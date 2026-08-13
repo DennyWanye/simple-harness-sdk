@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 
 
 FaultHook = Callable[[str], None]
+RUNTIME_LEASE_NAMESPACE = "runtime.kernel"
 
 
 class RunState(StrEnum):
@@ -64,6 +66,35 @@ class ContinuationState(StrEnum):
     PENDING = "pending"
     CLAIMED = "claimed"
     ACKED = "acked"
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionLease:
+    run_id: str
+    namespace: str
+    owner_id: str
+    epoch: int
+    expires_at: float
+
+    def __post_init__(self) -> None:
+        for name in ("run_id", "namespace", "owner_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} is required")
+        if isinstance(self.epoch, bool) or self.epoch < 1:
+            raise ValueError("epoch must be a positive integer")
+        if not math.isfinite(self.expires_at) or self.expires_at < 0:
+            raise ValueError("expires_at must be finite and non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowCheckpoint:
+    run_id: str
+    namespace: str
+    checkpoint: FrozenJsonValue
+    checkpoint_hash: str
+    lease_epoch: int
+    version: int
 
 
 class UnitOfWorkConflict(RuntimeError):
@@ -121,6 +152,77 @@ class ContinuationRecord:
 
 
 class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protocol):
+    def claim_runtime_activation(
+        self,
+        *,
+        run_id: str,
+        owner_id: str,
+        namespace: str,
+        now: float,
+        lease_ttl_seconds: float,
+        fault: FaultHook | None = None,
+    ) -> tuple[RunRecord, ExecutionLease]: ...
+
+    def release_runtime_lease(
+        self,
+        lease: ExecutionLease,
+        *,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> None: ...
+
+    def renew_runtime_lease(
+        self,
+        lease: ExecutionLease,
+        *,
+        now: float,
+        lease_ttl_seconds: float,
+        fault: FaultHook | None = None,
+    ) -> ExecutionLease: ...
+
+    def commit_runtime_state(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        state: RunState,
+        event_id: str,
+        payload: Mapping[str, JsonValue],
+        lease: ExecutionLease,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> RunRecord: ...
+
+    def request_run_cancel(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> RunRecord: ...
+
+    def read_run(self, run_id: str) -> RunRecord | None: ...
+
+    def read_start_snapshot(self, run_id: str) -> Mapping[str, JsonValue] | None: ...
+
+    def list_recoverable_root_runs(self) -> tuple[RunRecord, ...]: ...
+
+    def read_react_checkpoint(self, run_id: str) -> WorkflowCheckpoint | None: ...
+
+    def cas_react_checkpoint(
+        self,
+        *,
+        run_id: str,
+        lease: ExecutionLease,
+        expected_version: int | None,
+        checkpoint: Mapping[str, JsonValue],
+        checkpoint_hash: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> WorkflowCheckpoint: ...
+
     def commit_root_terminal_with_deliveries(
         self,
         *,
@@ -294,16 +396,19 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
 
 
 __all__ = (
+    "RUNTIME_LEASE_NAMESPACE",
     "AdmissionRecord",
     "AdmissionState",
     "ContinuationRecord",
     "ContinuationState",
     "DecisionRecord",
     "DecisionState",
+    "ExecutionLease",
     "ExecutionUnitOfWork",
     "FaultHook",
     "RunRecord",
     "RunState",
     "UnitOfWorkConflict",
     "UnitOfWorkNotFound",
+    "WorkflowCheckpoint",
 )

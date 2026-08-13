@@ -49,17 +49,20 @@ from simple_harness.execution.provider_invocations import (
     ProviderInvocationState,
 )
 from simple_harness.execution.uow import (
+    RUNTIME_LEASE_NAMESPACE,
     AdmissionRecord,
     AdmissionState,
     ContinuationRecord,
     ContinuationState,
     DecisionRecord,
     DecisionState,
+    ExecutionLease,
     FaultHook,
     RunRecord,
     RunState,
     UnitOfWorkConflict,
     UnitOfWorkNotFound,
+    WorkflowCheckpoint,
 )
 from simple_harness.providers import ProviderTarget
 from simple_harness.tools.contracts import ToolOutcome, ToolResult
@@ -101,6 +104,338 @@ class SqliteExecutionUnitOfWork:
     def __init__(self, database: Database) -> None:
         self.database = database
 
+    def claim_runtime_activation(
+        self,
+        *,
+        run_id: str,
+        owner_id: str,
+        namespace: str,
+        now: float,
+        lease_ttl_seconds: float,
+        fault: FaultHook | None = None,
+    ) -> tuple[RunRecord, ExecutionLease]:
+        """Atomically acquire the durable owner lease and activate a root Run."""
+
+        run_id = _required(run_id, "run_id")
+        owner_id = _required(owner_id, "owner_id")
+        namespace = _required(namespace, "namespace")
+        now = _time(now)
+        if (
+            not isinstance(lease_ttl_seconds, (int, float))
+            or isinstance(lease_ttl_seconds, bool)
+            or not math.isfinite(float(lease_ttl_seconds))
+            or lease_ttl_seconds <= 0
+        ):
+            raise ValueError("lease_ttl_seconds must be finite and positive")
+        expires_at = now + float(lease_ttl_seconds)
+        with self.database.transaction() as connection:
+            run_row = connection.execute(
+                "SELECT * FROM runs WHERE run_id = ? AND parent_run_id IS NULL",
+                (run_id,),
+            ).fetchone()
+            if run_row is None:
+                raise UnitOfWorkNotFound(run_id)
+            run = _run_record(run_row)
+            if run.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+                raise UnitOfWorkConflict("terminal Run cannot be activated")
+            lease_row = connection.execute(
+                "SELECT owner_id, epoch, expires_at FROM workflow_leases "
+                "WHERE run_id = ? AND namespace = ?",
+                (run_id, namespace),
+            ).fetchone()
+            if lease_row is not None and float(lease_row["expires_at"]) > now:
+                if str(lease_row["owner_id"]) != owner_id:
+                    raise UnitOfWorkConflict("Run already has an active runtime owner")
+                lease = ExecutionLease(
+                    run_id,
+                    namespace,
+                    owner_id,
+                    int(lease_row["epoch"]),
+                    float(lease_row["expires_at"]),
+                )
+                return run, lease
+            epoch = 1 if lease_row is None else int(lease_row["epoch"]) + 1
+            _fault(fault, "runtime_activation.lease.before_write")
+            connection.execute(
+                """
+                INSERT INTO workflow_leases(run_id, namespace, owner_id, epoch, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, namespace) DO UPDATE SET
+                    owner_id = excluded.owner_id,
+                    epoch = excluded.epoch,
+                    expires_at = excluded.expires_at
+                """,
+                (run_id, namespace, owner_id, epoch, expires_at),
+            )
+            _fault(fault, "runtime_activation.lease.after_write")
+            event_kind = (
+                "run.recovered" if run.state is RunState.RUNNING else "run.activated"
+            )
+            _fault(fault, "runtime_activation.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=f"{run_id}:runtime:{namespace}:{epoch}:activated",
+                run_id=run_id,
+                kind=event_kind,
+                payload={"owner_id": owner_id, "lease_epoch": epoch},
+                now=now,
+            )
+            _fault(fault, "runtime_activation.event.after_write")
+            if run.state in {RunState.CREATED, RunState.QUEUED}:
+                _fault(fault, "runtime_activation.run.before_write")
+                changed = connection.execute(
+                    """
+                    UPDATE runs SET state = 'running', version = version + 1, updated_at = ?
+                    WHERE run_id = ? AND version = ? AND state IN ('created', 'queued')
+                    """,
+                    (now, run_id, run.version),
+                ).rowcount
+                if changed != 1:
+                    raise UnitOfWorkConflict("runtime activation CAS failed")
+                _fault(fault, "runtime_activation.run.after_write")
+        _fault(fault, "runtime_activation.after_commit")
+        activated = self.read_run(run_id)
+        assert activated is not None
+        return activated, ExecutionLease(run_id, namespace, owner_id, epoch, expires_at)
+
+    def release_runtime_lease(
+        self,
+        lease: ExecutionLease,
+        *,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> None:
+        now = _time(now)
+        with self.database.transaction() as connection:
+            _fault(fault, "runtime_lease_release.before_write")
+            changed = connection.execute(
+                """
+                UPDATE workflow_leases SET expires_at = ?
+                WHERE run_id = ? AND namespace = ? AND owner_id = ? AND epoch = ?
+                """,
+                (now, lease.run_id, lease.namespace, lease.owner_id, lease.epoch),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("runtime lease release CAS failed")
+            _fault(fault, "runtime_lease_release.after_write")
+        _fault(fault, "runtime_lease_release.after_commit")
+
+    def renew_runtime_lease(
+        self,
+        lease: ExecutionLease,
+        *,
+        now: float,
+        lease_ttl_seconds: float,
+        fault: FaultHook | None = None,
+    ) -> ExecutionLease:
+        now = _time(now)
+        if (
+            not isinstance(lease_ttl_seconds, (int, float))
+            or isinstance(lease_ttl_seconds, bool)
+            or not math.isfinite(float(lease_ttl_seconds))
+            or lease_ttl_seconds <= 0
+        ):
+            raise ValueError("lease_ttl_seconds must be finite and positive")
+        expires_at = now + float(lease_ttl_seconds)
+        with self.database.transaction() as connection:
+            _fault(fault, "runtime_lease_renew.before_write")
+            changed = connection.execute(
+                """
+                UPDATE workflow_leases SET expires_at = ?
+                WHERE run_id = ? AND namespace = ? AND owner_id = ? AND epoch = ?
+                  AND expires_at > ?
+                """,
+                (
+                    expires_at,
+                    lease.run_id,
+                    lease.namespace,
+                    lease.owner_id,
+                    lease.epoch,
+                    now,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("runtime lease renew CAS failed")
+            _fault(fault, "runtime_lease_renew.after_write")
+        _fault(fault, "runtime_lease_renew.after_commit")
+        return ExecutionLease(
+            lease.run_id,
+            lease.namespace,
+            lease.owner_id,
+            lease.epoch,
+            expires_at,
+        )
+
+    def commit_runtime_state(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        state: RunState,
+        event_id: str,
+        payload: Mapping[str, JsonValue],
+        lease: ExecutionLease,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> RunRecord:
+        run_id = _required(run_id, "run_id")
+        event_id = _required(event_id, "event_id")
+        state = RunState(state)
+        if state not in {RunState.RUNNING, RunState.WAITING}:
+            raise ValueError("runtime state command only supports running or waiting")
+        now = _time(now)
+        payload_json = _object_json(payload, "payload")
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, lease, now=now)
+            _fault(fault, "runtime_state.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=run_id,
+                kind=f"run.{state.value}",
+                payload=json.loads(payload_json),
+                now=now,
+            )
+            _fault(fault, "runtime_state.event.after_write")
+            _fault(fault, "runtime_state.run.before_write")
+            changed = connection.execute(
+                """
+                UPDATE runs SET state = ?, version = version + 1, updated_at = ?
+                WHERE run_id = ? AND version = ?
+                  AND state NOT IN ('completed', 'failed', 'cancelled')
+                """,
+                (state.value, now, run_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("runtime state CAS failed")
+            _fault(fault, "runtime_state.run.after_write")
+        _fault(fault, "runtime_state.after_commit")
+        record = self.read_run(run_id)
+        assert record is not None
+        return record
+
+    def request_run_cancel(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> RunRecord:
+        run_id = _required(run_id, "run_id")
+        event_id = _required(event_id, "event_id")
+        now = _time(now)
+        existing = self.read_run(run_id)
+        if existing is None:
+            raise UnitOfWorkNotFound(run_id)
+        if existing.state in {
+            RunState.CANCEL_REQUESTED,
+            RunState.CANCELLED,
+            RunState.COMPLETED,
+            RunState.FAILED,
+        }:
+            return existing
+        with self.database.transaction() as connection:
+            _fault(fault, "runtime_cancel.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=run_id,
+                kind="run.cancel_requested",
+                payload={},
+                now=now,
+            )
+            _fault(fault, "runtime_cancel.event.after_write")
+            _fault(fault, "runtime_cancel.run.before_write")
+            changed = connection.execute(
+                """
+                UPDATE runs SET state = 'cancel_requested', version = version + 1, updated_at = ?
+                WHERE run_id = ? AND version = ?
+                  AND state NOT IN ('completed', 'failed', 'cancelled', 'cancel_requested')
+                """,
+                (now, run_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("runtime cancellation CAS failed")
+            _fault(fault, "runtime_cancel.run.after_write")
+        _fault(fault, "runtime_cancel.after_commit")
+        record = self.read_run(run_id)
+        assert record is not None
+        return record
+
+    def read_react_checkpoint(self, run_id: str) -> WorkflowCheckpoint | None:
+        row = self.database.connection.execute(
+            """
+            SELECT * FROM workflow_checkpoints
+            WHERE run_id = ? AND namespace = 'react.termination.v1'
+            ORDER BY version DESC LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        return None if row is None else _workflow_checkpoint(row)
+
+    def cas_react_checkpoint(
+        self,
+        *,
+        run_id: str,
+        lease: ExecutionLease,
+        expected_version: int | None,
+        checkpoint: Mapping[str, JsonValue],
+        checkpoint_hash: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> WorkflowCheckpoint:
+        run_id = _required(run_id, "run_id")
+        if lease.run_id != run_id or lease.namespace != RUNTIME_LEASE_NAMESPACE:
+            raise UnitOfWorkConflict("ReAct checkpoint requires canonical Run lease")
+        checkpoint_json = _object_json(checkpoint, "checkpoint")
+        actual_hash = hashlib.sha256(checkpoint_json.encode("utf-8")).hexdigest()
+        if checkpoint_hash != actual_hash:
+            raise UnitOfWorkConflict("ReAct checkpoint hash mismatch")
+        if expected_version is not None and (
+            isinstance(expected_version, bool) or expected_version < 0
+        ):
+            raise ValueError("expected_version must be non-negative or None")
+        now = _time(now)
+        next_version = 0 if expected_version is None else expected_version + 1
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, lease, now=now)
+            latest = connection.execute(
+                """
+                SELECT version FROM workflow_checkpoints
+                WHERE run_id = ? AND namespace = 'react.termination.v1'
+                ORDER BY version DESC LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            current_version = None if latest is None else int(latest["version"])
+            if current_version != expected_version:
+                raise UnitOfWorkConflict("ReAct checkpoint version CAS failed")
+            _fault(fault, "react_checkpoint.before_write")
+            connection.execute(
+                """
+                INSERT INTO workflow_checkpoints(
+                    checkpoint_id, run_id, namespace, checkpoint_json,
+                    checkpoint_hash, lease_epoch, version, created_at
+                ) VALUES (?, ?, 'react.termination.v1', ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"{run_id}:react.termination.v1:{next_version}",
+                    run_id,
+                    checkpoint_json,
+                    checkpoint_hash,
+                    lease.epoch,
+                    next_version,
+                    now,
+                ),
+            )
+            _fault(fault, "react_checkpoint.after_write")
+        _fault(fault, "react_checkpoint.after_commit")
+        result = self.read_react_checkpoint(run_id)
+        assert result is not None
+        return result
+
     def commit_root_terminal_with_deliveries(
         self,
         *,
@@ -123,7 +458,11 @@ class SqliteExecutionUnitOfWork:
         if isinstance(expected_version, bool) or expected_version < 0:
             raise ValueError("expected_version must be non-negative")
         terminal_state = RunState(terminal_state)
-        if terminal_state not in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+        if terminal_state not in {
+            RunState.COMPLETED,
+            RunState.FAILED,
+            RunState.CANCELLED,
+        }:
             raise ValueError("root terminal command requires a terminal state")
         if fence.run_id.value != run_id:
             raise UnitOfWorkConflict("terminal fence belongs to another run")
@@ -142,7 +481,11 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkNotFound(run_id)
         if existing_run.parent_run_id is not None:
             raise UnitOfWorkConflict("only root runs can commit terminal deliveries")
-        if existing_run.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+        if existing_run.state in {
+            RunState.COMPLETED,
+            RunState.FAILED,
+            RunState.CANCELLED,
+        }:
             existing_event = self.database.connection.execute(
                 "SELECT kind, payload_json FROM run_events WHERE event_id = ? AND run_id = ?",
                 (event_id, run_id),
@@ -157,7 +500,9 @@ class SqliteExecutionUnitOfWork:
             requested_rows: list[tuple[str, str, str, str]] = []
             for item in items:
                 replay_payload = _thaw(item.payload)
-                replay_payload["terminal_fence_receipt_ref"] = terminal_fence_receipt_ref
+                replay_payload["terminal_fence_receipt_ref"] = (
+                    terminal_fence_receipt_ref
+                )
                 replay_payload["fence_epoch"] = fence.epoch
                 requested_rows.append(
                     (
@@ -168,7 +513,17 @@ class SqliteExecutionUnitOfWork:
                     )
                 )
             requested = tuple(sorted(requested_rows))
-            actual = tuple(sorted((item.delivery_id, item.sink_kind, item.idempotency_key, canonical_json(_thaw(item.payload))) for item in stored))
+            actual = tuple(
+                sorted(
+                    (
+                        item.delivery_id,
+                        item.sink_kind,
+                        item.idempotency_key,
+                        canonical_json(_thaw(item.payload)),
+                    )
+                    for item in stored
+                )
+            )
             if (
                 existing_run.state is terminal_state
                 and existing_event is not None
@@ -500,7 +855,9 @@ class SqliteExecutionUnitOfWork:
                 != canonical_json(_thaw(existing.prompt))
                 or existing.expires_at != expires_at
             ):
-                raise UnitOfWorkConflict("admission identity reused with different intent")
+                raise UnitOfWorkConflict(
+                    "admission identity reused with different intent"
+                )
             return existing
         with self.database.transaction() as connection:
             _fault(fault, "admission_start.run.before_write")
@@ -561,7 +918,10 @@ class SqliteExecutionUnitOfWork:
         if existing is None:
             raise UnitOfWorkNotFound(admission_id)
         if existing.state is not AdmissionState.PENDING:
-            if existing.state is state and canonical_json(_thaw(existing.response)) == response_json:
+            if (
+                existing.state is state
+                and canonical_json(_thaw(existing.response)) == response_json
+            ):
                 return existing
             raise UnitOfWorkConflict("admission already resolved differently")
         run_state = {
@@ -631,7 +991,9 @@ class SqliteExecutionUnitOfWork:
         request_json = _object_json(request, "request")
         response_json = None if response is None else _object_json(response, "response")
         if (state is DecisionState.OPEN) != (response is None):
-            raise ValueError("open decision must omit response; resolved decision requires it")
+            raise ValueError(
+                "open decision must omit response; resolved decision requires it"
+            )
         existing = self.read_decision(decision_id)
         if existing is not None:
             if (
@@ -712,9 +1074,14 @@ class SqliteExecutionUnitOfWork:
         payload_json = _object_json(payload, "payload")
         existing = self.read_continuation(continuation_id)
         if existing is not None:
-            if existing.run_id == run_id and canonical_json(_thaw(existing.payload)) == payload_json:
+            if (
+                existing.run_id == run_id
+                and canonical_json(_thaw(existing.payload)) == payload_json
+            ):
                 return existing
-            raise UnitOfWorkConflict("continuation identity reused with different payload")
+            raise UnitOfWorkConflict(
+                "continuation identity reused with different payload"
+            )
         with self.database.transaction() as connection:
             row = connection.execute(
                 "SELECT COALESCE(MAX(fifo_seq), 0) + 1 FROM continuations WHERE run_id = ?",
@@ -792,7 +1159,10 @@ class SqliteExecutionUnitOfWork:
         if existing is None:
             raise UnitOfWorkNotFound(continuation_id)
         if existing.state is ContinuationState.ACKED:
-            if existing.claimed_by == owner_id and existing.version == expected_version + 1:
+            if (
+                existing.claimed_by == owner_id
+                and existing.version == expected_version + 1
+            ):
                 return existing
             raise UnitOfWorkConflict("continuation already acked by another claim")
         with self.database.transaction() as connection:
@@ -884,7 +1254,10 @@ class SqliteExecutionUnitOfWork:
         child_run_id = _required(child_run_id, "child_run_id")
         request_id = _required(request_id, "request_id")
         event_id = _required(event_id, "event_id")
-        if isinstance(expected_catalog_generation, bool) or expected_catalog_generation < 1:
+        if (
+            isinstance(expected_catalog_generation, bool)
+            or expected_catalog_generation < 1
+        ):
             raise ValueError("expected_catalog_generation must be positive")
         attachment_policy = AttachmentPolicy(attachment_policy)
         now = _time(now)
@@ -987,7 +1360,14 @@ class SqliteExecutionUnitOfWork:
                     state, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
                 """,
-                (command_id, existing_ticket.parent_run_id, child_run_id, ticket_id, now, now),
+                (
+                    command_id,
+                    existing_ticket.parent_run_id,
+                    child_run_id,
+                    ticket_id,
+                    now,
+                    now,
+                ),
             )
             _fault(fault, "child_launch.command.after_write")
             _fault(fault, "child_launch.link.before_write")
@@ -996,7 +1376,12 @@ class SqliteExecutionUnitOfWork:
                 INSERT INTO run_links(parent_run_id, child_run_id, attachment_policy, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (existing_ticket.parent_run_id, child_run_id, attachment_policy.value, now),
+                (
+                    existing_ticket.parent_run_id,
+                    child_run_id,
+                    attachment_policy.value,
+                    now,
+                ),
             )
             _fault(fault, "child_launch.link.after_write")
             if attachment_policy is not AttachmentPolicy.DETACHED:
@@ -1017,7 +1402,11 @@ class SqliteExecutionUnitOfWork:
                 event_id=event_id,
                 run_id=child_run_id,
                 kind="child.created",
-                payload={"command_id": command_id, "ticket_id": ticket_id, "launch": json.loads(launch_json)},
+                payload={
+                    "command_id": command_id,
+                    "ticket_id": ticket_id,
+                    "launch": json.loads(launch_json),
+                },
                 now=now,
             )
             _fault(fault, "child_launch.event.after_write")
@@ -1045,7 +1434,11 @@ class SqliteExecutionUnitOfWork:
         if isinstance(expected_child_version, bool) or expected_child_version < 0:
             raise ValueError("expected_child_version must be non-negative")
         terminal_state = RunState(terminal_state)
-        if terminal_state not in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+        if terminal_state not in {
+            RunState.COMPLETED,
+            RunState.FAILED,
+            RunState.CANCELLED,
+        }:
             raise ValueError("child finalization requires a terminal run state")
         payload_json = _object_json(signal_payload, "signal_payload")
         now = _time(now)
@@ -1063,7 +1456,9 @@ class SqliteExecutionUnitOfWork:
                 and canonical_json(_thaw(existing_signal.payload)) == payload_json
             ):
                 return existing_signal
-            raise UnitOfWorkConflict("child signal identity reused with different outcome")
+            raise UnitOfWorkConflict(
+                "child signal identity reused with different outcome"
+            )
         with self.database.transaction() as connection:
             _fault(fault, "child_terminal.run.before_write")
             changed = connection.execute(
@@ -1072,7 +1467,12 @@ class SqliteExecutionUnitOfWork:
                 WHERE run_id = ? AND version = ?
                   AND state NOT IN ('completed', 'failed', 'cancelled')
                 """,
-                (terminal_state.value, now, command.child_run_id, expected_child_version),
+                (
+                    terminal_state.value,
+                    now,
+                    command.child_run_id,
+                    expected_child_version,
+                ),
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("child terminal CAS failed")
@@ -1096,7 +1496,14 @@ class SqliteExecutionUnitOfWork:
                     state, version, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
                 """,
-                (signal_id, command.parent_run_id, command.child_run_id, payload_json, now, now),
+                (
+                    signal_id,
+                    command.parent_run_id,
+                    command.child_run_id,
+                    payload_json,
+                    now,
+                    now,
+                ),
             )
             _fault(fault, "child_terminal.signal.after_write")
             _fault(fault, "child_terminal.event.before_write")
@@ -1144,7 +1551,9 @@ class SqliteExecutionUnitOfWork:
                 and canonical_json(_thaw(continuation.payload)) == continuation_json
             ):
                 return signal
-            raise UnitOfWorkConflict("child signal was already acknowledged differently")
+            raise UnitOfWorkConflict(
+                "child signal was already acknowledged differently"
+            )
         with self.database.transaction() as connection:
             _fault(fault, "child_signal_ack.signal.before_write")
             changed = connection.execute(
@@ -1171,7 +1580,13 @@ class SqliteExecutionUnitOfWork:
                     version, claimed_by, created_at, claimed_at, acked_at
                 ) VALUES (?, ?, ?, ?, 'pending', 0, NULL, ?, NULL, NULL)
                 """,
-                (continuation_id, signal.parent_run_id, sequence, continuation_json, now),
+                (
+                    continuation_id,
+                    signal.parent_run_id,
+                    sequence,
+                    continuation_json,
+                    now,
+                ),
             )
             _fault(fault, "child_signal_ack.continuation.after_write")
             link = connection.execute(
@@ -1415,7 +1830,9 @@ class SqliteExecutionUnitOfWork:
         if result.call_id != existing.call_id:
             raise UnitOfWorkConflict("effect result call_id mismatch")
         state = EffectState(result.outcome.value)
-        result_json = None if state is EffectState.UNKNOWN else _tool_result_json(result)
+        result_json = (
+            None if state is EffectState.UNKNOWN else _tool_result_json(result)
+        )
         with self.database.transaction() as connection:
             _fault(fault, "effect_settle.before_write")
             changed = connection.execute(
@@ -1764,6 +2181,28 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         return None if row is None else _run_record(row)
 
+    def read_start_snapshot(self, run_id: str) -> Mapping[str, JsonValue] | None:
+        row = self.database.connection.execute(
+            "SELECT snapshot_json FROM run_start_snapshots WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(str(row["snapshot_json"]))
+        if not isinstance(value, dict):
+            raise TypeError("stored start snapshot is not a JSON object")
+        return value
+
+    def list_recoverable_root_runs(self) -> tuple[RunRecord, ...]:
+        rows = self.database.connection.execute(
+            """
+            SELECT * FROM runs
+            WHERE parent_run_id IS NULL
+              AND state IN ('created', 'queued', 'running', 'cancel_requested')
+            ORDER BY created_at ASC, run_id ASC
+            """
+        ).fetchall()
+        return tuple(_run_record(row) for row in rows)
+
     def read_admission(self, admission_id: str) -> AdmissionRecord | None:
         row = self.database.connection.execute(
             "SELECT * FROM run_admissions WHERE admission_id = ?", (admission_id,)
@@ -1790,6 +2229,28 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         return None if row is None else _run_record(row)
 
+    def _require_runtime_lease(
+        self,
+        connection: sqlite3.Connection,
+        lease: ExecutionLease,
+        *,
+        now: float,
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT owner_id, epoch, expires_at FROM workflow_leases
+            WHERE run_id = ? AND namespace = ?
+            """,
+            (lease.run_id, lease.namespace),
+        ).fetchone()
+        if (
+            row is None
+            or str(row["owner_id"]) != lease.owner_id
+            or int(row["epoch"]) != lease.epoch
+            or float(row["expires_at"]) <= now
+        ):
+            raise UnitOfWorkConflict("runtime lease is stale or expired")
+
     def _verify_existing_start(
         self,
         record: RunRecord,
@@ -1810,7 +2271,9 @@ class SqliteExecutionUnitOfWork:
             or row is None
             or row[0] != snapshot_hash
         ):
-            raise UnitOfWorkConflict("request identity reused with different root intent")
+            raise UnitOfWorkConflict(
+                "request identity reused with different root intent"
+            )
 
     def _insert_event(
         self,
@@ -1861,10 +2324,23 @@ def _run_record(row: sqlite3.Row) -> RunRecord:
         execution_session_id=str(row["execution_session_id"]),
         request_id=str(row["request_id"]),
         root_run_id=str(row["root_run_id"]),
-        parent_run_id=None if row["parent_run_id"] is None else str(row["parent_run_id"]),
+        parent_run_id=None
+        if row["parent_run_id"] is None
+        else str(row["parent_run_id"]),
         profile_key=str(row["profile_key"]),
         driver_kind=str(row["driver_kind"]),
         state=RunState(row["state"]),
+        version=int(row["version"]),
+    )
+
+
+def _workflow_checkpoint(row: sqlite3.Row) -> WorkflowCheckpoint:
+    return WorkflowCheckpoint(
+        run_id=str(row["run_id"]),
+        namespace=str(row["namespace"]),
+        checkpoint=freeze_json(json.loads(str(row["checkpoint_json"]))),
+        checkpoint_hash=str(row["checkpoint_hash"]),
+        lease_epoch=int(row["lease_epoch"]),
         version=int(row["version"]),
     )
 
@@ -2036,9 +2512,7 @@ def _provider_invocation_record(row: sqlite3.Row) -> ProviderInvocationRecord:
             else json.loads(str(row["estimator_json"]))
         ),
         estimator_digest=(
-            None
-            if row["estimator_digest"] is None
-            else str(row["estimator_digest"])
+            None if row["estimator_digest"] is None else str(row["estimator_digest"])
         ),
         budget_charge=BudgetCharge.from_json(usage["budget"]),
         response_json=(
@@ -2047,16 +2521,12 @@ def _provider_invocation_record(row: sqlite3.Row) -> ProviderInvocationRecord:
             else json.loads(str(row["response_json"]))
         ),
         usage_json=usage,
-        error_code=(
-            None if row["error_code"] is None else str(row["error_code"])
-        ),
+        error_code=(None if row["error_code"] is None else str(row["error_code"])),
         claimed_at=float(row["claimed_at"]),
         handed_off_at=(
             None if row["handed_off_at"] is None else float(row["handed_off_at"])
         ),
-        settled_at=(
-            None if row["settled_at"] is None else float(row["settled_at"])
-        ),
+        settled_at=(None if row["settled_at"] is None else float(row["settled_at"])),
         version=int(row["version"]),
     )
 
