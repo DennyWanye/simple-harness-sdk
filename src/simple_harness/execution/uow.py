@@ -235,6 +235,7 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         terminal_payload: Mapping[str, JsonValue],
         deliveries: Sequence[DeliverySpec],
         fence: RunFenceLease,
+        execution_lease: ExecutionLease,
         terminal_fence_receipt_ref: str,
         now: float,
         fault: FaultHook | None = None,

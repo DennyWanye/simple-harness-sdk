@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import cast
 
 from simple_harness.contracts import EffectId, thaw_json
@@ -17,7 +17,8 @@ from simple_harness.execution.effects import (
     EffectUnitOfWork,
     effect_request_hash,
 )
-from simple_harness.execution.fences import RunFencePort, require_current_epoch
+from simple_harness.execution.fences import RunFenceLease
+from simple_harness.execution.uow import RUNTIME_LEASE_NAMESPACE, ExecutionLease
 
 from .authorization import (
     AuthorizationDecision,
@@ -48,18 +49,12 @@ class EffectExecutor:
         registry: ToolRegistry,
         authorization: AuthorizationPort,
         reconciliation: ToolReconciliationPort,
-        fences: RunFencePort,
-        owner_id: str,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        if not owner_id.strip():
-            raise ValueError("owner_id is required")
         self._uow = uow
         self._registry = registry
         self._authorization = authorization
         self._reconciliation = reconciliation
-        self._fences = fences
-        self._owner_id = owner_id
         self._clock = clock
 
     def _prepared(
@@ -84,7 +79,19 @@ class EffectExecutor:
         effect_id: EffectId,
         call: ToolCall,
         context: ToolContext,
+        execution_lease: ExecutionLease,
+        run_fence: RunFenceLease,
     ) -> EffectExecution:
+        if (
+            execution_lease.run_id != context.run_id.value
+            or execution_lease.namespace != RUNTIME_LEASE_NAMESPACE
+        ):
+            raise ValueError("Tool execution lease belongs to another Run")
+        if (
+            run_fence.run_id != context.run_id
+            or run_fence.owner_id != execution_lease.owner_id
+        ):
+            raise ValueError("Tool Run fence differs from runtime lease")
         prepared = self._prepared(effect_id=effect_id, call=call, context=context)
         authorization = await self._authorization.authorize(prepared)
         if authorization.decision is not AuthorizationDecision.ALLOW:
@@ -93,19 +100,16 @@ class EffectExecutor:
                 result=ToolResult.rejected(
                     call.call_id,
                     authorization.reason_code or "authorization_denied",
-                    authorization.public_message or "Tool execution was not authorized.",
+                    authorization.public_message
+                    or "Tool execution was not authorized.",
                 ),
             )
         assert authorization.receipt_ref is not None
-        lease = await self._fences.acquire(context.run_id, self._owner_id)
-        try:
-            arguments = thaw_json(call.arguments)
-            if not isinstance(arguments, dict):
-                raise TypeError("Tool arguments must be a JSON object")
-            request_hash = effect_request_hash(
-                tool_name=call.name, arguments=arguments
-            )
-            record = self._uow.prepare_effect(
+        arguments = thaw_json(call.arguments)
+        if not isinstance(arguments, dict):
+            raise TypeError("Tool arguments must be a JSON object")
+        request_hash = effect_request_hash(tool_name=call.name, arguments=arguments)
+        record = self._uow.prepare_effect(
                 effect_id=effect_id,
                 run_id=context.run_id,
                 call_id=call.call_id,
@@ -113,66 +117,62 @@ class EffectExecutor:
                 arguments=cast(dict[str, object], arguments),
                 request_hash=request_hash,
                 authorization_receipt_ref=authorization.receipt_ref,
-                fence_epoch=lease.epoch,
+                run_fence=run_fence,
+                execution_lease=execution_lease,
                 now=self._clock(),
+        )
+        if record.terminal:
+            assert record.result is not None
+            return EffectExecution(record, record.result)
+        if record.state in {EffectState.HANDED_OFF, EffectState.UNKNOWN}:
+            reconciled = await self.reconcile(
+                record, context=context, current_fence_epoch=run_fence.epoch
             )
-            if record.terminal:
-                assert record.result is not None
-                return EffectExecution(record, record.result)
-            if record.state in {EffectState.HANDED_OFF, EffectState.UNKNOWN}:
-                reconciled = await self.reconcile(
-                    record, context=context, current_fence_epoch=lease.epoch
+            if not reconciled.dispatch_allowed:
+                return EffectExecution(
+                    reconciled,
+                    reconciled.result
+                    or ToolResult.unknown(
+                        call.call_id, "Tool outcome is awaiting reconciliation."
+                    ),
                 )
-                if not reconciled.dispatch_allowed:
-                    return EffectExecution(
-                        reconciled,
-                        reconciled.result
-                        or ToolResult.unknown(
-                            call.call_id, "Tool outcome is awaiting reconciliation."
-                        ),
-                    )
-                record = reconciled
-            require_current_epoch(
-                expected=record.fence_epoch,
-                current=await self._fences.current_epoch(context.run_id),
-            )
-            handed_off = self._uow.mark_effect_handed_off(
+            record = reconciled
+        handed_off = self._uow.mark_effect_handed_off(
                 effect_id,
                 expected_version=record.version,
-                expected_fence_epoch=lease.epoch,
+                run_fence=run_fence,
                 handoff_receipt_ref=(
                     f"tool-handoff:{context.run_id.value}:{call.call_id.value}:"
-                    f"{effect_id.value}:{lease.epoch}"
+                    f"{effect_id.value}:{run_fence.epoch}"
                 ),
+                execution_lease=execution_lease,
                 now=self._clock(),
-            )
-            try:
-                result = await self._registry.invoke(call, context)
-            except BaseException:
-                self._uow.mark_effect_unknown(
+        )
+        try:
+            result = await self._registry.invoke(call, context)
+        except BaseException:
+            self._uow.mark_effect_unknown(
                     effect_id,
                     expected_version=handed_off.version,
-                    expected_fence_epoch=lease.epoch,
+                    expected_fence_epoch=run_fence.epoch,
                     evidence_ref=(
                         f"tool-dispatch-interrupted:{context.run_id.value}:"
                         f"{effect_id.value}"
                     ),
                     now=self._clock(),
-                )
-                raise
-            settled = self._uow.settle_effect(
+            )
+            raise
+        settled = self._uow.settle_effect(
                 effect_id,
                 expected_version=handed_off.version,
-                expected_fence_epoch=lease.epoch,
+                expected_fence_epoch=run_fence.epoch,
                 result=result,
                 evidence_ref=(
                     f"tool-handler-result:{context.run_id.value}:{effect_id.value}"
                 ),
                 now=self._clock(),
-            )
-            return EffectExecution(settled, result)
-        finally:
-            await self._fences.release(lease)
+        )
+        return EffectExecution(settled, result)
 
     async def reconcile(
         self,
@@ -188,7 +188,9 @@ class EffectExecutor:
             raise TypeError("effect arguments must be a JSON object")
         prepared = self._prepared(
             effect_id=record.effect_id,
-            call=ToolCall(record.call_id, record.tool_name, arguments),
+            call=ToolCall(
+                record.call_id, record.tool_name, cast(JsonObject, arguments)
+            ),
             context=context,
         )
         observation = await self._reconciliation.observe(prepared)

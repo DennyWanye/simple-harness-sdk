@@ -8,9 +8,14 @@ from dataclasses import replace
 
 import pytest
 
-from simple_harness.contracts import CallId, EffectId, RequestId, RunId, thaw_json
-from simple_harness.execution import EffectRecord, EffectState, RunFenceLease
-from simple_harness.execution import StaleFenceError
+from simple_harness.contracts import CallId, EffectId, RequestId, RunId
+from simple_harness.execution import (
+    EffectRecord,
+    EffectState,
+    RunFenceLease,
+    StaleFenceError,
+)
+from simple_harness.execution.uow import ExecutionLease
 from simple_harness.tools import (
     AuthorizationDecision,
     AuthorizationResult,
@@ -36,8 +41,11 @@ class FakeUow:
     def prepare_effect(self, **values: object) -> EffectRecord:
         self.trace.append("prepare")
         if self.record is None:
+            run_fence = values["run_fence"]
+            assert isinstance(run_fence, RunFenceLease)
             self.record = EffectRecord(
                 arguments=values["arguments"],
+                fence_epoch=run_fence.epoch,
                 state=EffectState.PREPARED,
                 version=0,
                 handoff_receipt_ref=None,
@@ -46,7 +54,8 @@ class FakeUow:
                 **{
                     key: value
                     for key, value in values.items()
-                    if key not in {"arguments", "now"}
+                    if key
+                    not in {"arguments", "run_fence", "execution_lease", "now"}
                 },
             )  # type: ignore[arg-type]
         return self.record
@@ -69,9 +78,7 @@ class FakeUow:
         )
         return self.record
 
-    def settle_effect(
-        self, effect_id: EffectId, **values: object
-    ) -> EffectRecord:
+    def settle_effect(self, effect_id: EffectId, **values: object) -> EffectRecord:
         self.trace.append("settle")
         assert self.record is not None and self.record.effect_id == effect_id
         result = values["result"]
@@ -121,29 +128,12 @@ class Allow:
         )
 
 
-class Fence:
-    def __init__(self, epoch: int = 1) -> None:
-        self.epoch = epoch
-        self.releases = 0
-
-    async def acquire(self, run_id: RunId, owner_id: str) -> RunFenceLease:
-        return RunFenceLease(run_id, self.epoch, owner_id)
-
-    async def current_epoch(self, _run_id: RunId) -> int:
-        return self.epoch
-
-    async def release(self, _lease: RunFenceLease) -> None:
-        self.releases += 1
-
-
 class Observe:
     def __init__(self, observation: ReconciliationObservation) -> None:
         self.observation = observation
         self.calls = 0
 
-    async def observe(
-        self, _effect: PreparedToolEffect
-    ) -> ReconciliationObservation:
+    async def observe(self, _effect: PreparedToolEffect) -> ReconciliationObservation:
         self.calls += 1
         return self.observation
 
@@ -162,27 +152,26 @@ def _spec() -> ToolSpec:
 
 
 def _context() -> ToolContext:
-    return ToolContext(
-        RunId("run-1"), RequestId("request-1"), CancellationToken()
-    )
+    return ToolContext(RunId("run-1"), RequestId("request-1"), CancellationToken())
+
+
+LEASE = ExecutionLease("run-1", "runtime.kernel", "worker-1", 1, 100.0)
+FENCE = RunFenceLease(RunId("run-1"), 1, "worker-1", LEASE.epoch)
 
 
 def _executor(
     uow: FakeUow,
     handler: object,
     observation: ReconciliationObservation,
-) -> tuple[EffectExecutor, Fence, Observe]:
-    fence = Fence()
+) -> tuple[EffectExecutor, Observe]:
     observe = Observe(observation)
     executor = EffectExecutor(
         uow=uow,
         registry=ToolRegistry([FunctionTool(_spec(), handler)]),  # type: ignore[arg-type]
         authorization=Allow(),
         reconciliation=observe,
-        fences=fence,
-        owner_id="worker-1",
     )
-    return executor, fence, observe
+    return executor, observe
 
 
 def test_effect_is_handed_off_before_handler_and_then_settled() -> None:
@@ -196,7 +185,7 @@ def test_effect_is_handed_off_before_handler_and_then_settled() -> None:
         assert uow.record.state is EffectState.HANDED_OFF
         return ToolResult.succeeded(CallId("call-1"), {"path": arguments})
 
-    executor, fence, _ = _executor(
+    executor, _ = _executor(
         uow,
         handler,
         ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused"),
@@ -206,6 +195,8 @@ def test_effect_is_handed_off_before_handler_and_then_settled() -> None:
             effect_id=EffectId("effect-1"),
             call=ToolCall(CallId("call-1"), "read", {"path": "."}),
             context=_context(),
+            execution_lease=LEASE,
+            run_fence=FENCE,
         )
     )
 
@@ -213,7 +204,37 @@ def test_effect_is_handed_off_before_handler_and_then_settled() -> None:
     assert execution.effect.state is EffectState.SUCCEEDED
     assert uow.trace == ["prepare", "handoff", "settle"]
     assert calls == 1
-    assert fence.releases == 1
+
+
+def test_mismatched_runtime_and_run_fence_owner_never_reaches_handler() -> None:
+    uow = FakeUow()
+    calls = 0
+
+    def handler(_arguments: object, _context: ToolContext) -> ToolResult:
+        nonlocal calls
+        calls += 1
+        return ToolResult.succeeded(CallId("call-1"))
+
+    executor, _ = _executor(
+        uow,
+        handler,
+        ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused"),
+    )
+    mismatched = RunFenceLease(RunId("run-1"), 1, "different-owner", LEASE.epoch)
+
+    with pytest.raises(ValueError, match="differs"):
+        asyncio.run(
+            executor.execute(
+                effect_id=EffectId("effect-1"),
+                call=ToolCall(CallId("call-1"), "read", {"path": "."}),
+                context=_context(),
+                execution_lease=LEASE,
+                run_fence=mismatched,
+            )
+        )
+
+    assert calls == 0
+    assert uow.trace == []
 
 
 def test_still_unknown_reconciliation_never_dispatches_again() -> None:
@@ -241,7 +262,7 @@ def test_still_unknown_reconciliation_never_dispatches_again() -> None:
         calls += 1
         return ToolResult.succeeded(CallId("call-1"))
 
-    executor, _, observe = _executor(
+    executor, observe = _executor(
         uow,
         handler,
         ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "probe:1"),
@@ -251,6 +272,8 @@ def test_still_unknown_reconciliation_never_dispatches_again() -> None:
             effect_id=EffectId("effect-1"),
             call=original_call,
             context=_context(),
+            execution_lease=LEASE,
+            run_fence=FENCE,
         )
     )
 
@@ -286,7 +309,7 @@ def test_completed_reconciliation_settles_without_dispatch() -> None:
         calls += 1
         return ToolResult.succeeded(CallId("call-1"))
 
-    executor, _, _ = _executor(
+    executor, _ = _executor(
         uow,
         handler,
         ReconciliationObservation(
@@ -297,7 +320,11 @@ def test_completed_reconciliation_settles_without_dispatch() -> None:
     )
     execution = asyncio.run(
         executor.execute(
-            effect_id=EffectId("effect-1"), call=call, context=_context()
+            effect_id=EffectId("effect-1"),
+            call=call,
+            context=_context(),
+            execution_lease=LEASE,
+            run_fence=FENCE,
         )
     )
 
@@ -316,7 +343,7 @@ def test_executor_cancellation_marks_handed_off_effect_unknown() -> None:
         await asyncio.Future()
         raise AssertionError("unreachable")
 
-    executor, _, _ = _executor(
+    executor, _ = _executor(
         uow,
         handler,
         ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "probe:1"),
@@ -328,6 +355,8 @@ def test_executor_cancellation_marks_handed_off_effect_unknown() -> None:
                 effect_id=EffectId("effect-1"),
                 call=ToolCall(CallId("call-1"), "read", {"path": "."}),
                 context=_context(),
+                execution_lease=LEASE,
+                run_fence=FENCE,
             )
         )
         await started.wait()
@@ -345,7 +374,15 @@ def test_executor_cancellation_marks_handed_off_effect_unknown() -> None:
 
 
 def test_stale_fence_prevents_physical_dispatch() -> None:
-    uow = FakeUow()
+    class StaleHandoffUow(FakeUow):
+        def mark_effect_handed_off(
+            self, effect_id: EffectId, **values: object
+        ) -> EffectRecord:
+            del effect_id, values
+            self.trace.append("handoff")
+            raise StaleFenceError("stale Run fence")
+
+    uow = StaleHandoffUow()
     calls = 0
 
     def handler(_arguments: object, _context: ToolContext) -> ToolResult:
@@ -353,26 +390,21 @@ def test_stale_fence_prevents_physical_dispatch() -> None:
         calls += 1
         return ToolResult.succeeded(CallId("call-1"))
 
-    executor, fence, _ = _executor(
+    executor, _ = _executor(
         uow,
         handler,
         ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused"),
     )
-    original_current_epoch = fence.current_epoch
-
-    async def stolen(run_id: RunId) -> int:
-        return await original_current_epoch(run_id) + 1
-
-    fence.current_epoch = stolen  # type: ignore[method-assign]
-
     with pytest.raises(StaleFenceError):
         asyncio.run(
             executor.execute(
                 effect_id=EffectId("effect-1"),
                 call=ToolCall(CallId("call-1"), "read", {"path": "."}),
                 context=_context(),
+                execution_lease=LEASE,
+                run_fence=FENCE,
             )
         )
 
     assert calls == 0
-    assert uow.trace == ["prepare"]
+    assert uow.trace == ["prepare", "handoff"]

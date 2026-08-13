@@ -26,8 +26,9 @@ class FakeProviderInvocationUnitOfWork:
         self.operations: list[str] = []
 
     def claim_provider_invocation(
-        self, record, *, budget_policy
+        self, record, *, budget_policy, execution_lease
     ) -> ProviderInvocationRecord:
+        del execution_lease
         self.operations.append("claim")
         existing = self.records.get(record.invocation_id)
         if existing is not None:
@@ -43,8 +44,9 @@ class FakeProviderInvocationUnitOfWork:
         return self.records.get(invocation_id)
 
     def hand_off_provider_invocation(
-        self, invocation_id, *, expected_version, handed_off_at
+        self, invocation_id, *, expected_version, handed_off_at, execution_lease
     ):
+        del execution_lease
         self.operations.append("hand_off")
         record = self.records[invocation_id].hand_off(
             at=handed_off_at, expected_version=expected_version

@@ -58,6 +58,7 @@ class DriverInvocation:
     run: RunRecord
     start: StartSnapshot
     execution_lease: ExecutionLease
+    run_fence: RunFenceLease
     services: RuntimeServices
 
 
@@ -146,6 +147,7 @@ class RuntimePorts:
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     owner_id: str = field(default_factory=lambda: f"runtime-{uuid4().hex}")
     lease_ttl_seconds: float = 30.0
+    close_timeout_seconds: float = 5.0
 
     def __post_init__(self) -> None:
         for name in (
@@ -170,6 +172,13 @@ class RuntimePorts:
             or self.lease_ttl_seconds <= 0
         ):
             raise ValueError("lease_ttl_seconds must be finite and positive")
+        if (
+            not isinstance(self.close_timeout_seconds, (int, float))
+            or isinstance(self.close_timeout_seconds, bool)
+            or not math.isfinite(float(self.close_timeout_seconds))
+            or self.close_timeout_seconds <= 0
+        ):
+            raise ValueError("close_timeout_seconds must be finite and positive")
 
 
 class RunClient:
@@ -264,7 +273,7 @@ class Runtime:
         self._closing = True
         for token in self._cancels.values():
             token.cancel()
-        await self._live.close()
+        await self._live.close(timeout_seconds=self._ports.close_timeout_seconds)
         heartbeat_tasks = tuple(self._heartbeats.values())
         for task in heartbeat_tasks:
             task.cancel()
@@ -331,7 +340,7 @@ class Runtime:
             lease_ttl_seconds=self._ports.lease_ttl_seconds,
         )
         self._leases[run_id] = lease
-        fence = await self._uow.acquire(RunId(run_id), self._ports.owner_id)
+        fence = await self._uow.acquire(RunId(run_id), lease, now=self._now())
         self._fences[run_id] = fence
         self._cancels.setdefault(run_id, CancelToken())
         heartbeat = self._heartbeats.get(run_id)
@@ -344,7 +353,9 @@ class Runtime:
     async def _heartbeat(self, run_id: str) -> None:
         interval = max(0.001, self._ports.lease_ttl_seconds / 3.0)
         try:
-            while not self._closing and run_id in self._leases:
+            # Closing first cancels and joins every driver while ownership is still
+            # renewed.  Only Runtime.close may stop the heartbeat after that join.
+            while run_id in self._leases:
                 await self._ports.sleep(interval)
                 lease = self._leases.get(run_id)
                 if lease is None:
@@ -397,6 +408,7 @@ class Runtime:
                     run,
                     snapshot,
                     self._leases[run_id],
+                    self._fences[run_id],
                     self._services,
                 ),
                 context=self._ports.context,
@@ -513,6 +525,7 @@ class Runtime:
             payload=payload,
             deliveries=deliveries,
             fence=fence,
+            execution_lease=self._leases[run.run_id],
             now=self._now(),
         )
         self._fences.pop(run.run_id, None)

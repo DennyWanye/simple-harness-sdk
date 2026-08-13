@@ -45,14 +45,19 @@ class LiveRunIndex:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    async def close(self) -> tuple[str, ...]:
+    async def close(self, *, timeout_seconds: float) -> tuple[str, ...]:
         active = tuple(
             (run_id, task) for run_id, task in self._tasks.items() if not task.done()
         )
         for _, task in active:
             task.cancel()
         if active:
-            await asyncio.gather(*(task for _, task in active), return_exceptions=True)
+            _done, pending = await asyncio.wait(
+                (task for _, task in active), timeout=timeout_seconds
+            )
+            for run_id, task in active:
+                if task in pending:
+                    self._tasks.pop(run_id, None)
         return tuple(run_id for run_id, _ in active)
 
     def _discard(self, run_id: str, task: asyncio.Task[None]) -> None:

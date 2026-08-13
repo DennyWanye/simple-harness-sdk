@@ -10,7 +10,12 @@ from collections.abc import Mapping, Sequence
 from simple_harness.contracts import HarnessError, JsonValue
 from simple_harness.execution.delivery import DeliverySpec, TerminalCommitResult
 from simple_harness.execution.fences import RunFenceLease
-from simple_harness.execution.uow import ExecutionUnitOfWork, RunRecord, RunState
+from simple_harness.execution.uow import (
+    ExecutionLease,
+    ExecutionUnitOfWork,
+    RunRecord,
+    RunState,
+)
 
 
 class ToolCatalogStale(HarnessError):
@@ -34,6 +39,7 @@ class TerminalCoordinator:
         payload: Mapping[str, JsonValue],
         deliveries: Sequence[DeliverySpec],
         fence: RunFenceLease,
+        execution_lease: ExecutionLease,
         now: float,
     ) -> TerminalCommitResult:
         return self._uow.commit_root_terminal_with_deliveries(
@@ -44,6 +50,7 @@ class TerminalCoordinator:
             terminal_payload=payload,
             deliveries=deliveries,
             fence=fence,
+            execution_lease=execution_lease,
             terminal_fence_receipt_ref=(
                 f"runtime-fence:{fence.owner_id}:{fence.epoch}"
             ),

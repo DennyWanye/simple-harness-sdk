@@ -6,9 +6,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from simple_harness.contracts import RunId
+
+if TYPE_CHECKING:
+    from simple_harness.execution.uow import ExecutionLease
 
 
 class StaleFenceError(RuntimeError):
@@ -20,6 +23,7 @@ class RunFenceLease:
     run_id: RunId
     epoch: int
     owner_id: str
+    runtime_lease_epoch: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, RunId):
@@ -28,6 +32,8 @@ class RunFenceLease:
             raise ValueError("epoch must be positive")
         if not self.owner_id.strip():
             raise ValueError("owner_id is required")
+        if self.runtime_lease_epoch < 1:
+            raise ValueError("runtime_lease_epoch must be positive")
 
 
 def require_current_epoch(*, expected: int, current: int) -> None:
@@ -37,7 +43,13 @@ def require_current_epoch(*, expected: int, current: int) -> None:
 
 @runtime_checkable
 class RunFencePort(Protocol):
-    async def acquire(self, run_id: RunId, owner_id: str) -> RunFenceLease: ...
+    async def acquire(
+        self,
+        run_id: RunId,
+        execution_lease: ExecutionLease,
+        *,
+        now: float,
+    ) -> RunFenceLease: ...
 
     async def current_epoch(self, run_id: RunId) -> int: ...
 

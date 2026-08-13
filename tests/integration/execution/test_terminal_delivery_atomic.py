@@ -12,7 +12,7 @@ import pytest
 from simple_harness.contracts import RunId
 from simple_harness.execution.delivery import DeliverySpec, DeliveryState
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
-from simple_harness.execution.uow import RunState
+from simple_harness.execution.uow import RunState, UnitOfWorkConflict
 
 
 class InjectedFault(RuntimeError):
@@ -40,8 +40,17 @@ def setup_root(path: Path):
         event_id="event-root",
         now=1.0,
     )
-    fence = asyncio.run(uow.acquire(RunId("run-1"), "runtime-1"))
-    return database, uow, fence
+    _, runtime_lease = uow.claim_runtime_activation(
+        run_id="run-1",
+        owner_id="runtime-1",
+        namespace="runtime.kernel",
+        now=1.5,
+        lease_ttl_seconds=100.0,
+    )
+    fence = asyncio.run(
+        uow.acquire(RunId("run-1"), runtime_lease, now=1.5)
+    )
+    return database, uow, fence, runtime_lease
 
 
 def deliveries() -> tuple[DeliverySpec, ...]:
@@ -51,17 +60,22 @@ def deliveries() -> tuple[DeliverySpec, ...]:
     )
 
 
-def commit_terminal(uow, fence, *, fault=None, items=None):
+def commit_terminal(
+    uow, fence, runtime_lease, *, fault=None, items=None, now: float = 2.0
+):
+    current = uow.read_run("run-1")
+    assert current is not None
     return uow.commit_root_terminal_with_deliveries(
         run_id="run-1",
-        expected_version=0,
+        expected_version=current.version,
         terminal_state=RunState.COMPLETED,
         event_id="event-terminal",
         terminal_payload={"answer": 42},
         deliveries=deliveries() if items is None else items,
         fence=fence,
+        execution_lease=runtime_lease,
         terminal_fence_receipt_ref="receipt://terminal/run-1/1",
-        now=2.0,
+        now=now,
         fault=fault,
     )
 
@@ -83,12 +97,12 @@ WRITE_POINTS = (
 @pytest.mark.parametrize("fault_point", WRITE_POINTS)
 def test_terminal_delivery_fault_reopens_all_before(tmp_path: Path, fault_point: str) -> None:
     path = tmp_path / "execution.db"
-    database, uow, fence = setup_root(path)
+    database, uow, fence, runtime_lease = setup_root(path)
     with pytest.raises(InjectedFault, match=fault_point):
-        commit_terminal(uow, fence, fault=raise_at(fault_point))
+        commit_terminal(uow, fence, runtime_lease, fault=raise_at(fault_point))
     database.close()
     with Database.open(path) as reopened:
-        assert reopened.connection.execute("SELECT state FROM runs WHERE run_id='run-1'").fetchone()[0] == "created"
+        assert reopened.connection.execute("SELECT state FROM runs WHERE run_id='run-1'").fetchone()[0] == "running"
         assert reopened.connection.execute("SELECT COUNT(*) FROM delivery_outbox").fetchone()[0] == 0
         assert reopened.connection.execute("SELECT COUNT(*) FROM run_events WHERE event_id='event-terminal'").fetchone()[0] == 0
         assert reopened.connection.execute("SELECT state FROM run_fences WHERE run_id='run-1'").fetchone()[0] == "active"
@@ -96,13 +110,15 @@ def test_terminal_delivery_fault_reopens_all_before(tmp_path: Path, fault_point:
 
 def test_terminal_delivery_after_commit_reopens_all_after_and_replays(tmp_path: Path) -> None:
     path = tmp_path / "execution.db"
-    database, uow, fence = setup_root(path)
+    database, uow, fence, runtime_lease = setup_root(path)
     with pytest.raises(InjectedFault, match="root_terminal.after_commit"):
-        commit_terminal(uow, fence, fault=raise_at("root_terminal.after_commit"))
+        commit_terminal(
+            uow, fence, runtime_lease, fault=raise_at("root_terminal.after_commit")
+        )
     database.close()
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
-        result = commit_terminal(uow, fence)
+        result = commit_terminal(uow, fence, runtime_lease)
         assert result.run.state is RunState.COMPLETED
         assert [item.state for item in result.deliveries] == [DeliveryState.PENDING] * 2
         assert reopened.connection.execute("SELECT COUNT(*) FROM delivery_outbox").fetchone()[0] == 2
@@ -115,11 +131,61 @@ def test_terminal_delivery_after_commit_reopens_all_after_and_replays(tmp_path: 
 
 def test_zero_delivery_terminal_still_commits_fence_receipt(tmp_path: Path) -> None:
     path = tmp_path / "execution.db"
-    database, uow, fence = setup_root(path)
-    result = commit_terminal(uow, fence, items=())
+    database, uow, fence, runtime_lease = setup_root(path)
+    result = commit_terminal(uow, fence, runtime_lease, items=())
     assert result.deliveries == ()
     row = database.connection.execute("SELECT payload_json FROM run_events WHERE event_id='event-terminal'").fetchone()
     assert json.loads(row[0])["terminal_fence_receipt_ref"] == "receipt://terminal/run-1/1"
+    database.close()
+
+
+@pytest.mark.parametrize("takeover_owner", ("runtime-2", "runtime-1"))
+def test_old_runtime_cannot_terminalize_after_lease_takeover_before_new_fence(
+    tmp_path: Path, takeover_owner: str
+) -> None:
+    database, uow, old_fence, old_runtime_lease = setup_root(
+        tmp_path / f"terminal-takeover-{takeover_owner}.db"
+    )
+    _, current_runtime_lease = uow.claim_runtime_activation(
+        run_id="run-1",
+        owner_id=takeover_owner,
+        namespace="runtime.kernel",
+        now=102.0,
+        lease_ttl_seconds=100.0,
+    )
+    before_fence = tuple(
+        database.connection.execute(
+            "SELECT owner_id,runtime_lease_epoch,epoch,state FROM run_fences "
+            "WHERE run_id='run-1'"
+        ).fetchone()
+    )
+
+    with pytest.raises(UnitOfWorkConflict, match="lease"):
+        commit_terminal(
+            uow,
+            old_fence,
+            old_runtime_lease,
+            now=102.5,
+        )
+
+    run = uow.read_run("run-1")
+    assert run is not None and run.state is RunState.RUNNING
+    assert current_runtime_lease.epoch == old_runtime_lease.epoch + 1
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM run_events WHERE event_id='event-terminal'"
+        ).fetchone()[0]
+        == 0
+    )
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM delivery_outbox"
+    ).fetchone()[0] == 0
+    assert tuple(
+        database.connection.execute(
+            "SELECT owner_id,runtime_lease_epoch,epoch,state FROM run_fences "
+            "WHERE run_id='run-1'"
+        ).fetchone()
+    ) == before_fence
     database.close()
 
 
@@ -134,8 +200,8 @@ def test_zero_delivery_terminal_still_commits_fence_receipt(tmp_path: Path) -> N
 )
 def test_delivery_claim_fault_reopens_pending(tmp_path: Path, fault_point: str) -> None:
     path = tmp_path / "execution.db"
-    database, uow, fence = setup_root(path)
-    commit_terminal(uow, fence)
+    database, uow, fence, runtime_lease = setup_root(path)
+    commit_terminal(uow, fence, runtime_lease)
     with pytest.raises(InjectedFault, match=fault_point):
         uow.claim_delivery(
             sink_kinds=("presenter",),
@@ -151,8 +217,8 @@ def test_delivery_claim_fault_reopens_pending(tmp_path: Path, fault_point: str) 
 
 def test_claim_after_commit_reopens_claimed_then_expiry_reclaims(tmp_path: Path) -> None:
     path = tmp_path / "execution.db"
-    database, uow, fence = setup_root(path)
-    commit_terminal(uow, fence)
+    database, uow, fence, runtime_lease = setup_root(path)
+    commit_terminal(uow, fence, runtime_lease)
     with pytest.raises(InjectedFault, match="delivery_claim.after_commit"):
         uow.claim_delivery(
             sink_kinds=("presenter",),
@@ -178,8 +244,8 @@ def test_delivery_settle_fault_reopens_claimed(
     tmp_path: Path, command: str, side: str
 ) -> None:
     path = tmp_path / "execution.db"
-    database, uow, fence = setup_root(path)
-    commit_terminal(uow, fence)
+    database, uow, fence, runtime_lease = setup_root(path)
+    commit_terminal(uow, fence, runtime_lease)
     claimed = uow.claim_delivery(
         sink_kinds=("presenter",), now=3.0, claim_ttl_seconds=30.0
     )
@@ -207,8 +273,8 @@ def test_delivery_settle_after_commit_reopens_all_after(
     tmp_path: Path, command: str, expected_state: DeliveryState
 ) -> None:
     path = tmp_path / "execution.db"
-    database, uow, fence = setup_root(path)
-    commit_terminal(uow, fence)
+    database, uow, fence, runtime_lease = setup_root(path)
+    commit_terminal(uow, fence, runtime_lease)
     claimed = uow.claim_delivery(
         sink_kinds=("presenter",), now=3.0, claim_ttl_seconds=30.0
     )

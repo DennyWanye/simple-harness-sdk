@@ -35,18 +35,27 @@ def _uow(path: Path) -> tuple[Database, SqliteExecutionUnitOfWork]:
     return database, uow
 
 
-def _prepare(uow: SqliteExecutionUnitOfWork, epoch: int, **extra: object):
+def _runtime_lease(uow: SqliteExecutionUnitOfWork):
+    return uow.claim_runtime_activation(
+        run_id="run-1",
+        owner_id="worker-1",
+        namespace="runtime.kernel",
+        now=1.5,
+        lease_ttl_seconds=100.0,
+    )[1]
+
+
+def _prepare(uow: SqliteExecutionUnitOfWork, run_fence, execution_lease, **extra: object):
     return uow.prepare_effect(
         effect_id=EffectId("effect-1"),
         run_id=RunId("run-1"),
         call_id=CallId("call-1"),
         tool_name="read",
         arguments={"path": "."},
-        request_hash=effect_request_hash(
-            tool_name="read", arguments={"path": "."}
-        ),
+        request_hash=effect_request_hash(tool_name="read", arguments={"path": "."}),
         authorization_receipt_ref="authorization:1",
-        fence_epoch=epoch,
+        run_fence=run_fence,
+        execution_lease=execution_lease,
         now=2.0,
         **extra,
     )
@@ -73,9 +82,10 @@ def test_prepare_fault_is_before_or_after_atomic(
 ) -> None:
     path = tmp_path / "effects.db"
     database, uow = _uow(path)
-    lease = asyncio.run(uow.acquire(RunId("run-1"), "worker-1"))
+    runtime_lease = _runtime_lease(uow)
+    lease = asyncio.run(uow.acquire(RunId("run-1"), runtime_lease, now=1.5))
     with pytest.raises(InjectedCrash):
-        _prepare(uow, lease.epoch, fault=_crash_at(point))
+        _prepare(uow, lease, runtime_lease, fault=_crash_at(point))
     database.close()
 
     reopened, recovered = _uow(path)
@@ -90,13 +100,15 @@ def test_effect_handoff_unknown_reopen_and_reconcile_settlement(
 ) -> None:
     path = tmp_path / "effects.db"
     database, uow = _uow(path)
-    lease = asyncio.run(uow.acquire(RunId("run-1"), "worker-1"))
-    prepared = _prepare(uow, lease.epoch)
+    runtime_lease = _runtime_lease(uow)
+    lease = asyncio.run(uow.acquire(RunId("run-1"), runtime_lease, now=1.5))
+    prepared = _prepare(uow, lease, runtime_lease)
     handed_off = uow.mark_effect_handed_off(
         prepared.effect_id,
         expected_version=prepared.version,
-        expected_fence_epoch=lease.epoch,
+        run_fence=lease,
         handoff_receipt_ref="handoff:1",
+        execution_lease=runtime_lease,
         now=3.0,
     )
     unknown = uow.mark_effect_unknown(
@@ -127,8 +139,22 @@ def test_effect_handoff_unknown_reopen_and_reconcile_settlement(
 
 def test_new_fence_epoch_invalidates_old_owner(tmp_path: Path) -> None:
     database, uow = _uow(tmp_path / "effects.db")
-    first = asyncio.run(uow.acquire(RunId("run-1"), "worker-1"))
-    second = asyncio.run(uow.acquire(RunId("run-1"), "worker-2"))
+    _, first_runtime = uow.claim_runtime_activation(
+        run_id="run-1",
+        owner_id="worker-1",
+        namespace="runtime.kernel",
+        now=1.5,
+        lease_ttl_seconds=1.0,
+    )
+    first = asyncio.run(uow.acquire(RunId("run-1"), first_runtime, now=1.5))
+    _, second_runtime = uow.claim_runtime_activation(
+        run_id="run-1",
+        owner_id="worker-2",
+        namespace="runtime.kernel",
+        now=3.0,
+        lease_ttl_seconds=100.0,
+    )
+    second = asyncio.run(uow.acquire(RunId("run-1"), second_runtime, now=3.0))
 
     assert second.epoch == first.epoch + 1
     asyncio.run(uow.release(first))

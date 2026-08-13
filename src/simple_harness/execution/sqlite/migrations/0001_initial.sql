@@ -216,6 +216,7 @@ CREATE INDEX provider_invocations_run_state_idx ON provider_invocations(run_id, 
 CREATE TABLE run_fences (
     run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
     owner_id TEXT NOT NULL,
+    runtime_lease_epoch INTEGER NOT NULL CHECK(runtime_lease_epoch >= 1),
     epoch INTEGER NOT NULL CHECK(epoch >= 1),
     state TEXT NOT NULL CHECK(state IN ('active', 'released', 'cancelled')),
     acquired_at REAL NOT NULL CHECK(acquired_at >= 0),

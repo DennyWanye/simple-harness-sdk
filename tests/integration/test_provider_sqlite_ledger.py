@@ -45,7 +45,7 @@ def _estimator(*, output_rate: int = 2_000_000) -> FrozenPriceEstimator:
     )
 
 
-def _create_run(uow: SqliteExecutionUnitOfWork) -> None:
+def _create_run(uow: SqliteExecutionUnitOfWork):
     uow.create_with_start_snapshot(
         execution_session_id="session-1",
         run_id="run-1",
@@ -56,6 +56,23 @@ def _create_run(uow: SqliteExecutionUnitOfWork) -> None:
         event_id="event-1",
         now=1.0,
     )
+    return uow.claim_runtime_activation(
+        run_id="run-1",
+        owner_id="provider-test",
+        namespace="runtime.kernel",
+        now=2.0,
+        lease_ttl_seconds=100.0,
+    )[1]
+
+
+def _lease(uow: SqliteExecutionUnitOfWork):
+    return uow.claim_runtime_activation(
+        run_id="run-1",
+        owner_id="provider-test",
+        namespace="runtime.kernel",
+        now=2.0,
+        lease_ttl_seconds=100.0,
+    )[1]
 
 
 def _coordinator(uow, provider, *, output_rate=2_000_000, hard_cap=50_000):
@@ -73,10 +90,10 @@ def test_sqlite_reopen_returns_durable_response_without_replay(tmp_path: Path) -
     first_provider = RecordingProvider()
     with Database.open(path, wal=True) as database:
         uow = SqliteExecutionUnitOfWork(database)
-        _create_run(uow)
+        lease = _create_run(uow)
         first = asyncio.run(
             _coordinator(uow, first_provider).invoke(
-                RunId("run-1"), _request(), cancel=CancelToken()
+                RunId("run-1"), _request(), cancel=CancelToken(), execution_lease=lease
             )
         )
         row = database.connection.execute(
@@ -95,7 +112,10 @@ def test_sqlite_reopen_returns_durable_response_without_replay(tmp_path: Path) -
     with Database.open(path, wal=True) as reopened:
         second = asyncio.run(
             _coordinator(SqliteExecutionUnitOfWork(reopened), second_provider).invoke(
-                RunId("run-1"), _request(), cancel=CancelToken()
+                RunId("run-1"),
+                _request(),
+                cancel=CancelToken(),
+                execution_lease=_lease(SqliteExecutionUnitOfWork(reopened)),
             )
         )
     assert first == second
@@ -119,14 +139,17 @@ def test_restart_config_or_content_drift_keeps_one_row_and_zero_transport(
     path = tmp_path / "execution.db"
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
-        _create_run(uow)
+        lease = _create_run(uow)
         provider = RecordingProvider()
         coordinator = _coordinator(uow, provider)
-        record = asyncio.run(coordinator.prepare_claim(RunId("run-1"), _request()))
+        record = asyncio.run(
+            coordinator.prepare_claim(RunId("run-1"), _request(), execution_lease=lease)
+        )
         uow.hand_off_provider_invocation(
             record.invocation_id,
             expected_version=record.version,
             handed_off_at=2.0,
+            execution_lease=lease,
         )
 
     provider = RecordingProvider(
@@ -156,7 +179,12 @@ def test_restart_config_or_content_drift_keeps_one_row_and_zero_transport(
         )
         with pytest.raises(expected):
             asyncio.run(
-                coordinator.invoke(RunId("run-1"), request, cancel=CancelToken())
+                coordinator.invoke(
+                    RunId("run-1"),
+                    request,
+                    cancel=CancelToken(),
+                    execution_lease=_lease(SqliteExecutionUnitOfWork(reopened)),
+                )
             )
         assert (
             reopened.connection.execute(
@@ -173,14 +201,17 @@ def test_sqlite_recovery_marks_handoff_unknown_and_hard_cap_is_atomic(
     path = tmp_path / "execution.db"
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
-        _create_run(uow)
+        lease = _create_run(uow)
         provider = RecordingProvider()
         coordinator = _coordinator(uow, provider)
-        record = asyncio.run(coordinator.prepare_claim(RunId("run-1"), _request()))
+        record = asyncio.run(
+            coordinator.prepare_claim(RunId("run-1"), _request(), execution_lease=lease)
+        )
         uow.hand_off_provider_invocation(
             record.invocation_id,
             expected_version=record.version,
             handed_off_at=2.0,
+            execution_lease=lease,
         )
 
     with Database.open(path) as reopened:
@@ -196,7 +227,10 @@ def test_sqlite_recovery_marks_handoff_unknown_and_hard_cap_is_atomic(
         ):
             asyncio.run(
                 _coordinator(uow, provider, hard_cap=1).invoke(
-                    RunId("run-1"), _request("provider-request-2"), cancel=CancelToken()
+                    RunId("run-1"),
+                    _request("provider-request-2"),
+                    cancel=CancelToken(),
+                    execution_lease=_lease(uow),
                 )
             )
         assert provider.calls == 0

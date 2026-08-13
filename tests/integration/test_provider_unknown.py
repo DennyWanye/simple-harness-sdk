@@ -15,6 +15,7 @@ from simple_harness.execution.dispatch import (
     ProviderInvocationUnknownError,
 )
 from simple_harness.execution.provider_invocations import ProviderInvocationState
+from simple_harness.execution.uow import ExecutionLease
 from simple_harness.providers import (
     CancelToken,
     ProviderRequest,
@@ -22,6 +23,8 @@ from simple_harness.providers import (
 )
 
 from .provider_ledger_fakes import FakeProviderInvocationUnitOfWork, RecordingProvider
+
+LEASE = ExecutionLease("run-1", "runtime.kernel", "test-owner", 1, 100.0)
 
 
 def _request() -> ProviderRequest:
@@ -53,9 +56,13 @@ def test_error_after_handoff_is_unknown_and_never_replayed() -> None:
     async def exercise() -> None:
         coordinator = _coordinator(uow, provider)
         with pytest.raises(ProviderInvocationUnknownError):
-            await coordinator.invoke(RunId("run-1"), _request(), cancel=CancelToken())
+            await coordinator.invoke(
+                RunId("run-1"), _request(), cancel=CancelToken(), execution_lease=LEASE
+            )
         with pytest.raises(ProviderInvocationUnknownError):
-            await coordinator.invoke(RunId("run-1"), _request(), cancel=CancelToken())
+            await coordinator.invoke(
+                RunId("run-1"), _request(), cancel=CancelToken(), execution_lease=LEASE
+            )
 
     asyncio.run(exercise())
     assert provider.calls == 1
@@ -68,9 +75,14 @@ def test_recovery_marks_stranded_handed_off_unknown_without_provider_call() -> N
 
     async def exercise() -> None:
         coordinator = _coordinator(uow, provider)
-        record = await coordinator.prepare_claim(RunId("run-1"), _request())
+        record = await coordinator.prepare_claim(
+            RunId("run-1"), _request(), execution_lease=LEASE
+        )
         uow.hand_off_provider_invocation(
-            record.invocation_id, expected_version=record.version, handed_off_at=2.0
+            record.invocation_id,
+            expected_version=record.version,
+            handed_off_at=2.0,
+            execution_lease=LEASE,
         )
         settled = await coordinator.reconcile_incomplete()
         assert settled == 1

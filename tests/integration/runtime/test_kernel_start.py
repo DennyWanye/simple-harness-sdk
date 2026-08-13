@@ -60,6 +60,7 @@ def runtime(
     owner="owner-1",
     clock=lambda: 10.0,
     sleep=asyncio.sleep,
+    close_timeout_seconds=5.0,
 ):
     database = Database.open(tmp_path / "runtime.db")
     uow = SqliteExecutionUnitOfWork(database)
@@ -81,6 +82,7 @@ def runtime(
             owner_id=owner,
             clock=clock,
             sleep=sleep,
+            close_timeout_seconds=close_timeout_seconds,
         ),
     )
     return value, uow, database
@@ -307,6 +309,57 @@ def test_runtime_heartbeat_loss_cancels_stale_owner_before_any_write(tmp_path) -
         )
         await value.close()
         assert value._heartbeats == {}
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_close_is_bounded_for_noncooperative_driver_and_stops_heartbeat(
+    tmp_path,
+) -> None:
+    class NonCooperativeDriver:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.finished = asyncio.Event()
+
+        async def start(self, invocation, *, context, cancel):
+            del invocation, context, cancel
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await self.release.wait()
+                self.finished.set()
+                raise
+
+    async def case() -> None:
+        driver = NonCooperativeDriver()
+        value, uow, database = runtime(
+            tmp_path,
+            driver=driver,
+            close_timeout_seconds=0.01,
+        )
+        await value.start()
+        await value.client.start(request("noncooperative"))
+        await driver.started.wait()
+
+        await asyncio.wait_for(value.close(), timeout=0.2)
+
+        assert value._heartbeats == {}
+        assert value._leases == {}
+        row = database.connection.execute(
+            "SELECT expires_at FROM workflow_leases "
+            "WHERE run_id='run-noncooperative' AND namespace='runtime.kernel'"
+        ).fetchone()
+        assert row is not None and row[0] == 10.0
+        assert database.connection.execute(
+            "SELECT state FROM run_fences WHERE run_id='run-noncooperative'"
+        ).fetchone()[0] == "released"
+
+        driver.release.set()
+        await asyncio.wait_for(driver.finished.wait(), timeout=0.2)
+        assert uow.read_run("run-noncooperative").state is RunState.RUNNING
         database.close()
 
     asyncio.run(case())

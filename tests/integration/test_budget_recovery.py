@@ -15,9 +15,12 @@ from simple_harness.execution.budget import (
     FrozenPriceEstimator,
 )
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
+from simple_harness.execution.uow import ExecutionLease
 from simple_harness.providers import CancelToken, ProviderRequest
 
 from .provider_ledger_fakes import FakeProviderInvocationUnitOfWork, RecordingProvider
+
+LEASE = ExecutionLease("run-1", "runtime.kernel", "test-owner", 1, 100.0)
 
 
 def test_missing_usage_persists_estimator_upper_bound_across_recovery() -> None:
@@ -46,6 +49,7 @@ def test_missing_usage_persists_estimator_upper_bound_across_recovery() -> None:
                 max_output_tokens=100,
             ),
             cancel=CancelToken(),
+            execution_lease=LEASE,
         )
         snapshot = uow.read_provider_budget(RunId("run-1"))
         assert snapshot.committed_micros > 0
@@ -73,6 +77,7 @@ def test_missing_usage_without_estimate_is_unknown_and_blocks_next_call() -> Non
                 messages=(Message(role=MessageRole.USER, content="hello"),),
             ),
             cancel=CancelToken(),
+            execution_lease=LEASE,
         )
         with pytest.raises(BudgetUnknownError):
             await coordinator.invoke(
@@ -82,6 +87,7 @@ def test_missing_usage_without_estimate_is_unknown_and_blocks_next_call() -> Non
                     messages=(Message(role=MessageRole.USER, content="again"),),
                 ),
                 cancel=CancelToken(),
+                execution_lease=LEASE,
             )
 
     asyncio.run(exercise())
@@ -112,6 +118,7 @@ def test_usage_from_a_different_model_is_unknown_not_mispriced() -> None:
                 max_output_tokens=100,
             ),
             cancel=CancelToken(),
+            execution_lease=LEASE,
         )
         snapshot = uow.read_provider_budget(RunId("run-1"))
         assert snapshot.has_unknown_charge

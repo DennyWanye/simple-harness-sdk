@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
 import hashlib
 from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from simple_harness.contracts import (
@@ -20,7 +20,10 @@ from simple_harness.contracts import (
     freeze_json,
     thaw_json,
 )
+
 if TYPE_CHECKING:
+    from simple_harness.execution.fences import RunFenceLease
+    from simple_harness.execution.uow import ExecutionLease
     from simple_harness.tools.contracts import ToolResult
 
 
@@ -73,7 +76,7 @@ class EffectRecord:
     authorization_receipt_ref: str
     handoff_receipt_ref: str | None = None
     evidence_ref: str | None = None
-    result: "ToolResult | None" = None
+    result: ToolResult | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.effect_id, EffectId):
@@ -88,9 +91,7 @@ class EffectRecord:
             character not in "0123456789abcdef" for character in self.request_hash
         ):
             raise ValueError("request_hash must be lowercase SHA-256")
-        object.__setattr__(
-            self, "arguments", freeze_json(thaw_json(self.arguments))
-        )
+        object.__setattr__(self, "arguments", freeze_json(thaw_json(self.arguments)))
         if not isinstance(self.state, EffectState):
             object.__setattr__(self, "state", EffectState(self.state))
         if self.version < 0 or self.fence_epoch < 1:
@@ -131,7 +132,8 @@ class EffectUnitOfWork(Protocol):
         arguments: dict[str, object],
         request_hash: str,
         authorization_receipt_ref: str,
-        fence_epoch: int,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
         now: float,
         fault: Callable[[str], None] | None = None,
     ) -> EffectRecord: ...
@@ -143,8 +145,9 @@ class EffectUnitOfWork(Protocol):
         effect_id: EffectId,
         *,
         expected_version: int,
-        expected_fence_epoch: int,
+        run_fence: RunFenceLease,
         handoff_receipt_ref: str,
+        execution_lease: ExecutionLease,
         now: float,
         fault: Callable[[str], None] | None = None,
     ) -> EffectRecord: ...
@@ -155,7 +158,7 @@ class EffectUnitOfWork(Protocol):
         *,
         expected_version: int,
         expected_fence_epoch: int,
-        result: "ToolResult",
+        result: ToolResult,
         evidence_ref: str,
         now: float,
         fault: Callable[[str], None] | None = None,

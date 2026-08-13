@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from simple_harness.contracts import FrozenJsonValue, HarnessError, RunId, thaw_json
 from simple_harness.providers import (
@@ -39,12 +39,19 @@ from .provider_invocations import (
     provider_response_json,
 )
 
+if TYPE_CHECKING:
+    from .uow import ExecutionLease
+
 
 class ProviderInvocationUnitOfWork(Protocol):
     """SQLite implementation owns every method and its transaction boundary."""
 
     def claim_provider_invocation(
-        self, record: ProviderInvocationRecord, *, budget_policy: BudgetPolicy
+        self,
+        record: ProviderInvocationRecord,
+        *,
+        budget_policy: BudgetPolicy,
+        execution_lease: ExecutionLease,
     ) -> ProviderInvocationRecord: ...
 
     def read_provider_invocation(
@@ -52,7 +59,12 @@ class ProviderInvocationUnitOfWork(Protocol):
     ) -> ProviderInvocationRecord | None: ...
 
     def hand_off_provider_invocation(
-        self, invocation_id: str, *, expected_version: int, handed_off_at: float
+        self,
+        invocation_id: str,
+        *,
+        expected_version: int,
+        handed_off_at: float,
+        execution_lease: ExecutionLease,
     ) -> ProviderInvocationRecord: ...
 
     def settle_provider_invocation(
@@ -127,8 +139,19 @@ class ProviderInvocationCoordinator:
             estimator.bind(provider.target)
 
     async def prepare_claim(
-        self, run_id: RunId, request: ProviderRequest
+        self,
+        run_id: RunId,
+        request: ProviderRequest,
+        *,
+        execution_lease: ExecutionLease,
     ) -> ProviderInvocationRecord:
+        if (
+            execution_lease.run_id != run_id.value
+            or execution_lease.namespace != "runtime.kernel"
+        ):
+            raise ProviderInvocationConflictError(
+                "Provider invocation requires the canonical Run lease."
+            )
         fingerprint = provider_request_fingerprint(request)
         invocation_id = provider_invocation_id(run_id, request.request_id)
         reservation = (
@@ -152,7 +175,9 @@ class ProviderInvocationCoordinator:
             claimed_at=self._clock(),
         )
         claimed = self._uow.claim_provider_invocation(
-            record, budget_policy=self._budget_policy
+            record,
+            budget_policy=self._budget_policy,
+            execution_lease=execution_lease,
         )
         if (
             claimed.run_id != run_id
@@ -168,9 +193,23 @@ class ProviderInvocationCoordinator:
         return claimed
 
     async def invoke(
-        self, run_id: RunId, request: ProviderRequest, *, cancel: CancelToken
+        self,
+        run_id: RunId,
+        request: ProviderRequest,
+        *,
+        cancel: CancelToken,
+        execution_lease: ExecutionLease,
     ) -> ProviderResponse:
-        record = await self.prepare_claim(run_id, request)
+        if (
+            execution_lease.run_id != run_id.value
+            or execution_lease.namespace != "runtime.kernel"
+        ):
+            raise ProviderInvocationConflictError(
+                "Provider invocation requires the canonical Run lease."
+            )
+        record = await self.prepare_claim(
+            run_id, request, execution_lease=execution_lease
+        )
         if record.state is ProviderInvocationState.SUCCEEDED:
             if record.response_json is None:
                 raise ProviderInvocationUnknownError()
@@ -188,6 +227,7 @@ class ProviderInvocationCoordinator:
                 record.invocation_id,
                 expected_version=record.version,
                 handed_off_at=self._clock(),
+                execution_lease=execution_lease,
             )
         except ValueError as exc:
             current = self._uow.read_provider_invocation(record.invocation_id)

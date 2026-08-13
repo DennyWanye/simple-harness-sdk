@@ -448,6 +448,7 @@ class SqliteExecutionUnitOfWork:
         terminal_payload: Mapping[str, JsonValue],
         deliveries: Sequence[DeliverySpec],
         fence: RunFenceLease,
+        execution_lease: ExecutionLease,
         terminal_fence_receipt_ref: str,
         now: float,
         fault: FaultHook | None = None,
@@ -537,16 +538,19 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("another root terminal intent already won")
 
         with self.database.transaction() as connection:
-            current_fence = connection.execute(
-                "SELECT owner_id, epoch, state FROM run_fences WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()
-            if current_fence is None or tuple(current_fence) != (
-                fence.owner_id,
-                fence.epoch,
-                "active",
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            if (
+                execution_lease.run_id != run_id
+                or execution_lease.owner_id != fence.owner_id
             ):
-                raise UnitOfWorkConflict("terminal fence is stale or inactive")
+                raise UnitOfWorkConflict(
+                    "terminal runtime lease and Run fence differ"
+                )
+            self._require_run_fence(
+                connection,
+                fence,
+                execution_lease=execution_lease,
+            )
             _fault(fault, "root_terminal.event.before_write")
             self._insert_event(
                 connection,
@@ -1841,7 +1845,8 @@ class SqliteExecutionUnitOfWork:
         arguments: dict[str, object],
         request_hash: str,
         authorization_receipt_ref: str,
-        fence_epoch: int,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
         now: float,
         fault: FaultHook | None = None,
     ) -> EffectRecord:
@@ -1853,8 +1858,12 @@ class SqliteExecutionUnitOfWork:
             character not in "0123456789abcdef" for character in request_hash
         ):
             raise ValueError("request_hash must be lowercase SHA-256")
-        if fence_epoch < 1:
-            raise ValueError("fence_epoch must be positive")
+        if (
+            run_fence.run_id != run_id
+            or run_fence.owner_id != execution_lease.owner_id
+            or execution_lease.run_id != run_id.value
+        ):
+            raise UnitOfWorkConflict("effect runtime lease and Run fence differ")
         now = _time(now)
         arguments_json = canonical_json(arguments)  # type: ignore[arg-type]
         existing = self.read_effect(effect_id)
@@ -1868,10 +1877,16 @@ class SqliteExecutionUnitOfWork:
             ):
                 raise UnitOfWorkConflict("effect identity reused with different intent")
             if existing.state is EffectState.PREPARED and (
-                existing.fence_epoch != fence_epoch
+                existing.fence_epoch != run_fence.epoch
                 or existing.authorization_receipt_ref != authorization_receipt_ref
             ):
                 with self.database.transaction() as connection:
+                    self._require_runtime_lease(connection, execution_lease, now=now)
+                    self._require_run_fence(
+                        connection,
+                        run_fence,
+                        execution_lease=execution_lease,
+                    )
                     changed = connection.execute(
                         """
                         UPDATE execution_effects
@@ -1880,7 +1895,7 @@ class SqliteExecutionUnitOfWork:
                         WHERE effect_id = ? AND state = 'prepared' AND version = ?
                         """,
                         (
-                            fence_epoch,
+                            run_fence.epoch,
                             authorization_receipt_ref,
                             effect_id.value,
                             existing.version,
@@ -1893,6 +1908,12 @@ class SqliteExecutionUnitOfWork:
                 return refreshed
             return existing
         with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            self._require_run_fence(
+                connection,
+                run_fence,
+                execution_lease=execution_lease,
+            )
             conflict = connection.execute(
                 "SELECT effect_id FROM execution_effects WHERE run_id = ? AND call_id = ?",
                 (run_id.value, call_id.value),
@@ -1918,7 +1939,7 @@ class SqliteExecutionUnitOfWork:
                     arguments_json,
                     request_hash,
                     authorization_receipt_ref,
-                    fence_epoch,
+                    run_fence.epoch,
                     now,
                 ),
             )
@@ -1940,14 +1961,35 @@ class SqliteExecutionUnitOfWork:
         effect_id: EffectId,
         *,
         expected_version: int,
-        expected_fence_epoch: int,
+        run_fence: RunFenceLease,
         handoff_receipt_ref: str,
+        execution_lease: ExecutionLease,
         now: float,
         fault: FaultHook | None = None,
     ) -> EffectRecord:
         handoff_receipt_ref = _required(handoff_receipt_ref, "handoff_receipt_ref")
         now = _time(now)
         with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            self._require_run_fence(
+                connection,
+                run_fence,
+                execution_lease=execution_lease,
+            )
+            if (
+                run_fence.owner_id != execution_lease.owner_id
+                or run_fence.run_id.value != execution_lease.run_id
+            ):
+                raise UnitOfWorkConflict("effect runtime lease and Run fence differ")
+            effect_run = connection.execute(
+                "SELECT run_id FROM execution_effects WHERE effect_id = ?",
+                (effect_id.value,),
+            ).fetchone()
+            if (
+                effect_run is None
+                or str(effect_run["run_id"]) != execution_lease.run_id
+            ):
+                raise UnitOfWorkConflict("effect handoff lease belongs to another Run")
             _fault(fault, "effect_handoff.before_write")
             changed = connection.execute(
                 """
@@ -1962,7 +2004,7 @@ class SqliteExecutionUnitOfWork:
                     now,
                     effect_id.value,
                     expected_version,
-                    expected_fence_epoch,
+                    run_fence.epoch,
                 ),
             ).rowcount
             if changed != 1:
@@ -2103,26 +2145,63 @@ class SqliteExecutionUnitOfWork:
         assert record is not None
         return record
 
-    async def acquire(self, run_id: RunId, owner_id: str) -> RunFenceLease:
-        owner_id = _required(owner_id, "owner_id")
-        now = time.time()
+    async def acquire(
+        self,
+        run_id: RunId,
+        execution_lease: ExecutionLease,
+        *,
+        now: float,
+    ) -> RunFenceLease:
+        now = _time(now)
+        if (
+            execution_lease.run_id != run_id.value
+            or execution_lease.namespace != RUNTIME_LEASE_NAMESPACE
+        ):
+            raise UnitOfWorkConflict("Run fence requires the canonical Run lease")
         with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
             row = connection.execute(
-                "SELECT epoch FROM run_fences WHERE run_id = ?", (run_id.value,)
+                "SELECT owner_id, runtime_lease_epoch, epoch, state "
+                "FROM run_fences WHERE run_id = ?",
+                (run_id.value,),
             ).fetchone()
-            epoch = 1 if row is None else int(row[0]) + 1
+            if row is not None and tuple(row) == (
+                execution_lease.owner_id,
+                execution_lease.epoch,
+                int(row["epoch"]),
+                "active",
+            ):
+                return RunFenceLease(
+                    run_id,
+                    int(row["epoch"]),
+                    execution_lease.owner_id,
+                    execution_lease.epoch,
+                )
+            epoch = 1 if row is None else int(row["epoch"]) + 1
             connection.execute(
                 """
-                INSERT INTO run_fences(run_id, owner_id, epoch, state, acquired_at, released_at)
-                VALUES (?, ?, ?, 'active', ?, NULL)
+                INSERT INTO run_fences(
+                    run_id, owner_id, runtime_lease_epoch, epoch,
+                    state, acquired_at, released_at
+                ) VALUES (?, ?, ?, ?, 'active', ?, NULL)
                 ON CONFLICT(run_id) DO UPDATE SET
-                    owner_id = excluded.owner_id, epoch = excluded.epoch,
+                    owner_id = excluded.owner_id,
+                    runtime_lease_epoch = excluded.runtime_lease_epoch,
+                    epoch = excluded.epoch,
                     state = 'active', acquired_at = excluded.acquired_at,
                     released_at = NULL
                 """,
-                (run_id.value, owner_id, epoch, now),
+                (
+                    run_id.value,
+                    execution_lease.owner_id,
+                    execution_lease.epoch,
+                    epoch,
+                    now,
+                ),
             )
-        return RunFenceLease(run_id, epoch, owner_id)
+        return RunFenceLease(
+            run_id, epoch, execution_lease.owner_id, execution_lease.epoch
+        )
 
     async def current_epoch(self, run_id: RunId) -> int:
         row = self.database.connection.execute(
@@ -2147,6 +2226,7 @@ class SqliteExecutionUnitOfWork:
         record: ProviderInvocationRecord,
         *,
         budget_policy: BudgetPolicy,
+        execution_lease: ExecutionLease,
     ) -> ProviderInvocationRecord:
         existing = self._provider_invocation_by_logical_call(
             record.run_id, record.request_id.value
@@ -2154,6 +2234,13 @@ class SqliteExecutionUnitOfWork:
         if existing is not None:
             return existing
         with self.database.transaction() as connection:
+            self._require_runtime_lease(
+                connection, execution_lease, now=record.claimed_at
+            )
+            if execution_lease.run_id != record.run_id.value:
+                raise UnitOfWorkConflict(
+                    "provider invocation lease belongs to another Run"
+                )
             existing_row = connection.execute(
                 "SELECT * FROM provider_invocations WHERE run_id = ? AND request_id = ?",
                 (record.run_id.value, record.request_id.value),
@@ -2220,9 +2307,22 @@ class SqliteExecutionUnitOfWork:
         *,
         expected_version: int,
         handed_off_at: float,
+        execution_lease: ExecutionLease,
     ) -> ProviderInvocationRecord:
         handed_off_at = _time(handed_off_at, "handed_off_at")
         with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=handed_off_at)
+            invocation_run = connection.execute(
+                "SELECT run_id FROM provider_invocations WHERE invocation_id = ?",
+                (invocation_id,),
+            ).fetchone()
+            if (
+                invocation_run is None
+                or str(invocation_run["run_id"]) != execution_lease.run_id
+            ):
+                raise UnitOfWorkConflict(
+                    "provider handoff lease belongs to another Run"
+                )
             changed = connection.execute(
                 """
                 UPDATE provider_invocations
@@ -2413,6 +2513,26 @@ class SqliteExecutionUnitOfWork:
         ):
             raise UnitOfWorkConflict("runtime lease is stale or expired")
 
+    def _require_run_fence(
+        self,
+        connection: sqlite3.Connection,
+        fence: RunFenceLease,
+        *,
+        execution_lease: ExecutionLease,
+    ) -> None:
+        row = connection.execute(
+            "SELECT owner_id, runtime_lease_epoch, epoch, state "
+            "FROM run_fences WHERE run_id = ?",
+            (fence.run_id.value,),
+        ).fetchone()
+        if row is None or tuple(row) != (
+            fence.owner_id,
+            fence.runtime_lease_epoch,
+            fence.epoch,
+            "active",
+        ) or fence.runtime_lease_epoch != execution_lease.epoch:
+            raise UnitOfWorkConflict("Run fence is stale or inactive")
+
     def _verify_existing_start(
         self,
         record: RunRecord,
@@ -2600,9 +2720,7 @@ def _child_signal_record(row: sqlite3.Row) -> ChildSignalRecord:
         claimed_by=None if row["claimed_by"] is None else str(row["claimed_by"]),
         claimed_at=None if row["claimed_at"] is None else float(row["claimed_at"]),
         claim_expires_at=(
-            None
-            if row["claim_expires_at"] is None
-            else float(row["claim_expires_at"])
+            None if row["claim_expires_at"] is None else float(row["claim_expires_at"])
         ),
         claim_epoch=int(row["claim_epoch"]),
         acked_at=None if row["acked_at"] is None else float(row["acked_at"]),
