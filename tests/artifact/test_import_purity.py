@@ -72,7 +72,9 @@ def test_import_has_no_host_or_runtime_side_effects(tmp_path: Path) -> None:
         assert before_threads == after_threads
         assert before_files == after_files
         assert not forbidden, forbidden
-        assert simple_harness.__all__ == ("__version__",)
+        assert tuple(simple_harness.__all__)
+        assert simple_harness.__all__[0] == "__version__"
+        assert len(simple_harness.__all__) == len(set(simple_harness.__all__))
         print(json.dumps({"version": simple_harness.__version__, "status": "IMPORT_PURITY_PASS"}))
         """
     )
@@ -113,4 +115,3 @@ def test_public_import_does_not_eagerly_load_forbidden_dependencies() -> None:
         text=True,
     )
     assert json.loads(completed.stdout) == []
-

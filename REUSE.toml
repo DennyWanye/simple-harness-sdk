@@ -9,12 +9,13 @@ path = [
   ".gitignore",
   "README.md",
   "NOTICE",
+  "docs/**/*.md",
   "pyproject.toml",
   "provenance/*.json",
   "source-manifest.tsv",
+  "tests/**/*.json",
   "uv.lock",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 DennyWanye"
 SPDX-License-Identifier = "Apache-2.0"
-

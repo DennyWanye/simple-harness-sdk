@@ -1,36 +1,32 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Public package surface for Simple Harness SDK."""
+"""Public immutable contracts for Simple Harness SDK."""
 
-from .contracts import (
+from .errors import ContractValidationError, ErrorCode, HarnessError
+from .events import EventEnvelope, EventKind
+from .identity import (
     CallId,
-    ContractValidationError,
     CorrelationIds,
     EffectId,
-    ErrorCode,
-    EventEnvelope,
     EventId,
-    EventKind,
     ExecutionSessionId,
-    FrozenJsonValue,
-    HarnessError,
-    JsonPrimitive,
-    JsonValue,
-    Message,
-    MessageRole,
     RequestId,
     RunId,
+)
+from .json import (
+    FrozenJsonValue,
+    JsonPrimitive,
+    JsonValue,
     canonical_json,
     freeze_json,
     thaw_json,
     validate_json_value,
 )
+from .messages import Message, MessageRole
 
-__version__ = "0.1.0"
 
 __all__ = (
-    "__version__",
     "JsonPrimitive",
     "JsonValue",
     "FrozenJsonValue",
@@ -53,3 +49,4 @@ __all__ = (
     "HarnessError",
     "ContractValidationError",
 )
+
