@@ -1,0 +1,10 @@
+Simple Harness SDK
+Copyright 2026 DennyWanye
+
+Licensed under the Apache License, Version 2.0. See
+LICENSES/Apache-2.0.txt for the full license text.
+
+The source-manifest.tsv file records the BUSL-1.1 product sources used only as
+behavioral references for clean Apache-2.0 rewrites. No BUSL source text is
+included in this foundation release.
+

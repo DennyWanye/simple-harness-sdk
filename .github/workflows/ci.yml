@@ -46,4 +46,7 @@ jobs:
           .artifact-venv/bin/python -I -c 'import simple_harness; assert simple_harness.__version__ == "0.1.0"'
       - name: Run artifact tests
         run: uv run --frozen --group dev pytest -q tests/artifact
-
+      - name: Verify source provenance and REUSE compliance
+        run: |
+          uv run --frozen python scripts/check_source_provenance.py
+          uv run --frozen reuse lint

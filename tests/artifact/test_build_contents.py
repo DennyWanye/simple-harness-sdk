@@ -37,6 +37,11 @@ def test_wheel_contains_only_package_and_distribution_metadata(
         names = archive.namelist()
     _assert_clean(names)
     assert "simple_harness/__init__.py" in names
+    assert any(
+        name.endswith(".dist-info/licenses/LICENSES/Apache-2.0.txt")
+        for name in names
+    )
+    assert any(name.endswith(".dist-info/licenses/NOTICE") for name in names)
     assert all(
         name.startswith("simple_harness/")
         or ".dist-info/" in name
@@ -61,4 +66,3 @@ def test_required_workflows_are_present() -> None:
     root = Path(__file__).resolve().parents[2]
     assert (root / ".github/workflows/ci.yml").is_file()
     assert (root / ".github/workflows/release.yml").is_file()
-

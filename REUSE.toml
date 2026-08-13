@@ -1,0 +1,20 @@
+version = 1
+SPDX-PackageName = "simple-harness-sdk"
+SPDX-PackageSupplier = "DennyWanye"
+SPDX-PackageDownloadLocation = "NOASSERTION"
+
+[[annotations]]
+path = [
+  ".github/workflows/*.yml",
+  ".gitignore",
+  "README.md",
+  "NOTICE",
+  "pyproject.toml",
+  "provenance/*.json",
+  "source-manifest.tsv",
+  "uv.lock",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 DennyWanye"
+SPDX-License-Identifier = "Apache-2.0"
+
