@@ -10,7 +10,12 @@ from simple_harness.contracts.messages import Message, MessageRole
 from simple_harness.execution.budget import BudgetSnapshot
 from simple_harness.execution.fences import RunFenceLease
 from simple_harness.execution.uow import ExecutionLease, WorkflowCheckpoint
-from simple_harness.providers import ProviderResponse, ProviderToolCall
+from simple_harness.providers import (
+    ProviderReconciliationObservation,
+    ProviderReconciliationState,
+    ProviderResponse,
+    ProviderToolCall,
+)
 from simple_harness.runtime.context import ContextSnapshot
 from simple_harness.runtime.kernel import RuntimeServices
 from simple_harness.tools import ToolResult
@@ -120,12 +125,20 @@ class Batch:
         return [await self.tools.execute(call=call, **values) for call in calls]
 
 
+class StillUnknownProviderReconciliation:
+    async def observe(self, invocation):
+        return ProviderReconciliationObservation(
+            ProviderReconciliationState.STILL_UNKNOWN,
+            f"fixture:provider-still-unknown:{invocation.invocation_id}",
+        )
+
+
 @dataclass
 class MutableBudget:
     snapshot: BudgetSnapshot = field(default_factory=BudgetSnapshot)
 
 
-def services(provider, tools, context):
+def services(provider, tools, context, *, checkpoint=None):
     noop = object()
     return RuntimeServices(
         provider=provider,
@@ -135,7 +148,8 @@ def services(provider, tools, context):
         delivery=noop,
         tool_reconciliation=noop,
         reconciliation=noop,
-        react_checkpoint=Checkpoint(),
+        provider_reconciliation=StillUnknownProviderReconciliation(),
+        react_checkpoint=checkpoint or Checkpoint(),
     )
 
 

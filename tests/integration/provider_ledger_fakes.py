@@ -96,6 +96,9 @@ class FakeProviderInvocationUnitOfWork:
                     committed += charge.amount_micros
         return BudgetSnapshot(committed, reserved, unknown)
 
+    def read_reconciliation_resolution(self, **_values):
+        return None
+
 
 class RecordingProvider:
     def __init__(

@@ -27,6 +27,11 @@ from .errors import (
     ProviderTransportError,
 )
 from .openai_compatible import OpenAICompatibleProvider
+from .reconciliation import (
+    ProviderReconciliationObservation,
+    ProviderReconciliationPort,
+    ProviderReconciliationState,
+)
 from .redaction import SecretRedactor
 
 __all__ = (
@@ -39,6 +44,9 @@ __all__ = (
     "ProviderPaymentRequiredError",
     "ProviderProtocolError",
     "ProviderRateLimitError",
+    "ProviderReconciliationObservation",
+    "ProviderReconciliationPort",
+    "ProviderReconciliationState",
     "ProviderRequest",
     "ProviderRequestRejectedError",
     "ProviderResponse",

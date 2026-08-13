@@ -25,6 +25,12 @@ from simple_harness.execution.contracts.children import (
 from simple_harness.execution.dispatch import ProviderInvocationUnitOfWork
 from simple_harness.execution.effects import EffectUnitOfWork
 from simple_harness.execution.fences import RunFenceLease
+from simple_harness.execution.recovery import (
+    ReconciliationResolution,
+    WaitActivationReceipt,
+    WaitBlockerRecord,
+    WaitBlockerSpec,
+)
 
 if TYPE_CHECKING:
     from simple_harness.execution.delivery import (
@@ -185,6 +191,42 @@ class ContinuationTerminalResult:
 
 
 class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protocol):
+    def commit_runtime_wait_with_blocker(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        event_id: str,
+        payload: Mapping[str, JsonValue],
+        blocker: WaitBlockerSpec,
+        lease: ExecutionLease,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> tuple[RunRecord, WaitBlockerRecord]: ...
+
+    def list_resolved_wait_blockers(
+        self,
+        *,
+        owner_id: str,
+        namespace: str,
+        now: float,
+    ) -> tuple[WaitBlockerRecord, ...]: ...
+
+    def consume_resolved_wait_and_claim_activation(
+        self,
+        *,
+        blocker_id: str,
+        owner_id: str,
+        namespace: str,
+        now: float,
+        lease_ttl_seconds: float,
+        fault: FaultHook | None = None,
+    ) -> tuple[RunRecord, ExecutionLease, WaitActivationReceipt]: ...
+
+    def read_reconciliation_resolution(
+        self, *, kind: str, ledger_identity: str, handoff_attempt: int
+    ) -> ReconciliationResolution | None: ...
+
     def claim_runtime_activation(
         self,
         *,

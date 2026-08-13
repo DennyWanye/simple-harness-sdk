@@ -26,6 +26,7 @@ from simple_harness.providers import (
     ProviderResponse,
     ProviderTarget,
     ProviderToolCall,
+    ProviderToolSpec,
     ProviderUsage,
 )
 
@@ -82,6 +83,41 @@ def provider_request_json(request: ProviderRequest) -> dict[str, JsonValue]:
 
 def provider_request_fingerprint(request: ProviderRequest) -> str:
     return _digest(provider_request_json(request))
+
+
+def provider_request_from_json(request_id: RequestId, value: object) -> ProviderRequest:
+    if not isinstance(value, dict):
+        raise TypeError("stored Provider request must be an object")
+    raw_messages = value.get("messages")
+    raw_tools = value.get("tools", [])
+    if not isinstance(raw_messages, list) or not isinstance(raw_tools, list):
+        raise TypeError("stored Provider request messages/tools are malformed")
+    messages = tuple(_message_from_json(item) for item in raw_messages)
+    tools: list[ProviderToolSpec] = []
+    for item in raw_tools:
+        if not isinstance(item, dict):
+            raise TypeError("stored Provider tool spec must be an object")
+        parameters = item.get("parameters")
+        if not isinstance(parameters, dict):
+            raise TypeError("stored Provider tool parameters must be an object")
+        tools.append(
+            ProviderToolSpec(
+                str(item["name"]),
+                str(item["description"]),
+                parameters,  # type: ignore[arg-type]
+            )
+        )
+    metadata = value.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise TypeError("stored Provider metadata must be an object")
+    return ProviderRequest(
+        request_id,
+        messages,
+        tools=tuple(tools),
+        temperature=value.get("temperature"),  # type: ignore[arg-type]
+        max_output_tokens=value.get("max_output_tokens"),  # type: ignore[arg-type]
+        metadata=metadata,  # type: ignore[arg-type]
+    )
 
 
 def provider_invocation_id(run_id: RunId, request_id: RequestId) -> str:
@@ -227,6 +263,9 @@ class ProviderInvocationRecord:
     handed_off_at: float | None
     settled_at: float | None
     version: int
+    request_json: object | None = None
+    handoff_attempt: int = 0
+    rehandoff_count: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "state", ProviderInvocationState(self.state))
@@ -257,6 +296,12 @@ class ProviderInvocationRecord:
             )
         if self.version < 1 or isinstance(self.version, bool):
             raise ValueError("version must be a positive integer")
+        for name in ("handoff_attempt", "rehandoff_count"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.rehandoff_count > 1 or self.rehandoff_count > self.handoff_attempt:
+            raise ValueError("invalid Provider re-handoff counters")
         if self.claimed_at < 0:
             raise ValueError("claimed_at must be non-negative")
         if self.response_json is not None:
@@ -271,6 +316,13 @@ class ProviderInvocationRecord:
                 "usage_json",
                 freeze_json(thaw_json(cast(FrozenJsonValue, self.usage_json))),
             )
+        if self.request_json is not None:
+            request_payload = thaw_json(cast(FrozenJsonValue, self.request_json))
+            if not isinstance(request_payload, dict):
+                raise TypeError("request_json must be a JSON object")
+            if _digest(request_payload) != self.request_fingerprint:
+                raise ValueError("request_json does not match request_fingerprint")
+            object.__setattr__(self, "request_json", freeze_json(request_payload))
 
     @classmethod
     def claimed(
@@ -285,6 +337,7 @@ class ProviderInvocationRecord:
         estimator_digest: str | None,
         reservation: BudgetCharge,
         claimed_at: float,
+        request_json: JsonValue | None = None,
     ) -> ProviderInvocationRecord:
         return cls(
             invocation_id,
@@ -304,6 +357,9 @@ class ProviderInvocationRecord:
             None,
             None,
             1,
+            request_json,
+            0,
+            0,
         )
 
     def _expect(self, state: ProviderInvocationState, expected_version: int) -> None:
@@ -320,6 +376,7 @@ class ProviderInvocationRecord:
             self,
             state=ProviderInvocationState.HANDED_OFF,
             handed_off_at=at,
+            handoff_attempt=self.handoff_attempt + 1,
             version=self.version + 1,
         )
 
@@ -391,6 +448,7 @@ __all__ = (
     "ProviderInvocationState",
     "provider_invocation_id",
     "provider_request_fingerprint",
+    "provider_request_from_json",
     "provider_request_json",
     "provider_response_from_json",
     "provider_response_json",

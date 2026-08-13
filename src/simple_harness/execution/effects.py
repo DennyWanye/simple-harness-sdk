@@ -23,6 +23,10 @@ from simple_harness.contracts import (
 
 if TYPE_CHECKING:
     from simple_harness.execution.fences import RunFenceLease
+    from simple_harness.execution.recovery import (
+        ReconciliationResolution,
+        ResolutionOutcome,
+    )
     from simple_harness.execution.uow import ExecutionLease
     from simple_harness.tools.contracts import ToolResult
 
@@ -77,6 +81,11 @@ class EffectRecord:
     handoff_receipt_ref: str | None = None
     evidence_ref: str | None = None
     result: ToolResult | None = None
+    raw_call_id: str | None = None
+    turn_ordinal: int = 0
+    call_ordinal: int = 0
+    handoff_attempt: int = 0
+    rehandoff_count: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.effect_id, EffectId):
@@ -96,6 +105,19 @@ class EffectRecord:
             object.__setattr__(self, "state", EffectState(self.state))
         if self.version < 0 or self.fence_epoch < 1:
             raise ValueError("version must be non-negative and fence_epoch positive")
+        for name in (
+            "turn_ordinal",
+            "call_ordinal",
+            "handoff_attempt",
+            "rehandoff_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.rehandoff_count > 1 or self.rehandoff_count > self.handoff_attempt:
+            raise ValueError("invalid Tool re-handoff counters")
+        if self.raw_call_id is not None and not self.raw_call_id:
+            raise ValueError("raw_call_id must not be blank")
         if not self.authorization_receipt_ref.strip():
             raise ValueError("authorization_receipt_ref is required")
         if self.state is EffectState.PREPARED and self.handoff_receipt_ref is not None:
@@ -135,6 +157,9 @@ class EffectUnitOfWork(Protocol):
         run_fence: RunFenceLease,
         execution_lease: ExecutionLease,
         now: float,
+        raw_call_id: str | None = None,
+        turn_ordinal: int = 0,
+        call_ordinal: int = 0,
         fault: Callable[[str], None] | None = None,
     ) -> EffectRecord: ...
 
@@ -175,14 +200,40 @@ class EffectUnitOfWork(Protocol):
         fault: Callable[[str], None] | None = None,
     ) -> EffectRecord: ...
 
-    def reset_effect_not_started(
+    def record_tool_reconciliation(
         self,
-        effect_id: EffectId,
+        record: EffectRecord,
         *,
-        expected_version: int,
-        expected_fence_epoch: int,
-        new_fence_epoch: int,
+        outcome: ResolutionOutcome,
+        result: ToolResult | None,
         evidence_ref: str,
+        now: float,
+        fault: Callable[[str], None] | None = None,
+    ) -> EffectRecord: ...
+
+    def read_reconciliation_resolution(
+        self, *, kind: str, ledger_identity: str, handoff_attempt: int
+    ) -> ReconciliationResolution | None: ...
+
+    def reauthorize_effect_not_started(
+        self,
+        record: EffectRecord,
+        *,
+        authorization_receipt_ref: str,
+        resolution: ReconciliationResolution,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
+        now: float,
+        fault: Callable[[str], None] | None = None,
+    ) -> EffectRecord: ...
+
+    def refresh_prepared_effect_authority(
+        self,
+        record: EffectRecord,
+        *,
+        authorization_receipt_ref: str,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
         now: float,
         fault: Callable[[str], None] | None = None,
     ) -> EffectRecord: ...

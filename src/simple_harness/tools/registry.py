@@ -10,8 +10,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
+from typing import cast
 
-from simple_harness.contracts import CallId
+from simple_harness.contracts import CallId, FrozenJsonValue, thaw_json
 
 from .contracts import (
     FunctionTool,
@@ -89,7 +90,13 @@ class ToolRegistry:
             ) from exc
         return tool
 
-    async def invoke(self, call: ToolCall, context: ToolContext) -> ToolResult:
+    async def invoke(
+        self,
+        call: ToolCall,
+        context: ToolContext,
+        *,
+        accepted_result_call_id: CallId | None = None,
+    ) -> ToolResult:
         """Validate, claim call_id, then enter the handler at most once."""
 
         tool = self.validate(call)
@@ -98,7 +105,7 @@ class ToolRegistry:
                 call.call_id, "tool_cancelled", "Tool call was cancelled."
             )
         if call.call_id in self._calls:
-            raise DuplicateToolCallError(call.call_id)
+            raise DuplicateToolCallError(call.call_id.value)
 
         async def dispatch() -> ToolResult:
             try:
@@ -106,7 +113,7 @@ class ToolRegistry:
                 result = await await_tool_result(value)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 - handler is an untrusted boundary
                 # Host exceptions can contain stderr, response bodies, paths,
                 # or credentials.  They are private diagnostic causes and do
                 # not cross the model-facing ToolResult boundary.
@@ -115,13 +122,24 @@ class ToolRegistry:
                     "tool_handler_failed",
                     "Tool execution failed.",
                 )
-            if result.call_id != call.call_id:
+            if result.call_id == accepted_result_call_id:
+                result = ToolResult(
+                    call_id=call.call_id,
+                    outcome=result.outcome,
+                    value=cast(FrozenJsonValue, thaw_json(result.value)),
+                    error_code=result.error_code,
+                    public_message=result.public_message,
+                    retryable=result.retryable,
+                )
+            elif result.call_id != call.call_id:
                 raise LateToolResultError(
                     f"expected {call.call_id}, got {result.call_id}"
                 )
             return result
 
-        task = asyncio.create_task(dispatch(), name=f"simple-harness-tool:{call.call_id}")
+        task = asyncio.create_task(
+            dispatch(), name=f"simple-harness-tool:{call.call_id}"
+        )
         record = _CallRecord(ToolCallState.RUNNING, task)
         self._calls[call.call_id] = record
         cancellation_waiter = asyncio.create_task(context.cancellation.wait())
@@ -142,7 +160,7 @@ class ToolRegistry:
                     )
                 result = await task
                 if record.state is not ToolCallState.RUNNING:
-                    raise LateToolResultError(call.call_id)
+                    raise LateToolResultError(call.call_id.value)
                 record.state = ToolCallState.SETTLED
                 return result
             except asyncio.CancelledError:
@@ -164,10 +182,20 @@ class ToolRegistry:
         try:
             record = self._calls[call_id]
         except KeyError as exc:
-            raise LateToolResultError(call_id) from exc
+            raise LateToolResultError(call_id.value) from exc
         if record.state is ToolCallState.RUNNING:
             record.state = ToolCallState.CANCELLED
             record.task.cancel()
+
+    def allow_confirmed_not_started(self, call_id: CallId) -> None:
+        """Release only a settled local claim after durable external evidence."""
+
+        record = self._calls.get(call_id)
+        if record is None:
+            return
+        if record.state is ToolCallState.RUNNING:
+            raise LateToolResultError("running Tool call cannot be re-authorized")
+        del self._calls[call_id]
 
 
 __all__ = ("ToolCallState", "ToolRegistry")

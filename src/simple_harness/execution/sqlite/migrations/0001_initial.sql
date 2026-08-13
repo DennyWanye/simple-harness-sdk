@@ -231,6 +231,7 @@ CREATE TABLE provider_invocations (
     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
     request_id TEXT NOT NULL,
     request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint) = 64),
+    request_json TEXT,
     target_json TEXT NOT NULL,
     target_digest TEXT NOT NULL CHECK(length(target_digest) = 64),
     estimator_json TEXT,
@@ -243,6 +244,8 @@ CREATE TABLE provider_invocations (
     handed_off_at REAL,
     settled_at REAL,
     version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+    handoff_attempt INTEGER NOT NULL DEFAULT 0 CHECK(handoff_attempt >= 0),
+    rehandoff_count INTEGER NOT NULL DEFAULT 0 CHECK(rehandoff_count BETWEEN 0 AND 1),
     UNIQUE(run_id, request_id),
     CHECK((estimator_json IS NULL) = (estimator_digest IS NULL))
 ) STRICT;
@@ -263,6 +266,9 @@ CREATE TABLE execution_effects (
     effect_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
     call_id TEXT NOT NULL,
+    raw_call_id TEXT,
+    turn_ordinal INTEGER NOT NULL DEFAULT 0 CHECK(turn_ordinal >= 0),
+    call_ordinal INTEGER NOT NULL DEFAULT 0 CHECK(call_ordinal >= 0),
     tool_name TEXT NOT NULL,
     arguments_json TEXT NOT NULL,
     request_hash TEXT NOT NULL CHECK(length(request_hash) = 64),
@@ -276,10 +282,54 @@ CREATE TABLE execution_effects (
     handed_off_at REAL,
     settled_at REAL,
     version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0),
+    handoff_attempt INTEGER NOT NULL DEFAULT 0 CHECK(handoff_attempt >= 0),
+    rehandoff_count INTEGER NOT NULL DEFAULT 0 CHECK(rehandoff_count BETWEEN 0 AND 1),
     UNIQUE(run_id, call_id, effect_id)
 ) STRICT;
 
 CREATE INDEX execution_effects_run_state_idx ON execution_effects(run_id, state);
+
+CREATE TABLE reconciliation_resolutions (
+    resolution_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN ('provider', 'tool')),
+    ledger_identity TEXT NOT NULL,
+    handoff_attempt INTEGER NOT NULL CHECK(handoff_attempt >= 1),
+    outcome TEXT NOT NULL CHECK(outcome IN ('completed', 'confirmed_not_started')),
+    outcome_hash TEXT NOT NULL CHECK(length(outcome_hash) = 64),
+    evidence_ref TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at REAL NOT NULL CHECK(created_at >= 0),
+    UNIQUE(kind, ledger_identity, handoff_attempt)
+) STRICT;
+
+CREATE TABLE run_wait_blockers (
+    blocker_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('provider', 'tool')),
+    ledger_identity TEXT NOT NULL,
+    handoff_attempt INTEGER NOT NULL CHECK(handoff_attempt >= 1),
+    observed_version INTEGER NOT NULL CHECK(observed_version >= 1),
+    resolution_id TEXT REFERENCES reconciliation_resolutions(resolution_id),
+    wake_consumed INTEGER NOT NULL DEFAULT 0 CHECK(wake_consumed IN (0, 1)),
+    created_at REAL NOT NULL CHECK(created_at >= 0),
+    resolved_at REAL,
+    consumed_at REAL,
+    version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+    UNIQUE(kind, ledger_identity, handoff_attempt)
+) STRICT;
+
+CREATE INDEX run_wait_blockers_wake_idx
+ON run_wait_blockers(run_id, wake_consumed, resolution_id);
+
+CREATE TABLE wait_activation_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    blocker_id TEXT NOT NULL UNIQUE REFERENCES run_wait_blockers(blocker_id),
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL,
+    runtime_lease_epoch INTEGER NOT NULL CHECK(runtime_lease_epoch >= 1),
+    outcome_hash TEXT NOT NULL CHECK(length(outcome_hash) = 64),
+    created_at REAL NOT NULL CHECK(created_at >= 0)
+) STRICT;
 
 CREATE TABLE delivery_outbox (
     delivery_id TEXT PRIMARY KEY,

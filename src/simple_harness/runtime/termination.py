@@ -70,6 +70,12 @@ class TerminationState:
     phase: str = "ready"
     provider_request_id: str | None = None
     tool_batch_id: str | None = None
+    context_revision: int | None = None
+    provider_request_snapshot: JsonValue | None = None
+    provider_request_fingerprint: str | None = None
+    provider_response_snapshot: JsonValue | None = None
+    provider_response_digest: str | None = None
+    tool_result_progress: int = 0
 
     @property
     def turns(self) -> int:
@@ -86,7 +92,9 @@ class TerminationState:
     def __post_init__(self) -> None:
         if not math.isfinite(self.started_at) or self.started_at < 0:
             raise ValueError("started_at must be a finite Unix epoch")
-        observed = self.started_at if self.last_observed_at is None else self.last_observed_at
+        observed = (
+            self.started_at if self.last_observed_at is None else self.last_observed_at
+        )
         if not math.isfinite(observed) or observed < self.started_at:
             raise ValueError("clock rollback detected")
         object.__setattr__(self, "last_observed_at", observed)
@@ -94,9 +102,12 @@ class TerminationState:
             self.provider_turns_reserved_total,
             self.tool_calls_reserved_total,
             self.repeat_streak,
+            self.tool_result_progress,
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError("durable termination totals must be non-negative")
+        if self.context_revision is not None and self.context_revision < 0:
+            raise ValueError("context_revision must be non-negative")
 
     def before_provider(
         self, limits: TerminationLimits, *, now: float, budget: BudgetSnapshot
@@ -112,6 +123,12 @@ class TerminationState:
             phase="provider_reserved",
             provider_request_id=f"provider-turn:{ordinal}",
             tool_batch_id=None,
+            context_revision=None,
+            provider_request_snapshot=None,
+            provider_request_fingerprint=None,
+            provider_response_snapshot=None,
+            provider_response_digest=None,
+            tool_result_progress=0,
         )
 
     def before_tool_batch(
@@ -143,7 +160,12 @@ class TerminationState:
         )
 
     def before_tool(
-        self, tool_name: str, limits: TerminationLimits, *, now: float, budget: BudgetSnapshot
+        self,
+        tool_name: str,
+        limits: TerminationLimits,
+        *,
+        now: float,
+        budget: BudgetSnapshot,
     ) -> TerminationState:
         return self.before_tool_batch((tool_name,), limits, now=now, budget=budget)
 
@@ -159,6 +181,12 @@ class TerminationState:
             "phase": self.phase,
             "provider_request_id": self.provider_request_id,
             "tool_batch_id": self.tool_batch_id,
+            "context_revision": self.context_revision,
+            "provider_request_snapshot": self.provider_request_snapshot,
+            "provider_request_fingerprint": self.provider_request_fingerprint,
+            "provider_response_snapshot": self.provider_response_snapshot,
+            "provider_response_digest": self.provider_response_digest,
+            "tool_result_progress": self.tool_result_progress,
         }
 
     @classmethod
@@ -166,15 +194,29 @@ class TerminationState:
         if value.get("schema_version") != 1:
             raise ValueError("unsupported ReAct checkpoint schema")
         return cls(
-            started_at=float(value["started_at"]),
-            last_observed_at=float(value["last_observed_at"]),
-            provider_turns_reserved_total=int(value["provider_turns_reserved_total"]),
-            tool_calls_reserved_total=int(value["tool_calls_reserved_total"]),
+            started_at=_float(value["started_at"]),
+            last_observed_at=_float(value["last_observed_at"]),
+            provider_turns_reserved_total=_int(value["provider_turns_reserved_total"]),
+            tool_calls_reserved_total=_int(value["tool_calls_reserved_total"]),
             repeat_key=_optional_string(value.get("repeat_key")),
-            repeat_streak=int(value["repeat_streak"]),
+            repeat_streak=_int(value["repeat_streak"]),
             phase=str(value["phase"]),
             provider_request_id=_optional_string(value.get("provider_request_id")),
             tool_batch_id=_optional_string(value.get("tool_batch_id")),
+            context_revision=(
+                None
+                if value.get("context_revision") is None
+                else _int(value["context_revision"])
+            ),
+            provider_request_snapshot=value.get("provider_request_snapshot"),  # type: ignore[arg-type]
+            provider_request_fingerprint=_optional_string(
+                value.get("provider_request_fingerprint")
+            ),
+            provider_response_snapshot=value.get("provider_response_snapshot"),  # type: ignore[arg-type]
+            provider_response_digest=_optional_string(
+                value.get("provider_response_digest")
+            ),
+            tool_result_progress=_int(value.get("tool_result_progress", 0)),
         )
 
 
@@ -184,6 +226,18 @@ def _optional_string(value: object) -> str | None:
     if not isinstance(value, str) or not value:
         raise ValueError("checkpoint identity must be a non-empty string")
     return value
+
+
+def _int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("checkpoint integer is malformed")
+    return value
+
+
+def _float(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("checkpoint number is malformed")
+    return float(value)
 
 
 def _check_common(

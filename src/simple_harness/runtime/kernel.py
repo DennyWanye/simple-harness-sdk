@@ -18,6 +18,7 @@ from simple_harness.execution.contracts.children import AttachmentPolicy
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySpec
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.fences import RunFenceLease, RunFencePort
+from simple_harness.execution.recovery import WaitBlockerSpec
 from simple_harness.execution.uow import (
     RUNTIME_LEASE_NAMESPACE,
     ContinuationRecord,
@@ -28,7 +29,7 @@ from simple_harness.execution.uow import (
     UnitOfWorkConflict,
     WorkflowCheckpoint,
 )
-from simple_harness.providers import CancelToken
+from simple_harness.providers import CancelToken, ProviderReconciliationPort
 from simple_harness.tools.authorization import AuthorizationPort
 from simple_harness.tools.executor import EffectExecutor
 from simple_harness.tools.reconciliation import ToolReconciliationPort
@@ -70,6 +71,7 @@ class DriverResult:
     state: RunState
     payload: Mapping[str, JsonValue] = field(default_factory=dict)
     deliveries: tuple[DeliverySpec, ...] = ()
+    wait_blocker: WaitBlockerSpec | None = None
 
     def __post_init__(self) -> None:
         state = RunState(self.state)
@@ -127,6 +129,7 @@ class RuntimeServices:
     delivery: DeliveryDispatcher
     tool_reconciliation: ToolReconciliationPort
     reconciliation: RuntimeReconciliationPort
+    provider_reconciliation: ProviderReconciliationPort
     react_checkpoint: ReactCheckpointPort
 
 
@@ -143,6 +146,7 @@ class RuntimePorts:
     delivery: DeliveryDispatcher
     tool_reconciliation: ToolReconciliationPort
     reconciliation: RuntimeReconciliationPort
+    provider_reconciliation: ProviderReconciliationPort
     react_checkpoint: ReactCheckpointPort
     tool_catalog: ToolCatalogGenerationPort
     admission: AdmissionPort = field(default_factory=AllowAllAdmission)
@@ -161,6 +165,7 @@ class RuntimePorts:
             "delivery",
             "tool_reconciliation",
             "reconciliation",
+            "provider_reconciliation",
             "react_checkpoint",
             "tool_catalog",
         ):
@@ -239,6 +244,7 @@ class Runtime:
             delivery=ports.delivery,
             tool_reconciliation=ports.tool_reconciliation,
             reconciliation=ports.reconciliation,
+            provider_reconciliation=ports.provider_reconciliation,
             react_checkpoint=ports.react_checkpoint,
         )
         self._live = LiveRunIndex()
@@ -246,6 +252,7 @@ class Runtime:
         self._fences: dict[str, RunFenceLease] = {}
         self._cancels: dict[str, CancelToken] = {}
         self._heartbeats: dict[str, asyncio.Task[None]] = {}
+        self._wake_drain_task: asyncio.Task[None] | None = None
         self._started = False
         self._closing = False
         self.client = RunClient(self)
@@ -258,6 +265,10 @@ class Runtime:
         self._closing = False
         await self._ports.reconciliation.reconcile()
         await self.recover()
+        await self._drain_resolved_waits_once()
+        self._wake_drain_task = asyncio.create_task(
+            self._wake_drain(), name="simple-harness-wake-drain"
+        )
 
     async def recover(self) -> None:
         self._require_started()
@@ -279,6 +290,7 @@ class Runtime:
     async def reconcile(self) -> None:
         self._require_started()
         await self._ports.reconciliation.reconcile()
+        await self._drain_resolved_waits_once()
         await self.recover()
 
     async def dispatch_deliveries_once(self) -> bool:
@@ -289,6 +301,11 @@ class Runtime:
         if not self._started:
             return
         self._closing = True
+        wake_drain = self._wake_drain_task
+        self._wake_drain_task = None
+        if wake_drain is not None:
+            wake_drain.cancel()
+            await asyncio.gather(wake_drain, return_exceptions=True)
         for token in self._cancels.values():
             token.cancel()
         await self._live.close(timeout_seconds=self._ports.close_timeout_seconds)
@@ -313,6 +330,48 @@ class Runtime:
             self._leases.pop(run_id, None)
         self._cancels.clear()
         self._started = False
+
+    async def _wake_drain(self) -> None:
+        interval = min(0.05, max(0.001, self._ports.lease_ttl_seconds / 3.0))
+        try:
+            while self._started and not self._closing:
+                await self._drain_resolved_waits_once()
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+
+    async def _drain_resolved_waits_once(self) -> None:
+        for blocker in self._uow.list_resolved_wait_blockers(
+            owner_id=self._ports.owner_id,
+            namespace=RUNTIME_LEASE_NAMESPACE,
+            now=self._now(),
+        ):
+            try:
+                run, lease, _receipt = (
+                    self._uow.consume_resolved_wait_and_claim_activation(
+                        blocker_id=blocker.blocker_id,
+                        owner_id=self._ports.owner_id,
+                        namespace=RUNTIME_LEASE_NAMESPACE,
+                        now=self._now(),
+                        lease_ttl_seconds=self._ports.lease_ttl_seconds,
+                    )
+                )
+                fence = await self._uow.acquire(
+                    RunId(run.run_id), lease, now=self._now()
+                )
+            except UnitOfWorkConflict:
+                continue
+            self._leases[run.run_id] = lease
+            self._fences[run.run_id] = fence
+            self._cancels.setdefault(run.run_id, CancelToken())
+            heartbeat = self._heartbeats.get(run.run_id)
+            if heartbeat is None or heartbeat.done():
+                self._heartbeats[run.run_id] = asyncio.create_task(
+                    self._heartbeat(run.run_id),
+                    name=f"simple-harness-heartbeat:{run.run_id}",
+                )
+            if run.run_id not in self._live.active_run_ids():
+                self._schedule(run.run_id)
 
     async def wait_idle(self, run_id: RunId) -> None:
         await self._live.wait(_run_id(run_id))
@@ -454,16 +513,31 @@ class Runtime:
                 raise RuntimeError("Run disappeared during execution")
             if result.state is RunState.WAITING:
                 if continuation_claim is None:
-                    self._uow.commit_runtime_state(
-                        run_id=run_id,
-                        expected_version=current.version,
-                        state=RunState.WAITING,
-                        event_id=f"{run_id}:waiting:{current.version + 1}",
-                        payload=result.payload,
-                        lease=self._leases[run_id],
-                        now=self._now(),
-                    )
+                    if result.wait_blocker is None:
+                        self._uow.commit_runtime_state(
+                            run_id=run_id,
+                            expected_version=current.version,
+                            state=RunState.WAITING,
+                            event_id=f"{run_id}:waiting:{current.version + 1}",
+                            payload=result.payload,
+                            lease=self._leases[run_id],
+                            now=self._now(),
+                        )
+                    else:
+                        self._uow.commit_runtime_wait_with_blocker(
+                            run_id=run_id,
+                            expected_version=current.version,
+                            event_id=f"{run_id}:waiting:{current.version + 1}",
+                            payload=result.payload,
+                            blocker=result.wait_blocker,
+                            lease=self._leases[run_id],
+                            now=self._now(),
+                        )
                 else:
+                    if result.wait_blocker is not None:
+                        raise UnitOfWorkConflict(
+                            "uncertain outbound work cannot ack a continuation"
+                        )
                     self._uow.commit_runtime_state_and_ack_continuation(
                         run_id=run_id,
                         expected_version=current.version,

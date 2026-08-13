@@ -120,9 +120,12 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
                 tools=effects,
                 authorization=authorization,
                 context=context,
-                delivery=DeliveryDispatcher(uow, {"fixture": Sink()}, clock=lambda: 10.0),
+                delivery=DeliveryDispatcher(
+                    uow, {"fixture": Sink()}, clock=lambda: 10.0
+                ),
                 tool_reconciliation=reconciliation,
                 reconciliation=Noop(),
+                provider_reconciliation=Noop(),
                 react_checkpoint=uow,
                 tool_catalog=Catalog(),
                 owner_id="runtime-1",
@@ -144,9 +147,12 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
         run = uow.read_run("run-1")
         assert run is not None and run.state is RunState.COMPLETED
         assert len(provider.requests) == 1
-        assert database.connection.execute(
-            "SELECT state FROM provider_invocations WHERE run_id='run-1'"
-        ).fetchone()[0] == "succeeded"
+        assert (
+            database.connection.execute(
+                "SELECT state FROM provider_invocations WHERE run_id='run-1'"
+            ).fetchone()[0]
+            == "succeeded"
+        )
         checkpoint = uow.read_react_checkpoint("run-1")
         assert checkpoint is not None
         assert checkpoint.checkpoint["provider_turns_reserved_total"] == 1

@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from typing import cast
 
 from simple_harness.contracts import RequestId, RunId
 from simple_harness.contracts.messages import Message, MessageRole
 from simple_harness.execution.dispatch import ProviderInvocationUnknownError
+from simple_harness.execution.recovery import RecoveryKind, WaitBlockerSpec
 from simple_harness.execution.uow import RunState
 from simple_harness.providers import ProviderToolSpec
 from simple_harness.runtime.kernel import DriverInvocation, DriverResult
@@ -22,6 +24,7 @@ from .react_loop import (
     EffectBatchExecutor,
     ReActLoop,
     ReActRunInput,
+    ToolEffectUnknownError,
 )
 
 
@@ -39,12 +42,16 @@ class ReActDriver:
             clock=clock,
         )
 
-    async def start(self, invocation: DriverInvocation, *, context, cancel) -> DriverResult:
+    async def start(
+        self, invocation: DriverInvocation, *, context, cancel
+    ) -> DriverResult:
         if context is not invocation.services.context:
             raise ValueError("Runtime context service mismatch")
-        input_value = invocation.start.input
+        input_value = cast(Mapping[str, object], invocation.start.input)
         initial = _messages(input_value.get("messages"))
-        tools = _tools(input_value.get("capability_snapshot"), invocation.services.tools)
+        tools = _tools(
+            input_value.get("capability_snapshot"), invocation.services.tools
+        )
         try:
             result = await self._loop.run(
                 ReActRunInput(
@@ -73,22 +80,37 @@ class ReActDriver:
                     ]
                 },
             )
-        except ProviderInvocationUnknownError:
+        except ProviderInvocationUnknownError as error:
+            invocation_record = error.invocation
             return DriverResult(
                 RunState.WAITING,
                 {"raw_failures": [{"error_code": "provider_outcome_unknown"}]},
+                wait_blocker=(
+                    None
+                    if invocation_record is None
+                    else WaitBlockerSpec(
+                        RecoveryKind.PROVIDER,
+                        invocation_record.invocation_id,
+                        invocation_record.handoff_attempt,
+                        invocation_record.version,
+                    )
+                ),
             )
         except TerminationBudgetExceeded as error:
             return DriverResult(
                 RunState.WAITING,
                 {"raw_failures": [{"error_code": str(error.code)}]},
             )
-        except RuntimeError as error:
-            if str(error) != "tool_outcome_unknown":
-                raise
+        except ToolEffectUnknownError as error:
             return DriverResult(
                 RunState.WAITING,
                 {"raw_failures": [{"error_code": "tool_outcome_unknown"}]},
+                wait_blocker=WaitBlockerSpec(
+                    RecoveryKind.TOOL,
+                    error.effect.effect_id.value,
+                    error.effect.handoff_attempt,
+                    error.effect.version,
+                ),
             )
         return DriverResult(
             RunState.COMPLETED,
@@ -113,7 +135,9 @@ def _tools(value: object, executor) -> tuple[ProviderToolSpec, ...]:
     if not isinstance(value, Mapping):
         raise TypeError("capability_snapshot must be an object")
     names = value.get("tools", ())
-    if not isinstance(names, (list, tuple)) or not all(isinstance(name, str) for name in names):
+    if not isinstance(names, (list, tuple)) or not all(
+        isinstance(name, str) for name in names
+    ):
         raise TypeError("capability_snapshot.tools must contain strings")
     return executor.provider_tool_specs(tuple(names))
 

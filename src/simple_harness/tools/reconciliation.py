@@ -7,10 +7,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from .authorization import PreparedToolEffect
 from .contracts import ToolResult
+
+if TYPE_CHECKING:
+    from simple_harness.execution.effects import EffectRecord
 
 
 class ReconciliationState(StrEnum):
@@ -38,9 +40,7 @@ class ReconciliationObservation:
 
 @runtime_checkable
 class ToolReconciliationPort(Protocol):
-    async def observe(
-        self, effect: PreparedToolEffect
-    ) -> ReconciliationObservation: ...
+    async def observe(self, effect: EffectRecord) -> ReconciliationObservation: ...
 
 
 __all__ = (

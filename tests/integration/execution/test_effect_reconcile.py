@@ -15,6 +15,8 @@ from simple_harness.execution import (
     RunFenceLease,
     StaleFenceError,
 )
+from simple_harness.execution.effects import effect_request_hash
+from simple_harness.execution.recovery import ResolutionOutcome
 from simple_harness.execution.uow import ExecutionLease
 from simple_harness.tools import (
     AuthorizationDecision,
@@ -54,8 +56,7 @@ class FakeUow:
                 **{
                     key: value
                     for key, value in values.items()
-                    if key
-                    not in {"arguments", "run_fence", "execution_lease", "now"}
+                    if key not in {"arguments", "run_fence", "execution_lease", "now"}
                 },
             )  # type: ignore[arg-type]
         return self.record
@@ -105,20 +106,31 @@ class FakeUow:
         )
         return self.record
 
-    def reset_effect_not_started(
-        self, effect_id: EffectId, **values: object
+    def read_reconciliation_resolution(self, **_values):
+        return None
+
+    def refresh_prepared_effect_authority(
+        self, record: EffectRecord, **values: object
     ) -> EffectRecord:
-        self.trace.append("reset")
-        assert self.record is not None and self.record.effect_id == effect_id
+        self.trace.append("refresh")
+        run_fence = values["run_fence"]
+        assert isinstance(run_fence, RunFenceLease)
         self.record = replace(
-            self.record,
-            state=EffectState.PREPARED,
-            version=self.record.version + 1,
-            fence_epoch=values["new_fence_epoch"],
-            handoff_receipt_ref=None,
-            evidence_ref=values["evidence_ref"],
+            record,
+            authorization_receipt_ref=str(values["authorization_receipt_ref"]),
+            fence_epoch=run_fence.epoch,
+            version=record.version + 1,
         )
         return self.record
+
+    def record_tool_reconciliation(self, record, **values):
+        if values["outcome"] is ResolutionOutcome.COMPLETED:
+            return self.settle_effect(
+                record.effect_id,
+                result=values["result"],
+                evidence_ref=values["evidence_ref"],
+            )
+        return record
 
 
 class Allow:
@@ -245,7 +257,7 @@ def test_still_unknown_reconciliation_never_dispatches_again() -> None:
             run_id=RunId("run-1"),
             call_id=original_call.call_id,
             tool_name="read",
-            request_hash="a" * 64,
+            request_hash=effect_request_hash(tool_name="read", arguments={"path": "."}),
             arguments=original_call.arguments,
             state=EffectState.UNKNOWN,
             version=2,
@@ -293,7 +305,7 @@ def test_completed_reconciliation_settles_without_dispatch() -> None:
             run_id=RunId("run-1"),
             call_id=call.call_id,
             tool_name="read",
-            request_hash="a" * 64,
+            request_hash=effect_request_hash(tool_name="read", arguments={"path": "."}),
             arguments=call.arguments,
             state=EffectState.HANDED_OFF,
             version=1,
@@ -331,7 +343,7 @@ def test_completed_reconciliation_settles_without_dispatch() -> None:
     assert execution.effect is not None
     assert execution.effect.state is EffectState.SUCCEEDED
     assert calls == 0
-    assert uow.trace == ["prepare", "settle"]
+    assert uow.trace == ["settle"]
 
 
 def test_executor_cancellation_marks_handed_off_effect_unknown() -> None:
@@ -408,3 +420,51 @@ def test_stale_fence_prevents_physical_dispatch() -> None:
 
     assert calls == 0
     assert uow.trace == ["prepare", "handoff"]
+
+
+def test_retry_prepared_uses_explicit_authority_refresh_before_dispatch() -> None:
+    call = ToolCall(CallId("call-1"), "read", {"path": "."})
+    uow = FakeUow(
+        EffectRecord(
+            effect_id=EffectId("effect-1"),
+            run_id=RunId("run-1"),
+            call_id=call.call_id,
+            tool_name=call.name,
+            request_hash=effect_request_hash(
+                tool_name=call.name, arguments={"path": "."}
+            ),
+            arguments=call.arguments,
+            state=EffectState.PREPARED,
+            version=3,
+            fence_epoch=1,
+            authorization_receipt_ref="authorization:old",
+            handoff_receipt_ref=None,
+            evidence_ref="confirmed-not-started:1",
+            handoff_attempt=1,
+            rehandoff_count=1,
+        )
+    )
+    calls = 0
+
+    def handler(_arguments: object, _context: ToolContext) -> ToolResult:
+        nonlocal calls
+        calls += 1
+        return ToolResult.succeeded(CallId("call-1"))
+
+    executor, _ = _executor(
+        uow,
+        handler,
+        ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused"),
+    )
+    execution = asyncio.run(
+        executor.execute(
+            effect_id=EffectId("effect-1"),
+            call=call,
+            context=_context(),
+            execution_lease=LEASE,
+            run_fence=RunFenceLease(RunId("run-1"), 2, "worker-1", LEASE.epoch),
+        )
+    )
+    assert execution.result.outcome.value == "succeeded"
+    assert uow.trace == ["refresh", "handoff", "settle"]
+    assert calls == 1

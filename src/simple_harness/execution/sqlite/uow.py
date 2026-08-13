@@ -11,10 +11,12 @@ import math
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
+from typing import cast
 
 from simple_harness.contracts import (
     CallId,
     EffectId,
+    FrozenJsonValue,
     JsonValue,
     RequestId,
     RunId,
@@ -51,6 +53,15 @@ from simple_harness.execution.fences import RunFenceLease
 from simple_harness.execution.provider_invocations import (
     ProviderInvocationRecord,
     ProviderInvocationState,
+)
+from simple_harness.execution.recovery import (
+    ReconciliationResolution,
+    RecoveryKind,
+    ResolutionOutcome,
+    WaitActivationReceipt,
+    WaitBlockerRecord,
+    WaitBlockerSpec,
+    recovery_identity,
 )
 from simple_harness.execution.uow import (
     RUNTIME_LEASE_NAMESPACE,
@@ -320,6 +331,332 @@ class SqliteExecutionUnitOfWork:
         record = self.read_run(run_id)
         assert record is not None
         return record
+
+    def commit_runtime_wait_with_blocker(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        event_id: str,
+        payload: Mapping[str, JsonValue],
+        blocker: WaitBlockerSpec,
+        lease: ExecutionLease,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> tuple[RunRecord, WaitBlockerRecord]:
+        run_id = _required(run_id, "run_id")
+        event_id = _required(event_id, "event_id")
+        now = _time(now)
+        if lease.run_id != run_id:
+            raise UnitOfWorkConflict("wait blocker lease belongs to another Run")
+        payload_json = _object_json(payload, "payload")
+        blocker_id = blocker.blocker_id
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, lease, now=now)
+            existing = connection.execute(
+                "SELECT * FROM run_wait_blockers WHERE blocker_id = ?",
+                (blocker_id,),
+            ).fetchone()
+            if existing is not None:
+                stored = _wait_blocker_record(existing)
+                if (
+                    stored.run_id != run_id
+                    or stored.kind is not blocker.kind
+                    or stored.ledger_identity != blocker.ledger_identity
+                    or stored.handoff_attempt != blocker.handoff_attempt
+                    or stored.observed_version != blocker.observed_version
+                ):
+                    raise UnitOfWorkConflict("wait blocker identity conflict")
+                current = connection.execute(
+                    "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                assert current is not None
+                return _run_record(current), stored
+            resolution = connection.execute(
+                """
+                SELECT resolution_id, outcome FROM reconciliation_resolutions
+                WHERE kind = ? AND ledger_identity = ? AND handoff_attempt = ?
+                """,
+                (blocker.kind.value, blocker.ledger_identity, blocker.handoff_attempt),
+            ).fetchone()
+            if blocker.kind is RecoveryKind.PROVIDER:
+                ledger = connection.execute(
+                    """
+                    SELECT run_id,state,version,handoff_attempt
+                    FROM provider_invocations WHERE invocation_id=?
+                    """,
+                    (blocker.ledger_identity,),
+                ).fetchone()
+                unresolved_state = ProviderInvocationState.UNKNOWN.value
+                completed_states = (ProviderInvocationState.SUCCEEDED.value,)
+            else:
+                ledger = connection.execute(
+                    """
+                    SELECT run_id,state,version,handoff_attempt
+                    FROM execution_effects WHERE effect_id=?
+                    """,
+                    (blocker.ledger_identity,),
+                ).fetchone()
+                unresolved_state = EffectState.UNKNOWN.value
+                completed_states = (
+                    EffectState.SUCCEEDED.value,
+                    EffectState.FAILED.value,
+                    EffectState.REJECTED.value,
+                )
+            if (
+                ledger is None
+                or str(ledger["run_id"]) != run_id
+                or int(ledger["handoff_attempt"]) != blocker.handoff_attempt
+            ):
+                raise UnitOfWorkConflict("wait blocker ledger identity conflict")
+            resolution_outcome = (
+                None if resolution is None else str(resolution["outcome"])
+            )
+            if resolution_outcome == ResolutionOutcome.COMPLETED.value:
+                if (
+                    str(ledger["state"]) not in completed_states
+                    or int(ledger["version"]) != blocker.observed_version + 1
+                ):
+                    raise UnitOfWorkConflict(
+                        "completed wait resolution and ledger differ"
+                    )
+            elif (
+                str(ledger["state"]) != unresolved_state
+                or int(ledger["version"]) != blocker.observed_version
+            ):
+                raise UnitOfWorkConflict(
+                    "wait blocker observed ledger version is stale"
+                )
+            _fault(fault, "wait_blocker.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=run_id,
+                kind="run.waiting",
+                payload=json.loads(payload_json),
+                now=now,
+            )
+            _fault(fault, "wait_blocker.event.after_write")
+            changed = connection.execute(
+                """
+                UPDATE runs SET state = 'waiting', version = version + 1, updated_at = ?
+                WHERE run_id = ? AND version = ?
+                  AND state NOT IN ('completed', 'failed', 'cancelled')
+                """,
+                (now, run_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("wait blocker Run CAS failed")
+            _fault(fault, "wait_blocker.run.after_write")
+            connection.execute(
+                """
+                INSERT INTO run_wait_blockers(
+                    blocker_id, run_id, kind, ledger_identity, handoff_attempt,
+                    observed_version, resolution_id, wake_consumed, created_at,
+                    resolved_at, consumed_at, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, 1)
+                """,
+                (
+                    blocker_id,
+                    run_id,
+                    blocker.kind.value,
+                    blocker.ledger_identity,
+                    blocker.handoff_attempt,
+                    blocker.observed_version,
+                    None if resolution is None else str(resolution["resolution_id"]),
+                    now,
+                    None if resolution is None else now,
+                ),
+            )
+            _fault(fault, "wait_blocker.blocker.after_write")
+        _fault(fault, "wait_blocker.after_commit")
+        run = self.read_run(run_id)
+        row = self.database.connection.execute(
+            "SELECT * FROM run_wait_blockers WHERE blocker_id = ?", (blocker_id,)
+        ).fetchone()
+        assert run is not None and row is not None
+        return run, _wait_blocker_record(row)
+
+    def list_resolved_wait_blockers(
+        self,
+        *,
+        owner_id: str,
+        namespace: str,
+        now: float,
+    ) -> tuple[WaitBlockerRecord, ...]:
+        owner_id = _required(owner_id, "owner_id")
+        namespace = _required(namespace, "namespace")
+        now = _time(now)
+        rows = self.database.connection.execute(
+            """
+            SELECT blockers.* FROM run_wait_blockers AS blockers
+            JOIN runs ON runs.run_id = blockers.run_id
+            JOIN workflow_leases AS leases
+              ON leases.run_id = blockers.run_id AND leases.namespace = ?
+            WHERE blockers.resolution_id IS NOT NULL
+              AND blockers.wake_consumed = 0 AND runs.state = 'waiting'
+              AND ((leases.owner_id = ? AND leases.expires_at > ?)
+                   OR leases.expires_at <= ?)
+            ORDER BY blockers.created_at, blockers.blocker_id
+            """,
+            (namespace, owner_id, now, now),
+        ).fetchall()
+        return tuple(_wait_blocker_record(row) for row in rows)
+
+    def consume_resolved_wait_and_claim_activation(
+        self,
+        *,
+        blocker_id: str,
+        owner_id: str,
+        namespace: str,
+        now: float,
+        lease_ttl_seconds: float,
+        fault: FaultHook | None = None,
+    ) -> tuple[RunRecord, ExecutionLease, WaitActivationReceipt]:
+        blocker_id = _required(blocker_id, "blocker_id")
+        owner_id = _required(owner_id, "owner_id")
+        namespace = _required(namespace, "namespace")
+        now = _time(now)
+        if not math.isfinite(lease_ttl_seconds) or lease_ttl_seconds <= 0:
+            raise ValueError("lease_ttl_seconds must be finite and positive")
+        expires_at = now + float(lease_ttl_seconds)
+        receipt_id = f"wait-activation:{blocker_id}"
+        with self.database.transaction() as connection:
+            receipt_row = connection.execute(
+                "SELECT * FROM wait_activation_receipts WHERE receipt_id = ?",
+                (receipt_id,),
+            ).fetchone()
+            if receipt_row is not None:
+                receipt = _wait_activation_receipt(receipt_row)
+                if receipt.owner_id != owner_id:
+                    raise UnitOfWorkConflict(
+                        "activation receipt belongs to another Runtime owner"
+                    )
+                run_row = connection.execute(
+                    "SELECT * FROM runs WHERE run_id = ?", (receipt.run_id,)
+                ).fetchone()
+                lease_row = connection.execute(
+                    "SELECT * FROM workflow_leases WHERE run_id = ? AND namespace = ?",
+                    (receipt.run_id, namespace),
+                ).fetchone()
+                if run_row is None or lease_row is None:
+                    raise UnitOfWorkConflict("activation receipt authority disappeared")
+                if (
+                    str(lease_row["owner_id"]) != receipt.owner_id
+                    or int(lease_row["epoch"]) != receipt.runtime_lease_epoch
+                ):
+                    raise UnitOfWorkConflict("activation receipt was superseded")
+                return (
+                    _run_record(run_row),
+                    ExecutionLease(
+                        receipt.run_id,
+                        namespace,
+                        receipt.owner_id,
+                        receipt.runtime_lease_epoch,
+                        float(lease_row["expires_at"]),
+                    ),
+                    receipt,
+                )
+            blocker_row = connection.execute(
+                """
+                SELECT blockers.*, resolutions.outcome_hash
+                FROM run_wait_blockers AS blockers
+                JOIN reconciliation_resolutions AS resolutions
+                  ON resolutions.resolution_id = blockers.resolution_id
+                WHERE blockers.blocker_id = ? AND blockers.wake_consumed = 0
+                """,
+                (blocker_id,),
+            ).fetchone()
+            if blocker_row is None:
+                raise UnitOfWorkConflict("wait blocker is not resolved and unconsumed")
+            run_id = str(blocker_row["run_id"])
+            run_row = connection.execute(
+                "SELECT * FROM runs WHERE run_id = ? AND state = 'waiting'", (run_id,)
+            ).fetchone()
+            if run_row is None:
+                raise UnitOfWorkConflict("resolved blocker Run is not waiting")
+            lease_row = connection.execute(
+                "SELECT * FROM workflow_leases WHERE run_id = ? AND namespace = ?",
+                (run_id, namespace),
+            ).fetchone()
+            if lease_row is not None and float(lease_row["expires_at"]) > now:
+                if str(lease_row["owner_id"]) != owner_id:
+                    raise UnitOfWorkConflict("foreign active Runtime owns resolved Run")
+                epoch = int(lease_row["epoch"])
+            else:
+                epoch = 1 if lease_row is None else int(lease_row["epoch"]) + 1
+            connection.execute(
+                """
+                INSERT INTO workflow_leases(run_id, namespace, owner_id, epoch, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, namespace) DO UPDATE SET
+                    owner_id=excluded.owner_id, epoch=excluded.epoch,
+                    expires_at=excluded.expires_at
+                """,
+                (run_id, namespace, owner_id, epoch, expires_at),
+            )
+            _fault(fault, "wait_activation.lease.after_write")
+            changed = connection.execute(
+                """
+                UPDATE runs SET state='running', version=version+1, updated_at=?
+                WHERE run_id=? AND state='waiting' AND version=?
+                """,
+                (now, run_id, int(run_row["version"])),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("wait activation Run CAS failed")
+            outcome_hash = str(blocker_row["outcome_hash"])
+            connection.execute(
+                """
+                INSERT INTO wait_activation_receipts(
+                    receipt_id, blocker_id, run_id, owner_id,
+                    runtime_lease_epoch, outcome_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (receipt_id, blocker_id, run_id, owner_id, epoch, outcome_hash, now),
+            )
+            _fault(fault, "wait_activation.receipt.after_write")
+            connection.execute(
+                """
+                UPDATE run_wait_blockers SET wake_consumed=1, consumed_at=?,
+                    version=version+1 WHERE blocker_id=? AND wake_consumed=0
+                """,
+                (now, blocker_id),
+            )
+            self._insert_event(
+                connection,
+                event_id=f"{run_id}:wait-activation:{blocker_id}",
+                run_id=run_id,
+                kind="run.recovered",
+                payload={
+                    "owner_id": owner_id,
+                    "lease_epoch": epoch,
+                    "blocker_id": blocker_id,
+                },
+                now=now,
+            )
+        _fault(fault, "wait_activation.after_commit")
+        run = self.read_run(run_id)
+        assert run is not None
+        return (
+            run,
+            ExecutionLease(run_id, namespace, owner_id, epoch, expires_at),
+            WaitActivationReceipt(
+                receipt_id, blocker_id, run_id, owner_id, epoch, outcome_hash
+            ),
+        )
+
+    def read_reconciliation_resolution(
+        self, *, kind: str, ledger_identity: str, handoff_attempt: int
+    ) -> ReconciliationResolution | None:
+        row = self.database.connection.execute(
+            """
+            SELECT * FROM reconciliation_resolutions
+            WHERE kind=? AND ledger_identity=? AND handoff_attempt=?
+            """,
+            (RecoveryKind(kind).value, ledger_identity, handoff_attempt),
+        ).fetchone()
+        return None if row is None else _reconciliation_resolution(row)
 
     def request_run_cancel(
         self,
@@ -2371,6 +2708,9 @@ class SqliteExecutionUnitOfWork:
         run_fence: RunFenceLease,
         execution_lease: ExecutionLease,
         now: float,
+        raw_call_id: str | None = None,
+        turn_ordinal: int = 0,
+        call_ordinal: int = 0,
         fault: FaultHook | None = None,
     ) -> EffectRecord:
         tool_name = _required(tool_name, "tool_name")
@@ -2389,6 +2729,13 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("effect runtime lease and Run fence differ")
         now = _time(now)
         arguments_json = canonical_json(arguments)  # type: ignore[arg-type]
+        if raw_call_id is not None:
+            raw_call_id = _required(raw_call_id, "raw_call_id")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (turn_ordinal, call_ordinal)
+        ):
+            raise ValueError("effect ordinals must be non-negative integers")
         existing = self.read_effect(effect_id)
         if existing is not None:
             if (
@@ -2397,38 +2744,18 @@ class SqliteExecutionUnitOfWork:
                 or existing.tool_name != tool_name
                 or existing.request_hash != request_hash
                 or canonical_json(thaw_json(existing.arguments)) != arguments_json
+                or existing.raw_call_id != raw_call_id
+                or existing.turn_ordinal != turn_ordinal
+                or existing.call_ordinal != call_ordinal
             ):
                 raise UnitOfWorkConflict("effect identity reused with different intent")
             if existing.state is EffectState.PREPARED and (
                 existing.fence_epoch != run_fence.epoch
                 or existing.authorization_receipt_ref != authorization_receipt_ref
             ):
-                with self.database.transaction() as connection:
-                    self._require_runtime_lease(connection, execution_lease, now=now)
-                    self._require_run_fence(
-                        connection,
-                        run_fence,
-                        execution_lease=execution_lease,
-                    )
-                    changed = connection.execute(
-                        """
-                        UPDATE execution_effects
-                        SET fence_epoch = ?, authorization_receipt_ref = ?,
-                            version = version + 1
-                        WHERE effect_id = ? AND state = 'prepared' AND version = ?
-                        """,
-                        (
-                            run_fence.epoch,
-                            authorization_receipt_ref,
-                            effect_id.value,
-                            existing.version,
-                        ),
-                    ).rowcount
-                    if changed != 1:
-                        raise UnitOfWorkConflict("prepared effect refresh CAS failed")
-                refreshed = self.read_effect(effect_id)
-                assert refreshed is not None
-                return refreshed
+                raise UnitOfWorkConflict(
+                    "prepared effect authority must use explicit refresh CAS"
+                )
             return existing
         with self.database.transaction() as connection:
             self._require_runtime_lease(connection, execution_lease, now=now)
@@ -2447,17 +2774,21 @@ class SqliteExecutionUnitOfWork:
             connection.execute(
                 """
                 INSERT INTO execution_effects(
-                    effect_id, run_id, call_id, tool_name, arguments_json,
+                    effect_id, run_id, call_id, raw_call_id, turn_ordinal,
+                    call_ordinal, tool_name, arguments_json,
                     request_hash, authorization_receipt_ref, handoff_receipt_ref,
                     evidence_ref, fence_epoch, state, result_json, prepared_at,
                     handed_off_at, settled_at, version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 'prepared',
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 'prepared',
                           NULL, ?, NULL, NULL, 0)
                 """,
                 (
                     effect_id.value,
                     run_id.value,
                     call_id.value,
+                    raw_call_id,
+                    turn_ordinal,
+                    call_ordinal,
                     tool_name,
                     arguments_json,
                     request_hash,
@@ -2518,7 +2849,8 @@ class SqliteExecutionUnitOfWork:
                 """
                 UPDATE execution_effects
                 SET state = 'handed_off', handoff_receipt_ref = ?,
-                    handed_off_at = ?, version = version + 1
+                    handed_off_at = ?, handoff_attempt = handoff_attempt + 1,
+                    version = version + 1
                 WHERE effect_id = ? AND state = 'prepared' AND version = ?
                   AND fence_epoch = ?
                 """,
@@ -2626,47 +2958,283 @@ class SqliteExecutionUnitOfWork:
         assert record is not None
         return record
 
-    def reset_effect_not_started(
+    def record_tool_reconciliation(
         self,
-        effect_id: EffectId,
+        record: EffectRecord,
         *,
-        expected_version: int,
-        expected_fence_epoch: int,
-        new_fence_epoch: int,
+        outcome: ResolutionOutcome,
+        result: ToolResult | None,
         evidence_ref: str,
         now: float,
         fault: FaultHook | None = None,
     ) -> EffectRecord:
+        outcome = ResolutionOutcome(outcome)
         evidence_ref = _required(evidence_ref, "evidence_ref")
-        _time(now)
-        if new_fence_epoch < expected_fence_epoch:
-            raise UnitOfWorkConflict("effect fence epoch cannot move backward")
+        now = _time(now)
+        if record.state not in {EffectState.HANDED_OFF, EffectState.UNKNOWN}:
+            raise UnitOfWorkConflict("Tool reconciliation requires uncertain ledger")
+        if record.handoff_attempt < 1:
+            raise UnitOfWorkConflict("Tool reconciliation requires handoff attempt")
+        if outcome is ResolutionOutcome.COMPLETED:
+            if result is None:
+                raise ValueError("completed Tool resolution requires result")
+            if result.outcome.value == EffectState.UNKNOWN.value:
+                raise ValueError("completed Tool resolution cannot remain unknown")
+            if result.call_id != record.call_id:
+                result = ToolResult(
+                    record.call_id,
+                    result.outcome,
+                    cast(FrozenJsonValue, thaw_json(result.value)),
+                    result.error_code,
+                    result.public_message,
+                    result.retryable,
+                )
+            payload: dict[str, JsonValue] = {
+                "outcome": outcome.value,
+                "evidence_ref": evidence_ref,
+                "request_hash": record.request_hash,
+                "result": json.loads(_tool_result_json(result)),
+            }
+        else:
+            if result is not None:
+                raise ValueError("not-started Tool resolution cannot carry result")
+            payload = {
+                "outcome": outcome.value,
+                "evidence_ref": evidence_ref,
+                "request_hash": record.request_hash,
+                "result": None,
+            }
+        outcome_hash = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+        resolution_id = f"resolution:{recovery_identity(RecoveryKind.TOOL, record.effect_id.value, record.handoff_attempt)}"
         with self.database.transaction() as connection:
-            _fault(fault, "effect_reset.before_write")
+            row = connection.execute(
+                "SELECT * FROM execution_effects WHERE effect_id=?",
+                (record.effect_id.value,),
+            ).fetchone()
+            if row is None:
+                raise UnitOfWorkNotFound(record.effect_id.value)
+            current = _effect_record(row)
+            if (
+                current.run_id != record.run_id
+                or current.call_id != record.call_id
+                or current.request_hash != record.request_hash
+                or current.handoff_attempt != record.handoff_attempt
+            ):
+                raise UnitOfWorkConflict("Tool reconciliation identity conflict")
+            existing = connection.execute(
+                """
+                SELECT * FROM reconciliation_resolutions
+                WHERE kind='tool' AND ledger_identity=? AND handoff_attempt=?
+                """,
+                (record.effect_id.value, record.handoff_attempt),
+            ).fetchone()
+            if existing is not None:
+                stored = _reconciliation_resolution(existing)
+                if stored.outcome_hash != outcome_hash:
+                    raise UnitOfWorkConflict("Tool resolution outcome conflict")
+                return current
+            if current.version != record.version or current.state not in {
+                EffectState.HANDED_OFF,
+                EffectState.UNKNOWN,
+            }:
+                raise UnitOfWorkConflict("Tool reconciliation CAS failed")
+            _fault(fault, "tool_reconciliation.resolution.before_write")
+            connection.execute(
+                """
+                INSERT INTO reconciliation_resolutions(
+                    resolution_id,kind,ledger_identity,handoff_attempt,outcome,
+                    outcome_hash,evidence_ref,payload_json,created_at
+                ) VALUES (?, 'tool', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resolution_id,
+                    record.effect_id.value,
+                    record.handoff_attempt,
+                    outcome.value,
+                    outcome_hash,
+                    evidence_ref,
+                    canonical_json(payload),
+                    now,
+                ),
+            )
+            _fault(fault, "tool_reconciliation.resolution.after_write")
+            if outcome is ResolutionOutcome.COMPLETED:
+                assert result is not None
+                changed = connection.execute(
+                    """
+                    UPDATE execution_effects SET state=?, result_json=?, evidence_ref=?,
+                        settled_at=?, version=version+1
+                    WHERE effect_id=? AND state IN ('handed_off','unknown')
+                      AND version=? AND request_hash=? AND handoff_attempt=?
+                    """,
+                    (
+                        result.outcome.value,
+                        _tool_result_json(result),
+                        evidence_ref,
+                        now,
+                        record.effect_id.value,
+                        record.version,
+                        record.request_hash,
+                        record.handoff_attempt,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise UnitOfWorkConflict("Tool completed recovery CAS failed")
+                _fault(fault, "tool_reconciliation.ledger.after_write")
+            connection.execute(
+                """
+                UPDATE run_wait_blockers SET resolution_id=?, resolved_at=?,
+                    version=version+1
+                WHERE kind='tool' AND ledger_identity=? AND handoff_attempt=?
+                  AND resolution_id IS NULL
+                """,
+                (resolution_id, now, record.effect_id.value, record.handoff_attempt),
+            )
+            _fault(fault, "tool_reconciliation.blocker.after_write")
+        _fault(fault, "tool_reconciliation.after_commit")
+        result_record = self.read_effect(record.effect_id)
+        assert result_record is not None
+        return result_record
+
+    def reauthorize_effect_not_started(
+        self,
+        record: EffectRecord,
+        *,
+        authorization_receipt_ref: str,
+        resolution: ReconciliationResolution,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> EffectRecord:
+        authorization_receipt_ref = _required(
+            authorization_receipt_ref, "authorization_receipt_ref"
+        )
+        now = _time(now)
+        if (
+            resolution.kind is not RecoveryKind.TOOL
+            or resolution.ledger_identity != record.effect_id.value
+            or resolution.handoff_attempt != record.handoff_attempt
+            or resolution.outcome is not ResolutionOutcome.CONFIRMED_NOT_STARTED
+        ):
+            raise UnitOfWorkConflict("Tool reauthorization resolution mismatch")
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            self._require_run_fence(
+                connection, run_fence, execution_lease=execution_lease
+            )
+            row = connection.execute(
+                "SELECT outcome_hash,evidence_ref FROM reconciliation_resolutions WHERE resolution_id=?",
+                (resolution.resolution_id,),
+            ).fetchone()
+            if (
+                row is None
+                or str(row["outcome_hash"]) != resolution.outcome_hash
+                or str(row["evidence_ref"]) != resolution.evidence_ref
+            ):
+                raise UnitOfWorkConflict("Tool reauthorization evidence mismatch")
+            _fault(fault, "effect_reauthorize.before_write")
             changed = connection.execute(
                 """
                 UPDATE execution_effects
-                SET state = 'prepared', handoff_receipt_ref = NULL,
-                    evidence_ref = ?, result_json = NULL, handed_off_at = NULL,
-                    settled_at = NULL, fence_epoch = ?, version = version + 1
-                WHERE effect_id = ? AND state IN ('handed_off', 'unknown')
-                  AND version = ? AND fence_epoch = ?
+                SET state='prepared', authorization_receipt_ref=?, fence_epoch=?,
+                    handoff_receipt_ref=NULL, handed_off_at=NULL, settled_at=NULL,
+                    evidence_ref=?, rehandoff_count=rehandoff_count+1,
+                    version=version+1
+                WHERE effect_id=? AND state='unknown' AND version=?
+                  AND request_hash=? AND handoff_attempt=? AND rehandoff_count=0
                 """,
                 (
-                    evidence_ref,
-                    new_fence_epoch,
-                    effect_id.value,
-                    expected_version,
-                    expected_fence_epoch,
+                    authorization_receipt_ref,
+                    run_fence.epoch,
+                    resolution.evidence_ref,
+                    record.effect_id.value,
+                    record.version,
+                    record.request_hash,
+                    record.handoff_attempt,
                 ),
             ).rowcount
             if changed != 1:
-                raise UnitOfWorkConflict("effect reset CAS failed")
-            _fault(fault, "effect_reset.after_write")
-        _fault(fault, "effect_reset.after_commit")
-        record = self.read_effect(effect_id)
-        assert record is not None
-        return record
+                raise UnitOfWorkConflict("Tool reauthorization CAS failed")
+            _fault(fault, "effect_reauthorize.after_write")
+        _fault(fault, "effect_reauthorize.after_commit")
+        refreshed = self.read_effect(record.effect_id)
+        assert refreshed is not None
+        return refreshed
+
+    def refresh_prepared_effect_authority(
+        self,
+        record: EffectRecord,
+        *,
+        authorization_receipt_ref: str,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> EffectRecord:
+        authorization_receipt_ref = _required(
+            authorization_receipt_ref, "authorization_receipt_ref"
+        )
+        now = _time(now)
+        if record.state is not EffectState.PREPARED:
+            raise UnitOfWorkConflict("Tool authority refresh requires PREPARED")
+        if record.handoff_attempt == 0 and record.rehandoff_count != 0:
+            raise UnitOfWorkConflict("initial PREPARED has invalid retry count")
+        if record.handoff_attempt > 0 and record.rehandoff_count != 1:
+            raise UnitOfWorkConflict("retry PREPARED lacks one reauthorization")
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            self._require_run_fence(
+                connection, run_fence, execution_lease=execution_lease
+            )
+            if record.handoff_attempt > 0:
+                resolution = connection.execute(
+                    """
+                    SELECT evidence_ref FROM reconciliation_resolutions
+                    WHERE kind='tool' AND ledger_identity=? AND handoff_attempt=?
+                      AND outcome='confirmed_not_started'
+                    """,
+                    (record.effect_id.value, record.handoff_attempt),
+                ).fetchone()
+                if (
+                    resolution is None
+                    or str(resolution["evidence_ref"]) != record.evidence_ref
+                ):
+                    raise UnitOfWorkConflict("Tool refresh resolution mismatch")
+            if (
+                record.run_id.value != execution_lease.run_id
+                or record.run_id != run_fence.run_id
+            ):
+                raise UnitOfWorkConflict(
+                    "Tool refresh authority belongs to another Run"
+                )
+            _fault(fault, "effect_refresh.before_write")
+            changed = connection.execute(
+                """
+                UPDATE execution_effects
+                SET fence_epoch=?, authorization_receipt_ref=?, version=version+1
+                WHERE effect_id=? AND state='prepared' AND version=?
+                  AND request_hash=? AND handoff_attempt=? AND rehandoff_count=?
+                  AND COALESCE(evidence_ref, '')=COALESCE(?, '')
+                """,
+                (
+                    run_fence.epoch,
+                    authorization_receipt_ref,
+                    record.effect_id.value,
+                    record.version,
+                    record.request_hash,
+                    record.handoff_attempt,
+                    record.rehandoff_count,
+                    record.evidence_ref,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("Tool authority refresh CAS failed")
+            _fault(fault, "effect_refresh.after_write")
+        _fault(fault, "effect_refresh.after_commit")
+        refreshed = self.read_effect(record.effect_id)
+        assert refreshed is not None
+        return refreshed
 
     async def acquire(
         self,
@@ -2792,16 +3360,19 @@ class SqliteExecutionUnitOfWork:
                 """
                 INSERT INTO provider_invocations(
                     invocation_id, run_id, request_id, request_fingerprint,
-                    target_json, target_digest, estimator_json, estimator_digest,
+                    request_json, target_json, target_digest, estimator_json, estimator_digest,
                     state, response_json, usage_json, error_code, claimed_at,
-                    handed_off_at, settled_at, version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'claimed', NULL, ?, NULL, ?, NULL, NULL, ?)
+                    handed_off_at, settled_at, version, handoff_attempt, rehandoff_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed', NULL, ?, NULL, ?, NULL, NULL, ?, 0, 0)
                 """,
                 (
                     record.invocation_id,
                     record.run_id.value,
                     record.request_id.value,
                     record.request_fingerprint,
+                    None
+                    if record.request_json is None
+                    else canonical_json(_thaw_json(record.request_json)),
                     target_json,
                     record.target_digest,
                     estimator_json,
@@ -2849,7 +3420,8 @@ class SqliteExecutionUnitOfWork:
             changed = connection.execute(
                 """
                 UPDATE provider_invocations
-                SET state = 'handed_off', handed_off_at = ?, version = version + 1
+                SET state = 'handed_off', handed_off_at = ?,
+                    handoff_attempt = handoff_attempt + 1, version = version + 1
                 WHERE invocation_id = ? AND state = 'claimed' AND version = ?
                 """,
                 (handed_off_at, invocation_id, expected_version),
@@ -2911,13 +3483,213 @@ class SqliteExecutionUnitOfWork:
         assert result is not None
         return result
 
+    def record_provider_reconciliation(
+        self,
+        record: ProviderInvocationRecord,
+        *,
+        outcome: ResolutionOutcome,
+        response_json: object | None,
+        usage_json: object | None,
+        budget_charge: BudgetCharge,
+        evidence_ref: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ProviderInvocationRecord:
+        outcome = ResolutionOutcome(outcome)
+        evidence_ref = _required(evidence_ref, "evidence_ref")
+        now = _time(now)
+        if record.state is not ProviderInvocationState.UNKNOWN:
+            raise UnitOfWorkConflict("Provider reconciliation requires unknown ledger")
+        if record.handoff_attempt < 1:
+            raise UnitOfWorkConflict("Provider reconciliation requires handoff attempt")
+        if outcome is ResolutionOutcome.COMPLETED:
+            if response_json is None or usage_json is None:
+                raise ValueError(
+                    "completed Provider resolution requires response and usage"
+                )
+            response_payload = json.loads(canonical_json(response_json))  # type: ignore[arg-type]
+            usage_payload = json.loads(canonical_json(usage_json))  # type: ignore[arg-type]
+            if not isinstance(response_payload, dict) or not isinstance(
+                usage_payload, dict
+            ):
+                raise TypeError("Provider resolution payloads must be objects")
+            if response_payload.get("request_id") != record.request_id.value:
+                raise UnitOfWorkConflict(
+                    "Provider resolution request identity mismatch"
+                )
+            usage_payload = dict(usage_payload)
+            usage_payload["budget"] = budget_charge.to_json()
+        else:
+            if response_json is not None or usage_json is not None:
+                raise ValueError(
+                    "not-started Provider resolution cannot carry response"
+                )
+            response_payload = None
+            usage_payload = None
+        resolution_payload: dict[str, JsonValue] = {
+            "outcome": outcome.value,
+            "evidence_ref": evidence_ref,
+            "request_fingerprint": record.request_fingerprint,
+            "target_digest": record.target_digest,
+            "response": response_payload,
+            "usage": usage_payload,
+        }
+        outcome_hash = hashlib.sha256(
+            canonical_json(resolution_payload).encode()
+        ).hexdigest()
+        resolution_id = f"resolution:{recovery_identity(RecoveryKind.PROVIDER, record.invocation_id, record.handoff_attempt)}"
+        with self.database.transaction() as connection:
+            current_row = connection.execute(
+                "SELECT * FROM provider_invocations WHERE invocation_id=?",
+                (record.invocation_id,),
+            ).fetchone()
+            if current_row is None:
+                raise UnitOfWorkNotFound(record.invocation_id)
+            current = _provider_invocation_record(current_row)
+            if (
+                current.run_id != record.run_id
+                or current.request_id != record.request_id
+                or current.request_fingerprint != record.request_fingerprint
+                or current.target_digest != record.target_digest
+                or current.handoff_attempt != record.handoff_attempt
+            ):
+                raise UnitOfWorkConflict("Provider reconciliation identity conflict")
+            existing = connection.execute(
+                """
+                SELECT * FROM reconciliation_resolutions
+                WHERE kind='provider' AND ledger_identity=? AND handoff_attempt=?
+                """,
+                (record.invocation_id, record.handoff_attempt),
+            ).fetchone()
+            if existing is not None:
+                stored = _reconciliation_resolution(existing)
+                if stored.outcome_hash != outcome_hash:
+                    raise UnitOfWorkConflict("Provider resolution outcome conflict")
+                return current
+            if (
+                current.state is not ProviderInvocationState.UNKNOWN
+                or current.version != record.version
+            ):
+                raise UnitOfWorkConflict("Provider reconciliation CAS failed")
+            _fault(fault, "provider_reconciliation.resolution.before_write")
+            connection.execute(
+                """
+                INSERT INTO reconciliation_resolutions(
+                    resolution_id,kind,ledger_identity,handoff_attempt,outcome,
+                    outcome_hash,evidence_ref,payload_json,created_at
+                ) VALUES (?, 'provider', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resolution_id,
+                    record.invocation_id,
+                    record.handoff_attempt,
+                    outcome.value,
+                    outcome_hash,
+                    evidence_ref,
+                    canonical_json(resolution_payload),
+                    now,
+                ),
+            )
+            _fault(fault, "provider_reconciliation.resolution.after_write")
+            if outcome is ResolutionOutcome.COMPLETED:
+                changed = connection.execute(
+                    """
+                    UPDATE provider_invocations
+                    SET state='succeeded', response_json=?, usage_json=?,
+                        error_code=NULL, settled_at=?, version=version+1
+                    WHERE invocation_id=? AND state='unknown' AND version=?
+                      AND request_fingerprint=? AND target_digest=?
+                      AND handoff_attempt=?
+                    """,
+                    (
+                        canonical_json(response_payload),
+                        canonical_json(usage_payload),
+                        now,
+                        record.invocation_id,
+                        record.version,
+                        record.request_fingerprint,
+                        record.target_digest,
+                        record.handoff_attempt,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise UnitOfWorkConflict("Provider completed recovery CAS failed")
+                _fault(fault, "provider_reconciliation.ledger.after_write")
+            connection.execute(
+                """
+                UPDATE run_wait_blockers SET resolution_id=?, resolved_at=?,
+                    version=version+1
+                WHERE kind='provider' AND ledger_identity=? AND handoff_attempt=?
+                  AND resolution_id IS NULL
+                """,
+                (resolution_id, now, record.invocation_id, record.handoff_attempt),
+            )
+            _fault(fault, "provider_reconciliation.blocker.after_write")
+        _fault(fault, "provider_reconciliation.after_commit")
+        result = self.read_provider_invocation(record.invocation_id)
+        assert result is not None
+        return result
+
+    def reauthorize_provider_not_started(
+        self,
+        record: ProviderInvocationRecord,
+        *,
+        resolution: ReconciliationResolution,
+        execution_lease: ExecutionLease,
+        now: float,
+    ) -> ProviderInvocationRecord:
+        now = _time(now)
+        if (
+            resolution.kind is not RecoveryKind.PROVIDER
+            or resolution.ledger_identity != record.invocation_id
+            or resolution.handoff_attempt != record.handoff_attempt
+            or resolution.outcome is not ResolutionOutcome.CONFIRMED_NOT_STARTED
+        ):
+            raise UnitOfWorkConflict("Provider reauthorization resolution mismatch")
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            if execution_lease.run_id != record.run_id.value:
+                raise UnitOfWorkConflict("Provider retry lease belongs to another Run")
+            row = connection.execute(
+                "SELECT outcome_hash,evidence_ref FROM reconciliation_resolutions WHERE resolution_id=?",
+                (resolution.resolution_id,),
+            ).fetchone()
+            if (
+                row is None
+                or str(row["outcome_hash"]) != resolution.outcome_hash
+                or str(row["evidence_ref"]) != resolution.evidence_ref
+            ):
+                raise UnitOfWorkConflict("Provider reauthorization evidence mismatch")
+            changed = connection.execute(
+                """
+                UPDATE provider_invocations SET state='claimed', error_code=NULL,
+                    handed_off_at=NULL, settled_at=NULL, rehandoff_count=rehandoff_count+1,
+                    version=version+1
+                WHERE invocation_id=? AND state='unknown' AND version=?
+                  AND request_fingerprint=? AND target_digest=?
+                  AND handoff_attempt=? AND rehandoff_count=0
+                """,
+                (
+                    record.invocation_id,
+                    record.version,
+                    record.request_fingerprint,
+                    record.target_digest,
+                    record.handoff_attempt,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("Provider reauthorization CAS failed")
+        refreshed = self.read_provider_invocation(record.invocation_id)
+        assert refreshed is not None
+        return refreshed
+
     def list_incomplete_provider_invocations(
         self,
     ) -> tuple[ProviderInvocationRecord, ...]:
         rows = self.database.connection.execute(
             """
             SELECT * FROM provider_invocations
-            WHERE state IN ('claimed', 'handed_off')
+            WHERE state IN ('claimed', 'handed_off', 'unknown')
             ORDER BY claimed_at, invocation_id
             """
         ).fetchall()
@@ -3522,6 +4294,11 @@ def _effect_record(row: sqlite3.Row) -> EffectRecord:
             None if row["evidence_ref"] is None else str(row["evidence_ref"])
         ),
         result=_tool_result(row["result_json"]),
+        raw_call_id=(None if row["raw_call_id"] is None else str(row["raw_call_id"])),
+        turn_ordinal=int(row["turn_ordinal"]),
+        call_ordinal=int(row["call_ordinal"]),
+        handoff_attempt=int(row["handoff_attempt"]),
+        rehandoff_count=int(row["rehandoff_count"]),
     )
 
 
@@ -3564,6 +4341,53 @@ def _provider_invocation_record(row: sqlite3.Row) -> ProviderInvocationRecord:
         ),
         settled_at=(None if row["settled_at"] is None else float(row["settled_at"])),
         version=int(row["version"]),
+        request_json=(
+            None
+            if row["request_json"] is None
+            else json.loads(str(row["request_json"]))
+        ),
+        handoff_attempt=int(row["handoff_attempt"]),
+        rehandoff_count=int(row["rehandoff_count"]),
+    )
+
+
+def _wait_blocker_record(row: sqlite3.Row) -> WaitBlockerRecord:
+    return WaitBlockerRecord(
+        blocker_id=str(row["blocker_id"]),
+        run_id=str(row["run_id"]),
+        kind=RecoveryKind(str(row["kind"])),
+        ledger_identity=str(row["ledger_identity"]),
+        handoff_attempt=int(row["handoff_attempt"]),
+        observed_version=int(row["observed_version"]),
+        resolution_id=(
+            None if row["resolution_id"] is None else str(row["resolution_id"])
+        ),
+        wake_consumed=bool(row["wake_consumed"]),
+        version=int(row["version"]),
+    )
+
+
+def _reconciliation_resolution(row: sqlite3.Row) -> ReconciliationResolution:
+    return ReconciliationResolution(
+        resolution_id=str(row["resolution_id"]),
+        kind=RecoveryKind(str(row["kind"])),
+        ledger_identity=str(row["ledger_identity"]),
+        handoff_attempt=int(row["handoff_attempt"]),
+        outcome=ResolutionOutcome(str(row["outcome"])),
+        outcome_hash=str(row["outcome_hash"]),
+        evidence_ref=str(row["evidence_ref"]),
+        payload=json.loads(str(row["payload_json"])),
+    )
+
+
+def _wait_activation_receipt(row: sqlite3.Row) -> WaitActivationReceipt:
+    return WaitActivationReceipt(
+        receipt_id=str(row["receipt_id"]),
+        blocker_id=str(row["blocker_id"]),
+        run_id=str(row["run_id"]),
+        owner_id=str(row["owner_id"]),
+        runtime_lease_epoch=int(row["runtime_lease_epoch"]),
+        outcome_hash=str(row["outcome_hash"]),
     )
 
 
