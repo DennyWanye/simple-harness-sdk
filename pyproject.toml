@@ -65,3 +65,7 @@ exclude = [
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
 testpaths = ["tests"]
+markers = [
+  "h7_runtime_gate: frozen H7 Provider ReAct Tool restart and child runtime seams",
+  "h7_workflow_terminal_gate: frozen H7 strict and legacy workflow terminal projection seams",
+]

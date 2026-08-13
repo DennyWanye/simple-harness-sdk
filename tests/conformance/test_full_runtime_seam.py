@@ -3,11 +3,11 @@
 
 """Frozen H7 full-runtime oracle.
 
-The test doubles in this module only script physical I/O or Driver state.  They
-never call another authority, mutate the database, or manufacture a runtime
-result.  Provider, Tool, Authorization, Context, child-signal, terminal, and
-delivery coordination must therefore be performed by production code reached
-through ``DriverInvocation.services``.
+I/O doubles only script physical boundaries. Driver doubles and probes only
+implement the public RuntimeDriver boundary and never write durable state.
+Provider, Tool, Authorization, Context, child-signal, terminal, and delivery
+coordination must be performed by production code reached through
+``DriverInvocation.services`` and public Runtime facades.
 """
 
 from __future__ import annotations
@@ -28,18 +28,21 @@ from simple_harness.contracts import (
     RequestId,
     RunId,
     canonical_json,
+    thaw_json,
 )
 from simple_harness.contracts.messages import Message, MessageRole
-from simple_harness.execution.budget import BudgetPolicy
+from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
 from simple_harness.execution.contracts.children import (
     AttachmentPolicy,
+    ChildCommandState,
     ProfileLaunchTicket,
+    ProfileLaunchTicketState,
     child_launch_fingerprint,
 )
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySpec
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
-from simple_harness.execution.uow import RunState
+from simple_harness.execution.uow import RunRecord, RunState
 from simple_harness.providers import (
     CancelToken,
     ProviderRequest,
@@ -47,6 +50,7 @@ from simple_harness.providers import (
     ProviderResponse,
     ProviderTarget,
     ProviderToolCall,
+    ProviderUsage,
 )
 from simple_harness.runtime import (
     ChildLaunchRequest,
@@ -100,6 +104,68 @@ class OrderSpy:
 
     def operations(self) -> list[str]:
         return [operation for operation, _ in self.entries]
+
+
+@dataclass
+class RecoverySpy:
+    phases: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRecoveryObservation:
+    state: str
+    evidence_ref: str
+
+
+class RecordingProviderReconciliation:
+    """Script evidence only; production must select and invoke the Port."""
+
+    def __init__(self) -> None:
+        self.observed: list[tuple[str, str, str, str, str, int]] = []
+        self.last_evidence_ref: str | None = None
+
+    async def observe(self, invocation) -> ProviderRecoveryObservation:
+        identity = (
+            invocation.invocation_id,
+            invocation.run_id.value,
+            invocation.request_id.value,
+            invocation.request_fingerprint,
+            invocation.target_digest,
+            invocation.handoff_attempt,
+        )
+        self.observed.append(identity)
+        observation = ProviderRecoveryObservation(
+            "still_unknown",
+            f"provider-reconciliation:{invocation.invocation_id}:"
+            f"attempt:{invocation.handoff_attempt}",
+        )
+        self.last_evidence_ref = observation.evidence_ref
+        return observation
+
+
+class ReActDriverProbe:
+    """Observe one production ReActDriver without implementing its state machine."""
+
+    def __init__(self, delegate, order: OrderSpy) -> None:
+        self.delegate = delegate
+        self.order = order
+        self.start_calls = 0
+        self.delegate_ids: list[int] = []
+        self.results = []
+
+    async def start(self, invocation, *, context, cancel):
+        self.start_calls += 1
+        identity = id(self.delegate)
+        self.delegate_ids.append(identity)
+        self.order.add("driver.react.enter", identity)
+        result = await self.delegate.start(
+            invocation,
+            context=context,
+            cancel=cancel,
+        )
+        self.results.append(result)
+        self.order.add("driver.react.exit", identity)
+        return result
 
 
 class ScriptedProvider:
@@ -186,7 +252,9 @@ class RecordingSink:
     async def deliver(
         self, payload: Mapping[str, JsonValue], *, idempotency_key: str
     ) -> None:
-        encoded = canonical_json(dict(payload)).encode("utf-8")
+        mutable = thaw_json(payload)
+        assert isinstance(mutable, dict)
+        encoded = canonical_json(mutable).encode("utf-8")
         self.projections.append((idempotency_key, encoded))
         self.order.add("delivery.sink", idempotency_key)
 
@@ -203,6 +271,8 @@ class ParentStateDriver:
         self.order = order
         self.starts = 0
         self.recovered_child_run_id: str | None = None
+        self.continuation_id: str | None = None
+        self.signal_id: str | None = None
 
     async def start(self, invocation, *, context, cancel):
         del context
@@ -215,8 +285,13 @@ class ParentStateDriver:
             return DriverResult(RunState.WAITING, {"awaiting": "child_terminal"})
         continuations = tuple(invocation.continuations)
         assert len(continuations) == 1
-        payload = continuations[0].payload
+        continuation = continuations[0]
+        self.continuation_id = continuation.continuation_id
+        payload = continuation.payload
         assert payload["kind"] == "child_terminal"
+        assert payload["signal_id"]
+        assert payload["payload"]["status"] == "failed"
+        self.signal_id = str(payload["signal_id"])
         child_run_id = str(payload["child_run_id"])
         self.recovered_child_run_id = child_run_id
         terminal_payload = {
@@ -250,6 +325,10 @@ class Seam:
     reconciliation: RecordingReconciliation
     sink: RecordingSink
     order: OrderSpy
+    recovery: RecoverySpy
+    provider_reconciliation: RecordingProviderReconciliation
+    context: SqliteContextPort
+    react_driver: ReActDriverProbe
 
     async def start(self, run_id: str, input_value: Mapping[str, JsonValue]):
         start = RunStart(
@@ -270,6 +349,8 @@ class Seam:
             self.symbols,
             self.path,
             order=self.order,
+            recovery=self.recovery,
+            provider_reconciliation=self.provider_reconciliation,
             provider=self.provider,
             tool=self.tool,
             authorization=self.authorization,
@@ -284,6 +365,8 @@ async def make_seam(
     path: Path,
     *,
     order: OrderSpy | None = None,
+    recovery: RecoverySpy | None = None,
+    provider_reconciliation: RecordingProviderReconciliation | None = None,
     provider: ScriptedProvider | None = None,
     tool: RecordingTool | None = None,
     authorization: RecordingAuthorization | None = None,
@@ -292,6 +375,10 @@ async def make_seam(
     parent_driver=None,
 ) -> Seam:
     order = order or OrderSpy()
+    recovery = recovery or RecoverySpy()
+    provider_reconciliation = (
+        provider_reconciliation or RecordingProviderReconciliation()
+    )
     database = Database.open(path)
     uow = SqliteExecutionUnitOfWork(database)
     provider = provider or ScriptedProvider(order)
@@ -317,8 +404,13 @@ async def make_seam(
     provider_coordinator = ProviderInvocationCoordinator(
         uow=uow,
         provider=provider,
-        budget_policy=BudgetPolicy(max_total_micros=1_000_000),
-        estimator=None,
+        budget_policy=BudgetPolicy(hard_cap_micros=None),
+        estimator=FrozenPriceEstimator(
+            snapshot_id="h7-fixture-prices-v1",
+            pricing_key="fixture:model",
+            input_micros_per_million_tokens=0,
+            output_micros_per_million_tokens=0,
+        ),
         clock=lambda: 10.0,
     )
     effects = EffectExecutor(
@@ -326,18 +418,19 @@ async def make_seam(
         registry=registry,
         authorization=authorization,
         reconciliation=reconciliation,
-        fences=uow,
         clock=lambda: 10.0,
     )
     context = SqliteContextPort(database, clock=lambda: 10.0)
     delivery = DeliveryDispatcher(uow, {"fixture": sink}, clock=lambda: 10.0)
 
     async def reconcile_provider() -> None:
-        order.add("recovery.provider")
-        await provider_coordinator.reconcile_incomplete()
+        recovery.phases.append("provider")
+        await provider_coordinator.reconcile_incomplete(
+            provider_reconciliation=provider_reconciliation
+        )
 
     async def reconcile_effects() -> None:
-        order.add("recovery.effects")
+        recovery.phases.append("effects")
         rows = database.connection.execute(
             "SELECT effect_id,run_id FROM execution_effects "
             "WHERE state IN ('handed_off','unknown') ORDER BY effect_id"
@@ -359,17 +452,23 @@ async def make_seam(
             )
 
     async def reconcile_child_signals() -> None:
-        order.add("recovery.child_signals")
-        await symbols.ChildSignalRuntime(uow, owner_id="h7-runtime").reconcile_all(
-            now=10.0
-        )
+        recovery.phases.append("child_signals")
+        receiver = symbols.ChildSignalRuntime(uow, owner_id="h7-runtime")
+        parents = database.connection.execute(
+            "SELECT DISTINCT parent_run_id FROM child_signals "
+            "WHERE state != 'acked' ORDER BY parent_run_id"
+        ).fetchall()
+        for (parent_run_id,) in parents:
+            while receiver.receive_one(parent_run_id=str(parent_run_id), now=10.0):
+                pass
 
     async def reconcile_deliveries() -> None:
-        order.add("recovery.deliveries")
-        await delivery.drain()
+        recovery.phases.append("deliveries")
+        while await delivery.run_once():
+            pass
 
     async def recoverable_runs() -> None:
-        order.add("recovery.recoverable_runs")
+        recovery.phases.append("recoverable_runs")
 
     startup = StartupReconciler(
         StartupReconciliationSteps(
@@ -385,7 +484,12 @@ async def make_seam(
     # are deliberately absent and must come from DriverInvocation.services.
     collaborator = symbols.AgentLoopCollaborator()
     batch = symbols.EffectBatchExecutor(max_batch_size=32)
-    react_driver = symbols.ReActDriver(collaborator=collaborator, effects=batch)
+    production_react_driver = symbols.ReActDriver(
+        collaborator=collaborator,
+        effects=batch,
+        clock=lambda: 10.0,
+    )
+    react_driver = ReActDriverProbe(production_react_driver, order)
     profiles = {
         "agent.general": RuntimeProfile(
             "agent.general", "parent" if parent_driver is not None else "react"
@@ -409,6 +513,7 @@ async def make_seam(
             delivery=delivery,
             tool_reconciliation=reconciliation,
             reconciliation=startup,
+            provider_reconciliation=provider_reconciliation,
             react_checkpoint=uow,
             tool_catalog=Catalog(),
             owner_id="h7-runtime",
@@ -428,6 +533,10 @@ async def make_seam(
         reconciliation,
         sink,
         order,
+        recovery,
+        provider_reconciliation,
+        context,
+        react_driver,
     )
 
 
@@ -442,6 +551,7 @@ def response(*, content: str = "", tools=()) -> ProviderResponse:
         RequestId("scripted"),
         Message(MessageRole.ASSISTANT, content),
         tuple(tools),
+        usage=ProviderUsage(input_tokens=1, output_tokens=1, total_tokens=2),
         model="model",
         finish_reason="tool_calls" if tools else "stop",
     )
@@ -467,6 +577,7 @@ def _event_payload(database: Database, run_id: str, kind: str) -> dict[str, obje
     return value
 
 
+@pytest.mark.h7_runtime_gate
 def test_capability_snapshot_preserves_raw_failure_contract(
     production_seam_symbols, tmp_path
 ) -> None:
@@ -499,6 +610,7 @@ def test_capability_snapshot_preserves_raw_failure_contract(
     asyncio.run(case())
 
 
+@pytest.mark.h7_runtime_gate
 def test_provider_tool_kernel_effect_and_same_driver_order(
     production_seam_symbols, tmp_path
 ) -> None:
@@ -517,12 +629,18 @@ def test_provider_tool_kernel_effect_and_same_driver_order(
         )
 
         assert record.state is RunState.COMPLETED
-        assert seam.order.operations()[-4:] == [
+        assert seam.order.operations()[-6:] == [
+            "driver.react.enter",
             "provider.transport",
             "authorization.authorize",
             "tool.handler",
             "provider.transport",
+            "driver.react.exit",
         ]
+        assert seam.react_driver.start_calls == 1
+        assert seam.react_driver.delegate_ids == [id(seam.react_driver.delegate)]
+        assert len(seam.react_driver.results) == 1
+        assert seam.react_driver.results[0].state is RunState.COMPLETED
         assert seam.tool.calls == [{"x": 7}]
         assert _count(
             seam.database,
@@ -538,7 +656,16 @@ def test_provider_tool_kernel_effect_and_same_driver_order(
         assert checkpoint is not None
         assert checkpoint.checkpoint["provider_turns_reserved_total"] == 2
         assert checkpoint.checkpoint["tool_calls_reserved_total"] == 1
-        context = seam.runtime._ports.context.load(RunId("run-tool"))
+        tool_outcomes = [
+            message
+            for message in seam.provider.requests[1].messages
+            if message.role is MessageRole.TOOL
+        ]
+        assert len(tool_outcomes) == 1
+        tool_outcome = json.loads(tool_outcomes[0].content)
+        assert tool_outcome["outcome"] == "succeeded"
+        assert tool_outcome["value"] == {"seen": 7}
+        context = seam.context.load(RunId("run-tool"))
         assert [message.role for message in context.messages][-3:] == [
             MessageRole.ASSISTANT,
             MessageRole.TOOL,
@@ -548,6 +675,7 @@ def test_provider_tool_kernel_effect_and_same_driver_order(
     asyncio.run(case())
 
 
+@pytest.mark.h7_runtime_gate
 def test_reopen_reconciles_provider_and_tool_unknown_without_replay(
     production_seam_symbols, tmp_path
 ) -> None:
@@ -579,6 +707,8 @@ def test_reopen_reconciles_provider_and_tool_unknown_without_replay(
         assert provider_before is not None and effect_before is not None
         transport_count = len(seam.provider.physical_requests)
         handler_count = len(seam.tool.calls)
+        phase_cursor = len(seam.recovery.phases)
+        provider_cursor = len(seam.provider_reconciliation.observed)
 
         reopened = await seam.reopen()
         provider_after = reopened.database.connection.execute(
@@ -594,8 +724,29 @@ def test_reopen_reconciles_provider_and_tool_unknown_without_replay(
         assert len(reopened.provider.physical_requests) == transport_count
         assert len(reopened.tool.calls) == handler_count
         assert reopened.reconciliation.effect_ids == [str(effect_before[0])]
-        assert reopened.order.operations().index("recovery.provider") < (
-            reopened.order.operations().index("recovery.effects")
+        assert reopened.recovery.phases[phase_cursor : phase_cursor + 5] == [
+            "provider",
+            "effects",
+            "child_signals",
+            "deliveries",
+            "recoverable_runs",
+        ]
+        observations = reopened.provider_reconciliation.observed[provider_cursor:]
+        assert len(observations) == 1
+        observed = observations[0]
+        assert observed[0] == str(provider_before[0])
+        assert observed[1:3] == (
+            "run-provider-unknown",
+            "run-provider-unknown:provider-turn:1",
+        )
+        assert observed[3] == str(provider_before[1])
+        provider_record = reopened.uow.read_provider_invocation(observed[0])
+        assert provider_record is not None
+        assert observed[4] == provider_record.target_digest
+        assert observed[5] == provider_record.handoff_attempt
+        assert (
+            f"provider-reconciliation:{observed[0]}:attempt:{observed[5]}"
+            == reopened.provider_reconciliation.last_evidence_ref
         )
         assert reopened.uow.read_run("run-provider-unknown").state is RunState.WAITING
         assert reopened.uow.read_run("run-tool-unknown").state is RunState.WAITING
@@ -603,6 +754,7 @@ def test_reopen_reconciles_provider_and_tool_unknown_without_replay(
     asyncio.run(case())
 
 
+@pytest.mark.h7_runtime_gate
 def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
     production_seam_symbols, tmp_path
 ) -> None:
@@ -638,6 +790,8 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
         seam.provider.responses[:] = [
             ProviderRequestRejectedError(public_message="fixture child failure")
         ]
+        from simple_harness.runtime import ChildRunHandle
+
         child = await seam.runtime.children.launch(
             ChildLaunchRequest(
                 ProfileLaunchTicketRef(ticket.ticket_id, ticket.catalog_generation),
@@ -655,6 +809,18 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
                 },
             )
         )
+        assert isinstance(child, ChildRunHandle)
+        assert isinstance(child.run, RunRecord)
+        assert child.run.run_id == "child-composed"
+        assert child.ticket.ticket_id == ticket.ticket_id
+        assert child.ticket.state is ProfileLaunchTicketState.CLAIMED
+        assert child.command.command_id == "command-composed"
+        assert child.command.ticket_id == ticket.ticket_id
+        assert child.command.child_run_id == child.run.run_id
+        assert child.command.state in {
+            ChildCommandState.PENDING,
+            ChildCommandState.SCHEDULED,
+        }
         await seam.runtime.wait_idle(RunId(child.run.run_id))
         assert seam.uow.read_run(child.run.run_id).state is RunState.FAILED
         assert seam.provider.physical_requests == []
@@ -668,6 +834,34 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
             "parent-composed",
             "failed",
         )
+        provider_row = seam.database.connection.execute(
+            "SELECT invocation_id FROM provider_invocations "
+            "WHERE run_id='child-composed' AND state='failed'"
+        ).fetchone()
+        assert provider_row is not None
+        provider_record = seam.uow.read_provider_invocation(str(provider_row[0]))
+        assert provider_record is not None
+        assert provider_record.run_id == RunId("child-composed")
+        assert provider_record.request_id == seam.provider.requests[0].request_id
+        assert provider_record.target == seam.provider.target
+        assert provider_record.error_code == "provider_request_rejected"
+        child_event_kinds = [
+            str(row[0])
+            for row in seam.database.connection.execute(
+                "SELECT kind FROM run_events WHERE run_id='child-composed' "
+                "ORDER BY durable_seq"
+            ).fetchall()
+        ]
+        assert child_event_kinds.index("child.created") < child_event_kinds.index(
+            "child.failed"
+        )
+        pending_signal = seam.database.connection.execute(
+            "SELECT signal_id,payload_json,state FROM child_signals "
+            "WHERE parent_run_id='parent-composed' AND child_run_id='child-composed'"
+        ).fetchone()
+        assert pending_signal is not None
+        assert str(pending_signal[2]) == "pending"
+        assert json.loads(str(pending_signal[1]))["status"] == "failed"
 
         await seam.runtime.reconcile()
         await seam.runtime.wait_idle(RunId("parent-composed"))
@@ -685,6 +879,28 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
             "SELECT count(*) FROM continuations WHERE run_id='parent-composed' "
             "AND state='acked'",
         ) == 1
+        receipt = seam.database.connection.execute(
+            "SELECT receipt_id,signal_id,continuation_id,event_id "
+            "FROM child_signal_ack_receipts WHERE signal_id=?",
+            (str(pending_signal[0]),),
+        ).fetchone()
+        assert receipt is not None
+        assert parent_driver.signal_id == str(receipt[1]) == str(pending_signal[0])
+        assert parent_driver.continuation_id == str(receipt[2])
+        continuation = seam.database.connection.execute(
+            "SELECT payload_json,state FROM continuations WHERE continuation_id=?",
+            (str(receipt[2]),),
+        ).fetchone()
+        assert continuation is not None and str(continuation[1]) == "acked"
+        continuation_payload = json.loads(str(continuation[0]))
+        assert continuation_payload["signal_id"] == str(pending_signal[0])
+        assert continuation_payload["child_run_id"] == "child-composed"
+        assert continuation_payload["payload"]["status"] == "failed"
+        assert _count(
+            seam.database,
+            "SELECT count(*) FROM run_events WHERE event_id=?",
+            (str(receipt[3]),),
+        ) == 1
         terminal = _event_payload(seam.database, "parent-composed", "run.completed")
         assert terminal["correlation"] == {
             "recovered_child_run_id": "child-composed",
@@ -695,8 +911,8 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
             "SELECT count(*) FROM delivery_outbox "
             "WHERE run_id='parent-composed' AND state='pending'",
         ) == 1
-        assert await seam.runtime._ports.delivery.run_once() is True
-        assert seam.sink.projections == [
+        assert await seam.runtime.dispatch_deliveries_once() is True
+        expected_projections = [
             (
                 "parent-composed:terminal",
                 canonical_json(
@@ -714,6 +930,33 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
                 ).encode("utf-8"),
             )
         ]
+        assert seam.sink.projections == expected_projections
+        assert _count(
+            seam.database,
+            "SELECT count(*) FROM delivery_outbox "
+            "WHERE run_id='parent-composed' AND state='delivered'",
+        ) == 1
+        assert _count(
+            seam.database,
+            "SELECT count(*) FROM delivery_outbox "
+            "WHERE run_id='parent-composed' AND state='pending'",
+        ) == 0
+        assert await seam.runtime.dispatch_deliveries_once() is False
+        assert seam.sink.projections == expected_projections
+
+        reopened = await seam.reopen(parent_driver=parent_driver)
+        assert await reopened.runtime.dispatch_deliveries_once() is False
+        assert reopened.sink.projections == expected_projections
+        assert _count(
+            reopened.database,
+            "SELECT count(*) FROM delivery_outbox "
+            "WHERE run_id='parent-composed' AND state='delivered'",
+        ) == 1
+        assert _count(
+            reopened.database,
+            "SELECT count(*) FROM delivery_outbox "
+            "WHERE run_id='parent-composed' AND state='pending'",
+        ) == 0
 
     asyncio.run(case())
 
@@ -759,6 +1002,7 @@ def _terminal_intents(state, *, run_id, status, error, recovery_action):
     )
 
 
+@pytest.mark.h7_workflow_terminal_gate
 def test_failed_terminal_projects_only_strict_public_fields() -> None:
     intents = _terminal_intents(
         {
@@ -777,10 +1021,43 @@ def test_failed_terminal_projects_only_strict_public_fields() -> None:
     )
     assert [intent.event_type for intent in intents] == ["workflow.final"]
     payload = intents[0].payload
-    assert payload["metrics"]["actual_requests"] == 3
-    assert payload["retry_action_id"] == "retry_from_start"
-    assert payload["card"]["skipped_stage_ids"][-1] == "persist"
-    assert "topic" not in payload
+    public = _terminal_public()
+    expected = {
+        "kind": "final",
+        "status": "failed",
+        "error": {"code": "deep_research_no_results", "message": "No results"},
+        "recovery_action": "retry_from_start",
+        "card": {
+            "run_id": "run-v4",
+            "status": "failed",
+            "error": {
+                "code": "deep_research_no_results",
+                "message": "No results",
+            },
+            "recovery_action": "retry_from_start",
+            **public,
+        },
+        **public,
+    }
+    assert payload == expected
+    assert canonical_json(payload).encode("utf-8") == (
+        b'{"card":{"diagnostic_codes":["no_results"],"error":{"code":'
+        b'"deep_research_no_results","message":"No results"},"metrics":'
+        b'{"actual_requests":3,"busy_skips":1,"candidates":0,"cooldown_skips":4,'
+        b'"empty":2,"hits":0,"probes":1,"queue_timeouts":0,'
+        b'"rescue_considered_count":1,"rescue_executed_count":1,"timeouts":1},'
+        b'"recovery_action":"retry_from_start","retry_action_id":"retry_from_start",'
+        b'"run_id":"run-v4","skipped_stage_ids":["fetch","score","gap","rerank",'
+        b'"synth","cite","persist"],"status":"failed"},"diagnostic_codes":'
+        b'["no_results"],"error":{"code":"deep_research_no_results","message":'
+        b'"No results"},"kind":"final","metrics":{"actual_requests":3,'
+        b'"busy_skips":1,"candidates":0,"cooldown_skips":4,"empty":2,"hits":0,'
+        b'"probes":1,"queue_timeouts":0,"rescue_considered_count":1,'
+        b'"rescue_executed_count":1,"timeouts":1},"recovery_action":'
+        b'"retry_from_start","retry_action_id":"retry_from_start",'
+        b'"skipped_stage_ids":["fetch","score","gap","rerank","synth","cite",'
+        b'"persist"],"status":"failed"}'
+    )
 
 
 @pytest.mark.parametrize(
@@ -793,7 +1070,16 @@ def test_failed_terminal_projects_only_strict_public_fields() -> None:
         lambda value: value.update({"skipped_stage_ids": ["fetch", "fetch"]}),
         lambda value: value.update({"retry_action_id": "retry_with_query"}),
     ),
+    ids=(
+        "unknown-top-level-field",
+        "unknown-metric",
+        "negative-metric",
+        "diagnostic-not-allowlisted",
+        "duplicate-stage",
+        "retry-action-not-allowlisted",
+    ),
 )
+@pytest.mark.h7_workflow_terminal_gate
 def test_terminal_public_rejects_unknown_or_unbounded_state(mutate) -> None:
     from simple_harness.workflow.errors import InvalidStatePatch
 
@@ -813,6 +1099,7 @@ def test_terminal_public_rejects_unknown_or_unbounded_state(mutate) -> None:
         )
 
 
+@pytest.mark.h7_workflow_terminal_gate
 def test_legacy_terminal_without_public_projection_is_byte_shape_compatible() -> None:
     intents = _terminal_intents(
         {"values": {"delivery_intents": []}},
