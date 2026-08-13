@@ -13,6 +13,7 @@
     "ProviderRequestRejectedError",
     "ProviderResponse",
     "ProviderServerError",
+    "ProviderTarget",
     "ProviderTimeoutError",
     "ProviderToolCall",
     "ProviderToolSpec",

@@ -23,6 +23,7 @@ from simple_harness.providers import (
     ProviderRequestRejectedError,
     ProviderResponse,
     ProviderServerError,
+    ProviderTarget,
     ProviderTimeoutError,
     ProviderToolSpec,
     ProviderTransportError,
@@ -114,6 +115,39 @@ def test_provider_values_are_immutable() -> None:
         request.temperature = 1.0  # type: ignore[misc]
     with pytest.raises(TypeError):
         request.tools[0].parameters["type"] = "array"  # type: ignore[index]
+
+
+def test_openai_target_is_derived_from_the_physical_call_configuration() -> None:
+    async def exercise() -> tuple[ProviderTarget, httpx.Request]:
+        captured: list[httpx.Request] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return _response()
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = OpenAICompatibleProvider(
+                client,
+                "https://provider.invalid/v1/",
+                "fixture-model",
+                Secret("secret"),
+                provider_id="provider-fixture",
+                pricing_key="fixture-model-2026-08",
+            )
+            target = provider.target
+            await provider.invoke(_request(), cancel=CancelToken())
+            return target, captured[0]
+
+    target, request = asyncio.run(exercise())
+    assert target == ProviderTarget(
+        provider_id="provider-fixture",
+        model="fixture-model",
+        pricing_key="fixture-model-2026-08",
+        endpoint_identity="https://provider.invalid/v1/chat/completions",
+        adapter_key="openai-compatible.chat-completions.v1",
+    )
+    assert request.url == target.endpoint_identity
+    assert request.read().decode().count('"model":"fixture-model"') == 1
 
 
 @pytest.mark.parametrize(

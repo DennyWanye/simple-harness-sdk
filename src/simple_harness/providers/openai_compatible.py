@@ -21,6 +21,7 @@ from .base import (
     CancelToken,
     ProviderRequest,
     ProviderResponse,
+    ProviderTarget,
     ProviderToolCall,
     ProviderUsage,
     Secret,
@@ -55,7 +56,7 @@ def _plain_mapping(value: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
 class OpenAICompatibleProvider:
     """Perform one OpenAI-compatible chat-completions request per invocation."""
 
-    __slots__ = ("_client", "_endpoint", "_model", "_redactor", "_secret", "_timeout")
+    __slots__ = ("_client", "_endpoint", "_redactor", "_secret", "_target", "_timeout")
 
     def __init__(
         self,
@@ -64,6 +65,9 @@ class OpenAICompatibleProvider:
         model: str,
         secret: Secret,
         timeout: float | httpx.Timeout = 30.0,
+        *,
+        provider_id: str | None = None,
+        pricing_key: str | None = None,
     ) -> None:
         if not isinstance(client, httpx.AsyncClient):
             raise TypeError("client must be an httpx.AsyncClient")
@@ -93,7 +97,6 @@ class OpenAICompatibleProvider:
             else normalized + "/chat/completions"
         )
         self._client = client
-        self._model = model
         self._secret = secret
         if isinstance(timeout, bool) or (
             isinstance(timeout, (int, float)) and timeout <= 0
@@ -101,6 +104,17 @@ class OpenAICompatibleProvider:
             raise ValueError("timeout must be positive")
         self._timeout = timeout
         self._redactor = SecretRedactor.from_secrets(secret)
+        self._target = ProviderTarget(
+            provider_id=provider_id or str(hostname),
+            model=model,
+            pricing_key=pricing_key or model,
+            endpoint_identity=self._endpoint,
+            adapter_key="openai-compatible.chat-completions.v1",
+        )
+
+    @property
+    def target(self) -> ProviderTarget:
+        return self._target
 
     async def invoke(
         self, request: ProviderRequest, *, cancel: CancelToken
@@ -158,7 +172,7 @@ class OpenAICompatibleProvider:
 
     def _request_payload(self, request: ProviderRequest) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "model": self._model,
+            "model": self._target.model,
             "messages": [
                 self._message_payload(message) for message in request.messages
             ],

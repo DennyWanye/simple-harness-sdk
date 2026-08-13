@@ -68,6 +68,30 @@ class CancelToken:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderTarget:
+    """Stable identity derived by a Provider from its physical call config."""
+
+    provider_id: str
+    model: str
+    pricing_key: str
+    endpoint_identity: str
+    adapter_key: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "provider_id",
+            "model",
+            "pricing_key",
+            "endpoint_identity",
+            "adapter_key",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must not be blank")
+            object.__setattr__(self, name, value.strip())
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderToolSpec:
     """A provider-neutral structured tool declaration."""
 
@@ -194,6 +218,12 @@ class ProviderResponse:
 @runtime_checkable
 class Provider(Protocol):
     """A stateless port that performs one physical provider call per invocation."""
+
+    @property
+    def target(self) -> ProviderTarget:
+        """Return identity derived from the same config used by ``invoke``."""
+
+        ...
 
     async def invoke(
         self, request: ProviderRequest, *, cancel: CancelToken
