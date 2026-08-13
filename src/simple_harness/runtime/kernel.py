@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, Self, runtime_checkable
 from uuid import uuid4
@@ -57,6 +57,7 @@ class DriverInvocation:
     run: RunRecord
     start: StartSnapshot
     execution_lease: ExecutionLease
+    services: RuntimeServices
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,26 +96,50 @@ class RuntimeReconciliationPort(Protocol):
     async def reconcile(self) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeServices:
+    provider: ProviderInvocationCoordinator
+    tools: EffectExecutor
+    authorization: AuthorizationPort
+    context: ContextPort
+    delivery: DeliveryDispatcher
+    tool_reconciliation: ToolReconciliationPort
+    reconciliation: RuntimeReconciliationPort
+
+
 class RuntimeUnitOfWork(ExecutionUnitOfWork, RunFencePort, Protocol):
     pass
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimePorts:
+    provider: ProviderInvocationCoordinator
+    tools: EffectExecutor
+    authorization: AuthorizationPort
     context: ContextPort
+    delivery: DeliveryDispatcher
+    tool_reconciliation: ToolReconciliationPort
+    reconciliation: RuntimeReconciliationPort
     tool_catalog: ToolCatalogGenerationPort
-    provider: ProviderInvocationCoordinator | None = None
-    tools: EffectExecutor | None = None
-    authorization: AuthorizationPort | None = None
-    delivery: DeliveryDispatcher | None = None
-    tool_reconciliation: ToolReconciliationPort | None = None
-    reconciliation: RuntimeReconciliationPort | None = None
     admission: AdmissionPort = field(default_factory=AllowAllAdmission)
     clock: Callable[[], float] = time.time
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     owner_id: str = field(default_factory=lambda: f"runtime-{uuid4().hex}")
     lease_ttl_seconds: float = 30.0
 
     def __post_init__(self) -> None:
+        for name in (
+            "provider",
+            "tools",
+            "authorization",
+            "context",
+            "delivery",
+            "tool_reconciliation",
+            "reconciliation",
+            "tool_catalog",
+        ):
+            if getattr(self, name) is None:
+                raise TypeError(f"{name} Port is required")
         if not isinstance(self.owner_id, str) or not self.owner_id.strip():
             raise ValueError("owner_id is required")
         if (
@@ -171,6 +196,15 @@ class Runtime:
         self._ports = ports
         self._root_profile_key = root_profile_key
         self._terminal = TerminalCoordinator(uow)
+        self._services = RuntimeServices(
+            provider=ports.provider,
+            tools=ports.tools,
+            authorization=ports.authorization,
+            context=ports.context,
+            delivery=ports.delivery,
+            tool_reconciliation=ports.tool_reconciliation,
+            reconciliation=ports.reconciliation,
+        )
         self._live = LiveRunIndex()
         self._leases: dict[str, ExecutionLease] = {}
         self._fences: dict[str, RunFenceLease] = {}
@@ -185,8 +219,7 @@ class Runtime:
             return
         self._started = True
         self._closing = False
-        if self._ports.reconciliation is not None:
-            await self._ports.reconciliation.reconcile()
+        await self._ports.reconciliation.reconcile()
         await self.recover()
 
     async def recover(self) -> None:
@@ -290,7 +323,7 @@ class Runtime:
         interval = max(0.001, self._ports.lease_ttl_seconds / 3.0)
         try:
             while not self._closing and run_id in self._leases:
-                await asyncio.sleep(interval)
+                await self._ports.sleep(interval)
                 lease = self._leases.get(run_id)
                 if lease is None:
                     return
@@ -338,7 +371,12 @@ class Runtime:
                 return
             driver = self._drivers[snapshot.driver_kind]
             result = await driver.start(
-                DriverInvocation(run, snapshot, self._leases[run_id]),
+                DriverInvocation(
+                    run,
+                    snapshot,
+                    self._leases[run_id],
+                    self._services,
+                ),
                 context=self._ports.context,
                 cancel=self._cancels[run_id],
             )
@@ -526,6 +564,7 @@ __all__ = (
     "RuntimePorts",
     "RuntimeProfile",
     "RuntimeReconciliationPort",
+    "RuntimeServices",
     "RuntimeUnitOfWork",
     "ToolCatalogGenerationPort",
     "build_runtime",

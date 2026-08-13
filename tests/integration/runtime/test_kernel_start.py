@@ -13,16 +13,14 @@ from simple_harness.runtime import (
     RunStart,
     RuntimePorts,
     RuntimeProfile,
+    SqliteContextPort,
     build_runtime,
 )
 
 
-class Context:
-    def load(self, run_id):
-        raise AssertionError
-
-    def append(self, *args):
-        raise AssertionError
+class NoopPort:
+    async def reconcile(self) -> None:
+        return None
 
 
 class Catalog:
@@ -55,19 +53,33 @@ def request(name: str = "one", *, generation: int = 1) -> RunStart:
 
 
 def runtime(
-    tmp_path, *, driver=None, catalog=None, owner="owner-1", clock=lambda: 10.0
+    tmp_path,
+    *,
+    driver=None,
+    catalog=None,
+    owner="owner-1",
+    clock=lambda: 10.0,
+    sleep=asyncio.sleep,
 ):
     database = Database.open(tmp_path / "runtime.db")
     uow = SqliteExecutionUnitOfWork(database)
+    noop = NoopPort()
     value = build_runtime(
         uow,
         {"agent.general": RuntimeProfile("agent.general", "react")},
         {"react": driver or Driver()},
         RuntimePorts(
-            context=Context(),
+            provider=noop,
+            tools=noop,
+            authorization=noop,
+            context=SqliteContextPort(database, clock=clock),
+            delivery=noop,
+            tool_reconciliation=noop,
+            reconciliation=noop,
             tool_catalog=catalog or Catalog(),
             owner_id=owner,
             clock=clock,
+            sleep=sleep,
         ),
     )
     return value, uow, database
@@ -118,6 +130,18 @@ def test_fixed_root_has_no_classifier_and_rejects_override(tmp_path) -> None:
     else:
         raise AssertionError("root override must fail")
     value._uow.database.close()
+
+
+def test_runtime_ports_require_all_authority_seams() -> None:
+    try:
+        RuntimePorts(  # type: ignore[call-arg]
+            context=None,
+            tool_catalog=Catalog(),
+        )
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("authority Ports must not be optional")
 
 
 def test_recovery_lease_is_single_owner_then_expiry_allows_takeover(tmp_path) -> None:
@@ -191,50 +215,97 @@ def test_catalog_stale_terminalizes_once_without_driver(tmp_path) -> None:
     asyncio.run(case())
 
 
-def test_runtime_heartbeat_prevents_takeover_and_close_stops_it(tmp_path) -> None:
-    class BlockingDriver:
+def test_runtime_heartbeat_loss_cancels_stale_owner_before_any_write(tmp_path) -> None:
+    class Clock:
+        value = 10.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class ControlledSleep:
         def __init__(self) -> None:
+            self.entered = asyncio.Event()
             self.release = asyncio.Event()
 
-        async def start(self, invocation, *, context, cancel):
-            del invocation, context, cancel
+        async def __call__(self, delay: float) -> None:
+            assert delay > 0
+            self.entered.set()
             await self.release.wait()
-            return DriverResult(RunState.WAITING, {})
+
+    class BlockingDriver:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancelled = False
+            self.stale_append_rejected = False
+
+        async def start(self, invocation, *, context, cancel):
+            del cancel
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                from simple_harness.contracts.messages import Message, MessageRole
+                from simple_harness.execution.uow import UnitOfWorkConflict
+
+                try:
+                    context.append(
+                        RunId(invocation.run.run_id),
+                        invocation.execution_lease,
+                        0,
+                        "stale-append",
+                        (Message(MessageRole.USER, "must-not-write"),),
+                    )
+                except UnitOfWorkConflict:
+                    self.stale_append_rejected = True
+                raise
 
     async def case() -> None:
-        import time
-
+        clock = Clock()
+        controlled_sleep = ControlledSleep()
         driver = BlockingDriver()
         value, uow, database = runtime(
-            tmp_path, driver=driver, clock=time.time, owner="owner-heartbeat"
+            tmp_path,
+            driver=driver,
+            clock=clock,
+            sleep=controlled_sleep,
+            owner="owner-heartbeat",
         )
-        object.__setattr__(value._ports, "lease_ttl_seconds", 0.06)
         await value.start()
         await value.client.start(request("heartbeat"))
-        await asyncio.sleep(0.12)
-        from simple_harness.execution.uow import UnitOfWorkConflict
-
-        try:
-            uow.claim_runtime_activation(
-                run_id="run-heartbeat",
-                owner_id="owner-thief",
-                namespace="runtime.kernel",
-                now=time.time(),
-                lease_ttl_seconds=0.06,
-            )
-        except UnitOfWorkConflict:
-            pass
-        else:
-            raise AssertionError("heartbeat lease must not be stolen")
-        await value.close()
+        await driver.started.wait()
+        await controlled_sleep.entered.wait()
+        clock.value = 41.0
         _, stolen = uow.claim_runtime_activation(
             run_id="run-heartbeat",
             owner_id="owner-thief",
             namespace="runtime.kernel",
-            now=time.time() + 0.001,
-            lease_ttl_seconds=0.06,
+            now=clock(),
+            lease_ttl_seconds=30.0,
         )
         assert stolen.owner_id == "owner-thief"
+        controlled_sleep.release.set()
+        for _ in range(100):
+            if driver.cancelled:
+                break
+            await asyncio.sleep(0)
+        assert driver.cancelled is True
+        assert driver.stale_append_rejected is True
+        assert (
+            database.connection.execute(
+                "SELECT count(*) FROM workflow_checkpoints WHERE run_id='run-heartbeat'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            database.connection.execute(
+                "SELECT count(*) FROM run_events WHERE run_id='run-heartbeat' "
+                "AND kind IN ('run.completed','run.failed','run.cancelled')"
+            ).fetchone()[0]
+            == 0
+        )
+        await value.close()
+        assert value._heartbeats == {}
         database.close()
 
     asyncio.run(case())
