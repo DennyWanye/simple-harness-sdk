@@ -10,6 +10,12 @@ from enum import StrEnum
 from typing import Callable, Mapping, Protocol
 
 from simple_harness.contracts import FrozenJsonValue, JsonValue
+from simple_harness.execution.contracts.children import (
+    AttachmentPolicy,
+    ChildLaunchResult,
+    ChildSignalRecord,
+    ProfileLaunchTicket,
+)
 from simple_harness.execution.effects import EffectUnitOfWork
 
 
@@ -105,6 +111,55 @@ class ContinuationRecord:
 
 
 class ExecutionUnitOfWork(EffectUnitOfWork, Protocol):
+    def issue_profile_launch_ticket(
+        self,
+        ticket: ProfileLaunchTicket,
+        *,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ProfileLaunchTicket: ...
+
+    def claim_profile_launch_and_commit_child(
+        self,
+        *,
+        ticket_id: str,
+        expected_catalog_generation: int,
+        launch_request: Mapping[str, JsonValue],
+        command_id: str,
+        child_run_id: str,
+        request_id: str,
+        attachment_policy: AttachmentPolicy,
+        start_snapshot: Mapping[str, JsonValue],
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ChildLaunchResult: ...
+
+    def finalize_child_and_enqueue_parent_signal(
+        self,
+        *,
+        command_id: str,
+        expected_child_version: int,
+        terminal_state: RunState,
+        signal_id: str,
+        signal_payload: Mapping[str, JsonValue],
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ChildSignalRecord: ...
+
+    def ack_child_signal(
+        self,
+        *,
+        signal_id: str,
+        expected_version: int,
+        continuation_id: str,
+        continuation_payload: Mapping[str, JsonValue],
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ChildSignalRecord: ...
+
     def create_with_start_snapshot(
         self,
         *,

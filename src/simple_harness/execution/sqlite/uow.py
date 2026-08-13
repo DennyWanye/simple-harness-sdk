@@ -23,6 +23,17 @@ from simple_harness.contracts import (
 )
 from simple_harness.execution.effects import EffectRecord, EffectState
 from simple_harness.execution.fences import RunFenceLease
+from simple_harness.execution.contracts.children import (
+    AttachmentPolicy,
+    ChildCommandRecord,
+    ChildCommandState,
+    ChildLaunchResult,
+    ChildSignalRecord,
+    ChildSignalState,
+    ProfileLaunchTicket,
+    ProfileLaunchTicketState,
+    child_launch_fingerprint,
+)
 from simple_harness.execution.uow import (
     AdmissionRecord,
     AdmissionState,
@@ -499,6 +510,446 @@ class SqliteExecutionUnitOfWork:
         assert result is not None
         return result
 
+    def issue_profile_launch_ticket(
+        self,
+        ticket: ProfileLaunchTicket,
+        *,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ProfileLaunchTicket:
+        """Persist one immutable ticket; issuance never creates a child."""
+
+        if ticket.state is not ProfileLaunchTicketState.ISSUED:
+            raise ValueError("new profile launch ticket must be issued")
+        now = _time(now)
+        existing = self.read_profile_launch_ticket(ticket.ticket_id)
+        if existing is not None:
+            if existing == ticket:
+                return existing
+            raise UnitOfWorkConflict("profile launch ticket identity conflict")
+        with self.database.transaction() as connection:
+            parent = connection.execute(
+                "SELECT state FROM runs WHERE run_id = ?", (ticket.parent_run_id,)
+            ).fetchone()
+            if parent is None:
+                raise UnitOfWorkNotFound(ticket.parent_run_id)
+            if str(parent["state"]) in {"completed", "failed", "cancelled"}:
+                raise UnitOfWorkConflict("terminal parent cannot issue a launch ticket")
+            _fault(fault, "profile_ticket_issue.ticket.before_write")
+            connection.execute(
+                """
+                INSERT INTO profile_launch_tickets(
+                    ticket_id, parent_run_id, profile_key, catalog_generation,
+                    fingerprint, state, child_run_id, issued_at, claimed_at
+                ) VALUES (?, ?, ?, ?, ?, 'issued', NULL, ?, NULL)
+                """,
+                (
+                    ticket.ticket_id,
+                    ticket.parent_run_id,
+                    ticket.profile_key,
+                    ticket.catalog_generation,
+                    ticket.fingerprint,
+                    now,
+                ),
+            )
+            _fault(fault, "profile_ticket_issue.ticket.after_write")
+        _fault(fault, "profile_ticket_issue.after_commit")
+        result = self.read_profile_launch_ticket(ticket.ticket_id)
+        assert result is not None
+        return result
+
+    def claim_profile_launch_and_commit_child(
+        self,
+        *,
+        ticket_id: str,
+        expected_catalog_generation: int,
+        launch_request: Mapping[str, JsonValue],
+        command_id: str,
+        child_run_id: str,
+        request_id: str,
+        attachment_policy: AttachmentPolicy,
+        start_snapshot: Mapping[str, JsonValue],
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ChildLaunchResult:
+        """Consume the ticket and commit the complete child start atomically."""
+
+        ticket_id = _required(ticket_id, "ticket_id")
+        command_id = _required(command_id, "command_id")
+        child_run_id = _required(child_run_id, "child_run_id")
+        request_id = _required(request_id, "request_id")
+        event_id = _required(event_id, "event_id")
+        if isinstance(expected_catalog_generation, bool) or expected_catalog_generation < 1:
+            raise ValueError("expected_catalog_generation must be positive")
+        attachment_policy = AttachmentPolicy(attachment_policy)
+        now = _time(now)
+        launch_json = _object_json(launch_request, "launch_request")
+        launch_fingerprint = child_launch_fingerprint(dict(launch_request))
+        snapshot_json = _object_json(start_snapshot, "start_snapshot")
+        snapshot_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+        profile_key = _required(launch_request.get("profile_key"), "profile_key")
+        driver_kind = _required(launch_request.get("driver_kind"), "driver_kind")
+        generation = launch_request.get("catalog_generation")
+        if generation != expected_catalog_generation:
+            raise UnitOfWorkConflict("launch request catalog generation is stale")
+
+        existing_ticket = self.read_profile_launch_ticket(ticket_id)
+        if existing_ticket is None:
+            raise UnitOfWorkNotFound(ticket_id)
+        if existing_ticket.state is ProfileLaunchTicketState.CLAIMED:
+            command = self.read_child_command(command_id)
+            if (
+                existing_ticket.child_run_id == child_run_id
+                and command is not None
+                and command.ticket_id == ticket_id
+                and command.child_run_id == child_run_id
+                and self._same_existing_child_launch(
+                    command,
+                    request_id=request_id,
+                    profile_key=profile_key,
+                    driver_kind=driver_kind,
+                    attachment_policy=attachment_policy,
+                    snapshot_hash=snapshot_hash,
+                )
+            ):
+                return ChildLaunchResult(existing_ticket, command, child_run_id)
+            raise UnitOfWorkConflict("profile launch ticket was already consumed")
+        if existing_ticket.state is not ProfileLaunchTicketState.ISSUED:
+            raise UnitOfWorkConflict("profile launch ticket is not claimable")
+        if (
+            existing_ticket.catalog_generation != expected_catalog_generation
+            or existing_ticket.profile_key != profile_key
+            or existing_ticket.fingerprint != launch_fingerprint
+        ):
+            raise UnitOfWorkConflict("profile launch ticket binding mismatch")
+
+        with self.database.transaction() as connection:
+            parent = connection.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (existing_ticket.parent_run_id,)
+            ).fetchone()
+            if parent is None:
+                raise UnitOfWorkNotFound(existing_ticket.parent_run_id)
+            if str(parent["state"]) in {"completed", "failed", "cancelled"}:
+                raise UnitOfWorkConflict("terminal parent cannot launch a child")
+            _fault(fault, "child_launch.run.before_write")
+            connection.execute(
+                """
+                INSERT INTO runs(
+                    run_id, execution_session_id, request_id, root_run_id,
+                    parent_run_id, profile_key, driver_kind, state, version,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'created', 0, ?, ?)
+                """,
+                (
+                    child_run_id,
+                    str(parent["execution_session_id"]),
+                    request_id,
+                    str(parent["root_run_id"]),
+                    existing_ticket.parent_run_id,
+                    profile_key,
+                    driver_kind,
+                    now,
+                    now,
+                ),
+            )
+            _fault(fault, "child_launch.run.after_write")
+            _fault(fault, "child_launch.snapshot.before_write")
+            connection.execute(
+                """
+                INSERT INTO run_start_snapshots(run_id, snapshot_json, snapshot_hash, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (child_run_id, snapshot_json, snapshot_hash, now),
+            )
+            _fault(fault, "child_launch.snapshot.after_write")
+            _fault(fault, "child_launch.ticket.before_write")
+            changed = connection.execute(
+                """
+                UPDATE profile_launch_tickets
+                SET state = 'claimed', child_run_id = ?, claimed_at = ?
+                WHERE ticket_id = ? AND state = 'issued' AND child_run_id IS NULL
+                """,
+                (child_run_id, now, ticket_id),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("profile launch ticket claim CAS failed")
+            _fault(fault, "child_launch.ticket.after_write")
+            _fault(fault, "child_launch.command.before_write")
+            connection.execute(
+                """
+                INSERT INTO child_commands(
+                    command_id, parent_run_id, child_run_id, ticket_id,
+                    state, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (command_id, existing_ticket.parent_run_id, child_run_id, ticket_id, now, now),
+            )
+            _fault(fault, "child_launch.command.after_write")
+            _fault(fault, "child_launch.link.before_write")
+            connection.execute(
+                """
+                INSERT INTO run_links(parent_run_id, child_run_id, attachment_policy, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (existing_ticket.parent_run_id, child_run_id, attachment_policy.value, now),
+            )
+            _fault(fault, "child_launch.link.after_write")
+            if attachment_policy is not AttachmentPolicy.DETACHED:
+                _fault(fault, "child_launch.parent.before_write")
+                changed = connection.execute(
+                    """
+                    UPDATE runs SET state = 'waiting', version = version + 1, updated_at = ?
+                    WHERE run_id = ? AND state NOT IN ('completed', 'failed', 'cancelled')
+                    """,
+                    (now, existing_ticket.parent_run_id),
+                ).rowcount
+                if changed != 1:
+                    raise UnitOfWorkConflict("parent wait transition CAS failed")
+                _fault(fault, "child_launch.parent.after_write")
+            _fault(fault, "child_launch.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=child_run_id,
+                kind="child.created",
+                payload={"command_id": command_id, "ticket_id": ticket_id, "launch": json.loads(launch_json)},
+                now=now,
+            )
+            _fault(fault, "child_launch.event.after_write")
+        _fault(fault, "child_launch.after_commit")
+        ticket = self.read_profile_launch_ticket(ticket_id)
+        command = self.read_child_command(command_id)
+        assert ticket is not None and command is not None
+        return ChildLaunchResult(ticket, command, child_run_id)
+
+    def finalize_child_and_enqueue_parent_signal(
+        self,
+        *,
+        command_id: str,
+        expected_child_version: int,
+        terminal_state: RunState,
+        signal_id: str,
+        signal_payload: Mapping[str, JsonValue],
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ChildSignalRecord:
+        command_id = _required(command_id, "command_id")
+        signal_id = _required(signal_id, "signal_id")
+        event_id = _required(event_id, "event_id")
+        if isinstance(expected_child_version, bool) or expected_child_version < 0:
+            raise ValueError("expected_child_version must be non-negative")
+        terminal_state = RunState(terminal_state)
+        if terminal_state not in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+            raise ValueError("child finalization requires a terminal run state")
+        payload_json = _object_json(signal_payload, "signal_payload")
+        now = _time(now)
+        command = self.read_child_command(command_id)
+        if command is None:
+            raise UnitOfWorkNotFound(command_id)
+        existing_signal = self.read_child_signal(signal_id)
+        if existing_signal is not None:
+            child = self.read_run(command.child_run_id)
+            if (
+                child is not None
+                and child.state is terminal_state
+                and existing_signal.parent_run_id == command.parent_run_id
+                and existing_signal.child_run_id == command.child_run_id
+                and canonical_json(_thaw(existing_signal.payload)) == payload_json
+            ):
+                return existing_signal
+            raise UnitOfWorkConflict("child signal identity reused with different outcome")
+        with self.database.transaction() as connection:
+            _fault(fault, "child_terminal.run.before_write")
+            changed = connection.execute(
+                """
+                UPDATE runs SET state = ?, version = version + 1, updated_at = ?
+                WHERE run_id = ? AND version = ?
+                  AND state NOT IN ('completed', 'failed', 'cancelled')
+                """,
+                (terminal_state.value, now, command.child_run_id, expected_child_version),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("child terminal CAS failed")
+            _fault(fault, "child_terminal.run.after_write")
+            _fault(fault, "child_terminal.command.before_write")
+            changed = connection.execute(
+                """
+                UPDATE child_commands SET state = 'acked', updated_at = ?
+                WHERE command_id = ? AND state IN ('pending', 'scheduled')
+                """,
+                (now, command_id),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("child command terminal CAS failed")
+            _fault(fault, "child_terminal.command.after_write")
+            _fault(fault, "child_terminal.signal.before_write")
+            connection.execute(
+                """
+                INSERT INTO child_signals(
+                    signal_id, parent_run_id, child_run_id, payload_json,
+                    state, version, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
+                """,
+                (signal_id, command.parent_run_id, command.child_run_id, payload_json, now, now),
+            )
+            _fault(fault, "child_terminal.signal.after_write")
+            _fault(fault, "child_terminal.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=command.child_run_id,
+                kind=f"child.{terminal_state.value}",
+                payload={"command_id": command_id, "signal_id": signal_id},
+                now=now,
+            )
+            _fault(fault, "child_terminal.event.after_write")
+        _fault(fault, "child_terminal.after_commit")
+        result = self.read_child_signal(signal_id)
+        assert result is not None
+        return result
+
+    def ack_child_signal(
+        self,
+        *,
+        signal_id: str,
+        expected_version: int,
+        continuation_id: str,
+        continuation_payload: Mapping[str, JsonValue],
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ChildSignalRecord:
+        signal_id = _required(signal_id, "signal_id")
+        continuation_id = _required(continuation_id, "continuation_id")
+        event_id = _required(event_id, "event_id")
+        if isinstance(expected_version, bool) or expected_version < 0:
+            raise ValueError("expected_version must be non-negative")
+        continuation_json = _object_json(continuation_payload, "continuation_payload")
+        now = _time(now)
+        signal = self.read_child_signal(signal_id)
+        if signal is None:
+            raise UnitOfWorkNotFound(signal_id)
+        if signal.state is ChildSignalState.ACKED:
+            continuation = self.read_continuation(continuation_id)
+            if (
+                signal.version == expected_version + 1
+                and continuation is not None
+                and continuation.run_id == signal.parent_run_id
+                and canonical_json(_thaw(continuation.payload)) == continuation_json
+            ):
+                return signal
+            raise UnitOfWorkConflict("child signal was already acknowledged differently")
+        with self.database.transaction() as connection:
+            _fault(fault, "child_signal_ack.signal.before_write")
+            changed = connection.execute(
+                """
+                UPDATE child_signals SET state = 'acked', version = version + 1, updated_at = ?
+                WHERE signal_id = ? AND state IN ('pending', 'claimed') AND version = ?
+                """,
+                (now, signal_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("child signal ack CAS failed")
+            _fault(fault, "child_signal_ack.signal.after_write")
+            sequence = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(fifo_seq), 0) + 1 FROM continuations WHERE run_id = ?",
+                    (signal.parent_run_id,),
+                ).fetchone()[0]
+            )
+            _fault(fault, "child_signal_ack.continuation.before_write")
+            connection.execute(
+                """
+                INSERT INTO continuations(
+                    continuation_id, run_id, fifo_seq, payload_json, state,
+                    version, claimed_by, created_at, claimed_at, acked_at
+                ) VALUES (?, ?, ?, ?, 'pending', 0, NULL, ?, NULL, NULL)
+                """,
+                (continuation_id, signal.parent_run_id, sequence, continuation_json, now),
+            )
+            _fault(fault, "child_signal_ack.continuation.after_write")
+            link = connection.execute(
+                "SELECT attachment_policy FROM run_links WHERE parent_run_id = ? AND child_run_id = ?",
+                (signal.parent_run_id, signal.child_run_id),
+            ).fetchone()
+            if link is None:
+                raise UnitOfWorkConflict("child signal has no durable run link")
+            if str(link[0]) != AttachmentPolicy.DETACHED.value:
+                _fault(fault, "child_signal_ack.parent.before_write")
+                changed = connection.execute(
+                    """
+                    UPDATE runs SET state = 'queued', version = version + 1, updated_at = ?
+                    WHERE run_id = ? AND state = 'waiting'
+                    """,
+                    (now, signal.parent_run_id),
+                ).rowcount
+                if changed != 1:
+                    raise UnitOfWorkConflict("attached parent wake CAS failed")
+                _fault(fault, "child_signal_ack.parent.after_write")
+            _fault(fault, "child_signal_ack.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=signal.parent_run_id,
+                kind="child.signal_acked",
+                payload={"signal_id": signal_id, "continuation_id": continuation_id},
+                now=now,
+            )
+            _fault(fault, "child_signal_ack.event.after_write")
+        _fault(fault, "child_signal_ack.after_commit")
+        result = self.read_child_signal(signal_id)
+        assert result is not None
+        return result
+
+    def read_profile_launch_ticket(self, ticket_id: str) -> ProfileLaunchTicket | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM profile_launch_tickets WHERE ticket_id = ?", (ticket_id,)
+        ).fetchone()
+        return None if row is None else _profile_launch_ticket(row)
+
+    def read_child_command(self, command_id: str) -> ChildCommandRecord | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM child_commands WHERE command_id = ?", (command_id,)
+        ).fetchone()
+        return None if row is None else _child_command_record(row)
+
+    def read_child_signal(self, signal_id: str) -> ChildSignalRecord | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM child_signals WHERE signal_id = ?", (signal_id,)
+        ).fetchone()
+        return None if row is None else _child_signal_record(row)
+
+    def _same_existing_child_launch(
+        self,
+        command: ChildCommandRecord,
+        *,
+        request_id: str,
+        profile_key: str,
+        driver_kind: str,
+        attachment_policy: AttachmentPolicy,
+        snapshot_hash: str,
+    ) -> bool:
+        row = self.database.connection.execute(
+            """
+            SELECT runs.request_id, runs.profile_key, runs.driver_kind,
+                   snapshots.snapshot_hash, links.attachment_policy
+            FROM runs
+            JOIN run_start_snapshots AS snapshots ON snapshots.run_id = runs.run_id
+            JOIN run_links AS links ON links.child_run_id = runs.run_id
+            WHERE runs.run_id = ? AND links.parent_run_id = ?
+            """,
+            (command.child_run_id, command.parent_run_id),
+        ).fetchone()
+        return row is not None and tuple(row) == (
+            request_id,
+            profile_key,
+            driver_kind,
+            snapshot_hash,
+            attachment_policy.value,
+        )
+
     def prepare_effect(
         self,
         *,
@@ -962,6 +1413,41 @@ def _continuation_record(row: sqlite3.Row) -> ContinuationRecord:
         state=ContinuationState(row["state"]),
         version=int(row["version"]),
         claimed_by=None if row["claimed_by"] is None else str(row["claimed_by"]),
+    )
+
+
+def _profile_launch_ticket(row: sqlite3.Row) -> ProfileLaunchTicket:
+    return ProfileLaunchTicket(
+        ticket_id=str(row["ticket_id"]),
+        parent_run_id=str(row["parent_run_id"]),
+        profile_key=str(row["profile_key"]),
+        catalog_generation=int(row["catalog_generation"]),
+        fingerprint=str(row["fingerprint"]),
+        state=ProfileLaunchTicketState(str(row["state"])),
+        child_run_id=(
+            None if row["child_run_id"] is None else str(row["child_run_id"])
+        ),
+    )
+
+
+def _child_command_record(row: sqlite3.Row) -> ChildCommandRecord:
+    return ChildCommandRecord(
+        command_id=str(row["command_id"]),
+        parent_run_id=str(row["parent_run_id"]),
+        child_run_id=str(row["child_run_id"]),
+        ticket_id=str(row["ticket_id"]),
+        state=ChildCommandState(str(row["state"])),
+    )
+
+
+def _child_signal_record(row: sqlite3.Row) -> ChildSignalRecord:
+    return ChildSignalRecord(
+        signal_id=str(row["signal_id"]),
+        parent_run_id=str(row["parent_run_id"]),
+        child_run_id=str(row["child_run_id"]),
+        payload=freeze_json(json.loads(str(row["payload_json"]))),
+        state=ChildSignalState(str(row["state"])),
+        version=int(row["version"]),
     )
 
 
