@@ -1,0 +1,32 @@
+{
+  "module": "simple_harness.tools",
+  "symbols": [
+    "ArgumentsValidationError",
+    "AuthorizationDecision",
+    "AuthorizationPort",
+    "AuthorizationResult",
+    "CancellationToken",
+    "DuplicateToolCallError",
+    "DuplicateToolError",
+    "FunctionTool",
+    "JsonObject",
+    "LateToolResultError",
+    "MalformedToolArgumentsError",
+    "PreparedToolEffect",
+    "ReconciliationObservation",
+    "ReconciliationState",
+    "SchemaDefinitionError",
+    "Tool",
+    "ToolCall",
+    "ToolCallState",
+    "ToolContext",
+    "ToolHandler",
+    "ToolOutcome",
+    "ToolReconciliationPort",
+    "ToolRegistry",
+    "ToolRegistryError",
+    "ToolResult",
+    "ToolSpec",
+    "UnknownToolError"
+  ]
+}
