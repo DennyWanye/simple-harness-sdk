@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
-from simple_harness.execution.uow import ContinuationState, UnitOfWorkConflict
+from simple_harness.execution.uow import ContinuationState, RunState
 
 
 class InjectedFault(RuntimeError):
@@ -46,6 +46,16 @@ def _enqueue(uow: SqliteExecutionUnitOfWork, identifier: str, *, fault=None):
     )
 
 
+def _activate(uow: SqliteExecutionUnitOfWork, *, owner_id: str = "owner-1", now=2.5):
+    return uow.claim_runtime_activation(
+        run_id="run-1",
+        owner_id=owner_id,
+        namespace="runtime.kernel",
+        now=now,
+        lease_ttl_seconds=100.0,
+    )[1]
+
+
 @pytest.mark.parametrize(
     "fault_point",
     (
@@ -62,7 +72,12 @@ def test_enqueue_fault_reopens_all_before(tmp_path: Path, fault_point: str) -> N
         _enqueue(uow, "continuation-1", fault=_raise_at(fault_point))
     database.close()
     with Database.open(path) as reopened:
-        assert reopened.connection.execute("SELECT COUNT(*) FROM continuations").fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM continuations"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_enqueue_after_commit_reopens_all_after(tmp_path: Path) -> None:
@@ -71,65 +86,59 @@ def test_enqueue_after_commit_reopens_all_after(tmp_path: Path) -> None:
     uow = SqliteExecutionUnitOfWork(database)
     _create(uow)
     with pytest.raises(InjectedFault, match="continuation_enqueue.after_commit"):
-        _enqueue(uow, "continuation-1", fault=_raise_at("continuation_enqueue.after_commit"))
+        _enqueue(
+            uow, "continuation-1", fault=_raise_at("continuation_enqueue.after_commit")
+        )
     database.close()
     with Database.open(path) as reopened:
-        assert _enqueue(SqliteExecutionUnitOfWork(reopened), "continuation-1").fifo_seq == 1
+        assert (
+            _enqueue(SqliteExecutionUnitOfWork(reopened), "continuation-1").fifo_seq
+            == 1
+        )
 
 
 @pytest.mark.parametrize(
-    "command,fault_point",
+    "fault_point",
     (
-        ("claim", "continuation_claim.continuation.before_write"),
-        ("claim", "continuation_claim.continuation.after_write"),
-        ("ack", "continuation_ack.continuation.before_write"),
-        ("ack", "continuation_ack.continuation.after_write"),
+        "continuation_claim.continuation.before_write",
+        "continuation_claim.continuation.after_write",
     ),
 )
-def test_claim_and_ack_faults_reopen_all_before(
-    tmp_path: Path, command: str, fault_point: str
-) -> None:
+def test_claim_faults_reopen_all_before(tmp_path: Path, fault_point: str) -> None:
     path = tmp_path / "execution.db"
     database = Database.open(path)
     uow = SqliteExecutionUnitOfWork(database)
     _create(uow)
     _enqueue(uow, "continuation-1")
-    expected_state = ContinuationState.PENDING
-    if command == "claim":
-        operation = lambda: uow.claim_continuation(
-            run_id="run-1", owner_id="owner-1", now=3.0, fault=_raise_at(fault_point)
-        )
-    else:
-        claimed = uow.claim_continuation(run_id="run-1", owner_id="owner-1", now=3.0)
-        assert claimed is not None
-        expected_state = ContinuationState.CLAIMED
-        operation = lambda: uow.ack_continuation(
-            continuation_id="continuation-1",
-            owner_id="owner-1",
-            expected_version=claimed.version,
-            now=4.0,
+    lease = _activate(uow)
+    with pytest.raises(InjectedFault, match=fault_point):
+        uow.claim_continuation(
+            run_id="run-1",
+            execution_lease=lease,
+            now=3.0,
             fault=_raise_at(fault_point),
         )
-    with pytest.raises(InjectedFault, match=fault_point):
-        operation()
     database.close()
     with Database.open(path) as reopened:
         record = SqliteExecutionUnitOfWork(reopened).read_continuation("continuation-1")
-        assert record is not None and record.state is expected_state
+        assert record is not None and record.state is ContinuationState.PENDING
 
 
-def test_claim_ack_after_commit_reopen_and_fifo_cas(tmp_path: Path) -> None:
+def test_claim_after_commit_reopen_and_atomic_progress_preserve_fifo(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "execution.db"
     database = Database.open(path)
     uow = SqliteExecutionUnitOfWork(database)
     _create(uow)
     for identifier in ("continuation-1", "continuation-2", "continuation-3"):
         _enqueue(uow, identifier)
+    lease = _activate(uow)
 
     with pytest.raises(InjectedFault, match="continuation_claim.after_commit"):
         uow.claim_continuation(
             run_id="run-1",
-            owner_id="owner-1",
+            execution_lease=lease,
             now=3.0,
             fault=_raise_at("continuation_claim.after_commit"),
         )
@@ -139,39 +148,51 @@ def test_claim_ack_after_commit_reopen_and_fifo_cas(tmp_path: Path) -> None:
     uow = SqliteExecutionUnitOfWork(database)
     first = uow.read_continuation("continuation-1")
     assert first is not None and first.state is ContinuationState.CLAIMED
-    with pytest.raises(UnitOfWorkConflict, match="ack CAS"):
-        uow.ack_continuation(
-            continuation_id=first.continuation_id,
-            owner_id="wrong-owner",
-            expected_version=first.version,
-            now=4.0,
-        )
-    with pytest.raises(InjectedFault, match="continuation_ack.after_commit"):
-        uow.ack_continuation(
-            continuation_id=first.continuation_id,
-            owner_id="owner-1",
-            expected_version=first.version,
-            now=4.0,
-            fault=_raise_at("continuation_ack.after_commit"),
-        )
+    run = uow.read_run("run-1")
+    assert run is not None
+    progress = uow.commit_runtime_state_and_ack_continuation(
+        run_id="run-1",
+        expected_version=run.version,
+        state=RunState.WAITING,
+        event_id="run-1:waiting:continuation-1",
+        payload={"handled": "continuation-1"},
+        continuation_claim=first,
+        execution_lease=lease,
+        receipt_id="progress:continuation-1",
+        now=4.0,
+    )
+    assert progress.continuation.state is ContinuationState.ACKED
+    second = uow.claim_continuation(run_id="run-1", execution_lease=lease, now=5.0)
+    assert second is not None and second.continuation_id == "continuation-2"
+    run = uow.read_run("run-1")
+    assert run is not None
+    uow.commit_runtime_state_and_ack_continuation(
+        run_id="run-1",
+        expected_version=run.version,
+        state=RunState.WAITING,
+        event_id="run-1:waiting:continuation-2",
+        payload={"handled": "continuation-2"},
+        continuation_claim=second,
+        execution_lease=lease,
+        receipt_id="progress:continuation-2",
+        now=6.0,
+    )
     database.close()
 
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
-        acked = uow.ack_continuation(
-            continuation_id=first.continuation_id,
-            owner_id="owner-1",
-            expected_version=first.version,
-            now=5.0,
-        )
-        assert acked.state is ContinuationState.ACKED
-        second = uow.claim_continuation(run_id="run-1", owner_id="owner-2", now=6.0)
-        assert second is not None and second.continuation_id == "continuation-2"
-        uow.ack_continuation(
-            continuation_id=second.continuation_id,
+        _, resumed_lease = uow.claim_runtime_activation(
+            run_id="run-1",
             owner_id="owner-2",
-            expected_version=second.version,
-            now=7.0,
+            namespace="runtime.kernel",
+            now=105.0,
+            lease_ttl_seconds=100.0,
         )
-        third = uow.claim_continuation(run_id="run-1", owner_id="owner-3", now=8.0)
+        third = uow.claim_continuation(
+            run_id="run-1", execution_lease=resumed_lease, now=105.0
+        )
         assert third is not None and third.continuation_id == "continuation-3"
+
+
+def test_owner_only_ack_entrypoint_is_removed() -> None:
+    assert not hasattr(SqliteExecutionUnitOfWork, "ack_continuation")

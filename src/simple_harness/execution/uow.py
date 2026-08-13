@@ -14,10 +14,12 @@ from typing import TYPE_CHECKING, Protocol
 from simple_harness.contracts import FrozenJsonValue, JsonValue
 from simple_harness.execution.contracts.children import (
     AttachmentPolicy,
+    ChildCommandRecord,
     ChildLaunchResult,
     ChildSignalAckReceipt,
     ChildSignalAckResult,
     ChildSignalRecord,
+    ChildTerminalResult,
     ProfileLaunchTicket,
 )
 from simple_harness.execution.dispatch import ProviderInvocationUnitOfWork
@@ -68,6 +70,7 @@ class ContinuationState(StrEnum):
     PENDING = "pending"
     CLAIMED = "claimed"
     ACKED = "acked"
+    QUARANTINED = "quarantined"
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +154,34 @@ class ContinuationRecord:
     state: ContinuationState
     version: int
     claimed_by: str | None
+    runtime_lease_epoch: int | None
+    claim_epoch: int
+    ack_receipt_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuationProgressReceipt:
+    receipt_id: str
+    continuation_id: str
+    run_id: str
+    owner_id: str
+    runtime_lease_epoch: int
+    claim_epoch: int
+    outcome_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuationProgressResult:
+    run: RunRecord
+    continuation: ContinuationRecord
+    receipt: ContinuationProgressReceipt
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuationTerminalResult:
+    terminal: TerminalCommitResult
+    continuation: ContinuationRecord
+    receipt: ContinuationProgressReceipt
 
 
 class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protocol):
@@ -210,6 +241,8 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
     def read_start_snapshot(self, run_id: str) -> Mapping[str, JsonValue] | None: ...
 
     def list_recoverable_root_runs(self) -> tuple[RunRecord, ...]: ...
+
+    def list_recoverable_child_runs(self) -> tuple[RunRecord, ...]: ...
 
     def read_react_checkpoint(self, run_id: str) -> WorkflowCheckpoint | None: ...
 
@@ -292,6 +325,14 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         fault: FaultHook | None = None,
     ) -> ChildLaunchResult: ...
 
+    def read_child_command_for_run(
+        self, child_run_id: str
+    ) -> ChildCommandRecord | None: ...
+
+    def read_child_attachment_policy(self, child_run_id: str) -> AttachmentPolicy: ...
+
+    def list_child_signal_parent_run_ids(self) -> tuple[str, ...]: ...
+
     def finalize_child_and_enqueue_parent_signal(
         self,
         *,
@@ -301,9 +342,27 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         signal_id: str,
         signal_payload: Mapping[str, JsonValue],
         event_id: str,
+        receipt_id: str,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
         now: float,
         fault: FaultHook | None = None,
-    ) -> ChildSignalRecord: ...
+    ) -> ChildTerminalResult: ...
+
+    def commit_detached_child_terminal(
+        self,
+        *,
+        command_id: str,
+        expected_child_version: int,
+        terminal_state: RunState,
+        terminal_payload: Mapping[str, JsonValue],
+        event_id: str,
+        receipt_id: str,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ChildTerminalResult: ...
 
     def claim_next_child_signal(
         self,
@@ -399,28 +458,54 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         self,
         *,
         run_id: str,
-        owner_id: str,
+        execution_lease: ExecutionLease,
         now: float,
         fault: FaultHook | None = None,
     ) -> ContinuationRecord | None: ...
 
-    def ack_continuation(
+    def commit_runtime_state_and_ack_continuation(
         self,
         *,
-        continuation_id: str,
-        owner_id: str,
+        run_id: str,
         expected_version: int,
+        state: RunState,
+        event_id: str,
+        payload: Mapping[str, JsonValue],
+        continuation_claim: ContinuationRecord,
+        execution_lease: ExecutionLease,
+        receipt_id: str,
         now: float,
         fault: FaultHook | None = None,
-    ) -> ContinuationRecord: ...
+    ) -> ContinuationProgressResult: ...
+
+    def commit_root_terminal_with_deliveries_and_ack_continuation(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        terminal_state: RunState,
+        event_id: str,
+        terminal_payload: Mapping[str, JsonValue],
+        deliveries: Sequence[DeliverySpec],
+        continuation_claim: ContinuationRecord,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
+        receipt_id: str,
+        terminal_fence_receipt_ref: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ContinuationTerminalResult: ...
 
 
 __all__ = (
     "RUNTIME_LEASE_NAMESPACE",
     "AdmissionRecord",
     "AdmissionState",
+    "ContinuationProgressReceipt",
+    "ContinuationProgressResult",
     "ContinuationRecord",
     "ContinuationState",
+    "ContinuationTerminalResult",
     "DecisionRecord",
     "DecisionState",
     "ExecutionLease",

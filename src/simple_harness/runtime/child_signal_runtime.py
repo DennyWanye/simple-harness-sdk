@@ -16,6 +16,8 @@ from simple_harness.execution.contracts.children import (
 
 
 class ChildSignalUnitOfWork(Protocol):
+    def list_child_signal_parent_run_ids(self) -> tuple[str, ...]: ...
+
     def claim_next_child_signal(
         self,
         *,
@@ -93,6 +95,24 @@ class ChildSignalRuntime:
             event_payload=event_payload,
             now=now,
         )
+
+    def reconcile_all(
+        self, *, now: float, lease_seconds: float = 30.0
+    ) -> tuple[ChildSignalAckResult, ...]:
+        """Drain every currently claimable parent head in durable FIFO order."""
+
+        completed: list[ChildSignalAckResult] = []
+        for parent_run_id in self._uow.list_child_signal_parent_run_ids():
+            while True:
+                result = self.receive_one(
+                    parent_run_id=parent_run_id,
+                    now=now,
+                    lease_seconds=lease_seconds,
+                )
+                if result is None:
+                    break
+                completed.append(result)
+        return tuple(completed)
 
 
 __all__ = ("ChildSignalRuntime", "ChildSignalUnitOfWork")

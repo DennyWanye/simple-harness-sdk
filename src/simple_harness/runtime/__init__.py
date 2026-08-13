@@ -6,6 +6,7 @@
 from .admission import AdmissionPort, AdmissionVerdict, AllowAllAdmission
 from .child_runs import (
     ChildLaunchRequest,
+    ChildRunHandle,
     ChildRunUnitOfWork,
     ProfileLaunchTicketRef,
 )
@@ -45,6 +46,7 @@ __all__ = (
     "AgentLoopCollaborator",
     "AllowAllAdmission",
     "ChildLaunchRequest",
+    "ChildRunHandle",
     "ChildRunUnitOfWork",
     "ChildSignalRuntime",
     "ChildSignalUnitOfWork",

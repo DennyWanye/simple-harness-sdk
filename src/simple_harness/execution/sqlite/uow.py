@@ -32,6 +32,8 @@ from simple_harness.execution.contracts.children import (
     ChildSignalAckResult,
     ChildSignalRecord,
     ChildSignalState,
+    ChildTerminalReceipt,
+    ChildTerminalResult,
     ProfileLaunchTicket,
     ProfileLaunchTicketState,
     child_launch_fingerprint,
@@ -54,8 +56,11 @@ from simple_harness.execution.uow import (
     RUNTIME_LEASE_NAMESPACE,
     AdmissionRecord,
     AdmissionState,
+    ContinuationProgressReceipt,
+    ContinuationProgressResult,
     ContinuationRecord,
     ContinuationState,
+    ContinuationTerminalResult,
     DecisionRecord,
     DecisionState,
     ExecutionLease,
@@ -116,7 +121,7 @@ class SqliteExecutionUnitOfWork:
         lease_ttl_seconds: float,
         fault: FaultHook | None = None,
     ) -> tuple[RunRecord, ExecutionLease]:
-        """Atomically acquire the durable owner lease and activate a root Run."""
+        """Atomically acquire the durable owner lease and activate one Run."""
 
         run_id = _required(run_id, "run_id")
         owner_id = _required(owner_id, "owner_id")
@@ -132,7 +137,7 @@ class SqliteExecutionUnitOfWork:
         expires_at = now + float(lease_ttl_seconds)
         with self.database.transaction() as connection:
             run_row = connection.execute(
-                "SELECT * FROM runs WHERE run_id = ? AND parent_run_id IS NULL",
+                "SELECT * FROM runs WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if run_row is None:
@@ -543,9 +548,7 @@ class SqliteExecutionUnitOfWork:
                 execution_lease.run_id != run_id
                 or execution_lease.owner_id != fence.owner_id
             ):
-                raise UnitOfWorkConflict(
-                    "terminal runtime lease and Run fence differ"
-                )
+                raise UnitOfWorkConflict("terminal runtime lease and Run fence differ")
             self._require_run_fence(
                 connection,
                 fence,
@@ -557,7 +560,7 @@ class SqliteExecutionUnitOfWork:
                 event_id=event_id,
                 run_id=run_id,
                 kind=f"run.{terminal_state.value}",
-                payload=payload,
+                payload=dict(payload),
                 now=now,
             )
             _fault(fault, "root_terminal.event.after_write")
@@ -605,6 +608,11 @@ class SqliteExecutionUnitOfWork:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("root terminal CAS failed")
+            connection.execute(
+                "UPDATE continuations SET state='quarantined',acked_at=?,"
+                "version=version+1 WHERE run_id=? AND state IN ('pending','claimed')",
+                (now, run_id),
+            )
             _fault(fault, "root_terminal.run.after_write")
         _fault(fault, "root_terminal.after_commit")
         run = self.read_run(run_id)
@@ -1089,6 +1097,13 @@ class SqliteExecutionUnitOfWork:
                 "continuation identity reused with different payload"
             )
         with self.database.transaction() as connection:
+            run_row = connection.execute(
+                "SELECT state FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if run_row is None:
+                raise UnitOfWorkNotFound(run_id)
+            if str(run_row["state"]) in {"completed", "failed", "cancelled"}:
+                raise UnitOfWorkConflict("terminal Run rejects new continuations")
             row = connection.execute(
                 "SELECT COALESCE(MAX(fifo_seq), 0) + 1 FROM continuations WHERE run_id = ?",
                 (run_id,),
@@ -1099,8 +1114,10 @@ class SqliteExecutionUnitOfWork:
                 """
                 INSERT INTO continuations(
                     continuation_id, run_id, fifo_seq, payload_json, state,
-                    version, claimed_by, created_at, claimed_at, acked_at
-                ) VALUES (?, ?, ?, ?, 'pending', 0, NULL, ?, NULL, NULL)
+                    version, claimed_by, runtime_lease_epoch, claim_epoch,
+                    ack_receipt_id, created_at, claimed_at, acked_at
+                ) VALUES (?, ?, ?, ?, 'pending', 0, NULL, NULL, 0,
+                          NULL, ?, NULL, NULL)
                 """,
                 (continuation_id, run_id, sequence, payload_json, now),
             )
@@ -1114,34 +1131,72 @@ class SqliteExecutionUnitOfWork:
         self,
         *,
         run_id: str,
-        owner_id: str,
+        execution_lease: ExecutionLease,
         now: float,
         fault: FaultHook | None = None,
     ) -> ContinuationRecord | None:
         run_id = _required(run_id, "run_id")
-        owner_id = _required(owner_id, "owner_id")
         now = _time(now)
+        if (
+            execution_lease.run_id != run_id
+            or execution_lease.namespace != RUNTIME_LEASE_NAMESPACE
+        ):
+            raise UnitOfWorkConflict("continuation requires canonical Runtime lease")
         claimed_id: str | None = None
         with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            run_row = connection.execute(
+                "SELECT state FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run_row is None:
+                raise UnitOfWorkNotFound(run_id)
+            if str(run_row["state"]) in {"completed", "failed", "cancelled"}:
+                connection.execute(
+                    "UPDATE continuations SET state='quarantined', acked_at=?, "
+                    "version=version+1 WHERE run_id=? AND state IN ('pending','claimed')",
+                    (now, run_id),
+                )
+                return None
             row = connection.execute(
                 """
-                SELECT continuation_id, version FROM continuations
-                WHERE run_id = ? AND state = 'pending'
+                SELECT * FROM continuations
+                WHERE run_id = ? AND state IN ('pending','claimed')
                 ORDER BY fifo_seq ASC LIMIT 1
                 """,
                 (run_id,),
             ).fetchone()
             if row is not None:
-                claimed_id = str(row[0])
+                claimed_id = str(row["continuation_id"])
+                if str(row["state"]) == "claimed":
+                    lease_row = connection.execute(
+                        "SELECT owner_id,epoch,expires_at FROM workflow_leases "
+                        "WHERE run_id=? AND namespace=?",
+                        (run_id, RUNTIME_LEASE_NAMESPACE),
+                    ).fetchone()
+                    if (
+                        lease_row is not None
+                        and str(lease_row["owner_id"]) == str(row["claimed_by"])
+                        and int(lease_row["epoch"]) == int(row["runtime_lease_epoch"])
+                        and float(lease_row["expires_at"]) > now
+                    ):
+                        return None
                 _fault(fault, "continuation_claim.continuation.before_write")
                 changed = connection.execute(
                     """
                     UPDATE continuations
                     SET state = 'claimed', version = version + 1,
-                        claimed_by = ?, claimed_at = ?
-                    WHERE continuation_id = ? AND state = 'pending' AND version = ?
+                        claimed_by = ?, runtime_lease_epoch = ?, claimed_at = ?,
+                        claim_epoch = claim_epoch + 1
+                    WHERE continuation_id = ? AND state IN ('pending','claimed')
+                      AND version = ?
                     """,
-                    (owner_id, now, claimed_id, int(row[1])),
+                    (
+                        execution_lease.owner_id,
+                        execution_lease.epoch,
+                        now,
+                        claimed_id,
+                        int(row["version"]),
+                    ),
                 ).rowcount
                 if changed != 1:
                     raise UnitOfWorkConflict("continuation claim CAS failed")
@@ -1149,46 +1204,320 @@ class SqliteExecutionUnitOfWork:
         _fault(fault, "continuation_claim.after_commit")
         return None if claimed_id is None else self.read_continuation(claimed_id)
 
-    def ack_continuation(
+    def commit_runtime_state_and_ack_continuation(
         self,
         *,
-        continuation_id: str,
-        owner_id: str,
+        run_id: str,
         expected_version: int,
+        state: RunState,
+        event_id: str,
+        payload: Mapping[str, JsonValue],
+        continuation_claim: ContinuationRecord,
+        execution_lease: ExecutionLease,
+        receipt_id: str,
         now: float,
         fault: FaultHook | None = None,
-    ) -> ContinuationRecord:
-        continuation_id = _required(continuation_id, "continuation_id")
-        owner_id = _required(owner_id, "owner_id")
+    ) -> ContinuationProgressResult:
+        run_id = _required(run_id, "run_id")
+        event_id = _required(event_id, "event_id")
+        receipt_id = _required(receipt_id, "receipt_id")
+        state = RunState(state)
+        if state is not RunState.WAITING:
+            raise ValueError("continuation progress command requires WAITING")
         now = _time(now)
-        existing = self.read_continuation(continuation_id)
-        if existing is None:
-            raise UnitOfWorkNotFound(continuation_id)
-        if existing.state is ContinuationState.ACKED:
-            if (
-                existing.claimed_by == owner_id
-                and existing.version == expected_version + 1
-            ):
-                return existing
-            raise UnitOfWorkConflict("continuation already acked by another claim")
+        payload_json = _object_json(payload, "payload")
+        outcome_json = canonical_json(
+            {
+                "run_id": run_id,
+                "expected_version": expected_version,
+                "state": state.value,
+                "event_id": event_id,
+                "payload": json.loads(payload_json),
+            }
+        )
+        outcome_hash = hashlib.sha256(outcome_json.encode()).hexdigest()
+        existing_receipt = self._read_continuation_progress_receipt(receipt_id)
+        if existing_receipt is not None:
+            return self._replay_continuation_progress(
+                existing_receipt,
+                continuation_claim=continuation_claim,
+                execution_lease=execution_lease,
+                outcome_hash=outcome_hash,
+            )
         with self.database.transaction() as connection:
-            _fault(fault, "continuation_ack.continuation.before_write")
+            receipt_row = connection.execute(
+                "SELECT * FROM continuation_progress_receipts WHERE receipt_id=?",
+                (receipt_id,),
+            ).fetchone()
+            if receipt_row is not None:
+                return self._replay_continuation_progress(
+                    _continuation_progress_receipt(receipt_row),
+                    continuation_claim=continuation_claim,
+                    execution_lease=execution_lease,
+                    outcome_hash=outcome_hash,
+                )
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            self._require_continuation_claim(
+                connection, continuation_claim, execution_lease
+            )
+            _fault(fault, "continuation_progress.receipt.before_write")
+            connection.execute(
+                "INSERT INTO continuation_progress_receipts("
+                "receipt_id,continuation_id,run_id,owner_id,runtime_lease_epoch,"
+                "claim_epoch,outcome_hash,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    receipt_id,
+                    continuation_claim.continuation_id,
+                    run_id,
+                    execution_lease.owner_id,
+                    execution_lease.epoch,
+                    continuation_claim.claim_epoch,
+                    outcome_hash,
+                    now,
+                ),
+            )
+            _fault(fault, "continuation_progress.receipt.after_write")
+            _fault(fault, "continuation_progress.continuation.before_write")
             changed = connection.execute(
-                """
-                UPDATE continuations
-                SET state = 'acked', version = version + 1, acked_at = ?
-                WHERE continuation_id = ? AND state = 'claimed'
-                  AND claimed_by = ? AND version = ?
-                """,
-                (now, continuation_id, owner_id, expected_version),
+                "UPDATE continuations SET state='acked',acked_at=?,ack_receipt_id=?,"
+                "version=version+1 WHERE continuation_id=? AND state='claimed' "
+                "AND claimed_by=? AND runtime_lease_epoch=? AND claim_epoch=? AND version=?",
+                (
+                    now,
+                    receipt_id,
+                    continuation_claim.continuation_id,
+                    execution_lease.owner_id,
+                    execution_lease.epoch,
+                    continuation_claim.claim_epoch,
+                    continuation_claim.version,
+                ),
             ).rowcount
             if changed != 1:
-                raise UnitOfWorkConflict("continuation ack CAS failed")
-            _fault(fault, "continuation_ack.continuation.after_write")
-        _fault(fault, "continuation_ack.after_commit")
-        result = self.read_continuation(continuation_id)
-        assert result is not None
-        return result
+                raise UnitOfWorkConflict("continuation progress claim CAS failed")
+            _fault(fault, "continuation_progress.continuation.after_write")
+            _fault(fault, "continuation_progress.run.before_write")
+            changed = connection.execute(
+                "UPDATE runs SET state='waiting',version=version+1,updated_at=? "
+                "WHERE run_id=? AND version=? AND state NOT IN ('completed','failed','cancelled')",
+                (now, run_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("continuation progress Run CAS failed")
+            _fault(fault, "continuation_progress.run.after_write")
+            _fault(fault, "continuation_progress.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=run_id,
+                kind="run.waiting",
+                payload=dict(payload),
+                now=now,
+            )
+            _fault(fault, "continuation_progress.event.after_write")
+        _fault(fault, "continuation_progress.after_commit")
+        receipt = self._read_continuation_progress_receipt(receipt_id)
+        run = self.read_run(run_id)
+        continuation = self.read_continuation(continuation_claim.continuation_id)
+        assert receipt is not None and run is not None and continuation is not None
+        return ContinuationProgressResult(run, continuation, receipt)
+
+    def commit_root_terminal_with_deliveries_and_ack_continuation(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        terminal_state: RunState,
+        event_id: str,
+        terminal_payload: Mapping[str, JsonValue],
+        deliveries: Sequence[DeliverySpec],
+        continuation_claim: ContinuationRecord,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
+        receipt_id: str,
+        terminal_fence_receipt_ref: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ContinuationTerminalResult:
+        run_id = _required(run_id, "run_id")
+        terminal_state = RunState(terminal_state)
+        if terminal_state not in {
+            RunState.COMPLETED,
+            RunState.FAILED,
+            RunState.CANCELLED,
+        }:
+            raise ValueError("continuation terminal state is invalid")
+        receipt_id = _required(receipt_id, "receipt_id")
+        event_id = _required(event_id, "event_id")
+        now = _time(now)
+        payload = dict(terminal_payload)
+        payload["terminal_fence_receipt_ref"] = terminal_fence_receipt_ref
+        payload["fence_epoch"] = run_fence.epoch
+        payload_json = _object_json(payload, "terminal_payload")
+        items = tuple(deliveries)
+        identities = [item.idempotency_key for item in items]
+        if len(set(identities)) != len(identities):
+            raise DeliveryConflictError("duplicate delivery idempotency key")
+        outcome_hash = hashlib.sha256(
+            canonical_json(
+                {
+                    "run_id": run_id,
+                    "expected_version": expected_version,
+                    "terminal_state": terminal_state.value,
+                    "event_id": event_id,
+                    "payload": json.loads(payload_json),
+                    "deliveries": [
+                        {
+                            "delivery_id": item.delivery_id,
+                            "sink_kind": item.sink_kind,
+                            "idempotency_key": item.idempotency_key,
+                            "payload": _thaw(item.payload),
+                        }
+                        for item in items
+                    ],
+                }
+            ).encode()
+        ).hexdigest()
+        existing = self._read_continuation_progress_receipt(receipt_id)
+        if existing is not None:
+            return self._replay_continuation_terminal(
+                existing,
+                continuation_claim=continuation_claim,
+                execution_lease=execution_lease,
+                outcome_hash=outcome_hash,
+            )
+        with self.database.transaction() as connection:
+            receipt_row = connection.execute(
+                "SELECT * FROM continuation_progress_receipts WHERE receipt_id=?",
+                (receipt_id,),
+            ).fetchone()
+            if receipt_row is not None:
+                return self._replay_continuation_terminal(
+                    _continuation_progress_receipt(receipt_row),
+                    continuation_claim=continuation_claim,
+                    execution_lease=execution_lease,
+                    outcome_hash=outcome_hash,
+                )
+            prior_row = connection.execute(
+                "SELECT receipt_id FROM continuation_progress_receipts "
+                "WHERE continuation_id=?",
+                (continuation_claim.continuation_id,),
+            ).fetchone()
+            if prior_row is not None:
+                raise UnitOfWorkConflict(
+                    "continuation was already committed with another receipt"
+                )
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            self._require_run_fence(
+                connection, run_fence, execution_lease=execution_lease
+            )
+            self._require_continuation_claim(
+                connection, continuation_claim, execution_lease
+            )
+            _fault(fault, "continuation_terminal.receipt.before_write")
+            connection.execute(
+                "INSERT INTO continuation_progress_receipts("
+                "receipt_id,continuation_id,run_id,owner_id,runtime_lease_epoch,"
+                "claim_epoch,outcome_hash,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    receipt_id,
+                    continuation_claim.continuation_id,
+                    run_id,
+                    execution_lease.owner_id,
+                    execution_lease.epoch,
+                    continuation_claim.claim_epoch,
+                    outcome_hash,
+                    now,
+                ),
+            )
+            _fault(fault, "continuation_terminal.receipt.after_write")
+            _fault(fault, "continuation_terminal.continuation.before_write")
+            changed = connection.execute(
+                "UPDATE continuations SET state='acked',acked_at=?,ack_receipt_id=?,"
+                "version=version+1 WHERE continuation_id=? AND state='claimed' "
+                "AND claimed_by=? AND runtime_lease_epoch=? AND claim_epoch=? AND version=?",
+                (
+                    now,
+                    receipt_id,
+                    continuation_claim.continuation_id,
+                    execution_lease.owner_id,
+                    execution_lease.epoch,
+                    continuation_claim.claim_epoch,
+                    continuation_claim.version,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("continuation terminal claim CAS failed")
+            _fault(fault, "continuation_terminal.continuation.after_write")
+            _fault(fault, "continuation_terminal.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=run_id,
+                kind=f"run.{terminal_state.value}",
+                payload=payload,
+                now=now,
+            )
+            _fault(fault, "continuation_terminal.event.after_write")
+            for index, item in enumerate(items):
+                _fault(fault, f"continuation_terminal.delivery.{index}.before_write")
+                bound = _thaw(item.payload)
+                bound["terminal_fence_receipt_ref"] = terminal_fence_receipt_ref
+                bound["fence_epoch"] = run_fence.epoch
+                connection.execute(
+                    "INSERT INTO delivery_outbox("
+                    "delivery_id,run_id,sink_kind,idempotency_key,payload_json,state,"
+                    "version,created_at,claimed_at,settled_at) "
+                    "VALUES(?,?,?,?,?,'pending',0,?,NULL,NULL)",
+                    (
+                        item.delivery_id,
+                        run_id,
+                        item.sink_kind,
+                        item.idempotency_key,
+                        delivery_payload_json(bound),
+                        now,
+                    ),
+                )
+                _fault(fault, f"continuation_terminal.delivery.{index}.after_write")
+            _fault(fault, "continuation_terminal.fence.before_write")
+            changed = connection.execute(
+                "UPDATE run_fences SET state='released',released_at=? "
+                "WHERE run_id=? AND owner_id=? AND runtime_lease_epoch=? "
+                "AND epoch=? AND state='active'",
+                (
+                    now,
+                    run_id,
+                    run_fence.owner_id,
+                    run_fence.runtime_lease_epoch,
+                    run_fence.epoch,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("continuation terminal fence CAS failed")
+            _fault(fault, "continuation_terminal.fence.after_write")
+            _fault(fault, "continuation_terminal.run.before_write")
+            changed = connection.execute(
+                "UPDATE runs SET state=?,version=version+1,updated_at=? "
+                "WHERE run_id=? AND parent_run_id IS NULL AND version=? "
+                "AND state NOT IN ('completed','failed','cancelled')",
+                (terminal_state.value, now, run_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("continuation terminal Run CAS failed")
+            connection.execute(
+                "UPDATE continuations SET state='quarantined',acked_at=?,version=version+1 "
+                "WHERE run_id=? AND state IN ('pending','claimed')",
+                (now, run_id),
+            )
+            _fault(fault, "continuation_terminal.run.after_write")
+        _fault(fault, "continuation_terminal.after_commit")
+        receipt = self._read_continuation_progress_receipt(receipt_id)
+        assert receipt is not None
+        return self._replay_continuation_terminal(
+            receipt,
+            continuation_claim=continuation_claim,
+            execution_lease=execution_lease,
+            outcome_hash=outcome_hash,
+        )
 
     def issue_profile_launch_ticket(
         self,
@@ -1431,12 +1760,77 @@ class SqliteExecutionUnitOfWork:
         signal_id: str,
         signal_payload: Mapping[str, JsonValue],
         event_id: str,
+        receipt_id: str,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
         now: float,
         fault: FaultHook | None = None,
-    ) -> ChildSignalRecord:
+    ) -> ChildTerminalResult:
+        return self._commit_child_terminal(
+            command_id=command_id,
+            expected_child_version=expected_child_version,
+            terminal_state=terminal_state,
+            terminal_payload=signal_payload,
+            signal_id=signal_id,
+            event_id=event_id,
+            receipt_id=receipt_id,
+            run_fence=run_fence,
+            execution_lease=execution_lease,
+            now=now,
+            fault=fault,
+            expect_detached=False,
+        )
+
+    def commit_detached_child_terminal(
+        self,
+        *,
+        command_id: str,
+        expected_child_version: int,
+        terminal_state: RunState,
+        terminal_payload: Mapping[str, JsonValue],
+        event_id: str,
+        receipt_id: str,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ChildTerminalResult:
+        return self._commit_child_terminal(
+            command_id=command_id,
+            expected_child_version=expected_child_version,
+            terminal_state=terminal_state,
+            terminal_payload=terminal_payload,
+            signal_id=None,
+            event_id=event_id,
+            receipt_id=receipt_id,
+            run_fence=run_fence,
+            execution_lease=execution_lease,
+            now=now,
+            fault=fault,
+            expect_detached=True,
+        )
+
+    def _commit_child_terminal(
+        self,
+        *,
+        command_id: str,
+        expected_child_version: int,
+        terminal_state: RunState,
+        terminal_payload: Mapping[str, JsonValue],
+        signal_id: str | None,
+        event_id: str,
+        receipt_id: str,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
+        now: float,
+        fault: FaultHook | None,
+        expect_detached: bool,
+    ) -> ChildTerminalResult:
         command_id = _required(command_id, "command_id")
-        signal_id = _required(signal_id, "signal_id")
+        if signal_id is not None:
+            signal_id = _required(signal_id, "signal_id")
         event_id = _required(event_id, "event_id")
+        receipt_id = _required(receipt_id, "receipt_id")
         if isinstance(expected_child_version, bool) or expected_child_version < 0:
             raise ValueError("expected_child_version must be non-negative")
         terminal_state = RunState(terminal_state)
@@ -1446,26 +1840,86 @@ class SqliteExecutionUnitOfWork:
             RunState.CANCELLED,
         }:
             raise ValueError("child finalization requires a terminal run state")
-        payload_json = _object_json(signal_payload, "signal_payload")
+        payload_json = _object_json(terminal_payload, "terminal_payload")
+        outcome_hash = hashlib.sha256(
+            canonical_json(
+                {
+                    "command_id": command_id,
+                    "expected_child_version": expected_child_version,
+                    "terminal_state": terminal_state.value,
+                    "signal_id": signal_id,
+                    "event_id": event_id,
+                    "payload": json.loads(payload_json),
+                }
+            ).encode()
+        ).hexdigest()
         now = _time(now)
-        command = self.read_child_command(command_id)
-        if command is None:
-            raise UnitOfWorkNotFound(command_id)
-        existing_signal = self.read_child_signal(signal_id)
-        if existing_signal is not None:
-            child = self.read_run(command.child_run_id)
-            if (
-                child is not None
-                and child.state is terminal_state
-                and existing_signal.parent_run_id == command.parent_run_id
-                and existing_signal.child_run_id == command.child_run_id
-                and canonical_json(_thaw(existing_signal.payload)) == payload_json
-            ):
-                return existing_signal
+        existing = self._read_child_terminal_receipt(receipt_id)
+        if existing is not None:
+            return self._replay_child_terminal(
+                existing,
+                command_id=command_id,
+                terminal_state=terminal_state,
+                outcome_hash=outcome_hash,
+                signal_id=signal_id,
+                event_id=event_id,
+                run_fence=run_fence,
+                execution_lease=execution_lease,
+            )
+        existing_command = self._read_child_terminal_receipt_for_command(command_id)
+        if existing_command is not None:
             raise UnitOfWorkConflict(
-                "child signal identity reused with different outcome"
+                "child terminal command was already committed with another receipt"
             )
         with self.database.transaction() as connection:
+            receipt_row = connection.execute(
+                "SELECT * FROM child_terminal_receipts WHERE receipt_id=?",
+                (receipt_id,),
+            ).fetchone()
+            if receipt_row is not None:
+                return self._replay_child_terminal(
+                    _child_terminal_receipt(receipt_row),
+                    command_id=command_id,
+                    terminal_state=terminal_state,
+                    outcome_hash=outcome_hash,
+                    signal_id=signal_id,
+                    event_id=event_id,
+                    run_fence=run_fence,
+                    execution_lease=execution_lease,
+                )
+            command_receipt = connection.execute(
+                "SELECT receipt_id FROM child_terminal_receipts WHERE command_id=?",
+                (command_id,),
+            ).fetchone()
+            if command_receipt is not None:
+                raise UnitOfWorkConflict(
+                    "child terminal command was already committed with another receipt"
+                )
+            command_row = connection.execute(
+                "SELECT * FROM child_commands WHERE command_id=?", (command_id,)
+            ).fetchone()
+            if command_row is None:
+                raise UnitOfWorkNotFound(command_id)
+            child_run_id = str(command_row["child_run_id"])
+            parent_run_id = str(command_row["parent_run_id"])
+            link = connection.execute(
+                "SELECT attachment_policy FROM run_links "
+                "WHERE parent_run_id=? AND child_run_id=?",
+                (parent_run_id, child_run_id),
+            ).fetchone()
+            if link is None:
+                raise UnitOfWorkConflict("child attachment policy is missing")
+            policy = AttachmentPolicy(str(link["attachment_policy"]))
+            if (policy is AttachmentPolicy.DETACHED) != expect_detached:
+                raise UnitOfWorkConflict(
+                    "child terminal path differs from durable policy"
+                )
+            if execution_lease.run_id != child_run_id:
+                raise UnitOfWorkConflict("child terminal lease belongs to another Run")
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            self._require_run_fence(
+                connection, run_fence, execution_lease=execution_lease
+            )
             _fault(fault, "child_terminal.run.before_write")
             changed = connection.execute(
                 """
@@ -1476,7 +1930,7 @@ class SqliteExecutionUnitOfWork:
                 (
                     terminal_state.value,
                     now,
-                    command.child_run_id,
+                    child_run_id,
                     expected_child_version,
                 ),
             ).rowcount
@@ -1494,38 +1948,83 @@ class SqliteExecutionUnitOfWork:
             if changed != 1:
                 raise UnitOfWorkConflict("child command terminal CAS failed")
             _fault(fault, "child_terminal.command.after_write")
-            _fault(fault, "child_terminal.signal.before_write")
-            connection.execute(
-                """
-                INSERT INTO child_signals(
-                    signal_id, parent_run_id, child_run_id, payload_json,
-                    state, version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
-                """,
-                (
-                    signal_id,
-                    command.parent_run_id,
-                    command.child_run_id,
-                    payload_json,
-                    now,
-                    now,
-                ),
-            )
-            _fault(fault, "child_terminal.signal.after_write")
+            if signal_id is not None:
+                _fault(fault, "child_terminal.signal.before_write")
+                connection.execute(
+                    """
+                    INSERT INTO child_signals(
+                        signal_id, parent_run_id, child_run_id, payload_json,
+                        state, version, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
+                    """,
+                    (signal_id, parent_run_id, child_run_id, payload_json, now, now),
+                )
+                _fault(fault, "child_terminal.signal.after_write")
             _fault(fault, "child_terminal.event.before_write")
             self._insert_event(
                 connection,
                 event_id=event_id,
-                run_id=command.child_run_id,
+                run_id=child_run_id,
                 kind=f"child.{terminal_state.value}",
-                payload={"command_id": command_id, "signal_id": signal_id},
+                payload={
+                    "command_id": command_id,
+                    "signal_id": signal_id,
+                    "terminal": dict(terminal_payload),
+                },
                 now=now,
             )
             _fault(fault, "child_terminal.event.after_write")
+            _fault(fault, "child_terminal.receipt.before_write")
+            connection.execute(
+                "INSERT INTO child_terminal_receipts("
+                "receipt_id,command_id,child_run_id,terminal_state,outcome_hash,"
+                "signal_id,event_id,owner_id,runtime_lease_epoch,fence_epoch,created_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    receipt_id,
+                    command_id,
+                    child_run_id,
+                    terminal_state.value,
+                    outcome_hash,
+                    signal_id,
+                    event_id,
+                    execution_lease.owner_id,
+                    execution_lease.epoch,
+                    run_fence.epoch,
+                    now,
+                ),
+            )
+            _fault(fault, "child_terminal.receipt.after_write")
+            _fault(fault, "child_terminal.fence.before_write")
+            changed = connection.execute(
+                "UPDATE run_fences SET state='released',released_at=? "
+                "WHERE run_id=? AND owner_id=? AND runtime_lease_epoch=? "
+                "AND epoch=? AND state='active'",
+                (
+                    now,
+                    child_run_id,
+                    run_fence.owner_id,
+                    run_fence.runtime_lease_epoch,
+                    run_fence.epoch,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("child terminal fence release CAS failed")
+            _fault(fault, "child_terminal.fence.after_write")
+            connection.execute(
+                "UPDATE continuations SET state='quarantined',acked_at=?,"
+                "version=version+1 WHERE run_id=? AND state IN ('pending','claimed')",
+                (now, child_run_id),
+            )
         _fault(fault, "child_terminal.after_commit")
-        result = self.read_child_signal(signal_id)
-        assert result is not None
-        return result
+        receipt = self._read_child_terminal_receipt(receipt_id)
+        assert receipt is not None
+        return ChildTerminalResult(
+            receipt.child_run_id,
+            receipt.terminal_state,
+            receipt,
+            None if signal_id is None else self.read_child_signal(signal_id),
+        )
 
     def claim_next_child_signal(
         self,
@@ -1790,6 +2289,30 @@ class SqliteExecutionUnitOfWork:
             "SELECT * FROM child_commands WHERE command_id = ?", (command_id,)
         ).fetchone()
         return None if row is None else _child_command_record(row)
+
+    def read_child_command_for_run(
+        self, child_run_id: str
+    ) -> ChildCommandRecord | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM child_commands WHERE child_run_id = ?", (child_run_id,)
+        ).fetchone()
+        return None if row is None else _child_command_record(row)
+
+    def read_child_attachment_policy(self, child_run_id: str) -> AttachmentPolicy:
+        row = self.database.connection.execute(
+            "SELECT attachment_policy FROM run_links WHERE child_run_id = ?",
+            (child_run_id,),
+        ).fetchone()
+        if row is None:
+            raise UnitOfWorkNotFound(child_run_id)
+        return AttachmentPolicy(str(row["attachment_policy"]))
+
+    def list_child_signal_parent_run_ids(self) -> tuple[str, ...]:
+        rows = self.database.connection.execute(
+            "SELECT DISTINCT parent_run_id FROM child_signals "
+            "WHERE state <> 'acked' ORDER BY parent_run_id"
+        ).fetchall()
+        return tuple(str(row["parent_run_id"]) for row in rows)
 
     def read_child_signal(self, signal_id: str) -> ChildSignalRecord | None:
         row = self.database.connection.execute(
@@ -2465,6 +2988,17 @@ class SqliteExecutionUnitOfWork:
         ).fetchall()
         return tuple(_run_record(row) for row in rows)
 
+    def list_recoverable_child_runs(self) -> tuple[RunRecord, ...]:
+        rows = self.database.connection.execute(
+            """
+            SELECT * FROM runs
+            WHERE parent_run_id IS NOT NULL
+              AND state IN ('created', 'queued', 'running', 'cancel_requested')
+            ORDER BY created_at ASC, run_id ASC
+            """
+        ).fetchall()
+        return tuple(_run_record(row) for row in rows)
+
     def read_admission(self, admission_id: str) -> AdmissionRecord | None:
         row = self.database.connection.execute(
             "SELECT * FROM run_admissions WHERE admission_id = ?", (admission_id,)
@@ -2513,6 +3047,160 @@ class SqliteExecutionUnitOfWork:
         ):
             raise UnitOfWorkConflict("runtime lease is stale or expired")
 
+    def _require_continuation_claim(
+        self,
+        connection: sqlite3.Connection,
+        claim: ContinuationRecord,
+        lease: ExecutionLease,
+    ) -> None:
+        if claim.run_id != lease.run_id:
+            raise UnitOfWorkConflict("continuation claim belongs to another Run")
+        row = connection.execute(
+            "SELECT state,version,claimed_by,runtime_lease_epoch,claim_epoch "
+            "FROM continuations WHERE continuation_id=?",
+            (claim.continuation_id,),
+        ).fetchone()
+        if row is None or tuple(row) != (
+            "claimed",
+            claim.version,
+            lease.owner_id,
+            lease.epoch,
+            claim.claim_epoch,
+        ):
+            raise UnitOfWorkConflict("continuation claim is stale")
+
+    def _read_continuation_progress_receipt(
+        self, receipt_id: str
+    ) -> ContinuationProgressReceipt | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM continuation_progress_receipts WHERE receipt_id=?",
+            (receipt_id,),
+        ).fetchone()
+        return None if row is None else _continuation_progress_receipt(row)
+
+    def _read_child_terminal_receipt(
+        self, receipt_id: str
+    ) -> ChildTerminalReceipt | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM child_terminal_receipts WHERE receipt_id=?",
+            (receipt_id,),
+        ).fetchone()
+        return None if row is None else _child_terminal_receipt(row)
+
+    def _read_child_terminal_receipt_for_command(
+        self, command_id: str
+    ) -> ChildTerminalReceipt | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM child_terminal_receipts WHERE command_id=?",
+            (command_id,),
+        ).fetchone()
+        return None if row is None else _child_terminal_receipt(row)
+
+    def _replay_child_terminal(
+        self,
+        receipt: ChildTerminalReceipt,
+        *,
+        command_id: str,
+        terminal_state: RunState,
+        outcome_hash: str,
+        signal_id: str | None,
+        event_id: str,
+        run_fence: RunFenceLease,
+        execution_lease: ExecutionLease,
+    ) -> ChildTerminalResult:
+        if (
+            run_fence.owner_id != execution_lease.owner_id
+            or run_fence.runtime_lease_epoch != execution_lease.epoch
+        ):
+            raise UnitOfWorkConflict("child terminal authorities differ")
+        expected = (
+            command_id,
+            terminal_state.value,
+            outcome_hash,
+            signal_id,
+            event_id,
+            execution_lease.owner_id,
+            execution_lease.epoch,
+            run_fence.epoch,
+        )
+        actual = (
+            receipt.command_id,
+            receipt.terminal_state,
+            receipt.outcome_hash,
+            receipt.signal_id,
+            receipt.event_id,
+            receipt.owner_id,
+            receipt.runtime_lease_epoch,
+            receipt.fence_epoch,
+        )
+        if actual != expected or run_fence.run_id.value != receipt.child_run_id:
+            raise UnitOfWorkConflict("child terminal receipt differs")
+        return ChildTerminalResult(
+            receipt.child_run_id,
+            receipt.terminal_state,
+            receipt,
+            None if signal_id is None else self.read_child_signal(signal_id),
+        )
+
+    def _replay_continuation_progress(
+        self,
+        receipt: ContinuationProgressReceipt,
+        *,
+        continuation_claim: ContinuationRecord,
+        execution_lease: ExecutionLease,
+        outcome_hash: str,
+    ) -> ContinuationProgressResult:
+        expected = (
+            continuation_claim.continuation_id,
+            continuation_claim.run_id,
+            execution_lease.owner_id,
+            execution_lease.epoch,
+            continuation_claim.claim_epoch,
+            outcome_hash,
+        )
+        actual = (
+            receipt.continuation_id,
+            receipt.run_id,
+            receipt.owner_id,
+            receipt.runtime_lease_epoch,
+            receipt.claim_epoch,
+            receipt.outcome_hash,
+        )
+        if actual != expected:
+            raise UnitOfWorkConflict("continuation progress receipt differs")
+        run = self.read_run(receipt.run_id)
+        continuation = self.read_continuation(receipt.continuation_id)
+        if run is None or continuation is None:
+            raise UnitOfWorkConflict("continuation progress receipt is orphaned")
+        return ContinuationProgressResult(run, continuation, receipt)
+
+    def _replay_continuation_terminal(
+        self,
+        receipt: ContinuationProgressReceipt,
+        *,
+        continuation_claim: ContinuationRecord,
+        execution_lease: ExecutionLease,
+        outcome_hash: str,
+    ) -> ContinuationTerminalResult:
+        progress = self._replay_continuation_progress(
+            receipt,
+            continuation_claim=continuation_claim,
+            execution_lease=execution_lease,
+            outcome_hash=outcome_hash,
+        )
+        deliveries = tuple(
+            _delivery_record(row)
+            for row in self.database.connection.execute(
+                "SELECT * FROM delivery_outbox WHERE run_id=? ORDER BY delivery_id",
+                (receipt.run_id,),
+            ).fetchall()
+        )
+        return ContinuationTerminalResult(
+            TerminalCommitResult(progress.run, deliveries),
+            progress.continuation,
+            progress.receipt,
+        )
+
     def _require_run_fence(
         self,
         connection: sqlite3.Connection,
@@ -2525,12 +3213,17 @@ class SqliteExecutionUnitOfWork:
             "FROM run_fences WHERE run_id = ?",
             (fence.run_id.value,),
         ).fetchone()
-        if row is None or tuple(row) != (
-            fence.owner_id,
-            fence.runtime_lease_epoch,
-            fence.epoch,
-            "active",
-        ) or fence.runtime_lease_epoch != execution_lease.epoch:
+        if (
+            row is None
+            or tuple(row)
+            != (
+                fence.owner_id,
+                fence.runtime_lease_epoch,
+                fence.epoch,
+                "active",
+            )
+            or fence.runtime_lease_epoch != execution_lease.epoch
+        ):
             raise UnitOfWorkConflict("Run fence is stale or inactive")
 
     def _verify_existing_start(
@@ -2670,6 +3363,42 @@ def _continuation_record(row: sqlite3.Row) -> ContinuationRecord:
         state=ContinuationState(row["state"]),
         version=int(row["version"]),
         claimed_by=None if row["claimed_by"] is None else str(row["claimed_by"]),
+        runtime_lease_epoch=(
+            None
+            if row["runtime_lease_epoch"] is None
+            else int(row["runtime_lease_epoch"])
+        ),
+        claim_epoch=int(row["claim_epoch"]),
+        ack_receipt_id=(
+            None if row["ack_receipt_id"] is None else str(row["ack_receipt_id"])
+        ),
+    )
+
+
+def _continuation_progress_receipt(row: sqlite3.Row) -> ContinuationProgressReceipt:
+    return ContinuationProgressReceipt(
+        receipt_id=str(row["receipt_id"]),
+        continuation_id=str(row["continuation_id"]),
+        run_id=str(row["run_id"]),
+        owner_id=str(row["owner_id"]),
+        runtime_lease_epoch=int(row["runtime_lease_epoch"]),
+        claim_epoch=int(row["claim_epoch"]),
+        outcome_hash=str(row["outcome_hash"]),
+    )
+
+
+def _child_terminal_receipt(row: sqlite3.Row) -> ChildTerminalReceipt:
+    return ChildTerminalReceipt(
+        receipt_id=str(row["receipt_id"]),
+        command_id=str(row["command_id"]),
+        child_run_id=str(row["child_run_id"]),
+        terminal_state=str(row["terminal_state"]),
+        outcome_hash=str(row["outcome_hash"]),
+        signal_id=None if row["signal_id"] is None else str(row["signal_id"]),
+        event_id=str(row["event_id"]),
+        owner_id=str(row["owner_id"]),
+        runtime_lease_epoch=int(row["runtime_lease_epoch"]),
+        fence_epoch=int(row["fence_epoch"]),
     )
 
 

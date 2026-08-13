@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -15,9 +16,40 @@ from test_ticket_generation import (
     launch_request,
 )
 
+from simple_harness.contracts import RunId
 from simple_harness.execution.contracts.children import ChildSignalState
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import RunState, UnitOfWorkConflict
+
+
+def _terminalize_child(
+    uow: SqliteExecutionUnitOfWork,
+    *,
+    child_run_id: str,
+    command_id: str,
+    signal_id: str,
+    ordinal: int,
+) -> None:
+    _, lease = uow.claim_runtime_activation(
+        run_id=child_run_id,
+        owner_id=f"runtime-{child_run_id}",
+        namespace="runtime.kernel",
+        now=4.0,
+        lease_ttl_seconds=100.0,
+    )
+    fence = asyncio.run(uow.acquire(RunId(child_run_id), lease, now=4.0))
+    uow.finalize_child_and_enqueue_parent_signal(
+        command_id=command_id,
+        expected_child_version=1,
+        terminal_state=RunState.COMPLETED,
+        signal_id=signal_id,
+        signal_payload={"ordinal": ordinal},
+        event_id=f"event-{child_run_id}-terminal",
+        receipt_id=f"receipt-{child_run_id}-terminal",
+        run_fence=fence,
+        execution_lease=lease,
+        now=5.0,
+    )
 
 
 def _two_signals(path: Path) -> None:
@@ -42,23 +74,19 @@ def _two_signals(path: Path) -> None:
             command_id="command-2",
             request=second_request,
         )
-        uow.finalize_child_and_enqueue_parent_signal(
+        _terminalize_child(
+            uow,
+            child_run_id="child-1",
             command_id="command-1",
-            expected_child_version=0,
-            terminal_state=RunState.COMPLETED,
             signal_id="signal-1",
-            signal_payload={"ordinal": 1},
-            event_id="event-child-1-terminal",
-            now=5.0,
+            ordinal=1,
         )
-        uow.finalize_child_and_enqueue_parent_signal(
+        _terminalize_child(
+            uow,
+            child_run_id="child-2",
             command_id="command-2",
-            expected_child_version=0,
-            terminal_state=RunState.COMPLETED,
             signal_id="signal-2",
-            signal_payload={"ordinal": 2},
-            event_id="event-child-2-terminal",
-            now=5.0,
+            ordinal=2,
         )
 
 
@@ -143,12 +171,15 @@ def test_ack_retry_rejects_same_receipt_with_different_payload(tmp_path: Path) -
     _two_signals(path)
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
-        assert uow.claim_next_child_signal(
-            parent_run_id="root-1",
-            owner_id="runtime-a",
-            now=10.0,
-            lease_seconds=10.0,
-        ) is not None
+        assert (
+            uow.claim_next_child_signal(
+                parent_run_id="root-1",
+                owner_id="runtime-a",
+                now=10.0,
+                lease_seconds=10.0,
+            )
+            is not None
+        )
         ack(uow, now=11.0)
         with pytest.raises(UnitOfWorkConflict, match="differently"):
             ack(

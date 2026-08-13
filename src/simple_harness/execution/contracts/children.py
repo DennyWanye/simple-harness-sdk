@@ -28,7 +28,9 @@ def _required(value: object, name: str) -> str:
 
 def _sha256(value: object, name: str) -> str:
     text = _required(value, name)
-    if len(text) != 64 or any(character not in "0123456789abcdef" for character in text):
+    if len(text) != 64 or any(
+        character not in "0123456789abcdef" for character in text
+    ):
         raise ValueError(f"{name} must be lowercase SHA-256")
     return text
 
@@ -83,11 +85,17 @@ class ProfileLaunchTicket:
             object.__setattr__(self, name, _required(getattr(self, name), name))
         if isinstance(self.catalog_generation, bool) or self.catalog_generation < 1:
             raise ValueError("catalog_generation must be a positive integer")
-        object.__setattr__(self, "fingerprint", _sha256(self.fingerprint, "fingerprint"))
+        object.__setattr__(
+            self, "fingerprint", _sha256(self.fingerprint, "fingerprint")
+        )
         object.__setattr__(self, "state", ProfileLaunchTicketState(self.state))
         if self.child_run_id is not None:
-            object.__setattr__(self, "child_run_id", _required(self.child_run_id, "child_run_id"))
-        if (self.state is ProfileLaunchTicketState.CLAIMED) != (self.child_run_id is not None):
+            object.__setattr__(
+                self, "child_run_id", _required(self.child_run_id, "child_run_id")
+            )
+        if (self.state is ProfileLaunchTicketState.CLAIMED) != (
+            self.child_run_id is not None
+        ):
             raise ValueError("only claimed tickets must name their child run")
 
 
@@ -98,6 +106,11 @@ class ChildCommandRecord:
     child_run_id: str
     ticket_id: str
     state: ChildCommandState
+
+    def __post_init__(self) -> None:
+        for name in ("command_id", "parent_run_id", "child_run_id", "ticket_id"):
+            object.__setattr__(self, name, _required(getattr(self, name), name))
+        object.__setattr__(self, "state", ChildCommandState(self.state))
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +148,9 @@ class ChildSignalRecord:
             if any(value is not None for value in claim_values):
                 raise ValueError("pending child signal cannot have a claim lease")
             if self.claim_epoch != 0 or self.acked_at is not None:
-                raise ValueError("pending child signal cannot have claim or ack history")
+                raise ValueError(
+                    "pending child signal cannot have claim or ack history"
+                )
             if self.ack_receipt_id is not None:
                 raise ValueError("pending child signal cannot have an ack receipt")
             return
@@ -161,7 +176,9 @@ class ChildSignalRecord:
                 raise ValueError("claimed child signal cannot have ack metadata")
             return
 
-        if not isinstance(self.acked_at, (int, float)) or isinstance(self.acked_at, bool):
+        if not isinstance(self.acked_at, (int, float)) or isinstance(
+            self.acked_at, bool
+        ):
             raise TypeError("acked_at must be a number")
         acked_at = float(self.acked_at)
         if not math.isfinite(acked_at) or acked_at < 0:
@@ -201,7 +218,9 @@ class ChildSignalAckReceipt:
             raise ValueError("claim_epoch must be a positive integer")
         for name in ("continuation_payload_hash", "event_payload_hash"):
             object.__setattr__(self, name, _sha256(getattr(self, name), name))
-        if not isinstance(self.created_at, (int, float)) or isinstance(self.created_at, bool):
+        if not isinstance(self.created_at, (int, float)) or isinstance(
+            self.created_at, bool
+        ):
             raise TypeError("created_at must be a number")
         created_at = float(self.created_at)
         if not math.isfinite(created_at) or created_at < 0:
@@ -236,6 +255,64 @@ class ChildLaunchResult:
     child_run_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class ChildTerminalReceipt:
+    receipt_id: str
+    command_id: str
+    child_run_id: str
+    terminal_state: str
+    outcome_hash: str
+    signal_id: str | None
+    event_id: str
+    owner_id: str
+    runtime_lease_epoch: int
+    fence_epoch: int
+
+    def __post_init__(self) -> None:
+        for name in (
+            "receipt_id",
+            "command_id",
+            "child_run_id",
+            "event_id",
+            "owner_id",
+        ):
+            object.__setattr__(self, name, _required(getattr(self, name), name))
+        if self.signal_id is not None:
+            object.__setattr__(
+                self, "signal_id", _required(self.signal_id, "signal_id")
+            )
+        terminal_state = self.terminal_state.strip()
+        if terminal_state not in {"completed", "failed", "cancelled"}:
+            raise ValueError("terminal_state must be terminal")
+        object.__setattr__(self, "terminal_state", terminal_state)
+        object.__setattr__(
+            self, "outcome_hash", _sha256(self.outcome_hash, "outcome_hash")
+        )
+        for name in ("runtime_lease_epoch", "fence_epoch"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+
+
+@dataclass(frozen=True, slots=True)
+class ChildTerminalResult:
+    run_id: str
+    terminal_state: str
+    receipt: ChildTerminalReceipt
+    signal: ChildSignalRecord | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "run_id", _required(self.run_id, "run_id"))
+        if self.run_id != self.receipt.child_run_id:
+            raise ValueError("terminal receipt belongs to another child Run")
+        if self.terminal_state != self.receipt.terminal_state:
+            raise ValueError("terminal state differs from its receipt")
+        if (self.signal is None) != (self.receipt.signal_id is None):
+            raise ValueError("terminal signal differs from its receipt")
+        if self.signal is not None and self.signal.signal_id != self.receipt.signal_id:
+            raise ValueError("terminal signal identity differs from its receipt")
+
+
 __all__ = (
     "AttachmentPolicy",
     "ChildCommandRecord",
@@ -245,6 +322,8 @@ __all__ = (
     "ChildSignalAckResult",
     "ChildSignalRecord",
     "ChildSignalState",
+    "ChildTerminalReceipt",
+    "ChildTerminalResult",
     "ProfileLaunchTicket",
     "ProfileLaunchTicketState",
     "child_launch_fingerprint",

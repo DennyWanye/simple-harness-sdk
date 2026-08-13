@@ -12,8 +12,11 @@ from typing import Protocol
 from simple_harness.contracts import FrozenJsonValue, JsonValue, freeze_json
 from simple_harness.execution.contracts.children import (
     AttachmentPolicy,
+    ChildCommandRecord,
     ChildLaunchResult,
+    ProfileLaunchTicket,
 )
+from simple_harness.execution.uow import RunRecord
 
 
 def _required(value: object, name: str) -> str:
@@ -58,6 +61,21 @@ class ChildLaunchRequest:
             object.__setattr__(self, name, freeze_json(value))
 
 
+@dataclass(frozen=True, slots=True)
+class ChildRunHandle:
+    run: RunRecord
+    ticket: ProfileLaunchTicket
+    command: ChildCommandRecord
+
+    def __post_init__(self) -> None:
+        if self.run.run_id != self.command.child_run_id:
+            raise ValueError("child handle command belongs to another Run")
+        if self.ticket.ticket_id != self.command.ticket_id:
+            raise ValueError("child handle command belongs to another ticket")
+        if self.ticket.child_run_id != self.run.run_id:
+            raise ValueError("child handle ticket belongs to another Run")
+
+
 class ChildRunUnitOfWork(Protocol):
     def claim_profile_launch_and_commit_child(
         self,
@@ -77,6 +95,7 @@ class ChildRunUnitOfWork(Protocol):
 
 __all__ = (
     "ChildLaunchRequest",
+    "ChildRunHandle",
     "ChildRunUnitOfWork",
     "ProfileLaunchTicketRef",
 )

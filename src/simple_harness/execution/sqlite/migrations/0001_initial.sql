@@ -77,19 +77,41 @@ CREATE TABLE continuations (
     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
     fifo_seq INTEGER NOT NULL CHECK(fifo_seq >= 1),
     payload_json TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('pending', 'claimed', 'acked')),
+    state TEXT NOT NULL CHECK(state IN ('pending', 'claimed', 'acked', 'quarantined')),
     version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0),
     claimed_by TEXT,
+    runtime_lease_epoch INTEGER,
+    claim_epoch INTEGER NOT NULL DEFAULT 0 CHECK(claim_epoch >= 0),
+    ack_receipt_id TEXT UNIQUE REFERENCES continuation_progress_receipts(receipt_id),
     created_at REAL NOT NULL CHECK(created_at >= 0),
     claimed_at REAL,
     acked_at REAL,
     UNIQUE(run_id, fifo_seq),
-    CHECK((state = 'pending' AND claimed_by IS NULL AND claimed_at IS NULL AND acked_at IS NULL)
-       OR (state = 'claimed' AND claimed_by IS NOT NULL AND claimed_at IS NOT NULL AND acked_at IS NULL)
-       OR (state = 'acked' AND claimed_by IS NOT NULL AND claimed_at IS NOT NULL AND acked_at IS NOT NULL))
+    CHECK((state = 'pending' AND claimed_by IS NULL AND runtime_lease_epoch IS NULL
+             AND claimed_at IS NULL AND acked_at IS NULL AND claim_epoch = 0
+             AND ack_receipt_id IS NULL)
+       OR (state = 'claimed' AND claimed_by IS NOT NULL AND runtime_lease_epoch >= 1
+             AND claimed_at IS NOT NULL AND acked_at IS NULL AND claim_epoch >= 1
+             AND ack_receipt_id IS NULL)
+       OR (state = 'acked' AND claimed_by IS NOT NULL AND runtime_lease_epoch >= 1
+             AND claimed_at IS NOT NULL AND acked_at IS NOT NULL AND claim_epoch >= 1
+             AND ack_receipt_id IS NOT NULL)
+       OR (state = 'quarantined' AND acked_at IS NOT NULL))
 ) STRICT;
 
 CREATE INDEX continuations_fifo_idx ON continuations(run_id, state, fifo_seq);
+
+CREATE TABLE continuation_progress_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    continuation_id TEXT NOT NULL UNIQUE REFERENCES continuations(continuation_id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL,
+    runtime_lease_epoch INTEGER NOT NULL CHECK(runtime_lease_epoch >= 1),
+    claim_epoch INTEGER NOT NULL CHECK(claim_epoch >= 1),
+    outcome_hash TEXT NOT NULL CHECK(length(outcome_hash) = 64),
+    created_at REAL NOT NULL CHECK(created_at >= 0),
+    UNIQUE(continuation_id, owner_id, runtime_lease_epoch, claim_epoch)
+) STRICT;
 
 CREATE TABLE profile_launch_tickets (
     ticket_id TEXT PRIMARY KEY,
@@ -120,6 +142,20 @@ CREATE TABLE run_links (
     created_at REAL NOT NULL CHECK(created_at >= 0),
     PRIMARY KEY(parent_run_id, child_run_id),
     CHECK(parent_run_id <> child_run_id)
+) STRICT;
+
+CREATE TABLE child_terminal_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    command_id TEXT NOT NULL UNIQUE REFERENCES child_commands(command_id) ON DELETE CASCADE,
+    child_run_id TEXT NOT NULL UNIQUE REFERENCES runs(run_id) ON DELETE CASCADE,
+    terminal_state TEXT NOT NULL CHECK(terminal_state IN ('completed','failed','cancelled')),
+    outcome_hash TEXT NOT NULL CHECK(length(outcome_hash) = 64),
+    signal_id TEXT UNIQUE,
+    event_id TEXT NOT NULL UNIQUE REFERENCES run_events(event_id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL,
+    runtime_lease_epoch INTEGER NOT NULL CHECK(runtime_lease_epoch >= 1),
+    fence_epoch INTEGER NOT NULL CHECK(fence_epoch >= 1),
+    created_at REAL NOT NULL CHECK(created_at >= 0)
 ) STRICT;
 
 CREATE TABLE child_signals (

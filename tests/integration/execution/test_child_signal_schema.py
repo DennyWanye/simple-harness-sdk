@@ -11,9 +11,9 @@ from test_atomic_child_terminal_signal import finalize, setup_child
 
 
 def test_schema_rejects_claim_without_complete_lease(tmp_path: Path) -> None:
-    database, uow = setup_child(tmp_path / "execution.db")
+    database, uow, lease, fence = setup_child(tmp_path / "execution.db")
     try:
-        finalize(uow)
+        finalize(uow, lease, fence)
         with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
             database.connection.execute(
                 "UPDATE child_signals SET state = 'claimed' WHERE signal_id = 'signal-1'"
@@ -27,9 +27,9 @@ def test_schema_rejects_claim_without_complete_lease(tmp_path: Path) -> None:
 def test_schema_preserves_monotonic_epoch_across_expired_reclaim(
     tmp_path: Path,
 ) -> None:
-    database, uow = setup_child(tmp_path / "execution.db")
+    database, uow, lease, fence = setup_child(tmp_path / "execution.db")
     try:
-        finalize(uow)
+        finalize(uow, lease, fence)
         database.connection.execute(
             """
             UPDATE child_signals
@@ -63,9 +63,9 @@ def test_schema_preserves_monotonic_epoch_across_expired_reclaim(
 
 
 def test_schema_rejects_ack_without_durable_receipt(tmp_path: Path) -> None:
-    database, uow = setup_child(tmp_path / "execution.db")
+    database, uow, lease, fence = setup_child(tmp_path / "execution.db")
     try:
-        finalize(uow)
+        finalize(uow, lease, fence)
         database.connection.execute(
             """
             UPDATE child_signals

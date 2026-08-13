@@ -3,19 +3,27 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 from test_atomic_child_launch import InjectedFault, raise_at
 from test_ticket_generation import claim_child, create_root, issue_ticket
 
+from simple_harness.contracts import RunId
 from simple_harness.execution.contracts.children import ChildSignalState
+from simple_harness.execution.fences import RunFenceLease
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
-from simple_harness.execution.uow import ContinuationState, RunState, UnitOfWorkConflict
+from simple_harness.execution.uow import (
+    ContinuationState,
+    ExecutionLease,
+    RunState,
+    UnitOfWorkConflict,
+)
 
 TERMINAL_POINTS = tuple(
     f"child_terminal.{write}.{side}_write"
-    for write in ("run", "command", "signal", "event")
+    for write in ("run", "command", "signal", "event", "receipt", "fence")
     for side in ("before", "after")
 )
 ACK_POINTS = tuple(
@@ -25,23 +33,42 @@ ACK_POINTS = tuple(
 )
 
 
-def setup_child(path: Path) -> tuple[Database, SqliteExecutionUnitOfWork]:
+def setup_child(
+    path: Path,
+) -> tuple[Database, SqliteExecutionUnitOfWork, ExecutionLease, RunFenceLease]:
     database = Database.open(path)
     uow = SqliteExecutionUnitOfWork(database)
     create_root(uow)
     issue_ticket(uow)
     claim_child(uow)
-    return database, uow
+    _, lease = uow.claim_runtime_activation(
+        run_id="child-1",
+        owner_id="runtime-child",
+        namespace="runtime.kernel",
+        now=3.5,
+        lease_ttl_seconds=100.0,
+    )
+    fence = asyncio.run(uow.acquire(RunId("child-1"), lease, now=3.5))
+    return database, uow, lease, fence
 
 
-def finalize(uow: SqliteExecutionUnitOfWork, *, fault=None):
+def finalize(
+    uow: SqliteExecutionUnitOfWork,
+    lease: ExecutionLease,
+    fence: RunFenceLease,
+    *,
+    fault=None,
+):
     return uow.finalize_child_and_enqueue_parent_signal(
         command_id="command-1",
-        expected_child_version=0,
+        expected_child_version=1,
         terminal_state=RunState.COMPLETED,
         signal_id="signal-1",
         signal_payload={"outcome": "completed", "value": {"answer": 42}},
         event_id="event-child-terminal",
+        receipt_id="receipt-child-terminal",
+        run_fence=fence,
+        execution_lease=lease,
         now=4.0,
         fault=fault,
     )
@@ -98,36 +125,45 @@ def ack(
 
 
 @pytest.mark.parametrize("fault_point", TERMINAL_POINTS)
-def test_child_terminal_fault_reopens_all_before(tmp_path: Path, fault_point: str) -> None:
+def test_child_terminal_fault_reopens_all_before(
+    tmp_path: Path, fault_point: str
+) -> None:
     path = tmp_path / "execution.db"
-    database, uow = setup_child(path)
+    database, uow, lease, fence = setup_child(path)
     with pytest.raises(InjectedFault, match=fault_point):
-        finalize(uow, fault=raise_at(fault_point))
+        finalize(uow, lease, fence, fault=raise_at(fault_point))
     database.close()
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
-        assert uow.read_run("child-1").state is RunState.CREATED  # type: ignore[union-attr]
+        assert uow.read_run("child-1").state is RunState.RUNNING  # type: ignore[union-attr]
         assert uow.read_child_command("command-1").state.value == "pending"  # type: ignore[union-attr]
         assert uow.read_child_signal("signal-1") is None
 
 
 def test_child_terminal_after_commit_reopens_all_after(tmp_path: Path) -> None:
     path = tmp_path / "execution.db"
-    database, uow = setup_child(path)
+    database, uow, lease, fence = setup_child(path)
     with pytest.raises(InjectedFault, match="child_terminal.after_commit"):
-        finalize(uow, fault=raise_at("child_terminal.after_commit"))
+        finalize(
+            uow,
+            lease,
+            fence,
+            fault=raise_at("child_terminal.after_commit"),
+        )
     database.close()
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
-        assert finalize(uow).state is ChildSignalState.PENDING
+        result = finalize(uow, lease, fence)
+        assert result.signal is not None
+        assert result.signal.state is ChildSignalState.PENDING
         assert uow.read_run("child-1").state is RunState.COMPLETED  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("fault_point", ACK_POINTS)
 def test_signal_ack_fault_reopens_all_before(tmp_path: Path, fault_point: str) -> None:
     path = tmp_path / "execution.db"
-    database, uow = setup_child(path)
-    finalize(uow)
+    database, uow, lease, fence = setup_child(path)
+    finalize(uow, lease, fence)
     claimed = claim(uow)
     assert claimed is not None and claimed.claim_epoch == 1
     with pytest.raises(InjectedFault, match=fault_point):
@@ -140,16 +176,21 @@ def test_signal_ack_fault_reopens_all_before(tmp_path: Path, fault_point: str) -
         assert signal.claimed_by == "runtime-a" and signal.claim_epoch == 1
         assert uow.read_continuation("continuation-child-1") is None
         assert uow.read_child_signal_ack_receipt("receipt-signal-1") is None
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM run_events WHERE event_id = 'event-signal-acked'"
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM run_events WHERE event_id = 'event-signal-acked'"
+            ).fetchone()[0]
+            == 0
+        )
         assert uow.read_run("root-1").state is RunState.WAITING  # type: ignore[union-attr]
 
 
-def test_signal_ack_after_commit_reopens_all_after_and_is_idempotent(tmp_path: Path) -> None:
+def test_signal_ack_after_commit_reopens_all_after_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "execution.db"
-    database, uow = setup_child(path)
-    finalize(uow)
+    database, uow, lease, fence = setup_child(path)
+    finalize(uow, lease, fence)
     assert claim(uow) is not None
     with pytest.raises(InjectedFault, match="child_signal_ack.after_commit"):
         ack(uow, fault=raise_at("child_signal_ack.after_commit"))
@@ -160,7 +201,9 @@ def test_signal_ack_after_commit_reopens_all_after_and_is_idempotent(tmp_path: P
         assert repeated.signal.state is ChildSignalState.ACKED
         assert repeated.receipt.receipt_id == "receipt-signal-1"
         continuation = uow.read_continuation("continuation-child-1")
-        assert continuation is not None and continuation.state is ContinuationState.PENDING
+        assert (
+            continuation is not None and continuation.state is ContinuationState.PENDING
+        )
         assert uow.read_run("root-1").state is RunState.QUEUED  # type: ignore[union-attr]
         with pytest.raises(UnitOfWorkConflict, match="differently"):
             uow.ack_child_signal_and_commit_parent_progress(
