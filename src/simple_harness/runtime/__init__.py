@@ -11,6 +11,7 @@ from .child_runs import (
 )
 from .child_signal_runtime import ChildSignalRuntime, ChildSignalUnitOfWork
 from .context import ContextPort, ContextSnapshot, SqliteContextPort
+from .drivers.react_loop import AgentLoopCollaborator, EffectBatchExecutor
 from .kernel import (
     ROOT_PROFILE_KEY,
     DriverInvocation,
@@ -41,6 +42,7 @@ __all__ = (
     "STARTUP_RECONCILIATION_ORDER",
     "AdmissionPort",
     "AdmissionVerdict",
+    "AgentLoopCollaborator",
     "AllowAllAdmission",
     "ChildLaunchRequest",
     "ChildRunUnitOfWork",
@@ -51,6 +53,7 @@ __all__ = (
     "ContinuationUnitOfWork",
     "DriverInvocation",
     "DriverResult",
+    "EffectBatchExecutor",
     "ProfileLaunchTicketRef",
     "ReconciliationPhase",
     "RunClient",

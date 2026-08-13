@@ -97,11 +97,14 @@ class StartSnapshot:
 def bind_start_snapshot(
     start: RunStart, *, profile_key: str, driver_kind: str
 ) -> StartSnapshot:
+    input_value = thaw_json(start.input)
+    if not isinstance(input_value, dict):
+        raise TypeError("start input must remain a JSON object")
     return StartSnapshot(
         profile_key=profile_key,
         driver_kind=driver_kind,
         tool_catalog_generation=start.tool_catalog_generation,
-        input=freeze_json(dict(start.input)),
+        input=freeze_json(input_value),
     )
 
 

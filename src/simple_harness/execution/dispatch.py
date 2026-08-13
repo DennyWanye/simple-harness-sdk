@@ -192,6 +192,11 @@ class ProviderInvocationCoordinator:
             )
         return claimed
 
+    def read_provider_budget(self, run_id: RunId) -> BudgetSnapshot:
+        """Expose the durable budget authority without leaking the UoW."""
+
+        return self._uow.read_provider_budget(run_id)
+
     async def invoke(
         self,
         run_id: RunId,

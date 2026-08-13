@@ -19,6 +19,7 @@ from simple_harness.execution.effects import (
 )
 from simple_harness.execution.fences import RunFenceLease
 from simple_harness.execution.uow import RUNTIME_LEASE_NAMESPACE, ExecutionLease
+from simple_harness.providers import ProviderToolSpec
 
 from .authorization import (
     AuthorizationDecision,
@@ -56,6 +57,16 @@ class EffectExecutor:
         self._authorization = authorization
         self._reconciliation = reconciliation
         self._clock = clock
+
+    def provider_tool_specs(self, names: tuple[str, ...]) -> tuple[ProviderToolSpec, ...]:
+        """Project an allowlisted capability snapshot into Provider declarations."""
+
+        requested = set(names)
+        return tuple(
+            ProviderToolSpec(spec.name, spec.description, thaw_json(spec.input_schema))
+            for spec in self._registry.specs
+            if spec.name in requested
+        )
 
     def _prepared(
         self,
