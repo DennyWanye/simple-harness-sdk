@@ -251,6 +251,8 @@ class OpenAICompatibleProvider:
         tool_calls = self._parse_tool_calls(raw_message.get("tool_calls", []))
         usage = self._parse_usage(payload.get("usage"))
         model = payload.get("model")
+        if model is None:
+            model = self._target.model
         finish_reason = choice.get("finish_reason")
         provider_request_id = response.headers.get("x-request-id") or payload.get("id")
         for field_value in (model, finish_reason, provider_request_id):
