@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "simple-harness-sdk"
+version = "0.1.0"
+description = "Embeddable durable agent runtime and workflow SDK"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [
+  { name = "DennyWanye" },
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: OS Independent",
+]
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<9",
+  "reuse>=5.0,<6",
+  "twine>=6.1,<7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/simple_harness"]
+core-metadata-version = "2.4"
+
+[tool.hatch.build.targets.sdist]
+core-metadata-version = "2.4"
+include = [
+  "/.github",
+  "/LICENSES",
+  "/NOTICE",
+  "/README.md",
+  "/REUSE.toml",
+  "/pyproject.toml",
+  "/scripts",
+  "/src",
+  "/source-manifest.tsv",
+  "/tests",
+  "/uv.lock",
+]
+exclude = [
+  "/.git",
+  "/.local-test-evidence",
+  "/.pytest_cache",
+  "/.venv*",
+  "/build",
+  "/dist",
+  "**/__pycache__",
+  "**/*.pyc",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]

@@ -1,0 +1,66 @@
+name: Release candidate
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+      - name: Build canonical artifacts once
+        env:
+          SOURCE_DATE_EPOCH: "0"
+        run: uv build --out-dir dist
+      - name: Record checksums
+        run: sha256sum dist/* > dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-distributions
+          path: dist/*
+          if-no-files-found: error
+
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist
+      - name: Verify and install the exact artifact
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          uv venv .release-venv --python 3.11
+          uv pip install --python .release-venv/bin/python dist/*.whl
+          .release-venv/bin/python -I -c 'import simple_harness; assert simple_harness.__version__ == "0.1.0"'
+
+  publish-candidate:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist
+      - name: Assert publishing input was not rebuilt
+        run: (cd dist && sha256sum --check SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tested-release-candidate
+          path: dist/*
+          if-no-files-found: error
