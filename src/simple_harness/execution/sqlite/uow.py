@@ -10,7 +10,7 @@ import json
 import math
 import sqlite3
 import time
-from typing import Mapping
+from collections.abc import Mapping, Sequence
 
 from simple_harness.contracts import (
     CallId,
@@ -33,6 +33,14 @@ from simple_harness.execution.contracts.children import (
     ProfileLaunchTicket,
     ProfileLaunchTicketState,
     child_launch_fingerprint,
+)
+from simple_harness.execution.delivery import (
+    DeliveryConflictError,
+    DeliveryRecord,
+    DeliverySpec,
+    DeliveryState,
+    TerminalCommitResult,
+    delivery_payload_json,
 )
 from simple_harness.execution.effects import EffectRecord, EffectState
 from simple_harness.execution.fences import RunFenceLease
@@ -78,7 +86,7 @@ def _time(value: object, name: str = "now") -> float:
 
 def _object_json(value: Mapping[str, JsonValue], name: str) -> str:
     if not isinstance(value, dict):
-        raise ValueError(f"{name} must be a JSON object")
+        raise TypeError(f"{name} must be a JSON object")
     return canonical_json(value)
 
 
@@ -92,6 +100,295 @@ class SqliteExecutionUnitOfWork:
 
     def __init__(self, database: Database) -> None:
         self.database = database
+
+    def commit_root_terminal_with_deliveries(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        terminal_state: RunState,
+        event_id: str,
+        terminal_payload: Mapping[str, JsonValue],
+        deliveries: Sequence[DeliverySpec],
+        fence: RunFenceLease,
+        terminal_fence_receipt_ref: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> TerminalCommitResult:
+        run_id = _required(run_id, "run_id")
+        event_id = _required(event_id, "event_id")
+        terminal_fence_receipt_ref = _required(
+            terminal_fence_receipt_ref, "terminal_fence_receipt_ref"
+        )
+        if isinstance(expected_version, bool) or expected_version < 0:
+            raise ValueError("expected_version must be non-negative")
+        terminal_state = RunState(terminal_state)
+        if terminal_state not in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+            raise ValueError("root terminal command requires a terminal state")
+        if fence.run_id.value != run_id:
+            raise UnitOfWorkConflict("terminal fence belongs to another run")
+        now = _time(now)
+        payload = dict(terminal_payload)
+        payload["terminal_fence_receipt_ref"] = terminal_fence_receipt_ref
+        payload["fence_epoch"] = fence.epoch
+        payload_json = _object_json(payload, "terminal_payload")
+        items = tuple(deliveries)
+        identities = [item.idempotency_key for item in items]
+        if len(set(identities)) != len(identities):
+            raise DeliveryConflictError("duplicate delivery idempotency key")
+
+        existing_run = self.read_run(run_id)
+        if existing_run is None:
+            raise UnitOfWorkNotFound(run_id)
+        if existing_run.parent_run_id is not None:
+            raise UnitOfWorkConflict("only root runs can commit terminal deliveries")
+        if existing_run.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+            existing_event = self.database.connection.execute(
+                "SELECT kind, payload_json FROM run_events WHERE event_id = ? AND run_id = ?",
+                (event_id, run_id),
+            ).fetchone()
+            stored = tuple(
+                _delivery_record(row)
+                for row in self.database.connection.execute(
+                    "SELECT * FROM delivery_outbox WHERE run_id = ? ORDER BY delivery_id",
+                    (run_id,),
+                ).fetchall()
+            )
+            requested_rows: list[tuple[str, str, str, str]] = []
+            for item in items:
+                replay_payload = _thaw(item.payload)
+                replay_payload["terminal_fence_receipt_ref"] = terminal_fence_receipt_ref
+                replay_payload["fence_epoch"] = fence.epoch
+                requested_rows.append(
+                    (
+                        item.delivery_id,
+                        item.sink_kind,
+                        item.idempotency_key,
+                        delivery_payload_json(replay_payload),
+                    )
+                )
+            requested = tuple(sorted(requested_rows))
+            actual = tuple(sorted((item.delivery_id, item.sink_kind, item.idempotency_key, canonical_json(_thaw(item.payload))) for item in stored))
+            if (
+                existing_run.state is terminal_state
+                and existing_event is not None
+                and str(existing_event["kind"]) == f"run.{terminal_state.value}"
+                and str(existing_event["payload_json"]) == payload_json
+                and requested == actual
+            ):
+                return TerminalCommitResult(existing_run, stored)
+            raise UnitOfWorkConflict("another root terminal intent already won")
+
+        with self.database.transaction() as connection:
+            current_fence = connection.execute(
+                "SELECT owner_id, epoch, state FROM run_fences WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if current_fence is None or tuple(current_fence) != (
+                fence.owner_id,
+                fence.epoch,
+                "active",
+            ):
+                raise UnitOfWorkConflict("terminal fence is stale or inactive")
+            _fault(fault, "root_terminal.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=run_id,
+                kind=f"run.{terminal_state.value}",
+                payload=payload,
+                now=now,
+            )
+            _fault(fault, "root_terminal.event.after_write")
+            for index, item in enumerate(items):
+                _fault(fault, f"root_terminal.delivery.{index}.before_write")
+                bound_payload = _thaw(item.payload)
+                bound_payload["terminal_fence_receipt_ref"] = terminal_fence_receipt_ref
+                bound_payload["fence_epoch"] = fence.epoch
+                connection.execute(
+                    """
+                    INSERT INTO delivery_outbox(
+                        delivery_id, run_id, sink_kind, idempotency_key,
+                        payload_json, state, version, created_at, claimed_at, settled_at
+                    ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL)
+                    """,
+                    (
+                        item.delivery_id,
+                        run_id,
+                        item.sink_kind,
+                        item.idempotency_key,
+                        delivery_payload_json(bound_payload),
+                        now,
+                    ),
+                )
+                _fault(fault, f"root_terminal.delivery.{index}.after_write")
+            _fault(fault, "root_terminal.fence.before_write")
+            changed = connection.execute(
+                """
+                UPDATE run_fences SET state = 'released', released_at = ?
+                WHERE run_id = ? AND owner_id = ? AND epoch = ? AND state = 'active'
+                """,
+                (now, run_id, fence.owner_id, fence.epoch),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("terminal fence release CAS failed")
+            _fault(fault, "root_terminal.fence.after_write")
+            _fault(fault, "root_terminal.run.before_write")
+            changed = connection.execute(
+                """
+                UPDATE runs SET state = ?, version = version + 1, updated_at = ?
+                WHERE run_id = ? AND parent_run_id IS NULL AND version = ?
+                  AND state NOT IN ('completed', 'failed', 'cancelled')
+                """,
+                (terminal_state.value, now, run_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("root terminal CAS failed")
+            _fault(fault, "root_terminal.run.after_write")
+        _fault(fault, "root_terminal.after_commit")
+        run = self.read_run(run_id)
+        assert run is not None
+        stored = tuple(
+            record
+            for item in items
+            if (record := self.read_delivery(item.delivery_id)) is not None
+        )
+        return TerminalCommitResult(run, stored)
+
+    def claim_delivery(
+        self,
+        *,
+        sink_kinds: Sequence[str],
+        now: float,
+        claim_ttl_seconds: float,
+        fault: FaultHook | None = None,
+    ) -> DeliveryRecord | None:
+        now = _time(now)
+        if not math.isfinite(claim_ttl_seconds) or claim_ttl_seconds <= 0:
+            raise ValueError("claim_ttl_seconds must be finite and positive")
+        normalized = tuple(_required(item, "sink_kind") for item in sink_kinds)
+        if not normalized:
+            return None
+        placeholders = ",".join("?" for _ in normalized)
+        claimed_id: str | None = None
+        with self.database.transaction() as connection:
+            _fault(fault, "delivery_claim.expired.before_write")
+            connection.execute(
+                """
+                UPDATE delivery_outbox SET state = 'pending', version = version + 1,
+                    claimed_at = NULL
+                WHERE state = 'claimed' AND claimed_at <= ?
+                """,
+                (now - claim_ttl_seconds,),
+            )
+            _fault(fault, "delivery_claim.expired.after_write")
+            row = connection.execute(
+                f"""
+                SELECT delivery_id, version FROM delivery_outbox
+                WHERE state = 'pending' AND sink_kind IN ({placeholders})
+                ORDER BY created_at, delivery_id LIMIT 1
+                """,
+                normalized,
+            ).fetchone()
+            if row is not None:
+                claimed_id = str(row["delivery_id"])
+                _fault(fault, "delivery_claim.delivery.before_write")
+                changed = connection.execute(
+                    """
+                    UPDATE delivery_outbox SET state = 'claimed', version = version + 1,
+                        claimed_at = ?
+                    WHERE delivery_id = ? AND state = 'pending' AND version = ?
+                    """,
+                    (now, claimed_id, int(row["version"])),
+                ).rowcount
+                if changed != 1:
+                    raise DeliveryConflictError("delivery claim CAS failed")
+                _fault(fault, "delivery_claim.delivery.after_write")
+        _fault(fault, "delivery_claim.after_commit")
+        return None if claimed_id is None else self.read_delivery(claimed_id)
+
+    def complete_delivery(
+        self,
+        delivery_id: str,
+        *,
+        expected_version: int,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> DeliveryRecord:
+        return self._settle_delivery(
+            delivery_id,
+            expected_version=expected_version,
+            target_state=DeliveryState.DELIVERED,
+            now=now,
+            fault=fault,
+            command="delivery_complete",
+        )
+
+    def release_delivery(
+        self,
+        delivery_id: str,
+        *,
+        expected_version: int,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> DeliveryRecord:
+        return self._settle_delivery(
+            delivery_id,
+            expected_version=expected_version,
+            target_state=DeliveryState.PENDING,
+            now=now,
+            fault=fault,
+            command="delivery_release",
+        )
+
+    def read_delivery(self, delivery_id: str) -> DeliveryRecord | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM delivery_outbox WHERE delivery_id = ?", (delivery_id,)
+        ).fetchone()
+        return None if row is None else _delivery_record(row)
+
+    def _settle_delivery(
+        self,
+        delivery_id: str,
+        *,
+        expected_version: int,
+        target_state: DeliveryState,
+        now: float,
+        fault: FaultHook | None,
+        command: str,
+    ) -> DeliveryRecord:
+        delivery_id = _required(delivery_id, "delivery_id")
+        now = _time(now)
+        existing = self.read_delivery(delivery_id)
+        if existing is None:
+            raise UnitOfWorkNotFound(delivery_id)
+        if existing.state is target_state and existing.version == expected_version + 1:
+            return existing
+        with self.database.transaction() as connection:
+            _fault(fault, f"{command}.delivery.before_write")
+            changed = connection.execute(
+                """
+                UPDATE delivery_outbox SET state = ?, version = version + 1,
+                    claimed_at = CASE WHEN ? = 'pending' THEN NULL ELSE claimed_at END,
+                    settled_at = CASE WHEN ? = 'delivered' THEN ? ELSE settled_at END
+                WHERE delivery_id = ? AND state = 'claimed' AND version = ?
+                """,
+                (
+                    target_state.value,
+                    target_state.value,
+                    target_state.value,
+                    now,
+                    delivery_id,
+                    expected_version,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise DeliveryConflictError("delivery settlement CAS failed")
+            _fault(fault, f"{command}.delivery.after_write")
+        _fault(fault, f"{command}.after_commit")
+        result = self.read_delivery(delivery_id)
+        assert result is not None
+        return result
 
     def create_with_start_snapshot(
         self,
@@ -1615,6 +1912,18 @@ def _continuation_record(row: sqlite3.Row) -> ContinuationRecord:
         state=ContinuationState(row["state"]),
         version=int(row["version"]),
         claimed_by=None if row["claimed_by"] is None else str(row["claimed_by"]),
+    )
+
+
+def _delivery_record(row: sqlite3.Row) -> DeliveryRecord:
+    return DeliveryRecord(
+        delivery_id=str(row["delivery_id"]),
+        run_id=str(row["run_id"]),
+        sink_kind=str(row["sink_kind"]),
+        idempotency_key=str(row["idempotency_key"]),
+        payload=freeze_json(json.loads(str(row["payload_json"]))),
+        state=DeliveryState(str(row["state"])),
+        version=int(row["version"]),
     )
 
 

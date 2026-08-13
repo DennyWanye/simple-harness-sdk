@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from simple_harness.contracts import FrozenJsonValue, JsonValue
 from simple_harness.execution.contracts.children import (
@@ -18,6 +19,14 @@ from simple_harness.execution.contracts.children import (
 )
 from simple_harness.execution.dispatch import ProviderInvocationUnitOfWork
 from simple_harness.execution.effects import EffectUnitOfWork
+from simple_harness.execution.fences import RunFenceLease
+
+if TYPE_CHECKING:
+    from simple_harness.execution.delivery import (
+        DeliveryRecord,
+        DeliverySpec,
+        TerminalCommitResult,
+    )
 
 
 FaultHook = Callable[[str], None]
@@ -112,6 +121,48 @@ class ContinuationRecord:
 
 
 class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protocol):
+    def commit_root_terminal_with_deliveries(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        terminal_state: RunState,
+        event_id: str,
+        terminal_payload: Mapping[str, JsonValue],
+        deliveries: Sequence[DeliverySpec],
+        fence: RunFenceLease,
+        terminal_fence_receipt_ref: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> TerminalCommitResult: ...
+
+    def claim_delivery(
+        self,
+        *,
+        sink_kinds: Sequence[str],
+        now: float,
+        claim_ttl_seconds: float,
+        fault: FaultHook | None = None,
+    ) -> DeliveryRecord | None: ...
+
+    def complete_delivery(
+        self,
+        delivery_id: str,
+        *,
+        expected_version: int,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> DeliveryRecord: ...
+
+    def release_delivery(
+        self,
+        delivery_id: str,
+        *,
+        expected_version: int,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> DeliveryRecord: ...
+
     def issue_profile_launch_ticket(
         self,
         ticket: ProfileLaunchTicket,
