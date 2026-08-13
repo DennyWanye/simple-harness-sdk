@@ -226,6 +226,68 @@ CREATE TABLE workflow_leases (
     PRIMARY KEY(run_id, namespace)
 ) STRICT;
 
+CREATE TABLE workflow_operation_receipts (
+    operation_id TEXT PRIMARY KEY,
+    adapter_method TEXT NOT NULL,
+    identity_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL CHECK(length(payload_hash) = 64),
+    outcome_json TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    namespace TEXT NOT NULL,
+    checkpoint_id TEXT,
+    lease_epoch INTEGER NOT NULL CHECK(lease_epoch >= 1),
+    created_at REAL NOT NULL CHECK(created_at >= 0)
+) STRICT;
+
+CREATE TABLE terminal_projection_prepares (
+    operation_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    namespace TEXT NOT NULL,
+    terminal_checkpoint_id TEXT NOT NULL,
+    descriptor_digest TEXT NOT NULL CHECK(length(descriptor_digest) = 64),
+    input_hash TEXT NOT NULL CHECK(length(input_hash) = 64),
+    output_json TEXT NOT NULL,
+    output_hash TEXT NOT NULL CHECK(length(output_hash) = 64),
+    blob_refs_json TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    lease_epoch INTEGER NOT NULL CHECK(lease_epoch >= 1),
+    expected_head_id TEXT NOT NULL,
+    consumed_at REAL,
+    created_at REAL NOT NULL CHECK(created_at >= 0),
+    UNIQUE(run_id, terminal_checkpoint_id, descriptor_digest)
+) STRICT;
+
+CREATE TABLE workflow_native_operations (
+    operation_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    namespace TEXT NOT NULL,
+    base_checkpoint_id TEXT NOT NULL,
+    operation_kind TEXT NOT NULL,
+    identity_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL CHECK(length(payload_hash) = 64),
+    created_at REAL NOT NULL CHECK(created_at >= 0),
+    UNIQUE(run_id, namespace, base_checkpoint_id, operation_kind, identity_key)
+) STRICT;
+
+CREATE TABLE workflow_checkpoint_effect_links (
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    namespace TEXT NOT NULL,
+    checkpoint_id TEXT NOT NULL,
+    effect_id TEXT NOT NULL REFERENCES execution_effects(effect_id),
+    created_at REAL NOT NULL CHECK(created_at >= 0),
+    PRIMARY KEY(run_id, namespace, checkpoint_id, effect_id)
+) STRICT;
+
+CREATE TABLE workflow_decision_consumptions (
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    checkpoint_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
+    response_json TEXT NOT NULL,
+    consumed_at REAL NOT NULL CHECK(consumed_at >= 0),
+    PRIMARY KEY(run_id, checkpoint_id, decision_id)
+) STRICT;
+
 CREATE TABLE provider_invocations (
     invocation_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,

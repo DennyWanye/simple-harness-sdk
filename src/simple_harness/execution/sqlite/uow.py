@@ -10,8 +10,8 @@ import json
 import math
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
-from typing import cast
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import TypeVar, cast
 
 from simple_harness.contracts import (
     CallId,
@@ -84,8 +84,240 @@ from simple_harness.execution.uow import (
 )
 from simple_harness.providers import ProviderTarget
 from simple_harness.tools.contracts import ToolOutcome, ToolResult
+from simple_harness.workflow.execution_ports import (
+    WorkflowOperationConflict,
+    WorkflowOperationReceipt,
+    WorkflowTransaction,
+)
 
 from .database import Database
+
+_WorkflowResult = TypeVar("_WorkflowResult")
+
+
+class _SqliteWorkflowTransaction:
+    __slots__ = ("_fault", "connection", "is_open", "transaction_owner")
+
+    def __init__(self, owner: Database, connection: sqlite3.Connection, fault: FaultHook | None) -> None:
+        self.transaction_owner = owner
+        self.connection = connection
+        self.is_open = True
+        self._fault = fault
+
+    async def read_workflow_operation(
+        self, operation_id: str
+    ) -> WorkflowOperationReceipt | None:
+        row = self.connection.execute(
+            "SELECT * FROM workflow_operation_receipts WHERE operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        identity = json.loads(str(row["identity_json"]))
+        outcome = json.loads(str(row["outcome_json"]))
+        if not isinstance(identity, list):
+            raise WorkflowOperationConflict("corrupt workflow operation identity")
+        return WorkflowOperationReceipt(
+            operation_id=str(row["operation_id"]),
+            adapter_method=str(row["adapter_method"]),
+            identity=tuple(str(value) for value in identity),
+            payload_hash=str(row["payload_hash"]),
+            outcome=cast(JsonValue, outcome),
+            run_id=str(row["run_id"]),
+            namespace=str(row["namespace"]),
+            checkpoint_id=(
+                None if row["checkpoint_id"] is None else str(row["checkpoint_id"])
+            ),
+            lease_epoch=int(row["lease_epoch"]),
+            created_at=float(row["created_at"]),
+        )
+
+    async def apply_workflow_operation(
+        self,
+        *,
+        adapter_method: str,
+        identity: tuple[str, ...],
+        payload: Mapping[str, JsonValue],
+    ) -> JsonValue:
+        del identity
+        _fault(self._fault, f"workflow_adapter.{adapter_method}.before_ledger")
+        run_id = _required(payload.get("run_id"), "run_id")
+        now_value = payload.get("now", 0.0)
+        now = _time(now_value)
+        if adapter_method == "mark_running_on_claim":
+            changed = self.connection.execute(
+                """
+                UPDATE runs SET state='running', version=version+1, updated_at=?
+                WHERE run_id=? AND state IN ('created','queued','waiting')
+                """,
+                (now, run_id),
+            ).rowcount
+            row = self.connection.execute(
+                "SELECT state,version FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise UnitOfWorkNotFound(run_id)
+            outcome = {"changed": bool(changed), "state": str(row["state"]), "version": int(row["version"])}
+            _fault(self._fault, f"workflow_adapter.{adapter_method}.after_ledger")
+            return outcome
+        if adapter_method == "consume_decisions":
+            checkpoint_id = _required(payload.get("checkpoint_id"), "checkpoint_id")
+            decision_ids = payload.get("decision_ids")
+            responses = payload.get("responses")
+            if not isinstance(decision_ids, list) or not isinstance(responses, dict):
+                raise WorkflowOperationConflict("invalid decision consumption payload")
+            for decision_id in decision_ids:
+                resolved = _required(decision_id, "decision_id")
+                if resolved not in responses:
+                    raise WorkflowOperationConflict("decision response is missing")
+                row = self.connection.execute(
+                    "SELECT state,response_json FROM decisions WHERE decision_id=? AND run_id=?",
+                    (resolved, run_id),
+                ).fetchone()
+                if row is None or str(row["state"]) == "open":
+                    raise WorkflowOperationConflict("decision is not durably resolved")
+                response_json = canonical_json(cast(JsonValue, responses[resolved]))
+                self.connection.execute(
+                    """
+                    INSERT INTO workflow_decision_consumptions(
+                        run_id,checkpoint_id,decision_id,response_json,consumed_at
+                    ) VALUES (?,?,?,?,?)
+                    """,
+                    (run_id, checkpoint_id, resolved, response_json, now),
+                )
+            outcome = {"decision_ids": list(decision_ids), "checkpoint_id": checkpoint_id}
+            _fault(self._fault, f"workflow_adapter.{adapter_method}.after_ledger")
+            return outcome
+        if adapter_method == "open_decision":
+            interrupt_id = _required(payload.get("interrupt_id"), "interrupt_id")
+            request = payload.get("request")
+            if not isinstance(request, dict):
+                raise WorkflowOperationConflict("decision request must be an object")
+            existing = self.connection.execute(
+                "SELECT request_json,state FROM decisions WHERE decision_id=?", (interrupt_id,)
+            ).fetchone()
+            request_json = canonical_json(request)
+            if existing is not None:
+                if str(existing["request_json"]) != request_json:
+                    raise WorkflowOperationConflict("decision request changed")
+                return {"decision_id": interrupt_id, "state": str(existing["state"])}
+            self.connection.execute(
+                """
+                INSERT INTO decisions(
+                    decision_id,run_id,kind,state,request_json,version,created_at
+                ) VALUES (?,?,?,'open',?,0,?)
+                """,
+                (interrupt_id, run_id, str(request.get("kind", "workflow_interrupt")), request_json, now),
+            )
+            changed = self.connection.execute(
+                """
+                UPDATE runs SET state='waiting',version=version+1,updated_at=?
+                WHERE run_id=? AND state='running'
+                """,
+                (now, run_id),
+            ).rowcount
+            if changed != 1:
+                raise WorkflowOperationConflict("workflow interrupt requires running Run")
+            event_id = hashlib.sha256(
+                f"{run_id}|decision.open|{interrupt_id}".encode()
+            ).hexdigest()
+            sequence = int(
+                self.connection.execute(
+                    "SELECT COALESCE(MAX(durable_seq),0)+1 FROM run_events WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()[0]
+            )
+            self.connection.execute(
+                """
+                INSERT INTO run_events(
+                    event_id,run_id,durable_seq,kind,payload_json,created_at
+                ) VALUES(?,?,?,'decision.open',?,?)
+                """,
+                (
+                    event_id,run_id,sequence,
+                    canonical_json({"decision_id":interrupt_id,"kind":str(request.get("kind","workflow_interrupt"))}),
+                    now,
+                ),
+            )
+            outcome = cast(
+                JsonValue,
+                {"decision_id": interrupt_id, "state": "open", "event_id": event_id},
+            )
+            _fault(self._fault, f"workflow_adapter.{adapter_method}.after_ledger")
+            return outcome
+        if adapter_method == "materialize_intent":
+            intent_id = _required(payload.get("intent_id"), "intent_id")
+            intent = payload.get("intent")
+            if not isinstance(intent, dict):
+                raise WorkflowOperationConflict("workflow intent must be an object")
+            event_id = hashlib.sha256(f"{run_id}|{intent_id}".encode()).hexdigest()
+            sequence = int(self.connection.execute(
+                "SELECT COALESCE(MAX(durable_seq),0)+1 FROM run_events WHERE run_id=?",
+                (run_id,),
+            ).fetchone()[0])
+            self.connection.execute(
+                "INSERT INTO run_events(event_id,run_id,durable_seq,kind,payload_json,created_at) VALUES(?,?,?,?,?,?)",
+                (event_id, run_id, sequence, str(intent.get("event_type", "workflow.event")), canonical_json(intent), now),
+            )
+            outcome = {"event_id": event_id, "durable_seq": sequence}
+            _fault(self._fault, f"workflow_adapter.{adapter_method}.after_ledger")
+            return outcome
+        if adapter_method == "link_effects":
+            namespace = _required(payload.get("checkpoint_namespace"), "checkpoint_namespace")
+            checkpoint_id = _required(payload.get("checkpoint_id"), "checkpoint_id")
+            effect_ids = payload.get("effect_ids")
+            if not isinstance(effect_ids, list):
+                raise WorkflowOperationConflict("effect ids must be a list")
+            for effect_id in effect_ids:
+                self.connection.execute(
+                    "INSERT INTO workflow_checkpoint_effect_links(run_id,namespace,checkpoint_id,effect_id,created_at) VALUES(?,?,?,?,?)",
+                    (run_id, namespace, checkpoint_id, _required(effect_id, "effect_id"), now),
+                )
+            outcome = {"effect_ids": list(effect_ids), "checkpoint_id": checkpoint_id}
+            _fault(self._fault, f"workflow_adapter.{adapter_method}.after_ledger")
+            return outcome
+        if adapter_method == "finalize_run":
+            status = _required(payload.get("status"), "status")
+            if status not in {"completed", "failed", "cancelled"}:
+                raise WorkflowOperationConflict("invalid terminal workflow status")
+            changed = self.connection.execute(
+                """
+                UPDATE runs SET state=?,version=version+1,updated_at=?
+                WHERE run_id=? AND state NOT IN ('completed','failed','cancelled')
+                """,
+                (status, now, run_id),
+            ).rowcount
+            row = self.connection.execute(
+                "SELECT state,version FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise UnitOfWorkNotFound(run_id)
+            if not changed and str(row["state"]) != status:
+                raise WorkflowOperationConflict("Run already has another terminal state")
+            outcome = {"state": str(row["state"]), "version": int(row["version"])}
+            _fault(self._fault, f"workflow_adapter.{adapter_method}.after_ledger")
+            return outcome
+        raise WorkflowOperationConflict(f"unknown workflow adapter method: {adapter_method}")
+
+    async def write_workflow_operation(
+        self, receipt: WorkflowOperationReceipt
+    ) -> None:
+        _fault(self._fault, f"workflow_adapter.{receipt.adapter_method}.before_receipt")
+        self.connection.execute(
+            """
+            INSERT INTO workflow_operation_receipts(
+                operation_id,adapter_method,identity_json,payload_hash,outcome_json,
+                run_id,namespace,checkpoint_id,lease_epoch,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                receipt.operation_id, receipt.adapter_method,
+                canonical_json(list(receipt.identity)), receipt.payload_hash,
+                canonical_json(receipt.outcome), receipt.run_id, receipt.namespace,
+                receipt.checkpoint_id, receipt.lease_epoch, receipt.created_at,
+            ),
+        )
+        _fault(self._fault, f"workflow_adapter.{receipt.adapter_method}.after_receipt")
 
 
 def _required(value: object, name: str) -> str:
@@ -117,10 +349,34 @@ def _fault(hook: FaultHook | None, point: str) -> None:
 
 
 class SqliteExecutionUnitOfWork:
-    __slots__ = ("database",)
+    __slots__ = ("database", "workflow_fault")
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, *, workflow_fault: FaultHook | None = None) -> None:
         self.database = database
+        self.workflow_fault = workflow_fault
+
+    @property
+    def transaction_owner(self) -> object:
+        return self.database
+
+    async def run_atomic(
+        self,
+        operation: Callable[[WorkflowTransaction], Awaitable[_WorkflowResult]],
+        *,
+        fault_label: str,
+    ) -> _WorkflowResult:
+        _fault(self.workflow_fault, f"{fault_label}.before_begin")
+        with self.database.transaction() as connection:
+            transaction = _SqliteWorkflowTransaction(
+                self.database, connection, self.workflow_fault
+            )
+            try:
+                result = await operation(transaction)
+                _fault(self.workflow_fault, f"{fault_label}.before_commit")
+            finally:
+                transaction.is_open = False
+        _fault(self.workflow_fault, f"{fault_label}.after_commit")
+        return result
 
     def claim_runtime_activation(
         self,
@@ -1358,6 +1614,53 @@ class SqliteExecutionUnitOfWork:
                 )
             ):
                 return existing
+            if (
+                existing.run_id == run_id
+                and existing.kind == kind
+                and existing.state is DecisionState.OPEN
+                and state is not DecisionState.OPEN
+                and canonical_json(_thaw(existing.request)) == request_json
+                and response_json is not None
+            ):
+                run_state = {
+                    DecisionState.ALLOWED: RunState.QUEUED,
+                    DecisionState.DENIED: RunState.FAILED,
+                    DecisionState.EXPIRED: RunState.FAILED,
+                    DecisionState.CANCELLED: RunState.CANCELLED,
+                }[state]
+                with self.database.transaction() as connection:
+                    _fault(fault, "decision_resolve.decision.before_write")
+                    changed = connection.execute(
+                        """
+                        UPDATE decisions
+                        SET state=?,response_json=?,version=version+1,resolved_at=?
+                        WHERE decision_id=? AND run_id=? AND state='open' AND version=?
+                        """,
+                        (state.value,response_json,now,decision_id,run_id,existing.version),
+                    ).rowcount
+                    if changed != 1:
+                        raise UnitOfWorkConflict("decision resolution CAS failed")
+                    _fault(fault, "decision_resolve.decision.after_write")
+                    changed = connection.execute(
+                        """
+                        UPDATE runs SET state=?,version=version+1,updated_at=?
+                        WHERE run_id=? AND state='waiting'
+                        """,
+                        (run_state.value,now,run_id),
+                    ).rowcount
+                    if changed != 1:
+                        raise UnitOfWorkConflict("decision Run resolution CAS failed")
+                    _fault(fault, "decision_resolve.run.after_write")
+                    self._insert_event(
+                        connection,event_id=event_id,run_id=run_id,
+                        kind=f"decision.{state.value}",
+                        payload={"decision_id":decision_id,"kind":kind},now=now,
+                    )
+                    _fault(fault, "decision_resolve.event.after_write")
+                _fault(fault, "decision_resolve.after_commit")
+                result = self.read_decision(decision_id)
+                assert result is not None
+                return result
             raise UnitOfWorkConflict("decision identity reused with different intent")
         run_state = {
             DecisionState.OPEN: RunState.WAITING,
@@ -4388,6 +4691,21 @@ def _wait_activation_receipt(row: sqlite3.Row) -> WaitActivationReceipt:
         owner_id=str(row["owner_id"]),
         runtime_lease_epoch=int(row["runtime_lease_epoch"]),
         outcome_hash=str(row["outcome_hash"]),
+    )
+
+
+def _terminal_projection_prepare(row: sqlite3.Row):  # type: ignore[no-untyped-def]
+    from simple_harness.workflow.native import TerminalProjectionPrepareReceipt
+
+    return TerminalProjectionPrepareReceipt(
+        operation_id=str(row["operation_id"]),
+        run_id=str(row["run_id"]),
+        terminal_checkpoint_id=str(row["terminal_checkpoint_id"]),
+        descriptor_digest=str(row["descriptor_digest"]),
+        input_hash=str(row["input_hash"]),
+        output=json.loads(str(row["output_json"])),
+        output_hash=str(row["output_hash"]),
+        blob_refs=tuple(json.loads(str(row["blob_refs_json"]))),
     )
 
 
