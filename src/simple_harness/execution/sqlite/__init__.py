@@ -5,7 +5,7 @@
 
 from .database import Database
 from .schema import SCHEMA_VERSION
+from .uow import SqliteExecutionUnitOfWork
 
 
-__all__ = ("Database", "SCHEMA_VERSION")
-
+__all__ = ("Database", "SCHEMA_VERSION", "SqliteExecutionUnitOfWork")
