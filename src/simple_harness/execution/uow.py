@@ -10,6 +10,7 @@ from enum import StrEnum
 from typing import Callable, Mapping, Protocol
 
 from simple_harness.contracts import FrozenJsonValue, JsonValue
+from simple_harness.execution.effects import EffectUnitOfWork
 
 
 FaultHook = Callable[[str], None]
@@ -103,7 +104,7 @@ class ContinuationRecord:
     claimed_by: str | None
 
 
-class ExecutionUnitOfWork(Protocol):
+class ExecutionUnitOfWork(EffectUnitOfWork, Protocol):
     def create_with_start_snapshot(
         self,
         *,

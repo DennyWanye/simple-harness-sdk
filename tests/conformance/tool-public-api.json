@@ -8,6 +8,8 @@
     "CancellationToken",
     "DuplicateToolCallError",
     "DuplicateToolError",
+    "EffectExecution",
+    "EffectExecutor",
     "FunctionTool",
     "JsonObject",
     "LateToolResultError",

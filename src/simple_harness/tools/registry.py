@@ -126,24 +126,33 @@ class ToolRegistry:
         self._calls[call.call_id] = record
         cancellation_waiter = asyncio.create_task(context.cancellation.wait())
         try:
-            done, _ = await asyncio.wait(
-                {task, cancellation_waiter}, return_when=asyncio.FIRST_COMPLETED
-            )
-            if cancellation_waiter in done and task not in done:
+            try:
+                done, _ = await asyncio.wait(
+                    {task, cancellation_waiter}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if cancellation_waiter in done and task not in done:
+                    record.state = ToolCallState.CANCELLED
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    return ToolResult.rejected(
+                        call.call_id, "tool_cancelled", "Tool call was cancelled."
+                    )
+                result = await task
+                if record.state is not ToolCallState.RUNNING:
+                    raise LateToolResultError(call.call_id)
+                record.state = ToolCallState.SETTLED
+                return result
+            except asyncio.CancelledError:
                 record.state = ToolCallState.CANCELLED
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
-                return ToolResult.rejected(
-                    call.call_id, "tool_cancelled", "Tool call was cancelled."
-                )
-            result = await task
-            if record.state is not ToolCallState.RUNNING:
-                raise LateToolResultError(call.call_id)
-            record.state = ToolCallState.SETTLED
-            return result
+                raise
         finally:
             cancellation_waiter.cancel()
             try:

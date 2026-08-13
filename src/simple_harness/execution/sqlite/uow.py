@@ -9,9 +9,20 @@ import hashlib
 import json
 import math
 import sqlite3
+import time
 from typing import Mapping
 
-from simple_harness.contracts import JsonValue, canonical_json, freeze_json
+from simple_harness.contracts import (
+    CallId,
+    EffectId,
+    JsonValue,
+    RunId,
+    canonical_json,
+    freeze_json,
+    thaw_json,
+)
+from simple_harness.execution.effects import EffectRecord, EffectState
+from simple_harness.execution.fences import RunFenceLease
 from simple_harness.execution.uow import (
     AdmissionRecord,
     AdmissionState,
@@ -25,6 +36,7 @@ from simple_harness.execution.uow import (
     UnitOfWorkConflict,
     UnitOfWorkNotFound,
 )
+from simple_harness.tools.contracts import ToolOutcome, ToolResult
 
 from .database import Database
 
@@ -487,6 +499,315 @@ class SqliteExecutionUnitOfWork:
         assert result is not None
         return result
 
+    def prepare_effect(
+        self,
+        *,
+        effect_id: EffectId,
+        run_id: RunId,
+        call_id: CallId,
+        tool_name: str,
+        arguments: dict[str, object],
+        request_hash: str,
+        authorization_receipt_ref: str,
+        fence_epoch: int,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> EffectRecord:
+        tool_name = _required(tool_name, "tool_name")
+        authorization_receipt_ref = _required(
+            authorization_receipt_ref, "authorization_receipt_ref"
+        )
+        if len(request_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in request_hash
+        ):
+            raise ValueError("request_hash must be lowercase SHA-256")
+        if fence_epoch < 1:
+            raise ValueError("fence_epoch must be positive")
+        now = _time(now)
+        arguments_json = canonical_json(arguments)  # type: ignore[arg-type]
+        existing = self.read_effect(effect_id)
+        if existing is not None:
+            if (
+                existing.run_id != run_id
+                or existing.call_id != call_id
+                or existing.tool_name != tool_name
+                or existing.request_hash != request_hash
+                or canonical_json(thaw_json(existing.arguments)) != arguments_json
+            ):
+                raise UnitOfWorkConflict("effect identity reused with different intent")
+            if existing.state is EffectState.PREPARED and (
+                existing.fence_epoch != fence_epoch
+                or existing.authorization_receipt_ref != authorization_receipt_ref
+            ):
+                with self.database.transaction() as connection:
+                    changed = connection.execute(
+                        """
+                        UPDATE execution_effects
+                        SET fence_epoch = ?, authorization_receipt_ref = ?,
+                            version = version + 1
+                        WHERE effect_id = ? AND state = 'prepared' AND version = ?
+                        """,
+                        (
+                            fence_epoch,
+                            authorization_receipt_ref,
+                            effect_id.value,
+                            existing.version,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise UnitOfWorkConflict("prepared effect refresh CAS failed")
+                refreshed = self.read_effect(effect_id)
+                assert refreshed is not None
+                return refreshed
+            return existing
+        with self.database.transaction() as connection:
+            conflict = connection.execute(
+                "SELECT effect_id FROM execution_effects WHERE run_id = ? AND call_id = ?",
+                (run_id.value, call_id.value),
+            ).fetchone()
+            if conflict is not None:
+                raise UnitOfWorkConflict("call_id is already bound to another effect")
+            _fault(fault, "effect_prepare.before_write")
+            connection.execute(
+                """
+                INSERT INTO execution_effects(
+                    effect_id, run_id, call_id, tool_name, arguments_json,
+                    request_hash, authorization_receipt_ref, handoff_receipt_ref,
+                    evidence_ref, fence_epoch, state, result_json, prepared_at,
+                    handed_off_at, settled_at, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 'prepared',
+                          NULL, ?, NULL, NULL, 0)
+                """,
+                (
+                    effect_id.value,
+                    run_id.value,
+                    call_id.value,
+                    tool_name,
+                    arguments_json,
+                    request_hash,
+                    authorization_receipt_ref,
+                    fence_epoch,
+                    now,
+                ),
+            )
+            _fault(fault, "effect_prepare.after_write")
+        _fault(fault, "effect_prepare.after_commit")
+        record = self.read_effect(effect_id)
+        assert record is not None
+        return record
+
+    def read_effect(self, effect_id: EffectId) -> EffectRecord | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM execution_effects WHERE effect_id = ?",
+            (effect_id.value,),
+        ).fetchone()
+        return None if row is None else _effect_record(row)
+
+    def mark_effect_handed_off(
+        self,
+        effect_id: EffectId,
+        *,
+        expected_version: int,
+        expected_fence_epoch: int,
+        handoff_receipt_ref: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> EffectRecord:
+        handoff_receipt_ref = _required(handoff_receipt_ref, "handoff_receipt_ref")
+        now = _time(now)
+        with self.database.transaction() as connection:
+            _fault(fault, "effect_handoff.before_write")
+            changed = connection.execute(
+                """
+                UPDATE execution_effects
+                SET state = 'handed_off', handoff_receipt_ref = ?,
+                    handed_off_at = ?, version = version + 1
+                WHERE effect_id = ? AND state = 'prepared' AND version = ?
+                  AND fence_epoch = ?
+                """,
+                (
+                    handoff_receipt_ref,
+                    now,
+                    effect_id.value,
+                    expected_version,
+                    expected_fence_epoch,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("effect handoff CAS failed")
+            _fault(fault, "effect_handoff.after_write")
+        _fault(fault, "effect_handoff.after_commit")
+        record = self.read_effect(effect_id)
+        assert record is not None
+        return record
+
+    def settle_effect(
+        self,
+        effect_id: EffectId,
+        *,
+        expected_version: int,
+        expected_fence_epoch: int,
+        result: ToolResult,
+        evidence_ref: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> EffectRecord:
+        evidence_ref = _required(evidence_ref, "evidence_ref")
+        now = _time(now)
+        existing = self.read_effect(effect_id)
+        if existing is None:
+            raise UnitOfWorkNotFound(effect_id.value)
+        if result.call_id != existing.call_id:
+            raise UnitOfWorkConflict("effect result call_id mismatch")
+        state = EffectState(result.outcome.value)
+        result_json = None if state is EffectState.UNKNOWN else _tool_result_json(result)
+        with self.database.transaction() as connection:
+            _fault(fault, "effect_settle.before_write")
+            changed = connection.execute(
+                """
+                UPDATE execution_effects
+                SET state = ?, result_json = ?, evidence_ref = ?, settled_at = ?,
+                    version = version + 1
+                WHERE effect_id = ? AND state IN ('handed_off', 'unknown')
+                  AND version = ? AND fence_epoch = ?
+                """,
+                (
+                    state.value,
+                    result_json,
+                    evidence_ref,
+                    now,
+                    effect_id.value,
+                    expected_version,
+                    expected_fence_epoch,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("effect settlement CAS failed")
+            _fault(fault, "effect_settle.after_write")
+        _fault(fault, "effect_settle.after_commit")
+        record = self.read_effect(effect_id)
+        assert record is not None
+        return record
+
+    def mark_effect_unknown(
+        self,
+        effect_id: EffectId,
+        *,
+        expected_version: int,
+        expected_fence_epoch: int,
+        evidence_ref: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> EffectRecord:
+        evidence_ref = _required(evidence_ref, "evidence_ref")
+        now = _time(now)
+        with self.database.transaction() as connection:
+            _fault(fault, "effect_unknown.before_write")
+            changed = connection.execute(
+                """
+                UPDATE execution_effects
+                SET state = 'unknown', evidence_ref = ?, settled_at = ?,
+                    result_json = NULL, version = version + 1
+                WHERE effect_id = ? AND state = 'handed_off' AND version = ?
+                  AND fence_epoch = ?
+                """,
+                (
+                    evidence_ref,
+                    now,
+                    effect_id.value,
+                    expected_version,
+                    expected_fence_epoch,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("effect unknown CAS failed")
+            _fault(fault, "effect_unknown.after_write")
+        _fault(fault, "effect_unknown.after_commit")
+        record = self.read_effect(effect_id)
+        assert record is not None
+        return record
+
+    def reset_effect_not_started(
+        self,
+        effect_id: EffectId,
+        *,
+        expected_version: int,
+        expected_fence_epoch: int,
+        new_fence_epoch: int,
+        evidence_ref: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> EffectRecord:
+        evidence_ref = _required(evidence_ref, "evidence_ref")
+        _time(now)
+        if new_fence_epoch < expected_fence_epoch:
+            raise UnitOfWorkConflict("effect fence epoch cannot move backward")
+        with self.database.transaction() as connection:
+            _fault(fault, "effect_reset.before_write")
+            changed = connection.execute(
+                """
+                UPDATE execution_effects
+                SET state = 'prepared', handoff_receipt_ref = NULL,
+                    evidence_ref = ?, result_json = NULL, handed_off_at = NULL,
+                    settled_at = NULL, fence_epoch = ?, version = version + 1
+                WHERE effect_id = ? AND state IN ('handed_off', 'unknown')
+                  AND version = ? AND fence_epoch = ?
+                """,
+                (
+                    evidence_ref,
+                    new_fence_epoch,
+                    effect_id.value,
+                    expected_version,
+                    expected_fence_epoch,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("effect reset CAS failed")
+            _fault(fault, "effect_reset.after_write")
+        _fault(fault, "effect_reset.after_commit")
+        record = self.read_effect(effect_id)
+        assert record is not None
+        return record
+
+    async def acquire(self, run_id: RunId, owner_id: str) -> RunFenceLease:
+        owner_id = _required(owner_id, "owner_id")
+        now = time.time()
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                "SELECT epoch FROM run_fences WHERE run_id = ?", (run_id.value,)
+            ).fetchone()
+            epoch = 1 if row is None else int(row[0]) + 1
+            connection.execute(
+                """
+                INSERT INTO run_fences(run_id, owner_id, epoch, state, acquired_at, released_at)
+                VALUES (?, ?, ?, 'active', ?, NULL)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    owner_id = excluded.owner_id, epoch = excluded.epoch,
+                    state = 'active', acquired_at = excluded.acquired_at,
+                    released_at = NULL
+                """,
+                (run_id.value, owner_id, epoch, now),
+            )
+        return RunFenceLease(run_id, epoch, owner_id)
+
+    async def current_epoch(self, run_id: RunId) -> int:
+        row = self.database.connection.execute(
+            "SELECT epoch FROM run_fences WHERE run_id = ?", (run_id.value,)
+        ).fetchone()
+        if row is None:
+            raise UnitOfWorkNotFound(run_id.value)
+        return int(row[0])
+
+    async def release(self, lease: RunFenceLease) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE run_fences SET state = 'released', released_at = ?
+                WHERE run_id = ? AND owner_id = ? AND epoch = ? AND state = 'active'
+                """,
+                (time.time(), lease.run_id.value, lease.owner_id, lease.epoch),
+            )
+
     def read_run(self, run_id: str) -> RunRecord | None:
         row = self.database.connection.execute(
             "SELECT * FROM runs WHERE run_id = ?", (run_id,)
@@ -641,6 +962,57 @@ def _continuation_record(row: sqlite3.Row) -> ContinuationRecord:
         state=ContinuationState(row["state"]),
         version=int(row["version"]),
         claimed_by=None if row["claimed_by"] is None else str(row["claimed_by"]),
+    )
+
+
+def _tool_result_json(result: ToolResult) -> str:
+    return canonical_json(
+        {
+            "call_id": result.call_id.value,
+            "outcome": result.outcome.value,
+            "value": thaw_json(result.value),
+            "error_code": result.error_code,
+            "public_message": result.public_message,
+            "retryable": result.retryable,
+        }
+    )
+
+
+def _tool_result(value: object) -> ToolResult | None:
+    if value is None:
+        return None
+    payload = json.loads(str(value))
+    return ToolResult(
+        call_id=CallId(str(payload["call_id"])),
+        outcome=ToolOutcome(str(payload["outcome"])),
+        value=payload.get("value"),
+        error_code=payload.get("error_code"),
+        public_message=payload.get("public_message"),
+        retryable=bool(payload.get("retryable", False)),
+    )
+
+
+def _effect_record(row: sqlite3.Row) -> EffectRecord:
+    return EffectRecord(
+        effect_id=EffectId(str(row["effect_id"])),
+        run_id=RunId(str(row["run_id"])),
+        call_id=CallId(str(row["call_id"])),
+        tool_name=str(row["tool_name"]),
+        request_hash=str(row["request_hash"]),
+        arguments=freeze_json(json.loads(str(row["arguments_json"]))),
+        state=EffectState(str(row["state"])),
+        version=int(row["version"]),
+        fence_epoch=int(row["fence_epoch"]),
+        authorization_receipt_ref=str(row["authorization_receipt_ref"]),
+        handoff_receipt_ref=(
+            None
+            if row["handoff_receipt_ref"] is None
+            else str(row["handoff_receipt_ref"])
+        ),
+        evidence_ref=(
+            None if row["evidence_ref"] is None else str(row["evidence_ref"])
+        ),
+        result=_tool_result(row["result_json"]),
     )
 
 

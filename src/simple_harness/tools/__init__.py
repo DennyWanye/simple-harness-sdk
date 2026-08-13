@@ -29,6 +29,7 @@ from .errors import (
     ToolRegistryError,
     UnknownToolError,
 )
+from .executor import EffectExecution, EffectExecutor
 from .reconciliation import (
     ReconciliationObservation,
     ReconciliationState,
@@ -46,6 +47,8 @@ __all__ = (
     "CancellationToken",
     "DuplicateToolCallError",
     "DuplicateToolError",
+    "EffectExecution",
+    "EffectExecutor",
     "FunctionTool",
     "JsonObject",
     "LateToolResultError",
