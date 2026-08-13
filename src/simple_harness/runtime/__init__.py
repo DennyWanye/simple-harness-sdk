@@ -4,6 +4,12 @@
 """Durable runtime lifecycle public surface."""
 
 from .admission import AdmissionPort, AdmissionVerdict, AllowAllAdmission
+from .child_runs import (
+    ChildLaunchRequest,
+    ChildRunUnitOfWork,
+    ProfileLaunchTicketRef,
+)
+from .child_signal_runtime import ChildSignalRuntime, ChildSignalUnitOfWork
 from .context import ContextPort, ContextSnapshot, SqliteContextPort
 from .kernel import (
     ROOT_PROFILE_KEY,
@@ -20,18 +26,33 @@ from .kernel import (
     ToolCatalogGenerationPort,
     build_runtime,
 )
+from .reconciler import (
+    STARTUP_RECONCILIATION_ORDER,
+    ReconciliationPhase,
+    StartupReconciler,
+    StartupReconciliationSteps,
+)
 from .start_snapshot import RunStart, StartSnapshot
 from .terminal import TerminalCoordinator, ToolCatalogStale
+from .user_continuations import ContinuationUnitOfWork, UserContinuationRuntime
 
 __all__ = (
     "ROOT_PROFILE_KEY",
+    "STARTUP_RECONCILIATION_ORDER",
     "AdmissionPort",
     "AdmissionVerdict",
     "AllowAllAdmission",
+    "ChildLaunchRequest",
+    "ChildRunUnitOfWork",
+    "ChildSignalRuntime",
+    "ChildSignalUnitOfWork",
     "ContextPort",
     "ContextSnapshot",
+    "ContinuationUnitOfWork",
     "DriverInvocation",
     "DriverResult",
+    "ProfileLaunchTicketRef",
+    "ReconciliationPhase",
     "RunClient",
     "RunStart",
     "Runtime",
@@ -43,8 +64,11 @@ __all__ = (
     "RuntimeUnitOfWork",
     "SqliteContextPort",
     "StartSnapshot",
+    "StartupReconciler",
+    "StartupReconciliationSteps",
     "TerminalCoordinator",
     "ToolCatalogGenerationPort",
     "ToolCatalogStale",
+    "UserContinuationRuntime",
     "build_runtime",
 )

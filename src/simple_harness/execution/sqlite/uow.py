@@ -28,6 +28,8 @@ from simple_harness.execution.contracts.children import (
     ChildCommandRecord,
     ChildCommandState,
     ChildLaunchResult,
+    ChildSignalAckReceipt,
+    ChildSignalAckResult,
     ChildSignalRecord,
     ChildSignalState,
     ProfileLaunchTicket,
@@ -1521,51 +1523,147 @@ class SqliteExecutionUnitOfWork:
         assert result is not None
         return result
 
-    def ack_child_signal(
+    def claim_next_child_signal(
+        self,
+        *,
+        parent_run_id: str,
+        owner_id: str,
+        now: float,
+        lease_seconds: float,
+        fault: FaultHook | None = None,
+    ) -> ChildSignalRecord | None:
+        """Claim only the durable oldest non-acked signal for one parent."""
+
+        parent_run_id = _required(parent_run_id, "parent_run_id")
+        owner_id = _required(owner_id, "owner_id")
+        now = _time(now)
+        if (
+            not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or not math.isfinite(float(lease_seconds))
+            or lease_seconds <= 0
+        ):
+            raise ValueError("lease_seconds must be finite and positive")
+        expires_at = now + float(lease_seconds)
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM child_signals
+                WHERE parent_run_id = ? AND state <> 'acked'
+                ORDER BY created_at, signal_id
+                LIMIT 1
+                """,
+                (parent_run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            state = ChildSignalState(str(row["state"]))
+            if state is ChildSignalState.CLAIMED:
+                claim_expires_at = float(row["claim_expires_at"])
+                if claim_expires_at > now:
+                    return None
+            version = int(row["version"])
+            claim_epoch = int(row["claim_epoch"])
+            _fault(fault, "child_signal_claim.signal.before_write")
+            changed = connection.execute(
+                """
+                UPDATE child_signals
+                SET state = 'claimed', version = version + 1,
+                    claimed_by = ?, claimed_at = ?, claim_expires_at = ?,
+                    claim_epoch = claim_epoch + 1, updated_at = ?
+                WHERE signal_id = ? AND version = ?
+                  AND (
+                    state = 'pending'
+                    OR (state = 'claimed' AND claim_expires_at <= ?)
+                  )
+                """,
+                (
+                    owner_id,
+                    now,
+                    expires_at,
+                    now,
+                    str(row["signal_id"]),
+                    version,
+                    now,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("child signal claim CAS failed")
+            _fault(fault, "child_signal_claim.signal.after_write")
+            expected_epoch = claim_epoch + 1
+        _fault(fault, "child_signal_claim.after_commit")
+        result = self.read_child_signal(str(row["signal_id"]))
+        assert result is not None and result.claim_epoch == expected_epoch
+        return result
+
+    def ack_child_signal_and_commit_parent_progress(
         self,
         *,
         signal_id: str,
-        expected_version: int,
+        owner_id: str,
+        claim_epoch: int,
+        receipt_id: str,
         continuation_id: str,
         continuation_payload: Mapping[str, JsonValue],
         event_id: str,
+        event_payload: Mapping[str, JsonValue],
         now: float,
         fault: FaultHook | None = None,
-    ) -> ChildSignalRecord:
+    ) -> ChildSignalAckResult:
         signal_id = _required(signal_id, "signal_id")
+        owner_id = _required(owner_id, "owner_id")
+        receipt_id = _required(receipt_id, "receipt_id")
         continuation_id = _required(continuation_id, "continuation_id")
         event_id = _required(event_id, "event_id")
-        if isinstance(expected_version, bool) or expected_version < 0:
-            raise ValueError("expected_version must be non-negative")
+        if isinstance(claim_epoch, bool) or claim_epoch < 1:
+            raise ValueError("claim_epoch must be positive")
         continuation_json = _object_json(continuation_payload, "continuation_payload")
+        event_json = _object_json(event_payload, "event_payload")
+        continuation_hash = hashlib.sha256(
+            continuation_json.encode("utf-8")
+        ).hexdigest()
+        event_hash = hashlib.sha256(event_json.encode("utf-8")).hexdigest()
         now = _time(now)
-        signal = self.read_child_signal(signal_id)
-        if signal is None:
-            raise UnitOfWorkNotFound(signal_id)
-        if signal.state is ChildSignalState.ACKED:
-            continuation = self.read_continuation(continuation_id)
-            if (
-                signal.version == expected_version + 1
-                and continuation is not None
-                and continuation.run_id == signal.parent_run_id
-                and canonical_json(_thaw(continuation.payload)) == continuation_json
-            ):
-                return signal
-            raise UnitOfWorkConflict(
-                "child signal was already acknowledged differently"
-            )
         with self.database.transaction() as connection:
-            _fault(fault, "child_signal_ack.signal.before_write")
-            changed = connection.execute(
-                """
-                UPDATE child_signals SET state = 'acked', version = version + 1, updated_at = ?
-                WHERE signal_id = ? AND state IN ('pending', 'claimed') AND version = ?
-                """,
-                (now, signal_id, expected_version),
-            ).rowcount
-            if changed != 1:
-                raise UnitOfWorkConflict("child signal ack CAS failed")
-            _fault(fault, "child_signal_ack.signal.after_write")
+            row = connection.execute(
+                "SELECT * FROM child_signals WHERE signal_id = ?", (signal_id,)
+            ).fetchone()
+            if row is None:
+                raise UnitOfWorkNotFound(signal_id)
+            signal = _child_signal_record(row)
+            if signal.state is ChildSignalState.ACKED:
+                receipt_row = connection.execute(
+                    "SELECT * FROM child_signal_ack_receipts WHERE receipt_id = ?",
+                    (receipt_id,),
+                ).fetchone()
+                if receipt_row is None:
+                    raise UnitOfWorkConflict(
+                        "child signal was already acknowledged differently"
+                    )
+                receipt = _child_signal_ack_receipt(receipt_row)
+                if (
+                    signal.ack_receipt_id == receipt_id
+                    and receipt.signal_id == signal_id
+                    and receipt.parent_run_id == signal.parent_run_id
+                    and receipt.owner_id == owner_id
+                    and receipt.claim_epoch == claim_epoch
+                    and receipt.continuation_id == continuation_id
+                    and receipt.event_id == event_id
+                    and receipt.continuation_payload_hash == continuation_hash
+                    and receipt.event_payload_hash == event_hash
+                ):
+                    return ChildSignalAckResult(signal, receipt)
+                raise UnitOfWorkConflict(
+                    "child signal was already acknowledged differently"
+                )
+            if (
+                signal.state is not ChildSignalState.CLAIMED
+                or signal.claimed_by != owner_id
+                or signal.claim_epoch != claim_epoch
+                or signal.claim_expires_at is None
+                or signal.claim_expires_at <= now
+            ):
+                raise UnitOfWorkConflict("child signal ack claim is stale or expired")
             sequence = int(
                 connection.execute(
                     "SELECT COALESCE(MAX(fifo_seq), 0) + 1 FROM continuations WHERE run_id = ?",
@@ -1589,6 +1687,62 @@ class SqliteExecutionUnitOfWork:
                 ),
             )
             _fault(fault, "child_signal_ack.continuation.after_write")
+            _fault(fault, "child_signal_ack.event.before_write")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=signal.parent_run_id,
+                kind="child.signal_acked",
+                payload=json.loads(event_json),
+                now=now,
+            )
+            _fault(fault, "child_signal_ack.event.after_write")
+            _fault(fault, "child_signal_ack.receipt.before_write")
+            connection.execute(
+                """
+                INSERT INTO child_signal_ack_receipts(
+                    receipt_id, signal_id, parent_run_id, owner_id, claim_epoch,
+                    continuation_id, event_id, continuation_payload_hash,
+                    event_payload_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    receipt_id,
+                    signal_id,
+                    signal.parent_run_id,
+                    owner_id,
+                    claim_epoch,
+                    continuation_id,
+                    event_id,
+                    continuation_hash,
+                    event_hash,
+                    now,
+                ),
+            )
+            _fault(fault, "child_signal_ack.receipt.after_write")
+            _fault(fault, "child_signal_ack.signal.before_write")
+            changed = connection.execute(
+                """
+                UPDATE child_signals
+                SET state = 'acked', version = version + 1,
+                    acked_at = ?, ack_receipt_id = ?, updated_at = ?
+                WHERE signal_id = ? AND state = 'claimed'
+                  AND claimed_by = ? AND claim_epoch = ?
+                  AND claim_expires_at > ?
+                """,
+                (
+                    now,
+                    receipt_id,
+                    now,
+                    signal_id,
+                    owner_id,
+                    claim_epoch,
+                    now,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("child signal ack CAS failed")
+            _fault(fault, "child_signal_ack.signal.after_write")
             link = connection.execute(
                 "SELECT attachment_policy FROM run_links WHERE parent_run_id = ? AND child_run_id = ?",
                 (signal.parent_run_id, signal.child_run_id),
@@ -1605,22 +1759,21 @@ class SqliteExecutionUnitOfWork:
                     (now, signal.parent_run_id),
                 ).rowcount
                 if changed != 1:
-                    raise UnitOfWorkConflict("attached parent wake CAS failed")
+                    parent = connection.execute(
+                        "SELECT state FROM runs WHERE run_id = ?",
+                        (signal.parent_run_id,),
+                    ).fetchone()
+                    if parent is None or str(parent["state"]) not in {
+                        RunState.QUEUED.value,
+                        RunState.RUNNING.value,
+                    }:
+                        raise UnitOfWorkConflict("attached parent wake CAS failed")
                 _fault(fault, "child_signal_ack.parent.after_write")
-            _fault(fault, "child_signal_ack.event.before_write")
-            self._insert_event(
-                connection,
-                event_id=event_id,
-                run_id=signal.parent_run_id,
-                kind="child.signal_acked",
-                payload={"signal_id": signal_id, "continuation_id": continuation_id},
-                now=now,
-            )
-            _fault(fault, "child_signal_ack.event.after_write")
         _fault(fault, "child_signal_ack.after_commit")
-        result = self.read_child_signal(signal_id)
-        assert result is not None
-        return result
+        result_signal = self.read_child_signal(signal_id)
+        result_receipt = self.read_child_signal_ack_receipt(receipt_id)
+        assert result_signal is not None and result_receipt is not None
+        return ChildSignalAckResult(result_signal, result_receipt)
 
     def read_profile_launch_ticket(self, ticket_id: str) -> ProfileLaunchTicket | None:
         row = self.database.connection.execute(
@@ -1639,6 +1792,15 @@ class SqliteExecutionUnitOfWork:
             "SELECT * FROM child_signals WHERE signal_id = ?", (signal_id,)
         ).fetchone()
         return None if row is None else _child_signal_record(row)
+
+    def read_child_signal_ack_receipt(
+        self, receipt_id: str
+    ) -> ChildSignalAckReceipt | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM child_signal_ack_receipts WHERE receipt_id = ?",
+            (receipt_id,),
+        ).fetchone()
+        return None if row is None else _child_signal_ack_receipt(row)
 
     def _same_existing_child_launch(
         self,
@@ -2435,6 +2597,33 @@ def _child_signal_record(row: sqlite3.Row) -> ChildSignalRecord:
         payload=freeze_json(json.loads(str(row["payload_json"]))),
         state=ChildSignalState(str(row["state"])),
         version=int(row["version"]),
+        claimed_by=None if row["claimed_by"] is None else str(row["claimed_by"]),
+        claimed_at=None if row["claimed_at"] is None else float(row["claimed_at"]),
+        claim_expires_at=(
+            None
+            if row["claim_expires_at"] is None
+            else float(row["claim_expires_at"])
+        ),
+        claim_epoch=int(row["claim_epoch"]),
+        acked_at=None if row["acked_at"] is None else float(row["acked_at"]),
+        ack_receipt_id=(
+            None if row["ack_receipt_id"] is None else str(row["ack_receipt_id"])
+        ),
+    )
+
+
+def _child_signal_ack_receipt(row: sqlite3.Row) -> ChildSignalAckReceipt:
+    return ChildSignalAckReceipt(
+        receipt_id=str(row["receipt_id"]),
+        signal_id=str(row["signal_id"]),
+        parent_run_id=str(row["parent_run_id"]),
+        owner_id=str(row["owner_id"]),
+        claim_epoch=int(row["claim_epoch"]),
+        continuation_id=str(row["continuation_id"]),
+        event_id=str(row["event_id"]),
+        continuation_payload_hash=str(row["continuation_payload_hash"]),
+        event_payload_hash=str(row["event_payload_hash"]),
+        created_at=float(row["created_at"]),
     )
 
 

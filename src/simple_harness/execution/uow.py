@@ -15,6 +15,8 @@ from simple_harness.contracts import FrozenJsonValue, JsonValue
 from simple_harness.execution.contracts.children import (
     AttachmentPolicy,
     ChildLaunchResult,
+    ChildSignalAckReceipt,
+    ChildSignalAckResult,
     ChildSignalRecord,
     ProfileLaunchTicket,
 )
@@ -302,17 +304,34 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         fault: FaultHook | None = None,
     ) -> ChildSignalRecord: ...
 
-    def ack_child_signal(
+    def claim_next_child_signal(
+        self,
+        *,
+        parent_run_id: str,
+        owner_id: str,
+        now: float,
+        lease_seconds: float,
+        fault: FaultHook | None = None,
+    ) -> ChildSignalRecord | None: ...
+
+    def ack_child_signal_and_commit_parent_progress(
         self,
         *,
         signal_id: str,
-        expected_version: int,
+        owner_id: str,
+        claim_epoch: int,
+        receipt_id: str,
         continuation_id: str,
         continuation_payload: Mapping[str, JsonValue],
         event_id: str,
+        event_payload: Mapping[str, JsonValue],
         now: float,
         fault: FaultHook | None = None,
-    ) -> ChildSignalRecord: ...
+    ) -> ChildSignalAckResult: ...
+
+    def read_child_signal_ack_receipt(
+        self, receipt_id: str
+    ) -> ChildSignalAckReceipt | None: ...
 
     def create_with_start_snapshot(
         self,

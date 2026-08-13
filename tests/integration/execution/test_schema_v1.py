@@ -7,8 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from simple_harness.execution.sqlite import Database, SCHEMA_VERSION
-
+from simple_harness.execution.sqlite import SCHEMA_VERSION, Database
 
 EXPECTED_TABLES = {
     "sdk_schema_migrations",
@@ -23,6 +22,7 @@ EXPECTED_TABLES = {
     "child_commands",
     "run_links",
     "child_signals",
+    "child_signal_ack_receipts",
     "workflow_checkpoints",
     "workflow_leases",
     "provider_invocations",
@@ -85,6 +85,23 @@ def test_schema_reserves_complete_later_durable_authorities(tmp_path: Path) -> N
             "state",
             "version",
         } <= database.column_names("delivery_outbox")
+        assert {
+            "claimed_by",
+            "claimed_at",
+            "claim_expires_at",
+            "claim_epoch",
+            "acked_at",
+            "ack_receipt_id",
+        } <= database.column_names("child_signals")
+        assert {
+            "signal_id",
+            "owner_id",
+            "claim_epoch",
+            "continuation_id",
+            "event_id",
+            "continuation_payload_hash",
+            "event_payload_hash",
+        } <= database.column_names("child_signal_ack_receipts")
 
 
 def test_database_refuses_foreign_or_future_schema(tmp_path: Path) -> None:
@@ -102,4 +119,3 @@ def test_missing_parent_directory_is_not_created_implicitly(tmp_path: Path) -> N
     with pytest.raises(FileNotFoundError):
         Database.open(path)
     assert not path.parent.exists()
-

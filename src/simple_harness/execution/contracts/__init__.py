@@ -8,6 +8,8 @@ from .children import (
     ChildCommandRecord,
     ChildCommandState,
     ChildLaunchResult,
+    ChildSignalAckReceipt,
+    ChildSignalAckResult,
     ChildSignalRecord,
     ChildSignalState,
     ProfileLaunchTicket,
@@ -15,12 +17,13 @@ from .children import (
     child_launch_fingerprint,
 )
 
-
 __all__ = (
     "AttachmentPolicy",
     "ChildCommandRecord",
     "ChildCommandState",
     "ChildLaunchResult",
+    "ChildSignalAckReceipt",
+    "ChildSignalAckResult",
     "ChildSignalRecord",
     "ChildSignalState",
     "ProfileLaunchTicket",

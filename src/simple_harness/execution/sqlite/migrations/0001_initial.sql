@@ -129,11 +129,45 @@ CREATE TABLE child_signals (
     payload_json TEXT NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('pending', 'claimed', 'acked')),
     version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0),
+    claimed_by TEXT,
+    claimed_at REAL,
+    claim_expires_at REAL,
+    claim_epoch INTEGER NOT NULL DEFAULT 0 CHECK(claim_epoch >= 0),
+    acked_at REAL,
+    ack_receipt_id TEXT UNIQUE REFERENCES child_signal_ack_receipts(receipt_id),
     created_at REAL NOT NULL CHECK(created_at >= 0),
-    updated_at REAL NOT NULL CHECK(updated_at >= 0)
+    updated_at REAL NOT NULL CHECK(updated_at >= 0),
+    CHECK(
+        (state = 'pending' AND claimed_by IS NULL AND claimed_at IS NULL
+            AND claim_expires_at IS NULL AND claim_epoch = 0
+            AND acked_at IS NULL AND ack_receipt_id IS NULL)
+        OR
+        (state = 'claimed' AND claimed_by IS NOT NULL AND claimed_at IS NOT NULL
+            AND claim_expires_at > claimed_at AND claim_epoch >= 1
+            AND acked_at IS NULL AND ack_receipt_id IS NULL)
+        OR
+        (state = 'acked' AND claimed_by IS NOT NULL AND claimed_at IS NOT NULL
+            AND claim_expires_at > claimed_at AND claim_epoch >= 1
+            AND acked_at IS NOT NULL AND ack_receipt_id IS NOT NULL)
+    )
 ) STRICT;
 
-CREATE INDEX child_signals_parent_state_idx ON child_signals(parent_run_id, state, created_at);
+CREATE INDEX child_signals_parent_head_idx
+    ON child_signals(parent_run_id, created_at, signal_id, state);
+
+CREATE TABLE child_signal_ack_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    signal_id TEXT NOT NULL UNIQUE REFERENCES child_signals(signal_id) ON DELETE CASCADE,
+    parent_run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL,
+    claim_epoch INTEGER NOT NULL CHECK(claim_epoch >= 1),
+    continuation_id TEXT NOT NULL UNIQUE REFERENCES continuations(continuation_id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL UNIQUE REFERENCES run_events(event_id) ON DELETE CASCADE,
+    continuation_payload_hash TEXT NOT NULL CHECK(length(continuation_payload_hash) = 64),
+    event_payload_hash TEXT NOT NULL CHECK(length(event_payload_hash) = 64),
+    created_at REAL NOT NULL CHECK(created_at >= 0),
+    UNIQUE(signal_id, owner_id, claim_epoch)
+) STRICT;
 
 CREATE TABLE workflow_checkpoints (
     checkpoint_id TEXT PRIMARY KEY,
