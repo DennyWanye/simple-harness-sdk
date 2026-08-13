@@ -25,6 +25,7 @@ from simple_harness.execution.uow import (
     RunRecord,
     RunState,
     UnitOfWorkConflict,
+    WorkflowCheckpoint,
 )
 from simple_harness.providers import CancelToken
 from simple_harness.tools.authorization import AuthorizationPort
@@ -96,6 +97,23 @@ class RuntimeReconciliationPort(Protocol):
     async def reconcile(self) -> None: ...
 
 
+@runtime_checkable
+class ReactCheckpointPort(Protocol):
+    def read_react_checkpoint(self, run_id: str) -> WorkflowCheckpoint | None: ...
+
+    def cas_react_checkpoint(
+        self,
+        *,
+        run_id: str,
+        lease: ExecutionLease,
+        expected_version: int | None,
+        checkpoint: Mapping[str, JsonValue],
+        checkpoint_hash: str,
+        now: float,
+        fault: Callable[[str], None] | None = None,
+    ) -> WorkflowCheckpoint: ...
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeServices:
     provider: ProviderInvocationCoordinator
@@ -105,6 +123,7 @@ class RuntimeServices:
     delivery: DeliveryDispatcher
     tool_reconciliation: ToolReconciliationPort
     reconciliation: RuntimeReconciliationPort
+    react_checkpoint: ReactCheckpointPort
 
 
 class RuntimeUnitOfWork(ExecutionUnitOfWork, RunFencePort, Protocol):
@@ -120,6 +139,7 @@ class RuntimePorts:
     delivery: DeliveryDispatcher
     tool_reconciliation: ToolReconciliationPort
     reconciliation: RuntimeReconciliationPort
+    react_checkpoint: ReactCheckpointPort
     tool_catalog: ToolCatalogGenerationPort
     admission: AdmissionPort = field(default_factory=AllowAllAdmission)
     clock: Callable[[], float] = time.time
@@ -136,6 +156,7 @@ class RuntimePorts:
             "delivery",
             "tool_reconciliation",
             "reconciliation",
+            "react_checkpoint",
             "tool_catalog",
         ):
             if getattr(self, name) is None:
@@ -204,6 +225,7 @@ class Runtime:
             delivery=ports.delivery,
             tool_reconciliation=ports.tool_reconciliation,
             reconciliation=ports.reconciliation,
+            react_checkpoint=ports.react_checkpoint,
         )
         self._live = LiveRunIndex()
         self._leases: dict[str, ExecutionLease] = {}
@@ -558,6 +580,7 @@ __all__ = (
     "ROOT_PROFILE_KEY",
     "DriverInvocation",
     "DriverResult",
+    "ReactCheckpointPort",
     "RunClient",
     "Runtime",
     "RuntimeDriver",

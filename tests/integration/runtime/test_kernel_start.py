@@ -76,6 +76,7 @@ def runtime(
             delivery=noop,
             tool_reconciliation=noop,
             reconciliation=noop,
+            react_checkpoint=uow,
             tool_catalog=catalog or Catalog(),
             owner_id=owner,
             clock=clock,
