@@ -16,13 +16,13 @@ from simple_harness.contracts import (
     CallId,
     EffectId,
     JsonValue,
+    RequestId,
     RunId,
     canonical_json,
     freeze_json,
     thaw_json,
 )
-from simple_harness.execution.effects import EffectRecord, EffectState
-from simple_harness.execution.fences import RunFenceLease
+from simple_harness.execution.budget import BudgetCharge, BudgetPolicy, BudgetSnapshot
 from simple_harness.execution.contracts.children import (
     AttachmentPolicy,
     ChildCommandRecord,
@@ -33,6 +33,12 @@ from simple_harness.execution.contracts.children import (
     ProfileLaunchTicket,
     ProfileLaunchTicketState,
     child_launch_fingerprint,
+)
+from simple_harness.execution.effects import EffectRecord, EffectState
+from simple_harness.execution.fences import RunFenceLease
+from simple_harness.execution.provider_invocations import (
+    ProviderInvocationRecord,
+    ProviderInvocationState,
 )
 from simple_harness.execution.uow import (
     AdmissionRecord,
@@ -47,6 +53,7 @@ from simple_harness.execution.uow import (
     UnitOfWorkConflict,
     UnitOfWorkNotFound,
 )
+from simple_harness.providers import ProviderTarget
 from simple_harness.tools.contracts import ToolOutcome, ToolResult
 
 from .database import Database
@@ -1259,6 +1266,201 @@ class SqliteExecutionUnitOfWork:
                 (time.time(), lease.run_id.value, lease.owner_id, lease.epoch),
             )
 
+    def claim_provider_invocation(
+        self,
+        record: ProviderInvocationRecord,
+        *,
+        budget_policy: BudgetPolicy,
+    ) -> ProviderInvocationRecord:
+        existing = self._provider_invocation_by_logical_call(
+            record.run_id, record.request_id.value
+        )
+        if existing is not None:
+            return existing
+        with self.database.transaction() as connection:
+            existing_row = connection.execute(
+                "SELECT * FROM provider_invocations WHERE run_id = ? AND request_id = ?",
+                (record.run_id.value, record.request_id.value),
+            ).fetchone()
+            if existing_row is not None:
+                return _provider_invocation_record(existing_row)
+            budget_policy.authorize(
+                self._provider_budget(connection, record.run_id),
+                reservation_micros=record.budget_charge.amount_micros,
+            )
+            target_json = canonical_json(
+                {
+                    "provider_id": record.target.provider_id,
+                    "model": record.target.model,
+                    "pricing_key": record.target.pricing_key,
+                    "endpoint_identity": record.target.endpoint_identity,
+                    "adapter_key": record.target.adapter_key,
+                }
+            )
+            estimator_json = (
+                None
+                if record.estimator_snapshot is None
+                else canonical_json(_thaw_json(record.estimator_snapshot))
+            )
+            connection.execute(
+                """
+                INSERT INTO provider_invocations(
+                    invocation_id, run_id, request_id, request_fingerprint,
+                    target_json, target_digest, estimator_json, estimator_digest,
+                    state, response_json, usage_json, error_code, claimed_at,
+                    handed_off_at, settled_at, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'claimed', NULL, ?, NULL, ?, NULL, NULL, ?)
+                """,
+                (
+                    record.invocation_id,
+                    record.run_id.value,
+                    record.request_id.value,
+                    record.request_fingerprint,
+                    target_json,
+                    record.target_digest,
+                    estimator_json,
+                    record.estimator_digest,
+                    canonical_json(_thaw_json(record.usage_json)),
+                    record.claimed_at,
+                    record.version,
+                ),
+            )
+        stored = self.read_provider_invocation(record.invocation_id)
+        assert stored is not None
+        return stored
+
+    def read_provider_invocation(
+        self, invocation_id: str
+    ) -> ProviderInvocationRecord | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM provider_invocations WHERE invocation_id = ?",
+            (invocation_id,),
+        ).fetchone()
+        return None if row is None else _provider_invocation_record(row)
+
+    def hand_off_provider_invocation(
+        self,
+        invocation_id: str,
+        *,
+        expected_version: int,
+        handed_off_at: float,
+    ) -> ProviderInvocationRecord:
+        handed_off_at = _time(handed_off_at, "handed_off_at")
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE provider_invocations
+                SET state = 'handed_off', handed_off_at = ?, version = version + 1
+                WHERE invocation_id = ? AND state = 'claimed' AND version = ?
+                """,
+                (handed_off_at, invocation_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("provider invocation handoff CAS failed")
+        result = self.read_provider_invocation(invocation_id)
+        assert result is not None
+        return result
+
+    def settle_provider_invocation(
+        self,
+        record: ProviderInvocationRecord,
+        *,
+        expected_version: int,
+    ) -> ProviderInvocationRecord:
+        if record.state not in {
+            ProviderInvocationState.SUCCEEDED,
+            ProviderInvocationState.FAILED,
+            ProviderInvocationState.UNKNOWN,
+        }:
+            raise ValueError("provider settlement requires a terminal state")
+        response_json = (
+            None
+            if record.response_json is None
+            else canonical_json(_thaw_json(record.response_json))
+        )
+        usage_json = (
+            None
+            if record.usage_json is None
+            else canonical_json(_thaw_json(record.usage_json))
+        )
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE provider_invocations
+                SET state = ?, response_json = ?, usage_json = ?, error_code = ?,
+                    settled_at = ?, version = version + 1
+                WHERE invocation_id = ? AND state = 'handed_off' AND version = ?
+                  AND request_fingerprint = ? AND target_digest = ?
+                  AND COALESCE(estimator_digest, '') = COALESCE(?, '')
+                """,
+                (
+                    record.state.value,
+                    response_json,
+                    usage_json,
+                    record.error_code,
+                    record.settled_at,
+                    record.invocation_id,
+                    expected_version,
+                    record.request_fingerprint,
+                    record.target_digest,
+                    record.estimator_digest,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("provider invocation settlement CAS failed")
+        result = self.read_provider_invocation(record.invocation_id)
+        assert result is not None
+        return result
+
+    def list_incomplete_provider_invocations(
+        self,
+    ) -> tuple[ProviderInvocationRecord, ...]:
+        rows = self.database.connection.execute(
+            """
+            SELECT * FROM provider_invocations
+            WHERE state IN ('claimed', 'handed_off')
+            ORDER BY claimed_at, invocation_id
+            """
+        ).fetchall()
+        return tuple(_provider_invocation_record(row) for row in rows)
+
+    def read_provider_budget(self, run_id: RunId) -> BudgetSnapshot:
+        return self._provider_budget(self.database.connection, run_id)
+
+    def _provider_budget(
+        self, connection: sqlite3.Connection, run_id: RunId
+    ) -> BudgetSnapshot:
+        committed = 0
+        reserved = 0
+        unknown = False
+        rows = connection.execute(
+            "SELECT state, usage_json FROM provider_invocations WHERE run_id = ?",
+            (run_id.value,),
+        ).fetchall()
+        for row in rows:
+            usage = json.loads(str(row["usage_json"]))
+            charge = BudgetCharge.from_json(usage["budget"])
+            state = ProviderInvocationState(str(row["state"]))
+            if charge.amount_micros is None:
+                unknown = True
+            elif state in {
+                ProviderInvocationState.CLAIMED,
+                ProviderInvocationState.HANDED_OFF,
+            }:
+                reserved += charge.amount_micros
+            else:
+                committed += charge.amount_micros
+        return BudgetSnapshot(committed, reserved, unknown)
+
+    def _provider_invocation_by_logical_call(
+        self, run_id: RunId, request_id: str
+    ) -> ProviderInvocationRecord | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM provider_invocations WHERE run_id = ? AND request_id = ?",
+            (run_id.value, request_id),
+        ).fetchone()
+        return None if row is None else _provider_invocation_record(row)
+
     def read_run(self, run_id: str) -> RunRecord | None:
         row = self.database.connection.execute(
             "SELECT * FROM runs WHERE run_id = ?", (run_id,)
@@ -1499,6 +1701,54 @@ def _effect_record(row: sqlite3.Row) -> EffectRecord:
             None if row["evidence_ref"] is None else str(row["evidence_ref"])
         ),
         result=_tool_result(row["result_json"]),
+    )
+
+
+def _provider_invocation_record(row: sqlite3.Row) -> ProviderInvocationRecord:
+    target = json.loads(str(row["target_json"]))
+    usage = json.loads(str(row["usage_json"]))
+    return ProviderInvocationRecord(
+        invocation_id=str(row["invocation_id"]),
+        run_id=RunId(str(row["run_id"])),
+        request_id=RequestId(str(row["request_id"])),
+        state=ProviderInvocationState(str(row["state"])),
+        request_fingerprint=str(row["request_fingerprint"]),
+        target=ProviderTarget(
+            provider_id=str(target["provider_id"]),
+            model=str(target["model"]),
+            pricing_key=str(target["pricing_key"]),
+            endpoint_identity=str(target["endpoint_identity"]),
+            adapter_key=str(target["adapter_key"]),
+        ),
+        target_digest=str(row["target_digest"]),
+        estimator_snapshot=(
+            None
+            if row["estimator_json"] is None
+            else json.loads(str(row["estimator_json"]))
+        ),
+        estimator_digest=(
+            None
+            if row["estimator_digest"] is None
+            else str(row["estimator_digest"])
+        ),
+        budget_charge=BudgetCharge.from_json(usage["budget"]),
+        response_json=(
+            None
+            if row["response_json"] is None
+            else json.loads(str(row["response_json"]))
+        ),
+        usage_json=usage,
+        error_code=(
+            None if row["error_code"] is None else str(row["error_code"])
+        ),
+        claimed_at=float(row["claimed_at"]),
+        handed_off_at=(
+            None if row["handed_off_at"] is None else float(row["handed_off_at"])
+        ),
+        settled_at=(
+            None if row["settled_at"] is None else float(row["settled_at"])
+        ),
+        version=int(row["version"]),
     )
 
 

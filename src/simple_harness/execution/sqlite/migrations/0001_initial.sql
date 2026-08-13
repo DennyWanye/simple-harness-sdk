@@ -161,6 +161,10 @@ CREATE TABLE provider_invocations (
     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
     request_id TEXT NOT NULL,
     request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint) = 64),
+    target_json TEXT NOT NULL,
+    target_digest TEXT NOT NULL CHECK(length(target_digest) = 64),
+    estimator_json TEXT,
+    estimator_digest TEXT CHECK(estimator_digest IS NULL OR length(estimator_digest) = 64),
     state TEXT NOT NULL CHECK(state IN ('claimed', 'handed_off', 'succeeded', 'failed', 'unknown')),
     response_json TEXT,
     usage_json TEXT,
@@ -168,8 +172,9 @@ CREATE TABLE provider_invocations (
     claimed_at REAL NOT NULL CHECK(claimed_at >= 0),
     handed_off_at REAL,
     settled_at REAL,
-    version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0),
-    UNIQUE(run_id, request_id, invocation_id)
+    version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+    UNIQUE(run_id, request_id),
+    CHECK((estimator_json IS NULL) = (estimator_digest IS NULL))
 ) STRICT;
 
 CREATE INDEX provider_invocations_run_state_idx ON provider_invocations(run_id, state);
@@ -219,4 +224,3 @@ CREATE TABLE delivery_outbox (
 ) STRICT;
 
 CREATE INDEX delivery_outbox_state_idx ON delivery_outbox(state, created_at);
-

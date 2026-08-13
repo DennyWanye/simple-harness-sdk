@@ -16,6 +16,7 @@ from simple_harness.execution.contracts.children import (
     ChildSignalRecord,
     ProfileLaunchTicket,
 )
+from simple_harness.execution.dispatch import ProviderInvocationUnitOfWork
 from simple_harness.execution.effects import EffectUnitOfWork
 
 
@@ -110,7 +111,7 @@ class ContinuationRecord:
     claimed_by: str | None
 
 
-class ExecutionUnitOfWork(EffectUnitOfWork, Protocol):
+class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protocol):
     def issue_profile_launch_ticket(
         self,
         ticket: ProfileLaunchTicket,
