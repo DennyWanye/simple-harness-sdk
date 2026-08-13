@@ -1,0 +1,24 @@
+{
+  "simple_harness.providers": [
+    "CancelToken",
+    "OpenAICompatibleProvider",
+    "Provider",
+    "ProviderAuthenticationError",
+    "ProviderCancelledError",
+    "ProviderError",
+    "ProviderPaymentRequiredError",
+    "ProviderProtocolError",
+    "ProviderRateLimitError",
+    "ProviderRequest",
+    "ProviderRequestRejectedError",
+    "ProviderResponse",
+    "ProviderServerError",
+    "ProviderTimeoutError",
+    "ProviderToolCall",
+    "ProviderToolSpec",
+    "ProviderTransportError",
+    "ProviderUsage",
+    "Secret",
+    "SecretRedactor"
+  ]
+}
