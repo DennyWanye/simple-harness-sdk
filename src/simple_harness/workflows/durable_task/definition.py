@@ -126,6 +126,7 @@ def create_definition(
                 interrupt_capable=True,
                 barrier=True,
                 exclusive_superstep=True,
+                pre_interrupt_effect_policy="pure",
             ),
             NodeDefinition("plan", plan_handler),
             NodeDefinition(
@@ -134,6 +135,7 @@ def create_definition(
                 interrupt_capable=True,
                 barrier=True,
                 exclusive_superstep=True,
+                pre_interrupt_effect_policy="pure",
             ),
             NodeDefinition(
                 "llm_proposal",
@@ -155,6 +157,7 @@ def create_definition(
                 interrupt_capable=True,
                 barrier=True,
                 exclusive_superstep=True,
+                pre_interrupt_effect_policy="pure",
             ),
             NodeDefinition("completion_decision", completion_decision_handler),
             NodeDefinition("test", test_handler),
@@ -182,6 +185,7 @@ def create_definition(
                 "wait_approval",
                 approval_route,
                 {"approved": "llm_proposal", "finalize": "finalize"},
+                selector_effect_policy="pure",
             ),
             ConditionalEdge(
                 "completion_decision",
@@ -192,11 +196,13 @@ def create_definition(
                     "audit": "audit",
                     "finalize": "finalize",
                 },
+                selector_effect_policy="pure",
             ),
             ConditionalEdge(
                 "audit",
                 audit_route,
                 {"fix": "llm_proposal", "finalize": "finalize"},
+                selector_effect_policy="pure",
             ),
         ),
         recursion_limit=RECURSION_LIMIT,
