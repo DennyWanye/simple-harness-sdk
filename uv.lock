@@ -818,6 +818,11 @@ dependencies = [
     { name = "httpx" },
 ]
 
+[package.optional-dependencies]
+testing = [
+    { name = "pytest" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -827,7 +832,11 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "httpx", specifier = ">=0.27,<1" }]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.3,<9" },
+]
+provides-extras = ["testing"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -25,6 +25,14 @@ dependencies = [
   "httpx>=0.27,<1",
 ]
 
+[project.optional-dependencies]
+testing = [
+  "pytest>=8.3,<9",
+]
+
+[project.entry-points.pytest11]
+simple_harness = "simple_harness.testing.pytest_plugin"
+
 [dependency-groups]
 dev = [
   "pytest>=8.3,<9",
@@ -70,4 +78,5 @@ markers = [
   "h7_runtime_gate: frozen H7 Provider ReAct Tool restart and child runtime seams",
   "h7_workflow_terminal_gate: frozen H7 strict and legacy workflow terminal projection seams",
   "anyio: async tests using anyio",
+  "simple_harness_conformance: mark test as requiring conformance host fixture",
 ]
