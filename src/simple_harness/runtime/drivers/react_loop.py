@@ -346,6 +346,20 @@ class ReActLoop:
                 state, checkpoint_version = checkpoint.cas(
                     value.run_id, execution_lease, checkpoint_version, state
                 )
+            if state.workflow_spawn_wait_receipt_id is not None:
+                stored = services.react_checkpoint.commit_pending_spawn_child_completion_and_react_ready(
+                    run_id=value.run_id.value,
+                    expected_checkpoint_version=checkpoint_version,
+                    execution_lease=execution_lease,
+                    run_fence=run_fence,
+                    now=self._clock(),
+                )
+                checkpoint_payload = thaw_json(stored.checkpoint)
+                if not isinstance(checkpoint_payload, dict):
+                    raise TypeError("ReAct checkpoint payload must be an object")
+                state = TerminationState.from_json(checkpoint_payload)
+                checkpoint_version = stored.version
+                continue
             state = replace(
                 state,
                 phase="ready",
@@ -357,6 +371,10 @@ class ReActLoop:
                 provider_response_snapshot=None,
                 provider_response_digest=None,
                 tool_result_progress=0,
+                workflow_spawn_wait_receipt_id=None,
+                pending_child_completion=None,
+                pending_child_completion_hash=None,
+                pending_child_completion_append_id=None,
                 last_observed_at=self._clock(),
             )
             state, checkpoint_version = checkpoint.cas(

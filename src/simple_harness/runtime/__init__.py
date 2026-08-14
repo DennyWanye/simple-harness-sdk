@@ -13,8 +13,17 @@ from .child_runs import (
 from .child_signal_runtime import ChildSignalRuntime, ChildSignalUnitOfWork
 from .context import ContextPort, ContextSnapshot, SqliteContextPort
 from .drivers.react_loop import AgentLoopCollaborator, EffectBatchExecutor
+from .drivers.workflow import (
+    WORKFLOW_DRIVER_IMPLEMENTATION_FINGERPRINT,
+    WORKFLOW_DRIVER_KIND,
+    WorkflowRuntimeDriver,
+    build_workflow_runtime_driver,
+)
 from .kernel import (
     ROOT_PROFILE_KEY,
+    DriverCancellationCoordinator,
+    DriverCancellationRecovery,
+    DriverCancelOutcome,
     DriverInvocation,
     DriverResult,
     RunClient,
@@ -41,6 +50,8 @@ from .user_continuations import ContinuationUnitOfWork, UserContinuationRuntime
 __all__ = (
     "ROOT_PROFILE_KEY",
     "STARTUP_RECONCILIATION_ORDER",
+    "WORKFLOW_DRIVER_IMPLEMENTATION_FINGERPRINT",
+    "WORKFLOW_DRIVER_KIND",
     "AdmissionPort",
     "AdmissionVerdict",
     "AgentLoopCollaborator",
@@ -53,6 +64,9 @@ __all__ = (
     "ContextPort",
     "ContextSnapshot",
     "ContinuationUnitOfWork",
+    "DriverCancelOutcome",
+    "DriverCancellationCoordinator",
+    "DriverCancellationRecovery",
     "DriverInvocation",
     "DriverResult",
     "EffectBatchExecutor",
@@ -75,5 +89,7 @@ __all__ = (
     "ToolCatalogGenerationPort",
     "ToolCatalogStale",
     "UserContinuationRuntime",
+    "WorkflowRuntimeDriver",
     "build_runtime",
+    "build_workflow_runtime_driver",
 )

@@ -76,6 +76,11 @@ class TerminationState:
     provider_response_snapshot: JsonValue | None = None
     provider_response_digest: str | None = None
     tool_result_progress: int = 0
+    workflow_spawn_wait_receipt_id: str | None = None
+    pending_child_completion: JsonValue | None = None
+    pending_child_completion_hash: str | None = None
+    pending_child_completion_append_id: str | None = None
+    last_workflow_spawn_wait_receipt_id: str | None = None
 
     @property
     def turns(self) -> int:
@@ -108,6 +113,20 @@ class TerminationState:
                 raise ValueError("durable termination totals must be non-negative")
         if self.context_revision is not None and self.context_revision < 0:
             raise ValueError("context_revision must be non-negative")
+        pending_values = (
+            self.workflow_spawn_wait_receipt_id,
+            self.pending_child_completion,
+            self.pending_child_completion_hash,
+            self.pending_child_completion_append_id,
+        )
+        if any(value is not None for value in pending_values) and not all(
+            value is not None for value in pending_values
+        ):
+            raise ValueError("pending workflow child completion is incomplete")
+        if self.pending_child_completion_hash is not None and len(
+            self.pending_child_completion_hash
+        ) != 64:
+            raise ValueError("pending child completion hash is invalid")
 
     def before_provider(
         self, limits: TerminationLimits, *, now: float, budget: BudgetSnapshot
@@ -187,6 +206,15 @@ class TerminationState:
             "provider_response_snapshot": self.provider_response_snapshot,
             "provider_response_digest": self.provider_response_digest,
             "tool_result_progress": self.tool_result_progress,
+            "workflow_spawn_wait_receipt_id": self.workflow_spawn_wait_receipt_id,
+            "pending_child_completion": self.pending_child_completion,
+            "pending_child_completion_hash": self.pending_child_completion_hash,
+            "pending_child_completion_append_id": (
+                self.pending_child_completion_append_id
+            ),
+            "last_workflow_spawn_wait_receipt_id": (
+                self.last_workflow_spawn_wait_receipt_id
+            ),
         }
 
     @classmethod
@@ -217,6 +245,19 @@ class TerminationState:
                 value.get("provider_response_digest")
             ),
             tool_result_progress=_int(value.get("tool_result_progress", 0)),
+            workflow_spawn_wait_receipt_id=_optional_string(
+                value.get("workflow_spawn_wait_receipt_id")
+            ),
+            pending_child_completion=value.get("pending_child_completion"),  # type: ignore[arg-type]
+            pending_child_completion_hash=_optional_string(
+                value.get("pending_child_completion_hash")
+            ),
+            pending_child_completion_append_id=_optional_string(
+                value.get("pending_child_completion_append_id")
+            ),
+            last_workflow_spawn_wait_receipt_id=_optional_string(
+                value.get("last_workflow_spawn_wait_receipt_id")
+            ),
         )
 
 
