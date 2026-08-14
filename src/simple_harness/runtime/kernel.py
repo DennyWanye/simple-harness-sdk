@@ -191,6 +191,12 @@ class RuntimeReconciliationPort(Protocol):
 
 @runtime_checkable
 class WorkflowSpawnRuntimeCoordinator(Protocol):
+    async def catalog_snapshot(self):  # type: ignore[no-untyped-def]
+        ...
+
+    async def execute(self, invocation):  # type: ignore[no-untyped-def]
+        ...
+
     async def continue_ready(
         self, activation: WorkflowSpawnReadyActivation
     ) -> WorkflowSpawnCoordinatorOutcome: ...
@@ -264,6 +270,17 @@ class _CanonicalWorkflowSpawnRuntimeCoordinator:
         self._owner_id = owner_id
         self._lease_ttl_seconds = lease_ttl_seconds
         self._clock = clock
+
+    async def catalog_snapshot(self):  # type: ignore[no-untyped-def]
+        from .orchestration import workflow_catalog_selection_from_authority
+
+        async def operation(transaction):  # type: ignore[no-untyped-def]
+            authority = await self._uow.read_catalog(transaction)
+            return workflow_catalog_selection_from_authority(authority)
+
+        return await self._uow.run_atomic(
+            operation, fault_label="runtime:workflow_spawn:catalog"
+        )
 
     async def continue_ready(
         self, activation: WorkflowSpawnReadyActivation
@@ -502,6 +519,91 @@ class RunClient:
     async def cancel(self, run_id: RunId) -> RunRecord:
         return await self._runtime._cancel_run(run_id)
 
+    async def workflow_spawn_catalog(self):  # type: ignore[no-untyped-def]
+        coordinator = self._runtime._services.workflow_spawn
+        if coordinator is None:
+            raise RuntimeError("workflow spawn is not configured")
+        return await coordinator.catalog_snapshot()
+
+    def bind_workflow_spawn(self, context, selection):  # type: ignore[no-untyped-def]
+        from .orchestration import (
+            WorkflowSpawnOrigin,
+            WorkflowSpawnSelection,
+            workflow_catalog_selection_from_json,
+            workflow_spawn_child_request_id,
+            workflow_spawn_child_run_id,
+            workflow_spawn_operation_id,
+        )
+        from .start_snapshot import StartSnapshot
+        from .workflow_spawn import (
+            WorkflowSpawnToolContext,
+            _create_workflow_spawn_invocation,
+        )
+
+        if not isinstance(context, WorkflowSpawnToolContext):
+            raise TypeError("workflow spawn binder requires its typed Tool context")
+        if not isinstance(selection, WorkflowSpawnSelection):
+            raise TypeError("workflow spawn binder requires a typed selection")
+        parent = self._runtime._uow.read_run(context.run_id)
+        raw_snapshot = self._runtime._uow.read_start_snapshot(context.run_id)
+        checkpoint = self._runtime._ports.react_checkpoint.read_react_checkpoint(
+            context.run_id
+        )
+        if parent is None or raw_snapshot is None or checkpoint is None:
+            raise UnitOfWorkConflict("workflow spawn parent authority disappeared")
+        parent_start = StartSnapshot.from_json(raw_snapshot)
+        checkpoint_payload = checkpoint.checkpoint
+        if not isinstance(checkpoint_payload, Mapping):
+            raise UnitOfWorkConflict("workflow spawn checkpoint is malformed")
+        raw_catalog = checkpoint_payload.get("workflow_catalog_selection")
+        if not isinstance(raw_catalog, Mapping):
+            raise UnitOfWorkConflict("workflow spawn catalog pin is missing")
+        catalog = workflow_catalog_selection_from_json(raw_catalog)
+        if (
+            catalog.canonical_hash != context.catalog_snapshot_hash
+            or checkpoint.version != context.react_checkpoint_revision
+            or parent.request_id != context.request_id
+            or parent_start.turn_id != context.turn_id
+            or selection.profile_key
+            not in {item.profile_key for item in catalog.profiles}
+        ):
+            raise UnitOfWorkConflict("workflow spawn binding differs from durable pin")
+        origin = WorkflowSpawnOrigin(
+            context.run_id,
+            context.request_id,
+            context.turn_id,
+            context.internal_tool_call_id,
+        )
+        operation_id = workflow_spawn_operation_id(origin)
+        child_start = RunStart(
+            ExecutionSessionId(parent.execution_session_id),
+            RunId(workflow_spawn_child_run_id(operation_id)),
+            RequestId(workflow_spawn_child_request_id(operation_id)),
+            context.turn_id,
+            selection.start_input,
+            parent_start.tool_catalog_generation,
+        )
+        return _create_workflow_spawn_invocation(
+            spawn_operation_id=operation_id,
+            origin=origin,
+            start=child_start,
+            selection=selection,
+            catalog_selection=catalog,
+            issue_authority=context.issue_authority,
+        )
+
+    async def workflow_spawn(self, invocation):  # type: ignore[no-untyped-def]
+        coordinator = self._runtime._services.workflow_spawn
+        if coordinator is None:
+            raise RuntimeError("workflow spawn is not configured")
+        return await coordinator.execute(invocation)
+
+    def prove_graph_unavailable(self, ticket, ready_activation):  # type: ignore[no-untyped-def]
+        runner = self._runtime._workflow_runner
+        if runner is None:
+            raise RuntimeError("workflow spawn is not configured")
+        return runner._prove_graph_unavailable(ticket, ready_activation)
+
 
 class Runtime:
     def __init__(
@@ -551,6 +653,7 @@ class Runtime:
         if workflow_profiles and workflow_driver is None:
             raise ValueError("workflow profile requires the SDK-owned workflow driver")
         self._uow = uow
+        self._workflow_runner = workflow_runner
         self._profiles = dict(profiles)
         self._drivers = dict(drivers)
         self._cancellation_coordinators: dict[

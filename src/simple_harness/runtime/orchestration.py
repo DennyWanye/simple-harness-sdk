@@ -438,6 +438,114 @@ class WorkflowCatalogSelectionSnapshot:
             raise ValueError("workflow spawn catalog snapshot hash differs")
 
 
+def workflow_catalog_selection_to_json(
+    snapshot: WorkflowCatalogSelectionSnapshot,
+) -> dict[str, JsonValue]:
+    if not isinstance(snapshot, WorkflowCatalogSelectionSnapshot):
+        raise TypeError("snapshot must be a WorkflowCatalogSelectionSnapshot")
+    return {
+        "authority_id": snapshot.authority_id,
+        "generation": snapshot.generation,
+        "version": snapshot.version,
+        "catalog_hash": snapshot.catalog_hash,
+        "profiles": [item.to_json() for item in snapshot.profiles],
+        "canonical_hash": snapshot.canonical_hash,
+    }
+
+
+def workflow_catalog_selection_from_json(
+    value: Mapping[str, object],
+) -> WorkflowCatalogSelectionSnapshot:
+    if not isinstance(value, Mapping):
+        raise TypeError("workflow catalog selection snapshot must be an object")
+    raw_profiles = value.get("profiles")
+    if not isinstance(raw_profiles, list):
+        raise TypeError("workflow catalog selection profiles must be an array")
+    profiles: list[WorkflowCatalogSelectionProfile] = []
+    for raw_profile in raw_profiles:
+        if not isinstance(raw_profile, Mapping):
+            raise TypeError("workflow catalog selection profile must be an object")
+        raw_schema = raw_profile.get("start_input_schema")
+        if not isinstance(raw_schema, Mapping):
+            raise TypeError("workflow catalog selection schema must be an object")
+        canonical_schema = raw_schema.get("canonical_schema")
+        if not isinstance(canonical_schema, Mapping):
+            raise TypeError("workflow catalog selection schema body must be an object")
+        schema = StartInputSchema(
+            schema_ref=str(raw_schema.get("schema_ref", "")),
+            canonical_schema=cast(Mapping[str, JsonValue], canonical_schema),
+            schema_hash=str(raw_schema.get("schema_hash", "")),
+        )
+        profiles.append(
+            WorkflowCatalogSelectionProfile(
+                profile_key=str(raw_profile.get("profile_key", "")),
+                description=str(raw_profile.get("description", "")),
+                use_when=str(raw_profile.get("use_when", "")),
+                avoid_when=str(raw_profile.get("avoid_when", "")),
+                profile_fingerprint=str(
+                    raw_profile.get("profile_fingerprint", "")
+                ),
+                start_input_schema=schema,
+            )
+        )
+    authority_id = value.get("authority_id")
+    generation = value.get("generation")
+    version = value.get("version")
+    catalog_hash = value.get("catalog_hash")
+    canonical_hash = value.get("canonical_hash")
+    if not isinstance(authority_id, str) or not isinstance(catalog_hash, str):
+        raise TypeError("workflow catalog selection identity is malformed")
+    if not isinstance(canonical_hash, str):
+        raise TypeError("workflow catalog selection hash is malformed")
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or isinstance(version, bool)
+        or not isinstance(version, int)
+    ):
+        raise TypeError("workflow catalog selection revision is malformed")
+    return WorkflowCatalogSelectionSnapshot(
+        authority_id,
+        generation,
+        version,
+        catalog_hash,
+        tuple(profiles),
+        canonical_hash,
+    )
+
+
+def workflow_catalog_selection_from_authority(
+    authority: WorkflowCatalogAuthority,
+) -> WorkflowCatalogSelectionSnapshot:
+    if not isinstance(authority, WorkflowCatalogAuthority):
+        raise TypeError("authority must be a WorkflowCatalogAuthority")
+    profiles = tuple(
+        WorkflowCatalogSelectionProfile(
+            profile_key=item.profile_key,
+            description=item.description,
+            use_when=item.use_when,
+            avoid_when=item.avoid_when,
+            profile_fingerprint=item.profile_fingerprint,
+            start_input_schema=item.start_input_schema,
+        )
+        for item in authority.profiles
+    )
+    return WorkflowCatalogSelectionSnapshot(
+        authority_id=authority.authority_id,
+        generation=authority.generation,
+        version=authority.version,
+        catalog_hash=authority.catalog_hash,
+        profiles=profiles,
+        canonical_hash=workflow_catalog_selection_hash(
+            authority.authority_id,
+            authority.generation,
+            authority.version,
+            authority.catalog_hash,
+            profiles,
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class WorkflowSpawnOrigin:
     parent_run_id: str
@@ -509,6 +617,20 @@ def workflow_spawn_child_command_id(spawn_operation_id: str) -> str:
     _required(spawn_operation_id, "spawn_operation_id")
     return _domain_hash(
         "workflow-spawn/child-command/v1", {"operation_id": spawn_operation_id}
+    )
+
+
+def workflow_spawn_child_request_id(spawn_operation_id: str) -> str:
+    _required(spawn_operation_id, "spawn_operation_id")
+    return _domain_hash(
+        "workflow-spawn/request/v1", {"operation_id": spawn_operation_id}
+    )
+
+
+def workflow_spawn_child_run_id(spawn_operation_id: str) -> str:
+    _required(spawn_operation_id, "spawn_operation_id")
+    return _domain_hash(
+        "workflow-spawn/run/v1", {"operation_id": spawn_operation_id}
     )
 
 
@@ -1407,6 +1529,12 @@ __all__ = (
     "WorkflowSpawnReadyActivationState",
     "WorkflowSpawnSelection",
     "workflow_catalog_hash",
+    "workflow_catalog_selection_from_authority",
+    "workflow_catalog_selection_from_json",
+    "workflow_catalog_selection_hash",
+    "workflow_catalog_selection_to_json",
     "workflow_spawn_child_command_id",
+    "workflow_spawn_child_request_id",
+    "workflow_spawn_child_run_id",
     "workflow_spawn_operation_id",
 )

@@ -6,21 +6,31 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
+from simple_harness.contracts import canonical_json
 from simple_harness.execution.contracts.children import AttachmentPolicy
-from simple_harness.runtime.kernel import DriverInvocation
+from simple_harness.runtime.kernel import DriverInvocation, RunClient
 from simple_harness.runtime.orchestration import (
+    StartInputSchema,
     VerifiedWorkflowGraphUnavailable,
+    WorkflowCatalogSelectionProfile,
+    WorkflowCatalogSelectionSnapshot,
     WorkflowLaunchRequest,
     WorkflowLaunchTicketPort,
     WorkflowSpawnOrigin,
     WorkflowSpawnReadyActivationState,
     WorkflowSpawnSelection,
     _create_verified_workflow_graph_unavailable,
+    workflow_catalog_selection_from_json,
+    workflow_catalog_selection_hash,
+    workflow_catalog_selection_to_json,
     workflow_spawn_child_command_id,
+    workflow_spawn_child_request_id,
+    workflow_spawn_child_run_id,
     workflow_spawn_operation_id,
 )
 from simple_harness.runtime.workflow_spawn import (
@@ -28,6 +38,40 @@ from simple_harness.runtime.workflow_spawn import (
     WorkflowSpawnChildControlKind,
     WorkflowSpawnHandlerOutcome,
 )
+from simple_harness.tools.contracts import ToolContext
+
+
+def _catalog_selection_snapshot() -> WorkflowCatalogSelectionSnapshot:
+    schema_json = {
+        "type": "object",
+        "properties": {"objective": {"type": "string"}},
+        "required": ["objective"],
+        "additionalProperties": False,
+    }
+    schema = StartInputSchema(
+        "schema://workflow.task/v1",
+        schema_json,
+        hashlib.sha256(canonical_json(schema_json).encode()).hexdigest(),
+    )
+    profile = WorkflowCatalogSelectionProfile(
+        "workflow.task",
+        "Durable task",
+        "Use for durable work",
+        "Avoid for direct answers",
+        "profile-fingerprint",
+        schema,
+    )
+    profiles = (profile,)
+    return WorkflowCatalogSelectionSnapshot(
+        "model_spawnable",
+        1,
+        1,
+        "catalog-hash",
+        profiles,
+        workflow_catalog_selection_hash(
+            "model_spawnable", 1, 1, "catalog-hash", profiles
+        ),
+    )
 
 
 def test_spawn_identity_is_payload_independent_and_child_is_attached() -> None:
@@ -53,6 +97,15 @@ def test_spawn_identity_is_payload_independent_and_child_is_attached() -> None:
     assert operation_id == workflow_spawn_operation_id(origin)
     assert first != second
     assert workflow_spawn_child_command_id(operation_id) == workflow_spawn_child_command_id(
+        operation_id
+    )
+    assert workflow_spawn_child_request_id(operation_id) == workflow_spawn_child_request_id(
+        operation_id
+    )
+    assert workflow_spawn_child_run_id(operation_id) == workflow_spawn_child_run_id(
+        operation_id
+    )
+    assert workflow_spawn_child_request_id(operation_id) != workflow_spawn_child_run_id(
         operation_id
     )
     assert AttachmentPolicy.ATTACHED.value == "attached"
@@ -127,6 +180,22 @@ def test_launch_port_exposes_only_canonical_spawn_commands() -> None:
 
 def test_driver_invocation_reserves_typed_spawn_ready_carrier() -> None:
     assert "workflow_spawn_ready_activation" in DriverInvocation.__dataclass_fields__
+
+
+def test_public_spawn_surface_and_typed_tool_context_are_reserved() -> None:
+    assert {
+        "workflow_spawn_catalog",
+        "bind_workflow_spawn",
+        "workflow_spawn",
+        "prove_graph_unavailable",
+    } <= set(RunClient.__dict__)
+    assert "workflow_spawn_context" in ToolContext.__dataclass_fields__
+
+
+def test_catalog_selection_snapshot_round_trips_canonical_bytes() -> None:
+    authority = _catalog_selection_snapshot()
+    encoded = workflow_catalog_selection_to_json(authority)
+    assert workflow_catalog_selection_from_json(encoded) == authority
 
 
 def test_handler_and_child_control_algebras_are_closed() -> None:

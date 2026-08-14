@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-import inspect
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from simple_harness.contracts import (
     CallId,
@@ -23,6 +23,9 @@ from simple_harness.contracts import (
 )
 
 from .schema import validate_tool_schema
+
+if TYPE_CHECKING:
+    from simple_harness.runtime.workflow_spawn import WorkflowSpawnToolContext
 
 
 JsonObject = Mapping[str, FrozenJsonValue]
@@ -87,14 +90,20 @@ class ToolCall:
 class ToolContext:
     run_id: RunId
     request_id: RequestId
-    cancellation: "CancellationToken"
+    cancellation: CancellationToken
     metadata: JsonObject = field(default_factory=dict)
+    workflow_spawn_context: WorkflowSpawnToolContext | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, RunId):
             raise TypeError("run_id must use RunId")
         if not isinstance(self.request_id, RequestId):
             raise TypeError("request_id must use RequestId")
+        if self.workflow_spawn_context is not None:
+            from simple_harness.runtime.workflow_spawn import WorkflowSpawnToolContext
+
+            if not isinstance(self.workflow_spawn_context, WorkflowSpawnToolContext):
+                raise TypeError("workflow_spawn_context must use the SDK typed context")
         object.__setattr__(self, "metadata", _freeze_object(self.metadata, "metadata"))
 
 
@@ -128,13 +137,13 @@ class ToolResult:
             raise ValueError("unknown effect outcome cannot be marked retryable")
 
     @classmethod
-    def succeeded(cls, call_id: CallId, value: JsonValue = None) -> "ToolResult":
+    def succeeded(cls, call_id: CallId, value: JsonValue = None) -> ToolResult:
         return cls(call_id=call_id, outcome=ToolOutcome.SUCCEEDED, value=value)
 
     @classmethod
     def partial(
         cls, call_id: CallId, value: JsonValue, *, public_message: str | None = None
-    ) -> "ToolResult":
+    ) -> ToolResult:
         return cls(
             call_id=call_id,
             outcome=ToolOutcome.PARTIAL,
@@ -145,7 +154,7 @@ class ToolResult:
     @classmethod
     def rejected(
         cls, call_id: CallId, error_code: str, public_message: str
-    ) -> "ToolResult":
+    ) -> ToolResult:
         return cls(
             call_id=call_id,
             outcome=ToolOutcome.REJECTED,
@@ -161,7 +170,7 @@ class ToolResult:
         public_message: str,
         *,
         retryable: bool = False,
-    ) -> "ToolResult":
+    ) -> ToolResult:
         return cls(
             call_id=call_id,
             outcome=ToolOutcome.FAILED,
@@ -171,7 +180,7 @@ class ToolResult:
         )
 
     @classmethod
-    def unknown(cls, call_id: CallId, public_message: str) -> "ToolResult":
+    def unknown(cls, call_id: CallId, public_message: str) -> ToolResult:
         return cls(
             call_id=call_id,
             outcome=ToolOutcome.UNKNOWN,
