@@ -120,6 +120,7 @@ def test_public_children_launch_returns_true_records_and_schedules(tmp_path) -> 
                 ExecutionSessionId("session-1"),
                 RunId("root-child"),
                 RequestId("request-root-child"),
+                "turn-root-child",
                 {"prompt": "root"},
                 1,
             )
@@ -151,6 +152,7 @@ def test_public_children_launch_returns_true_records_and_schedules(tmp_path) -> 
                     "schema_version": 1,
                     "profile_key": "workflow.child",
                     "driver_kind": "react",
+                    "turn_id": "turn-child-1",
                     "tool_catalog_generation": 1,
                     "input": {"prompt": "child"},
                 },

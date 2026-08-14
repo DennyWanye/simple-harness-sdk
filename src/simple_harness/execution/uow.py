@@ -191,6 +191,10 @@ class ContinuationTerminalResult:
 
 
 class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protocol):
+    def read_continuation(
+        self, continuation_id: str
+    ) -> ContinuationRecord | None: ...
+
     def commit_runtime_wait_with_blocker(
         self,
         *,
@@ -277,6 +281,10 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         now: float,
         fault: FaultHook | None = None,
     ) -> RunRecord: ...
+
+    def verify_workflow_cancel_terminal(
+        self, *, run_id: str, cancel_id: str, generation: int
+    ) -> bool: ...
 
     def read_run(self, run_id: str) -> RunRecord | None: ...
 
@@ -370,6 +378,12 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
     def read_child_command_for_run(
         self, child_run_id: str
     ) -> ChildCommandRecord | None: ...
+
+    def is_workflow_spawn_child(self, child_run_id: str) -> bool: ...
+
+    def read_child_terminal_result_for_run(
+        self, child_run_id: str
+    ) -> ChildTerminalResult | None: ...
 
     def read_child_attachment_policy(self, child_run_id: str) -> AttachmentPolicy: ...
 

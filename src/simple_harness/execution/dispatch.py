@@ -45,6 +45,8 @@ from .provider_invocations import (
 from .recovery import ResolutionOutcome
 
 if TYPE_CHECKING:
+    from simple_harness.workflow.lease import WorkflowLease
+
     from .recovery import ReconciliationResolution
     from .uow import ExecutionLease
 
@@ -71,6 +73,7 @@ class ProviderInvocationUnitOfWork(Protocol):
         expected_version: int,
         handed_off_at: float,
         execution_lease: ExecutionLease,
+        workflow_lease: WorkflowLease | None = None,
     ) -> ProviderInvocationRecord: ...
 
     def settle_provider_invocation(
@@ -238,6 +241,7 @@ class ProviderInvocationCoordinator:
         *,
         cancel: CancelToken,
         execution_lease: ExecutionLease,
+        workflow_lease: WorkflowLease | None = None,
     ) -> ProviderResponse:
         if (
             execution_lease.run_id != run_id.value
@@ -282,6 +286,7 @@ class ProviderInvocationCoordinator:
                 expected_version=record.version,
                 handed_off_at=self._clock(),
                 execution_lease=execution_lease,
+                workflow_lease=workflow_lease,
             )
         except ValueError as exc:
             current = self._uow.read_provider_invocation(record.invocation_id)

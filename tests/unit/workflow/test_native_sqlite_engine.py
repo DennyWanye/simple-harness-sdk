@@ -4,12 +4,21 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from simple_harness.contracts import CallId, EffectId, RequestId, RunId, thaw_json
+from simple_harness.contracts import (
+    CallId,
+    EffectId,
+    JsonValue,
+    RequestId,
+    RunId,
+    canonical_json,
+    thaw_json,
+)
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import DecisionState
 from simple_harness.tools import (
@@ -46,6 +55,9 @@ from simple_harness.workflow.definition import (
 from simple_harness.workflow.errors import WorkflowErrorCode, WorkflowNodeError
 from simple_harness.workflow.execution_ports import (
     CheckpointExecutionAdapter,
+    ResumeAdmissionRequest,
+    StartAdmissionRequest,
+    StartMode,
     WorkflowExecutionPorts,
     WorkflowOperationConflict,
 )
@@ -79,31 +91,84 @@ def _channel(writer: str, value_type: JsonType = JsonType.STRING) -> ChannelSpec
 
 
 def _create_run(uow: SqliteExecutionUnitOfWork, run_id: str) -> dict[str, object]:
-    uow.create_with_start_snapshot(
-        execution_session_id=f"session-{run_id}",
-        run_id=run_id,
+    request = StartAdmissionRequest(
+        request_key=f"start-{run_id}",
+        mode=StartMode.STANDALONE,
+        session_id=f"session-{run_id}",
         request_id=f"request-{run_id}",
-        profile_key="agent.general",
+        turn_id=f"turn-{run_id}",
+        profile_key="workflow.test",
         driver_kind="workflow",
-        snapshot={},
-        event_id=f"start-{run_id}",
-        now=0.0,
+        tool_catalog_generation=1,
+        workflow_name="native-test",
+        workflow_version="1",
+        requested_run_id=run_id,
+        requested_trace_id=f"trace-{run_id}",
+        requested_thread_id=f"thread-{run_id}",
+        resolved_run_id=run_id,
+        resolved_trace_id=f"trace-{run_id}",
+        resolved_thread_id=f"thread-{run_id}",
+        checkpoint_namespace="native",
+        manifest_hash="a" * 64,
+        implementation_hash="b" * 64,
+        state_schema_version=1,
+        start_input_schema_ref="schema://workflow.test/v1",
+        start_input_schema_hash=hashlib.sha256(b"{}").hexdigest(),
+        terminal_projection_descriptor=None,
+        terminal_request_factory_hash=None,
+        start_input={},
+        capability_snapshot={},
     )
-    _run, lease = uow.claim_runtime_activation(
-        run_id=run_id,
-        owner_id="workflow-owner",
-        namespace="native",
-        now=1.0,
-        lease_ttl_seconds=100.0,
-    )
-    return {
+
+    async def admit_and_claim():  # type: ignore[no-untyped-def]
+        admitted = await uow.run_atomic(
+            lambda transaction: uow.admit_start_standalone(
+                transaction, request, now=0.0
+            ),
+            fault_label="test:admit_start",
+        )
+        return await uow.run_atomic(
+            lambda transaction: uow.claim_activation(
+                transaction,
+                admitted.run_id,
+                0,
+                "workflow-owner",
+                now=1.0,
+                ttl_seconds=100.0,
+            ),
+            fault_label="test:claim_start",
+        )
+
+    activation = asyncio.run(admit_and_claim())
+    config: dict[str, object] = {
         "run_id": run_id,
         "thread_id": f"thread-{run_id}",
         "checkpoint_ns": "native",
-        "workflow_owner_id": "workflow-owner",
-        "workflow_lease_epoch": lease.epoch,
         "logical_timestamp": 2.0,
     }
+    _apply_workflow_activation(config, activation)
+    return config
+
+
+def _apply_workflow_activation(config, activation):  # type: ignore[no-untyped-def]
+    config.update(
+        {
+            "workflow_owner_id": activation.workflow_lease.owner_id,
+            "workflow_lease_epoch": activation.workflow_lease.epoch,
+            "runtime_lease_epoch": activation.execution_lease.epoch,
+            "run_fence_epoch": activation.run_fence.epoch,
+            "workflow_activation": {
+                "run_id": activation.execution_lease.run_id,
+                "owner_id": activation.execution_lease.owner_id,
+                "runtime_namespace": activation.execution_lease.namespace,
+                "runtime_epoch": activation.execution_lease.epoch,
+                "expires_at": activation.execution_lease.expires_at,
+                "run_fence_epoch": activation.run_fence.epoch,
+                "workflow_namespace": activation.workflow_lease.namespace,
+                "workflow_epoch": activation.workflow_lease.epoch,
+            },
+        }
+    )
 
 
 def _store(
@@ -113,10 +178,96 @@ def _store(
     ports = WorkflowExecutionPorts(
         unit_of_work=uow,
         checkpoint=CheckpointExecutionAdapter(database),
+        lifecycle=uow,
+        recovery=uow,
+        replay=uow,
     )
     return uow, SqliteNativeCheckpointStore(
         ports, blob_references=_NoBlobReferences()
     )
+
+
+def _claim_resume(
+    uow: SqliteExecutionUnitOfWork,
+    store: SqliteNativeCheckpointStore,
+    config: dict[str, object],
+    *,
+    decision_id: str,
+    response: Mapping[str, JsonValue],
+):  # type: ignore[no-untyped-def]
+    run_id = str(config["run_id"])
+    execution = asyncio.run(
+        store.load_execution(
+            run_id=run_id,
+            thread_id=str(config["thread_id"]),
+            checkpoint_ns=str(config["checkpoint_ns"]),
+        )
+    )
+    interrupt = execution.snapshot.interrupt
+    assert interrupt is not None
+    assert interrupt["interrupt_id"] == decision_id
+    run = uow.read_run(run_id)
+    assert run is not None
+    responses: dict[str, JsonValue] = {decision_id: dict(response)}
+    request = ResumeAdmissionRequest(
+        receipt_id=f"resume-{run_id}",
+        run_id=run_id,
+        expected_run_version=run.version,
+        expected_checkpoint_head=execution.snapshot.checkpoint_id,
+        pending_interrupts=(
+            (
+                decision_id,
+                hashlib.sha256(canonical_json(dict(interrupt)).encode()).hexdigest(),
+            ),
+        ),
+        responses=responses,
+        responses_hash=hashlib.sha256(canonical_json(responses).encode()).hexdigest(),
+        mode=StartMode.STANDALONE,
+    )
+
+    async def claim():  # type: ignore[no-untyped-def]
+        admitted = await uow.run_atomic(
+            lambda transaction: uow.admit_resume(transaction, request, now=4.0),
+            fault_label="test:admit_resume",
+        )
+        return await uow.run_atomic(
+            lambda transaction: uow.claim_resume_standalone(
+                transaction,
+                request.receipt_id,
+                admitted.version,
+                "workflow-owner",
+                now=5.0,
+                ttl_seconds=100.0,
+            ),
+            fault_label="test:claim_resume",
+        )
+
+    claimed = asyncio.run(claim())
+    activation = claimed.activation
+    assert activation is not None
+    runtime_row = uow.database.connection.execute(
+        "SELECT owner_id,epoch,expires_at FROM workflow_leases "
+        "WHERE run_id=? AND namespace=?",
+        (run_id, activation.execution_lease.namespace),
+    ).fetchone()
+    assert runtime_row is not None
+    assert tuple(runtime_row) == (
+        activation.execution_lease.owner_id,
+        activation.execution_lease.epoch,
+        activation.execution_lease.expires_at,
+    )
+    _apply_workflow_activation(config, activation)
+    config.update(
+        {
+            "resume_binding": {
+                "receipt_id": request.receipt_id,
+                "expected_receipt_version": claimed.version,
+                "target_run_revision": claimed.request.expected_run_version,
+                "request_fingerprint": claimed.request_fingerprint,
+            },
+        }
+    )
+    return activation
 
 
 def _native(workflow, store):  # type: ignore[no-untyped-def]
@@ -738,7 +889,14 @@ def test_real_sqlite_interrupt_suspend_resolve_reopen_resume_exactly_once(
         )
         assert resolved.state is DecisionState.ALLOWED
     with Database.open(path) as reopened:
-        _uow, store = _store(reopened)
+        reopened_uow, store = _store(reopened)
+        _claim_resume(
+            reopened_uow,
+            store,
+            config,
+            decision_id=decision_id,
+            response={"approved": True},
+        )
         result = asyncio.run(
             _native(workflow, store).resume(
                 {decision_id: {"approved": True}},
@@ -795,6 +953,22 @@ def test_real_effect_interrupt_effect_graph_reopens_without_physical_replay(
     run_fence = asyncio.run(
         uow.acquire(RunId(str(config["run_id"])), runtime_lease, now=2.0)
     )
+    current_run = uow.read_run(str(config["run_id"]))
+    assert current_run is not None
+    activation = asyncio.run(
+        uow.run_atomic(
+            lambda transaction: uow.bind_activation(
+                transaction,
+                str(config["run_id"]),
+                current_run.version,
+                runtime_lease,
+                run_fence,
+                now=2.0,
+                ttl_seconds=100.0,
+            ),
+            fault_label="test:bind_effect_activation",
+        )
+    )
     registry = ToolRegistry(
         [
             FunctionTool(
@@ -831,8 +1005,9 @@ def test_real_effect_interrupt_effect_graph_reopens_without_physical_replay(
                 RequestId(f"request-{phase}"),
                 CancellationToken(),
             ),
-            execution_lease=runtime_lease,
-            run_fence=run_fence,
+            execution_lease=activation.execution_lease,
+            run_fence=activation.run_fence,
+            workflow_lease=activation.workflow_lease,
         )
         assert execution.result.value is not None
         return StatePatch({phase: "done"})
@@ -906,6 +1081,13 @@ def test_real_effect_interrupt_effect_graph_reopens_without_physical_replay(
 
     with Database.open(path) as reopened:
         reopened_uow, reopened_store = _store(reopened)
+        activation = _claim_resume(
+            reopened_uow,
+            reopened_store,
+            config,
+            decision_id=decision_id,
+            response={"approved": True},
+        )
         reopened_executor = EffectExecutor(
             uow=reopened_uow,
             registry=registry,

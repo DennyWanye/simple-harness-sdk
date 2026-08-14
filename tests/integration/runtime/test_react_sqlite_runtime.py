@@ -138,6 +138,7 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
                 ExecutionSessionId("session-1"),
                 RunId("run-1"),
                 RequestId("request-1"),
+                "turn-1",
                 {"messages": [{"role": "user", "content": "hello"}]},
                 1,
             )

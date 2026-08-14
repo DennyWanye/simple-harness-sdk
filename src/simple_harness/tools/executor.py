@@ -27,6 +27,7 @@ from simple_harness.execution.fences import RunFenceLease
 from simple_harness.execution.recovery import RecoveryKind, ResolutionOutcome
 from simple_harness.execution.uow import RUNTIME_LEASE_NAMESPACE, ExecutionLease
 from simple_harness.providers import ProviderToolSpec
+from simple_harness.workflow.lease import WorkflowLease
 
 from .authorization import (
     AuthorizationDecision,
@@ -105,6 +106,7 @@ class EffectExecutor:
         context: ToolContext,
         execution_lease: ExecutionLease,
         run_fence: RunFenceLease,
+        workflow_lease: WorkflowLease | None = None,
         raw_call_id: str | None = None,
         turn_ordinal: int = 0,
         call_ordinal: int = 0,
@@ -232,6 +234,7 @@ class EffectExecutor:
                 f"{effect_id.value}:{run_fence.epoch}"
             ),
             execution_lease=execution_lease,
+            workflow_lease=workflow_lease,
             now=self._clock(),
         )
         try:

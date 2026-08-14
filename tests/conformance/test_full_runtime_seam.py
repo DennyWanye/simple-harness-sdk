@@ -332,11 +332,12 @@ class Seam:
 
     async def start(self, run_id: str, input_value: Mapping[str, JsonValue]):
         start = RunStart(
-            ExecutionSessionId("h7-session"),
-            RunId(run_id),
-            RequestId(f"request-{run_id}"),
-            input_value,
-            1,
+            execution_session_id=ExecutionSessionId("h7-session"),
+            run_id=RunId(run_id),
+            request_id=RequestId(f"request-{run_id}"),
+            turn_id=f"turn-{run_id}",
+            input=input_value,
+            tool_catalog_generation=1,
         )
         await self.runtime.client.start(start)
         await self.runtime.wait_idle(start.run_id)
@@ -804,6 +805,7 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
                     "schema_version": 1,
                     "profile_key": "workflow.durable_task",
                     "driver_kind": "react",
+                    "turn_id": "turn-child-composed",
                     "tool_catalog_generation": 1,
                     "input": {"messages": launch_payload["messages"]},
                 },

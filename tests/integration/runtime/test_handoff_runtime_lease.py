@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 import pytest
 
-from simple_harness.contracts import CallId, EffectId, RequestId, RunId
+from simple_harness.contracts import CallId, EffectId, RequestId, RunId, canonical_json
 from simple_harness.contracts.messages import Message, MessageRole
 from simple_harness.execution.budget import BudgetPolicy
 from simple_harness.execution.delivery import DeliverySpec
@@ -35,6 +36,7 @@ from simple_harness.tools import (
     ToolResult,
     ToolSpec,
 )
+from simple_harness.workflow.lease import WorkflowLease
 
 
 class Provider:
@@ -184,6 +186,265 @@ def test_stale_runtime_owner_cannot_prepare_or_hand_off_tool(tmp_path) -> None:
         ).fetchone()[0]
         == 0
     )
+    database.close()
+
+
+def _seed_workflow_authority(uow: SqliteExecutionUnitOfWork):
+    uow.create_with_start_snapshot(
+        execution_session_id="session-1",
+        run_id="workflow-run",
+        request_id="workflow-request",
+        profile_key="workflow.demo",
+        driver_kind="workflow",
+        snapshot={},
+        event_id="workflow-run:created",
+        now=1.0,
+    )
+    _, lease = uow.claim_runtime_activation(
+        run_id="workflow-run",
+        owner_id="workflow-owner",
+        namespace="runtime.kernel",
+        now=2.0,
+        lease_ttl_seconds=30.0,
+    )
+    fence = asyncio.run(uow.acquire(RunId("workflow-run"), lease, now=2.0))
+    request_json = canonical_json(
+        {
+            "checkpoint_namespace": "native",
+            "driver_kind": "workflow",
+        }
+    )
+    request_hash = hashlib.sha256(request_json.encode()).hexdigest()
+    uow.database.connection.execute(
+        "INSERT INTO workflow_start_admissions(request_key,request_id,"
+            "request_fingerprint,request_json,mode,run_id,trace_id,thread_id,phase,"
+            "version,claim_action,claim_owner,claim_epoch,claim_expires_at,created_at,updated_at) "
+            "VALUES('workflow-start','workflow-request',?,?, 'precreated',"
+            "'workflow-run','workflow-trace','workflow-thread','claimed',0,'new',?,?,?,1,1)",
+        (request_hash, request_json, lease.owner_id, lease.epoch, lease.expires_at),
+    )
+    uow.database.connection.execute(
+        "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at) "
+        "VALUES('workflow-run','native',?,?,?)",
+        (lease.owner_id, lease.epoch, lease.expires_at),
+    )
+    uow.database.connection.commit()
+    return lease, fence, WorkflowLease(
+        "workflow-run",
+        lease.owner_id,
+        lease.epoch,
+        lease.expires_at,
+        lease.epoch,
+        "native",
+    )
+
+
+@pytest.mark.parametrize("kind", ["provider", "tool"])
+def test_workflow_handoff_accepts_immutable_activation_token_after_heartbeat(
+    tmp_path, kind: str
+) -> None:
+    database = Database.open(tmp_path / f"workflow-renewed-{kind}.db")
+    uow = SqliteExecutionUnitOfWork(database)
+    lease, fence, workflow_lease = _seed_workflow_authority(uow)
+    database.connection.execute(
+        "UPDATE workflow_leases SET expires_at=100 WHERE run_id='workflow-run'"
+    )
+    database.connection.commit()
+    if kind == "provider":
+        provider = Provider()
+        coordinator = ProviderInvocationCoordinator(
+            uow=uow,
+            provider=provider,
+            budget_policy=BudgetPolicy(),
+            estimator=None,
+            clock=lambda: 40.0,
+        )
+        asyncio.run(
+            coordinator.invoke(
+                RunId("workflow-run"),
+                ProviderRequest(
+                    RequestId("provider-renewed"),
+                    (Message(MessageRole.USER, "hello"),),
+                ),
+                cancel=CancelToken(),
+                execution_lease=lease,
+                workflow_lease=workflow_lease,
+            )
+        )
+        assert provider.calls == 1
+    else:
+        calls = 0
+
+        def handler(arguments, context):
+            nonlocal calls
+            del arguments, context
+            calls += 1
+            return ToolResult.succeeded(CallId("workflow-call"), {"ok": True})
+
+        executor = EffectExecutor(
+            uow=uow,
+            registry=ToolRegistry(
+                [
+                    FunctionTool(
+                        ToolSpec(
+                            "fixture",
+                            "fixture",
+                            {"type": "object", "additionalProperties": False},
+                        ),
+                        handler,
+                    )
+                ]
+            ),
+            authorization=Allow(),
+            reconciliation=Observe(),
+            clock=lambda: 40.0,
+        )
+        asyncio.run(
+            executor.execute(
+                effect_id=EffectId("workflow-effect-renewed"),
+                call=ToolCall(CallId("workflow-call"), "fixture", {}),
+                context=ToolContext(
+                    RunId("workflow-run"),
+                    RequestId("workflow-tool-renewed"),
+                    CancellationToken(),
+                ),
+                execution_lease=lease,
+                run_fence=fence,
+                workflow_lease=workflow_lease,
+            )
+        )
+        assert calls == 1
+    database.close()
+
+
+@pytest.mark.parametrize("authority", ["missing", "expired", "mismatch"])
+def test_workflow_provider_handoff_requires_current_triple_fence(
+    tmp_path, authority: str
+) -> None:
+    database = Database.open(tmp_path / f"workflow-provider-{authority}.db")
+    uow = SqliteExecutionUnitOfWork(database)
+    lease, _fence, workflow_lease = _seed_workflow_authority(uow)
+    provider = Provider()
+    coordinator = ProviderInvocationCoordinator(
+        uow=uow,
+        provider=provider,
+        budget_policy=BudgetPolicy(),
+        estimator=None,
+        clock=lambda: 5.0,
+    )
+    passed = workflow_lease
+    if authority == "missing":
+        passed = None
+    elif authority == "expired":
+        database.connection.execute(
+            "UPDATE workflow_leases SET expires_at=4 WHERE run_id='workflow-run' "
+            "AND namespace='native'"
+        )
+        database.connection.commit()
+        passed = WorkflowLease(
+            "workflow-run", lease.owner_id, lease.epoch, 4.0, lease.epoch, "native"
+        )
+    else:
+        passed = WorkflowLease(
+            "workflow-run",
+            lease.owner_id,
+            lease.epoch + 1,
+            lease.expires_at,
+            lease.epoch,
+            "native",
+        )
+    request = ProviderRequest(
+        RequestId(f"provider-{authority}"),
+        (Message(MessageRole.USER, "hello"),),
+    )
+    with pytest.raises(UnitOfWorkConflict, match="workflow"):
+        asyncio.run(
+            coordinator.invoke(
+                RunId("workflow-run"),
+                request,
+                cancel=CancelToken(),
+                execution_lease=lease,
+                workflow_lease=passed,
+            )
+        )
+    assert provider.calls == 0
+    assert database.connection.execute(
+        "SELECT state FROM provider_invocations WHERE run_id='workflow-run'"
+    ).fetchone()[0] == "claimed"
+    database.close()
+
+
+@pytest.mark.parametrize("authority", ["missing", "expired", "mismatch"])
+def test_workflow_tool_handoff_requires_current_workflow_lease(
+    tmp_path, authority: str
+) -> None:
+    database = Database.open(tmp_path / f"workflow-tool-{authority}.db")
+    uow = SqliteExecutionUnitOfWork(database)
+    lease, fence, workflow_lease = _seed_workflow_authority(uow)
+    calls = 0
+
+    def handler(arguments, context):
+        nonlocal calls
+        del arguments, context
+        calls += 1
+        return ToolResult.succeeded(CallId("workflow-call"), {"ok": True})
+
+    executor = EffectExecutor(
+        uow=uow,
+        registry=ToolRegistry(
+            [
+                FunctionTool(
+                    ToolSpec(
+                        "fixture",
+                        "fixture",
+                        {"type": "object", "additionalProperties": False},
+                    ),
+                    handler,
+                )
+            ]
+        ),
+        authorization=Allow(),
+        reconciliation=Observe(),
+        clock=lambda: 5.0,
+    )
+    passed = workflow_lease
+    if authority == "missing":
+        passed = None
+    elif authority == "expired":
+        database.connection.execute(
+            "UPDATE workflow_leases SET expires_at=4 WHERE run_id='workflow-run' "
+            "AND namespace='native'"
+        )
+        database.connection.commit()
+        passed = WorkflowLease(
+            "workflow-run", lease.owner_id, lease.epoch, 4.0, lease.epoch, "native"
+        )
+    else:
+        passed = WorkflowLease(
+            "workflow-run",
+            lease.owner_id,
+            lease.epoch + 1,
+            lease.expires_at,
+            lease.epoch,
+            "native",
+        )
+    with pytest.raises(UnitOfWorkConflict, match="workflow"):
+        asyncio.run(
+            executor.execute(
+                effect_id=EffectId("workflow-effect"),
+                call=ToolCall(CallId("workflow-call"), "fixture", {}),
+                context=ToolContext(
+                    RunId("workflow-run"),
+                    RequestId("workflow-tool-request"),
+                    CancellationToken(),
+                ),
+                execution_lease=lease,
+                run_fence=fence,
+                workflow_lease=passed,
+            )
+        )
+    assert calls == 0
+    assert uow.read_effect(EffectId("workflow-effect")).state.value == "prepared"
     database.close()
 
 

@@ -586,8 +586,17 @@ class NativeCheckpointStore(Protocol):
     ) -> NativeSnapshotEnvelope: ...
 
     async def load_execution(
-        self, *, run_id: str, thread_id: str, checkpoint_ns: str
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: str | None = None,
     ) -> NativeExecution: ...
+
+    async def history(
+        self, *, run_id: str, limit: int | None = None
+    ) -> tuple[NativeSnapshotEnvelope, ...]: ...
 
     async def commit_task_result(
         self,
@@ -730,7 +739,12 @@ class InMemoryNativeCheckpointStore:
         return self.snapshot
 
     async def load_execution(
-        self, *, run_id: str, thread_id: str, checkpoint_ns: str
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: str | None = None,
     ) -> NativeExecution:
         snapshot = self.snapshot
         if snapshot is None:
@@ -741,6 +755,7 @@ class InMemoryNativeCheckpointStore:
             snapshot.run_id != run_id
             or snapshot.thread_id != thread_id
             or snapshot.checkpoint_ns != checkpoint_ns
+            or (checkpoint_id is not None and snapshot.checkpoint_id != checkpoint_id)
         ):
             raise InvalidStatePatch(
                 "checkpoint_identity_mismatch", "Checkpoint identity changed"
@@ -767,6 +782,15 @@ class InMemoryNativeCheckpointStore:
                 self.pending_consumed_interrupt_ids
             ),
         )
+
+    async def history(
+        self, *, run_id: str, limit: int | None = None
+    ) -> tuple[NativeSnapshotEnvelope, ...]:
+        if limit is not None and limit < 0:
+            raise ValueError("history limit cannot be negative")
+        if self.snapshot is None or self.snapshot.run_id != run_id or limit == 0:
+            return ()
+        return (self.snapshot,)
 
     async def commit_task_result(
         self,

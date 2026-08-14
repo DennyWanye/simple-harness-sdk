@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     )
     from simple_harness.execution.uow import ExecutionLease
     from simple_harness.tools.contracts import ToolResult
+    from simple_harness.workflow.lease import WorkflowLease
 
 
 class EffectState(StrEnum):
@@ -173,6 +174,7 @@ class EffectUnitOfWork(Protocol):
         run_fence: RunFenceLease,
         handoff_receipt_ref: str,
         execution_lease: ExecutionLease,
+        workflow_lease: WorkflowLease | None = None,
         now: float,
         fault: Callable[[str], None] | None = None,
     ) -> EffectRecord: ...

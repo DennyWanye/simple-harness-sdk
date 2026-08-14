@@ -16,6 +16,7 @@ from simple_harness.runtime import (
     SqliteContextPort,
     build_runtime,
 )
+from simple_harness.runtime.start_snapshot import bind_start_snapshot
 
 
 class NoopPort:
@@ -47,6 +48,7 @@ def request(name: str = "one", *, generation: int = 1) -> RunStart:
         ExecutionSessionId("session-1"),
         RunId(f"run-{name}"),
         RequestId(f"request-{name}"),
+        f"turn-{name}",
         {"prompt": name},
         generation,
     )
@@ -136,6 +138,18 @@ def test_fixed_root_has_no_classifier_and_rejects_override(tmp_path) -> None:
     value._uow.database.close()
 
 
+def test_workflow_start_snapshot_requires_typed_admission() -> None:
+    start = request("workflow-roundtrip")
+    try:
+        bind_start_snapshot(
+            start, profile_key="workflow.demo", driver_kind="workflow"
+        )
+    except ValueError as error:
+        assert "workflow admission" in str(error)
+    else:
+        raise AssertionError("workflow start must carry durable admission")
+
+
 def test_runtime_ports_require_all_authority_seams() -> None:
     try:
         RuntimePorts(  # type: ignore[call-arg]
@@ -160,6 +174,7 @@ def test_recovery_lease_is_single_owner_then_expiry_allows_takeover(tmp_path) ->
             "schema_version": 1,
             "profile_key": "agent.general",
             "driver_kind": "react",
+            "turn_id": "turn-run-recover",
             "tool_catalog_generation": 1,
             "input": {},
         },

@@ -44,9 +44,15 @@ class FakeProviderInvocationUnitOfWork:
         return self.records.get(invocation_id)
 
     def hand_off_provider_invocation(
-        self, invocation_id, *, expected_version, handed_off_at, execution_lease
+        self,
+        invocation_id,
+        *,
+        expected_version,
+        handed_off_at,
+        execution_lease,
+        workflow_lease=None,
     ):
-        del execution_lease
+        del execution_lease, workflow_lease
         self.operations.append("hand_off")
         record = self.records[invocation_id].hand_off(
             at=handed_off_at, expected_version=expected_version

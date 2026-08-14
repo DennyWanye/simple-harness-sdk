@@ -15,12 +15,16 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Protocol, cast
 
-from simple_harness.contracts import JsonValue, validate_json_value
+from simple_harness.contracts import JsonValue, RunId, validate_json_value
+from simple_harness.execution.fences import RunFenceLease
 from simple_harness.execution.sqlite.database import Database
+from simple_harness.execution.uow import ExecutionLease
 
 from .contracts import WorkflowRunStatus
 from .execution_ports import (
     CheckpointExecutionAdapter,
+    ResumeCommitBinding,
+    WorkflowActivation,
     WorkflowBlobReferencePort,
     WorkflowExecutionPorts,
     WorkflowOperationConflict,
@@ -160,6 +164,104 @@ class SqliteNativeCheckpointStore:
     @property
     def transaction_owner(self) -> object:
         return self._database
+
+    @staticmethod
+    def _activation_authority(
+        configurable: Mapping[str, JsonValue],
+    ) -> WorkflowActivation:
+        activation_raw = configurable.get("workflow_activation")
+        if not isinstance(activation_raw, Mapping):
+            raise WorkflowOperationConflict("workflow activation is incomplete")
+        run_id = cast(str, activation_raw.get("run_id"))
+        owner_id = cast(str, activation_raw.get("owner_id"))
+        runtime_namespace = cast(str, activation_raw.get("runtime_namespace"))
+        runtime_epoch = cast(int, activation_raw.get("runtime_epoch"))
+        expires_at = cast(float, activation_raw.get("expires_at"))
+        run_fence_epoch = cast(int, activation_raw.get("run_fence_epoch"))
+        workflow_namespace = cast(str, activation_raw.get("workflow_namespace"))
+        workflow_epoch = cast(int, activation_raw.get("workflow_epoch"))
+        return WorkflowActivation(
+            ExecutionLease(
+                run_id,
+                runtime_namespace,
+                owner_id,
+                runtime_epoch,
+                expires_at,
+            ),
+            RunFenceLease(
+                RunId(run_id), run_fence_epoch, owner_id, runtime_epoch
+            ),
+            WorkflowLease(
+                run_id,
+                owner_id,
+                workflow_epoch,
+                expires_at,
+                runtime_epoch,
+                workflow_namespace,
+            ),
+        )
+
+    @classmethod
+    def _resume_authority(
+        cls, configurable: Mapping[str, JsonValue]
+    ) -> tuple[ResumeCommitBinding, WorkflowActivation] | None:
+        binding_raw = configurable.get("resume_binding")
+        if binding_raw is None:
+            return None
+        if not isinstance(binding_raw, Mapping):
+            raise WorkflowOperationConflict("resume binding is incomplete")
+        binding = ResumeCommitBinding(
+            cast(str, binding_raw.get("receipt_id")),
+            cast(int, binding_raw.get("expected_receipt_version")),
+            cast(int, binding_raw.get("target_run_revision")),
+            cast(str, binding_raw.get("request_fingerprint")),
+        )
+        return binding, cls._activation_authority(configurable)
+
+    async def _release_activation(
+        self,
+        transaction: WorkflowTransaction,
+        *,
+        configurable: Mapping[str, JsonValue],
+        outcome: Mapping[str, JsonValue],
+        now: float,
+    ) -> None:
+        connection = self._connection(transaction)
+        run_id = cast(str, configurable.get("run_id"))
+        row = connection.execute(
+            "SELECT version FROM runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise WorkflowOperationConflict("workflow Run disappeared before release")
+        await self._execution_ports.lifecycle.release_activation(
+            transaction,
+            self._activation_authority(configurable),
+            int(row["version"]),
+            outcome,
+            now=now,
+        )
+
+    async def _settle_resume(
+        self,
+        transaction: WorkflowTransaction,
+        *,
+        configurable: Mapping[str, JsonValue],
+        committed_checkpoint: str,
+        outcome: Mapping[str, JsonValue],
+        now: float,
+    ) -> None:
+        authority = self._resume_authority(configurable)
+        if authority is None:
+            return
+        binding, activation = authority
+        await self._execution_ports.lifecycle.settle_resume(
+            transaction,
+            binding,
+            activation,
+            committed_checkpoint,
+            outcome,
+            now=now,
+        )
 
     async def _atomic(self, label, operation):  # type: ignore[no-untyped-def]
         return await self._execution_ports.unit_of_work.run_atomic(
@@ -333,15 +435,23 @@ class SqliteNativeCheckpointStore:
             return snapshot
         return await self._atomic("genesis", operation)
 
-    async def load_execution(self, *, run_id: str, thread_id: str, checkpoint_ns: str):  # type: ignore[no-untyped-def]
+    async def load_execution(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: str | None = None,
+    ):  # type: ignore[no-untyped-def]
         from dataclasses import replace
 
         from .contracts import StatePatch
         from .native import NativeExecution
 
         row = self._database.connection.execute(
-            "SELECT * FROM workflow_checkpoints WHERE run_id=? AND namespace=? ORDER BY version DESC LIMIT 1",
-            (run_id, checkpoint_ns),
+            "SELECT * FROM workflow_checkpoints WHERE run_id=? AND namespace=? "
+            "AND (? IS NULL OR checkpoint_id=?) ORDER BY version DESC LIMIT 1",
+            (run_id, checkpoint_ns, checkpoint_id, checkpoint_id),
         ).fetchone()
         if row is None:
             raise WorkflowOperationConflict("Native checkpoint is missing")
@@ -394,10 +504,30 @@ class SqliteNativeCheckpointStore:
             ))
         return NativeExecution(snapshot,pending,first_attempts,routes,tuple(consumed))
 
+    async def history(
+        self, *, run_id: str, limit: int | None = None
+    ):  # type: ignore[no-untyped-def]
+        if limit is not None and limit < 0:
+            raise ValueError("history limit cannot be negative")
+        if limit == 0:
+            return ()
+        parameters: list[object] = [run_id]
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = " LIMIT ?"
+            parameters.append(limit)
+        rows = self._database.connection.execute(
+            "SELECT * FROM workflow_checkpoints WHERE run_id=? "
+            "ORDER BY version DESC" + limit_clause,
+            parameters,
+        ).fetchall()
+        return tuple(self._snapshot_from_row(row) for row in reversed(rows))
+
     async def _commit_operation(
         self, *, operation_id: str, expected_head: str, kind: str,
         identity_key: str, payload: Mapping[str, JsonValue], configurable: Mapping[str, JsonValue],
         blob_refs: Sequence[str] = (),
+        resume_outcome: Mapping[str, JsonValue] | None = None,
     ) -> dict[str, JsonValue]:
         run_id = cast(str, configurable.get("run_id"))
         namespace = cast(str, configurable.get("checkpoint_ns", ""))
@@ -422,11 +552,28 @@ class SqliteNativeCheckpointStore:
                 transaction,run_id=run_id,owner_kind=kind,owner_id=identity_key,
                 blob_refs=blob_refs,
             )
-            return self._write_native_operation(
+            saved = self._write_native_operation(
                 connection,operation_id=operation_id,run_id=run_id,namespace=namespace,
                 base_checkpoint_id=expected_head,operation_kind=kind,
                 identity_key=identity_key,payload=payload,now=now,
             )
+            if resume_outcome is not None:
+                if self._resume_authority(configurable) is None:
+                    await self._release_activation(
+                        transaction,
+                        configurable=configurable,
+                        outcome=resume_outcome,
+                        now=now,
+                    )
+                else:
+                    await self._settle_resume(
+                        transaction,
+                        configurable=configurable,
+                        committed_checkpoint=expected_head,
+                        outcome=resume_outcome,
+                        now=now,
+                    )
+            return saved
         return await self._atomic(kind, operation)
 
     async def commit_task_result(self, *, operation_id: str, expected_head: str, task, execution_info, patch, blob_refs, consumed_interrupt_ids, configurable):  # type: ignore[no-untyped-def]
@@ -452,7 +599,40 @@ class SqliteNativeCheckpointStore:
         return cast(dict[str, JsonValue], saved["selection"])
 
     async def commit_retry(self, *, operation_id: str, expected_head: str, task, error, next_attempt_at: float, configurable):  # type: ignore[no-untyped-def]
-        await self._commit_operation(operation_id=operation_id,expected_head=expected_head,kind="retry",identity_key=task.task_id,payload={"retry_attempt":task.retry_attempt+1,"next_attempt_at":next_attempt_at,"error_type":type(error).__name__},configurable=configurable)
+        run_id = cast(str, configurable.get("run_id"))
+        namespace = cast(str, configurable.get("checkpoint_ns", ""))
+        payload = {"retry_attempt":task.retry_attempt+1,"next_attempt_at":next_attempt_at,"error_type":type(error).__name__}
+        async def operation(transaction: WorkflowTransaction):  # type: ignore[no-untyped-def]
+            connection = self._connection(transaction)
+            existing = connection.execute(
+                "SELECT created_at FROM workflow_native_operations WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+            if existing is not None:
+                self._write_native_operation(
+                    connection,operation_id=operation_id,run_id=run_id,
+                    namespace=namespace,base_checkpoint_id=expected_head,
+                    operation_kind="retry",identity_key=task.task_id,payload=payload,
+                    now=float(existing["created_at"]),
+                )
+                return
+            _, _, now = self._assert_writer(
+                connection,run_id=run_id,namespace=namespace,
+                expected_head=expected_head,configurable=configurable,
+            )
+            self._write_native_operation(
+                connection,operation_id=operation_id,run_id=run_id,
+                namespace=namespace,base_checkpoint_id=expected_head,
+                operation_kind="retry",identity_key=task.task_id,payload=payload,now=now,
+            )
+            authority = self._resume_authority(configurable)
+            if authority is not None:
+                binding, activation = authority
+                await self._execution_ports.lifecycle.defer_resume_retry(
+                    transaction,binding,activation,operation_id,
+                    task.retry_attempt+1,next_attempt_at,now=now,
+                )
+        await self._atomic("retry", operation)
 
     async def commit_interrupt(self, *, operation_id: str, expected_head: str, task, interrupt, configurable):  # type: ignore[no-untyped-def]
         request = copy.deepcopy(dict(interrupt))
@@ -479,20 +659,42 @@ class SqliteNativeCheckpointStore:
                 now=now if existing is None else float(existing["created_at"]),
             )
             durable_request = cast(dict[str, JsonValue], saved["interrupt"])
-            return await self._execution_ports.checkpoint.open_decision(
+            outcome = await self._execution_ports.checkpoint.open_decision(
                 transaction,run_id=run_id,interrupt_id=interrupt_id,request=durable_request,
                 checkpoint_namespace=namespace,checkpoint_id=expected_head,
                 lease_epoch=epoch,now=now,
             )
+            if existing is None:
+                waiting_outcome = {
+                    "status": "waiting",
+                    "checkpoint_id": expected_head,
+                    "decision_id": interrupt_id,
+                }
+                if self._resume_authority(configurable) is None:
+                    await self._release_activation(
+                        transaction,
+                        configurable=configurable,
+                        outcome=waiting_outcome,
+                        now=now,
+                    )
+                else:
+                    await self._settle_resume(
+                        transaction,
+                        configurable=configurable,
+                        committed_checkpoint=expected_head,
+                        outcome=waiting_outcome,
+                        now=now,
+                    )
+            return outcome
         await self._atomic("interrupt", commit_and_open)
 
     async def commit_failure(self, *, operation_id: str, expected_head: str, task, error, configurable):  # type: ignore[no-untyped-def]
         code = getattr(error,"code","permanent")
-        await self._commit_operation(operation_id=operation_id,expected_head=expected_head,kind="failure",identity_key=task.task_id,payload={"error_type":type(error).__name__,"error_code":str(getattr(code,"value",code)),"message_ref":str(getattr(error,"message_ref","workflow_engine:permanent")),"retryable":bool(getattr(error,"retryable",False)),"node_id":getattr(error,"node_id",task.node_id)},configurable=configurable)
+        await self._commit_operation(operation_id=operation_id,expected_head=expected_head,kind="failure",identity_key=task.task_id,payload={"error_type":type(error).__name__,"error_code":str(getattr(code,"value",code)),"message_ref":str(getattr(error,"message_ref","workflow_engine:permanent")),"retryable":bool(getattr(error,"retryable",False)),"node_id":getattr(error,"node_id",task.node_id)},configurable=configurable,resume_outcome={"status":"failed","checkpoint_id":expected_head,"error_code":str(getattr(code,"value",code))})
 
     async def commit_engine_failure(self, *, operation_id: str, expected_head: str, frontier, error, configurable):  # type: ignore[no-untyped-def]
         code = getattr(error,"code","invalid_state")
-        await self._commit_operation(operation_id=operation_id,expected_head=expected_head,kind="engine_failure",identity_key=",".join(sorted(task.task_id for task in frontier)),payload={"error_type":type(error).__name__,"error_code":str(getattr(code,"value",code)),"message_ref":str(getattr(error,"message_ref","workflow_engine:invalid_state")),"retryable":bool(getattr(error,"retryable",False)),"node_id":getattr(error,"node_id",None)},configurable=configurable)
+        await self._commit_operation(operation_id=operation_id,expected_head=expected_head,kind="engine_failure",identity_key=",".join(sorted(task.task_id for task in frontier)),payload={"error_type":type(error).__name__,"error_code":str(getattr(code,"value",code)),"message_ref":str(getattr(error,"message_ref","workflow_engine:invalid_state")),"retryable":bool(getattr(error,"retryable",False)),"node_id":getattr(error,"node_id",None)},configurable=configurable,resume_outcome={"status":"failed","checkpoint_id":expected_head,"error_code":str(getattr(code,"value",code))})
 
     async def read_terminal_projection_prepare(self, *, operation_id: str, expected_head: str, configurable):  # type: ignore[no-untyped-def]
         run_id = cast(str, configurable["run_id"])
@@ -727,6 +929,34 @@ class SqliteNativeCheckpointStore:
             if terminal_status is not None:
                 await self._execution_ports.checkpoint.finalize_run(transaction,run_id=run_id,terminal_checkpoint_id=next_id,status=terminal_status,outcome={"error":copy.deepcopy(terminal_error),"recovery_action":recovery_action,"event_ids":event_ids},checkpoint_namespace=namespace,lease_epoch=epoch,now=now)
             self._write_native_operation(connection,operation_id=operation_id,run_id=run_id,namespace=namespace,base_checkpoint_id=expected_head,operation_kind="frontier",identity_key=next_id,payload={"request_hash":request_hash,"next_checkpoint_id":next_id,"event_ids":event_ids},now=now)
+            frontier_outcome = {
+                "status": "terminal" if terminal_status is not None else "advanced",
+                "checkpoint_id": next_id,
+                "terminal_status": terminal_status,
+                "output": copy.deepcopy(dict(state)),
+            }
+            # Native keeps driving after a non-terminal frontier commit.  Settling
+            # the resume here would release its three-part activation before the
+            # next node/effect handoff.  A resume receipt is settled only by a
+            # durable exit; intermediate frontiers remain CLAIMED.
+            if (
+                terminal_status is not None
+                and self._resume_authority(configurable) is not None
+            ):
+                await self._settle_resume(
+                    transaction,
+                    configurable=configurable,
+                    committed_checkpoint=next_id,
+                    outcome=frontier_outcome,
+                    now=now,
+                )
+            elif terminal_status is not None:
+                await self._release_activation(
+                    transaction,
+                    configurable=configurable,
+                    outcome=frontier_outcome,
+                    now=now,
+                )
             return NativeCommitResult(snapshot,tuple(event_ids))
         return await self._atomic("frontier", operation)
 
