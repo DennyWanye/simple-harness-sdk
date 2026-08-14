@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import json
 import math
 import re
+from collections.abc import Mapping
 from typing import Any
 
+from simple_harness.contracts import thaw_json
 
 _SUPPORTED_TYPES = frozenset(
     {"object", "array", "string", "integer", "number", "boolean", "null"}
@@ -68,6 +70,76 @@ class ArgumentsValidationError(ValueError):
         super().__init__(f"{path}: {reason}")
         self.path = path
         self.reason = reason
+
+
+def _validate_resource_bounds(
+    value: Any,
+    *,
+    max_bytes: int,
+    max_depth: int,
+    max_nodes: int,
+    schema: bool,
+) -> None:
+    stack: list[tuple[Any, int, bool]] = [(value, 0, False)]
+    active: set[int] = set()
+    nodes = properties = required = enum_entries = 0
+    while stack:
+        current, depth, leaving = stack.pop()
+        if leaving:
+            active.remove(id(current))
+            continue
+        nodes += 1
+        if nodes > max_nodes:
+            raise SchemaDefinitionError("$: JSON node limit exceeded")
+        if depth > max_depth:
+            raise SchemaDefinitionError("$: JSON depth limit exceeded")
+        if isinstance(current, (Mapping, list, tuple)):
+            identity = id(current)
+            if identity in active:
+                raise SchemaDefinitionError("$: cyclic JSON containers are forbidden")
+            active.add(identity)
+            stack.append((current, depth, True))
+        if isinstance(current, Mapping):
+            if not all(isinstance(key, str) for key in current):
+                raise SchemaDefinitionError("$: JSON object keys must be strings")
+            if schema and isinstance(current.get("properties"), Mapping):
+                count = len(current["properties"])
+                properties += count
+                if count > 64 or properties > 256:
+                    raise SchemaDefinitionError("$: schema property limit exceeded")
+            if schema and isinstance(current.get("required"), list):
+                required += len(current["required"])
+                if required > 256:
+                    raise SchemaDefinitionError("$: schema required limit exceeded")
+            if schema and isinstance(current.get("enum"), list):
+                count = len(current["enum"])
+                enum_entries += count
+                if count > 64 or enum_entries > 256:
+                    raise SchemaDefinitionError("$: schema enum limit exceeded")
+            for key, child in current.items():
+                if schema and len(key.encode("utf-8")) > 4096:
+                    raise SchemaDefinitionError("$: JSON key exceeds 4096 bytes")
+                stack.append((child, depth + 1, False))
+        elif isinstance(current, (list, tuple)):
+            for child in current:
+                stack.append((child, depth + 1, False))
+        elif isinstance(current, str):
+            if schema and len(current.encode("utf-8")) > 4096:
+                raise SchemaDefinitionError("$: JSON string exceeds 4096 bytes")
+        elif isinstance(current, float) and not math.isfinite(current):
+            raise SchemaDefinitionError("$: JSON numbers must be finite")
+    try:
+        encoded = json.dumps(
+            thaw_json(value),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise SchemaDefinitionError("$: value is not strict JSON") from exc
+    if len(encoded) > max_bytes:
+        raise SchemaDefinitionError("$: canonical JSON byte limit exceeded")
 
 
 def _json_equal(left: Any, right: Any) -> bool:
@@ -206,13 +278,33 @@ def normalize_field_name(value: str) -> str:
 
 
 def validate_tool_schema(schema: Mapping[str, Any]) -> None:
+    _validate_resource_bounds(
+        schema,
+        max_bytes=32768,
+        max_depth=12,
+        max_nodes=256,
+        schema=True,
+    )
     _validate_schema_node(schema, "$")
     if schema.get("type") != "object":
         raise SchemaDefinitionError("$: Tool input schema root must be an object")
 
 
 def validate_arguments(arguments: Any, schema: Mapping[str, Any]) -> None:
+    validate_argument_resource_bounds(arguments)
     _validate_value(arguments, schema, "$")
+
+
+def validate_argument_resource_bounds(arguments: Any) -> None:
+    """Reject hostile JSON graphs before recursive detach/freeze operations."""
+
+    _validate_resource_bounds(
+        arguments,
+        max_bytes=65536,
+        max_depth=12,
+        max_nodes=1024,
+        schema=False,
+    )
 
 
 def _validate_value(value: Any, schema: Mapping[str, Any], path: str) -> None:
