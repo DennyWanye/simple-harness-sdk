@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -83,103 +84,119 @@ class SqliteContextPort:
         append_id: str,
         entries: Sequence[Message],
     ) -> ContextSnapshot:
-        value = _run_id(run_id)
-        if execution_lease.run_id != value:
-            raise UnitOfWorkConflict("context append lease belongs to another Run")
-        if execution_lease.namespace != RUNTIME_LEASE_NAMESPACE:
-            raise UnitOfWorkConflict(
-                "context append requires the canonical runtime lease"
-            )
-        if isinstance(expected_revision, bool) or expected_revision < 0:
-            raise ValueError("expected_revision must be non-negative")
-        if not isinstance(append_id, str) or not append_id.strip():
-            raise ValueError("append_id is required")
-        items = tuple(entries)
-        if not items or not all(isinstance(entry, Message) for entry in items):
-            raise TypeError("entries must contain at least one Message")
-        append_payload: list[JsonValue] = [entry.to_dict() for entry in items]
-        append_hash = hashlib.sha256(
-            canonical_json(append_payload).encode("utf-8")
-        ).hexdigest()
         now = float(self._clock())
         if now < 0:
             raise ValueError("context clock must be non-negative")
-
         with self._database.transaction() as connection:
-            lease = connection.execute(
-                """
-                SELECT owner_id, epoch, expires_at FROM workflow_leases
-                WHERE run_id = ? AND namespace = ?
-                """,
-                (value, execution_lease.namespace),
-            ).fetchone()
-            if (
-                lease is None
-                or str(lease["owner_id"]) != execution_lease.owner_id
-                or int(lease["epoch"]) != execution_lease.epoch
-                or float(lease["expires_at"]) <= now
-            ):
-                raise UnitOfWorkConflict(
-                    "context append runtime lease is stale or expired"
-                )
-            row = connection.execute(
-                """
-                SELECT checkpoint_json FROM workflow_checkpoints
-                WHERE run_id = ? AND namespace = ?
-                ORDER BY version DESC LIMIT 1
-                """,
-                (value, CONTEXT_NAMESPACE),
-            ).fetchone()
-            current_payload = (
-                {"revision": 0, "messages": [], "append_receipts": {}}
-                if row is None
-                else json.loads(str(row["checkpoint_json"]))
+            return _append_context_in_transaction(
+                connection,
+                run_id,
+                execution_lease,
+                expected_revision,
+                append_id,
+                entries,
+                now=now,
             )
-            receipts = current_payload.get("append_receipts")
-            if not isinstance(receipts, dict):
-                raise TypeError("stored context append receipts are invalid")
-            existing_hash = receipts.get(append_id)
-            if existing_hash is not None:
-                if existing_hash != append_hash:
-                    raise UnitOfWorkConflict(
-                        "context append identity reused with different payload"
-                    )
-                return _snapshot_from_payload(current_payload)
-            revision = current_payload.get("revision")
-            if revision != expected_revision:
-                raise UnitOfWorkConflict("context revision CAS failed")
-            messages = current_payload.get("messages")
-            if not isinstance(messages, list):
-                raise TypeError("stored context messages are invalid")
-            next_revision = expected_revision + 1
-            next_payload: dict[str, JsonValue] = {
-                "revision": next_revision,
-                "messages": [*messages, *append_payload],
-                "append_receipts": {**receipts, append_id: append_hash},
-            }
-            checkpoint_json = canonical_json(next_payload)
-            checkpoint_hash = hashlib.sha256(
-                checkpoint_json.encode("utf-8")
-            ).hexdigest()
-            connection.execute(
-                """
-                INSERT INTO workflow_checkpoints(
-                    checkpoint_id, run_id, namespace, checkpoint_json,
-                    checkpoint_hash, lease_epoch, version, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    f"{value}:{CONTEXT_NAMESPACE}:{next_revision}",
-                    value,
-                    CONTEXT_NAMESPACE,
-                    checkpoint_json,
-                    checkpoint_hash,
-                    execution_lease.epoch,
-                    next_revision,
-                    now,
-                ),
+
+
+def _append_context_in_transaction(
+    connection: sqlite3.Connection,
+    run_id: RunId,
+    execution_lease: ExecutionLease,
+    expected_revision: int,
+    append_id: str,
+    entries: Sequence[Message],
+    *,
+    now: float,
+) -> ContextSnapshot:
+    """Append once using the caller's already-open persistence transaction."""
+
+    value = _run_id(run_id)
+    if execution_lease.run_id != value:
+        raise UnitOfWorkConflict("context append lease belongs to another Run")
+    if execution_lease.namespace != RUNTIME_LEASE_NAMESPACE:
+        raise UnitOfWorkConflict("context append requires the canonical runtime lease")
+    if isinstance(expected_revision, bool) or expected_revision < 0:
+        raise ValueError("expected_revision must be non-negative")
+    if not isinstance(append_id, str) or not append_id.strip():
+        raise ValueError("append_id is required")
+    items = tuple(entries)
+    if not items or not all(isinstance(entry, Message) for entry in items):
+        raise TypeError("entries must contain at least one Message")
+    append_payload: list[JsonValue] = [entry.to_dict() for entry in items]
+    append_hash = hashlib.sha256(
+        canonical_json(append_payload).encode("utf-8")
+    ).hexdigest()
+    lease = connection.execute(
+        """
+        SELECT owner_id, epoch, expires_at FROM workflow_leases
+        WHERE run_id = ? AND namespace = ?
+        """,
+        (value, execution_lease.namespace),
+    ).fetchone()
+    if (
+        lease is None
+        or str(lease["owner_id"]) != execution_lease.owner_id
+        or int(lease["epoch"]) != execution_lease.epoch
+        or float(lease["expires_at"]) <= now
+    ):
+        raise UnitOfWorkConflict("context append runtime lease is stale or expired")
+    row = connection.execute(
+        """
+        SELECT checkpoint_json FROM workflow_checkpoints
+        WHERE run_id = ? AND namespace = ?
+        ORDER BY version DESC LIMIT 1
+        """,
+        (value, CONTEXT_NAMESPACE),
+    ).fetchone()
+    current_payload = (
+        {"revision": 0, "messages": [], "append_receipts": {}}
+        if row is None
+        else json.loads(str(row["checkpoint_json"]))
+    )
+    receipts = current_payload.get("append_receipts")
+    if not isinstance(receipts, dict):
+        raise TypeError("stored context append receipts are invalid")
+    existing_hash = receipts.get(append_id)
+    if existing_hash is not None:
+        if existing_hash != append_hash:
+            raise UnitOfWorkConflict(
+                "context append identity reused with different payload"
             )
-        return self.load(run_id)
+        return _snapshot_from_payload(current_payload)
+    revision = current_payload.get("revision")
+    if revision != expected_revision:
+        raise UnitOfWorkConflict("context revision CAS failed")
+    messages = current_payload.get("messages")
+    if not isinstance(messages, list):
+        raise TypeError("stored context messages are invalid")
+    next_revision = expected_revision + 1
+    next_payload: dict[str, JsonValue] = {
+        "revision": next_revision,
+        "messages": [*messages, *append_payload],
+        "append_receipts": {**receipts, append_id: append_hash},
+    }
+    checkpoint_json = canonical_json(next_payload)
+    checkpoint_hash = hashlib.sha256(checkpoint_json.encode("utf-8")).hexdigest()
+    connection.execute(
+        """
+        INSERT INTO workflow_checkpoints(
+            checkpoint_id, run_id, namespace, checkpoint_json,
+            checkpoint_hash, lease_epoch, version, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            f"{value}:{CONTEXT_NAMESPACE}:{next_revision}",
+            value,
+            CONTEXT_NAMESPACE,
+            checkpoint_json,
+            checkpoint_hash,
+            execution_lease.epoch,
+            next_revision,
+            now,
+        ),
+    )
+    return _snapshot_from_payload(next_payload)
 
 
 def _run_id(value: RunId) -> str:
@@ -195,7 +212,7 @@ def _snapshot(value: object) -> ContextSnapshot:
     return _snapshot_from_payload(payload)
 
 
-def _snapshot_from_payload(payload: dict[str, object]) -> ContextSnapshot:
+def _snapshot_from_payload(payload: Mapping[str, object]) -> ContextSnapshot:
     revision = payload.get("revision")
     values = payload.get("messages")
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
