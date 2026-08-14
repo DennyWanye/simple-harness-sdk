@@ -538,6 +538,147 @@ async def _prepare_spawn_ready_activation(
     return parent, first
 
 
+def _terminalize_spawn_parent(
+    uow: SqliteExecutionUnitOfWork,
+    terminal_state: RunState,
+    *,
+    now: float = 8.0,
+):  # type: ignore[no-untyped-def]
+    connection = uow.database.connection
+    run = connection.execute(
+        "SELECT state,version FROM runs WHERE run_id='parent-run'"
+    ).fetchone()
+    fence = connection.execute(
+        "SELECT owner_id,runtime_lease_epoch,epoch FROM run_fences "
+        "WHERE run_id='parent-run'"
+    ).fetchone()
+    assert run is not None and fence is not None
+    namespace = "react.termination.v1"
+    request_json = canonical_json({"checkpoint_namespace": namespace})
+    connection.execute(
+        "INSERT OR IGNORE INTO workflow_start_admissions("
+        "request_key,request_id,request_fingerprint,request_json,mode,run_id,"
+        "trace_id,thread_id,phase,version,created_at,updated_at) "
+        "VALUES('parent-start','parent-request',?,?, 'standalone','parent-run',"
+        "'parent-trace','parent-thread','admitted',0,0,0)",
+        (hashlib.sha256(request_json.encode()).hexdigest(), request_json),
+    )
+    checkpoint_version = int(
+        connection.execute(
+            "SELECT COALESCE(MAX(version),-1)+1 FROM workflow_checkpoints "
+            "WHERE run_id='parent-run' AND namespace=?",
+            (namespace,),
+        ).fetchone()[0]
+    )
+    checkpoint_id = f"parent-terminal-{terminal_state.value}"
+    checkpoint_json = canonical_json(
+        {"checkpoint_id": checkpoint_id, "status": terminal_state.value}
+    )
+    checkpoint_hash = hashlib.sha256(checkpoint_json.encode()).hexdigest()
+    connection.execute(
+        "INSERT INTO workflow_checkpoints("
+        "checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,"
+        "lease_epoch,version,created_at) VALUES(?,'parent-run',?,?,?,?,?,?)",
+        (
+            checkpoint_id,
+            namespace,
+            checkpoint_json,
+            checkpoint_hash,
+            int(fence["runtime_lease_epoch"]),
+            checkpoint_version,
+            now,
+        ),
+    )
+    event_id = f"parent-terminal-event-{terminal_state.value}"
+    terminal_payload = {
+        "status": "terminal",
+        "terminal_status": terminal_state.value,
+    }
+    event_json = canonical_json(terminal_payload)
+    durable_seq = int(
+        connection.execute(
+            "SELECT COALESCE(MAX(durable_seq),0)+1 FROM run_events "
+            "WHERE run_id='parent-run'"
+        ).fetchone()[0]
+    )
+    connection.execute(
+        "INSERT INTO run_events(event_id,run_id,durable_seq,kind,payload_json,created_at) "
+        "VALUES(?,'parent-run',?,?,?,?)",
+        (
+            event_id,
+            durable_seq,
+            f"run.{terminal_state.value}",
+            event_json,
+            now,
+        ),
+    )
+    fence_receipt_id = f"parent-terminal-fence-{terminal_state.value}"
+    receipt_id = f"parent-terminal-receipt-{terminal_state.value}"
+    next_run_version = int(run["version"]) + 1
+    connection.execute(
+        "INSERT INTO workflow_terminal_fence_receipts("
+        "receipt_id,run_id,owner_id,runtime_lease_epoch,run_fence_epoch,created_at) "
+        "VALUES(?,'parent-run',?,?,?,?)",
+        (
+            fence_receipt_id,
+            str(fence["owner_id"]),
+            int(fence["runtime_lease_epoch"]),
+            int(fence["epoch"]),
+            now,
+        ),
+    )
+    terminal_fields = {
+        "receipt_id": receipt_id,
+        "run_id": "parent-run",
+        "checkpoint_id": checkpoint_id,
+        "state": terminal_state.value,
+        "event_id": event_id,
+        "delivery_ids": [],
+        "terminal_payload": terminal_payload,
+        "delivery_facts": [],
+    }
+    outcome_hash = hashlib.sha256(
+        canonical_json(terminal_fields).encode()
+    ).hexdigest()
+    connection.execute(
+        "INSERT INTO workflow_terminal_receipts("
+        "receipt_id,run_id,checkpoint_id,checkpoint_namespace,checkpoint_version,"
+        "checkpoint_hash,state,run_version,event_id,event_payload_hash,"
+        "delivery_ids_json,delivery_facts_json,terminal_payload_json,"
+        "terminal_fence_receipt_id,outcome_hash,created_at) "
+        "VALUES(?,'parent-run',?,?,?,?,?,?,?,?,'[]','[]',?,?,?,?)",
+        (
+            receipt_id,
+            checkpoint_id,
+            namespace,
+            checkpoint_version,
+            checkpoint_hash,
+            terminal_state.value,
+            next_run_version,
+            event_id,
+            hashlib.sha256(event_json.encode()).hexdigest(),
+            event_json,
+            fence_receipt_id,
+            outcome_hash,
+            now,
+        ),
+    )
+    connection.execute("DELETE FROM workflow_leases WHERE run_id='parent-run'")
+    connection.execute(
+        "UPDATE run_fences SET state='released',released_at=? "
+        "WHERE run_id='parent-run'",
+        (now,),
+    )
+    connection.execute(
+        "UPDATE runs SET state=?,version=?,updated_at=? WHERE run_id='parent-run'",
+        (terminal_state.value, next_run_version, now),
+    )
+    connection.commit()
+    outcome = uow.read_workflow_terminal_outcome("parent-run")
+    assert outcome is not None and uow.verify_workflow_terminal(outcome)
+    return outcome
+
+
 def _start_inputs(ticket, verified, launch):  # type: ignore[no-untyped-def]
     start = RunStart(
         execution_session_id=ExecutionSessionId(verified.session_id),
@@ -3362,6 +3503,312 @@ def test_spawn_ready_coordinator_returns_sealed_catalog_stale_failure(
         assert isinstance(replayed, WorkflowSpawnFailed)
         assert replayed == outcome
 
+
+@pytest.mark.parametrize(
+    "terminal_state",
+    [RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED],
+)
+@pytest.mark.parametrize(
+    ("shape", "expected_path"),
+    [
+        ("ticket_only", "parent_terminal_ticket_only"),
+        ("ready_unactivated", "parent_terminal_ready_unactivated"),
+        ("activated", "parent_terminal_activated"),
+        ("activated_reclaimed", "parent_terminal_activated"),
+    ],
+)
+def test_spawn_parent_terminal_settles_all_durable_shapes_and_reopens(
+    tmp_path: Path,
+    terminal_state: RunState,
+    shape: str,
+    expected_path: str,
+) -> None:
+    path = tmp_path / f"spawn-parent-terminal-{shape}-{terminal_state.value}.db"
+    with Database.open(path) as database:
+        uow = SqliteExecutionUnitOfWork(database)
+        launch, ticket, _ = asyncio.run(_publish_and_issue(uow))
+        if shape == "ticket_only":
+            issue_authority = asyncio.run(_spawn_issue_authority(uow))
+            authority = asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.claim_spawn_continuation(
+                        tx,
+                        ticket,
+                        issue_authority,
+                        None,
+                        now=2.1,
+                        ttl_seconds=10.0,
+                    ),
+                )
+            )
+        else:
+            issue_authority = asyncio.run(_spawn_issue_authority(uow))
+            effect = uow.read_effect(EffectId("spawn-effect-1"))
+            assert effect is not None
+            unknown = uow.mark_effect_unknown(
+                effect.effect_id,
+                expected_version=effect.version,
+                expected_fence_epoch=1,
+                evidence_ref="spawn:unknown:terminal",
+                now=2.1,
+            )
+            ready = asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.mark_spawn_continuation_ready(
+                        tx,
+                        ticket,
+                        unknown,
+                        "spawn:ready:terminal",
+                        now=2.2,
+                    ),
+                )
+            )
+            parent = uow.read_run("parent-run")
+            assert parent is not None
+            _, blocker = uow.commit_runtime_wait_with_blocker(
+                run_id="parent-run",
+                expected_version=parent.version,
+                event_id="parent-run:spawn-terminal-waiting",
+                payload={"reason": "workflow_spawn_started_incomplete"},
+                blocker=WaitBlockerSpec(
+                    RecoveryKind.TOOL,
+                    unknown.effect_id.value,
+                    unknown.handoff_attempt,
+                    unknown.version,
+                ),
+                lease=issue_authority.execution_lease,
+                now=2.3,
+            )
+            if shape == "ready_unactivated":
+                authority = ready
+            else:
+                activation = asyncio.run(
+                    _atomic(
+                        uow,
+                        lambda tx: uow.consume_spawn_ready_and_claim_activation(
+                            tx,
+                            ready,
+                            blocker,
+                            "parent-worker",
+                            now=2.4,
+                            ttl_seconds=10.0,
+                        ),
+                    )
+                )
+                if shape == "activated_reclaimed":
+                    activation = asyncio.run(
+                        _atomic(
+                            uow,
+                            lambda tx: uow.reclaim_spawn_ready_activation(
+                                tx,
+                                activation,
+                                "replacement-worker",
+                                now=2000.0,
+                                ttl_seconds=10.0,
+                            ),
+                        )
+                    )
+                authority = activation.ready_receipt
+        terminal = _terminalize_spawn_parent(
+            uow,
+            terminal_state,
+            now=2010.0 if shape == "activated_reclaimed" else 8.0,
+        )
+        result = asyncio.run(
+            _atomic(
+                uow,
+                lambda tx: uow.settle_spawn_continuation_for_parent_terminal(
+                    tx,
+                    ticket,
+                    authority,
+                    terminal,
+                    now=9.0,
+                ),
+            )
+        )
+        assert result.outcome is ToolOutcome.FAILED
+        assert result.error_code == "workflow_parent_terminal_before_spawn"
+        completion = database.connection.execute(
+            "SELECT path_kind FROM workflow_spawn_completion_receipts "
+            "WHERE spawn_operation_id=?",
+            (launch.request_key,),
+        ).fetchone()
+        assert completion is not None and completion[0] == expected_path
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM workflow_spawn_ready_activations "
+            "WHERE spawn_operation_id=? AND state='active'",
+            (launch.request_key,),
+        ).fetchone()[0] == 0
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM runs WHERE parent_run_id='parent-run'"
+        ).fetchone()[0] == 0
+        assert asyncio.run(
+            _atomic(
+                uow,
+                lambda tx: uow.settle_spawn_continuation_for_parent_terminal(
+                    tx,
+                    ticket,
+                    authority,
+                    terminal,
+                    now=10.0,
+                ),
+            )
+        ) == result
+        with pytest.raises(
+            UnitOfWorkConflict, match="parent-terminal replay evidence differs"
+        ):
+            asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.settle_spawn_continuation_for_parent_terminal(
+                        tx,
+                        ticket,
+                        authority,
+                        replace(terminal, outcome_hash="0" * 64),
+                        now=10.1,
+                    ),
+                )
+            )
+        if shape in {"activated", "activated_reclaimed"}:
+            with pytest.raises(UnitOfWorkConflict, match="activation is stale"):
+                asyncio.run(
+                    _atomic(
+                        uow,
+                        lambda tx: uow.reclaim_spawn_ready_activation(
+                            tx,
+                            activation,
+                            "late-worker",
+                            now=3000.0,
+                            ttl_seconds=10.0,
+                        ),
+                    )
+                )
+            coordinator = _CanonicalWorkflowSpawnRuntimeCoordinator(
+                uow=uow,
+                runner=_sqlite_runner(database, uow),
+                owner_id="late-worker",
+                lease_ttl_seconds=10.0,
+                clock=lambda: 3000.0,
+            )
+            replayed = asyncio.run(coordinator.continue_ready(activation))
+            assert isinstance(replayed, WorkflowSpawnFailed)
+            assert replayed.tool_result == result
+
+    with Database.open(path) as reopened:
+        uow = SqliteExecutionUnitOfWork(reopened)
+        assert asyncio.run(
+            _atomic(
+                uow,
+                lambda tx: uow.read_spawn_continuation_outcome(
+                    tx, launch.request_key
+                ),
+            )
+        ) == result
+
+
+@pytest.mark.parametrize(
+    ("shape", "fault_point", "persisted"),
+    [
+        ("ready", "workflow:spawn_parent_terminal:before_effect_write", False),
+        ("ready", "workflow:spawn_parent_terminal:after_effect_write", False),
+        ("ready", "workflow:spawn_parent_terminal:before_ready_write", False),
+        ("ready", "workflow:spawn_parent_terminal:after_ready_write", False),
+        ("ready", "workflow:spawn_parent_terminal:before_blocker_write", False),
+        ("ready", "workflow:spawn_parent_terminal:after_blocker_write", False),
+        ("activated", "workflow:spawn_parent_terminal:before_activation_write", False),
+        ("activated", "workflow:spawn_parent_terminal:after_activation_write", False),
+        ("ready", "workflow:spawn_parent_terminal:before_completion_write", False),
+        ("ready", "workflow:spawn_parent_terminal:after_completion_write", False),
+        ("ready", "workflow:spawn_parent_terminal:before_continuation_write", False),
+        ("ready", "workflow:spawn_parent_terminal:after_continuation_write", False),
+        ("ready", "workflow:spawn_parent_terminal:after_commit", True),
+    ],
+)
+def test_spawn_parent_terminal_fault_reopen_is_atomic(
+    tmp_path: Path,
+    shape: str,
+    fault_point: str,
+    persisted: bool,
+) -> None:
+    path = tmp_path / f"spawn-parent-terminal-fault-{fault_point.rsplit(':', 1)[-1]}-{shape}.db"
+    with Database.open(path) as database:
+        base = SqliteExecutionUnitOfWork(database)
+        parent, ready, blocker = asyncio.run(_prepare_spawn_ready(base))
+        assert parent is not None
+        issued = asyncio.run(
+            _atomic(
+                base,
+                lambda tx: base.read_issued(tx, ready.spawn_operation_id),
+            )
+        )
+        assert issued is not None
+        ticket, _request = issued
+        authority = ready
+        if shape == "activated":
+            activation = asyncio.run(
+                _atomic(
+                    base,
+                    lambda tx: base.consume_spawn_ready_and_claim_activation(
+                        tx,
+                        ready,
+                        blocker,
+                        "parent-worker",
+                        now=2.4,
+                        ttl_seconds=10.0,
+                    ),
+                )
+            )
+            authority = activation.ready_receipt
+        terminal = _terminalize_spawn_parent(base, RunState.CANCELLED)
+
+        def fault(actual: str) -> None:
+            if actual == fault_point:
+                raise RuntimeError(actual)
+
+        crashing = (
+            SqliteExecutionUnitOfWork(database, workflow_fault=fault)
+            if persisted
+            else base
+        )
+        with pytest.raises(RuntimeError, match=fault_point):
+            asyncio.run(
+                _atomic(
+                    crashing,
+                    lambda tx: crashing.settle_spawn_continuation_for_parent_terminal(
+                        tx,
+                        ticket,
+                        authority,
+                        terminal,
+                        now=9.0,
+                        fault=fault,
+                    ),
+                )
+            )
+
+    with Database.open(path) as reopened:
+        uow = SqliteExecutionUnitOfWork(reopened)
+        outcome = asyncio.run(
+            _atomic(
+                uow,
+                lambda tx: uow.read_spawn_continuation_outcome(
+                    tx, ready.spawn_operation_id
+                ),
+            )
+        )
+        active = reopened.connection.execute(
+            "SELECT COUNT(*) FROM workflow_spawn_ready_activations "
+            "WHERE spawn_operation_id=? AND state='active'",
+            (ready.spawn_operation_id,),
+        ).fetchone()[0]
+        if persisted:
+            assert outcome is not None
+            assert outcome.error_code == "workflow_parent_terminal_before_spawn"
+            assert active == 0
+        else:
+            assert outcome is None
+            assert active == (1 if shape == "activated" else 0)
 
 def test_react_graph_failure_clears_ready_carrier_before_normal_loop(
     tmp_path: Path,
