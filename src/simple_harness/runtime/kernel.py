@@ -65,6 +65,8 @@ if TYPE_CHECKING:
     )
     from simple_harness.workflow.execution_ports import (
         WorkflowRecoveryWork,
+        WorkflowRetryWake,
+        WorkflowTerminalOutcome,
         WorkflowTransaction,
     )
     from simple_harness.workflow.runner import WorkflowRunner
@@ -124,6 +126,8 @@ class DriverResult:
     deliveries: tuple[DeliverySpec, ...] = ()
     wait_blocker: WaitBlockerSpec | None = None
     workflow_spawn_control: WorkflowSpawnToolOutcome | None = None
+    workflow_terminal: WorkflowTerminalOutcome | None = None
+    workflow_retry_wake: WorkflowRetryWake | None = None
 
     def __post_init__(self) -> None:
         state = RunState(self.state)
@@ -137,6 +141,19 @@ class DriverResult:
         ):
             raise ValueError(
                 "workflow spawn control requires an exclusive WAITING result"
+            )
+        if self.workflow_terminal is not None and state not in {
+            RunState.COMPLETED,
+            RunState.FAILED,
+        }:
+            raise ValueError(
+                "workflow terminal outcome requires COMPLETED or FAILED state"
+            )
+        if self.workflow_retry_wake is not None and (
+            state is not RunState.WAITING or self.wait_blocker is not None
+        ):
+            raise ValueError(
+                "workflow retry wake requires an exclusive WAITING result"
             )
 
 
