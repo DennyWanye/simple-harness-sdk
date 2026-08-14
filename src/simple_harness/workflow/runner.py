@@ -1522,11 +1522,99 @@ class WorkflowRunner:
     cancel = request_cancel
 
     async def recover_expired(self) -> list[RecoveryRecord]:
-        return []
+        """Enumerate expired workflow leases and recover via Port pipeline."""
+
+        async def expire_transaction(tx: WorkflowTransaction):
+            return await self.recovery.recover_expired(now=float(self._clock()), transaction=tx)
+
+        records = await self.execution_ports.unit_of_work.run_atomic(
+            expire_transaction, fault_label="workflow:recover-expired"
+        )
+        return list(records)
 
     async def recover(
         self, run_id: str, context: WorkflowContext | None = None, **_: object
     ) -> WorkflowRunResult:
+        """Recover workflow via classify/repair/quarantine pipeline."""
+        from .recovery import quarantine_checkpoint, repair_head_projection
+
+        # Read recovery snapshot to get candidate and checkpoint state
+        if not hasattr(self.execution_ports, "recovery"):
+            # Fallback for stores without recovery port
+            return await self._execute(
+                run_id,
+                state=None,
+                responses=None,
+                context=context or WorkflowContext(),
+                precreated=None,
+            )
+
+        recovery_store = self.execution_ports.recovery
+        snapshot = recovery_store.read_recovery_snapshot(run_id)
+
+        # If no checkpoint head, quarantine
+        if snapshot.candidate.checkpoint_head is None:
+            async def quarantine_tx(tx: WorkflowTransaction):
+                return await quarantine_checkpoint(
+                    self.recovery,
+                    run_id=run_id,
+                    reason="no_checkpoint_head",
+                    checkpoint=None,
+                    transaction=tx,
+                )
+
+            record = await self.execution_ports.unit_of_work.run_atomic(
+                quarantine_tx, fault_label="workflow:recover-quarantine"
+            )
+            return WorkflowRunResult(
+                run_id,
+                WorkflowRunStatus.BLOCKED,
+                error={"action": record.action, "reason": record.reason},
+            )
+
+        # Try to read and repair checkpoint head
+        try:
+            checkpoint = await self.checkpoint.read(
+                run_id, snapshot.candidate.checkpoint_head
+            )
+
+            async def repair_tx(tx: WorkflowTransaction):
+                return await repair_head_projection(
+                    self.recovery, checkpoint, transaction=tx
+                )
+
+            record = await self.execution_ports.unit_of_work.run_atomic(
+                repair_tx, fault_label="workflow:recover-repair"
+            )
+
+            if record is not None:
+                # Repair was needed and applied
+                return WorkflowRunResult(
+                    run_id,
+                    WorkflowRunStatus(_STATUS.get(RunState(record.status), WorkflowRunStatus.BLOCKED)),
+                    {"action": record.action, "reason": record.reason},
+                )
+        except Exception as exc:
+            # Checkpoint read or repair failed, quarantine
+            async def quarantine_tx(tx: WorkflowTransaction):
+                return await quarantine_checkpoint(
+                    self.recovery,
+                    run_id=run_id,
+                    reason=f"checkpoint_repair_failed:{exc.__class__.__name__}",
+                    checkpoint=None,
+                    transaction=tx,
+                )
+
+            record = await self.execution_ports.unit_of_work.run_atomic(
+                quarantine_tx, fault_label="workflow:recover-quarantine"
+            )
+            return WorkflowRunResult(
+                run_id,
+                WorkflowRunStatus.BLOCKED,
+                error={"action": record.action, "reason": record.reason},
+            )
+
+        # After repair (or if no repair needed), proceed with execution
         return await self._execute(
             run_id,
             state=None,
