@@ -81,6 +81,8 @@ class TerminationState:
     pending_child_completion_hash: str | None = None
     pending_child_completion_append_id: str | None = None
     last_workflow_spawn_wait_receipt_id: str | None = None
+    workflow_catalog_selection: JsonValue | None = None
+    workflow_catalog_selection_hash: str | None = None
 
     @property
     def turns(self) -> int:
@@ -127,6 +129,18 @@ class TerminationState:
             self.pending_child_completion_hash
         ) != 64:
             raise ValueError("pending child completion hash is invalid")
+        catalog_pin_values = (
+            self.workflow_catalog_selection,
+            self.workflow_catalog_selection_hash,
+        )
+        if any(value is not None for value in catalog_pin_values) and not all(
+            value is not None for value in catalog_pin_values
+        ):
+            raise ValueError("workflow catalog selection pin is incomplete")
+        if self.workflow_catalog_selection_hash is not None and len(
+            self.workflow_catalog_selection_hash
+        ) != 64:
+            raise ValueError("workflow catalog selection hash is invalid")
 
     def before_provider(
         self, limits: TerminationLimits, *, now: float, budget: BudgetSnapshot
@@ -215,6 +229,8 @@ class TerminationState:
             "last_workflow_spawn_wait_receipt_id": (
                 self.last_workflow_spawn_wait_receipt_id
             ),
+            "workflow_catalog_selection": self.workflow_catalog_selection,
+            "workflow_catalog_selection_hash": self.workflow_catalog_selection_hash,
         }
 
     @classmethod
@@ -257,6 +273,10 @@ class TerminationState:
             ),
             last_workflow_spawn_wait_receipt_id=_optional_string(
                 value.get("last_workflow_spawn_wait_receipt_id")
+            ),
+            workflow_catalog_selection=value.get("workflow_catalog_selection"),  # type: ignore[arg-type]
+            workflow_catalog_selection_hash=_optional_string(
+                value.get("workflow_catalog_selection_hash")
             ),
         )
 

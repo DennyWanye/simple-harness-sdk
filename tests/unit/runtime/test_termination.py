@@ -118,3 +118,24 @@ def test_checkpoint_roundtrip_preserves_durable_totals_and_phase() -> None:
     restored = TerminationState.from_json(state.to_json())
     assert restored == state
     assert restored.provider_request_id == "provider-turn:1"
+
+
+def test_checkpoint_roundtrip_preserves_workflow_catalog_pin() -> None:
+    catalog = {
+        "authority_id": "model_spawnable",
+        "generation": 1,
+        "version": 1,
+        "catalog_hash": "catalog-hash",
+        "profiles": [],
+        "canonical_hash": "selection-hash",
+    }
+    # SHA-256 hash must be 64 hex characters
+    selection_hash = "a" * 64
+    state = TerminationState(
+        10,
+        workflow_catalog_selection=catalog,
+        workflow_catalog_selection_hash=selection_hash,
+    )
+    restored = TerminationState.from_json(state.to_json())
+    assert restored.workflow_catalog_selection == catalog
+    assert restored.workflow_catalog_selection_hash == selection_hash
