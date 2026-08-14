@@ -5,7 +5,20 @@
 
 from __future__ import annotations
 
+from .definition import (
+    DEFAULT_FIX_ROUNDS,
+    DEFAULT_PROPOSAL_TURNS,
+    WORKFLOW_NAME,
+    WORKFLOW_VERSION,
+    create_definition,
+    create_initial_state,
+)
+
 __all__ = [
-    "DURABLE_TASK_V1",
-    "DURABLE_TASK_V1_DEFINITION",
+    "DEFAULT_FIX_ROUNDS",
+    "DEFAULT_PROPOSAL_TURNS",
+    "WORKFLOW_NAME",
+    "WORKFLOW_VERSION",
+    "create_definition",
+    "create_initial_state",
 ]
