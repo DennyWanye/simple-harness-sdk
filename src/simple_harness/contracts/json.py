@@ -89,6 +89,17 @@ def thaw_json(value: FrozenJsonValue) -> JsonValue:
     return value
 
 
+def fingerprint_json(value: JsonValue) -> str:
+    """Return a deterministic SHA-256 hash of a JSON value.
+
+    The value is serialized in canonical form (sorted keys, no whitespace)
+    before hashing to ensure the fingerprint is stable across platforms.
+    """
+    import hashlib
+    canonical = canonical_json(value)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 __all__ = (
     "JsonPrimitive",
     "JsonValue",
@@ -97,5 +108,6 @@ __all__ = (
     "canonical_json",
     "freeze_json",
     "thaw_json",
+    "fingerprint_json",
 )
 
