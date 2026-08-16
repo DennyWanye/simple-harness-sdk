@@ -32,6 +32,7 @@ from .budget import (
     BudgetPolicy,
     BudgetSnapshot,
     FrozenPriceEstimator,
+    budget_policy_fingerprint,
 )
 from .provider_invocations import (
     ProviderInvocationRecord,
@@ -173,6 +174,10 @@ class ProviderInvocationCoordinator:
         self._clock = clock
         if estimator is not None:
             estimator.bind(provider.target)
+
+    @property
+    def budget_policy_fingerprint(self) -> str:
+        return budget_policy_fingerprint(self._budget_policy, self._estimator)
 
     async def prepare_claim(
         self,

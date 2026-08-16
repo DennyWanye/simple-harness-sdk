@@ -6,12 +6,18 @@ from __future__ import annotations
 import asyncio
 
 from simple_harness.contracts import ExecutionSessionId, RequestId, RunId
+from simple_harness.execution.delivery import (
+    DeliveryDispatcher,
+    DeliverySpec,
+    DeliveryState,
+)
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import RunState
 from simple_harness.runtime import (
     DriverResult,
     RunStart,
     RuntimePorts,
+    RuntimeLifecycleState,
     RuntimeProfile,
     SqliteContextPort,
     build_runtime,
@@ -63,6 +69,7 @@ def runtime(
     clock=lambda: 10.0,
     sleep=asyncio.sleep,
     close_timeout_seconds=5.0,
+    delivery_sink=None,
 ):
     database = Database.open(tmp_path / "runtime.db")
     uow = SqliteExecutionUnitOfWork(database)
@@ -76,7 +83,13 @@ def runtime(
             tools=noop,
             authorization=noop,
             context=SqliteContextPort(database, clock=clock),
-            delivery=noop,
+            delivery=(
+                noop
+                if delivery_sink is None
+                else DeliveryDispatcher(
+                    uow, {"fixture": delivery_sink}, clock=clock
+                )
+            ),
             tool_reconciliation=noop,
             reconciliation=noop,
             provider_reconciliation=noop,
@@ -89,6 +102,57 @@ def runtime(
         ),
     )
     return value, uow, database
+
+
+async def seed_terminal_deliveries(
+    uow: SqliteExecutionUnitOfWork, *, count: int
+) -> None:
+    uow.create_with_start_snapshot(
+        execution_session_id="session-delivery",
+        run_id="run-delivery",
+        request_id="request-delivery",
+        profile_key="agent.general",
+        driver_kind="react",
+        snapshot={
+            "schema_version": 1,
+            "profile_key": "agent.general",
+            "driver_kind": "react",
+            "turn_id": "turn-delivery",
+            "tool_catalog_generation": 1,
+            "input": {},
+        },
+        event_id="run-delivery:created",
+        now=1.0,
+    )
+    run, lease = uow.claim_runtime_activation(
+        run_id="run-delivery",
+        owner_id="delivery-seeder",
+        namespace="runtime.kernel",
+        now=2.0,
+        lease_ttl_seconds=30.0,
+    )
+    fence = await uow.acquire(RunId("run-delivery"), lease, now=2.0)
+    uow.commit_root_terminal_with_deliveries(
+        run_id=run.run_id,
+        expected_version=run.version,
+        terminal_state=RunState.COMPLETED,
+        event_id="run-delivery:completed",
+        terminal_payload={"answer": "done"},
+        deliveries=tuple(
+            DeliverySpec(
+                f"delivery-{index:03d}",
+                "fixture",
+                f"delivery-key-{index:03d}",
+                {"index": index},
+            )
+            for index in range(count)
+        ),
+        fence=fence,
+        execution_lease=lease,
+        terminal_fence_receipt_ref="runtime-fence:delivery-seeder:1",
+        now=3.0,
+    )
+    uow.release_runtime_lease(lease, now=3.0)
 
 
 def test_start_is_atomic_activated_and_idempotent(tmp_path) -> None:
@@ -105,6 +169,246 @@ def test_start_is_atomic_activated_and_idempotent(tmp_path) -> None:
         assert driver.calls == 1
         await value.close()
         database.close()
+
+    asyncio.run(case())
+
+
+def test_concurrent_start_publishes_ready_once_and_clients_fail_before_ready(
+    tmp_path,
+) -> None:
+    async def case() -> None:
+        value, _, database = runtime(tmp_path)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def reconcile() -> None:
+            nonlocal calls
+            calls += 1
+            entered.set()
+            await release.wait()
+
+        value._ports.reconciliation.reconcile = reconcile
+        first = asyncio.create_task(value.start())
+        second = asyncio.create_task(value.start())
+        await entered.wait()
+        assert value.state is RuntimeLifecycleState.STARTING
+        try:
+            await value.client.start(request("too-early"))
+        except Exception as error:  # public error code is the contract
+            assert getattr(error, "code", None) == "runtime_not_ready"
+        else:
+            raise AssertionError("client start must fail before READY")
+        release.set()
+        await asyncio.gather(first, second)
+        assert calls == 1
+        assert value.state is RuntimeLifecycleState.READY
+        await value.close()
+        assert value.state is RuntimeLifecycleState.CLOSED
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_start_failure_is_not_restartable_but_close_is_idempotent(tmp_path) -> None:
+    async def case() -> None:
+        value, _, database = runtime(tmp_path)
+
+        async def fail() -> None:
+            raise RuntimeError("startup failed")
+
+        value._ports.reconciliation.reconcile = fail
+        for _ in range(2):
+            try:
+                await value.start()
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("failed Runtime must not become ready")
+        assert value.state is RuntimeLifecycleState.FAILED
+        await value.close()
+        await value.close()
+        assert value.state is RuntimeLifecycleState.CLOSED
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_policy_pin_rejects_drift_after_pre_checkpoint_restart(tmp_path) -> None:
+    class BeforeCheckpointDriver:
+        def __init__(self, fingerprint: str, *, block: bool) -> None:
+            self.policy_fingerprint = fingerprint
+            self.block = block
+            self.calls = 0
+            self.started = asyncio.Event()
+
+        async def start(self, invocation, *, context, cancel):
+            del invocation, context, cancel
+            self.calls += 1
+            self.started.set()
+            if self.block:
+                await asyncio.Event().wait()
+            return DriverResult(RunState.COMPLETED, {"answer": "must-not-run"})
+
+    async def case() -> None:
+        first_driver = BeforeCheckpointDriver("policy-a", block=True)
+        first, first_uow, first_database = runtime(
+            tmp_path, driver=first_driver, owner="owner-policy-a"
+        )
+        await first.start()
+        await first.client.start(request("policy-drift"))
+        await first_driver.started.wait()
+        assert first_uow.read_react_checkpoint("run-policy-drift") is None
+        snapshot = first_uow.read_start_snapshot("run-policy-drift")
+        assert snapshot is not None and snapshot["policy_fingerprint"] == "policy-a"
+        await first.close()
+        first_database.close()
+
+        drifted_driver = BeforeCheckpointDriver("policy-b", block=False)
+        second, second_uow, second_database = runtime(
+            tmp_path, driver=drifted_driver, owner="owner-policy-b"
+        )
+        await second.start()
+        await second.wait_idle(RunId("run-policy-drift"))
+        recovered = second_uow.read_run("run-policy-drift")
+        assert recovered is not None and recovered.state is RunState.FAILED
+        assert drifted_driver.calls == 0
+        assert second_uow.read_react_checkpoint("run-policy-drift") is None
+        await second.close()
+        second_database.close()
+
+    asyncio.run(case())
+
+
+def test_start_racing_close_never_publishes_ready(tmp_path) -> None:
+    async def case() -> None:
+        value, _, database = runtime(tmp_path)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def reconcile() -> None:
+            entered.set()
+            await release.wait()
+
+        value._ports.reconciliation.reconcile = reconcile
+        starting = asyncio.create_task(value.start())
+        await entered.wait()
+        closing = asyncio.create_task(value.close())
+        await asyncio.wait_for(closing, timeout=0.2)
+        outcome = await asyncio.gather(starting, return_exceptions=True)
+        assert isinstance(outcome[0], asyncio.CancelledError)
+        assert value.state is RuntimeLifecycleState.CLOSED
+        assert value._wake_drain_task is None
+        assert value._delivery_pump_task is None
+        release.set()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_concurrent_close_is_single_terminal_lifecycle_transition(tmp_path) -> None:
+    async def case() -> None:
+        value, _, database = runtime(tmp_path)
+        await value.start()
+        await asyncio.gather(*(value.close() for _ in range(8)))
+        assert value.state is RuntimeLifecycleState.CLOSED
+        assert value._wake_drain_task is None
+        assert value._delivery_pump_task is None
+        assert value._leases == {}
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_delivery_sink_failure_is_released_and_retried_by_runtime(tmp_path) -> None:
+    class FlakySink:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.keys: list[str] = []
+
+        async def deliver(self, payload, *, idempotency_key):
+            del payload
+            self.calls += 1
+            self.keys.append(idempotency_key)
+            if self.calls == 1:
+                raise RuntimeError("transient sink failure")
+
+    async def case() -> None:
+        sink = FlakySink()
+        value, uow, database = runtime(tmp_path, delivery_sink=sink)
+        await seed_terminal_deliveries(uow, count=1)
+
+        await value.start()
+
+        delivery = uow.read_delivery("delivery-000")
+        assert delivery is not None and delivery.state is DeliveryState.DELIVERED
+        assert sink.calls == 2
+        assert sink.keys == ["delivery-key-000", "delivery-key-000"]
+        await value.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_startup_backlog_remains_durable_and_drains_after_runtime_reopen(
+    tmp_path,
+) -> None:
+    class FailingSink:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def deliver(self, payload, *, idempotency_key):
+            del payload, idempotency_key
+            self.calls += 1
+            raise RuntimeError("sink remains offline")
+
+    class RecordingSink:
+        def __init__(self) -> None:
+            self.keys: list[str] = []
+            self.all_delivered = asyncio.Event()
+
+        async def deliver(self, payload, *, idempotency_key):
+            del payload
+            self.keys.append(idempotency_key)
+            if len(self.keys) == 101:
+                self.all_delivered.set()
+
+    async def case() -> None:
+        failing = FailingSink()
+        first, first_uow, first_database = runtime(
+            tmp_path,
+            owner="runtime-before-reopen",
+            delivery_sink=failing,
+        )
+        await seed_terminal_deliveries(first_uow, count=101)
+        await first.start()
+        assert failing.calls >= 100
+        assert (
+            first_database.connection.execute(
+                "SELECT count(*) FROM delivery_outbox WHERE state='pending'"
+            ).fetchone()[0]
+            == 101
+        )
+        await first.close()
+        first_database.close()
+
+        recording = RecordingSink()
+        second, second_uow, second_database = runtime(
+            tmp_path,
+            owner="runtime-after-reopen",
+            delivery_sink=recording,
+        )
+        await second.start()
+        second._delivery_wake.set()
+        await asyncio.wait_for(recording.all_delivered.wait(), timeout=0.2)
+        delivered = second_database.connection.execute(
+            "SELECT count(*) FROM delivery_outbox WHERE state='delivered'"
+        ).fetchone()[0]
+        assert delivered == 101
+        assert len(recording.keys) == len(set(recording.keys)) == 101
+        assert second_uow.read_delivery("delivery-100").state is DeliveryState.DELIVERED
+        await second.close()
+        second_database.close()
 
     asyncio.run(case())
 

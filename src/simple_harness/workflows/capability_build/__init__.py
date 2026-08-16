@@ -9,7 +9,7 @@ graph as durable_task but with:
 
 - Restricted budgets (proposal_budget: 40, fix_budget: 3)
 - capability_build capability tag
-- Reserved control launch policy (not model-spawnable)
+- Model-spawnable when its complete Host service group is configured
 - Host-issued admission contracts for candidate-only builds
 
 The workflow reuses durable_task's graph definition and node handlers. This
@@ -29,6 +29,42 @@ __all__ = [
 
 WORKFLOW_PROFILE_KEY = "workflow.capability_build"
 WORKFLOW_NAME = "durable_task"
-WORKFLOW_VERSION = "v1"
+WORKFLOW_VERSION = "capability_build_v1"
 DEFAULT_PROPOSAL_BUDGET = 40
 DEFAULT_FIX_BUDGET = 3
+
+from .factory import (
+    CapabilityBuildAdmission,
+    CapabilityBuildExecutionState,
+    START_SCHEMA,
+    START_SCHEMA_REF,
+    build_capability_build_definition,
+    build_capability_build_registration,
+    create_initial_state,
+    run_capability_build_specialization,
+)
+from .ports import (
+    CapabilityActivatePort,
+    CapabilityBuildAuthorizationPort,
+    CapabilitySearchPort,
+    CapabilitySourcePolicyPort,
+    IsolatedBuildPort,
+    PackageStorePort,
+)
+
+__all__ += [
+    "CapabilityBuildAdmission",
+    "CapabilityBuildExecutionState",
+    "CapabilityActivatePort",
+    "CapabilityBuildAuthorizationPort",
+    "CapabilitySearchPort",
+    "CapabilitySourcePolicyPort",
+    "IsolatedBuildPort",
+    "PackageStorePort",
+    "START_SCHEMA",
+    "START_SCHEMA_REF",
+    "build_capability_build_definition",
+    "build_capability_build_registration",
+    "create_initial_state",
+    "run_capability_build_specialization",
+]

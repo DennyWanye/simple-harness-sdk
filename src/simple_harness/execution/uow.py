@@ -500,6 +500,8 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         fault: FaultHook | None = None,
     ) -> DecisionRecord: ...
 
+    def read_decision(self, decision_id: str) -> DecisionRecord | None: ...
+
     def enqueue_continuation(
         self,
         *,

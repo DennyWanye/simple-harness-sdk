@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from simple_harness.execution.budget import BudgetSnapshot
+from simple_harness.execution.budget import BudgetPolicy, BudgetSnapshot
+from simple_harness.runtime import build_react_driver
 from simple_harness.runtime.termination import (
     TerminationBudgetExceeded,
     TerminationLimits,
@@ -112,12 +113,13 @@ def test_clock_rollback_fails_closed_before_reservation() -> None:
 
 
 def test_checkpoint_roundtrip_preserves_durable_totals_and_phase() -> None:
-    state = TerminationState(10).before_provider(
+    state = TerminationState(10, policy_fingerprint="a" * 64).before_provider(
         LIMITS, now=11, budget=BudgetSnapshot()
     )
     restored = TerminationState.from_json(state.to_json())
     assert restored == state
     assert restored.provider_request_id == "provider-turn:1"
+    assert restored.policy_fingerprint == "a" * 64
 
 
 def test_checkpoint_roundtrip_preserves_workflow_catalog_pin() -> None:
@@ -139,3 +141,20 @@ def test_checkpoint_roundtrip_preserves_workflow_catalog_pin() -> None:
     restored = TerminationState.from_json(state.to_json())
     assert restored.workflow_catalog_selection == catalog
     assert restored.workflow_catalog_selection_hash == selection_hash
+
+
+def test_public_react_builder_requires_and_freezes_hard_policy() -> None:
+    with pytest.raises(TypeError):
+        build_react_driver()  # type: ignore[call-arg]
+    first = build_react_driver(
+        limits=LIMITS,
+        budget_policy=BudgetPolicy(hard_cap_micros=100, refuse_on_unknown=True),
+        estimator=None,
+    )
+    second = build_react_driver(
+        limits=TerminationLimits(3, 3, 10.0, 100, 2),
+        budget_policy=BudgetPolicy(hard_cap_micros=100, refuse_on_unknown=True),
+        estimator=None,
+    )
+    assert first.policy_fingerprint is not None
+    assert first.policy_fingerprint != second.policy_fingerprint

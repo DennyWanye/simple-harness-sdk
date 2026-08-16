@@ -1,0 +1,2268 @@
+{
+  "acceptance": {
+    "path": "/Users/denny/projects/simple_harness/plans/2026-08-16-simple-harness-sdk-v0.1.1-cutover/acceptance-slice-a.md",
+    "sha256": "c6c117dc7ad78e9645c9cbbe72d992fea666c307cac02f8e6c79a673fe905d68"
+  },
+  "applicability": {
+    "input_sensitive": {
+      "decided_by": "user",
+      "rationale": "原始验收要求自然语言主Agent与三个Workflow的语义选择和有效结果",
+      "value": true
+    },
+    "llm_payload_driven": {
+      "decided_by": "user",
+      "rationale": "Provider工具调用和Workflow控制载荷会直接驱动durable状态机",
+      "value": true
+    },
+    "stateful_init": {
+      "decided_by": "user",
+      "rationale": "本slice只实现显式依赖注入SDK且不修改产品首次登录初始化",
+      "value": false
+    }
+  },
+  "baseline": {
+    "content_digest": "82c35a91b64277b3eb1c13c06271786e89ad94f3724058d7dbb300b6e5a32b3c",
+    "content_entries": [
+      [
+        ".github/workflows/ci.yml",
+        "-:e12edad543c7183aca64d7e4df3dbf4d00e891de2125ec3165feee7de5389657"
+      ],
+      [
+        ".github/workflows/platform-tests.yml",
+        "-:756a7d3e3eb9dd0889c29d711349279511f8ab6203c052795b47978364ac223f"
+      ],
+      [
+        ".github/workflows/release.yml",
+        "-:5bd54f55fcf1fff3823abc4429d91621f5b0e2c9dc515a50a1a9e896196f2c52"
+      ],
+      [
+        ".gitignore",
+        "-:1f9a98dac3f11d418d39d4779dfc9e5003369e9020b18417863d13c01a03c2ef"
+      ],
+      [
+        "LICENSES/Apache-2.0.txt",
+        "-:1f83bfbb6ab612d244b9619bcf615e54c2e107fc78a05eb6e16bc1ce41fd2f8f"
+      ],
+      [
+        "NOTICE",
+        "-:af26470258903608cb9e620cb4361d749531e7349f27616f980453b61fe0da48"
+      ],
+      [
+        "README.md",
+        "-:863490b117dd6910d288f36d1e54037d5601d5c3f42ac8a6f7246f3246ca35e3"
+      ],
+      [
+        "REUSE.toml",
+        "-:68e2becb2077c7cac4b6c1a35f610324a287f4db458abe80436b9329791c22e1"
+      ],
+      [
+        "docs/api/contracts.md",
+        "-:8ff513f5e876c961775ea180323500b6572f8fb0d111d86ed4b5ae4de7a9daea"
+      ],
+      [
+        "docs/api/effects.md",
+        "-:5fd4d3358f8a0fc5bf58a65595908e3df62e9f39f194989c1f2a72ba9e1928e7"
+      ],
+      [
+        "docs/api/provider-invocation-ledger.md",
+        "-:d0c7551b0690f0a81c154bdd9bd258011c7055890a1a37c90d77950d20c7c77a"
+      ],
+      [
+        "docs/api/providers.md",
+        "-:695027936aef6d8fc7fa4ce5a0fd53a51838232ae85a03c0749a017910a6cb75"
+      ],
+      [
+        "docs/api/tools.md",
+        "-:63f5c41f217d2f0d322b3437b35546d0b3ca804527894a125ede1bbd85d5e29f"
+      ],
+      [
+        "docs/consumers/aiphone-handoff.md",
+        "-:536d487e9b06de3858eaf1917dfc62189ed7acedd821af52c3fd02fb4343db02"
+      ],
+      [
+        "docs/release/v0.1.0.md",
+        "-:73429404c7253bc8a4e9b3b2bcb763dd17f8f9752a24438d8de1dfd10984fe2d"
+      ],
+      [
+        "provenance/source-lock.json",
+        "-:9fcd5ef30e35595c687257e1c4e159540a9bf4781ff8ad98334c7046c68598e7"
+      ],
+      [
+        "pyproject.toml",
+        "-:605b31580ba14e3550fbd5c58f818d1a445d4bb132531a51955e6c3f1a1e45f2"
+      ],
+      [
+        "scripts/acceptance/verify_full_runtime_stage.py",
+        "-:9567e4af8e72846c92cb544fd2c386137ee61b2e218f9ce8dc27623b0cc829a4"
+      ],
+      [
+        "scripts/check_source_provenance.py",
+        "-:657f36b8a319dbde1337db00cd655287edcac9b36a0085f0e80770c5e8105037"
+      ],
+      [
+        "source-manifest.tsv",
+        "-:886485d60d67469e15c6bd687c87c436199708f5fdd594bd5b76f9f6cefc2a36"
+      ],
+      [
+        "src/simple_harness/__init__.py",
+        "-:da5065c5059c63cd517ea1530f81f448dc4c6e4d6210f2f4ca8a23c62b0d3d32"
+      ],
+      [
+        "src/simple_harness/capabilities/__init__.py",
+        "-:898c12e84aa7cb30e60bae8616247c8c454e079cdf9ddd1ad923c4138f8e1ff3"
+      ],
+      [
+        "src/simple_harness/capabilities/builder_contracts.py",
+        "-:2cbe1a0888d8ecd1ea6699fddd49ca60235389b5b4030085d5f2c3ba2b3cd442"
+      ],
+      [
+        "src/simple_harness/capabilities/builder_errors.py",
+        "-:b3487b38d404f5f9cdc09168b8983dcf911c9ebcbc94ad185f339255a2d034fc"
+      ],
+      [
+        "src/simple_harness/contracts/__init__.py",
+        "-:c4d68aade7bb7821f3a8eaf673941b361c02fe20ce7ce00d7a3732a57c4c89be"
+      ],
+      [
+        "src/simple_harness/contracts/errors.py",
+        "-:080679d0e84dd24b1816e8b8a5cb0d2eb0f4791a078b09d96e01bc8ebf5cbdfe"
+      ],
+      [
+        "src/simple_harness/contracts/events.py",
+        "-:b828285b1c6a185d5bd0b25edaf33ceae42c7c75bf15d6b065c396fe4553312a"
+      ],
+      [
+        "src/simple_harness/contracts/identity.py",
+        "-:e4f5dc5accc0fcc0ce10de62b842386c67e4681c2b5bddf741b7d77dcc81075d"
+      ],
+      [
+        "src/simple_harness/contracts/json.py",
+        "-:2c92e29944c199dbb8eee6388934aa41520e986e72a9abcf5d237ade28dfb22f"
+      ],
+      [
+        "src/simple_harness/contracts/messages.py",
+        "-:bc3ebf341a03698167cd36627809fe46de75980c4b383a461669eafa17ee4528"
+      ],
+      [
+        "src/simple_harness/execution/__init__.py",
+        "-:7fdc6fc784e65e9b13ad25b45810da4a89bbfa90f7c6ddfd845fdc70121f4b24"
+      ],
+      [
+        "src/simple_harness/execution/budget.py",
+        "-:92bfc65923a807434d0aaf54c683e9d5cb63ddc40ccb2240c23c8b667bea009d"
+      ],
+      [
+        "src/simple_harness/execution/contracts/__init__.py",
+        "-:5087fb2fb70e4fa87058f4045080d58cf7cdfeec03f85220b9a640b82f7451a1"
+      ],
+      [
+        "src/simple_harness/execution/contracts/children.py",
+        "-:da3ec145e553ac5fca6b5011cdf9a037fe707fd6da39735ce32b67fd02505f76"
+      ],
+      [
+        "src/simple_harness/execution/delivery.py",
+        "-:6b912cb9176249b3c112ac5fe842a28c29ae96bb3c9b47b7cccc51e1a18f2591"
+      ],
+      [
+        "src/simple_harness/execution/dispatch.py",
+        "-:b56a6195d5fd6fe22ca4adab88c0c75e4eb683b0133711888766b5cce295d110"
+      ],
+      [
+        "src/simple_harness/execution/effects.py",
+        "-:32cccd2d39a8692cf29c66aa263e8bafa0c72577998c77b023dc69b94f7518d1"
+      ],
+      [
+        "src/simple_harness/execution/fences.py",
+        "-:ebfc3c85fb616c9a967d6d58bdb4882c386c40d99b3fca23f795aa70cc90f008"
+      ],
+      [
+        "src/simple_harness/execution/provider_invocations.py",
+        "-:93167bbc54c2779715f339263ff3a9be2883aefabeb2949ac4742c56df09666e"
+      ],
+      [
+        "src/simple_harness/execution/recovery.py",
+        "-:adac4229f7aec0d5f65d58947c745ba5a7e0420e22607f2f00d96e28d9697a57"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/__init__.py",
+        "-:71239770572fe826b0ceb24cb19967de26f6cc9538ba0844372bb7e0b8d0625a"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/database.py",
+        "-:5b3b18132c4817de8d0fbbd3b3c34cbb617f6dd96944cc8d82accc8c0595b85d"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/migrations/0001_initial.sql",
+        "-:428b2c4f521ceed055e110d75b6c8ea68b2f4a6c097be05bf3d3425e7f6855d3"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/migrations/__init__.py",
+        "-:93432cb87b161d30dacbcaad0530bd7f8b291a43afc7f51e358a084e70b80916"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/schema.py",
+        "-:f07a4a735002919e87b681601ef6c9e60d8d29609ab42a16d52e7cf0c40f39de"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/uow.py",
+        "-:f827e59a76af179647047f8c6cc3d32aede8c44d8772efe61ca1bb0702dc15d9"
+      ],
+      [
+        "src/simple_harness/execution/uow.py",
+        "-:f78521e4360df915fea30ab4cb82fe00de94e22f5b0a67ef73eaacc01532685e"
+      ],
+      [
+        "src/simple_harness/providers/__init__.py",
+        "-:bead56a54aef959a6f9c6985105669f85212f69a8439caf68dc1c950b15dec45"
+      ],
+      [
+        "src/simple_harness/providers/base.py",
+        "-:5234127161e1b4fb3a13770c2e0f3c97e0e065d5f4d31cfa8e4bed80e57836a7"
+      ],
+      [
+        "src/simple_harness/providers/errors.py",
+        "-:ad726f962890d8578d081e5c663f73c7a5d04d9689396ecd72e4a2e7941fb5aa"
+      ],
+      [
+        "src/simple_harness/providers/openai_compatible.py",
+        "-:c0be0ce455e8e1c19ce6f515ffaa2c0393b743d6976b9fe307d7761776facf4f"
+      ],
+      [
+        "src/simple_harness/providers/reconciliation.py",
+        "-:7b06986df3969012457b1756ca6a538b26029b9320b2935472c951d1e270eee6"
+      ],
+      [
+        "src/simple_harness/providers/redaction.py",
+        "-:9bd6954685ff01b4b8c283e6e2fefdb50c2a83e4db6d287993f6408d9aa3f80e"
+      ],
+      [
+        "src/simple_harness/runtime/__init__.py",
+        "-:5c90b7c548bd387afb635133f54546fa29e5cc2a4486b7198a8de3e80e48a6f5"
+      ],
+      [
+        "src/simple_harness/runtime/admission.py",
+        "-:2e17c838e87c7bc6ab8ff9bd3db664e32ce15437b060c064d27f8e33e4f3e780"
+      ],
+      [
+        "src/simple_harness/runtime/child_coordinator.py",
+        "-:c4baf70a3bb458bebdc33b8cef34f909aa6b56311b48736f86d1ccd69eb2818f"
+      ],
+      [
+        "src/simple_harness/runtime/child_runs.py",
+        "-:9d952518dda1d175c42cf13abc304c6b1d83674d9d77c172f42e5be571e61771"
+      ],
+      [
+        "src/simple_harness/runtime/child_signal_runtime.py",
+        "-:151cd6cb489099202b83e7a6ffa55151bdea4f38dae249e3bc2592d5a6d00cff"
+      ],
+      [
+        "src/simple_harness/runtime/context.py",
+        "-:d721d0ed2baaa1ce0e0f49b2c29d9e6b269a375e9adb1076a504df0c04a2a117"
+      ],
+      [
+        "src/simple_harness/runtime/drivers/__init__.py",
+        "-:75616b050c2da0268240ab6435d9982aca334e9bb64f90f03562272fc3a256d5"
+      ],
+      [
+        "src/simple_harness/runtime/drivers/react.py",
+        "-:8a6a35b8fdff2619584d8993e196d07be150f5769bb7e5f697fd99186c7f83b0"
+      ],
+      [
+        "src/simple_harness/runtime/drivers/react_loop.py",
+        "-:2c01cc5ea966f012e8df3ff2382bb77ce91fa0bfefde3f7099a4c6e272b71a89"
+      ],
+      [
+        "src/simple_harness/runtime/drivers/workflow.py",
+        "-:44fdbd01c5055b78fc899f84fc631133e291723e88a856297c0dfde15ba3048e"
+      ],
+      [
+        "src/simple_harness/runtime/kernel.py",
+        "-:d0e31dc0920a93f7f2d48443441412f658f6026eaa2abef84c911970292d681e"
+      ],
+      [
+        "src/simple_harness/runtime/live_index.py",
+        "-:bb795eede12d3c28646bb5be1202ad061b915b03250009f6b6156d35f3b1e7c7"
+      ],
+      [
+        "src/simple_harness/runtime/orchestration.py",
+        "-:be10cb4baf8ee52adedc3ec4d15e4cb56a7f5151bd6ff0941a19b4e3d4f70504"
+      ],
+      [
+        "src/simple_harness/runtime/profiles.py",
+        "-:21f64cb527c88ccf90d759a01d35cda241870748d48ac566b18083f03d0df3d3"
+      ],
+      [
+        "src/simple_harness/runtime/react_checkpoint.py",
+        "-:a0680ffbc04e4e989e4008df1d8891cd02a6f9d71fc051065f1b418ef455bde5"
+      ],
+      [
+        "src/simple_harness/runtime/reconciler.py",
+        "-:de2571c09ed63628182749959ea8b02753683f79f57b92e46b2f1c1cf55485c7"
+      ],
+      [
+        "src/simple_harness/runtime/start_snapshot.py",
+        "-:9e0fea464132658ad612c5b15ea9e3998acfabd8a9c91544c84941a843111462"
+      ],
+      [
+        "src/simple_harness/runtime/terminal.py",
+        "-:47b6fc33bd0135e077a5869b362a0bb08c0faf47293f22c08731b188ac243cb0"
+      ],
+      [
+        "src/simple_harness/runtime/termination.py",
+        "-:36cb90d81e75098418d4ab4f00bdf1f4a1a9611813913f9e7edaf86c2a84358e"
+      ],
+      [
+        "src/simple_harness/runtime/user_continuations.py",
+        "-:f21006c8eca9b7b064919bd823a83abd947a1ebf54b86e4b5b706a59f3103357"
+      ],
+      [
+        "src/simple_harness/runtime/workflow_spawn.py",
+        "-:09d22d5a44fa65fd6547f3dd8d777762a6c3bf68d16b71646ebb3ed8bcb1614d"
+      ],
+      [
+        "src/simple_harness/testing/__init__.py",
+        "-:6bc5dc545584acea04a26a6286cf3f89fa5a2aa359f0c3a32f65a2ab5eef0855"
+      ],
+      [
+        "src/simple_harness/testing/__main__.py",
+        "-:67970136789a64926e2da6c38021644bd898a3d525a93221bc31f027621567f9"
+      ],
+      [
+        "src/simple_harness/testing/cli.py",
+        "-:f6605d95c46011e3b7e37b6d45d35a520547c813b037f35d4bc29c04e988992b"
+      ],
+      [
+        "src/simple_harness/testing/pytest_plugin.py",
+        "-:6cb17f4744cdde4a5c1e71366ba8ff93a6df556ed25e34ae41f1a292d0d38528"
+      ],
+      [
+        "src/simple_harness/tools/__init__.py",
+        "-:99a595c5835130e358dee85dc0d7130c10c14becfb77baa67226efd0fb6c2ab3"
+      ],
+      [
+        "src/simple_harness/tools/authorization.py",
+        "-:693e1b5cdc97e01e15243c5ef93ead530439cd668093f7c646af89307c0e2bec"
+      ],
+      [
+        "src/simple_harness/tools/contracts.py",
+        "-:db9e1fce879382bb2b1b4705e98d856962879429bcbb3526d84bd18d33b66880"
+      ],
+      [
+        "src/simple_harness/tools/errors.py",
+        "-:3a9b317fab8923c0f4be0b62e70024062eba73a052361fb8403f2b4f6641d8dc"
+      ],
+      [
+        "src/simple_harness/tools/executor.py",
+        "-:44600040064750299d2c93f75fd6c0d4de7f32da8098c7433b214c7db614bc3d"
+      ],
+      [
+        "src/simple_harness/tools/reconciliation.py",
+        "-:db1f77a22dbf2baa05c73c40707c6d30d36f78bc428f5dd8fd616a6872f6c186"
+      ],
+      [
+        "src/simple_harness/tools/registry.py",
+        "-:cb3bc0c961a7d3f1beb485cdddae52388f0609a0ec7ba0f178785869b4bfb34a"
+      ],
+      [
+        "src/simple_harness/tools/schema.py",
+        "-:751a66f2814b59634abfbb6d3a458a7a251369dc0dee02088df026d1ccec6b77"
+      ],
+      [
+        "src/simple_harness/workflow/adapters.py",
+        "-:fcf82467d4db5a0ceece6612b3d1fbd3bd70d75e7764ffd42ae58cb1b1fe1cdb"
+      ],
+      [
+        "src/simple_harness/workflow/checkpoint.py",
+        "-:ee2bf4f6f5e3a714c8fa77f2fde962c856f579793da44236da770a9b0d7fa468"
+      ],
+      [
+        "src/simple_harness/workflow/compiler.py",
+        "-:a5557881c05bf5869509f15b818a23058f65378fd080a299d28522d6ae9366b6"
+      ],
+      [
+        "src/simple_harness/workflow/contracts.py",
+        "-:109b77582612e4f448079781e0f3d10ba70316a955abc98009c64b444f8a0e2c"
+      ],
+      [
+        "src/simple_harness/workflow/control.py",
+        "-:640e00247db14e15a956c54bdea08f9377294dc4fc5787fa3a3ed783b25a7edc"
+      ],
+      [
+        "src/simple_harness/workflow/definition.py",
+        "-:9856068681fe46feec2b4f4cbec2f5bc25efb1e64f7747528178d3518211052c"
+      ],
+      [
+        "src/simple_harness/workflow/errors.py",
+        "-:d9f37e3c548e08344acf64c9ba4d10345e5ccc5aad501aa4711ed4376abbf3c1"
+      ],
+      [
+        "src/simple_harness/workflow/execution_ports.py",
+        "-:2e58beb0a7b6563eeed13e5b2c613c26156282c14123988f010ed20c28dc2164"
+      ],
+      [
+        "src/simple_harness/workflow/lease.py",
+        "-:c206de6b82783bc32644f356df3c9423d5c009b2c0c35fdf9bb0817d9ac5a7ec"
+      ],
+      [
+        "src/simple_harness/workflow/native.py",
+        "-:e55e212fd563b72982ed10838e753613986b25e5b2277857bff80b54b9952004"
+      ],
+      [
+        "src/simple_harness/workflow/recovery.py",
+        "-:d1f9ae5f012da264cb8b5549f6ea0415e605020004f1f79a69e0fbdb01921baf"
+      ],
+      [
+        "src/simple_harness/workflow/replay.py",
+        "-:9a17562e0605edb1bf5031728c20969e8503d09f4b71b247a6c80b96320dae63"
+      ],
+      [
+        "src/simple_harness/workflow/runner.py",
+        "-:628eed4b4a0128356ad696458b1db62aef240596f0f8ad32052ce9f45464137e"
+      ],
+      [
+        "src/simple_harness/workflow/trace.py",
+        "-:ca3b7321e4156cdc01c63b921e12eddd925faa13ed50703da1c04bed443ed117"
+      ],
+      [
+        "src/simple_harness/workflows/capability_build/__init__.py",
+        "-:f2bbd110e8a80085bf6f52621740e0a1104c97a6bad6f53f3c9cf7e1cec2e791"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/__init__.py",
+        "-:3c4d1c50113acb70f183feaba017d0f68501b3fc60fb9048003fc18d64f38fde"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/definition.py",
+        "-:6d429d25259f94d041898ab86584790db9ac6476ecef83c2d6399edb4cf621e2"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/nodes.py",
+        "-:002b1fa7bf32e502a7dae6f1ae94e5ed9dbbef66f59e51352f5596bcbf2ab47b"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/output_contract.py",
+        "-:3446de80812c3702f6454282d98791ca2bca1bade1a5ab007f86eb016a96e01e"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/ports.py",
+        "-:2e4d1cb7d0fa6e4af37e5e5d78709af586c445526ae90d0b10e7ac410bd3995a"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/state.py",
+        "-:1ce6184435247a25ad74321027eb284ec19dcb0c2d529c68673d530023464dd0"
+      ],
+      [
+        "src/simple_harness/workflows/personal_v1/__init__.py",
+        "-:812868f71c9ba81aff3792e22fdd4442ffc86a1d0fab1d3aa273f958597074e1"
+      ],
+      [
+        "src/simple_harness/workflows/personal_v1/definition.py",
+        "-:2d526a5fb0d2c04f4a633fdde0538c48e6f83c214f6322bfb1c54168f2b48bc4"
+      ],
+      [
+        "src/simple_harness/workflows/personal_v1/ports.py",
+        "-:1e5ec7df071b3ab19729f0768811fcc5544fd6a89421b4b34f7f5dde28ead1de"
+      ],
+      [
+        "src/simple_harness/workflows/personal_v1/selection.py",
+        "-:936c8546747d427444e080152dc1afe6593379741cb9aa2303b79a3967de7813"
+      ],
+      [
+        "tests/artifact/conftest.py",
+        "-:f9d5f312dda70c690b82da217b764a3dea2d6c99603e7afc0b908029fd76e7ee"
+      ],
+      [
+        "tests/artifact/test_build_contents.py",
+        "-:1a32ac8eb1a09aaa167bbcbfb85e7b6c82637acb48e5094e56829de505545526"
+      ],
+      [
+        "tests/artifact/test_import_purity.py",
+        "-:5e4a9e60449cd09ee49a856011ab55ca8a153489cf2bd2e86a45da57fbe88eec"
+      ],
+      [
+        "tests/artifact/test_provenance_complete.py",
+        "-:ad5ba6640cfddb60530c358f7a2065798760af68405b5cff7ae33d8ef1d5f0a4"
+      ],
+      [
+        "tests/artifact/test_reproducible_build.py",
+        "-:4447abdb311247717974b153fde5728d8c1a7c2561c31f1e3c46871a01c33013"
+      ],
+      [
+        "tests/conformance/provider-public-api.json",
+        "-:67492782ec80f2505a8e944c61745d42b7ae8825722b7068ef9e6599ab92d128"
+      ],
+      [
+        "tests/conformance/test_authorization_contract.py",
+        "-:2b534766b524fddc6e196c32f20bb1bb545efe92fab8a7e506688c052e2145b8"
+      ],
+      [
+        "tests/conformance/test_cli.py",
+        "-:63e6fd854cb952f367671edc5d4a7ac078aae0733d379bfcde4a43ea10cecb85"
+      ],
+      [
+        "tests/conformance/test_full_runtime_seam.py",
+        "-:338495205d85f670d3017bdde70bd77d1a7b4a41f5a734f4eaad0478c1f61499"
+      ],
+      [
+        "tests/conformance/test_protocol_version.py",
+        "-:ab0e8532279446ddd024df97835f220baf79b1224fe97cbeb579bdadb179065b"
+      ],
+      [
+        "tests/conformance/test_provider_contract.py",
+        "-:2ee90c479050abf176d0998e89803f7ff6e2c638b479d13a3da74c7630a0bba8"
+      ],
+      [
+        "tests/conformance/test_provider_public_api.py",
+        "-:303b33b2cade8b26e340f009ecbb27226f68b633566e7d55393a6f857a49cb8c"
+      ],
+      [
+        "tests/conformance/test_pytest_plugin.py",
+        "-:b5b6780b974e2516e9b3bb6878d18d5bf326238fea68d0ba7caddc5a8edaa775"
+      ],
+      [
+        "tests/conformance/test_reconciliation_contract.py",
+        "-:14b672238ee5d71e7ccdf4afa0b39c24724fedbd6ff9d30d01f1b9f1fe511c05"
+      ],
+      [
+        "tests/conformance/test_secret_canary.py",
+        "-:ec25d3d6e58cb855b4b4ae92fddae7f53a4fa4006d594661e5cfbd089511a3e0"
+      ],
+      [
+        "tests/conformance/test_tool_contract.py",
+        "-:8470128cdd11e710f452972953114dbf8ee6ab9792f5c02649549d12e0ce5093"
+      ],
+      [
+        "tests/conformance/test_tool_public_api.py",
+        "-:199cab8bb706b3eadf49264226c4af34d52a2031cdf8fbd6ae67deee2cb0db6b"
+      ],
+      [
+        "tests/conformance/test_tool_secret_canary.py",
+        "-:e70908bb43306d2c02628ebdd07e996e9f107b53d2e2f5272c9fc5409f403353"
+      ],
+      [
+        "tests/conformance/tool-public-api.json",
+        "-:fffacf3a8a2a6b615642bd57ea236012e2171dac9aca5acd8c8df250b9421cac"
+      ],
+      [
+        "tests/integration/__init__.py",
+        "-:d2529cafc86f86910a1fae95d1379fc24fc8ebdc7d13c06fb6b8dc6eb96f4771"
+      ],
+      [
+        "tests/integration/capabilities/__init__.py",
+        "-:3119afdfd9b30ef3ba26e597ff8d8c980c22ca3e2540b1eadd844ac380047815"
+      ],
+      [
+        "tests/integration/capabilities/test_builder_contracts.py",
+        "-:2ef2eee22140767f1eb22d5e25e3ebc9fd7a70f305b96a5122a1058124b487a4"
+      ],
+      [
+        "tests/integration/execution/test_atomic_child_launch.py",
+        "-:de4c00f91453f1e40f48103344f722de3452a2ed062984b89ac04dc3573ddcc2"
+      ],
+      [
+        "tests/integration/execution/test_atomic_child_terminal_signal.py",
+        "-:5d3d43cd4e1c1d7fd136b456134e7626b98b3bb1816aeb71d34c3362b1815d30"
+      ],
+      [
+        "tests/integration/execution/test_atomic_decision.py",
+        "-:532c87fd56f502ced28b6ec25c5c88e36326aeebd1d7fe855be39e58e0c70d93"
+      ],
+      [
+        "tests/integration/execution/test_atomic_root_start.py",
+        "-:43111f92e350569c05e60a0188c759094a67e0b5c6781423d3cfc2eae40e339c"
+      ],
+      [
+        "tests/integration/execution/test_child_signal_hol.py",
+        "-:7a93812ed4842fd4686b36b9faecaffbf8b03d015109495e8ddcc6677804df00"
+      ],
+      [
+        "tests/integration/execution/test_child_signal_schema.py",
+        "-:d770a6880510fe96cdabd1c96068e276a892581b798c5c4a76c768692f4e38c6"
+      ],
+      [
+        "tests/integration/execution/test_child_terminal_h12.py",
+        "-:4b83445f1619ee907071682c5b91cc233cd224784cc9d3ef032d7541e3b3f74b"
+      ],
+      [
+        "tests/integration/execution/test_continuation_fifo.py",
+        "-:50074182968b69351f4dcd5d1d56be52ad6c75664697ca58d49f7ee1bdffe3c0"
+      ],
+      [
+        "tests/integration/execution/test_delivery_dispatcher.py",
+        "-:15957d89db6d99471ba24a16836bc4c57aa90d9ae58ced1e3751eae041e7ab10"
+      ],
+      [
+        "tests/integration/execution/test_effect_atomic.py",
+        "-:eed5cd57f728b5bc4336624f8648b703f8073b57acaad2df60a84cf5ae2b27e9"
+      ],
+      [
+        "tests/integration/execution/test_effect_contract.py",
+        "-:80173d94de93315c2b3a5d93dced531a15b0362c5ec5c97e2afa9eace6646766"
+      ],
+      [
+        "tests/integration/execution/test_effect_reconcile.py",
+        "-:9660a0a0b4a7d23f32a0fec62bb54097ab50f3369c69d2a78cd2aa27321991c9"
+      ],
+      [
+        "tests/integration/execution/test_fence_epoch.py",
+        "-:a6782405412918c8904a572c941bf03debc84b9f80d54bffd5ca332fc248b24a"
+      ],
+      [
+        "tests/integration/execution/test_integrity.py",
+        "-:3b4fef5ee29644f3eefa157690cff7b45285c0b64b9f4438ab4c47d23476c741"
+      ],
+      [
+        "tests/integration/execution/test_open_close.py",
+        "-:3cc01c1e9c1aff4abc90d4c340bc17d96d560e810295dc3554b8321a46e86f40"
+      ],
+      [
+        "tests/integration/execution/test_schema_v1.py",
+        "-:e430ac318eeb1a7e835c663d070ea3dbd525e58a491178e16fb536d54df68fe1"
+      ],
+      [
+        "tests/integration/execution/test_terminal_delivery_atomic.py",
+        "-:992b501636d8eafe4c02a6654e74b5117b21391c0680f0b937b4cb374c431c65"
+      ],
+      [
+        "tests/integration/execution/test_ticket_generation.py",
+        "-:7b65ff3ba649467672e18d847229a4f3926b81471a32614ac152f0582feabb59"
+      ],
+      [
+        "tests/integration/execution/test_workflow_adapter_atomic.py",
+        "-:3a5bdcd2e22cad66233cb664c1e10f4873b6f6302629147aa5d7a2430903210e"
+      ],
+      [
+        "tests/integration/execution/test_workflow_launch_admission_h16.py",
+        "-:32bf618de99d141146b1205f04f25a8232dea54a3f392d9282e0dec05e427a52"
+      ],
+      [
+        "tests/integration/execution/test_workflow_lifecycle_h16.py",
+        "-:e25db2e1082bd4c890ebadd19c1197d0e9ac751ee76b5b2ee64c185e0a51ebea"
+      ],
+      [
+        "tests/integration/execution/test_workflow_projection_prepare.py",
+        "-:232bc882127ba83d9f56b46061994bf777c8d1a7877b5da241454dab21a6769d"
+      ],
+      [
+        "tests/integration/execution/test_workflow_spawn_sqlite.py",
+        "-:308d60bcccf267e6fc82d9dd09deb25aadfbf72defec54feab3a59d17ec5df7b"
+      ],
+      [
+        "tests/integration/provider_ledger_fakes.py",
+        "-:3d36cce05d51d5e238f9e95609635e799082a765660de69ee9b19b2a3a0f1779"
+      ],
+      [
+        "tests/integration/runtime/__init__.py",
+        "-:cf556763e365c2038fe3f19af0cc6d58056438320b75bd2451f0f7a66cda6988"
+      ],
+      [
+        "tests/integration/runtime/react_fakes.py",
+        "-:19a40a0f41b24b3f5e779efdc402fb9bffffc8286e6fb1ac18178254b4e1c4c2"
+      ],
+      [
+        "tests/integration/runtime/test_context_checkpoint.py",
+        "-:b1beea606898dd89a71c56dbc5a816ca994f29c33596453c14d3d36c0d659182"
+      ],
+      [
+        "tests/integration/runtime/test_continuation_h12.py",
+        "-:f111cfe4b76ce1c1d764ca2ed31a80329ca5b3c500df603a606425086c255929"
+      ],
+      [
+        "tests/integration/runtime/test_h13_provider_recovery.py",
+        "-:a5951ff38886e37a0334031407febbdd35952423431f5c092f3b09fd8cc3c293"
+      ],
+      [
+        "tests/integration/runtime/test_h13_react_phase_reopen.py",
+        "-:c014a69864cfe10b5499b89ff8610e83909efaf6baa72e2b362dca2a53c518fd"
+      ],
+      [
+        "tests/integration/runtime/test_h13_tool_recovery.py",
+        "-:f4ad9b17b33f8a25d263ba42b374f27376cde8631dd83be8ea65057f88d9ff66"
+      ],
+      [
+        "tests/integration/runtime/test_handoff_runtime_lease.py",
+        "-:71c48a6600f2b75349e1fae9b0f51252fabb4c36f9a52be082d852d4c59a23f3"
+      ],
+      [
+        "tests/integration/runtime/test_kernel_start.py",
+        "-:630c203d02dd9f4c686ce1cf5973d6f7d2fe0826f6cd1136ffd985178a56919c"
+      ],
+      [
+        "tests/integration/runtime/test_react_budgets.py",
+        "-:f996a6412beb25bf0143515e78f797e56778fa6298a0670abbd14e69949d2e0e"
+      ],
+      [
+        "tests/integration/runtime/test_react_cancel.py",
+        "-:3bf6c1849954292e2c9b138b6c3b58a62197132372e497edf22e8248919eccc2"
+      ],
+      [
+        "tests/integration/runtime/test_react_checkpoint.py",
+        "-:1b60ee2fdc34d5291787c0b629f4c09442e51504035a4ea017e5a6a9dd67c112"
+      ],
+      [
+        "tests/integration/runtime/test_react_crash.py",
+        "-:526c167423ddb65dbf53ade7e440de216a937844b0aa5f66cb8ae2f582ebd360"
+      ],
+      [
+        "tests/integration/runtime/test_react_no_tool.py",
+        "-:164169a55000e908e85bb5fb50efc9f68c7074cc4878746571a4eafb51ed7a52"
+      ],
+      [
+        "tests/integration/runtime/test_react_sqlite_runtime.py",
+        "-:1b717eec7edffddbabba3f77e2477f9526e411010cb86b98707d22e1e23d0347"
+      ],
+      [
+        "tests/integration/runtime/test_react_tool_roundtrip.py",
+        "-:3471f05ceacca233ba66646fc4a97d0a249067c426e642bad7250db8dbc9d8cd"
+      ],
+      [
+        "tests/integration/runtime/test_runtime_h12.py",
+        "-:ab9399b0f662dde85394460bc7077c681be3753d1728af83b76bdcb1b56f5ba5"
+      ],
+      [
+        "tests/integration/runtime/test_workflow_cancel_kernel.py",
+        "-:c9e7ccc719abfa70ecde73eddc9ee74d019fbec05c1b5aba86f502e5e7471667"
+      ],
+      [
+        "tests/integration/test_budget_recovery.py",
+        "-:d3c6547f69c0b2089a389c50102bb902f13dd1ad75aeaa3b524cd803ad82b641"
+      ],
+      [
+        "tests/integration/test_openai_mock_server.py",
+        "-:ec0dfdde89829e3694a336b98f6d3dceee45a9c767583201b5c40d91f192bf27"
+      ],
+      [
+        "tests/integration/test_provider_dispatch_atomic.py",
+        "-:302d47974b53bd6841003e210c187c60f6881ce6266546e331974da02a5b1dea"
+      ],
+      [
+        "tests/integration/test_provider_sqlite_ledger.py",
+        "-:48a549108c345b5b29864903b7168832d5311640cc84e16eb54a5c94e63fe3d4"
+      ],
+      [
+        "tests/integration/test_provider_unknown.py",
+        "-:38fbc5fcd527751d332febbe4697de951d61da08b5f494463fed530b67992f31"
+      ],
+      [
+        "tests/integration/workflows/__init__.py",
+        "-:f682e79a5d4bb52ef12b1eea8627ac50ba2d419df52e71d800a75ef07fd3c531"
+      ],
+      [
+        "tests/integration/workflows/test_capability_build_profile.py",
+        "-:cfc26e5b8f5530f8c8c1ff501d616281561635f5a7323419b70452fad370b336"
+      ],
+      [
+        "tests/integration/workflows/test_durable_task_graph.py",
+        "-:eb7e0c274eee9e172e343a704536bc96906f84a6dcda9767ee03c0d219dea894"
+      ],
+      [
+        "tests/integration/workflows/test_durable_task_human.py",
+        "-:a628503c20f2a87994a44af45e79df7f39e93e90a6a9a592715e6ff2b7bfec4c"
+      ],
+      [
+        "tests/integration/workflows/test_durable_task_output.py",
+        "-:da8882800f2070048bb7cff6170468a8c2b051cdcc5e71c07acd9a3db90b134f"
+      ],
+      [
+        "tests/integration/workflows/test_durable_task_recovery.py",
+        "-:808deaeb87da53bae34e239132f282280213a9a520708f35ec6850d23c644afe"
+      ],
+      [
+        "tests/integration/workflows/test_personal_v1_execution.py",
+        "-:9468385b90c3077dd02578a1412f427922a57b118c1044fa4dc66bd4e83398cc"
+      ],
+      [
+        "tests/integration/workflows/test_personal_v1_graph.py",
+        "-:da3a49b282c6108190b789beade6320b77aae2ede2ee230497129edcf1d944f5"
+      ],
+      [
+        "tests/runtime/test_child_restart.py",
+        "-:18d95f7bb785aae0ec607cddb5d7f55fdc2732dfa546ab0588e75d1704cc5923"
+      ],
+      [
+        "tests/runtime/test_child_signal_runtime.py",
+        "-:62fd6c20c43a9bbc6a6f3d6e30b06d74e8f18300b9bac26c407ee006825f5ac6"
+      ],
+      [
+        "tests/runtime/test_continuation_restart.py",
+        "-:4d0146623b5db3c3e0ba3bc072b74fe6154c472a337280ce11b7a981946541df"
+      ],
+      [
+        "tests/runtime/test_startup_reconcile_order.py",
+        "-:d008c77f7c078b1c74fb9dd39e53d432364a9c47916805c104c5b00c634700ad"
+      ],
+      [
+        "tests/unit/contracts/public-api.json",
+        "-:3a8f37de53b584c2b8d8f76cc6aa7db547fd6181e65ebe503f402296bae5cc0b"
+      ],
+      [
+        "tests/unit/contracts/test_errors.py",
+        "-:118eade5316de869a0070fcc0f902f3c81ffb14f002a6486bf6468aaadf91cd8"
+      ],
+      [
+        "tests/unit/contracts/test_events.py",
+        "-:bcb91005afd50ae012517dc0491ee4a4c6347acfafcdfff9fc9f3949c13ec127"
+      ],
+      [
+        "tests/unit/contracts/test_identity.py",
+        "-:d337689b24428bf6ebabb303164cca00a58999e42e870ea4b3348688be61476e"
+      ],
+      [
+        "tests/unit/contracts/test_json.py",
+        "-:5d962dd0076d6b391d2d2d4746bc62125f67856e87e08151862d9f4694d82884"
+      ],
+      [
+        "tests/unit/contracts/test_messages.py",
+        "-:2c0b103d6ecffb1ab4f49840c066a7668b49be6dc11d3035b52386b8df4e3159"
+      ],
+      [
+        "tests/unit/contracts/test_public_api.py",
+        "-:9d57c4d4d15b29daa6ef834a03da3d98f7f100375a2e332767fed3e0577d7dc0"
+      ],
+      [
+        "tests/unit/execution/test_budget.py",
+        "-:53a644d02f2abc403e55ad2f6839c994cd481aff75593505cb3e0c3daf47a078"
+      ],
+      [
+        "tests/unit/execution/test_child_signals.py",
+        "-:048ae0a014bd61b2a2258a4d66147ef3adc0e58a1a1d020cfccd2e3e633da348"
+      ],
+      [
+        "tests/unit/execution/test_provider_invocations.py",
+        "-:3c1e6b688fa4520c8940bb59af1cfa5d947a93cb0eff0f97258bda000059e25d"
+      ],
+      [
+        "tests/unit/runtime/test_termination.py",
+        "-:5e59fb19be9dc1e9e0d082dd6f9f6ad70732b8c31cb914024f7589dea6a062db"
+      ],
+      [
+        "tests/unit/runtime/test_workflow_spawn_contracts.py",
+        "-:b48f2588394b059c95a6fc8aa8ef0c9f4d26d0547545e9cb96869601d6d24738"
+      ],
+      [
+        "tests/unit/workflow/test_activation_adapters.py",
+        "-:3be9786d2a2811f0284436183d576b1009dac0795f955b3b749203ef139047a4"
+      ],
+      [
+        "tests/unit/workflow/test_native_api.py",
+        "-:e1e7e643dbec75f8591f067f44216ffbc85f60ae38ff629f4ee015c500857545"
+      ],
+      [
+        "tests/unit/workflow/test_native_contracts.py",
+        "-:efbbe2cb1476a717736307a4fab6cc0c0913d27f3e1948870f8a2cef1e1443ef"
+      ],
+      [
+        "tests/unit/workflow/test_native_engine.py",
+        "-:a2edf5a61fd5cecb87437cb7d8482226338ce588a81ff12f680de3135a776306"
+      ],
+      [
+        "tests/unit/workflow/test_native_sqlite_engine.py",
+        "-:916db2c6cdecb880b19e7e8b68385ea6be7619af7e4be596ddad8a357264973a"
+      ],
+      [
+        "tests/unit/workflow/test_native_terminal.py",
+        "-:bd87df18cf1b4b0c2d940f73aa8e9e3dd61046a755a3414a571ee32bf62056bf"
+      ],
+      [
+        "tests/unit/workflow/test_workflow_errors.py",
+        "-:52b66ddb0b8d877c97f79747ff6b1129894fa7fa9d3836a769f028b77b484447"
+      ],
+      [
+        "tests/workflow/__init__.py",
+        "-:3119afdfd9b30ef3ba26e597ff8d8c980c22ca3e2540b1eadd844ac380047815"
+      ],
+      [
+        "tests/workflow/_fakes.py",
+        "-:0290d15aa54a71068bd8cd31559a38f742b4065c1822c8c4b52302d25cfabc51"
+      ],
+      [
+        "tests/workflow/test_checkpoint_reopen.py",
+        "-:e5c904294a0e59da47ed6d3b37228f3382d3b1220ddee27e58d9e8dbdd24fe35"
+      ],
+      [
+        "tests/workflow/test_compiler.py",
+        "-:509b77a94a79cf4686a3b3cced7b6822b98fbe6246401a28f53dd76b5528df85"
+      ],
+      [
+        "tests/workflow/test_lease_quarantine.py",
+        "-:800463031311b38bea7c2e64ea070633671d82da91744779f9e61fbb01a6b087"
+      ],
+      [
+        "tests/workflow/test_replay.py",
+        "-:456b5b1e40cba7ce67be2dcbad7ad349adf8b6d298469a0dbbc78458bdeb2fdf"
+      ],
+      [
+        "tests/workflow/test_runner_fault_matrix.py",
+        "-:ca75c828a173972a7a6f1a92cadaa75cff361aafddb546ea2461b2bb954a0374"
+      ],
+      [
+        "tests/workflow/test_runner_h16_sqlite.py",
+        "-:e7f8688a483c7cc16ffef01e3b762a9040190b721525a5bf0c940181926b1d15"
+      ],
+      [
+        "tests/workflow/test_source_contracts.py",
+        "-:cce3e110e678da359ade9d64208449c51f652842d871926121fd31479f543fb0"
+      ],
+      [
+        "uv.lock",
+        "-:c3665c711d3a3ac3c52253324c2a243986ba133d44b4bf7fc621e07911e72f3a"
+      ]
+    ],
+    "dirty_patch_sha256": "77a6d7d8a379e7db37f1d437425912c0a0ec64b028a2bbcab46ec125a716b84f",
+    "exclusion_count": 1,
+    "exclusion_scope": [
+      "plans/2026-08-16-sdk-v0.1.1-slice-a/verification/2026-08-16-r1"
+    ],
+    "exclusions": [
+      [
+        "plans/2026-08-16-sdk-v0.1.1-slice-a/verification/2026-08-16-r1/plan-test-run.json",
+        "declared-scope:plans/2026-08-16-sdk-v0.1.1-slice-a/verification/2026-08-16-r1"
+      ]
+    ],
+    "head": "0e385328b417e9f4b4d5fdfecb2866cb6248e3c1",
+    "recorded_at": "2026-08-16T13:20:11+0800"
+  },
+  "behavior_changes": [],
+  "behavior_contract": {
+    "path": "/Users/denny/projects/simple_harness/plans/2026-08-13-simple-harness-sdk/behavior-contract.md",
+    "status": "FROZEN"
+  },
+  "challenge_loops": [
+    {
+      "baseline_hash": "8a170c72c4e8316cd9db72e1be4d65836b8afff25578a7b24f8621bc5a4312c5",
+      "loop_id": "plan-iteration-001",
+      "loop_type": "plan-iteration",
+      "rounds": [
+        {
+          "dedupe_key": "1e5d77177ec4e0cb477152bfbe40bf70e12a6f2d9d3893cef5fc70e856d6b551",
+          "findings": {},
+          "plan_hash": "291624c7708deed2874f4d46588562555613452cb10c1f839c6a69b223d342aac",
+          "round": 1,
+          "timestamp": "2026-08-16T13:26:05.492254+08:00",
+          "verdict": "FAIL"
+        },
+        {
+          "dedupe_key": "05f5144e0853a4c06fc0281f3e0b3369d8ac183aa52c180f12f7066fd171a7ab",
+          "findings": {
+            "critical": 1,
+            "major": 2,
+            "minor": 0
+          },
+          "plan_hash": "0cd82075a04b24d8362675e62e839a9f27afdff8b6a510cf68cbc67328a0e192",
+          "round": 2,
+          "timestamp": "2026-08-16T13:26:22.657682+08:00",
+          "verdict": "FAIL"
+        }
+      ],
+      "started_at": "2026-08-16T13:24:59.832251+08:00",
+      "status": "active",
+      "target_file": "/Users/denny/projects/simple_harness/plans/2026-08-16-simple-harness-sdk-v0.1.1-cutover/slice-a-sdk-candidate.md"
+    }
+  ],
+  "created_at": "2026-08-16T13:20:11+0800",
+  "declared_statuses": [],
+  "delivery": {},
+  "doc_only_globs": null,
+  "events": [
+    {
+      "action": "start",
+      "at": "2026-08-16T05:20:11Z",
+      "note": "Slice A独立门禁初始化；先验证基线与独立challenge",
+      "phase": "phase-0",
+      "type": "phase"
+    },
+    {
+      "action": "end",
+      "at": "2026-08-16T05:21:09Z",
+      "note": "clean SDK baseline: 1122 passed, 2 skipped; junit local evidence已生成",
+      "phase": "phase-0",
+      "status": "ok",
+      "type": "phase"
+    },
+    {
+      "action": "start",
+      "at": "2026-08-16T05:21:09Z",
+      "note": "Slice A独立challenge；生产代码尚未修改",
+      "phase": "phase-2",
+      "type": "phase"
+    },
+    {
+      "action": "end",
+      "at": "2026-08-16T05:53:37Z",
+      "note": "challenger FAIL 1 critical/2 major；critical已获BC-SDK-A7-REMOTE-GATE-002批准，计划修正进入successor r2；本run保留直至r2 SHIPPABLE后retire",
+      "phase": "phase-2",
+      "status": "blocked",
+      "type": "phase"
+    }
+  ],
+  "evidence": [
+    {
+      "attached_at": "2026-08-16T13:21:38+0800",
+      "evidence_id": "baseline-conclusion",
+      "file_mtime": "2026-08-16T05:21:31Z",
+      "kind": "derived",
+      "path": "baseline-conclusion.md",
+      "sha256": "01b561f4f48c978a2e521f3cfc3ab3dc02e31a811534f473297237183dc3d51b"
+    }
+  ],
+  "exclusion_scope": [
+    "plans/2026-08-16-sdk-v0.1.1-slice-a/verification/2026-08-16-r1"
+  ],
+  "executor_engine": "codex-gpt5.5",
+  "external_run_dir": false,
+  "fixture_only": false,
+  "integrity": {
+    "chain": "085b22ee9508f4278c8edec037ec6509088b360c531014840692a993aa837a91",
+    "genesis": "1b83ee40cb82287bdb06925b2903deabc8e860095f16c1286f71230d944ace12",
+    "log": [
+      {
+        "at": "2026-08-16T13:20:11+0800",
+        "chain": "a89f2bf5ec8e189b322efcc79bf36d541f54d3c21071540ef1b6d8961d978ffb",
+        "facts_digest": "36e49ddbb0939c142f8fc08fbd7034ec23f11e77af5e5a45c996ed3c91237263",
+        "op": "init",
+        "seq": 1
+      },
+      {
+        "at": "2026-08-16T13:20:11+0800",
+        "chain": "36d461c223da70a5562d7bfafbed384e6a9cf47f4cf0963bc7d4f55d573db2dc",
+        "facts_digest": "e287dc1224cf2c710f9ff5720002e8198df8d031e5e47ecf9913d7b0870b2461",
+        "op": "phase-start",
+        "seq": 2
+      },
+      {
+        "at": "2026-08-16T13:21:09+0800",
+        "chain": "6491be3cc32a0d422dd3bd2309640519537527ca40ff55e826418b0d95d3fa46",
+        "facts_digest": "0584dc28fc70eae1f6a7c43daa6d731d7a985669169fbedab73c5705f2fbe0a4",
+        "op": "phase-end",
+        "seq": 3
+      },
+      {
+        "at": "2026-08-16T13:21:09+0800",
+        "chain": "12f3be905b0f375ad80af1ad04de63ad4e1c1336abdac2ed1d209caeaf599d2b",
+        "facts_digest": "660b29f2d224abd47f448134f42d5d901382dd4050fa8a61af2bed89dc68e06b",
+        "op": "phase-start",
+        "seq": 4
+      },
+      {
+        "at": "2026-08-16T13:21:38+0800",
+        "chain": "5c69155bb80a08e6b23df4d376008e3c6b42c6f8a72d9126a552bd3793dbbe42",
+        "facts_digest": "0aff169ed2ecac8d973c32944dd5d84c9fc798034662f159c57e58050692f4fc",
+        "op": "record-timing",
+        "seq": 5
+      },
+      {
+        "at": "2026-08-16T13:21:38+0800",
+        "chain": "d5054f5f4e58cb411ecea92d32989017c5867e5fe9ab4bda2191b940c27f43a5",
+        "facts_digest": "3722fee5ada47cadde6d7e98045c712d5152763dbae30a45ad1abd81e6a21e55",
+        "op": "attach-evidence",
+        "seq": 6
+      },
+      {
+        "at": "2026-08-16T13:24:59+0800",
+        "chain": "62c23881f9b7ddba5ecc54cd335e834fc8b9469af9a18ab2e4ccf7088cdab17d",
+        "facts_digest": "17d09761f6218c11491d6ce11e9b2057590aeb3aa8a0047be01974def734bc44",
+        "op": "start_challenge_loop",
+        "seq": 7
+      },
+      {
+        "at": "2026-08-16T13:26:05+0800",
+        "chain": "78b66e5501745d4284d3c3ae909d009716da4c8f3e5c218d13feae6904985772",
+        "facts_digest": "b2b9860c4c812a1a8fea9d945ea635c1bcd53740e6b781fbfba0b04c6f157c83",
+        "op": "record_challenge_round",
+        "seq": 8
+      },
+      {
+        "at": "2026-08-16T13:26:22+0800",
+        "chain": "b88890a64e56337968d6115f9c296755f4cf0b317381dc40fa0dc8348d1b0a8f",
+        "facts_digest": "ab6d8f33cfa52e5aad8fefd18d5c8201ea7d199b72ace03596cb4dbfafab4ff1",
+        "op": "record_challenge_round",
+        "seq": 9
+      },
+      {
+        "at": "2026-08-16T13:26:22+0800",
+        "chain": "7e1f317c5451c54e32479e37b355c588398b25790da3366178683514e407acfe",
+        "facts_digest": "7e645285b501ffa7ff39ed2dbb18c8b0dbcb049a8b3068fa129d1eeafcb27c33",
+        "op": "record_plan_defect",
+        "seq": 10
+      },
+      {
+        "at": "2026-08-16T13:26:22+0800",
+        "chain": "c41048d1e9e3662f05076c75be4167f729aec2933fd573fed392449f89446f11",
+        "facts_digest": "6185eeb86d7db55fededb57225dc04033c91c18b96a2426dd698b986b30f4116",
+        "op": "record_plan_defect",
+        "seq": 11
+      },
+      {
+        "at": "2026-08-16T13:26:22+0800",
+        "chain": "877d2a007f5710f784d1ed041939bb0a47c7cca2733240b6bf3b98f91c9f0267",
+        "facts_digest": "2c2a1d6fa52b9cdb45b8bb9fd57d735e4659715a91306d0d194815930d3c2633",
+        "op": "record_plan_defect",
+        "seq": 12
+      },
+      {
+        "at": "2026-08-16T13:53:37+0800",
+        "chain": "7bb7eff1196ec81cfc799fe02284515c57211e7e7b5e3c4334263cbfe2f5a90b",
+        "facts_digest": "e96ce33d2968559d30531690e3c17768ff7e56694b23ea24dfdb0fcfb43e0e83",
+        "op": "phase-end",
+        "seq": 13
+      },
+      {
+        "at": "2026-08-16T13:53:46+0800",
+        "chain": "a9c55f247b002cf58cf21635a818c94d3d983f697093f278cd22195b90a3e28c",
+        "facts_digest": "bce892b9a48233941a845e9ac650b87cb460230a59737daa318b4e2c9e3a61ca",
+        "op": "resolve_plan_defect",
+        "seq": 14
+      },
+      {
+        "at": "2026-08-16T13:53:46+0800",
+        "chain": "8cacd126b3cd975f34075c8bed83d4358e607042c44e0431ba1a20fab2631302",
+        "facts_digest": "b015fc9d9cc280db28894dd90610993c3e86f877889e29308a0546113b08072e",
+        "op": "resolve_plan_defect",
+        "seq": 15
+      },
+      {
+        "at": "2026-08-16T13:53:46+0800",
+        "chain": "085b22ee9508f4278c8edec037ec6509088b360c531014840692a993aa837a91",
+        "facts_digest": "4c5c77cc61e56860dea8a7da43d652cd26ec280c995ed527b11ea94e60e9ca11",
+        "op": "resolve_plan_defect",
+        "seq": 16
+      }
+    ]
+  },
+  "plan_defects": [
+    {
+      "affected_tasks": [
+        "A7"
+      ],
+      "defect_type": "contract-conflict",
+      "description": "Slice A允许远端三平台PENDING但SDK-A7是required PASS；需用户批准将远端required gate移至SDK-C7",
+      "event_id": "a2-001",
+      "occurred_at": "2026-08-16T13:26:22.704995+08:00",
+      "resolution": "用户批准BC-SDK-A7-REMOTE-GATE-002；successor manifest将本地candidate与SDK-C7远端release gate分离",
+      "resolved_at": "2026-08-16T13:53:46.408863+08:00"
+    },
+    {
+      "affected_tasks": [
+        "A4"
+      ],
+      "defect_type": "contract-gap",
+      "description": "Runtime.start缺少并发readiness/start-vs-close/READY前public操作合同；已补计划",
+      "event_id": "a2-002",
+      "occurred_at": "2026-08-16T13:26:22.749809+08:00",
+      "resolution": "计划新增NEW/STARTING/READY/FAILED/CLOSING/CLOSED并发合同与测试矩阵",
+      "resolved_at": "2026-08-16T13:53:46.457479+08:00"
+    },
+    {
+      "affected_tasks": [
+        "A1"
+      ],
+      "defect_type": "contract-gap",
+      "description": "WorkflowDefinitionRegistration字段、builder、owner/fingerprint/duplicate规则未冻结；已补计划",
+      "event_id": "a2-003",
+      "occurred_at": "2026-08-16T13:26:22.793997+08:00",
+      "resolution": "计划冻结WorkflowDefinitionRegistration字段、public builder、owner/fingerprint/duplicate规则",
+      "resolved_at": "2026-08-16T13:53:46.503751+08:00"
+    }
+  ],
+  "related_run_dirs": [],
+  "release_unit": {
+    "high_risk_subsystems": 1,
+    "max_plan_lines": 138,
+    "must_ac_count": 4,
+    "parent_program": "simple-harness-sdk-v0.1.1-cutover",
+    "scope_hash": "77f615403ec228f74f130193490b4888ea11543df273e0fb76dc1981287f0184",
+    "slice_id": "SDK-v0.1.1-A"
+  },
+  "repo_root": "/Users/denny/projects/simple-harness-sdk",
+  "revision": 16,
+  "run_id": "run-20260816-132011",
+  "runs": [],
+  "runtime_attestation": {
+    "content_digest": "82c35a91b64277b3eb1c13c06271786e89ad94f3724058d7dbb300b6e5a32b3c",
+    "content_entries": [
+      [
+        ".github/workflows/ci.yml",
+        "-:e12edad543c7183aca64d7e4df3dbf4d00e891de2125ec3165feee7de5389657"
+      ],
+      [
+        ".github/workflows/platform-tests.yml",
+        "-:756a7d3e3eb9dd0889c29d711349279511f8ab6203c052795b47978364ac223f"
+      ],
+      [
+        ".github/workflows/release.yml",
+        "-:5bd54f55fcf1fff3823abc4429d91621f5b0e2c9dc515a50a1a9e896196f2c52"
+      ],
+      [
+        ".gitignore",
+        "-:1f9a98dac3f11d418d39d4779dfc9e5003369e9020b18417863d13c01a03c2ef"
+      ],
+      [
+        "LICENSES/Apache-2.0.txt",
+        "-:1f83bfbb6ab612d244b9619bcf615e54c2e107fc78a05eb6e16bc1ce41fd2f8f"
+      ],
+      [
+        "NOTICE",
+        "-:af26470258903608cb9e620cb4361d749531e7349f27616f980453b61fe0da48"
+      ],
+      [
+        "README.md",
+        "-:863490b117dd6910d288f36d1e54037d5601d5c3f42ac8a6f7246f3246ca35e3"
+      ],
+      [
+        "REUSE.toml",
+        "-:68e2becb2077c7cac4b6c1a35f610324a287f4db458abe80436b9329791c22e1"
+      ],
+      [
+        "docs/api/contracts.md",
+        "-:8ff513f5e876c961775ea180323500b6572f8fb0d111d86ed4b5ae4de7a9daea"
+      ],
+      [
+        "docs/api/effects.md",
+        "-:5fd4d3358f8a0fc5bf58a65595908e3df62e9f39f194989c1f2a72ba9e1928e7"
+      ],
+      [
+        "docs/api/provider-invocation-ledger.md",
+        "-:d0c7551b0690f0a81c154bdd9bd258011c7055890a1a37c90d77950d20c7c77a"
+      ],
+      [
+        "docs/api/providers.md",
+        "-:695027936aef6d8fc7fa4ce5a0fd53a51838232ae85a03c0749a017910a6cb75"
+      ],
+      [
+        "docs/api/tools.md",
+        "-:63f5c41f217d2f0d322b3437b35546d0b3ca804527894a125ede1bbd85d5e29f"
+      ],
+      [
+        "docs/consumers/aiphone-handoff.md",
+        "-:536d487e9b06de3858eaf1917dfc62189ed7acedd821af52c3fd02fb4343db02"
+      ],
+      [
+        "docs/release/v0.1.0.md",
+        "-:73429404c7253bc8a4e9b3b2bcb763dd17f8f9752a24438d8de1dfd10984fe2d"
+      ],
+      [
+        "provenance/source-lock.json",
+        "-:9fcd5ef30e35595c687257e1c4e159540a9bf4781ff8ad98334c7046c68598e7"
+      ],
+      [
+        "pyproject.toml",
+        "-:605b31580ba14e3550fbd5c58f818d1a445d4bb132531a51955e6c3f1a1e45f2"
+      ],
+      [
+        "scripts/acceptance/verify_full_runtime_stage.py",
+        "-:9567e4af8e72846c92cb544fd2c386137ee61b2e218f9ce8dc27623b0cc829a4"
+      ],
+      [
+        "scripts/check_source_provenance.py",
+        "-:657f36b8a319dbde1337db00cd655287edcac9b36a0085f0e80770c5e8105037"
+      ],
+      [
+        "source-manifest.tsv",
+        "-:886485d60d67469e15c6bd687c87c436199708f5fdd594bd5b76f9f6cefc2a36"
+      ],
+      [
+        "src/simple_harness/__init__.py",
+        "-:da5065c5059c63cd517ea1530f81f448dc4c6e4d6210f2f4ca8a23c62b0d3d32"
+      ],
+      [
+        "src/simple_harness/capabilities/__init__.py",
+        "-:898c12e84aa7cb30e60bae8616247c8c454e079cdf9ddd1ad923c4138f8e1ff3"
+      ],
+      [
+        "src/simple_harness/capabilities/builder_contracts.py",
+        "-:2cbe1a0888d8ecd1ea6699fddd49ca60235389b5b4030085d5f2c3ba2b3cd442"
+      ],
+      [
+        "src/simple_harness/capabilities/builder_errors.py",
+        "-:b3487b38d404f5f9cdc09168b8983dcf911c9ebcbc94ad185f339255a2d034fc"
+      ],
+      [
+        "src/simple_harness/contracts/__init__.py",
+        "-:c4d68aade7bb7821f3a8eaf673941b361c02fe20ce7ce00d7a3732a57c4c89be"
+      ],
+      [
+        "src/simple_harness/contracts/errors.py",
+        "-:080679d0e84dd24b1816e8b8a5cb0d2eb0f4791a078b09d96e01bc8ebf5cbdfe"
+      ],
+      [
+        "src/simple_harness/contracts/events.py",
+        "-:b828285b1c6a185d5bd0b25edaf33ceae42c7c75bf15d6b065c396fe4553312a"
+      ],
+      [
+        "src/simple_harness/contracts/identity.py",
+        "-:e4f5dc5accc0fcc0ce10de62b842386c67e4681c2b5bddf741b7d77dcc81075d"
+      ],
+      [
+        "src/simple_harness/contracts/json.py",
+        "-:2c92e29944c199dbb8eee6388934aa41520e986e72a9abcf5d237ade28dfb22f"
+      ],
+      [
+        "src/simple_harness/contracts/messages.py",
+        "-:bc3ebf341a03698167cd36627809fe46de75980c4b383a461669eafa17ee4528"
+      ],
+      [
+        "src/simple_harness/execution/__init__.py",
+        "-:7fdc6fc784e65e9b13ad25b45810da4a89bbfa90f7c6ddfd845fdc70121f4b24"
+      ],
+      [
+        "src/simple_harness/execution/budget.py",
+        "-:92bfc65923a807434d0aaf54c683e9d5cb63ddc40ccb2240c23c8b667bea009d"
+      ],
+      [
+        "src/simple_harness/execution/contracts/__init__.py",
+        "-:5087fb2fb70e4fa87058f4045080d58cf7cdfeec03f85220b9a640b82f7451a1"
+      ],
+      [
+        "src/simple_harness/execution/contracts/children.py",
+        "-:da3ec145e553ac5fca6b5011cdf9a037fe707fd6da39735ce32b67fd02505f76"
+      ],
+      [
+        "src/simple_harness/execution/delivery.py",
+        "-:6b912cb9176249b3c112ac5fe842a28c29ae96bb3c9b47b7cccc51e1a18f2591"
+      ],
+      [
+        "src/simple_harness/execution/dispatch.py",
+        "-:b56a6195d5fd6fe22ca4adab88c0c75e4eb683b0133711888766b5cce295d110"
+      ],
+      [
+        "src/simple_harness/execution/effects.py",
+        "-:32cccd2d39a8692cf29c66aa263e8bafa0c72577998c77b023dc69b94f7518d1"
+      ],
+      [
+        "src/simple_harness/execution/fences.py",
+        "-:ebfc3c85fb616c9a967d6d58bdb4882c386c40d99b3fca23f795aa70cc90f008"
+      ],
+      [
+        "src/simple_harness/execution/provider_invocations.py",
+        "-:93167bbc54c2779715f339263ff3a9be2883aefabeb2949ac4742c56df09666e"
+      ],
+      [
+        "src/simple_harness/execution/recovery.py",
+        "-:adac4229f7aec0d5f65d58947c745ba5a7e0420e22607f2f00d96e28d9697a57"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/__init__.py",
+        "-:71239770572fe826b0ceb24cb19967de26f6cc9538ba0844372bb7e0b8d0625a"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/database.py",
+        "-:5b3b18132c4817de8d0fbbd3b3c34cbb617f6dd96944cc8d82accc8c0595b85d"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/migrations/0001_initial.sql",
+        "-:428b2c4f521ceed055e110d75b6c8ea68b2f4a6c097be05bf3d3425e7f6855d3"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/migrations/__init__.py",
+        "-:93432cb87b161d30dacbcaad0530bd7f8b291a43afc7f51e358a084e70b80916"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/schema.py",
+        "-:f07a4a735002919e87b681601ef6c9e60d8d29609ab42a16d52e7cf0c40f39de"
+      ],
+      [
+        "src/simple_harness/execution/sqlite/uow.py",
+        "-:f827e59a76af179647047f8c6cc3d32aede8c44d8772efe61ca1bb0702dc15d9"
+      ],
+      [
+        "src/simple_harness/execution/uow.py",
+        "-:f78521e4360df915fea30ab4cb82fe00de94e22f5b0a67ef73eaacc01532685e"
+      ],
+      [
+        "src/simple_harness/providers/__init__.py",
+        "-:bead56a54aef959a6f9c6985105669f85212f69a8439caf68dc1c950b15dec45"
+      ],
+      [
+        "src/simple_harness/providers/base.py",
+        "-:5234127161e1b4fb3a13770c2e0f3c97e0e065d5f4d31cfa8e4bed80e57836a7"
+      ],
+      [
+        "src/simple_harness/providers/errors.py",
+        "-:ad726f962890d8578d081e5c663f73c7a5d04d9689396ecd72e4a2e7941fb5aa"
+      ],
+      [
+        "src/simple_harness/providers/openai_compatible.py",
+        "-:c0be0ce455e8e1c19ce6f515ffaa2c0393b743d6976b9fe307d7761776facf4f"
+      ],
+      [
+        "src/simple_harness/providers/reconciliation.py",
+        "-:7b06986df3969012457b1756ca6a538b26029b9320b2935472c951d1e270eee6"
+      ],
+      [
+        "src/simple_harness/providers/redaction.py",
+        "-:9bd6954685ff01b4b8c283e6e2fefdb50c2a83e4db6d287993f6408d9aa3f80e"
+      ],
+      [
+        "src/simple_harness/runtime/__init__.py",
+        "-:5c90b7c548bd387afb635133f54546fa29e5cc2a4486b7198a8de3e80e48a6f5"
+      ],
+      [
+        "src/simple_harness/runtime/admission.py",
+        "-:2e17c838e87c7bc6ab8ff9bd3db664e32ce15437b060c064d27f8e33e4f3e780"
+      ],
+      [
+        "src/simple_harness/runtime/child_coordinator.py",
+        "-:c4baf70a3bb458bebdc33b8cef34f909aa6b56311b48736f86d1ccd69eb2818f"
+      ],
+      [
+        "src/simple_harness/runtime/child_runs.py",
+        "-:9d952518dda1d175c42cf13abc304c6b1d83674d9d77c172f42e5be571e61771"
+      ],
+      [
+        "src/simple_harness/runtime/child_signal_runtime.py",
+        "-:151cd6cb489099202b83e7a6ffa55151bdea4f38dae249e3bc2592d5a6d00cff"
+      ],
+      [
+        "src/simple_harness/runtime/context.py",
+        "-:d721d0ed2baaa1ce0e0f49b2c29d9e6b269a375e9adb1076a504df0c04a2a117"
+      ],
+      [
+        "src/simple_harness/runtime/drivers/__init__.py",
+        "-:75616b050c2da0268240ab6435d9982aca334e9bb64f90f03562272fc3a256d5"
+      ],
+      [
+        "src/simple_harness/runtime/drivers/react.py",
+        "-:8a6a35b8fdff2619584d8993e196d07be150f5769bb7e5f697fd99186c7f83b0"
+      ],
+      [
+        "src/simple_harness/runtime/drivers/react_loop.py",
+        "-:2c01cc5ea966f012e8df3ff2382bb77ce91fa0bfefde3f7099a4c6e272b71a89"
+      ],
+      [
+        "src/simple_harness/runtime/drivers/workflow.py",
+        "-:44fdbd01c5055b78fc899f84fc631133e291723e88a856297c0dfde15ba3048e"
+      ],
+      [
+        "src/simple_harness/runtime/kernel.py",
+        "-:d0e31dc0920a93f7f2d48443441412f658f6026eaa2abef84c911970292d681e"
+      ],
+      [
+        "src/simple_harness/runtime/live_index.py",
+        "-:bb795eede12d3c28646bb5be1202ad061b915b03250009f6b6156d35f3b1e7c7"
+      ],
+      [
+        "src/simple_harness/runtime/orchestration.py",
+        "-:be10cb4baf8ee52adedc3ec4d15e4cb56a7f5151bd6ff0941a19b4e3d4f70504"
+      ],
+      [
+        "src/simple_harness/runtime/profiles.py",
+        "-:21f64cb527c88ccf90d759a01d35cda241870748d48ac566b18083f03d0df3d3"
+      ],
+      [
+        "src/simple_harness/runtime/react_checkpoint.py",
+        "-:a0680ffbc04e4e989e4008df1d8891cd02a6f9d71fc051065f1b418ef455bde5"
+      ],
+      [
+        "src/simple_harness/runtime/reconciler.py",
+        "-:de2571c09ed63628182749959ea8b02753683f79f57b92e46b2f1c1cf55485c7"
+      ],
+      [
+        "src/simple_harness/runtime/start_snapshot.py",
+        "-:9e0fea464132658ad612c5b15ea9e3998acfabd8a9c91544c84941a843111462"
+      ],
+      [
+        "src/simple_harness/runtime/terminal.py",
+        "-:47b6fc33bd0135e077a5869b362a0bb08c0faf47293f22c08731b188ac243cb0"
+      ],
+      [
+        "src/simple_harness/runtime/termination.py",
+        "-:36cb90d81e75098418d4ab4f00bdf1f4a1a9611813913f9e7edaf86c2a84358e"
+      ],
+      [
+        "src/simple_harness/runtime/user_continuations.py",
+        "-:f21006c8eca9b7b064919bd823a83abd947a1ebf54b86e4b5b706a59f3103357"
+      ],
+      [
+        "src/simple_harness/runtime/workflow_spawn.py",
+        "-:09d22d5a44fa65fd6547f3dd8d777762a6c3bf68d16b71646ebb3ed8bcb1614d"
+      ],
+      [
+        "src/simple_harness/testing/__init__.py",
+        "-:6bc5dc545584acea04a26a6286cf3f89fa5a2aa359f0c3a32f65a2ab5eef0855"
+      ],
+      [
+        "src/simple_harness/testing/__main__.py",
+        "-:67970136789a64926e2da6c38021644bd898a3d525a93221bc31f027621567f9"
+      ],
+      [
+        "src/simple_harness/testing/cli.py",
+        "-:f6605d95c46011e3b7e37b6d45d35a520547c813b037f35d4bc29c04e988992b"
+      ],
+      [
+        "src/simple_harness/testing/pytest_plugin.py",
+        "-:6cb17f4744cdde4a5c1e71366ba8ff93a6df556ed25e34ae41f1a292d0d38528"
+      ],
+      [
+        "src/simple_harness/tools/__init__.py",
+        "-:99a595c5835130e358dee85dc0d7130c10c14becfb77baa67226efd0fb6c2ab3"
+      ],
+      [
+        "src/simple_harness/tools/authorization.py",
+        "-:693e1b5cdc97e01e15243c5ef93ead530439cd668093f7c646af89307c0e2bec"
+      ],
+      [
+        "src/simple_harness/tools/contracts.py",
+        "-:db9e1fce879382bb2b1b4705e98d856962879429bcbb3526d84bd18d33b66880"
+      ],
+      [
+        "src/simple_harness/tools/errors.py",
+        "-:3a9b317fab8923c0f4be0b62e70024062eba73a052361fb8403f2b4f6641d8dc"
+      ],
+      [
+        "src/simple_harness/tools/executor.py",
+        "-:44600040064750299d2c93f75fd6c0d4de7f32da8098c7433b214c7db614bc3d"
+      ],
+      [
+        "src/simple_harness/tools/reconciliation.py",
+        "-:db1f77a22dbf2baa05c73c40707c6d30d36f78bc428f5dd8fd616a6872f6c186"
+      ],
+      [
+        "src/simple_harness/tools/registry.py",
+        "-:cb3bc0c961a7d3f1beb485cdddae52388f0609a0ec7ba0f178785869b4bfb34a"
+      ],
+      [
+        "src/simple_harness/tools/schema.py",
+        "-:751a66f2814b59634abfbb6d3a458a7a251369dc0dee02088df026d1ccec6b77"
+      ],
+      [
+        "src/simple_harness/workflow/adapters.py",
+        "-:fcf82467d4db5a0ceece6612b3d1fbd3bd70d75e7764ffd42ae58cb1b1fe1cdb"
+      ],
+      [
+        "src/simple_harness/workflow/checkpoint.py",
+        "-:ee2bf4f6f5e3a714c8fa77f2fde962c856f579793da44236da770a9b0d7fa468"
+      ],
+      [
+        "src/simple_harness/workflow/compiler.py",
+        "-:a5557881c05bf5869509f15b818a23058f65378fd080a299d28522d6ae9366b6"
+      ],
+      [
+        "src/simple_harness/workflow/contracts.py",
+        "-:109b77582612e4f448079781e0f3d10ba70316a955abc98009c64b444f8a0e2c"
+      ],
+      [
+        "src/simple_harness/workflow/control.py",
+        "-:640e00247db14e15a956c54bdea08f9377294dc4fc5787fa3a3ed783b25a7edc"
+      ],
+      [
+        "src/simple_harness/workflow/definition.py",
+        "-:9856068681fe46feec2b4f4cbec2f5bc25efb1e64f7747528178d3518211052c"
+      ],
+      [
+        "src/simple_harness/workflow/errors.py",
+        "-:d9f37e3c548e08344acf64c9ba4d10345e5ccc5aad501aa4711ed4376abbf3c1"
+      ],
+      [
+        "src/simple_harness/workflow/execution_ports.py",
+        "-:2e58beb0a7b6563eeed13e5b2c613c26156282c14123988f010ed20c28dc2164"
+      ],
+      [
+        "src/simple_harness/workflow/lease.py",
+        "-:c206de6b82783bc32644f356df3c9423d5c009b2c0c35fdf9bb0817d9ac5a7ec"
+      ],
+      [
+        "src/simple_harness/workflow/native.py",
+        "-:e55e212fd563b72982ed10838e753613986b25e5b2277857bff80b54b9952004"
+      ],
+      [
+        "src/simple_harness/workflow/recovery.py",
+        "-:d1f9ae5f012da264cb8b5549f6ea0415e605020004f1f79a69e0fbdb01921baf"
+      ],
+      [
+        "src/simple_harness/workflow/replay.py",
+        "-:9a17562e0605edb1bf5031728c20969e8503d09f4b71b247a6c80b96320dae63"
+      ],
+      [
+        "src/simple_harness/workflow/runner.py",
+        "-:628eed4b4a0128356ad696458b1db62aef240596f0f8ad32052ce9f45464137e"
+      ],
+      [
+        "src/simple_harness/workflow/trace.py",
+        "-:ca3b7321e4156cdc01c63b921e12eddd925faa13ed50703da1c04bed443ed117"
+      ],
+      [
+        "src/simple_harness/workflows/capability_build/__init__.py",
+        "-:f2bbd110e8a80085bf6f52621740e0a1104c97a6bad6f53f3c9cf7e1cec2e791"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/__init__.py",
+        "-:3c4d1c50113acb70f183feaba017d0f68501b3fc60fb9048003fc18d64f38fde"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/definition.py",
+        "-:6d429d25259f94d041898ab86584790db9ac6476ecef83c2d6399edb4cf621e2"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/nodes.py",
+        "-:002b1fa7bf32e502a7dae6f1ae94e5ed9dbbef66f59e51352f5596bcbf2ab47b"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/output_contract.py",
+        "-:3446de80812c3702f6454282d98791ca2bca1bade1a5ab007f86eb016a96e01e"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/ports.py",
+        "-:2e4d1cb7d0fa6e4af37e5e5d78709af586c445526ae90d0b10e7ac410bd3995a"
+      ],
+      [
+        "src/simple_harness/workflows/durable_task/state.py",
+        "-:1ce6184435247a25ad74321027eb284ec19dcb0c2d529c68673d530023464dd0"
+      ],
+      [
+        "src/simple_harness/workflows/personal_v1/__init__.py",
+        "-:812868f71c9ba81aff3792e22fdd4442ffc86a1d0fab1d3aa273f958597074e1"
+      ],
+      [
+        "src/simple_harness/workflows/personal_v1/definition.py",
+        "-:2d526a5fb0d2c04f4a633fdde0538c48e6f83c214f6322bfb1c54168f2b48bc4"
+      ],
+      [
+        "src/simple_harness/workflows/personal_v1/ports.py",
+        "-:1e5ec7df071b3ab19729f0768811fcc5544fd6a89421b4b34f7f5dde28ead1de"
+      ],
+      [
+        "src/simple_harness/workflows/personal_v1/selection.py",
+        "-:936c8546747d427444e080152dc1afe6593379741cb9aa2303b79a3967de7813"
+      ],
+      [
+        "tests/artifact/conftest.py",
+        "-:f9d5f312dda70c690b82da217b764a3dea2d6c99603e7afc0b908029fd76e7ee"
+      ],
+      [
+        "tests/artifact/test_build_contents.py",
+        "-:1a32ac8eb1a09aaa167bbcbfb85e7b6c82637acb48e5094e56829de505545526"
+      ],
+      [
+        "tests/artifact/test_import_purity.py",
+        "-:5e4a9e60449cd09ee49a856011ab55ca8a153489cf2bd2e86a45da57fbe88eec"
+      ],
+      [
+        "tests/artifact/test_provenance_complete.py",
+        "-:ad5ba6640cfddb60530c358f7a2065798760af68405b5cff7ae33d8ef1d5f0a4"
+      ],
+      [
+        "tests/artifact/test_reproducible_build.py",
+        "-:4447abdb311247717974b153fde5728d8c1a7c2561c31f1e3c46871a01c33013"
+      ],
+      [
+        "tests/conformance/provider-public-api.json",
+        "-:67492782ec80f2505a8e944c61745d42b7ae8825722b7068ef9e6599ab92d128"
+      ],
+      [
+        "tests/conformance/test_authorization_contract.py",
+        "-:2b534766b524fddc6e196c32f20bb1bb545efe92fab8a7e506688c052e2145b8"
+      ],
+      [
+        "tests/conformance/test_cli.py",
+        "-:63e6fd854cb952f367671edc5d4a7ac078aae0733d379bfcde4a43ea10cecb85"
+      ],
+      [
+        "tests/conformance/test_full_runtime_seam.py",
+        "-:338495205d85f670d3017bdde70bd77d1a7b4a41f5a734f4eaad0478c1f61499"
+      ],
+      [
+        "tests/conformance/test_protocol_version.py",
+        "-:ab0e8532279446ddd024df97835f220baf79b1224fe97cbeb579bdadb179065b"
+      ],
+      [
+        "tests/conformance/test_provider_contract.py",
+        "-:2ee90c479050abf176d0998e89803f7ff6e2c638b479d13a3da74c7630a0bba8"
+      ],
+      [
+        "tests/conformance/test_provider_public_api.py",
+        "-:303b33b2cade8b26e340f009ecbb27226f68b633566e7d55393a6f857a49cb8c"
+      ],
+      [
+        "tests/conformance/test_pytest_plugin.py",
+        "-:b5b6780b974e2516e9b3bb6878d18d5bf326238fea68d0ba7caddc5a8edaa775"
+      ],
+      [
+        "tests/conformance/test_reconciliation_contract.py",
+        "-:14b672238ee5d71e7ccdf4afa0b39c24724fedbd6ff9d30d01f1b9f1fe511c05"
+      ],
+      [
+        "tests/conformance/test_secret_canary.py",
+        "-:ec25d3d6e58cb855b4b4ae92fddae7f53a4fa4006d594661e5cfbd089511a3e0"
+      ],
+      [
+        "tests/conformance/test_tool_contract.py",
+        "-:8470128cdd11e710f452972953114dbf8ee6ab9792f5c02649549d12e0ce5093"
+      ],
+      [
+        "tests/conformance/test_tool_public_api.py",
+        "-:199cab8bb706b3eadf49264226c4af34d52a2031cdf8fbd6ae67deee2cb0db6b"
+      ],
+      [
+        "tests/conformance/test_tool_secret_canary.py",
+        "-:e70908bb43306d2c02628ebdd07e996e9f107b53d2e2f5272c9fc5409f403353"
+      ],
+      [
+        "tests/conformance/tool-public-api.json",
+        "-:fffacf3a8a2a6b615642bd57ea236012e2171dac9aca5acd8c8df250b9421cac"
+      ],
+      [
+        "tests/integration/__init__.py",
+        "-:d2529cafc86f86910a1fae95d1379fc24fc8ebdc7d13c06fb6b8dc6eb96f4771"
+      ],
+      [
+        "tests/integration/capabilities/__init__.py",
+        "-:3119afdfd9b30ef3ba26e597ff8d8c980c22ca3e2540b1eadd844ac380047815"
+      ],
+      [
+        "tests/integration/capabilities/test_builder_contracts.py",
+        "-:2ef2eee22140767f1eb22d5e25e3ebc9fd7a70f305b96a5122a1058124b487a4"
+      ],
+      [
+        "tests/integration/execution/test_atomic_child_launch.py",
+        "-:de4c00f91453f1e40f48103344f722de3452a2ed062984b89ac04dc3573ddcc2"
+      ],
+      [
+        "tests/integration/execution/test_atomic_child_terminal_signal.py",
+        "-:5d3d43cd4e1c1d7fd136b456134e7626b98b3bb1816aeb71d34c3362b1815d30"
+      ],
+      [
+        "tests/integration/execution/test_atomic_decision.py",
+        "-:532c87fd56f502ced28b6ec25c5c88e36326aeebd1d7fe855be39e58e0c70d93"
+      ],
+      [
+        "tests/integration/execution/test_atomic_root_start.py",
+        "-:43111f92e350569c05e60a0188c759094a67e0b5c6781423d3cfc2eae40e339c"
+      ],
+      [
+        "tests/integration/execution/test_child_signal_hol.py",
+        "-:7a93812ed4842fd4686b36b9faecaffbf8b03d015109495e8ddcc6677804df00"
+      ],
+      [
+        "tests/integration/execution/test_child_signal_schema.py",
+        "-:d770a6880510fe96cdabd1c96068e276a892581b798c5c4a76c768692f4e38c6"
+      ],
+      [
+        "tests/integration/execution/test_child_terminal_h12.py",
+        "-:4b83445f1619ee907071682c5b91cc233cd224784cc9d3ef032d7541e3b3f74b"
+      ],
+      [
+        "tests/integration/execution/test_continuation_fifo.py",
+        "-:50074182968b69351f4dcd5d1d56be52ad6c75664697ca58d49f7ee1bdffe3c0"
+      ],
+      [
+        "tests/integration/execution/test_delivery_dispatcher.py",
+        "-:15957d89db6d99471ba24a16836bc4c57aa90d9ae58ced1e3751eae041e7ab10"
+      ],
+      [
+        "tests/integration/execution/test_effect_atomic.py",
+        "-:eed5cd57f728b5bc4336624f8648b703f8073b57acaad2df60a84cf5ae2b27e9"
+      ],
+      [
+        "tests/integration/execution/test_effect_contract.py",
+        "-:80173d94de93315c2b3a5d93dced531a15b0362c5ec5c97e2afa9eace6646766"
+      ],
+      [
+        "tests/integration/execution/test_effect_reconcile.py",
+        "-:9660a0a0b4a7d23f32a0fec62bb54097ab50f3369c69d2a78cd2aa27321991c9"
+      ],
+      [
+        "tests/integration/execution/test_fence_epoch.py",
+        "-:a6782405412918c8904a572c941bf03debc84b9f80d54bffd5ca332fc248b24a"
+      ],
+      [
+        "tests/integration/execution/test_integrity.py",
+        "-:3b4fef5ee29644f3eefa157690cff7b45285c0b64b9f4438ab4c47d23476c741"
+      ],
+      [
+        "tests/integration/execution/test_open_close.py",
+        "-:3cc01c1e9c1aff4abc90d4c340bc17d96d560e810295dc3554b8321a46e86f40"
+      ],
+      [
+        "tests/integration/execution/test_schema_v1.py",
+        "-:e430ac318eeb1a7e835c663d070ea3dbd525e58a491178e16fb536d54df68fe1"
+      ],
+      [
+        "tests/integration/execution/test_terminal_delivery_atomic.py",
+        "-:992b501636d8eafe4c02a6654e74b5117b21391c0680f0b937b4cb374c431c65"
+      ],
+      [
+        "tests/integration/execution/test_ticket_generation.py",
+        "-:7b65ff3ba649467672e18d847229a4f3926b81471a32614ac152f0582feabb59"
+      ],
+      [
+        "tests/integration/execution/test_workflow_adapter_atomic.py",
+        "-:3a5bdcd2e22cad66233cb664c1e10f4873b6f6302629147aa5d7a2430903210e"
+      ],
+      [
+        "tests/integration/execution/test_workflow_launch_admission_h16.py",
+        "-:32bf618de99d141146b1205f04f25a8232dea54a3f392d9282e0dec05e427a52"
+      ],
+      [
+        "tests/integration/execution/test_workflow_lifecycle_h16.py",
+        "-:e25db2e1082bd4c890ebadd19c1197d0e9ac751ee76b5b2ee64c185e0a51ebea"
+      ],
+      [
+        "tests/integration/execution/test_workflow_projection_prepare.py",
+        "-:232bc882127ba83d9f56b46061994bf777c8d1a7877b5da241454dab21a6769d"
+      ],
+      [
+        "tests/integration/execution/test_workflow_spawn_sqlite.py",
+        "-:308d60bcccf267e6fc82d9dd09deb25aadfbf72defec54feab3a59d17ec5df7b"
+      ],
+      [
+        "tests/integration/provider_ledger_fakes.py",
+        "-:3d36cce05d51d5e238f9e95609635e799082a765660de69ee9b19b2a3a0f1779"
+      ],
+      [
+        "tests/integration/runtime/__init__.py",
+        "-:cf556763e365c2038fe3f19af0cc6d58056438320b75bd2451f0f7a66cda6988"
+      ],
+      [
+        "tests/integration/runtime/react_fakes.py",
+        "-:19a40a0f41b24b3f5e779efdc402fb9bffffc8286e6fb1ac18178254b4e1c4c2"
+      ],
+      [
+        "tests/integration/runtime/test_context_checkpoint.py",
+        "-:b1beea606898dd89a71c56dbc5a816ca994f29c33596453c14d3d36c0d659182"
+      ],
+      [
+        "tests/integration/runtime/test_continuation_h12.py",
+        "-:f111cfe4b76ce1c1d764ca2ed31a80329ca5b3c500df603a606425086c255929"
+      ],
+      [
+        "tests/integration/runtime/test_h13_provider_recovery.py",
+        "-:a5951ff38886e37a0334031407febbdd35952423431f5c092f3b09fd8cc3c293"
+      ],
+      [
+        "tests/integration/runtime/test_h13_react_phase_reopen.py",
+        "-:c014a69864cfe10b5499b89ff8610e83909efaf6baa72e2b362dca2a53c518fd"
+      ],
+      [
+        "tests/integration/runtime/test_h13_tool_recovery.py",
+        "-:f4ad9b17b33f8a25d263ba42b374f27376cde8631dd83be8ea65057f88d9ff66"
+      ],
+      [
+        "tests/integration/runtime/test_handoff_runtime_lease.py",
+        "-:71c48a6600f2b75349e1fae9b0f51252fabb4c36f9a52be082d852d4c59a23f3"
+      ],
+      [
+        "tests/integration/runtime/test_kernel_start.py",
+        "-:630c203d02dd9f4c686ce1cf5973d6f7d2fe0826f6cd1136ffd985178a56919c"
+      ],
+      [
+        "tests/integration/runtime/test_react_budgets.py",
+        "-:f996a6412beb25bf0143515e78f797e56778fa6298a0670abbd14e69949d2e0e"
+      ],
+      [
+        "tests/integration/runtime/test_react_cancel.py",
+        "-:3bf6c1849954292e2c9b138b6c3b58a62197132372e497edf22e8248919eccc2"
+      ],
+      [
+        "tests/integration/runtime/test_react_checkpoint.py",
+        "-:1b60ee2fdc34d5291787c0b629f4c09442e51504035a4ea017e5a6a9dd67c112"
+      ],
+      [
+        "tests/integration/runtime/test_react_crash.py",
+        "-:526c167423ddb65dbf53ade7e440de216a937844b0aa5f66cb8ae2f582ebd360"
+      ],
+      [
+        "tests/integration/runtime/test_react_no_tool.py",
+        "-:164169a55000e908e85bb5fb50efc9f68c7074cc4878746571a4eafb51ed7a52"
+      ],
+      [
+        "tests/integration/runtime/test_react_sqlite_runtime.py",
+        "-:1b717eec7edffddbabba3f77e2477f9526e411010cb86b98707d22e1e23d0347"
+      ],
+      [
+        "tests/integration/runtime/test_react_tool_roundtrip.py",
+        "-:3471f05ceacca233ba66646fc4a97d0a249067c426e642bad7250db8dbc9d8cd"
+      ],
+      [
+        "tests/integration/runtime/test_runtime_h12.py",
+        "-:ab9399b0f662dde85394460bc7077c681be3753d1728af83b76bdcb1b56f5ba5"
+      ],
+      [
+        "tests/integration/runtime/test_workflow_cancel_kernel.py",
+        "-:c9e7ccc719abfa70ecde73eddc9ee74d019fbec05c1b5aba86f502e5e7471667"
+      ],
+      [
+        "tests/integration/test_budget_recovery.py",
+        "-:d3c6547f69c0b2089a389c50102bb902f13dd1ad75aeaa3b524cd803ad82b641"
+      ],
+      [
+        "tests/integration/test_openai_mock_server.py",
+        "-:ec0dfdde89829e3694a336b98f6d3dceee45a9c767583201b5c40d91f192bf27"
+      ],
+      [
+        "tests/integration/test_provider_dispatch_atomic.py",
+        "-:302d47974b53bd6841003e210c187c60f6881ce6266546e331974da02a5b1dea"
+      ],
+      [
+        "tests/integration/test_provider_sqlite_ledger.py",
+        "-:48a549108c345b5b29864903b7168832d5311640cc84e16eb54a5c94e63fe3d4"
+      ],
+      [
+        "tests/integration/test_provider_unknown.py",
+        "-:38fbc5fcd527751d332febbe4697de951d61da08b5f494463fed530b67992f31"
+      ],
+      [
+        "tests/integration/workflows/__init__.py",
+        "-:f682e79a5d4bb52ef12b1eea8627ac50ba2d419df52e71d800a75ef07fd3c531"
+      ],
+      [
+        "tests/integration/workflows/test_capability_build_profile.py",
+        "-:cfc26e5b8f5530f8c8c1ff501d616281561635f5a7323419b70452fad370b336"
+      ],
+      [
+        "tests/integration/workflows/test_durable_task_graph.py",
+        "-:eb7e0c274eee9e172e343a704536bc96906f84a6dcda9767ee03c0d219dea894"
+      ],
+      [
+        "tests/integration/workflows/test_durable_task_human.py",
+        "-:a628503c20f2a87994a44af45e79df7f39e93e90a6a9a592715e6ff2b7bfec4c"
+      ],
+      [
+        "tests/integration/workflows/test_durable_task_output.py",
+        "-:da8882800f2070048bb7cff6170468a8c2b051cdcc5e71c07acd9a3db90b134f"
+      ],
+      [
+        "tests/integration/workflows/test_durable_task_recovery.py",
+        "-:808deaeb87da53bae34e239132f282280213a9a520708f35ec6850d23c644afe"
+      ],
+      [
+        "tests/integration/workflows/test_personal_v1_execution.py",
+        "-:9468385b90c3077dd02578a1412f427922a57b118c1044fa4dc66bd4e83398cc"
+      ],
+      [
+        "tests/integration/workflows/test_personal_v1_graph.py",
+        "-:da3a49b282c6108190b789beade6320b77aae2ede2ee230497129edcf1d944f5"
+      ],
+      [
+        "tests/runtime/test_child_restart.py",
+        "-:18d95f7bb785aae0ec607cddb5d7f55fdc2732dfa546ab0588e75d1704cc5923"
+      ],
+      [
+        "tests/runtime/test_child_signal_runtime.py",
+        "-:62fd6c20c43a9bbc6a6f3d6e30b06d74e8f18300b9bac26c407ee006825f5ac6"
+      ],
+      [
+        "tests/runtime/test_continuation_restart.py",
+        "-:4d0146623b5db3c3e0ba3bc072b74fe6154c472a337280ce11b7a981946541df"
+      ],
+      [
+        "tests/runtime/test_startup_reconcile_order.py",
+        "-:d008c77f7c078b1c74fb9dd39e53d432364a9c47916805c104c5b00c634700ad"
+      ],
+      [
+        "tests/unit/contracts/public-api.json",
+        "-:3a8f37de53b584c2b8d8f76cc6aa7db547fd6181e65ebe503f402296bae5cc0b"
+      ],
+      [
+        "tests/unit/contracts/test_errors.py",
+        "-:118eade5316de869a0070fcc0f902f3c81ffb14f002a6486bf6468aaadf91cd8"
+      ],
+      [
+        "tests/unit/contracts/test_events.py",
+        "-:bcb91005afd50ae012517dc0491ee4a4c6347acfafcdfff9fc9f3949c13ec127"
+      ],
+      [
+        "tests/unit/contracts/test_identity.py",
+        "-:d337689b24428bf6ebabb303164cca00a58999e42e870ea4b3348688be61476e"
+      ],
+      [
+        "tests/unit/contracts/test_json.py",
+        "-:5d962dd0076d6b391d2d2d4746bc62125f67856e87e08151862d9f4694d82884"
+      ],
+      [
+        "tests/unit/contracts/test_messages.py",
+        "-:2c0b103d6ecffb1ab4f49840c066a7668b49be6dc11d3035b52386b8df4e3159"
+      ],
+      [
+        "tests/unit/contracts/test_public_api.py",
+        "-:9d57c4d4d15b29daa6ef834a03da3d98f7f100375a2e332767fed3e0577d7dc0"
+      ],
+      [
+        "tests/unit/execution/test_budget.py",
+        "-:53a644d02f2abc403e55ad2f6839c994cd481aff75593505cb3e0c3daf47a078"
+      ],
+      [
+        "tests/unit/execution/test_child_signals.py",
+        "-:048ae0a014bd61b2a2258a4d66147ef3adc0e58a1a1d020cfccd2e3e633da348"
+      ],
+      [
+        "tests/unit/execution/test_provider_invocations.py",
+        "-:3c1e6b688fa4520c8940bb59af1cfa5d947a93cb0eff0f97258bda000059e25d"
+      ],
+      [
+        "tests/unit/runtime/test_termination.py",
+        "-:5e59fb19be9dc1e9e0d082dd6f9f6ad70732b8c31cb914024f7589dea6a062db"
+      ],
+      [
+        "tests/unit/runtime/test_workflow_spawn_contracts.py",
+        "-:b48f2588394b059c95a6fc8aa8ef0c9f4d26d0547545e9cb96869601d6d24738"
+      ],
+      [
+        "tests/unit/workflow/test_activation_adapters.py",
+        "-:3be9786d2a2811f0284436183d576b1009dac0795f955b3b749203ef139047a4"
+      ],
+      [
+        "tests/unit/workflow/test_native_api.py",
+        "-:e1e7e643dbec75f8591f067f44216ffbc85f60ae38ff629f4ee015c500857545"
+      ],
+      [
+        "tests/unit/workflow/test_native_contracts.py",
+        "-:efbbe2cb1476a717736307a4fab6cc0c0913d27f3e1948870f8a2cef1e1443ef"
+      ],
+      [
+        "tests/unit/workflow/test_native_engine.py",
+        "-:a2edf5a61fd5cecb87437cb7d8482226338ce588a81ff12f680de3135a776306"
+      ],
+      [
+        "tests/unit/workflow/test_native_sqlite_engine.py",
+        "-:916db2c6cdecb880b19e7e8b68385ea6be7619af7e4be596ddad8a357264973a"
+      ],
+      [
+        "tests/unit/workflow/test_native_terminal.py",
+        "-:bd87df18cf1b4b0c2d940f73aa8e9e3dd61046a755a3414a571ee32bf62056bf"
+      ],
+      [
+        "tests/unit/workflow/test_workflow_errors.py",
+        "-:52b66ddb0b8d877c97f79747ff6b1129894fa7fa9d3836a769f028b77b484447"
+      ],
+      [
+        "tests/workflow/__init__.py",
+        "-:3119afdfd9b30ef3ba26e597ff8d8c980c22ca3e2540b1eadd844ac380047815"
+      ],
+      [
+        "tests/workflow/_fakes.py",
+        "-:0290d15aa54a71068bd8cd31559a38f742b4065c1822c8c4b52302d25cfabc51"
+      ],
+      [
+        "tests/workflow/test_checkpoint_reopen.py",
+        "-:e5c904294a0e59da47ed6d3b37228f3382d3b1220ddee27e58d9e8dbdd24fe35"
+      ],
+      [
+        "tests/workflow/test_compiler.py",
+        "-:509b77a94a79cf4686a3b3cced7b6822b98fbe6246401a28f53dd76b5528df85"
+      ],
+      [
+        "tests/workflow/test_lease_quarantine.py",
+        "-:800463031311b38bea7c2e64ea070633671d82da91744779f9e61fbb01a6b087"
+      ],
+      [
+        "tests/workflow/test_replay.py",
+        "-:456b5b1e40cba7ce67be2dcbad7ad349adf8b6d298469a0dbbc78458bdeb2fdf"
+      ],
+      [
+        "tests/workflow/test_runner_fault_matrix.py",
+        "-:ca75c828a173972a7a6f1a92cadaa75cff361aafddb546ea2461b2bb954a0374"
+      ],
+      [
+        "tests/workflow/test_runner_h16_sqlite.py",
+        "-:e7f8688a483c7cc16ffef01e3b762a9040190b721525a5bf0c940181926b1d15"
+      ],
+      [
+        "tests/workflow/test_source_contracts.py",
+        "-:cce3e110e678da359ade9d64208449c51f652842d871926121fd31479f543fb0"
+      ],
+      [
+        "uv.lock",
+        "-:c3665c711d3a3ac3c52253324c2a243986ba133d44b4bf7fc621e07911e72f3a"
+      ]
+    ],
+    "dirty_patch_sha256": "77a6d7d8a379e7db37f1d437425912c0a0ec64b028a2bbcab46ec125a716b84f",
+    "exclusion_count": 1,
+    "exclusion_scope": [
+      "plans/2026-08-16-sdk-v0.1.1-slice-a/verification/2026-08-16-r1"
+    ],
+    "exclusions": [
+      [
+        "plans/2026-08-16-sdk-v0.1.1-slice-a/verification/2026-08-16-r1/plan-test-run.json",
+        "declared-scope:plans/2026-08-16-sdk-v0.1.1-slice-a/verification/2026-08-16-r1"
+      ]
+    ],
+    "head": "0e385328b417e9f4b4d5fdfecb2866cb6248e3c1",
+    "recorded_at": "2026-08-16T13:20:11+0800"
+  },
+  "scenarios": [
+    {
+      "ac_ids": [
+        "SDK-AC-5"
+      ],
+      "cold_start": false,
+      "expected_run_created": true,
+      "gate_type": "positive-value",
+      "impact_paths": [
+        "src/simple_harness/runtime/**",
+        "src/simple_harness/execution/**"
+      ],
+      "input_class": "public ReAct no-tool one-tool multi-tool",
+      "min_root_runs": 2,
+      "required": true,
+      "required_lanes": [
+        "fresh"
+      ],
+      "scenario_id": "SDK-A1",
+      "ui": false
+    },
+    {
+      "ac_ids": [
+        "SDK-AC-6",
+        "SDK-AC-7"
+      ],
+      "cold_start": false,
+      "expected_run_created": true,
+      "gate_type": "positive-value",
+      "impact_paths": [
+        "src/simple_harness/workflow/**",
+        "src/simple_harness/workflows/**"
+      ],
+      "input_class": "official和host-owned Workflow选择执行",
+      "min_root_runs": 2,
+      "required": true,
+      "required_lanes": [
+        "fresh"
+      ],
+      "scenario_id": "SDK-A2",
+      "ui": false
+    },
+    {
+      "ac_ids": [
+        "SDK-AC-5"
+      ],
+      "cold_start": false,
+      "expected_run_created": true,
+      "gate_type": "negative-safety",
+      "impact_paths": [
+        "src/simple_harness/tools/**",
+        "src/simple_harness/execution/**",
+        "src/simple_harness/runtime/**"
+      ],
+      "input_class": "durable Tool permission HITL",
+      "min_root_runs": 2,
+      "required": true,
+      "required_lanes": [
+        "temporal-fault"
+      ],
+      "scenario_id": "SDK-A3",
+      "ui": false
+    },
+    {
+      "ac_ids": [
+        "SDK-AC-5",
+        "SDK-AC-8"
+      ],
+      "cold_start": false,
+      "expected_run_created": true,
+      "gate_type": "negative-safety",
+      "impact_paths": [
+        "src/simple_harness/execution/**",
+        "src/simple_harness/runtime/**"
+      ],
+      "input_class": "delivery crash restart backfill",
+      "min_root_runs": 2,
+      "required": true,
+      "required_lanes": [
+        "temporal-fault"
+      ],
+      "scenario_id": "SDK-A4",
+      "ui": false
+    },
+    {
+      "ac_ids": [
+        "SDK-AC-5"
+      ],
+      "cold_start": false,
+      "expected_run_created": true,
+      "gate_type": "negative-safety",
+      "impact_paths": [
+        "src/simple_harness/runtime/**",
+        "src/simple_harness/execution/**",
+        "src/simple_harness/tools/**"
+      ],
+      "input_class": "硬预算与LLM载荷变异",
+      "min_root_runs": 2,
+      "required": true,
+      "required_lanes": [
+        "fresh",
+        "temporal-fault"
+      ],
+      "scenario_id": "SDK-A5",
+      "ui": false
+    },
+    {
+      "ac_ids": [
+        "SDK-AC-8"
+      ],
+      "cold_start": false,
+      "expected_run_created": false,
+      "gate_type": "positive-value",
+      "impact_paths": [
+        "src/simple_harness/testing/**"
+      ],
+      "input_class": "consumer conformance四suite",
+      "min_root_runs": 1,
+      "required": true,
+      "required_lanes": [
+        "fresh"
+      ],
+      "scenario_id": "SDK-A6",
+      "ui": false
+    },
+    {
+      "ac_ids": [
+        "SDK-AC-8"
+      ],
+      "cold_start": false,
+      "expected_run_created": false,
+      "gate_type": "negative-safety",
+      "impact_paths": [
+        "pyproject.toml",
+        "src/simple_harness/**",
+        "docs/**"
+      ],
+      "input_class": "immutable artifact三平台复验",
+      "min_root_runs": 1,
+      "required": true,
+      "required_lanes": [
+        "fresh"
+      ],
+      "scenario_id": "SDK-A7",
+      "ui": false
+    }
+  ],
+  "schema_version": "1.3.0",
+  "source_request": {
+    "path": "/Users/denny/projects/simple_harness/plans/2026-08-13-simple-harness-sdk/source-request.md",
+    "sha256": "dc2eb7e99bb0f9cb1973c841fea3d12086bab89bbc06e320588c48402aaf80a0"
+  },
+  "testcase_lock": {
+    "files": [
+      {
+        "abs_path": "/Users/denny/projects/simple_harness/testcase/2026-08-16-simple-harness-sdk-v0.1.1/slice-a-black-box.md",
+        "path": "/Users/denny/projects/simple_harness/testcase/2026-08-16-simple-harness-sdk-v0.1.1/slice-a-black-box.md",
+        "sha256": "fd139a2732bfdfe4c93af77a2ffb221e361a99f9460818879497c2890bba0a15"
+      }
+    ],
+    "locked_at": "2026-08-16T13:20:11+0800"
+  },
+  "thresholds": {},
+  "timing": [
+    {
+      "abort": false,
+      "activity_class": "automated_test",
+      "command": "uv run pytest -q --junitxml=.local-test-evidence/2026-08-16/sdk-v0.1.1-slice-a/baseline/pytest.xml",
+      "elapsed_ms": 15000,
+      "ended_at": "2026-08-16T05:20:59Z",
+      "evidence_ids": [],
+      "measured": false,
+      "phase": "phase-0",
+      "recorded_at": "2026-08-16T13:21:38+0800",
+      "retry": 0,
+      "runtime_identity": {
+        "head": "0e385328b417e9f4b4d5fdfecb2866cb6248e3c1"
+      },
+      "slice": "SDK-A",
+      "started_at": "2026-08-16T05:20:44Z",
+      "task": "baseline-full-pytest",
+      "test_count": 1124,
+      "timing_id": "t-0001",
+      "tool": "exec_command"
+    }
+  ]
+}

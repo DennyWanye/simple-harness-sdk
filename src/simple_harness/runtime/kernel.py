@@ -10,6 +10,7 @@ import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, Self, TypeVar, runtime_checkable
 from uuid import uuid4
 
@@ -19,6 +20,7 @@ from simple_harness.contracts import (
     JsonValue,
     RequestId,
     RunId,
+    thaw_json,
 )
 from simple_harness.execution.contracts.children import AttachmentPolicy
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySpec
@@ -29,6 +31,7 @@ from simple_harness.execution.uow import (
     RUNTIME_LEASE_NAMESPACE,
     ContinuationRecord,
     ContinuationState,
+    DecisionState,
     ExecutionLease,
     ExecutionUnitOfWork,
     RunRecord,
@@ -37,8 +40,8 @@ from simple_harness.execution.uow import (
     WorkflowCheckpoint,
 )
 from simple_harness.providers import CancelToken, ProviderReconciliationPort
-from simple_harness.tools.authorization import AuthorizationPort
-from simple_harness.tools.executor import EffectExecutor
+from simple_harness.tools.authorization import AuthorizationDecision, AuthorizationPort
+from simple_harness.tools.executor import EffectExecutor, ToolAuthorizationPending
 from simple_harness.tools.reconciliation import ToolReconciliationPort
 from simple_harness.workflow.errors import WorkflowDependencyUnavailable
 
@@ -75,6 +78,15 @@ T = TypeVar("T")
 
 ROOT_PROFILE_KEY = "agent.general"
 WORKFLOW_DRIVER_KIND = "workflow"
+
+
+class RuntimeLifecycleState(StrEnum):
+    NEW = "new"
+    STARTING = "starting"
+    READY = "ready"
+    CLOSING = "closing"
+    CLOSED = "closed"
+    FAILED = "failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +140,7 @@ class DriverResult:
     workflow_spawn_control: WorkflowSpawnToolOutcome | None = None
     workflow_terminal: WorkflowTerminalOutcome | None = None
     workflow_retry_wake: WorkflowRetryWake | None = None
+    authorization_wait: ToolAuthorizationPending | None = None
 
     def __post_init__(self) -> None:
         state = RunState(self.state)
@@ -154,6 +167,15 @@ class DriverResult:
         ):
             raise ValueError(
                 "workflow retry wake requires an exclusive WAITING result"
+            )
+        if self.authorization_wait is not None and (
+            state is not RunState.WAITING
+            or self.wait_blocker is not None
+            or self.workflow_spawn_control is not None
+            or self.workflow_retry_wake is not None
+        ):
+            raise ValueError(
+                "authorization wait requires an exclusive WAITING result"
             )
 
 
@@ -533,6 +555,71 @@ class RunClient:
         asyncio.create_task(self._runtime._wake_continuation(continuation.run_id))
         return continuation
 
+    async def decide_authorization(
+        self,
+        run_id: RunId,
+        *,
+        decision_id: str,
+        nonce: str,
+        expected_version: int,
+        decision: AuthorizationDecision,
+    ):
+        """Resolve one durable Tool decision with nonce/version replay fences."""
+
+        self._runtime._require_started()
+        record = self._runtime._uow.read_decision(decision_id)
+        if record is None or record.run_id != _run_id(run_id):
+            raise HarnessError("authorization_decision_not_found", "Decision was not found.")
+        if record.state is not DecisionState.OPEN:
+            if record.response is not None and isinstance(record.response, Mapping):
+                if (
+                    record.response.get("nonce") == nonce
+                    and record.response.get("decision") == decision.value
+                ):
+                    return record
+            raise HarnessError("authorization_decision_late", "Decision is already closed.")
+        run = self._runtime._uow.read_run(record.run_id)
+        if run is None or run.state is not RunState.WAITING:
+            raise HarnessError(
+                "authorization_decision_late",
+                "The Run no longer accepts this decision.",
+            )
+        if record.version != expected_version:
+            raise HarnessError(
+                "authorization_decision_version_conflict", "Decision version is stale."
+            )
+        request = thaw_json(record.request)
+        if not isinstance(request, dict) or request.get("nonce") != nonce:
+            raise HarnessError("authorization_decision_nonce_mismatch", "Decision nonce differs.")
+        expires_at = request.get("expires_at")
+        if expires_at is not None and self._runtime._now() >= float(expires_at):
+            decision = AuthorizationDecision.DENY
+            state = DecisionState.EXPIRED
+        elif decision is AuthorizationDecision.ALLOW:
+            state = DecisionState.ALLOWED
+        elif decision is AuthorizationDecision.DENY:
+            state = DecisionState.DENIED
+        else:
+            raise ValueError("a user decision must be ALLOW or DENY")
+        binding_ref = await self._runtime._services.tools.bind_decision(record, decision)
+        resolved = self._runtime._uow.commit_decision(
+            decision_id=record.decision_id,
+            run_id=record.run_id,
+            kind=record.kind,
+            state=state,
+            request=request,
+            response={
+                "authorization_receipt_ref": binding_ref,
+                "decision": decision.value,
+                "nonce": nonce,
+            },
+            event_id=f"{record.decision_id}:{state.value}:{record.version + 1}",
+            now=self._runtime._now(),
+        )
+        if state is DecisionState.ALLOWED:
+            asyncio.create_task(self._runtime._wake_continuation(record.run_id))
+        return resolved
+
     async def cancel(self, run_id: RunId) -> RunRecord:
         return await self._runtime._cancel_run(run_id)
 
@@ -706,25 +793,69 @@ class Runtime:
         self._workflow_recovery_work: dict[str, WorkflowRecoveryWork] = {}
         self._child_signals = ChildSignalRuntime(uow, owner_id=ports.owner_id)
         self._wake_drain_task: asyncio.Task[None] | None = None
+        self._delivery_pump_task: asyncio.Task[None] | None = None
+        self._delivery_wake = asyncio.Event()
+        self._lifecycle_lock = asyncio.Lock()
+        self._startup_task: asyncio.Task[None] | None = None
+        self._state = RuntimeLifecycleState.NEW
         self._started = False
         self._closing = False
         self.client = RunClient(self)
         self.children = ChildCoordinator(self)
 
-    async def start(self) -> None:
-        if self._started:
-            return
-        self._started = True
-        self._closing = False
-        await self._ports.reconciliation.reconcile()
-        await self.recover()
-        await self._drain_resolved_waits_once()
-        self._wake_drain_task = asyncio.create_task(
-            self._wake_drain(), name="simple-harness-wake-drain"
-        )
+    @property
+    def state(self) -> RuntimeLifecycleState:
+        return self._state
 
-    async def recover(self) -> None:
-        self._require_started()
+    async def start(self) -> None:
+        async with self._lifecycle_lock:
+            if self._state is RuntimeLifecycleState.READY:
+                return
+            if self._state in {
+                RuntimeLifecycleState.CLOSING,
+                RuntimeLifecycleState.CLOSED,
+                RuntimeLifecycleState.FAILED,
+            }:
+                raise RuntimeError(f"Runtime cannot start from {self._state.value}")
+            if self._state is RuntimeLifecycleState.NEW:
+                self._state = RuntimeLifecycleState.STARTING
+                self._startup_task = asyncio.create_task(
+                    self._start_once(), name="simple-harness-startup"
+                )
+            startup = self._startup_task
+        assert startup is not None
+        await asyncio.shield(startup)
+
+    async def _start_once(self) -> None:
+        try:
+            await self._ports.reconciliation.reconcile()
+            await self.recover(_startup=True)
+            await self._drain_resolved_waits_once()
+            await self._drain_deliveries_bounded(100)
+            async with self._lifecycle_lock:
+                if self._state is not RuntimeLifecycleState.STARTING:
+                    raise asyncio.CancelledError
+                self._wake_drain_task = asyncio.create_task(
+                    self._wake_drain(), name="simple-harness-wake-drain"
+                )
+                self._delivery_pump_task = asyncio.create_task(
+                    self._delivery_pump(), name="simple-harness-delivery-pump"
+                )
+                self._started = True
+                self._closing = False
+                self._state = RuntimeLifecycleState.READY
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            async with self._lifecycle_lock:
+                if self._state is RuntimeLifecycleState.STARTING:
+                    self._state = RuntimeLifecycleState.FAILED
+            await self._stop_background_tasks()
+            raise
+
+    async def recover(self, *, _startup: bool = False) -> None:
+        if not _startup:
+            self._require_started()
         for run in (
             *self._uow.list_recoverable_root_runs(),
             *self._uow.list_recoverable_child_runs(),
@@ -804,14 +935,20 @@ class Runtime:
         return await self._ports.delivery.run_once()
 
     async def close(self) -> None:
-        if not self._started:
-            return
-        self._closing = True
-        wake_drain = self._wake_drain_task
-        self._wake_drain_task = None
-        if wake_drain is not None:
-            wake_drain.cancel()
-            await asyncio.gather(wake_drain, return_exceptions=True)
+        async with self._lifecycle_lock:
+            if self._state is RuntimeLifecycleState.CLOSED:
+                return
+            if self._state is RuntimeLifecycleState.NEW:
+                self._state = RuntimeLifecycleState.CLOSED
+                return
+            self._state = RuntimeLifecycleState.CLOSING
+            self._closing = True
+            startup = self._startup_task
+        if startup is not None and not startup.done():
+            startup.cancel()
+            await asyncio.gather(startup, return_exceptions=True)
+        await self._drain_deliveries_bounded(100)
+        await self._stop_background_tasks()
         for token in self._cancels.values():
             token.cancel()
         await self._live.close(timeout_seconds=self._ports.close_timeout_seconds)
@@ -839,13 +976,55 @@ class Runtime:
         self._workflow_start_dispatches.clear()
         self._workflow_recovery_work.clear()
         self._started = False
+        async with self._lifecycle_lock:
+            self._state = RuntimeLifecycleState.CLOSED
+
+    async def _stop_background_tasks(self) -> None:
+        tasks = tuple(
+            task
+            for task in (self._wake_drain_task, self._delivery_pump_task)
+            if task is not None
+        )
+        self._wake_drain_task = None
+        self._delivery_pump_task = None
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _wake_drain(self) -> None:
         interval = min(0.05, max(0.001, self._ports.lease_ttl_seconds / 3.0))
         try:
-            while self._started and not self._closing:
+            while self._state is RuntimeLifecycleState.READY:
                 await self._drain_resolved_waits_once()
                 await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+
+    async def _drain_deliveries_bounded(self, limit: int) -> bool:
+        run_once = getattr(self._ports.delivery, "run_once", None)
+        if run_once is None:
+            return True
+        for _ in range(limit):
+            if not await run_once():
+                return True
+        return False
+
+    async def _delivery_pump(self) -> None:
+        backoff = 0.01
+        try:
+            while self._state is RuntimeLifecycleState.READY:
+                try:
+                    await asyncio.wait_for(self._delivery_wake.wait(), timeout=backoff)
+                except TimeoutError:
+                    pass
+                self._delivery_wake.clear()
+                empty = await self._drain_deliveries_bounded(100)
+                if empty:
+                    backoff = min(1.0, backoff * 2)
+                else:
+                    backoff = 0.01
+                    self._delivery_wake.set()
         except asyncio.CancelledError:
             return
 
@@ -957,8 +1136,12 @@ class Runtime:
         if not verdict.allowed:
             raise HarnessError("admission_denied", "The Run was denied by admission.")
         profile = self._profiles[self._root_profile_key]
+        driver = self._drivers[profile.driver_kind]
         snapshot = bind_start_snapshot(
-            start, profile_key=self._root_profile_key, driver_kind=profile.driver_kind
+            start,
+            profile_key=self._root_profile_key,
+            driver_kind=profile.driver_kind,
+            policy_fingerprint=getattr(driver, "policy_fingerprint", None),
         )
         created = self._uow.create_with_start_snapshot(
             execution_session_id=start.execution_session_id.value,
@@ -1055,6 +1238,22 @@ class Runtime:
             if run is None or raw_snapshot is None:
                 raise RuntimeError("durable Run start state is incomplete")
             snapshot = StartSnapshot.from_json(raw_snapshot)
+            driver = self._drivers[snapshot.driver_kind]
+            if snapshot.policy_fingerprint is not None and (
+                getattr(driver, "policy_fingerprint", None)
+                != snapshot.policy_fingerprint
+            ):
+                error = HarnessError(
+                    "runtime_policy_mismatch",
+                    "The frozen Runtime policy is unavailable.",
+                )
+                self._terminalize(
+                    run,
+                    state=RunState.FAILED,
+                    payload=error.to_dict(),
+                    deliveries=(),
+                )
+                return
             if (
                 snapshot.tool_catalog_generation
                 != self._ports.tool_catalog.current_generation()
@@ -1072,7 +1271,6 @@ class Runtime:
                     run, snapshot=snapshot, reason="pre_drive_cancel"
                 )
                 return
-            driver = self._drivers[snapshot.driver_kind]
             continuation_claim = self._uow.claim_continuation(
                 run_id=run_id,
                 execution_lease=self._leases[run_id],
@@ -1117,6 +1315,37 @@ class Runtime:
             if current is None:
                 raise RuntimeError("Run disappeared during execution")
             if result.state is RunState.WAITING:
+                if result.authorization_wait is not None:
+                    if continuation_claim is not None:
+                        raise UnitOfWorkConflict(
+                            "authorization wait cannot ack a continuation"
+                        )
+                    pending = result.authorization_wait
+                    prepared = pending.prepared
+                    arguments = thaw_json(prepared.call.arguments)
+                    metadata = thaw_json(pending.request.metadata)
+                    if not isinstance(arguments, dict) or not isinstance(metadata, dict):
+                        raise TypeError("authorization request payload must be objects")
+                    self._uow.commit_decision(
+                        decision_id=pending.decision_id,
+                        run_id=run_id,
+                        kind="tool_authorization",
+                        state=DecisionState.OPEN,
+                        request={
+                            "arguments": arguments,
+                            "call_id": prepared.call.call_id.value,
+                            "effect_id": prepared.effect_id.value,
+                            "expires_at": pending.request.expires_at,
+                            "metadata": metadata,
+                            "nonce": pending.request.nonce,
+                            "prompt": pending.request.prompt,
+                            "tool_name": prepared.call.name,
+                        },
+                        response=None,
+                        event_id=f"{pending.decision_id}:open",
+                        now=self._now(),
+                    )
+                    return
                 if continuation_claim is None:
                     if result.wait_blocker is None:
                         self._uow.commit_runtime_state(
@@ -1399,6 +1628,8 @@ class Runtime:
                 now=self._now(),
             )
             self._fences.pop(run.run_id, None)
+            if deliveries:
+                self._delivery_wake.set()
             return
         self._terminal.commit(
             run,
@@ -1410,6 +1641,8 @@ class Runtime:
             now=self._now(),
         )
         self._fences.pop(run.run_id, None)
+        if deliveries:
+            self._delivery_wake.set()
 
     async def _abandon_run_authority(self, run_id: str) -> None:
         fence = self._fences.pop(run_id, None)
@@ -1567,8 +1800,8 @@ class Runtime:
         return float(value)
 
     def _require_started(self) -> None:
-        if not self._started or self._closing:
-            raise RuntimeError("Runtime is not started")
+        if self._state is not RuntimeLifecycleState.READY:
+            raise HarnessError("runtime_not_ready", "Runtime is not ready.")
 
 
 def build_runtime(
@@ -1629,6 +1862,7 @@ __all__ = (
     "ReactCheckpointPort",
     "RunClient",
     "Runtime",
+    "RuntimeLifecycleState",
     "RuntimeDriver",
     "RuntimePorts",
     "RuntimeProfile",

@@ -134,10 +134,12 @@ class ReActLoop:
         collaborator: AgentLoopCollaborator,
         effects: EffectBatchExecutor,
         clock: Callable[[], float],
+        policy_fingerprint: str | None = None,
     ) -> None:
         self._collaborator = collaborator
         self._effects = effects
         self._clock = clock
+        self._policy_fingerprint = policy_fingerprint
 
     async def run(
         self,
@@ -173,6 +175,18 @@ class ReActLoop:
         state, checkpoint_version = checkpoint.load_or_create(
             value.run_id, execution_lease
         )
+        if self._policy_fingerprint is not None:
+            if state.policy_fingerprint and (
+                state.policy_fingerprint != self._policy_fingerprint
+            ):
+                raise RuntimeError("ReAct policy fingerprint differs from checkpoint")
+            if not state.policy_fingerprint:
+                if state.provider_turns_reserved_total or state.tool_calls_reserved_total:
+                    raise RuntimeError("legacy active ReAct checkpoint lacks policy binding")
+                state = replace(state, policy_fingerprint=self._policy_fingerprint)
+                state, checkpoint_version = checkpoint.cas(
+                    value.run_id, execution_lease, checkpoint_version, state
+                )
 
         while True:
             _cancel(cancel, tool_cancel)

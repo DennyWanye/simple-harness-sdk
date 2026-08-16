@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
+import textwrap
 
 import pytest
 
@@ -16,6 +18,10 @@ from simple_harness.testing.cli import (
     run_conformance_cli,
     validate_suites,
 )
+from test_suite_runner import GOOD_VALUES
+
+
+ARTIFACT_SHA = "b" * 64
 
 
 def test_parse_host_factory_valid():
@@ -95,7 +101,7 @@ def test_run_conformance_cli_missing_suite(capsys):
 
 def test_run_conformance_cli_invalid_host_spec(capsys):
     """Test CLI with invalid host spec format."""
-    exit_code = run_conformance_cli(["--host", "invalid_spec", "--suite", "provider"])
+    exit_code = run_conformance_cli(["--host", "invalid_spec", "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA])
     assert exit_code == 2
     captured = capsys.readouterr()
     assert "Error" in captured.err
@@ -103,7 +109,7 @@ def test_run_conformance_cli_invalid_host_spec(capsys):
 
 def test_run_conformance_cli_invalid_suite(capsys):
     """Test CLI with invalid suite name."""
-    exit_code = run_conformance_cli(["--host", "json:dumps", "--suite", "invalid"])
+    exit_code = run_conformance_cli(["--host", "json:dumps", "--suite", "invalid", "--artifact-sha256", ARTIFACT_SHA])
     assert exit_code == 2
     captured = capsys.readouterr()
     assert "Invalid suite names" in captured.err
@@ -112,31 +118,108 @@ def test_run_conformance_cli_invalid_suite(capsys):
 def test_run_conformance_cli_nonexistent_module(capsys):
     """Test CLI with non-existent module."""
     exit_code = run_conformance_cli(
-        ["--host", "nonexistent_xyz:factory", "--suite", "provider"]
+        ["--host", "nonexistent_xyz:factory", "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA]
     )
     assert exit_code == 2
     captured = capsys.readouterr()
     assert "Error loading host factory" in captured.err
 
 
-def test_run_conformance_cli_success_without_json(capsys):
-    """Test CLI with valid arguments but no JSON output."""
-    exit_code = run_conformance_cli(["--host", "json:dumps", "--suite", "provider"])
-    # Returns 1 because implementation is incomplete
-    assert exit_code == 1
+def _write_host_module(tmp_path: Path, *, status: str = "pass") -> str:
+    module_name = "consumer_host_" + hashlib.sha256(
+        str(tmp_path).encode("utf-8")
+    ).hexdigest()[:12]
+    module = tmp_path / f"{module_name}.py"
+    module.write_text(
+        textwrap.dedent(
+            f"""
+            from simple_harness.testing import CaseObservation, ConformanceCaseUnavailable, ConformanceHostMetadata
+
+            VALUES = {GOOD_VALUES!r}
+
+            class Suite:
+                async def _case(self, case_id):
+                    if {status!r} == "skip":
+                        raise ConformanceCaseUnavailable("physical seam unavailable")
+                    if {status!r} == "error":
+                        raise RuntimeError("physical seam failed")
+                    values = dict(VALUES[case_id])
+                    if {status!r} == "fail" and case_id == "provider.physical_request":
+                        values["physical_calls"] = 0
+                    return CaseObservation(case_id=case_id, values=values, evidence={{"receipt": "ok"}})
+                async def physical_request(self): return await self._case("provider.physical_request")
+                async def typed_error(self): return await self._case("provider.typed_error")
+                async def usage(self): return await self._case("provider.usage")
+                async def redaction(self): return await self._case("provider.redaction")
+                async def schema(self): return await self._case("tool.schema")
+                async def five_state(self): return await self._case("tool.five_state")
+                async def reconcile(self): return await self._case("tool.reconcile")
+                async def malformed_duplicate_late(self): return await self._case("tool.malformed_duplicate_late")
+                async def no_tool(self): return await self._case("runtime.no_tool")
+                async def one_tool(self): return await self._case("runtime.one_tool")
+                async def multi_turn_tool(self): return await self._case("runtime.multi_turn_tool")
+                async def session_persistence(self): return await self._case("runtime.session_persistence")
+                async def hitl(self): return await self._case("runtime.hitl")
+                async def delivery(self): return await self._case("runtime.delivery")
+                async def budget(self): return await self._case("runtime.budget")
+                async def restart_without_replay(self): return await self._case("runtime.restart_without_replay")
+                async def host_owned(self): return await self._case("workflow.host_owned")
+                async def official_durable_task(self): return await self._case("workflow.official_durable_task")
+                async def official_personal_v1(self): return await self._case("workflow.official_personal_v1")
+                async def official_capability_build(self): return await self._case("workflow.official_capability_build")
+                async def ticket_fingerprint(self): return await self._case("workflow.ticket_fingerprint")
+                async def reopen(self): return await self._case("workflow.reopen")
+                async def aclose(self):
+                    return None
+
+            class Context:
+                async def __aenter__(self):
+                    self.suite = Suite()
+                    return self.suite
+                async def __aexit__(self, *args):
+                    await self.suite.aclose()
+
+            class Host:
+                metadata = ConformanceHostMetadata(
+                    protocol_version="1.0.0",
+                    host_name="consumer-fixture",
+                    host_version="1.2.3",
+                    capabilities=frozenset({{"provider", "tool", "runtime", "workflow"}}),
+                )
+                def open_suite(self, name):
+                    return Context()
+
+            def build_host():
+                return Host()
+            """
+        ),
+        encoding="utf-8",
+    )
+    return f"{module_name}:build_host"
+
+
+def test_run_conformance_cli_success_without_json(capsys, tmp_path, monkeypatch):
+    """CLI executes the shared provider runner."""
+    monkeypatch.syspath_prepend(str(tmp_path))
+    host = _write_host_module(tmp_path)
+    exit_code = run_conformance_cli(["--host", host, "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA])
+    assert exit_code == 0
     captured = capsys.readouterr()
     assert "Simple Harness SDK Conformance Testing" in captured.out
-    assert "Host: json:dumps" in captured.out
+    assert f"Host: {host}" in captured.out
     assert "Suites: provider" in captured.out
+    assert "PASS" in captured.out
 
 
-def test_run_conformance_cli_success_with_json(capsys, tmp_path):
+def test_run_conformance_cli_success_with_json(capsys, tmp_path, monkeypatch):
     """Test CLI with JSON output file."""
+    monkeypatch.syspath_prepend(str(tmp_path))
+    host = _write_host_module(tmp_path)
     json_file = tmp_path / "report.json"
     exit_code = run_conformance_cli(
-        ["--host", "json:dumps", "--suite", "provider,tool", "--json", str(json_file)]
+        ["--host", host, "--suite", "provider,tool", "--json", str(json_file), "--artifact-sha256", ARTIFACT_SHA]
     )
-    assert exit_code == 1  # Incomplete implementation
+    assert exit_code == 0
     captured = capsys.readouterr()
     assert "Report written to" in captured.out
 
@@ -144,19 +227,33 @@ def test_run_conformance_cli_success_with_json(capsys, tmp_path):
     assert json_file.exists()
     report = json.loads(json_file.read_text())
     assert report["protocol_version"] == "1.0.0"
-    assert report["host"] == "json:dumps"
+    assert report["host"] == {"name": "consumer-fixture", "version": "1.2.3"}
     assert report["suites"] == ["provider", "tool"]
-    assert report["status"] == "not_implemented"
+    assert report["status"] == "pass"
+    assert report["cases"]
 
 
-def test_run_conformance_cli_multiple_suites(capsys):
+def test_run_conformance_cli_multiple_suites(capsys, tmp_path, monkeypatch):
     """Test CLI with multiple comma-separated suites."""
+    monkeypatch.syspath_prepend(str(tmp_path))
+    host = _write_host_module(tmp_path)
     exit_code = run_conformance_cli(
-        ["--host", "json:dumps", "--suite", "provider,tool,runtime,workflow"]
+        ["--host", host, "--suite", "provider,tool,runtime,workflow", "--artifact-sha256", ARTIFACT_SHA]
     )
-    assert exit_code == 1
+    assert exit_code == 0
     captured = capsys.readouterr()
     assert "Suites: provider, tool, runtime, workflow" in captured.out
+
+
+@pytest.mark.parametrize("status", ["skip", "fail", "error"])
+def test_run_conformance_cli_required_non_pass_is_nonzero(
+    status, capsys, tmp_path, monkeypatch
+):
+    monkeypatch.syspath_prepend(str(tmp_path))
+    host = _write_host_module(tmp_path, status=status)
+
+    assert run_conformance_cli(["--host", host, "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA]) == 1
+    assert "FAIL" in capsys.readouterr().out
 
 
 def test_run_conformance_cli_version(capsys):

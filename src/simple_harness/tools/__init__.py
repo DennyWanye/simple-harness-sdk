@@ -6,8 +6,12 @@
 from .authorization import (
     AuthorizationDecision,
     AuthorizationPort,
+    AuthorizationReceipt,
+    AuthorizationRequest,
     AuthorizationResult,
     PreparedToolEffect,
+    bind_authorization_receipts,
+    sdk_authorization_receipt,
 )
 from .contracts import (
     CancellationToken,
@@ -29,7 +33,7 @@ from .errors import (
     ToolRegistryError,
     UnknownToolError,
 )
-from .executor import EffectExecution, EffectExecutor
+from .executor import EffectExecution, EffectExecutor, ToolAuthorizationPending
 from .reconciliation import (
     ReconciliationObservation,
     ReconciliationState,
@@ -43,6 +47,8 @@ __all__ = (
     "ArgumentsValidationError",
     "AuthorizationDecision",
     "AuthorizationPort",
+    "AuthorizationReceipt",
+    "AuthorizationRequest",
     "AuthorizationResult",
     "CancellationToken",
     "DuplicateToolCallError",
@@ -60,6 +66,7 @@ __all__ = (
     "Tool",
     "ToolCall",
     "ToolCallState",
+    "ToolAuthorizationPending",
     "ToolContext",
     "ToolHandler",
     "ToolOutcome",
@@ -69,4 +76,6 @@ __all__ = (
     "ToolResult",
     "ToolSpec",
     "UnknownToolError",
+    "bind_authorization_receipts",
+    "sdk_authorization_receipt",
 )

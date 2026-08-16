@@ -43,7 +43,7 @@ jobs:
         run: |
           uv venv .artifact-venv --python 3.11
           uv pip install --python .artifact-venv/bin/python dist/*.whl
-          .artifact-venv/bin/python -I -c 'import simple_harness; assert simple_harness.__version__ == "0.1.0"'
+          .artifact-venv/bin/python -I -c 'import runpy, simple_harness; expected = runpy.run_path("src/simple_harness/version.py")["__version__"]; assert simple_harness.__version__ == expected'
       - name: Run artifact tests
         run: uv run --frozen --group dev pytest -q tests/artifact
       - name: Verify source provenance and REUSE compliance

@@ -10,21 +10,22 @@ import zipfile
 from conftest import BuildArtifacts
 
 
-FORBIDDEN_PARTS = {
+FORBIDDEN_ANYWHERE = {
     ".git",
     ".local-test-evidence",
     ".pytest_cache",
     ".venv",
     "__pycache__",
-    "build",
-    "dist",
 }
+FORBIDDEN_TOP_LEVEL = {"build", "dist"}
 
 
 def _assert_clean(names: list[str]) -> None:
     for name in names:
         path = PurePosixPath(name)
-        assert not FORBIDDEN_PARTS.intersection(path.parts), name
+        assert not FORBIDDEN_ANYWHERE.intersection(path.parts), name
+        relative_parts = path.parts[1:]
+        assert not relative_parts or relative_parts[0] not in FORBIDDEN_TOP_LEVEL, name
         assert path.suffix not in {".pyc", ".pyo"}, name
 
 
@@ -66,3 +67,4 @@ def test_required_workflows_are_present() -> None:
     root = Path(__file__).resolve().parents[2]
     assert (root / ".github/workflows/ci.yml").is_file()
     assert (root / ".github/workflows/release.yml").is_file()
+    assert (root / ".github/workflows/release-candidate-conformance.yml").is_file()

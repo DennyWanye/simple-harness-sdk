@@ -46,6 +46,12 @@ def test_host_option_registered(pytestconfig):
         pass
 
 
+def test_suite_option_registered(pytestconfig):
+    assert pytestconfig.getoption("--simple-harness-suite") == (
+        "provider,tool,runtime,workflow"
+    )
+
+
 # Sample conformance test that uses the fixture
 @pytest.mark.simple_harness_conformance
 def test_sample_conformance_with_marker(simple_harness_conformance_host):

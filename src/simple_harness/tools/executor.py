@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import time
+import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import cast
@@ -15,6 +16,7 @@ from simple_harness.contracts import (
     EffectId,
     FrozenJsonValue,
     JsonValue,
+    RunId,
     thaw_json,
 )
 from simple_harness.execution.effects import (
@@ -25,14 +27,22 @@ from simple_harness.execution.effects import (
 )
 from simple_harness.execution.fences import RunFenceLease
 from simple_harness.execution.recovery import RecoveryKind, ResolutionOutcome
-from simple_harness.execution.uow import RUNTIME_LEASE_NAMESPACE, ExecutionLease
+from simple_harness.execution.uow import (
+    RUNTIME_LEASE_NAMESPACE,
+    DecisionRecord,
+    DecisionState,
+    ExecutionLease,
+)
 from simple_harness.providers import ProviderToolSpec
 from simple_harness.workflow.lease import WorkflowLease
 
 from .authorization import (
     AuthorizationDecision,
     AuthorizationPort,
+    AuthorizationRequest,
     PreparedToolEffect,
+    bind_authorization_receipts,
+    sdk_authorization_receipt,
 )
 from .contracts import ToolCall, ToolContext, ToolResult
 from .reconciliation import (
@@ -46,6 +56,19 @@ from .registry import ToolRegistry
 class EffectExecution:
     effect: EffectRecord | None
     result: ToolResult
+
+
+class ToolAuthorizationPending(RuntimeError):
+    """Control result: the Run must durably wait for this exact decision."""
+
+    def __init__(self, prepared: PreparedToolEffect, request: AuthorizationRequest) -> None:
+        super().__init__(f"authorization:{prepared.effect_id.value}")
+        self.prepared = prepared
+        self.request = request
+
+    @property
+    def decision_id(self) -> str:
+        return f"authorization:{self.prepared.effect_id.value}"
 
 
 class EffectExecutor:
@@ -96,6 +119,53 @@ class EffectExecutor:
             call=call,
             spec=tool.spec,
             context_metadata=context.metadata,
+        )
+
+    async def bind_decision(
+        self,
+        decision: DecisionRecord,
+        outcome: AuthorizationDecision,
+    ) -> str:
+        """Bind a durable SDK decision to the Host store before Run wake."""
+
+        request = _authorization_request(decision)
+        prepared = self._prepared_from_decision(decision)
+        sdk_receipt = sdk_authorization_receipt(
+            "decision",
+            {
+                "decision": outcome.value,
+                "decision_id": decision.decision_id,
+                "decision_version": decision.version,
+                "effect_id": prepared.effect_id.value,
+                "nonce": request.nonce,
+                "run_id": prepared.run_id.value,
+            },
+        )
+        binder = getattr(self._authorization, "bind_decision", None)
+        if binder is None:
+            # Compatibility is intentionally limited to immediate ALLOW/DENY Hosts.
+            raise TypeError("REQUIRE_USER authorization requires bind_decision")
+        host_receipt = await binder(prepared, request, outcome, sdk_receipt)
+        return bind_authorization_receipts(sdk_receipt, host_receipt)
+
+    def _prepared_from_decision(self, decision: DecisionRecord) -> PreparedToolEffect:
+        request = decision.request
+        if not isinstance(request, Mapping):
+            raise TypeError("authorization decision request must be an object")
+        effect_id = EffectId(str(request["effect_id"]))
+        run_id = RunId(decision.run_id)
+        call_id = CallId(str(request["call_id"]))
+        name = str(request["tool_name"])
+        arguments = thaw_json(request.get("arguments"))
+        if not isinstance(arguments, Mapping):
+            raise TypeError("authorization decision arguments must be an object")
+        tool = self._registry.get(name)
+        return PreparedToolEffect(
+            effect_id=effect_id,
+            run_id=run_id,
+            call=ToolCall(call_id, name, cast(dict[str, FrozenJsonValue], arguments)),
+            spec=tool.spec,
+            context_metadata={},
         )
 
     async def execute(
@@ -172,8 +242,52 @@ class EffectExecutor:
             elif existing.state is EffectState.PREPARED:
                 refresh_prepared_authority = True
         prepared = self._prepared(effect_id=effect_id, call=call, context=context)
-        authorization = await self._authorization.authorize(prepared)
-        if authorization.decision is not AuthorizationDecision.ALLOW:
+        authorization_receipt_ref: str | None = None
+        read_decision = getattr(self._uow, "read_decision", None)
+        durable_decision = (
+            None if read_decision is None else read_decision(f"authorization:{effect_id.value}")
+        )
+        if durable_decision is not None:
+            if durable_decision.run_id != context.run_id.value:
+                raise ValueError("authorization decision belongs to another Run")
+            if durable_decision.state is DecisionState.OPEN:
+                raise ToolAuthorizationPending(
+                    prepared, _authorization_request(durable_decision)
+                )
+            if durable_decision.state is DecisionState.ALLOWED:
+                response = durable_decision.response
+                if not isinstance(response, Mapping):
+                    raise ValueError("allowed authorization lacks a bound receipt")
+                value = response.get("authorization_receipt_ref")
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError("allowed authorization lacks a bound receipt")
+                authorization_receipt_ref = value
+            else:
+                return EffectExecution(
+                    effect=None,
+                    result=ToolResult.rejected(
+                        call.call_id,
+                        f"authorization_{durable_decision.state.value}",
+                        "Tool execution was not authorized.",
+                    ),
+                )
+        prepare = getattr(self._authorization, "prepare", None)
+        if authorization_receipt_ref is None:
+            if prepare is None:
+                prepare = getattr(self._authorization, "authorize")
+            authorization = await prepare(prepared)
+        else:
+            authorization = None
+        if authorization is not None and authorization.decision is AuthorizationDecision.REQUIRE_USER:
+            assert authorization.request is not None
+            request = AuthorizationRequest(
+                prompt=authorization.request.prompt,
+                nonce=secrets.token_urlsafe(32),
+                expires_at=authorization.request.expires_at,
+                metadata=authorization.request.metadata,
+            )
+            raise ToolAuthorizationPending(prepared, request)
+        if authorization is not None and authorization.decision is not AuthorizationDecision.ALLOW:
             return EffectExecution(
                 effect=None,
                 result=ToolResult.rejected(
@@ -183,11 +297,14 @@ class EffectExecutor:
                     or "Tool execution was not authorized.",
                 ),
             )
-        assert authorization.receipt_ref is not None
+        if authorization is not None:
+            assert authorization.receipt_ref is not None
+            authorization_receipt_ref = authorization.receipt_ref
+        assert authorization_receipt_ref is not None
         if existing is not None and not_started_resolution is not None:
             record = self._uow.reauthorize_effect_not_started(
                 existing,
-                authorization_receipt_ref=authorization.receipt_ref,
+                authorization_receipt_ref=authorization_receipt_ref,
                 resolution=not_started_resolution,
                 run_fence=run_fence,
                 execution_lease=execution_lease,
@@ -199,12 +316,12 @@ class EffectExecutor:
             and refresh_prepared_authority
             and (
                 existing.fence_epoch != run_fence.epoch
-                or existing.authorization_receipt_ref != authorization.receipt_ref
+                or existing.authorization_receipt_ref != authorization_receipt_ref
             )
         ):
             record = self._uow.refresh_prepared_effect_authority(
                 existing,
-                authorization_receipt_ref=authorization.receipt_ref,
+                authorization_receipt_ref=authorization_receipt_ref,
                 run_fence=run_fence,
                 execution_lease=execution_lease,
                 now=self._clock(),
@@ -217,7 +334,7 @@ class EffectExecutor:
                 tool_name=call.name,
                 arguments=cast(dict[str, object], arguments),
                 request_hash=request_hash,
-                authorization_receipt_ref=authorization.receipt_ref,
+                authorization_receipt_ref=authorization_receipt_ref,
                 run_fence=run_fence,
                 execution_lease=execution_lease,
                 now=self._clock(),
@@ -225,14 +342,30 @@ class EffectExecutor:
                 turn_ordinal=turn_ordinal,
                 call_ordinal=call_ordinal,
             )
+        sdk_handoff_receipt = sdk_authorization_receipt(
+            "effect-handoff",
+            {
+                "authorization_receipt_ref": authorization_receipt_ref,
+                "effect_id": effect_id.value,
+                "effect_version": record.version,
+                "fence_epoch": run_fence.epoch,
+                "run_id": context.run_id.value,
+            },
+        )
+        handoff_binder = getattr(self._authorization, "bind_effect_handoff", None)
+        if handoff_binder is None:
+            raise TypeError("Tool handoff requires bind_effect_handoff")
+        host_handoff_receipt = await handoff_binder(
+            prepared, authorization_receipt_ref, sdk_handoff_receipt
+        )
+        handoff_receipt_ref = bind_authorization_receipts(
+            sdk_handoff_receipt, host_handoff_receipt
+        )
         handed_off = self._uow.mark_effect_handed_off(
             effect_id,
             expected_version=record.version,
             run_fence=run_fence,
-            handoff_receipt_ref=(
-                f"tool-handoff:{context.run_id.value}:{call.call_id.value}:"
-                f"{effect_id.value}:{run_fence.epoch}"
-            ),
+            handoff_receipt_ref=handoff_receipt_ref,
             execution_lease=execution_lease,
             workflow_lease=workflow_lease,
             now=self._clock(),
@@ -316,4 +449,20 @@ class EffectExecutor:
         )
 
 
-__all__ = ("EffectExecution", "EffectExecutor")
+def _authorization_request(decision: DecisionRecord) -> AuthorizationRequest:
+    value = decision.request
+    if not isinstance(value, Mapping):
+        raise TypeError("authorization decision request must be an object")
+    metadata = value.get("metadata", {})
+    if not isinstance(metadata, Mapping):
+        raise TypeError("authorization metadata must be an object")
+    expires_at = value.get("expires_at")
+    return AuthorizationRequest(
+        prompt=str(value["prompt"]),
+        nonce=str(value["nonce"]),
+        expires_at=None if expires_at is None else float(expires_at),
+        metadata=cast(Mapping[str, FrozenJsonValue], metadata),
+    )
+
+
+__all__ = ("EffectExecution", "EffectExecutor", "ToolAuthorizationPending")

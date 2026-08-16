@@ -12,7 +12,12 @@ import pytest
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.workflow.checkpoint import SqliteNativeCheckpointStore
 from simple_harness.workflow.compiler import compile_workflow
-from simple_harness.workflow.contracts import StatePatch, WorkflowContext
+from simple_harness.workflow.contracts import (
+    PersonalWorkflowHostServices,
+    StatePatch,
+    WorkflowContext,
+    WorkflowHostServices,
+)
 from simple_harness.workflow.definition import Edge, NodeDefinition, WorkflowDefinition
 from simple_harness.workflow.execution_ports import (
     CheckpointExecutionAdapter,
@@ -50,7 +55,12 @@ def _compiled(calls: list[str]):  # type: ignore[no-untyped-def]
     )
 
 
-def _build(database, registry, owner):  # type: ignore[no-untyped-def]
+def _build(
+    database,
+    registry,
+    owner,
+    host_services=WorkflowHostServices(),
+):  # type: ignore[no-untyped-def]
     uow = SqliteExecutionUnitOfWork(database)
     ports = WorkflowExecutionPorts(
         uow, CheckpointExecutionAdapter(database), uow, uow, uow
@@ -64,10 +74,64 @@ def _build(database, registry, owner):  # type: ignore[no-untyped-def]
         execution_ports=ports,
         terminal_projection_port=LegacyTerminalProjectionPort(),
         terminal_commit_projection_port=NoTerminalCommitProjectionPort(),
+        host_services=host_services,
         owner=owner,
         clock=lambda: 1.0,
     )
     return uow, ports, store, runner
+
+
+@pytest.mark.anyio
+async def test_runner_injects_frozen_profile_services(tmp_path: Path) -> None:
+    observed: list[object] = []
+
+    async def node(state, context):  # type: ignore[no-untyped-def]
+        del state
+        observed.append(context.port("personal_workflow_runtime"))
+        return StatePatch({})
+
+    compiled = compile_workflow(
+        WorkflowDefinition(
+            "service_injection",
+            "1",
+            1,
+            "node",
+            (NodeDefinition("node", node),),
+            {},
+            5,
+            4,
+            edges=(Edge("node", "__end__"),),
+        )
+    )
+    class Service:
+        async def execute(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {}
+
+    service = Service()
+    services = WorkflowHostServices(
+        personal_v1=PersonalWorkflowHostServices(runtime=service)
+    )
+    with Database.open(tmp_path / "services.db") as database:
+        _uow, _ports, _store, runner = _build(
+            database,
+            WorkflowRegistry((compiled,)),
+            "runner",
+            services,
+        )
+        run_id = await runner.start(
+            session_id="session",
+            request_id="request",
+            turn_id="turn",
+            profile_key="workflow.personal_v1",
+            tool_catalog_generation=1,
+            workflow_name="service_injection",
+            workflow_version="1",
+            start_input={},
+            capability_snapshot={},
+        )
+        await runner.run(run_id, {}, WorkflowContext())
+    assert observed == [service]
 
 
 async def _start_and_run(runner: WorkflowRunner, request_id: str) -> str:

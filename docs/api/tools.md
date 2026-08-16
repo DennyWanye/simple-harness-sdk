@@ -20,7 +20,15 @@ rejected as late. Host exceptions are converted into a stable minimal error and
 their raw text is not returned to the model.
 
 Authorization remains host-owned through
-`AuthorizationPort.authorize(PreparedToolEffect)`. An allow decision requires a
-receipt reference. `ToolReconciliationPort.observe(effect)` returns only
+`AuthorizationPort.prepare(PreparedToolEffect)`. An immediate allow requires a
+Host receipt reference. A `REQUIRE_USER` result is frozen as an SDK decision; the
+Host must implement `bind_decision(...)` and return a receipt whose
+`bound_sdk_receipt_hash` matches the SDK receipt before the Run can wake. Every
+allowed effect, including an immediate allow, must then pass
+`bind_effect_handoff(...)`; without that second hash-bound Host receipt the effect
+stays `PREPARED` and the physical Tool handler is not called. Implementing only
+the legacy `authorize(...)` method is therefore insufficient for a 0.1.1 Host.
+
+`ToolReconciliationPort.observe(effect)` returns only
 `confirmed_not_started`, `completed`, or `still_unknown`, always with an
 evidence reference. Only `completed` may carry a settled `ToolResult`.

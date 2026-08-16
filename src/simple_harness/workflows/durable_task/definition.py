@@ -34,7 +34,7 @@ from simple_harness.workflow.definition import (
 )
 
 if TYPE_CHECKING:
-    from simple_harness.workflow.contracts import NodeHandler
+    from simple_harness.workflow.contracts import NodeHandler, RouteSelector
 
 
 WORKFLOW_NAME = "durable_task"
@@ -85,9 +85,9 @@ def create_definition(
     test_handler: NodeHandler,
     audit_handler: NodeHandler,
     finalize_handler: NodeHandler,
-    approval_route: NodeHandler,
-    completion_route: NodeHandler,
-    audit_route: NodeHandler,
+    approval_route: RouteSelector,
+    completion_route: RouteSelector,
+    audit_route: RouteSelector,
     max_proposal_turns: int = DEFAULT_PROPOSAL_TURNS,
     max_fix_rounds: int = DEFAULT_FIX_ROUNDS,
 ) -> WorkflowDefinition:

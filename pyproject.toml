@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simple-harness-sdk"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Embeddable durable agent runtime and workflow SDK"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -45,10 +45,15 @@ dev = [
 packages = ["src/simple_harness"]
 core-metadata-version = "2.4"
 
+[tool.hatch.version]
+path = "src/simple_harness/version.py"
+
 [tool.hatch.build.targets.sdist]
 core-metadata-version = "2.4"
 include = [
   "/.github",
+  "/CHANGELOG.md",
+  "/docs",
   "/LICENSES",
   "/NOTICE",
   "/README.md",

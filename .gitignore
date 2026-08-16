@@ -3,7 +3,8 @@
 __pycache__/
 *.py[cod]
 build/
+!scripts/build/
+!scripts/build/reproducibility.py
 dist/
 .coverage
 .local-test-evidence/
-

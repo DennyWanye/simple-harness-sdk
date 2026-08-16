@@ -64,6 +64,7 @@ class StartSnapshot:
     tool_catalog_generation: int
     input: FrozenJsonValue
     workflow_admission: StartAdmissionRequest | None = None
+    policy_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if self.driver_kind == "workflow":
@@ -73,18 +74,24 @@ class StartSnapshot:
             raise ValueError("non-workflow start snapshot rejects workflow admission")
         if not isinstance(self.turn_id, str) or not self.turn_id.strip():
             raise ValueError("start snapshot turn_id is required")
+        if self.policy_fingerprint is not None and (
+            not isinstance(self.policy_fingerprint, str)
+            or not self.policy_fingerprint.strip()
+        ):
+            raise ValueError("policy_fingerprint must be a non-empty string or None")
 
     def to_json(self) -> dict[str, JsonValue]:
         value = thaw_json(self.input)
         if not isinstance(value, dict):
             raise TypeError("start input must remain a JSON object")
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "profile_key": self.profile_key,
             "driver_kind": self.driver_kind,
             "turn_id": self.turn_id,
             "tool_catalog_generation": self.tool_catalog_generation,
             "input": value,
+            "policy_fingerprint": self.policy_fingerprint,
             "workflow_admission": (
                 None
                 if self.workflow_admission is None
@@ -100,7 +107,7 @@ class StartSnapshot:
             and "start_input" in value
             and "workflow_name" in value
         )
-        if not legacy_workflow_snapshot and schema_version not in {1, 2}:
+        if not legacy_workflow_snapshot and schema_version not in {1, 2, 3}:
             raise ValueError("unsupported start snapshot schema")
         profile_key = value.get("profile_key")
         driver_kind = value.get("driver_kind")
@@ -144,6 +151,11 @@ class StartSnapshot:
             tool_catalog_generation=generation,
             input=freeze_json(start_input),
             workflow_admission=admission,
+            policy_fingerprint=(
+                value.get("policy_fingerprint")
+                if schema_version == 3
+                else None
+            ),
         )
 
 
@@ -153,6 +165,7 @@ def bind_start_snapshot(
     profile_key: str,
     driver_kind: str,
     workflow_admission: StartAdmissionRequest | None = None,
+    policy_fingerprint: str | None = None,
 ) -> StartSnapshot:
     input_value = thaw_json(cast(FrozenJsonValue, start.input))
     if not isinstance(input_value, dict):
@@ -164,6 +177,7 @@ def bind_start_snapshot(
         tool_catalog_generation=start.tool_catalog_generation,
         input=freeze_json(input_value),
         workflow_admission=workflow_admission,
+        policy_fingerprint=policy_fingerprint,
     )
 
 

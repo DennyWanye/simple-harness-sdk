@@ -9,6 +9,7 @@ import asyncio
 import copy
 import hashlib
 import inspect
+import json
 import logging
 import textwrap
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -40,6 +41,10 @@ from .contracts import (
     validate_json_value,
 )
 from .control import WorkflowSuspended
+from .dependency_lock import (
+    SDK_DEPENDENCY_LOCK_HASH,
+    validate_dependency_lock_hash,
+)
 from .errors import (
     InvalidStatePatch,
     StateMergeConflict,
@@ -49,6 +54,8 @@ from .errors import (
 )
 
 if TYPE_CHECKING:
+    from simple_harness.runtime.orchestration import WorkflowProfileRegistration
+
     from .native import (
         NativeCheckpointStore,
         TerminalCommitProjectionPort,
@@ -240,6 +247,97 @@ class WorkflowManifest:
                 else self.terminal_projection_descriptor.to_dict()
             ),
         }
+
+
+def workflow_manifest_hash(manifest: WorkflowManifest) -> str:
+    """Return the stable public identity used by admission and registration."""
+
+    if not isinstance(manifest, WorkflowManifest):
+        raise TypeError("manifest must be a WorkflowManifest")
+    return hashlib.sha256(
+        json.dumps(
+            manifest.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowDefinitionRegistration:
+    """Host registration request sealed to one profile, graph and UoW owner."""
+
+    profile: WorkflowProfileRegistration
+    definition: WorkflowDefinition
+    dependency_lock_hash: str
+    expected_manifest_hash: str
+    expected_implementation_fingerprint: str
+    transaction_owner: object
+
+    def __post_init__(self) -> None:
+        from simple_harness.runtime.orchestration import WorkflowProfileRegistration
+
+        if not isinstance(self.profile, WorkflowProfileRegistration):
+            raise TypeError("profile must be a WorkflowProfileRegistration")
+        if not isinstance(self.definition, WorkflowDefinition):
+            raise TypeError("definition must be a WorkflowDefinition")
+        if self.transaction_owner is None:
+            raise ValueError("transaction_owner is required")
+        for name in (
+            "dependency_lock_hash",
+            "expected_manifest_hash",
+            "expected_implementation_fingerprint",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{name} is required")
+        validate_dependency_lock_hash(self.dependency_lock_hash)
+        if (
+            self.profile.workflow_name != self.definition.name
+            or self.profile.workflow_version != self.definition.version
+        ):
+            raise ValueError("profile graph identity differs from definition")
+
+
+def compile_workflow_registration(
+    registration: WorkflowDefinitionRegistration,
+    *,
+    transaction_owner: object,
+    dependency_lock_path: str | Path | None = None,
+    dependency_lock_hash: str | None = None,
+) -> CompiledWorkflow:
+    """Compile a Host definition after fail-closed owner/fingerprint checks."""
+
+    if not isinstance(registration, WorkflowDefinitionRegistration):
+        raise TypeError("registration must be a WorkflowDefinitionRegistration")
+    if registration.transaction_owner is not transaction_owner:
+        raise ValueError("workflow registration transaction owner mismatch")
+    if dependency_lock_path is not None and dependency_lock_hash is not None:
+        raise ValueError(
+            "dependency_lock_path and dependency_lock_hash are mutually exclusive"
+        )
+    requested_hash = (
+        registration.dependency_lock_hash
+        if dependency_lock_path is None and dependency_lock_hash is None
+        else dependency_lock_hash
+    )
+    compiled = compile_workflow(
+        registration.definition,
+        dependency_lock_path=dependency_lock_path,
+        dependency_lock_hash=requested_hash,
+    )
+    manifest = compiled.manifest
+    if manifest.dependency_lock_hash != registration.dependency_lock_hash:
+        raise ValueError("workflow dependency lock hash mismatch")
+    if workflow_manifest_hash(manifest) != registration.expected_manifest_hash:
+        raise ValueError("workflow manifest hash mismatch")
+    if (
+        manifest.implementation_bundle_hash
+        != registration.expected_implementation_fingerprint
+    ):
+        raise ValueError("workflow implementation fingerprint mismatch")
+    return compiled
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -1188,7 +1286,12 @@ def compile_workflow(
     definition: WorkflowDefinition,
     *,
     dependency_lock_path: str | Path | None = None,
+    dependency_lock_hash: str | None = None,
 ) -> CompiledWorkflow:
+    if dependency_lock_path is not None and dependency_lock_hash is not None:
+        raise ValueError(
+            "dependency_lock_path and dependency_lock_hash are mutually exclusive"
+        )
     nodes = _validate_definition(definition)
     callable_records = [
         {"kind": "node", "node_id": node.node_id, **_callable_record(node.handler)}
@@ -1257,17 +1360,20 @@ def compile_workflow(
         ),
     }
 
-    lock_path = (
-        Path(dependency_lock_path)
-        if dependency_lock_path is not None
-        else Path(__file__).resolve().parents[3] / "uv.lock"
-    )
-    if not lock_path.is_file():
-        raise WorkflowDefinitionError(
-            "dependency_lock_missing", f"Dependency lock does not exist: {lock_path}"
-        )
-    lock_bytes = lock_path.read_bytes()
-    lock_hash = _sha256_bytes(lock_bytes)
+    lock_bytes: bytes | None = None
+    if dependency_lock_path is not None:
+        lock_path = Path(dependency_lock_path)
+        if not lock_path.is_file():
+            raise WorkflowDefinitionError(
+                "dependency_lock_missing",
+                f"Dependency lock does not exist: {lock_path}",
+            )
+        lock_bytes = lock_path.read_bytes()
+        lock_hash = _sha256_bytes(lock_bytes)
+    elif dependency_lock_hash is not None:
+        lock_hash = validate_dependency_lock_hash(dependency_lock_hash)
+    else:
+        lock_hash = SDK_DEPENDENCY_LOCK_HASH
     # DeepResearch v1-v4 are immutable recovery formats.  Their manifests were
     # shipped with this dependency identity and must not drift merely because
     # a later workflow version adds an unrelated product dependency (for
@@ -1277,16 +1383,27 @@ def compile_workflow(
         "lf": "1013a7b449853880a44dd4219d1fe8090dff38055fd4a42d6902887693e4c8ef",
         "crlf": "ff691f62e113477ba230f0897488fb6ec9f1d1009b003947497cbecc6ea895e5",
     }
-    if definition.name == "deep_research" and definition.version in {"v1", "v2", "v3", "v4"}:
+    if (
+        dependency_lock_hash is None
+        and definition.name == "deep_research"
+        and definition.version in {"v1", "v2", "v3", "v4"}
+    ):
         # The registered recovery definitions keep the released LF identity on
         # every checkout. Explicit fixture compilation still exercises both
         # historical line-ending variants.
         line_ending = (
-            "crlf" if dependency_lock_path is not None and b"\r\n" in lock_bytes
+            "crlf"
+            if dependency_lock_path is not None
+            and lock_bytes is not None
+            and b"\r\n" in lock_bytes
             else "lf"
         )
         lock_hash = historical_dependency_lock_hashes[line_ending]
-    elif definition.name == "deep_research" and definition.version in {"v5", "v6"}:
+    elif (
+        dependency_lock_hash is None
+        and definition.name == "deep_research"
+        and definition.version in {"v5", "v6"}
+    ):
         # v5/v6 were released against this dependency identity. Recovery must
         # not change when the checkout's uv.lock later advances.
         lock_hash = "0082b2a5c7d7148fa54fb5d740520430e14bfebd56f2461c5bb7adda67ec4526"

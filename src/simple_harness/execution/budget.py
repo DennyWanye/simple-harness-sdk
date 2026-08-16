@@ -215,7 +215,6 @@ class FrozenPriceEstimator:
             amount,
             self.snapshot_id,
         )
-
     def estimate_upper_bound(self, request: ProviderRequest) -> BudgetCharge:
         if request.max_output_tokens is None:
             return BudgetCharge.unknown()
@@ -260,6 +259,20 @@ class FrozenPriceEstimator:
         )
 
 
+def budget_policy_fingerprint(
+    policy: BudgetPolicy, estimator: FrozenPriceEstimator | None
+) -> str:
+    """Canonical identity for the provider budget authority frozen at composition."""
+
+    payload: JsonValue = {
+        "estimator": None if estimator is None else estimator.snapshot_json(),
+        "hard_cap_micros": policy.hard_cap_micros,
+        "protocol": "provider-budget-policy-v1",
+        "refuse_on_unknown": policy.refuse_on_unknown,
+    }
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
 __all__ = (
     "BudgetCharge",
     "BudgetChargeKind",
@@ -268,4 +281,5 @@ __all__ = (
     "BudgetSnapshot",
     "BudgetUnknownError",
     "FrozenPriceEstimator",
+    "budget_policy_fingerprint",
 )

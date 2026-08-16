@@ -8,12 +8,11 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
-import json
 import threading
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol, cast
 
 from simple_harness.contracts import (
@@ -37,12 +36,15 @@ from simple_harness.runtime.profiles import ProfileDescriptor
 from simple_harness.runtime.start_snapshot import RunStart, StartSnapshot
 from simple_harness.tools.schema import validate_arguments
 
-from .contracts import WorkflowContext, WorkflowRunStatus
+from .contracts import WorkflowContext, WorkflowHostServices, WorkflowRunStatus
 from .definition import (
     CompiledWorkflow,
     WorkflowDefinition,
+    WorkflowDefinitionRegistration,
     WorkflowManifest,
     compile_workflow,
+    compile_workflow_registration,
+    workflow_manifest_hash,
 )
 from .errors import WorkflowDependencyUnavailable
 from .execution_ports import (
@@ -90,14 +92,9 @@ class NativeExecutableProtocol(Protocol):
 
 
 def manifest_hash(manifest: WorkflowManifest) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            asdict(manifest),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
+    """Compatibility alias for the public manifest fingerprint helper."""
+
+    return workflow_manifest_hash(manifest)
 
 
 def _clone_definition(definition: WorkflowDefinition) -> WorkflowDefinition:
@@ -144,7 +141,10 @@ def _sealed_compiled_workflow(workflow: CompiledWorkflow) -> CompiledWorkflow:
             for node_id, node in definition_nodes.items()
         ):
             raise ValueError("compiled node map differs from definition")
-        sealed = compile_workflow(_clone_definition(workflow.definition))
+        sealed = compile_workflow(
+            _clone_definition(workflow.definition),
+            dependency_lock_hash=workflow.manifest.dependency_lock_hash,
+        )
         if manifest_hash(sealed.manifest) != manifest_hash(workflow.manifest):
             raise ValueError("compiled manifest differs from definition")
         return sealed
@@ -277,12 +277,76 @@ class RegisteredWorkflow:
 
 
 class WorkflowRegistry:
-    def __init__(self, workflows: tuple[CompiledWorkflow, ...] = ()) -> None:
+    def __init__(
+        self,
+        workflows: tuple[CompiledWorkflow, ...] = (),
+        *,
+        transaction_owner: object | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self._revision = 0
         self._entries: dict[tuple[str, str], RegisteredWorkflow] = {}
+        self._profile_registrations: dict[str, WorkflowDefinitionRegistration] = {}
+        self._transaction_owner = transaction_owner
         for workflow in workflows:
             self.register(workflow)
+
+    @property
+    def transaction_owner(self) -> object | None:
+        return self._transaction_owner
+
+    def bind_transaction_owner(self, transaction_owner: object) -> None:
+        if transaction_owner is None:
+            raise ValueError("transaction_owner is required")
+        with self._lock:
+            if (
+                self._transaction_owner is not None
+                and self._transaction_owner is not transaction_owner
+            ):
+                raise ValueError("workflow registry transaction owner mismatch")
+            self._transaction_owner = transaction_owner
+
+    def register_definition(
+        self, registration: WorkflowDefinitionRegistration
+    ) -> RegisteredWorkflow:
+        if not isinstance(registration, WorkflowDefinitionRegistration):
+            raise TypeError(
+                "registration must be a WorkflowDefinitionRegistration"
+            )
+        owner = self._transaction_owner
+        if owner is None:
+            raise ValueError("workflow registry transaction owner is not bound")
+        key = registration.profile.descriptor.key
+        with self._lock:
+            existing_registration = self._profile_registrations.get(key)
+            if existing_registration is not None:
+                if existing_registration != registration:
+                    raise ValueError(
+                        "profile key already registered with different fingerprint"
+                    )
+                return self.require(
+                    registration.definition.name, registration.definition.version
+                )
+            compiled = compile_workflow_registration(
+                registration, transaction_owner=owner
+            )
+            entry = self.register(compiled)
+            self._profile_registrations[key] = registration
+            self._revision += 1
+            return entry
+
+    def profile_registrations(self) -> tuple[WorkflowDefinitionRegistration, ...]:
+        with self._lock:
+            return tuple(
+                self._profile_registrations[key]
+                for key in sorted(self._profile_registrations)
+            )
+
+    def profile_registration(
+        self, profile_key: str
+    ) -> WorkflowDefinitionRegistration | None:
+        with self._lock:
+            return self._profile_registrations.get(profile_key)
 
     def register(
         self, workflow: CompiledWorkflow, *, replace: bool = False
@@ -446,6 +510,7 @@ class WorkflowRunner:
         terminal_commit_projection_port: TerminalCommitProjectionPort,
         progress_port: WorkflowProgressPort | None = None,
         observer_port: WorkflowObserverPort | None = None,
+        host_services: WorkflowHostServices = WorkflowHostServices(),
         owner: str | None = None,
         lease_ttl_seconds: float = 30.0,
         heartbeat_interval_seconds: float = 10.0,
@@ -462,6 +527,13 @@ class WorkflowRunner:
             is not execution_ports.checkpoint.transaction_owner
         ):
             raise ValueError("workflow authorities have different transaction owners")
+        if not isinstance(host_services, WorkflowHostServices):
+            raise TypeError("host_services must be a WorkflowHostServices")
+        if (
+            registry.transaction_owner is not None
+            and registry.transaction_owner is not owner_identity
+        ):
+            raise ValueError("workflow registry transaction owner mismatch")
         self.registry = registry
         self.checkpoint = checkpoint
         self.recovery = recovery
@@ -472,6 +544,7 @@ class WorkflowRunner:
         self.terminal_commit_projection_port = terminal_commit_projection_port
         self.progress_port = progress_port
         self.observer_port = observer_port
+        self.host_services = host_services
         self.owner = owner or f"workflow-runner-{uuid.uuid4().hex}"
         self.lease_ttl_seconds = lease_ttl_seconds
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
@@ -751,6 +824,20 @@ class WorkflowRunner:
         thread_id: str | None = None,
         checkpoint_ns: str = "native",
     ) -> str:
+        profile_registration = self.registry.profile_registration(profile_key)
+        if profile_registration is not None:
+            profile = profile_registration.profile
+            if (
+                profile.workflow_name != workflow_name
+                or profile.workflow_version != workflow_version
+            ):
+                raise ValueError(
+                    "workflow identity differs from the registered profile"
+                )
+            validate_arguments(
+                copy.deepcopy(dict(start_input)),
+                profile.start_input_schema.canonical_schema,
+            )
         entry = self.registry.require(workflow_name, workflow_version)
         capability = copy.deepcopy(dict(capability_snapshot))
         calculated = hashlib.sha256(canonical_json(capability).encode()).hexdigest()
@@ -1134,6 +1221,7 @@ class WorkflowRunner:
         request = start_snapshot.workflow_admission
         if request is None:
             raise RuntimeError("workflow Run lacks its durable admission snapshot")
+        context = self.host_services.bind_context(run.profile_key, context)
         workflow_name = request.workflow_name
         workflow_version = request.workflow_version
         entry = self.registry.require(

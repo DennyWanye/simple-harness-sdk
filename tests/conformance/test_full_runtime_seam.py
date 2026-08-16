@@ -66,6 +66,7 @@ from simple_harness.runtime import (
 from simple_harness.tools import ToolContext, ToolResult, ToolSpec
 from simple_harness.tools.authorization import (
     AuthorizationDecision,
+    AuthorizationReceipt,
     AuthorizationResult,
 )
 from simple_harness.tools.executor import EffectExecutor
@@ -212,6 +213,17 @@ class RecordingAuthorization:
         return AuthorizationResult(
             AuthorizationDecision.ALLOW,
             receipt_ref=f"authorization:{prepared.effect_id.value}",
+        )
+
+    async def bind_effect_handoff(
+        self, prepared, authorization_receipt_ref, sdk_receipt
+    ) -> AuthorizationReceipt:
+        del authorization_receipt_ref
+        self.order.add("authorization.bind_effect_handoff", prepared.effect_id.value)
+        return AuthorizationReceipt(
+            f"host:handoff:{prepared.effect_id.value}",
+            "a" * 64,
+            sdk_receipt.receipt_hash,
         )
 
 
@@ -630,10 +642,11 @@ def test_provider_tool_kernel_effect_and_same_driver_order(
         )
 
         assert record.state is RunState.COMPLETED
-        assert seam.order.operations()[-6:] == [
+        assert seam.order.operations()[-7:] == [
             "driver.react.enter",
             "provider.transport",
             "authorization.authorize",
+            "authorization.bind_effect_handoff",
             "tool.handler",
             "provider.transport",
             "driver.react.exit",
@@ -908,12 +921,6 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
             "recovered_child_run_id": "child-composed",
             "recovery_reason": "child_provider_failure",
         }
-        assert _count(
-            seam.database,
-            "SELECT count(*) FROM delivery_outbox "
-            "WHERE run_id='parent-composed' AND state='pending'",
-        ) == 1
-        assert await seam.runtime.dispatch_deliveries_once() is True
         expected_projections = [
             (
                 "parent-composed:terminal",
@@ -932,6 +939,14 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
                 ).encode("utf-8"),
             )
         ]
+        for _ in range(100):
+            if _count(
+                seam.database,
+                "SELECT count(*) FROM delivery_outbox "
+                "WHERE run_id='parent-composed' AND state='delivered'",
+            ) == 1:
+                break
+            await asyncio.sleep(0)
         assert seam.sink.projections == expected_projections
         assert _count(
             seam.database,

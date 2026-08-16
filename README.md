@@ -2,6 +2,7 @@
 
 An embeddable, durable agent runtime extracted from Simple Harness.
 
-This repository is in its v0.1 foundation phase. The public immutable contracts
-are documented in [`docs/api/contracts.md`](docs/api/contracts.md); runtime
-factories are added by the later implementation slices.
+Version 0.1.1 provides the durable runtime/workflow foundation and an executable
+consumer conformance protocol. Public contracts are documented in
+[`docs/api/contracts.md`](docs/api/contracts.md); consumer validation is covered
+by [`docs/conformance.md`](docs/conformance.md).

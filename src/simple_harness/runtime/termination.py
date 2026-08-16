@@ -83,6 +83,7 @@ class TerminationState:
     last_workflow_spawn_wait_receipt_id: str | None = None
     workflow_catalog_selection: JsonValue | None = None
     workflow_catalog_selection_hash: str | None = None
+    policy_fingerprint: str = ""
 
     @property
     def turns(self) -> int:
@@ -141,6 +142,11 @@ class TerminationState:
             self.workflow_catalog_selection_hash
         ) != 64:
             raise ValueError("workflow catalog selection hash is invalid")
+        if self.policy_fingerprint and (
+            len(self.policy_fingerprint) != 64
+            or any(ch not in "0123456789abcdef" for ch in self.policy_fingerprint)
+        ):
+            raise ValueError("termination policy fingerprint must be lowercase SHA-256")
 
     def before_provider(
         self, limits: TerminationLimits, *, now: float, budget: BudgetSnapshot
@@ -204,7 +210,7 @@ class TerminationState:
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "started_at": self.started_at,
             "last_observed_at": self.last_observed_at,
             "provider_turns_reserved_total": self.provider_turns_reserved_total,
@@ -231,11 +237,12 @@ class TerminationState:
             ),
             "workflow_catalog_selection": self.workflow_catalog_selection,
             "workflow_catalog_selection_hash": self.workflow_catalog_selection_hash,
+            "policy_fingerprint": self.policy_fingerprint,
         }
 
     @classmethod
     def from_json(cls, value: Mapping[str, object]) -> TerminationState:
-        if value.get("schema_version") != 1:
+        if value.get("schema_version") not in {1, 2}:
             raise ValueError("unsupported ReAct checkpoint schema")
         return cls(
             started_at=_float(value["started_at"]),
@@ -278,6 +285,7 @@ class TerminationState:
             workflow_catalog_selection_hash=_optional_string(
                 value.get("workflow_catalog_selection_hash")
             ),
+            policy_fingerprint=str(value.get("policy_fingerprint") or ""),
         )
 
 

@@ -20,6 +20,7 @@ from simple_harness.execution.recovery import ResolutionOutcome
 from simple_harness.execution.uow import ExecutionLease
 from simple_harness.tools import (
     AuthorizationDecision,
+    AuthorizationReceipt,
     AuthorizationResult,
     CancellationToken,
     EffectExecutor,
@@ -139,6 +140,18 @@ class Allow:
             AuthorizationDecision.ALLOW, receipt_ref="authorization:1"
         )
 
+    async def bind_effect_handoff(
+        self, _prepared, _authorization_receipt_ref, sdk_receipt
+    ) -> AuthorizationReceipt:
+        return AuthorizationReceipt("host:handoff:1", "a" * 64, sdk_receipt.receipt_hash)
+
+
+class AllowWithoutHandoff:
+    async def authorize(self, _prepared: PreparedToolEffect) -> AuthorizationResult:
+        return AuthorizationResult(
+            AuthorizationDecision.ALLOW, receipt_ref="authorization:missing-handoff"
+        )
+
 
 class Observe:
     def __init__(self, observation: ReconciliationObservation) -> None:
@@ -175,15 +188,46 @@ def _executor(
     uow: FakeUow,
     handler: object,
     observation: ReconciliationObservation,
+    *,
+    authorization: object | None = None,
 ) -> tuple[EffectExecutor, Observe]:
     observe = Observe(observation)
     executor = EffectExecutor(
         uow=uow,
         registry=ToolRegistry([FunctionTool(_spec(), handler)]),  # type: ignore[arg-type]
-        authorization=Allow(),
+        authorization=authorization or Allow(),  # type: ignore[arg-type]
         reconciliation=observe,
     )
     return executor, observe
+
+
+def test_missing_host_handoff_receipt_fails_before_physical_tool() -> None:
+    uow = FakeUow()
+    calls = 0
+
+    def handler(_arguments: object, _context: ToolContext) -> ToolResult:
+        nonlocal calls
+        calls += 1
+        return ToolResult.succeeded(CallId("call-1"))
+
+    executor, _ = _executor(
+        uow,
+        handler,
+        ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused"),
+        authorization=AllowWithoutHandoff(),
+    )
+    with pytest.raises(TypeError, match="bind_effect_handoff"):
+        asyncio.run(
+            executor.execute(
+                effect_id=EffectId("effect-missing-handoff"),
+                call=ToolCall(CallId("call-1"), "read", {"path": "."}),
+                context=_context(),
+                execution_lease=LEASE,
+                run_fence=FENCE,
+            )
+        )
+    assert calls == 0
+    assert uow.record is not None and uow.record.state is EffectState.PREPARED
 
 
 def test_effect_is_handed_off_before_handler_and_then_settled() -> None:

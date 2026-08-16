@@ -79,10 +79,11 @@ async def test_execute_handler_calls_runtime_port() -> None:
     mock_runtime = Mock()
     mock_runtime.execute = AsyncMock(return_value={"output_key": "output_value"})
 
-    # Mock context
-    context = Mock()
-    context.ports = {"personal_workflow_runtime": mock_runtime}
-    context.identity = {"user": "test-user"}
+    execution_identity = object()
+    context = WorkflowContext(
+        ports={"personal_workflow_runtime": mock_runtime},
+        identity=execution_identity,  # type: ignore[arg-type]
+    )
 
     # Execute handler
     patch = await _execute_handler(state, context)
@@ -95,7 +96,7 @@ async def test_execute_handler_calls_runtime_port() -> None:
     assert isinstance(call_kwargs["selection"], PersonalWorkflowSelectionV1)
     assert call_kwargs["selection"].selection_id == selection.selection_id
     assert call_kwargs["inputs"] == {"input_key": "input_value"}
-    assert call_kwargs["execution_identity"] == {"user": "test-user"}
+    assert call_kwargs["execution_identity"] is execution_identity
 
     # Verify patch includes outputs
     patch_dict = patch.to_dict()
@@ -120,9 +121,7 @@ async def test_execute_handler_preserves_existing_values() -> None:
     mock_runtime = Mock()
     mock_runtime.execute = AsyncMock(return_value={"result": "done"})
 
-    context = Mock()
-    context.ports = {"personal_workflow_runtime": mock_runtime}
-    context.identity = {}
+    context = WorkflowContext(ports={"personal_workflow_runtime": mock_runtime})
 
     patch = await _execute_handler(state, context)
 
@@ -142,8 +141,7 @@ async def test_execute_handler_missing_port() -> None:
         inputs={},
     )
 
-    context = Mock()
-    context.ports = {}  # No runtime port
+    context = WorkflowContext()
 
     with pytest.raises(TypeError, match="personal workflow runtime port is unavailable"):
         await _execute_handler(state, context)
@@ -162,8 +160,7 @@ async def test_execute_handler_port_not_callable() -> None:
     mock_runtime = Mock()
     mock_runtime.execute = "not-callable"  # Not a function
 
-    context = Mock()
-    context.ports = {"personal_workflow_runtime": mock_runtime}
+    context = WorkflowContext(ports={"personal_workflow_runtime": mock_runtime})
 
     with pytest.raises(TypeError, match="personal workflow runtime port is unavailable"):
         await _execute_handler(state, context)
@@ -190,9 +187,7 @@ async def test_execute_handler_with_complex_inputs() -> None:
     mock_runtime = Mock()
     mock_runtime.execute = AsyncMock(return_value={"status": "ok"})
 
-    context = Mock()
-    context.ports = {"personal_workflow_runtime": mock_runtime}
-    context.identity = {}
+    context = WorkflowContext(ports={"personal_workflow_runtime": mock_runtime})
 
     await _execute_handler(state, context)
 
@@ -213,9 +208,7 @@ async def test_execute_handler_with_empty_inputs() -> None:
     mock_runtime = Mock()
     mock_runtime.execute = AsyncMock(return_value={"default": "output"})
 
-    context = Mock()
-    context.ports = {"personal_workflow_runtime": mock_runtime}
-    context.identity = {}
+    context = WorkflowContext(ports={"personal_workflow_runtime": mock_runtime})
 
     patch = await _execute_handler(state, context)
 
@@ -238,9 +231,7 @@ async def test_execute_handler_runtime_execution_failure() -> None:
     mock_runtime = Mock()
     mock_runtime.execute = AsyncMock(side_effect=RuntimeError("Execution failed"))
 
-    context = Mock()
-    context.ports = {"personal_workflow_runtime": mock_runtime}
-    context.identity = {}
+    context = WorkflowContext(ports={"personal_workflow_runtime": mock_runtime})
 
     with pytest.raises(RuntimeError, match="Execution failed"):
         await _execute_handler(state, context)
@@ -259,9 +250,7 @@ async def test_execute_handler_selection_deserialization() -> None:
     mock_runtime = Mock()
     mock_runtime.execute = AsyncMock(return_value={})
 
-    context = Mock()
-    context.ports = {"personal_workflow_runtime": mock_runtime}
-    context.identity = {}
+    context = WorkflowContext(ports={"personal_workflow_runtime": mock_runtime})
 
     await _execute_handler(state, context)
 

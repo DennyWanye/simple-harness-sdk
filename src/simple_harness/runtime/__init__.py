@@ -12,6 +12,7 @@ from .child_runs import (
 )
 from .child_signal_runtime import ChildSignalRuntime, ChildSignalUnitOfWork
 from .context import ContextPort, ContextSnapshot, SqliteContextPort
+from .drivers.react import ReActDriver, build_react_driver
 from .drivers.react_loop import AgentLoopCollaborator, EffectBatchExecutor
 from .drivers.workflow import (
     WORKFLOW_DRIVER_IMPLEMENTATION_FINGERPRINT,
@@ -28,6 +29,7 @@ from .kernel import (
     DriverResult,
     RunClient,
     Runtime,
+    RuntimeLifecycleState,
     RuntimeDriver,
     RuntimePorts,
     RuntimeProfile,
@@ -72,9 +74,11 @@ __all__ = (
     "EffectBatchExecutor",
     "ProfileLaunchTicketRef",
     "ReconciliationPhase",
+    "ReActDriver",
     "RunClient",
     "RunStart",
     "Runtime",
+    "RuntimeLifecycleState",
     "RuntimeDriver",
     "RuntimePorts",
     "RuntimeProfile",
@@ -91,5 +95,6 @@ __all__ = (
     "UserContinuationRuntime",
     "WorkflowRuntimeDriver",
     "build_runtime",
+    "build_react_driver",
     "build_workflow_runtime_driver",
 )

@@ -6,21 +6,28 @@
 from __future__ import annotations
 
 import time
+import hashlib
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import cast
 
-from simple_harness.contracts import RequestId, RunId, thaw_json
+from simple_harness.contracts import RequestId, RunId, canonical_json, thaw_json
 from simple_harness.contracts.messages import Message, MessageRole
 from simple_harness.execution.dispatch import ProviderInvocationUnknownError
+from simple_harness.execution.budget import (
+    BudgetPolicy,
+    FrozenPriceEstimator,
+    budget_policy_fingerprint,
+)
 from simple_harness.execution.recovery import RecoveryKind, WaitBlockerSpec
 from simple_harness.execution.uow import RunState
 from simple_harness.providers import ProviderToolSpec
 from simple_harness.runtime.kernel import DriverInvocation, DriverResult
 from simple_harness.runtime.workflow_spawn import WorkflowSpawnFailed
 from simple_harness.tools.errors import UnknownToolError
+from simple_harness.tools.executor import ToolAuthorizationPending
 
-from ..termination import TerminationBudgetExceeded
+from ..termination import TerminationBudgetExceeded, TerminationLimits
 from .react_loop import (
     AgentLoopCollaborator,
     EffectBatchExecutor,
@@ -37,19 +44,29 @@ class ReActDriver:
         collaborator: AgentLoopCollaborator | None = None,
         effects: EffectBatchExecutor | None = None,
         clock=time.time,
+        policy_fingerprint: str | None = None,
+        provider_budget_fingerprint: str | None = None,
     ) -> None:
         self._clock = clock
         self._loop = ReActLoop(
             collaborator=collaborator or AgentLoopCollaborator(),
             effects=effects or EffectBatchExecutor(),
             clock=clock,
+            policy_fingerprint=policy_fingerprint,
         )
+        self.policy_fingerprint = policy_fingerprint
+        self.provider_budget_fingerprint = provider_budget_fingerprint
 
     async def start(
         self, invocation: DriverInvocation, *, context, cancel
     ) -> DriverResult:
         if context is not invocation.services.context:
             raise ValueError("Runtime context service mismatch")
+        if self.provider_budget_fingerprint is not None and (
+            getattr(invocation.services.provider, "budget_policy_fingerprint", None)
+            != self.provider_budget_fingerprint
+        ):
+            raise ValueError("Provider budget policy differs from ReAct composition")
         ready = invocation.workflow_spawn_ready_activation
         if ready is not None:
             coordinator = invocation.services.workflow_spawn
@@ -104,6 +121,16 @@ class ReActDriver:
                     RunId(invocation.run.run_id),
                     RequestId(invocation.run.request_id),
                     tools=tools,
+                    temperature=(
+                        None
+                        if input_value.get("temperature") is None
+                        else float(input_value["temperature"])
+                    ),
+                    max_output_tokens=(
+                        None
+                        if input_value.get("max_output_tokens") is None
+                        else int(input_value["max_output_tokens"])
+                    ),
                 ),
                 services=invocation.services,
                 execution_lease=invocation.execution_lease,
@@ -144,8 +171,17 @@ class ReActDriver:
             )
         except TerminationBudgetExceeded as error:
             return DriverResult(
-                RunState.WAITING,
+                RunState.FAILED,
                 {"raw_failures": [{"error_code": str(error.code)}]},
+            )
+        except ToolAuthorizationPending as pending:
+            return DriverResult(
+                RunState.WAITING,
+                {
+                    "authorization_decision_id": pending.decision_id,
+                    "authorization_prompt": pending.request.prompt,
+                },
+                authorization_wait=pending,
             )
         except ToolEffectUnknownError as error:
             return DriverResult(
@@ -188,4 +224,44 @@ def _tools(value: object, executor) -> tuple[ProviderToolSpec, ...]:
     return executor.provider_tool_specs(tuple(names))
 
 
-__all__ = ("ReActDriver",)
+def build_react_driver(
+    *,
+    limits: TerminationLimits,
+    budget_policy: BudgetPolicy,
+    estimator: FrozenPriceEstimator | None,
+    effects: EffectBatchExecutor | None = None,
+    clock=time.time,
+) -> ReActDriver:
+    """Public hard-policy builder; every authority must be explicit and frozen."""
+
+    if not isinstance(limits, TerminationLimits):
+        raise TypeError("limits must use TerminationLimits")
+    if not isinstance(budget_policy, BudgetPolicy):
+        raise TypeError("budget_policy must use BudgetPolicy")
+    if estimator is not None and not isinstance(estimator, FrozenPriceEstimator):
+        raise TypeError("estimator must use FrozenPriceEstimator or None")
+    provider_fingerprint = budget_policy_fingerprint(budget_policy, estimator)
+    policy_payload = {
+        "limits": {
+            "max_consecutive_same_tool": limits.max_consecutive_same_tool,
+            "max_cost_micros": limits.max_cost_micros,
+            "max_tool_calls": limits.max_tool_calls,
+            "max_turns": limits.max_turns,
+            "max_wall_seconds": limits.max_wall_seconds,
+        },
+        "protocol": "react-hard-policy-v1",
+        "provider_budget_fingerprint": provider_fingerprint,
+    }
+    policy_fingerprint = hashlib.sha256(
+        canonical_json(policy_payload).encode("utf-8")
+    ).hexdigest()
+    return ReActDriver(
+        collaborator=AgentLoopCollaborator(limits=limits),
+        effects=effects,
+        clock=clock,
+        policy_fingerprint=policy_fingerprint,
+        provider_budget_fingerprint=provider_fingerprint,
+    )
+
+
+__all__ = ("ReActDriver", "build_react_driver")

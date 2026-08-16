@@ -12,11 +12,29 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Protocol, TypeAlias, TypedDict
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypedDict
 
 from simple_harness.contracts import freeze_json
 
 from .errors import InvalidStatePatch, WorkflowDefinitionError
+
+if TYPE_CHECKING:
+    from simple_harness.workflows.capability_build.ports import (
+        CapabilityActivatePort,
+        CapabilityBuildAuthorizationPort,
+        CapabilitySearchPort,
+        CapabilitySourcePolicyPort,
+        IsolatedBuildPort,
+        PackageStorePort,
+    )
+    from simple_harness.workflows.durable_task.ports import (
+        ArtifactPort,
+        AuthorizationPort,
+        CapabilityCatalogPort,
+        ProposalPort,
+        WorkspacePort,
+    )
+    from simple_harness.workflows.personal_v1.ports import PersonalWorkflowRuntimePort
 
 JsonPrimitive: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
@@ -293,8 +311,179 @@ WORKFLOW_PORT_NAMES = frozenset(
         "llm_repair",
         "deadline",
         "subagent_scheduler",
+        "proposal",
+        "capability_catalog",
+        "workspace",
+        "authorization",
+        "personal_workflow_runtime",
+        "capability_search",
+        "source_policy",
+        "isolated_build",
+        "package_store",
+        "activate",
     }
 )
+
+
+def _require_port(value: object, name: str, methods: tuple[str, ...]) -> None:
+    missing = tuple(method for method in methods if not callable(getattr(value, method, None)))
+    if missing:
+        raise TypeError(f"{name} must implement {', '.join(missing)}")
+
+
+@dataclass(frozen=True, slots=True)
+class DurableTaskHostServices:
+    """Frozen Host-owned services used by the durable task graph."""
+
+    proposal: ProposalPort
+    workspace: WorkspacePort
+    capability_catalog: CapabilityCatalogPort | None = None
+    authorization: AuthorizationPort | None = None
+    artifact: ArtifactPort | None = None
+    clock: object | None = None
+
+    def __post_init__(self) -> None:
+        _require_port(self.proposal, "proposal", ("propose",))
+        _require_port(self.workspace, "workspace", ("execute_tools",))
+        if self.capability_catalog is not None:
+            _require_port(
+                self.capability_catalog,
+                "capability_catalog",
+                ("is_capability_available", "get_capability_source", "get_capability_policy"),
+            )
+        if self.authorization is not None:
+            _require_port(self.authorization, "authorization", ("grant_authorization",))
+        if self.artifact is not None:
+            _require_port(
+                self.artifact,
+                "artifact",
+                ("check_completion_evidence", "completion_decision", "run_tests", "audit"),
+            )
+        if self.clock is not None and not callable(self.clock):
+            raise TypeError("clock must be callable")
+
+    def as_ports(self) -> Mapping[str, object]:
+        ports = {"proposal": self.proposal, "workspace": self.workspace}
+        ports.update(
+            {
+                name: value
+                for name, value in (
+                    ("capability_catalog", self.capability_catalog),
+                    ("authorization", self.authorization),
+                    ("artifact", self.artifact),
+                    ("clock", self.clock),
+                )
+                if value is not None
+            }
+        )
+        return MappingProxyType(ports)
+
+
+@dataclass(frozen=True, slots=True)
+class PersonalWorkflowHostServices:
+    """Frozen Host-owned personal workflow interpreter service."""
+
+    runtime: PersonalWorkflowRuntimePort
+
+    def __post_init__(self) -> None:
+        _require_port(self.runtime, "personal workflow runtime", ("execute",))
+
+    def as_ports(self) -> Mapping[str, object]:
+        return MappingProxyType({"personal_workflow_runtime": self.runtime})
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityBuildHostServices:
+    """Frozen services for the capability-build durable-task specialization."""
+
+    proposal: ProposalPort
+    workspace: WorkspacePort
+    search: CapabilitySearchPort
+    source_policy: CapabilitySourcePolicyPort
+    isolated_build: IsolatedBuildPort
+    package_store: PackageStorePort
+    activate: CapabilityActivatePort
+    authorization: CapabilityBuildAuthorizationPort
+    artifact: ArtifactPort | None = None
+    clock: object | None = None
+
+    def __post_init__(self) -> None:
+        _require_port(self.proposal, "proposal", ("propose",))
+        _require_port(self.workspace, "workspace", ("execute_tools",))
+        for value, name, methods in (
+            (self.search, "capability search", ("search",)),
+            (self.source_policy, "source policy", ("authorize_source",)),
+            (self.isolated_build, "isolated build", ("build",)),
+            (self.package_store, "package store", ("store",)),
+            (self.activate, "activate", ("activate",)),
+            (self.authorization, "authorization", ("authorize_build",)),
+        ):
+            _require_port(value, name, methods)
+        if self.artifact is not None:
+            _require_port(
+                self.artifact,
+                "artifact",
+                ("check_completion_evidence", "completion_decision", "run_tests", "audit"),
+            )
+        if self.clock is not None and not callable(self.clock):
+            raise TypeError("clock must be callable")
+
+    def as_ports(self) -> Mapping[str, object]:
+        ports: dict[str, object] = {
+            "proposal": self.proposal,
+            "workspace": self.workspace,
+            "capability_search": self.search,
+            "source_policy": self.source_policy,
+            "isolated_build": self.isolated_build,
+            "package_store": self.package_store,
+            "activate": self.activate,
+            "authorization": self.authorization,
+        }
+        if self.artifact is not None:
+            ports["artifact"] = self.artifact
+        if self.clock is not None:
+            ports["clock"] = self.clock
+        return MappingProxyType(ports)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowHostServices:
+    """One immutable service composition root owned by a WorkflowRunner."""
+
+    durable_task: DurableTaskHostServices | None = None
+    personal_v1: PersonalWorkflowHostServices | None = None
+    capability_build: CapabilityBuildHostServices | None = None
+
+    def has_profile(self, profile_key: str) -> bool:
+        return {
+            "workflow.durable_task": self.durable_task,
+            "workflow.personal_v1": self.personal_v1,
+            "workflow.capability_build": self.capability_build,
+        }.get(profile_key) is not None
+
+    def ports_for(self, profile_key: str) -> Mapping[str, object]:
+        groups = {
+            "workflow.durable_task": self.durable_task,
+            "workflow.personal_v1": self.personal_v1,
+            "workflow.capability_build": self.capability_build,
+        }
+        if profile_key not in groups:
+            raise KeyError(f"unknown workflow profile: {profile_key}")
+        group = groups[profile_key]
+        if group is None:
+            raise KeyError(f"workflow profile services unavailable: {profile_key}")
+        return group.as_ports()
+
+    def bind_context(
+        self, profile_key: str, context: WorkflowContext
+    ) -> WorkflowContext:
+        if not self.has_profile(profile_key):
+            return context
+        if context.ports:
+            raise ValueError(
+                "workflow ports are Runner-owned and cannot be supplied per call"
+            )
+        return replace(context, ports=self.ports_for(profile_key))
 
 
 @dataclass(frozen=True)
@@ -492,6 +681,8 @@ __all__ = [
     "TERMINAL_RUN_STATUSES",
     "WORKFLOW_PORT_NAMES",
     "ChannelSpec",
+    "CapabilityBuildHostServices",
+    "DurableTaskHostServices",
     "EffectKind",
     "EffectPolicy",
     "ExecutionInfoProtocol",
@@ -509,6 +700,8 @@ __all__ = [
     "ToolAccess",
     "ToolInventoryEntry",
     "WorkflowContext",
+    "WorkflowHostServices",
+    "PersonalWorkflowHostServices",
     "WorkflowRunStatus",
     "WorkflowState",
     "canonical_json",

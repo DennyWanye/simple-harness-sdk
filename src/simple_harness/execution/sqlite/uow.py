@@ -1312,6 +1312,35 @@ class SqliteExecutionUnitOfWork:
                 now=now,
             )
             _fault(fault, "runtime_cancel.event.after_write")
+            open_decisions = connection.execute(
+                "SELECT decision_id FROM decisions WHERE run_id=? AND state='open'",
+                (run_id,),
+            ).fetchall()
+            for row in open_decisions:
+                decision_id = str(row["decision_id"])
+                _fault(fault, "runtime_cancel.decision.before_write")
+                changed = connection.execute(
+                    "UPDATE decisions SET state='cancelled',response_json=?,"
+                    "version=version+1,resolved_at=? "
+                    "WHERE decision_id=? AND run_id=? AND state='open'",
+                    (
+                        canonical_json({"reason": "run_cancelled"}),
+                        now,
+                        decision_id,
+                        run_id,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise UnitOfWorkConflict("decision cancellation CAS failed")
+                self._insert_event(
+                    connection,
+                    event_id=f"{event_id}:decision:{decision_id}",
+                    run_id=run_id,
+                    kind="decision.cancelled",
+                    payload={"decision_id": decision_id},
+                    now=now,
+                )
+                _fault(fault, "runtime_cancel.decision.after_write")
             _fault(fault, "runtime_cancel.run.before_write")
             changed = connection.execute(
                 """

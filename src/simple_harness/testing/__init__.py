@@ -1,39 +1,70 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conformance testing framework for Simple Harness SDK.
-
-This module provides CLI and pytest plugin interfaces for validating that
-host implementations conform to SDK protocols.
-
-Usage:
-    # CLI
-    python -m simple_harness.testing --host module:factory --suite provider,tool,runtime,workflow --json report.json
-
-    # pytest plugin
-    pytest --simple-harness-host module:factory tests/
-"""
+"""Executable consumer conformance protocol for Simple Harness SDK."""
 
 from __future__ import annotations
 
-__all__ = ["PROTOCOL_VERSION", "run_conformance_suite"]
+import asyncio
+import json
+from pathlib import Path
 
-PROTOCOL_VERSION = "1.0.0"
+from .cli import load_host_factory, parse_host_factory
+from .contracts import (
+    CaseDefinition,
+    CaseObservation,
+    CaseStatus,
+    ConformanceCaseUnavailable,
+    ConformanceCaseResult,
+    ConformanceError,
+    ConformanceHost,
+    ConformanceHostMetadata,
+    ConformanceReport,
+    ConformanceSuite,
+    ProviderConformanceSuite,
+    RuntimeConformanceSuite,
+    ToolConformanceSuite,
+    WorkflowConformanceSuite,
+)
+from .runner import PROTOCOL_VERSION, run_conformance
 
 
 def run_conformance_suite(
     host_factory: str,
     suites: tuple[str, ...],
+    artifact_sha256: str,
     json_output: str | None = None,
 ) -> int:
-    """Run conformance test suites against a host implementation.
+    """Compatibility entrypoint used by embedded consumers."""
 
-    Args:
-        host_factory: Module path and factory function (e.g. "my.module:build_host")
-        suites: Tuple of suite names to run (provider, tool, runtime, workflow)
-        json_output: Optional path to write JSON report
+    module_name, factory_name = parse_host_factory(host_factory)
+    factory = load_host_factory(module_name, factory_name)
+    report = asyncio.run(
+        run_conformance(factory, suites, artifact_sha256=artifact_sha256)
+    )
+    if json_output is not None:
+        path = Path(json_output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report.to_json(), indent=2) + "\n", encoding="utf-8")
+    return 0 if report.passed else 1
 
-    Returns:
-        Exit code (0 for pass, non-zero for failures)
-    """
-    raise NotImplementedError("T5.4 conformance CLI implementation pending")
+
+__all__ = (
+    "PROTOCOL_VERSION",
+    "CaseDefinition",
+    "CaseObservation",
+    "CaseStatus",
+    "ConformanceCaseUnavailable",
+    "ConformanceCaseResult",
+    "ConformanceError",
+    "ConformanceHost",
+    "ConformanceHostMetadata",
+    "ConformanceReport",
+    "ConformanceSuite",
+    "ProviderConformanceSuite",
+    "RuntimeConformanceSuite",
+    "ToolConformanceSuite",
+    "WorkflowConformanceSuite",
+    "run_conformance",
+    "run_conformance_suite",
+)

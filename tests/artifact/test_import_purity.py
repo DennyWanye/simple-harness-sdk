@@ -93,7 +93,7 @@ def test_import_has_no_host_or_runtime_side_effects(tmp_path: Path) -> None:
         text=True,
     )
     result = json.loads(completed.stdout)
-    assert result == {"status": "IMPORT_PURITY_PASS", "version": "0.1.0"}
+    assert result == {"status": "IMPORT_PURITY_PASS", "version": "0.1.1"}
 
 
 def test_public_import_does_not_eagerly_load_forbidden_dependencies() -> None:

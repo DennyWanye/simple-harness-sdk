@@ -13,12 +13,24 @@ from .definition import (
     create_definition,
     create_initial_state,
 )
+from .factory import (
+    PROFILE_KEY,
+    START_SCHEMA,
+    START_SCHEMA_REF,
+    build_durable_task_definition,
+    build_durable_task_registration,
+)
 
 __all__ = [
     "DEFAULT_FIX_ROUNDS",
     "DEFAULT_PROPOSAL_TURNS",
+    "PROFILE_KEY",
+    "START_SCHEMA",
+    "START_SCHEMA_REF",
     "WORKFLOW_NAME",
     "WORKFLOW_VERSION",
+    "build_durable_task_definition",
+    "build_durable_task_registration",
     "create_definition",
     "create_initial_state",
 ]

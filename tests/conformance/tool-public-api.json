@@ -4,6 +4,8 @@
     "ArgumentsValidationError",
     "AuthorizationDecision",
     "AuthorizationPort",
+    "AuthorizationReceipt",
+    "AuthorizationRequest",
     "AuthorizationResult",
     "CancellationToken",
     "DuplicateToolCallError",
@@ -19,6 +21,7 @@
     "ReconciliationState",
     "SchemaDefinitionError",
     "Tool",
+    "ToolAuthorizationPending",
     "ToolCall",
     "ToolCallState",
     "ToolContext",
@@ -29,6 +32,8 @@
     "ToolRegistryError",
     "ToolResult",
     "ToolSpec",
-    "UnknownToolError"
+    "UnknownToolError",
+    "bind_authorization_receipts",
+    "sdk_authorization_receipt"
   ]
 }

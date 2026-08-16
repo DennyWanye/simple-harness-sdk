@@ -1,0 +1,148 @@
+name: Release Candidate Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_commit:
+        description: Exact candidate Git commit
+        required: true
+        type: string
+      artifact_run_id:
+        description: Workflow run containing the immutable candidate and consumer Host
+        required: true
+        type: string
+      artifact_name:
+        description: Name of the candidate artifact uploaded by artifact_run_id
+        required: true
+        type: string
+      artifact_sha256:
+        description: Lowercase SHA-256 of the exact wheel
+        required: true
+        type: string
+      host_factory:
+        description: Consumer Host factory inside consumer-host (module:factory)
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: macos-arm64
+          - os: windows-latest
+            platform: windows-x64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.artifact_run_id }}
+          name: ${{ inputs.artifact_name }}
+          path: candidate
+      - name: Verify and install the exact wheel
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ inputs.artifact_sha256 }}
+        run: |
+          WHEEL="$(find candidate -type f -name '*.whl' -print -quit)"
+          test -n "$WHEEL"
+          ACTUAL_SHA256="$(python -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$WHEEL")"
+          test "$ACTUAL_SHA256" = "$EXPECTED_SHA256"
+          uv venv .candidate-venv --python 3.11
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            PYTHON=.candidate-venv/Scripts/python.exe
+          else
+            PYTHON=.candidate-venv/bin/python
+          fi
+          uv pip install --python "$PYTHON" "${WHEEL}[testing]"
+          "$PYTHON" -I -c 'import simple_harness; assert simple_harness.__version__ == "0.1.1"'
+      - name: Verify import purity and SQLite schema reopen
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            PYTHON=.candidate-venv/Scripts/python.exe
+          else
+            PYTHON=.candidate-venv/bin/python
+          fi
+          "$PYTHON" -I - <<'PY'
+          import collections.abc
+          import os
+          from pathlib import Path
+          import socket
+          import tempfile
+          import threading
+
+          class GuardedEnvironment(collections.abc.MutableMapping):
+              def __getitem__(self, key): raise AssertionError("environment read during import")
+              def __setitem__(self, key, value): raise AssertionError("environment write during import")
+              def __delitem__(self, key): raise AssertionError("environment delete during import")
+              def __iter__(self): raise AssertionError("environment scan during import")
+              def __len__(self): raise AssertionError("environment scan during import")
+
+          original_environment = os.environ
+          original_socket = socket.socket
+          original_create_connection = socket.create_connection
+          before_threads = {thread.ident for thread in threading.enumerate()}
+          socket.socket = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network during import"))
+          socket.create_connection = socket.socket
+          os.environ = GuardedEnvironment()
+          try:
+              import simple_harness
+          finally:
+              os.environ = original_environment
+              socket.socket = original_socket
+              socket.create_connection = original_create_connection
+          assert before_threads == {thread.ident for thread in threading.enumerate()}
+          assert not {"deskpet", "fastapi", "playwright", "tauri", "torch", "whisper"}.intersection(
+              name.split(".", 1)[0] for name in __import__("sys").modules
+          )
+          from simple_harness.execution.sqlite import Database, SCHEMA_VERSION
+          with tempfile.TemporaryDirectory() as raw:
+              path = Path(raw) / "sdk.sqlite"
+              first = Database.open(path)
+              assert first.schema_version == SCHEMA_VERSION
+              first.close()
+              reopened = Database.open(path)
+              assert reopened.schema_version == SCHEMA_VERSION
+              assert reopened.integrity_check() == ("ok",)
+              reopened.close()
+          print("IMPORT_PURITY_AND_SCHEMA_REOPEN_PASS")
+          PY
+      - name: Run all four consumer conformance suites
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/candidate/consumer-host
+          EXPECTED_SHA256: ${{ inputs.artifact_sha256 }}
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            PYTHON=.candidate-venv/Scripts/python.exe
+          else
+            PYTHON=.candidate-venv/bin/python
+          fi
+          "$PYTHON" -m simple_harness.testing \
+            --host "${{ inputs.host_factory }}" \
+            --suite provider,tool,runtime,workflow \
+            --artifact-sha256 "$EXPECTED_SHA256" \
+            --json "conformance-${{ matrix.platform }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conformance-${{ matrix.platform }}
+          path: conformance-${{ matrix.platform }}.json
+          if-no-files-found: error

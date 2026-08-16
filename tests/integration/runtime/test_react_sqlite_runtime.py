@@ -4,15 +4,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
-from simple_harness.contracts import ExecutionSessionId, RequestId, RunId
+import pytest
+
+from simple_harness.contracts import CallId, ExecutionSessionId, RequestId, RunId
 from simple_harness.contracts.messages import Message, MessageRole
-from simple_harness.execution.budget import BudgetPolicy
+from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
 from simple_harness.execution.delivery import DeliveryDispatcher
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import RunState
-from simple_harness.providers import ProviderResponse, ProviderTarget
+from simple_harness.providers import ProviderResponse, ProviderTarget, ProviderToolCall
 from simple_harness.runtime import (
     AgentLoopCollaborator,
     EffectBatchExecutor,
@@ -23,9 +26,11 @@ from simple_harness.runtime import (
     build_runtime,
 )
 from simple_harness.runtime.drivers import ReActDriver
-from simple_harness.tools import EffectExecutor, ToolRegistry
+from simple_harness.tools import EffectExecutor, FunctionTool, ToolRegistry, ToolResult, ToolSpec
 from simple_harness.tools.authorization import (
     AuthorizationDecision,
+    AuthorizationReceipt,
+    AuthorizationRequest,
     AuthorizationResult,
 )
 from simple_harness.tools.reconciliation import (
@@ -161,6 +166,606 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
             MessageRole.USER,
             MessageRole.ASSISTANT,
         ]
+        await runtime.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+class AuthorizationScenario:
+    def __init__(
+        self,
+        *,
+        expires_at: float | None = None,
+        fail_decision_binding: bool = False,
+        fail_handoff_binding: bool = False,
+    ) -> None:
+        self.expires_at = expires_at
+        self.fail_decision_binding = fail_decision_binding
+        self.fail_handoff_binding = fail_handoff_binding
+        self.decision_bind_calls = 0
+        self.handoff_bind_calls = 0
+
+    async def prepare(self, prepared):
+        del prepared
+        return AuthorizationResult(
+            AuthorizationDecision.REQUIRE_USER,
+            reason_code="confirmation_required",
+            public_message="Confirm.",
+            request=AuthorizationRequest(
+                "Write the note?", "untrusted-host-nonce", self.expires_at
+            ),
+        )
+
+    async def bind_decision(self, prepared, request, decision, sdk_receipt):
+        del prepared, request, decision
+        self.decision_bind_calls += 1
+        if self.fail_decision_binding:
+            raise RuntimeError("host decision receipt unavailable")
+        return AuthorizationReceipt(
+            f"host:decision:{self.decision_bind_calls}",
+            hashlib.sha256(
+                f"host:decision:{self.decision_bind_calls}".encode()
+            ).hexdigest(),
+            sdk_receipt.receipt_hash,
+        )
+
+    async def bind_effect_handoff(
+        self, prepared, authorization_receipt_ref, sdk_receipt
+    ):
+        del prepared, authorization_receipt_ref
+        self.handoff_bind_calls += 1
+        if self.fail_handoff_binding:
+            raise RuntimeError("host handoff receipt unavailable")
+        return AuthorizationReceipt(
+            f"host:handoff:{self.handoff_bind_calls}",
+            hashlib.sha256(
+                f"host:handoff:{self.handoff_bind_calls}".encode()
+            ).hexdigest(),
+            sdk_receipt.receipt_hash,
+        )
+
+
+class PhysicalToolCounter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+
+def authorization_runtime(
+    database_path,
+    *,
+    authorization: AuthorizationScenario,
+    physical: PhysicalToolCounter,
+    owner_id: str,
+    clock,
+    emit_tool_call: bool = True,
+):
+    class ScenarioProvider(Provider):
+        async def invoke(self, request, *, cancel):
+            assert not cancel.is_cancelled
+            self.requests.append(request)
+            if emit_tool_call and len(self.requests) == 1:
+                return ProviderResponse(
+                    request.request_id,
+                    Message(MessageRole.ASSISTANT, "use tool"),
+                    tool_calls=(
+                        ProviderToolCall(CallId("raw-fault"), "write_note", {}),
+                    ),
+                    model="model",
+                )
+            return ProviderResponse(
+                request.request_id,
+                Message(MessageRole.ASSISTANT, "done"),
+                model="model",
+            )
+
+    database = Database.open(database_path)
+    uow = SqliteExecutionUnitOfWork(database)
+    provider = ScenarioProvider()
+    reconciliation = Reconciliation()
+    registry = ToolRegistry()
+
+    async def write_note(arguments, context):
+        del arguments, context
+        physical.calls += 1
+        return ToolResult.succeeded(CallId("raw-fault"))
+
+    registry.register(
+        FunctionTool(
+            ToolSpec(
+                "write_note",
+                "Write a note.",
+                {"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+            write_note,
+        )
+    )
+    effects = EffectExecutor(
+        uow=uow,
+        registry=registry,
+        authorization=authorization,
+        reconciliation=reconciliation,
+        clock=clock,
+    )
+    runtime = build_runtime(
+        uow,
+        {"agent.general": RuntimeProfile("agent.general", "react")},
+        {"react": ReActDriver(clock=clock)},
+        RuntimePorts(
+            provider=ProviderInvocationCoordinator(
+                uow=uow,
+                provider=provider,
+                budget_policy=BudgetPolicy(),
+                estimator=FrozenPriceEstimator("price-v1", "model", 0, 0),
+                clock=clock,
+            ),
+            tools=effects,
+            authorization=authorization,
+            context=SqliteContextPort(database, clock=clock),
+            delivery=DeliveryDispatcher(uow, {"fixture": Sink()}, clock=clock),
+            tool_reconciliation=reconciliation,
+            reconciliation=Noop(),
+            provider_reconciliation=Noop(),
+            react_checkpoint=uow,
+            tool_catalog=Catalog(),
+            owner_id=owner_id,
+            clock=clock,
+        ),
+    )
+    return runtime, uow, database
+
+
+async def start_authorization_wait(runtime, uow):
+    await runtime.start()
+    await runtime.client.start(
+        RunStart(
+            ExecutionSessionId("session-fault"),
+            RunId("run-fault"),
+            RequestId("request-fault"),
+            "turn-fault",
+            {
+                "messages": [{"role": "user", "content": "write"}],
+                "capability_snapshot": {"tools": ["write_note"]},
+                "max_output_tokens": 100,
+            },
+            1,
+        )
+    )
+    await runtime.wait_idle(RunId("run-fault"))
+    row = uow.database.connection.execute(
+        "SELECT decision_id FROM decisions WHERE run_id='run-fault'"
+    ).fetchone()
+    assert row is not None
+    decision = uow.read_decision(str(row[0]))
+    assert decision is not None and decision.state.value == "open"
+    return decision
+
+
+async def wait_for_scenario(runtime, predicate) -> None:
+    for _ in range(100):
+        await asyncio.sleep(0)
+        await runtime.wait_idle(RunId("run-fault"))
+        if predicate():
+            return
+    raise AssertionError("authorization scenario did not settle")
+
+
+def test_require_user_is_durable_and_double_bound_before_tool_handoff(tmp_path) -> None:
+    class ToolProvider(Provider):
+        async def invoke(self, request, *, cancel):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return ProviderResponse(
+                    request.request_id,
+                    Message(MessageRole.ASSISTANT, "use tool"),
+                    tool_calls=(ProviderToolCall(CallId("raw-1"), "write_note", {}),),
+                    model="model",
+                )
+            return ProviderResponse(
+                request.request_id,
+                Message(MessageRole.ASSISTANT, "done"),
+                model="model",
+            )
+
+    class UserAuthorization:
+        async def prepare(self, prepared):
+            return AuthorizationResult(
+                AuthorizationDecision.REQUIRE_USER,
+                reason_code="confirmation_required",
+                public_message="Confirm.",
+                request=AuthorizationRequest("Write the note?", "host-nonce"),
+            )
+
+        async def bind_decision(self, prepared, request, decision, sdk_receipt):
+            del prepared, request, decision
+            return AuthorizationReceipt(
+                "host:decision",
+                hashlib.sha256(b"host:decision").hexdigest(),
+                sdk_receipt.receipt_hash,
+            )
+
+        async def bind_effect_handoff(
+            self, prepared, authorization_receipt_ref, sdk_receipt
+        ):
+            del prepared, authorization_receipt_ref
+            return AuthorizationReceipt(
+                "host:handoff",
+                hashlib.sha256(b"host:handoff").hexdigest(),
+                sdk_receipt.receipt_hash,
+            )
+
+    async def case() -> None:
+        database = Database.open(tmp_path / "react-authorization.db")
+        uow = SqliteExecutionUnitOfWork(database)
+        provider = ToolProvider()
+        authorization = UserAuthorization()
+        reconciliation = Reconciliation()
+        coordinator = ProviderInvocationCoordinator(
+            uow=uow,
+            provider=provider,
+            budget_policy=BudgetPolicy(),
+            estimator=FrozenPriceEstimator("price-v1", "model", 0, 0),
+            clock=lambda: 10.0,
+        )
+        physical_calls = 0
+
+        registry = ToolRegistry()
+
+        async def write_note(arguments, context):
+            nonlocal physical_calls
+            del arguments
+            physical_calls += 1
+            # accepted_result_call_id lets the registry remap the raw Provider id.
+            return ToolResult.succeeded(CallId("raw-1"))
+
+        registry.register(
+            FunctionTool(
+                ToolSpec(
+                    "write_note",
+                    "Write a note.",
+                    {"type": "object", "properties": {}, "additionalProperties": False},
+                ),
+                write_note,
+            )
+        )
+        effects = EffectExecutor(
+            uow=uow,
+            registry=registry,
+            authorization=authorization,
+            reconciliation=reconciliation,
+            clock=lambda: 10.0,
+        )
+        runtime = build_runtime(
+            uow,
+            {"agent.general": RuntimeProfile("agent.general", "react")},
+            {"react": ReActDriver(clock=lambda: 10.0)},
+            RuntimePorts(
+                provider=coordinator,
+                tools=effects,
+                authorization=authorization,
+                context=SqliteContextPort(database, clock=lambda: 10.0),
+                delivery=DeliveryDispatcher(uow, {"fixture": Sink()}, clock=lambda: 10.0),
+                tool_reconciliation=reconciliation,
+                reconciliation=Noop(),
+                provider_reconciliation=Noop(),
+                react_checkpoint=uow,
+                tool_catalog=Catalog(),
+                owner_id="runtime-auth",
+                clock=lambda: 10.0,
+            ),
+        )
+        await runtime.start()
+        await runtime.client.start(
+            RunStart(
+                ExecutionSessionId("session-auth"),
+                RunId("run-auth"),
+                RequestId("request-auth"),
+                "turn-auth",
+                {
+                    "messages": [{"role": "user", "content": "write"}],
+                    "capability_snapshot": {"tools": ["write_note"]},
+                    "max_output_tokens": 100,
+                },
+                1,
+            )
+        )
+        await runtime.wait_idle(RunId("run-auth"))
+        decision_id = str(
+            database.connection.execute(
+                "SELECT decision_id FROM decisions WHERE run_id='run-auth'"
+            ).fetchone()[0]
+        )
+        decision = uow.read_decision(decision_id)
+        assert decision is not None and decision.state.value == "open"
+        assert physical_calls == 0
+        try:
+            await runtime.client.decide_authorization(
+                RunId("run-auth"),
+                decision_id=decision.decision_id,
+                nonce="wrong",
+                expected_version=decision.version,
+                decision=AuthorizationDecision.ALLOW,
+            )
+        except Exception as error:
+            assert getattr(error, "code", None) == "authorization_decision_nonce_mismatch"
+        else:
+            raise AssertionError("wrong nonce must fail closed")
+        await runtime.client.decide_authorization(
+            RunId("run-auth"),
+            decision_id=decision.decision_id,
+            nonce=str(decision.request["nonce"]),
+            expected_version=decision.version,
+            decision=AuthorizationDecision.ALLOW,
+        )
+        await asyncio.sleep(0)
+        await runtime.wait_idle(RunId("run-auth"))
+        await asyncio.sleep(0)
+        await runtime.wait_idle(RunId("run-auth"))
+        assert physical_calls == 1
+        effect = database.connection.execute(
+            "SELECT authorization_receipt_ref,handoff_receipt_ref,state "
+            "FROM execution_effects WHERE run_id='run-auth'"
+        ).fetchone()
+        assert effect is not None and effect[2] == "succeeded"
+        assert str(effect[0]).startswith("authorization-binding-v1:")
+        assert str(effect[1]).startswith("authorization-binding-v1:")
+        await runtime.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_decision_state", "expected_run_state"),
+    [
+        (AuthorizationDecision.DENY, "denied", RunState.FAILED),
+        (AuthorizationDecision.ALLOW, "expired", RunState.FAILED),
+    ],
+)
+def test_authorization_deny_and_expiry_fail_before_physical_tool(
+    tmp_path, outcome, expected_decision_state, expected_run_state
+) -> None:
+    async def case() -> None:
+        now = [10.0]
+        authorization = AuthorizationScenario(
+            expires_at=11.0 if expected_decision_state == "expired" else None
+        )
+        physical = PhysicalToolCounter()
+        runtime, uow, database = authorization_runtime(
+            tmp_path / f"authorization-{expected_decision_state}.db",
+            authorization=authorization,
+            physical=physical,
+            owner_id=f"runtime-{expected_decision_state}",
+            clock=lambda: now[0],
+        )
+        decision = await start_authorization_wait(runtime, uow)
+        if expected_decision_state == "expired":
+            now[0] = 12.0
+        resolved = await runtime.client.decide_authorization(
+            RunId("run-fault"),
+            decision_id=decision.decision_id,
+            nonce=str(decision.request["nonce"]),
+            expected_version=decision.version,
+            decision=outcome,
+        )
+        assert resolved.state.value == expected_decision_state
+        assert uow.read_run("run-fault").state is expected_run_state
+        assert physical.calls == 0
+        await runtime.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_authorization_identity_fences_and_duplicate_allow_are_fail_closed(
+    tmp_path,
+) -> None:
+    async def case() -> None:
+        authorization = AuthorizationScenario()
+        physical = PhysicalToolCounter()
+        runtime, uow, database = authorization_runtime(
+            tmp_path / "authorization-fences.db",
+            authorization=authorization,
+            physical=physical,
+            owner_id="runtime-fences",
+            clock=lambda: 10.0,
+        )
+        decision = await start_authorization_wait(runtime, uow)
+        attempts = (
+            (RunId("wrong-run"), str(decision.request["nonce"]), decision.version),
+            (RunId("run-fault"), "wrong-nonce", decision.version),
+            (
+                RunId("run-fault"),
+                str(decision.request["nonce"]),
+                decision.version + 1,
+            ),
+        )
+        expected_codes = (
+            "authorization_decision_not_found",
+            "authorization_decision_nonce_mismatch",
+            "authorization_decision_version_conflict",
+        )
+        for (run_id, nonce, version), expected_code in zip(
+            attempts, expected_codes, strict=True
+        ):
+            with pytest.raises(Exception) as caught:
+                await runtime.client.decide_authorization(
+                    run_id,
+                    decision_id=decision.decision_id,
+                    nonce=nonce,
+                    expected_version=version,
+                    decision=AuthorizationDecision.ALLOW,
+                )
+            assert getattr(caught.value, "code", None) == expected_code
+            assert physical.calls == 0
+            assert authorization.decision_bind_calls == 0
+
+        first = await runtime.client.decide_authorization(
+            RunId("run-fault"),
+            decision_id=decision.decision_id,
+            nonce=str(decision.request["nonce"]),
+            expected_version=decision.version,
+            decision=AuthorizationDecision.ALLOW,
+        )
+        duplicate = await runtime.client.decide_authorization(
+            RunId("run-fault"),
+            decision_id=decision.decision_id,
+            nonce=str(decision.request["nonce"]),
+            expected_version=decision.version,
+            decision=AuthorizationDecision.ALLOW,
+        )
+        assert duplicate == first
+        assert authorization.decision_bind_calls == 1
+        await wait_for_scenario(runtime, lambda: physical.calls == 1)
+        assert physical.calls == 1
+        await runtime.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_cancelled_authorization_cannot_be_bound_or_invoke_tool(tmp_path) -> None:
+    async def case() -> None:
+        authorization = AuthorizationScenario()
+        physical = PhysicalToolCounter()
+        runtime, uow, database = authorization_runtime(
+            tmp_path / "authorization-cancel.db",
+            authorization=authorization,
+            physical=physical,
+            owner_id="runtime-cancel",
+            clock=lambda: 10.0,
+        )
+        decision = await start_authorization_wait(runtime, uow)
+        cancelled = await runtime.client.cancel(RunId("run-fault"))
+        assert cancelled.state is RunState.CANCELLED
+        durable_decision = uow.read_decision(decision.decision_id)
+        assert durable_decision is not None
+        assert durable_decision.state.value == "cancelled"
+        with pytest.raises(Exception) as caught:
+            await runtime.client.decide_authorization(
+                RunId("run-fault"),
+                decision_id=decision.decision_id,
+                nonce=str(decision.request["nonce"]),
+                expected_version=decision.version,
+                decision=AuthorizationDecision.ALLOW,
+            )
+        assert getattr(caught.value, "code", None) == "authorization_decision_late"
+        assert authorization.decision_bind_calls == 0
+        assert physical.calls == 0
+        await runtime.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_open_authorization_survives_runtime_restart_and_invokes_at_most_once(
+    tmp_path,
+) -> None:
+    async def case() -> None:
+        database_path = tmp_path / "authorization-restart.db"
+        authorization = AuthorizationScenario()
+        physical = PhysicalToolCounter()
+        first, first_uow, first_database = authorization_runtime(
+            database_path,
+            authorization=authorization,
+            physical=physical,
+            owner_id="runtime-before-restart",
+            clock=lambda: 10.0,
+        )
+        decision = await start_authorization_wait(first, first_uow)
+        await first.close()
+        first_database.close()
+
+        second, second_uow, second_database = authorization_runtime(
+            database_path,
+            authorization=authorization,
+            physical=physical,
+            owner_id="runtime-after-restart",
+            clock=lambda: 10.0,
+            emit_tool_call=False,
+        )
+        await second.start()
+        reopened = second_uow.read_decision(decision.decision_id)
+        assert reopened is not None and reopened.state.value == "open"
+        assert second_uow.read_run("run-fault").state is RunState.WAITING
+        await second.client.decide_authorization(
+            RunId("run-fault"),
+            decision_id=reopened.decision_id,
+            nonce=str(reopened.request["nonce"]),
+            expected_version=reopened.version,
+            decision=AuthorizationDecision.ALLOW,
+        )
+        await wait_for_scenario(second, lambda: physical.calls == 1)
+        assert physical.calls == 1
+        await second.close()
+        second_database.close()
+
+    asyncio.run(case())
+
+
+def test_permanent_host_decision_binding_failure_keeps_open_and_never_invokes(
+    tmp_path,
+) -> None:
+    async def case() -> None:
+        authorization = AuthorizationScenario(fail_decision_binding=True)
+        physical = PhysicalToolCounter()
+        runtime, uow, database = authorization_runtime(
+            tmp_path / "authorization-decision-bind-failure.db",
+            authorization=authorization,
+            physical=physical,
+            owner_id="runtime-decision-bind-failure",
+            clock=lambda: 10.0,
+        )
+        decision = await start_authorization_wait(runtime, uow)
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="decision receipt unavailable"):
+                await runtime.client.decide_authorization(
+                    RunId("run-fault"),
+                    decision_id=decision.decision_id,
+                    nonce=str(decision.request["nonce"]),
+                    expected_version=decision.version,
+                    decision=AuthorizationDecision.ALLOW,
+                )
+        still_open = uow.read_decision(decision.decision_id)
+        assert still_open is not None and still_open.state.value == "open"
+        assert uow.read_run("run-fault").state is RunState.WAITING
+        assert authorization.decision_bind_calls == 2
+        assert physical.calls == 0
+        await runtime.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_host_handoff_binding_failure_stops_before_physical_tool(tmp_path) -> None:
+    async def case() -> None:
+        authorization = AuthorizationScenario(fail_handoff_binding=True)
+        physical = PhysicalToolCounter()
+        runtime, uow, database = authorization_runtime(
+            tmp_path / "authorization-handoff-bind-failure.db",
+            authorization=authorization,
+            physical=physical,
+            owner_id="runtime-handoff-bind-failure",
+            clock=lambda: 10.0,
+        )
+        decision = await start_authorization_wait(runtime, uow)
+        await runtime.client.decide_authorization(
+            RunId("run-fault"),
+            decision_id=decision.decision_id,
+            nonce=str(decision.request["nonce"]),
+            expected_version=decision.version,
+            decision=AuthorizationDecision.ALLOW,
+        )
+        await wait_for_scenario(
+            runtime, lambda: uow.read_run("run-fault").state is RunState.FAILED
+        )
+        effect = database.connection.execute(
+            "SELECT state,handoff_receipt_ref FROM execution_effects "
+            "WHERE run_id='run-fault'"
+        ).fetchone()
+        assert effect is not None and tuple(effect) == ("prepared", None)
+        assert authorization.handoff_bind_calls == 1
+        assert physical.calls == 0
         await runtime.close()
         database.close()
 

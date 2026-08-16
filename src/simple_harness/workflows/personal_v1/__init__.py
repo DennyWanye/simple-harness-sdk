@@ -16,9 +16,25 @@ from .selection import (
     PersonalWorkflowSelectionV1,
     personal_workflow_query_hash,
 )
+from .definition import (
+    PERSONAL_WORKFLOW_V1,
+    PERSONAL_WORKFLOW_V1_DEFINITION,
+    create_initial_state,
+)
+from .factory import (
+    START_SCHEMA,
+    START_SCHEMA_REF,
+    build_personal_v1_registration,
+)
 
 __all__ = [
     "PersonalWorkflowRuntimePort",
+    "PERSONAL_WORKFLOW_V1",
+    "PERSONAL_WORKFLOW_V1_DEFINITION",
+    "START_SCHEMA",
+    "START_SCHEMA_REF",
+    "build_personal_v1_registration",
+    "create_initial_state",
     "PersonalWorkflowSelectionError",
     "PersonalWorkflowSelectionV1",
     "personal_workflow_query_hash",

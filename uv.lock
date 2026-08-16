@@ -812,7 +812,6 @@ wheels = [
 
 [[package]]
 name = "simple-harness-sdk"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

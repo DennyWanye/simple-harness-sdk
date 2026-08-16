@@ -10,6 +10,8 @@ path = [
   "README.md",
   "NOTICE",
   "docs/**/*.md",
+  "plans/**/*.json",
+  "plans/**/*.md",
   "pyproject.toml",
   "provenance/*.json",
   "source-manifest.tsv",

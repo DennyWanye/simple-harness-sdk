@@ -110,12 +110,14 @@ class DeliveryDispatcher:
         *,
         clock: Callable[[], float] = time.time,
         claim_ttl_seconds: float = 30.0,
+        fault: Callable[[str], None] | None = None,
     ) -> None:
         self._uow = uow
         self._sinks = dict(sinks)
         if not self._sinks or any(not key.strip() for key in self._sinks):
             raise ValueError("delivery sinks must have non-empty unique keys")
         self._clock = clock
+        self._fault = fault
         if not math.isfinite(claim_ttl_seconds) or claim_ttl_seconds <= 0:
             raise ValueError("claim_ttl_seconds must be finite and positive")
         self._claim_ttl_seconds = float(claim_ttl_seconds)
@@ -146,6 +148,8 @@ class DeliveryDispatcher:
                 now=self._now(),
             )
         else:
+            if self._fault is not None:
+                self._fault("delivery.sink_succeeded.before_complete")
             self._uow.complete_delivery(
                 record.delivery_id,
                 expected_version=record.version,

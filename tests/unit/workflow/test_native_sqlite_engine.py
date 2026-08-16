@@ -23,6 +23,7 @@ from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import DecisionState
 from simple_harness.tools import (
     AuthorizationDecision,
+    AuthorizationReceipt,
     AuthorizationResult,
     CancellationToken,
     EffectExecutor,
@@ -930,6 +931,14 @@ def test_real_effect_interrupt_effect_graph_reopens_without_physical_replay(
             return AuthorizationResult(
                 AuthorizationDecision.ALLOW,
                 receipt_ref=f"auth:{prepared.effect_id.value}",
+            )
+
+        async def bind_effect_handoff(
+            self, prepared, authorization_receipt_ref, sdk_receipt
+        ) -> AuthorizationReceipt:
+            del prepared, authorization_receipt_ref
+            return AuthorizationReceipt(
+                "host:workflow-handoff", "a" * 64, sdk_receipt.receipt_hash
             )
 
     class Observe:

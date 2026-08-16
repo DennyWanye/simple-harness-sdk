@@ -197,156 +197,63 @@ class AuthorizationDecision:
 
 
 class ProposalPort(Protocol):
-    """LLM proposal generation with context."""
+    """Generate the next normalized proposal transition."""
 
-    async def generate_proposal(
-        self,
-        *,
-        request: str,
-        context: ProposalContext,
-        capabilities: Sequence[CapabilityDescriptor],
-        constraints: ProposalConstraints,
-    ) -> ProposalResult:
-        """Generate LLM proposal with available capabilities.
+    async def propose(self, proposal_state: object) -> object: ...
 
-        Args:
-            request: User request or task description
-            context: Conversation context and history
-            capabilities: Available capabilities for this proposal
-            constraints: Generation constraints (tools, turns, approval)
-
-        Returns:
-            ProposalResult with content, tool calls, and convergence state
-        """
-        ...
+    async def propose_for_execution(
+        self, proposal_state: object, *, execution_identity: object
+    ) -> object: ...
 
 
 class CapabilityCatalogPort(Protocol):
-    """Capability search and binding."""
+    """Read-only capability availability and lifecycle metadata."""
 
-    async def search_capabilities(
-        self,
-        *,
-        query: str,
-        filters: CapabilityFilters,
-    ) -> Sequence[CapabilityDescriptor]:
-        """Search available capabilities.
+    async def is_capability_available(self, name: str) -> bool: ...
 
-        Args:
-            query: Search query string
-            filters: Additional filters (tags, categories)
+    async def get_capability_source(self, name: str) -> str | None: ...
 
-        Returns:
-            Sequence of matching capability descriptors
-        """
-        ...
-
-    async def bind_capability(
-        self,
-        *,
-        capability_id: str,
-        generation: int,
-    ) -> BoundCapability:
-        """Bind specific capability version.
-
-        Args:
-            capability_id: Unique capability identifier
-            generation: Capability generation number
-
-        Returns:
-            BoundCapability with handler and metadata
-
-        Raises:
-            ValueError: If capability not found or generation mismatch
-        """
-        ...
+    async def get_capability_policy(
+        self, name: str
+    ) -> Mapping[str, JsonValue] | None: ...
 
 
 class WorkspacePort(Protocol):
-    """Workspace file operations."""
+    """Dispatch prepared calls through the Host workspace/tool boundary."""
 
-    async def read_file(self, path: str) -> bytes:
-        """Read file from workspace.
-
-        Args:
-            path: Relative path within workspace
-
-        Returns:
-            File contents as bytes
-
-        Raises:
-            FileNotFoundError: If file does not exist
-        """
-        ...
-
-    async def write_file(self, path: str, content: bytes) -> WriteReceipt:
-        """Write file to workspace with receipt.
-
-        Args:
-            path: Relative path within workspace
-            content: File contents as bytes
-
-        Returns:
-            WriteReceipt with checksum and timestamp
-        """
-        ...
-
-    async def list_files(self, pattern: str) -> Sequence[FileInfo]:
-        """List files matching pattern.
-
-        Args:
-            pattern: Glob pattern (e.g., "*.py", "src/**/*.ts")
-
-        Returns:
-            Sequence of FileInfo for matching files
-        """
-        ...
+    async def execute_tools(
+        self,
+        calls: Sequence[object],
+        *,
+        workflow_step_id: str,
+        prior_results: Mapping[str, object],
+    ) -> Mapping[str, object]: ...
 
 
 class ArtifactPort(Protocol):
-    """Artifact creation and management."""
+    """Optional evidence, testing, audit, and completion policy boundary."""
 
-    async def create_artifact(
-        self,
-        *,
-        name: str,
-        content: bytes,
-        metadata: Mapping[str, JsonValue],
-    ) -> ArtifactId:
-        """Create output artifact.
+    async def check_completion_evidence(
+        self, proposal_state: object, outcome: object
+    ) -> bool: ...
 
-        Args:
-            name: Artifact name
-            content: Artifact content as bytes
-            metadata: Additional metadata (type, description, etc.)
+    async def completion_decision(
+        self, decision: Mapping[str, JsonValue], proposal_state: object
+    ) -> Mapping[str, JsonValue]: ...
 
-        Returns:
-            ArtifactId with unique identifier and version
-        """
-        ...
+    async def run_tests(self, proposal_state: object) -> Mapping[str, JsonValue]: ...
+
+    async def audit(
+        self, audit: Mapping[str, JsonValue], proposal_state: object
+    ) -> Mapping[str, JsonValue]: ...
 
 
 class AuthorizationPort(Protocol):
-    """Permission and authorization checks."""
+    """Commit an admission-issued authorization for one stable call."""
 
-    async def check_tool_authorization(
-        self,
-        *,
-        tool_name: str,
-        arguments: Mapping[str, JsonValue],
-        context: AuthorizationContext,
-    ) -> AuthorizationDecision:
-        """Check if tool call is authorized.
-
-        Args:
-            tool_name: Name of the tool to check
-            arguments: Tool call arguments
-            context: Authorization context (run, user, session)
-
-        Returns:
-            AuthorizationDecision with allowed status and reason
-        """
-        ...
+    async def grant_authorization(
+        self, stable_call_id: str, authorization: object
+    ) -> None: ...
 
 
 __all__ = [

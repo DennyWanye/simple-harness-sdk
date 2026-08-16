@@ -11,6 +11,8 @@ from simple_harness.contracts import CallId, EffectId, RunId
 from simple_harness.tools import (
     AuthorizationDecision,
     AuthorizationPort,
+    AuthorizationReceipt,
+    AuthorizationRequest,
     AuthorizationResult,
     PreparedToolEffect,
     ToolCall,
@@ -62,4 +64,20 @@ def test_authorization_result_is_fail_closed() -> None:
         AuthorizationDecision.REQUIRE_USER,
         reason_code="user_confirmation_required",
         public_message="Confirmation is required.",
+        request=AuthorizationRequest("Confirm read.", "nonce-1"),
     ).decision is AuthorizationDecision.REQUIRE_USER
+
+
+def test_host_receipt_must_bind_the_sdk_receipt_hash() -> None:
+    from simple_harness.tools import (
+        bind_authorization_receipts,
+        sdk_authorization_receipt,
+    )
+
+    sdk = sdk_authorization_receipt("decision", {"decision_id": "decision-1"})
+    host = AuthorizationReceipt("host:1", "a" * 64, sdk.receipt_hash)
+    assert bind_authorization_receipts(sdk, host).startswith("authorization-binding-v1:")
+    with pytest.raises(ValueError):
+        bind_authorization_receipts(
+            sdk, AuthorizationReceipt("host:2", "b" * 64, "c" * 64)
+        )

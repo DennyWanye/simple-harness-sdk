@@ -24,16 +24,15 @@ def test_profile_constants():
     """Test capability_build profile has expected constants."""
     assert WORKFLOW_PROFILE_KEY == "workflow.capability_build"
     assert WORKFLOW_NAME == "durable_task"
-    assert WORKFLOW_VERSION == "v1"
+    assert WORKFLOW_VERSION == "capability_build_v1"
     assert DEFAULT_PROPOSAL_BUDGET == 40
     assert DEFAULT_FIX_BUDGET == 3
 
 
-def test_profile_reuses_durable_task():
-    """Test capability_build is a bounded durable_task profile."""
-    # The profile should reference durable_task workflow, not define a new graph
+def test_profile_keeps_durable_task_ownership_with_an_isolated_graph_version():
+    """The specialization remains durable-task-owned without graph collision."""
     assert WORKFLOW_NAME == "durable_task"
-    assert WORKFLOW_VERSION == "v1"
+    assert WORKFLOW_VERSION == "capability_build_v1"
 
 
 def test_profile_budgets_are_constrained():
