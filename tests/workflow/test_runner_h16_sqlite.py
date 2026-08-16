@@ -329,6 +329,37 @@ def test_runner_resume_receipt_settles_with_terminal_checkpoint_same_transaction
             return run_id
 
         run_id = asyncio.run(suspend())
+        with Database.open(path) as recovery_database:
+            recovery_uow = SqliteExecutionUnitOfWork(recovery_database)
+            recovery_ports = WorkflowExecutionPorts(
+                recovery_uow,
+                CheckpointExecutionAdapter(recovery_database),
+                recovery_uow,
+                recovery_uow,
+                recovery_uow,
+            )
+            recovery_runner = WorkflowRunner(
+                registry=WorkflowRegistry((compiled,)),
+                checkpoint=SqliteNativeCheckpointStore(
+                    recovery_ports, blob_references=NoBlobReferences()
+                ),
+                recovery=RecordingRecoveryPort(),
+                trace=RecordingTracePort(),
+                execution_ports=recovery_ports,
+                terminal_projection_port=LegacyTerminalProjectionPort(),
+                terminal_commit_projection_port=NoTerminalCommitProjectionPort(),
+                owner="runner-recovery",
+                clock=lambda: clock_value,
+            )
+            waiting = asyncio.run(
+                recovery_runner.recover(run_id, WorkflowContext())
+            )
+            assert waiting.status.value == "waiting"
+            assert isinstance(waiting.output, Mapping)
+            assert waiting.output["interrupt"]["payload"] == {
+                "question": "continue?"
+            }
+            assert calls == 1
         decision = database.connection.execute(
             "SELECT decision_id FROM decisions WHERE run_id=? AND state='open'",
             (run_id,),

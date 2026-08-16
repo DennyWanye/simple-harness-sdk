@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 import secrets
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 from simple_harness.contracts import (
@@ -105,7 +105,7 @@ class EffectExecutor:
             if spec.name in requested
         )
 
-    def _prepared(
+    async def _prepared(
         self,
         *,
         effect_id: EffectId,
@@ -113,12 +113,18 @@ class EffectExecutor:
         context: ToolContext,
     ) -> PreparedToolEffect:
         tool = self._registry.validate(call)
+        resources = (
+            ()
+            if tool.spec.sidecar is None
+            else await tool.spec.sidecar.resolve_resources(call.arguments, context)
+        )
         return PreparedToolEffect(
             effect_id=effect_id,
             run_id=context.run_id,
             call=call,
             spec=tool.spec,
             context_metadata=context.metadata,
+            resources=resources,
         )
 
     async def bind_decision(
@@ -160,12 +166,38 @@ class EffectExecutor:
         if not isinstance(arguments, Mapping):
             raise TypeError("authorization decision arguments must be an object")
         tool = self._registry.get(name)
+        sidecar_digest = request.get("sidecar_digest")
+        if sidecar_digest is not None and (
+            tool.spec.sidecar is None or tool.spec.sidecar.digest != sidecar_digest
+        ):
+            raise ValueError("authorization Tool sidecar authority changed")
+        from .sidecar import ToolResource, resource_digest
+
+        resources_raw = request.get("resources", [])
+        if not isinstance(resources_raw, (list, tuple)):
+            raise TypeError("authorization resources must be an array")
+        resources: list[ToolResource] = []
+        for raw in resources_raw:
+            if not isinstance(raw, Mapping) or not isinstance(
+                raw.get("actions"), (list, tuple)
+            ):
+                raise TypeError("authorization resource is malformed")
+            resources.append(
+                ToolResource(
+                    str(raw.get("namespace") or ""),
+                    str(raw.get("resource_id") or ""),
+                    tuple(str(value) for value in raw["actions"]),
+                )
+            )
+        if request.get("resources_digest") != resource_digest(resources):
+            raise ValueError("authorization resource authority changed")
         return PreparedToolEffect(
             effect_id=effect_id,
             run_id=run_id,
             call=ToolCall(call_id, name, cast(dict[str, FrozenJsonValue], arguments)),
             spec=tool.spec,
             context_metadata={},
+            resources=tuple(resources),
         )
 
     async def execute(
@@ -181,6 +213,10 @@ class EffectExecutor:
         turn_ordinal: int = 0,
         call_ordinal: int = 0,
     ) -> EffectExecution:
+        if context.call_id is not None and context.call_id != call.call_id:
+            raise ValueError("Tool context call_id differs from call")
+        if context.effect_id is not None and context.effect_id != effect_id:
+            raise ValueError("Tool context effect_id differs from effect")
         if (
             execution_lease.run_id != context.run_id.value
             or execution_lease.namespace != RUNTIME_LEASE_NAMESPACE
@@ -191,6 +227,11 @@ class EffectExecutor:
             or run_fence.owner_id != execution_lease.owner_id
         ):
             raise ValueError("Tool Run fence differs from runtime lease")
+        trusted_context = replace(
+            context,
+            call_id=call.call_id,
+            effect_id=effect_id,
+        )
         arguments = thaw_json(call.arguments)
         if not isinstance(arguments, dict):
             raise TypeError("Tool arguments must be a JSON object")
@@ -216,7 +257,7 @@ class EffectExecutor:
             if existing.state in {EffectState.HANDED_OFF, EffectState.UNKNOWN}:
                 reconciled = await self.reconcile(
                     existing,
-                    context=context,
+                    context=trusted_context,
                     current_fence_epoch=run_fence.epoch,
                 )
                 if reconciled.terminal:
@@ -241,7 +282,9 @@ class EffectExecutor:
                     )
             elif existing.state is EffectState.PREPARED:
                 refresh_prepared_authority = True
-        prepared = self._prepared(effect_id=effect_id, call=call, context=context)
+        prepared = await self._prepared(
+            effect_id=effect_id, call=call, context=trusted_context
+        )
         authorization_receipt_ref: str | None = None
         read_decision = getattr(self._uow, "read_decision", None)
         durable_decision = (
@@ -373,7 +416,7 @@ class EffectExecutor:
         try:
             result = await self._registry.invoke(
                 call,
-                context,
+                trusted_context,
                 accepted_result_call_id=(
                     None if raw_call_id is None else CallId(raw_call_id)
                 ),

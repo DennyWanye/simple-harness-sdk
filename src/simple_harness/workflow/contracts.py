@@ -638,9 +638,16 @@ class ToolInventoryEntry:
     spec_version: str
     schema_hash: str
     effect_policy: EffectPolicy | None = None
+    effect_policy_hash: str | None = None
     outcome_parser_id: str | None = None
     outcome_parser_version: str | None = None
     outcome_parser_hash: str | None = None
+    handler_id: str | None = None
+    dispatch_kind: str = "sync"
+    execution_build_digest: str | None = None
+    completion_semantics: str = "sync"
+    resource_scope_resolver_id: str | None = None
+    resource_scope_resolver_version: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.spec_version or not self.schema_hash:
@@ -663,6 +670,41 @@ class ToolInventoryEntry:
             raise WorkflowDefinitionError(
                 "incomplete_outcome_parser",
                 "Outcome parser id, version and hash must be supplied together",
+            )
+        if self.dispatch_kind not in {
+            "sync",
+            "async",
+            "context",
+            "staged",
+            "control",
+            "provider",
+        }:
+            raise WorkflowDefinitionError(
+                "invalid_tool_dispatch", "Unknown Tool dispatch kind"
+            )
+        if self.completion_semantics not in {"sync", "accepted_async"}:
+            raise WorkflowDefinitionError(
+                "invalid_tool_completion", "Unknown Tool completion semantics"
+            )
+        for name in (
+            "schema_hash",
+            "effect_policy_hash",
+            "outcome_parser_hash",
+            "execution_build_digest",
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise WorkflowDefinitionError(
+                    "invalid_tool_digest", f"{name} must be lowercase SHA-256"
+                )
+        resolver = (self.resource_scope_resolver_id, self.resource_scope_resolver_version)
+        if any(resolver) and not all(resolver):
+            raise WorkflowDefinitionError(
+                "incomplete_resource_resolver",
+                "Resource resolver id and version must be supplied together",
             )
 
 

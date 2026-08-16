@@ -4,11 +4,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import replace
 
 import pytest
 
-from simple_harness.contracts import CallId, EffectId, RequestId, RunId
+from simple_harness.contracts import (
+    CallId,
+    EffectId,
+    RequestId,
+    RunId,
+    canonical_json,
+    freeze_json,
+)
 from simple_harness.execution import (
     EffectRecord,
     EffectState,
@@ -17,7 +25,7 @@ from simple_harness.execution import (
 )
 from simple_harness.execution.effects import effect_request_hash
 from simple_harness.execution.recovery import ResolutionOutcome
-from simple_harness.execution.uow import ExecutionLease
+from simple_harness.execution.uow import DecisionRecord, DecisionState, ExecutionLease
 from simple_harness.tools import (
     AuthorizationDecision,
     AuthorizationReceipt,
@@ -31,8 +39,12 @@ from simple_harness.tools import (
     ToolCall,
     ToolContext,
     ToolRegistry,
+    ToolResource,
     ToolResult,
     ToolSpec,
+    Sidecar,
+    ToolInventoryRecord,
+    resource_digest,
 )
 
 
@@ -153,6 +165,34 @@ class AllowWithoutHandoff:
         )
 
 
+class _ResourceResolver:
+    resolver_id = "sdk.test.filesystem"
+    version = "v1"
+
+    def resolve(self, arguments, context):
+        assert context.call_id == CallId("call-resource")
+        assert context.effect_id == EffectId("effect-resource")
+        return (ToolResource("filesystem", str(arguments["path"]), ("read",)),)
+
+
+class CapturePrepared(Allow):
+    def __init__(self) -> None:
+        self.prepared: PreparedToolEffect | None = None
+
+    async def prepare(self, prepared: PreparedToolEffect) -> AuthorizationResult:
+        self.prepared = prepared
+        return AuthorizationResult(
+            AuthorizationDecision.ALLOW, receipt_ref="authorization:resource"
+        )
+
+    async def bind_decision(self, prepared, request, decision, sdk_receipt):
+        del request, decision
+        self.prepared = prepared
+        return AuthorizationReceipt(
+            "host:decision:resource", "c" * 64, sdk_receipt.receipt_hash
+        )
+
+
 class Observe:
     def __init__(self, observation: ReconciliationObservation) -> None:
         self.observation = observation
@@ -260,6 +300,188 @@ def test_effect_is_handed_off_before_handler_and_then_settled() -> None:
     assert execution.effect.state is EffectState.SUCCEEDED
     assert uow.trace == ["prepare", "handoff", "settle"]
     assert calls == 1
+
+
+def test_executor_binds_typed_ids_and_resources_before_authorization() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+        "additionalProperties": False,
+    }
+    sidecar = Sidecar(
+        ToolInventoryRecord(
+            name="read",
+            access="read",
+            spec_version="v1",
+            schema_hash=hashlib.sha256(canonical_json(schema).encode()).hexdigest(),
+            resource_scope_resolver_id=_ResourceResolver.resolver_id,
+            resource_scope_resolver_version=_ResourceResolver.version,
+        ),
+        resource_scope_resolver=_ResourceResolver(),
+    )
+    seen: list[ToolContext] = []
+
+    def handler(_arguments: object, context: ToolContext) -> ToolResult:
+        seen.append(context)
+        return ToolResult.succeeded(context.call_id)  # type: ignore[arg-type]
+
+    authorization = CapturePrepared()
+    uow = FakeUow()
+    observer = Observe(
+        ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused")
+    )
+    executor = EffectExecutor(
+        uow=uow,
+        registry=ToolRegistry(
+            [FunctionTool(ToolSpec("read", "Read data.", schema, sidecar), handler)]
+        ),
+        authorization=authorization,
+        reconciliation=observer,
+    )
+    result = asyncio.run(
+        executor.execute(
+            effect_id=EffectId("effect-resource"),
+            call=ToolCall(CallId("call-resource"), "read", {"path": "/tmp/input"}),
+            context=ToolContext(
+                RunId("run-1"), RequestId("request-same"), CancellationToken()
+            ),
+            execution_lease=LEASE,
+            run_fence=FENCE,
+        )
+    )
+    assert result.result.outcome.value == "succeeded"
+    assert authorization.prepared is not None
+    assert authorization.prepared.sidecar is sidecar
+    assert authorization.prepared.resources == (
+        ToolResource("filesystem", "/tmp/input", ("read",)),
+    )
+    assert seen[0].call_id == CallId("call-resource")
+    assert seen[0].effect_id == EffectId("effect-resource")
+
+
+def test_durable_authorization_reopen_rechecks_sidecar_and_resource_hashes() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+        "additionalProperties": False,
+    }
+    sidecar = Sidecar(
+        ToolInventoryRecord(
+            name="read",
+            access="read",
+            spec_version="v1",
+            schema_hash=hashlib.sha256(canonical_json(schema).encode()).hexdigest(),
+            resource_scope_resolver_id=_ResourceResolver.resolver_id,
+            resource_scope_resolver_version=_ResourceResolver.version,
+        ),
+        resource_scope_resolver=_ResourceResolver(),
+    )
+    authorization = CapturePrepared()
+    executor = EffectExecutor(
+        uow=FakeUow(),
+        registry=ToolRegistry(
+            [
+                FunctionTool(
+                    ToolSpec("read", "Read data.", schema, sidecar),
+                    lambda _arguments, context: ToolResult.succeeded(context.call_id),
+                )
+            ]
+        ),
+        authorization=authorization,
+        reconciliation=Observe(
+            ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused")
+        ),
+    )
+    resources = (ToolResource("filesystem", "/tmp/input", ("read",)),)
+    request = {
+        "arguments": {"path": "/tmp/input"},
+        "call_id": "call-resource",
+        "effect_id": "effect-resource",
+        "expires_at": None,
+        "metadata": {},
+        "nonce": "nonce-resource",
+        "prompt": "Allow read?",
+        "resources": [value.to_json() for value in resources],
+        "resources_digest": resource_digest(resources),
+        "sidecar_digest": sidecar.digest,
+        "tool_name": "read",
+    }
+    record = DecisionRecord(
+        "authorization:effect-resource",
+        "run-1",
+        "tool_authorization",
+        DecisionState.OPEN,
+        freeze_json(request),
+        None,
+        0,
+    )
+    binding = asyncio.run(
+        executor.bind_decision(record, AuthorizationDecision.ALLOW)
+    )
+    assert binding.startswith("authorization-binding-v1:")
+    assert authorization.prepared is not None
+    assert authorization.prepared.sidecar is sidecar
+    assert authorization.prepared.resources == resources
+
+    for field in ("sidecar_digest", "resources_digest"):
+        tampered = dict(request)
+        tampered[field] = "f" * 64
+        with pytest.raises(ValueError, match="authority changed"):
+            asyncio.run(
+                executor.bind_decision(
+                    replace(record, request=freeze_json(tampered)),
+                    AuthorizationDecision.ALLOW,
+                )
+            )
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        ToolContext(
+            RunId("run-1"),
+            RequestId("request-same"),
+            CancellationToken(),
+            call_id=CallId("forged-call"),
+        ),
+        ToolContext(
+            RunId("run-1"),
+            RequestId("request-same"),
+            CancellationToken(),
+            effect_id=EffectId("forged-effect"),
+        ),
+    ],
+)
+def test_executor_rejects_forged_context_identity_before_physical_call(
+    context: ToolContext,
+) -> None:
+    calls = 0
+
+    def handler(_arguments: object, _context: ToolContext) -> ToolResult:
+        nonlocal calls
+        calls += 1
+        return ToolResult.succeeded(CallId("call-1"))
+
+    uow = FakeUow()
+    executor, _ = _executor(
+        uow,
+        handler,
+        ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused"),
+    )
+    with pytest.raises(ValueError, match="differs"):
+        asyncio.run(
+            executor.execute(
+                effect_id=EffectId("effect-1"),
+                call=ToolCall(CallId("call-1"), "read", {"path": "."}),
+                context=context,
+                execution_lease=LEASE,
+                run_fence=FENCE,
+            )
+        )
+    assert calls == 0
+    assert uow.record is None
 
 
 def test_mismatched_runtime_and_run_fence_owner_never_reaches_handler() -> None:

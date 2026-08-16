@@ -14,6 +14,7 @@ from typing import Protocol, runtime_checkable
 from simple_harness.contracts import EffectId, JsonValue, RunId, canonical_json, freeze_json
 
 from .contracts import JsonObject, ToolCall, ToolSpec
+from .sidecar import Sidecar, ToolResource
 
 
 class AuthorizationDecision(StrEnum):
@@ -107,12 +108,29 @@ class PreparedToolEffect:
     call: ToolCall
     spec: ToolSpec
     context_metadata: JsonObject
+    sidecar: Sidecar | None = None
+    resources: tuple[ToolResource, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.effect_id, EffectId):
             raise TypeError("effect_id must use EffectId")
         if not isinstance(self.run_id, RunId):
             raise TypeError("run_id must use RunId")
+        if self.call.name != self.spec.name:
+            raise ValueError("prepared Tool call and spec differ")
+        expected = self.spec.sidecar
+        if self.sidecar is None:
+            object.__setattr__(self, "sidecar", expected)
+        elif not isinstance(self.sidecar, Sidecar) or self.sidecar != expected:
+            raise ValueError("prepared Tool sidecar differs from registry authority")
+        resources = tuple(self.resources)
+        if any(not isinstance(resource, ToolResource) for resource in resources):
+            raise TypeError("resources must use ToolResource")
+        if len(resources) != len(
+            {(value.namespace, value.resource_id, value.actions) for value in resources}
+        ):
+            raise ValueError("resources contain duplicate claims")
+        object.__setattr__(self, "resources", resources)
 
 
 @dataclass(frozen=True, slots=True)

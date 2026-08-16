@@ -6785,18 +6785,23 @@ class SqliteExecutionUnitOfWork:
         if phase not in {
             StartPhase.ADMITTED.value,
             StartPhase.CLAIMED.value,
+            StartPhase.RUNNING.value,
         }:
             raise UnitOfWorkConflict("start receipt is not claimable")
         namespace = str(
             json.loads(str(receipt["request_json"]))["checkpoint_namespace"]
         )
-        if phase == StartPhase.CLAIMED.value:
+        if phase in {StartPhase.CLAIMED.value, StartPhase.RUNNING.value}:
             runtime = tx.connection.execute(
                 "SELECT owner_id,epoch,expires_at FROM workflow_leases "
                 "WHERE run_id=? AND namespace=?",
                 (run_id, RUNTIME_LEASE_NAMESPACE),
             ).fetchone()
             if runtime is not None and float(runtime["expires_at"]) > now:
+                if phase == StartPhase.RUNNING.value:
+                    raise UnitOfWorkConflict(
+                        "running workflow activation has not expired"
+                    )
                 if str(runtime["owner_id"]) != owner_id:
                     raise UnitOfWorkConflict(
                         "workflow activation has an active owner"
@@ -6821,7 +6826,12 @@ class SqliteExecutionUnitOfWork:
         if (
             run is None
             or int(run["version"]) != expected_run_version
-            or str(run["state"]) not in {"created", "queued"}
+            or str(run["state"])
+            not in (
+                {"running"}
+                if phase == StartPhase.RUNNING.value
+                else {"created", "queued"}
+            )
         ):
             raise UnitOfWorkConflict("workflow Run is not claimable")
         _fault(fault, "workflow:claim_activation:before_workflow_leases_write")

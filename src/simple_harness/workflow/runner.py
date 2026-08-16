@@ -1311,6 +1311,7 @@ class WorkflowRunner:
         precreated: tuple[ExecutionLease, RunFenceLease] | None,
         precreated_activation: WorkflowActivation | None = None,
         recovered_resume_binding: ResumeCommitBinding | None = None,
+        recovering: bool = False,
     ) -> WorkflowRunResult:
         run = cast(RunRecord | None, self.execution_ports.unit_of_work.read_run(run_id))
         snapshot = self.execution_ports.unit_of_work.read_start_snapshot(run_id)
@@ -1366,7 +1367,7 @@ class WorkflowRunner:
             observer_port=self.observer_port,
         )
         logical_timestamp = float(self._clock())
-        if responses is not None:
+        if responses is not None or recovering:
             resumed_execution = await self.native_store.load_execution(
                 run_id=run.run_id,
                 thread_id=(
@@ -1384,7 +1385,7 @@ class WorkflowRunner:
                 or not isinstance(pinned_logical_timestamp, (int, float))
             ):
                 raise RuntimeError(
-                    "workflow resume lacks a durable logical timestamp"
+                    "workflow reopen lacks a durable logical timestamp"
                 )
             logical_timestamp = float(pinned_logical_timestamp)
         configurable: dict[str, JsonValue] = {
@@ -1468,9 +1469,13 @@ class WorkflowRunner:
             )
             namespace = request.checkpoint_namespace
             initial = (
-                state
-                if state is not None
-                else thaw_json(cast(FrozenJsonValue, request.start_input))
+                None
+                if recovering
+                else (
+                    state
+                    if state is not None
+                    else thaw_json(cast(FrozenJsonValue, request.start_input))
+                )
             )
             if responses is None:
                 return await executable.ainvoke(
@@ -1725,6 +1730,7 @@ class WorkflowRunner:
         self, run_id: str, context: WorkflowContext | None = None, **_: object
     ) -> WorkflowRunResult:
         """Recover workflow via classify/repair/quarantine pipeline."""
+        from .checkpoint import PendingInterrupt, WorkflowCheckpoint
         from .recovery import quarantine_checkpoint, repair_head_projection
 
         # Read recovery snapshot to get candidate and checkpoint state
@@ -1761,10 +1767,74 @@ class WorkflowRunner:
                 error={"action": record.action, "reason": record.reason},
             )
 
-        # Try to read and repair checkpoint head
+        # Load the exact Native head through the public NativeCheckpointStore
+        # contract.  The prior implementation called ``checkpoint.read`` even
+        # though no such Native store operation exists, turning every real
+        # SQLite reopen into a false quarantine.
+        checkpoint: WorkflowCheckpoint | None = None
         try:
-            checkpoint = await self.checkpoint.read(
-                run_id, snapshot.candidate.checkpoint_head
+            run = cast(
+                RunRecord | None,
+                self.execution_ports.unit_of_work.read_run(run_id),
+            )
+            start_raw = self.execution_ports.unit_of_work.read_start_snapshot(run_id)
+            if run is None or start_raw is None:
+                raise RuntimeError("workflow recovery authority is missing")
+            start = StartSnapshot.from_json(start_raw)
+            request = start.workflow_admission
+            if request is None:
+                raise RuntimeError("workflow recovery admission is missing")
+            native = await self.native_store.load_execution(
+                run_id=run_id,
+                thread_id=(
+                    request.resolved_thread_id
+                    or request.requested_thread_id
+                    or run_id
+                ),
+                checkpoint_ns=request.checkpoint_namespace,
+                checkpoint_id=snapshot.candidate.checkpoint_head,
+            )
+            if native.snapshot.checkpoint_id != snapshot.candidate.checkpoint_head:
+                raise RuntimeError("workflow recovery head changed")
+            interrupt_raw = native.snapshot.interrupt
+            pending_interrupt = None
+            if isinstance(interrupt_raw, Mapping):
+                interrupt_id = interrupt_raw.get("interrupt_id")
+                payload = interrupt_raw.get("payload")
+                if not isinstance(interrupt_id, str) or not isinstance(payload, Mapping):
+                    raise RuntimeError("workflow recovery interrupt is malformed")
+                pending_interrupt = PendingInterrupt(
+                    interrupt_id,
+                    cast(Mapping[str, JsonValue], copy.deepcopy(dict(payload))),
+                )
+            checkpoint = WorkflowCheckpoint(
+                run_id=run_id,
+                workflow_name=request.workflow_name,
+                workflow_version=request.workflow_version,
+                manifest_hash=request.manifest_hash,
+                status=_STATUS.get(run.state, WorkflowRunStatus.BLOCKED),
+                active_nodes=tuple(task.node_id for task in native.snapshot.frontier),
+                values=cast(
+                    Mapping[str, JsonValue], copy.deepcopy(dict(native.snapshot.state))
+                ),
+                attempts={
+                    task.node_id: task.retry_attempt for task in native.snapshot.frontier
+                },
+                loop_counters={},
+                pending_interrupt=pending_interrupt,
+                revision=native.snapshot.step,
+                error_code=None,
+                recovery_action=None,
+                checkpoint_namespace=native.snapshot.checkpoint_ns,
+                completed_nodes=tuple(
+                    sorted(
+                        {
+                            node_id
+                            for node_ids in native.snapshot.completed_activations.values()
+                            for node_id in node_ids
+                        }
+                    )
+                ),
             )
 
             async def repair_tx(tx: WorkflowTransaction):
@@ -1780,8 +1850,32 @@ class WorkflowRunner:
                 # Repair was needed and applied
                 return WorkflowRunResult(
                     run_id,
-                    WorkflowRunStatus(_STATUS.get(RunState(record.status), WorkflowRunStatus.BLOCKED)),
+                    _STATUS.get(RunState(record.status), WorkflowRunStatus.BLOCKED),
                     {"action": record.action, "reason": record.reason},
+                )
+
+            # Terminal and waiting checkpoints are already business-stable.
+            # Recovery must report their durable state without attempting a new
+            # activation (which would either replay effects or consume an
+            # interrupt without a response).
+            durable_output: dict[str, JsonValue] = copy.deepcopy(
+                dict(native.snapshot.state)
+            )
+            if pending_interrupt is not None:
+                durable_output["interrupt"] = {
+                    "interrupt_id": pending_interrupt.interrupt_id,
+                    "payload": copy.deepcopy(dict(pending_interrupt.payload)),
+                }
+            if run.state in {
+                RunState.WAITING,
+                RunState.COMPLETED,
+                RunState.FAILED,
+                RunState.CANCELLED,
+            }:
+                return WorkflowRunResult(
+                    run_id,
+                    _STATUS[run.state],
+                    durable_output,
                 )
         except Exception as exc:
             # Checkpoint read or repair failed, quarantine
@@ -1790,7 +1884,7 @@ class WorkflowRunner:
                     self.recovery,
                     run_id=run_id,
                     reason=f"checkpoint_repair_failed:{exc.__class__.__name__}",
-                    checkpoint=None,
+                    checkpoint=checkpoint,
                     transaction=tx,
                 )
 
@@ -1810,6 +1904,7 @@ class WorkflowRunner:
             responses=None,
             context=context or WorkflowContext(),
             precreated=None,
+            recovering=True,
         )
 
     async def history(self, run_id: str, *, limit: int | None = None):

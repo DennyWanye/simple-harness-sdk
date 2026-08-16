@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -14,18 +15,21 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from simple_harness.contracts import (
     CallId,
+    EffectId,
     FrozenJsonValue,
     JsonValue,
     RequestId,
     RunId,
     freeze_json,
     thaw_json,
+    canonical_json,
 )
 
 from .schema import validate_tool_schema
 
 if TYPE_CHECKING:
     from simple_harness.runtime.workflow_spawn import WorkflowSpawnToolContext
+    from .sidecar import Sidecar
 
 
 JsonObject = Mapping[str, FrozenJsonValue]
@@ -39,9 +43,9 @@ def _required(value: str, field_name: str) -> str:
 
 
 def _freeze_object(value: object, field_name: str) -> JsonObject:
-    if not isinstance(value, dict):
+    if not isinstance(value, Mapping):
         raise TypeError(f"{field_name} must be a JSON object")
-    frozen = freeze_json(value)
+    frozen = freeze_json(dict(value))
     if not isinstance(frozen, Mapping):
         raise TypeError(f"{field_name} must be a JSON object")
     return frozen
@@ -60,6 +64,7 @@ class ToolSpec:
     name: str
     description: str
     input_schema: JsonObject
+    sidecar: Sidecar | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _required(self.name, "name"))
@@ -69,6 +74,18 @@ class ToolSpec:
         validate_tool_schema(self.input_schema)
         schema = _freeze_object(self.input_schema, "input_schema")
         object.__setattr__(self, "input_schema", schema)
+        if self.sidecar is not None:
+            from .sidecar import Sidecar
+
+            if not isinstance(self.sidecar, Sidecar):
+                raise TypeError("sidecar must use Sidecar")
+            if self.sidecar.inventory.name != self.name:
+                raise ValueError("ToolSpec and sidecar inventory name differ")
+            schema_hash = hashlib.sha256(
+                canonical_json(thaw_json(self.input_schema)).encode()
+            ).hexdigest()
+            if self.sidecar.inventory.schema_hash != schema_hash:
+                raise ValueError("ToolSpec and sidecar schema_hash differ")
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,12 +110,18 @@ class ToolContext:
     cancellation: CancellationToken
     metadata: JsonObject = field(default_factory=dict)
     workflow_spawn_context: WorkflowSpawnToolContext | None = None
+    call_id: CallId | None = None
+    effect_id: EffectId | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, RunId):
             raise TypeError("run_id must use RunId")
         if not isinstance(self.request_id, RequestId):
             raise TypeError("request_id must use RequestId")
+        if self.call_id is not None and not isinstance(self.call_id, CallId):
+            raise TypeError("call_id must use CallId")
+        if self.effect_id is not None and not isinstance(self.effect_id, EffectId):
+            raise TypeError("effect_id must use EffectId")
         if self.workflow_spawn_context is not None:
             from simple_harness.runtime.workflow_spawn import WorkflowSpawnToolContext
 
@@ -212,7 +235,7 @@ class CancellationToken:
         await self._event.wait()
 
 
-ToolHandler = Callable[[JsonObject, ToolContext], ToolResult | Awaitable[ToolResult]]
+ToolHandler = Callable[[JsonObject, ToolContext], object | Awaitable[object]]
 
 
 @runtime_checkable
@@ -221,7 +244,7 @@ class Tool(Protocol):
 
     def invoke(
         self, arguments: JsonObject, context: ToolContext
-    ) -> ToolResult | Awaitable[ToolResult]: ...
+    ) -> object | Awaitable[object]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,15 +258,21 @@ class FunctionTool:
 
     def invoke(
         self, arguments: JsonObject, context: ToolContext
-    ) -> ToolResult | Awaitable[ToolResult]:
+    ) -> object | Awaitable[object]:
         detached = thaw_json(arguments)
         if not isinstance(detached, dict):
             raise TypeError("Tool arguments must thaw to a JSON object")
         return self.handler(detached, context)
 
 
-async def await_tool_result(value: ToolResult | Awaitable[ToolResult]) -> ToolResult:
-    result = await value if inspect.isawaitable(value) else value
+async def await_tool_value(value: object | Awaitable[object]) -> object:
+    return await value if inspect.isawaitable(value) else value
+
+
+async def await_tool_result(value: object | Awaitable[object]) -> ToolResult:
+    """Compatibility helper for callers that require an already-normalized result."""
+
+    result = await await_tool_value(value)
     if not isinstance(result, ToolResult):
         raise TypeError("Tool handler must return ToolResult")
     return result
@@ -260,4 +289,5 @@ __all__ = (
     "ToolOutcome",
     "ToolResult",
     "ToolSpec",
+    "await_tool_value",
 )

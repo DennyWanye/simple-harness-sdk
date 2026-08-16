@@ -43,6 +43,7 @@ from simple_harness.providers import CancelToken, ProviderReconciliationPort
 from simple_harness.tools.authorization import AuthorizationDecision, AuthorizationPort
 from simple_harness.tools.executor import EffectExecutor, ToolAuthorizationPending
 from simple_harness.tools.reconciliation import ToolReconciliationPort
+from simple_harness.tools.sidecar import resource_digest
 from simple_harness.workflow.errors import WorkflowDependencyUnavailable
 
 from .admission import AdmissionPort, AllowAllAdmission
@@ -1339,6 +1340,15 @@ class Runtime:
                             "metadata": metadata,
                             "nonce": pending.request.nonce,
                             "prompt": pending.request.prompt,
+                            "resources": [
+                                resource.to_json() for resource in prepared.resources
+                            ],
+                            "resources_digest": resource_digest(prepared.resources),
+                            "sidecar_digest": (
+                                None
+                                if prepared.sidecar is None
+                                else prepared.sidecar.digest
+                            ),
                             "tool_name": prepared.call.name,
                         },
                         response=None,

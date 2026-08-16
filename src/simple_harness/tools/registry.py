@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
 from typing import cast
@@ -21,7 +21,7 @@ from .contracts import (
     ToolContext,
     ToolResult,
     ToolSpec,
-    await_tool_result,
+    await_tool_value,
 )
 from .errors import (
     DuplicateToolCallError,
@@ -31,6 +31,7 @@ from .errors import (
     UnknownToolError,
 )
 from .schema import ArgumentsValidationError, validate_arguments
+from .sidecar import Sidecar, inventory_digest
 
 
 class ToolCallState(StrEnum):
@@ -51,6 +52,7 @@ class ToolRegistry:
     def __init__(self, tools: Sequence[Tool] = ()) -> None:
         self._tools: dict[str, Tool] = {}
         self._calls: dict[CallId, _CallRecord] = {}
+        self._sealed_digest: str | None = None
         for tool in tools:
             self.register(tool)
 
@@ -64,7 +66,44 @@ class ToolRegistry:
             {call_id: record.state for call_id, record in self._calls.items()}
         )
 
+    @property
+    def sidecars(self) -> MappingProxyType[str, Sidecar]:
+        return MappingProxyType(
+            {
+                name: tool.spec.sidecar
+                for name, tool in sorted(self._tools.items())
+                if tool.spec.sidecar is not None
+            }
+        )
+
+    @property
+    def inventory_digest(self) -> str:
+        return self._sealed_digest or inventory_digest(self.sidecars)
+
+    @property
+    def sealed(self) -> bool:
+        return self._sealed_digest is not None
+
+    def seal(self, *, require_sidecars: bool = False) -> str:
+        """Freeze registration and return the canonical inventory digest."""
+
+        if require_sidecars:
+            missing = tuple(
+                name
+                for name, tool in sorted(self._tools.items())
+                if tool.spec.sidecar is None
+            )
+            if missing:
+                raise ValueError(f"Tool sidecars are required: {missing}")
+        digest = inventory_digest(self.sidecars)
+        if self._sealed_digest is not None and self._sealed_digest != digest:
+            raise RuntimeError("sealed Tool inventory changed")
+        self._sealed_digest = digest
+        return digest
+
     def register(self, tool: Tool) -> None:
+        if self.sealed:
+            raise RuntimeError("ToolRegistry is sealed")
         if not isinstance(tool, Tool):
             raise TypeError("tool must implement the Tool protocol")
         if tool.spec.name in self._tools:
@@ -106,11 +145,19 @@ class ToolRegistry:
             )
         if call.call_id in self._calls:
             raise DuplicateToolCallError(call.call_id.value)
+        trusted_context = replace(context, call_id=call.call_id)
 
         async def dispatch() -> ToolResult:
             try:
-                value = tool.invoke(call.arguments, context)
-                result = await await_tool_result(value)
+                value = tool.invoke(call.arguments, trusted_context)
+                raw = await await_tool_value(value)
+                result = (
+                    tool.spec.sidecar.parse_outcome(call.call_id, raw)
+                    if tool.spec.sidecar is not None
+                    else raw
+                )
+                if not isinstance(result, ToolResult):
+                    raise TypeError("Tool handler must return ToolResult")
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - handler is an untrusted boundary

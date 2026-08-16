@@ -503,8 +503,75 @@ async def test_public_runner_executes_specialization_and_reopen_does_not_replay(
     recovered = await reopened.recover(run_id, WorkflowContext())
     restored = reopened_uow.read_run(run_id)
     assert recovered.run_id == run_id
+    assert recovered.status.value == "completed"
+    assert recovered.error is None
+    assert recovered.output["values"]["active"] is True
     assert restored is not None and restored.state.value == "completed"
     assert calls.count("activate") == 1
+    reopened_database.close()
+
+
+@pytest.mark.anyio
+async def test_public_runner_recover_reclaims_expired_mid_node_and_keeps_effect_once(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "capability-build-mid-node.sqlite"
+    host = _IdempotentPhysicalHost()
+    services = _idempotent_services(host)
+    armed = True
+
+    def fault(point: str) -> None:
+        nonlocal armed
+        if (
+            armed
+            and host.last_stage == "authorization"
+            and point == "workflow_native:task_result.before_commit"
+        ):
+            armed = False
+            raise ConnectionError("crash-after-physical:authorization")
+
+    database, _uow, registration, runner = _runner(
+        path,
+        [],
+        host_services=services,
+        workflow_fault=fault,
+        clock=lambda: 10.0,
+    )
+    run_id = await runner.start(
+        session_id="session",
+        request_id="request-mid-node",
+        turn_id="turn",
+        profile_key="workflow.capability_build",
+        tool_catalog_generation=1,
+        workflow_name=registration.definition.name,
+        workflow_version=registration.definition.version,
+        start_input={
+            "request": "build after crash",
+            "search_miss_receipt": "miss-mid-node",
+            "proposal_budget": 40,
+            "fix_budget": 3,
+        },
+        capability_snapshot={},
+        run_id="run-capability-mid-node",
+    )
+    with pytest.raises(ConnectionError, match="crash-after-physical:authorization"):
+        await runner.run(run_id, _state(run_id), WorkflowContext())
+    database.close()
+
+    reopened_database, reopened_uow, _registration, reopened = _runner(
+        path,
+        [],
+        host_services=services,
+        clock=lambda: 100.0,
+    )
+    recovered = await reopened.recover(run_id, WorkflowContext())
+    restored = reopened_uow.read_run(run_id)
+    assert recovered.status.value == "completed"
+    assert recovered.output["values"]["active"] is True
+    assert restored is not None and restored.state.value == "completed"
+    assert host.attempts["authorization"] == 2
+    assert host.physical["authorization"] == 1
+    assert all(count == 1 for count in host.physical.values())
     reopened_database.close()
 
 
