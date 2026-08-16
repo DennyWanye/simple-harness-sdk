@@ -1,0 +1,198 @@
+name: Platform Tests
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to test (e.g., v0.1.0)'
+        required: true
+        type: string
+
+jobs:
+  test-platforms:
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: Linux x64
+            python: "3.11"
+          - os: macos-14
+            platform: macOS ARM64
+            python: "3.11"
+          - os: windows-latest
+            platform: Windows x64
+            python: "3.11"
+
+    runs-on: ${{ matrix.os }}
+    name: Test on ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Determine release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
+          else
+            # Extract tag from triggering workflow
+            TAG=$(echo "${{ github.event.workflow_run.head_branch }}" | grep -oP 'v\d+\.\d+\.\d+' || echo "")
+            if [ -z "$TAG" ]; then
+              echo "Could not determine release tag"
+              exit 1
+            fi
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download release artifacts
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          mkdir -p release-dist
+          cd release-dist
+
+          # Download wheel
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}" \
+            | jq -r '.assets[] | select(.name | endswith(".whl")) | .browser_download_url' \
+            | xargs curl -L -O
+
+          # Download checksums
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}" \
+            | jq -r '.assets[] | select(.name == "SHA256SUMS") | .browser_download_url' \
+            | xargs curl -L -O
+
+      - name: Verify checksums
+        shell: bash
+        run: |
+          cd release-dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # Windows uses CertUtil for sha256
+            for file in *.whl *.tar.gz; do
+              if [ -f "$file" ]; then
+                EXPECTED=$(grep "$file" SHA256SUMS | awk '{print $1}')
+                ACTUAL=$(certutil -hashfile "$file" SHA256 | grep -v ":" | tr -d ' \n' | tr '[:upper:]' '[:lower:]')
+                if [ "$EXPECTED" != "$ACTUAL" ]; then
+                  echo "Checksum mismatch for $file"
+                  exit 1
+                fi
+              fi
+            done
+          else
+            sha256sum --ignore-missing -c SHA256SUMS
+          fi
+          echo "✓ Checksums verified"
+
+      - name: Create clean test environment
+        shell: bash
+        run: |
+          uv venv .platform-test-venv --python ${{ matrix.python }}
+
+      - name: Install wheel with testing extras
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            PYTHON=".platform-test-venv/Scripts/python.exe"
+          else
+            PYTHON=".platform-test-venv/bin/python"
+          fi
+
+          WHEEL=$(ls release-dist/*.whl)
+          uv pip install --python "$PYTHON" "${WHEEL}[testing]"
+
+      - name: Test SDK imports
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            PYTHON=".platform-test-venv/Scripts/python.exe"
+          else
+            PYTHON=".platform-test-venv/bin/python"
+          fi
+
+          "$PYTHON" -c "
+          from simple_harness import (
+              build_runtime,
+              RuntimeProfile,
+              RuntimePorts,
+              ROOT_PROFILE_KEY,
+              Message,
+              MessageRole,
+              JsonValue,
+              fingerprint_json,
+              __version__,
+          )
+          print(f'✓ SDK imports successful on ${{ matrix.platform }}')
+          print(f'  Version: {__version__}')
+          "
+
+      - name: Test conformance CLI
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            PYTHON=".platform-test-venv/Scripts/python.exe"
+          else
+            PYTHON=".platform-test-venv/bin/python"
+          fi
+
+          "$PYTHON" -m simple_harness.testing --version
+          echo "✓ Conformance CLI works on ${{ matrix.platform }}"
+
+      - name: Run conformance self-test
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            PYTHON=".platform-test-venv/Scripts/python.exe"
+          else
+            PYTHON=".platform-test-venv/bin/python"
+          fi
+
+          # Run pytest with conformance tests
+          "$PYTHON" -m pytest --pyargs simple_harness.testing -v
+          echo "✓ Conformance tests pass on ${{ matrix.platform }}"
+
+      - name: Report platform success
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${TAG#v}"
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✓ Platform verification PASSED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Platform: ${{ matrix.platform }}"
+          echo "Python: ${{ matrix.python }}"
+          echo "SDK Version: ${VERSION}"
+          echo "Release Tag: ${TAG}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  report-results:
+    needs: test-platforms
+    runs-on: ubuntu-latest
+    steps:
+      - name: All platforms passed
+        run: |
+          echo "✓ All platform tests passed successfully"
+          echo ""
+          echo "Verified platforms:"
+          echo "  - Linux x64"
+          echo "  - macOS ARM64"
+          echo "  - Windows x64"
+          echo ""
+          echo "Ready for production deployment"

@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write  # Required for creating GitHub releases
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for accurate build metadata
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build canonical artifacts once
+        env:
+          SOURCE_DATE_EPOCH: "0"
+        run: uv build --out-dir dist
+
+      - name: Record checksums and metadata
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          echo "Built from commit: $(git rev-parse HEAD)" > BUILD_INFO.txt
+          echo "Tag: ${{ github.ref_name }}" >> BUILD_INFO.txt
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> BUILD_INFO.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-distributions
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 90
+
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist
+
+      - name: Verify checksums and install exact artifact
+        run: |
+          cd dist
+          sha256sum --check SHA256SUMS
+          cat BUILD_INFO.txt
+
+          cd ..
+          uv venv .release-venv --python 3.11
+          uv pip install --python .release-venv/bin/python dist/*.whl
+
+          # Verify version matches tag
+          TAG_VERSION="${{ github.ref_name }}"
+          TAG_VERSION="${TAG_VERSION#v}"  # Strip 'v' prefix
+          .release-venv/bin/python -I -c "import simple_harness; assert simple_harness.__version__ == '${TAG_VERSION}', f'Version mismatch: {simple_harness.__version__} != ${TAG_VERSION}'"
+
+          echo "✓ Artifact verified: simple_harness ${TAG_VERSION}"
+
+  test-import:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist
+
+      - name: Test SDK imports
+        run: |
+          uv venv .test-venv --python 3.11
+          uv pip install --python .test-venv/bin/python "dist/*.whl[testing]"
+
+          # Test core imports
+          .test-venv/bin/python -c "
+          from simple_harness import (
+              build_runtime,
+              RuntimeProfile,
+              RuntimePorts,
+              ROOT_PROFILE_KEY,
+              Message,
+              MessageRole,
+              JsonValue,
+              fingerprint_json,
+          )
+          print('✓ All core imports successful')
+          "
+
+          # Test conformance CLI
+          .test-venv/bin/python -m simple_harness.testing --version
+
+          echo "✓ SDK imports and CLI verified"
+
+  publish-github-release:
+    needs: [verify, test-import]
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist
+
+      - name: Assert artifacts not rebuilt
+        run: |
+          cd dist
+          sha256sum --check SHA256SUMS
+          cat BUILD_INFO.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/BUILD_INFO.txt
+          body: |
+            # Simple Harness SDK ${{ github.ref_name }}
+
+            **Private Release** - Access restricted to authorized consumers.
+
+            ## Artifacts
+
+            - `simple_harness_sdk-*.whl` - Pure Python wheel (any platform)
+            - `simple_harness_sdk-*.tar.gz` - Source distribution
+            - `SHA256SUMS` - Checksums for verification
+            - `BUILD_INFO.txt` - Build metadata
+
+            ## Installation
+
+            ```bash
+            # Download exact wheel
+            curl -LO https://github.com/DennyWanye/simple-harness-sdk/releases/download/${{ github.ref_name }}/simple_harness_sdk-*.whl
+
+            # Verify checksum
+            sha256sum -c SHA256SUMS
+
+            # Install
+            pip install simple_harness_sdk-*.whl
+
+            # Verify
+            python -c "import simple_harness; print(simple_harness.__version__)"
+            ```
+
+            ## Documentation
+
+            See `docs/` directory in source for:
+            - Runtime API reference
+            - Workflow profiles
+            - Conformance testing guide
+            - Consumer handoff instructions
+
+            ## Verification
+
+            All artifacts built from a single canonical build and verified across:
+            - Checksum validation
+            - Version assertion
+            - Import smoke tests
+            - Conformance CLI execution
+
+            Build info available in `BUILD_INFO.txt` artifact.
