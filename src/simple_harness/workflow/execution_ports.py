@@ -969,6 +969,20 @@ class WorkflowLifecyclePort(Protocol):
         fault: FaultHook | None = None,
     ) -> ResumeAdmissionReceipt: ...
 
+    async def resolve_decision_and_admit_resume(
+        self,
+        transaction: WorkflowTransaction,
+        request: ResumeAdmissionRequest,
+        *,
+        decision_id: str,
+        nonce: str,
+        expected_decision_version: int,
+        response: Mapping[str, JsonValue],
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ResumeAdmissionReceipt: ...
+
     async def claim_resume_standalone(
         self,
         transaction: WorkflowTransaction,

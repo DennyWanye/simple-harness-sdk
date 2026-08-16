@@ -56,6 +56,7 @@ class ObservedRenewUnitOfWork(SqliteExecutionUnitOfWork):
         super().__init__(database)
         self.renewed = renewed
         self.fail = fail
+        self.fail_resolve = False
 
     async def renew_activation(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         if self.fail:
@@ -64,6 +65,15 @@ class ObservedRenewUnitOfWork(SqliteExecutionUnitOfWork):
         result = await super().renew_activation(*args, **kwargs)
         self.renewed.set()
         return result
+
+    async def resolve_decision_and_admit_resume(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self.fail_resolve:
+            kwargs["fault"] = lambda point: (
+                (_ for _ in ()).throw(RuntimeError("simulated resolve crash"))
+                if point == "workflow:resolve_resume:before_admit"
+                else None
+            )
+        return await super().resolve_decision_and_admit_resume(*args, **kwargs)
 
 
 def test_runner_real_native_start_run_and_reopen(tmp_path: Path) -> None:
@@ -327,22 +337,52 @@ def test_runner_resume_receipt_settles_with_terminal_checkpoint_same_transaction
         decision_id = str(decision[0])
         durable = uow.read_decision(decision_id)
         assert durable is not None
-        uow.commit_decision(
-            decision_id=decision_id,
-            run_id=run_id,
-            kind=durable.kind,
-            state=DecisionState.ALLOWED,
-            request=thaw_json(durable.request),
-            response={"approved": True},
-            event_id=f"resolved-{decision_id}",
-            now=3.0,
-        )
         resume_phase = True
+        with pytest.raises(ValueError, match="nonce"):
+            asyncio.run(
+                runner.resolve_and_resume(
+                    run_id,
+                    decision_id=decision_id,
+                    nonce="foreign-nonce",
+                    expected_version=durable.version,
+                    response={"approved": True},
+                )
+            )
+        with pytest.raises(ValueError, match="version"):
+            asyncio.run(
+                runner.resolve_and_resume(
+                    run_id,
+                    decision_id=decision_id,
+                    nonce=decision_id,
+                    expected_version=durable.version + 1,
+                    response={"approved": True},
+                )
+            )
+        uow.fail_resolve = True
+        with pytest.raises(RuntimeError, match="simulated resolve crash"):
+            asyncio.run(
+                runner.resolve_and_resume(
+                    run_id,
+                    decision_id=decision_id,
+                    nonce=decision_id,
+                    expected_version=durable.version,
+                    response={"approved": True},
+                )
+            )
+        uow.fail_resolve = False
+        assert uow.read_decision(decision_id).state is DecisionState.OPEN
+        assert uow.read_run(run_id).state.value == "waiting"
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM workflow_resume_admissions WHERE run_id=?", (run_id,)
+        ).fetchone()[0] == 0
         result = asyncio.run(
-            runner.resume(
+            runner.resolve_and_resume(
                 run_id,
-                {decision_id: {"approved": True}},
-                WorkflowContext(),
+                decision_id=decision_id,
+                nonce=decision_id,
+                expected_version=durable.version,
+                response={"approved": True},
+                context=WorkflowContext(),
             )
         )
         assert isinstance(result.output, Mapping)

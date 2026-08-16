@@ -7514,6 +7514,74 @@ class SqliteExecutionUnitOfWork:
             connection=tx.connection,
         )
 
+    async def resolve_decision_and_admit_resume(
+        self,
+        transaction: WorkflowTransaction,
+        request: ResumeAdmissionRequest,
+        *,
+        decision_id: str,
+        nonce: str,
+        expected_decision_version: int,
+        response: Mapping[str, JsonValue],
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> ResumeAdmissionReceipt:
+        """Resolve one open Workflow interrupt and admit its resume atomically."""
+
+        tx = self._assert_open_workflow_transaction(transaction)
+        decision_id = _required(decision_id, "decision_id")
+        nonce = _required(nonce, "nonce")
+        event_id = _required(event_id, "event_id")
+        now = _time(now)
+        if isinstance(expected_decision_version, bool) or expected_decision_version < 0:
+            raise ValueError("expected_decision_version must be non-negative")
+        response_json = _object_json(response, "response")
+        row = tx.connection.execute(
+            "SELECT run_id,kind,state,request_json,version FROM decisions WHERE decision_id=?",
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            raise UnitOfWorkNotFound(decision_id)
+        durable_request = json.loads(str(row["request_json"]))
+        if (
+            str(row["run_id"]) != request.run_id
+            or str(row["state"]) != DecisionState.OPEN.value
+            or int(row["version"]) != expected_decision_version
+            or str(durable_request.get("nonce") or decision_id) != nonce
+        ):
+            raise UnitOfWorkConflict("workflow decision resume authority changed")
+        _fault(fault, "workflow:resolve_resume:before_decision_write")
+        changed = tx.connection.execute(
+            "UPDATE decisions SET state='allowed',response_json=?,version=version+1,resolved_at=? "
+            "WHERE decision_id=? AND run_id=? AND state='open' AND version=?",
+            (response_json, now, decision_id, request.run_id, expected_decision_version),
+        ).rowcount
+        if changed != 1:
+            raise UnitOfWorkConflict("workflow decision resolution CAS failed")
+        _fault(fault, "workflow:resolve_resume:after_decision_write")
+        changed = tx.connection.execute(
+            "UPDATE runs SET state='queued',version=version+1,updated_at=? "
+            "WHERE run_id=? AND state='waiting' AND version=?",
+            (now, request.run_id, request.expected_run_version - 1),
+        ).rowcount
+        if changed != 1:
+            raise UnitOfWorkConflict("workflow decision Run resolution CAS failed")
+        self._insert_event(
+            tx.connection,
+            event_id=event_id,
+            run_id=request.run_id,
+            kind="decision.allowed",
+            payload={"decision_id": decision_id, "kind": str(row["kind"])},
+            now=now,
+        )
+        _fault(fault, "workflow:resolve_resume:before_admit")
+        receipt = await self.admit_resume(
+            transaction, request, now=now, fault=fault
+        )
+        _fault(fault, "workflow:resolve_resume:after_admit")
+        return receipt
+
     async def _claim_resume(
         self,
         transaction: WorkflowTransaction,

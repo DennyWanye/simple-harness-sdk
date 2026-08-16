@@ -1037,6 +1037,107 @@ class WorkflowRunner:
             precreated=None,
         )
 
+    async def resolve_and_resume(
+        self,
+        run_id: str,
+        *,
+        decision_id: str,
+        nonce: str,
+        expected_version: int,
+        response: Mapping[str, JsonValue],
+        context: WorkflowContext | None = None,
+    ) -> WorkflowRunResult:
+        """Atomically resolve one durable interrupt decision and admit resume.
+
+        The decision CAS, Run transition, and durable resume admission share the
+        execution UnitOfWork transaction.  Execution may happen after that
+        commit; recovery can claim the admitted receipt if the process stops.
+        """
+
+        run = cast(RunRecord | None, self.execution_ports.unit_of_work.read_run(run_id))
+        snapshot = self.execution_ports.unit_of_work.read_start_snapshot(run_id)
+        decision = self.execution_ports.unit_of_work.read_decision(decision_id)
+        if run is None or snapshot is None or decision is None:
+            raise KeyError(f"workflow decision not found: {decision_id}")
+        if run.driver_kind != "workflow" or decision.run_id != run_id:
+            raise ValueError("workflow decision belongs to another Run")
+        if decision.state.value != "open":
+            raise ValueError("workflow decision is not open")
+        if decision.version != expected_version:
+            raise ValueError("workflow decision version changed")
+        durable_request = thaw_json(cast(FrozenJsonValue, decision.request))
+        if not isinstance(durable_request, Mapping) or str(
+            durable_request.get("nonce") or decision_id
+        ) != nonce:
+            raise ValueError("workflow decision nonce changed")
+        start_snapshot = StartSnapshot.from_json(snapshot)
+        request = start_snapshot.workflow_admission
+        if request is None:
+            raise RuntimeError("workflow Run lacks its durable admission snapshot")
+        native = await self.native_store.load_execution(
+            run_id=run.run_id,
+            thread_id=(
+                request.resolved_thread_id
+                or request.requested_thread_id
+                or run.run_id
+            ),
+            checkpoint_ns=request.checkpoint_namespace,
+        )
+        interrupt = native.snapshot.interrupt
+        if not isinstance(interrupt, Mapping):
+            raise TypeError("workflow decision has no durable pending interrupt")
+        interrupt_id = interrupt.get("interrupt_id")
+        if interrupt_id != decision_id:
+            raise ValueError("workflow decision differs from pending interrupt")
+        request_hash = hashlib.sha256(
+            canonical_json(cast(JsonValue, copy.deepcopy(dict(interrupt)))).encode()
+        ).hexdigest()
+        responses: dict[str, JsonValue] = {
+            decision_id: copy.deepcopy(dict(response))
+        }
+        responses_hash = hashlib.sha256(
+            canonical_json(cast(JsonValue, responses)).encode()
+        ).hexdigest()
+        resolved_run_version = run.version + 1
+        receipt_id = hashlib.sha256(
+            canonical_json(
+                {
+                    "run_id": run.run_id,
+                    "run_version": resolved_run_version,
+                    "checkpoint_head": native.snapshot.checkpoint_id,
+                    "pending_interrupts": [[interrupt_id, request_hash]],
+                    "responses_hash": responses_hash,
+                }
+            ).encode()
+        ).hexdigest()
+        resume_request = ResumeAdmissionRequest(
+            receipt_id,
+            run.run_id,
+            resolved_run_version,
+            native.snapshot.checkpoint_id,
+            ((decision_id, request_hash),),
+            responses,
+            responses_hash,
+            StartMode.STANDALONE,
+        )
+
+        async def resolve(transaction: WorkflowTransaction):  # type: ignore[no-untyped-def]
+            return await self.execution_ports.lifecycle.resolve_decision_and_admit_resume(
+                transaction,
+                resume_request,
+                decision_id=decision_id,
+                nonce=nonce,
+                expected_decision_version=expected_version,
+                response=response,
+                event_id=f"workflow-decision-resolved:{decision_id}:{expected_version}",
+                now=float(self._clock()),
+            )
+
+        await self.execution_ports.unit_of_work.run_atomic(
+            resolve, fault_label="workflow:resolve-and-resume"
+        )
+        return await self.resume(run_id, responses, context)
+
     async def resume_precreated(
         self,
         run_id: str,

@@ -108,6 +108,8 @@ def test_public_workflow_namespace_is_lazy_and_complete() -> None:
     assert "WorkflowRunner" in dir(workflow)
     assert workflow.WorkflowDefinition.__name__ == "WorkflowDefinition"
     assert workflow.WorkflowHostServices.__name__ == "WorkflowHostServices"
+    assert callable(workflow.workflow_interrupt)
+    assert hasattr(workflow.WorkflowRunner, "resolve_and_resume")
     assert workflow.WorkflowDefinitionRegistration.__name__ == (
         "WorkflowDefinitionRegistration"
     )

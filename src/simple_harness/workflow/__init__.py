@@ -29,6 +29,7 @@ _EXPORTS = {
     "WorkflowContext": (".contracts", "WorkflowContext"),
     "WorkflowHostServices": (".contracts", "WorkflowHostServices"),
     "WorkflowRunStatus": (".contracts", "WorkflowRunStatus"),
+    "workflow_interrupt": (".control", "workflow_interrupt"),
     # definitions
     "CompiledWorkflow": (".definition", "CompiledWorkflow"),
     "ConditionalEdge": (".definition", "ConditionalEdge"),
