@@ -1,26 +1,28 @@
 # AIPhone SDK Integration Handoff
 
-**Date:** 2026-08-15  
-**SDK Version:** v0.1.0  
+**Date:** 2026-08-17  
+**SDK Version:** v0.1.1  
 **Target:** AIPhone Mobile Application
 
 ---
 
 ## Overview
 
-This document provides everything needed to integrate Simple Harness SDK v0.1.0 into the AIPhone mobile application runtime.
+This document provides everything needed to integrate Simple Harness SDK v0.1.1 into the AIPhone mobile application runtime.
 
 **What AIPhone Gets:**
 - Fault-tolerant workflow execution engine
 - Three official workflow profiles (durable_task, personal_v1, capability_build)
 - Conformance testing framework for implementation validation
 - Protocol-first design for cross-platform deployment
+- Memory Port interfaces for future Memory SDK integration
 
 **What AIPhone Must Provide:**
 - Mobile-compatible persistence layer (SQLite)
 - LLM provider adapter (API calls from mobile runtime)
 - Tool implementations for mobile context
 - Platform-specific admission control
+- Optional: Memory integration (long-term and working memory)
 
 ---
 
@@ -28,18 +30,18 @@ This document provides everything needed to integrate Simple Harness SDK v0.1.0 
 
 ### 1. Download from Private GitHub Release
 
-**Release URL:** https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.1.0
+**Release URL:** https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.1.1
 
 Download artifacts:
 ```bash
 # Wheel (pure Python, works on any platform)
-curl -LO https://github.com/DennyWanye/simple-harness-sdk/releases/download/v0.1.0/simple_harness_sdk-0.1.0-py3-none-any.whl
+curl -LO https://github.com/DennyWanye/simple-harness-sdk/releases/download/v0.1.1/simple_harness_sdk-0.1.1-py3-none-any.whl
 
 # Checksum file
-curl -LO https://github.com/DennyWanye/simple-harness-sdk/releases/download/v0.1.0/SHA256SUMS
+curl -LO https://github.com/DennyWanye/simple-harness-sdk/releases/download/v0.1.1/SHA256SUMS
 
 # Build metadata
-curl -LO https://github.com/DennyWanye/simple-harness-sdk/releases/download/v0.1.0/BUILD_INFO.txt
+curl -LO https://github.com/DennyWanye/simple-harness-sdk/releases/download/v0.1.1/BUILD_INFO.txt
 ```
 
 **Authentication:** Requires GitHub access token with read access to private repository.
@@ -51,7 +53,7 @@ curl -LO https://github.com/DennyWanye/simple-harness-sdk/releases/download/v0.1
 sha256sum --ignore-missing -c SHA256SUMS
 
 # Verify specific file
-sha256sum simple_harness_sdk-0.1.0-py3-none-any.whl
+sha256sum simple_harness_sdk-0.1.1-py3-none-any.whl
 # Compare with SHA256SUMS content
 ```
 
@@ -59,14 +61,14 @@ sha256sum simple_harness_sdk-0.1.0-py3-none-any.whl
 
 ```bash
 # Basic installation
-pip install simple_harness_sdk-0.1.0-py3-none-any.whl
+pip install simple_harness_sdk-0.1.1-py3-none-any.whl
 
 # With testing extras (for conformance validation)
-pip install "simple_harness_sdk-0.1.0-py3-none-any.whl[testing]"
+pip install "simple_harness_sdk-0.1.1-py3-none-any.whl[testing]"
 
 # Verify installation
 python -c "import simple_harness; print(simple_harness.__version__)"
-# Expected output: 0.1.0
+# Expected output: 0.1.1
 ```
 
 ---
@@ -75,7 +77,7 @@ python -c "import simple_harness; print(simple_harness.__version__)"
 
 ### Verified Platforms
 
-SDK v0.1.0 tested on:
+SDK v0.1.1 tested on:
 - **Linux x64** - Ubuntu 24.04, Python 3.11
 - **macOS ARM64** - macOS 14, Python 3.11  
 - **Windows x64** - Windows Server 2022, Python 3.11
@@ -216,6 +218,173 @@ asyncio.run(main())
 
 ---
 
+## Memory Integration (Optional)
+
+SDK v0.1.1 introduces Memory Port interfaces for future Memory SDK integration.
+
+### Memory Port Interfaces
+
+**MemoryQueryPort** - Read-only access to long-term memory:
+
+```python
+from simple_harness.runtime import MemoryQueryPort
+
+class AIPhoneMemoryQuery:
+    """Read from mobile local memory database."""
+    
+    def __init__(self, mobile_db):
+        self.db = mobile_db
+    
+    async def recall_readonly(self, query, limit, scope):
+        """Query user's conversation history and saved knowledge.
+        
+        Args:
+            query: Natural language query (e.g., "what did user say about restaurants?")
+            limit: Maximum number of results
+            scope: Memory scope (e.g., "user:123", "session:abc")
+        
+        Returns:
+            List of memory entries as JSON-safe dicts
+        """
+        # Vector search in mobile SQLite
+        results = await self.db.vector_search(
+            table="conversation_memory",
+            query_text=query,
+            limit=limit,
+            user_id=scope.split(":")[1],
+        )
+        
+        return [
+            {
+                "content": r["text"],
+                "timestamp": r["created_at"],
+                "relevance": r["similarity_score"],
+            }
+            for r in results
+        ]
+```
+
+**MemoryWritePort** - Session-scoped working memory:
+
+```python
+from simple_harness.runtime import MemoryWritePort
+
+class AIPhoneMemoryWrite:
+    """Write to mobile session memory (todos, notes)."""
+    
+    def __init__(self, mobile_db):
+        self.db = mobile_db
+    
+    async def replace_session_todos(self, session_id, items):
+        """Replace working memory list for a session.
+        
+        Args:
+            session_id: Execution session ID
+            items: New todo list (JSON-safe dicts)
+        """
+        async with self.db.transaction() as tx:
+            # Atomic replace
+            await tx.execute(
+                "DELETE FROM session_todos WHERE session_id = ?",
+                (session_id,)
+            )
+            
+            for idx, item in enumerate(items):
+                await tx.execute(
+                    "INSERT INTO session_todos (session_id, idx, content) VALUES (?, ?, ?)",
+                    (session_id, idx, item.get("content", ""))
+                )
+```
+
+### Integrating Memory Ports
+
+```python
+# In your runtime setup
+ports = RuntimePorts(
+    provider=mobile_provider,
+    tool_executor=mobile_tools,
+    authorization=mobile_auth,
+    context=mobile_context,
+    
+    # Optional: Add memory
+    memory_query=AIPhoneMemoryQuery(mobile_db),
+    memory_write=AIPhoneMemoryWrite(mobile_db),
+)
+```
+
+**Benefits:**
+- Agent can recall past conversations
+- Agent can maintain working notes across turns
+- Future-proof for standalone Memory SDK
+
+**Mobile Constraints:**
+- Keep memory DB size reasonable (< 100MB for smooth operation)
+- Index conversation history for fast vector search
+- Consider background sync to cloud backup
+
+---
+
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    AIPhone Mobile App                       │
+├─────────────────────────────────────────────────────────────┤
+│  UI Layer                                                   │
+│  • Chat interface                                           │
+│  • Permission dialogs                                       │
+│  • Notification display                                     │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ↓
+┌─────────────────────────────────────────────────────────────┐
+│              AIPhone Adapter Layer (Your Code)              │
+├─────────────────────────────────────────────────────────────┤
+│  RuntimePorts Implementation                                │
+│  • MobileProvider (LLM API client)                         │
+│  • MobileToolExecutor (contacts, calendar, location)      │
+│  • MobileAuthorization (user permissions)                 │
+│  • MobileMemoryQuery (conversation history)               │
+│  • MobileMemoryWrite (session notes)                      │
+│                                                             │
+│  Mobile-Specific Services                                  │
+│  • SQLite persistence (conversations, memory, todos)      │
+│  • Background task scheduler                               │
+│  • Network adapter (offline handling)                      │
+└────────────────────┬────────────────────────────────────────┘
+                     │ Ports Interface
+                     ↓
+┌─────────────────────────────────────────────────────────────┐
+│           Simple Harness SDK (v0.1.1 Wheel)                 │
+├─────────────────────────────────────────────────────────────┤
+│  Runtime Engine                                             │
+│  • RunKernel (state management)                            │
+│  • ReActDriver (Agent loop)                                │
+│  • WorkflowDriver (multi-step orchestration)              │
+│  • Recovery & reconciliation                               │
+│                                                             │
+│  Official Workflows                                         │
+│  • workflow.durable_task                                   │
+│  • workflow.personal_v1 (user-defined routines)           │
+│  • workflow.capability_build (optional)                    │
+│                                                             │
+│  Persistence Layer                                          │
+│  • SQLite execution state                                  │
+│  • Checkpoint storage                                       │
+│  • Effect ledger (idempotency)                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Data Flow:**
+
+1. **User Input** → AIPhone UI → Adapter → SDK Runtime
+2. **LLM Call** → SDK → MobileProvider → Cloud API → Response
+3. **Tool Execution** → SDK → MobileToolExecutor → Mobile OS
+4. **Memory Recall** → SDK → MobileMemoryQuery → Local SQLite
+5. **Result** → SDK → Adapter.deliver_terminal() → UI Update
+
+---
+
 ## Implementation Checklist
 
 ### Phase 1: Basic Runtime (Week 1-2)
@@ -250,6 +419,26 @@ asyncio.run(main())
 - [ ] Logging and observability
 - [ ] Battery/network awareness
 - [ ] Run full conformance suite
+
+### Phase 4: Memory Integration (Optional, Week 7-8)
+
+- [ ] Design mobile memory schema (conversations, entities, notes)
+- [ ] Implement `MemoryQueryPort`:
+  - [ ] Vector search setup (e.g., sqlite-vec extension)
+  - [ ] Query conversation history by semantic similarity
+  - [ ] Scope memory by user/session
+- [ ] Implement `MemoryWritePort`:
+  - [ ] Session todos storage
+  - [ ] Atomic replace logic
+- [ ] Wire Memory Ports to RuntimePorts
+- [ ] Test memory recall in multi-turn conversations
+- [ ] Optimize for mobile (index size, query speed)
+
+**Memory Constraints for Mobile:**
+- Keep total memory DB < 100MB for app store guidelines
+- Limit vector search to top 50 results max
+- Background sync to cloud (don't block main thread)
+- Periodic cleanup of old conversations (>6 months)
 
 ---
 

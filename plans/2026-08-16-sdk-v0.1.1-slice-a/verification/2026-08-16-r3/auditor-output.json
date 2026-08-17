@@ -1,0 +1,43 @@
+{
+  "mode": "full-audit",
+  "auditor": "architecture-challenger-poincare",
+  "verdict": "PASS",
+  "must_ac": {
+    "SDK-AC-5-A": "PASS",
+    "SDK-AC-6-A": "PASS",
+    "SDK-AC-7-A": "PASS",
+    "SDK-AC-8-A": "PASS"
+  },
+  "counts": {
+    "must_ac_pass": "4/4",
+    "required_scenarios_pass": "7/7",
+    "root_runs_pass": "12/12",
+    "evidence_hash_valid": "10/10",
+    "business_terminals_match": "12/12",
+    "open": 0,
+    "p1": 0,
+    "p2": 0,
+    "scope_drift": 0
+  },
+  "production_authority": "Exact-wheel consumer invokes build_runtime, ReActDriver, WorkflowRunner and SqliteExecutionUnitOfWork. Hosts return observations; SDK verifiers determine case status.",
+  "risk_closure": {
+    "hitl": "Nonce/version CAS, SDK and Host hash-bound receipts, and handoff fence keep unauthorized physical Tool calls at zero and authorized execution at most once.",
+    "delivery": "Sink-success/before-settle crash retries the same key; the idempotent Host sink exposes one visible delivery.",
+    "capability_build": "Six checkpointed stages inject a crash after physical success and before task-result commit; reopen retries the same key and each stage exposes one physical effect.",
+    "candidate": "HEAD 70a2b9fe20016772e4a34035fb96520f2f17da1e, version 0.1.1, planned tag v0.1.1 and wheel SHA-256 371ceb98913986f6b3f7ef1187255483d210556e9baed94e4f4ed115d49510d5 are consistently bound through BUILD_INFO, SBOM, NOTICE, SHA256SUMS and candidate manifest."
+  },
+  "independent_retest": "21 passed in 4.96s",
+  "main_contradiction": "None within Slice A. The completed object is a local immutable SDK candidate, not publication or product cutover.",
+  "overall_usability": "The local SDK v0.1.1 candidate is deliverable to Slice B product adapter integration. It is not yet a cross-platform release or completed product cutover.",
+  "pending_out_of_slice": [
+    "Windows x64 and Linux ARM64 same-bytes remote verification",
+    "tag, Release and workflow dispatch",
+    "product adapter and cutover",
+    "database reset",
+    "Simple Harness App desktop E2E"
+  ],
+  "plan_defects": [
+    "Non-blocking trace hygiene: ledger scenarios.ac_ids use parent SDK-AC-5..8 while slice acceptance uses SDK-AC-5-A..8-A; the mapping is unique and evidence is unaffected."
+  ],
+  "verdict_line": "VERDICT: PASS"
+}

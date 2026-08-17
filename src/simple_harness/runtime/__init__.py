@@ -39,6 +39,7 @@ from .kernel import (
     ToolCatalogGenerationPort,
     build_runtime,
 )
+from .ports import MemoryQueryPort, MemoryWritePort
 from .reconciler import (
     STARTUP_RECONCILIATION_ORDER,
     ReconciliationPhase,
@@ -72,6 +73,8 @@ __all__ = (
     "DriverInvocation",
     "DriverResult",
     "EffectBatchExecutor",
+    "MemoryQueryPort",
+    "MemoryWritePort",
     "ProfileLaunchTicketRef",
     "ReconciliationPhase",
     "ReActDriver",

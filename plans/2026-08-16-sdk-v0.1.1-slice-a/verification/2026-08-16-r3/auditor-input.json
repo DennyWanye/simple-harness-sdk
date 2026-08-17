@@ -1,0 +1,53 @@
+{
+  "mode": "full-audit",
+  "run_id": "run-20260816-140241",
+  "ledger_revision": 56,
+  "ledger_sha256": "0fef3ecd4e56f552c099f3b12442fcf7b63ae1eeb073975d7eb00703c07ac697",
+  "tested_head": "70a2b9fe20016772e4a34035fb96520f2f17da1e",
+  "tested_content_digest": "30a2ae8288a2a85814db59a467635675d650cdf50c14c207a412e02443da0f17",
+  "acceptance": {
+    "path": "/Users/denny/projects/simple_harness/plans/2026-08-16-simple-harness-sdk-v0.1.1-cutover/acceptance-slice-a.md",
+    "sha256": "c6c117dc7ad78e9645c9cbbe72d992fea666c307cac02f8e6c79a673fe905d68"
+  },
+  "testcase": {
+    "path": "/Users/denny/projects/simple_harness/testcase/2026-08-16-simple-harness-sdk-v0.1.1/slice-a-black-box.md",
+    "sha256": "4966e0d8dbf38464ef85df9761120340bbf5dea6fa362202affb3e4dcacd0b76"
+  },
+  "candidate": {
+    "version": "0.1.1",
+    "planned_tag": "v0.1.1",
+    "wheel_sha256": "371ceb98913986f6b3f7ef1187255483d210556e9baed94e4f4ed115d49510d5",
+    "manifest_sha256": "4b834cc7f27b06c116eb0875074d34265e124e86fccf9a0068809cddfd34bf54",
+    "remote_dispatch": "PENDING_OUT_OF_SLICE",
+    "publication": "PENDING_OUT_OF_SLICE"
+  },
+  "scenario_summary": {
+    "required": 7,
+    "runs": 12,
+    "evidence": 10,
+    "status": {
+      "SDK-A1": "PASS",
+      "SDK-A2": "PASS",
+      "SDK-A3": "PASS",
+      "SDK-A4": "PASS",
+      "SDK-A5": "PASS",
+      "SDK-A6": "PASS",
+      "SDK-A7": "PASS"
+    }
+  },
+  "regression": {
+    "pytest": "1181 passed, 2 expected skips",
+    "exact_wheel": "clean Python 3.11 CLI 22 cases PASS and pytest protocol PASS",
+    "diff_check": "PASS",
+    "lock_check": "PASS",
+    "yaml_parse": "PASS",
+    "reuse_lint": "PASS 264/264"
+  },
+  "required_review": [
+    "Trace every MUST AC through task, public code, black-box testcase, recorded roots, evidence and business terminal.",
+    "Confirm physical Provider/Tool/Workflow execution is production Runtime/Runner/UoW, not Host self-reported verdicts.",
+    "Confirm authorization, delivery and capability mid-node crash windows use correct durable fences and stable keys.",
+    "Confirm exact candidate identity, clean-install and reproducibility without claiming remote publication or product cutover.",
+    "Report OPEN findings by P1/P2 and end with VERDICT: PASS or VERDICT: FAIL."
+  ]
+}
