@@ -3,7 +3,7 @@
 In a real application, implement user permission dialogs.
 """
 
-from simple_harness.tools import (
+from simple_harness.runtime import (
     AuthorizationRequest,
     AuthorizationResult,
 )

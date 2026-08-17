@@ -13,7 +13,6 @@ from simple_harness.providers import (
     ProviderResponse,
     ProviderUsage,
     ProviderToolCall,
-    ProviderMessage,
 )
 
 

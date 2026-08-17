@@ -1,63 +1,12 @@
 """Tool executor with calculator and echo tools."""
 
-import json
 from typing import Any
 
-from simple_harness.tools import (
-    ToolRegistry,
-    ToolSpec,
-    ToolCall,
-    ToolResult,
-)
+from simple_harness.tools import ToolCall, ToolResult
 
 
 class CalculatorToolExecutor:
     """Execute calculator and echo tools."""
-
-    def __init__(self):
-        self.registry = ToolRegistry()
-        self._register_tools()
-
-    def _register_tools(self):
-        """Register available tools."""
-
-        # Calculator tool
-        self.registry.register(
-            ToolSpec(
-                name="calculate",
-                description="Evaluate a mathematical expression",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "expression": {
-                            "type": "string",
-                            "description": "Math expression to evaluate (e.g., '2+2', '10*5')",
-                        },
-                    },
-                    "required": ["expression"],
-                    "additionalProperties": False,
-                },
-            )
-        )
-
-        # Echo tool
-        self.registry.register(
-            ToolSpec(
-                name="echo",
-                description="Echo back the input text",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "text": {
-                            "type": "string",
-                            "description": "Text to echo",
-                        },
-                    },
-                    "required": ["text"],
-                    "additionalProperties": False,
-                },
-            )
-        )
 
     async def execute(self, call: ToolCall, context: dict[str, Any]) -> ToolResult:
         """Execute a tool call."""

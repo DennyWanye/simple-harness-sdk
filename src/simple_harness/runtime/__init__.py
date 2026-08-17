@@ -11,6 +11,7 @@ from .child_runs import (
     ProfileLaunchTicketRef,
 )
 from .child_signal_runtime import ChildSignalRuntime, ChildSignalUnitOfWork
+from .consumer_adapter import ConsumerRuntimePorts, build_consumer_runtime
 from .context import ContextPort, ContextSnapshot, SqliteContextPort
 from .drivers.react import ReActDriver, build_react_driver
 from .drivers.react_loop import AgentLoopCollaborator, EffectBatchExecutor
@@ -39,7 +40,15 @@ from .kernel import (
     ToolCatalogGenerationPort,
     build_runtime,
 )
-from .ports import MemoryQueryPort, MemoryWritePort
+from .ports import (
+    AuthorizationPort,
+    AuthorizationRequest,
+    AuthorizationResult,
+    MemoryQueryPort,
+    MemoryWritePort,
+    ProviderPort,
+    ToolExecutorPort,
+)
 from .reconciler import (
     STARTUP_RECONCILIATION_ORDER,
     ReconciliationPhase,
@@ -59,11 +68,15 @@ __all__ = (
     "AdmissionVerdict",
     "AgentLoopCollaborator",
     "AllowAllAdmission",
+    "AuthorizationPort",
+    "AuthorizationRequest",
+    "AuthorizationResult",
     "ChildLaunchRequest",
     "ChildRunHandle",
     "ChildRunUnitOfWork",
     "ChildSignalRuntime",
     "ChildSignalUnitOfWork",
+    "ConsumerRuntimePorts",
     "ContextPort",
     "ContextSnapshot",
     "ContinuationUnitOfWork",
@@ -76,6 +89,7 @@ __all__ = (
     "MemoryQueryPort",
     "MemoryWritePort",
     "ProfileLaunchTicketRef",
+    "ProviderPort",
     "ReconciliationPhase",
     "ReActDriver",
     "RunClient",
@@ -95,8 +109,10 @@ __all__ = (
     "TerminalCoordinator",
     "ToolCatalogGenerationPort",
     "ToolCatalogStale",
+    "ToolExecutorPort",
     "UserContinuationRuntime",
     "WorkflowRuntimeDriver",
+    "build_consumer_runtime",
     "build_runtime",
     "build_react_driver",
     "build_workflow_runtime_driver",

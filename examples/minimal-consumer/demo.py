@@ -7,15 +7,18 @@ import asyncio
 import time
 from pathlib import Path
 
-from simple_harness.runtime import build_runtime, RuntimePorts, RunStart
-from simple_harness.execution.sqlite import Database
+from simple_harness.runtime import (
+    build_consumer_runtime,
+    ConsumerRuntimePorts,
+    RunStart,
+    RunClient,
+)
 from simple_harness.execution.uow import RunState
 from simple_harness.contracts import ExecutionSessionId, RunId, RequestId
 
 from ports.provider import MockLLMProvider
 from ports.tools import CalculatorToolExecutor
 from ports.auth import AlwaysAllowAuthorization
-from ports.context import SqliteContextPort
 
 
 async def main():
@@ -26,20 +29,28 @@ async def main():
     # Setup database
     db_path = Path(__file__).parent / "execution.db"
     print(f"Using database: {db_path}")
-    db = Database.open(str(db_path))
 
-    # Build runtime
+    # Build consumer runtime ports
     print("Building runtime...")
-    ports = RuntimePorts(
+    ports = ConsumerRuntimePorts(
         provider=MockLLMProvider(),
         tool_executor=CalculatorToolExecutor(),
         authorization=AlwaysAllowAuthorization(),
-        context=SqliteContextPort(db),
+        database_path=str(db_path),
+        tool_names=("calculate", "echo"),
+        max_turns=10,
+        max_tool_calls=20,
     )
 
-    runtime = await build_runtime(ports).__aenter__()
+    runtime = await build_consumer_runtime(ports)
 
     try:
+        # Enter runtime context
+        await runtime.__aenter__()
+
+        # Create run client
+        client = RunClient(runtime)
+
         # Create run
         run_id = RunId("run-001")
         run_start = RunStart(
@@ -47,6 +58,7 @@ async def main():
             run_id=run_id,
             request_id=RequestId("req-001"),
             turn_id="turn-001",
+            tool_catalog_generation=1,
             input={
                 "messages": [
                     {"role": "user", "content": "What is 2 + 2?"}
@@ -55,14 +67,13 @@ async def main():
                     "tools": ["calculate", "echo"],
                 },
             },
-            created_at_unix_ms=int(time.time() * 1000),
         )
 
         print(f"\n[Runtime] Starting run {run_id}")
         print(f"[User] What is 2 + 2?\n")
 
         # Start run
-        await runtime.start(run_start)
+        await client.start(run_start)
 
         # Wait for completion
         print("[Agent] Processing...")
@@ -72,7 +83,6 @@ async def main():
 
         # Show results
         if state == RunState.COMPLETED:
-            # In real app, fetch from database
             print("✅ Task completed successfully")
             print("\nIn a real app, you would:")
             print("  1. Fetch final state from database")
@@ -89,7 +99,6 @@ async def main():
         # Cleanup
         print("\nCleaning up...")
         await runtime.__aexit__(None, None, None)
-        db.close()
         print("Done!")
 
 
