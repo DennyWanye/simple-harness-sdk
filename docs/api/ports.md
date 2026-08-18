@@ -28,6 +28,13 @@ This document lists all port interfaces and their requirements.
 
 ## Core Ports (Required)
 
+> **Which API level do you need?** Most consumers only need to implement
+> **3 Protocols** — `ProviderPort`, `ToolExecutorPort`, and
+> `AuthorizationPort` — and build the runtime via `build_consumer_runtime`
+> (see [Quickstart](../quickstart.md)). The full 10-Port `RuntimePorts` API
+> documented below is the **advanced** path, for consumers who need custom
+> tool schemas, workflows, memory, or delivery sinks.
+
 ### ProviderPort
 
 **Purpose**: Execute LLM requests (e.g., OpenAI, Anthropic).

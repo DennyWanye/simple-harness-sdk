@@ -2,6 +2,18 @@
 
 Complete step-by-step guide for integrating Simple Harness SDK into your application.
 
+> **Recommended integration path (0.1.2):** most consumers should start with
+> `build_consumer_runtime` — implement 3 Protocols (`ProviderPort`,
+> `ToolExecutorPort`, `AuthorizationPort`) and the SDK adapts them to the full
+> kernel. See the runnable walkthrough in [Quickstart](quickstart.md) and
+> `examples/minimal-consumer/`.
+>
+> **This guide documents the advanced path**: the kernel-level 10-Port
+> `RuntimePorts` API (`build_runtime`), needed only when you require custom
+> tool schemas, workflows, memory ports, or delivery sinks. Code excerpts here
+> are illustrative fragments, not runnable programs; the runnable example
+> lives in the Quickstart.
+
 ## Overview
 
 This guide walks you through:
@@ -50,8 +62,17 @@ Your Application
 
 ### Step 1: Install SDK
 
+The SDK is not published to PyPI or as a GitHub Release. Clone the SDK
+repository, build the 0.1.2 wheel locally, and install it (identical to the
+[Quickstart](quickstart.md) installation — that document is the single source
+of truth for install commands):
+
 ```bash
-pip install simple_harness_sdk-0.1.1-py3-none-any.whl
+git clone <sdk-repo-url>
+cd simple-harness-sdk
+uv build
+uv venv --seed --python 3.11 .venv
+.venv/bin/pip install dist/simple_harness_sdk-0.1.2-py3-none-any.whl
 ```
 
 ### Step 2: Implement ProviderPort
@@ -699,8 +720,8 @@ Review conformance report and fix failures:
 
 **Solution:**
 ```bash
-pip install simple_harness_sdk-0.1.1-py3-none-any.whl
-pip list | grep simple-harness
+.venv/bin/pip install dist/simple_harness_sdk-0.1.2-py3-none-any.whl
+.venv/bin/pip list | grep simple-harness
 ```
 
 ### Issue: Database Locked
