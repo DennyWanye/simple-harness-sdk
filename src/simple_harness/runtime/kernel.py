@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -61,6 +62,8 @@ from .orchestration import (
 )
 from .start_snapshot import RunStart, StartSnapshot, bind_start_snapshot
 from .terminal import TerminalCoordinator, ToolCatalogStale
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from simple_harness.runtime.workflow_spawn import (
@@ -1427,6 +1430,13 @@ class Runtime:
                 await self._abandon_run_authority(run_id)
             return
         except Exception as error:  # noqa: BLE001 - driver boundary becomes a durable failure
+            # private_cause 不进 HarnessError.to_dict()（对外只暴露稳定 public 契约），
+            # 但必须落到日志供 host 排障；否则 driver 失败完全不可追踪。
+            logger.exception(
+                "sdk_run_driver_failed",
+                run_id=run_id,
+                exc_info=(type(error), error, error.__traceback__),
+            )
             current = self._uow.read_run(run_id)
             if current is not None and current.state not in {
                 RunState.COMPLETED,
