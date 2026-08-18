@@ -96,11 +96,19 @@ from simple_harness.runtime import AuthorizationRequest, AuthorizationResult
 from simple_harness.tools import ToolCall, ToolResult
 
 
-# The 0.1.2 consumer adapter pins ProviderTarget(model="consumer-model").
-# The kernel only trusts reported usage (instead of recording an unknown
-# charge that trips the react_cost_exceeded guard) when the response model
-# matches the target model, so providers must echo it here.
-ADAPTER_MODEL = "consumer-model"
+# Declare the model your provider returns. The kernel only trusts reported
+# usage when the response model matches this target; a mismatch records an
+# unknown charge and refuses the run on a later turn.
+MODEL = "demo-model"
+
+# Closed input schema for the echo tool. Tools without a declared schema keep
+# the fail-closed no-argument default (the SDK schema subset forbids
+# additionalProperties).
+ECHO_SCHEMA = {
+    "type": "object",
+    "properties": {"text": {"type": "string"}},
+    "additionalProperties": False,
+}
 
 
 # 1. Provider port — fake LLM that demonstrates one tool call.
@@ -121,14 +129,11 @@ class FakeProvider:
                     ProviderToolCall(
                         CallId(f"call-{uuid.uuid4().hex[:8]}"),
                         "echo",
-                        # The 0.1.2 adapter registers placeholder tool specs
-                        # ({"properties": {}, "additionalProperties": false}),
-                        # so non-empty arguments fail schema validation.
-                        {},
+                        {"text": "hello"},
                     ),
                 ),
                 usage=ProviderUsage(input_tokens=10, output_tokens=5, total_tokens=15),
-                model=ADAPTER_MODEL,
+                model=MODEL,
                 finish_reason="tool_calls",
             )
 
@@ -138,7 +143,7 @@ class FakeProvider:
             message=Message(MessageRole.ASSISTANT, "Hello from the SDK!"),
             tool_calls=(),
             usage=ProviderUsage(input_tokens=20, output_tokens=8, total_tokens=28),
-            model=ADAPTER_MODEL,
+            model=MODEL,
             finish_reason="stop",
         )
 
@@ -171,6 +176,8 @@ async def main() -> int:
         authorization=AllowAllAuthorization(),
         database_path=str(db_path),
         tool_names=("echo",),
+        tool_schemas={"echo": ECHO_SCHEMA},
+        model=MODEL,
     )
     runtime = await build_consumer_runtime(ports)
     await runtime.__aenter__()

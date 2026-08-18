@@ -39,6 +39,11 @@ This document lists all port interfaces and their requirements.
 
 **Purpose**: Execute LLM requests (e.g., OpenAI, Anthropic).
 
+> **Model echo contract (0.1.3)**: the `ProviderResponse.model` your provider
+> returns must match the `model` you declare on `ConsumerRuntimePorts`. The
+> kernel only trusts reported usage when the two match; a mismatch records an
+> unknown charge and refuses the run on a later turn.
+
 ```python
 from simple_harness.providers import ProviderRequest, ProviderResponse, CancelToken
 

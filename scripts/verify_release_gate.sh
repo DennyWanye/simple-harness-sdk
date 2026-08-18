@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# verify_release_gate.sh — harness SDK release gate for the dist/ 0.1.2 wheel.
+# verify_release_gate.sh — harness SDK release gate for the dist/ 0.1.3 wheel.
 #
 # Steps:
-#   1. Locate dist/simple_harness_sdk-0.1.2-py3-none-any.whl, compute its
+#   1. Locate dist/simple_harness_sdk-0.1.3-py3-none-any.whl, compute its
 #      SHA-256, and cross-check it against dist/SHA256SUMS (integrity anchor).
 #   2. Create a clean venv with Python >= 3.11 and install the wheel.
 #   3. Run examples/minimal-consumer/demo.py (must reach COMPLETED, exit 0).
@@ -18,7 +18,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-WHEEL="$REPO_ROOT/dist/simple_harness_sdk-0.1.2-py3-none-any.whl"
+WHEEL="$REPO_ROOT/dist/simple_harness_sdk-0.1.3-py3-none-any.whl"
 SUMS="$REPO_ROOT/dist/SHA256SUMS"
 CONSUMER_DIR="$REPO_ROOT/examples/minimal-consumer"
 
@@ -53,7 +53,7 @@ find_python() {
 }
 
 # --- Step 1: wheel + SHA-256 -------------------------------------------------
-step "locate 0.1.2 wheel and compute SHA-256"
+step "locate 0.1.3 wheel and compute SHA-256"
 if [ ! -f "$WHEEL" ]; then
   fail "wheel missing: $WHEEL"
   say ""; say "RESULT: FAIL"; exit 1
@@ -62,9 +62,9 @@ SHA="$(shasum -a 256 "$WHEEL" | awk '{print $1}')"
 say "computed SHA-256: $SHA"
 
 step "cross-check SHA against dist/SHA256SUMS"
-EXPECTED="$(grep 'simple_harness_sdk-0.1.2-py3-none-any.whl' "$SUMS" | awk '{print $1}' | head -1)"
+EXPECTED="$(grep 'simple_harness_sdk-0.1.3-py3-none-any.whl' "$SUMS" | awk '{print $1}' | head -1)"
 if [ -z "$EXPECTED" ]; then
-  fail "no 0.1.2 wheel entry in dist/SHA256SUMS"
+  fail "no 0.1.3 wheel entry in dist/SHA256SUMS"
 elif [ "$SHA" != "$EXPECTED" ]; then
   fail "wheel SHA mismatch (computed $SHA vs SHA256SUMS $EXPECTED)"
 else
@@ -86,7 +86,7 @@ else
 fi
 VENV_PY="$WORK/venv/bin/python"
 
-step "install 0.1.2 wheel"
+step "install 0.1.3 wheel"
 if "$VENV_PY" -m pip install -q "$WHEEL"; then
   pass "install"
 else
