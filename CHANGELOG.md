@@ -5,6 +5,28 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.1.3 — candidate
+
+**Focus:** Fix two consumer-layer design defects.
+
+### Fixed
+- `ConsumerRuntimePorts` now accepts `model` (default `"consumer-model"`); the consumer
+  provider adapter uses it as `ProviderTarget.model` instead of the hardcoded constant.
+  This lets real consumers whose `ProviderPort` echoes a real model name have their usage
+  trusted, instead of always landing in `BudgetCharge.unknown()` and refusing multi-turn runs.
+- `ConsumerRuntimePorts` now accepts `tool_schemas` (a name → closed input schema mapping);
+  tools with a declared schema accept their arguments. Tools without a schema keep the
+  fail-closed no-argument default (the SDK JSON-Schema subset forbids `additionalProperties`).
+
+### Backward compatibility
+- New fields are appended after existing fields and carry defaults, so 0.1.2 consumers build
+  and run unchanged.
+
+### Semantics note
+- When usage is trusted, it is recorded as `TRUSTED_USAGE` at the consumer price estimator,
+  which is currently a frozen zero-price estimator — trusted usage therefore books at zero
+  cost. This is intentional for the consumer facade and not a pricing path.
+
 ## 0.1.2 — candidate
 
 **Focus:** Ease of integration for external projects.

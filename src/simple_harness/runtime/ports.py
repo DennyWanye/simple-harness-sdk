@@ -24,6 +24,11 @@ class ProviderPort(Protocol):
     to the Runtime. The SDK handles request coordination, error recovery, and
     provider reconciliation.
 
+    The returned ``ProviderResponse.model`` MUST echo the model declared in
+    ``ConsumerRuntimePorts.model``. The kernel only trusts reported usage when
+    ``response.model == target.model``; a mismatch records an unknown charge,
+    which refuses the run on a later turn.
+
     Example implementation:
         class MyOpenAIProvider:
             async def invoke(self, request, *, cancel):
@@ -39,12 +44,16 @@ class ProviderPort(Protocol):
                 data = response.json()
                 return ProviderResponse(
                     request_id=request.request_id,
-                    content=data["choices"][0]["message"]["content"],
+                    message=Message(
+                        MessageRole.ASSISTANT,
+                        data["choices"][0]["message"]["content"],
+                    ),
                     tool_calls=(),
                     usage=ProviderUsage(
-                        prompt_tokens=data["usage"]["prompt_tokens"],
-                        completion_tokens=data["usage"]["completion_tokens"],
+                        input_tokens=data["usage"]["prompt_tokens"],
+                        output_tokens=data["usage"]["completion_tokens"],
                     ),
+                    model=request.model,
                     finish_reason=data["choices"][0]["finish_reason"],
                 )
     """
@@ -62,7 +71,8 @@ class ProviderPort(Protocol):
             cancel: Cancellation token (check `cancel.cancelled` periodically)
 
         Returns:
-            ProviderResponse with content/tool_calls and usage statistics
+            ProviderResponse with message/tool_calls and usage statistics; the
+            ``model`` field must echo the model declared by the consumer.
 
         Raises:
             ProviderTransportError: Network/server errors

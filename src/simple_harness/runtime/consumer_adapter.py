@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
 from simple_harness.execution.delivery import DeliveryDispatcher
@@ -77,6 +77,13 @@ class ConsumerRuntimePorts:
     max_turns: int = 50
     max_tool_calls: int = 100
     owner_id: str = field(default_factory=lambda: "consumer-runtime")
+    # The model name the consumer's ProviderPort echoes back in
+    # ProviderResponse.model. The kernel only trusts usage when
+    # response.model == target.model, so this must match the provider's echo.
+    model: str = "consumer-model"
+    # Optional closed input schemas keyed by tool name. Tools without a
+    # declared schema keep the fail-closed no-argument default.
+    tool_schemas: Mapping[str, dict] = field(default_factory=dict)
 
 
 class _ConsumerAuthorizationAdapter:
@@ -133,11 +140,11 @@ class _ConsumerAuthorizationAdapter:
 class _ConsumerProviderAdapter:
     """Adapts consumer ProviderPort to SDK provider interface."""
 
-    def __init__(self, consumer_port: ProviderPort):
+    def __init__(self, consumer_port: ProviderPort, model: str):
         self._port = consumer_port
         self.target = ProviderTarget(
             provider_id="consumer",
-            model="consumer-model",
+            model=model,
             pricing_key="consumer",
             endpoint_identity="consumer-endpoint",
             adapter_key="consumer-adapter",
@@ -156,9 +163,15 @@ class _ConsumerProviderAdapter:
 class _ConsumerToolExecutorAdapter:
     """Adapts consumer ToolExecutorPort to SDK tool registry."""
 
-    def __init__(self, consumer_port: ToolExecutorPort, tool_names: tuple[str, ...]):
+    def __init__(
+        self,
+        consumer_port: ToolExecutorPort,
+        tool_names: tuple[str, ...],
+        tool_schemas: Mapping[str, dict],
+    ):
         self._port = consumer_port
         self._tool_names = tool_names
+        self._tool_schemas = tool_schemas
 
     def build_registry(self) -> ToolRegistry:
         """Build tool registry with placeholder specs."""
@@ -167,15 +180,19 @@ class _ConsumerToolExecutorAdapter:
         tools = []
 
         for name in self._tool_names:
-            # Create tool spec
+            # Use the consumer-declared closed schema when present; otherwise
+            # keep the fail-closed no-argument default (the SDK schema subset
+            # forbids additionalProperties, so a tool with no declared schema
+            # accepts exactly zero arguments).
+            input_schema = self._tool_schemas.get(name) or {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            }
             spec = ToolSpec(
                 name=name,
                 description=f"Tool: {name}",
-                input_schema={
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
+                input_schema=input_schema,
             )
 
             # Create handler closure
@@ -276,7 +293,9 @@ async def build_consumer_runtime(ports: ConsumerRuntimePorts) -> Runtime:
     uow = SqliteExecutionUnitOfWork(database)
 
     # Build tool registry
-    tool_adapter = _ConsumerToolExecutorAdapter(ports.tool_executor, ports.tool_names)
+    tool_adapter = _ConsumerToolExecutorAdapter(
+        ports.tool_executor, ports.tool_names, ports.tool_schemas
+    )
     tool_registry = tool_adapter.build_registry()
 
     # Build authorization adapter
@@ -292,7 +311,7 @@ async def build_consumer_runtime(ports: ConsumerRuntimePorts) -> Runtime:
     )
 
     # Build provider coordinator
-    provider_adapter = _ConsumerProviderAdapter(ports.provider)
+    provider_adapter = _ConsumerProviderAdapter(ports.provider, ports.model)
     estimator = FrozenPriceEstimator("consumer-v1", "consumer", 0, 0)
     budget_policy = BudgetPolicy()
     provider_coordinator = ProviderInvocationCoordinator(
