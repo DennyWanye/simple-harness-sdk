@@ -1,0 +1,108 @@
+{
+ "review_mode": "breadth",
+ "coverage": {
+  "acceptance_coverage": true,
+  "entry_and_trust_chain": true,
+  "data_flow_and_persistence": true,
+  "identity_permissions_concurrency_cleanup": true,
+  "failure_and_recovery": true,
+  "tests_and_evidence": true,
+  "release_and_rollback": true,
+  "trusted_boundary_stop": true
+ },
+ "findings": [
+  {
+   "id": "consumer-f1",
+   "severity": "P0",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "C-AC-3",
+    "C-AC-4",
+    "C-AC-5",
+    "C-AC-6"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-3"
+   ],
+   "evidence": "schema.py:209-213 拒绝 additionalProperties!=False；_validate_value 无视 additionalProperties、未声明 key 一律拒；conformance 断言 additionalProperties=True 抛错。Task 2 默认 additionalProperties=True 会让 build 崩，且 C-AC-4 要求不可实现（除非改 kernel schema.py）。",
+   "status": "open",
+   "root_cause": "plan 未核对 fail-closed 工具 schema 子系统，默认值设计与 C-AC-4 目标在现有校验语义下不可行"
+  },
+  {
+   "id": "consumer-f2",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "patch-induced",
+   "violated_acceptance_ids": [
+    "C-AC-6"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": "verify_release_gate.sh:20/71 硬编码 0.1.2 wheel 路径与 SHA 匹配串，plan 未把它列入需 0.1.2→0.1.3 的文件影响清单。",
+   "status": "open",
+   "root_cause": "发布门脚本版本号写死，plan 版本升级改动集遗漏该脚本"
+  },
+  {
+   "id": "consumer-f3",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "patch-induced",
+   "violated_acceptance_ids": [
+    "C-AC-2"
+   ],
+   "assurance_contract_ids": [
+    "TRUST-1"
+   ],
+   "evidence": "ProviderResponse.model 默认 None；ports.py ProviderPort 示例用过期 content= 签名且未设 model；消费者只声明 model 但 provider 回显 None 仍 unknown→拒绝。",
+   "status": "open",
+   "root_cause": "声明点(ports.model)与回显点(ProviderResponse.model)的新耦合面未作为契约/文档落地"
+  },
+  {
+   "id": "consumer-f4",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "patch-induced",
+   "violated_acceptance_ids": [
+    "C-AC-2"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-2"
+   ],
+   "evidence": "Task 4 五个测试全正向，缺 mismatch→unknown→refuse 的行为级负向测试；TO-R1 无对应 testcase。",
+   "status": "open",
+   "root_cause": "FAIL-2 唯一 change-risk 义务缺行为回归测试，仅源码 grep 防不住未来放宽"
+  },
+  {
+   "id": "consumer-f5",
+   "severity": "P2",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "C-AC-5"
+   ],
+   "assurance_contract_ids": [
+    "ASSET-1"
+   ],
+   "evidence": "ConsumerRuntimePorts 为 frozen slots dataclass，plan 未规定新字段必须追加在 owner_id 之后；关键字测试捕获不到位置参数移位破坏。",
+   "status": "open",
+   "root_cause": "新增字段插入位置未约束，dataclass 位置构造向后兼容性无锁定"
+  },
+  {
+   "id": "consumer-f6",
+   "severity": "P2",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "C-AC-2"
+   ],
+   "assurance_contract_ids": [
+    "ASSET-2"
+   ],
+   "evidence": "trusted usage 以 FrozenPriceEstimator 0 成本入账，语义从 unknown-refuse 转 proceed-zero-accounting 未在 CHANGELOG/docs 记录。",
+   "status": "open",
+   "root_cause": "信任边界语义放宽（零成本入账）未文档化，可能被误读为正常计费"
+  }
+ ]
+}

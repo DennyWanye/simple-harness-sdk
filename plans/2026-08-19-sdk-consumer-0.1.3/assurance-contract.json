@@ -1,0 +1,25 @@
+{
+  "profile": "standard",
+  "acceptance_ids": ["C-AC-1", "C-AC-2", "C-AC-3", "C-AC-4", "C-AC-5", "C-AC-6"],
+  "protected_assets": [
+    {"id": "ASSET-1", "description": "消费者公开 API 稳定性（0.1.2→0.1.3 不破坏既有字段/Protocol/入口）"},
+    {"id": "ASSET-2", "description": "usage 信任链（response.model == target.model 校验不得被修复放宽）"}
+  ],
+  "trusted_assumptions": [
+    {"id": "TRUST-1", "description": "消费者按文档声明 model 与 tool schema"},
+    {"id": "TRUST-2", "description": "本机可构建 wheel + 建干净 venv（macOS ARM64）"}
+  ],
+  "in_scope_failures": [
+    {"id": "FAIL-1", "description": "model 声明不生效（target.model 仍硬编码）"},
+    {"id": "FAIL-2", "description": "usage 信任被放宽（去掉 response.model==target.model 检查）"},
+    {"id": "FAIL-3", "description": "tool schema 入口不生效（带参调用仍被拒）"},
+    {"id": "FAIL-4", "description": "向后兼容破坏（0.1.2 消费者代码升级后跑不通）"}
+  ],
+  "in_scope_adversaries": [],
+  "out_of_scope_conditions": [
+    {"id": "OOS-1", "description": "宿主 simple_harness re-vendor 0.1.3（独立后续）"},
+    {"id": "OOS-2", "description": "kernel usage 机制重构"},
+    {"id": "OOS-3", "description": "非 macOS 平台"}
+  ],
+  "maximum_acceptable_impact": "消费者集成失败需人工排查；不得造成多扣费/少扣费"
+}
