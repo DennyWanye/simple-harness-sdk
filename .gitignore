@@ -8,3 +8,12 @@ build/
 dist/
 .coverage
 .local-test-evidence/
+
+# plan-test gate living ledger + derived artifacts (challenge findings/manifest stay tracked)
+plans/**/verification/**/plan-test-run.json
+plans/**/verification/**/gate-receipt.json
+plans/**/verification/**/report.md
+plans/**/verification/**/auditor-input.json
+plans/**/verification/**/auditor-output.json
+plans/**/verification/**/.plan-test-gate.lock
+plans/**/verification/**/artifacts/
