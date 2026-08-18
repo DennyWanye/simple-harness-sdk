@@ -42,6 +42,18 @@ SPDX-License-Identifier: Apache-2.0
   extracts build/install commands and the runnable example verbatim from
   `docs/quickstart.md`, executes them, and runs the demo twice (structured
   PASS/FAIL, exit-code gated).
+- Added `examples/minimal-consumer/conformance_host.py`: a consumer-level host
+  for the SDK conformance protocol covering the `provider` and `tool` suites
+  (exercises the provider/tool contracts directly, so it is unaffected by the
+  two 0.1.2 consumer-adapter limitations above).
+- Added `scripts/verify_release_gate.sh`: one-shot release gate that installs
+  the `dist/` 0.1.2 wheel into a clean venv, runs `minimal-consumer`, and runs
+  `python -m simple_harness.testing --suite provider,tool` against the
+  conformance host (structured PASS/FAIL, exit-code gated).
+- Recorded 0.1.2 provenance in `dist/BUILD_INFO.txt` and `dist/SHA256SUMS`
+  (wheel built locally at commit `cb1f245`, before `896b685`'s observability
+  fix; wheel SHA-256
+  `387c8d1d97c0f89e4664347fb57ca6a43a0e7fa772b07a0f34c6f3a6e86efd4c`).
 
 ### Documentation
 - Added comprehensive Integration Guide (`docs/integration-guide.md`) with step-by-step Port implementation examples
