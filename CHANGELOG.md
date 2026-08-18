@@ -9,6 +9,40 @@ SPDX-License-Identifier: Apache-2.0
 
 **Focus:** Ease of integration for external projects.
 
+### Post-release fixes (2026-08-19, docs/examples only — no SDK code changes)
+
+- Fixed `examples/minimal-consumer/`: the demo previously printed
+  `Run completed: None` (it printed `wait_idle()`'s `None` return), always
+  exited 0, and could not be re-run (hardcoded IDs + persistent
+  `execution.db`). The demo now reads the real terminal state via
+  `client.query(run_id)`, exits 0 only on `COMPLETED`, and uses fresh
+  run/session IDs plus a temporary database per invocation.
+- Fixed the example's mock provider to the real 0.1.2 provider contract
+  (`Message`/`CallId`/`ProviderUsage(input/output/total_tokens)`), and
+  documented three integration gotchas discovered while repairing it:
+  1. `RunStart.input` must set `max_output_tokens`, otherwise the provider
+     reservation is unpriceable and the run fails with `react_cost_exceeded`.
+  2. The consumer adapter pins `ProviderTarget(model="consumer-model")`;
+     a provider response whose `model` does not match gets its usage recorded
+     as an unknown charge, also tripping `react_cost_exceeded`.
+  3. The consumer adapter registers placeholder tool specs
+     (`additionalProperties: false`, no properties), so tool calls with
+     non-empty argument mappings fail schema validation; consumer-level tools
+     effectively cannot take arguments in 0.1.2 (use the 10-Port
+     `RuntimePorts` API for real schemas).
+- Rewrote `docs/quickstart.md` for the real 0.1.2 API: installation section
+  now states the only acquisition path (clone repository + `uv build` +
+  `pip install dist/simple_harness_sdk-0.1.2-py3-none-any.whl`), and exactly
+  one self-contained runnable ```python block (all other snippets marked
+  `python fragment`).
+- Promoted `build_consumer_runtime` as the recommended integration path in
+  `docs/integration-guide.md` and `docs/api/ports.md`; the full 10-Port
+  `RuntimePorts` API is now labeled advanced usage.
+- Added `examples/minimal-consumer/verify_from_zero.sh`: clean-clone gate that
+  extracts build/install commands and the runnable example verbatim from
+  `docs/quickstart.md`, executes them, and runs the demo twice (structured
+  PASS/FAIL, exit-code gated).
+
 ### Documentation
 - Added comprehensive Integration Guide (`docs/integration-guide.md`) with step-by-step Port implementation examples
 - Added Quickstart guide (`docs/quickstart.md`) for 10-minute first-run experience
