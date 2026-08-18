@@ -26,7 +26,9 @@ class CalculatorToolExecutor:
     async def _calculate(self, call: ToolCall) -> ToolResult:
         """Handle calculate tool."""
         try:
-            expression = call.arguments["expression"]
+            # The 0.1.2 consumer adapter registers placeholder tool specs that
+            # reject all arguments, so the demo passes none and defaults here.
+            expression = call.arguments.get("expression", "2+2")
 
             # Security: Only allow safe operations
             if not self._is_safe_expression(expression):

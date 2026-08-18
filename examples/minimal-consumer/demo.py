@@ -1,10 +1,16 @@
 """Minimal Consumer Example - Main Entry Point
 
 Demonstrates basic Simple Harness SDK integration.
+
+Exit code contract:
+- 0: the run reached the declared terminal state (RunState.COMPLETED)
+- 1: the run did NOT reach the declared terminal state
 """
 
 import asyncio
-import time
+import sys
+import tempfile
+import uuid
 from pathlib import Path
 
 from simple_harness.runtime import (
@@ -20,14 +26,18 @@ from ports.provider import MockLLMProvider
 from ports.tools import CalculatorToolExecutor
 from ports.auth import AlwaysAllowAuthorization
 
+# The terminal state this demo declares as success. Anything else exits non-zero.
+EXPECTED_TERMINAL_STATE = RunState.COMPLETED
 
-async def main():
-    """Run a simple agent task."""
+
+async def main() -> int:
+    """Run a simple agent task. Returns process exit code."""
 
     print("=== Minimal Consumer Example ===\n")
 
-    # Setup database
-    db_path = Path(__file__).parent / "execution.db"
+    # Fresh database in a temp directory on every invocation, so the example
+    # is re-runnable without colliding with persisted execution state.
+    db_path = Path(tempfile.mkdtemp(prefix="minimal-consumer-")) / "execution.db"
     print(f"Using database: {db_path}")
 
     # Build consumer runtime ports
@@ -51,12 +61,13 @@ async def main():
         # Create run client
         client = RunClient(runtime)
 
-        # Create run
-        run_id = RunId("run-001")
+        # Fresh IDs on every invocation (persisted runs are keyed on them)
+        suffix = uuid.uuid4().hex[:8]
+        run_id = RunId(f"run-{suffix}")
         run_start = RunStart(
-            execution_session_id=ExecutionSessionId("session-001"),
+            execution_session_id=ExecutionSessionId(f"session-{suffix}"),
             run_id=run_id,
-            request_id=RequestId("req-001"),
+            request_id=RequestId(f"req-{suffix}"),
             turn_id="turn-001",
             tool_catalog_generation=1,
             input={
@@ -66,6 +77,10 @@ async def main():
                 "capability_snapshot": {
                     "tools": ["calculate", "echo"],
                 },
+                # Required: without an output-token bound the kernel cannot
+                # price the provider reservation, treats the charge as unknown,
+                # and the ReAct driver fails the run with react_cost_exceeded.
+                "max_output_tokens": 1024,
             },
         )
 
@@ -75,25 +90,27 @@ async def main():
         # Start run
         await client.start(run_start)
 
-        # Wait for completion
+        # Wait for completion. NOTE: wait_idle() returns None — it only
+        # signals that the run is no longer live. The terminal state must be
+        # read back from the execution store via client.query(run_id).
         print("[Agent] Processing...")
-        state = await runtime.wait_idle(run_id)
+        await runtime.wait_idle(run_id)
 
-        print(f"\n[Runtime] Run completed: {state}\n")
+        record = client.query(run_id)
+        state = record.state if record is not None else None
 
-        # Show results
-        if state == RunState.COMPLETED:
+        print(f"\n[Runtime] Run terminal state: {state}\n")
+
+        if state == EXPECTED_TERMINAL_STATE:
             print("✅ Task completed successfully")
             print("\nIn a real app, you would:")
             print("  1. Fetch final state from database")
             print("  2. Extract terminal_payload")
             print("  3. Show result to user")
-        elif state == RunState.FAILED:
-            print("❌ Task failed")
-        elif state == RunState.CANCELLED:
-            print("⚠️  Task cancelled")
-        else:
-            print(f"⏸️  Task in state: {state}")
+            return 0
+
+        print(f"❌ FAIL: expected terminal state {EXPECTED_TERMINAL_STATE}, got {state}")
+        return 1
 
     finally:
         # Cleanup
@@ -103,4 +120,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

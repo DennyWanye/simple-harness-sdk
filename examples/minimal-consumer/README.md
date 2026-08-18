@@ -9,12 +9,19 @@ Complete working example showing how to integrate Simple Harness SDK into your a
 - ✅ Authorization port (always allow)
 - ✅ Context port (SQLite persistence)
 - ✅ Runtime setup and execution
-- ✅ Error handling
+- ✅ Terminal-state assertion (exit code 0 only when the run reaches `COMPLETED`)
+- ✅ Re-runnable: fresh run IDs and a temporary database on every invocation
 
 ## Prerequisites
 
+The SDK is not published to PyPI. Build the wheel from the SDK repository and
+install it (see [docs/quickstart.md](../../docs/quickstart.md) for the full
+walkthrough):
+
 ```bash
-pip install simple_harness_sdk-0.1.1-py3-none-any.whl
+git clone <sdk-repo-url> && cd simple-harness-sdk
+uv build
+pip install dist/simple_harness_sdk-0.1.2-py3-none-any.whl
 ```
 
 ## Project Structure
@@ -23,13 +30,16 @@ pip install simple_harness_sdk-0.1.1-py3-none-any.whl
 minimal-consumer/
 ├── README.md          # This file
 ├── demo.py            # Main entry point
-├── ports/
-│   ├── __init__.py
-│   ├── provider.py    # Mock LLM provider
-│   ├── tools.py       # Calculator + echo tools
-│   └── auth.py        # Always-allow authorization
-└── execution.db       # SQLite database (created on first run)
+├── verify_from_zero.sh# From-zero verification (clean clone → install → run)
+└── ports/
+    ├── __init__.py
+    ├── provider.py    # Mock LLM provider
+    ├── tools.py       # Calculator + echo tools
+    └── auth.py        # Always-allow authorization
 ```
+
+The SQLite execution database is created in a fresh temporary directory on
+every run, so repeated runs never collide with persisted state.
 
 ## Running the Example
 
@@ -38,15 +48,17 @@ minimal-consumer/
 python demo.py
 ```
 
-Expected output:
+Expected output (run IDs and temp paths vary per run):
 ```
-[Runtime] Starting run run-001
-[Agent] Thinking...
-[Agent] Using tool: calculate
-[Tool] calculate(expression="2+2") → 4.0
-[Agent] Result: The answer is 4
-[Runtime] Run completed: COMPLETED
+[Runtime] Starting run run-2af0a5bc
+[Agent] Thinking... (using calculate tool)
+[Tool] calculate(expression='2+2') → 4
+[Agent] Formulating final answer...
+[Runtime] Run terminal state: completed
+✅ Task completed successfully
 ```
+
+Exit code contract: `0` when the run reaches `COMPLETED`, `1` otherwise.
 
 ## Key Files
 
@@ -55,7 +67,10 @@ Main entry point that:
 1. Sets up all ports
 2. Builds runtime
 3. Executes a simple calculation task
-4. Prints results
+4. Reads the real terminal state via `client.query(run_id)` and asserts it
+
+Note: `runtime.wait_idle(run_id)` returns `None` — it only waits until the run
+is no longer live. Always read the terminal state back via `client.query()`.
 
 ### `ports/provider.py`
 Mock LLM provider that simulates:
@@ -67,6 +82,10 @@ Mock LLM provider that simulates:
 Two simple tools:
 - `calculate`: Evaluate math expressions
 - `echo`: Echo back input
+
+Note: in SDK 0.1.2 the consumer adapter registers placeholder tool specs that
+reject all arguments, so tool calls must pass an empty argument mapping; the
+executor applies its own defaults.
 
 ### `ports/auth.py`
 Always-allow authorization (for demo purposes)
