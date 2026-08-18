@@ -193,6 +193,65 @@ def test_tool_with_schema_accepts_arguments() -> None:
     assert spec.input_schema["properties"]["expression"] == {"type": "string"}
 
 
+def _arg_provider(model: str):
+    """Two-turn provider whose first turn requests the tool WITH an argument."""
+
+    class _Provider:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def invoke(self, request: ProviderRequest, *, cancel) -> ProviderResponse:
+            self.call_count += 1
+            if self.call_count == 1:
+                return ProviderResponse(
+                    request_id=request.request_id,
+                    message=Message(MessageRole.ASSISTANT, ""),
+                    tool_calls=(
+                        ProviderToolCall(CallId("call-1"), "calculate", {"expression": "2+2"}),
+                    ),
+                    usage=ProviderUsage(50, 20, 70),
+                    model=model,
+                    finish_reason="tool_calls",
+                )
+            return ProviderResponse(
+                request_id=request.request_id,
+                message=Message(MessageRole.ASSISTANT, "done"),
+                tool_calls=(),
+                usage=ProviderUsage(80, 30, 110),
+                model=model,
+                finish_reason="stop",
+            )
+
+    return _Provider()
+
+
+def test_tool_schema_arg_reaches_executor_end_to_end() -> None:
+    """TO-C3 min_decisive_test: a tool call WITH arguments survives schema
+    validation and reaches ToolExecutorPort.execute."""
+    db = Path(tempfile.mkdtemp(prefix="consumer-test-")) / "execution.db"
+    executor = _EchoToolExecutor()
+    ports = ConsumerRuntimePorts(
+        provider=_arg_provider("demo-model"),
+        tool_executor=executor,
+        authorization=_AllowAll(),
+        database_path=str(db),
+        tool_names=("calculate",),
+        tool_schemas={
+            "calculate": {
+                "type": "object",
+                "properties": {"expression": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        },
+        max_turns=10,
+        max_tool_calls=20,
+        model="demo-model",
+    )
+    state = _run_once(ports)
+    assert state is RunState.COMPLETED
+    assert executor.calls == [("calculate", {"expression": "2+2"})]
+
+
 def test_tool_without_schema_is_noarg_only() -> None:
     executor = _EchoToolExecutor()
     adapter = _ConsumerToolExecutorAdapter(executor, ("calculate",), {})
