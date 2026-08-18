@@ -1,258 +1,317 @@
 # Quick Start Guide
 
-Get started with Simple Harness SDK in 10 minutes.
+Get started with Simple Harness SDK 0.1.2 in 10 minutes.
+
+> **Code block convention in this document:** exactly **one** code block is a
+> complete, self-contained, runnable program — the plain ` ```python ` block in
+> [Minimal Example](#minimal-example). Every other Python snippet is marked
+> ` ```python fragment ` and is an illustrative excerpt that will **not** run
+> standalone. Verification scripts extract and execute the single plain
+> `python` block verbatim; fragment blocks are never executed.
 
 ## Prerequisites
 
 - Python 3.11 or higher
-- `pip` package manager
+- [uv](https://docs.astral.sh/uv/) (used to build the wheel and create the venv)
+- `git`
 
 ## Installation
 
-### 1. Install the SDK
+The SDK is not published to PyPI or as a GitHub Release. The only way to get
+the 0.1.2 wheel is to clone the SDK repository and build it locally:
 
 ```bash
-pip install simple_harness_sdk-0.1.1-py3-none-any.whl
+git clone <sdk-repo-url>
+cd simple-harness-sdk
+uv build
+uv venv --seed --python 3.11 .venv
+.venv/bin/pip install dist/simple_harness_sdk-0.1.2-py3-none-any.whl
 ```
 
-Or if installing from a local wheel file:
+Notes:
+
+- `uv build` produces `dist/simple_harness_sdk-0.1.2-py3-none-any.whl`.
+- If your `python3` is already ≥ 3.11, `python3 -m venv .venv` works instead of
+  the `uv venv` line.
+- All commands above run from the repository root; the install line uses a
+  repo-relative wheel path.
+
+### Verify Installation
 
 ```bash
-pip install /path/to/simple_harness_sdk-0.1.1-py3-none-any.whl
+.venv/bin/python -c "import simple_harness; print(simple_harness.__version__)"
 ```
 
-### 2. Verify Installation
+Expected output:
 
-```bash
-python -m simple_harness.testing --help
+```text
+0.1.2
 ```
-
-You should see the conformance testing CLI help message.
 
 ---
 
 ## Minimal Example
 
-Here's a complete working example that runs an Agent with a fake Provider and one Tool.
+The recommended integration path is `build_consumer_runtime`: you implement
+three simple Protocols (Provider, ToolExecutor, Authorization) and the SDK
+adapts them to the full kernel ports.
 
-**Create `demo.py`:**
+Save this complete program as `demo.py` (outside the SDK repository, e.g. in
+your own project directory):
 
 ```python
-"""Minimal Simple Harness SDK example."""
+"""Minimal Simple Harness SDK 0.1.2 example (self-contained, runnable).
+
+Exit code 0 only when the run reaches the COMPLETED terminal state.
+"""
 
 import asyncio
-from simple_harness import (
-    build_runtime,
-    RuntimePorts,
+import sys
+import tempfile
+import uuid
+from pathlib import Path
+
+from simple_harness.runtime import (
+    build_consumer_runtime,
+    ConsumerRuntimePorts,
     RunStart,
-    ExecutionSessionId,
-    RunId,
-    RequestId,
-    SqliteContextPort,
-    Message,
+    RunClient,
 )
-from simple_harness.execution.sqlite import Database
+from simple_harness.contracts import (
+    CallId,
+    ExecutionSessionId,
+    Message,
+    MessageRole,
+    RequestId,
+    RunId,
+)
 from simple_harness.execution.uow import RunState
-from simple_harness.providers import ProviderRequest, ProviderResponse, ProviderUsage
-from simple_harness.tools import ToolRegistry, ToolSpec, ToolCall, ToolResult
+from simple_harness.providers import (
+    ProviderRequest,
+    ProviderResponse,
+    ProviderToolCall,
+    ProviderUsage,
+)
+from simple_harness.runtime import AuthorizationRequest, AuthorizationResult
+from simple_harness.tools import ToolCall, ToolResult
 
 
-# 1. Fake Provider (returns canned responses)
+# The 0.1.2 consumer adapter pins ProviderTarget(model="consumer-model").
+# The kernel only trusts reported usage (instead of recording an unknown
+# charge that trips the react_cost_exceeded guard) when the response model
+# matches the target model, so providers must echo it here.
+ADAPTER_MODEL = "consumer-model"
+
+
+# 1. Provider port — fake LLM that demonstrates one tool call.
 class FakeProvider:
-    async def invoke(self, request, *, cancel):
-        # Simple canned response
+    def __init__(self):
+        self.call_count = 0
+
+    async def invoke(self, request: ProviderRequest, *, cancel) -> ProviderResponse:
+        self.call_count += 1
+        last_message = request.messages[-1]
+
+        if self.call_count == 1 and last_message.role == MessageRole.USER:
+            # First turn: ask for the echo tool.
+            return ProviderResponse(
+                request_id=request.request_id,
+                message=Message(MessageRole.ASSISTANT, ""),
+                tool_calls=(
+                    ProviderToolCall(
+                        CallId(f"call-{uuid.uuid4().hex[:8]}"),
+                        "echo",
+                        # The 0.1.2 adapter registers placeholder tool specs
+                        # ({"properties": {}, "additionalProperties": false}),
+                        # so non-empty arguments fail schema validation.
+                        {},
+                    ),
+                ),
+                usage=ProviderUsage(input_tokens=10, output_tokens=5, total_tokens=15),
+                model=ADAPTER_MODEL,
+                finish_reason="tool_calls",
+            )
+
+        # Second turn (after the tool result): final answer.
         return ProviderResponse(
             request_id=request.request_id,
-            content="Hello! I'm a fake Agent. I can echo text.",
-            tool_calls=[],
-            usage=ProviderUsage(prompt_tokens=10, completion_tokens=15),
+            message=Message(MessageRole.ASSISTANT, "Hello from the SDK!"),
+            tool_calls=(),
+            usage=ProviderUsage(input_tokens=20, output_tokens=8, total_tokens=28),
+            model=ADAPTER_MODEL,
             finish_reason="stop",
         )
 
 
-# 2. Simple Tool Executor
-class SimpleToolExecutor:
-    def __init__(self):
-        self.registry = ToolRegistry()
-        
-        # Register an echo tool
-        self.registry.register(ToolSpec(
-            name="echo",
-            description="Echo back the input text",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string"},
-                },
-                "required": ["text"],
-                "additionalProperties": False,
-            },
-        ))
-    
-    async def execute(self, call, context):
+# 2. Tool executor port — one echo tool.
+class EchoToolExecutor:
+    async def execute(self, call: ToolCall, context: dict) -> ToolResult:
         if call.name == "echo":
-            text = call.arguments.get("text", "")
-            return ToolResult.succeeded(call.call_id, {"output": text})
-        
-        return ToolResult.rejected(
-            call.call_id,
-            "unknown_tool",
-            f"Tool {call.name} not found",
-        )
+            text = call.arguments.get("text", "hello")
+            print(f"[Tool] echo(text={text!r})")
+            return ToolResult.succeeded(call.call_id, {"echoed": text})
+        return ToolResult.rejected(call.call_id, "unknown_tool", f"Tool {call.name} not found")
 
 
-# 3. Simple Authorization (always allow)
+# 3. Authorization port — always allow (demo only).
 class AllowAllAuthorization:
-    async def request_authorization(self, request):
-        from simple_harness.tools import AuthorizationResult
+    async def request_authorization(self, request: AuthorizationRequest) -> AuthorizationResult:
         return AuthorizationResult.allow()
 
 
-# 4. Main function
-async def main():
-    # Create SQLite database for execution state
-    db = Database.open("demo-execution.db")
-    context = SqliteContextPort(db)
-    
-    # Build runtime with ports
-    ports = RuntimePorts(
+async def main() -> int:
+    # Fresh temp database + fresh IDs on every run: re-runnable by design.
+    db_path = Path(tempfile.mkdtemp(prefix="quickstart-")) / "execution.db"
+    suffix = uuid.uuid4().hex[:8]
+    run_id = RunId(f"run-{suffix}")
+
+    ports = ConsumerRuntimePorts(
         provider=FakeProvider(),
-        tool_executor=SimpleToolExecutor(),
+        tool_executor=EchoToolExecutor(),
         authorization=AllowAllAuthorization(),
-        context=context,
+        database_path=str(db_path),
+        tool_names=("echo",),
     )
-    
-    async with build_runtime(ports) as runtime:
-        # Create a run
-        run_start = RunStart(
-            execution_session_id=ExecutionSessionId("demo-session"),
-            run_id=RunId("demo-run"),
-            request_id=RequestId("demo-request"),
-            turn_id="turn-1",
+    runtime = await build_consumer_runtime(ports)
+    await runtime.__aenter__()
+    try:
+        client = RunClient(runtime)
+        await client.start(RunStart(
+            execution_session_id=ExecutionSessionId(f"session-{suffix}"),
+            run_id=run_id,
+            request_id=RequestId(f"req-{suffix}"),
+            turn_id="turn-001",
+            tool_catalog_generation=1,
             input={
-                "messages": [
-                    {"role": "user", "content": "Hello, what can you do?"}
-                ],
-                "capability_snapshot": {
-                    "tools": ["echo"],
-                },
+                "messages": [{"role": "user", "content": "Say hello"}],
+                "capability_snapshot": {"tools": ["echo"]},
+                # Without an output-token bound the provider reservation is
+                # unpriceable and the run fails with react_cost_exceeded.
+                "max_output_tokens": 1024,
             },
-            created_at_unix_ms=1735000000000,
-        )
-        
-        # Start the run
-        print("Starting run...")
-        await runtime.start(run_start)
-        
-        # Wait for completion
-        state = await runtime.wait_idle(RunId("demo-run"))
-        
-        print(f"✓ Run completed with state: {state}")
-        
-        if state == RunState.COMPLETED:
-            print("Success! Agent responded.")
-        elif state == RunState.FAILED:
-            print("Run failed.")
-        else:
-            print(f"Run ended with state: {state}")
-    
-    # Cleanup
-    db.close()
+        ))
+
+        # wait_idle() returns None — it only waits until the run is no longer
+        # live. Read the real terminal state back via client.query().
+        await runtime.wait_idle(run_id)
+        record = client.query(run_id)
+        state = record.state if record is not None else None
+        print(f"Run terminal state: {state}")
+
+        if state != RunState.COMPLETED:
+            print(f"FAIL: expected {RunState.COMPLETED}, got {state}")
+            return 1
+        print("SUCCESS: run completed")
+        return 0
+    finally:
+        await runtime.__aexit__(None, None, None)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))
 ```
 
 **Run it:**
 
 ```bash
-python demo.py
+.venv/bin/python demo.py
 ```
 
-**Expected output:**
+**Expected output** (IDs vary per run):
 
+```text
+[Tool] echo(text='hello')
+Run terminal state: completed
+SUCCESS: run completed
 ```
-Starting run...
-✓ Run completed with state: RunState.COMPLETED
-Success! Agent responded.
-```
+
+The process exits `0` only when the run reaches `COMPLETED`; any other
+terminal state exits `1`.
 
 ---
 
 ## What Just Happened?
 
-1. **Fake Provider**: Returns canned responses (no real LLM)
-2. **Tool Executor**: Registered one `echo` tool
-3. **Runtime**: Managed the Agent execution
-4. **Run**: A single conversation turn completed successfully
+1. **Fake Provider**: Returns canned responses (no real LLM), demonstrating
+   one tool call followed by a final answer
+2. **Tool Executor**: Executes one `echo` tool
+3. **Authorization**: Allows every tool call (demo only)
+4. **Runtime**: Managed the durable Agent execution end to end
+5. **Terminal assertion**: `client.query(run_id)` read back the real terminal
+   state and the process exit code reflects it
 
 ---
 
 ## Next Steps
 
+The snippets below are **fragments** (marked `python fragment`): they show the
+shape of each API but are not runnable standalone.
+
 ### 1. Use a Real LLM Provider
 
-Replace `FakeProvider` with a real OpenAI adapter:
+Replace `FakeProvider` with a real API client:
 
-```python
-from simple_harness.providers import OpenAICompatibleProvider, Secret
-
-provider = OpenAICompatibleProvider(
-    base_url="https://api.openai.com/v1",
-    model="gpt-4",
-    api_key=Secret("your-api-key-here"),
-)
+```python fragment
+class OpenAIProvider:
+    async def invoke(self, request, *, cancel):
+        data = await call_openai(request)  # your HTTP client here
+        return ProviderResponse(
+            request_id=request.request_id,
+            message=Message(MessageRole.ASSISTANT, data["choices"][0]["message"]["content"]),
+            tool_calls=(),
+            usage=ProviderUsage(
+                input_tokens=data["usage"]["prompt_tokens"],
+                output_tokens=data["usage"]["completion_tokens"],
+                total_tokens=data["usage"]["total_tokens"],
+            ),
+            model="consumer-model",  # must match the 0.1.2 adapter target
+            finish_reason="stop",
+        )
 ```
 
-**See:** [Integration Guide](integration-guide.md#provider-implementation)
+**See:** [Integration Guide](integration-guide.md)
 
 ### 2. Add Real Tools
 
-Implement file operations, API calls, etc.:
+Implement file operations, API calls, etc. Note the 0.1.2 limitation: the
+consumer adapter registers placeholder tool specs that reject all arguments,
+so tools must work with an empty argument mapping (upgrade path: use the
+10-Port `RuntimePorts` API, see [Ports API](api/ports.md)):
 
-```python
-# In your execute() method
-if call.name == "read_file":
-    path = call.arguments["path"]
-    content = open(path).read()
-    return ToolResult.succeeded(call.call_id, {"content": content})
+```python fragment
+class FileToolExecutor:
+    async def execute(self, call, context):
+        if call.name == "read_file":
+            content = open(call.arguments["path"]).read()
+            return ToolResult.succeeded(call.call_id, {"content": content})
+        return ToolResult.rejected(call.call_id, "unknown_tool", "Tool not found")
 ```
 
-**See:** [Ports API](api/ports.md#toolexecutorport)
+**See:** [Ports API](api/ports.md)
 
-### 3. Enable Workflows
+### 3. Advanced: the 10-Port RuntimePorts API
 
-Register official workflows for multi-step tasks:
+`build_consumer_runtime` covers most consumers. If you need full control
+(custom tool schemas, workflows, memory, delivery sinks), drop down to the
+kernel-level `build_runtime` + `RuntimePorts` (10 ports) — this is the
+advanced path:
 
-```python
-from simple_harness.workflows import build_official_workflow_registrations
+```python fragment
+from simple_harness.runtime import build_runtime, RuntimePorts, RuntimeProfile
 
-ports = RuntimePorts(
-    ...
-    workflow_registrations=build_official_workflow_registrations(),
+runtime = build_runtime(
+    uow=uow,
+    profiles={"agent.general": RuntimeProfile("agent.general", "react")},
+    drivers=drivers,
+    ports=RuntimePorts(...),  # 10 kernel ports
 )
 ```
 
-**See:** [Workflow API](api/workflow.md)
+**See:** [Ports API](api/ports.md), [Integration Guide](integration-guide.md)
 
-### 4. Add Memory
+### 4. Run Conformance Tests
 
-Integrate long-term memory:
-
-```python
-ports = RuntimePorts(
-    ...
-    memory_query=MyMemoryQuery(),
-    memory_write=MyMemoryWrite(),
-)
-```
-
-**See:** [Integration Guide](integration-guide.md#memory-integration)
-
-### 5. Run Conformance Tests
-
-Verify your implementation:
+Verify your port implementations against the SDK conformance suite:
 
 ```bash
 python -m simple_harness.testing \
@@ -269,11 +328,11 @@ python -m simple_harness.testing \
 
 ### Import Error: `No module named 'simple_harness'`
 
-**Solution**: Make sure you installed the wheel correctly:
+**Solution**: Make sure you installed the wheel into the same environment you
+run with:
 
 ```bash
-pip install simple_harness_sdk-0.1.1-py3-none-any.whl
-pip list | grep simple-harness
+.venv/bin/pip list | grep simple-harness
 ```
 
 ### Python Version Error
@@ -281,28 +340,23 @@ pip list | grep simple-harness
 **Solution**: SDK requires Python 3.11+. Check your version:
 
 ```bash
-python --version
-# Should show Python 3.11.0 or higher
+.venv/bin/python --version
 ```
 
-If you have multiple Python versions:
+### Run fails with `react_cost_exceeded`
 
-```bash
-python3.11 demo.py
-```
+**Solution**: two common causes, both shown in the Minimal Example above:
 
-### Database Locked Error
+1. `max_output_tokens` missing from the run input — the provider reservation
+   is then unpriceable and recorded as an unknown charge.
+2. The provider's `ProviderResponse.model` does not match the adapter target
+   (`"consumer-model"`) — reported usage is then treated as an unknown charge.
 
-**Solution**: Only one Runtime can open a database at a time. Make sure previous runs closed properly:
+### Run completes but prints `Run completed: None`
 
-```python
-async with build_runtime(ports) as runtime:
-    # Runtime auto-closes on exit
-    ...
-
-# Or manually:
-db.close()
-```
+**Solution**: `runtime.wait_idle(run_id)` returns `None` by design — it only
+waits until the run is no longer live. Read the terminal state via
+`client.query(run_id)` (see the Minimal Example).
 
 ---
 
@@ -314,15 +368,7 @@ db.close()
   - [Workflow](api/workflow.md)
   - [Ports](api/ports.md)
 - **[Conformance Testing](conformance.md)** - Validate your implementation
-- **[Examples](../examples/)** - More code examples
-
----
-
-## Getting Help
-
-- Check the [Integration Guide](integration-guide.md) for detailed implementation steps
-- Review [Conformance test cases](conformance.md) to understand expected behavior
-- Refer to [API documentation](api/) for interface details
+- **[Examples](../examples/)** - More code examples (see `examples/minimal-consumer/`)
 
 ---
 
