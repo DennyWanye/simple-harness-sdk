@@ -10,7 +10,7 @@
     {"scenario_id": "full-suite", "required": true, "ui": false}
   ],
   "executor_engine": "claude-fable-5",
-  "auditor_engine": "claude-fable-5",
+  "auditor_engine": "opus-4.8",
   "applicability": {
     "input_sensitive": {
       "value": false,

@@ -46,6 +46,7 @@
 - **错误态**：未注入 sink 时 fail-closed（不得静默产生假 DELIVERED）；model 非法值沿用 0.1.3 的 fail-closed
 - **隐私**：`private_cause` 不得进入对外结果；日志不得打敏感值全量
 - **reproducible build 边界**：`release.yml` 的 `BUILD_INFO.txt` 时间字段明确为"排除在 byte-for-byte 比较外"（或改为取自固定 commit timestamp），记录在本 slice，不强制 byte-for-byte
+- **conformance 范围收窄（H-AC-6）**：本 slice 把"release-candidate conformance"收窄为 release.yml `test` job 内的 ubuntu 内联 conformance（provider+tool 套件）；多平台矩阵保留在独立 `release-candidate-conformance.yml`（手动候选验证），不进自动 release 门
 - **兼容**：不引入新运行时依赖（ruff/mypy 仅 dev 依赖）
 
 ## 适用性声明（APPLICABILITY_DECLARATION）
