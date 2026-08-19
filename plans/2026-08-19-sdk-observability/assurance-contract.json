@@ -1,0 +1,25 @@
+{
+  "profile": "standard",
+  "acceptance_ids": ["L-AC-1", "L-AC-2", "L-AC-3", "L-AC-4", "L-AC-5", "L-AC-6", "L-AC-7"],
+  "protected_assets": [
+    {"id": "ASSET-1", "description": "两个 SDK 的既有行为（日志是纯新增观测，不得改变任何行为/协议/持久化/依赖）"},
+    {"id": "ASSET-2", "description": "日志不泄露敏感值（prompt / api_key / 完整参数）"}
+  ],
+  "trusted_assumptions": [
+    {"id": "TRUST-1", "description": "宿主用标准 logging / structlog 机制能接管 SDK 日志"},
+    {"id": "TRUST-2", "description": "event 命名约定 <模块>.<动作> 被实现遵守"}
+  ],
+  "in_scope_failures": [
+    {"id": "FAIL-1", "description": "日志改变了行为（回归新增红）"},
+    {"id": "FAIL-2", "description": "日志泄露敏感值（全量打 prompt/key）"},
+    {"id": "FAIL-3", "description": "关键路径仍无日志（防退化测试失效）"},
+    {"id": "FAIL-4", "description": "日志点加错位置（打了但不在真正触发的路径上）"}
+  ],
+  "in_scope_adversaries": [],
+  "out_of_scope_conditions": [
+    {"id": "OOS-1", "description": "宿主日志桥接（simple_harness 后端消费 SDK 日志）"},
+    {"id": "OOS-2", "description": "日志采集/传输/存储基础设施"},
+    {"id": "OOS-3", "description": "通用脱敏框架"}
+  ],
+  "maximum_acceptable_impact": "日志信息不足需人工补日志；不得导致行为变化或敏感值泄露"
+}

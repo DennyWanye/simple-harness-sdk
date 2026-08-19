@@ -1,0 +1,188 @@
+{
+ "review_mode": "diff",
+ "findings": [
+  {
+   "id": "b1-run-terminal-naming",
+   "severity": "P0",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-1"
+   ],
+   "assurance_contract_ids": [
+    "TRUST-2",
+    "FAIL-3"
+   ],
+   "evidence": "Task 1 改 _terminalize 入口按 state 三分支",
+   "status": "resolved",
+   "root_cause": "plan 发明 run.terminal 与验收冲突"
+  },
+  {
+   "id": "b2-tool-effect-settled-missing",
+   "severity": "P0",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-3"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-3"
+   ],
+   "evidence": "Task 3 补 tool.effect_settled 锚定 settle_effect 445",
+   "status": "resolved",
+   "root_cause": "漏 effect 落账"
+  },
+  {
+   "id": "b3-terminalize-multi-exit",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-1"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": "日志打 _terminalize 入口覆盖全部终态",
+   "status": "resolved",
+   "root_cause": "单点日志覆盖不全"
+  },
+  {
+   "id": "b4-tool-auth-wrong-path",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-3"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": "durable 决策 293-316 也是 deny 出口，plan 只锚 333 即时分支",
+   "status": "open",
+   "root_cause": "execute 有 durable+immediate 两个 deny 出口"
+  },
+  {
+   "id": "b5-provider-reconcile-path-missed",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-2"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": "provider.invoked 打 invoke+reconcile 两处，_response_charge_for_record 不比对 model 已注明",
+   "status": "resolved",
+   "root_cause": "双收费路径漏一条"
+  },
+  {
+   "id": "b6-provider-invoked-none-deref",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "patch-induced",
+   "violated_acceptance_ids": [
+    "L-AC-7"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-1"
+   ],
+   "evidence": "usage 三字段加 None 守卫",
+   "status": "resolved",
+   "root_cause": "None 解引用"
+  },
+  {
+   "id": "b7-budget-line-anchor",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-4"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": "日志锚 authorize(136) raise 处，字段改 committed/reserved_micros",
+   "status": "resolved",
+   "root_cause": "行号 grep 锚错"
+  },
+  {
+   "id": "b8-structlog-extra-idiom",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "patch-induced",
+   "violated_acceptance_ids": [
+    "L-AC-5"
+   ],
+   "assurance_contract_ids": [
+    "TRUST-2"
+   ],
+   "evidence": "Task 5 改 structlog kwargs",
+   "status": "resolved",
+   "root_cause": "extra= 混用到 structlog"
+  },
+  {
+   "id": "b9-ast-test-symbol-fragility",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-6"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-3"
+   ],
+   "evidence": "行为测试防错位，AST 防删除，函数名改真实符号",
+   "status": "resolved",
+   "root_cause": "绑不存在符号"
+  },
+  {
+   "id": "b10-redaction-grep-scope",
+   "severity": "P2",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-6"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-2",
+    "ASSET-2"
+   ],
+   "evidence": "query 截断断言需落在 memory-sdk 侧测试，防泄露不能只靠字段名 grep",
+   "status": "open",
+   "root_cause": "脱敏绑字段名而非截断语义，memory 侧断言位置未定义"
+  },
+  {
+   "id": "b11-run-start-wrapper-anchor",
+   "severity": "P2",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-1"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": "run.start 锚 _start_run(1150)，admission 拒绝打 run.admission_denied",
+   "status": "resolved",
+   "root_cause": "锚薄包装"
+  },
+  {
+   "id": "b12-recall-ast-cross-repo",
+   "severity": "P2",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-6"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-3"
+   ],
+   "evidence": "recall 属 memory-sdk，AST 测试需在 memory-sdk 侧建文件，不能跨仓硬编码路径",
+   "status": "open",
+   "root_cause": "单一 harness 测试文件承担两仓断言",
+   "why_not_found_in_round_one": "第一轮聚焦日志点定位错误（单仓 harness-sdk），未审查 Task 6 的防退化测试是否跨仓；第二轮复核 Task 6 修订时才发现 AST 断言名单含 memory-sdk 的 recall 而测试文件只在 harness-sdk"
+  }
+ ]
+}

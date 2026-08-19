@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Protocol, cast
 
 from simple_harness.contracts import FrozenJsonValue, HarnessError, RunId, thaw_json
+
+logger = logging.getLogger(__name__)
 from simple_harness.providers import (
     CancelToken,
     Provider,
@@ -367,6 +370,15 @@ class ProviderInvocationCoordinator:
                 )
             current = self._uow.read_provider_invocation(record.invocation_id)
             raise ProviderInvocationUnknownError(current) from exc
+        logger.info(
+            "provider.invoked",
+            extra={
+                "model": response.model,
+                "input_tokens": (response.usage.input_tokens if response.usage else None),
+                "output_tokens": (response.usage.output_tokens if response.usage else None),
+                "total_tokens": (response.usage.total_tokens if response.usage else None),
+            },
+        )
         return response
 
     def _response_charge(
@@ -380,11 +392,21 @@ class ProviderInvocationCoordinator:
             return self._estimator.charge_usage(response.usage)
         if response.usage is None and not reservation.is_unknown:
             return reservation
+        if response.usage is not None:
+            logger.warning(
+                "provider.usage_untrusted",
+                extra={
+                    "target_model": self._provider.target.model,
+                    "response_model": response.model,
+                },
+            )
+        logger.warning("provider.charge_unknown", extra={"model": response.model})
         return BudgetCharge.unknown()
 
     async def _settle_unknown(
         self, handed_off: ProviderInvocationRecord, error_code: str
     ) -> ProviderInvocationRecord:
+        logger.warning("reconcile.unknown_settled", extra={"error_code": error_code})
         unknown = handed_off.settle_unknown(
             error_code=error_code,
             at=self._clock(),
@@ -458,6 +480,22 @@ class ProviderInvocationCoordinator:
                     budget_charge=charge,
                     evidence_ref=observation.evidence_ref,
                     now=self._clock(),
+                )
+                logger.info(
+                    "provider.invoked",
+                    extra={
+                        "reconcile": True,
+                        "model": response.model,
+                        "input_tokens": (
+                            response.usage.input_tokens if response.usage else None
+                        ),
+                        "output_tokens": (
+                            response.usage.output_tokens if response.usage else None
+                        ),
+                        "total_tokens": (
+                            response.usage.total_tokens if response.usage else None
+                        ),
+                    },
                 )
             else:
                 self._uow.record_provider_reconciliation(

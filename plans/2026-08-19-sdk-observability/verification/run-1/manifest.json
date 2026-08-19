@@ -1,0 +1,22 @@
+{
+  "run_id": "slice-1",
+  "repo_root": "/Users/denny/projects/simple-harness-sdk",
+  "source_request_text": "用户：『请你处理』——按上轮建议给两个 SDK 补日志（harness-sdk 5 类关键路径 stdlib logging + memory-sdk recall 补漏 + 防退化约定），方便收集日志判断 SDK 问题。用户批准 acceptance + 确认 harness-sdk 用 stdlib logging。",
+  "acceptance_file": "plans/2026-08-19-sdk-observability/acceptance.md",
+  "applicability": {
+    "input_sensitive": {"value": false, "rationale": "纯可观测性改动，不产生/消费 LLM 语义结果", "decided_by": "agent"},
+    "llm_payload_driven": {"value": false, "rationale": "无 LLM 输出驱动端侧状态机", "decided_by": "agent"},
+    "stateful_init": {"value": false, "rationale": "日志不依赖异步注册服务/登录态", "decided_by": "agent"}
+  },
+  "release_unit": {"slice_id": "slice-1-sdk-observability", "parent_program": "sdk-observability", "scope_hash": "见 acceptance.md（L-AC-1..7 共 7 条 MUST）"},
+  "executor_engine": "claude",
+  "scenarios": [
+    {"scenario_id": "L-run-lifecycle", "ac_id": "L-AC-1", "obligation_id": "TO-L1", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["src/simple_harness/runtime/kernel.py"], "terminal_expectation": "caplog 捕获 run.start + run.terminal 且带 run_id"},
+    {"scenario_id": "L-provider", "ac_id": "L-AC-2", "obligation_id": "TO-L2", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["src/simple_harness/execution/dispatch.py"], "terminal_expectation": "model 不匹配时 provider.usage_untrusted 出现"},
+    {"scenario_id": "L-tool", "ac_id": "L-AC-3", "obligation_id": "TO-L3", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["src/simple_harness/tools/executor.py"], "terminal_expectation": "tool.invoked + tool.authorized 出现"},
+    {"scenario_id": "L-budget", "ac_id": "L-AC-4", "obligation_id": "TO-L4", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["src/simple_harness/execution/budget.py"], "terminal_expectation": "budget.refused_on_unknown 出现"},
+    {"scenario_id": "L-recall", "ac_id": "L-AC-5", "obligation_id": "TO-L5", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["src/simple_harness_memory/features/retriever.py"], "terminal_expectation": "memory.recall + hits 字段出现"},
+    {"scenario_id": "L-anti-regression", "ac_id": "L-AC-6", "obligation_id": "TO-L6", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["tests/**"], "terminal_expectation": "防退化测试断言关键路径源码含日志点"},
+    {"scenario_id": "L-behavior-unchanged", "ac_id": "L-AC-7", "obligation_id": "TO-R1", "kind": "script", "required": true, "gate_type": "negative-safety", "impact_paths": ["src/**"], "terminal_expectation": "两 SDK 全量 pytest 0 新增红 + 日志不含敏感值明文"}
+  ]
+}

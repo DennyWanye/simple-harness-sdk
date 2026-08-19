@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import time
+import logging
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -19,6 +20,8 @@ from simple_harness.contracts import (
     RunId,
     thaw_json,
 )
+
+logger = logging.getLogger(__name__)
 from simple_harness.execution.effects import (
     EffectRecord,
     EffectState,
@@ -285,6 +288,10 @@ class EffectExecutor:
         prepared = await self._prepared(
             effect_id=effect_id, call=call, context=trusted_context
         )
+        logger.info(
+            "tool.invoked",
+            extra={"tool": call.name, "args_keys": list(arguments)[:20]},
+        )
         authorization_receipt_ref: str | None = None
         read_decision = getattr(self._uow, "read_decision", None)
         durable_decision = (
@@ -306,6 +313,14 @@ class EffectExecutor:
                     raise ValueError("allowed authorization lacks a bound receipt")
                 authorization_receipt_ref = value
             else:
+                logger.warning(
+                    "tool.denied",
+                    extra={
+                        "tool": call.name,
+                        "reason": f"authorization_{durable_decision.state.value}",
+                        "path": "durable",
+                    },
+                )
                 return EffectExecution(
                     effect=None,
                     result=ToolResult.rejected(
@@ -331,6 +346,14 @@ class EffectExecutor:
             )
             raise ToolAuthorizationPending(prepared, request)
         if authorization is not None and authorization.decision is not AuthorizationDecision.ALLOW:
+            logger.warning(
+                "tool.denied",
+                extra={
+                    "tool": call.name,
+                    "reason": authorization.reason_code or "authorization_denied",
+                    "path": "immediate",
+                },
+            )
             return EffectExecution(
                 effect=None,
                 result=ToolResult.rejected(
@@ -344,6 +367,7 @@ class EffectExecutor:
             assert authorization.receipt_ref is not None
             authorization_receipt_ref = authorization.receipt_ref
         assert authorization_receipt_ref is not None
+        logger.info("tool.authorized", extra={"tool": call.name})
         if existing is not None and not_started_resolution is not None:
             record = self._uow.reauthorize_effect_not_started(
                 existing,
@@ -451,6 +475,10 @@ class EffectExecutor:
                 f"tool-handler-result:{context.run_id.value}:{effect_id.value}"
             ),
             now=self._clock(),
+        )
+        logger.info(
+            "tool.effect_settled",
+            extra={"tool": call.name, "effect_id": effect_id.value},
         )
         return EffectExecution(settled, result)
 

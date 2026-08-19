@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 from dataclasses import dataclass
 from enum import StrEnum
@@ -18,6 +19,8 @@ from simple_harness.contracts import (
     canonical_json,
     thaw_json,
 )
+
+logger = logging.getLogger(__name__)
 from simple_harness.providers import ProviderRequest, ProviderTarget, ProviderUsage
 
 
@@ -137,6 +140,14 @@ class BudgetPolicy:
         self, snapshot: BudgetSnapshot, *, reservation_micros: int | None
     ) -> None:
         if self.refuse_on_unknown and snapshot.has_unknown_charge:
+            logger.warning(
+                "budget.refused_on_unknown",
+                extra={
+                    "committed_micros": snapshot.committed_micros,
+                    "reserved_micros": snapshot.reserved_micros,
+                    "hard_cap_micros": self.hard_cap_micros,
+                },
+            )
             raise BudgetUnknownError()
         if reservation_micros is None:
             if self.hard_cap_micros is not None:
@@ -148,6 +159,15 @@ class BudgetPolicy:
             snapshot.committed_micros + snapshot.reserved_micros + reservation_micros
             > self.hard_cap_micros
         ):
+            logger.warning(
+                "budget.exceeded",
+                extra={
+                    "committed_micros": snapshot.committed_micros,
+                    "reserved_micros": snapshot.reserved_micros,
+                    "reservation_micros": reservation_micros,
+                    "hard_cap_micros": self.hard_cap_micros,
+                },
+            )
             raise BudgetExceededError()
 
 

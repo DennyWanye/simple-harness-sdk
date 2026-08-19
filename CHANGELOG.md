@@ -7,6 +7,20 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 0.1.3 — candidate
 
+### Observability (post-release, 2026-08-19)
+
+- Added structured stdlib `logging` events on the SDK's core execution paths so hosts
+  can observe the engine: `run.start` / `run.complete` / `run.fail` / `run.cancelled` /
+  `run.admission_denied` (kernel), `provider.invoked` / `provider.usage_untrusted` /
+  `provider.charge_unknown` / `reconcile.unknown_settled` (dispatch), `tool.invoked` /
+  `tool.authorized` / `tool.denied` / `tool.effect_settled` (executor), and
+  `budget.refused_on_unknown` / `budget.exceeded` (budget).
+- Events follow a `<module>.<action>` name with structured `extra` fields; tool
+  arguments are logged as keys only and never as values.
+- Added a regression suite (`tests/unit/runtime/test_logging_observability.py`) that
+  locks the observability contract via caplog behaviour tests, AST existence checks,
+  and redaction assertions.
+
 **Focus:** Fix two consumer-layer design defects.
 
 ### Fixed

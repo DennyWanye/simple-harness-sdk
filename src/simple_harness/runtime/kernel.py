@@ -860,10 +860,13 @@ class Runtime:
     async def recover(self, *, _startup: bool = False) -> None:
         if not _startup:
             self._require_started()
-        for run in (
-            *self._uow.list_recoverable_root_runs(),
-            *self._uow.list_recoverable_child_runs(),
-        ):
+        root_runs = self._uow.list_recoverable_root_runs()
+        child_runs = self._uow.list_recoverable_child_runs()
+        logger.info(
+            "reconcile.recovered",
+            extra={"roots": len(root_runs), "children": len(child_runs)},
+        )
+        for run in (*root_runs, *child_runs):
             if run.run_id in self._live.active_run_ids():
                 continue
             try:
@@ -1138,6 +1141,13 @@ class Runtime:
         self._require_started()
         verdict = await self._ports.admission.evaluate(start)
         if not verdict.allowed:
+            logger.warning(
+                "run.admission_denied",
+                extra={
+                    "run_id": start.run_id.value,
+                    "session_id": start.execution_session_id.value,
+                },
+            )
             raise HarnessError("admission_denied", "The Run was denied by admission.")
         profile = self._profiles[self._root_profile_key]
         driver = self._drivers[profile.driver_kind]
@@ -1156,6 +1166,14 @@ class Runtime:
             snapshot=snapshot.to_json(),
             event_id=f"{start.run_id.value}:created",
             now=self._now(),
+        )
+        logger.info(
+            "run.start",
+            extra={
+                "run_id": start.run_id.value,
+                "session_id": start.execution_session_id.value,
+                "profile": self._root_profile_key,
+            },
         )
         if created.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
             return created
@@ -1575,6 +1593,21 @@ class Runtime:
         deliveries: Sequence[DeliverySpec],
         continuation_claim: ContinuationRecord | None = None,
     ) -> None:
+        event = (
+            "run.complete"
+            if state is RunState.COMPLETED
+            else "run.fail"
+            if state is RunState.FAILED
+            else "run.cancelled"
+        )
+        logger.info(
+            event,
+            extra={
+                "run_id": run.run_id,
+                "state": state.value,
+                "payload_keys": list(payload)[:10],
+            },
+        )
         fence = self._fences[run.run_id]
         if run.parent_run_id is not None:
             if continuation_claim is not None:

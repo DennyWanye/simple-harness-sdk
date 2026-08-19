@@ -1,0 +1,182 @@
+{
+ "review_mode": "breadth",
+ "coverage": {
+  "acceptance_coverage": true,
+  "entry_and_trust_chain": true,
+  "data_flow_and_persistence": true,
+  "identity_permissions_concurrency_cleanup": true,
+  "failure_and_recovery": true,
+  "tests_and_evidence": true,
+  "release_and_rollback": true,
+  "trusted_boundary_stop": true
+ },
+ "findings": [
+  {
+   "id": "b1-run-terminal-naming",
+   "severity": "P0",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-1"
+   ],
+   "assurance_contract_ids": [
+    "TRUST-2",
+    "FAIL-3"
+   ],
+   "evidence": "plan 用 run.terminal 伞形名，acceptance/TO-L1 锁死 run.complete/run.fail",
+   "status": "open",
+   "root_cause": "plan 发明 run.terminal 与验收文本冲突"
+  },
+  {
+   "id": "b2-tool-effect-settled-missing",
+   "severity": "P0",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-3"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-3"
+   ],
+   "evidence": "L-AC-3 要求 tool.effect_settled，plan Task 3 完全缺失",
+   "status": "open",
+   "root_cause": "plan 只对齐 executor 准备/授权，漏 effect 落账"
+  },
+  {
+   "id": "b3-terminalize-multi-exit",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-1"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": "_terminalize 有 child/continuation/workflow-cancel 多条提前 return 与旁路，单点日志覆盖不全",
+   "status": "open",
+   "root_cause": "plan 把 _terminalize 当唯一终态出口"
+  },
+  {
+   "id": "b4-tool-auth-wrong-path",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-3"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": ":133 是 bind_decision 形参，即时 allow/deny 在 execute() 324-342 三分支",
+   "status": "open",
+   "root_cause": "plan 行号 grep 把 bind_decision 误当授权决策点"
+  },
+  {
+   "id": "b5-provider-reconcile-path-missed",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-2"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": "provider 有 invoke + reconcile_incomplete 双收费路径，usage 信任判断两处独立，plan 只布 invoke 主链",
+   "status": "open",
+   "root_cause": "plan 未识别 reconcile 对账路径"
+  },
+  {
+   "id": "b6-provider-invoked-none-deref",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "patch-induced",
+   "violated_acceptance_ids": [
+    "L-AC-7"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-1"
+   ],
+   "evidence": "response.usage 可为 None，直接 .input_tokens 会 AttributeError 改行为",
+   "status": "open",
+   "root_cause": "日志 extra 构造未沿用 usage None 守卫"
+  },
+  {
+   "id": "b7-budget-line-anchor",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-4"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": ":104 是错误类字符串，真正 raise 在 authorize():151；字段名 spent_micros 与 snapshot 实际 committed/reserved_micros 不符",
+   "status": "open",
+   "root_cause": "plan 用字符串 grep 命中行号当锚点，字段名错误"
+  },
+  {
+   "id": "b8-structlog-extra-idiom",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "patch-induced",
+   "violated_acceptance_ids": [
+    "L-AC-5"
+   ],
+   "assurance_contract_ids": [
+    "TRUST-2"
+   ],
+   "evidence": "memory-sdk structlog 用 kwargs 不是 extra=，extra={...} 会嵌套成 'extra' 键",
+   "status": "open",
+   "root_cause": "plan 把 stdlib logging extra= 惯用法混用到 structlog"
+  },
+  {
+   "id": "b9-ast-test-symbol-fragility",
+   "severity": "P1",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-6"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-3"
+   ],
+   "evidence": "budget.py 无 check 函数；字符串存在断言无法防日志点错位",
+   "status": "open",
+   "root_cause": "防退化测试绑不存在符号，机制天然防不了 FAIL-4"
+  },
+  {
+   "id": "b10-redaction-grep-scope",
+   "severity": "P2",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-6"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-2",
+    "ASSET-2"
+   ],
+   "evidence": "脱敏 grep 只覆盖 harness-sdk，漏 memory-sdk 的 query 内容；字段名 grep 拦不住异名字段值泄露",
+   "status": "open",
+   "root_cause": "脱敏绑定字段名字面量而非敏感值语义"
+  },
+  {
+   "id": "b11-run-start-wrapper-anchor",
+   "severity": "P2",
+   "scope_relation": "in-scope",
+   "origin": "pre-existing",
+   "violated_acceptance_ids": [
+    "L-AC-1"
+   ],
+   "assurance_contract_ids": [
+    "FAIL-4"
+   ],
+   "evidence": "run 真创建在 _start_run:1150，admission 拒绝/spawn 子 run/recover 不走 RunClient.start",
+   "status": "open",
+   "root_cause": "plan 把 run.start 锚在薄包装方法"
+  }
+ ]
+}

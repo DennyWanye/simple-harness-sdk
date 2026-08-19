@@ -1,0 +1,8 @@
+{
+  "review_mode": "diff",
+  "findings": [
+    {"id":"b4-tool-auth-wrong-path","severity":"P1","scope_relation":"in-scope","origin":"pre-existing","violated_acceptance_ids":["L-AC-3"],"assurance_contract_ids":["FAIL-4"],"evidence":"Task 3 覆盖 durable+immediate 两个 deny 出口","status":"resolved","root_cause":"execute 两个 deny 出口"},
+    {"id":"b10-redaction-grep-scope","severity":"P2","scope_relation":"in-scope","origin":"pre-existing","violated_acceptance_ids":["L-AC-6"],"assurance_contract_ids":["FAIL-2","ASSET-2"],"evidence":"Task 6 拆两仓脱敏断言，memory 侧锁 query[:80]，harness 侧锁 args keys-only","status":"resolved","root_cause":"脱敏绑字段名而非截断语义"},
+    {"id":"b12-recall-ast-cross-repo","severity":"P2","scope_relation":"in-scope","origin":"pre-existing","violated_acceptance_ids":["L-AC-6"],"assurance_contract_ids":["FAIL-3"],"evidence":"Task 6 拆两仓测试文件，recall 防退化在 memory-sdk 侧落地","status":"resolved","root_cause":"单一 harness 测试文件承担两仓断言"}
+  ]
+}
