@@ -44,8 +44,12 @@ jobs:
           uv venv .artifact-venv --python 3.11
           uv pip install --python .artifact-venv/bin/python dist/*.whl
           .artifact-venv/bin/python -I -c 'import runpy, simple_harness; expected = runpy.run_path("src/simple_harness/version.py")["__version__"]; assert simple_harness.__version__ == expected'
-      - name: Run artifact tests
-        run: uv run --frozen --group dev pytest -q tests/artifact
+      - name: Run full test suite
+        run: uv run --frozen --group dev pytest -q
+      - name: Lint (scoped ruff)
+        run: uv run --frozen --group dev ruff check src/simple_harness/runtime/consumer_adapter.py src/simple_harness/runtime/ports.py src/simple_harness/execution/delivery.py src/simple_harness/testing/sinks.py src/simple_harness/testing/__init__.py
+      - name: Type check (scoped mypy)
+        run: uv run --frozen --group dev mypy
       - name: Verify source provenance and REUSE compliance
         run: |
           uv run --frozen python scripts/check_source_provenance.py

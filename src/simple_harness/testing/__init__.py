@@ -14,8 +14,8 @@ from .contracts import (
     CaseDefinition,
     CaseObservation,
     CaseStatus,
-    ConformanceCaseUnavailable,
     ConformanceCaseResult,
+    ConformanceCaseUnavailable,
     ConformanceError,
     ConformanceHost,
     ConformanceHostMetadata,
@@ -27,6 +27,7 @@ from .contracts import (
     WorkflowConformanceSuite,
 )
 from .runner import PROTOCOL_VERSION, run_conformance
+from .sinks import NoopDeliverySink
 
 
 def run_conformance_suite(
@@ -65,6 +66,7 @@ __all__ = (
     "RuntimeConformanceSuite",
     "ToolConformanceSuite",
     "WorkflowConformanceSuite",
+    "NoopDeliverySink",
     "run_conformance",
     "run_conformance_suite",
 )

@@ -218,6 +218,9 @@ class AuthorizationPort(Protocol):
 class MemoryQueryPort(Protocol):
     """Read-only memory recall interface.
 
+    reserved — declared but not yet wired into Runtime; do not assume recall is
+    active. The Runtime does not currently call this port.
+
     Consumers implement this to give the Agent access to long-term memory
     without owning the storage. The Runtime calls this port when an Agent
     needs to recall relevant information from past conversations or knowledge.
@@ -264,6 +267,9 @@ class MemoryQueryPort(Protocol):
 
 class MemoryWritePort(Protocol):
     """Write interface for session-scoped working memory.
+
+    reserved — declared but not yet wired into Runtime; do not assume working
+    memory is active. The Runtime does not currently call this port.
 
     Consumers implement this to persist short-term notes and todos across turns.
     The Runtime calls this port when an Agent updates its working memory list.

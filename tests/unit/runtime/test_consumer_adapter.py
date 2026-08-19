@@ -28,6 +28,7 @@ from simple_harness.contracts import (
     RequestId,
     RunId,
 )
+from simple_harness.execution.sqlite import Database
 from simple_harness.execution.uow import RunState
 from simple_harness.providers import (
     ProviderRequest,
@@ -173,6 +174,35 @@ def test_model_mismatch_still_unknown_and_refuses() -> None:
     )
     state = _run_once(ports)
     assert state is not RunState.COMPLETED
+
+
+def test_build_consumer_runtime_closes_database_on_exit() -> None:
+    import asyncio
+
+    db = Path(tempfile.mkdtemp(prefix="consumer-test-")) / "execution.db"
+    ports = ConsumerRuntimePorts(
+        provider=_calculator_provider("gpt-4o"),
+        tool_executor=_EchoToolExecutor(),
+        authorization=_AllowAll(),
+        database_path=str(db),
+        tool_names=("calculate",),
+        max_turns=10,
+        max_tool_calls=20,
+        model="gpt-4o",
+    )
+
+    async def _go() -> None:
+        runtime = await build_consumer_runtime(ports)
+        await runtime.__aenter__()
+        await runtime.__aexit__(None, None, None)
+
+    asyncio.run(_go())
+
+    reopened = Database.open(db)
+    try:
+        assert reopened.connection.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        reopened.close()
 
 
 def test_tool_with_schema_accepts_arguments() -> None:

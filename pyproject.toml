@@ -39,6 +39,8 @@ dev = [
   "pytest-anyio>=0.0.0",
   "reuse>=5.0,<6",
   "twine>=6.1,<7",
+  "ruff>=0.5,<1",
+  "mypy>=1.10,<2",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -84,4 +86,22 @@ markers = [
   "h7_workflow_terminal_gate: frozen H7 strict and legacy workflow terminal projection seams",
   "anyio: async tests using anyio",
   "simple_harness_conformance: mark test as requiring conformance host fixture",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+# Scoped to the public consumer surface and this release's touched files.
+# Full-project strict typing is out of scope for 0.1.4 (OOS-2).
+files = [
+  "src/simple_harness/runtime/consumer_adapter.py",
+  "src/simple_harness/runtime/ports.py",
+  "src/simple_harness/execution/delivery.py",
+  "src/simple_harness/testing/sinks.py",
 ]

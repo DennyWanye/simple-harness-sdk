@@ -5,6 +5,42 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.1.4 — candidate
+
+**Focus:** Release-blocking hardening of the consumer facade and the release/CI pipeline.
+
+### Fixed
+- Delivery no longer fabricates `DELIVERED`: the no-op `_DefaultDeliverySink` was removed
+  from the production namespace. `build_consumer_runtime` now accepts an optional
+  `delivery_sinks` mapping; when omitted, no sink is registered and deliveries stay PENDING
+  (fail-closed). `DeliveryDispatcher` now permits an empty sink set. A test-only
+  `NoopDeliverySink` lives in `simple_harness.testing`.
+- Tool calls now pass a real execution context (`run_id` / `request_id` / `call_id`) to
+  `ToolExecutorPort.execute` instead of an empty dict.
+- `build_consumer_runtime` is documented as a demo/basic facade; production consumers
+  should assemble `RuntimePorts` directly (the facade uses a zero-cost price estimator and
+  no-op reconciliation).
+- The Database opened by `build_consumer_runtime` is now closed on Runtime shutdown via a
+  `close_hook` (registered by the facade, not by the generic `Runtime.close()`), so a
+  consumer-built runtime no longer leaks its SQLite connection.
+- Added a driver-failure terminalization regression test: a raising driver durable-
+  terminalizes the run to FAILED, the failure log carries `run_id` via `extra` (no
+  secondary logging `TypeError`), and the public payload never exposes `private_cause`.
+
+### Changed
+- `MemoryQueryPort` / `MemoryWritePort` are marked `reserved` (declared but not yet wired
+  into the Runtime); consumers must not assume recall or working memory is active.
+- Release/CI hygiene: `ci.yml` now runs the full pytest suite plus scoped ruff/mypy;
+  `release.yml` gates publish on a same-file `test` job (full pytest + conformance) since
+  `needs` cannot reference a separate manual workflow; hardcoded version literals were
+  removed from `release-candidate-conformance.yml` and `verify_release_gate.sh` in favour
+  of the single `src/simple_harness/version.py` source.
+
+### Backward compatibility
+- `build_consumer_runtime`'s new `delivery_sinks` argument is optional; 0.1.3 consumers
+  build and run unchanged. `Runtime`/`build_runtime` gain an optional `close_hook` (default
+  `None`, no behaviour change).
+
 ## 0.1.3 — candidate
 
 ### Observability (post-release, 2026-08-19)

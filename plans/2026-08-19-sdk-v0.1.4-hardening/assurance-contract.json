@@ -1,0 +1,30 @@
+{
+  "profile": "standard",
+  "acceptance_ids": ["H-AC-1", "H-AC-2", "H-AC-3", "H-AC-4", "H-AC-5", "H-AC-6", "H-AC-7", "H-AC-8"],
+  "protected_assets": [
+    {"id": "ASSET-1", "description": "消费者公开 API 稳定性（0.1.3 → 0.1.4 不破坏既有 ConsumerRuntimePorts/Protocol/入口）"},
+    {"id": "ASSET-2", "description": "delivery 状态机完整性（不得再产生假 DELIVERED）"},
+    {"id": "ASSET-3", "description": "敏感信息不外泄（private_cause 不进对外结果与日志）"}
+  ],
+  "trusted_assumptions": [
+    {"id": "TRUST-1", "description": "消费者会显式注入 delivery sink，或接受未注入时的 fail-closed 行为"},
+    {"id": "TRUST-2", "description": "本机可构建 wheel + 建干净 venv（macOS ARM64）"},
+    {"id": "TRUST-3", "description": "CI 环境（ubuntu + Python 3.11）可跑全量 pytest"}
+  ],
+  "in_scope_failures": [
+    {"id": "FAIL-1", "description": "no-op sink 仍在生产路径产生假 DELIVERED"},
+    {"id": "FAIL-2", "description": "ToolContext 仍为空字典，consumer 拿不到 run/session 关联"},
+    {"id": "FAIL-3", "description": "数据库关闭泄漏（__aexit__ 后连接未释放）"},
+    {"id": "FAIL-4", "description": "driver 异常仍无法 durable terminalize（logger 二次异常回归）"},
+    {"id": "FAIL-5", "description": "向后兼容破坏（0.1.3 消费者代码升级后跑不通）"},
+    {"id": "FAIL-6", "description": "workflow 中仍有硬编码旧版本字面量"}
+  ],
+  "in_scope_adversaries": [],
+  "out_of_scope_conditions": [
+    {"id": "OOS-1", "description": "宿主 simple_harness re-vendor（C1 slice）"},
+    {"id": "OOS-2", "description": "全项目 strict mypy / 完整 ruff 规则集（渐进引入，后续扩大）"},
+    {"id": "OOS-3", "description": "Memory Port 的实际实现与接线（本 slice 只标 reserved）"},
+    {"id": "OOS-4", "description": "byte-for-byte reproducible build（本 slice 只明确 BUILD_INFO 时间字段边界）"}
+  ],
+  "maximum_acceptable_impact": "消费者集成失败需人工排查；不得造成假投递、数据库连接泄漏或敏感信息泄露"
+}

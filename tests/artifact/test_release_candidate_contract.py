@@ -80,7 +80,7 @@ def test_version_has_one_runtime_authority() -> None:
     assert 'dynamic = ["version"]' in pyproject
     assert 'path = "src/simple_harness/version.py"' in pyproject
     assert 'from .version import __version__' in package
-    assert '__version__ = "0.1.1"' in version
+    assert '__version__ = "' in version
     build_script = (
         ROOT / "scripts/build/reproducibility.py"
     ).read_text(encoding="utf-8")
@@ -118,6 +118,7 @@ def test_build_candidate_generates_a_consistent_attestation_chain(
     repository = _clean_project(tmp_path)
     output = tmp_path / "candidate"
     monkeypatch.setattr(module, "ROOT", repository)
+    monkeypatch.setattr(module, "VERSION", "0.1.1")
 
     manifest = module.build_candidate(output, planned_tag="v0.1.1")
 
@@ -150,6 +151,7 @@ def test_build_candidate_rejects_untracked_build_input_and_wrong_tag(
     module = _candidate_module()
     repository = _clean_project(tmp_path)
     monkeypatch.setattr(module, "ROOT", repository)
+    monkeypatch.setattr(module, "VERSION", "0.1.1")
 
     with pytest.raises(RuntimeError, match="planned_tag must be exactly v0.1.1"):
         module.build_candidate(tmp_path / "wrong-tag", planned_tag="v9.9.9")
@@ -168,6 +170,7 @@ def test_build_candidate_rejects_existing_tag_on_another_commit(
     module = _candidate_module()
     repository = _clean_project(tmp_path)
     monkeypatch.setattr(module, "ROOT", repository)
+    monkeypatch.setattr(module, "VERSION", "0.1.1")
     _git(repository, "tag", "v0.1.1")
     notice = repository / "NOTICE"
     notice.write_text("Simple Harness SDK candidate\n", encoding="utf-8")

@@ -723,7 +723,9 @@ class Runtime:
         workflow_runner: object | None,
         ports: RuntimePorts,
         root_profile_key: str,
+        close_hook: Callable[[], None] | None = None,
     ) -> None:
+        self._close_hook = close_hook
         if WORKFLOW_DRIVER_KIND in drivers:
             raise ValueError("workflow is an SDK-reserved driver key")
         workflow_profiles = tuple(
@@ -947,6 +949,8 @@ class Runtime:
                 return
             if self._state is RuntimeLifecycleState.NEW:
                 self._state = RuntimeLifecycleState.CLOSED
+                if self._close_hook is not None:
+                    self._close_hook()
                 return
             self._state = RuntimeLifecycleState.CLOSING
             self._closing = True
@@ -983,6 +987,8 @@ class Runtime:
         self._workflow_start_dispatches.clear()
         self._workflow_recovery_work.clear()
         self._started = False
+        if self._close_hook is not None:
+            self._close_hook()
         async with self._lifecycle_lock:
             self._state = RuntimeLifecycleState.CLOSED
 
@@ -1864,6 +1870,7 @@ def build_runtime(
     root_profile_key: str = ROOT_PROFILE_KEY,
     *,
     workflow_runner: object | None = None,
+    close_hook: Callable[[], None] | None = None,
 ) -> Runtime:
     """Build a Runtime with one fixed root Profile and no classifier path."""
 
@@ -1894,6 +1901,7 @@ def build_runtime(
         workflow_runner=workflow_runner,
         ports=ports,
         root_profile_key=ROOT_PROFILE_KEY,
+        close_hook=close_hook,
     )
 
 

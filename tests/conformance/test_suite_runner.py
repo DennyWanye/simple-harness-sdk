@@ -17,6 +17,7 @@ from simple_harness.testing import (
     run_conformance,
 )
 from simple_harness.testing.suites import CASES_BY_SUITE
+from simple_harness import __version__
 
 
 ARTIFACT_SHA = "a" * 64
@@ -222,7 +223,7 @@ def test_report_json_is_fixed_metadata_and_redacted() -> None:
     rendered = json.dumps(payload, sort_keys=True)
 
     assert payload["protocol_version"] == PROTOCOL_VERSION
-    assert payload["sdk_version"] == "0.1.1"
+    assert payload["sdk_version"] == __version__
     assert payload["host"] == {"name": "fixture-host", "version": "7.4.0"}
     assert payload["artifact_sha256"] == ARTIFACT_SHA
     assert payload["platform"]

@@ -72,7 +72,12 @@ jobs:
             PYTHON=.candidate-venv/bin/python
           fi
           uv pip install --python "$PYTHON" "${WHEEL}[testing]"
-          "$PYTHON" -I -c 'import simple_harness; assert simple_harness.__version__ == "0.1.1"'
+          EXPECTED_VERSION="$(python -c 'import runpy; print(runpy.run_path("src/simple_harness/version.py")["__version__"])')"
+          "$PYTHON" -I - "$EXPECTED_VERSION" <<'PY'
+          import sys
+          import simple_harness
+          assert simple_harness.__version__ == sys.argv[1], (simple_harness.__version__, sys.argv[1])
+          PY
       - name: Verify import purity and SQLite schema reopen
         shell: bash
         run: |

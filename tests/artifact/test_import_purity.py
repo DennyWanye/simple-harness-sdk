@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,9 @@ import textwrap
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+VERSION = str(
+    runpy.run_path(str(REPOSITORY_ROOT / "src/simple_harness/version.py"))["__version__"]
+)
 
 
 def test_import_has_no_host_or_runtime_side_effects(tmp_path: Path) -> None:
@@ -93,7 +97,7 @@ def test_import_has_no_host_or_runtime_side_effects(tmp_path: Path) -> None:
         text=True,
     )
     result = json.loads(completed.stdout)
-    assert result == {"status": "IMPORT_PURITY_PASS", "version": "0.1.1"}
+    assert result == {"status": "IMPORT_PURITY_PASS", "version": VERSION}
 
 
 def test_public_import_does_not_eagerly_load_forbidden_dependencies() -> None:

@@ -101,7 +101,12 @@ class DeliveryUnitOfWork(Protocol):
 
 
 class DeliveryDispatcher:
-    """Deliver one claimed item; sink failure only releases that item."""
+    """Deliver one claimed item; sink failure only releases that item.
+
+    An empty sink set is allowed and means no delivery is ever claimed:
+    `run_once` returns False and every delivery stays PENDING (fail-closed —
+    nothing is silently marked DELIVERED without a real sink).
+    """
 
     def __init__(
         self,
@@ -114,7 +119,7 @@ class DeliveryDispatcher:
     ) -> None:
         self._uow = uow
         self._sinks = dict(sinks)
-        if not self._sinks or any(not key.strip() for key in self._sinks):
+        if any(not key.strip() for key in self._sinks):
             raise ValueError("delivery sinks must have non-empty unique keys")
         self._clock = clock
         self._fault = fault

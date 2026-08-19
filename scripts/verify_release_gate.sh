@@ -18,7 +18,9 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-WHEEL="$REPO_ROOT/dist/simple_harness_sdk-0.1.3-py3-none-any.whl"
+VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$REPO_ROOT/src/simple_harness/version.py")"
+WHEEL_NAME="simple_harness_sdk-${VERSION}-py3-none-any.whl"
+WHEEL="$REPO_ROOT/dist/$WHEEL_NAME"
 SUMS="$REPO_ROOT/dist/SHA256SUMS"
 CONSUMER_DIR="$REPO_ROOT/examples/minimal-consumer"
 
@@ -53,7 +55,7 @@ find_python() {
 }
 
 # --- Step 1: wheel + SHA-256 -------------------------------------------------
-step "locate 0.1.3 wheel and compute SHA-256"
+step "locate ${VERSION} wheel and compute SHA-256"
 if [ ! -f "$WHEEL" ]; then
   fail "wheel missing: $WHEEL"
   say ""; say "RESULT: FAIL"; exit 1
@@ -62,9 +64,9 @@ SHA="$(shasum -a 256 "$WHEEL" | awk '{print $1}')"
 say "computed SHA-256: $SHA"
 
 step "cross-check SHA against dist/SHA256SUMS"
-EXPECTED="$(grep 'simple_harness_sdk-0.1.3-py3-none-any.whl' "$SUMS" | awk '{print $1}' | head -1)"
+EXPECTED="$(grep "$WHEEL_NAME" "$SUMS" | awk '{print $1}' | head -1)"
 if [ -z "$EXPECTED" ]; then
-  fail "no 0.1.3 wheel entry in dist/SHA256SUMS"
+  fail "no ${WHEEL_NAME} wheel entry in dist/SHA256SUMS"
 elif [ "$SHA" != "$EXPECTED" ]; then
   fail "wheel SHA mismatch (computed $SHA vs SHA256SUMS $EXPECTED)"
 else
@@ -86,7 +88,7 @@ else
 fi
 VENV_PY="$WORK/venv/bin/python"
 
-step "install 0.1.3 wheel"
+step "install ${VERSION} wheel"
 if "$VENV_PY" -m pip install -q "$WHEEL"; then
   pass "install"
 else

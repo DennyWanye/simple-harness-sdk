@@ -6,16 +6,18 @@
 This module provides the missing link between external consumer implementations
 and the internal SDK kernel, making it easy for external projects to integrate
 Simple Harness SDK.
+
+``build_consumer_runtime`` is a demo/basic facade; production consumers should
+assemble ``RuntimePorts`` directly.
 """
 
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
 
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
-from simple_harness.execution.delivery import DeliveryDispatcher
+from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySink
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.sqlite import Database
 from simple_harness.execution.sqlite.uow import SqliteExecutionUnitOfWork
@@ -41,13 +43,14 @@ from simple_harness.tools.reconciliation import (
 
 from .context import SqliteContextPort
 from .drivers import build_react_driver
-from .kernel import Runtime, RuntimePorts, RuntimeProfile, RunClient, build_runtime
+from .kernel import Runtime, RuntimePorts, RuntimeProfile, build_runtime
 from .ports import (
     AuthorizationPort,
-    AuthorizationRequest as ConsumerAuthRequest,
-    AuthorizationResult as ConsumerAuthResult,
     ProviderPort,
     ToolExecutorPort,
+)
+from .ports import (
+    AuthorizationRequest as ConsumerAuthRequest,
 )
 from .termination import TerminationLimits
 
@@ -200,7 +203,12 @@ class _ConsumerToolExecutorAdapter:
                 async def handler(arguments: dict, context):  # type: ignore[no-untyped-def]
                     from simple_harness.tools import ToolCall
                     call = ToolCall(context.call_id, tool_name, arguments)
-                    return await self._port.execute(call, {})
+                    tool_ctx = {
+                        "run_id": str(context.run_id),
+                        "request_id": str(context.request_id),
+                        "call_id": str(context.call_id) if context.call_id else None,
+                    }
+                    return await self._port.execute(call, tool_ctx)
                 return handler
 
             tool = FunctionTool(
@@ -209,7 +217,7 @@ class _ConsumerToolExecutorAdapter:
             )
             tools.append(tool)
 
-        return ToolRegistry(tuple(tools))
+        return ToolRegistry(tuple(tools))  # type: ignore[arg-type]
 
 
 class _DefaultToolReconciliation:
@@ -246,21 +254,24 @@ class _DefaultToolCatalog:
         return 1
 
 
-class _DefaultDeliverySink:
-    """Default delivery sink (no-op)."""
-
-    async def deliver(self, payload, *, idempotency_key):  # type: ignore[no-untyped-def]
-        pass  # Consumer runtime doesn't need delivery
-
-
-async def build_consumer_runtime(ports: ConsumerRuntimePorts) -> Runtime:
+async def build_consumer_runtime(
+    ports: ConsumerRuntimePorts,
+    delivery_sinks: Mapping[str, DeliverySink] | None = None,
+) -> Runtime:
     """Build a Runtime from consumer-provided simple ports.
 
-    This is the main entry point for external consumers. It bridges the simple
-    ConsumerRuntimePorts interface to the complex internal RuntimePorts interface.
+    This is a demo/basic facade for external consumers. It bridges the simple
+    ConsumerRuntimePorts interface to the complex internal RuntimePorts interface,
+    but does NOT provide production-grade delivery, memory, or real pricing (the
+    price estimator is a zero-cost stub and reconciliation is a no-op). Production
+    consumers should assemble ``RuntimePorts`` directly.
 
     Args:
         ports: Consumer port implementations
+        delivery_sinks: Optional mapping of sink kind → DeliverySink. When
+            omitted, no delivery sink is registered and deliveries stay PENDING
+            (nothing is silently marked DELIVERED). A no-op sink is available
+            in ``simple_harness.testing`` for tests only.
 
     Returns:
         Ready-to-use Runtime instance. Use RunClient(runtime) to start runs.
@@ -330,7 +341,7 @@ async def build_consumer_runtime(ports: ConsumerRuntimePorts) -> Runtime:
         tools=effects,
         authorization=auth_adapter,
         context=context,
-        delivery=DeliveryDispatcher(uow, {"consumer": _DefaultDeliverySink()}),
+        delivery=DeliveryDispatcher(uow, dict(delivery_sinks or {})),
         tool_reconciliation=tool_reconciliation,
         reconciliation=_DefaultRuntimeReconciliation(),
         provider_reconciliation=_DefaultProviderReconciliation(),
@@ -351,10 +362,11 @@ async def build_consumer_runtime(ports: ConsumerRuntimePorts) -> Runtime:
 
     # Build runtime
     runtime = build_runtime(
-        uow=uow,
+        uow=uow,  # type: ignore[arg-type]
         profiles={"agent.general": RuntimeProfile("agent.general", "react")},
         drivers={"react": driver},
         ports=runtime_ports,
+        close_hook=uow.close,
     )
 
     return runtime

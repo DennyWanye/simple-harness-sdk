@@ -496,6 +496,10 @@ class SqliteExecutionUnitOfWork:
         self.database = database
         self.workflow_fault = workflow_fault
 
+    def close(self) -> None:
+        """Close the owned database (idempotent)."""
+        self.database.close()
+
     @property
     def transaction_owner(self) -> object:
         return self.database

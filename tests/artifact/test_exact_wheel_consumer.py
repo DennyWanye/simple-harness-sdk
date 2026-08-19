@@ -6,11 +6,18 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import textwrap
 
 from conftest import BuildArtifacts
+
+VERSION = str(
+    runpy.run_path(
+        str(Path(__file__).resolve().parents[2] / "src/simple_harness/version.py")
+    )["__version__"]
+)
 
 
 def _consumer_files(root: Path) -> None:
@@ -609,7 +616,7 @@ def test_exact_wheel_clean_python311_cli_and_pytest_protocol(
     )
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["status"] == "pass"
-    assert payload["sdk_version"] == "0.1.1"
+    assert payload["sdk_version"] == VERSION
     assert payload["artifact_sha256"] == wheel_sha256
     assert {case["suite"] for case in payload["cases"]} == {
         "provider",

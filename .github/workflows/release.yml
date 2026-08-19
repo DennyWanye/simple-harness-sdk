@@ -114,8 +114,32 @@ jobs:
 
           echo "✓ SDK imports and CLI verified"
 
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist
+      - name: Run full test suite
+        run: uv run --frozen --group dev pytest -q
+      - name: Run conformance against the built wheel
+        run: |
+          WHEEL="$(find dist -name '*.whl' -print -quit)"
+          SHA="$(sha256sum "$WHEEL" | awk '{print $1}')"
+          uv venv .release-test-venv --python 3.11
+          uv pip install --python .release-test-venv/bin/python "$WHEEL[testing]"
+          PYTHONPATH=examples/minimal-consumer .release-test-venv/bin/python -m simple_harness.testing \
+            --host conformance_host:build_host --suite provider,tool --artifact-sha256 "$SHA"
+
   publish-github-release:
-    needs: [verify, test-import]
+    needs: [verify, test-import, test]
     runs-on: ubuntu-latest
     environment: release
     steps:
