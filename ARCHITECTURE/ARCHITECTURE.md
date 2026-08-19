@@ -1,9 +1,10 @@
-<!-- last-calibrated: 577ed87bdc6147f5bc7e6c7e647212bd99302e60 -->
+<!-- last-calibrated: 3c2f463 -->
 
 # Simple Harness SDK — 架构基线（H1 生产化受影响模块）
 
 > 本文件记录 H1 slice（v0.1.4 发布阻断收尾）涉及的模块生产事实。非全仓架构；其余模块见 `docs/`。
-> 校准锚点：`577ed87bdc6147f5bc7e6c7e647212bd99302e60`（logger 二次异常已修复）。
+> 校准锚点：`3c2f463`（H1 已提交，8 条 H-AC 全部实现，全量 pytest 1223 passed / 2 skipped）。
+> 下列"已知缺陷"在 0.1.4 已全部修复，仅保留缺陷描述与修复方式作为历史对照。
 
 ## 1. Consumer Adapter 层（`runtime/consumer_adapter.py`）
 
