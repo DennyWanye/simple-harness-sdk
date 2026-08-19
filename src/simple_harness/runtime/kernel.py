@@ -1452,8 +1452,7 @@ class Runtime:
             # 但必须落到日志供 host 排障；否则 driver 失败完全不可追踪。
             logger.exception(
                 "sdk_run_driver_failed",
-                run_id=run_id,
-                exc_info=(type(error), error, error.__traceback__),
+                extra={"run_id": str(run_id)},
             )
             current = self._uow.read_run(run_id)
             if current is not None and current.state not in {

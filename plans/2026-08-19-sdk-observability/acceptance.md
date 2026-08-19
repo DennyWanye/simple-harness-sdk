@@ -28,7 +28,7 @@
 | L-AC-2 | harness Provider 调用日志 | 每次 provider 调用打 `provider.invoked`（model、token 用量、耗时）；当 `response.model != target.model` 时打 `provider.usage_untrusted`（声明 model vs 实际 model）；当 charge 为 unknown 时打 `provider.charge_unknown` | 必须 |
 | L-AC-3 | harness 工具调用+授权日志 | 工具调用打 `tool.invoked`（name、参数脱敏）；授权通过打 `tool.authorized`、拒绝打 `tool.denied`（reason）；effect 落账打 `tool.effect_settled` | 必须 |
 | L-AC-4 | harness 恢复对账+预算日志 | 重启恢复打 `reconcile.recovered`（恢复条数）；unknown settle 打 `reconcile.unknown_settled`；预算拒绝打 `budget.refused_on_unknown` / 超限打 `budget.exceeded` | 必须 |
-| L-AC-5 | memory recall/embed 补漏 | `memory.recall` 打 query、命中数、RRF 各路贡献、命中来源（facts/twin/vector/fts）；`memory.embed` 打维度、是否走 hash fallback | 必须 |
+| L-AC-5 | memory recall/embed 补漏 | `memory.recall` 打 query（截断 80）、命中数、RRF 各路贡献、命中来源（vec/fts/facts/entity）；embedder 选择与 hash 回退由既有 `memory.embedder_selected`（含 dim）与 `memory.embedder_fallback_to_hash` 观测（本 program 补齐 bge 分支的 dim 字段并加测试锁） | 必须 |
 | L-AC-6 | 约定 + 防退化 | event 命名遵循 `<模块>.<动作>`；有一个测试断言"L-AC-1..5 的关键路径在源码里有对应日志点"，防止未来删日志而测试不知 | 必须 |
 | L-AC-7 | 不改变行为 | 两个 SDK 全量测试回归 0 新增失败；日志是可观测性纯新增，不改变任何公开 API/协议/持久化状态/依赖 | 必须 |
 

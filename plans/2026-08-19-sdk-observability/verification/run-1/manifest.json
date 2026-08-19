@@ -11,7 +11,7 @@
   "release_unit": {"slice_id": "slice-1-sdk-observability", "parent_program": "sdk-observability", "scope_hash": "见 acceptance.md（L-AC-1..7 共 7 条 MUST）"},
   "executor_engine": "claude",
   "scenarios": [
-    {"scenario_id": "L-run-lifecycle", "ac_id": "L-AC-1", "obligation_id": "TO-L1", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["src/simple_harness/runtime/kernel.py"], "terminal_expectation": "caplog 捕获 run.start + run.terminal 且带 run_id"},
+    {"scenario_id": "L-run-lifecycle", "ac_id": "L-AC-1", "obligation_id": "TO-L1", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["src/simple_harness/runtime/kernel.py"], "terminal_expectation": "caplog 捕获 run.start + run.complete（或 run.fail）且带 run_id"},
     {"scenario_id": "L-provider", "ac_id": "L-AC-2", "obligation_id": "TO-L2", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["src/simple_harness/execution/dispatch.py"], "terminal_expectation": "model 不匹配时 provider.usage_untrusted 出现"},
     {"scenario_id": "L-tool", "ac_id": "L-AC-3", "obligation_id": "TO-L3", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["src/simple_harness/tools/executor.py"], "terminal_expectation": "tool.invoked + tool.authorized 出现"},
     {"scenario_id": "L-budget", "ac_id": "L-AC-4", "obligation_id": "TO-L4", "kind": "script", "required": true, "gate_type": "positive-value", "impact_paths": ["src/simple_harness/execution/budget.py"], "terminal_expectation": "budget.refused_on_unknown 出现"},
