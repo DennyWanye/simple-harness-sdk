@@ -3,7 +3,7 @@
   "source_request_text": "完成评审文档 P0：harness v0.1.4 发布阻断收尾（8 条 H-AC：delivery 假投递/ToolContext/facade 边界/DB 生命周期/logger 回归/CI 全量/版本单一来源/Memory reserved）",
   "acceptance_file": "acceptance.md",
   "baseline": {
-    "head": "ba01c1182357f93ff8de1e2f8a50ca528c2c7b0f",
+    "head": "789dc3a832d54814c5c334b77a07cec787e550dc",
     "dirty_patch_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
   },
   "scenarios": [
