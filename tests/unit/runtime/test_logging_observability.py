@@ -31,6 +31,12 @@ from simple_harness.contracts import (
     RequestId,
     RunId,
 )
+from simple_harness.execution.budget import (
+    BudgetExceededError,
+    BudgetPolicy,
+    BudgetSnapshot,
+    BudgetUnknownError,
+)
 from simple_harness.execution.uow import RunState
 from simple_harness.providers import (
     ProviderRequest,
@@ -165,6 +171,24 @@ def test_tool_logs_invoked_authorized_settled(caplog) -> None:
     assert any(r.message == "tool.invoked" for r in caplog.records)
     assert any(r.message == "tool.authorized" for r in caplog.records)
     assert any(r.message == "tool.effect_settled" for r in caplog.records)
+
+
+def test_budget_refused_on_unknown_logged(caplog) -> None:
+    caplog.set_level(logging.WARNING, logger="simple_harness.execution.budget")
+    policy = BudgetPolicy()  # refuse_on_unknown defaults to True
+    snapshot = BudgetSnapshot(has_unknown_charge=True)
+    with pytest.raises(BudgetUnknownError):
+        policy.authorize(snapshot, reservation_micros=None)
+    assert any(r.message == "budget.refused_on_unknown" for r in caplog.records)
+
+
+def test_budget_exceeded_logged(caplog) -> None:
+    caplog.set_level(logging.WARNING, logger="simple_harness.execution.budget")
+    policy = BudgetPolicy(hard_cap_micros=100)
+    snapshot = BudgetSnapshot(committed_micros=100)
+    with pytest.raises(BudgetExceededError):
+        policy.authorize(snapshot, reservation_micros=1)
+    assert any(r.message == "budget.exceeded" for r in caplog.records)
 
 
 # --- AST existence tests -----------------------------------------------------
