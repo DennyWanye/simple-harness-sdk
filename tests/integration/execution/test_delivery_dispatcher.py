@@ -99,6 +99,15 @@ def test_sink_failure_releases_only_delivery_and_never_reopens_run() -> None:
     assert [call[1] for call in failing.calls] == ["terminal:run-1", "terminal:run-1"]
 
 
+def test_empty_sinks_are_allowed_and_never_mark_delivered() -> None:
+    uow = MemoryUow()
+    # An empty sink set is valid (fail-closed): nothing is silently DELIVERED.
+    dispatcher = DeliveryDispatcher(uow, {}, clock=lambda: 5.0)
+    assert asyncio.run(dispatcher.run_once()) is True
+    assert uow.record.state is DeliveryState.PENDING
+    assert "complete" not in uow.operations
+
+
 def test_sink_success_before_settle_crash_retries_same_key_after_reopen(
     tmp_path,
 ) -> None:

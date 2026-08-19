@@ -1,0 +1,31 @@
+{
+  "run_id": "h1-0.1.4-hardening",
+  "source_request_text": "完成评审文档 P0：harness v0.1.4 发布阻断收尾（8 条 H-AC：delivery 假投递/ToolContext/facade 边界/DB 生命周期/logger 回归/CI 全量/版本单一来源/Memory reserved）",
+  "acceptance_file": "acceptance.md",
+  "baseline": {
+    "head": "ba01c1182357f93ff8de1e2f8a50ca528c2c7b0f",
+    "dirty_patch_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "scenarios": [
+    {"scenario_id": "full-suite", "required": true, "ui": false}
+  ],
+  "executor_engine": "claude-fable-5",
+  "auditor_engine": "claude-fable-5",
+  "applicability": {
+    "input_sensitive": {
+      "value": false,
+      "decided_by": "agent",
+      "rationale": "库 API 硬化，验证走确定性 mock provider + conformance，非 LLM 语义功能"
+    },
+    "llm_payload_driven": {
+      "value": false,
+      "decided_by": "agent",
+      "rationale": "无 LLM 结构化载荷驱动端侧状态机路径"
+    },
+    "stateful_init": {
+      "value": false,
+      "decided_by": "agent",
+      "rationale": "无异步注册服务/登录态依赖，无冷启动场景"
+    }
+  }
+}

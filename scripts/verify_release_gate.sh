@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# verify_release_gate.sh — harness SDK release gate for the dist/ 0.1.3 wheel.
+# verify_release_gate.sh — harness SDK release gate for the dist/ wheel.
 #
 # Steps:
-#   1. Locate dist/simple_harness_sdk-0.1.3-py3-none-any.whl, compute its
+#   1. Locate the dist/ wheel (version from src/simple_harness/version.py), compute its
 #      SHA-256, and cross-check it against dist/SHA256SUMS (integrity anchor).
 #   2. Create a clean venv with Python >= 3.11 and install the wheel.
 #   3. Run examples/minimal-consumer/demo.py (must reach COMPLETED, exit 0).

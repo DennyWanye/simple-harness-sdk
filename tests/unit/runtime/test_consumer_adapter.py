@@ -62,9 +62,11 @@ class _EchoToolExecutor:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
+        self.contexts: list[dict[str, Any]] = []
 
     async def execute(self, call: ToolCall, context: dict[str, Any]) -> ToolResult:
         self.calls.append((call.name, dict(call.arguments)))
+        self.contexts.append(context)
         return ToolResult.succeeded(call.call_id, {"ok": True})
 
 
@@ -203,6 +205,54 @@ def test_build_consumer_runtime_closes_database_on_exit() -> None:
         assert reopened.connection.execute("SELECT 1").fetchone()[0] == 1
     finally:
         reopened.close()
+
+
+def test_build_consumer_runtime_closes_database_without_start() -> None:
+    import asyncio
+
+    db = Path(tempfile.mkdtemp(prefix="consumer-test-")) / "execution.db"
+    ports = ConsumerRuntimePorts(
+        provider=_calculator_provider("gpt-4o"),
+        tool_executor=_EchoToolExecutor(),
+        authorization=_AllowAll(),
+        database_path=str(db),
+        tool_names=("calculate",),
+        max_turns=10,
+        max_tool_calls=20,
+        model="gpt-4o",
+    )
+
+    async def _go() -> None:
+        runtime = await build_consumer_runtime(ports)
+        await runtime.close()  # NEW state: never started
+
+    asyncio.run(_go())
+
+    reopened = Database.open(db)
+    try:
+        assert reopened.connection.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        reopened.close()
+
+
+def test_tool_executor_receives_real_context() -> None:
+    db = Path(tempfile.mkdtemp(prefix="consumer-test-")) / "execution.db"
+    executor = _EchoToolExecutor()
+    ports = ConsumerRuntimePorts(
+        provider=_calculator_provider("gpt-4o"),
+        tool_executor=executor,
+        authorization=_AllowAll(),
+        database_path=str(db),
+        tool_names=("calculate",),
+        max_turns=10,
+        max_tool_calls=20,
+        model="gpt-4o",
+    )
+    state = _run_once(ports)
+    assert state is RunState.COMPLETED
+    assert executor.contexts
+    assert executor.contexts[0].get("run_id")
+    assert executor.contexts[0].get("call_id")
 
 
 def test_tool_with_schema_accepts_arguments() -> None:
