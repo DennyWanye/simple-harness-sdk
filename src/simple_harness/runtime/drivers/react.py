@@ -62,7 +62,14 @@ class ReActDriver:
     ) -> DriverResult:
         if context is not invocation.services.context:
             raise ValueError("Runtime context service mismatch")
-        if self.provider_budget_fingerprint is not None and (
+        expected_budget = invocation.start.provider_budget_fingerprint
+        if expected_budget is not None:
+            actual_budget = invocation.services.provider.budget_policy_fingerprint_for(
+                RunId(invocation.run.run_id)
+            )
+            if actual_budget != expected_budget:
+                raise ValueError("Provider budget policy differs from frozen Run binding")
+        elif self.provider_budget_fingerprint is not None and (
             getattr(invocation.services.provider, "budget_policy_fingerprint", None)
             != self.provider_budget_fingerprint
         ):

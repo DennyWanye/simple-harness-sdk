@@ -9,6 +9,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
 from simple_harness.contracts import FrozenJsonValue, HarnessError, RunId, thaw_json
@@ -65,6 +66,27 @@ class ProviderInvocationUnitOfWork(Protocol):
         budget_policy: BudgetPolicy,
         execution_lease: ExecutionLease,
     ) -> ProviderInvocationRecord: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderBinding:
+    """Immutable physical Provider and budget authority for one Run."""
+
+    provider: Provider
+    estimator: FrozenPriceEstimator | None
+    budget_policy: BudgetPolicy
+
+    def __post_init__(self) -> None:
+        if self.estimator is not None:
+            self.estimator.bind(self.provider.target)
+
+    @property
+    def budget_fingerprint(self) -> str:
+        return budget_policy_fingerprint(self.budget_policy, self.estimator)
+
+
+class ProviderBindingResolver(Protocol):
+    def resolve(self, run_id: RunId) -> ProviderBinding: ...
 
     def read_provider_invocation(
         self, invocation_id: str
@@ -165,22 +187,44 @@ class ProviderInvocationCoordinator:
         self,
         *,
         uow: ProviderInvocationUnitOfWork,
-        provider: Provider,
-        budget_policy: BudgetPolicy,
-        estimator: FrozenPriceEstimator | None,
+        provider: Provider | None = None,
+        budget_policy: BudgetPolicy | None = None,
+        estimator: FrozenPriceEstimator | None = None,
+        resolver: ProviderBindingResolver | None = None,
         clock=time.time,
     ) -> None:
         self._uow = uow
-        self._provider = provider
-        self._budget_policy = budget_policy
-        self._estimator = estimator
+        if resolver is None:
+            if provider is None or budget_policy is None:
+                raise TypeError("provider and budget_policy are required without resolver")
+            self._legacy_binding: ProviderBinding | None = ProviderBinding(
+                provider, estimator, budget_policy
+            )
+        else:
+            if provider is not None or budget_policy is not None or estimator is not None:
+                raise TypeError("resolver is mutually exclusive with fixed authority")
+            self._legacy_binding = None
+        self._resolver = resolver
         self._clock = clock
-        if estimator is not None:
-            estimator.bind(provider.target)
+
+    def resolve(self, run_id: RunId) -> ProviderBinding:
+        binding = (
+            self._legacy_binding
+            if self._resolver is None
+            else self._resolver.resolve(run_id)
+        )
+        if not isinstance(binding, ProviderBinding):
+            raise TypeError("provider resolver must return ProviderBinding")
+        return binding
+
+    def budget_policy_fingerprint_for(self, run_id: RunId) -> str:
+        return self.resolve(run_id).budget_fingerprint
 
     @property
     def budget_policy_fingerprint(self) -> str:
-        return budget_policy_fingerprint(self._budget_policy, self._estimator)
+        if self._legacy_binding is None:
+            raise RuntimeError("per-Run provider authority has no global fingerprint")
+        return self._legacy_binding.budget_fingerprint
 
     async def prepare_claim(
         self,
@@ -188,6 +232,21 @@ class ProviderInvocationCoordinator:
         request: ProviderRequest,
         *,
         execution_lease: ExecutionLease,
+    ) -> ProviderInvocationRecord:
+        return await self._prepare_claim_with_binding(
+            run_id,
+            request,
+            execution_lease=execution_lease,
+            binding=self.resolve(run_id),
+        )
+
+    async def _prepare_claim_with_binding(
+        self,
+        run_id: RunId,
+        request: ProviderRequest,
+        *,
+        execution_lease: ExecutionLease,
+        binding: ProviderBinding,
     ) -> ProviderInvocationRecord:
         if (
             execution_lease.run_id != run_id.value
@@ -200,20 +259,20 @@ class ProviderInvocationCoordinator:
         invocation_id = provider_invocation_id(run_id, request.request_id)
         reservation = (
             BudgetCharge.unknown()
-            if self._estimator is None
-            else self._estimator.estimate_upper_bound(request)
+            if binding.estimator is None
+            else binding.estimator.estimate_upper_bound(request)
         )
         record = ProviderInvocationRecord.claimed(
             invocation_id=invocation_id,
             run_id=run_id,
             request_id=request.request_id,
             request_fingerprint=fingerprint,
-            target=self._provider.target,
+            target=binding.provider.target,
             estimator_snapshot=(
-                None if self._estimator is None else self._estimator.snapshot_json()
+                None if binding.estimator is None else binding.estimator.snapshot_json()
             ),
             estimator_digest=(
-                None if self._estimator is None else self._estimator.snapshot_digest
+                None if binding.estimator is None else binding.estimator.snapshot_digest
             ),
             reservation=reservation,
             claimed_at=self._clock(),
@@ -221,14 +280,14 @@ class ProviderInvocationCoordinator:
         )
         claimed = self._uow.claim_provider_invocation(
             record,
-            budget_policy=self._budget_policy,
+            budget_policy=binding.budget_policy,
             execution_lease=execution_lease,
         )
         if (
             claimed.run_id != run_id
             or claimed.request_id != request.request_id
             or claimed.request_fingerprint != fingerprint
-            or claimed.target != self._provider.target
+            or claimed.target != binding.provider.target
             or claimed.target_digest != record.target_digest
             or claimed.estimator_digest != record.estimator_digest
         ):
@@ -258,8 +317,12 @@ class ProviderInvocationCoordinator:
             raise ProviderInvocationConflictError(
                 "Provider invocation requires the canonical Run lease."
             )
-        record = await self.prepare_claim(
-            run_id, request, execution_lease=execution_lease
+        binding = self.resolve(run_id)
+        record = await self._prepare_claim_with_binding(
+            run_id,
+            request,
+            execution_lease=execution_lease,
+            binding=binding,
         )
         if record.state is ProviderInvocationState.SUCCEEDED:
             if record.response_json is None:
@@ -306,7 +369,7 @@ class ProviderInvocationCoordinator:
             raise
 
         try:
-            response = await self._provider.invoke(request, cancel=cancel)
+            response = await binding.provider.invoke(request, cancel=cancel)
         except _DEFINITE_PROVIDER_FAILURES as exc:
             failed = handed_off.settle_failed(
                 error_code=str(exc.code),
@@ -328,7 +391,9 @@ class ProviderInvocationCoordinator:
             )
             raise ProviderInvocationUnknownError(unknown) from exc
 
-        charge = self._response_charge(response, handed_off.budget_charge)
+        charge = self._response_charge(
+            response, handed_off.budget_charge, binding=binding
+        )
         usage_json = {
             "usage": (
                 None
@@ -384,21 +449,25 @@ class ProviderInvocationCoordinator:
         return response
 
     def _response_charge(
-        self, response: ProviderResponse, reservation: BudgetCharge
+        self,
+        response: ProviderResponse,
+        reservation: BudgetCharge,
+        *,
+        binding: ProviderBinding,
     ) -> BudgetCharge:
         if (
             response.usage is not None
-            and self._estimator is not None
-            and response.model == self._provider.target.model
+            and binding.estimator is not None
+            and response.model == binding.provider.target.model
         ):
-            return self._estimator.charge_usage(response.usage)
+            return binding.estimator.charge_usage(response.usage)
         if response.usage is None and not reservation.is_unknown:
             return reservation
         if response.usage is not None:
             logger.warning(
                 "provider.usage_untrusted",
                 extra={
-                    "target_model": self._provider.target.model,
+                    "target_model": binding.provider.target.model,
                     "response_model": response.model,
                 },
             )
@@ -544,6 +613,8 @@ class ProviderInvocationCoordinator:
 
 
 __all__ = (
+    "ProviderBinding",
+    "ProviderBindingResolver",
     "ProviderInvocationConflictError",
     "ProviderInvocationCoordinator",
     "ProviderInvocationFailedError",

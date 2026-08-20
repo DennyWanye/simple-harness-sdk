@@ -19,9 +19,9 @@ from simple_harness.contracts import (
     canonical_json,
     thaw_json,
 )
+from simple_harness.providers import ProviderRequest, ProviderTarget, ProviderUsage
 
 logger = logging.getLogger(__name__)
-from simple_harness.providers import ProviderRequest, ProviderTarget, ProviderUsage
 
 
 class BudgetChargeKind(StrEnum):
@@ -242,7 +242,11 @@ class FrozenPriceEstimator:
             "messages": [
                 {
                     "role": getattr(message.role, "value", str(message.role)),
-                    "content": message.content,
+                    "content": (
+                        message.content
+                        if isinstance(message.content, str)
+                        else [block.to_dict() for block in message.content]
+                    ),
                     "name": message.name,
                     "call_id": None
                     if message.call_id is None

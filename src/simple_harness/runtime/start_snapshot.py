@@ -33,6 +33,8 @@ class RunStart:
     turn_id: str
     input: Mapping[str, JsonValue]
     tool_catalog_generation: int
+    tool_catalog_fingerprint: str | None = None
+    provider_budget_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.execution_session_id, ExecutionSessionId):
@@ -54,6 +56,12 @@ class RunStart:
             or self.tool_catalog_generation < 1
         ):
             raise ValueError("tool_catalog_generation must be a positive integer")
+        for name in ("tool_catalog_fingerprint", "provider_budget_fingerprint"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, str) or len(value) != 64
+            ):
+                raise ValueError(f"{name} must be a SHA-256 digest or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +73,8 @@ class StartSnapshot:
     input: FrozenJsonValue
     workflow_admission: StartAdmissionRequest | None = None
     policy_fingerprint: str | None = None
+    tool_catalog_fingerprint: str | None = None
+    provider_budget_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if self.driver_kind == "workflow":
@@ -79,19 +89,27 @@ class StartSnapshot:
             or not self.policy_fingerprint.strip()
         ):
             raise ValueError("policy_fingerprint must be a non-empty string or None")
+        for name in ("tool_catalog_fingerprint", "provider_budget_fingerprint"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, str) or len(value) != 64
+            ):
+                raise ValueError(f"{name} must be a SHA-256 digest or None")
 
     def to_json(self) -> dict[str, JsonValue]:
         value = thaw_json(self.input)
         if not isinstance(value, dict):
             raise TypeError("start input must remain a JSON object")
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "profile_key": self.profile_key,
             "driver_kind": self.driver_kind,
             "turn_id": self.turn_id,
             "tool_catalog_generation": self.tool_catalog_generation,
             "input": value,
             "policy_fingerprint": self.policy_fingerprint,
+            "tool_catalog_fingerprint": self.tool_catalog_fingerprint,
+            "provider_budget_fingerprint": self.provider_budget_fingerprint,
             "workflow_admission": (
                 None
                 if self.workflow_admission is None
@@ -107,7 +125,7 @@ class StartSnapshot:
             and "start_input" in value
             and "workflow_name" in value
         )
-        if not legacy_workflow_snapshot and schema_version not in {1, 2, 3}:
+        if not legacy_workflow_snapshot and schema_version not in {1, 2, 3, 4}:
             raise ValueError("unsupported start snapshot schema")
         profile_key = value.get("profile_key")
         driver_kind = value.get("driver_kind")
@@ -153,9 +171,17 @@ class StartSnapshot:
             workflow_admission=admission,
             policy_fingerprint=(
                 value.get("policy_fingerprint")
-                if schema_version == 3
+                if schema_version in {3, 4}
                 else None
             ),
+            tool_catalog_fingerprint=(
+                value.get("tool_catalog_fingerprint") if schema_version == 4 else None
+            ),  # type: ignore[arg-type]
+            provider_budget_fingerprint=(
+                value.get("provider_budget_fingerprint")
+                if schema_version == 4
+                else None
+            ),  # type: ignore[arg-type]
         )
 
 
@@ -178,6 +204,8 @@ def bind_start_snapshot(
         input=freeze_json(input_value),
         workflow_admission=workflow_admission,
         policy_fingerprint=policy_fingerprint,
+        tool_catalog_fingerprint=start.tool_catalog_fingerprint,
+        provider_budget_fingerprint=start.provider_budget_fingerprint,
     )
 
 
