@@ -74,6 +74,8 @@ def test_settlement_and_projection_receipt_commit_atomically_and_cursor_is_stabl
         receipt = receipts[0]
         assert receipt.execution_session_id == "session-1"
         assert receipt.payload["state"] == "succeeded"  # type: ignore[index]
+        assert receipt.payload["handoff_attempt"] == 1  # type: ignore[index]
+        assert receipt.payload["target"]["model"] == "model-1"  # type: ignore[index]
 
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)

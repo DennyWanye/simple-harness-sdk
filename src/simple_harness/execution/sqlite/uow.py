@@ -16199,6 +16199,7 @@ def _insert_provider_projection_receipt(
         "run_id": record.run_id.value,
         "execution_session_id": str(session_row["execution_session_id"]),
         "request_id": record.request_id.value,
+        "handoff_attempt": record.handoff_attempt,
         "state": record.state.value,
         "target": {
             "provider_id": record.target.provider_id,
