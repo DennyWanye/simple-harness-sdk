@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
+from simple_harness.execution.context_authority import ToolCatalogSnapshot
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySink
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.sqlite import Database
@@ -252,6 +253,12 @@ class _DefaultToolCatalog:
 
     def current_generation(self) -> int:
         return 1
+
+    def resolve(
+        self, generation: int, content_fingerprint: str
+    ) -> ToolCatalogSnapshot | None:
+        del generation, content_fingerprint
+        return None
 
 
 async def build_consumer_runtime(

@@ -1,10 +1,23 @@
-<!-- last-calibrated: 617fa9f -->
+<!-- last-calibrated: 9b331f5 -->
 
-# Simple Harness SDK — 架构基线（v0.1.4 生产化）
+# Simple Harness SDK — 架构基线（v0.1.5 Context authority）
 
 > 本文件记录 H1 slice（v0.1.4 发布阻断收尾）涉及的模块生产事实。非全仓架构；其余模块见 `docs/`。
 > 校准锚点：`617fa9f`（H1 完成：8 条 H-AC 全部实现并 finalize PASS，receipt `c5f546cd`，全量 pytest 1226 passed / 2 skipped）。
 > 下列"已知缺陷"在 0.1.4 已全部修复，仅保留缺陷描述与修复方式作为历史对照。
+
+## 0.1.5 Context authority 当前事实（2026-08-21）
+
+- `Message.content` 是 `str | tuple[ContentBlock, ...]`；canonical JSON、StartSnapshot、
+  ReAct 恢复和 OpenAI serializer 保留结构，不允许通过 `str(list)` 降级。
+- `ProviderBindingResolver.resolve(run_id)` 一次性绑定每个 Run 的 Provider、可选 frozen
+  estimator 与预算策略；其 fingerprint 随 StartSnapshot 持久化并在恢复时校验。
+- SQLite schema v2 持久化不可变、内容寻址的 tool catalog generation。Runtime 按
+  generation + fingerprint 精确恢复；0.1.5 不执行 GC，因此 WAITING/restart 引用不会丢失。
+- Provider terminal settlement 与 `provider_projection_outbox` receipt 在同一事务提交；
+  reader 使用单调 `sequence` cursor，支持重启后幂等投影。
+- `deskpet_public_progress` 是可选公开进度元数据；缺失、空白或类型错误时只剥离该字段，
+  不阻断业务工具参数。8 MiB/block 与 16 MiB/Run 上限由产品 ingress 前置执行。
 
 ## 1. Consumer Adapter 层（`runtime/consumer_adapter.py`）
 

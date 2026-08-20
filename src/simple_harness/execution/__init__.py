@@ -9,6 +9,7 @@ from .context_authority import (
     ToolCatalogSnapshot,
     ToolCatalogStore,
 )
+from .dispatch import ProviderBinding, ProviderBindingResolver
 from .effects import (
     EffectConflictError,
     EffectRecord,
@@ -34,6 +35,8 @@ __all__ = (
     "EffectState",
     "EffectTransitionError",
     "EffectUnitOfWork",
+    "ProviderBinding",
+    "ProviderBindingResolver",
     "RunFenceLease",
     "RunFencePort",
     "StaleFenceError",

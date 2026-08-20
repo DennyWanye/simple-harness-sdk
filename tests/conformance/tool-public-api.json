@@ -20,6 +20,7 @@
     "LateToolResultError",
     "MalformedToolArgumentsError",
     "OutcomeParserPort",
+    "PUBLIC_PROGRESS_ARGUMENT",
     "PreparedToolEffect",
     "ReconciliationObservation",
     "ReconciliationState",
@@ -48,6 +49,7 @@
     "bind_authorization_receipts",
     "builtin_outcome_parser",
     "inventory_digest",
+    "normalize_public_progress_arguments",
     "parse_tool_outcome",
     "resource_digest",
     "sdk_authorization_receipt"

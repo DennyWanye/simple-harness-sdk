@@ -5,6 +5,33 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.1.5 — candidate
+
+**Focus:** Durable per-Run context authority for SDK-first product integration.
+
+### Added
+- Typed structured message content (`ContentBlock` / `MessageContent`) with canonical
+  persistence, StartSnapshot/ReAct recovery, and OpenAI-compatible serialization. Structured
+  content is never coerced through `str(list)`.
+- Nullable Provider usage dimensions for cached and reasoning tokens.
+- Atomic per-Run Provider resolution via `ProviderBindingResolver`, binding the physical
+  Provider, optional frozen estimator, budget policy, and restart-checkable fingerprint.
+- Immutable, content-addressed tool-catalog generations persisted in SQLite and resolved by
+  exact generation/fingerprint across WAITING and process restart.
+- A transactionally coupled Provider settlement projection outbox with stable cursor reads.
+- Optional `deskpet_public_progress` normalization; missing, blank, or wrong-type metadata is
+  stripped without blocking business tool arguments.
+
+### Changed
+- SQLite schema version is 2. Existing 0.1.4 databases migrate in place.
+- StartSnapshot schema version is 4 and remains backward-readable for schema versions 1–3.
+
+### Integration boundary
+- Product code remains responsible for enforcing the 8 MiB per-content-block and 16 MiB
+  aggregate-per-Run ingress limits before constructing SDK messages.
+- Catalog generations are retained indefinitely in 0.1.5; a future GC may delete them only
+  after every referencing Run is terminal.
+
 ## 0.1.4 — candidate
 
 **Focus:** Release-blocking hardening of the consumer facade and the release/CI pipeline.
