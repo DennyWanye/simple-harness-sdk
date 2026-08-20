@@ -25,6 +25,11 @@ from simple_harness.contracts import (
     thaw_json,
 )
 from simple_harness.execution.budget import BudgetCharge, BudgetPolicy, BudgetSnapshot
+from simple_harness.execution.context_authority import (
+    ProviderProjectionReceipt,
+    ToolCatalogSnapshot,
+    frozen_payload,
+)
 from simple_harness.execution.contracts.children import (
     AttachmentPolicy,
     ChildCommandRecord,
@@ -82,7 +87,7 @@ from simple_harness.execution.uow import (
     UnitOfWorkNotFound,
     WorkflowCheckpoint,
 )
-from simple_harness.providers import ProviderTarget
+from simple_harness.providers import ProviderTarget, ProviderToolSpec
 from simple_harness.tools.contracts import ToolOutcome, ToolResult
 from simple_harness.tools.schema import (
     ArgumentsValidationError,
@@ -5117,6 +5122,91 @@ class SqliteExecutionUnitOfWork:
                 (time.time(), lease.run_id.value, lease.owner_id, lease.epoch),
             )
 
+    def put_tool_catalog_snapshot(
+        self,
+        specs: Sequence[ProviderToolSpec],
+        *,
+        created_at: float | None = None,
+    ) -> ToolCatalogSnapshot:
+        ordered = tuple(specs)
+        if len({spec.name for spec in ordered}) != len(ordered):
+            raise ValueError("tool catalog contains duplicate names")
+        payload: JsonValue = [
+            {
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": _thaw_json(spec.parameters),
+            }
+            for spec in ordered
+        ]
+        encoded = canonical_json(payload)
+        fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
+        now = _time(time.time() if created_at is None else created_at)
+        with self.database.transaction() as connection:
+            connection.execute(
+                "INSERT INTO tool_catalog_snapshots(content_fingerprint,specs_json,created_at) "
+                "VALUES (?,?,?) ON CONFLICT(content_fingerprint) DO NOTHING",
+                (fingerprint, encoded, now),
+            )
+        snapshot = self.read_tool_catalog_snapshot(content_fingerprint=fingerprint)
+        assert snapshot is not None
+        return snapshot
+
+    def read_tool_catalog_snapshot(
+        self,
+        generation: int | None = None,
+        *,
+        content_fingerprint: str | None = None,
+    ) -> ToolCatalogSnapshot | None:
+        if (generation is None) == (content_fingerprint is None):
+            raise ValueError("provide exactly one catalog identity")
+        row = self.database.connection.execute(
+            "SELECT * FROM tool_catalog_snapshots WHERE "
+            + ("generation=?" if generation is not None else "content_fingerprint=?"),
+            (generation if generation is not None else content_fingerprint,),
+        ).fetchone()
+        if row is None:
+            return None
+        raw = json.loads(str(row["specs_json"]))
+        if not isinstance(raw, list):
+            raise RuntimeError("stored tool catalog is malformed")
+        specs = []
+        for item in raw:
+            if not isinstance(item, dict) or not isinstance(item.get("parameters"), dict):
+                raise RuntimeError("stored tool catalog spec is malformed")
+            specs.append(
+                ProviderToolSpec(
+                    str(item["name"]), str(item["description"]), item["parameters"]
+                )
+            )
+        return ToolCatalogSnapshot(
+            int(row["generation"]),
+            str(row["content_fingerprint"]),
+            tuple(specs),
+            float(row["created_at"]),
+        )
+
+    def current_tool_catalog_generation(self) -> int:
+        row = self.database.connection.execute(
+            "SELECT COALESCE(MAX(generation), 0) FROM tool_catalog_snapshots"
+        ).fetchone()
+        return int(row[0])
+
+    def list_provider_projection_receipts(
+        self,
+        *,
+        after_sequence: int = 0,
+        limit: int = 256,
+    ) -> tuple[ProviderProjectionReceipt, ...]:
+        if after_sequence < 0 or not 1 <= limit <= 10_000:
+            raise ValueError("invalid projection cursor or limit")
+        rows = self.database.connection.execute(
+            "SELECT * FROM provider_projection_outbox WHERE sequence>? "
+            "ORDER BY sequence LIMIT ?",
+            (after_sequence, limit),
+        ).fetchall()
+        return tuple(_provider_projection_receipt(row) for row in rows)
+
     def claim_provider_invocation(
         self,
         record: ProviderInvocationRecord,
@@ -5292,6 +5382,7 @@ class SqliteExecutionUnitOfWork:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("provider invocation settlement CAS failed")
+            _insert_provider_projection_receipt(connection, record)
         result = self.read_provider_invocation(record.invocation_id)
         assert result is not None
         return result
@@ -5427,6 +5518,14 @@ class SqliteExecutionUnitOfWork:
                 ).rowcount
                 if changed != 1:
                     raise UnitOfWorkConflict("Provider completed recovery CAS failed")
+                projected_row = connection.execute(
+                    "SELECT * FROM provider_invocations WHERE invocation_id=?",
+                    (record.invocation_id,),
+                ).fetchone()
+                assert projected_row is not None
+                _insert_provider_projection_receipt(
+                    connection, _provider_invocation_record(projected_row)
+                )
                 _fault(fault, "provider_reconciliation.ledger.after_write")
             connection.execute(
                 """
@@ -16080,6 +16179,68 @@ def _effect_record(row: sqlite3.Row) -> EffectRecord:
         call_ordinal=int(row["call_ordinal"]),
         handoff_attempt=int(row["handoff_attempt"]),
         rehandoff_count=int(row["rehandoff_count"]),
+    )
+
+
+def _insert_provider_projection_receipt(
+    connection: sqlite3.Connection, record: ProviderInvocationRecord
+) -> None:
+    session_row = connection.execute(
+        "SELECT execution_session_id FROM runs WHERE run_id=?", (record.run_id.value,)
+    ).fetchone()
+    if session_row is None:
+        raise UnitOfWorkNotFound(record.run_id.value)
+    payload: JsonValue = {
+        "invocation_id": record.invocation_id,
+        "invocation_version": record.version,
+        "run_id": record.run_id.value,
+        "execution_session_id": str(session_row["execution_session_id"]),
+        "request_id": record.request_id.value,
+        "state": record.state.value,
+        "target": {
+            "provider_id": record.target.provider_id,
+            "model": record.target.model,
+            "pricing_key": record.target.pricing_key,
+            "endpoint_identity": record.target.endpoint_identity,
+            "adapter_key": record.target.adapter_key,
+        },
+        "request_fingerprint": record.request_fingerprint,
+        "usage": None if record.usage_json is None else _thaw_json(record.usage_json),
+        "error_code": record.error_code,
+        "settled_at": record.settled_at,
+    }
+    encoded = canonical_json(payload)
+    payload_hash = hashlib.sha256(encoded.encode()).hexdigest()
+    connection.execute(
+        "INSERT INTO provider_projection_outbox("
+        "invocation_id,invocation_version,run_id,execution_session_id,request_id,"
+        "payload_json,payload_hash,created_at) VALUES (?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(invocation_id,invocation_version) DO NOTHING",
+        (
+            record.invocation_id,
+            record.version,
+            record.run_id.value,
+            str(session_row["execution_session_id"]),
+            record.request_id.value,
+            encoded,
+            payload_hash,
+            record.settled_at if record.settled_at is not None else record.claimed_at,
+        ),
+    )
+
+
+def _provider_projection_receipt(row: sqlite3.Row) -> ProviderProjectionReceipt:
+    payload = json.loads(str(row["payload_json"]))
+    return ProviderProjectionReceipt(
+        int(row["sequence"]),
+        str(row["invocation_id"]),
+        int(row["invocation_version"]),
+        str(row["run_id"]),
+        str(row["execution_session_id"]),
+        str(row["request_id"]),
+        frozen_payload(payload),
+        str(row["payload_hash"]),
+        float(row["created_at"]),
     )
 
 

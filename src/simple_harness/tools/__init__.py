@@ -40,7 +40,12 @@ from .reconciliation import (
     ToolReconciliationPort,
 )
 from .registry import ToolCallState, ToolRegistry
-from .schema import ArgumentsValidationError, SchemaDefinitionError
+from .schema import (
+    PUBLIC_PROGRESS_ARGUMENT,
+    ArgumentsValidationError,
+    SchemaDefinitionError,
+    normalize_public_progress_arguments,
+)
 from .sidecar import (
     EffectKind,
     EffectPolicy,
@@ -59,7 +64,6 @@ from .sidecar import (
     parse_tool_outcome,
     resource_digest,
 )
-
 
 __all__ = (
     "ArgumentsValidationError",
@@ -81,6 +85,7 @@ __all__ = (
     "LateToolResultError",
     "MalformedToolArgumentsError",
     "OutcomeParserPort",
+    "PUBLIC_PROGRESS_ARGUMENT",
     "PreparedToolEffect",
     "ReconciliationObservation",
     "ReconciliationState",
@@ -110,6 +115,7 @@ __all__ = (
     "builtin_outcome_parser",
     "sdk_authorization_receipt",
     "inventory_digest",
+    "normalize_public_progress_arguments",
     "parse_tool_outcome",
     "resource_digest",
 )

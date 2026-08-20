@@ -5,12 +5,12 @@
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-import sqlite3
-from typing import Iterator
 
-from .schema import SCHEMA_VERSION, initial_migration
+from .schema import migrations
 
 
 class Database:
@@ -34,7 +34,7 @@ class Database:
         *,
         wal: bool = False,
         timeout: float = 5.0,
-    ) -> "Database":
+    ) -> Database:
         resolved = Path(path).expanduser().resolve()
         if not resolved.parent.is_dir():
             raise FileNotFoundError(
@@ -143,7 +143,7 @@ class Database:
         connection.close()
         self._connection = None
 
-    def __enter__(self) -> "Database":
+    def __enter__(self) -> Database:
         if not self.is_open:
             raise RuntimeError("database is closed")
         return self
@@ -163,7 +163,7 @@ class Database:
             non_internal = {name for name in tables if not name.startswith("sqlite_")}
             if non_internal:
                 raise RuntimeError("database is not an empty Simple Harness SDK database")
-            migration = initial_migration()
+            migration = migrations()[0]
             script = (
                 "BEGIN IMMEDIATE;\n"
                 "CREATE TABLE sdk_schema_migrations ("
@@ -182,19 +182,32 @@ class Database:
                 if connection.in_transaction:
                     connection.rollback()
                 raise
-        row = connection.execute(
-            "SELECT version, name, checksum FROM sdk_schema_migrations ORDER BY version DESC LIMIT 1"
-        ).fetchone()
-        migration = initial_migration()
-        expected = (migration.version, migration.name, migration.checksum)
-        if row is None or tuple(row) != expected:
-            actual = None if row is None else tuple(row)
-            raise RuntimeError(
-                f"unsupported or corrupt SDK schema version: expected {expected}, got {actual}"
+        applied = {
+            int(row[0]): (str(row[1]), str(row[2]))
+            for row in connection.execute(
+                "SELECT version,name,checksum FROM sdk_schema_migrations"
             )
+        }
+        known = migrations()
+        for migration in known:
+            existing = applied.get(migration.version)
+            if existing is not None and existing != (migration.name, migration.checksum):
+                raise RuntimeError("corrupt SDK schema migration history")
+            if existing is None:
+                if any(version > migration.version for version in applied):
+                    raise RuntimeError("SDK schema migration history has a gap")
+                script = (
+                    "BEGIN IMMEDIATE;\n"
+                    + migration.sql
+                    + "\nINSERT INTO sdk_schema_migrations(version,name,checksum) VALUES ("
+                    + f"{migration.version},'{migration.name}','{migration.checksum}');\nCOMMIT;"
+                )
+                connection.executescript(script)
+                applied[migration.version] = (migration.name, migration.checksum)
+        if set(applied) != {migration.version for migration in known}:
+            raise RuntimeError("unsupported SDK schema version")
         if self.integrity_check() != ("ok",) or self.foreign_key_violations():
             raise RuntimeError("SDK execution database failed integrity validation")
 
 
 __all__ = ("Database",)
-

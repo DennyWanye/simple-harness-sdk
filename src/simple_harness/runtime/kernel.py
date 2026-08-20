@@ -23,6 +23,7 @@ from simple_harness.contracts import (
     RunId,
     thaw_json,
 )
+from simple_harness.execution.context_authority import ToolCatalogSnapshot
 from simple_harness.execution.contracts.children import AttachmentPolicy
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySpec
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
@@ -226,6 +227,10 @@ class DriverCancellationCoordinator(Protocol):
 class ToolCatalogGenerationPort(Protocol):
     def current_generation(self) -> int: ...
 
+    def resolve(
+        self, generation: int, content_fingerprint: str
+    ) -> ToolCatalogSnapshot | None: ...
+
 
 @runtime_checkable
 class RuntimeReconciliationPort(Protocol):
@@ -295,6 +300,7 @@ class RuntimeServices:
     reconciliation: RuntimeReconciliationPort
     provider_reconciliation: ProviderReconciliationPort
     react_checkpoint: ReactCheckpointPort
+    tool_catalog: ToolCatalogGenerationPort | None = None
     workflow_spawn: WorkflowSpawnRuntimeCoordinator | None = None
 
 
@@ -785,6 +791,7 @@ class Runtime:
             reconciliation=ports.reconciliation,
             provider_reconciliation=ports.provider_reconciliation,
             react_checkpoint=ports.react_checkpoint,
+            tool_catalog=ports.tool_catalog,
             workflow_spawn=workflow_spawn,
         )
         self._live = LiveRunIndex()
@@ -1282,10 +1289,29 @@ class Runtime:
                     deliveries=(),
                 )
                 return
-            if (
-                snapshot.tool_catalog_generation
-                != self._ports.tool_catalog.current_generation()
-            ):
+            catalog_matches = False
+            if snapshot.tool_catalog_fingerprint is not None:
+                resolver = getattr(self._ports.tool_catalog, "resolve", None)
+                resolved_catalog = (
+                    None
+                    if resolver is None
+                    else resolver(
+                        snapshot.tool_catalog_generation,
+                        snapshot.tool_catalog_fingerprint,
+                    )
+                )
+                catalog_matches = (
+                    resolved_catalog is not None
+                    and resolved_catalog.generation == snapshot.tool_catalog_generation
+                    and resolved_catalog.content_fingerprint
+                    == snapshot.tool_catalog_fingerprint
+                )
+            else:
+                catalog_matches = (
+                    snapshot.tool_catalog_generation
+                    == self._ports.tool_catalog.current_generation()
+                )
+            if not catalog_matches:
                 error = ToolCatalogStale()
                 self._terminalize(
                     run,

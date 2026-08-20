@@ -3,6 +3,12 @@
 
 """Durable execution contracts."""
 
+from .context_authority import (
+    DurableToolCatalogResolver,
+    ProviderProjectionReceipt,
+    ToolCatalogSnapshot,
+    ToolCatalogStore,
+)
 from .effects import (
     EffectConflictError,
     EffectRecord,
@@ -18,9 +24,12 @@ from .fences import (
     require_current_epoch,
 )
 
-
 __all__ = (
     "EffectConflictError",
+    "DurableToolCatalogResolver",
+    "ProviderProjectionReceipt",
+    "ToolCatalogSnapshot",
+    "ToolCatalogStore",
     "EffectRecord",
     "EffectState",
     "EffectTransitionError",

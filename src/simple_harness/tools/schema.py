@@ -57,6 +57,7 @@ _RESERVED_FIELDS = frozenset(
         "token",
     }
 )
+PUBLIC_PROGRESS_ARGUMENT = "deskpet_public_progress"
 
 
 class SchemaDefinitionError(ValueError):
@@ -307,6 +308,21 @@ def validate_argument_resource_bounds(arguments: Any) -> None:
     )
 
 
+def normalize_public_progress_arguments(
+    arguments: Mapping[str, Any], *, maximum: int = 600
+) -> tuple[dict[str, Any], str | None]:
+    """Remove the optional narration protocol field before business validation.
+
+    Missing, blank and wrong-type values are deliberately tolerant: public
+    narration must never block the underlying Tool effect.
+    """
+
+    normalized = dict(arguments)
+    raw = normalized.pop(PUBLIC_PROGRESS_ARGUMENT, None)
+    narration = raw.strip()[:maximum] if isinstance(raw, str) else ""
+    return normalized, narration or None
+
+
 def _validate_value(value: Any, schema: Mapping[str, Any], path: str) -> None:
     expected_type = schema["type"]
     if not _matches_type(value, expected_type):
@@ -356,6 +372,8 @@ def _validate_value(value: Any, schema: Mapping[str, Any], path: str) -> None:
 __all__ = (
     "ArgumentsValidationError",
     "SchemaDefinitionError",
+    "PUBLIC_PROGRESS_ARGUMENT",
+    "normalize_public_progress_arguments",
     "validate_arguments",
     "validate_tool_schema",
 )

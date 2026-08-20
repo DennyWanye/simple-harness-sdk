@@ -120,7 +120,11 @@ class ReActDriver:
         input_value = cast(Mapping[str, object], invocation.start.input)
         initial = _messages(input_value.get("messages"))
         tools = _tools(
-            input_value.get("capability_snapshot"), invocation.services.tools
+            input_value.get("capability_snapshot"),
+            invocation.services.tools,
+            catalog=invocation.services.tool_catalog,
+            generation=invocation.start.tool_catalog_generation,
+            fingerprint=invocation.start.tool_catalog_fingerprint,
         )
         try:
             result = await self._loop.run(
@@ -232,7 +236,14 @@ def _messages(value: object) -> tuple[Message, ...]:
     return tuple(messages)
 
 
-def _tools(value: object, executor) -> tuple[ProviderToolSpec, ...]:
+def _tools(
+    value: object,
+    executor,
+    *,
+    catalog,
+    generation: int,
+    fingerprint: str | None,
+) -> tuple[ProviderToolSpec, ...]:
     if value is None:
         return ()
     if not isinstance(value, Mapping):
@@ -242,6 +253,15 @@ def _tools(value: object, executor) -> tuple[ProviderToolSpec, ...]:
         isinstance(name, str) for name in names
     ):
         raise TypeError("capability_snapshot.tools must contain strings")
+    if fingerprint is not None:
+        resolver = getattr(catalog, "resolve", None)
+        snapshot = None if resolver is None else resolver(generation, fingerprint)
+        if snapshot is None:
+            raise ValueError("frozen Tool catalog snapshot is unavailable")
+        by_name = {spec.name: spec for spec in snapshot.specs}
+        if any(name not in by_name for name in names):
+            raise ValueError("capability snapshot differs from frozen Tool catalog")
+        return tuple(by_name[name] for name in names)
     return executor.provider_tool_specs(tuple(names))
 
 

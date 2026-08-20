@@ -5,13 +5,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
+from dataclasses import dataclass
 from importlib.resources import files
 
-
-SCHEMA_VERSION = 1
-MIGRATION_NAME = "0001_initial"
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,19 +20,22 @@ class Migration:
     checksum: str
 
 
+def migrations() -> tuple[Migration, ...]:
+    values = []
+    for version, name in ((1, "0001_initial"), (2, "0002_context_authority")):
+        sql = (
+            files("simple_harness.execution.sqlite.migrations")
+            .joinpath(f"{name}.sql")
+            .read_text(encoding="utf-8")
+        )
+        values.append(
+            Migration(version, name, sql, hashlib.sha256(sql.encode()).hexdigest())
+        )
+    return tuple(values)
+
+
 def initial_migration() -> Migration:
-    sql = (
-        files("simple_harness.execution.sqlite.migrations")
-        .joinpath("0001_initial.sql")
-        .read_text(encoding="utf-8")
-    )
-    return Migration(
-        version=SCHEMA_VERSION,
-        name=MIGRATION_NAME,
-        sql=sql,
-        checksum=hashlib.sha256(sql.encode("utf-8")).hexdigest(),
-    )
+    return migrations()[0]
 
 
-__all__ = ("SCHEMA_VERSION", "Migration", "initial_migration")
-
+__all__ = ("SCHEMA_VERSION", "Migration", "initial_migration", "migrations")
