@@ -17,6 +17,7 @@ from simple_harness.providers import (
     ProviderRequest,
     Secret,
 )
+from simple_harness.runtime.drivers.react import _messages
 
 
 def test_structured_content_round_trips_without_string_coercion() -> None:
@@ -36,6 +37,25 @@ def test_structured_content_round_trips_without_string_coercion() -> None:
 def test_list_content_is_rejected_instead_of_stringified() -> None:
     with pytest.raises(Exception, match="text or a tuple"):
         Message(MessageRole.USER, [{"type": "text", "text": "unsafe"}])  # type: ignore[arg-type]
+
+
+def test_react_accepts_frozen_tuple_blocks_from_start_snapshot() -> None:
+    messages = _messages(
+        (
+            {
+                "role": "user",
+                "content": (
+                    {"type": "text", "text": "hello"},
+                    {"type": "input_text", "data": "body"},
+                ),
+            },
+        )
+    )
+    assert not isinstance(messages[0].content, str)
+    assert [block.to_dict() for block in messages[0].content] == [
+        {"type": "text", "text": "hello"},
+        {"type": "input_text", "data": "body"},
+    ]
 
 
 @pytest.mark.anyio

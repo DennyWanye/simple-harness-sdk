@@ -219,7 +219,7 @@ def _messages(value: object) -> tuple[Message, ...]:
         if not isinstance(item, Mapping):
             raise TypeError("ReAct input message must be an object")
         content = item["content"]
-        if isinstance(content, list):
+        if isinstance(content, (list, tuple)):
             blocks = tuple(
                 ContentBlock.from_dict(block)
                 for block in content
