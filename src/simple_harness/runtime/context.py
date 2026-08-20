@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from simple_harness.contracts import CallId, JsonValue, RunId, canonical_json
-from simple_harness.contracts.messages import Message, MessageRole
+from simple_harness.contracts.messages import ContentBlock, Message, MessageRole
 from simple_harness.execution.sqlite.database import Database
 from simple_harness.execution.uow import (
     RUNTIME_LEASE_NAMESPACE,
@@ -230,8 +230,19 @@ def _message(value: object) -> Message:
     name = value.get("name")
     call_id = value.get("call_id")
     metadata = value.get("metadata", {})
-    if not isinstance(role, str) or not isinstance(content, str):
+    if not isinstance(role, str) or not isinstance(content, (str, list)):
         raise TypeError("stored context entry is invalid")
+    normalized_content = (
+        content
+        if isinstance(content, str)
+        else tuple(
+            ContentBlock.from_dict(block)
+            for block in content
+            if isinstance(block, Mapping)
+        )
+    )
+    if isinstance(content, list) and len(normalized_content) != len(content):
+        raise TypeError("stored context content block is invalid")
     if name is not None and not isinstance(name, str):
         raise TypeError("stored message name is invalid")
     if call_id is not None and not isinstance(call_id, str):
@@ -240,7 +251,7 @@ def _message(value: object) -> Message:
         raise TypeError("stored message metadata is invalid")
     return Message(
         MessageRole(role),
-        content,
+        normalized_content,
         name=name,
         call_id=None if call_id is None else CallId(call_id),
         metadata=metadata,

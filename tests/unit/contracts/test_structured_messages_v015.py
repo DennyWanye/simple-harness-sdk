@@ -17,6 +17,7 @@ from simple_harness.providers import (
     ProviderRequest,
     Secret,
 )
+from simple_harness.runtime.context import _message
 from simple_harness.runtime.drivers.react import _messages
 
 
@@ -53,6 +54,24 @@ def test_react_accepts_frozen_tuple_blocks_from_start_snapshot() -> None:
     )
     assert not isinstance(messages[0].content, str)
     assert [block.to_dict() for block in messages[0].content] == [
+        {"type": "text", "text": "hello"},
+        {"type": "input_text", "data": "body"},
+    ]
+
+
+def test_durable_context_rebuilds_structured_blocks() -> None:
+    message = _message(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "input_text", "data": "body"},
+            ],
+            "metadata": {},
+        }
+    )
+    assert not isinstance(message.content, str)
+    assert [block.to_dict() for block in message.content] == [
         {"type": "text", "text": "hello"},
         {"type": "input_text", "data": "body"},
     ]
