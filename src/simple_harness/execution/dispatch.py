@@ -12,8 +12,6 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Protocol, cast
 
 from simple_harness.contracts import FrozenJsonValue, HarnessError, RunId, thaw_json
-
-logger = logging.getLogger(__name__)
 from simple_harness.providers import (
     CancelToken,
     Provider,
@@ -47,6 +45,8 @@ from .provider_invocations import (
     provider_response_json,
 )
 from .recovery import ResolutionOutcome
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from simple_harness.workflow.lease import WorkflowLease
@@ -337,6 +337,8 @@ class ProviderInvocationCoordinator:
                     "input_tokens": response.usage.input_tokens,
                     "output_tokens": response.usage.output_tokens,
                     "total_tokens": response.usage.total_tokens,
+                    "cache_tokens": response.usage.cache_tokens,
+                    "reasoning_tokens": response.usage.reasoning_tokens,
                 }
             ),
             "budget": charge.to_json(),

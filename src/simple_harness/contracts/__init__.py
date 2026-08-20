@@ -24,8 +24,7 @@ from .json import (
     thaw_json,
     validate_json_value,
 )
-from .messages import Message, MessageRole
-
+from .messages import ContentBlock, Message, MessageContent, MessageRole
 
 __all__ = (
     "JsonPrimitive",
@@ -43,12 +42,13 @@ __all__ = (
     "EffectId",
     "EventId",
     "CorrelationIds",
+    "ContentBlock",
     "MessageRole",
     "Message",
+    "MessageContent",
     "EventKind",
     "EventEnvelope",
     "ErrorCode",
     "HarnessError",
     "ContractValidationError",
 )
-

@@ -202,7 +202,14 @@ class OpenAICompatibleProvider:
             if isinstance(message.role, MessageRole)
             else str(message.role)
         )
-        payload: dict[str, Any] = {"role": role, "content": message.content}
+        payload: dict[str, Any] = {
+            "role": role,
+            "content": (
+                message.content
+                if isinstance(message.content, str)
+                else [block.to_dict() for block in message.content]
+            ),
+        }
         if message.name is not None:
             payload["name"] = message.name
         if message.call_id is not None:
@@ -324,6 +331,24 @@ class OpenAICompatibleProvider:
         ):
             raise ProviderProtocolError()
         try:
-            return ProviderUsage(prompt, completion, total)
+            prompt_details = raw_usage.get("prompt_tokens_details")
+            completion_details = raw_usage.get("completion_tokens_details")
+            cache_tokens = (
+                prompt_details.get("cached_tokens")
+                if isinstance(prompt_details, Mapping)
+                else None
+            )
+            reasoning_tokens = (
+                completion_details.get("reasoning_tokens")
+                if isinstance(completion_details, Mapping)
+                else None
+            )
+            return ProviderUsage(
+                prompt,
+                completion,
+                total,
+                cache_tokens=cache_tokens,
+                reasoning_tokens=reasoning_tokens,
+            )
         except ValueError:
             raise ProviderProtocolError() from None

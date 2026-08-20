@@ -5,20 +5,20 @@
 
 from __future__ import annotations
 
-import time
 import hashlib
+import time
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import cast
 
 from simple_harness.contracts import RequestId, RunId, canonical_json, thaw_json
-from simple_harness.contracts.messages import Message, MessageRole
-from simple_harness.execution.dispatch import ProviderInvocationUnknownError
+from simple_harness.contracts.messages import ContentBlock, Message, MessageRole
 from simple_harness.execution.budget import (
     BudgetPolicy,
     FrozenPriceEstimator,
     budget_policy_fingerprint,
 )
+from simple_harness.execution.dispatch import ProviderInvocationUnknownError
 from simple_harness.execution.recovery import RecoveryKind, WaitBlockerSpec
 from simple_harness.execution.uow import RunState
 from simple_harness.providers import ProviderToolSpec
@@ -207,7 +207,21 @@ def _messages(value: object) -> tuple[Message, ...]:
     for item in value:
         if not isinstance(item, Mapping):
             raise TypeError("ReAct input message must be an object")
-        messages.append(Message(MessageRole(str(item["role"])), str(item["content"])))
+        content = item["content"]
+        if isinstance(content, list):
+            blocks = tuple(
+                ContentBlock.from_dict(block)
+                for block in content
+                if isinstance(block, Mapping)
+            )
+            if len(blocks) != len(content):
+                raise TypeError("ReAct structured content blocks must be objects")
+            normalized_content = blocks
+        elif isinstance(content, str):
+            normalized_content = content
+        else:
+            raise TypeError("ReAct message content must be text or content blocks")
+        messages.append(Message(MessageRole(str(item["role"])), normalized_content))
     return tuple(messages)
 
 

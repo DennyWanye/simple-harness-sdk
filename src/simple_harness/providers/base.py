@@ -142,6 +142,8 @@ class ProviderUsage:
     input_tokens: int
     output_tokens: int
     total_tokens: int
+    cache_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
     def __post_init__(self) -> None:
         values = (self.input_tokens, self.output_tokens, self.total_tokens)
@@ -152,6 +154,12 @@ class ProviderUsage:
             raise ValueError("token usage values must be non-negative integers")
         if self.total_tokens < self.input_tokens + self.output_tokens:
             raise ValueError("total_tokens cannot be less than input + output")
+        for name in ("cache_tokens", "reasoning_tokens"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer or None")
 
 
 @dataclass(frozen=True, slots=True)

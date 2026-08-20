@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Mapping
+from typing import TypeAlias, cast
 
 from .errors import ContractValidationError, ErrorCode
 from .identity import CallId
@@ -22,9 +23,54 @@ class MessageRole(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ContentBlock:
+    """Provider-neutral structured message content block.
+
+    ``data`` contains every field except the discriminator.  Keeping the
+    discriminator typed prevents callers from accidentally passing a list and
+    relying on its string representation at a transport boundary.
+    """
+
+    type: str
+    data: Mapping[str, JsonValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str) or not self.type.strip():
+            raise ContractValidationError(
+                ErrorCode.INVALID_MESSAGE, "content block type must be non-empty"
+            )
+        if not isinstance(self.data, Mapping) or "type" in self.data:
+            raise ContractValidationError(
+                ErrorCode.INVALID_MESSAGE,
+                "content block data must be an object without a type field",
+            )
+        frozen = freeze_json(dict(self.data))
+        assert isinstance(frozen, Mapping)
+        object.__setattr__(self, "type", self.type.strip())
+        object.__setattr__(self, "data", frozen)
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        data = thaw_json(cast(FrozenJsonValue, self.data))
+        assert isinstance(data, dict)
+        return {"type": self.type, **data}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, JsonValue]) -> ContentBlock:
+        block_type = value.get("type")
+        if not isinstance(block_type, str):
+            raise ContractValidationError(
+                ErrorCode.INVALID_MESSAGE, "content block type must be a string"
+            )
+        return cls(block_type, {key: item for key, item in value.items() if key != "type"})
+
+
+MessageContent: TypeAlias = str | tuple[ContentBlock, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class Message:
     role: MessageRole | str
-    content: str
+    content: MessageContent
     name: str | None = None
     call_id: CallId | None = None
     metadata: Mapping[str, JsonValue] = field(default_factory=dict)
@@ -36,9 +82,17 @@ class Message:
             raise ContractValidationError(
                 ErrorCode.INVALID_MESSAGE, "message role is not supported"
             ) from error
-        if not isinstance(self.content, str):
+        if not isinstance(self.content, (str, tuple)):
             raise ContractValidationError(
-                ErrorCode.INVALID_MESSAGE, "message content must be a string"
+                ErrorCode.INVALID_MESSAGE,
+                "message content must be text or a tuple of ContentBlock values",
+            )
+        if isinstance(self.content, tuple) and not all(
+            isinstance(block, ContentBlock) for block in self.content
+        ):
+            raise ContractValidationError(
+                ErrorCode.INVALID_MESSAGE,
+                "structured message content must contain ContentBlock values",
             )
         if self.name is not None and (
             not isinstance(self.name, str) or not self.name.strip()
@@ -71,7 +125,11 @@ class Message:
     def to_dict(self) -> dict[str, JsonValue]:
         result: dict[str, JsonValue] = {
             "role": self.role.value,
-            "content": self.content,
+            "content": (
+                self.content
+                if isinstance(self.content, str)
+                else [block.to_dict() for block in self.content]
+            ),
             "metadata": thaw_json(self.metadata),  # type: ignore[arg-type]
         }
         if self.name is not None:
@@ -81,5 +139,4 @@ class Message:
         return result
 
 
-__all__ = ("MessageRole", "Message")
-
+__all__ = ("ContentBlock", "Message", "MessageContent", "MessageRole")

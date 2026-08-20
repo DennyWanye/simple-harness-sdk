@@ -20,7 +20,7 @@ from simple_harness.contracts import (
     freeze_json,
     thaw_json,
 )
-from simple_harness.contracts.messages import Message, MessageRole
+from simple_harness.contracts.messages import ContentBlock, Message, MessageRole
 from simple_harness.providers import (
     ProviderRequest,
     ProviderResponse,
@@ -57,7 +57,11 @@ def _digest(value: JsonValue) -> str:
 def _message_json(message: Message) -> dict[str, JsonValue]:
     return {
         "role": getattr(message.role, "value", str(message.role)),
-        "content": message.content,
+        "content": (
+            message.content
+            if isinstance(message.content, str)
+            else [block.to_dict() for block in message.content]
+        ),
         "name": message.name,
         "call_id": None if message.call_id is None else message.call_id.value,
         "metadata": thaw_json(cast(FrozenJsonValue, message.metadata)),
@@ -163,6 +167,8 @@ def provider_response_json(response: ProviderResponse) -> dict[str, JsonValue]:
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
                 "total_tokens": response.usage.total_tokens,
+                "cache_tokens": response.usage.cache_tokens,
+                "reasoning_tokens": response.usage.reasoning_tokens,
             }
         ),
         "model": response.model,
@@ -179,8 +185,19 @@ def _message_from_json(value: object) -> Message:
     name = value.get("name")
     raw_call_id = value.get("call_id")
     metadata = value.get("metadata", {})
-    if not isinstance(role, str) or not isinstance(content, str):
+    if not isinstance(role, str) or not isinstance(content, (str, list)):
         raise TypeError("stored provider message is malformed")
+    normalized_content = (
+        content
+        if isinstance(content, str)
+        else tuple(
+            ContentBlock.from_dict(item)
+            for item in content
+            if isinstance(item, dict)
+        )
+    )
+    if isinstance(content, list) and len(normalized_content) != len(content):
+        raise TypeError("stored provider content block is malformed")
     if name is not None and not isinstance(name, str):
         raise ValueError("stored provider message name is malformed")
     if raw_call_id is not None and not isinstance(raw_call_id, str):
@@ -189,7 +206,7 @@ def _message_from_json(value: object) -> Message:
         raise TypeError("stored provider message metadata is malformed")
     return Message(
         role=MessageRole(role),
-        content=content,
+        content=normalized_content,
         name=name,
         call_id=None if raw_call_id is None else CallId(raw_call_id),
         metadata=metadata,  # type: ignore[arg-type]
@@ -226,6 +243,8 @@ def provider_response_from_json(value: object) -> ProviderResponse:
             raw_usage.get("input_tokens"),  # type: ignore[arg-type]
             raw_usage.get("output_tokens"),  # type: ignore[arg-type]
             raw_usage.get("total_tokens"),  # type: ignore[arg-type]
+            cache_tokens=raw_usage.get("cache_tokens"),  # type: ignore[arg-type]
+            reasoning_tokens=raw_usage.get("reasoning_tokens"),  # type: ignore[arg-type]
         )
     optional_text: list[str | None] = []
     for name in ("model", "finish_reason", "provider_request_id"):

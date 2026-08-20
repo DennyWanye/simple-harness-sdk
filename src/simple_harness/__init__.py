@@ -5,6 +5,7 @@
 
 from .contracts import (
     CallId,
+    ContentBlock,
     ContractValidationError,
     CorrelationIds,
     EffectId,
@@ -18,6 +19,7 @@ from .contracts import (
     JsonPrimitive,
     JsonValue,
     Message,
+    MessageContent,
     MessageRole,
     RequestId,
     RunId,
@@ -65,8 +67,10 @@ __all__ = (
     "EffectId",
     "EventId",
     "CorrelationIds",
+    "ContentBlock",
     "MessageRole",
     "Message",
+    "MessageContent",
     "EventKind",
     "EventEnvelope",
     "ErrorCode",
