@@ -67,27 +67,6 @@ class ProviderInvocationUnitOfWork(Protocol):
         execution_lease: ExecutionLease,
     ) -> ProviderInvocationRecord: ...
 
-
-@dataclass(frozen=True, slots=True)
-class ProviderBinding:
-    """Immutable physical Provider and budget authority for one Run."""
-
-    provider: Provider
-    estimator: FrozenPriceEstimator | None
-    budget_policy: BudgetPolicy
-
-    def __post_init__(self) -> None:
-        if self.estimator is not None:
-            self.estimator.bind(self.provider.target)
-
-    @property
-    def budget_fingerprint(self) -> str:
-        return budget_policy_fingerprint(self.budget_policy, self.estimator)
-
-
-class ProviderBindingResolver(Protocol):
-    def resolve(self, run_id: RunId) -> ProviderBinding: ...
-
     def read_provider_invocation(
         self, invocation_id: str
     ) -> ProviderInvocationRecord | None: ...
@@ -103,7 +82,11 @@ class ProviderBindingResolver(Protocol):
     ) -> ProviderInvocationRecord: ...
 
     def settle_provider_invocation(
-        self, record: ProviderInvocationRecord, *, expected_version: int
+        self,
+        record: ProviderInvocationRecord,
+        *,
+        expected_version: int,
+        fault: Callable[[str], None] | None = None,
     ) -> ProviderInvocationRecord: ...
 
     def list_incomplete_provider_invocations(
@@ -137,6 +120,27 @@ class ProviderBindingResolver(Protocol):
         execution_lease: ExecutionLease,
         now: float,
     ) -> ProviderInvocationRecord: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderBinding:
+    """Immutable physical Provider and budget authority for one Run."""
+
+    provider: Provider
+    estimator: FrozenPriceEstimator | None
+    budget_policy: BudgetPolicy
+
+    def __post_init__(self) -> None:
+        if self.estimator is not None:
+            self.estimator.bind(self.provider.target)
+
+    @property
+    def budget_fingerprint(self) -> str:
+        return budget_policy_fingerprint(self.budget_policy, self.estimator)
+
+
+class ProviderBindingResolver(Protocol):
+    def resolve(self, run_id: RunId) -> ProviderBinding: ...
 
 
 class ProviderInvocationUnknownError(HarnessError):

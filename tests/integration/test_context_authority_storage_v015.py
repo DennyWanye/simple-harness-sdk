@@ -5,7 +5,10 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from simple_harness import RunId, thaw_json
+from simple_harness.execution.provider_invocations import ProviderInvocationState
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.sqlite.schema import migrations
 from simple_harness.providers import CancelToken, ProviderToolSpec
@@ -78,6 +81,50 @@ def test_settlement_and_projection_receipt_commit_atomically_and_cursor_is_stabl
         assert uow.list_provider_projection_receipts(
             after_sequence=receipt.sequence
         ) == ()
+
+
+def test_settlement_rolls_back_ledger_when_projection_outbox_write_cannot_finish(
+    tmp_path: Path,
+) -> None:
+    with Database.open(tmp_path / "atomic-outbox.db") as database:
+        uow = SqliteExecutionUnitOfWork(database)
+        lease = _create_run(uow)
+        coordinator = _coordinator(uow, RecordingProvider())
+        claimed = asyncio.run(
+            coordinator.prepare_claim(RunId("run-1"), _request(), execution_lease=lease)
+        )
+        handed_off = uow.hand_off_provider_invocation(
+            claimed.invocation_id,
+            expected_version=claimed.version,
+            handed_off_at=3,
+            execution_lease=lease,
+        )
+        terminal = handed_off.settle_failed(
+            error_code="provider_test_failure",
+            at=4,
+            expected_version=handed_off.version,
+        )
+
+        def fail_after_ledger(point: str) -> None:
+            if point == "provider_settlement.ledger.after_write":
+                raise RuntimeError("injected projection failure")
+
+        with pytest.raises(RuntimeError, match="injected projection failure"):
+            uow.settle_provider_invocation(
+                terminal,
+                expected_version=handed_off.version,
+                fault=fail_after_ledger,
+            )
+        restored = uow.read_provider_invocation(claimed.invocation_id)
+        assert restored is not None
+        assert restored.state is ProviderInvocationState.HANDED_OFF
+        assert uow.list_provider_projection_receipts() == ()
+
+        settled = uow.settle_provider_invocation(
+            terminal, expected_version=handed_off.version
+        )
+        assert settled.state is ProviderInvocationState.FAILED
+        assert len(uow.list_provider_projection_receipts()) == 1
 
 
 def test_public_progress_normalization_never_blocks_business_arguments() -> None:

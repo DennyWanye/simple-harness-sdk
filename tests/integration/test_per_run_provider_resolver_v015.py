@@ -14,9 +14,10 @@ from .provider_ledger_fakes import FakeProviderInvocationUnitOfWork, RecordingPr
 
 def test_resolver_keeps_provider_estimator_and_charge_on_each_run() -> None:
     uow = FakeProviderInvocationUnitOfWork()
+    release = asyncio.Event()
     providers = {
-        RunId("run-a"): RecordingProvider(model="model-a"),
-        RunId("run-b"): RecordingProvider(model="model-b"),
+        RunId("run-a"): RecordingProvider(model="model-a", release=release),
+        RunId("run-b"): RecordingProvider(model="model-b", release=release),
     }
 
     class Resolver:
@@ -45,7 +46,18 @@ def test_resolver_keeps_provider_estimator_and_charge_on_each_run() -> None:
         )
 
     async def exercise() -> None:
-        await asyncio.gather(invoke("run-a"), invoke("run-b"))
+        tasks = (
+            asyncio.create_task(invoke("run-a")),
+            asyncio.create_task(invoke("run-b")),
+        )
+        await asyncio.wait_for(
+            asyncio.gather(
+                *(provider.entered.wait() for provider in providers.values())
+            ),
+            timeout=1,
+        )
+        release.set()
+        await asyncio.gather(*tasks)
 
     asyncio.run(exercise())
 

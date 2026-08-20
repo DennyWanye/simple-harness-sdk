@@ -5340,6 +5340,7 @@ class SqliteExecutionUnitOfWork:
         record: ProviderInvocationRecord,
         *,
         expected_version: int,
+        fault: FaultHook | None = None,
     ) -> ProviderInvocationRecord:
         if record.state not in {
             ProviderInvocationState.SUCCEEDED,
@@ -5382,7 +5383,9 @@ class SqliteExecutionUnitOfWork:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("provider invocation settlement CAS failed")
+            _fault(fault, "provider_settlement.ledger.after_write")
             _insert_provider_projection_receipt(connection, record)
+            _fault(fault, "provider_settlement.outbox.after_write")
         result = self.read_provider_invocation(record.invocation_id)
         assert result is not None
         return result
