@@ -39,9 +39,9 @@ last-updated: 2026-08-21
 - CI 单次构建 authoritative wheel/sdist 并生成 canonical `BUILD_INFO.txt`/`SHA256SUMS`，
   Python 3.11–3.13 测同一 wheel。release 仅 manual dispatch 下载、校验并上传 program publisher
   已创建 release 的原 bytes，不响应 tag、也不重新 build。
-- 2026-08-21 验证：H1 19 passed；H2 14 passed；full pytest 1262 passed / 2 skipped；
-  release-owned mypy 11 files 无错误；full Ruff 481，相对 frozen 484 baseline 减少 3；
-  H-WHEEL artifact suite 20 passed。
+- 2026-08-21 验证：H1 19 passed；H2 15 passed；full pytest 1263 passed / 2 skipped；
+  release-owned mypy 11 files 无错误；full Ruff 477，相对 frozen 484 baseline 减少 7；
+  REUSE 338/338 compliant；H-WHEEL artifact suite 20 passed。
 
 ## 0.1.5 Context authority 当前事实（2026-08-21）
 
