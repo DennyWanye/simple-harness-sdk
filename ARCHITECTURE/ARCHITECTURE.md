@@ -37,6 +37,10 @@ last-updated: 2026-08-21
   恢复；apply 成功后 ack 前崩溃会以同 source event 重放。Runtime 在 recovery/drain 后启动 pump，
   close 时 bounded drain，并关闭 projection pump、query、sink 与 execution DB。关闭路径把
   `asyncio.wait` 输入物化，并只 cancel/gather 未完成任务，兼容 Python 3.11–3.13。
+- child terminal 与 parent signal 虽在同一 durable terminal 事务提交，wake pump 仍须等待该 child
+  离开 process-local active task 生命周期后才可 claim/ack 对应 parent signal；因此
+  `wait_idle(child)` 的完成边界不会与 parent 自动恢复竞速，startup recovery 在 Python 3.11–3.13
+  保持相同可观察顺序。
 - `build_production_runtime(ProductionRuntimeConfig)` 是严格生产组合根：Provider、Tool、Auth、
   Delivery、reconcilers、conversation Ports、context staging builder 都必须显式提供；同时保留
   0.1.5 的 tool catalog、Provider budget resolver/projection pump、run binding 与 structured-message

@@ -20,6 +20,9 @@ class FakeSignalUnitOfWork:
         self.claim_calls: list[dict[str, object]] = []
         self.ack_calls: list[dict[str, object]] = []
 
+    def list_child_signal_parent_run_ids(self) -> tuple[str, ...]:
+        return ("root-1",)
+
     def claim_next_child_signal(self, **kwargs: object) -> ChildSignalRecord:
         self.claim_calls.append(kwargs)
         return ChildSignalRecord(
@@ -98,3 +101,16 @@ def test_runtime_uses_hol_claim_and_atomic_ack_with_stable_identities() -> None:
         "child-signal:signal-1:continuation"
     )
     assert uow.ack_calls[0]["event_id"] == "child-signal:signal-1:acked"
+
+
+def test_reconcile_does_not_ack_signal_while_parent_has_active_child() -> None:
+    uow = FakeSignalUnitOfWork()
+    runtime = ChildSignalRuntime(uow, owner_id="runtime-a")
+
+    results = runtime.reconcile_all(
+        now=10.0, blocked_parent_run_ids={"root-1"}
+    )
+
+    assert results == ()
+    assert uow.claim_calls == []
+    assert uow.ack_calls == []

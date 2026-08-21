@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Protocol
 
 from simple_harness.contracts import JsonValue, thaw_json
@@ -97,12 +97,19 @@ class ChildSignalRuntime:
         )
 
     def reconcile_all(
-        self, *, now: float, lease_seconds: float = 30.0
+        self,
+        *,
+        now: float,
+        lease_seconds: float = 30.0,
+        blocked_parent_run_ids: Collection[str] = (),
     ) -> tuple[ChildSignalAckResult, ...]:
         """Drain every currently claimable parent head in durable FIFO order."""
 
         completed: list[ChildSignalAckResult] = []
+        blocked = frozenset(blocked_parent_run_ids)
         for parent_run_id in self._uow.list_child_signal_parent_run_ids():
+            if parent_run_id in blocked:
+                continue
             while True:
                 result = self.receive_one(
                     parent_run_id=parent_run_id,

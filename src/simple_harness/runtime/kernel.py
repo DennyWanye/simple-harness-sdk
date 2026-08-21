@@ -1232,7 +1232,14 @@ class Runtime:
         await self._drain_spawn_ready_once()
 
     async def _drain_child_signals_once(self) -> None:
-        for result in self._child_signals.reconcile_all(now=self._now()):
+        active_child_parents: set[str] = set()
+        for active_run_id in self._live.active_run_ids():
+            active_run = self._uow.read_run(active_run_id)
+            if active_run is not None and active_run.parent_run_id is not None:
+                active_child_parents.add(active_run.parent_run_id)
+        for result in self._child_signals.reconcile_all(
+            now=self._now(), blocked_parent_run_ids=active_child_parents
+        ):
             run_id = result.signal.parent_run_id
             if run_id not in self._leases:
                 try:
