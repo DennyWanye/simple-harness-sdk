@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path, PurePosixPath
+import re
 import tarfile
 import zipfile
+from pathlib import Path, PurePosixPath
 
 from conftest import BuildArtifacts
-
 
 FORBIDDEN_ANYWHERE = {
     ".git",
@@ -68,3 +68,31 @@ def test_required_workflows_are_present() -> None:
     assert (root / ".github/workflows/ci.yml").is_file()
     assert (root / ".github/workflows/release.yml").is_file()
     assert (root / ".github/workflows/release-candidate-conformance.yml").is_file()
+
+
+def test_fresh_schema_v3_is_a_self_contained_static_artifact() -> None:
+    root = Path(__file__).resolve().parents[2]
+    sqlite_root = root / "src/simple_harness/execution/sqlite"
+    loader = (sqlite_root / "schema.py").read_text(encoding="utf-8")
+    migrations = sqlite_root / "migrations"
+    fresh_sql = (migrations / "0003_fresh.sql").read_text(encoding="utf-8")
+
+    assert 'joinpath("0003_fresh.sql")' in loader
+    assert "0001_initial.sql" not in loader
+    assert "0002_context_authority.sql" not in loader
+    assert loader.count(".read_text(") == 1
+
+    legacy_tables: set[str] = set()
+    for legacy_name in ("0001_initial.sql", "0002_context_authority.sql"):
+        legacy_sql = (migrations / legacy_name).read_text(encoding="utf-8")
+        legacy_tables.update(
+            re.findall(r"CREATE TABLE ([a-z_]+)", legacy_sql)
+        )
+    fresh_tables = set(re.findall(r"CREATE TABLE ([a-z_]+)", fresh_sql))
+    assert legacy_tables <= fresh_tables
+    assert {
+        "execution_users",
+        "memory_outbox",
+        "context_preparation_staging",
+    } <= fresh_tables
+    assert fresh_sql.count("CREATE TABLE execution_sessions") == 1

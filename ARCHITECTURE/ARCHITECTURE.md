@@ -15,9 +15,10 @@ last-updated: 2026-08-21
   turn 使用 `None` 并在本地结算，附件 body、reasoning 与 tool payload 不会自动进入 Memory。
 - `ConversationMemoryQueryPort.recall_bounded()` 与 `ConversationMemorySinkPort.apply()` 是稳定
   async 边界，均有显式 `close()`；旧 reserved `MemoryQueryPort` / `MemoryWritePort` 仍可导入。
-- execution SQLite 只接受唯一 fresh schema v3 descriptor。新库包含不可变 user/session 绑定、
-  `context_preparation_staging` 与 `memory_outbox`；旧 v1/v2 history 稳定 fail-closed，每次打开
-  都开启并 read-back FK，POSIX DB 文件强制 0600 且拒绝 symlink/非普通文件。
+- execution SQLite 只接受唯一、self-contained 的 `0003_fresh.sql` descriptor；loader 不读取或
+  拼接 legacy DDL。新库包含不可变 user/session 绑定、`context_preparation_staging` 与
+  `memory_outbox`；旧 v1/v2 history（包括 StartSnapshot v4 数据）稳定 fail-closed 且不迁移，
+  每次打开都开启并 read-back FK，POSIX DB 文件强制 0600 且拒绝 symlink/非普通文件。
 - root start、普通 user continuation、root terminal、continuation terminal 四条命令把对应
   Memory intent 与 execution 事实放在同一 SQLite 事务；replay 同时比较 canonical intent hash。
   非文本 intent 直接进入 `skipped_non_text`，不会调用 sink。
@@ -39,9 +40,9 @@ last-updated: 2026-08-21
 - CI 单次构建 authoritative wheel/sdist 并生成 canonical `BUILD_INFO.txt`/`SHA256SUMS`，
   Python 3.11–3.13 测同一 wheel。release 仅 manual dispatch 下载、校验并上传 program publisher
   已创建 release 的原 bytes，不响应 tag、也不重新 build。
-- 2026-08-21 验证：H1 19 passed；H2 15 passed；full pytest 1263 passed / 2 skipped；
+- 2026-08-21 验证：H1 19 passed；H2 15 passed；full pytest 1264 passed / 2 skipped；
   release-owned mypy 11 files 无错误；full Ruff 477，相对 frozen 484 baseline 减少 7；
-  REUSE 338/338 compliant；H-WHEEL artifact suite 20 passed。
+  REUSE 338/338 compliant；H-WHEEL artifact suite 21 passed。
 
 ## 0.1.5 Context authority 当前事实（2026-08-21）
 

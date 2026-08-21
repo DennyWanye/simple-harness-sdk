@@ -3,6 +3,7 @@
 
 import asyncio
 import hashlib
+import json
 import sqlite3
 from importlib.resources import files
 from pathlib import Path
@@ -173,8 +174,47 @@ def test_v015_database_requires_fresh_v3_storage_set(tmp_path: Path) -> None:
             ),
         ),
     )
+    snapshot = json.dumps(
+        {
+            "schema_version": 4,
+            "profile_key": "agent.general",
+            "driver_kind": "react",
+            "turn_id": "turn-v4",
+            "tool_catalog_generation": 1,
+            "input": {},
+            "policy_fingerprint": None,
+            "tool_catalog_fingerprint": "a" * 64,
+            "provider_budget_fingerprint": "b" * 64,
+            "workflow_admission": None,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    connection.execute("INSERT INTO execution_sessions VALUES ('session-v4', 1)")
+    connection.execute(
+        "INSERT INTO runs(run_id,execution_session_id,request_id,root_run_id,"
+        "profile_key,driver_kind,state,created_at,updated_at) "
+        "VALUES ('run-v4','session-v4','request-v4','run-v4','agent.general',"
+        "'react','created',1,1)"
+    )
+    connection.execute(
+        "INSERT INTO run_start_snapshots VALUES ('run-v4',?,?,1)",
+        (snapshot, hashlib.sha256(snapshot.encode()).hexdigest()),
+    )
     connection.commit()
     connection.close()
 
     with pytest.raises(ExecutionSchemaIncompatible, match="fresh schema v3"):
         Database.open(path)
+
+    check = sqlite3.connect(path)
+    assert check.execute(
+        "SELECT version FROM sdk_schema_migrations ORDER BY version"
+    ).fetchall() == [(1,), (2,)]
+    assert check.execute(
+        "SELECT snapshot_json FROM run_start_snapshots WHERE run_id='run-v4'"
+    ).fetchone() == (snapshot,)
+    assert check.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_outbox'"
+    ).fetchone() is None
+    check.close()
