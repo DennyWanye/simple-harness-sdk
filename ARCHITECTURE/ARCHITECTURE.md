@@ -74,7 +74,8 @@ last-updated: 2026-08-21
   API snapshot 固定；conversation DTO/ports、production builder 与 ARM64 gate entrypoint 的增删或重排
   都会触发契约测试失败。
 - 2026-08-21 验证：H1 19 passed；H2 15 passed；Python 3.11/3.12/3.13 full pytest
-  各 1279 passed / 2 expected skips；spawn-child recovery 全 8 参数在 Python 3.11 连续 20 轮
+  各 1325 passed / 2 expected skips；consumer authority / recall release / finite bounds targeted
+  74 passed；spawn-child recovery 全 8 参数在 Python 3.11 连续 20 轮
   （160 cases）通过；P0/P1 authority hardening targeted 76 passed；ARM64 public/artifact targeted
   9 passed。release-owned mypy 12 files 无错误；full Ruff 481 与
   `16d481b` pre-slice clean HEAD 完全相同、相对 frozen 484 baseline 减少 3；REUSE 340/340
