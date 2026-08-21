@@ -16,6 +16,13 @@ from simple_harness.contracts import JsonValue
 from simple_harness.providers import ProviderRequest, ProviderResponse
 from simple_harness.tools import ToolCall, ToolResult
 
+from .conversation_memory import (
+    ConversationMemoryApplyResult,
+    ConversationMemoryIntent,
+    ConversationMemoryRecallQuery,
+    ConversationMemoryRecallResult,
+)
+
 
 class ProviderPort(Protocol):
     """LLM provider interface for consumers.
@@ -313,6 +320,26 @@ class MemoryWritePort(Protocol):
         ...
 
 
+class ConversationMemoryQueryPort(Protocol):
+    """Durable, bounded conversation recall boundary."""
+
+    async def recall_bounded(
+        self, query: ConversationMemoryRecallQuery
+    ) -> ConversationMemoryRecallResult: ...
+
+    async def close(self) -> None: ...
+
+
+class ConversationMemorySinkPort(Protocol):
+    """Idempotent sink for one canonical conversation Memory event."""
+
+    async def apply(
+        self, intent: ConversationMemoryIntent
+    ) -> ConversationMemoryApplyResult: ...
+
+    async def close(self) -> None: ...
+
+
 __all__ = (
     "ProviderPort",
     "ToolExecutorPort",
@@ -321,4 +348,6 @@ __all__ = (
     "AuthorizationResult",
     "MemoryQueryPort",
     "MemoryWritePort",
+    "ConversationMemoryQueryPort",
+    "ConversationMemorySinkPort",
 )

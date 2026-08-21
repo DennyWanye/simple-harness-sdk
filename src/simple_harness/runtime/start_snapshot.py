@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
@@ -15,6 +16,7 @@ from simple_harness.contracts import (
     JsonValue,
     RequestId,
     RunId,
+    canonical_json,
     freeze_json,
     thaw_json,
 )
@@ -23,6 +25,8 @@ from simple_harness.workflow.execution_ports import (
     start_admission_request_from_json,
     start_admission_request_to_json,
 )
+
+from .conversation_memory import ContextPreparationMode, ConversationTurnInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +39,11 @@ class RunStart:
     tool_catalog_generation: int
     tool_catalog_fingerprint: str | None = None
     provider_budget_fingerprint: str | None = None
+    conversation: ConversationTurnInput | None = None
+    context_preparation_mode: ContextPreparationMode | None = None
+    context_stage_id: str | None = None
+    context_stage_hash: str | None = None
+    prepared_context: Mapping[str, JsonValue] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.execution_session_id, ExecutionSessionId):
@@ -62,6 +71,43 @@ class RunStart:
                 not isinstance(value, str) or len(value) != 64
             ):
                 raise ValueError(f"{name} must be a SHA-256 digest or None")
+        if self.conversation is not None:
+            if not isinstance(self.conversation, ConversationTurnInput):
+                raise TypeError("conversation must use ConversationTurnInput")
+            if self.conversation.session_id != self.execution_session_id.value:
+                raise ValueError("conversation session differs from RunStart")
+        mode = self.context_preparation_mode
+        if mode is not None:
+            mode = ContextPreparationMode(mode)
+            object.__setattr__(self, "context_preparation_mode", mode)
+        stage_values = (
+            self.context_stage_id,
+            self.context_stage_hash,
+            self.prepared_context,
+        )
+        if any(value is not None for value in stage_values) and not all(
+            value is not None for value in stage_values
+        ):
+            raise ValueError("context stage id/hash/private snapshot travel together")
+        if mode is not None and self.conversation is None:
+            raise ValueError("context preparation requires conversation envelope")
+        if mode is not None and self.context_stage_id is None:
+            raise ValueError("context preparation mode requires a durable stage")
+        if self.context_stage_id is not None and mode is None:
+            raise ValueError("durable context stage requires preparation mode")
+        if self.context_stage_id is not None and self.conversation is None:
+            raise ValueError("durable context stage requires conversation envelope")
+        if self.prepared_context is not None:
+            frozen_context = freeze_json(dict(self.prepared_context))
+            assert isinstance(frozen_context, Mapping)
+            expected_hash = hashlib.sha256(
+                canonical_json(
+                    thaw_json(cast(FrozenJsonValue, frozen_context))
+                ).encode("utf-8")
+            ).hexdigest()
+            if self.context_stage_hash != expected_hash:
+                raise ValueError("prepared context differs from context stage hash")
+            object.__setattr__(self, "prepared_context", frozen_context)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +121,11 @@ class StartSnapshot:
     policy_fingerprint: str | None = None
     tool_catalog_fingerprint: str | None = None
     provider_budget_fingerprint: str | None = None
+    conversation: ConversationTurnInput | None = None
+    context_preparation_mode: ContextPreparationMode | None = None
+    context_stage_id: str | None = None
+    context_stage_hash: str | None = None
+    prepared_context: FrozenJsonValue | None = None
 
     def __post_init__(self) -> None:
         if self.driver_kind == "workflow":
@@ -95,13 +146,45 @@ class StartSnapshot:
                 not isinstance(value, str) or len(value) != 64
             ):
                 raise ValueError(f"{name} must be a SHA-256 digest or None")
+        if self.conversation is not None and not isinstance(
+            self.conversation, ConversationTurnInput
+        ):
+            raise TypeError("conversation must use ConversationTurnInput")
+        if self.context_preparation_mode is not None:
+            object.__setattr__(
+                self,
+                "context_preparation_mode",
+                ContextPreparationMode(self.context_preparation_mode),
+            )
+        stage_values = (
+            self.context_stage_id,
+            self.context_stage_hash,
+            self.prepared_context,
+        )
+        if any(value is not None for value in stage_values) and not all(
+            value is not None for value in stage_values
+        ):
+            raise ValueError("snapshot context stage fields travel together")
+        if self.context_preparation_mode is not None and self.conversation is None:
+            raise ValueError("context preparation requires conversation envelope")
+        if self.context_preparation_mode is not None and self.context_stage_id is None:
+            raise ValueError("context preparation mode requires a durable stage")
+        if self.context_stage_id is not None and self.context_preparation_mode is None:
+            raise ValueError("durable context stage requires preparation mode")
+        if self.prepared_context is not None:
+            context = thaw_json(self.prepared_context)
+            expected_hash = hashlib.sha256(
+                canonical_json(context).encode("utf-8")
+            ).hexdigest()
+            if self.context_stage_hash != expected_hash:
+                raise ValueError("snapshot prepared context hash differs")
 
     def to_json(self) -> dict[str, JsonValue]:
         value = thaw_json(self.input)
         if not isinstance(value, dict):
             raise TypeError("start input must remain a JSON object")
         return {
-            "schema_version": 4,
+            "schema_version": 5,
             "profile_key": self.profile_key,
             "driver_kind": self.driver_kind,
             "turn_id": self.turn_id,
@@ -110,6 +193,21 @@ class StartSnapshot:
             "policy_fingerprint": self.policy_fingerprint,
             "tool_catalog_fingerprint": self.tool_catalog_fingerprint,
             "provider_budget_fingerprint": self.provider_budget_fingerprint,
+            "conversation": (
+                None if self.conversation is None else self.conversation.to_json()
+            ),
+            "context_preparation_mode": (
+                None
+                if self.context_preparation_mode is None
+                else self.context_preparation_mode.value
+            ),
+            "context_stage_id": self.context_stage_id,
+            "context_stage_hash": self.context_stage_hash,
+            "prepared_context": (
+                None
+                if self.prepared_context is None
+                else thaw_json(self.prepared_context)
+            ),
             "workflow_admission": (
                 None
                 if self.workflow_admission is None
@@ -125,7 +223,7 @@ class StartSnapshot:
             and "start_input" in value
             and "workflow_name" in value
         )
-        if not legacy_workflow_snapshot and schema_version not in {1, 2, 3, 4}:
+        if not legacy_workflow_snapshot and schema_version not in {1, 2, 3, 4, 5}:
             raise ValueError("unsupported start snapshot schema")
         profile_key = value.get("profile_key")
         driver_kind = value.get("driver_kind")
@@ -162,6 +260,19 @@ class StartSnapshot:
             if workflow_admission_value is None
             else start_admission_request_from_json(workflow_admission_value)
         )
+        conversation_value = value.get("conversation") if schema_version == 5 else None
+        if conversation_value is not None and not isinstance(conversation_value, dict):
+            raise TypeError("conversation must be an object or null")
+        mode_value = (
+            value.get("context_preparation_mode") if schema_version == 5 else None
+        )
+        if mode_value is not None and not isinstance(mode_value, str):
+            raise TypeError("context_preparation_mode must be a string or null")
+        prepared_value = (
+            value.get("prepared_context") if schema_version == 5 else None
+        )
+        if prepared_value is not None and not isinstance(prepared_value, dict):
+            raise TypeError("prepared_context must be an object or null")
         return cls(
             profile_key=profile_key,
             driver_kind=driver_kind,
@@ -170,18 +281,53 @@ class StartSnapshot:
             input=freeze_json(start_input),
             workflow_admission=admission,
             policy_fingerprint=(
-                value.get("policy_fingerprint")
-                if schema_version in {3, 4}
+                _optional_string(value.get("policy_fingerprint"), "policy_fingerprint")
+                if schema_version in {3, 4, 5}
                 else None
             ),
             tool_catalog_fingerprint=(
-                value.get("tool_catalog_fingerprint") if schema_version == 4 else None
-            ),  # type: ignore[arg-type]
-            provider_budget_fingerprint=(
-                value.get("provider_budget_fingerprint")
-                if schema_version == 4
+                _optional_string(
+                    value.get("tool_catalog_fingerprint"),
+                    "tool_catalog_fingerprint",
+                )
+                if schema_version in {4, 5}
                 else None
-            ),  # type: ignore[arg-type]
+            ),
+            provider_budget_fingerprint=(
+                _optional_string(
+                    value.get("provider_budget_fingerprint"),
+                    "provider_budget_fingerprint",
+                )
+                if schema_version in {4, 5}
+                else None
+            ),
+            conversation=(
+                ConversationTurnInput.from_json(conversation_value)
+                if isinstance(conversation_value, dict)
+                else None
+            ),
+            context_preparation_mode=(
+                ContextPreparationMode(mode_value)
+                if isinstance(mode_value, str)
+                else None
+            ),
+            context_stage_id=(
+                _optional_string(value.get("context_stage_id"), "context_stage_id")
+                if schema_version == 5
+                else None
+            ),
+            context_stage_hash=(
+                _optional_string(
+                    value.get("context_stage_hash"), "context_stage_hash"
+                )
+                if schema_version == 5
+                else None
+            ),
+            prepared_context=(
+                freeze_json(prepared_value)
+                if isinstance(prepared_value, dict)
+                else None
+            ),
         )
 
 
@@ -206,7 +352,26 @@ def bind_start_snapshot(
         policy_fingerprint=policy_fingerprint,
         tool_catalog_fingerprint=start.tool_catalog_fingerprint,
         provider_budget_fingerprint=start.provider_budget_fingerprint,
+        conversation=start.conversation,
+        context_preparation_mode=start.context_preparation_mode,
+        context_stage_id=start.context_stage_id,
+        context_stage_hash=start.context_stage_hash,
+        prepared_context=(
+            None
+            if start.prepared_context is None
+            else freeze_json(
+                thaw_json(cast(FrozenJsonValue, start.prepared_context))
+            )
+        ),
     )
+
+
+def _optional_string(value: JsonValue | None, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string or null")
+    return value
 
 
 __all__ = ("RunStart", "StartSnapshot", "bind_start_snapshot")

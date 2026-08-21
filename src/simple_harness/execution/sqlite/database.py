@@ -10,7 +10,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from .schema import migrations
+from .schema import SCHEMA_VERSION, fresh_descriptor
+from .storage import prepare_execution_database
+
+
+class ExecutionSchemaIncompatible(RuntimeError):
+    code = "execution_schema_incompatible"
 
 
 class Database:
@@ -35,11 +40,7 @@ class Database:
         wal: bool = False,
         timeout: float = 5.0,
     ) -> Database:
-        resolved = Path(path).expanduser().resolve()
-        if not resolved.parent.is_dir():
-            raise FileNotFoundError(
-                f"database parent directory does not exist: {resolved.parent}"
-            )
+        resolved = prepare_execution_database(path)
         connection = sqlite3.connect(
             resolved,
             timeout=timeout,
@@ -50,6 +51,8 @@ class Database:
         database = cls(resolved, connection)
         try:
             connection.execute("PRAGMA foreign_keys = ON")
+            if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+                raise RuntimeError("SQLite foreign key enforcement is unavailable")
             connection.execute(f"PRAGMA journal_mode = {'WAL' if wal else 'DELETE'}")
             connection.execute("PRAGMA synchronous = FULL")
             database._initialize_or_validate()
@@ -163,7 +166,7 @@ class Database:
             non_internal = {name for name in tables if not name.startswith("sqlite_")}
             if non_internal:
                 raise RuntimeError("database is not an empty Simple Harness SDK database")
-            migration = migrations()[0]
+            migration = fresh_descriptor()
             script = (
                 "BEGIN IMMEDIATE;\n"
                 "CREATE TABLE sdk_schema_migrations ("
@@ -188,26 +191,15 @@ class Database:
                 "SELECT version,name,checksum FROM sdk_schema_migrations"
             )
         }
-        known = migrations()
-        for migration in known:
-            existing = applied.get(migration.version)
-            if existing is not None and existing != (migration.name, migration.checksum):
-                raise RuntimeError("corrupt SDK schema migration history")
-            if existing is None:
-                if any(version > migration.version for version in applied):
-                    raise RuntimeError("SDK schema migration history has a gap")
-                script = (
-                    "BEGIN IMMEDIATE;\n"
-                    + migration.sql
-                    + "\nINSERT INTO sdk_schema_migrations(version,name,checksum) VALUES ("
-                    + f"{migration.version},'{migration.name}','{migration.checksum}');\nCOMMIT;"
-                )
-                connection.executescript(script)
-                applied[migration.version] = (migration.name, migration.checksum)
-        if set(applied) != {migration.version for migration in known}:
-            raise RuntimeError("unsupported SDK schema version")
+        descriptor = fresh_descriptor()
+        if applied != {
+            SCHEMA_VERSION: (descriptor.name, descriptor.checksum)
+        }:
+            raise ExecutionSchemaIncompatible(
+                "execution database requires a fresh schema v3 storage set"
+            )
         if self.integrity_check() != ("ok",) or self.foreign_key_violations():
             raise RuntimeError("SDK execution database failed integrity validation")
 
 
-__all__ = ("Database",)
+__all__ = ("Database", "ExecutionSchemaIncompatible")

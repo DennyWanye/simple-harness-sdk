@@ -3895,7 +3895,8 @@ def test_react_graph_failure_clears_ready_carrier_before_normal_loop(
             )
             assert result.state is RunState.COMPLETED
             assert result.payload == {
-                "message": "continued after durable spawn failure"
+                "response_present": True,
+                "finish_reason": None,
             }
             assert loop.calls == 1
             effect = uow.read_effect(EffectId(activation.ready_receipt.effect_id))

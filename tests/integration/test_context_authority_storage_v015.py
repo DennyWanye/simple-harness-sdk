@@ -2,15 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import hashlib
 import sqlite3
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
 
 from simple_harness import RunId, thaw_json
 from simple_harness.execution.provider_invocations import ProviderInvocationState
-from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
-from simple_harness.execution.sqlite.schema import migrations
+from simple_harness.execution.sqlite import (
+    Database,
+    ExecutionSchemaIncompatible,
+    SqliteExecutionUnitOfWork,
+)
 from simple_harness.providers import CancelToken, ProviderToolSpec
 from simple_harness.tools import normalize_public_progress_arguments
 
@@ -143,24 +148,33 @@ def test_public_progress_normalization_never_blocks_business_arguments() -> None
     assert narration == "Reading file"
 
 
-def test_v014_database_is_migrated_in_place(tmp_path: Path) -> None:
+def test_v015_database_requires_fresh_v3_storage_set(tmp_path: Path) -> None:
     path = tmp_path / "legacy.db"
-    first = migrations()[0]
+    resources = files("simple_harness.execution.sqlite.migrations")
+    first = resources.joinpath("0001_initial.sql").read_text(encoding="utf-8")
+    second = resources.joinpath("0002_context_authority.sql").read_text(
+        encoding="utf-8"
+    )
     connection = sqlite3.connect(path)
     connection.executescript(
         "CREATE TABLE sdk_schema_migrations (version INTEGER PRIMARY KEY, "
         "name TEXT NOT NULL UNIQUE, checksum TEXT NOT NULL, applied_at TEXT);"
-        + first.sql
+        + first
+        + second
     )
-    connection.execute(
+    connection.executemany(
         "INSERT INTO sdk_schema_migrations VALUES (?,?,?,CURRENT_TIMESTAMP)",
-        (first.version, first.name, first.checksum),
+        (
+            (1, "0001_initial", hashlib.sha256(first.encode()).hexdigest()),
+            (
+                2,
+                "0002_context_authority",
+                hashlib.sha256(second.encode()).hexdigest(),
+            ),
+        ),
     )
     connection.commit()
     connection.close()
 
-    with Database.open(path) as migrated:
-        assert migrated.schema_version == 2
-        assert {"tool_catalog_snapshots", "provider_projection_outbox"} <= (
-            migrated.table_names()
-        )
+    with pytest.raises(ExecutionSchemaIncompatible, match="fresh schema v3"):
+        Database.open(path)

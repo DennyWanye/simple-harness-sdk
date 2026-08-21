@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from simple_harness.contracts import HarnessError, JsonValue
 from simple_harness.execution.delivery import DeliverySpec, TerminalCommitResult
 from simple_harness.execution.fences import RunFenceLease
+from simple_harness.execution.memory_outbox import MemoryIntentSpec
 from simple_harness.execution.uow import (
     ExecutionLease,
     ExecutionUnitOfWork,
@@ -41,6 +42,7 @@ class TerminalCoordinator:
         fence: RunFenceLease,
         execution_lease: ExecutionLease,
         now: float,
+        memory_intent: MemoryIntentSpec | None = None,
     ) -> TerminalCommitResult:
         return self._uow.commit_root_terminal_with_deliveries(
             run_id=run.run_id,
@@ -55,6 +57,7 @@ class TerminalCoordinator:
                 f"runtime-fence:{fence.owner_id}:{fence.epoch}"
             ),
             now=now,
+            memory_intent=memory_intent,
         )
 
 

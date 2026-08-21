@@ -12,7 +12,12 @@ from dataclasses import replace
 from typing import cast
 
 from simple_harness.contracts import RequestId, RunId, canonical_json, thaw_json
-from simple_harness.contracts.messages import ContentBlock, Message, MessageRole
+from simple_harness.contracts.messages import (
+    ContentBlock,
+    Message,
+    MessageContent,
+    MessageRole,
+)
 from simple_harness.execution.budget import (
     BudgetPolicy,
     FrozenPriceEstimator,
@@ -22,6 +27,10 @@ from simple_harness.execution.dispatch import ProviderInvocationUnknownError
 from simple_harness.execution.recovery import RecoveryKind, WaitBlockerSpec
 from simple_harness.execution.uow import RunState
 from simple_harness.providers import ProviderToolSpec
+from simple_harness.runtime.conversation_memory import (
+    ConversationContinuationInput,
+    ConversationTurnOutput,
+)
 from simple_harness.runtime.kernel import DriverInvocation, DriverResult
 from simple_harness.runtime.workflow_spawn import WorkflowSpawnFailed
 from simple_harness.tools.errors import UnknownToolError
@@ -117,8 +126,51 @@ class ReActDriver:
                     run_fence=invocation.run_fence,
                     now=self._clock(),
                 )
+            for continuation in invocation.continuations:
+                continuation_payload = thaw_json(continuation.payload)
+                if not isinstance(continuation_payload, dict) or (
+                    continuation_payload.get("kind") != "conversation_user"
+                ):
+                    continue
+                conversation_value = continuation_payload.get("conversation")
+                if not isinstance(conversation_value, dict):
+                    raise TypeError("conversation continuation envelope is required")
+                conversation = ConversationContinuationInput.from_json(
+                    conversation_value
+                )
+                current_context = invocation.services.context.load(
+                    RunId(invocation.run.run_id)
+                )
+                invocation.services.context.append(
+                    RunId(invocation.run.run_id),
+                    invocation.execution_lease,
+                    current_context.revision,
+                    f"{continuation.continuation_id}:context:user",
+                    (conversation.message,),
+                )
         input_value = cast(Mapping[str, object], invocation.start.input)
-        initial = _messages(input_value.get("messages"))
+        prepared_context = invocation.start.prepared_context
+        prepared_value = (
+            None if prepared_context is None else thaw_json(prepared_context)
+        )
+        prepared_messages = (
+            prepared_value.get("provider_messages")
+            if isinstance(prepared_value, dict)
+            else None
+        )
+        initial = _messages(
+            input_value.get("messages")
+            if prepared_messages is None
+            else prepared_messages
+        )
+        if invocation.start.conversation is not None and (
+            not initial
+            or canonical_json(initial[-1].to_dict())
+            != canonical_json(invocation.start.conversation.message.to_dict())
+        ):
+            raise ValueError(
+                "prepared current message differs from conversation envelope"
+            )
         tools = _tools(
             input_value.get("capability_snapshot"),
             invocation.services.tools,
@@ -205,10 +257,35 @@ class ReActDriver:
                     error.effect.version,
                 ),
             )
+        response_message = result.response.message
         return DriverResult(
             RunState.COMPLETED,
-            {"message": result.response.message.content},
+            {
+                "response_present": True,
+                "finish_reason": getattr(result.response, "finish_reason", None),
+            },
+            conversation_output=(
+                ConversationTurnOutput(
+                    response_message,
+                    _assistant_memory_text(response_message),
+                )
+                if isinstance(response_message, Message)
+                else None
+            ),
         )
+
+
+def _assistant_memory_text(message: Message) -> str | None:
+    if isinstance(message.content, str):
+        return message.content
+    values: list[str] = []
+    for block in message.content:
+        if block.type not in {"text", "input_text", "output_text"}:
+            continue
+        text = block.data.get("text")
+        if isinstance(text, str) and text.strip():
+            values.append(text)
+    return "\n".join(values) or None
 
 
 def _messages(value: object) -> tuple[Message, ...]:
@@ -219,6 +296,7 @@ def _messages(value: object) -> tuple[Message, ...]:
         if not isinstance(item, Mapping):
             raise TypeError("ReAct input message must be an object")
         content = item["content"]
+        normalized_content: MessageContent
         if isinstance(content, (list, tuple)):
             blocks = tuple(
                 ContentBlock.from_dict(block)

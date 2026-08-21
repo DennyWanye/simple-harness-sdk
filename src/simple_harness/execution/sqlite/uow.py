@@ -88,6 +88,9 @@ from simple_harness.execution.uow import (
     WorkflowCheckpoint,
 )
 from simple_harness.providers import ProviderTarget, ProviderToolSpec
+
+if TYPE_CHECKING:
+    from simple_harness.execution.memory_outbox import MemoryIntentSpec
 from simple_harness.tools.contracts import ToolOutcome, ToolResult
 from simple_harness.tools.schema import (
     ArgumentsValidationError,
@@ -490,6 +493,155 @@ def _object_json(value: Mapping[str, JsonValue], name: str) -> str:
 def _fault(hook: FaultHook | None, point: str) -> None:
     if hook is not None:
         hook(point)
+
+
+def _stage_pair(stage_id: str | None, stage_hash: str | None) -> None:
+    if (stage_id is None) != (stage_hash is None):
+        raise ValueError("context stage id/hash must be present together")
+    if stage_id is not None:
+        _required(stage_id, "context_stage_id")
+        if len(stage_hash or "") != 64:
+            raise ValueError("context_stage_hash must be a SHA-256 digest")
+
+
+def _validate_memory_intent(
+    intent: MemoryIntentSpec,
+    *,
+    user_id: str,
+    session_id: str,
+) -> None:
+    for name in ("intent_id", "source_event_id", "user_id", "session_id", "role"):
+        _required(str(getattr(intent, name)), name)
+    if intent.user_id != user_id or intent.session_id != session_id:
+        raise UnitOfWorkConflict("memory intent user/session binding differs")
+    if intent.role not in {"user", "assistant"}:
+        raise ValueError("memory intent role is invalid")
+    if len(intent.payload_hash) != 64:
+        raise ValueError("memory intent payload hash is invalid")
+    if intent.memory_text is not None and not intent.memory_text.strip():
+        raise ValueError("memory intent text must be non-empty")
+
+
+def _insert_memory_intent(
+    connection: sqlite3.Connection,
+    intent: MemoryIntentSpec,
+    *,
+    run_id: str,
+    continuation_id: str | None,
+    now: float,
+) -> None:
+    state = "skipped_non_text" if intent.memory_text is None else "pending"
+    settled_at = now if state == "skipped_non_text" else None
+    connection.execute(
+        "INSERT INTO memory_outbox("
+        "intent_id,source_event_id,run_id,continuation_id,user_id,session_id,role,"
+        "memory_text,payload_hash,state,version,attempt_count,claim_owner,claim_token,"
+        "claim_expires_at,retry_at,error_code,created_at,updated_at,settled_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,NULL,?,NULL,?,?,?)",
+        (
+            intent.intent_id,
+            intent.source_event_id,
+            run_id,
+            continuation_id,
+            intent.user_id,
+            intent.session_id,
+            intent.role,
+            intent.memory_text,
+            intent.payload_hash,
+            state,
+            now,
+            now,
+            now,
+            settled_at,
+        ),
+    )
+
+
+def _verify_memory_replay(
+    connection: sqlite3.Connection, intent: MemoryIntentSpec | None
+) -> None:
+    if intent is None:
+        return
+    row = connection.execute(
+        "SELECT source_event_id,user_id,session_id,role,memory_text,payload_hash "
+        "FROM memory_outbox WHERE intent_id=?",
+        (intent.intent_id,),
+    ).fetchone()
+    expected = (
+        intent.source_event_id,
+        intent.user_id,
+        intent.session_id,
+        intent.role,
+        intent.memory_text,
+        intent.payload_hash,
+    )
+    if row is None or tuple(row) != expected:
+        raise UnitOfWorkConflict("memory intent replay differs")
+
+
+def _consume_context_stage(
+    connection: sqlite3.Connection,
+    *,
+    stage_id: str,
+    stage_hash: str,
+    kind: str,
+    expected_snapshot: JsonValue | None,
+    consumed_run_id: str | None,
+    consumed_continuation_id: str | None,
+    now: float,
+) -> None:
+    row = connection.execute(
+        "SELECT kind,state,private_snapshot,private_snapshot_hash FROM "
+        "context_preparation_staging WHERE stage_id=?",
+        (stage_id,),
+    ).fetchone()
+    if row is None or str(row["kind"]) != kind or str(row["state"]) != "staged":
+        raise UnitOfWorkConflict("context stage is not available for this command")
+    raw = bytes(row["private_snapshot"])
+    if str(row["private_snapshot_hash"]) != stage_hash:
+        raise UnitOfWorkConflict("context stage hash differs")
+    if hashlib.sha256(raw).hexdigest() != stage_hash:
+        raise UnitOfWorkConflict("context stage bytes are corrupt")
+    if not isinstance(expected_snapshot, Mapping) or (
+        canonical_json(expected_snapshot).encode("utf-8") != raw
+    ):
+        raise UnitOfWorkConflict("command private context differs from durable stage")
+    changed = connection.execute(
+        "UPDATE context_preparation_staging SET state='consumed',private_snapshot=NULL,"
+        "lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,consumed_run_id=?,"
+        "consumed_continuation_id=?,updated_at=? WHERE stage_id=? AND state='staged' "
+        "AND private_snapshot_hash=?",
+        (
+            consumed_run_id,
+            consumed_continuation_id,
+            now,
+            stage_id,
+            stage_hash,
+        ),
+    ).rowcount
+    if changed != 1:
+        raise UnitOfWorkConflict("context stage consume CAS failed")
+
+
+def _verify_stage_replay(
+    connection: sqlite3.Connection,
+    *,
+    stage_id: str | None,
+    stage_hash: str | None,
+    consumed_run_id: str | None,
+    consumed_continuation_id: str | None,
+) -> None:
+    _stage_pair(stage_id, stage_hash)
+    if stage_id is None:
+        return
+    row = connection.execute(
+        "SELECT state,private_snapshot_hash,consumed_run_id,consumed_continuation_id "
+        "FROM context_preparation_staging WHERE stage_id=?",
+        (stage_id,),
+    ).fetchone()
+    expected = ("consumed", stage_hash, consumed_run_id, consumed_continuation_id)
+    if row is None or tuple(row) != expected:
+        raise UnitOfWorkConflict("context stage replay differs")
 
 
 class SqliteExecutionUnitOfWork:
@@ -1885,6 +2037,7 @@ class SqliteExecutionUnitOfWork:
         execution_lease: ExecutionLease,
         terminal_fence_receipt_ref: str,
         now: float,
+        memory_intent: MemoryIntentSpec | None = None,
         fault: FaultHook | None = None,
     ) -> TerminalCommitResult:
         run_id = _required(run_id, "run_id")
@@ -1968,6 +2121,7 @@ class SqliteExecutionUnitOfWork:
                 and str(existing_event["payload_json"]) == payload_json
                 and requested == actual
             ):
+                _verify_memory_replay(self.database.connection, memory_intent)
                 return TerminalCommitResult(existing_run, stored)
             raise UnitOfWorkConflict("another root terminal intent already won")
 
@@ -2024,6 +2178,28 @@ class SqliteExecutionUnitOfWork:
                     ),
                 )
                 _fault(fault, f"root_terminal.delivery.{index}.after_write")
+            if memory_intent is not None:
+                session = connection.execute(
+                    "SELECT s.user_id,r.execution_session_id FROM runs r "
+                    "JOIN execution_sessions s ON s.session_id=r.execution_session_id "
+                    "WHERE r.run_id=?",
+                    (run_id,),
+                ).fetchone()
+                assert session is not None
+                _validate_memory_intent(
+                    memory_intent,
+                    user_id=str(session["user_id"]),
+                    session_id=str(session["execution_session_id"]),
+                )
+                _fault(fault, "root_terminal.memory_intent.before_write")
+                _insert_memory_intent(
+                    connection,
+                    memory_intent,
+                    run_id=run_id,
+                    continuation_id=None,
+                    now=now,
+                )
+                _fault(fault, "root_terminal.memory_intent.after_write")
             _fault(fault, "root_terminal.fence.before_write")
             changed = connection.execute(
                 """
@@ -2208,6 +2384,10 @@ class SqliteExecutionUnitOfWork:
         snapshot: Mapping[str, JsonValue],
         event_id: str,
         now: float,
+        user_id: str = "harness-system",
+        memory_intent: MemoryIntentSpec | None = None,
+        context_stage_id: str | None = None,
+        context_stage_hash: str | None = None,
         fault: FaultHook | None = None,
     ) -> RunRecord:
         execution_session_id = _required(execution_session_id, "execution_session_id")
@@ -2216,6 +2396,14 @@ class SqliteExecutionUnitOfWork:
         profile_key = _required(profile_key, "profile_key")
         driver_kind = _required(driver_kind, "driver_kind")
         event_id = _required(event_id, "event_id")
+        user_id = _required(user_id, "user_id")
+        _stage_pair(context_stage_id, context_stage_hash)
+        if memory_intent is not None:
+            _validate_memory_intent(
+                memory_intent,
+                user_id=user_id,
+                session_id=execution_session_id,
+            )
         now = _time(now)
         snapshot_json = _object_json(snapshot, "snapshot")
         snapshot_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
@@ -2228,12 +2416,37 @@ class SqliteExecutionUnitOfWork:
                 driver_kind=driver_kind,
                 snapshot_hash=snapshot_hash,
             )
+            owner = self.database.connection.execute(
+                "SELECT user_id FROM execution_sessions WHERE session_id=?",
+                (execution_session_id,),
+            ).fetchone()
+            if owner is None or str(owner[0]) != user_id:
+                raise UnitOfWorkConflict("execution session belongs to another user")
+            _verify_memory_replay(self.database.connection, memory_intent)
+            _verify_stage_replay(
+                self.database.connection,
+                stage_id=context_stage_id,
+                stage_hash=context_stage_hash,
+                consumed_run_id=run_id,
+                consumed_continuation_id=None,
+            )
             return existing
         with self.database.transaction() as connection:
             _fault(fault, "root_start.session.before_write")
             connection.execute(
-                "INSERT OR IGNORE INTO execution_sessions(session_id, created_at) VALUES (?, ?)",
-                (execution_session_id, now),
+                "INSERT OR IGNORE INTO execution_users(user_id,created_at) VALUES(?,?)",
+                (user_id, now),
+            )
+            owner = connection.execute(
+                "SELECT user_id FROM execution_sessions WHERE session_id=?",
+                (execution_session_id,),
+            ).fetchone()
+            if owner is not None and str(owner[0]) != user_id:
+                raise UnitOfWorkConflict("execution session belongs to another user")
+            connection.execute(
+                "INSERT OR IGNORE INTO execution_sessions(session_id,user_id,created_at) "
+                "VALUES(?,?,?)",
+                (execution_session_id, user_id, now),
             )
             _fault(fault, "root_start.session.after_write")
             _fault(fault, "root_start.run.before_write")
@@ -2266,6 +2479,27 @@ class SqliteExecutionUnitOfWork:
                 (run_id, snapshot_json, snapshot_hash, now),
             )
             _fault(fault, "root_start.snapshot.after_write")
+            if context_stage_id is not None and context_stage_hash is not None:
+                _consume_context_stage(
+                    connection,
+                    stage_id=context_stage_id,
+                    stage_hash=context_stage_hash,
+                    kind="root",
+                    expected_snapshot=snapshot.get("prepared_context"),
+                    consumed_run_id=run_id,
+                    consumed_continuation_id=None,
+                    now=now,
+                )
+            if memory_intent is not None:
+                _fault(fault, "root_start.memory_intent.before_write")
+                _insert_memory_intent(
+                    connection,
+                    memory_intent,
+                    run_id=run_id,
+                    continuation_id=None,
+                    now=now,
+                )
+                _fault(fault, "root_start.memory_intent.after_write")
             _fault(fault, "root_start.event.before_write")
             self._insert_event(
                 connection,
@@ -2575,30 +2809,51 @@ class SqliteExecutionUnitOfWork:
         run_id: str,
         payload: Mapping[str, JsonValue],
         now: float,
+        memory_intent: MemoryIntentSpec | None = None,
+        context_stage_id: str | None = None,
+        context_stage_hash: str | None = None,
         fault: FaultHook | None = None,
     ) -> ContinuationRecord:
         continuation_id = _required(continuation_id, "continuation_id")
         run_id = _required(run_id, "run_id")
         now = _time(now)
         payload_json = _object_json(payload, "payload")
+        _stage_pair(context_stage_id, context_stage_hash)
         existing = self.read_continuation(continuation_id)
         if existing is not None:
             if (
                 existing.run_id == run_id
                 and canonical_json(_thaw(existing.payload)) == payload_json
             ):
+                _verify_memory_replay(self.database.connection, memory_intent)
+                _verify_stage_replay(
+                    self.database.connection,
+                    stage_id=context_stage_id,
+                    stage_hash=context_stage_hash,
+                    consumed_run_id=None,
+                    consumed_continuation_id=continuation_id,
+                )
                 return existing
             raise UnitOfWorkConflict(
                 "continuation identity reused with different payload"
             )
         with self.database.transaction() as connection:
             run_row = connection.execute(
-                "SELECT state FROM runs WHERE run_id=?", (run_id,)
+                "SELECT r.state,s.user_id,r.execution_session_id FROM runs r "
+                "JOIN execution_sessions s ON s.session_id=r.execution_session_id "
+                "WHERE r.run_id=?",
+                (run_id,),
             ).fetchone()
             if run_row is None:
                 raise UnitOfWorkNotFound(run_id)
             if str(run_row["state"]) in {"completed", "failed", "cancelled"}:
                 raise UnitOfWorkConflict("terminal Run rejects new continuations")
+            if memory_intent is not None:
+                _validate_memory_intent(
+                    memory_intent,
+                    user_id=str(run_row["user_id"]),
+                    session_id=str(run_row["execution_session_id"]),
+                )
             row = connection.execute(
                 "SELECT COALESCE(MAX(fifo_seq), 0) + 1 FROM continuations WHERE run_id = ?",
                 (run_id,),
@@ -2610,13 +2865,43 @@ class SqliteExecutionUnitOfWork:
                 INSERT INTO continuations(
                     continuation_id, run_id, fifo_seq, payload_json, state,
                     version, claimed_by, runtime_lease_epoch, claim_epoch,
-                    ack_receipt_id, created_at, claimed_at, acked_at
+                    ack_receipt_id, created_at, claimed_at, acked_at,
+                    context_stage_id, context_stage_hash
                 ) VALUES (?, ?, ?, ?, 'pending', 0, NULL, NULL, 0,
-                          NULL, ?, NULL, NULL)
+                          NULL, ?, NULL, NULL, ?, ?)
                 """,
-                (continuation_id, run_id, sequence, payload_json, now),
+                (
+                    continuation_id,
+                    run_id,
+                    sequence,
+                    payload_json,
+                    now,
+                    context_stage_id,
+                    context_stage_hash,
+                ),
             )
             _fault(fault, "continuation_enqueue.continuation.after_write")
+            if context_stage_id is not None and context_stage_hash is not None:
+                _consume_context_stage(
+                    connection,
+                    stage_id=context_stage_id,
+                    stage_hash=context_stage_hash,
+                    kind="continuation",
+                    expected_snapshot=payload.get("prepared_context"),
+                    consumed_run_id=None,
+                    consumed_continuation_id=continuation_id,
+                    now=now,
+                )
+            if memory_intent is not None:
+                _fault(fault, "continuation_enqueue.memory_intent.before_write")
+                _insert_memory_intent(
+                    connection,
+                    memory_intent,
+                    run_id=run_id,
+                    continuation_id=continuation_id,
+                    now=now,
+                )
+                _fault(fault, "continuation_enqueue.memory_intent.after_write")
         _fault(fault, "continuation_enqueue.after_commit")
         result = self.read_continuation(continuation_id)
         assert result is not None
@@ -2871,6 +3156,7 @@ class SqliteExecutionUnitOfWork:
         receipt_id: str,
         terminal_fence_receipt_ref: str,
         now: float,
+        memory_intent: MemoryIntentSpec | None = None,
         fault: FaultHook | None = None,
     ) -> ContinuationTerminalResult:
         run_id = _required(run_id, "run_id")
@@ -2909,11 +3195,15 @@ class SqliteExecutionUnitOfWork:
                         }
                         for item in items
                     ],
+                    "memory_intent_hash": (
+                        None if memory_intent is None else memory_intent.payload_hash
+                    ),
                 }
             ).encode()
         ).hexdigest()
         existing = self._read_continuation_progress_receipt(receipt_id)
         if existing is not None:
+            _verify_memory_replay(self.database.connection, memory_intent)
             return self._replay_continuation_terminal(
                 existing,
                 continuation_claim=continuation_claim,
@@ -2926,6 +3216,7 @@ class SqliteExecutionUnitOfWork:
                 (receipt_id,),
             ).fetchone()
             if receipt_row is not None:
+                _verify_memory_replay(connection, memory_intent)
                 return self._replay_continuation_terminal(
                     _continuation_progress_receipt(receipt_row),
                     continuation_claim=continuation_claim,
@@ -3022,6 +3313,28 @@ class SqliteExecutionUnitOfWork:
                     ),
                 )
                 _fault(fault, f"continuation_terminal.delivery.{index}.after_write")
+            if memory_intent is not None:
+                session = connection.execute(
+                    "SELECT s.user_id,r.execution_session_id FROM runs r "
+                    "JOIN execution_sessions s ON s.session_id=r.execution_session_id "
+                    "WHERE r.run_id=?",
+                    (run_id,),
+                ).fetchone()
+                assert session is not None
+                _validate_memory_intent(
+                    memory_intent,
+                    user_id=str(session["user_id"]),
+                    session_id=str(session["execution_session_id"]),
+                )
+                _fault(fault, "continuation_terminal.memory_intent.before_write")
+                _insert_memory_intent(
+                    connection,
+                    memory_intent,
+                    run_id=run_id,
+                    continuation_id=None,
+                    now=now,
+                )
+                _fault(fault, "continuation_terminal.memory_intent.after_write")
             _fault(fault, "continuation_terminal.fence.before_write")
             changed = connection.execute(
                 "UPDATE run_fences SET state='released',released_at=? "
@@ -6188,7 +6501,8 @@ class SqliteExecutionUnitOfWork:
         snapshot_json = canonical_json(snapshot)
         _fault(fault, "workflow:admit_start_standalone:before_runs_write")
         tx.connection.execute(
-            "INSERT OR IGNORE INTO execution_sessions(session_id,created_at) VALUES(?,?)",
+            "INSERT OR IGNORE INTO execution_sessions(session_id,user_id,created_at) "
+            "VALUES(?,'harness-system',?)",
             (request.session_id, now),
         )
         tx.connection.execute(
@@ -13770,7 +14084,8 @@ class SqliteExecutionUnitOfWork:
         expires_at = now + float(claim.lease_ttl_seconds)
         _fault(fault, "workflow:runtime_start:before_session_write")
         tx.connection.execute(
-            "INSERT OR IGNORE INTO execution_sessions(session_id,created_at) VALUES(?,?)",
+            "INSERT OR IGNORE INTO execution_sessions(session_id,user_id,created_at) "
+            "VALUES(?,'harness-system',?)",
             (verified.session_id, now),
         )
         _fault(fault, "workflow:runtime_start:after_session_write")

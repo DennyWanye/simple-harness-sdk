@@ -24,10 +24,12 @@ from simple_harness.contracts import (
     thaw_json,
 )
 from simple_harness.execution.context_authority import ToolCatalogSnapshot
+from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.contracts.children import AttachmentPolicy
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySpec
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.fences import RunFenceLease, RunFencePort
+from simple_harness.execution.memory_outbox import MemoryDispatcher, MemoryIntentSpec
 from simple_harness.execution.recovery import WaitBlockerSpec
 from simple_harness.execution.uow import (
     RUNTIME_LEASE_NAMESPACE,
@@ -52,6 +54,13 @@ from .admission import AdmissionPort, AllowAllAdmission
 from .child_coordinator import ChildCoordinator
 from .child_signal_runtime import ChildSignalRuntime
 from .context import ContextPort
+from .conversation_memory import (
+    ContextPreparationMode,
+    ConversationContinuationInput,
+    ConversationMemoryIntent,
+    ConversationMemoryRole,
+    ConversationTurnOutput,
+)
 from .live_index import LiveRunIndex
 from .orchestration import (
     RuntimeActivationClaim,
@@ -146,6 +155,7 @@ class DriverResult:
     workflow_terminal: WorkflowTerminalOutcome | None = None
     workflow_retry_wake: WorkflowRetryWake | None = None
     authorization_wait: ToolAuthorizationPending | None = None
+    conversation_output: ConversationTurnOutput | None = None
 
     def __post_init__(self) -> None:
         state = RunState(self.state)
@@ -154,6 +164,11 @@ class DriverResult:
         object.__setattr__(self, "state", state)
         object.__setattr__(self, "payload", dict(self.payload))
         object.__setattr__(self, "deliveries", tuple(self.deliveries))
+        if self.conversation_output is not None:
+            if not isinstance(self.conversation_output, ConversationTurnOutput):
+                raise TypeError("conversation_output must use ConversationTurnOutput")
+            if state is not RunState.COMPLETED:
+                raise ValueError("only COMPLETED may carry conversation_output")
         if self.workflow_spawn_control is not None and (
             state is not RunState.WAITING or self.wait_blocker is not None
         ):
@@ -504,6 +519,10 @@ class RuntimePorts:
     owner_id: str = field(default_factory=lambda: f"runtime-{uuid4().hex}")
     lease_ttl_seconds: float = 30.0
     close_timeout_seconds: float = 5.0
+    conversation_memory_enabled: bool = False
+    memory_dispatcher: MemoryDispatcher | None = None
+    context_staging: ContextStagingRepository | None = None
+    context_preparation_mode: ContextPreparationMode | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -536,6 +555,20 @@ class RuntimePorts:
             or self.close_timeout_seconds <= 0
         ):
             raise ValueError("close_timeout_seconds must be finite and positive")
+        if self.conversation_memory_enabled and (
+            self.memory_dispatcher is None or self.context_staging is None
+        ):
+            raise TypeError(
+                "enabled conversation Memory requires dispatcher and context staging"
+            )
+        if self.conversation_memory_enabled and self.context_preparation_mode is None:
+            raise TypeError("enabled conversation Memory requires preparation mode")
+        if self.context_preparation_mode is not None:
+            object.__setattr__(
+                self,
+                "context_preparation_mode",
+                ContextPreparationMode(self.context_preparation_mode),
+            )
 
 
 class RunClient:
@@ -562,6 +595,55 @@ class RunClient:
             payload=payload,
             now=self._runtime._now(),
         )
+        asyncio.create_task(self._runtime._wake_continuation(continuation.run_id))
+        return continuation
+
+    def signal_conversation(
+        self,
+        run_id: RunId,
+        *,
+        continuation_id: str,
+        value: ConversationContinuationInput,
+        context_stage_id: str,
+        context_stage_hash: str,
+        prepared_context: Mapping[str, JsonValue],
+    ) -> ContinuationRecord:
+        """Enqueue one ordinary user continuation with its durable context stage."""
+
+        self._runtime._require_started()
+        if not isinstance(value, ConversationContinuationInput):
+            raise TypeError("value must use ConversationContinuationInput")
+        raw = self._runtime._uow.read_start_snapshot(_run_id(run_id))
+        if raw is None:
+            raise KeyError(run_id.value)
+        start = StartSnapshot.from_json(raw)
+        if start.conversation is None:
+            raise UnitOfWorkConflict("Run has no conversation identity")
+        memory_intent: MemoryIntentSpec | None = None
+        if self._runtime._ports.conversation_memory_enabled:
+            intent = ConversationMemoryIntent(
+                f"harness-memory/v1/user-continuation/{continuation_id}",
+                start.conversation.user_id,
+                start.conversation.session_id,
+                ConversationMemoryRole.USER,
+                value.memory_text,
+            )
+            memory_intent = MemoryIntentSpec.from_conversation(intent)
+        continuation = self._runtime._uow.enqueue_continuation(
+            continuation_id=continuation_id,
+            run_id=_run_id(run_id),
+            payload={
+                "kind": "conversation_user",
+                "conversation": value.to_json(),
+                "prepared_context": dict(prepared_context),
+            },
+            memory_intent=memory_intent,
+            context_stage_id=context_stage_id,
+            context_stage_hash=context_stage_hash,
+            now=self._runtime._now(),
+        )
+        if memory_intent is not None:
+            self._runtime._memory_wake.set()
         asyncio.create_task(self._runtime._wake_continuation(continuation.run_id))
         return continuation
 
@@ -730,8 +812,13 @@ class Runtime:
         ports: RuntimePorts,
         root_profile_key: str,
         close_hook: Callable[[], None] | None = None,
+        start_hooks: Sequence[Callable[[], Awaitable[None]]] = (),
+        async_close_hooks: Sequence[Callable[[], Awaitable[None]]] = (),
     ) -> None:
         self._close_hook = close_hook
+        self._start_hooks = tuple(start_hooks)
+        self._async_close_hooks = tuple(async_close_hooks)
+        self._started_hooks = 0
         if WORKFLOW_DRIVER_KIND in drivers:
             raise ValueError("workflow is an SDK-reserved driver key")
         workflow_profiles = tuple(
@@ -808,6 +895,8 @@ class Runtime:
         self._wake_drain_task: asyncio.Task[None] | None = None
         self._delivery_pump_task: asyncio.Task[None] | None = None
         self._delivery_wake = asyncio.Event()
+        self._memory_pump_task: asyncio.Task[None] | None = None
+        self._memory_wake = asyncio.Event()
         self._lifecycle_lock = asyncio.Lock()
         self._startup_task: asyncio.Task[None] | None = None
         self._state = RuntimeLifecycleState.NEW
@@ -845,6 +934,10 @@ class Runtime:
             await self.recover(_startup=True)
             await self._drain_resolved_waits_once()
             await self._drain_deliveries_bounded(100)
+            await self._drain_memory_bounded(100)
+            for hook in self._start_hooks:
+                await hook()
+                self._started_hooks += 1
             async with self._lifecycle_lock:
                 if self._state is not RuntimeLifecycleState.STARTING:
                     raise asyncio.CancelledError
@@ -854,6 +947,10 @@ class Runtime:
                 self._delivery_pump_task = asyncio.create_task(
                     self._delivery_pump(), name="simple-harness-delivery-pump"
                 )
+                if self._ports.memory_dispatcher is not None:
+                    self._memory_pump_task = asyncio.create_task(
+                        self._memory_pump(), name="simple-harness-memory-pump"
+                    )
                 self._started = True
                 self._closing = False
                 self._state = RuntimeLifecycleState.READY
@@ -956,6 +1053,10 @@ class Runtime:
                 return
             if self._state is RuntimeLifecycleState.NEW:
                 self._state = RuntimeLifecycleState.CLOSED
+                for hook in reversed(self._async_close_hooks):
+                    await hook()
+                if self._ports.memory_dispatcher is not None:
+                    await self._ports.memory_dispatcher.close()
                 if self._close_hook is not None:
                     self._close_hook()
                 return
@@ -966,6 +1067,7 @@ class Runtime:
             startup.cancel()
             await asyncio.gather(startup, return_exceptions=True)
         await self._drain_deliveries_bounded(100)
+        await self._drain_memory_bounded(100)
         await self._stop_background_tasks()
         for token in self._cancels.values():
             token.cancel()
@@ -994,6 +1096,11 @@ class Runtime:
         self._workflow_start_dispatches.clear()
         self._workflow_recovery_work.clear()
         self._started = False
+        for hook in reversed(self._async_close_hooks):
+            await hook()
+        self._started_hooks = 0
+        if self._ports.memory_dispatcher is not None:
+            await self._ports.memory_dispatcher.close()
         if self._close_hook is not None:
             self._close_hook()
         async with self._lifecycle_lock:
@@ -1002,11 +1109,16 @@ class Runtime:
     async def _stop_background_tasks(self) -> None:
         tasks = tuple(
             task
-            for task in (self._wake_drain_task, self._delivery_pump_task)
+            for task in (
+                self._wake_drain_task,
+                self._delivery_pump_task,
+                self._memory_pump_task,
+            )
             if task is not None
         )
         self._wake_drain_task = None
         self._delivery_pump_task = None
+        self._memory_pump_task = None
         for task in tasks:
             task.cancel()
         if tasks:
@@ -1045,6 +1157,29 @@ class Runtime:
                 else:
                     backoff = 0.01
                     self._delivery_wake.set()
+        except asyncio.CancelledError:
+            return
+
+    async def _drain_memory_bounded(self, limit: int) -> bool:
+        dispatcher = self._ports.memory_dispatcher
+        if dispatcher is None:
+            return True
+        return await dispatcher.drain(limit=limit)
+
+    async def _memory_pump(self) -> None:
+        dispatcher = self._ports.memory_dispatcher
+        if dispatcher is None:
+            return
+        backoff = 0.01
+        try:
+            while self._state is RuntimeLifecycleState.READY:
+                try:
+                    await asyncio.wait_for(self._memory_wake.wait(), timeout=backoff)
+                except TimeoutError:
+                    pass
+                self._memory_wake.clear()
+                progressed = await dispatcher.run_once()
+                backoff = 0.01 if progressed else min(1.0, backoff * 2)
         except asyncio.CancelledError:
             return
 
@@ -1106,13 +1241,15 @@ class Runtime:
                     continue
                 try:
                     activation = await self._uow.run_atomic(
-                        lambda tx, ready=ready, blocker=blocker: self._uow.consume_spawn_ready_and_claim_activation(
-                            tx,
-                            ready,
-                            blocker,
-                            self._ports.owner_id,
-                            now=self._now(),
-                            ttl_seconds=self._ports.lease_ttl_seconds,
+                        lambda tx, ready=ready, blocker=blocker: (
+                            self._uow.consume_spawn_ready_and_claim_activation(
+                                tx,
+                                ready,
+                                blocker,
+                                self._ports.owner_id,
+                                now=self._now(),
+                                ttl_seconds=self._ports.lease_ttl_seconds,
+                            )
                         ),
                         fault_label="runtime:spawn_ready:consume",
                     )
@@ -1152,6 +1289,25 @@ class Runtime:
 
     async def _start_run(self, start: RunStart) -> RunRecord:
         self._require_started()
+        if self._ports.conversation_memory_enabled and start.conversation is None:
+            raise HarnessError(
+                "conversation_envelope_required",
+                "Enabled conversation Memory requires an explicit envelope.",
+            )
+        if self._ports.conversation_memory_enabled and (
+            start.context_stage_id is None or start.prepared_context is None
+        ):
+            raise HarnessError(
+                "context_stage_required",
+                "Enabled conversation Memory requires durable prepared context.",
+            )
+        if self._ports.conversation_memory_enabled and (
+            start.context_preparation_mode is not self._ports.context_preparation_mode
+        ):
+            raise HarnessError(
+                "context_preparation_mode_mismatch",
+                "Run context preparation mode differs from Runtime composition.",
+            )
         verdict = await self._ports.admission.evaluate(start)
         if not verdict.allowed:
             logger.warning(
@@ -1170,6 +1326,17 @@ class Runtime:
             driver_kind=profile.driver_kind,
             policy_fingerprint=getattr(driver, "policy_fingerprint", None),
         )
+        memory_intent: MemoryIntentSpec | None = None
+        if self._ports.conversation_memory_enabled and start.conversation is not None:
+            memory_intent = MemoryIntentSpec.from_conversation(
+                ConversationMemoryIntent(
+                    f"harness-memory/v1/user/{start.run_id.value}",
+                    start.conversation.user_id,
+                    start.conversation.session_id,
+                    ConversationMemoryRole.USER,
+                    start.conversation.memory_text,
+                )
+            )
         created = self._uow.create_with_start_snapshot(
             execution_session_id=start.execution_session_id.value,
             run_id=start.run_id.value,
@@ -1179,7 +1346,17 @@ class Runtime:
             snapshot=snapshot.to_json(),
             event_id=f"{start.run_id.value}:created",
             now=self._now(),
+            user_id=(
+                "harness-system"
+                if start.conversation is None
+                else start.conversation.user_id
+            ),
+            memory_intent=memory_intent,
+            context_stage_id=start.context_stage_id,
+            context_stage_hash=start.context_stage_hash,
         )
+        if memory_intent is not None:
+            self._memory_wake.set()
         logger.info(
             "run.start",
             extra={
@@ -1249,8 +1426,10 @@ class Runtime:
                 ready = self._workflow_spawn_ready_activations.get(run_id)
                 if ready is not None:
                     refreshed = await self._uow.run_atomic(
-                        lambda tx, receipt_id=ready.activation_receipt_id: self._uow.read_spawn_ready_activation(
-                            tx, run_id, receipt_id
+                        lambda tx, receipt_id=ready.activation_receipt_id: (
+                            self._uow.read_spawn_ready_activation(
+                                tx, run_id, receipt_id
+                            )
                         ),
                         fault_label="runtime:spawn_ready:heartbeat_read",
                     )
@@ -1461,6 +1640,7 @@ class Runtime:
                     payload=result.payload,
                     deliveries=result.deliveries,
                     continuation_claim=continuation_claim,
+                    conversation_output=result.conversation_output,
                 )
         except asyncio.CancelledError:
             current = self._uow.read_run(run_id)
@@ -1623,7 +1803,34 @@ class Runtime:
         payload: Mapping[str, JsonValue],
         deliveries: Sequence[DeliverySpec],
         continuation_claim: ContinuationRecord | None = None,
+        conversation_output: ConversationTurnOutput | None = None,
     ) -> None:
+        raw_snapshot = self._uow.read_start_snapshot(run.run_id)
+        snapshot = None if raw_snapshot is None else StartSnapshot.from_json(raw_snapshot)
+        memory_intent: MemoryIntentSpec | None = None
+        if (
+            self._ports.conversation_memory_enabled
+            and snapshot is not None
+            and snapshot.conversation is not None
+        ):
+            if state is RunState.COMPLETED and conversation_output is None:
+                raise UnitOfWorkConflict(
+                    "completed conversation requires typed conversation_output"
+                )
+            if state is not RunState.COMPLETED and conversation_output is not None:
+                raise UnitOfWorkConflict(
+                    "non-completed conversation rejects conversation_output"
+                )
+            if conversation_output is not None:
+                memory_intent = MemoryIntentSpec.from_conversation(
+                    ConversationMemoryIntent(
+                        f"harness-memory/v1/assistant/{run.run_id}",
+                        snapshot.conversation.user_id,
+                        snapshot.conversation.session_id,
+                        ConversationMemoryRole.ASSISTANT,
+                        conversation_output.memory_text,
+                    )
+                )
         event = (
             "run.complete"
             if state is RunState.COMPLETED
@@ -1710,10 +1917,13 @@ class Runtime:
                     f"runtime-fence:{fence.owner_id}:{fence.epoch}"
                 ),
                 now=self._now(),
+                memory_intent=memory_intent,
             )
             self._fences.pop(run.run_id, None)
             if deliveries:
                 self._delivery_wake.set()
+            if memory_intent is not None:
+                self._memory_wake.set()
             return
         self._terminal.commit(
             run,
@@ -1723,10 +1933,13 @@ class Runtime:
             fence=fence,
             execution_lease=self._leases[run.run_id],
             now=self._now(),
+            memory_intent=memory_intent,
         )
         self._fences.pop(run.run_id, None)
         if deliveries:
             self._delivery_wake.set()
+        if memory_intent is not None:
+            self._memory_wake.set()
 
     async def _abandon_run_authority(self, run_id: str) -> None:
         fence = self._fences.pop(run_id, None)
@@ -1897,6 +2110,8 @@ def build_runtime(
     *,
     workflow_runner: object | None = None,
     close_hook: Callable[[], None] | None = None,
+    start_hooks: Sequence[Callable[[], Awaitable[None]]] = (),
+    async_close_hooks: Sequence[Callable[[], Awaitable[None]]] = (),
 ) -> Runtime:
     """Build a Runtime with one fixed root Profile and no classifier path."""
 
@@ -1928,6 +2143,8 @@ def build_runtime(
         ports=ports,
         root_profile_key=ROOT_PROFILE_KEY,
         close_hook=close_hook,
+        start_hooks=start_hooks,
+        async_close_hooks=async_close_hooks,
     )
 
 

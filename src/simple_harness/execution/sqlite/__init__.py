@@ -3,9 +3,15 @@
 
 """SQLite implementation of durable execution persistence."""
 
-from .database import Database
+from .database import Database, ExecutionSchemaIncompatible
 from .schema import SCHEMA_VERSION
+from .storage import ExecutionStorageError
 from .uow import SqliteExecutionUnitOfWork
 
-
-__all__ = ("Database", "SCHEMA_VERSION", "SqliteExecutionUnitOfWork")
+__all__ = (
+    "Database",
+    "ExecutionSchemaIncompatible",
+    "ExecutionStorageError",
+    "SCHEMA_VERSION",
+    "SqliteExecutionUnitOfWork",
+)
