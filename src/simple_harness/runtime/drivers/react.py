@@ -11,7 +11,14 @@ from collections.abc import Mapping
 from dataclasses import replace
 from typing import cast
 
-from simple_harness.contracts import RequestId, RunId, canonical_json, thaw_json
+from simple_harness.contracts import (
+    CallId,
+    FrozenJsonValue,
+    RequestId,
+    RunId,
+    canonical_json,
+    thaw_json,
+)
 from simple_harness.contracts.messages import (
     ContentBlock,
     Message,
@@ -138,6 +145,10 @@ class ReActDriver:
                 conversation = ConversationContinuationInput.from_json(
                     conversation_value
                 )
+                prepared_messages = _continuation_prepared_messages(
+                    continuation_payload.get("prepared_context"),
+                    current_message=conversation.message,
+                )
                 current_context = invocation.services.context.load(
                     RunId(invocation.run.run_id)
                 )
@@ -146,7 +157,7 @@ class ReActDriver:
                     invocation.execution_lease,
                     current_context.revision,
                     f"{continuation.continuation_id}:context:user",
-                    (conversation.message,),
+                    prepared_messages,
                 )
         input_value = cast(Mapping[str, object], invocation.start.input)
         prepared_context = invocation.start.prepared_context
@@ -310,8 +321,52 @@ def _messages(value: object) -> tuple[Message, ...]:
             normalized_content = content
         else:
             raise TypeError("ReAct message content must be text or content blocks")
-        messages.append(Message(MessageRole(str(item["role"])), normalized_content))
+        metadata = item.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise TypeError("ReAct message metadata must be an object")
+        name = item.get("name")
+        if name is not None and not isinstance(name, str):
+            raise TypeError("ReAct message name must be a string")
+        call_id = item.get("call_id")
+        if call_id is not None and not isinstance(call_id, str):
+            raise TypeError("ReAct message call_id must be a string")
+        messages.append(
+            Message(
+                MessageRole(str(item["role"])),
+                normalized_content,
+                name=name,
+                call_id=None if call_id is None else CallId(call_id),
+                metadata=metadata,
+            )
+        )
     return tuple(messages)
+
+
+def _continuation_prepared_messages(
+    value: object,
+    *,
+    current_message: Message,
+) -> tuple[Message, ...]:
+    if not isinstance(value, Mapping):
+        raise TypeError("conversation continuation prepared_context is required")
+    messages = _messages(value.get("provider_messages"))
+    if len(messages) < 2 or canonical_json(messages[-1].to_dict()) != canonical_json(
+        current_message.to_dict()
+    ):
+        raise ValueError(
+            "prepared continuation current message differs from conversation envelope"
+        )
+    for message in messages[:-1]:
+        metadata = thaw_json(cast(FrozenJsonValue, message.metadata))
+        if (
+            message.role is not MessageRole.USER
+            or not isinstance(metadata, dict)
+            or metadata.get("trust") != "untrusted_data"
+        ):
+            raise ValueError(
+                "prepared continuation memory must remain USER/untrusted data"
+            )
+    return messages
 
 
 def _tools(

@@ -7,6 +7,8 @@ import asyncio
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from simple_harness import Message, MessageRole, canonical_json, thaw_json
 from simple_harness.execution.context_staging import (
     ContextStageKind,
@@ -15,6 +17,8 @@ from simple_harness.execution.context_staging import (
 )
 from simple_harness.execution.sqlite import Database
 from simple_harness.runtime import (
+    ConversationMemoryError,
+    ConversationMemoryErrorCode,
     ConversationMemoryQueryStatus,
     ConversationMemoryRecallResult,
     ConversationTurnInput,
@@ -24,17 +28,24 @@ from simple_harness.runtime import (
 
 
 class RecallSpy:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        result_query_id: str | None = None,
+        result_hash: str | None = None,
+    ) -> None:
         self.calls = []
+        self.result_query_id = result_query_id
+        self.result_hash = result_hash
 
     async def recall_bounded(self, query):  # type: ignore[no-untyped-def]
         self.calls.append(query)
         payload = {"items": [{"text": "memory is untrusted"}]}
         encoded = canonical_json(payload).encode()
         return ConversationMemoryRecallResult(
-            query.context_query_id,
+            self.result_query_id or query.context_query_id,
             "result-1",
-            query.query_hash,
+            self.result_hash or query.query_hash,
             payload,
             hashlib.sha256(encoded).hexdigest(),
             ConversationMemoryQueryStatus.COMPLETE,
@@ -85,5 +96,48 @@ def test_sdk_preparation_has_one_logical_recall_and_reuses_private_bytes(
             recalled = thaw_json(messages[0])
             assert recalled["role"] == "user"
             assert recalled["metadata"]["trust"] == "untrusted_data"
+
+    asyncio.run(case())
+
+
+@pytest.mark.parametrize(
+    "spy",
+    (
+        RecallSpy(result_query_id="wrong-context-query"),
+        RecallSpy(result_hash="f" * 64),
+    ),
+)
+def test_sdk_preparation_rejects_mismatched_recall_identity_without_staging(
+    tmp_path: Path, spy: RecallSpy
+) -> None:
+    async def case() -> None:
+        with Database.open(tmp_path / "execution.db") as database:
+            repository = ContextStagingRepository(database)
+            value = ConversationTurnInput(
+                "user-1",
+                "session-1",
+                Message(MessageRole.USER, "hello"),
+                "hello",
+            )
+            with pytest.raises(ConversationMemoryError) as captured:
+                await prepare_sdk_conversation_context(
+                    repository,
+                    spy,
+                    stage_id="stage-mismatch",
+                    kind=ContextStageKind.ROOT,
+                    identity_key="request-1",
+                    value=value,
+                    owner_id="worker-1",
+                    now=lambda: 1.0,
+                    lease_seconds=10.0,
+                    max_items=8,
+                    max_bytes=4096,
+                    timeout_seconds=0.5,
+                )
+            assert captured.value.code is ConversationMemoryErrorCode.QUERY_CONFLICT
+            record = repository.get("stage-mismatch")
+            assert record is not None
+            assert record.state is ContextStageState.PREPARING
+            assert record.private_snapshot is None
 
     asyncio.run(case())

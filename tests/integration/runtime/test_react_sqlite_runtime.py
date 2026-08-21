@@ -8,22 +8,45 @@ import hashlib
 
 import pytest
 
-from simple_harness.contracts import CallId, ExecutionSessionId, RequestId, RunId
+from simple_harness.contracts import (
+    CallId,
+    ExecutionSessionId,
+    RequestId,
+    RunId,
+    canonical_json,
+)
 from simple_harness.contracts.messages import Message, MessageRole
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
+from simple_harness.execution.context_staging import (
+    ContextStageKind,
+    ContextStagingRepository,
+)
 from simple_harness.execution.delivery import DeliveryDispatcher
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import RunState
-from simple_harness.providers import ProviderResponse, ProviderTarget, ProviderToolCall
+from simple_harness.providers import (
+    CancelToken,
+    ProviderResponse,
+    ProviderTarget,
+    ProviderToolCall,
+)
 from simple_harness.runtime import (
     AgentLoopCollaborator,
+    ConversationContinuationInput,
+    ConversationMemoryQueryStatus,
+    ConversationMemoryRecallResult,
+    ConversationTurnInput,
+    DriverInvocation,
     EffectBatchExecutor,
     RunStart,
     RuntimePorts,
     RuntimeProfile,
+    RuntimeServices,
     SqliteContextPort,
+    StartSnapshot,
     build_runtime,
+    prepare_sdk_conversation_context,
 )
 from simple_harness.runtime.drivers import ReActDriver
 from simple_harness.tools import EffectExecutor, FunctionTool, ToolRegistry, ToolResult, ToolSpec
@@ -167,6 +190,172 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
             MessageRole.ASSISTANT,
         ]
         await runtime.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_continuation_staged_memory_is_frozen_as_untrusted_user_context(
+    tmp_path,
+) -> None:
+    class Recall:
+        async def recall_bounded(self, query):  # type: ignore[no-untyped-def]
+            payload = {"items": [{"text": "remembered preference"}]}
+            encoded = canonical_json(payload).encode()
+            return ConversationMemoryRecallResult(
+                query.context_query_id,
+                "memory-result-1",
+                query.query_hash,
+                payload,
+                hashlib.sha256(encoded).hexdigest(),
+                ConversationMemoryQueryStatus.COMPLETE,
+                1,
+                len(encoded),
+            )
+
+        async def close(self) -> None:
+            return None
+
+    async def case() -> None:
+        database = Database.open(tmp_path / "react-continuation-memory.db")
+        uow = SqliteExecutionUnitOfWork(database)
+        root_message = Message(MessageRole.USER, "root question")
+        root_conversation = ConversationTurnInput(
+            "user-1", "session-1", root_message, "root question"
+        )
+        start = StartSnapshot(
+            profile_key="agent.general",
+            driver_kind="react",
+            turn_id="turn-1",
+            tool_catalog_generation=1,
+            input={"messages": [root_message.to_dict()]},
+            conversation=root_conversation,
+        )
+        uow.create_with_start_snapshot(
+            execution_session_id="session-1",
+            run_id="run-1",
+            request_id="request-1",
+            profile_key="agent.general",
+            driver_kind="react",
+            snapshot=start.to_json(),
+            event_id="run-1:created",
+            user_id="user-1",
+            now=1.0,
+        )
+        run, lease = uow.claim_runtime_activation(
+            run_id="run-1",
+            owner_id="runtime-1",
+            namespace="runtime.kernel",
+            now=2.0,
+            lease_ttl_seconds=100.0,
+        )
+        fence = await uow.acquire(RunId("run-1"), lease, now=2.0)
+        context = SqliteContextPort(database, clock=lambda: 3.0)
+        context.append(
+            RunId("run-1"),
+            lease,
+            0,
+            "run-1:context:root-fixture",
+            (root_message,),
+        )
+        next_message = Message(MessageRole.USER, "next question")
+        next_value = ConversationTurnInput(
+            "user-1", "session-1", next_message, "next question"
+        )
+        staged = await prepare_sdk_conversation_context(
+            ContextStagingRepository(database),
+            Recall(),
+            stage_id="stage-continuation-1",
+            kind=ContextStageKind.CONTINUATION,
+            identity_key="continuation-1",
+            value=next_value,
+            owner_id="runtime-1",
+            now=lambda: 3.0,
+            lease_seconds=30.0,
+            max_items=8,
+            max_bytes=4096,
+            timeout_seconds=0.5,
+        )
+        assert staged.private_snapshot is not None
+        continuation_value = ConversationContinuationInput(
+            next_message, "next question"
+        )
+        uow.enqueue_continuation(
+            continuation_id="continuation-1",
+            run_id="run-1",
+            payload={
+                "kind": "conversation_user",
+                "conversation": continuation_value.to_json(),
+                "prepared_context": dict(staged.private_snapshot),
+            },
+            context_stage_id=staged.stage_id,
+            context_stage_hash=staged.private_snapshot_hash,
+            now=3.0,
+        )
+        continuation = uow.claim_continuation(
+            run_id="run-1", execution_lease=lease, now=4.0
+        )
+        assert continuation is not None
+
+        provider = Provider()
+        authorization = Authorization()
+        reconciliation = Reconciliation()
+        services = RuntimeServices(
+            provider=ProviderInvocationCoordinator(
+                uow=uow,
+                provider=provider,
+                budget_policy=BudgetPolicy(),
+                estimator=None,
+                clock=lambda: 5.0,
+            ),
+            tools=EffectExecutor(
+                uow=uow,
+                registry=ToolRegistry(),
+                authorization=authorization,
+                reconciliation=reconciliation,
+                clock=lambda: 5.0,
+            ),
+            authorization=authorization,
+            context=context,
+            delivery=DeliveryDispatcher(
+                uow, {"fixture": Sink()}, clock=lambda: 5.0
+            ),
+            tool_reconciliation=reconciliation,
+            reconciliation=Noop(),
+            provider_reconciliation=Noop(),
+            react_checkpoint=uow,
+            tool_catalog=Catalog(),
+        )
+        result = await ReActDriver(clock=lambda: 5.0).start(
+            DriverInvocation(
+                run,
+                start,
+                lease,
+                fence,
+                services,
+                continuations=(continuation,),
+            ),
+            context=context,
+            cancel=CancelToken(),
+        )
+        assert result.state is RunState.COMPLETED
+        assert len(provider.requests) == 1
+        request_messages = provider.requests[0].messages
+        assert [message.role for message in request_messages] == [
+            MessageRole.USER,
+            MessageRole.USER,
+            MessageRole.USER,
+        ]
+        recalled, current = request_messages[-2:]
+        assert recalled.metadata["trust"] == "untrusted_data"
+        assert recalled.metadata["source"] == "memory"
+        assert current == next_message
+        frozen_messages = context.load(RunId("run-1")).messages
+        assert frozen_messages[1:3] == (recalled, current)
+        assert all(
+            message.role is not MessageRole.SYSTEM
+            for message in frozen_messages[1:3]
+        )
         database.close()
 
     asyncio.run(case())

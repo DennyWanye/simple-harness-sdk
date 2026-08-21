@@ -72,6 +72,45 @@ def test_two_user_continuations_keep_fifo_and_distinct_intents(tmp_path: Path) -
                 continuation_id="continuation-1",
                 run_id="run-1",
                 payload={"kind": "conversation_user", "text": "one"},
+                memory_intent=None,
+                now=4.5,
+            )
+        with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+            uow.enqueue_continuation(
+                continuation_id="continuation-1",
+                run_id="run-1",
+                payload={"kind": "conversation_user", "text": "one"},
                 memory_intent=_spec("continuation-1", "different"),
                 now=5.0,
+            )
+
+
+def test_continuation_without_memory_intent_replays_only_without_intent(
+    tmp_path: Path,
+) -> None:
+    with Database.open(tmp_path / "execution.db") as database:
+        uow = SqliteExecutionUnitOfWork(database)
+        uow.create_with_start_snapshot(
+            execution_session_id="session-1",
+            run_id="run-1",
+            request_id="request-1",
+            profile_key="agent.general",
+            driver_kind="react",
+            snapshot={"schema_version": 5},
+            event_id="run-1:created",
+            user_id="user-1",
+            now=1.0,
+        )
+        kwargs = {
+            "continuation_id": "continuation-no-memory",
+            "run_id": "run-1",
+            "payload": {"kind": "conversation_user", "text": "one"},
+            "now": 2.0,
+        }
+        first = uow.enqueue_continuation(**kwargs)
+        assert uow.enqueue_continuation(**kwargs) == first
+        with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+            uow.enqueue_continuation(
+                **kwargs,
+                memory_intent=_spec("continuation-no-memory", "one"),
             )

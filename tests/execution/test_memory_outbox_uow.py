@@ -29,7 +29,12 @@ def _intent(text: str | None = "hello") -> MemoryIntentSpec:
     )
 
 
-def _create(uow: SqliteExecutionUnitOfWork, intent: MemoryIntentSpec, *, fault=None):
+def _create(
+    uow: SqliteExecutionUnitOfWork,
+    intent: MemoryIntentSpec | None,
+    *,
+    fault=None,
+):
     return uow.create_with_start_snapshot(
         execution_session_id="session-1",
         run_id="run-1",
@@ -71,7 +76,18 @@ def test_replay_compares_memory_hash_and_non_text_settles_locally(tmp_path: Path
         assert tuple(row) == ("skipped_non_text", None)
         _create(uow, _intent(None))
         with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+            _create(uow, None)
+        with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
             _create(uow, _intent("different"))
+
+
+def test_start_without_memory_intent_replays_only_without_intent(tmp_path: Path) -> None:
+    with Database.open(tmp_path / "execution.db") as database:
+        uow = SqliteExecutionUnitOfWork(database)
+        first = _create(uow, None)
+        assert _create(uow, None) == first
+        with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+            _create(uow, _intent())
 
 
 def test_session_cannot_be_rebound_to_another_user(tmp_path: Path) -> None:

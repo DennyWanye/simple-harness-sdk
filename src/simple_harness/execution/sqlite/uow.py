@@ -509,13 +509,14 @@ def _validate_memory_intent(
     *,
     user_id: str,
     session_id: str,
+    role: str,
 ) -> None:
     for name in ("intent_id", "source_event_id", "user_id", "session_id", "role"):
         _required(str(getattr(intent, name)), name)
     if intent.user_id != user_id or intent.session_id != session_id:
         raise UnitOfWorkConflict("memory intent user/session binding differs")
-    if intent.role not in {"user", "assistant"}:
-        raise ValueError("memory intent role is invalid")
+    if intent.role != role:
+        raise UnitOfWorkConflict("memory intent role binding differs")
     if len(intent.payload_hash) != 64:
         raise ValueError("memory intent payload hash is invalid")
     if intent.memory_text is not None and not intent.memory_text.strip():
@@ -558,16 +559,25 @@ def _insert_memory_intent(
 
 
 def _verify_memory_replay(
-    connection: sqlite3.Connection, intent: MemoryIntentSpec | None
+    connection: sqlite3.Connection,
+    intent: MemoryIntentSpec | None,
+    *,
+    run_id: str,
+    continuation_id: str | None,
+    role: str,
 ) -> None:
+    rows = connection.execute(
+        "SELECT intent_id,source_event_id,user_id,session_id,role,memory_text,"
+        "payload_hash FROM memory_outbox WHERE run_id=? AND continuation_id IS ? "
+        "AND role=? ORDER BY intent_id",
+        (run_id, continuation_id, role),
+    ).fetchall()
     if intent is None:
+        if rows:
+            raise UnitOfWorkConflict("memory intent replay differs")
         return
-    row = connection.execute(
-        "SELECT source_event_id,user_id,session_id,role,memory_text,payload_hash "
-        "FROM memory_outbox WHERE intent_id=?",
-        (intent.intent_id,),
-    ).fetchone()
     expected = (
+        intent.intent_id,
         intent.source_event_id,
         intent.user_id,
         intent.session_id,
@@ -575,7 +585,7 @@ def _verify_memory_replay(
         intent.memory_text,
         intent.payload_hash,
     )
-    if row is None or tuple(row) != expected:
+    if len(rows) != 1 or tuple(rows[0]) != expected:
         raise UnitOfWorkConflict("memory intent replay differs")
 
 
@@ -2121,7 +2131,13 @@ class SqliteExecutionUnitOfWork:
                 and str(existing_event["payload_json"]) == payload_json
                 and requested == actual
             ):
-                _verify_memory_replay(self.database.connection, memory_intent)
+                _verify_memory_replay(
+                    self.database.connection,
+                    memory_intent,
+                    run_id=run_id,
+                    continuation_id=None,
+                    role="assistant",
+                )
                 return TerminalCommitResult(existing_run, stored)
             raise UnitOfWorkConflict("another root terminal intent already won")
 
@@ -2190,6 +2206,7 @@ class SqliteExecutionUnitOfWork:
                     memory_intent,
                     user_id=str(session["user_id"]),
                     session_id=str(session["execution_session_id"]),
+                    role="assistant",
                 )
                 _fault(fault, "root_terminal.memory_intent.before_write")
                 _insert_memory_intent(
@@ -2403,6 +2420,7 @@ class SqliteExecutionUnitOfWork:
                 memory_intent,
                 user_id=user_id,
                 session_id=execution_session_id,
+                role="user",
             )
         now = _time(now)
         snapshot_json = _object_json(snapshot, "snapshot")
@@ -2422,7 +2440,13 @@ class SqliteExecutionUnitOfWork:
             ).fetchone()
             if owner is None or str(owner[0]) != user_id:
                 raise UnitOfWorkConflict("execution session belongs to another user")
-            _verify_memory_replay(self.database.connection, memory_intent)
+            _verify_memory_replay(
+                self.database.connection,
+                memory_intent,
+                run_id=run_id,
+                continuation_id=None,
+                role="user",
+            )
             _verify_stage_replay(
                 self.database.connection,
                 stage_id=context_stage_id,
@@ -2825,7 +2849,13 @@ class SqliteExecutionUnitOfWork:
                 existing.run_id == run_id
                 and canonical_json(_thaw(existing.payload)) == payload_json
             ):
-                _verify_memory_replay(self.database.connection, memory_intent)
+                _verify_memory_replay(
+                    self.database.connection,
+                    memory_intent,
+                    run_id=run_id,
+                    continuation_id=continuation_id,
+                    role="user",
+                )
                 _verify_stage_replay(
                     self.database.connection,
                     stage_id=context_stage_id,
@@ -2853,6 +2883,7 @@ class SqliteExecutionUnitOfWork:
                     memory_intent,
                     user_id=str(run_row["user_id"]),
                     session_id=str(run_row["execution_session_id"]),
+                    role="user",
                 )
             row = connection.execute(
                 "SELECT COALESCE(MAX(fifo_seq), 0) + 1 FROM continuations WHERE run_id = ?",
@@ -3203,7 +3234,13 @@ class SqliteExecutionUnitOfWork:
         ).hexdigest()
         existing = self._read_continuation_progress_receipt(receipt_id)
         if existing is not None:
-            _verify_memory_replay(self.database.connection, memory_intent)
+            _verify_memory_replay(
+                self.database.connection,
+                memory_intent,
+                run_id=run_id,
+                continuation_id=None,
+                role="assistant",
+            )
             return self._replay_continuation_terminal(
                 existing,
                 continuation_claim=continuation_claim,
@@ -3216,7 +3253,13 @@ class SqliteExecutionUnitOfWork:
                 (receipt_id,),
             ).fetchone()
             if receipt_row is not None:
-                _verify_memory_replay(connection, memory_intent)
+                _verify_memory_replay(
+                    connection,
+                    memory_intent,
+                    run_id=run_id,
+                    continuation_id=None,
+                    role="assistant",
+                )
                 return self._replay_continuation_terminal(
                     _continuation_progress_receipt(receipt_row),
                     continuation_claim=continuation_claim,
@@ -3325,6 +3368,7 @@ class SqliteExecutionUnitOfWork:
                     memory_intent,
                     user_id=str(session["user_id"]),
                     session_id=str(session["execution_session_id"]),
+                    role="assistant",
                 )
                 _fault(fault, "continuation_terminal.memory_intent.before_write")
                 _insert_memory_intent(

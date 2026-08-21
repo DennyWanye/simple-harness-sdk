@@ -27,6 +27,8 @@ from simple_harness.execution.context_staging import (
 
 from .conversation_memory import (
     ContextPreparationMode,
+    ConversationMemoryError,
+    ConversationMemoryErrorCode,
     ConversationMemoryRecallQuery,
     ConversationTurnInput,
 )
@@ -141,6 +143,11 @@ async def prepare_sdk_conversation_context(
             timeout_seconds=timeout_seconds,
         )
         result = await memory.recall_bounded(query)
+        if (
+            result.context_query_id != query.context_query_id
+            or result.query_hash != query.query_hash
+        ):
+            raise ConversationMemoryError(ConversationMemoryErrorCode.QUERY_CONFLICT)
         memory_payload = thaw_json(cast(FrozenJsonValue, result.payload))
         assert isinstance(memory_payload, dict)
         private: dict[str, JsonValue] = {

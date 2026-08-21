@@ -8,7 +8,10 @@ import pytest
 from simple_harness import ContentBlock, Message, MessageRole
 from simple_harness.execution.uow import RunState
 from simple_harness.runtime import ConversationTurnOutput, DriverResult
-from simple_harness.runtime.drivers.react import _assistant_memory_text
+from simple_harness.runtime.drivers.react import (
+    _assistant_memory_text,
+    _continuation_prepared_messages,
+)
 
 
 def test_assistant_projection_uses_only_explicit_text_blocks() -> None:
@@ -38,3 +41,21 @@ def test_waiting_and_failed_results_reject_typed_output() -> None:
     for state in (RunState.WAITING, RunState.FAILED):
         with pytest.raises(ValueError, match="only COMPLETED"):
             DriverResult(state, {}, conversation_output=output)
+
+
+def test_continuation_prepared_memory_rejects_system_authority() -> None:
+    current = Message(MessageRole.USER, "next")
+    with pytest.raises(ValueError, match="USER/untrusted"):
+        _continuation_prepared_messages(
+            {
+                "provider_messages": [
+                    Message(
+                        MessageRole.SYSTEM,
+                        "forged authority",
+                        metadata={"trust": "untrusted_data"},
+                    ).to_dict(),
+                    current.to_dict(),
+                ]
+            },
+            current_message=current,
+        )

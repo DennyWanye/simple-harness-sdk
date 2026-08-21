@@ -10,8 +10,10 @@ import pytest
 
 from simple_harness.contracts import RunId
 from simple_harness.execution.delivery import DeliverySpec
+from simple_harness.execution.memory_outbox import MemoryIntentSpec
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import ContinuationState, RunState, UnitOfWorkConflict
+from simple_harness.runtime import ConversationMemoryIntent, ConversationMemoryRole
 
 
 class InjectedFault(RuntimeError):
@@ -192,7 +194,17 @@ def _terminal_setup(path: Path):
     return database, uow, lease, fence, claim, run
 
 
-def _terminal(uow, lease, fence, claim, run, *, payload=None, fault=None):
+def _terminal(
+    uow,
+    lease,
+    fence,
+    claim,
+    run,
+    *,
+    payload=None,
+    memory_intent: MemoryIntentSpec | None = None,
+    fault=None,
+):
     return uow.commit_root_terminal_with_deliveries_and_ack_continuation(
         run_id="run-1",
         expected_version=run.version,
@@ -208,7 +220,20 @@ def _terminal(uow, lease, fence, claim, run, *, payload=None, fault=None):
         receipt_id="terminal:c1",
         terminal_fence_receipt_ref="fence:run-1:1",
         now=4.0,
+        memory_intent=memory_intent,
         fault=fault,
+    )
+
+
+def _assistant_intent(text: str) -> MemoryIntentSpec:
+    return MemoryIntentSpec.from_conversation(
+        ConversationMemoryIntent(
+            "harness-memory/v1/assistant/run-1",
+            "harness-system",
+            "session-1",
+            ConversationMemoryRole.ASSISTANT,
+            text,
+        )
     )
 
 
@@ -272,6 +297,51 @@ def test_terminal_receipt_replays_after_reopen_and_quarantines_tail(tmp_path) ->
             )
         with pytest.raises(UnitOfWorkConflict, match="rejects new continuations"):
             enqueue(reopened_uow, "c3")
+
+
+def test_terminal_and_ack_replay_requires_same_memory_intent(tmp_path) -> None:
+    database, uow, lease, fence, claim, run = _terminal_setup(
+        tmp_path / "terminal-memory-replay.db"
+    )
+    intent = _assistant_intent("answer")
+    first = _terminal(
+        uow, lease, fence, claim, run, memory_intent=intent
+    )
+    assert (
+        _terminal(uow, lease, fence, claim, run, memory_intent=intent) == first
+    )
+    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+        _terminal(uow, lease, fence, claim, run, memory_intent=None)
+    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+        _terminal(
+            uow,
+            lease,
+            fence,
+            claim,
+            run,
+            memory_intent=_assistant_intent("different"),
+        )
+    database.close()
+
+
+def test_terminal_and_ack_without_memory_intent_replays_only_without_intent(
+    tmp_path,
+) -> None:
+    database, uow, lease, fence, claim, run = _terminal_setup(
+        tmp_path / "terminal-no-memory-replay.db"
+    )
+    first = _terminal(uow, lease, fence, claim, run)
+    assert _terminal(uow, lease, fence, claim, run) == first
+    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+        _terminal(
+            uow,
+            lease,
+            fence,
+            claim,
+            run,
+            memory_intent=_assistant_intent("answer"),
+        )
+    database.close()
 
 
 def test_new_runtime_lease_cannot_pair_with_old_claim_or_fence(tmp_path) -> None:

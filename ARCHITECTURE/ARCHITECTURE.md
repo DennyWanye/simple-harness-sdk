@@ -21,11 +21,15 @@ last-updated: 2026-08-21
   每次打开都开启并 read-back FK，POSIX DB 文件强制 0600 且拒绝 symlink/非普通文件。
 - root start、普通 user continuation、root terminal、continuation terminal 四条命令把对应
   Memory intent 与 execution 事实放在同一 SQLite 事务；replay 同时比较 canonical intent hash。
-  非文本 intent 直接进入 `skipped_non_text`，不会调用 sink。
+  replay 还按命令的 run/continuation/role authority 区分“原命令无 intent”和“原命令有 intent”：
+  same intent 可重放，different/missing/后加 intent 均稳定 conflict。非文本 intent 直接进入
+  `skipped_non_text`，不会调用 sink。
 - context preparation 先持久 claim identity/input hash 与有界 lease。`sdk_prepared` 只有 owner
-  发 deterministic query；`consumer_prepared` 也遵循单 winner。private snapshot 把 recall
-  结果作为 USER/untrusted data，并在 start/continuation 原事务消费后清空 private bytes、保留
-  lineage/hash；ReAct 恢复只读冻结 snapshot，不二次 recall。
+  发 deterministic query，并在 staging 前校验返回的 `context_query_id` 与 canonical `query_hash`
+  精确对应请求，错误关联 fail-closed 且不产生 staged context；`consumer_prepared` 也遵循单 winner。
+  private snapshot 把 recall 结果作为 USER/untrusted data，并在 start/continuation 原事务消费后清空
+  private bytes、保留 lineage/hash；continuation 的 frozen prepared messages 连同本轮 message 一次性
+  进入 ReAct durable context，Memory 数据不得提升为 SYSTEM。ReAct 恢复只读冻结 snapshot，不二次 recall。
 - `MemoryDispatcher` 用 claim token/expiry、transient backoff、permanent dead-letter 与幂等 sink
   恢复；apply 成功后 ack 前崩溃会以同 source event 重放。Runtime 在 recovery/drain 后启动 pump，
   close 时 bounded drain，并关闭 projection pump、query、sink 与 execution DB。关闭路径把
@@ -44,7 +48,8 @@ last-updated: 2026-08-21
 - 2026-08-21 验证：H1 19 passed；H2 15 passed；Python 3.11/3.12/3.13 full pytest
   各 1264 passed / 2 skipped；
   release-owned mypy 11 files 无错误；full Ruff 476，相对 frozen 484 baseline 减少 8；
-  REUSE 338/338 compliant；H-WHEEL artifact suite 21 passed。
+  REUSE 338/338 compliant；H-WHEEL artifact suite 21 passed。P0/P1 authority hardening targeted
+  75 passed，mypy 11 files 无错误，full Ruff 481 与该 slice clean HEAD 完全相同（零新增）。
 
 ## 0.1.5 Context authority 当前事实（2026-08-21）
 

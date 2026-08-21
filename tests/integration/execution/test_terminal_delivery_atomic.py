@@ -11,8 +11,10 @@ import pytest
 
 from simple_harness.contracts import RunId
 from simple_harness.execution.delivery import DeliverySpec, DeliveryState
+from simple_harness.execution.memory_outbox import MemoryIntentSpec
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import RunState, UnitOfWorkConflict
+from simple_harness.runtime import ConversationMemoryIntent, ConversationMemoryRole
 
 
 class InjectedFault(RuntimeError):
@@ -61,7 +63,14 @@ def deliveries() -> tuple[DeliverySpec, ...]:
 
 
 def commit_terminal(
-    uow, fence, runtime_lease, *, fault=None, items=None, now: float = 2.0
+    uow,
+    fence,
+    runtime_lease,
+    *,
+    fault=None,
+    items=None,
+    now: float = 2.0,
+    memory_intent: MemoryIntentSpec | None = None,
 ):
     current = uow.read_run("run-1")
     assert current is not None
@@ -76,7 +85,20 @@ def commit_terminal(
         execution_lease=runtime_lease,
         terminal_fence_receipt_ref="receipt://terminal/run-1/1",
         now=now,
+        memory_intent=memory_intent,
         fault=fault,
+    )
+
+
+def _assistant_intent(text: str) -> MemoryIntentSpec:
+    return MemoryIntentSpec.from_conversation(
+        ConversationMemoryIntent(
+            "harness-memory/v1/assistant/run-1",
+            "harness-system",
+            "session-1",
+            ConversationMemoryRole.ASSISTANT,
+            text,
+        )
     )
 
 
@@ -127,6 +149,48 @@ def test_terminal_delivery_after_commit_reopens_all_after_and_replays(tmp_path: 
         assert payload["terminal_fence_receipt_ref"] == "receipt://terminal/run-1/1"
         assert payload["fence_epoch"] == fence.epoch
         assert reopened.connection.execute("SELECT state FROM run_fences WHERE run_id='run-1'").fetchone()[0] == "released"
+
+
+def test_root_terminal_replay_requires_same_memory_intent(tmp_path: Path) -> None:
+    database, uow, fence, runtime_lease = setup_root(tmp_path / "memory-replay.db")
+    intent = _assistant_intent("answer")
+    first = commit_terminal(
+        uow, fence, runtime_lease, items=(), memory_intent=intent
+    )
+    assert (
+        commit_terminal(uow, fence, runtime_lease, items=(), memory_intent=intent)
+        == first
+    )
+    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+        commit_terminal(uow, fence, runtime_lease, items=(), memory_intent=None)
+    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+        commit_terminal(
+            uow,
+            fence,
+            runtime_lease,
+            items=(),
+            memory_intent=_assistant_intent("different"),
+        )
+    database.close()
+
+
+def test_root_terminal_without_memory_intent_replays_only_without_intent(
+    tmp_path: Path,
+) -> None:
+    database, uow, fence, runtime_lease = setup_root(
+        tmp_path / "no-memory-replay.db"
+    )
+    first = commit_terminal(uow, fence, runtime_lease, items=())
+    assert commit_terminal(uow, fence, runtime_lease, items=()) == first
+    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+        commit_terminal(
+            uow,
+            fence,
+            runtime_lease,
+            items=(),
+            memory_intent=_assistant_intent("answer"),
+        )
+    database.close()
 
 
 def test_zero_delivery_terminal_still_commits_fence_receipt(tmp_path: Path) -> None:
