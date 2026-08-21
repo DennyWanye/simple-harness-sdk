@@ -145,7 +145,7 @@ class ReActDriver:
                 conversation = ConversationContinuationInput.from_json(
                     conversation_value
                 )
-                prepared_messages = _continuation_prepared_messages(
+                continuation_messages = _continuation_prepared_messages(
                     continuation_payload.get("prepared_context"),
                     current_message=conversation.message,
                 )
@@ -157,7 +157,7 @@ class ReActDriver:
                     invocation.execution_lease,
                     current_context.revision,
                     f"{continuation.continuation_id}:context:user",
-                    prepared_messages,
+                    continuation_messages,
                 )
         input_value = cast(Mapping[str, object], invocation.start.input)
         prepared_context = invocation.start.prepared_context
