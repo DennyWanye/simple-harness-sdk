@@ -839,47 +839,34 @@ ALTER TABLE continuations ADD COLUMN context_stage_hash TEXT;
 
 CREATE TABLE memory_outbox (
     intent_id TEXT PRIMARY KEY,
-    source_event_id TEXT NOT NULL UNIQUE,
-    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-    continuation_id TEXT REFERENCES continuations(continuation_id) ON DELETE CASCADE,
-    user_id TEXT NOT NULL REFERENCES execution_users(user_id),
+    run_id TEXT NOT NULL UNIQUE REFERENCES runs(run_id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL UNIQUE,
+    deployment_id TEXT NOT NULL,
+    household_id TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('user','assistant')),
-    memory_text TEXT,
+    payload_json TEXT NOT NULL,
     payload_hash TEXT NOT NULL CHECK(length(payload_hash) = 64),
-    state TEXT NOT NULL CHECK(state IN (
-        'pending','claimed','applied','dead_letter','skipped_non_text'
-    )),
-    version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0),
-    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    state TEXT NOT NULL CHECK(state IN ('pending','claimed','applied','retry_wait','dead_letter')),
     claim_owner TEXT,
-    claim_token TEXT,
+    claim_epoch INTEGER NOT NULL DEFAULT 0 CHECK(claim_epoch >= 0),
     claim_expires_at REAL,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
     retry_at REAL NOT NULL CHECK(retry_at >= 0),
     error_code TEXT,
     created_at REAL NOT NULL CHECK(created_at >= 0),
-    updated_at REAL NOT NULL CHECK(updated_at >= 0),
     settled_at REAL,
-    FOREIGN KEY(session_id, user_id)
-        REFERENCES execution_sessions(session_id, user_id),
     CHECK(
-        (state = 'claimed' AND claim_owner IS NOT NULL AND claim_token IS NOT NULL
-            AND claim_expires_at IS NOT NULL)
+        (state = 'claimed' AND claim_owner IS NOT NULL AND claim_expires_at IS NOT NULL)
         OR
-        (state <> 'claimed' AND claim_owner IS NULL AND claim_token IS NULL
-            AND claim_expires_at IS NULL)
-    ),
-    CHECK(
-        (memory_text IS NULL AND state = 'skipped_non_text')
-        OR
-        (memory_text IS NOT NULL AND length(trim(memory_text)) > 0
-            AND state <> 'skipped_non_text')
+        (state <> 'claimed' AND claim_owner IS NULL AND claim_expires_at IS NULL)
     )
 ) STRICT;
 
 CREATE INDEX memory_outbox_claim_idx
     ON memory_outbox(state, retry_at, created_at, intent_id);
-CREATE INDEX memory_outbox_run_idx ON memory_outbox(run_id, source_event_id);
+CREATE INDEX memory_outbox_principal_idx
+    ON memory_outbox(deployment_id, household_id, actor_id, session_id, created_at);
 
 CREATE TABLE agent_identity_bindings (
     session_id TEXT PRIMARY KEY,
@@ -961,27 +948,3 @@ CREATE TABLE memory_recall_releases (
 
 CREATE INDEX memory_recall_releases_pending_idx
     ON memory_recall_releases(state, retry_at, release_id);
-
-CREATE TABLE committed_turn_outbox (
-    intent_id TEXT PRIMARY KEY,
-    run_id TEXT NOT NULL UNIQUE REFERENCES runs(run_id) ON DELETE CASCADE,
-    turn_id TEXT NOT NULL UNIQUE,
-    deployment_id TEXT NOT NULL,
-    household_id TEXT NOT NULL,
-    actor_id TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    payload_hash TEXT NOT NULL CHECK(length(payload_hash) = 64),
-    state TEXT NOT NULL CHECK(state IN ('pending','claimed','delivered','retry_wait','dead_letter')),
-    claim_owner TEXT,
-    claim_epoch INTEGER NOT NULL DEFAULT 0 CHECK(claim_epoch >= 0),
-    claim_expires_at REAL,
-    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
-    retry_at REAL NOT NULL CHECK(retry_at >= 0),
-    error_code TEXT,
-    created_at REAL NOT NULL CHECK(created_at >= 0),
-    settled_at REAL
-) STRICT;
-
-CREATE INDEX committed_turn_outbox_claim_idx
-    ON committed_turn_outbox(state, retry_at, created_at, intent_id);

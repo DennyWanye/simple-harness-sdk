@@ -26,7 +26,6 @@ def test_fresh_v4_is_one_identity_with_conversation_tables(tmp_path: Path) -> No
             "provider_projection_outbox",
             "agent_identity_bindings",
             "memory_recall_releases",
-            "committed_turn_outbox",
         } <= database.table_names()
         assert database.foreign_keys_enabled
         assert database.integrity_check() == ("ok",)

@@ -28,16 +28,17 @@ last-updated: 2026-08-22
   再进入 durable start/continuation。generic `start()` 在 Memory enabled 时拒绝绕过该入口。
 - execution SQLite 只接受唯一、self-contained 的 `0004_fresh.sql`。新库包含 immutable
   `agent_identity_bindings`、扩展后的 `context_preparation_staging`、durable
-  `memory_recall_releases`，以及供后续 S2 启用的 `committed_turn_outbox` schema；旧 schema 稳定
-  fail-closed 且不执行 in-place migration。
-- root start、普通 user continuation、root terminal、continuation terminal 四条命令把对应的**逐消息**
-  Memory intent 与 execution 事实放在同一 SQLite 事务；replay 同时比较 canonical intent hash。
-  replay 还按命令的 run/continuation/role authority 区分“原命令无 intent”和“原命令有 intent”：
-  same intent 可重放，different/missing/后加 intent 均稳定 conflict。非文本 intent 直接进入
-  `skipped_non_text`，不会调用 sink。
-  user intent 在 root start/continuation enqueue 即可投递，即使后续 Run failed/cancelled；assistant intent
-  才受 completed terminal 约束。该 v3 dispatcher 只为内部兼容；S2 将切换为 committed user+assistant
-  Turn envelope 与 receipt，v4 outbox 当前尚未投递。
+  `memory_recall_releases`，以及 final `memory_outbox` committed-turn schema；旧 schema 稳定
+  fail-closed 且不执行 in-place migration。v3→v4 offline migrator 尚未获批：legacy completed Run 中
+  continuation 前的 tentative user event 缺少冻结 taxonomy，不能无损分类，故正常 loader 与显式迁移线
+  都不会猜测处理。
+- root start 与普通 user continuation enqueue 只提交执行/Context事实，不产生 tentative Memory intent。
+  completed root/continuation terminal 才构造一份 canonical user+assistant `CommittedTurn`，并与 terminal
+  state、delivery、parent wake 在同一 SQLite transaction 写入。failed/cancelled terminal 零 intent；
+  非文本输入或输出若没有显式 `memory_text` 也跳过，不保存 attachment/tool/reasoning payload。
+- terminal replay 同时验证 committed-turn presence 与 canonical payload/hash：same 可重放，different、
+  missing 或事后 added 均稳定 conflict。turn identity、完整四元 identity、personal actor scope、recall
+  write fence 与 SDK 冻结的 `turn_started_at` 一起进入 canonical envelope。
 - context preparation 先持久 claim identity/input hash 与有界 lease。winner 调用 product provider 与
   deterministic recall；replay 复用同一 frozen stage，不二次调用两者。product provider 只能提供
   persona/history/skills/tool hints 等非 Memory Context，伪造 `source=memory` 会在冻结前拒绝。
@@ -52,8 +53,11 @@ last-updated: 2026-08-22
 - `RunClient.signal()` 的 generic continuation namespace 明确拒绝保留的 `conversation_user` kind；
   普通 user turn 只能通过 `signal_conversation()` 携带 typed DTO、durable context stage 与同事务 intent，
   产品 generic payload 不能伪造该 authority。
-- legacy `MemoryDispatcher` 用 claim token/expiry、transient backoff、permanent dead-letter 与幂等 sink
-  恢复；apply 成功后 ack 前崩溃会以同 source event 重放。Runtime 在 recovery/drain 后启动 pump，
+- committed-turn `MemoryDispatcher` 调用唯一 `AgentMemoryPort.record_committed_turn`，核对 receipt 的
+  turn ID/hash；claim owner + epoch + expiry 防止 takeover 后旧 worker settle。transient 指数退避，
+  permanent/conflict dead-letter；record 成功后 ack 前崩溃会以同 turn/hash 重放。
+  `REJECTED_ERASED` 作为隐私安全的 applied no-op 收敛且日志只含 ID/hash/attempt/code。backlog 对所有
+  state 提供计数，cleanup 只按 limit 删除 settled applied。Runtime 在 recovery/drain 后启动 pump，
   close 时 bounded drain。Agent Memory release pump 独立恢复；统一 Memory resource 按显式 ownership
   关闭且不会 double-close。关闭路径把
   `asyncio.wait` 输入物化，并只 cancel/gather 未完成任务，兼容 Python 3.11–3.13。
@@ -75,13 +79,18 @@ last-updated: 2026-08-22
   tag、也不重新 build；artifact contract 静态拒绝 CI 重新引入 `SOURCE_DATE_EPOCH`。
 - `simple_harness.testing.arm64_candidate:run_core_gate` 是 zero-argument synchronous public gate：
   只在 Linux ARM64 与两个非 editable、版本精确的 installed-wheel distributions 上运行。它用真实
-  Harness fresh v4 UOW、Memory SQLite backend/adapter 与 dispatcher，注入 Memory apply 成功但 ack 前
-  崩溃，关闭并重开两库后验证 outbox 以同 source event 收敛到单条 Memory record，同时 read-back WAL、
+  Harness fresh v4 UOW、Memory SQLite backend/adapter 与 dispatcher，先 terminal commit 完整 Turn，再注入
+  Memory record 成功但 ack 前崩溃，关闭并重开两库后验证 outbox 以同 turn/hash 收敛，同时 read-back WAL、
   FK、integrity 与 0600。成功结果包含 `minimal_runtime`、`memory_outbox_restart`、`sqlite_reopen`
   三个 true 值及 Python/架构/distribution identity；任何失败以 stable code 抛错/CLI 非零退出。
 - root、`simple_harness.runtime` 与 `simple_harness.testing.arm64_candidate` 的 `__all__` 均由同一 public
   API snapshot 固定；conversation DTO/ports、production builder 与 ARM64 gate entrypoint 的增删或重排
   都会触发契约测试失败。
+- 2026-08-22 S2-T1～T6 验证：terminal/outbox fault、root/continuation replay、apply-before-ack restart、
+  `REJECTED_ERASED`、transient/permanent/conflict、claim takeover/stale epoch、bounded drain/cleanup 等
+  targeted 82 passed；Python 3.11/3.12/3.13 full pytest 各 1345 passed / 2 expected skips；ruff、
+  release-owned mypy、source provenance、REUSE 346/346、wheel/sdist build、twine 与 canonical artifact
+  provenance 全绿。S2-T7 不计入本验证，等待 frozen migration taxonomy 修订批准。
 - 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
   1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、
   atomic release-pending、replay、rebind、malicious product Context、ownership/build cleanup 与 legacy
@@ -165,4 +174,5 @@ last-updated: 2026-08-22
 - `AgentIdentity`、personal/family scope、canonical request/result/committed-turn hash、stable error/status
   与 ownership policy 由 `runtime/agent_memory.py` 定义。
 - 旧 `ConversationMemoryQueryPort` / `ConversationMemorySinkPort`、`MemoryQueryPort` /
-  `MemoryWritePort` 已退出 public export；旧逐消息 DTO/dispatcher 只服务 schema v3 内部兼容线。
+  `MemoryWritePort` 已退出 public export；旧逐消息 DTO 与 v3 DDL 仅作不可加载的历史兼容事实，
+  production dispatcher 已只接受 committed turn。

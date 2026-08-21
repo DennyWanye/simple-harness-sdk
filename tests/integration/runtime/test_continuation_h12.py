@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
+from simple_harness import AgentIdentity, CommittedTurn, MemoryScopeRef
 from simple_harness.contracts import RunId
 from simple_harness.execution.delivery import DeliverySpec
-from simple_harness.execution.memory_outbox import MemoryIntentSpec
+from simple_harness.execution.memory_outbox import CommittedTurnSpec
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import ContinuationState, RunState, UnitOfWorkConflict
-from simple_harness.runtime import ConversationMemoryIntent, ConversationMemoryRole
 
 
 class InjectedFault(RuntimeError):
@@ -39,7 +39,12 @@ def setup(path: Path, *, ttl: float = 100.0):
         driver_kind="react",
         snapshot={},
         event_id="run-1:created",
+        user_id="actor-1",
         now=1.0,
+    )
+    database.connection.execute(
+        "INSERT INTO agent_identity_bindings VALUES(?,?,?,?,?,?)",
+        ("session-1", "deployment-1", "household-1", "actor-1", "a" * 64, 1.0),
     )
     _, lease = uow.claim_runtime_activation(
         run_id="run-1",
@@ -173,7 +178,15 @@ def test_progress_after_commit_is_receipt_first_replay_after_lease_release(
 
 TERMINAL_POINTS = tuple(
     f"continuation_terminal.{write}.{side}_write"
-    for write in ("receipt", "continuation", "event", "delivery.0", "fence", "run")
+    for write in (
+        "receipt",
+        "continuation",
+        "event",
+        "delivery.0",
+        "committed_turn",
+        "fence",
+        "run",
+    )
     for side in ("before", "after")
 )
 
@@ -197,7 +210,7 @@ def _terminal(
     run,
     *,
     payload=None,
-    memory_intent: MemoryIntentSpec | None = None,
+    committed_turn: CommittedTurnSpec | None = None,
     fault=None,
 ):
     return uow.commit_root_terminal_with_deliveries_and_ack_continuation(
@@ -213,19 +226,21 @@ def _terminal(
         receipt_id="terminal:c1",
         terminal_fence_receipt_ref="fence:run-1:1",
         now=4.0,
-        memory_intent=memory_intent,
+        committed_turn=committed_turn,
         fault=fault,
     )
 
 
-def _assistant_intent(text: str) -> MemoryIntentSpec:
-    return MemoryIntentSpec.from_conversation(
-        ConversationMemoryIntent(
-            "harness-memory/v1/assistant/run-1",
-            "harness-system",
-            "session-1",
-            ConversationMemoryRole.ASSISTANT,
+def _committed_turn(text: str) -> CommittedTurnSpec:
+    return CommittedTurnSpec.from_domain(
+        CommittedTurn(
+            "turn-c1",
+            AgentIdentity("deployment-1", "household-1", "actor-1", "session-1"),
+            "question",
             text,
+            MemoryScopeRef.personal("actor-1"),
+            "epoch-1",
+            1.0,
         )
     )
 
@@ -235,7 +250,15 @@ def test_terminal_and_ack_fault_reopens_all_before(tmp_path, point) -> None:
     path = tmp_path / f"terminal-{point}.db"
     database, uow, lease, fence, claim, run = _terminal_setup(path)
     with pytest.raises(InjectedFault, match=point):
-        _terminal(uow, lease, fence, claim, run, fault=raise_at(point))
+        _terminal(
+            uow,
+            lease,
+            fence,
+            claim,
+            run,
+            committed_turn=_committed_turn("answer"),
+            fault=raise_at(point),
+        )
     database.close()
     with Database.open(path) as reopened:
         stored = SqliteExecutionUnitOfWork(reopened).read_continuation("c1")
@@ -289,28 +312,28 @@ def test_terminal_receipt_replays_after_reopen_and_quarantines_tail(tmp_path) ->
             enqueue(reopened_uow, "c3")
 
 
-def test_terminal_and_ack_replay_requires_same_memory_intent(tmp_path) -> None:
+def test_terminal_and_ack_replay_requires_same_committed_turn(tmp_path) -> None:
     database, uow, lease, fence, claim, run = _terminal_setup(
         tmp_path / "terminal-memory-replay.db"
     )
-    intent = _assistant_intent("answer")
-    first = _terminal(uow, lease, fence, claim, run, memory_intent=intent)
-    assert _terminal(uow, lease, fence, claim, run, memory_intent=intent) == first
-    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
-        _terminal(uow, lease, fence, claim, run, memory_intent=None)
-    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+    intent = _committed_turn("answer")
+    first = _terminal(uow, lease, fence, claim, run, committed_turn=intent)
+    assert _terminal(uow, lease, fence, claim, run, committed_turn=intent) == first
+    with pytest.raises(UnitOfWorkConflict, match="committed-turn replay differs"):
+        _terminal(uow, lease, fence, claim, run, committed_turn=None)
+    with pytest.raises(UnitOfWorkConflict, match="committed-turn replay differs"):
         _terminal(
             uow,
             lease,
             fence,
             claim,
             run,
-            memory_intent=_assistant_intent("different"),
+            committed_turn=_committed_turn("different"),
         )
     database.close()
 
 
-def test_terminal_and_ack_without_memory_intent_replays_only_without_intent(
+def test_terminal_and_ack_without_committed_turn_replays_only_without_turn(
     tmp_path,
 ) -> None:
     database, uow, lease, fence, claim, run = _terminal_setup(
@@ -318,14 +341,14 @@ def test_terminal_and_ack_without_memory_intent_replays_only_without_intent(
     )
     first = _terminal(uow, lease, fence, claim, run)
     assert _terminal(uow, lease, fence, claim, run) == first
-    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+    with pytest.raises(UnitOfWorkConflict, match="committed-turn replay differs"):
         _terminal(
             uow,
             lease,
             fence,
             claim,
             run,
-            memory_intent=_assistant_intent("answer"),
+            committed_turn=_committed_turn("answer"),
         )
     database.close()
 

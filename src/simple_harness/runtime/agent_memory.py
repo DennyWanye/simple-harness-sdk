@@ -300,6 +300,30 @@ class CommittedTurn:
             "turn_started_at": float(self.turn_started_at),
         }
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, JsonValue]) -> CommittedTurn:
+        identity = value.get("identity")
+        write_scope = value.get("write_scope")
+        if value.get("protocol") != "simple-harness-agent-memory/committed-turn/v1":
+            raise ValueError("committed turn protocol is invalid")
+        if not isinstance(identity, Mapping):
+            raise TypeError("committed turn identity must be an object")
+        if not isinstance(write_scope, Mapping):
+            raise TypeError("committed turn write_scope must be an object")
+        return cls(
+            _identifier(value.get("turn_id"), "turn_id"),
+            AgentIdentity.from_json(identity),
+            _identifier(value.get("user_text"), "user_text"),
+            _identifier(value.get("assistant_text"), "assistant_text"),
+            MemoryScopeRef.from_json(write_scope),
+            (
+                None
+                if value.get("write_fence") is None
+                else _identifier(value.get("write_fence"), "write_fence")
+            ),
+            _timestamp(value.get("turn_started_at"), "turn_started_at"),
+        )
+
 
 class CommittedTurnStatus(StrEnum):
     APPLIED = "applied"

@@ -92,6 +92,7 @@ class _Memory:
         self.close_count = 0
         self.release_failures = release_failures
         self.corrupt_result = corrupt_result
+        self.committed: list[CommittedTurn] = []
 
     async def recall_for_turn(self, request: MemoryRecallRequest) -> MemoryRecallResult:
         self.recalls.append(request)
@@ -116,6 +117,7 @@ class _Memory:
             raise TimeoutError
 
     async def record_committed_turn(self, request: CommittedTurn) -> CommittedTurnReceipt:
+        self.committed.append(request)
         return CommittedTurnReceipt(
             request.turn_id,
             request.payload_hash,
@@ -215,6 +217,10 @@ def test_consumer_runtime_automatically_recalls_once_and_freezes_stage(
             assert stage.private_snapshot_hash
             assert stage.turn_started_at is not None
             assert len(memory.recalls) == 1
+            await runtime._drain_memory_bounded(100)
+            assert len(memory.committed) == 1
+            assert memory.committed[0].user_text == "hello"
+            assert memory.committed[0].assistant_text == "done"
         assert memory.close_count == 0
 
     asyncio.run(case())

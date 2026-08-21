@@ -16,6 +16,7 @@ from typing import Protocol
 from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.delivery import DeliveryDispatcher
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
+from simple_harness.execution.memory_outbox import MemoryDispatcher, MemoryOutboxRepository
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.providers import ProviderReconciliationPort
 from simple_harness.tools.authorization import AuthorizationPort
@@ -178,6 +179,13 @@ def build_production_runtime(config: ProductionRuntimeConfig) -> Runtime:
             owner_id=config.owner_id,
             lease_ttl_seconds=config.lease_ttl_seconds,
             close_timeout_seconds=config.close_timeout_seconds,
+            memory_dispatcher=MemoryDispatcher(
+                MemoryOutboxRepository(database),
+                config.memory,
+                owner_id=config.owner_id,
+                clock=config.clock,
+                lease_seconds=config.lease_ttl_seconds,
+            ),
             conversation_memory_enabled=True,
             context_staging=staging,
             context_preparation_mode=config.context_preparation_mode,

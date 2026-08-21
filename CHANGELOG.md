@@ -14,7 +14,9 @@ SPDX-License-Identifier: Apache-2.0
 - `ConversationContextProviderPort` for product-owned non-Memory Context and automatic
   `RunClient.start_conversation()` / continuation preparation.
 - Fresh execution schema v4 with immutable Agent identity bindings, richer Context staging,
-  durable recall-release retry, and the committed-turn outbox schema reserved for S2.
+  durable recall-release retry, and a terminal-only canonical committed-turn outbox.
+- Lease/epoch-fenced committed-turn dispatch with restart replay, bounded backlog cleanup,
+  transient retry, permanent/conflict dead-letter, and privacy-safe `REJECTED_ERASED` settlement.
 
 ### Changed
 - `build_consumer_runtime` is the official easy composition root and accepts one Memory
@@ -22,6 +24,11 @@ SPDX-License-Identifier: Apache-2.0
   again.
 - Old query/sink and reserved query/write ports are retired from public exports. Consumers
   migrate to one `AgentMemoryPort` and no longer call preparation helpers manually.
+- Conversation start and continuation enqueue no longer create tentative Memory writes. A
+  completed root or continuation commits its user+assistant pair atomically with terminal facts;
+  failed/cancelled turns produce no outbox row and replay rejects missing, added, or changed turns.
+- Existing execution schema v1-v3 databases remain fail-closed. The explicit v3-to-v4 offline
+  migration is deferred pending a complete legacy-event classification contract.
 
 ## 0.2.0 — candidate
 

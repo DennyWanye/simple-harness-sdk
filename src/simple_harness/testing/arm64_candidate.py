@@ -17,11 +17,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
 
-from simple_harness.contracts import freeze_json
+from simple_harness.contracts import RunId, freeze_json
 from simple_harness.contracts.messages import Message, MessageRole
 from simple_harness.execution.memory_outbox import (
+    CommittedTurnSpec,
     MemoryDispatcher,
-    MemoryIntentSpec,
     MemoryOutboxRepository,
     MemoryOutboxState,
 )
@@ -31,12 +31,12 @@ from simple_harness.execution.sqlite import (
     SqliteExecutionUnitOfWork,
 )
 from simple_harness.execution.uow import RunState
-from simple_harness.runtime.agent_memory import AgentIdentity
-from simple_harness.runtime.conversation_memory import (
-    ConversationMemoryIntent,
-    ConversationMemoryRole,
-    ConversationTurnInput,
+from simple_harness.runtime.agent_memory import (
+    AgentIdentity,
+    CommittedTurn,
+    MemoryScopeRef,
 )
+from simple_harness.runtime.conversation_memory import ConversationTurnInput
 from simple_harness.runtime.start_snapshot import StartSnapshot
 from simple_harness.version import __version__
 
@@ -51,6 +51,10 @@ class Arm64CandidateGateError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+class _InjectedRestart(BaseException):
+    """Simulate process loss without running normal exception cleanup."""
 
 
 def _require(condition: bool, code: str) -> None:
@@ -184,14 +188,17 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
         Message(MessageRole.USER, "remember the ARM64 candidate"),
         "remember the ARM64 candidate",
     )
-    intent = ConversationMemoryIntent(
-        "harness-memory/v1/user/run-arm64-gate",
-        turn.user_id,
-        turn.session_id,
-        ConversationMemoryRole.USER,
-        turn.memory_text,
+    committed_turn = CommittedTurnSpec.from_domain(
+        CommittedTurn(
+            "turn-arm64-gate",
+            turn.identity,
+            "remember the ARM64 candidate",
+            "ARM64 candidate acknowledged",
+            MemoryScopeRef.personal(turn.user_id),
+            "a" * 64,
+            1.0,
+        )
     )
-    intent_spec = MemoryIntentSpec.from_conversation(intent)
 
     database = Database.open(execution_path, wal=True)
     first_dispatcher: MemoryDispatcher | None = None
@@ -207,14 +214,47 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
             snapshot=cast(Any, _execution_snapshot(turn)),
             event_id="run-arm64-gate:created",
             user_id=turn.user_id,
-            memory_intent=intent_spec,
             now=1.0,
+        )
+        database.connection.execute(
+            "INSERT INTO agent_identity_bindings VALUES(?,?,?,?,?,?)",
+            (
+                turn.session_id,
+                turn.identity.deployment_id,
+                turn.identity.household_id,
+                turn.identity.actor_id,
+                "b" * 64,
+                1.0,
+            ),
         )
         stored_snapshot = uow.read_start_snapshot(run.run_id)
         _require(run.state is RunState.CREATED, "arm64-minimal-runtime-state-invalid")
         _require(stored_snapshot is not None, "arm64-minimal-runtime-snapshot-missing")
         restored = StartSnapshot.from_json(cast(Any, stored_snapshot))
         _require(restored.conversation == turn, "arm64-minimal-runtime-snapshot-invalid")
+        _, runtime_lease = uow.claim_runtime_activation(
+            run_id=run.run_id,
+            owner_id="arm64-gate-runtime",
+            namespace="runtime.kernel",
+            now=1.1,
+            lease_ttl_seconds=30.0,
+        )
+        fence = await uow.acquire(RunId(run.run_id), runtime_lease, now=1.1)
+        current = uow.read_run(run.run_id)
+        assert current is not None
+        uow.commit_root_terminal_with_deliveries(
+            run_id=run.run_id,
+            expected_version=current.version,
+            terminal_state=RunState.COMPLETED,
+            event_id="run-arm64-gate:terminal",
+            terminal_payload={"answer": "ARM64 candidate acknowledged"},
+            deliveries=(),
+            fence=fence,
+            execution_lease=runtime_lease,
+            terminal_fence_receipt_ref="receipt://arm64-gate/terminal/1",
+            committed_turn=committed_turn,
+            now=1.2,
+        )
         first_backend = backend_type(str(memory_path))
         await first_backend.initialize()
         first_adapter = adapter_type(first_backend)
@@ -226,25 +266,25 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
             clock=lambda: 1.0,
         )
 
-        def crash_after_apply(point: str) -> None:
-            if point == "memory_dispatcher.after_apply_before_ack":
-                raise RuntimeError("injected-arm64-gate-restart")
+        def crash_after_record(point: str) -> None:
+            if point == "memory_dispatcher.after_record_before_ack":
+                raise _InjectedRestart("injected-arm64-gate-restart")
 
-        _require(
-            await first_dispatcher.run_once(fault=crash_after_apply),
-            "arm64-memory-outbox-first-dispatch-missing",
-        )
-        released = first_repository.read(intent.source_event_id)
+        try:
+            await first_dispatcher.run_once(fault=crash_after_record)
+        except _InjectedRestart:
+            pass
+        released = first_repository.read(committed_turn.intent_id)
         if released is None:
             raise Arm64CandidateGateError("arm64-memory-outbox-record-missing")
         _require(
-            released.state is MemoryOutboxState.PENDING and released.attempt_count == 1,
+            released.state is MemoryOutboxState.CLAIMED and released.attempt_count == 1,
             "arm64-memory-outbox-restart-state-invalid",
         )
     finally:
         if first_dispatcher is not None:
             await first_dispatcher.close()
-        elif first_backend is not None:
+        if first_backend is not None:
             await first_backend.close()
         database.close()
 
@@ -284,7 +324,7 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
             await second_dispatcher.run_once(),
             "arm64-memory-outbox-replay-missing",
         )
-        settled = second_repository.read(intent.source_event_id)
+        settled = second_repository.read(committed_turn.intent_id)
         if settled is None:
             raise Arm64CandidateGateError("arm64-memory-outbox-record-missing")
         _require(
@@ -294,12 +334,12 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
         outbox = {
             "state": settled.state.value,
             "attempt_count": settled.attempt_count,
-            "source_event_id": settled.source_event_id,
+            "turn_id": settled.turn_id,
         }
     finally:
         if second_dispatcher is not None:
             await second_dispatcher.close()
-        elif second_backend is not None:
+        if second_backend is not None:
             await second_backend.close()
         reopened_database.close()
 

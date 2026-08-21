@@ -38,7 +38,7 @@ if TYPE_CHECKING:
         DeliverySpec,
         TerminalCommitResult,
     )
-    from simple_harness.execution.memory_outbox import MemoryIntentSpec
+    from simple_harness.execution.memory_outbox import CommittedTurnSpec
 
 
 FaultHook = Callable[[str], None]
@@ -320,7 +320,7 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         execution_lease: ExecutionLease,
         terminal_fence_receipt_ref: str,
         now: float,
-        memory_intent: MemoryIntentSpec | None = None,
+        committed_turn: CommittedTurnSpec | None = None,
         fault: FaultHook | None = None,
     ) -> TerminalCommitResult: ...
 
@@ -457,7 +457,6 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         event_id: str,
         now: float,
         user_id: str = "harness-system",
-        memory_intent: MemoryIntentSpec | None = None,
         context_stage_id: str | None = None,
         context_stage_hash: str | None = None,
         fault: FaultHook | None = None,
@@ -509,7 +508,6 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         run_id: str,
         payload: Mapping[str, JsonValue],
         now: float,
-        memory_intent: MemoryIntentSpec | None = None,
         context_stage_id: str | None = None,
         context_stage_hash: str | None = None,
         fault: FaultHook | None = None,
@@ -554,7 +552,7 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         receipt_id: str,
         terminal_fence_receipt_ref: str,
         now: float,
-        memory_intent: MemoryIntentSpec | None = None,
+        committed_turn: CommittedTurnSpec | None = None,
         fault: FaultHook | None = None,
     ) -> ContinuationTerminalResult: ...
 

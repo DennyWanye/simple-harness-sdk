@@ -90,7 +90,7 @@ from simple_harness.execution.uow import (
 from simple_harness.providers import ProviderTarget, ProviderToolSpec
 
 if TYPE_CHECKING:
-    from simple_harness.execution.memory_outbox import MemoryIntentSpec
+    from simple_harness.execution.memory_outbox import CommittedTurnSpec
 from simple_harness.tools.contracts import ToolOutcome, ToolResult
 from simple_harness.tools.schema import (
     ArgumentsValidationError,
@@ -492,89 +492,81 @@ def _stage_pair(stage_id: str | None, stage_hash: str | None) -> None:
             raise ValueError("context_stage_hash must be a SHA-256 digest")
 
 
-def _validate_memory_intent(
-    intent: MemoryIntentSpec,
-    *,
-    user_id: str,
-    session_id: str,
-    role: str,
-) -> None:
-    for name in ("intent_id", "source_event_id", "user_id", "session_id", "role"):
-        _required(str(getattr(intent, name)), name)
-    if intent.user_id != user_id or intent.session_id != session_id:
-        raise UnitOfWorkConflict("memory intent user/session binding differs")
-    if intent.role != role:
-        raise UnitOfWorkConflict("memory intent role binding differs")
-    if len(intent.payload_hash) != 64:
-        raise ValueError("memory intent payload hash is invalid")
-    if intent.memory_text is not None and not intent.memory_text.strip():
-        raise ValueError("memory intent text must be non-empty")
-
-
-def _insert_memory_intent(
+def _insert_committed_turn(
     connection: sqlite3.Connection,
-    intent: MemoryIntentSpec,
+    intent: CommittedTurnSpec,
     *,
     run_id: str,
-    continuation_id: str | None,
     now: float,
 ) -> None:
-    state = "skipped_non_text" if intent.memory_text is None else "pending"
-    settled_at = now if state == "skipped_non_text" else None
+    turn = intent.turn
     connection.execute(
         "INSERT INTO memory_outbox("
-        "intent_id,source_event_id,run_id,continuation_id,user_id,session_id,role,"
-        "memory_text,payload_hash,state,version,attempt_count,claim_owner,claim_token,"
-        "claim_expires_at,retry_at,error_code,created_at,updated_at,settled_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,NULL,?,NULL,?,?,?)",
+        "intent_id,run_id,turn_id,deployment_id,household_id,actor_id,session_id,"
+        "payload_json,payload_hash,state,claim_owner,claim_epoch,claim_expires_at,"
+        "attempt_count,retry_at,error_code,created_at,settled_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,'pending',NULL,0,NULL,0,?,NULL,?,NULL)",
         (
             intent.intent_id,
-            intent.source_event_id,
             run_id,
-            continuation_id,
-            intent.user_id,
-            intent.session_id,
-            intent.role,
-            intent.memory_text,
+            turn.turn_id,
+            turn.identity.deployment_id,
+            turn.identity.household_id,
+            turn.identity.actor_id,
+            turn.identity.session_id,
+            intent.payload_json,
             intent.payload_hash,
-            state,
             now,
             now,
-            now,
-            settled_at,
         ),
     )
 
 
-def _verify_memory_replay(
+def _validate_committed_turn(
     connection: sqlite3.Connection,
-    intent: MemoryIntentSpec | None,
+    intent: CommittedTurnSpec,
     *,
     run_id: str,
-    continuation_id: str | None,
-    role: str,
+) -> None:
+    row = connection.execute(
+        "SELECT r.execution_session_id,b.deployment_id,b.household_id,b.actor_id "
+        "FROM runs AS r JOIN agent_identity_bindings AS b "
+        "ON b.session_id=r.execution_session_id WHERE r.run_id=?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        raise UnitOfWorkConflict("committed turn lacks trusted identity binding")
+    turn = intent.turn
+    if (
+        turn.identity.session_id != str(row["execution_session_id"])
+        or turn.identity.deployment_id != str(row["deployment_id"])
+        or turn.identity.household_id != str(row["household_id"])
+        or turn.identity.actor_id != str(row["actor_id"])
+    ):
+        raise UnitOfWorkConflict("committed turn identity binding differs")
+    if intent.payload_json != canonical_json(turn.canonical_payload()):
+        raise UnitOfWorkConflict("committed turn canonical payload differs")
+    if intent.payload_hash != turn.payload_hash:
+        raise UnitOfWorkConflict("committed turn payload hash differs")
+
+
+def _verify_committed_turn_replay(
+    connection: sqlite3.Connection,
+    intent: CommittedTurnSpec | None,
+    *,
+    run_id: str,
 ) -> None:
     rows = connection.execute(
-        "SELECT intent_id,source_event_id,user_id,session_id,role,memory_text,"
-        "payload_hash FROM memory_outbox WHERE run_id=? AND continuation_id IS ? "
-        "AND role=? ORDER BY intent_id",
-        (run_id, continuation_id, role),
+        "SELECT intent_id,payload_json,payload_hash FROM memory_outbox WHERE run_id=?",
+        (run_id,),
     ).fetchall()
     if intent is None:
         if rows:
-            raise UnitOfWorkConflict("memory intent replay differs")
+            raise UnitOfWorkConflict("committed-turn replay differs")
         return
-    expected = (
-        intent.intent_id,
-        intent.source_event_id,
-        intent.user_id,
-        intent.session_id,
-        intent.role,
-        intent.memory_text,
-        intent.payload_hash,
-    )
+    expected = (intent.intent_id, intent.payload_json, intent.payload_hash)
     if len(rows) != 1 or tuple(rows[0]) != expected:
-        raise UnitOfWorkConflict("memory intent replay differs")
+        raise UnitOfWorkConflict("committed-turn replay differs")
 
 
 def _consume_context_stage(
@@ -1967,7 +1959,7 @@ class SqliteExecutionUnitOfWork:
         execution_lease: ExecutionLease,
         terminal_fence_receipt_ref: str,
         now: float,
-        memory_intent: MemoryIntentSpec | None = None,
+        committed_turn: CommittedTurnSpec | None = None,
         fault: FaultHook | None = None,
     ) -> TerminalCommitResult:
         run_id = _required(run_id, "run_id")
@@ -1984,6 +1976,8 @@ class SqliteExecutionUnitOfWork:
             RunState.CANCELLED,
         }:
             raise ValueError("root terminal command requires a terminal state")
+        if terminal_state is not RunState.COMPLETED and committed_turn is not None:
+            raise UnitOfWorkConflict("only COMPLETED may create a committed turn")
         if fence.run_id.value != run_id:
             raise UnitOfWorkConflict("terminal fence belongs to another run")
         now = _time(now)
@@ -2049,12 +2043,10 @@ class SqliteExecutionUnitOfWork:
                 and str(existing_event["payload_json"]) == payload_json
                 and requested == actual
             ):
-                _verify_memory_replay(
+                _verify_committed_turn_replay(
                     self.database.connection,
-                    memory_intent,
+                    committed_turn,
                     run_id=run_id,
-                    continuation_id=None,
-                    role="assistant",
                 )
                 return TerminalCommitResult(existing_run, stored)
             raise UnitOfWorkConflict("another root terminal intent already won")
@@ -2109,29 +2101,16 @@ class SqliteExecutionUnitOfWork:
                     ),
                 )
                 _fault(fault, f"root_terminal.delivery.{index}.after_write")
-            if memory_intent is not None:
-                session = connection.execute(
-                    "SELECT s.user_id,r.execution_session_id FROM runs r "
-                    "JOIN execution_sessions s ON s.session_id=r.execution_session_id "
-                    "WHERE r.run_id=?",
-                    (run_id,),
-                ).fetchone()
-                assert session is not None
-                _validate_memory_intent(
-                    memory_intent,
-                    user_id=str(session["user_id"]),
-                    session_id=str(session["execution_session_id"]),
-                    role="assistant",
-                )
-                _fault(fault, "root_terminal.memory_intent.before_write")
-                _insert_memory_intent(
+            if committed_turn is not None:
+                _validate_committed_turn(connection, committed_turn, run_id=run_id)
+                _fault(fault, "root_terminal.committed_turn.before_write")
+                _insert_committed_turn(
                     connection,
-                    memory_intent,
+                    committed_turn,
                     run_id=run_id,
-                    continuation_id=None,
                     now=now,
                 )
-                _fault(fault, "root_terminal.memory_intent.after_write")
+                _fault(fault, "root_terminal.committed_turn.after_write")
             _fault(fault, "root_terminal.fence.before_write")
             changed = connection.execute(
                 """
@@ -2315,7 +2294,6 @@ class SqliteExecutionUnitOfWork:
         event_id: str,
         now: float,
         user_id: str = "harness-system",
-        memory_intent: MemoryIntentSpec | None = None,
         context_stage_id: str | None = None,
         context_stage_hash: str | None = None,
         fault: FaultHook | None = None,
@@ -2328,13 +2306,6 @@ class SqliteExecutionUnitOfWork:
         event_id = _required(event_id, "event_id")
         user_id = _required(user_id, "user_id")
         _stage_pair(context_stage_id, context_stage_hash)
-        if memory_intent is not None:
-            _validate_memory_intent(
-                memory_intent,
-                user_id=user_id,
-                session_id=execution_session_id,
-                role="user",
-            )
         now = _time(now)
         snapshot_json = _object_json(snapshot, "snapshot")
         snapshot_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
@@ -2353,13 +2324,6 @@ class SqliteExecutionUnitOfWork:
             ).fetchone()
             if owner is None or str(owner[0]) != user_id:
                 raise UnitOfWorkConflict("execution session belongs to another user")
-            _verify_memory_replay(
-                self.database.connection,
-                memory_intent,
-                run_id=run_id,
-                continuation_id=None,
-                role="user",
-            )
             _verify_stage_replay(
                 self.database.connection,
                 stage_id=context_stage_id,
@@ -2427,16 +2391,6 @@ class SqliteExecutionUnitOfWork:
                     consumed_continuation_id=None,
                     now=now,
                 )
-            if memory_intent is not None:
-                _fault(fault, "root_start.memory_intent.before_write")
-                _insert_memory_intent(
-                    connection,
-                    memory_intent,
-                    run_id=run_id,
-                    continuation_id=None,
-                    now=now,
-                )
-                _fault(fault, "root_start.memory_intent.after_write")
             _fault(fault, "root_start.event.before_write")
             self._insert_event(
                 connection,
@@ -2741,7 +2695,6 @@ class SqliteExecutionUnitOfWork:
         run_id: str,
         payload: Mapping[str, JsonValue],
         now: float,
-        memory_intent: MemoryIntentSpec | None = None,
         context_stage_id: str | None = None,
         context_stage_hash: str | None = None,
         fault: FaultHook | None = None,
@@ -2757,13 +2710,6 @@ class SqliteExecutionUnitOfWork:
                 existing.run_id == run_id
                 and canonical_json(_thaw(existing.payload)) == payload_json
             ):
-                _verify_memory_replay(
-                    self.database.connection,
-                    memory_intent,
-                    run_id=run_id,
-                    continuation_id=continuation_id,
-                    role="user",
-                )
                 _verify_stage_replay(
                     self.database.connection,
                     stage_id=context_stage_id,
@@ -2784,13 +2730,6 @@ class SqliteExecutionUnitOfWork:
                 raise UnitOfWorkNotFound(run_id)
             if str(run_row["state"]) in {"completed", "failed", "cancelled"}:
                 raise UnitOfWorkConflict("terminal Run rejects new continuations")
-            if memory_intent is not None:
-                _validate_memory_intent(
-                    memory_intent,
-                    user_id=str(run_row["user_id"]),
-                    session_id=str(run_row["execution_session_id"]),
-                    role="user",
-                )
             row = connection.execute(
                 "SELECT COALESCE(MAX(fifo_seq), 0) + 1 FROM continuations WHERE run_id = ?",
                 (run_id,),
@@ -2829,16 +2768,6 @@ class SqliteExecutionUnitOfWork:
                     consumed_continuation_id=continuation_id,
                     now=now,
                 )
-            if memory_intent is not None:
-                _fault(fault, "continuation_enqueue.memory_intent.before_write")
-                _insert_memory_intent(
-                    connection,
-                    memory_intent,
-                    run_id=run_id,
-                    continuation_id=continuation_id,
-                    now=now,
-                )
-                _fault(fault, "continuation_enqueue.memory_intent.after_write")
         _fault(fault, "continuation_enqueue.after_commit")
         result = self.read_continuation(continuation_id)
         assert result is not None
@@ -3086,7 +3015,7 @@ class SqliteExecutionUnitOfWork:
         receipt_id: str,
         terminal_fence_receipt_ref: str,
         now: float,
-        memory_intent: MemoryIntentSpec | None = None,
+        committed_turn: CommittedTurnSpec | None = None,
         fault: FaultHook | None = None,
     ) -> ContinuationTerminalResult:
         run_id = _required(run_id, "run_id")
@@ -3097,6 +3026,8 @@ class SqliteExecutionUnitOfWork:
             RunState.CANCELLED,
         }:
             raise ValueError("continuation terminal state is invalid")
+        if terminal_state is not RunState.COMPLETED and committed_turn is not None:
+            raise UnitOfWorkConflict("only COMPLETED may create a committed turn")
         receipt_id = _required(receipt_id, "receipt_id")
         event_id = _required(event_id, "event_id")
         now = _time(now)
@@ -3125,20 +3056,18 @@ class SqliteExecutionUnitOfWork:
                         }
                         for item in items
                     ],
-                    "memory_intent_hash": (
-                        None if memory_intent is None else memory_intent.payload_hash
+                    "committed_turn_hash": (
+                        None if committed_turn is None else committed_turn.payload_hash
                     ),
                 }
             ).encode()
         ).hexdigest()
         existing = self._read_continuation_progress_receipt(receipt_id)
         if existing is not None:
-            _verify_memory_replay(
+            _verify_committed_turn_replay(
                 self.database.connection,
-                memory_intent,
+                committed_turn,
                 run_id=run_id,
-                continuation_id=None,
-                role="assistant",
             )
             return self._replay_continuation_terminal(
                 existing,
@@ -3152,12 +3081,10 @@ class SqliteExecutionUnitOfWork:
                 (receipt_id,),
             ).fetchone()
             if receipt_row is not None:
-                _verify_memory_replay(
+                _verify_committed_turn_replay(
                     connection,
-                    memory_intent,
+                    committed_turn,
                     run_id=run_id,
-                    continuation_id=None,
-                    role="assistant",
                 )
                 return self._replay_continuation_terminal(
                     _continuation_progress_receipt(receipt_row),
@@ -3248,29 +3175,16 @@ class SqliteExecutionUnitOfWork:
                     ),
                 )
                 _fault(fault, f"continuation_terminal.delivery.{index}.after_write")
-            if memory_intent is not None:
-                session = connection.execute(
-                    "SELECT s.user_id,r.execution_session_id FROM runs r "
-                    "JOIN execution_sessions s ON s.session_id=r.execution_session_id "
-                    "WHERE r.run_id=?",
-                    (run_id,),
-                ).fetchone()
-                assert session is not None
-                _validate_memory_intent(
-                    memory_intent,
-                    user_id=str(session["user_id"]),
-                    session_id=str(session["execution_session_id"]),
-                    role="assistant",
-                )
-                _fault(fault, "continuation_terminal.memory_intent.before_write")
-                _insert_memory_intent(
+            if committed_turn is not None:
+                _validate_committed_turn(connection, committed_turn, run_id=run_id)
+                _fault(fault, "continuation_terminal.committed_turn.before_write")
+                _insert_committed_turn(
                     connection,
-                    memory_intent,
+                    committed_turn,
                     run_id=run_id,
-                    continuation_id=None,
                     now=now,
                 )
-                _fault(fault, "continuation_terminal.memory_intent.after_write")
+                _fault(fault, "continuation_terminal.committed_turn.after_write")
             _fault(fault, "continuation_terminal.fence.before_write")
             changed = connection.execute(
                 "UPDATE run_fences SET state='released',released_at=? "

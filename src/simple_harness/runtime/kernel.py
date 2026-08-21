@@ -40,7 +40,7 @@ from simple_harness.execution.contracts.children import AttachmentPolicy
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySpec
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.fences import RunFenceLease, RunFencePort
-from simple_harness.execution.memory_outbox import MemoryDispatcher, MemoryIntentSpec
+from simple_harness.execution.memory_outbox import CommittedTurnSpec, MemoryDispatcher
 from simple_harness.execution.recovery import WaitBlockerSpec
 from simple_harness.execution.uow import (
     RUNTIME_LEASE_NAMESPACE,
@@ -66,11 +66,13 @@ from .agent_memory import (
     AgentMemoryError,
     AgentMemoryErrorCode,
     AgentMemoryPort,
+    CommittedTurn,
     MemoryFailurePolicy,
     MemoryRecallBounds,
     MemoryRecallRequest,
     MemoryRecallResult,
     MemoryReleaseRequest,
+    MemoryScopeRef,
 )
 from .child_coordinator import ChildCoordinator
 from .child_signal_runtime import ChildSignalRuntime
@@ -89,8 +91,6 @@ from .conversation_context_provider import (
 from .conversation_memory import (
     ContextPreparationMode,
     ConversationContinuationInput,
-    ConversationMemoryIntent,
-    ConversationMemoryRole,
     ConversationTurnInput,
     ConversationTurnOutput,
     _message_from_json,
@@ -996,16 +996,6 @@ class RunClient:
             prepared_context = stage.private_snapshot
         if context_stage_id is None or context_stage_hash is None or prepared_context is None:
             raise ValueError("conversation continuation requires durable prepared context")
-        memory_intent: MemoryIntentSpec | None = None
-        if self._runtime._ports.memory_dispatcher is not None:
-            intent = ConversationMemoryIntent(
-                f"harness-memory/v1/user-continuation/{continuation_id}",
-                start.conversation.user_id,
-                start.conversation.session_id,
-                ConversationMemoryRole.USER,
-                value.memory_text,
-            )
-            memory_intent = MemoryIntentSpec.from_conversation(intent)
         continuation = self._runtime._uow.enqueue_continuation(
             continuation_id=continuation_id,
             run_id=_run_id(run_id),
@@ -1014,13 +1004,10 @@ class RunClient:
                 "conversation": value.to_json(),
                 "prepared_context": dict(prepared_context),
             },
-            memory_intent=memory_intent,
             context_stage_id=context_stage_id,
             context_stage_hash=context_stage_hash,
             now=self._runtime._now(),
         )
-        if memory_intent is not None:
-            self._runtime._memory_wake.set()
         asyncio.create_task(self._runtime._wake_continuation(continuation.run_id))
         return continuation
 
@@ -1754,17 +1741,6 @@ class Runtime:
             driver_kind=profile.driver_kind,
             policy_fingerprint=getattr(driver, "policy_fingerprint", None),
         )
-        memory_intent: MemoryIntentSpec | None = None
-        if self._ports.memory_dispatcher is not None and start.conversation is not None:
-            memory_intent = MemoryIntentSpec.from_conversation(
-                ConversationMemoryIntent(
-                    f"harness-memory/v1/user/{start.run_id.value}",
-                    start.conversation.user_id,
-                    start.conversation.session_id,
-                    ConversationMemoryRole.USER,
-                    start.conversation.memory_text,
-                )
-            )
         created = self._uow.create_with_start_snapshot(
             execution_session_id=start.execution_session_id.value,
             run_id=start.run_id.value,
@@ -1777,12 +1753,9 @@ class Runtime:
             user_id=(
                 "harness-system" if start.conversation is None else start.conversation.user_id
             ),
-            memory_intent=memory_intent,
             context_stage_id=start.context_stage_id,
             context_stage_hash=start.context_stage_hash,
         )
-        if memory_intent is not None:
-            self._memory_wake.set()
         logger.info(
             "run.start",
             extra={
@@ -2209,9 +2182,9 @@ class Runtime:
     ) -> None:
         raw_snapshot = self._uow.read_start_snapshot(run.run_id)
         snapshot = None if raw_snapshot is None else StartSnapshot.from_json(raw_snapshot)
-        memory_intent: MemoryIntentSpec | None = None
+        committed_turn: CommittedTurnSpec | None = None
         if (
-            self._ports.memory_dispatcher is not None
+            self._ports.agent_memory is not None
             and snapshot is not None
             and snapshot.conversation is not None
         ):
@@ -2221,16 +2194,53 @@ class Runtime:
                 )
             if state is not RunState.COMPLETED and conversation_output is not None:
                 raise UnitOfWorkConflict("non-completed conversation rejects conversation_output")
-            if conversation_output is not None:
-                memory_intent = MemoryIntentSpec.from_conversation(
-                    ConversationMemoryIntent(
-                        f"harness-memory/v1/assistant/{run.run_id}",
-                        snapshot.conversation.user_id,
-                        snapshot.conversation.session_id,
-                        ConversationMemoryRole.ASSISTANT,
-                        conversation_output.memory_text,
+            if (
+                conversation_output is not None
+                and conversation_output.memory_text is not None
+            ):
+                if continuation_claim is None:
+                    user_text = snapshot.conversation.memory_text
+                    turn_id = snapshot.turn_id
+                    stage_where = "consumed_run_id=?"
+                    stage_identity = run.run_id
+                else:
+                    continuation_payload = thaw_json(continuation_claim.payload)
+                    if not isinstance(continuation_payload, dict):
+                        raise UnitOfWorkConflict("conversation continuation payload is invalid")
+                    raw_conversation = continuation_payload.get("conversation")
+                    if not isinstance(raw_conversation, Mapping):
+                        raise UnitOfWorkConflict("conversation continuation value is invalid")
+                    continuation_value = ConversationContinuationInput.from_json(raw_conversation)
+                    user_text = continuation_value.memory_text
+                    turn_id = continuation_claim.continuation_id
+                    stage_where = "consumed_continuation_id=?"
+                    stage_identity = continuation_claim.continuation_id
+                if user_text is not None:
+                    staging = self._ports.context_staging
+                    if staging is None:
+                        raise UnitOfWorkConflict("committed turn lacks Context staging")
+                    stage = staging.database.connection.execute(
+                        "SELECT memory_write_fence,turn_started_at "
+                        f"FROM context_preparation_staging WHERE {stage_where}",
+                        (stage_identity,),
+                    ).fetchone()
+                    if stage is None or stage["turn_started_at"] is None:
+                        raise UnitOfWorkConflict("committed turn lacks durable recall lineage")
+                    committed_turn = CommittedTurnSpec.from_domain(
+                        CommittedTurn(
+                            turn_id,
+                            snapshot.conversation.identity,
+                            user_text,
+                            conversation_output.memory_text,
+                            MemoryScopeRef.personal(snapshot.conversation.identity.actor_id),
+                            (
+                                None
+                                if stage["memory_write_fence"] is None
+                                else str(stage["memory_write_fence"])
+                            ),
+                            float(stage["turn_started_at"]),
+                        )
                     )
-                )
         event = (
             "run.complete"
             if state is RunState.COMPLETED
@@ -2313,12 +2323,12 @@ class Runtime:
                 receipt_id=f"{identity}:receipt",
                 terminal_fence_receipt_ref=(f"runtime-fence:{fence.owner_id}:{fence.epoch}"),
                 now=self._now(),
-                memory_intent=memory_intent,
+                committed_turn=committed_turn,
             )
             self._fences.pop(run.run_id, None)
             if deliveries:
                 self._delivery_wake.set()
-            if memory_intent is not None:
+            if committed_turn is not None:
                 self._memory_wake.set()
             return
         self._terminal.commit(
@@ -2329,12 +2339,12 @@ class Runtime:
             fence=fence,
             execution_lease=self._leases[run.run_id],
             now=self._now(),
-            memory_intent=memory_intent,
+            committed_turn=committed_turn,
         )
         self._fences.pop(run.run_id, None)
         if deliveries:
             self._delivery_wake.set()
-        if memory_intent is not None:
+        if committed_turn is not None:
             self._memory_wake.set()
 
     async def _abandon_run_authority(self, run_id: str) -> None:

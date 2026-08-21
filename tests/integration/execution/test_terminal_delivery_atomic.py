@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
+from simple_harness import AgentIdentity, CommittedTurn, MemoryScopeRef
 from simple_harness.contracts import RunId
 from simple_harness.execution.delivery import DeliverySpec, DeliveryState
-from simple_harness.execution.memory_outbox import MemoryIntentSpec
+from simple_harness.execution.memory_outbox import CommittedTurnSpec
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import RunState, UnitOfWorkConflict
-from simple_harness.runtime import ConversationMemoryIntent, ConversationMemoryRole
 
 
 class InjectedFault(RuntimeError):
@@ -40,7 +40,12 @@ def setup_root(path: Path):
         driver_kind="react",
         snapshot={"messages": []},
         event_id="event-root",
+        user_id="actor-1",
         now=1.0,
+    )
+    database.connection.execute(
+        "INSERT INTO agent_identity_bindings VALUES(?,?,?,?,?,?)",
+        ("session-1", "deployment-1", "household-1", "actor-1", "a" * 64, 1.0),
     )
     _, runtime_lease = uow.claim_runtime_activation(
         run_id="run-1",
@@ -68,7 +73,7 @@ def commit_terminal(
     fault=None,
     items=None,
     now: float = 2.0,
-    memory_intent: MemoryIntentSpec | None = None,
+    committed_turn: CommittedTurnSpec | None = None,
 ):
     current = uow.read_run("run-1")
     assert current is not None
@@ -83,19 +88,21 @@ def commit_terminal(
         execution_lease=runtime_lease,
         terminal_fence_receipt_ref="receipt://terminal/run-1/1",
         now=now,
-        memory_intent=memory_intent,
+        committed_turn=committed_turn,
         fault=fault,
     )
 
 
-def _assistant_intent(text: str) -> MemoryIntentSpec:
-    return MemoryIntentSpec.from_conversation(
-        ConversationMemoryIntent(
-            "harness-memory/v1/assistant/run-1",
-            "harness-system",
-            "session-1",
-            ConversationMemoryRole.ASSISTANT,
+def _committed_turn(text: str) -> CommittedTurnSpec:
+    return CommittedTurnSpec.from_domain(
+        CommittedTurn(
+            "turn-1",
+            AgentIdentity("deployment-1", "household-1", "actor-1", "session-1"),
+            "question",
             text,
+            MemoryScopeRef.personal("actor-1"),
+            "epoch-1",
+            1.0,
         )
     )
 
@@ -107,6 +114,8 @@ WRITE_POINTS = (
     "root_terminal.delivery.0.after_write",
     "root_terminal.delivery.1.before_write",
     "root_terminal.delivery.1.after_write",
+    "root_terminal.committed_turn.before_write",
+    "root_terminal.committed_turn.after_write",
     "root_terminal.fence.before_write",
     "root_terminal.fence.after_write",
     "root_terminal.run.before_write",
@@ -119,7 +128,13 @@ def test_terminal_delivery_fault_reopens_all_before(tmp_path: Path, fault_point:
     path = tmp_path / "execution.db"
     database, uow, fence, runtime_lease = setup_root(path)
     with pytest.raises(InjectedFault, match=fault_point):
-        commit_terminal(uow, fence, runtime_lease, fault=raise_at(fault_point))
+        commit_terminal(
+            uow,
+            fence,
+            runtime_lease,
+            fault=raise_at(fault_point),
+            committed_turn=_committed_turn("answer"),
+        )
     database.close()
     with Database.open(path) as reopened:
         assert (
@@ -129,6 +144,7 @@ def test_terminal_delivery_fault_reopens_all_before(tmp_path: Path, fault_point:
         assert (
             reopened.connection.execute("SELECT COUNT(*) FROM delivery_outbox").fetchone()[0] == 0
         )
+        assert reopened.connection.execute("SELECT COUNT(*) FROM memory_outbox").fetchone()[0] == 0
         assert (
             reopened.connection.execute(
                 "SELECT COUNT(*) FROM run_events WHERE event_id='event-terminal'"
@@ -171,37 +187,37 @@ def test_terminal_delivery_after_commit_reopens_all_after_and_replays(tmp_path: 
         )
 
 
-def test_root_terminal_replay_requires_same_memory_intent(tmp_path: Path) -> None:
+def test_root_terminal_replay_requires_same_committed_turn(tmp_path: Path) -> None:
     database, uow, fence, runtime_lease = setup_root(tmp_path / "memory-replay.db")
-    intent = _assistant_intent("answer")
-    first = commit_terminal(uow, fence, runtime_lease, items=(), memory_intent=intent)
-    assert commit_terminal(uow, fence, runtime_lease, items=(), memory_intent=intent) == first
-    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
-        commit_terminal(uow, fence, runtime_lease, items=(), memory_intent=None)
-    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+    intent = _committed_turn("answer")
+    first = commit_terminal(uow, fence, runtime_lease, items=(), committed_turn=intent)
+    assert commit_terminal(uow, fence, runtime_lease, items=(), committed_turn=intent) == first
+    with pytest.raises(UnitOfWorkConflict, match="committed-turn replay differs"):
+        commit_terminal(uow, fence, runtime_lease, items=(), committed_turn=None)
+    with pytest.raises(UnitOfWorkConflict, match="committed-turn replay differs"):
         commit_terminal(
             uow,
             fence,
             runtime_lease,
             items=(),
-            memory_intent=_assistant_intent("different"),
+            committed_turn=_committed_turn("different"),
         )
     database.close()
 
 
-def test_root_terminal_without_memory_intent_replays_only_without_intent(
+def test_root_terminal_without_committed_turn_replays_only_without_turn(
     tmp_path: Path,
 ) -> None:
     database, uow, fence, runtime_lease = setup_root(tmp_path / "no-memory-replay.db")
     first = commit_terminal(uow, fence, runtime_lease, items=())
     assert commit_terminal(uow, fence, runtime_lease, items=()) == first
-    with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
+    with pytest.raises(UnitOfWorkConflict, match="committed-turn replay differs"):
         commit_terminal(
             uow,
             fence,
             runtime_lease,
             items=(),
-            memory_intent=_assistant_intent("answer"),
+            committed_turn=_committed_turn("answer"),
         )
     database.close()
 

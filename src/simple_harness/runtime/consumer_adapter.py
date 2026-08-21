@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,7 @@ from simple_harness.execution.context_authority import ToolCatalogSnapshot
 from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySink
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
+from simple_harness.execution.memory_outbox import MemoryDispatcher, MemoryOutboxRepository
 from simple_harness.execution.sqlite import Database
 from simple_harness.execution.sqlite.uow import SqliteExecutionUnitOfWork
 from simple_harness.providers import (
@@ -427,6 +429,16 @@ async def _build_consumer_runtime(
         react_checkpoint=uow,
         tool_catalog=_DefaultToolCatalog(),
         owner_id=ports.owner_id,
+        memory_dispatcher=(
+            None
+            if ports.memory is None
+            else MemoryDispatcher(
+                MemoryOutboxRepository(database),
+                ports.memory,
+                owner_id=ports.owner_id,
+                clock=time.time,
+            )
+        ),
         conversation_memory_enabled=ports.memory is not None,
         context_staging=(None if ports.memory is None else ContextStagingRepository(database)),
         context_preparation_mode=(

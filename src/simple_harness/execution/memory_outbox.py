@@ -1,80 +1,111 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Durable product-neutral conversation Memory outbox and dispatcher."""
+"""Durable terminal-only committed-turn outbox and dispatcher."""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from uuid import uuid4
 
-from simple_harness.runtime.conversation_memory import (
-    ConversationMemoryApplyStatus,
-    ConversationMemoryError,
-    ConversationMemoryErrorCode,
-    ConversationMemoryIntent,
-    ConversationMemoryRole,
+from simple_harness.contracts import canonical_json
+from simple_harness.runtime.agent_memory import (
+    AgentMemoryError,
+    AgentMemoryErrorCode,
+    AgentMemoryPort,
+    CommittedTurn,
+    CommittedTurnReceipt,
+    CommittedTurnStatus,
 )
-from simple_harness.runtime.ports import ConversationMemorySinkPort
 
 from .sqlite.database import Database
 from .uow import UnitOfWorkConflict
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryOutboxState(StrEnum):
     PENDING = "pending"
     CLAIMED = "claimed"
+    RETRY_WAIT = "retry_wait"
     APPLIED = "applied"
     DEAD_LETTER = "dead_letter"
-    SKIPPED_NON_TEXT = "skipped_non_text"
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryIntentSpec:
+class CommittedTurnSpec:
     intent_id: str
-    source_event_id: str
-    user_id: str
-    session_id: str
-    role: str
-    memory_text: str | None
+    turn: CommittedTurn
+    payload_json: str
     payload_hash: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.turn, CommittedTurn):
+            raise TypeError("turn must use CommittedTurn")
+        expected_id = f"agent-memory-turn/v1/{self.turn.turn_id}"
+        if self.intent_id != expected_id:
+            raise ValueError("committed-turn intent identity differs")
+        if self.payload_json != canonical_json(self.turn.canonical_payload()):
+            raise ValueError("committed-turn canonical payload differs")
+        if self.payload_hash != self.turn.payload_hash:
+            raise ValueError("committed-turn payload hash differs")
+
     @classmethod
-    def from_conversation(cls, intent: ConversationMemoryIntent) -> MemoryIntentSpec:
+    def from_domain(cls, turn: CommittedTurn) -> CommittedTurnSpec:
+        if not isinstance(turn, CommittedTurn):
+            raise TypeError("turn must use CommittedTurn")
         return cls(
-            intent_id=intent.source_event_id,
-            source_event_id=intent.source_event_id,
-            user_id=intent.user_id,
-            session_id=intent.session_id,
-            role=intent.role.value,
-            memory_text=intent.memory_text,
-            payload_hash=intent.payload_hash,
+            intent_id=f"agent-memory-turn/v1/{turn.turn_id}",
+            turn=turn,
+            payload_json=canonical_json(turn.canonical_payload()),
+            payload_hash=turn.payload_hash,
         )
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryOutboxRecord:
     intent_id: str
-    source_event_id: str
     run_id: str
-    continuation_id: str | None
-    user_id: str
+    turn_id: str
+    deployment_id: str
+    household_id: str
+    actor_id: str
     session_id: str
-    role: str
-    memory_text: str | None
+    payload_json: str
     payload_hash: str
     state: MemoryOutboxState
-    version: int
-    attempt_count: int
     claim_owner: str | None
-    claim_token: str | None
+    claim_epoch: int
     claim_expires_at: float | None
+    attempt_count: int
     retry_at: float
     error_code: str | None
+    created_at: float
+    settled_at: float | None
+
+    def committed_turn(self) -> CommittedTurn:
+        try:
+            value: object = json.loads(self.payload_json)
+            if not isinstance(value, dict):
+                raise TypeError("committed-turn payload is not an object")
+            turn = CommittedTurn.from_json(value)
+        except (TypeError, ValueError) as error:
+            raise UnitOfWorkConflict("committed-turn payload is invalid") from error
+        if (
+            turn.turn_id != self.turn_id
+            or turn.payload_hash != self.payload_hash
+            or turn.identity.deployment_id != self.deployment_id
+            or turn.identity.household_id != self.household_id
+            or turn.identity.actor_id != self.actor_id
+            or turn.identity.session_id != self.session_id
+        ):
+            raise UnitOfWorkConflict("committed-turn payload identity differs")
+        return turn
 
 
 class MemoryOutboxRepository:
@@ -94,46 +125,47 @@ class MemoryOutboxRepository:
         now: float,
         lease_seconds: float,
     ) -> MemoryOutboxRecord | None:
+        if not isinstance(owner_id, str) or not owner_id.strip():
+            raise ValueError("owner_id is required")
         _positive_time(now, "now", allow_zero=True)
         _positive_time(lease_seconds, "lease_seconds")
-        token = uuid4().hex
-        claimed_id: str | None = None
         with self.database.transaction() as connection:
             row = connection.execute(
                 "SELECT intent_id FROM memory_outbox WHERE "
-                "(state='pending' AND retry_at<=?) OR "
+                "(state IN ('pending','retry_wait') AND retry_at<=?) OR "
                 "(state='claimed' AND claim_expires_at<=?) "
-                "ORDER BY created_at,intent_id LIMIT 1",
+                "ORDER BY retry_at,created_at,intent_id LIMIT 1",
                 (now, now),
             ).fetchone()
             if row is None:
                 return None
-            claimed_id = str(row[0])
+            intent_id = str(row[0])
             changed = connection.execute(
-                "UPDATE memory_outbox SET state='claimed',version=version+1,"
-                "attempt_count=attempt_count+1,claim_owner=?,claim_token=?,"
-                "claim_expires_at=?,updated_at=? WHERE intent_id=? AND "
-                "((state='pending' AND retry_at<=?) OR "
-                "(state='claimed' AND claim_expires_at<=?))",
-                (
-                    owner_id,
-                    token,
-                    now + lease_seconds,
-                    now,
-                    claimed_id,
-                    now,
-                    now,
-                ),
+                "UPDATE memory_outbox SET state='claimed',claim_owner=?,"
+                "claim_epoch=claim_epoch+1,claim_expires_at=?,attempt_count=attempt_count+1 "
+                "WHERE intent_id=? AND ((state IN ('pending','retry_wait') AND retry_at<=?) "
+                "OR (state='claimed' AND claim_expires_at<=?))",
+                (owner_id, now + lease_seconds, intent_id, now, now),
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("memory outbox claim CAS failed")
-        assert claimed_id is not None
-        result = self.read(claimed_id)
+        result = self.read(intent_id)
         assert result is not None
         return result
 
-    def applied(self, claim: MemoryOutboxRecord, *, now: float) -> MemoryOutboxRecord:
-        return self._settle(claim, state=MemoryOutboxState.APPLIED, now=now)
+    def applied(
+        self,
+        claim: MemoryOutboxRecord,
+        *,
+        now: float,
+        error_code: str | None = None,
+    ) -> MemoryOutboxRecord:
+        return self._settle(
+            claim,
+            state=MemoryOutboxState.APPLIED,
+            now=now,
+            error_code=error_code,
+        )
 
     def dead_letter(
         self,
@@ -157,21 +189,19 @@ class MemoryOutboxRepository:
         backoff_seconds: float,
         error_code: str,
     ) -> MemoryOutboxRecord:
+        _positive_time(now, "now", allow_zero=True)
         _positive_time(backoff_seconds, "backoff_seconds", allow_zero=True)
         with self.database.transaction() as connection:
             changed = connection.execute(
-                "UPDATE memory_outbox SET state='pending',version=version+1,"
-                "claim_owner=NULL,claim_token=NULL,claim_expires_at=NULL,retry_at=?,"
-                "error_code=?,updated_at=? WHERE intent_id=? AND state='claimed' "
-                "AND version=? AND claim_owner=? AND claim_token=?",
+                "UPDATE memory_outbox SET state='retry_wait',claim_owner=NULL,"
+                "claim_expires_at=NULL,retry_at=?,error_code=? WHERE intent_id=? "
+                "AND state='claimed' AND claim_owner=? AND claim_epoch=?",
                 (
                     now + backoff_seconds,
                     error_code,
-                    now,
                     claim.intent_id,
-                    claim.version,
                     claim.claim_owner,
-                    claim.claim_token,
+                    claim.claim_epoch,
                 ),
             ).rowcount
             if changed != 1:
@@ -181,10 +211,29 @@ class MemoryOutboxRepository:
         return result
 
     def backlog(self) -> dict[str, int]:
+        result = {state.value: 0 for state in MemoryOutboxState}
         rows = self.database.connection.execute(
             "SELECT state,COUNT(*) FROM memory_outbox GROUP BY state"
         ).fetchall()
-        return {str(row[0]): int(row[1]) for row in rows}
+        result.update({str(row[0]): int(row[1]) for row in rows})
+        return result
+
+    def cleanup_applied(self, *, settled_before: float, limit: int) -> int:
+        _positive_time(settled_before, "settled_before", allow_zero=True)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be positive")
+        with self.database.transaction() as connection:
+            rows = connection.execute(
+                "SELECT intent_id FROM memory_outbox WHERE state='applied' "
+                "AND settled_at<=? ORDER BY settled_at,intent_id LIMIT ?",
+                (settled_before, limit),
+            ).fetchall()
+            for row in rows:
+                connection.execute(
+                    "DELETE FROM memory_outbox WHERE intent_id=? AND state='applied'",
+                    (str(row[0]),),
+                )
+        return len(rows)
 
     def _settle(
         self,
@@ -192,25 +241,23 @@ class MemoryOutboxRepository:
         *,
         state: MemoryOutboxState,
         now: float,
-        error_code: str | None = None,
+        error_code: str | None,
     ) -> MemoryOutboxRecord:
         if state not in {MemoryOutboxState.APPLIED, MemoryOutboxState.DEAD_LETTER}:
             raise ValueError("memory outbox settlement state is invalid")
+        _positive_time(now, "now", allow_zero=True)
         with self.database.transaction() as connection:
             changed = connection.execute(
-                "UPDATE memory_outbox SET state=?,version=version+1,claim_owner=NULL,"
-                "claim_token=NULL,claim_expires_at=NULL,error_code=?,updated_at=?,"
-                "settled_at=? WHERE intent_id=? AND state='claimed' AND version=? "
-                "AND claim_owner=? AND claim_token=?",
+                "UPDATE memory_outbox SET state=?,claim_owner=NULL,claim_expires_at=NULL,"
+                "error_code=?,settled_at=? WHERE intent_id=? AND state='claimed' "
+                "AND claim_owner=? AND claim_epoch=?",
                 (
                     state.value,
                     error_code,
                     now,
-                    now,
                     claim.intent_id,
-                    claim.version,
                     claim.claim_owner,
-                    claim.claim_token,
+                    claim.claim_epoch,
                 ),
             ).rowcount
             if changed != 1:
@@ -224,7 +271,7 @@ class MemoryDispatcher:
     def __init__(
         self,
         repository: MemoryOutboxRepository,
-        sink: ConversationMemorySinkPort,
+        memory: AgentMemoryPort,
         *,
         owner_id: str,
         clock: Callable[[], float],
@@ -234,7 +281,7 @@ class MemoryDispatcher:
         if not owner_id.strip():
             raise ValueError("owner_id is required")
         self.repository = repository
-        self.sink = sink
+        self.memory = memory
         self.owner_id = owner_id
         self.clock = clock
         self.lease_seconds = lease_seconds
@@ -251,51 +298,56 @@ class MemoryDispatcher:
         )
         if claim is None:
             return False
-        if claim.memory_text is None:
-            raise UnitOfWorkConflict("skipped non-text intent reached dispatcher")
-        intent = ConversationMemoryIntent(
-            claim.source_event_id,
-            claim.user_id,
-            claim.session_id,
-            ConversationMemoryRole(claim.role),
-            claim.memory_text,
-        )
-        if intent.payload_hash != claim.payload_hash:
-            self.repository.dead_letter(
-                claim,
-                error_code=ConversationMemoryErrorCode.APPLY_CONFLICT.value,
-                now=self.clock(),
-            )
-            return True
         try:
-            result = await self.sink.apply(intent)
+            receipt = await self.memory.record_committed_turn(claim.committed_turn())
             if fault is not None:
-                fault("memory_dispatcher.after_apply_before_ack")
-            if (
-                result.source_event_id != claim.source_event_id
-                or result.payload_hash != claim.payload_hash
-                or result.status
-                not in {
-                    ConversationMemoryApplyStatus.APPLIED,
-                    ConversationMemoryApplyStatus.ALREADY_APPLIED,
-                }
-            ):
-                raise ConversationMemoryError(ConversationMemoryErrorCode.APPLY_CONFLICT)
-        except ConversationMemoryError as error:
-            if error.code in {
-                ConversationMemoryErrorCode.APPLY_CONFLICT,
-                ConversationMemoryErrorCode.PERMANENT,
-            }:
-                self.repository.dead_letter(claim, error_code=error.code.value, now=self.clock())
+                fault("memory_dispatcher.after_record_before_ack")
+            self._validate_receipt(claim, receipt)
+        except AgentMemoryError as error:
+            if error.code in {AgentMemoryErrorCode.CONFLICT, AgentMemoryErrorCode.PERMANENT}:
+                self.repository.dead_letter(
+                    claim,
+                    error_code=error.code.value,
+                    now=self.clock(),
+                )
             else:
                 self._release_transient(claim, error.code.value)
+            return True
+        except UnitOfWorkConflict:
+            self.repository.dead_letter(
+                claim,
+                error_code=AgentMemoryErrorCode.CONFLICT.value,
+                now=self.clock(),
+            )
             return True
         except asyncio.CancelledError:
             raise
         except Exception:
-            self._release_transient(claim, ConversationMemoryErrorCode.TRANSIENT.value)
+            self._release_transient(claim, AgentMemoryErrorCode.TRANSIENT.value)
             return True
-        self.repository.applied(claim, now=self.clock())
+        if receipt.status is CommittedTurnStatus.CONFLICT:
+            self.repository.dead_letter(
+                claim,
+                error_code=AgentMemoryErrorCode.CONFLICT.value,
+                now=self.clock(),
+            )
+        elif receipt.status is CommittedTurnStatus.REJECTED_ERASED:
+            logger.info(
+                "memory.committed_turn_rejected_erased",
+                extra={
+                    "turn_id": claim.turn_id,
+                    "payload_hash": claim.payload_hash,
+                    "attempt": claim.attempt_count,
+                    "error_code": CommittedTurnStatus.REJECTED_ERASED.value,
+                },
+            )
+            self.repository.applied(
+                claim,
+                now=self.clock(),
+                error_code=CommittedTurnStatus.REJECTED_ERASED.value,
+            )
+        else:
+            self.repository.applied(claim, now=self.clock())
         return True
 
     async def drain(self, *, limit: int) -> bool:
@@ -307,10 +359,16 @@ class MemoryDispatcher:
         return False
 
     async def close(self) -> None:
-        if self._closed:
-            return
         self._closed = True
-        await self.sink.close()
+
+    @staticmethod
+    def _validate_receipt(
+        claim: MemoryOutboxRecord, receipt: CommittedTurnReceipt
+    ) -> None:
+        if not isinstance(receipt, CommittedTurnReceipt):
+            raise AgentMemoryError(AgentMemoryErrorCode.CONFLICT)
+        if receipt.turn_id != claim.turn_id or receipt.payload_hash != claim.payload_hash:
+            raise AgentMemoryError(AgentMemoryErrorCode.CONFLICT)
 
     def _release_transient(self, claim: MemoryOutboxRecord, code: str) -> None:
         backoff = min(
@@ -328,24 +386,25 @@ class MemoryDispatcher:
 def _record(row) -> MemoryOutboxRecord:  # type: ignore[no-untyped-def]
     return MemoryOutboxRecord(
         intent_id=str(row["intent_id"]),
-        source_event_id=str(row["source_event_id"]),
         run_id=str(row["run_id"]),
-        continuation_id=(None if row["continuation_id"] is None else str(row["continuation_id"])),
-        user_id=str(row["user_id"]),
+        turn_id=str(row["turn_id"]),
+        deployment_id=str(row["deployment_id"]),
+        household_id=str(row["household_id"]),
+        actor_id=str(row["actor_id"]),
         session_id=str(row["session_id"]),
-        role=str(row["role"]),
-        memory_text=(None if row["memory_text"] is None else str(row["memory_text"])),
+        payload_json=str(row["payload_json"]),
         payload_hash=str(row["payload_hash"]),
         state=MemoryOutboxState(str(row["state"])),
-        version=int(row["version"]),
-        attempt_count=int(row["attempt_count"]),
-        claim_owner=(None if row["claim_owner"] is None else str(row["claim_owner"])),
-        claim_token=(None if row["claim_token"] is None else str(row["claim_token"])),
+        claim_owner=None if row["claim_owner"] is None else str(row["claim_owner"]),
+        claim_epoch=int(row["claim_epoch"]),
         claim_expires_at=(
             None if row["claim_expires_at"] is None else float(row["claim_expires_at"])
         ),
+        attempt_count=int(row["attempt_count"]),
         retry_at=float(row["retry_at"]),
-        error_code=(None if row["error_code"] is None else str(row["error_code"])),
+        error_code=None if row["error_code"] is None else str(row["error_code"]),
+        created_at=float(row["created_at"]),
+        settled_at=None if row["settled_at"] is None else float(row["settled_at"]),
     )
 
 
@@ -361,8 +420,8 @@ def _positive_time(value: float, name: str, *, allow_zero: bool = False) -> None
 
 
 __all__ = (
+    "CommittedTurnSpec",
     "MemoryDispatcher",
-    "MemoryIntentSpec",
     "MemoryOutboxRecord",
     "MemoryOutboxRepository",
     "MemoryOutboxState",
