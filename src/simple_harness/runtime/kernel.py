@@ -865,6 +865,7 @@ class Runtime:
         self._workflow_start_dispatches: dict[str, RuntimeStartDispatchClaim] = {}
         self._workflow_recovery_work: dict[str, WorkflowRecoveryWork] = {}
         self._child_signals = ChildSignalRuntime(uow, owner_id=ports.owner_id)
+        self._child_signal_wait_handoffs: dict[str, object] = {}
         self._wake_drain_task: asyncio.Task[None] | None = None
         self._delivery_pump_task: asyncio.Task[None] | None = None
         self._delivery_wake = asyncio.Event()
@@ -1187,7 +1188,7 @@ class Runtime:
         await self._drain_spawn_ready_once()
 
     async def _drain_child_signals_once(self) -> None:
-        active_child_parents: set[str] = set()
+        active_child_parents = set(self._child_signal_wait_handoffs)
         for active_run_id in self._live.active_run_ids():
             active_run = self._uow.read_run(active_run_id)
             if active_run is not None and active_run.parent_run_id is not None:
@@ -1249,7 +1250,26 @@ class Runtime:
             )
 
     async def wait_idle(self, run_id: RunId) -> None:
-        await self._live.wait(_run_id(run_id))
+        value = _run_id(run_id)
+        run = self._uow.read_run(value)
+        parent_run_id = None if run is None else run.parent_run_id
+        handoff = object()
+        if parent_run_id is not None:
+            self._child_signal_wait_handoffs[parent_run_id] = handoff
+        try:
+            await self._live.wait(value)
+        finally:
+            if parent_run_id is not None:
+                asyncio.create_task(
+                    self._release_child_signal_wait_handoff(parent_run_id, handoff)
+                )
+
+    async def _release_child_signal_wait_handoff(
+        self, parent_run_id: str, handoff: object
+    ) -> None:
+        await asyncio.sleep(0)
+        if self._child_signal_wait_handoffs.get(parent_run_id) is handoff:
+            self._child_signal_wait_handoffs.pop(parent_run_id, None)
 
     async def __aenter__(self) -> Self:
         await self.start()

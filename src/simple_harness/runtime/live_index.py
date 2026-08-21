@@ -35,7 +35,7 @@ class LiveRunIndex:
         return task
 
     def active_run_ids(self) -> tuple[str, ...]:
-        return tuple(self._tasks)
+        return tuple(run_id for run_id, task in self._tasks.items() if not task.done())
 
     async def wait(self, run_id: str) -> None:
         task = self._tasks.get(run_id)
@@ -62,12 +62,6 @@ class LiveRunIndex:
         return tuple(run_id for run_id, _ in active)
 
     def _discard(self, run_id: str, task: asyncio.Task[None]) -> None:
-        asyncio.create_task(self._discard_after_waiters(run_id, task))
-
-    async def _discard_after_waiters(self, run_id: str, task: asyncio.Task[None]) -> None:
-        # Let waiters observe the completed task before background drains can
-        # treat its child-terminal signal as independently claimable.
-        await asyncio.sleep(0)
         if self._tasks.get(run_id) is task:
             self._tasks.pop(run_id, None)
 
