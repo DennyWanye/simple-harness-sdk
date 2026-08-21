@@ -58,6 +58,9 @@ last-updated: 2026-08-21
   崩溃，关闭并重开两库后验证 outbox 以同 source event 收敛到单条 Memory record，同时 read-back WAL、
   FK、integrity 与 0600。成功结果包含 `minimal_runtime`、`memory_outbox_restart`、`sqlite_reopen`
   三个 true 值及 Python/架构/distribution identity；任何失败以 stable code 抛错/CLI 非零退出。
+- root、`simple_harness.runtime` 与 `simple_harness.testing.arm64_candidate` 的 `__all__` 均由同一 public
+  API snapshot 固定；conversation DTO/ports、production builder 与 ARM64 gate entrypoint 的增删或重排
+  都会触发契约测试失败。
 - 2026-08-21 验证：H1 19 passed；H2 15 passed；Python 3.11/3.12/3.13 full pytest
   各 1278 passed / 2 expected skips；P0/P1 authority hardening targeted 76 passed；ARM64
   public/artifact targeted 9 passed。release-owned mypy 12 files 无错误；full Ruff 481 与
