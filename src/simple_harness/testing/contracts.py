@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import AsyncContextManager, Protocol, TypeAlias
+from typing import Protocol, TypeAlias
 
 from simple_harness.contracts import JsonValue
-
 
 _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
@@ -207,11 +207,18 @@ class WorkflowConformanceSuite(ClosableConformanceSuite, Protocol):
     async def reopen(self) -> CaseObservation: ...
 
 
+class ConversationConformanceSuite(ClosableConformanceSuite, Protocol):
+    async def conversation_contract(self) -> CaseObservation: ...
+    async def conversation_schema_identity(self) -> CaseObservation: ...
+    async def conversation_outbox_recovery(self) -> CaseObservation: ...
+
+
 ConformanceSuite: TypeAlias = (
     ProviderConformanceSuite
     | ToolConformanceSuite
     | RuntimeConformanceSuite
     | WorkflowConformanceSuite
+    | ConversationConformanceSuite
 )
 
 
@@ -219,7 +226,9 @@ class ConformanceHost(Protocol):
     @property
     def metadata(self) -> ConformanceHostMetadata: ...
 
-    def open_suite(self, name: str) -> AsyncContextManager[ConformanceSuite]: ...
+    def open_suite(
+        self, name: str
+    ) -> AbstractAsyncContextManager[ConformanceSuite]: ...
 
 
 __all__ = (
@@ -229,6 +238,7 @@ __all__ = (
     "ConformanceCaseUnavailable",
     "ClosableConformanceSuite",
     "ConformanceCaseResult",
+    "ConversationConformanceSuite",
     "ConformanceError",
     "ConformanceHost",
     "ConformanceHostMetadata",

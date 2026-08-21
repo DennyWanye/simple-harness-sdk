@@ -53,6 +53,7 @@ from .runtime import (
     ConversationTurnOutput,
     DriverInvocation,
     DriverResult,
+    ProductionRuntimeConfig,
     RunClient,
     Runtime,
     RuntimeDriver,
@@ -62,6 +63,7 @@ from .runtime import (
     RuntimeUnitOfWork,
     SqliteContextPort,
     build_runtime,
+    build_production_runtime,
     canonicalize_memory_text,
 )
 from .version import __version__
@@ -115,6 +117,7 @@ __all__ = (
     "ConversationTurnOutput",
     "DriverInvocation",
     "DriverResult",
+    "ProductionRuntimeConfig",
     "RunClient",
     "Runtime",
     "RuntimeDriver",
@@ -124,5 +127,6 @@ __all__ = (
     "RuntimeUnitOfWork",
     "SqliteContextPort",
     "build_runtime",
+    "build_production_runtime",
     "canonicalize_memory_text",
 )

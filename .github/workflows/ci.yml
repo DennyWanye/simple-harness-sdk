@@ -12,22 +12,61 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v6
-      - name: Build distributions once
+      - name: Build authoritative distributions once
         env:
           SOURCE_DATE_EPOCH: "0"
         run: uv build --out-dir dist
+      - name: Record canonical authoritative provenance
+        run: |
+          python scripts/build/authoritative_provenance.py emit \
+            --dist dist \
+            --source-commit "$(git rev-parse HEAD)" \
+            --build-utc "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python scripts/build/authoritative_provenance.py verify \
+            --dist dist \
+            --source-commit "$(git rev-parse HEAD)"
       - uses: actions/upload-artifact@v4
         with:
-          name: distributions
+          name: authoritative-distributions
           path: dist/*
           if-no-files-found: error
+          retention-days: 90
 
   test:
     needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: authoritative-distributions
+          path: dist
+      - name: Verify and install exact authoritative wheel
+        run: |
+          python scripts/build/authoritative_provenance.py verify \
+            --dist dist \
+            --source-commit "${{ github.sha }}"
+          uv venv .artifact-venv --python "${{ matrix.python }}"
+          uv pip install --python .artifact-venv/bin/python dist/*.whl
+          .artifact-venv/bin/python -I -c 'import runpy, simple_harness; expected = runpy.run_path("src/simple_harness/version.py")["__version__"]; assert simple_harness.__version__ == expected'
+      - name: Run full test suite
+        run: uv run --python "${{ matrix.python }}" --frozen --group dev pytest -q
+
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,20 +74,17 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v6
-      - uses: actions/download-artifact@v4
-        with:
-          name: distributions
-          path: dist
-      - name: Install exact built wheel
+      - name: Lint release paths
         run: |
-          uv venv .artifact-venv --python 3.11
-          uv pip install --python .artifact-venv/bin/python dist/*.whl
-          .artifact-venv/bin/python -I -c 'import runpy, simple_harness; expected = runpy.run_path("src/simple_harness/version.py")["__version__"]; assert simple_harness.__version__ == expected'
-      - name: Run full test suite
-        run: uv run --frozen --group dev pytest -q
-      - name: Lint (scoped ruff)
-        run: uv run --frozen --group dev ruff check src/simple_harness/runtime/consumer_adapter.py src/simple_harness/runtime/ports.py src/simple_harness/execution/delivery.py src/simple_harness/testing/sinks.py src/simple_harness/testing/__init__.py
-      - name: Type check (scoped mypy)
+          uv run --frozen --group dev ruff check \
+            src/simple_harness/runtime/conversation_memory.py \
+            src/simple_harness/runtime/conversation_context.py \
+            src/simple_harness/runtime/production.py \
+            src/simple_harness/execution/context_staging.py \
+            src/simple_harness/execution/memory_outbox.py \
+            src/simple_harness/execution/sqlite/storage.py \
+            scripts/build/authoritative_provenance.py
+      - name: Type check public and release paths
         run: uv run --frozen --group dev mypy
       - name: Verify source provenance and REUSE compliance
         run: |

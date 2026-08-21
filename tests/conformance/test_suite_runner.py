@@ -47,6 +47,26 @@ GOOD_VALUES = {
     "workflow.official_capability_build": {"profile_key": "workflow.capability_build", "completed": True},
     "workflow.ticket_fingerprint": {"forged_ticket_rejected": True, "fingerprint_rejected": True, "child_runs": 0},
     "workflow.reopen": {"reopened": True, "run_before": "run-1", "run_after": "run-1", "physical_calls_before": 1, "physical_calls_after": 1, "completed": True},
+    "conversation.contract": {
+        "dto_round_trip": True,
+        "structured_preserved": True,
+        "projection_text_only": True,
+        "stable_statuses": True,
+    },
+    "conversation.schema_identity": {
+        "schema_version": 3,
+        "history_rows": 1,
+        "fresh_only": True,
+        "foreign_keys": True,
+        "reopened": True,
+    },
+    "conversation.outbox_recovery": {
+        "atomic": True,
+        "replayed_source_event": True,
+        "sink_calls": 2,
+        "settled": True,
+        "fake_terminal_intents": 0,
+    },
 }
 
 
@@ -99,6 +119,12 @@ class _Suite:
     async def official_capability_build(self): return await self._case("workflow.official_capability_build")
     async def ticket_fingerprint(self): return await self._case("workflow.ticket_fingerprint")
     async def reopen(self): return await self._case("workflow.reopen")
+    async def conversation_contract(self): return await self._case("conversation.contract")
+    async def conversation_schema_identity(self):
+        return await self._case("conversation.schema_identity")
+
+    async def conversation_outbox_recovery(self):
+        return await self._case("conversation.outbox_recovery")
 
     async def aclose(self) -> None:
         assert not self.closed

@@ -64,7 +64,7 @@ def run_conformance_cli(args: list[str] | None = None) -> int:
         "--suite",
         required=True,
         metavar="SUITE[,SUITE...]",
-        help="Comma-separated provider,tool,runtime,workflow suites",
+        help="Comma-separated provider,tool,runtime,workflow,conversation suites",
     )
     parser.add_argument("--json", metavar="PATH", dest="json_output")
     parser.add_argument(

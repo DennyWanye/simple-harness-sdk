@@ -5,6 +5,27 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.2.0 — candidate
+
+**Focus:** Durable conversation Memory integration without replacing the 0.1.5
+structured-message, tool-catalog, Provider-budget, or projection authorities.
+
+### Added
+- Typed conversation turn/continuation/output DTOs and bounded recall/apply Ports.
+- Fresh execution schema v3 with immutable user/session ownership, durable private context
+  staging, and a transactionally coupled conversation Memory outbox.
+- Four atomic root/continuation commands, lease-based Memory dispatcher recovery, and
+  SDK- or consumer-prepared context modes whose private snapshots replay byte-for-byte.
+- Strict production composition that requires all authorities and owns projection, Memory,
+  and SQLite lifecycle resources.
+
+### Changed
+- StartSnapshot schema is v5; schemas v1–v4 remain readable. New conversation fields are
+  additive and generic runs remain supported when conversation Memory is disabled.
+- Existing execution schema v1/v2 files now fail closed and require a fresh v3 storage set.
+- CI builds one authoritative candidate and tests the exact wheel on Python 3.11–3.13.
+  Release publication is manual and uploads the tested bytes without rebuilding.
+
 ## 0.1.5 — candidate
 
 **Focus:** Durable per-Run context authority for SDK-first product integration.

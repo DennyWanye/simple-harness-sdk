@@ -11,7 +11,6 @@ from simple_harness.contracts import JsonValue
 
 from .contracts import CaseObservation
 
-
 Verifier = Callable[[Mapping[str, JsonValue]], None]
 
 
@@ -136,7 +135,11 @@ def _runtime_delivery(values: Mapping[str, JsonValue]) -> None:
 
 
 def _runtime_budget(values: Mapping[str, JsonValue]) -> None:
-    _sequence(values, "terminations", ("max_turns", "max_tool_calls", "wall_clock", "cost", "repeated_tool"))
+    _sequence(
+        values,
+        "terminations",
+        ("max_turns", "max_tool_calls", "wall_clock", "cost", "repeated_tool"),
+    )
 
 
 def _restart_without_replay(values: Mapping[str, JsonValue]) -> None:
@@ -174,6 +177,31 @@ def _workflow_reopen(values: Mapping[str, JsonValue]) -> None:
     _equal(values, "completed", True)
 
 
+def _conversation_contract(values: Mapping[str, JsonValue]) -> None:
+    for name in (
+        "dto_round_trip",
+        "structured_preserved",
+        "projection_text_only",
+        "stable_statuses",
+    ):
+        _equal(values, name, True)
+
+
+def _conversation_schema(values: Mapping[str, JsonValue]) -> None:
+    _equal(values, "schema_version", 3)
+    _equal(values, "history_rows", 1)
+    for name in ("fresh_only", "foreign_keys", "reopened"):
+        _equal(values, name, True)
+
+
+def _conversation_outbox(values: Mapping[str, JsonValue]) -> None:
+    _equal(values, "atomic", True)
+    _equal(values, "replayed_source_event", True)
+    _at_least(values, "sink_calls", 2)
+    _equal(values, "settled", True)
+    _equal(values, "fake_terminal_intents", 0)
+
+
 VERIFIERS: Mapping[str, Verifier] = {
     "provider.physical_request": _provider_physical,
     "provider.typed_error": _provider_error,
@@ -197,6 +225,9 @@ VERIFIERS: Mapping[str, Verifier] = {
     "workflow.official_capability_build": _official("workflow.capability_build"),
     "workflow.ticket_fingerprint": _workflow_ticket,
     "workflow.reopen": _workflow_reopen,
+    "conversation.contract": _conversation_contract,
+    "conversation.schema_identity": _conversation_schema,
+    "conversation.outbox_recovery": _conversation_outbox,
 }
 
 

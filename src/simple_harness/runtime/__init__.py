@@ -76,6 +76,10 @@ from .ports import (
     ProviderPort,
     ToolExecutorPort,
 )
+from .production import (
+    ProductionRuntimeConfig,
+    build_production_runtime,
+)
 from .reconciler import (
     STARTUP_RECONCILIATION_ORDER,
     ReconciliationPhase,
@@ -132,6 +136,7 @@ __all__ = (
     "MemoryWritePort",
     "ProfileLaunchTicketRef",
     "ProviderPort",
+    "ProductionRuntimeConfig",
     "ReconciliationPhase",
     "ReActDriver",
     "RunClient",
@@ -155,6 +160,7 @@ __all__ = (
     "UserContinuationRuntime",
     "WorkflowRuntimeDriver",
     "build_consumer_runtime",
+    "build_production_runtime",
     "build_runtime",
     "build_react_driver",
     "build_workflow_runtime_driver",

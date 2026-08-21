@@ -48,6 +48,7 @@
     "ConversationTurnOutput",
     "DriverInvocation",
     "DriverResult",
+    "ProductionRuntimeConfig",
     "RunClient",
     "Runtime",
     "RuntimeDriver",
@@ -57,6 +58,7 @@
     "RuntimeUnitOfWork",
     "SqliteContextPort",
     "build_runtime",
+    "build_production_runtime",
     "canonicalize_memory_text"
   ],
   "simple_harness.contracts": [

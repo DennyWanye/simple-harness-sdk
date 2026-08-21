@@ -902,12 +902,19 @@ class Runtime:
         self._state = RuntimeLifecycleState.NEW
         self._started = False
         self._closing = False
+        self._production_authorities: object | None = None
         self.client = RunClient(self)
         self.children = ChildCoordinator(self)
 
     @property
     def state(self) -> RuntimeLifecycleState:
         return self._state
+
+    @property
+    def production_authorities(self) -> object | None:
+        """Explicit 0.1.5+ authorities retained by production composition."""
+
+        return self._production_authorities
 
     async def start(self) -> None:
         async with self._lifecycle_lock:

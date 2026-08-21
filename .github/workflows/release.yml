@@ -1,214 +1,78 @@
-name: Release
+name: Publish Frozen Release Artifact
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      candidate_commit:
+        description: Exact tested candidate commit
+        required: true
+        type: string
+      artifact_run_id:
+        description: Successful CI run containing authoritative-distributions
+        required: true
+        type: string
+      artifact_name:
+        description: Frozen Actions artifact name
+        required: true
+        default: authoritative-distributions
+        type: string
+      release_tag:
+        description: Existing release/tag created by the program publisher
+        required: true
+        type: string
+      wheel_sha256:
+        description: Expected lowercase SHA-256 of the exact wheel
+        required: true
+        type: string
 
 permissions:
-  contents: write  # Required for creating GitHub releases
+  actions: read
+  contents: write
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Full history for accurate build metadata
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Build canonical artifacts once
-        env:
-          SOURCE_DATE_EPOCH: "0"
-        run: uv build --out-dir dist
-
-      - name: Record checksums and metadata
-        run: |
-          cd dist
-          sha256sum * > SHA256SUMS
-          echo "Built from commit: $(git rev-parse HEAD)" > BUILD_INFO.txt
-          echo "Tag: ${{ github.ref_name }}" >> BUILD_INFO.txt
-          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> BUILD_INFO.txt
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-distributions
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 90
-
-  verify:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - uses: astral-sh/setup-uv@v6
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-distributions
-          path: dist
-
-      - name: Verify checksums and install exact artifact
-        run: |
-          cd dist
-          sha256sum --check SHA256SUMS
-          cat BUILD_INFO.txt
-
-          cd ..
-          uv venv .release-venv --python 3.11
-          uv pip install --python .release-venv/bin/python dist/*.whl
-
-          # Verify version matches tag
-          TAG_VERSION="${{ github.ref_name }}"
-          TAG_VERSION="${TAG_VERSION#v}"  # Strip 'v' prefix
-          .release-venv/bin/python -I -c "import simple_harness; assert simple_harness.__version__ == '${TAG_VERSION}', f'Version mismatch: {simple_harness.__version__} != ${TAG_VERSION}'"
-
-          echo "✓ Artifact verified: simple_harness ${TAG_VERSION}"
-
-  test-import:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - uses: astral-sh/setup-uv@v6
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-distributions
-          path: dist
-
-      - name: Test SDK imports
-        run: |
-          uv venv .test-venv --python 3.11
-          uv pip install --python .test-venv/bin/python "dist/*.whl[testing]"
-
-          # Test core imports
-          .test-venv/bin/python -c "
-          from simple_harness import (
-              build_runtime,
-              RuntimeProfile,
-              RuntimePorts,
-              ROOT_PROFILE_KEY,
-              Message,
-              MessageRole,
-              JsonValue,
-              fingerprint_json,
-          )
-          print('✓ All core imports successful')
-          "
-
-          # Test conformance CLI
-          .test-venv/bin/python -m simple_harness.testing --version
-
-          echo "✓ SDK imports and CLI verified"
-
-  test:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - uses: astral-sh/setup-uv@v6
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-distributions
-          path: dist
-      - name: Run full test suite
-        run: uv run --frozen --group dev pytest -q
-      - name: Run conformance against the built wheel
-        run: |
-          WHEEL="$(find dist -name '*.whl' -print -quit)"
-          SHA="$(sha256sum "$WHEEL" | awk '{print $1}')"
-          uv venv .release-test-venv --python 3.11
-          uv pip install --python .release-test-venv/bin/python "$WHEEL[testing]"
-          PYTHONPATH=examples/minimal-consumer .release-test-venv/bin/python -m simple_harness.testing \
-            --host conformance_host:build_host --suite provider,tool --artifact-sha256 "$SHA"
-
-  publish-github-release:
-    needs: [verify, test-import, test]
+  verify-and-publish:
     runs-on: ubuntu-latest
     environment: release
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          ref: ${{ inputs.candidate_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
       - uses: actions/download-artifact@v4
         with:
-          name: release-distributions
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.artifact_run_id }}
+          name: ${{ inputs.artifact_name }}
           path: dist
-
-      - name: Assert artifacts not rebuilt
+      - name: Verify frozen provenance, commit, version, and wheel SHA
+        env:
+          EXPECTED_COMMIT: ${{ inputs.candidate_commit }}
+          EXPECTED_WHEEL_SHA256: ${{ inputs.wheel_sha256 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          cd dist
-          sha256sum --check SHA256SUMS
-          cat BUILD_INFO.txt
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          files: |
-            dist/*.whl
-            dist/*.tar.gz
-            dist/SHA256SUMS
-            dist/BUILD_INFO.txt
-          body: |
-            # Simple Harness SDK ${{ github.ref_name }}
-
-            **Private Release** - Access restricted to authorized consumers.
-
-            ## Artifacts
-
-            - `simple_harness_sdk-*.whl` - Pure Python wheel (any platform)
-            - `simple_harness_sdk-*.tar.gz` - Source distribution
-            - `SHA256SUMS` - Checksums for verification
-            - `BUILD_INFO.txt` - Build metadata
-
-            ## Installation
-
-            ```bash
-            # Download exact wheel
-            curl -LO https://github.com/DennyWanye/simple-harness-sdk/releases/download/${{ github.ref_name }}/simple_harness_sdk-*.whl
-
-            # Verify checksum
-            sha256sum -c SHA256SUMS
-
-            # Install
-            pip install simple_harness_sdk-*.whl
-
-            # Verify
-            python -c "import simple_harness; print(simple_harness.__version__)"
-            ```
-
-            ## Documentation
-
-            See `docs/` directory in source for:
-            - Runtime API reference
-            - Workflow profiles
-            - Conformance testing guide
-            - Consumer handoff instructions
-
-            ## Verification
-
-            All artifacts built from a single canonical build and verified across:
-            - Checksum validation
-            - Version assertion
-            - Import smoke tests
-            - Conformance CLI execution
-
-            Build info available in `BUILD_INFO.txt` artifact.
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          VERSION="$(python -c 'import runpy; print(runpy.run_path("src/simple_harness/version.py")["__version__"])')"
+          test "$RELEASE_TAG" = "v$VERSION"
+          python scripts/build/authoritative_provenance.py verify \
+            --dist dist \
+            --source-commit "$EXPECTED_COMMIT" \
+            --version "$VERSION"
+          WHEEL="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$WHEEL"
+          test "$(sha256sum "$WHEEL" | awk '{print $1}')" = "$EXPECTED_WHEEL_SHA256"
+          uv venv .release-venv --python 3.11
+          uv pip install --python .release-venv/bin/python "$WHEEL"
+          .release-venv/bin/python -I -c "import simple_harness; assert simple_harness.__version__ == '$VERSION'"
+      - name: Upload original bytes to the existing program release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null
+          gh release upload "$RELEASE_TAG" \
+            dist/*.whl dist/*.tar.gz dist/SHA256SUMS dist/BUILD_INFO.txt

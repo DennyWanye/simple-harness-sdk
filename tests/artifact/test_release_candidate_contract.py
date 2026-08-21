@@ -6,11 +6,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,6 +17,15 @@ ROOT = Path(__file__).resolve().parents[2]
 def _candidate_module():
     path = ROOT / "scripts/build/reproducibility.py"
     spec = importlib.util.spec_from_file_location("candidate_reproducibility", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _provenance_module():
+    path = ROOT / "scripts/build/authoritative_provenance.py"
+    spec = importlib.util.spec_from_file_location("authoritative_provenance", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -89,6 +97,52 @@ def test_version_has_one_runtime_authority() -> None:
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert 'simple_harness.__version__ == "0.1.0"' not in ci
     assert 'src/simple_harness/version.py' in ci
+
+
+def test_ci_builds_one_authoritative_artifact_for_python_311_to_313() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert workflow.count("uv build --out-dir dist") == 1
+    assert 'python: ["3.11", "3.12", "3.13"]' in workflow
+    assert "authoritative-distributions" in workflow
+    assert "authoritative_provenance.py emit" in workflow
+    assert "authoritative_provenance.py verify" in workflow
+
+
+def test_release_only_uploads_verified_frozen_bytes() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in workflow
+    assert "artifact_run_id:" in workflow
+    assert "candidate_commit:" in workflow
+    assert "wheel_sha256:" in workflow
+    assert "actions/download-artifact@v4" in workflow
+    assert "authoritative_provenance.py verify" in workflow
+    assert "gh release upload" in workflow
+    assert "uv build" not in workflow
+    assert "push:" not in workflow
+    assert "softprops/action-gh-release" not in workflow
+
+
+def test_authoritative_provenance_is_canonical_and_detects_tampering(
+    tmp_path: Path,
+) -> None:
+    module = _provenance_module()
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    wheel = dist / "simple_harness_sdk-0.2.0-py3-none-any.whl"
+    sdist = dist / "simple_harness_sdk-0.2.0.tar.gz"
+    wheel.write_bytes(b"wheel-bytes")
+    sdist.write_bytes(b"sdist-bytes")
+    commit = "a" * 40
+    module.emit(dist, source_commit=commit, build_utc="2026-08-21T10:11:12Z")
+    module.verify(dist, source_commit=commit, version="0.2.0")
+    build_info = (dist / "BUILD_INFO.txt").read_text(encoding="utf-8").splitlines()
+    assert [line.partition("=")[0] for line in build_info] == list(module.KEYS)
+    sums = (dist / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    assert [line.split("  ", 1)[1] for line in sums] == sorted((wheel.name, sdist.name))
+    assert all("  " in line for line in sums)
+    wheel.write_bytes(b"tampered")
+    with pytest.raises(module.ProvenanceError, match="checksum differs"):
+        module.verify(dist, source_commit=commit, version="0.2.0")
 
 
 def test_candidate_workflow_accepts_identity_inputs_and_never_publishes() -> None:

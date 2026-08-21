@@ -97,11 +97,18 @@ select = ["E", "F", "W", "I", "UP"]
 
 [tool.mypy]
 python_version = "3.11"
-# Scoped to the public consumer surface and this release's touched files.
-# Full-project strict typing is out of scope for 0.1.4 (OOS-2).
+# Scoped to the public consumer surface and release-owned modules.
+# Legacy full-project typing debt remains outside the 0.2.0 release slice.
 files = [
   "src/simple_harness/runtime/consumer_adapter.py",
   "src/simple_harness/runtime/ports.py",
+  "src/simple_harness/runtime/conversation_memory.py",
+  "src/simple_harness/runtime/conversation_context.py",
+  "src/simple_harness/runtime/start_snapshot.py",
+  "src/simple_harness/runtime/production.py",
   "src/simple_harness/execution/delivery.py",
+  "src/simple_harness/execution/context_staging.py",
+  "src/simple_harness/execution/memory_outbox.py",
+  "src/simple_harness/execution/sqlite/storage.py",
   "src/simple_harness/testing/sinks.py",
 ]
