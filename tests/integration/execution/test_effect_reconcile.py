@@ -36,14 +36,14 @@ from simple_harness.tools import (
     PreparedToolEffect,
     ReconciliationObservation,
     ReconciliationState,
+    Sidecar,
     ToolCall,
     ToolContext,
+    ToolInventoryRecord,
     ToolRegistry,
     ToolResource,
     ToolResult,
     ToolSpec,
-    Sidecar,
-    ToolInventoryRecord,
     resource_digest,
 )
 
@@ -78,9 +78,7 @@ class FakeUow:
         assert self.record is None or self.record.effect_id == effect_id
         return self.record
 
-    def mark_effect_handed_off(
-        self, effect_id: EffectId, **values: object
-    ) -> EffectRecord:
+    def mark_effect_handed_off(self, effect_id: EffectId, **values: object) -> EffectRecord:
         self.trace.append("handoff")
         assert self.record is not None and self.record.effect_id == effect_id
         assert values["expected_version"] == self.record.version
@@ -106,9 +104,7 @@ class FakeUow:
         )
         return self.record
 
-    def mark_effect_unknown(
-        self, effect_id: EffectId, **values: object
-    ) -> EffectRecord:
+    def mark_effect_unknown(self, effect_id: EffectId, **values: object) -> EffectRecord:
         self.trace.append("unknown")
         assert self.record is not None and self.record.effect_id == effect_id
         self.record = replace(
@@ -148,9 +144,7 @@ class FakeUow:
 
 class Allow:
     async def authorize(self, _prepared: PreparedToolEffect) -> AuthorizationResult:
-        return AuthorizationResult(
-            AuthorizationDecision.ALLOW, receipt_ref="authorization:1"
-        )
+        return AuthorizationResult(AuthorizationDecision.ALLOW, receipt_ref="authorization:1")
 
     async def bind_effect_handoff(
         self, _prepared, _authorization_receipt_ref, sdk_receipt
@@ -188,9 +182,7 @@ class CapturePrepared(Allow):
     async def bind_decision(self, prepared, request, decision, sdk_receipt):
         del request, decision
         self.prepared = prepared
-        return AuthorizationReceipt(
-            "host:decision:resource", "c" * 64, sdk_receipt.receipt_hash
-        )
+        return AuthorizationReceipt("host:decision:resource", "c" * 64, sdk_receipt.receipt_hash)
 
 
 class Observe:
@@ -328,9 +320,7 @@ def test_executor_binds_typed_ids_and_resources_before_authorization() -> None:
 
     authorization = CapturePrepared()
     uow = FakeUow()
-    observer = Observe(
-        ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused")
-    )
+    observer = Observe(ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused"))
     executor = EffectExecutor(
         uow=uow,
         registry=ToolRegistry(
@@ -343,9 +333,7 @@ def test_executor_binds_typed_ids_and_resources_before_authorization() -> None:
         executor.execute(
             effect_id=EffectId("effect-resource"),
             call=ToolCall(CallId("call-resource"), "read", {"path": "/tmp/input"}),
-            context=ToolContext(
-                RunId("run-1"), RequestId("request-same"), CancellationToken()
-            ),
+            context=ToolContext(RunId("run-1"), RequestId("request-same"), CancellationToken()),
             execution_lease=LEASE,
             run_fence=FENCE,
         )
@@ -417,9 +405,7 @@ def test_durable_authorization_reopen_rechecks_sidecar_and_resource_hashes() -> 
         None,
         0,
     )
-    binding = asyncio.run(
-        executor.bind_decision(record, AuthorizationDecision.ALLOW)
-    )
+    binding = asyncio.run(executor.bind_decision(record, AuthorizationDecision.ALLOW))
     assert binding.startswith("authorization-binding-v1:")
     assert authorization.prepared is not None
     assert authorization.prepared.sidecar is sidecar
@@ -653,9 +639,7 @@ def test_executor_cancellation_marks_handed_off_effect_unknown() -> None:
 
 def test_stale_fence_prevents_physical_dispatch() -> None:
     class StaleHandoffUow(FakeUow):
-        def mark_effect_handed_off(
-            self, effect_id: EffectId, **values: object
-        ) -> EffectRecord:
+        def mark_effect_handed_off(self, effect_id: EffectId, **values: object) -> EffectRecord:
             del effect_id, values
             self.trace.append("handoff")
             raise StaleFenceError("stale Run fence")
@@ -696,9 +680,7 @@ def test_retry_prepared_uses_explicit_authority_refresh_before_dispatch() -> Non
             run_id=RunId("run-1"),
             call_id=call.call_id,
             tool_name=call.name,
-            request_hash=effect_request_hash(
-                tool_name=call.name, arguments={"path": "."}
-            ),
+            request_hash=effect_request_hash(tool_name=call.name, arguments={"path": "."}),
             arguments=call.arguments,
             state=EffectState.PREPARED,
             version=3,

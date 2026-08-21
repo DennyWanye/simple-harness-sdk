@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, Self, cast
 
 from simple_harness.contracts import (
     FrozenJsonValue,
@@ -59,9 +59,7 @@ def _required(value: str, name: str) -> str:
     return value
 
 
-def _frozen_object(
-    value: Mapping[str, JsonValue], *, path: str
-) -> Mapping[str, FrozenJsonValue]:
+def _frozen_object(value: Mapping[str, JsonValue], *, path: str) -> Mapping[str, FrozenJsonValue]:
     detached = copy.deepcopy(dict(value))
     validate_json_value(detached, path=path)
     frozen = freeze_json(detached)
@@ -170,16 +168,11 @@ class WorkflowCatalogProfileBinding:
             )
         if self.terminal_projection_descriptor is None:
             if self.terminal_request_factory_hash is not None:
-                raise ValueError(
-                    "terminal request factory requires a projection descriptor"
-                )
-        elif (
-            self.terminal_request_factory_hash
-            != self.terminal_projection_descriptor.get("request_factory_hash")
+                raise ValueError("terminal request factory requires a projection descriptor")
+        elif self.terminal_request_factory_hash != self.terminal_projection_descriptor.get(
+            "request_factory_hash"
         ):
-            raise ValueError(
-                "terminal request factory hash differs from projection descriptor"
-            )
+            raise ValueError("terminal request factory hash differs from projection descriptor")
         if self.terminal_projection_descriptor is not None:
             object.__setattr__(
                 self,
@@ -192,9 +185,7 @@ class WorkflowCatalogProfileBinding:
         object.__setattr__(
             self,
             "capability_snapshot",
-            _frozen_object(
-                self.capability_snapshot, path="$.catalog.capability_snapshot"
-            ),
+            _frozen_object(self.capability_snapshot, path="$.catalog.capability_snapshot"),
         )
 
 
@@ -215,9 +206,7 @@ class WorkflowCatalogAuthority:
             raise ValueError("catalog version must be non-negative")
         _required(self.catalog_hash, "catalog_hash")
         ordered = tuple(sorted(self.profiles, key=lambda item: item.profile_key))
-        if ordered != self.profiles or len(
-            {item.profile_key for item in ordered}
-        ) != len(ordered):
+        if ordered != self.profiles or len({item.profile_key for item in ordered}) != len(ordered):
             raise ValueError("catalog profiles must be uniquely ordered by key")
         expected = workflow_catalog_hash(self.authority_id, self.generation, ordered)
         if self.catalog_hash != expected:
@@ -256,19 +245,15 @@ def workflow_catalog_hash(
                 "terminal_projection_descriptor": (
                     None
                     if item.terminal_projection_descriptor is None
-                    else thaw_json(
-                        cast(FrozenJsonValue, item.terminal_projection_descriptor)
-                    )
+                    else thaw_json(cast(FrozenJsonValue, item.terminal_projection_descriptor))
                 ),
                 "terminal_request_factory_hash": item.terminal_request_factory_hash,
-                "capability_snapshot": thaw_json(
-                    cast(FrozenJsonValue, item.capability_snapshot)
-                ),
+                "capability_snapshot": thaw_json(cast(FrozenJsonValue, item.capability_snapshot)),
             }
             for item in profiles
         ],
     }
-    return hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+    return hashlib.sha256(canonical_json(cast(JsonValue, payload)).encode()).hexdigest()
 
 
 _VERIFIED_CATALOG_FACTORY = object()
@@ -482,9 +467,7 @@ def workflow_catalog_selection_from_json(
                 description=str(raw_profile.get("description", "")),
                 use_when=str(raw_profile.get("use_when", "")),
                 avoid_when=str(raw_profile.get("avoid_when", "")),
-                profile_fingerprint=str(
-                    raw_profile.get("profile_fingerprint", "")
-                ),
+                profile_fingerprint=str(raw_profile.get("profile_fingerprint", "")),
                 start_input_schema=schema,
             )
         )
@@ -615,23 +598,17 @@ def workflow_spawn_operation_id(origin: WorkflowSpawnOrigin) -> str:
 
 def workflow_spawn_child_command_id(spawn_operation_id: str) -> str:
     _required(spawn_operation_id, "spawn_operation_id")
-    return _domain_hash(
-        "workflow-spawn/child-command/v1", {"operation_id": spawn_operation_id}
-    )
+    return _domain_hash("workflow-spawn/child-command/v1", {"operation_id": spawn_operation_id})
 
 
 def workflow_spawn_child_request_id(spawn_operation_id: str) -> str:
     _required(spawn_operation_id, "spawn_operation_id")
-    return _domain_hash(
-        "workflow-spawn/request/v1", {"operation_id": spawn_operation_id}
-    )
+    return _domain_hash("workflow-spawn/request/v1", {"operation_id": spawn_operation_id})
 
 
 def workflow_spawn_child_run_id(spawn_operation_id: str) -> str:
     _required(spawn_operation_id, "spawn_operation_id")
-    return _domain_hash(
-        "workflow-spawn/run/v1", {"operation_id": spawn_operation_id}
-    )
+    return _domain_hash("workflow-spawn/run/v1", {"operation_id": spawn_operation_id})
 
 
 class WorkflowSpawnReadyActivationState(StrEnum):
@@ -672,8 +649,7 @@ class WorkflowSpawnContinuationClaim:
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise ValueError(f"{name} is invalid")
         if self.workflow_lease_epoch is not None and (
-            isinstance(self.workflow_lease_epoch, bool)
-            or self.workflow_lease_epoch < 1
+            isinstance(self.workflow_lease_epoch, bool) or self.workflow_lease_epoch < 1
         ):
             raise ValueError("workflow_lease_epoch must be positive or null")
         if not math.isfinite(self.expires_at) or self.expires_at < 0:
@@ -759,10 +735,8 @@ class WorkflowSpawnReadyActivation:
         if activation_version < 1:
             raise ValueError("activation_version must be positive")
         if (
-            ready_receipt.spawn_operation_id
-            != continuation_claim.spawn_operation_id
-            or ready_receipt.ticket_receipt_id
-            != continuation_claim.ticket_receipt_id
+            ready_receipt.spawn_operation_id != continuation_claim.spawn_operation_id
+            or ready_receipt.ticket_receipt_id != continuation_claim.ticket_receipt_id
             or continuation_claim.parent_run_id != execution_lease.run_id
             or continuation_claim.owner_id != execution_lease.owner_id
             or continuation_claim.runtime_lease_epoch != execution_lease.epoch
@@ -864,10 +838,7 @@ class WorkflowLaunchRequest:
                 _required(value, name)
         if isinstance(self.catalog_generation, bool) or self.catalog_generation < 1:
             raise ValueError("catalog_generation must be positive")
-        if (
-            isinstance(self.tool_catalog_generation, bool)
-            or self.tool_catalog_generation < 1
-        ):
+        if isinstance(self.tool_catalog_generation, bool) or self.tool_catalog_generation < 1:
             raise ValueError("tool_catalog_generation must be positive")
         validate_argument_resource_bounds(self.start_input)
         object.__setattr__(
@@ -951,9 +922,7 @@ class VerifiedWorkflowLaunchTicket:
     ) -> VerifiedWorkflowLaunchTicket:
         if factory_token is not _VERIFIED_TICKET_FACTORY:
             raise TypeError("verified launch tickets are SDK factory-only")
-        if set(values) != {
-            name for name in cls.__dataclass_fields__ if name != "_factory_token"
-        }:
+        if set(values) != {name for name in cls.__dataclass_fields__ if name != "_factory_token"}:
             raise TypeError("verified workflow ticket fields differ from contract")
         self = object.__new__(cls)
         for field_name in cls.__dataclass_fields__:
@@ -961,23 +930,23 @@ class VerifiedWorkflowLaunchTicket:
                 object.__setattr__(self, field_name, factory_token)
             else:
                 value = values[field_name]
-                if field_name == "start_input_schema" and not isinstance(
-                    value, StartInputSchema
-                ):
+                if field_name == "start_input_schema" and not isinstance(value, StartInputSchema):
                     raise TypeError("verified ticket schema must be typed")
-                if field_name in {
-                    "terminal_projection_descriptor",
-                    "capability_snapshot",
-                } and value is not None:
+                if (
+                    field_name
+                    in {
+                        "terminal_projection_descriptor",
+                        "capability_snapshot",
+                    }
+                    and value is not None
+                ):
                     if not isinstance(value, Mapping):
                         raise TypeError(f"{field_name} must be a JSON object")
                     value = _frozen_object(value, path=f"$.ticket.{field_name}")
-                if field_name == "spawn_origin" and not isinstance(
-                    value, WorkflowSpawnOrigin
-                ):
+                if field_name == "spawn_origin" and not isinstance(value, WorkflowSpawnOrigin):
                     raise TypeError("verified ticket spawn_origin must be typed")
                 if field_name == "attachment_policy":
-                    value = AttachmentPolicy(value)
+                    value = AttachmentPolicy(cast(str, value))
                     if value is not AttachmentPolicy.ATTACHED:
                         raise ValueError("verified workflow spawn must remain attached")
                 object.__setattr__(self, field_name, value)
@@ -1025,7 +994,7 @@ class VerifiedWorkflowGraphUnavailable:
     observed_implementation_hash: str | None
     _factory_token: object
 
-    def __new__(cls, *_args: object, **_kwargs: object) -> None:
+    def __new__(cls, *_args: object, **_kwargs: object) -> Self:
         raise TypeError("workflow graph-unavailable proofs are SDK factory-only")
 
     @classmethod
@@ -1037,9 +1006,7 @@ class VerifiedWorkflowGraphUnavailable:
     ) -> VerifiedWorkflowGraphUnavailable:
         if factory_token is not _VERIFIED_GRAPH_UNAVAILABLE_FACTORY:
             raise TypeError("workflow graph-unavailable proofs are SDK factory-only")
-        expected_fields = {
-            name for name in cls.__dataclass_fields__ if name != "_factory_token"
-        }
+        expected_fields = {name for name in cls.__dataclass_fields__ if name != "_factory_token"}
         if set(values) != expected_fields:
             raise TypeError("workflow graph-unavailable proof fields differ")
         for name in (
@@ -1084,11 +1051,7 @@ class VerifiedWorkflowGraphUnavailable:
             object.__setattr__(
                 self,
                 field_name,
-                (
-                    factory_token
-                    if field_name == "_factory_token"
-                    else values[field_name]
-                ),
+                (factory_token if field_name == "_factory_token" else values[field_name]),
             )
         return self
 
@@ -1169,10 +1132,7 @@ class RuntimeStartReceipt:
             "workflow_request_hash",
         ):
             _required(getattr(self, name), name)
-        if (
-            isinstance(self.committed_run_version, bool)
-            or self.committed_run_version < 0
-        ):
+        if isinstance(self.committed_run_version, bool) or self.committed_run_version < 0:
             raise ValueError("committed_run_version must be non-negative")
         if not math.isfinite(self.created_at) or self.created_at < 0:
             raise ValueError("created_at must be finite and non-negative")
@@ -1280,10 +1240,8 @@ class RuntimeStartAdmission:
             assert self.activation is not None
             if (
                 self.dispatch_claim.run_id != self.receipt.run_id
-                or self.dispatch_claim.owner_id
-                != self.activation.execution_lease.owner_id
-                or self.dispatch_claim.runtime_lease_epoch
-                != self.activation.execution_lease.epoch
+                or self.dispatch_claim.owner_id != self.activation.execution_lease.owner_id
+                or self.dispatch_claim.runtime_lease_epoch != self.activation.execution_lease.epoch
             ):
                 raise ValueError("Runtime start dispatch claim is not co-fenced")
         if self.recovery_work is not None:
@@ -1321,9 +1279,7 @@ class WorkflowLaunchTicketPort(Protocol):
         fault: FaultHook | None = None,
     ) -> WorkflowCatalogAuthority: ...
 
-    async def read_catalog(
-        self, transaction: WorkflowTransaction
-    ) -> WorkflowCatalogAuthority: ...
+    async def read_catalog(self, transaction: WorkflowTransaction) -> WorkflowCatalogAuthority: ...
 
     async def issue(
         self,
@@ -1453,8 +1409,7 @@ class WorkflowLaunchTicketPort(Protocol):
         self,
         transaction: WorkflowTransaction,
         ticket: WorkflowLaunchTicket,
-        ready_or_continuation: WorkflowSpawnContinuationReady
-        | WorkflowSpawnContinuationClaim,
+        ready_or_continuation: WorkflowSpawnContinuationReady | WorkflowSpawnContinuationClaim,
         parent_terminal_snapshot: WorkflowTerminalOutcome,
         *,
         now: float,

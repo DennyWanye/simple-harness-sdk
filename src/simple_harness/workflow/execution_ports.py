@@ -77,9 +77,7 @@ class WorkflowRecoveryReceiptKind(StrEnum):
     RESUME = "resume"
 
 
-def _frozen_object(
-    value: Mapping[str, JsonValue], *, path: str
-) -> Mapping[str, FrozenJsonValue]:
+def _frozen_object(value: Mapping[str, JsonValue], *, path: str) -> Mapping[str, FrozenJsonValue]:
     detached = copy.deepcopy(dict(value))
     validate_json_value(detached, path=path)
     frozen = freeze_json(detached)
@@ -203,12 +201,8 @@ def start_admission_request_to_json(
     request: StartAdmissionRequest,
 ) -> dict[str, JsonValue]:
     start_input = thaw_json(cast(FrozenJsonValue, request.start_input))
-    capability_snapshot = thaw_json(
-        cast(FrozenJsonValue, request.capability_snapshot)
-    )
-    if not isinstance(start_input, dict) or not isinstance(
-        capability_snapshot, dict
-    ):
+    capability_snapshot = thaw_json(cast(FrozenJsonValue, request.capability_snapshot))
+    if not isinstance(start_input, dict) or not isinstance(capability_snapshot, dict):
         raise TypeError("workflow start request objects did not thaw as objects")
     descriptor = (
         None
@@ -300,9 +294,7 @@ def start_admission_request_from_json(
         start_input_schema_ref=optional_string("start_input_schema_ref"),
         start_input_schema_hash=optional_string("start_input_schema_hash"),
         terminal_projection_descriptor=descriptor,
-        terminal_request_factory_hash=optional_string(
-            "terminal_request_factory_hash"
-        ),
+        terminal_request_factory_hash=optional_string("terminal_request_factory_hash"),
         start_input=start_input,
         capability_snapshot=capability_snapshot,
     )
@@ -328,11 +320,7 @@ class StartAdmissionReceipt:
 
     def __post_init__(self) -> None:
         phase = StartPhase(self.phase)
-        action = (
-            None
-            if self.claim_action is None
-            else StartClaimAction(self.claim_action)
-        )
+        action = None if self.claim_action is None else StartClaimAction(self.claim_action)
         object.__setattr__(self, "phase", phase)
         object.__setattr__(self, "claim_action", action)
         if isinstance(self.version, bool) or self.version < 0:
@@ -376,16 +364,13 @@ class StartAdmissionReceipt:
             activation.execution_lease.run_id != self.run_id
             or activation.workflow_lease.run_id != self.run_id
             or activation.run_fence.run_id.value != self.run_id
-            or activation.workflow_lease.namespace
-            != self.request.checkpoint_namespace
+            or activation.workflow_lease.namespace != self.request.checkpoint_namespace
             or activation.execution_lease.owner_id != self.claim_owner
             or activation.workflow_lease.owner_id != self.claim_owner
             or activation.run_fence.owner_id != self.claim_owner
             or activation.workflow_lease.epoch != self.claim_epoch
-            or activation.workflow_lease.runtime_lease_epoch
-            != activation.execution_lease.epoch
-            or activation.run_fence.runtime_lease_epoch
-            != activation.execution_lease.epoch
+            or activation.workflow_lease.runtime_lease_epoch != activation.execution_lease.epoch
+            or activation.run_fence.runtime_lease_epoch != activation.execution_lease.epoch
             or activation.workflow_lease.expires_at != self.claim_expires_at
             or activation.execution_lease.expires_at != self.claim_expires_at
         ):
@@ -428,15 +413,9 @@ class ResumeAdmissionRequest:
 
     def __post_init__(self) -> None:
         ordered = tuple(sorted(self.pending_interrupts))
-        if ordered != self.pending_interrupts or len(
-            {item[0] for item in ordered}
-        ) != len(ordered):
-            raise ValueError(
-                "pending interrupts must be unique and canonically ordered"
-            )
-        object.__setattr__(
-            self, "responses", _frozen_object(self.responses, path="$.responses")
-        )
+        if ordered != self.pending_interrupts or len({item[0] for item in ordered}) != len(ordered):
+            raise ValueError("pending interrupts must be unique and canonically ordered")
+        object.__setattr__(self, "responses", _frozen_object(self.responses, path="$.responses"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -482,8 +461,7 @@ class ResumeAdmissionReceipt:
             if self.next_attempt_at is not None:
                 raise ValueError("claimed resume cannot retain retry due time")
         elif phase is not ResumePhase.SETTLED and (
-            any(value is not None for value in claim_values)
-            or self.activation is not None
+            any(value is not None for value in claim_values) or self.activation is not None
         ):
             raise ValueError("non-claimed resume cannot carry activation authority")
         elif phase is ResumePhase.SETTLED and self.activation is not None:
@@ -578,8 +556,7 @@ class PrecreatedStartDispatch:
             self.receipt.activation != self.activation
             or self.activation.execution_lease.run_id != self.receipt.run_id
             or self.activation.workflow_lease.run_id != self.receipt.run_id
-            or self.activation.workflow_lease.namespace
-            != self.receipt.request.checkpoint_namespace
+            or self.activation.workflow_lease.namespace != self.receipt.request.checkpoint_namespace
             or self.receipt.claim_owner != self.activation.execution_lease.owner_id
             or self.receipt.claim_owner != self.activation.workflow_lease.owner_id
             or self.receipt.claim_owner != self.activation.run_fence.owner_id
@@ -588,10 +565,8 @@ class PrecreatedStartDispatch:
             != self.activation.execution_lease.epoch
             or self.activation.run_fence.runtime_lease_epoch
             != self.activation.execution_lease.epoch
-            or self.receipt.claim_expires_at
-            != self.activation.workflow_lease.expires_at
-            or self.receipt.claim_expires_at
-            != self.activation.execution_lease.expires_at
+            or self.receipt.claim_expires_at != self.activation.workflow_lease.expires_at
+            or self.receipt.claim_expires_at != self.activation.execution_lease.expires_at
         ):
             raise ValueError("active dispatch namespace/identity differs from receipt")
 
@@ -639,10 +614,7 @@ class DangerousEffectConfirmation:
     digest: str
 
     def __post_init__(self) -> None:
-        if (
-            tuple(sorted(self.observations, key=lambda item: item.effect_id))
-            != self.observations
-        ):
+        if tuple(sorted(self.observations, key=lambda item: item.effect_id)) != self.observations:
             raise ValueError("dangerous observations must be canonically ordered")
 
 
@@ -663,9 +635,7 @@ class ForkRequest:
     dangerous_confirmation: DangerousEffectConfirmation | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "patch", _frozen_object(self.patch, path="$.fork.patch")
-        )
+        object.__setattr__(self, "patch", _frozen_object(self.patch, path="$.fork.patch"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -806,9 +776,7 @@ class WorkflowTransaction(Protocol):
         payload: Mapping[str, JsonValue],
     ) -> JsonValue: ...
 
-    async def write_workflow_operation(
-        self, receipt: WorkflowOperationReceipt
-    ) -> None: ...
+    async def write_workflow_operation(self, receipt: WorkflowOperationReceipt) -> None: ...
 
 
 class WorkflowBlobReferencePort(Protocol):
@@ -843,9 +811,7 @@ class WorkflowLifecyclePort(Protocol):
     @property
     def transaction_owner(self) -> object: ...
 
-    def read_cancel_resolution_snapshot(
-        self, cancel_id: str
-    ) -> Mapping[str, JsonValue] | None: ...
+    def read_cancel_resolution_snapshot(self, cancel_id: str) -> Mapping[str, JsonValue] | None: ...
 
     def read_cancel_outcome(
         self, *, run_id: str, generation: int
@@ -1189,25 +1155,18 @@ class CheckpointExecutionAdapter:
         lease_epoch: int,
         created_at: float,
     ) -> JsonValue:
-        if (
-            not transaction.is_open
-            or transaction.transaction_owner is not self.transaction_owner
-        ):
+        if not transaction.is_open or transaction.transaction_owner is not self.transaction_owner:
             raise WorkflowOperationConflict("foreign or closed workflow transaction")
         expected_id = _operation_id(identity)
         if operation_id is not None and operation_id != expected_id:
-            raise WorkflowOperationConflict(
-                "operation id does not match durable identity"
-            )
+            raise WorkflowOperationConflict("operation id does not match durable identity")
         resolved_id = expected_id
         detached = copy.deepcopy(dict(payload))
         payload_hash = hashlib.sha256(canonical_json(detached).encode()).hexdigest()
         existing = await transaction.read_workflow_operation(resolved_id)
         if existing is not None:
             if existing.adapter_method != method or existing.identity != identity:
-                raise WorkflowOperationConflict(
-                    "operation id reused across adapter methods"
-                )
+                raise WorkflowOperationConflict("operation id reused across adapter methods")
             if existing.payload_hash != payload_hash:
                 raise WorkflowOperationConflict("operation payload changed")
             return copy.deepcopy(existing.outcome)
@@ -1456,9 +1415,7 @@ class WorkflowExecutionPorts:
                 self.replay,
             )
         ):
-            raise ValueError(
-                "workflow execution ports do not share one transaction owner"
-            )
+            raise ValueError("workflow execution ports do not share one transaction owner")
 
 
 __all__ = (

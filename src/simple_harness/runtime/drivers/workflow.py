@@ -78,9 +78,7 @@ class WorkflowRuntimeDriver:
         recovery_work = invocation.workflow_recovery_work
         if recovery_work is not None:
             if request is None:
-                raise RuntimeError(
-                    "workflow driver recovery requires durable admission"
-                )
+                raise RuntimeError("workflow driver recovery requires durable admission")
             recovered = await self._runner.recover_precreated(
                 invocation.run.run_id,
                 recovery_work=recovery_work,

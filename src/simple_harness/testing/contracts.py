@@ -226,9 +226,7 @@ class ConformanceHost(Protocol):
     @property
     def metadata(self) -> ConformanceHostMetadata: ...
 
-    def open_suite(
-        self, name: str
-    ) -> AbstractAsyncContextManager[ConformanceSuite]: ...
+    def open_suite(self, name: str) -> AbstractAsyncContextManager[ConformanceSuite]: ...
 
 
 __all__ = (

@@ -184,9 +184,7 @@ class _SqliteWorkflowTransaction:
         if point not in self._after_commit_fault_points:
             self._after_commit_fault_points.append(point)
 
-    async def read_workflow_operation(
-        self, operation_id: str
-    ) -> WorkflowOperationReceipt | None:
+    async def read_workflow_operation(self, operation_id: str) -> WorkflowOperationReceipt | None:
         row = self.connection.execute(
             "SELECT * FROM workflow_operation_receipts WHERE operation_id=?",
             (operation_id,),
@@ -205,9 +203,7 @@ class _SqliteWorkflowTransaction:
             outcome=cast(JsonValue, outcome),
             run_id=str(row["run_id"]),
             namespace=str(row["namespace"]),
-            checkpoint_id=(
-                None if row["checkpoint_id"] is None else str(row["checkpoint_id"])
-            ),
+            checkpoint_id=(None if row["checkpoint_id"] is None else str(row["checkpoint_id"])),
             lease_epoch=int(row["lease_epoch"]),
             created_at=float(row["created_at"]),
         )
@@ -241,15 +237,14 @@ class _SqliteWorkflowTransaction:
                 "SELECT phase,version FROM workflow_start_admissions WHERE run_id=?",
                 (run_id,),
             ).fetchone()
-            if (
-                receipt is not None
-                and str(receipt["phase"]) == StartPhase.CLAIMED.value
-            ):
+            if receipt is not None and str(receipt["phase"]) == StartPhase.CLAIMED.value:
                 self.connection.execute(
-                    "UPDATE workflow_start_admissions SET phase='running',version=version+1,updated_at=? WHERE run_id=? AND phase='claimed' AND version=?",
+                    "UPDATE workflow_start_admissions SET"
+                    " phase='running',version=version+1,updated_at=? WHERE run_id=? AND"
+                    " phase='claimed' AND version=?",
                     (now, run_id, int(receipt["version"])),
                 )
-            outcome = {
+            outcome: JsonValue = {
                 "changed": bool(changed),
                 "state": str(row["state"]),
                 "version": int(row["version"]),
@@ -323,12 +318,8 @@ class _SqliteWorkflowTransaction:
                 (now, run_id),
             ).rowcount
             if changed != 1:
-                raise WorkflowOperationConflict(
-                    "workflow interrupt requires running Run"
-                )
-            event_id = hashlib.sha256(
-                f"{run_id}|decision.open|{interrupt_id}".encode()
-            ).hexdigest()
+                raise WorkflowOperationConflict("workflow interrupt requires running Run")
+            event_id = hashlib.sha256(f"{run_id}|decision.open|{interrupt_id}".encode()).hexdigest()
             sequence = int(
                 self.connection.execute(
                     "SELECT COALESCE(MAX(durable_seq),0)+1 FROM run_events WHERE run_id=?",
@@ -373,7 +364,8 @@ class _SqliteWorkflowTransaction:
                 ).fetchone()[0]
             )
             self.connection.execute(
-                "INSERT INTO run_events(event_id,run_id,durable_seq,kind,payload_json,created_at) VALUES(?,?,?,?,?,?)",
+                "INSERT INTO run_events(event_id,run_id,durable_seq,kind,payload_json,created_at)"
+                " VALUES(?,?,?,?,?,?)",
                 (
                     event_id,
                     run_id,
@@ -387,16 +379,16 @@ class _SqliteWorkflowTransaction:
             _fault(self._fault, f"workflow_adapter.{adapter_method}.after_ledger")
             return outcome
         if adapter_method == "link_effects":
-            namespace = _required(
-                payload.get("checkpoint_namespace"), "checkpoint_namespace"
-            )
+            namespace = _required(payload.get("checkpoint_namespace"), "checkpoint_namespace")
             checkpoint_id = _required(payload.get("checkpoint_id"), "checkpoint_id")
             effect_ids = payload.get("effect_ids")
             if not isinstance(effect_ids, list):
                 raise WorkflowOperationConflict("effect ids must be a list")
             for effect_id in effect_ids:
                 self.connection.execute(
-                    "INSERT INTO workflow_checkpoint_effect_links(run_id,namespace,checkpoint_id,effect_id,created_at) VALUES(?,?,?,?,?)",
+                    "INSERT INTO"
+                    " workflow_checkpoint_effect_links(run_id,namespace,checkpoint_id,effect_id,created_at)"  # noqa: E501
+                    " VALUES(?,?,?,?,?)",
                     (
                         run_id,
                         namespace,
@@ -425,15 +417,11 @@ class _SqliteWorkflowTransaction:
             if row is None:
                 raise UnitOfWorkNotFound(run_id)
             if not changed and str(row["state"]) != status:
-                raise WorkflowOperationConflict(
-                    "Run already has another terminal state"
-                )
+                raise WorkflowOperationConflict("Run already has another terminal state")
             outcome = {"state": str(row["state"]), "version": int(row["version"])}
             _fault(self._fault, f"workflow_adapter.{adapter_method}.after_ledger")
             return outcome
-        raise WorkflowOperationConflict(
-            f"unknown workflow adapter method: {adapter_method}"
-        )
+        raise WorkflowOperationConflict(f"unknown workflow adapter method: {adapter_method}")
 
     async def write_workflow_operation(self, receipt: WorkflowOperationReceipt) -> None:
         _fault(self._fault, f"workflow_adapter.{receipt.adapter_method}.before_receipt")
@@ -657,9 +645,7 @@ def _verify_stage_replay(
 class SqliteExecutionUnitOfWork:
     __slots__ = ("database", "workflow_fault")
 
-    def __init__(
-        self, database: Database, *, workflow_fault: FaultHook | None = None
-    ) -> None:
+    def __init__(self, database: Database, *, workflow_fault: FaultHook | None = None) -> None:
         self.database = database
         self.workflow_fault = workflow_fault
 
@@ -679,9 +665,7 @@ class SqliteExecutionUnitOfWork:
     ) -> _WorkflowResult:
         _fault(self.workflow_fault, f"{fault_label}.before_begin")
         with self.database.transaction() as connection:
-            transaction = _SqliteWorkflowTransaction(
-                self.database, connection, self.workflow_fault
-            )
+            transaction = _SqliteWorkflowTransaction(self.database, connection, self.workflow_fault)
             try:
                 result = await operation(transaction)
                 _fault(self.workflow_fault, f"{fault_label}.before_commit")
@@ -734,9 +718,7 @@ class SqliteExecutionUnitOfWork:
                 ).fetchone()
                 if admission is not None:
                     workflow_namespace = str(
-                        json.loads(str(admission["request_json"]))[
-                            "checkpoint_namespace"
-                        ]
+                        json.loads(str(admission["request_json"]))["checkpoint_namespace"]
                     )
             lease_row = connection.execute(
                 "SELECT owner_id, epoch, expires_at FROM workflow_leases "
@@ -805,9 +787,7 @@ class SqliteExecutionUnitOfWork:
                     (run_id, workflow_namespace, owner_id, epoch, expires_at),
                 )
                 _fault(fault, "runtime_activation.workflow_lease.after_write")
-            event_kind = (
-                "run.recovered" if run.state is RunState.RUNNING else "run.activated"
-            )
+            event_kind = "run.recovered" if run.state is RunState.RUNNING else "run.activated"
             _fault(fault, "runtime_activation.event.before_write")
             self._insert_event(
                 connection,
@@ -897,7 +877,9 @@ class SqliteExecutionUnitOfWork:
             if dispatch is not None:
                 _fault(fault, "runtime_lease_release.dispatch.before_write")
                 changed = connection.execute(
-                    "UPDATE runtime_start_dispatch_claims SET expires_at=?,version=version+1,updated_at=? WHERE run_id=? AND owner_id=? AND runtime_lease_epoch=? AND expires_at=?",
+                    "UPDATE runtime_start_dispatch_claims SET"
+                    " expires_at=?,version=version+1,updated_at=? WHERE run_id=? AND owner_id=? AND"
+                    " runtime_lease_epoch=? AND expires_at=?",
                     (
                         now,
                         now,
@@ -908,9 +890,7 @@ class SqliteExecutionUnitOfWork:
                     ),
                 ).rowcount
                 if changed != 1:
-                    raise UnitOfWorkConflict(
-                        "runtime start dispatch release CAS failed"
-                    )
+                    raise UnitOfWorkConflict("runtime start dispatch release CAS failed")
                 _fault(fault, "runtime_lease_release.dispatch.after_write")
             for projection in owned_projection_rows:
                 namespace = str(projection["namespace"])
@@ -934,9 +914,7 @@ class SqliteExecutionUnitOfWork:
                     ),
                 ).rowcount
                 if changed != 1:
-                    raise UnitOfWorkConflict(
-                        "workflow projection lease release CAS failed"
-                    )
+                    raise UnitOfWorkConflict("workflow projection lease release CAS failed")
                 _fault(
                     fault,
                     f"runtime_lease_release.{namespace}.after_projection_write",
@@ -1022,7 +1000,9 @@ class SqliteExecutionUnitOfWork:
             if dispatch is not None:
                 _fault(fault, "runtime_lease_renew.dispatch.before_write")
                 changed = connection.execute(
-                    "UPDATE runtime_start_dispatch_claims SET expires_at=?,version=version+1,updated_at=? WHERE run_id=? AND owner_id=? AND runtime_lease_epoch=? AND expires_at=?",
+                    "UPDATE runtime_start_dispatch_claims SET"
+                    " expires_at=?,version=version+1,updated_at=? WHERE run_id=? AND owner_id=? AND"
+                    " runtime_lease_epoch=? AND expires_at=?",
                     (
                         expires_at,
                         now,
@@ -1033,9 +1013,7 @@ class SqliteExecutionUnitOfWork:
                     ),
                 ).rowcount
                 if changed != 1:
-                    raise UnitOfWorkConflict(
-                        "runtime start dispatch renew CAS failed"
-                    )
+                    raise UnitOfWorkConflict("runtime start dispatch renew CAS failed")
                 _fault(fault, "runtime_lease_renew.dispatch.after_write")
             for projection in owned_projection_rows:
                 namespace = str(projection["namespace"])
@@ -1060,9 +1038,7 @@ class SqliteExecutionUnitOfWork:
                     ),
                 ).rowcount
                 if changed != 1:
-                    raise UnitOfWorkConflict(
-                        "workflow projection lease renew CAS failed"
-                    )
+                    raise UnitOfWorkConflict("workflow projection lease renew CAS failed")
                 _fault(
                     fault,
                     f"runtime_lease_renew.{namespace}.after_projection_write",
@@ -1171,6 +1147,7 @@ class SqliteExecutionUnitOfWork:
                 """,
                 (blocker.kind.value, blocker.ledger_identity, blocker.handoff_attempt),
             ).fetchone()
+            completed_states: tuple[str, ...]
             if blocker.kind is RecoveryKind.PROVIDER:
                 ledger = connection.execute(
                     """
@@ -1201,24 +1178,18 @@ class SqliteExecutionUnitOfWork:
                 or int(ledger["handoff_attempt"]) != blocker.handoff_attempt
             ):
                 raise UnitOfWorkConflict("wait blocker ledger identity conflict")
-            resolution_outcome = (
-                None if resolution is None else str(resolution["outcome"])
-            )
+            resolution_outcome = None if resolution is None else str(resolution["outcome"])
             if resolution_outcome == ResolutionOutcome.COMPLETED.value:
                 if (
                     str(ledger["state"]) not in completed_states
                     or int(ledger["version"]) != blocker.observed_version + 1
                 ):
-                    raise UnitOfWorkConflict(
-                        "completed wait resolution and ledger differ"
-                    )
+                    raise UnitOfWorkConflict("completed wait resolution and ledger differ")
             elif (
                 str(ledger["state"]) != unresolved_state
                 or int(ledger["version"]) != blocker.observed_version
             ):
-                raise UnitOfWorkConflict(
-                    "wait blocker observed ledger version is stale"
-                )
+                raise UnitOfWorkConflict("wait blocker observed ledger version is stale")
             _fault(fault, "wait_blocker.event.before_write")
             self._insert_event(
                 connection,
@@ -1321,9 +1292,7 @@ class SqliteExecutionUnitOfWork:
             if receipt_row is not None:
                 receipt = _wait_activation_receipt(receipt_row)
                 if receipt.owner_id != owner_id:
-                    raise UnitOfWorkConflict(
-                        "activation receipt belongs to another Runtime owner"
-                    )
+                    raise UnitOfWorkConflict("activation receipt belongs to another Runtime owner")
                 run_row = connection.execute(
                     "SELECT * FROM runs WHERE run_id = ?", (receipt.run_id,)
                 ).fetchone()
@@ -1433,9 +1402,7 @@ class SqliteExecutionUnitOfWork:
         return (
             run,
             ExecutionLease(run_id, namespace, owner_id, epoch, expires_at),
-            WaitActivationReceipt(
-                receipt_id, blocker_id, run_id, owner_id, epoch, outcome_hash
-            ),
+            WaitActivationReceipt(receipt_id, blocker_id, run_id, owner_id, epoch, outcome_hash),
         )
 
     def read_reconciliation_resolution(
@@ -1619,8 +1586,7 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("workflow spawn continuation belongs elsewhere")
         with self.database.transaction() as connection:
             wait = connection.execute(
-                "SELECT * FROM workflow_spawn_child_wait_receipts "
-                "WHERE continuation_id=?",
+                "SELECT * FROM workflow_spawn_child_wait_receipts WHERE continuation_id=?",
                 (continuation_claim.continuation_id,),
             ).fetchone()
             if wait is None:
@@ -1638,13 +1604,11 @@ class SqliteExecutionUnitOfWork:
                 "acked",
             }:
                 receipt = connection.execute(
-                    "SELECT * FROM continuation_progress_receipts "
-                    "WHERE receipt_id=?",
+                    "SELECT * FROM continuation_progress_receipts WHERE receipt_id=?",
                     (wait["progress_receipt_id"],),
                 ).fetchone()
                 continuation = connection.execute(
-                    "SELECT state,ack_receipt_id FROM continuations "
-                    "WHERE continuation_id=?",
+                    "SELECT state,ack_receipt_id FROM continuations WHERE continuation_id=?",
                     (continuation_claim.continuation_id,),
                 ).fetchone()
                 if (
@@ -1653,47 +1617,31 @@ class SqliteExecutionUnitOfWork:
                     or str(continuation["state"]) != "acked"
                     or continuation["ack_receipt_id"] != wait["progress_receipt_id"]
                     or str(receipt["owner_id"]) != continuation_claim.claimed_by
-                    or int(receipt["runtime_lease_epoch"])
-                    != continuation_claim.runtime_lease_epoch
-                    or int(receipt["claim_epoch"])
-                    != continuation_claim.claim_epoch
+                    or int(receipt["runtime_lease_epoch"]) != continuation_claim.runtime_lease_epoch
+                    or int(receipt["claim_epoch"]) != continuation_claim.claim_epoch
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow spawn continuation replay differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn continuation replay differs")
                 return _workflow_checkpoint(latest)
             if str(wait["state"]) != "claimed":
                 raise UnitOfWorkConflict("workflow spawn child wait is not claimed")
             self._require_runtime_lease(connection, execution_lease, now=now)
-            self._require_run_fence(
-                connection, run_fence, execution_lease=execution_lease
-            )
-            self._require_continuation_claim(
-                connection, continuation_claim, execution_lease
-            )
-            run = connection.execute(
-                "SELECT state FROM runs WHERE run_id=?", (run_id,)
-            ).fetchone()
+            self._require_run_fence(connection, run_fence, execution_lease=execution_lease)
+            self._require_continuation_claim(connection, continuation_claim, execution_lease)
+            run = connection.execute("SELECT state FROM runs WHERE run_id=?", (run_id,)).fetchone()
             if run is None or str(run["state"]) != RunState.RUNNING.value:
-                raise UnitOfWorkConflict(
-                    "workflow spawn continuation requires a RUNNING parent"
-                )
+                raise UnitOfWorkConflict("workflow spawn continuation requires a RUNNING parent")
             checkpoint_payload = json.loads(str(latest["checkpoint_json"]))
             if (
                 not isinstance(checkpoint_payload, dict)
                 or checkpoint_payload.get("phase") != "child_wait"
-                or int(latest["version"])
-                != int(wait["react_checkpoint_revision"])
-                or str(latest["checkpoint_hash"])
-                != str(wait["react_checkpoint_hash"])
+                or int(latest["version"]) != int(wait["react_checkpoint_revision"])
+                or str(latest["checkpoint_hash"]) != str(wait["react_checkpoint_hash"])
                 or checkpoint_payload.get("workflow_spawn_operation_id")
                 != str(wait["spawn_operation_id"])
                 or checkpoint_payload.get("workflow_spawn_child_run_id")
                 != str(wait["child_run_id"])
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn suspended ReAct checkpoint differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn suspended ReAct checkpoint differs")
             continuation_payload = thaw_json(continuation_claim.payload)
             if (
                 not isinstance(continuation_payload, dict)
@@ -1702,9 +1650,7 @@ class SqliteExecutionUnitOfWork:
                 or continuation_payload.get("child_run_id") != wait["child_run_id"]
                 or not isinstance(continuation_payload.get("payload"), dict)
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn child completion payload differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn child completion payload differs")
             pending_completion: dict[str, JsonValue] = {
                 "schema_version": "workflow_child_completion.v1",
                 "child_run_id": str(wait["child_run_id"]),
@@ -1807,9 +1753,7 @@ class SqliteExecutionUnitOfWork:
                 {
                     "phase": "tool_batch_reserved",
                     "tool_result_progress": int(wait["next_tool_ordinal"]),
-                    "workflow_spawn_wait_receipt_id": str(
-                        wait["parent_wait_receipt_id"]
-                    ),
+                    "workflow_spawn_wait_receipt_id": str(wait["parent_wait_receipt_id"]),
                     "pending_child_completion": pending_completion,
                     "pending_child_completion_hash": pending_hash,
                     "pending_child_completion_append_id": append_id,
@@ -1861,9 +1805,7 @@ class SqliteExecutionUnitOfWork:
         now = _time(now)
         with self.database.transaction() as connection:
             self._require_runtime_lease(connection, execution_lease, now=now)
-            self._require_run_fence(
-                connection, run_fence, execution_lease=execution_lease
-            )
+            self._require_run_fence(connection, run_fence, execution_lease=execution_lease)
             latest = connection.execute(
                 "SELECT * FROM workflow_checkpoints WHERE run_id=? "
                 "AND namespace='react.termination.v1' "
@@ -1875,20 +1817,13 @@ class SqliteExecutionUnitOfWork:
             checkpoint_payload = json.loads(str(latest["checkpoint_json"]))
             if not isinstance(checkpoint_payload, dict):
                 raise UnitOfWorkConflict("workflow spawn ReAct checkpoint is malformed")
-            wait_receipt_id = checkpoint_payload.get(
-                "workflow_spawn_wait_receipt_id"
-            )
+            wait_receipt_id = checkpoint_payload.get("workflow_spawn_wait_receipt_id")
             completed_wait_receipt_id = checkpoint_payload.get(
                 "last_workflow_spawn_wait_receipt_id"
             )
             wait = connection.execute(
-                "SELECT * FROM workflow_spawn_child_wait_receipts "
-                "WHERE parent_wait_receipt_id=?",
-                (
-                    wait_receipt_id
-                    if wait_receipt_id is not None
-                    else completed_wait_receipt_id,
-                ),
+                "SELECT * FROM workflow_spawn_child_wait_receipts WHERE parent_wait_receipt_id=?",
+                (wait_receipt_id if wait_receipt_id is not None else completed_wait_receipt_id,),
             ).fetchone()
             if (
                 wait is not None
@@ -1906,9 +1841,7 @@ class SqliteExecutionUnitOfWork:
                 or wait["pending_child_completion_hash"] is None
                 or wait["child_completion_append_id"] is None
             ):
-                raise UnitOfWorkConflict(
-                    "pending workflow child completion authority differs"
-                )
+                raise UnitOfWorkConflict("pending workflow child completion authority differs")
             response_payload = checkpoint_payload.get("provider_response_snapshot")
             if not isinstance(response_payload, dict):
                 raise UnitOfWorkConflict("workflow spawn Provider response is missing")
@@ -1916,23 +1849,16 @@ class SqliteExecutionUnitOfWork:
             if not isinstance(tool_calls, list) or checkpoint_payload.get(
                 "tool_result_progress"
             ) != len(tool_calls):
-                raise UnitOfWorkConflict(
-                    "workflow spawn Tool batch is not fully appended"
-                )
+                raise UnitOfWorkConflict("workflow spawn Tool batch is not fully appended")
             pending_json = str(wait["pending_child_completion_json"])
-            if (
-                hashlib.sha256(pending_json.encode()).hexdigest()
-                != str(wait["pending_child_completion_hash"])
-                or checkpoint_payload.get("pending_child_completion_hash")
-                != str(wait["pending_child_completion_hash"])
+            if hashlib.sha256(pending_json.encode()).hexdigest() != str(
+                wait["pending_child_completion_hash"]
+            ) or checkpoint_payload.get("pending_child_completion_hash") != str(
+                wait["pending_child_completion_hash"]
             ):
-                raise UnitOfWorkConflict(
-                    "pending workflow child completion payload differs"
-                )
+                raise UnitOfWorkConflict("pending workflow child completion payload differs")
             context_revision = checkpoint_payload.get("context_revision")
-            if isinstance(context_revision, bool) or not isinstance(
-                context_revision, int
-            ):
+            if isinstance(context_revision, bool) or not isinstance(context_revision, int):
                 raise UnitOfWorkConflict("workflow spawn Context revision is missing")
             completion = json.loads(pending_json)
             context = _append_context_in_transaction(
@@ -1967,9 +1893,7 @@ class SqliteExecutionUnitOfWork:
                     "pending_child_completion": None,
                     "pending_child_completion_hash": None,
                     "pending_child_completion_append_id": None,
-                    "last_workflow_spawn_wait_receipt_id": str(
-                        wait["parent_wait_receipt_id"]
-                    ),
+                    "last_workflow_spawn_wait_receipt_id": str(wait["parent_wait_receipt_id"]),
                     "last_observed_at": now,
                 }
             )
@@ -2001,9 +1925,7 @@ class SqliteExecutionUnitOfWork:
                         "state": "acked",
                         "version": wait_version,
                         "progress_receipt_id": wait["progress_receipt_id"],
-                        "child_completion_append_id": wait[
-                            "child_completion_append_id"
-                        ],
+                        "child_completion_append_id": wait["child_completion_append_id"],
                         "child_completion_context_revision": context.revision,
                     }
                 ).encode()
@@ -2025,9 +1947,7 @@ class SqliteExecutionUnitOfWork:
                 ),
             ).rowcount
             if changed != 1:
-                raise UnitOfWorkConflict(
-                    "workflow spawn child completion ACK CAS failed"
-                )
+                raise UnitOfWorkConflict("workflow spawn child completion ACK CAS failed")
             _fault(fault, "workflow:spawn_child_complete:after_wait_write")
         _fault(fault, "workflow:spawn_child_complete:after_commit")
         result = self.read_react_checkpoint(run_id)
@@ -2100,9 +2020,7 @@ class SqliteExecutionUnitOfWork:
             requested_rows: list[tuple[str, str, str, str]] = []
             for item in items:
                 replay_payload = _thaw(item.payload)
-                replay_payload["terminal_fence_receipt_ref"] = (
-                    terminal_fence_receipt_ref
-                )
+                replay_payload["terminal_fence_receipt_ref"] = terminal_fence_receipt_ref
                 replay_payload["fence_epoch"] = fence.epoch
                 requested_rows.append(
                     (
@@ -2143,10 +2061,7 @@ class SqliteExecutionUnitOfWork:
 
         with self.database.transaction() as connection:
             self._require_runtime_lease(connection, execution_lease, now=now)
-            if (
-                execution_lease.run_id != run_id
-                or execution_lease.owner_id != fence.owner_id
-            ):
+            if execution_lease.run_id != run_id or execution_lease.owner_id != fence.owner_id:
                 raise UnitOfWorkConflict("terminal runtime lease and Run fence differ")
             self._require_run_fence(
                 connection,
@@ -2249,9 +2164,7 @@ class SqliteExecutionUnitOfWork:
         run = self.read_run(run_id)
         assert run is not None
         stored = tuple(
-            record
-            for item in items
-            if (record := self.read_delivery(item.delivery_id)) is not None
+            record for item in items if (record := self.read_delivery(item.delivery_id)) is not None
         )
         return TerminalCommitResult(run, stored)
 
@@ -2561,13 +2474,10 @@ class SqliteExecutionUnitOfWork:
         if existing is not None:
             if (
                 existing.run_id != run_id
-                or canonical_json(json.loads(prompt_json))
-                != canonical_json(_thaw(existing.prompt))
+                or canonical_json(json.loads(prompt_json)) != canonical_json(_thaw(existing.prompt))
                 or existing.expires_at != expires_at
             ):
-                raise UnitOfWorkConflict(
-                    "admission identity reused with different intent"
-                )
+                raise UnitOfWorkConflict("admission identity reused with different intent")
             return existing
         with self.database.transaction() as connection:
             _fault(fault, "admission_start.run.before_write")
@@ -2701,9 +2611,7 @@ class SqliteExecutionUnitOfWork:
         request_json = _object_json(request, "request")
         response_json = None if response is None else _object_json(response, "response")
         if (state is DecisionState.OPEN) != (response is None):
-            raise ValueError(
-                "open decision must omit response; resolved decision requires it"
-            )
+            raise ValueError("open decision must omit response; resolved decision requires it")
         existing = self.read_decision(decision_id)
         if existing is not None:
             if (
@@ -2864,9 +2772,7 @@ class SqliteExecutionUnitOfWork:
                     consumed_continuation_id=continuation_id,
                 )
                 return existing
-            raise UnitOfWorkConflict(
-                "continuation identity reused with different payload"
-            )
+            raise UnitOfWorkConflict("continuation identity reused with different payload")
         with self.database.transaction() as connection:
             run_row = connection.execute(
                 "SELECT r.state,s.user_id,r.execution_session_id FROM runs r "
@@ -2948,10 +2854,7 @@ class SqliteExecutionUnitOfWork:
     ) -> ContinuationRecord | None:
         run_id = _required(run_id, "run_id")
         now = _time(now)
-        if (
-            execution_lease.run_id != run_id
-            or execution_lease.namespace != RUNTIME_LEASE_NAMESPACE
-        ):
+        if execution_lease.run_id != run_id or execution_lease.namespace != RUNTIME_LEASE_NAMESPACE:
             raise UnitOfWorkConflict("continuation requires canonical Runtime lease")
         claimed_id: str | None = None
         with self.database.transaction() as connection:
@@ -3048,9 +2951,7 @@ class SqliteExecutionUnitOfWork:
                         ),
                     ).rowcount
                     if changed != 1:
-                        raise UnitOfWorkConflict(
-                            "workflow spawn child-wait claim CAS failed"
-                        )
+                        raise UnitOfWorkConflict("workflow spawn child-wait claim CAS failed")
                     _fault(fault, "continuation_claim.spawn_wait.after_write")
         _fault(fault, "continuation_claim.after_commit")
         return None if claimed_id is None else self.read_continuation(claimed_id)
@@ -3108,9 +3009,7 @@ class SqliteExecutionUnitOfWork:
                     outcome_hash=outcome_hash,
                 )
             self._require_runtime_lease(connection, execution_lease, now=now)
-            self._require_continuation_claim(
-                connection, continuation_claim, execution_lease
-            )
+            self._require_continuation_claim(connection, continuation_claim, execution_lease)
             _fault(fault, "continuation_progress.receipt.before_write")
             connection.execute(
                 "INSERT INTO continuation_progress_receipts("
@@ -3267,21 +3166,14 @@ class SqliteExecutionUnitOfWork:
                     outcome_hash=outcome_hash,
                 )
             prior_row = connection.execute(
-                "SELECT receipt_id FROM continuation_progress_receipts "
-                "WHERE continuation_id=?",
+                "SELECT receipt_id FROM continuation_progress_receipts WHERE continuation_id=?",
                 (continuation_claim.continuation_id,),
             ).fetchone()
             if prior_row is not None:
-                raise UnitOfWorkConflict(
-                    "continuation was already committed with another receipt"
-                )
+                raise UnitOfWorkConflict("continuation was already committed with another receipt")
             self._require_runtime_lease(connection, execution_lease, now=now)
-            self._require_run_fence(
-                connection, run_fence, execution_lease=execution_lease
-            )
-            self._require_continuation_claim(
-                connection, continuation_claim, execution_lease
-            )
+            self._require_run_fence(connection, run_fence, execution_lease=execution_lease)
+            self._require_continuation_claim(connection, continuation_claim, execution_lease)
             _fault(fault, "continuation_terminal.receipt.before_write")
             connection.execute(
                 "INSERT INTO continuation_progress_receipts("
@@ -3454,9 +3346,7 @@ class SqliteExecutionUnitOfWork:
                     "signal_pending"
                     if prior_state == "woken"
                     else (
-                        "continuation_claimed"
-                        if prior_state == "claimed"
-                        else "completion_pending"
+                        "continuation_claimed" if prior_state == "claimed" else "completion_pending"
                     )
                 )
             )
@@ -3485,16 +3375,11 @@ class SqliteExecutionUnitOfWork:
                     (str(row["child_run_id"]),),
                 ).fetchone()
                 if str(child["state"]) == RunState.CANCEL_REQUESTED.value:
-                    if (
-                        existing_cancel is None
-                        or str(existing_cancel["phase"]) == "terminal"
-                    ):
+                    if existing_cancel is None or str(existing_cancel["phase"]) == "terminal":
                         raise UnitOfWorkConflict(
                             "cancel-requested spawn child lacks active cancel receipt"
                         )
-                    reused_child_cancel_receipt_id = str(
-                        existing_cancel["cancel_id"]
-                    )
+                    reused_child_cancel_receipt_id = str(existing_cancel["cancel_id"])
                 elif str(child["state"]) in {
                     RunState.RUNNING.value,
                     RunState.WAITING.value,
@@ -3507,9 +3392,7 @@ class SqliteExecutionUnitOfWork:
                         canonical_json(
                             {
                                 "protocol": "workflow-spawn-parent-terminal-child-cancel-v1",
-                                "parent_wait_receipt_id": str(
-                                    row["parent_wait_receipt_id"]
-                                ),
+                                "parent_wait_receipt_id": str(row["parent_wait_receipt_id"]),
                                 "child_run_id": str(row["child_run_id"]),
                             }
                         ).encode()
@@ -3524,12 +3407,15 @@ class SqliteExecutionUnitOfWork:
                         str(item["blocker_id"]) for item in blocker_rows
                     ]
                     blocker_snapshot: dict[str, JsonValue] = {
-                        str(item["blocker_id"]): cast(dict[str, JsonValue], {
-                            "kind": str(item["kind"]),
-                            "ledger_identity": str(item["ledger_identity"]),
-                            "handoff_attempt": int(item["handoff_attempt"]),
-                            "observed_blocker_version": int(item["version"]),
-                        })
+                        str(item["blocker_id"]): cast(
+                            dict[str, JsonValue],
+                            {
+                                "kind": str(item["kind"]),
+                                "ledger_identity": str(item["ledger_identity"]),
+                                "handoff_attempt": int(item["handoff_attempt"]),
+                                "observed_blocker_version": int(item["version"]),
+                            },
+                        )
                         for item in blocker_rows
                     }
                     _fault(fault, "root_terminal.child_cancel.run.before_write")
@@ -3544,9 +3430,7 @@ class SqliteExecutionUnitOfWork:
                         ),
                     ).rowcount
                     if changed != 1:
-                        raise UnitOfWorkConflict(
-                            "spawn child parent-terminal cancel CAS failed"
-                        )
+                        raise UnitOfWorkConflict("spawn child parent-terminal cancel CAS failed")
                     _fault(fault, "root_terminal.child_cancel.run.after_write")
                     SqliteExecutionUnitOfWork._invalidate_cancel_activation(
                         connection,
@@ -3581,9 +3465,7 @@ class SqliteExecutionUnitOfWork:
                 continuation_id = row["continuation_id"]
                 signal_id = row["child_signal_id"]
                 if continuation_id is None or signal_id is None:
-                    raise UnitOfWorkConflict(
-                        "woken spawn child-wait lacks signal continuation"
-                    )
+                    raise UnitOfWorkConflict("woken spawn child-wait lacks signal continuation")
                 _fault(fault, "root_terminal.spawn_continuation.before_write")
                 changed = connection.execute(
                     "UPDATE continuations SET state='quarantined',acked_at=?,"
@@ -3592,9 +3474,7 @@ class SqliteExecutionUnitOfWork:
                     (now, continuation_id, parent_run_id),
                 ).rowcount
                 if changed != 1:
-                    raise UnitOfWorkConflict(
-                        "spawn signal continuation terminal quarantine failed"
-                    )
+                    raise UnitOfWorkConflict("spawn signal continuation terminal quarantine failed")
                 _fault(fault, "root_terminal.spawn_continuation.after_write")
             elif prior_state == "claimed":
                 if claimed_continuation_ack_receipt_id is None:
@@ -3609,18 +3489,13 @@ class SqliteExecutionUnitOfWork:
                 if (
                     continuation is None
                     or str(continuation["state"]) != "acked"
-                    or str(continuation["ack_receipt_id"])
-                    != claimed_continuation_ack_receipt_id
+                    or str(continuation["ack_receipt_id"]) != claimed_continuation_ack_receipt_id
                 ):
-                    raise UnitOfWorkConflict(
-                        "claimed spawn child-wait terminal ACK differs"
-                    )
+                    raise UnitOfWorkConflict("claimed spawn child-wait terminal ACK differs")
             terminal_hash = hashlib.sha256(
                 canonical_json(
                     {
-                        "parent_wait_receipt_id": str(
-                            row["parent_wait_receipt_id"]
-                        ),
+                        "parent_wait_receipt_id": str(row["parent_wait_receipt_id"]),
                         "spawn_operation_id": str(row["spawn_operation_id"]),
                         "phase_kind": phase_kind,
                         "terminal_receipt_id": terminal_receipt_id,
@@ -3639,9 +3514,7 @@ class SqliteExecutionUnitOfWork:
                         ),
                         "child_cancel_request_id": child_cancel_request_id,
                         "child_cancel_receipt_id": child_cancel_receipt_id,
-                        "reused_child_cancel_receipt_id": (
-                            reused_child_cancel_receipt_id
-                        ),
+                        "reused_child_cancel_receipt_id": reused_child_cancel_receipt_id,
                     }
                 ).encode()
             ).hexdigest()
@@ -3702,9 +3575,7 @@ class SqliteExecutionUnitOfWork:
                 ),
             ).rowcount
             if changed != 1:
-                raise UnitOfWorkConflict(
-                    "spawn child completion terminal closure CAS failed"
-                )
+                raise UnitOfWorkConflict("spawn child completion terminal closure CAS failed")
             _fault(fault, "root_terminal.spawn_wait.after_write")
 
     def issue_profile_launch_ticket(
@@ -3777,10 +3648,7 @@ class SqliteExecutionUnitOfWork:
         child_run_id = _required(child_run_id, "child_run_id")
         request_id = _required(request_id, "request_id")
         event_id = _required(event_id, "event_id")
-        if (
-            isinstance(expected_catalog_generation, bool)
-            or expected_catalog_generation < 1
-        ):
+        if isinstance(expected_catalog_generation, bool) or expected_catalog_generation < 1:
             raise ValueError("expected_catalog_generation must be positive")
         attachment_policy = AttachmentPolicy(attachment_policy)
         now = _time(now)
@@ -4091,23 +3959,18 @@ class SqliteExecutionUnitOfWork:
             child_run_id = str(command_row["child_run_id"])
             parent_run_id = str(command_row["parent_run_id"])
             link = connection.execute(
-                "SELECT attachment_policy FROM run_links "
-                "WHERE parent_run_id=? AND child_run_id=?",
+                "SELECT attachment_policy FROM run_links WHERE parent_run_id=? AND child_run_id=?",
                 (parent_run_id, child_run_id),
             ).fetchone()
             if link is None:
                 raise UnitOfWorkConflict("child attachment policy is missing")
             policy = AttachmentPolicy(str(link["attachment_policy"]))
             if (policy is AttachmentPolicy.DETACHED) != expect_detached:
-                raise UnitOfWorkConflict(
-                    "child terminal path differs from durable policy"
-                )
+                raise UnitOfWorkConflict("child terminal path differs from durable policy")
             if execution_lease.run_id != child_run_id:
                 raise UnitOfWorkConflict("child terminal lease belongs to another Run")
             self._require_runtime_lease(connection, execution_lease, now=now)
-            self._require_run_fence(
-                connection, run_fence, execution_lease=execution_lease
-            )
+            self._require_run_fence(connection, run_fence, execution_lease=execution_lease)
             _fault(fault, "child_terminal.run.before_write")
             changed = connection.execute(
                 """
@@ -4259,15 +4122,11 @@ class SqliteExecutionUnitOfWork:
                 "AND parent_terminal_phase_kind='child_active'",
                 (parent_run_id, str(row["child_run_id"])),
             ).fetchone()
-            if (
-                parent is not None
-                and str(parent["state"])
-                in {
-                    RunState.COMPLETED.value,
-                    RunState.FAILED.value,
-                    RunState.CANCELLED.value,
-                }
-            ):
+            if parent is not None and str(parent["state"]) in {
+                RunState.COMPLETED.value,
+                RunState.FAILED.value,
+                RunState.CANCELLED.value,
+            }:
                 self._quarantine_late_spawn_child_signal(
                     connection,
                     signal=row,
@@ -4348,8 +4207,7 @@ class SqliteExecutionUnitOfWork:
         event_json = canonical_json(event_payload)
         fifo_seq = int(
             connection.execute(
-                "SELECT COALESCE(MAX(fifo_seq),0)+1 FROM continuations "
-                "WHERE run_id=?",
+                "SELECT COALESCE(MAX(fifo_seq),0)+1 FROM continuations WHERE run_id=?",
                 (parent_run_id,),
             ).fetchone()[0]
         )
@@ -4439,15 +4297,9 @@ class SqliteExecutionUnitOfWork:
                     "state": "acked_parent_terminal",
                     "version": next_version,
                     "phase_kind": "child_active",
-                    "terminal_receipt_id": spawn_wait[
-                        "pending_completion_terminal_receipt_id"
-                    ],
-                    "terminal_state": spawn_wait[
-                        "pending_completion_terminal_state"
-                    ],
-                    "terminal_hash": spawn_wait[
-                        "pending_completion_terminal_hash"
-                    ],
+                    "terminal_receipt_id": spawn_wait["pending_completion_terminal_receipt_id"],
+                    "terminal_state": spawn_wait["pending_completion_terminal_state"],
+                    "terminal_hash": spawn_wait["pending_completion_terminal_hash"],
                     "late_signal_quarantine_receipt_id": receipt_id,
                 }
             ).encode()
@@ -4497,9 +4349,7 @@ class SqliteExecutionUnitOfWork:
             raise ValueError("claim_epoch must be positive")
         continuation_json = _object_json(continuation_payload, "continuation_payload")
         event_json = _object_json(event_payload, "event_payload")
-        continuation_hash = hashlib.sha256(
-            continuation_json.encode("utf-8")
-        ).hexdigest()
+        continuation_hash = hashlib.sha256(continuation_json.encode("utf-8")).hexdigest()
         event_hash = hashlib.sha256(event_json.encode("utf-8")).hexdigest()
         now = _time(now)
         with self.database.transaction() as connection:
@@ -4515,9 +4365,7 @@ class SqliteExecutionUnitOfWork:
                     (receipt_id,),
                 ).fetchone()
                 if receipt_row is None:
-                    raise UnitOfWorkConflict(
-                        "child signal was already acknowledged differently"
-                    )
+                    raise UnitOfWorkConflict("child signal was already acknowledged differently")
                 receipt = _child_signal_ack_receipt(receipt_row)
                 if (
                     signal.ack_receipt_id == receipt_id
@@ -4531,9 +4379,7 @@ class SqliteExecutionUnitOfWork:
                     and receipt.event_payload_hash == event_hash
                 ):
                     return ChildSignalAckResult(signal, receipt)
-                raise UnitOfWorkConflict(
-                    "child signal was already acknowledged differently"
-                )
+                raise UnitOfWorkConflict("child signal was already acknowledged differently")
             if (
                 signal.state is not ChildSignalState.CLAIMED
                 or signal.claimed_by != owner_id
@@ -4660,12 +4506,11 @@ class SqliteExecutionUnitOfWork:
                     ),
                 ).rowcount
                 if changed != 1:
-                    raise UnitOfWorkConflict(
-                        "workflow spawn child-wait wake CAS failed"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn child-wait wake CAS failed")
                 _fault(fault, "child_signal_ack.spawn_wait.after_write")
             link = connection.execute(
-                "SELECT attachment_policy FROM run_links WHERE parent_run_id = ? AND child_run_id = ?",
+                "SELECT attachment_policy FROM run_links WHERE parent_run_id = ? AND"
+                " child_run_id = ?",
                 (signal.parent_run_id, signal.child_run_id),
             ).fetchone()
             if link is None:
@@ -4708,9 +4553,7 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         return None if row is None else _child_command_record(row)
 
-    def read_child_command_for_run(
-        self, child_run_id: str
-    ) -> ChildCommandRecord | None:
+    def read_child_command_for_run(self, child_run_id: str) -> ChildCommandRecord | None:
         row = self.database.connection.execute(
             "SELECT * FROM child_commands WHERE child_run_id = ?", (child_run_id,)
         ).fetchone()
@@ -4718,15 +4561,12 @@ class SqliteExecutionUnitOfWork:
 
     def is_workflow_spawn_child(self, child_run_id: str) -> bool:
         row = self.database.connection.execute(
-            "SELECT workflow_ticket_receipt_id FROM child_commands "
-            "WHERE child_run_id=?",
+            "SELECT workflow_ticket_receipt_id FROM child_commands WHERE child_run_id=?",
             (child_run_id,),
         ).fetchone()
         return row is not None and row["workflow_ticket_receipt_id"] is not None
 
-    def read_child_terminal_result_for_run(
-        self, child_run_id: str
-    ) -> ChildTerminalResult | None:
+    def read_child_terminal_result_for_run(self, child_run_id: str) -> ChildTerminalResult | None:
         receipt_row = self.database.connection.execute(
             "SELECT * FROM child_terminal_receipts WHERE child_run_id=?",
             (child_run_id,),
@@ -4773,20 +4613,12 @@ class SqliteExecutionUnitOfWork:
         ).hexdigest()
         if expected_hash != receipt.outcome_hash:
             raise UnitOfWorkConflict("workflow child terminal outcome hash differs")
-        signal = (
-            None
-            if receipt.signal_id is None
-            else self.read_child_signal(receipt.signal_id)
-        )
+        signal = None if receipt.signal_id is None else self.read_child_signal(receipt.signal_id)
         if receipt.signal_id is not None:
             if signal is None or signal.parent_run_id != str(command["parent_run_id"]):
                 raise UnitOfWorkConflict("workflow child terminal signal differs")
-            if canonical_json(thaw_json(signal.payload)) != canonical_json(
-                terminal_payload
-            ):
-                raise UnitOfWorkConflict(
-                    "workflow child terminal signal payload differs"
-                )
+            if canonical_json(thaw_json(signal.payload)) != canonical_json(terminal_payload):
+                raise UnitOfWorkConflict("workflow child terminal signal payload differs")
         return ChildTerminalResult(
             child_run_id,
             receipt.terminal_state,
@@ -4816,9 +4648,7 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         return None if row is None else _child_signal_record(row)
 
-    def read_child_signal_ack_receipt(
-        self, receipt_id: str
-    ) -> ChildSignalAckReceipt | None:
+    def read_child_signal_ack_receipt(self, receipt_id: str) -> ChildSignalAckReceipt | None:
         row = self.database.connection.execute(
             "SELECT * FROM child_signal_ack_receipts WHERE receipt_id = ?",
             (receipt_id,),
@@ -4912,9 +4742,7 @@ class SqliteExecutionUnitOfWork:
                 existing.fence_epoch != run_fence.epoch
                 or existing.authorization_receipt_ref != authorization_receipt_ref
             ):
-                raise UnitOfWorkConflict(
-                    "prepared effect authority must use explicit refresh CAS"
-                )
+                raise UnitOfWorkConflict("prepared effect authority must use explicit refresh CAS")
             return existing
         with self.database.transaction() as connection:
             self._require_runtime_lease(connection, execution_lease, now=now)
@@ -5006,10 +4834,7 @@ class SqliteExecutionUnitOfWork:
                 "SELECT run_id FROM execution_effects WHERE effect_id = ?",
                 (effect_id.value,),
             ).fetchone()
-            if (
-                effect_run is None
-                or str(effect_run["run_id"]) != execution_lease.run_id
-            ):
+            if effect_run is None or str(effect_run["run_id"]) != execution_lease.run_id:
                 raise UnitOfWorkConflict("effect handoff lease belongs to another Run")
             _fault(fault, "effect_handoff.before_write")
             changed = connection.execute(
@@ -5056,9 +4881,7 @@ class SqliteExecutionUnitOfWork:
         if result.call_id != existing.call_id:
             raise UnitOfWorkConflict("effect result call_id mismatch")
         state = EffectState(result.outcome.value)
-        result_json = (
-            None if state is EffectState.UNKNOWN else _tool_result_json(result)
-        )
+        result_json = None if state is EffectState.UNKNOWN else _tool_result_json(result)
         with self.database.transaction() as connection:
             _fault(fault, "effect_settle.before_write")
             changed = connection.execute(
@@ -5172,7 +4995,7 @@ class SqliteExecutionUnitOfWork:
                 "result": None,
             }
         outcome_hash = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
-        resolution_id = f"resolution:{recovery_identity(RecoveryKind.TOOL, record.effect_id.value, record.handoff_attempt)}"
+        resolution_id = f"resolution:{recovery_identity(RecoveryKind.TOOL, record.effect_id.value, record.handoff_attempt)}"  # noqa: E501
         with self.database.transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM execution_effects WHERE effect_id=?",
@@ -5287,11 +5110,10 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("Tool reauthorization resolution mismatch")
         with self.database.transaction() as connection:
             self._require_runtime_lease(connection, execution_lease, now=now)
-            self._require_run_fence(
-                connection, run_fence, execution_lease=execution_lease
-            )
+            self._require_run_fence(connection, run_fence, execution_lease=execution_lease)
             row = connection.execute(
-                "SELECT outcome_hash,evidence_ref FROM reconciliation_resolutions WHERE resolution_id=?",
+                "SELECT outcome_hash,evidence_ref FROM reconciliation_resolutions WHERE"
+                " resolution_id=?",
                 (resolution.resolution_id,),
             ).fetchone()
             if (
@@ -5351,9 +5173,7 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("retry PREPARED lacks one reauthorization")
         with self.database.transaction() as connection:
             self._require_runtime_lease(connection, execution_lease, now=now)
-            self._require_run_fence(
-                connection, run_fence, execution_lease=execution_lease
-            )
+            self._require_run_fence(connection, run_fence, execution_lease=execution_lease)
             if record.handoff_attempt > 0:
                 resolution = connection.execute(
                     """
@@ -5363,18 +5183,10 @@ class SqliteExecutionUnitOfWork:
                     """,
                     (record.effect_id.value, record.handoff_attempt),
                 ).fetchone()
-                if (
-                    resolution is None
-                    or str(resolution["evidence_ref"]) != record.evidence_ref
-                ):
+                if resolution is None or str(resolution["evidence_ref"]) != record.evidence_ref:
                     raise UnitOfWorkConflict("Tool refresh resolution mismatch")
-            if (
-                record.run_id.value != execution_lease.run_id
-                or record.run_id != run_fence.run_id
-            ):
-                raise UnitOfWorkConflict(
-                    "Tool refresh authority belongs to another Run"
-                )
+            if record.run_id.value != execution_lease.run_id or record.run_id != run_fence.run_id:
+                raise UnitOfWorkConflict("Tool refresh authority belongs to another Run")
             _fault(fault, "effect_refresh.before_write")
             changed = connection.execute(
                 """
@@ -5457,9 +5269,7 @@ class SqliteExecutionUnitOfWork:
                     now,
                 ),
             )
-        return RunFenceLease(
-            run_id, epoch, execution_lease.owner_id, execution_lease.epoch
-        )
+        return RunFenceLease(run_id, epoch, execution_lease.owner_id, execution_lease.epoch)
 
     async def current_epoch(self, run_id: RunId) -> int:
         row = self.database.connection.execute(
@@ -5532,9 +5342,7 @@ class SqliteExecutionUnitOfWork:
             if not isinstance(item, dict) or not isinstance(item.get("parameters"), dict):
                 raise RuntimeError("stored tool catalog spec is malformed")
             specs.append(
-                ProviderToolSpec(
-                    str(item["name"]), str(item["description"]), item["parameters"]
-                )
+                ProviderToolSpec(str(item["name"]), str(item["description"]), item["parameters"])
             )
         return ToolCatalogSnapshot(
             int(row["generation"]),
@@ -5558,8 +5366,7 @@ class SqliteExecutionUnitOfWork:
         if after_sequence < 0 or not 1 <= limit <= 10_000:
             raise ValueError("invalid projection cursor or limit")
         rows = self.database.connection.execute(
-            "SELECT * FROM provider_projection_outbox WHERE sequence>? "
-            "ORDER BY sequence LIMIT ?",
+            "SELECT * FROM provider_projection_outbox WHERE sequence>? ORDER BY sequence LIMIT ?",
             (after_sequence, limit),
         ).fetchall()
         return tuple(_provider_projection_receipt(row) for row in rows)
@@ -5571,19 +5378,13 @@ class SqliteExecutionUnitOfWork:
         budget_policy: BudgetPolicy,
         execution_lease: ExecutionLease,
     ) -> ProviderInvocationRecord:
-        existing = self._provider_invocation_by_logical_call(
-            record.run_id, record.request_id.value
-        )
+        existing = self._provider_invocation_by_logical_call(record.run_id, record.request_id.value)
         if existing is not None:
             return existing
         with self.database.transaction() as connection:
-            self._require_runtime_lease(
-                connection, execution_lease, now=record.claimed_at
-            )
+            self._require_runtime_lease(connection, execution_lease, now=record.claimed_at)
             if execution_lease.run_id != record.run_id.value:
-                raise UnitOfWorkConflict(
-                    "provider invocation lease belongs to another Run"
-                )
+                raise UnitOfWorkConflict("provider invocation lease belongs to another Run")
             existing_row = connection.execute(
                 "SELECT * FROM provider_invocations WHERE run_id = ? AND request_id = ?",
                 (record.run_id.value, record.request_id.value),
@@ -5616,15 +5417,17 @@ class SqliteExecutionUnitOfWork:
                     state, response_json, usage_json, error_code, claimed_at,
                     handed_off_at, settled_at, version, handoff_attempt, rehandoff_count
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed', NULL, ?, NULL, ?, NULL, NULL, ?, 0, 0)
-                """,
+                """,  # noqa: E501
                 (
                     record.invocation_id,
                     record.run_id.value,
                     record.request_id.value,
                     record.request_fingerprint,
-                    None
-                    if record.request_json is None
-                    else canonical_json(_thaw_json(record.request_json)),
+                    (
+                        None
+                        if record.request_json is None
+                        else canonical_json(_thaw_json(record.request_json))
+                    ),
                     target_json,
                     record.target_digest,
                     estimator_json,
@@ -5638,9 +5441,7 @@ class SqliteExecutionUnitOfWork:
         assert stored is not None
         return stored
 
-    def read_provider_invocation(
-        self, invocation_id: str
-    ) -> ProviderInvocationRecord | None:
+    def read_provider_invocation(self, invocation_id: str) -> ProviderInvocationRecord | None:
         row = self.database.connection.execute(
             "SELECT * FROM provider_invocations WHERE invocation_id = ?",
             (invocation_id,),
@@ -5670,13 +5471,8 @@ class SqliteExecutionUnitOfWork:
                 "SELECT run_id FROM provider_invocations WHERE invocation_id = ?",
                 (invocation_id,),
             ).fetchone()
-            if (
-                invocation_run is None
-                or str(invocation_run["run_id"]) != execution_lease.run_id
-            ):
-                raise UnitOfWorkConflict(
-                    "provider handoff lease belongs to another Run"
-                )
+            if invocation_run is None or str(invocation_run["run_id"]) != execution_lease.run_id:
+                raise UnitOfWorkConflict("provider handoff lease belongs to another Run")
             changed = connection.execute(
                 """
                 UPDATE provider_invocations
@@ -5711,9 +5507,7 @@ class SqliteExecutionUnitOfWork:
             else canonical_json(_thaw_json(record.response_json))
         )
         usage_json = (
-            None
-            if record.usage_json is None
-            else canonical_json(_thaw_json(record.usage_json))
+            None if record.usage_json is None else canonical_json(_thaw_json(record.usage_json))
         )
         with self.database.transaction() as connection:
             changed = connection.execute(
@@ -5768,26 +5562,18 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("Provider reconciliation requires handoff attempt")
         if outcome is ResolutionOutcome.COMPLETED:
             if response_json is None or usage_json is None:
-                raise ValueError(
-                    "completed Provider resolution requires response and usage"
-                )
+                raise ValueError("completed Provider resolution requires response and usage")
             response_payload = json.loads(canonical_json(response_json))  # type: ignore[arg-type]
             usage_payload = json.loads(canonical_json(usage_json))  # type: ignore[arg-type]
-            if not isinstance(response_payload, dict) or not isinstance(
-                usage_payload, dict
-            ):
+            if not isinstance(response_payload, dict) or not isinstance(usage_payload, dict):
                 raise TypeError("Provider resolution payloads must be objects")
             if response_payload.get("request_id") != record.request_id.value:
-                raise UnitOfWorkConflict(
-                    "Provider resolution request identity mismatch"
-                )
+                raise UnitOfWorkConflict("Provider resolution request identity mismatch")
             usage_payload = dict(usage_payload)
             usage_payload["budget"] = budget_charge.to_json()
         else:
             if response_json is not None or usage_json is not None:
-                raise ValueError(
-                    "not-started Provider resolution cannot carry response"
-                )
+                raise ValueError("not-started Provider resolution cannot carry response")
             response_payload = None
             usage_payload = None
         resolution_payload: dict[str, JsonValue] = {
@@ -5798,10 +5584,8 @@ class SqliteExecutionUnitOfWork:
             "response": response_payload,
             "usage": usage_payload,
         }
-        outcome_hash = hashlib.sha256(
-            canonical_json(resolution_payload).encode()
-        ).hexdigest()
-        resolution_id = f"resolution:{recovery_identity(RecoveryKind.PROVIDER, record.invocation_id, record.handoff_attempt)}"
+        outcome_hash = hashlib.sha256(canonical_json(resolution_payload).encode()).hexdigest()
+        resolution_id = f"resolution:{recovery_identity(RecoveryKind.PROVIDER, record.invocation_id, record.handoff_attempt)}"  # noqa: E501
         with self.database.transaction() as connection:
             current_row = connection.execute(
                 "SELECT * FROM provider_invocations WHERE invocation_id=?",
@@ -5923,7 +5707,8 @@ class SqliteExecutionUnitOfWork:
             if execution_lease.run_id != record.run_id.value:
                 raise UnitOfWorkConflict("Provider retry lease belongs to another Run")
             row = connection.execute(
-                "SELECT outcome_hash,evidence_ref FROM reconciliation_resolutions WHERE resolution_id=?",
+                "SELECT outcome_hash,evidence_ref FROM reconciliation_resolutions WHERE"
+                " resolution_id=?",
                 (resolution.resolution_id,),
             ).fetchone()
             if (
@@ -5970,9 +5755,7 @@ class SqliteExecutionUnitOfWork:
     def read_provider_budget(self, run_id: RunId) -> BudgetSnapshot:
         return self._provider_budget(self.database.connection, run_id)
 
-    def _provider_budget(
-        self, connection: sqlite3.Connection, run_id: RunId
-    ) -> BudgetSnapshot:
+    def _provider_budget(self, connection: sqlite3.Connection, run_id: RunId) -> BudgetSnapshot:
         committed = 0
         reserved = 0
         unknown = False
@@ -6122,9 +5905,7 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         return None if row is None else _continuation_progress_receipt(row)
 
-    def _read_child_terminal_receipt(
-        self, receipt_id: str
-    ) -> ChildTerminalReceipt | None:
+    def _read_child_terminal_receipt(self, receipt_id: str) -> ChildTerminalReceipt | None:
         row = self.database.connection.execute(
             "SELECT * FROM child_terminal_receipts WHERE receipt_id=?",
             (receipt_id,),
@@ -6253,8 +6034,7 @@ class SqliteExecutionUnitOfWork:
         execution_lease: ExecutionLease,
     ) -> None:
         row = connection.execute(
-            "SELECT owner_id, runtime_lease_epoch, epoch, state "
-            "FROM run_fences WHERE run_id = ?",
+            "SELECT owner_id, runtime_lease_epoch, epoch, state FROM run_fences WHERE run_id = ?",
             (fence.run_id.value,),
         ).fetchone()
         if (
@@ -6290,9 +6070,7 @@ class SqliteExecutionUnitOfWork:
             or row is None
             or row[0] != snapshot_hash
         ):
-            raise UnitOfWorkConflict(
-                "request identity reused with different root intent"
-            )
+            raise UnitOfWorkConflict("request identity reused with different root intent")
 
     def _insert_event(
         self,
@@ -6331,9 +6109,7 @@ class SqliteExecutionUnitOfWork:
         ).hexdigest()
 
     @classmethod
-    def _start_identity(
-        cls, request: StartAdmissionRequest
-    ) -> tuple[str, str, str, str, str]:
+    def _start_identity(cls, request: StartAdmissionRequest) -> tuple[str, str, str, str, str]:
         payload_json = canonical_json(cls._workflow_request_payload(request))
         fingerprint = hashlib.sha256(payload_json.encode()).hexdigest()
         run_id = (
@@ -6346,8 +6122,10 @@ class SqliteExecutionUnitOfWork:
             or request.requested_trace_id
             or cls._derived_id("trace", fingerprint)
         )
-        thread_id = request.resolved_thread_id or request.requested_thread_id or cls._derived_id(
-            "thread", fingerprint
+        thread_id = (
+            request.resolved_thread_id
+            or request.requested_thread_id
+            or cls._derived_id("thread", fingerprint)
         )
         return payload_json, fingerprint, run_id, trace_id, thread_id
 
@@ -6366,9 +6144,7 @@ class SqliteExecutionUnitOfWork:
             StartPhase.RUNNING.value,
         }:
             run_id = str(row["run_id"])
-            namespace = str(
-                json.loads(str(row["request_json"]))["checkpoint_namespace"]
-            )
+            namespace = str(json.loads(str(row["request_json"]))["checkpoint_namespace"])
             if activation_override is not None:
                 activation = activation_override
             elif include_activation:
@@ -6383,9 +6159,7 @@ class SqliteExecutionUnitOfWork:
                     or str(fence["owner_id"]) != str(row["claim_owner"])
                     or int(fence["runtime_lease_epoch"]) != int(row["claim_epoch"])
                 ):
-                    raise UnitOfWorkConflict(
-                        "start receipt claim fence authority changed"
-                    )
+                    raise UnitOfWorkConflict("start receipt claim fence authority changed")
                 claim_epoch = int(row["claim_epoch"])
                 claim_expiry = float(row["claim_expires_at"])
                 owner_id = str(row["claim_owner"])
@@ -6431,18 +6205,12 @@ class SqliteExecutionUnitOfWork:
             phase=StartPhase(str(row["phase"])),
             version=int(row["version"]),
             claim_action=(
-                None
-                if row["claim_action"] is None
-                else StartClaimAction(str(row["claim_action"]))
+                None if row["claim_action"] is None else StartClaimAction(str(row["claim_action"]))
             ),
             claim_owner=None if row["claim_owner"] is None else str(row["claim_owner"]),
-            claim_epoch=(
-                None if row["claim_epoch"] is None else int(row["claim_epoch"])
-            ),
+            claim_epoch=(None if row["claim_epoch"] is None else int(row["claim_epoch"])),
             claim_expires_at=(
-                None
-                if row["claim_expires_at"] is None
-                else float(row["claim_expires_at"])
+                None if row["claim_expires_at"] is None else float(row["claim_expires_at"])
             ),
             activation=activation,
             serialized_outcome=outcome,
@@ -6469,12 +6237,7 @@ class SqliteExecutionUnitOfWork:
             "SELECT epoch,owner_id,runtime_lease_epoch,state FROM run_fences WHERE run_id=?",
             (run_id,),
         ).fetchone()
-        if (
-            runtime is None
-            or workflow is None
-            or fence is None
-            or str(fence["state"]) != "active"
-        ):
+        if runtime is None or workflow is None or fence is None or str(fence["state"]) != "active":
             raise UnitOfWorkConflict("workflow activation is incomplete")
         execution_lease = ExecutionLease(
             run_id,
@@ -6505,13 +6268,8 @@ class SqliteExecutionUnitOfWork:
     def _assert_open_workflow_transaction(
         transaction: WorkflowTransaction,
     ) -> _SqliteWorkflowTransaction:
-        if (
-            not isinstance(transaction, _SqliteWorkflowTransaction)
-            or not transaction.is_open
-        ):
-            raise UnitOfWorkConflict(
-                "workflow lifecycle requires an open canonical transaction"
-            )
+        if not isinstance(transaction, _SqliteWorkflowTransaction) or not transaction.is_open:
+            raise UnitOfWorkConflict("workflow lifecycle requires an open canonical transaction")
         return transaction
 
     async def admit_start_standalone(
@@ -6525,23 +6283,17 @@ class SqliteExecutionUnitOfWork:
         tx = self._assert_open_workflow_transaction(transaction)
         if request.mode is not StartMode.STANDALONE:
             raise UnitOfWorkConflict("standalone admission rejects precreated mode")
-        payload_json, fingerprint, run_id, trace_id, thread_id = self._start_identity(
-            request
-        )
+        payload_json, fingerprint, run_id, trace_id, thread_id = self._start_identity(request)
         existing = tx.connection.execute(
             "SELECT * FROM workflow_start_admissions WHERE request_key=?",
             (request.request_key,),
         ).fetchone()
         if existing is not None:
             if str(existing["request_fingerprint"]) != fingerprint:
-                raise UnitOfWorkConflict(
-                    "start request key reused with different payload"
-                )
+                raise UnitOfWorkConflict("start request key reused with different payload")
             return self._start_receipt(existing, connection=tx.connection)
         snapshot = json.loads(payload_json)
-        snapshot.update(
-            {"resolved_run_id": run_id, "trace_id": trace_id, "thread_id": thread_id}
-        )
+        snapshot.update({"resolved_run_id": run_id, "trace_id": trace_id, "thread_id": thread_id})
         snapshot_json = canonical_json(snapshot)
         _fault(fault, "workflow:admit_start_standalone:before_runs_write")
         tx.connection.execute(
@@ -6550,7 +6302,9 @@ class SqliteExecutionUnitOfWork:
             (request.session_id, now),
         )
         tx.connection.execute(
-            "INSERT INTO runs(run_id,execution_session_id,request_id,root_run_id,parent_run_id,profile_key,driver_kind,state,version,created_at,updated_at) VALUES(?,?,?,?,NULL,?,?,'created',0,?,?)",
+            "INSERT INTO"
+            " runs(run_id,execution_session_id,request_id,root_run_id,parent_run_id,profile_key,driver_kind,state,version,created_at,updated_at)"  # noqa: E501
+            " VALUES(?,?,?,?,NULL,?,?,'created',0,?,?)",
             (
                 run_id,
                 request.session_id,
@@ -6563,11 +6317,10 @@ class SqliteExecutionUnitOfWork:
             ),
         )
         _fault(fault, "workflow:admit_start_standalone:after_runs_write")
-        _fault(
-            fault, "workflow:admit_start_standalone:before_run_start_snapshots_write"
-        )
+        _fault(fault, "workflow:admit_start_standalone:before_run_start_snapshots_write")
         tx.connection.execute(
-            "INSERT INTO run_start_snapshots(run_id,snapshot_json,snapshot_hash,created_at) VALUES(?,?,?,?)",
+            "INSERT INTO run_start_snapshots(run_id,snapshot_json,snapshot_hash,created_at)"
+            " VALUES(?,?,?,?)",
             (
                 run_id,
                 snapshot_json,
@@ -6581,7 +6334,9 @@ class SqliteExecutionUnitOfWork:
             "workflow:admit_start_standalone:before_workflow_start_admissions_write",
         )
         tx.connection.execute(
-            "INSERT INTO workflow_start_admissions(request_key,request_id,request_fingerprint,request_json,mode,run_id,trace_id,thread_id,phase,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?, 'admitted',0,?,?)",
+            "INSERT INTO"
+            " workflow_start_admissions(request_key,request_id,request_fingerprint,request_json,mode,run_id,trace_id,thread_id,phase,version,created_at,updated_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,?,?,?, 'admitted',0,?,?)",
             (
                 request.request_key,
                 request.request_id,
@@ -6633,10 +6388,7 @@ class SqliteExecutionUnitOfWork:
             or str(runtime["owner_id"]) != execution_lease.owner_id
             or int(runtime["epoch"]) != execution_lease.epoch
             or float(runtime["expires_at"]) <= now
-            or (
-                require_exact_expiry
-                and float(runtime["expires_at"]) != execution_lease.expires_at
-            )
+            or (require_exact_expiry and float(runtime["expires_at"]) != execution_lease.expires_at)
             or (
                 not require_exact_expiry
                 and float(runtime["expires_at"]) < execution_lease.expires_at
@@ -6674,13 +6426,11 @@ class SqliteExecutionUnitOfWork:
             require_exact_expiry=False,
         )
         runtime = connection.execute(
-            "SELECT owner_id,epoch,expires_at FROM workflow_leases "
-            "WHERE run_id=? AND namespace=?",
+            "SELECT owner_id,epoch,expires_at FROM workflow_leases WHERE run_id=? AND namespace=?",
             (receipt.run_id, RUNTIME_LEASE_NAMESPACE),
         ).fetchone()
         projection = connection.execute(
-            "SELECT owner_id,epoch,expires_at FROM workflow_leases "
-            "WHERE run_id=? AND namespace=?",
+            "SELECT owner_id,epoch,expires_at FROM workflow_leases WHERE run_id=? AND namespace=?",
             (receipt.run_id, receipt.request.checkpoint_namespace),
         ).fetchone()
         if (
@@ -6690,8 +6440,7 @@ class SqliteExecutionUnitOfWork:
             or receipt.claim_epoch != execution_lease.epoch
             or receipt.claim_expires_at is None
             or receipt.claim_expires_at > float(runtime["expires_at"])
-            or tuple(projection[:2])
-            != (execution_lease.owner_id, execution_lease.epoch)
+            or tuple(projection[:2]) != (execution_lease.owner_id, execution_lease.epoch)
             or float(projection["expires_at"]) != float(runtime["expires_at"])
             or float(projection["expires_at"]) <= now
         ):
@@ -6713,20 +6462,16 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("handoff Run does not exist")
         if str(run["driver_kind"]) != "workflow":
             if workflow_lease is not None:
-                raise UnitOfWorkConflict(
-                    "non-workflow handoff rejects workflow authority"
-                )
+                raise UnitOfWorkConflict("non-workflow handoff rejects workflow authority")
             return
         if workflow_lease is None:
             raise UnitOfWorkConflict("workflow handoff requires workflow lease")
         projection = connection.execute(
-            "SELECT owner_id,epoch,expires_at FROM workflow_leases "
-            "WHERE run_id=? AND namespace=?",
+            "SELECT owner_id,epoch,expires_at FROM workflow_leases WHERE run_id=? AND namespace=?",
             (run_id, workflow_lease.namespace),
         ).fetchone()
         runtime = connection.execute(
-            "SELECT owner_id,epoch,expires_at FROM workflow_leases "
-            "WHERE run_id=? AND namespace=?",
+            "SELECT owner_id,epoch,expires_at FROM workflow_leases WHERE run_id=? AND namespace=?",
             (run_id, RUNTIME_LEASE_NAMESPACE),
         ).fetchone()
         admission = connection.execute(
@@ -6746,18 +6491,15 @@ class SqliteExecutionUnitOfWork:
             or admission is None
             or str(admission["namespace"]) != workflow_lease.namespace
             or runtime is None
-            or tuple(runtime[:2])
-            != (execution_lease.owner_id, execution_lease.epoch)
+            or tuple(runtime[:2]) != (execution_lease.owner_id, execution_lease.epoch)
             or float(runtime["expires_at"]) <= now
             or float(runtime["expires_at"]) < execution_lease.expires_at
             or projection is None
-            or tuple(projection[:2])
-            != (workflow_lease.owner_id, workflow_lease.epoch)
+            or tuple(projection[:2]) != (workflow_lease.owner_id, workflow_lease.epoch)
             or float(projection["expires_at"]) != float(runtime["expires_at"])
             or float(projection["expires_at"]) < workflow_lease.expires_at
             or fence is None
-            or tuple(fence)
-            != (execution_lease.owner_id, execution_lease.epoch, "active")
+            or tuple(fence) != (execution_lease.owner_id, execution_lease.epoch, "active")
         ):
             raise UnitOfWorkConflict("workflow handoff authority is stale")
 
@@ -6784,9 +6526,7 @@ class SqliteExecutionUnitOfWork:
         tx = self._assert_open_workflow_transaction(transaction)
         if request.mode is not StartMode.PRECREATED:
             raise UnitOfWorkConflict("precreated admission requires precreated mode")
-        payload_json, fingerprint, run_id, trace_id, thread_id = self._start_identity(
-            request
-        )
+        payload_json, fingerprint, run_id, trace_id, thread_id = self._start_identity(request)
         receipt: StartAdmissionReceipt | None = None
         existing = tx.connection.execute(
             "SELECT * FROM workflow_start_admissions WHERE request_key=?",
@@ -6798,9 +6538,7 @@ class SqliteExecutionUnitOfWork:
                 or str(existing["request_json"]) != payload_json
                 or str(existing["run_id"]) != run_id
             ):
-                raise UnitOfWorkConflict(
-                    "start request key reused with different payload"
-                )
+                raise UnitOfWorkConflict("start request key reused with different payload")
             receipt = self._start_receipt(existing, connection=tx.connection)
             if receipt.phase is StartPhase.SETTLED:
                 return PrecreatedStartDispatch(
@@ -6831,9 +6569,7 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("runtime start dispatch capability is stale")
         if existing is not None and str(dispatch["state"]) != "consumed":
             raise UnitOfWorkConflict("start request key reused with different payload")
-        run = tx.connection.execute(
-            "SELECT * FROM runs WHERE run_id=?", (run_id,)
-        ).fetchone()
+        run = tx.connection.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
         snapshot = tx.connection.execute(
             "SELECT snapshot_json FROM run_start_snapshots WHERE run_id=?", (run_id,)
         ).fetchone()
@@ -6859,13 +6595,9 @@ class SqliteExecutionUnitOfWork:
                 now=now,
             )
             if str(existing["claim_owner"]) != execution_lease.owner_id:
-                raise UnitOfWorkConflict(
-                    "workflow start receipt belongs to another activation"
-                )
+                raise UnitOfWorkConflict("workflow start receipt belongs to another activation")
             if receipt.claim_action is not StartClaimAction.NEW:
-                raise UnitOfWorkConflict(
-                    "first start replay no longer has NEW claim authority"
-                )
+                raise UnitOfWorkConflict("first start replay no longer has NEW claim authority")
             return PrecreatedStartDispatch(
                 PrecreatedStartAction.NEW_CLAIMED,
                 receipt,
@@ -6890,7 +6622,8 @@ class SqliteExecutionUnitOfWork:
         namespace = request.checkpoint_namespace
         _fault(fault, "workflow:ensure_precreated_start:before_workflow_leases_write")
         tx.connection.execute(
-            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at) VALUES(?,?,?,?,?)",
+            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at)"
+            " VALUES(?,?,?,?,?)",
             (
                 run_id,
                 namespace,
@@ -6905,7 +6638,9 @@ class SqliteExecutionUnitOfWork:
             "workflow:ensure_precreated_start:before_workflow_start_admissions_write",
         )
         tx.connection.execute(
-            "INSERT INTO workflow_start_admissions(request_key,request_id,request_fingerprint,request_json,mode,run_id,trace_id,thread_id,phase,version,claim_action,claim_owner,claim_epoch,claim_expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?, 'claimed',0,'new',?,?,?,?,?)",
+            "INSERT INTO"
+            " workflow_start_admissions(request_key,request_id,request_fingerprint,request_json,mode,run_id,trace_id,thread_id,phase,version,claim_action,claim_owner,claim_epoch,claim_expires_at,created_at,updated_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,?,?,?, 'claimed',0,'new',?,?,?,?,?)",
             (
                 request.request_key,
                 request.request_id,
@@ -6931,7 +6666,9 @@ class SqliteExecutionUnitOfWork:
             "workflow:ensure_precreated_start:before_runtime_start_dispatch_claims_write",
         )
         changed = tx.connection.execute(
-            "UPDATE runtime_start_dispatch_claims SET state='consumed',version=version+1,updated_at=? WHERE claim_id=? AND state='claimed' AND owner_id=? AND runtime_lease_epoch=? AND claim_epoch=?",
+            "UPDATE runtime_start_dispatch_claims SET"
+            " state='consumed',version=version+1,updated_at=? WHERE claim_id=? AND state='claimed'"
+            " AND owner_id=? AND runtime_lease_epoch=? AND claim_epoch=?",
             (
                 now,
                 dispatch_claim.claim_id,
@@ -6946,9 +6683,7 @@ class SqliteExecutionUnitOfWork:
             fault,
             "workflow:ensure_precreated_start:after_runtime_start_dispatch_claims_write",
         )
-        tx.register_after_commit_fault(
-            "workflow:ensure_precreated_start:after_commit"
-        )
+        tx.register_after_commit_fault("workflow:ensure_precreated_start:after_commit")
         stored = tx.connection.execute(
             "SELECT * FROM workflow_start_admissions WHERE request_key=?",
             (request.request_key,),
@@ -7028,9 +6763,7 @@ class SqliteExecutionUnitOfWork:
                 now=now,
             )
             if current.claim_action is not StartClaimAction.RESUME:
-                raise UnitOfWorkConflict(
-                    "recovered start replay lacks RESUME claim authority"
-                )
+                raise UnitOfWorkConflict("recovered start replay lacks RESUME claim authority")
             action = (
                 PrecreatedStartAction.RESUME_RUNNING
                 if current.phase is StartPhase.RUNNING
@@ -7085,7 +6818,9 @@ class SqliteExecutionUnitOfWork:
                 raise UnitOfWorkConflict("RUNNING workflow start has no genesis head")
         _fault(fault, "workflow:recover_precreated_start:before_workflow_leases_write")
         tx.connection.execute(
-            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(run_id,namespace) DO UPDATE SET owner_id=excluded.owner_id,epoch=excluded.epoch,expires_at=excluded.expires_at",
+            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at)"
+            " VALUES(?,?,?,?,?) ON CONFLICT(run_id,namespace) DO UPDATE SET"
+            " owner_id=excluded.owner_id,epoch=excluded.epoch,expires_at=excluded.expires_at",
             (
                 current.run_id,
                 namespace,
@@ -7119,9 +6854,7 @@ class SqliteExecutionUnitOfWork:
             fault,
             "workflow:recover_precreated_start:after_workflow_start_admissions_write",
         )
-        tx.register_after_commit_fault(
-            "workflow:recover_precreated_start:after_commit"
-        )
+        tx.register_after_commit_fault("workflow:recover_precreated_start:after_commit")
         updated = tx.connection.execute(
             "SELECT * FROM workflow_start_admissions WHERE request_key=?",
             (current.request_key,),
@@ -7153,9 +6886,9 @@ class SqliteExecutionUnitOfWork:
             (snapshot_cursor, snapshot_cursor, limit + 1),
         ).fetchall()
         page = rows[:limit]
-        return tuple(
-            self._start_receipt(row) for row in page
-        ), (None if len(rows) <= limit else str(page[-1]["request_key"]))
+        return tuple(self._start_receipt(row) for row in page), (
+            None if len(rows) <= limit else str(page[-1]["request_key"])
+        )
 
     def list_unsettled_resume_admissions(
         self,
@@ -7165,7 +6898,9 @@ class SqliteExecutionUnitOfWork:
     ) -> tuple[tuple[ResumeAdmissionReceipt, ...], str | None]:
         _validate_workflow_page_limit(limit)
         rows = self.database.connection.execute(
-            "SELECT * FROM workflow_resume_admissions WHERE phase IN ('admitted','claimed','retry_wait') AND (? IS NULL OR receipt_id>?) ORDER BY receipt_id LIMIT ?",
+            "SELECT * FROM workflow_resume_admissions WHERE phase IN"
+            " ('admitted','claimed','retry_wait') AND (? IS NULL OR receipt_id>?) ORDER BY"
+            " receipt_id LIMIT ?",
             (snapshot_cursor, snapshot_cursor, limit + 1),
         ).fetchall()
         page = rows[:limit]
@@ -7202,11 +6937,15 @@ class SqliteExecutionUnitOfWork:
             epoch = int(current["epoch"])
         expires_at = now + ttl_seconds
         connection.execute(
-            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(run_id,namespace) DO UPDATE SET owner_id=excluded.owner_id,epoch=excluded.epoch,expires_at=excluded.expires_at",
+            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at)"
+            " VALUES(?,?,?,?,?) ON CONFLICT(run_id,namespace) DO UPDATE SET"
+            " owner_id=excluded.owner_id,epoch=excluded.epoch,expires_at=excluded.expires_at",
             (run_id, RUNTIME_LEASE_NAMESPACE, owner_id, epoch, expires_at),
         )
         connection.execute(
-            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(run_id,namespace) DO UPDATE SET owner_id=excluded.owner_id,epoch=excluded.epoch,expires_at=excluded.expires_at",
+            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at)"
+            " VALUES(?,?,?,?,?) ON CONFLICT(run_id,namespace) DO UPDATE SET"
+            " owner_id=excluded.owner_id,epoch=excluded.epoch,expires_at=excluded.expires_at",
             (run_id, namespace, owner_id, epoch, expires_at),
         )
         fence = connection.execute(
@@ -7214,13 +6953,14 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         fence_epoch = (0 if fence is None else int(fence["epoch"])) + 1
         connection.execute(
-            "INSERT INTO run_fences(run_id,epoch,owner_id,runtime_lease_epoch,state,acquired_at,released_at) VALUES(?,?,?,?, 'active',?,NULL) ON CONFLICT(run_id) DO UPDATE SET epoch=excluded.epoch,owner_id=excluded.owner_id,runtime_lease_epoch=excluded.runtime_lease_epoch,state='active',acquired_at=excluded.acquired_at,released_at=NULL",
+            "INSERT INTO"
+            " run_fences(run_id,epoch,owner_id,runtime_lease_epoch,state,acquired_at,released_at)"
+            " VALUES(?,?,?,?, 'active',?,NULL) ON CONFLICT(run_id) DO UPDATE SET"
+            " epoch=excluded.epoch,owner_id=excluded.owner_id,runtime_lease_epoch=excluded.runtime_lease_epoch,state='active',acquired_at=excluded.acquired_at,released_at=NULL",  # noqa: E501
             (run_id, fence_epoch, owner_id, epoch, now),
         )
         return WorkflowActivation(
-            ExecutionLease(
-                run_id, RUNTIME_LEASE_NAMESPACE, owner_id, epoch, expires_at
-            ),
+            ExecutionLease(run_id, RUNTIME_LEASE_NAMESPACE, owner_id, epoch, expires_at),
             RunFenceLease(RunId(run_id), fence_epoch, owner_id, epoch),
             WorkflowLease(run_id, owner_id, epoch, expires_at, epoch, namespace),
         )
@@ -7252,9 +6992,7 @@ class SqliteExecutionUnitOfWork:
             StartPhase.RUNNING.value,
         }:
             raise UnitOfWorkConflict("start receipt is not claimable")
-        namespace = str(
-            json.loads(str(receipt["request_json"]))["checkpoint_namespace"]
-        )
+        namespace = str(json.loads(str(receipt["request_json"]))["checkpoint_namespace"])
         if phase in {StartPhase.CLAIMED.value, StartPhase.RUNNING.value}:
             runtime = tx.connection.execute(
                 "SELECT owner_id,epoch,expires_at FROM workflow_leases "
@@ -7263,13 +7001,9 @@ class SqliteExecutionUnitOfWork:
             ).fetchone()
             if runtime is not None and float(runtime["expires_at"]) > now:
                 if phase == StartPhase.RUNNING.value:
-                    raise UnitOfWorkConflict(
-                        "running workflow activation has not expired"
-                    )
+                    raise UnitOfWorkConflict("running workflow activation has not expired")
                 if str(runtime["owner_id"]) != owner_id:
-                    raise UnitOfWorkConflict(
-                        "workflow activation has an active owner"
-                    )
+                    raise UnitOfWorkConflict("workflow activation has an active owner")
                 activation = self._read_workflow_activation(
                     run_id,
                     namespace=namespace,
@@ -7278,24 +7012,16 @@ class SqliteExecutionUnitOfWork:
                 )
                 if (
                     str(receipt["claim_owner"]) != owner_id
-                    or int(receipt["claim_epoch"])
-                    != activation.workflow_lease.epoch
-                    or float(receipt["claim_expires_at"])
-                    > activation.execution_lease.expires_at
+                    or int(receipt["claim_epoch"]) != activation.workflow_lease.epoch
+                    or float(receipt["claim_expires_at"]) > activation.execution_lease.expires_at
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow activation receipt is stale"
-                    )
+                    raise UnitOfWorkConflict("workflow activation receipt is stale")
                 return activation
         if (
             run is None
             or int(run["version"]) != expected_run_version
             or str(run["state"])
-            not in (
-                {"running"}
-                if phase == StartPhase.RUNNING.value
-                else {"created", "queued"}
-            )
+            not in ({"running"} if phase == StartPhase.RUNNING.value else {"created", "queued"})
         ):
             raise UnitOfWorkConflict("workflow Run is not claimable")
         _fault(fault, "workflow:claim_activation:before_workflow_leases_write")
@@ -7308,13 +7034,9 @@ class SqliteExecutionUnitOfWork:
             ttl_seconds=ttl_seconds,
         )
         _fault(fault, "workflow:claim_activation:after_workflow_leases_write")
-        _fault(
-            fault, "workflow:claim_activation:before_workflow_start_admissions_write"
-        )
+        _fault(fault, "workflow:claim_activation:before_workflow_start_admissions_write")
         claim_action = (
-            StartClaimAction.NEW
-            if phase == StartPhase.ADMITTED.value
-            else StartClaimAction.RESUME
+            StartClaimAction.NEW if phase == StartPhase.ADMITTED.value else StartClaimAction.RESUME
         )
         changed = tx.connection.execute(
             "UPDATE workflow_start_admissions SET phase='claimed',version=version+1,"
@@ -7350,9 +7072,7 @@ class SqliteExecutionUnitOfWork:
     ) -> WorkflowActivation:
         del ttl_seconds
         tx = self._assert_open_workflow_transaction(transaction)
-        run = tx.connection.execute(
-            "SELECT version FROM runs WHERE run_id=?", (run_id,)
-        ).fetchone()
+        run = tx.connection.execute("SELECT version FROM runs WHERE run_id=?", (run_id,)).fetchone()
         if run is None or int(run["version"]) != expected_run_version:
             raise UnitOfWorkConflict("precreated Run version changed")
         self._require_runtime_and_fence(
@@ -7368,9 +7088,7 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         if receipt is None:
             raise UnitOfWorkConflict("workflow start admission is missing")
-        namespace = str(
-            json.loads(str(receipt["request_json"]))["checkpoint_namespace"]
-        )
+        namespace = str(json.loads(str(receipt["request_json"]))["checkpoint_namespace"])
         workflow = tx.connection.execute(
             "SELECT owner_id,epoch,expires_at FROM workflow_leases WHERE run_id=? AND namespace=?",
             (run_id, namespace),
@@ -7414,7 +7132,8 @@ class SqliteExecutionUnitOfWork:
         expires_at = now + ttl_seconds
         _fault(fault, "workflow:renew_activation:before_runtime_lease_write")
         changed = tx.connection.execute(
-            "UPDATE workflow_leases SET expires_at=? WHERE run_id=? AND namespace=? AND owner_id=? AND epoch=? AND expires_at=?",
+            "UPDATE workflow_leases SET expires_at=? WHERE run_id=? AND namespace=? AND owner_id=?"
+            " AND epoch=? AND expires_at=?",
             (
                 expires_at,
                 activation.execution_lease.run_id,
@@ -7429,7 +7148,8 @@ class SqliteExecutionUnitOfWork:
         _fault(fault, "workflow:renew_activation:after_runtime_lease_write")
         _fault(fault, "workflow:renew_activation:before_workflow_lease_write")
         changed = tx.connection.execute(
-            "UPDATE workflow_leases SET expires_at=? WHERE run_id=? AND namespace=? AND owner_id=? AND epoch=? AND expires_at=?",
+            "UPDATE workflow_leases SET expires_at=? WHERE run_id=? AND namespace=? AND owner_id=?"
+            " AND epoch=? AND expires_at=?",
             (
                 expires_at,
                 activation.workflow_lease.run_id,
@@ -7504,7 +7224,8 @@ class SqliteExecutionUnitOfWork:
             )
         _fault(fault, "workflow:release_activation:before_workflow_leases_write")
         tx.connection.execute(
-            "DELETE FROM workflow_leases WHERE run_id=? AND namespace IN (?,?) AND owner_id=? AND epoch=?",
+            "DELETE FROM workflow_leases WHERE run_id=? AND namespace IN (?,?) AND owner_id=? AND"
+            " epoch=?",
             (
                 activation.execution_lease.run_id,
                 RUNTIME_LEASE_NAMESPACE,
@@ -7516,7 +7237,8 @@ class SqliteExecutionUnitOfWork:
         _fault(fault, "workflow:release_activation:after_workflow_leases_write")
         _fault(fault, "workflow:release_activation:before_run_fences_write")
         changed = tx.connection.execute(
-            "UPDATE run_fences SET state='released',released_at=? WHERE run_id=? AND owner_id=? AND epoch=? AND runtime_lease_epoch=? AND state='active'",
+            "UPDATE run_fences SET state='released',released_at=? WHERE run_id=? AND owner_id=? AND"
+            " epoch=? AND runtime_lease_epoch=? AND state='active'",
             (
                 now,
                 activation.execution_lease.run_id,
@@ -7552,9 +7274,7 @@ class SqliteExecutionUnitOfWork:
         if checkpoint is None:
             raise UnitOfWorkConflict("terminal workflow checkpoint is missing")
 
-        terminal_payload_value = json.loads(
-            canonical_json(cast(JsonValue, dict(outcome)))
-        )
+        terminal_payload_value = json.loads(canonical_json(cast(JsonValue, dict(outcome))))
         if not isinstance(terminal_payload_value, dict):
             raise UnitOfWorkConflict("terminal workflow payload is invalid")
         terminal_payload = cast(dict[str, JsonValue], terminal_payload_value)
@@ -7576,18 +7296,16 @@ class SqliteExecutionUnitOfWork:
             "FROM delivery_outbox WHERE run_id=? ORDER BY delivery_id",
             (run_id,),
         ).fetchall()
-        delivery_ids: list[JsonValue] = [
-            str(row["delivery_id"]) for row in delivery_rows
-        ]
+        delivery_ids: list[JsonValue] = [str(row["delivery_id"]) for row in delivery_rows]
         delivery_facts: list[JsonValue] = [
             cast(
                 JsonValue,
                 {
-                "delivery_id": str(row["delivery_id"]),
-                "sink_kind": str(row["sink_kind"]),
-                "idempotency_key": str(row["idempotency_key"]),
-                "payload": cast(JsonValue, json.loads(str(row["payload_json"]))),
-                "created_at": float(row["created_at"]),
+                    "delivery_id": str(row["delivery_id"]),
+                    "sink_kind": str(row["sink_kind"]),
+                    "idempotency_key": str(row["idempotency_key"]),
+                    "payload": cast(JsonValue, json.loads(str(row["payload_json"]))),
+                    "created_at": float(row["created_at"]),
                 },
             )
             for row in delivery_rows
@@ -7602,9 +7320,7 @@ class SqliteExecutionUnitOfWork:
             "terminal_payload": terminal_payload,
             "delivery_facts": delivery_facts,
         }
-        outcome_hash = hashlib.sha256(
-            canonical_json(canonical_outcome).encode()
-        ).hexdigest()
+        outcome_hash = hashlib.sha256(canonical_json(canonical_outcome).encode()).hexdigest()
 
         _fault(fault, "workflow:release_activation:before_terminal_event_write")
         self._insert_event(
@@ -7682,8 +7398,7 @@ class SqliteExecutionUnitOfWork:
         command_id = str(command["command_id"])
         parent_run_id = str(command["parent_run_id"])
         link = connection.execute(
-            "SELECT attachment_policy FROM run_links "
-            "WHERE parent_run_id=? AND child_run_id=?",
+            "SELECT attachment_policy FROM run_links WHERE parent_run_id=? AND child_run_id=?",
             (parent_run_id, child_run_id),
         ).fetchone()
         if link is None:
@@ -7693,9 +7408,7 @@ class SqliteExecutionUnitOfWork:
         if previous_version < 0:
             raise UnitOfWorkConflict("workflow child terminal version is invalid")
         identity = f"{child_run_id}:{previous_version}:{terminal_state.value}"
-        signal_id = (
-            None if policy is AttachmentPolicy.DETACHED else f"{identity}:signal"
-        )
+        signal_id = None if policy is AttachmentPolicy.DETACHED else f"{identity}:signal"
         event_id = f"{identity}:event"
         receipt_id = f"{identity}:receipt"
         from simple_harness.workflow.native import NativeWorkflowExecutable
@@ -7711,9 +7424,7 @@ class SqliteExecutionUnitOfWork:
             recovery_action=None,
         )
         if not terminal_intents or terminal_intents[-1].event_type != "workflow.final":
-            raise UnitOfWorkConflict(
-                "workflow child terminal public projection is missing"
-            )
+            raise UnitOfWorkConflict("workflow child terminal public projection is missing")
         result = cast(JsonValue, dict(terminal_intents[-1].payload))
         terminal_payload: dict[str, JsonValue] = {
             "status": terminal_state.value,
@@ -7849,9 +7560,7 @@ class SqliteExecutionUnitOfWork:
     ) -> ResumeAdmissionReceipt:
         authority = self.database.connection if connection is None else connection
         payload = json.loads(str(row["request_json"]))
-        pending = tuple(
-            (str(item[0]), str(item[1])) for item in payload["pending_interrupts"]
-        )
+        pending = tuple((str(item[0]), str(item[1])) for item in payload["pending_interrupts"])
         request = ResumeAdmissionRequest(
             receipt_id=str(payload["receipt_id"]),
             run_id=str(payload["run_id"]),
@@ -7869,15 +7578,13 @@ class SqliteExecutionUnitOfWork:
             or str(row["run_id"]) != request.run_id
             or str(row["mode"]) != request.mode.value
             or int(row["expected_run_version"]) != request.expected_run_version
-            or str(row["expected_checkpoint_head"])
-            != request.expected_checkpoint_head
+            or str(row["expected_checkpoint_head"]) != request.expected_checkpoint_head
         ):
             raise UnitOfWorkConflict("resume receipt durable binding changed")
         activation = None
         if (
             include_activation
-            and
-            row["claim_owner"] is not None
+            and row["claim_owner"] is not None
             and str(row["phase"]) == ResumePhase.CLAIMED.value
         ):
             start = authority.execute(
@@ -7887,9 +7594,7 @@ class SqliteExecutionUnitOfWork:
             if start is not None:
                 activation = self._read_workflow_activation(
                     request.run_id,
-                    namespace=str(
-                        json.loads(str(start["request_json"]))["checkpoint_namespace"]
-                    ),
+                    namespace=str(json.loads(str(start["request_json"]))["checkpoint_namespace"]),
                     owner_id=str(row["claim_owner"]),
                     connection=authority,
                 )
@@ -7905,15 +7610,13 @@ class SqliteExecutionUnitOfWork:
             version=int(row["version"]),
             claim_owner=None if row["claim_owner"] is None else str(row["claim_owner"]),
             claim_epoch=None if row["claim_epoch"] is None else int(row["claim_epoch"]),
-            claim_expires_at=None
-            if row["claim_expires_at"] is None
-            else float(row["claim_expires_at"]),
+            claim_expires_at=(
+                None if row["claim_expires_at"] is None else float(row["claim_expires_at"])
+            ),
             activation=activation,
             serialized_outcome=outcome,
             next_attempt_at=(
-                None
-                if row["next_attempt_at"] is None
-                else float(row["next_attempt_at"])
+                None if row["next_attempt_at"] is None else float(row["next_attempt_at"])
             ),
         )
 
@@ -7939,7 +7642,8 @@ class SqliteExecutionUnitOfWork:
             "SELECT state,version FROM runs WHERE run_id=?", (request.run_id,)
         ).fetchone()
         head = tx.connection.execute(
-            "SELECT checkpoint_id,checkpoint_json FROM workflow_checkpoints WHERE run_id=? ORDER BY version DESC LIMIT 1",
+            "SELECT checkpoint_id,checkpoint_json FROM workflow_checkpoints WHERE run_id=? ORDER BY"
+            " version DESC LIMIT 1",
             (request.run_id,),
         ).fetchone()
         if (
@@ -7957,7 +7661,8 @@ class SqliteExecutionUnitOfWork:
                     hashlib.sha256(str(row["request_json"]).encode()).hexdigest(),
                 )
                 for row in tx.connection.execute(
-                    "SELECT decision_id,request_json FROM decisions WHERE run_id=? AND state!='open'",
+                    "SELECT decision_id,request_json FROM decisions WHERE run_id=? AND"
+                    " state!='open'",
                     (request.run_id,),
                 ).fetchall()
             )
@@ -7966,7 +7671,9 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("resume pending interrupts changed")
         _fault(fault, "workflow:admit_resume:before_workflow_resume_admissions_write")
         tx.connection.execute(
-            "INSERT INTO workflow_resume_admissions(receipt_id,run_id,request_fingerprint,request_json,mode,expected_run_version,expected_checkpoint_head,phase,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'admitted',0,?,?)",
+            "INSERT INTO"
+            " workflow_resume_admissions(receipt_id,run_id,request_fingerprint,request_json,mode,expected_run_version,expected_checkpoint_head,phase,version,created_at,updated_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,?,?,'admitted',0,?,?)",
             (
                 request.receipt_id,
                 request.run_id,
@@ -8050,9 +7757,7 @@ class SqliteExecutionUnitOfWork:
             now=now,
         )
         _fault(fault, "workflow:resolve_resume:before_admit")
-        receipt = await self.admit_resume(
-            transaction, request, now=now, fault=fault
-        )
+        receipt = await self.admit_resume(transaction, request, now=now, fault=fault)
         _fault(fault, "workflow:resolve_resume:after_admit")
         return receipt
 
@@ -8081,12 +7786,8 @@ class SqliteExecutionUnitOfWork:
             or str(row["mode"]) != expected_mode.value
         ):
             raise UnitOfWorkConflict("resume receipt is not claimable")
-        if (
-            str(row["phase"]) == ResumePhase.RETRY_WAIT.value
-            and (
-                row["next_attempt_at"] is None
-                or float(row["next_attempt_at"]) > now
-            )
+        if str(row["phase"]) == ResumePhase.RETRY_WAIT.value and (
+            row["next_attempt_at"] is None or float(row["next_attempt_at"]) > now
         ):
             raise UnitOfWorkConflict("resume retry is not due")
         if (
@@ -8134,7 +7835,8 @@ class SqliteExecutionUnitOfWork:
                 ),
             )
             workflow = tx.connection.execute(
-                "SELECT owner_id,epoch,expires_at FROM workflow_leases WHERE run_id=? AND namespace=?",
+                "SELECT owner_id,epoch,expires_at FROM workflow_leases WHERE run_id=? AND"
+                " namespace=?",
                 (run_id, namespace),
             ).fetchone()
             if workflow is None or tuple(workflow) != (
@@ -8142,9 +7844,7 @@ class SqliteExecutionUnitOfWork:
                 execution_lease.epoch,
                 execution_lease.expires_at,
             ):
-                raise UnitOfWorkConflict(
-                    "precreated resume workflow projection changed"
-                )
+                raise UnitOfWorkConflict("precreated resume workflow projection changed")
         _fault(fault, "workflow:claim_resume:before_workflow_resume_admissions_write")
         changed = tx.connection.execute(
             "UPDATE workflow_resume_admissions SET phase='claimed',version=version+1,"
@@ -8251,7 +7951,8 @@ class SqliteExecutionUnitOfWork:
             require_exact_expiry=False,
         )
         head = tx.connection.execute(
-            "SELECT checkpoint_id FROM workflow_checkpoints WHERE run_id=? ORDER BY version DESC LIMIT 1",
+            "SELECT checkpoint_id FROM workflow_checkpoints WHERE run_id=? ORDER BY version DESC"
+            " LIMIT 1",
             (str(row["run_id"]),),
         ).fetchone()
         if head is None or str(head["checkpoint_id"]) != committed_checkpoint:
@@ -8259,7 +7960,9 @@ class SqliteExecutionUnitOfWork:
         outcome_json = canonical_json(dict(outcome))
         _fault(fault, "workflow:settle_resume:before_workflow_resume_admissions_write")
         changed = tx.connection.execute(
-            "UPDATE workflow_resume_admissions SET phase='settled',version=version+1,committed_checkpoint=?,outcome_json=?,updated_at=? WHERE receipt_id=? AND version=? AND phase='claimed'",
+            "UPDATE workflow_resume_admissions SET"
+            " phase='settled',version=version+1,committed_checkpoint=?,outcome_json=?,updated_at=?"
+            " WHERE receipt_id=? AND version=? AND phase='claimed'",
             (
                 committed_checkpoint,
                 outcome_json,
@@ -8332,11 +8035,11 @@ class SqliteExecutionUnitOfWork:
                 "next_attempt_at": next_attempt_at,
             }
         )
-        _fault(
-            fault, "workflow:defer_resume_retry:before_workflow_resume_admissions_write"
-        )
+        _fault(fault, "workflow:defer_resume_retry:before_workflow_resume_admissions_write")
         changed = tx.connection.execute(
-            "UPDATE workflow_resume_admissions SET phase='retry_wait',version=version+1,retry_attempt=?,next_attempt_at=?,outcome_json=?,claim_owner=NULL,claim_epoch=NULL,claim_expires_at=NULL,updated_at=? WHERE receipt_id=? AND version=? AND phase='claimed'",
+            "UPDATE workflow_resume_admissions SET"
+            " phase='retry_wait',version=version+1,retry_attempt=?,next_attempt_at=?,outcome_json=?,claim_owner=NULL,claim_epoch=NULL,claim_expires_at=NULL,updated_at=?"  # noqa: E501
+            " WHERE receipt_id=? AND version=? AND phase='claimed'",
             (
                 retry_attempt,
                 next_attempt_at,
@@ -8348,11 +8051,10 @@ class SqliteExecutionUnitOfWork:
         ).rowcount
         if changed != 1:
             raise UnitOfWorkConflict("resume retry CAS failed")
-        _fault(
-            fault, "workflow:defer_resume_retry:after_workflow_resume_admissions_write"
-        )
+        _fault(fault, "workflow:defer_resume_retry:after_workflow_resume_admissions_write")
         tx.connection.execute(
-            "DELETE FROM workflow_leases WHERE run_id=? AND namespace IN (?,?) AND owner_id=? AND epoch=?",
+            "DELETE FROM workflow_leases WHERE run_id=? AND namespace IN (?,?) AND owner_id=? AND"
+            " epoch=?",
             (
                 activation.execution_lease.run_id,
                 RUNTIME_LEASE_NAMESPACE,
@@ -8362,7 +8064,8 @@ class SqliteExecutionUnitOfWork:
             ),
         )
         tx.connection.execute(
-            "UPDATE run_fences SET state='released',released_at=? WHERE run_id=? AND epoch=? AND state='active'",
+            "UPDATE run_fences SET state='released',released_at=? WHERE run_id=? AND epoch=? AND"
+            " state='active'",
             (now, activation.execution_lease.run_id, activation.run_fence.epoch),
         )
         return self._resume_receipt(
@@ -8392,9 +8095,7 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("cancel blocker snapshot is corrupt")
         resolved_snapshot: dict[str, JsonValue] = {}
         for blocker_id, frozen_identity in sorted(frozen_blockers.items()):
-            if not isinstance(blocker_id, str) or not isinstance(
-                frozen_identity, dict
-            ):
+            if not isinstance(blocker_id, str) or not isinstance(frozen_identity, dict):
                 raise UnitOfWorkConflict("cancel blocker snapshot is corrupt")
             blocker = connection.execute(
                 "SELECT * FROM run_wait_blockers WHERE blocker_id=? AND run_id=?",
@@ -8403,10 +8104,8 @@ class SqliteExecutionUnitOfWork:
             if (
                 blocker is None
                 or str(blocker["kind"]) != frozen_identity.get("kind")
-                or str(blocker["ledger_identity"])
-                != frozen_identity.get("ledger_identity")
-                or int(blocker["handoff_attempt"])
-                != frozen_identity.get("handoff_attempt")
+                or str(blocker["ledger_identity"]) != frozen_identity.get("ledger_identity")
+                or int(blocker["handoff_attempt"]) != frozen_identity.get("handoff_attempt")
                 or int(blocker["version"])
                 < int(frozen_identity.get("observed_blocker_version", -1))
             ):
@@ -8424,10 +8123,8 @@ class SqliteExecutionUnitOfWork:
             if (
                 resolution is None
                 or str(resolution["kind"]) != str(blocker["kind"])
-                or str(resolution["ledger_identity"])
-                != str(blocker["ledger_identity"])
-                or int(resolution["handoff_attempt"])
-                != int(blocker["handoff_attempt"])
+                or str(resolution["ledger_identity"]) != str(blocker["ledger_identity"])
+                or int(resolution["handoff_attempt"]) != int(blocker["handoff_attempt"])
             ):
                 raise UnitOfWorkConflict("cancel blocker resolution changed")
             resolved_snapshot[blocker_id] = {
@@ -8438,9 +8135,7 @@ class SqliteExecutionUnitOfWork:
             }
         return resolved_snapshot
 
-    def read_cancel_resolution_snapshot(
-        self, cancel_id: str
-    ) -> Mapping[str, JsonValue] | None:
+    def read_cancel_resolution_snapshot(self, cancel_id: str) -> Mapping[str, JsonValue] | None:
         row = self.database.connection.execute(
             "SELECT * FROM workflow_cancel_receipts WHERE cancel_id=?", (cancel_id,)
         ).fetchone()
@@ -8448,18 +8143,14 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("cancel receipt does not exist")
         return self._cancel_resolution_snapshot(self.database.connection, row)
 
-    def read_cancel_outcome(
-        self, *, run_id: str, generation: int
-    ) -> CancelWorkflowOutcome | None:
+    def read_cancel_outcome(self, *, run_id: str, generation: int) -> CancelWorkflowOutcome | None:
         row = self.database.connection.execute(
             "SELECT * FROM workflow_cancel_receipts WHERE run_id=? AND generation=?",
             (run_id, generation),
         ).fetchone()
         return None if row is None else self._cancel_outcome(row)
 
-    def read_cancel_request(
-        self, *, run_id: str, generation: int
-    ) -> CancelWorkflowRequest | None:
+    def read_cancel_request(self, *, run_id: str, generation: int) -> CancelWorkflowRequest | None:
         row = self.database.connection.execute(
             "SELECT cancel_id,run_id,reason,generation "
             "FROM workflow_cancel_receipts WHERE run_id=? AND generation=?",
@@ -8602,9 +8293,7 @@ class SqliteExecutionUnitOfWork:
             "SELECT MAX(generation) FROM workflow_cancel_receipts WHERE run_id=?",
             (request.run_id,),
         ).fetchone()[0]
-        expected_generation = (
-            0 if current_generation is None else int(current_generation) + 1
-        )
+        expected_generation = 0 if current_generation is None else int(current_generation) + 1
         if request.expected_generation != expected_generation:
             raise UnitOfWorkConflict("cancel generation changed")
         blocker_rows = tx.connection.execute(
@@ -8616,10 +8305,7 @@ class SqliteExecutionUnitOfWork:
             """,
             (request.run_id,),
         ).fetchall()
-        blocker_ids = tuple(
-            str(row["blocker_id"])
-            for row in blocker_rows
-        )
+        blocker_ids = tuple(str(row["blocker_id"]) for row in blocker_rows)
         blocker_snapshot: dict[str, JsonValue] = {
             str(row["blocker_id"]): {
                 "kind": str(row["kind"]),
@@ -8632,7 +8318,8 @@ class SqliteExecutionUnitOfWork:
         phase = "cancelling" if blocker_ids else "requested"
         _fault(fault, "workflow:request_cancel:before_runs_write")
         tx.connection.execute(
-            "UPDATE runs SET state='cancel_requested',version=version+1,updated_at=? WHERE run_id=? AND version=?",
+            "UPDATE runs SET state='cancel_requested',version=version+1,updated_at=? WHERE run_id=?"
+            " AND version=?",
             (now, request.run_id, expected_run_version),
         )
         _fault(fault, "workflow:request_cancel:after_runs_write")
@@ -8645,7 +8332,9 @@ class SqliteExecutionUnitOfWork:
         )
         _fault(fault, "workflow:request_cancel:before_workflow_cancel_receipts_write")
         tx.connection.execute(
-            "INSERT INTO workflow_cancel_receipts(cancel_id,run_id,generation,reason,phase,blocker_ids_json,blocker_snapshot_json,terminal,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,NULL,0,?,?)",
+            "INSERT INTO"
+            " workflow_cancel_receipts(cancel_id,run_id,generation,reason,phase,blocker_ids_json,blocker_snapshot_json,terminal,version,created_at,updated_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,?,?,NULL,0,?,?)",
             (
                 request.cancel_id,
                 request.run_id,
@@ -8748,7 +8437,9 @@ class SqliteExecutionUnitOfWork:
             "workflow:claim_cancel_convergence:before_workflow_cancel_receipts_write",
         )
         changed = tx.connection.execute(
-            "UPDATE workflow_cancel_receipts SET phase='cancelling',convergence_owner=?,convergence_epoch=?,convergence_expires_at=?,version=version+1,updated_at=? WHERE cancel_id=? AND generation=? AND version=?",
+            "UPDATE workflow_cancel_receipts SET"
+            " phase='cancelling',convergence_owner=?,convergence_epoch=?,convergence_expires_at=?,version=version+1,updated_at=?"  # noqa: E501
+            " WHERE cancel_id=? AND generation=? AND version=?",
             (
                 owner_id,
                 epoch,
@@ -8800,16 +8491,10 @@ class SqliteExecutionUnitOfWork:
         resolved_snapshot = self._cancel_resolution_snapshot(tx.connection, row)
         if resolved_snapshot is None:
             raise UnitOfWorkConflict("cancel blockers remain unresolved")
-        if canonical_json(dict(resolution_snapshot)) != canonical_json(
-            resolved_snapshot
-        ):
+        if canonical_json(dict(resolution_snapshot)) != canonical_json(resolved_snapshot):
             raise UnitOfWorkConflict("cancel resolution snapshot changed")
-        checkpoint_id = _required(
-            terminal_checkpoint.get("checkpoint_id"), "checkpoint_id"
-        )
-        namespace = _required(
-            terminal_checkpoint.get("namespace", "native"), "namespace"
-        )
+        checkpoint_id = _required(terminal_checkpoint.get("checkpoint_id"), "checkpoint_id")
+        namespace = _required(terminal_checkpoint.get("namespace", "native"), "namespace")
         checkpoint_payload = cast(dict[str, JsonValue], dict(terminal_checkpoint))
         checkpoint_json = canonical_json(checkpoint_payload)
         outcome = {
@@ -8820,7 +8505,8 @@ class SqliteExecutionUnitOfWork:
         }
         _fault(fault, "workflow:settle_cancel_convergence:before_runs_write")
         tx.connection.execute(
-            "UPDATE runs SET state='cancelled',version=version+1,updated_at=? WHERE run_id=? AND state='cancel_requested'",
+            "UPDATE runs SET state='cancelled',version=version+1,updated_at=? WHERE run_id=? AND"
+            " state='cancel_requested'",
             (now, cancel_lease.run_id),
         )
         _fault(fault, "workflow:settle_cancel_convergence:after_runs_write")
@@ -8830,12 +8516,15 @@ class SqliteExecutionUnitOfWork:
         )
         next_version = int(
             tx.connection.execute(
-                "SELECT COALESCE(MAX(version),-1)+1 FROM workflow_checkpoints WHERE run_id=? AND namespace=?",
+                "SELECT COALESCE(MAX(version),-1)+1 FROM workflow_checkpoints WHERE run_id=? AND"
+                " namespace=?",
                 (cancel_lease.run_id, namespace),
             ).fetchone()[0]
         )
         tx.connection.execute(
-            "INSERT INTO workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO"
+            " workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,?,?,?)",
             (
                 checkpoint_id,
                 cancel_lease.run_id,
@@ -8874,7 +8563,9 @@ class SqliteExecutionUnitOfWork:
             if not isinstance(payload, Mapping):
                 raise UnitOfWorkConflict("cancel delivery payload must be an object")
             tx.connection.execute(
-                "INSERT INTO delivery_outbox(delivery_id,run_id,sink_kind,idempotency_key,payload_json,state,version,created_at) VALUES(?,?,?,?,?,'pending',0,?)",
+                "INSERT INTO"
+                " delivery_outbox(delivery_id,run_id,sink_kind,idempotency_key,payload_json,state,version,created_at)"  # noqa: E501
+                " VALUES(?,?,?,?,?,'pending',0,?)",
                 (
                     delivery_id,
                     cancel_lease.run_id,
@@ -8901,9 +8592,11 @@ class SqliteExecutionUnitOfWork:
             "workflow:settle_cancel_convergence:before_workflow_cancel_receipts_write",
         )
         tx.connection.execute(
-            "UPDATE workflow_cancel_receipts SET phase='terminal',terminal=1,outcome_json=?,version=version+1,updated_at=? WHERE cancel_id=? AND convergence_owner=? AND convergence_epoch=?",
+            "UPDATE workflow_cancel_receipts SET"
+            " phase='terminal',terminal=1,outcome_json=?,version=version+1,updated_at=? WHERE"
+            " cancel_id=? AND convergence_owner=? AND convergence_epoch=?",
             (
-                canonical_json(outcome),
+                canonical_json(cast(JsonValue, outcome)),
                 now,
                 str(row["cancel_id"]),
                 cancel_lease.owner_id,
@@ -8955,9 +8648,7 @@ class SqliteExecutionUnitOfWork:
             (run_id,),
         ).fetchone()
         if fence is None or str(fence["state"]) != "cancelled":
-            raise UnitOfWorkConflict(
-                "cancelled attached child lacks its cancelled Run fence"
-            )
+            raise UnitOfWorkConflict("cancelled attached child lacks its cancelled Run fence")
         signal_id = f"{cancel_id}:child-signal"
         event_id = f"{cancel_id}:child-terminal-event"
         receipt_id = f"{cancel_id}:child-terminal-receipt"
@@ -9036,9 +8727,7 @@ class SqliteExecutionUnitOfWork:
             self.database.connection, snapshot_cursor=snapshot_cursor, limit=101
         )
         candidates = [self._recovery_candidate(row) for row in rows[:100]]
-        return tuple(candidates), (
-            None if len(rows) <= 100 else str(rows[99]["run_id"])
-        )
+        return tuple(candidates), (None if len(rows) <= 100 else str(rows[99]["run_id"]))
 
     @staticmethod
     def _recovery_candidate_rows(
@@ -9109,7 +8798,8 @@ class SqliteExecutionUnitOfWork:
                    AND candidate_head.namespace = candidate_runs.workflow_namespace
              )
             ORDER BY candidate_runs.run_id
-            """ + limit_clause,
+            """
+            + limit_clause,
             parameters,
         ).fetchall()
 
@@ -9168,7 +8858,8 @@ class SqliteExecutionUnitOfWork:
         blockers = tuple(
             str(row[0])
             for row in connection.execute(
-                "SELECT blocker_id FROM run_wait_blockers WHERE run_id=? AND wake_consumed=0 ORDER BY blocker_id",
+                "SELECT blocker_id FROM run_wait_blockers WHERE run_id=? AND wake_consumed=0 ORDER"
+                " BY blocker_id",
                 (run_id,),
             ).fetchall()
         )
@@ -9221,14 +8912,13 @@ class SqliteExecutionUnitOfWork:
                 str(existing["reason"]),
                 str(existing["receipt_id"]),
             )
-        current = self._recovery_snapshot_from_connection(
-            tx.connection, candidate.run_id
-        )
+        current = self._recovery_snapshot_from_connection(tx.connection, candidate.run_id)
         if current != expected_snapshot or current.candidate != candidate:
             raise UnitOfWorkConflict("recovery snapshot changed")
         _fault(fault, "workflow:commit_recovery_outcome:before_runs_write")
         changed = tx.connection.execute(
-            "UPDATE runs SET state=?,version=version+1,updated_at=? WHERE run_id=? AND state=? AND version=?",
+            "UPDATE runs SET state=?,version=version+1,updated_at=? WHERE run_id=? AND state=? AND"
+            " version=?",
             (
                 outcome.status,
                 now,
@@ -9245,7 +8935,9 @@ class SqliteExecutionUnitOfWork:
             "workflow:commit_recovery_outcome:before_workflow_recovery_receipts_write",
         )
         tx.connection.execute(
-            "INSERT INTO workflow_recovery_receipts(receipt_id,run_id,candidate_hash,snapshot_hash,previous_status,status,action,reason,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO"
+            " workflow_recovery_receipts(receipt_id,run_id,candidate_hash,snapshot_hash,previous_status,status,action,reason,created_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,?,?,?,?)",
             (
                 outcome.receipt_id,
                 candidate.run_id,
@@ -9306,7 +8998,9 @@ class SqliteExecutionUnitOfWork:
         )
         if claim is None:
             tx.connection.execute(
-                "INSERT INTO workflow_recovery_claims(blocker_id,run_id,resolution_version,owner_id,epoch,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO"
+                " workflow_recovery_claims(blocker_id,run_id,resolution_version,owner_id,epoch,expires_at,created_at,updated_at)"  # noqa: E501
+                " VALUES(?,?,?,?,?,?,?,?)",
                 (
                     blocker_id,
                     run_id,
@@ -9320,7 +9014,9 @@ class SqliteExecutionUnitOfWork:
             )
         else:
             tx.connection.execute(
-                "UPDATE workflow_recovery_claims SET resolution_version=?,owner_id=?,epoch=?,expires_at=?,updated_at=? WHERE blocker_id=? AND epoch=?",
+                "UPDATE workflow_recovery_claims SET"
+                " resolution_version=?,owner_id=?,epoch=?,expires_at=?,updated_at=? WHERE"
+                " blocker_id=? AND epoch=?",
                 (
                     expected_resolution_version,
                     owner_id,
@@ -9340,11 +9036,10 @@ class SqliteExecutionUnitOfWork:
     def _fork_receipt(self, row: sqlite3.Row) -> ForkReceipt:
         raw = json.loads(str(row["request_json"]))
         confirmation_raw = raw.get("dangerous_confirmation")
-        confirmation = None
+        confirmation: DangerousEffectConfirmation | None = None
         if isinstance(confirmation_raw, dict):
             observations = tuple(
-                DangerousEffectObservation(**item)
-                for item in confirmation_raw["observations"]
+                DangerousEffectObservation(**item) for item in confirmation_raw["observations"]
             )
             confirmation = DangerousEffectConfirmation(
                 str(confirmation_raw["scope"]),
@@ -9393,7 +9088,7 @@ class SqliteExecutionUnitOfWork:
 
     @staticmethod
     def _fork_payload(request: ForkRequest) -> dict[str, JsonValue]:
-        confirmation = None
+        confirmation: JsonValue = None
         if request.dangerous_confirmation is not None:
             confirmation = {
                 "scope": request.dangerous_confirmation.scope,
@@ -9431,7 +9126,9 @@ class SqliteExecutionUnitOfWork:
         connection: sqlite3.Connection, request: ForkRequest
     ) -> bool:
         rows = connection.execute(
-            "SELECT effect_id,'tool' AS kind,state,version,request_hash,handoff_attempt FROM execution_effects WHERE run_id=? AND state IN ('handed_off','unknown','succeeded') ORDER BY effect_id",
+            "SELECT effect_id,'tool' AS kind,state,version,request_hash,handoff_attempt FROM"
+            " execution_effects WHERE run_id=? AND state IN ('handed_off','unknown','succeeded')"
+            " ORDER BY effect_id",
             (request.source_run_id,),
         ).fetchall()
         actual = tuple(
@@ -9476,9 +9173,7 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("dangerous effect confirmation digest changed")
 
     @staticmethod
-    def _fork_source_head_is_current(
-        connection: sqlite3.Connection, request: ForkRequest
-    ) -> bool:
+    def _fork_source_head_is_current(connection: sqlite3.Connection, request: ForkRequest) -> bool:
         run = connection.execute(
             "SELECT version FROM runs WHERE run_id=?", (request.source_run_id,)
         ).fetchone()
@@ -9488,8 +9183,7 @@ class SqliteExecutionUnitOfWork:
             (request.source_run_id, request.source_namespace),
         ).fetchone()
         source_checkpoint = connection.execute(
-            "SELECT 1 FROM workflow_checkpoints "
-            "WHERE checkpoint_id=? AND run_id=? AND namespace=?",
+            "SELECT 1 FROM workflow_checkpoints WHERE checkpoint_id=? AND run_id=? AND namespace=?",
             (
                 request.source_checkpoint_id,
                 request.source_run_id,
@@ -9561,19 +9255,14 @@ class SqliteExecutionUnitOfWork:
                 raise UnitOfWorkConflict("fork id reused with different request")
             return self._fork_receipt(existing)
         if (
-            self._recovery_snapshot_from_connection(
-                tx.connection, request.source_run_id
-            )
+            self._recovery_snapshot_from_connection(tx.connection, request.source_run_id)
             != expected_source_snapshot
         ):
             raise UnitOfWorkConflict("fork source snapshot changed")
         source = tx.connection.execute(
             "SELECT * FROM runs WHERE run_id=?", (request.source_run_id,)
         ).fetchone()
-        if (
-            source is None
-            or not self._fork_source_head_is_current(tx.connection, request)
-        ):
+        if source is None or not self._fork_source_head_is_current(tx.connection, request):
             raise UnitOfWorkConflict("fork source head changed")
         self._validate_dangerous_confirmation(tx.connection, request)
         target_run_id = self._derived_id("fork-run", request.fingerprint)
@@ -9614,9 +9303,7 @@ class SqliteExecutionUnitOfWork:
             }
         )
         target_request_json = canonical_json(target_request)
-        target_request_fingerprint = hashlib.sha256(
-            target_request_json.encode()
-        ).hexdigest()
+        target_request_fingerprint = hashlib.sha256(target_request_json.encode()).hexdigest()
         target_snapshot = {
             **target_request,
             "resolved_run_id": target_run_id,
@@ -9628,7 +9315,9 @@ class SqliteExecutionUnitOfWork:
         target_snapshot_json = canonical_json(target_snapshot)
         _fault(fault, "workflow:prepare_fork:before_runs_write")
         tx.connection.execute(
-            "INSERT INTO runs(run_id,execution_session_id,request_id,root_run_id,parent_run_id,profile_key,driver_kind,state,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'reserved_fork',0,?,?)",
+            "INSERT INTO"
+            " runs(run_id,execution_session_id,request_id,root_run_id,parent_run_id,profile_key,driver_kind,state,version,created_at,updated_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,?,?,'reserved_fork',0,?,?)",
             (
                 target_run_id,
                 str(source["execution_session_id"]),
@@ -9675,7 +9364,9 @@ class SqliteExecutionUnitOfWork:
         _fault(fault, "workflow:prepare_fork:after_workflow_start_admissions_write")
         _fault(fault, "workflow:prepare_fork:before_workflow_fork_receipts_write")
         tx.connection.execute(
-            "INSERT INTO workflow_fork_receipts(fork_id,fingerprint,request_json,source_run_id,source_namespace,source_checkpoint_id,source_run_version,source_head,target_run_id,target_trace_id,target_thread_id,target_checkpoint_id,phase,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'prepared',0,?,?)",
+            "INSERT INTO"
+            " workflow_fork_receipts(fork_id,fingerprint,request_json,source_run_id,source_namespace,source_checkpoint_id,source_run_version,source_head,target_run_id,target_trace_id,target_thread_id,target_checkpoint_id,phase,version,created_at,updated_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'prepared',0,?,?)",
             (
                 request.fork_id,
                 request.fingerprint,
@@ -9749,7 +9440,9 @@ class SqliteExecutionUnitOfWork:
         expires = now + ttl_seconds
         _fault(fault, "workflow:claim_fork:before_workflow_fork_receipts_write")
         tx.connection.execute(
-            "UPDATE workflow_fork_receipts SET phase=?,version=version+1,claim_owner=?,claim_epoch=?,claim_expires_at=?,updated_at=? WHERE fork_id=? AND version=?",
+            "UPDATE workflow_fork_receipts SET"
+            " phase=?,version=version+1,claim_owner=?,claim_epoch=?,claim_expires_at=?,updated_at=?"
+            " WHERE fork_id=? AND version=?",
             (
                 str(row["phase"]) if mode == "commit_only" else "claimed",
                 owner_id,
@@ -9833,11 +9526,10 @@ class SqliteExecutionUnitOfWork:
         if not self._fork_source_head_is_current(
             tx.connection, request
         ) or not self._dangerous_confirmation_is_current(tx.connection, request):
-            return self._rollback_fork_for_changed_source(
-                tx.connection, row, now=now, fault=fault
-            )
+            return self._rollback_fork_for_changed_source(tx.connection, row, now=now, fault=fault)
         head = tx.connection.execute(
-            "SELECT checkpoint_id FROM workflow_checkpoints WHERE run_id=? ORDER BY version DESC LIMIT 1",
+            "SELECT checkpoint_id FROM workflow_checkpoints WHERE run_id=? ORDER BY version DESC"
+            " LIMIT 1",
             (fork_lease.target_run_id,),
         ).fetchone()
         actual = None if head is None else str(head["checkpoint_id"])
@@ -9845,7 +9537,9 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("fork target head changed")
         _fault(fault, "workflow:checkpoint_fork:before_workflow_checkpoints_write")
         tx.connection.execute(
-            "INSERT INTO workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at) VALUES(?,?,?,?,?,1,0,?)",
+            "INSERT INTO"
+            " workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,1,0,?)",
             (
                 str(row["target_checkpoint_id"]),
                 fork_lease.target_run_id,
@@ -9861,7 +9555,9 @@ class SqliteExecutionUnitOfWork:
             "workflow:checkpoint_fork:before_workflow_fork_receipts_write",
         )
         tx.connection.execute(
-            "UPDATE workflow_fork_receipts SET phase='checkpointed',version=version+1,target_checkpoint_hash=?,updated_at=? WHERE fork_id=? AND version=?",
+            "UPDATE workflow_fork_receipts SET"
+            " phase='checkpointed',version=version+1,target_checkpoint_hash=?,updated_at=? WHERE"
+            " fork_id=? AND version=?",
             (
                 checkpoint_hash,
                 now,
@@ -9914,18 +9610,19 @@ class SqliteExecutionUnitOfWork:
         if not self._fork_source_head_is_current(
             tx.connection, request
         ) or not self._dangerous_confirmation_is_current(tx.connection, request):
-            return self._rollback_fork_for_changed_source(
-                tx.connection, row, now=now, fault=fault
-            )
+            return self._rollback_fork_for_changed_source(tx.connection, row, now=now, fault=fault)
         _fault(fault, "workflow:commit_fork:before_runs_write")
         tx.connection.execute(
-            "UPDATE runs SET state='created',version=version+1,updated_at=? WHERE run_id=? AND state='reserved_fork'",
+            "UPDATE runs SET state='created',version=version+1,updated_at=? WHERE run_id=? AND"
+            " state='reserved_fork'",
             (now, fork_lease.target_run_id),
         )
         _fault(fault, "workflow:commit_fork:after_runs_write")
         _fault(fault, "workflow:commit_fork:before_workflow_fork_receipts_write")
         tx.connection.execute(
-            "UPDATE workflow_fork_receipts SET phase='committed',version=version+1,outcome_json=?,updated_at=? WHERE fork_id=? AND version=?",
+            "UPDATE workflow_fork_receipts SET"
+            " phase='committed',version=version+1,outcome_json=?,updated_at=? WHERE fork_id=? AND"
+            " version=?",
             (
                 canonical_json({"run_id": fork_lease.target_run_id}),
                 now,
@@ -9964,7 +9661,9 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("fork rollback binding changed")
         _fault(fault, "workflow:rollback_fork:before_workflow_fork_receipts_write")
         tx.connection.execute(
-            "UPDATE workflow_fork_receipts SET phase='rolled_back',version=version+1,outcome_json=?,updated_at=? WHERE fork_id=? AND version=?",
+            "UPDATE workflow_fork_receipts SET"
+            " phase='rolled_back',version=version+1,outcome_json=?,updated_at=? WHERE fork_id=? AND"
+            " version=?",
             (
                 canonical_json({"reason": reason}),
                 now,
@@ -10005,17 +9704,13 @@ class SqliteExecutionUnitOfWork:
                 {
                     "generation": durable_authority.generation,
                     "profiles": [
-                        _workflow_catalog_profile_json(item)
-                        for item in durable_authority.profiles
+                        _workflow_catalog_profile_json(item) for item in durable_authority.profiles
                     ],
                 }
             ).encode()
         ).hexdigest()
         expected_snapshot_id = hashlib.sha256(
-            (
-                "simple-harness.workflow.registry-snapshot.v1|"
-                + expected_snapshot_hash
-            ).encode()
+            ("simple-harness.workflow.registry-snapshot.v1|" + expected_snapshot_hash).encode()
         ).hexdigest()
         if (
             authority.registry_snapshot_hash != expected_snapshot_hash
@@ -10038,7 +9733,9 @@ class SqliteExecutionUnitOfWork:
                 raise UnitOfWorkConflict("workflow catalog version changed")
             _fault(fault, "workflow:catalog:before_authority_write")
             changed = tx.connection.execute(
-                "UPDATE workflow_catalog_authorities SET generation=?,version=?,catalog_hash=?,canonical_profiles=?,updated_at=? WHERE authority_id=? AND version=?",
+                "UPDATE workflow_catalog_authorities SET"
+                " generation=?,version=?,catalog_hash=?,canonical_profiles=?,updated_at=? WHERE"
+                " authority_id=? AND version=?",
                 (
                     durable_authority.generation,
                     durable_authority.version,
@@ -10056,7 +9753,9 @@ class SqliteExecutionUnitOfWork:
                 raise UnitOfWorkConflict("initial workflow catalog version must be one")
             _fault(fault, "workflow:catalog:before_authority_write")
             tx.connection.execute(
-                "INSERT INTO workflow_catalog_authorities(authority_id,generation,version,catalog_hash,canonical_profiles,updated_at) VALUES(?,?,?,?,?,?)",
+                "INSERT INTO"
+                " workflow_catalog_authorities(authority_id,generation,version,catalog_hash,canonical_profiles,updated_at)"  # noqa: E501
+                " VALUES(?,?,?,?,?,?)",
                 (
                     durable_authority.authority_id,
                     durable_authority.generation,
@@ -10070,9 +9769,7 @@ class SqliteExecutionUnitOfWork:
         tx.register_after_commit_fault("workflow:catalog:after_commit")
         return durable_authority
 
-    async def read_catalog(
-        self, transaction: WorkflowTransaction
-    ) -> WorkflowCatalogAuthority:
+    async def read_catalog(self, transaction: WorkflowTransaction) -> WorkflowCatalogAuthority:
         tx = self._assert_open_workflow_transaction(transaction)
         row = tx.connection.execute(
             "SELECT * FROM workflow_catalog_authorities WHERE authority_id='model_spawnable'"
@@ -10114,9 +9811,7 @@ class SqliteExecutionUnitOfWork:
             workflow_lease=authority.workflow_lease,
             now=now,
         )
-        run = connection.execute(
-            "SELECT * FROM runs WHERE run_id=?", (parent_run_id,)
-        ).fetchone()
+        run = connection.execute("SELECT * FROM runs WHERE run_id=?", (parent_run_id,)).fetchone()
         if (
             run is None
             or str(run["state"]) != RunState.RUNNING.value
@@ -10135,17 +9830,13 @@ class SqliteExecutionUnitOfWork:
         try:
             snapshot_value = json.loads(snapshot_json)
         except (TypeError, ValueError) as exc:
-            raise UnitOfWorkConflict(
-                "workflow spawn parent start snapshot is malformed"
-            ) from exc
+            raise UnitOfWorkConflict("workflow spawn parent start snapshot is malformed") from exc
         if (
             not isinstance(snapshot_value, dict)
             or canonical_json(snapshot_value) != snapshot_json
-            or hashlib.sha256(snapshot_json.encode()).hexdigest()
-            != str(snapshot["snapshot_hash"])
+            or hashlib.sha256(snapshot_json.encode()).hexdigest() != str(snapshot["snapshot_hash"])
             or snapshot_value.get("turn_id") != request.turn_id
-            or snapshot_value.get("tool_catalog_generation")
-            != request.tool_catalog_generation
+            or snapshot_value.get("tool_catalog_generation") != request.tool_catalog_generation
         ):
             raise UnitOfWorkConflict("workflow spawn parent start snapshot differs")
         checkpoint = connection.execute(
@@ -10182,14 +9873,10 @@ class SqliteExecutionUnitOfWork:
             or str(effect["run_id"]) != parent_run_id
             or str(effect["state"]) != EffectState.HANDED_OFF.value
             or str(effect["tool_name"]) != "workflow_spawn"
-            or str(effect["raw_call_id"])
-            != request.spawn_origin.internal_tool_call_id
+            or str(effect["raw_call_id"]) != request.spawn_origin.internal_tool_call_id
             or str(effect["request_hash"]) != authority.effect_request_hash
             or int(effect["handoff_attempt"]) != authority.effect_handoff_attempt
-            or (
-                require_effect_fence
-                and int(effect["fence_epoch"]) != authority.run_fence.epoch
-            )
+            or (require_effect_fence and int(effect["fence_epoch"]) != authority.run_fence.epoch)
         ):
             raise UnitOfWorkConflict("workflow spawn Effect authority differs")
         authority_payload: dict[str, JsonValue] = {
@@ -10221,9 +9908,7 @@ class SqliteExecutionUnitOfWork:
             "effect_handoff_attempt": authority.effect_handoff_attempt,
             "effect_request_hash": authority.effect_request_hash,
         }
-        return hashlib.sha256(
-            canonical_json(authority_payload).encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(canonical_json(authority_payload).encode("utf-8")).hexdigest()
 
     async def issue(
         self,
@@ -10237,9 +9922,7 @@ class SqliteExecutionUnitOfWork:
         tx = self._assert_open_workflow_transaction(transaction)
         request_payload = _workflow_launch_request_json(request)
         canonical_request = canonical_json(request_payload)
-        ticket_receipt_id = self._derived_id(
-            "workflow-launch/receipt/v1", request.request_key
-        )
+        ticket_receipt_id = self._derived_id("workflow-launch/receipt/v1", request.request_key)
         existing = tx.connection.execute(
             "SELECT * FROM workflow_launch_ticket_receipts WHERE request_key=?",
             (request.request_key,),
@@ -10247,9 +9930,7 @@ class SqliteExecutionUnitOfWork:
         if existing is not None:
             stored_payload = json.loads(str(existing["canonical_payload"]))
             stored_request = (
-                stored_payload.get("request")
-                if isinstance(stored_payload, dict)
-                else None
+                stored_payload.get("request") if isinstance(stored_payload, dict) else None
             )
             canonical_payload = canonical_json(stored_payload)
             payload_hash = hashlib.sha256(canonical_payload.encode()).hexdigest()
@@ -10420,8 +10101,7 @@ class SqliteExecutionUnitOfWork:
         if (
             str(row["canonical_payload"]) != canonical_payload
             or str(row["payload_hash"]) != payload_hash
-            or str(row["ticket_id"])
-            != self._derived_id("workflow-launch/ticket/v1", payload_hash)
+            or str(row["ticket_id"]) != self._derived_id("workflow-launch/ticket/v1", payload_hash)
         ):
             raise UnitOfWorkConflict("stored workflow launch ticket self-hash differs")
         request = _workflow_launch_request_from_json(payload.get("request"))
@@ -10461,17 +10141,13 @@ class SqliteExecutionUnitOfWork:
             row is None
             or str(row["ticket_receipt_id"]) != ticket.ticket_receipt_id
             or str(row["effect_id"]) != issue_authority.effect_id
-            or int(row["handoff_attempt"])
-            != issue_authority.effect_handoff_attempt
-            or str(row["effect_request_hash"])
-            != issue_authority.effect_request_hash
+            or int(row["handoff_attempt"]) != issue_authority.effect_handoff_attempt
+            or str(row["effect_request_hash"]) != issue_authority.effect_request_hash
         ):
             raise UnitOfWorkConflict("workflow spawn continuation identity differs")
         state = str(row["state"])
         workflow_epoch = (
-            None
-            if issue_authority.workflow_lease is None
-            else issue_authority.workflow_lease.epoch
+            None if issue_authority.workflow_lease is None else issue_authority.workflow_lease.epoch
         )
         if state == "claimed" and float(row["expires_at"]) > now:
             authority_hash = self._require_workflow_spawn_issue_authority(
@@ -10481,9 +10157,7 @@ class SqliteExecutionUnitOfWork:
                 now=now,
             )
             if str(row["issue_authority_hash"]) != authority_hash:
-                raise UnitOfWorkConflict(
-                    "workflow spawn continuation issue authority differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn continuation issue authority differs")
             current = _workflow_spawn_continuation_claim(row)
             if (
                 current.owner_id != issue_authority.execution_lease.owner_id
@@ -10491,9 +10165,7 @@ class SqliteExecutionUnitOfWork:
                 or current.run_fence_epoch != issue_authority.run_fence.epoch
                 or current.workflow_lease_epoch != workflow_epoch
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn continuation has a live foreign owner"
-                )
+                raise UnitOfWorkConflict("workflow spawn continuation has a live foreign owner")
             return current
         if state == "completed":
             raise UnitOfWorkConflict("workflow spawn continuation is already completed")
@@ -10524,9 +10196,7 @@ class SqliteExecutionUnitOfWork:
                 now=now,
             )
             if str(row["issue_authority_hash"]) != authority_hash:
-                raise UnitOfWorkConflict(
-                    "workflow spawn continuation issue authority differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn continuation issue authority differs")
         next_epoch = int(row["claim_epoch"]) + 1
         expires_at = now + ttl_seconds
         _fault(fault, "workflow:spawn_continuation:before_claim_write")
@@ -10595,12 +10265,9 @@ class SqliteExecutionUnitOfWork:
             durable_effect is None
             or _effect_record(durable_effect) != effect_snapshot
             or str(continuation["effect_id"]) != effect_snapshot.effect_id.value
-            or int(continuation["handoff_attempt"])
-            != effect_snapshot.handoff_attempt
-            or str(continuation["effect_request_hash"])
-            != effect_snapshot.request_hash
-            or effect_snapshot.state
-            not in {EffectState.HANDED_OFF, EffectState.UNKNOWN}
+            or int(continuation["handoff_attempt"]) != effect_snapshot.handoff_attempt
+            or str(continuation["effect_request_hash"]) != effect_snapshot.request_hash
+            or effect_snapshot.state not in {EffectState.HANDED_OFF, EffectState.UNKNOWN}
         ):
             raise UnitOfWorkConflict("workflow spawn ready Effect evidence differs")
         ready_receipt_id = self._derived_id(
@@ -10669,11 +10336,7 @@ class SqliteExecutionUnitOfWork:
             (snapshot_cursor, snapshot_cursor, limit + 1),
         ).fetchall()
         page = rows[:limit]
-        next_cursor = (
-            None
-            if len(rows) <= limit
-            else str(page[-1]["ready_receipt_id"])
-        )
+        next_cursor = None if len(rows) <= limit else str(page[-1]["ready_receipt_id"])
         return tuple(_workflow_spawn_continuation_ready(row) for row in page), next_cursor
 
     def read_spawn_ready_blocker(
@@ -10686,8 +10349,7 @@ class SqliteExecutionUnitOfWork:
         if not isinstance(ready, WorkflowSpawnContinuationReady):
             raise TypeError("ready must be a WorkflowSpawnContinuationReady")
         durable = self.database.connection.execute(
-            "SELECT * FROM workflow_spawn_continuation_ready "
-            "WHERE ready_receipt_id=?",
+            "SELECT * FROM workflow_spawn_continuation_ready WHERE ready_receipt_id=?",
             (ready.ready_receipt_id,),
         ).fetchone()
         if durable is None or _workflow_spawn_continuation_ready(durable) != ready:
@@ -10704,9 +10366,7 @@ class SqliteExecutionUnitOfWork:
         if not rows:
             return None
         if len(rows) != 1:
-            raise UnitOfWorkConflict(
-                "workflow spawn ready maps to multiple wait blockers"
-            )
+            raise UnitOfWorkConflict("workflow spawn ready maps to multiple wait blockers")
         blocker = _wait_blocker_record(rows[0])
         if (
             blocker.kind is not RecoveryKind.TOOL
@@ -10771,13 +10431,9 @@ class SqliteExecutionUnitOfWork:
             (ready.ready_receipt_id,),
         ).fetchone()
         if existing_active is not None:
-            activation = _workflow_spawn_ready_activation(
-                tx.connection, existing_active
-            )
+            activation = _workflow_spawn_ready_activation(tx.connection, existing_active)
             if activation.execution_lease.owner_id != owner_id:
-                raise UnitOfWorkConflict(
-                    "workflow spawn ready has a live activation owner"
-                )
+                raise UnitOfWorkConflict("workflow spawn ready has a live activation owner")
             return activation
         runtime_row = tx.connection.execute(
             "SELECT owner_id,epoch,expires_at FROM workflow_leases WHERE run_id=? AND namespace=?",
@@ -10789,16 +10445,17 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         if runtime_row is not None and float(runtime_row["expires_at"]) > now:
             if str(runtime_row["owner_id"]) != owner_id:
-                raise UnitOfWorkConflict(
-                    "workflow spawn parent has a live foreign Runtime owner"
-                )
+                raise UnitOfWorkConflict("workflow spawn parent has a live foreign Runtime owner")
             runtime_epoch = int(runtime_row["epoch"])
             expires_at = max(expires_at, float(runtime_row["expires_at"]))
         else:
-            runtime_epoch = max(
-                0 if runtime_row is None else int(runtime_row["epoch"]),
-                0 if fence_row is None else int(fence_row["runtime_lease_epoch"]),
-            ) + 1
+            runtime_epoch = (
+                max(
+                    0 if runtime_row is None else int(runtime_row["epoch"]),
+                    0 if fence_row is None else int(fence_row["runtime_lease_epoch"]),
+                )
+                + 1
+            )
         _fault(fault, "workflow:spawn_activation:before_runtime_lease_write")
         tx.connection.execute(
             """
@@ -10905,11 +10562,13 @@ class SqliteExecutionUnitOfWork:
         if changed != 1:
             raise UnitOfWorkConflict("workflow spawn activation Run CAS failed")
         tx.connection.execute(
-            "UPDATE run_wait_blockers SET wake_consumed=1,consumed_at=?,version=version+1 WHERE blocker_id=? AND wake_consumed=0 AND version=?",
+            "UPDATE run_wait_blockers SET wake_consumed=1,consumed_at=?,version=version+1 WHERE"
+            " blocker_id=? AND wake_consumed=0 AND version=?",
             (now, blocker_snapshot.blocker_id, blocker_snapshot.version),
         )
         tx.connection.execute(
-            "UPDATE workflow_spawn_continuation_ready SET consumed_at=? WHERE ready_receipt_id=? AND consumed_at IS NULL",
+            "UPDATE workflow_spawn_continuation_ready SET consumed_at=? WHERE ready_receipt_id=?"
+            " AND consumed_at IS NULL",
             (now, ready.ready_receipt_id),
         )
         activation_receipt_id = self._derived_id(
@@ -10925,9 +10584,7 @@ class SqliteExecutionUnitOfWork:
             owner_id=owner_id,
             runtime_lease_epoch=runtime_epoch,
             run_fence_epoch=fence_epoch,
-            workflow_lease_epoch=(
-                None if workflow_namespace is None else runtime_epoch
-            ),
+            workflow_lease_epoch=(None if workflow_namespace is None else runtime_epoch),
             continuation_claim_epoch=next_claim_epoch,
             predecessor_activation_receipt_id=None,
             version=1,
@@ -10989,9 +10646,7 @@ class SqliteExecutionUnitOfWork:
             blocker_id=activation.blocker_id,
             activation_receipt_id=activation.activation_receipt_id,
             activation_version=activation.activation_version,
-            predecessor_activation_receipt_id=(
-                activation.predecessor_activation_receipt_id
-            ),
+            predecessor_activation_receipt_id=(activation.predecessor_activation_receipt_id),
             state=activation.state,
         )
 
@@ -11013,9 +10668,7 @@ class SqliteExecutionUnitOfWork:
                 (parent_run_id,),
             ).fetchone()
         else:
-            activation_receipt_id = _required(
-                activation_receipt_id, "activation_receipt_id"
-            )
+            activation_receipt_id = _required(activation_receipt_id, "activation_receipt_id")
             row = tx.connection.execute(
                 """
                 SELECT * FROM workflow_spawn_ready_activations
@@ -11085,8 +10738,7 @@ class SqliteExecutionUnitOfWork:
             str(runtime["owner_id"]) != prior.execution_lease.owner_id
             or int(runtime["epoch"]) != prior.execution_lease.epoch
             or str(fence["owner_id"]) != prior.run_fence.owner_id
-            or int(fence["runtime_lease_epoch"])
-            != prior.run_fence.runtime_lease_epoch
+            or int(fence["runtime_lease_epoch"]) != prior.run_fence.runtime_lease_epoch
             or int(fence["epoch"]) != prior.run_fence.epoch
             or str(fence["state"]) != "active"
         ):
@@ -11112,9 +10764,7 @@ class SqliteExecutionUnitOfWork:
                 )
             workflow_epoch = int(projection["epoch"]) + 1
 
-        runtime_epoch = max(
-            int(runtime["epoch"]), int(fence["runtime_lease_epoch"])
-        ) + 1
+        runtime_epoch = max(int(runtime["epoch"]), int(fence["runtime_lease_epoch"])) + 1
         fence_epoch = int(fence["epoch"]) + 1
         continuation = tx.connection.execute(
             "SELECT * FROM workflow_spawn_continuations WHERE operation_id=?",
@@ -11126,10 +10776,8 @@ class SqliteExecutionUnitOfWork:
             or str(continuation["owner_id"]) != prior.continuation_claim.owner_id
             or int(continuation["runtime_lease_epoch"])
             != prior.continuation_claim.runtime_lease_epoch
-            or int(continuation["run_fence_epoch"])
-            != prior.continuation_claim.run_fence_epoch
-            or int(continuation["claim_epoch"])
-            != prior.continuation_claim.claim_epoch
+            or int(continuation["run_fence_epoch"]) != prior.continuation_claim.run_fence_epoch
+            or int(continuation["claim_epoch"]) != prior.continuation_claim.claim_epoch
             or int(continuation["version"]) != prior.continuation_claim.version
         ):
             raise UnitOfWorkConflict("workflow spawn continuation claim drifted")
@@ -11246,9 +10894,7 @@ class SqliteExecutionUnitOfWork:
                 None if prior.workflow_lease is None else prior.workflow_lease.epoch
             ),
             continuation_claim_epoch=prior.continuation_claim.claim_epoch,
-            predecessor_activation_receipt_id=(
-                prior.predecessor_activation_receipt_id
-            ),
+            predecessor_activation_receipt_id=(prior.predecessor_activation_receipt_id),
             version=superseded_version,
         )
         changed = tx.connection.execute(
@@ -11363,9 +11009,7 @@ class SqliteExecutionUnitOfWork:
         spawn_operation_id: str,
     ) -> ToolResult | None:
         tx = self._assert_open_workflow_transaction(transaction)
-        spawn_operation_id = _required(
-            spawn_operation_id, "spawn_operation_id"
-        )
+        spawn_operation_id = _required(spawn_operation_id, "spawn_operation_id")
         continuation = tx.connection.execute(
             "SELECT * FROM workflow_spawn_continuations WHERE operation_id=?",
             (spawn_operation_id,),
@@ -11376,9 +11020,7 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         if continuation is None:
             if completion is not None:
-                raise UnitOfWorkConflict(
-                    "workflow spawn completion lacks its continuation"
-                )
+                raise UnitOfWorkConflict("workflow spawn completion lacks its continuation")
             return None
         pointer = continuation["completion_receipt_id"]
         if pointer is None and completion is None:
@@ -11388,8 +11030,7 @@ class SqliteExecutionUnitOfWork:
             or completion is None
             or str(pointer) != str(completion["completion_receipt_id"])
             or str(continuation["state"]) != "completed"
-            or str(continuation["completion_path_kind"])
-            != str(completion["path_kind"])
+            or str(continuation["completion_path_kind"]) != str(completion["path_kind"])
         ):
             raise UnitOfWorkConflict("workflow spawn completion pointer differs")
 
@@ -11419,17 +11060,12 @@ class SqliteExecutionUnitOfWork:
         if completion_hash != str(completion["canonical_hash"]):
             raise UnitOfWorkConflict("workflow spawn completion hash differs")
         if (
-            str(completion["ticket_receipt_id"])
-            != str(ticket["ticket_receipt_id"])
-            or str(completion["parent_run_id"])
-            != str(continuation["parent_run_id"])
+            str(completion["ticket_receipt_id"]) != str(ticket["ticket_receipt_id"])
+            or str(completion["parent_run_id"]) != str(continuation["parent_run_id"])
             or str(completion["effect_id"]) != str(continuation["effect_id"])
-            or int(completion["handoff_attempt"])
-            != int(continuation["handoff_attempt"])
-            or str(completion["effect_request_hash"])
-            != str(continuation["effect_request_hash"])
-            or str(completion["issue_authority_hash"])
-            != str(continuation["issue_authority_hash"])
+            or int(completion["handoff_attempt"]) != int(continuation["handoff_attempt"])
+            or str(completion["effect_request_hash"]) != str(continuation["effect_request_hash"])
+            or str(completion["issue_authority_hash"]) != str(continuation["issue_authority_hash"])
         ):
             raise UnitOfWorkConflict("workflow spawn completion identity differs")
 
@@ -11448,14 +11084,11 @@ class SqliteExecutionUnitOfWork:
             or str(effect["state"]) != result.outcome.value
             or str(effect["result_json"]) != result_json
             or str(effect["call_id"]) != result.call_id.value
-            or str(effect["request_hash"])
-            != str(completion["effect_request_hash"])
-            or int(effect["handoff_attempt"])
-            != int(completion["handoff_attempt"])
+            or str(effect["request_hash"]) != str(completion["effect_request_hash"])
+            or int(effect["handoff_attempt"]) != int(completion["handoff_attempt"])
             or (
                 completion["failure_evidence_id"] is not None
-                and effect["evidence_ref"]
-                != completion["failure_evidence_id"]
+                and effect["evidence_ref"] != completion["failure_evidence_id"]
             )
         ):
             raise UnitOfWorkConflict("workflow spawn completion Effect differs")
@@ -11493,36 +11126,24 @@ class SqliteExecutionUnitOfWork:
                 or ready_row is None
                 or ready_row["consumed_at"] is None
                 or not activation_rows
-                or str(ready_row["ticket_receipt_id"])
-                != str(completion["ticket_receipt_id"])
-                or str(ready_row["effect_id"])
-                != str(completion["effect_id"])
-                or int(ready_row["handoff_attempt"])
-                != int(completion["handoff_attempt"])
+                or str(ready_row["ticket_receipt_id"]) != str(completion["ticket_receipt_id"])
+                or str(ready_row["effect_id"]) != str(completion["effect_id"])
+                or int(ready_row["handoff_attempt"]) != int(completion["handoff_attempt"])
                 or str(completion["activation_chain_head_id"])
                 != str(activation_rows[-1]["activation_receipt_id"])
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn recovery completion chain differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn recovery completion chain differs")
             predecessor: str | None = None
             for index, activation in enumerate(activation_rows):
                 if (
-                    str(activation["ready_receipt_id"])
-                    != str(ready_row["ready_receipt_id"])
-                    or str(activation["spawn_operation_id"])
-                    != spawn_operation_id
-                    or str(activation["parent_run_id"])
-                    != str(completion["parent_run_id"])
-                    or str(activation["effect_id"])
-                    != str(completion["effect_id"])
-                    or activation["predecessor_activation_receipt_id"]
-                    != predecessor
+                    str(activation["ready_receipt_id"]) != str(ready_row["ready_receipt_id"])
+                    or str(activation["spawn_operation_id"]) != spawn_operation_id
+                    or str(activation["parent_run_id"]) != str(completion["parent_run_id"])
+                    or str(activation["effect_id"]) != str(completion["effect_id"])
+                    or activation["predecessor_activation_receipt_id"] != predecessor
                     or str(activation["canonical_hash"])
                     != _workflow_spawn_activation_hash(
-                        activation_receipt_id=str(
-                            activation["activation_receipt_id"]
-                        ),
+                        activation_receipt_id=str(activation["activation_receipt_id"]),
                         ready_receipt_id=str(activation["ready_receipt_id"]),
                         spawn_operation_id=str(activation["spawn_operation_id"]),
                         parent_run_id=str(activation["parent_run_id"]),
@@ -11535,9 +11156,7 @@ class SqliteExecutionUnitOfWork:
                             if activation["workflow_lease_epoch"] is None
                             else int(activation["workflow_lease_epoch"])
                         ),
-                        continuation_claim_epoch=int(
-                            activation["continuation_claim_epoch"]
-                        ),
+                        continuation_claim_epoch=int(activation["continuation_claim_epoch"]),
                         predecessor_activation_receipt_id=predecessor,
                         version=int(activation["version"]),
                     )
@@ -11546,13 +11165,10 @@ class SqliteExecutionUnitOfWork:
                         and str(activation["state"]) != "superseded"
                     )
                     or (
-                        index == len(activation_rows) - 1
-                        and str(activation["state"]) != "consumed"
+                        index == len(activation_rows) - 1 and str(activation["state"]) != "consumed"
                     )
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow spawn recovery activation chain differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn recovery activation chain differs")
                 predecessor = str(activation["activation_receipt_id"])
         elif path_kind == "parent_terminal_ticket_only":
             if (
@@ -11560,13 +11176,10 @@ class SqliteExecutionUnitOfWork:
                 or activation_count != 0
                 or completion["activation_chain_head_id"] is not None
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn terminal ticket-only chain differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn terminal ticket-only chain differs")
         elif path_kind == "parent_terminal_ready_unactivated":
             ready_row = tx.connection.execute(
-                "SELECT * FROM workflow_spawn_continuation_ready "
-                "WHERE operation_id=?",
+                "SELECT * FROM workflow_spawn_continuation_ready WHERE operation_id=?",
                 (spawn_operation_id,),
             ).fetchone()
             blocker = (
@@ -11587,22 +11200,16 @@ class SqliteExecutionUnitOfWork:
                 or activation_count != 0
                 or ready_row is None
                 or ready_row["consumed_at"] is None
-                or str(ready_row["ticket_receipt_id"])
-                != str(completion["ticket_receipt_id"])
-                or str(ready_row["effect_id"])
-                != str(completion["effect_id"])
-                or int(ready_row["handoff_attempt"])
-                != int(completion["handoff_attempt"])
+                or str(ready_row["ticket_receipt_id"]) != str(completion["ticket_receipt_id"])
+                or str(ready_row["effect_id"]) != str(completion["effect_id"])
+                or int(ready_row["handoff_attempt"]) != int(completion["handoff_attempt"])
                 or completion["activation_chain_head_id"] is not None
                 or blocker is None
                 or int(blocker["wake_consumed"]) != 1
                 or blocker["consumed_at"] is None
-                or str(blocker["superseded_by"])
-                != str(ready_row["ready_receipt_id"])
+                or str(blocker["superseded_by"]) != str(ready_row["ready_receipt_id"])
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn unactivated terminal chain differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn unactivated terminal chain differs")
         else:
             raise UnitOfWorkConflict("workflow spawn completion path is unsupported")
 
@@ -11619,9 +11226,7 @@ class SqliteExecutionUnitOfWork:
                 or completion["failure_evidence_hash"] is not None
                 or not isinstance(result.value, Mapping)
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn success completion shape differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn success completion shape differs")
             wait = tx.connection.execute(
                 "SELECT * FROM workflow_spawn_child_wait_receipts WHERE parent_wait_receipt_id=?",
                 (str(child_wait_receipt_id),),
@@ -11665,8 +11270,7 @@ class SqliteExecutionUnitOfWork:
                 or str(wait["parent_run_id"]) != str(completion["parent_run_id"])
                 or str(wait["child_run_id"]) != str(child["run_id"])
                 or str(wait["child_command_id"]) != str(command["command_id"])
-                or str(command["parent_run_id"])
-                != str(completion["parent_run_id"])
+                or str(command["parent_run_id"]) != str(completion["parent_run_id"])
                 or str(command["child_run_id"]) != str(child["run_id"])
                 or str(command["state"]) not in {"pending", "scheduled", "acked"}
                 or str(link["attachment_policy"]) != AttachmentPolicy.ATTACHED.value
@@ -11676,22 +11280,20 @@ class SqliteExecutionUnitOfWork:
                 raise UnitOfWorkConflict("workflow spawn success durable chain differs")
             wait_state = str(wait["state"])
             claimed_continuation: sqlite3.Row | None = None
+            expected_lifecycle_hash: str | None
             if wait_state == "unconsumed":
                 if (
                     wait["child_signal_id"] is not None
                     or wait["continuation_id"] is not None
                     or str(parent["state"]) != RunState.WAITING.value
-                    or int(parent["version"])
-                    != int(wait["parent_waiting_version"])
+                    or int(parent["version"]) != int(wait["parent_waiting_version"])
                     or tx.connection.execute(
                         "SELECT 1 FROM workflow_leases WHERE run_id=? LIMIT 1",
                         (str(completion["parent_run_id"]),),
                     ).fetchone()
                     is not None
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow spawn unconsumed child-wait differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn unconsumed child-wait differs")
             elif wait_state == "woken":
                 signal = tx.connection.execute(
                     "SELECT * FROM child_signals WHERE signal_id=?",
@@ -11716,18 +11318,14 @@ class SqliteExecutionUnitOfWork:
                     signal is None
                     or continuation is None
                     or str(signal["state"]) != "acked"
-                    or str(signal["parent_run_id"])
-                    != str(completion["parent_run_id"])
+                    or str(signal["parent_run_id"]) != str(completion["parent_run_id"])
                     or str(signal["child_run_id"]) != str(child["run_id"])
-                    or str(continuation["run_id"])
-                    != str(completion["parent_run_id"])
+                    or str(continuation["run_id"]) != str(completion["parent_run_id"])
                     or str(continuation["state"]) != "pending"
                     or str(parent["state"]) != RunState.QUEUED.value
                     or str(wait["lifecycle_hash"]) != expected_lifecycle_hash
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow spawn woken child-wait differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn woken child-wait differs")
             elif wait_state == "claimed":
                 signal = tx.connection.execute(
                     "SELECT * FROM child_signals WHERE signal_id=?",
@@ -11754,9 +11352,7 @@ class SqliteExecutionUnitOfWork:
                                 "child_signal_id": wait["child_signal_id"],
                                 "continuation_id": wait["continuation_id"],
                                 "claim_owner": continuation["claimed_by"],
-                                "runtime_lease_epoch": continuation[
-                                    "runtime_lease_epoch"
-                                ],
+                                "runtime_lease_epoch": continuation["runtime_lease_epoch"],
                             }
                         ).encode()
                     ).hexdigest()
@@ -11767,18 +11363,13 @@ class SqliteExecutionUnitOfWork:
                     or runtime_lease is None
                     or str(signal["state"]) != "acked"
                     or str(continuation["state"]) != "claimed"
-                    or str(continuation["run_id"])
-                    != str(completion["parent_run_id"])
-                    or str(runtime_lease["owner_id"])
-                    != str(continuation["claimed_by"])
-                    or int(runtime_lease["epoch"])
-                    != int(continuation["runtime_lease_epoch"])
+                    or str(continuation["run_id"]) != str(completion["parent_run_id"])
+                    or str(runtime_lease["owner_id"]) != str(continuation["claimed_by"])
+                    or int(runtime_lease["epoch"]) != int(continuation["runtime_lease_epoch"])
                     or str(parent["state"]) != RunState.RUNNING.value
                     or str(wait["lifecycle_hash"]) != expected_lifecycle_hash
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow spawn claimed child-wait differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn claimed child-wait differs")
             elif wait_state in {"acked_completion_pending", "acked"}:
                 signal = tx.connection.execute(
                     "SELECT * FROM child_signals WHERE signal_id=?",
@@ -11789,8 +11380,7 @@ class SqliteExecutionUnitOfWork:
                     (wait["continuation_id"],),
                 ).fetchone()
                 progress = tx.connection.execute(
-                    "SELECT * FROM continuation_progress_receipts "
-                    "WHERE receipt_id=?",
+                    "SELECT * FROM continuation_progress_receipts WHERE receipt_id=?",
                     (wait["progress_receipt_id"],),
                 ).fetchone()
                 claimed_continuation = continuation
@@ -11803,21 +11393,16 @@ class SqliteExecutionUnitOfWork:
                     or str(signal["state"]) != "acked"
                     or str(continuation["state"]) != "acked"
                     or continuation["ack_receipt_id"] != wait["progress_receipt_id"]
-                    or str(progress["continuation_id"])
-                    != str(continuation["continuation_id"])
+                    or str(progress["continuation_id"]) != str(continuation["continuation_id"])
                     or str(progress["owner_id"]) != str(continuation["claimed_by"])
                     or int(progress["runtime_lease_epoch"])
                     != int(continuation["runtime_lease_epoch"])
-                    or int(progress["claim_epoch"])
-                    != int(continuation["claim_epoch"])
+                    or int(progress["claim_epoch"]) != int(continuation["claim_epoch"])
                     or pending_json is None
                     or pending_hash is None
-                    or hashlib.sha256(str(pending_json).encode()).hexdigest()
-                    != str(pending_hash)
+                    or hashlib.sha256(str(pending_json).encode()).hexdigest() != str(pending_hash)
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow spawn acknowledged child-wait differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn acknowledged child-wait differs")
                 if wait_state == "acked_completion_pending":
                     expected_lifecycle_hash = hashlib.sha256(
                         canonical_json(
@@ -11827,9 +11412,7 @@ class SqliteExecutionUnitOfWork:
                                 "version": int(wait["version"]),
                                 "child_signal_id": wait["child_signal_id"],
                                 "continuation_id": wait["continuation_id"],
-                                "progress_receipt_id": wait[
-                                    "progress_receipt_id"
-                                ],
+                                "progress_receipt_id": wait["progress_receipt_id"],
                                 "pending_child_completion_hash": pending_hash,
                             }
                         ).encode()
@@ -11838,12 +11421,9 @@ class SqliteExecutionUnitOfWork:
                         wait["child_completion_append_receipt_id"] is not None
                         or wait["child_completion_context_revision"] is not None
                         or str(parent["state"]) != RunState.RUNNING.value
-                        or str(wait["lifecycle_hash"])
-                        != expected_lifecycle_hash
+                        or str(wait["lifecycle_hash"]) != expected_lifecycle_hash
                     ):
-                        raise UnitOfWorkConflict(
-                            "workflow spawn pending completion differs"
-                        )
+                        raise UnitOfWorkConflict("workflow spawn pending completion differs")
                 else:
                     expected_lifecycle_hash = hashlib.sha256(
                         canonical_json(
@@ -11851,12 +11431,8 @@ class SqliteExecutionUnitOfWork:
                                 "identity_hash": str(wait["identity_hash"]),
                                 "state": "acked",
                                 "version": int(wait["version"]),
-                                "progress_receipt_id": wait[
-                                    "progress_receipt_id"
-                                ],
-                                "child_completion_append_id": wait[
-                                    "child_completion_append_id"
-                                ],
+                                "progress_receipt_id": wait["progress_receipt_id"],
+                                "child_completion_append_id": wait["child_completion_append_id"],
                                 "child_completion_context_revision": wait[
                                     "child_completion_context_revision"
                                 ],
@@ -11887,12 +11463,9 @@ class SqliteExecutionUnitOfWork:
                         != wait["child_completion_append_id"]
                         or not isinstance(append_receipts, dict)
                         or wait["child_completion_append_id"] not in append_receipts
-                        or str(wait["lifecycle_hash"])
-                        != expected_lifecycle_hash
+                        or str(wait["lifecycle_hash"]) != expected_lifecycle_hash
                     ):
-                        raise UnitOfWorkConflict(
-                            "workflow spawn completed Context append differs"
-                        )
+                        raise UnitOfWorkConflict("workflow spawn completed Context append differs")
             elif wait_state == "acked_parent_terminal":
                 signal = tx.connection.execute(
                     "SELECT * FROM child_signals WHERE signal_id=?",
@@ -11903,8 +11476,7 @@ class SqliteExecutionUnitOfWork:
                     (wait["continuation_id"],),
                 ).fetchone()
                 progress = tx.connection.execute(
-                    "SELECT * FROM continuation_progress_receipts "
-                    "WHERE receipt_id=?",
+                    "SELECT * FROM continuation_progress_receipts WHERE receipt_id=?",
                     (wait["progress_receipt_id"],),
                 ).fetchone()
                 terminal_event = tx.connection.execute(
@@ -11917,50 +11489,34 @@ class SqliteExecutionUnitOfWork:
                 pending_json = wait["pending_child_completion_json"]
                 pending_hash = wait["pending_child_completion_hash"]
                 terminal_state = wait["pending_completion_terminal_state"]
-                terminal_receipt_id = wait[
-                    "pending_completion_terminal_receipt_id"
-                ]
+                terminal_receipt_id = wait["pending_completion_terminal_receipt_id"]
                 phase_kind = wait["parent_terminal_phase_kind"]
-                claimed_ack = wait[
-                    "claimed_continuation_terminal_ack_receipt_id"
-                ]
+                claimed_ack = wait["claimed_continuation_terminal_ack_receipt_id"]
                 if phase_kind not in {
                     "child_active",
                     "signal_pending",
                     "continuation_claimed",
                     "completion_pending",
                 }:
-                    raise UnitOfWorkConflict(
-                        "workflow spawn parent-terminal phase differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn parent-terminal phase differs")
                 expected_terminal_hash = hashlib.sha256(
                     canonical_json(
                         {
-                            "parent_wait_receipt_id": str(
-                                wait["parent_wait_receipt_id"]
-                            ),
+                            "parent_wait_receipt_id": str(wait["parent_wait_receipt_id"]),
                             "spawn_operation_id": spawn_operation_id,
                             "phase_kind": phase_kind,
                             "terminal_receipt_id": terminal_receipt_id,
                             "terminal_state": terminal_state,
                             "child_signal_id": (
-                                None
-                                if phase_kind == "child_active"
-                                else wait["child_signal_id"]
+                                None if phase_kind == "child_active" else wait["child_signal_id"]
                             ),
                             "continuation_id": (
-                                None
-                                if phase_kind == "child_active"
-                                else wait["continuation_id"]
+                                None if phase_kind == "child_active" else wait["continuation_id"]
                             ),
                             "pending_child_completion_hash": pending_hash,
                             "claimed_continuation_ack_receipt_id": claimed_ack,
-                            "child_cancel_request_id": wait[
-                                "child_cancel_request_id"
-                            ],
-                            "child_cancel_receipt_id": wait[
-                                "child_cancel_receipt_id"
-                            ],
+                            "child_cancel_request_id": wait["child_cancel_request_id"],
+                            "child_cancel_receipt_id": wait["child_cancel_receipt_id"],
                             "reused_child_cancel_receipt_id": wait[
                                 "reused_child_cancel_receipt_id"
                             ],
@@ -11987,7 +11543,8 @@ class SqliteExecutionUnitOfWork:
                     canonical_json(lifecycle_payload).encode()
                 ).hexdigest()
                 common_differs = (
-                    terminal_state not in {
+                    terminal_state
+                    not in {
                         RunState.COMPLETED.value,
                         RunState.FAILED.value,
                         RunState.CANCELLED.value,
@@ -11995,19 +11552,15 @@ class SqliteExecutionUnitOfWork:
                     or terminal_event is None
                     or str(parent["state"]) != str(terminal_state)
                     or str(terminal_event["kind"]) != f"run.{terminal_state}"
-                    or str(wait["pending_completion_terminal_hash"])
-                    != expected_terminal_hash
-                    or str(wait["lifecycle_hash"])
-                    != expected_lifecycle_hash
+                    or str(wait["pending_completion_terminal_hash"]) != expected_terminal_hash
+                    or str(wait["lifecycle_hash"]) != expected_lifecycle_hash
                 )
                 progress_differs = (
                     continuation is None
                     or progress is None
                     or str(continuation["state"]) != "acked"
-                    or continuation["ack_receipt_id"]
-                    != wait["progress_receipt_id"]
-                    or str(progress["continuation_id"])
-                    != str(continuation["continuation_id"])
+                    or continuation["ack_receipt_id"] != wait["progress_receipt_id"]
+                    or str(progress["continuation_id"]) != str(continuation["continuation_id"])
                 )
                 phase_differs = False
                 if phase_kind == "child_active":
@@ -12025,8 +11578,7 @@ class SqliteExecutionUnitOfWork:
                         None
                         if late_receipt_id is None
                         else tx.connection.execute(
-                            "SELECT * FROM child_signal_ack_receipts "
-                            "WHERE receipt_id=?",
+                            "SELECT * FROM child_signal_ack_receipts WHERE receipt_id=?",
                             (late_receipt_id,),
                         ).fetchone()
                     )
@@ -12038,9 +11590,7 @@ class SqliteExecutionUnitOfWork:
                             (late_ack["event_id"],),
                         ).fetchone()
                     )
-                    cancel_is_terminal = (
-                        cancel is not None and str(cancel["phase"]) == "terminal"
-                    )
+                    cancel_is_terminal = cancel is not None and str(cancel["phase"]) == "terminal"
                     late_differs = (
                         signal is not None or continuation is not None
                         if late_receipt_id is None
@@ -12052,12 +11602,10 @@ class SqliteExecutionUnitOfWork:
                             or str(signal["state"]) != "acked"
                             or signal["ack_receipt_id"] != late_receipt_id
                             or str(continuation["state"]) != "quarantined"
-                            or str(late_ack["signal_id"])
-                            != str(signal["signal_id"])
+                            or str(late_ack["signal_id"]) != str(signal["signal_id"])
                             or str(late_ack["continuation_id"])
                             != str(continuation["continuation_id"])
-                            or str(late_event["kind"])
-                            != "child.signal_quarantined"
+                            or str(late_event["kind"]) != "child.signal_quarantined"
                         )
                     )
                     phase_differs = (
@@ -12067,25 +11615,21 @@ class SqliteExecutionUnitOfWork:
                         or pending_hash is not None
                         or cancel is None
                         or str(cancel["run_id"]) != str(child["run_id"])
-                        or str(cancel["phase"]) not in {
+                        or str(cancel["phase"])
+                        not in {
                             "requested",
                             "cancelling",
                             "blocked",
                             "terminal",
                         }
-                        or (
-                            cancel_is_terminal
-                            and str(child["state"]) != RunState.CANCELLED.value
-                        )
+                        or (cancel_is_terminal and str(child["state"]) != RunState.CANCELLED.value)
                         or (
                             not cancel_is_terminal
-                            and str(child["state"])
-                            != RunState.CANCEL_REQUESTED.value
+                            and str(child["state"]) != RunState.CANCEL_REQUESTED.value
                         )
                         or (
                             wait["child_cancel_receipt_id"] is not None
-                            and wait["child_cancel_request_id"]
-                            != wait["child_cancel_receipt_id"]
+                            and wait["child_cancel_request_id"] != wait["child_cancel_receipt_id"]
                         )
                         or (
                             wait["child_cancel_receipt_id"] is None
@@ -12106,8 +11650,7 @@ class SqliteExecutionUnitOfWork:
                         or progress is not None
                         or pending_json is not None
                         or pending_hash is not None
-                        or wait["late_signal_quarantine_receipt_id"]
-                        != terminal_receipt_id
+                        or wait["late_signal_quarantine_receipt_id"] != terminal_receipt_id
                         or claimed_ack is not None
                         or wait["child_cancel_request_id"] is not None
                         or wait["child_cancel_receipt_id"] is not None
@@ -12144,13 +11687,9 @@ class SqliteExecutionUnitOfWork:
                         or wait["reused_child_cancel_receipt_id"] is not None
                     )
                 if common_differs or phase_differs:
-                    raise UnitOfWorkConflict(
-                        "workflow spawn parent-terminal child-wait differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn parent-terminal child-wait differs")
             else:
-                raise UnitOfWorkConflict(
-                    "workflow spawn child-wait lifecycle is unsupported"
-                )
+                raise UnitOfWorkConflict("workflow spawn child-wait lifecycle is unsupported")
             if str(command["state"]) == "acked":
                 terminal = tx.connection.execute(
                     "SELECT * FROM child_terminal_receipts WHERE command_id=?",
@@ -12169,22 +11708,21 @@ class SqliteExecutionUnitOfWork:
                     or signal is None
                     or str(terminal["child_run_id"]) != str(child["run_id"])
                     or str(terminal["terminal_state"]) != str(child["state"])
-                    or str(signal["parent_run_id"])
-                    != str(completion["parent_run_id"])
+                    or str(signal["parent_run_id"]) != str(completion["parent_run_id"])
                     or str(signal["child_run_id"]) != str(child["run_id"])
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow spawn child terminal successor differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn child terminal successor differs")
             checkpoint = tx.connection.execute(
-                "SELECT * FROM workflow_checkpoints WHERE run_id=? AND namespace='react.termination.v1' AND version=?",
+                "SELECT * FROM workflow_checkpoints WHERE run_id=? AND"
+                " namespace='react.termination.v1' AND version=?",
                 (
                     str(completion["parent_run_id"]),
                     int(wait["react_checkpoint_revision"]),
                 ),
             ).fetchone()
             context = tx.connection.execute(
-                "SELECT checkpoint_json FROM workflow_checkpoints WHERE run_id=? AND namespace='react.context.v1' AND version=?",
+                "SELECT checkpoint_json FROM workflow_checkpoints WHERE run_id=? AND"
+                " namespace='react.context.v1' AND version=?",
                 (
                     str(completion["parent_run_id"]),
                     int(wait["context_post_revision"]),
@@ -12198,45 +11736,27 @@ class SqliteExecutionUnitOfWork:
                 checkpoint is None
                 or context is None
                 or fence is None
-                or str(checkpoint["checkpoint_hash"])
-                != str(wait["react_checkpoint_hash"])
-                or hashlib.sha256(
-                    str(checkpoint["checkpoint_json"]).encode()
-                ).hexdigest()
+                or str(checkpoint["checkpoint_hash"]) != str(wait["react_checkpoint_hash"])
+                or hashlib.sha256(str(checkpoint["checkpoint_json"]).encode()).hexdigest()
                 != str(checkpoint["checkpoint_hash"])
             )
-            historical_fence_differs = (
-                wait_state in {"unconsumed", "woken"}
-                and (
-                    fence is None
-                    or str(fence["state"]) != "released"
-                    or int(fence["runtime_lease_epoch"])
-                    != int(wait["released_runtime_lease_epoch"])
-                    or int(fence["epoch"])
-                    != int(wait["released_run_fence_epoch"])
-                )
+            historical_fence_differs = wait_state in {"unconsumed", "woken"} and (
+                fence is None
+                or str(fence["state"]) != "released"
+                or int(fence["runtime_lease_epoch"]) != int(wait["released_runtime_lease_epoch"])
+                or int(fence["epoch"]) != int(wait["released_run_fence_epoch"])
             )
-            current_fence_differs = (
-                wait_state in {"claimed", "acked_completion_pending"}
-                and (
-                    fence is None
-                    or claimed_continuation is None
-                    or str(fence["state"]) != "active"
-                    or str(fence["owner_id"])
-                    != str(claimed_continuation["claimed_by"])
-                    or int(fence["runtime_lease_epoch"])
-                    != int(claimed_continuation["runtime_lease_epoch"])
-                    or int(fence["runtime_lease_epoch"])
-                    <= int(wait["released_runtime_lease_epoch"])
-                    or int(fence["epoch"])
-                    <= int(wait["released_run_fence_epoch"])
-                )
+            current_fence_differs = wait_state in {"claimed", "acked_completion_pending"} and (
+                fence is None
+                or claimed_continuation is None
+                or str(fence["state"]) != "active"
+                or str(fence["owner_id"]) != str(claimed_continuation["claimed_by"])
+                or int(fence["runtime_lease_epoch"])
+                != int(claimed_continuation["runtime_lease_epoch"])
+                or int(fence["runtime_lease_epoch"]) <= int(wait["released_runtime_lease_epoch"])
+                or int(fence["epoch"]) <= int(wait["released_run_fence_epoch"])
             )
-            if (
-                historical_checkpoint_differs
-                or historical_fence_differs
-                or current_fence_differs
-            ):
+            if historical_checkpoint_differs or historical_fence_differs or current_fence_differs:
                 raise UnitOfWorkConflict("workflow spawn success checkpoint differs")
             return result
 
@@ -12245,20 +11765,16 @@ class SqliteExecutionUnitOfWork:
         if str(completion["failure_evidence_id"]) != self._derived_id(
             "workflow-spawn/failure-evidence/v1", evidence_hash
         ):
-            raise UnitOfWorkConflict(
-                "workflow spawn failure evidence identity differs"
-            )
+            raise UnitOfWorkConflict("workflow spawn failure evidence identity differs")
         evidence_kind = evidence.get("kind")
         if evidence_kind == "catalog_stale":
             if (
                 result.outcome is not ToolOutcome.FAILED
                 or result.error_code != "workflow_catalog_stale"
-                or evidence.get("ticket_catalog_generation")
-                != int(ticket["catalog_generation"])
+                or evidence.get("ticket_catalog_generation") != int(ticket["catalog_generation"])
                 or evidence.get("ticket_catalog_version")
                 != int(ticket["catalog_authority_version"])
-                or evidence.get("ticket_catalog_hash")
-                != str(ticket["catalog_hash"])
+                or evidence.get("ticket_catalog_hash") != str(ticket["catalog_hash"])
                 or (
                     evidence.get("observed_catalog_generation"),
                     evidence.get("observed_catalog_version"),
@@ -12270,13 +11786,10 @@ class SqliteExecutionUnitOfWork:
                     str(ticket["catalog_hash"]),
                 )
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn catalog-stale evidence differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn catalog-stale evidence differs")
         elif evidence_kind == "graph_version_unavailable":
             activation = tx.connection.execute(
-                "SELECT * FROM workflow_spawn_ready_activations "
-                "WHERE activation_receipt_id=?",
+                "SELECT * FROM workflow_spawn_ready_activations WHERE activation_receipt_id=?",
                 (str(completion["activation_chain_head_id"]),),
             ).fetchone()
             observed_kind = evidence.get("observed_kind")
@@ -12285,24 +11798,17 @@ class SqliteExecutionUnitOfWork:
                 result.outcome is not ToolOutcome.FAILED
                 or result.error_code != "graph_version_unavailable"
                 or activation is None
-                or evidence.get("ticket_receipt_id")
-                != str(ticket["ticket_receipt_id"])
+                or evidence.get("ticket_receipt_id") != str(ticket["ticket_receipt_id"])
                 or evidence.get("profile_key") != str(ticket["profile_key"])
-                or evidence.get("workflow_name")
-                != str(ticket["workflow_name"])
-                or evidence.get("workflow_version")
-                != str(ticket["workflow_version"])
+                or evidence.get("workflow_name") != str(ticket["workflow_name"])
+                or evidence.get("workflow_version") != str(ticket["workflow_version"])
                 or evidence.get("expected_implementation_hash")
                 != str(ticket["implementation_fingerprint"])
-                or evidence.get("activation_receipt_id")
-                != str(activation["activation_receipt_id"])
-                or evidence.get("parent_run_id")
-                != str(activation["parent_run_id"])
+                or evidence.get("activation_receipt_id") != str(activation["activation_receipt_id"])
+                or evidence.get("parent_run_id") != str(activation["parent_run_id"])
                 or evidence.get("owner_id") != str(activation["owner_id"])
-                or evidence.get("runtime_lease_epoch")
-                != int(activation["runtime_lease_epoch"])
-                or evidence.get("run_fence_epoch")
-                != int(activation["run_fence_epoch"])
+                or evidence.get("runtime_lease_epoch") != int(activation["runtime_lease_epoch"])
+                or evidence.get("run_fence_epoch") != int(activation["run_fence_epoch"])
                 or evidence.get("workflow_lease_epoch")
                 != (
                     None
@@ -12318,14 +11824,11 @@ class SqliteExecutionUnitOfWork:
                     observed_kind == "drift"
                     and (
                         not isinstance(observed_hash, str)
-                        or observed_hash
-                        == evidence.get("expected_implementation_hash")
+                        or observed_hash == evidence.get("expected_implementation_hash")
                     )
                 )
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn graph-unavailable evidence differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn graph-unavailable evidence differs")
         elif evidence_kind == "workflow_parent_terminal_before_spawn":
             from simple_harness.workflow.execution_ports import (
                 WorkflowTerminalOutcome,
@@ -12342,17 +11845,14 @@ class SqliteExecutionUnitOfWork:
                     "parent_terminal_activated",
                 }
                 or result.outcome is not ToolOutcome.FAILED
-                or result.error_code
-                != "workflow_parent_terminal_before_spawn"
+                or result.error_code != "workflow_parent_terminal_before_spawn"
                 or not isinstance(terminal, WorkflowTerminalOutcome)
                 or not self._verify_workflow_terminal(tx.connection, terminal)
                 or evidence.get("terminal_receipt_id") != terminal.receipt_id
                 or evidence.get("terminal_state") != terminal.state
                 or evidence.get("terminal_outcome_hash") != terminal.outcome_hash
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn parent-terminal evidence differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn parent-terminal evidence differs")
         else:
             raise UnitOfWorkConflict("workflow spawn failure evidence is unsupported")
         return result
@@ -12370,9 +11870,7 @@ class SqliteExecutionUnitOfWork:
         )
 
         tx = self._assert_open_workflow_transaction(transaction)
-        result = await self.read_spawn_continuation_outcome(
-            transaction, spawn_operation_id
-        )
+        result = await self.read_spawn_continuation_outcome(transaction, spawn_operation_id)
         if result is None:
             return None
         completion = tx.connection.execute(
@@ -12405,7 +11903,7 @@ class SqliteExecutionUnitOfWork:
             ticket_receipt_id=value.get("ticket_receipt_id"),
             runtime_start_receipt_id=value.get("runtime_start_receipt_id"),
             child_command_id=value.get("child_command_id"),
-            attachment_policy=AttachmentPolicy(value.get("attachment_policy")),
+            attachment_policy=AttachmentPolicy(cast(str, value.get("attachment_policy"))),
         )
         if (
             spawn_result.child_run_id != str(wait["child_run_id"])
@@ -12432,20 +11930,12 @@ class SqliteExecutionUnitOfWork:
             batch_digest=str(wait["batch_digest"]),
             spawn_ordinal=int(wait["spawn_ordinal"]),
             next_tool_ordinal=int(wait["next_tool_ordinal"]),
-            spawn_result_append_receipt_id=str(
-                wait["spawn_result_append_receipt_id"]
-            ),
+            spawn_result_append_receipt_id=str(wait["spawn_result_append_receipt_id"]),
             context_revision=int(wait["context_post_revision"]),
             termination_started_at=float(wait["termination_started_at"]),
-            termination_last_observed_at=float(
-                wait["termination_last_observed_at"]
-            ),
-            wall_deadline=(
-                None if wait["wall_deadline"] is None else float(wait["wall_deadline"])
-            ),
-            termination_policy_snapshot_hash=str(
-                wait["termination_policy_snapshot_hash"]
-            ),
+            termination_last_observed_at=float(wait["termination_last_observed_at"]),
+            wall_deadline=(None if wait["wall_deadline"] is None else float(wait["wall_deadline"])),
+            termination_policy_snapshot_hash=str(wait["termination_policy_snapshot_hash"]),
         )
         return _create_workflow_spawn_admission_outcome(
             child_start_ref=child_start_ref,
@@ -12479,9 +11969,10 @@ class SqliteExecutionUnitOfWork:
         )
 
         tx = self._assert_open_workflow_transaction(transaction)
-        if await self.read_spawn_admission_outcome(
-            transaction, continuation.spawn_operation_id
-        ) is not None:
+        if (
+            await self.read_spawn_admission_outcome(transaction, continuation.spawn_operation_id)
+            is not None
+        ):
             raise UnitOfWorkConflict(
                 "workflow spawn admission already committed; use receipt reader"
             )
@@ -12520,8 +12011,7 @@ class SqliteExecutionUnitOfWork:
             or float(runtime["expires_at"]) <= now
             or str(fence["state"]) != "active"
             or str(fence["owner_id"]) != continuation.owner_id
-            or int(fence["runtime_lease_epoch"])
-            != continuation.runtime_lease_epoch
+            or int(fence["runtime_lease_epoch"]) != continuation.runtime_lease_epoch
             or int(fence["epoch"]) != continuation.run_fence_epoch
         ):
             raise UnitOfWorkConflict("workflow spawn parent authority differs")
@@ -12533,22 +12023,16 @@ class SqliteExecutionUnitOfWork:
         path_kind = "direct"
         activation_chain_head_id: str | None = None
         if active_activation is not None:
-            durable_activation = _workflow_spawn_ready_activation(
-                tx.connection, active_activation
-            )
+            durable_activation = _workflow_spawn_ready_activation(tx.connection, active_activation)
             if durable_activation.continuation_claim != continuation:
-                raise UnitOfWorkConflict(
-                    "workflow spawn recovery activation claim differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn recovery activation claim differs")
             ready = tx.connection.execute(
                 "SELECT consumed_at FROM workflow_spawn_continuation_ready "
                 "WHERE ready_receipt_id=?",
                 (durable_activation.ready_receipt.ready_receipt_id,),
             ).fetchone()
             if ready is None or ready["consumed_at"] is None:
-                raise UnitOfWorkConflict(
-                    "workflow spawn recovery ready receipt is unconsumed"
-                )
+                raise UnitOfWorkConflict("workflow spawn recovery ready receipt is unconsumed")
             path_kind = "ready_recovery"
             activation_chain_head_id = durable_activation.activation_receipt_id
 
@@ -12562,13 +12046,15 @@ class SqliteExecutionUnitOfWork:
             now=now,
             fault=fault,
         )
-        if admission.disposition not in {
-            RuntimeStartDisposition.START_NEW,
-            RuntimeStartDisposition.START_ORPHAN,
-        } or admission.dispatch_claim is None:
-            raise UnitOfWorkConflict(
-                "direct workflow spawn requires a fresh child start authority"
-            )
+        if (
+            admission.disposition
+            not in {
+                RuntimeStartDisposition.START_NEW,
+                RuntimeStartDisposition.START_ORPHAN,
+            }
+            or admission.dispatch_claim is None
+        ):
+            raise UnitOfWorkConflict("direct workflow spawn requires a fresh child start authority")
         ticket_row = tx.connection.execute(
             "SELECT * FROM workflow_launch_ticket_receipts WHERE ticket_receipt_id=?",
             (ticket.ticket_receipt_id,),
@@ -12578,7 +12064,8 @@ class SqliteExecutionUnitOfWork:
             (str(continuation_row["effect_id"]),),
         ).fetchone()
         checkpoint = tx.connection.execute(
-            "SELECT * FROM workflow_checkpoints WHERE run_id=? AND namespace='react.termination.v1' ORDER BY version DESC LIMIT 1",
+            "SELECT * FROM workflow_checkpoints WHERE run_id=? AND namespace='react.termination.v1'"
+            " ORDER BY version DESC LIMIT 1",
             (continuation.parent_run_id,),
         ).fetchone()
         if ticket_row is None or effect is None or checkpoint is None:
@@ -12589,8 +12076,7 @@ class SqliteExecutionUnitOfWork:
             not isinstance(checkpoint_value, dict)
             or checkpoint_value.get("phase") != "tool_batch_reserved"
             or int(checkpoint["version"]) != 0
-            or str(effect["state"])
-            not in {EffectState.HANDED_OFF.value, EffectState.UNKNOWN.value}
+            or str(effect["state"]) not in {EffectState.HANDED_OFF.value, EffectState.UNKNOWN.value}
             or str(effect["run_id"]) != continuation.parent_run_id
         ):
             raise UnitOfWorkConflict("workflow spawn success phase differs")
@@ -12605,18 +12091,14 @@ class SqliteExecutionUnitOfWork:
             child_command_id=str(ticket_row["child_command_id"]),
             attachment_policy=AttachmentPolicy.ATTACHED,
         )
-        tool_result = ToolResult.succeeded(
-            CallId(str(effect["call_id"])), spawn_result.to_json()
-        )
+        tool_result = ToolResult.succeeded(CallId(str(effect["call_id"])), spawn_result.to_json())
         tool_result_json = _tool_result_json(tool_result)
         tool_result_hash = hashlib.sha256(tool_result_json.encode()).hexdigest()
         append_id = self._derived_id(
             "workflow-spawn/context-append/v1", continuation.spawn_operation_id
         )
         context_pre_revision = checkpoint_value.get("context_revision")
-        if isinstance(context_pre_revision, bool) or not isinstance(
-            context_pre_revision, int
-        ):
+        if isinstance(context_pre_revision, bool) or not isinstance(context_pre_revision, int):
             raise UnitOfWorkConflict("workflow spawn Context revision is missing")
         parent_lease = ExecutionLease(
             continuation.parent_run_id,
@@ -12657,7 +12139,9 @@ class SqliteExecutionUnitOfWork:
         next_checkpoint_hash = hashlib.sha256(next_checkpoint_json.encode()).hexdigest()
         next_checkpoint_version = int(checkpoint["version"]) + 1
         tx.connection.execute(
-            "INSERT INTO workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO"
+            " workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,?,?,?)",
             (
                 f"{continuation.parent_run_id}:react.termination.v1:{next_checkpoint_version}",
                 continuation.parent_run_id,
@@ -12672,7 +12156,8 @@ class SqliteExecutionUnitOfWork:
         _fault(fault, "workflow:spawn_admission:after_checkpoint_write")
         parent_waiting_version = int(parent["version"]) + 1
         changed = tx.connection.execute(
-            "UPDATE runs SET state='waiting',version=version+1,updated_at=? WHERE run_id=? AND state='running' AND version=?",
+            "UPDATE runs SET state='waiting',version=version+1,updated_at=? WHERE run_id=? AND"
+            " state='running' AND version=?",
             (now, continuation.parent_run_id, int(parent["version"])),
         ).rowcount
         if changed != 1:
@@ -12691,7 +12176,8 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("workflow spawn Runtime release CAS failed")
         if continuation.workflow_lease_epoch is not None:
             workflow_deleted = tx.connection.execute(
-                "DELETE FROM workflow_leases WHERE run_id=? AND namespace<>? AND owner_id=? AND epoch=?",
+                "DELETE FROM workflow_leases WHERE run_id=? AND namespace<>? AND owner_id=? AND"
+                " epoch=?",
                 (
                     continuation.parent_run_id,
                     RUNTIME_LEASE_NAMESPACE,
@@ -12702,7 +12188,8 @@ class SqliteExecutionUnitOfWork:
             if workflow_deleted != 1:
                 raise UnitOfWorkConflict("workflow spawn Workflow release CAS failed")
         changed = tx.connection.execute(
-            "UPDATE run_fences SET state='released',released_at=? WHERE run_id=? AND owner_id=? AND runtime_lease_epoch=? AND epoch=? AND state='active'",
+            "UPDATE run_fences SET state='released',released_at=? WHERE run_id=? AND owner_id=? AND"
+            " runtime_lease_epoch=? AND epoch=? AND state='active'",
             (
                 now,
                 continuation.parent_run_id,
@@ -12717,9 +12204,7 @@ class SqliteExecutionUnitOfWork:
         if active_activation is not None:
             consumed_version = int(active_activation["version"]) + 1
             consumed_hash = _workflow_spawn_activation_hash(
-                activation_receipt_id=str(
-                    active_activation["activation_receipt_id"]
-                ),
+                activation_receipt_id=str(active_activation["activation_receipt_id"]),
                 ready_receipt_id=str(active_activation["ready_receipt_id"]),
                 spawn_operation_id=str(active_activation["spawn_operation_id"]),
                 parent_run_id=str(active_activation["parent_run_id"]),
@@ -12732,16 +12217,11 @@ class SqliteExecutionUnitOfWork:
                     if active_activation["workflow_lease_epoch"] is None
                     else int(active_activation["workflow_lease_epoch"])
                 ),
-                continuation_claim_epoch=int(
-                    active_activation["continuation_claim_epoch"]
-                ),
+                continuation_claim_epoch=int(active_activation["continuation_claim_epoch"]),
                 predecessor_activation_receipt_id=(
                     None
-                    if active_activation["predecessor_activation_receipt_id"]
-                    is None
-                    else str(
-                        active_activation["predecessor_activation_receipt_id"]
-                    )
+                    if active_activation["predecessor_activation_receipt_id"] is None
+                    else str(active_activation["predecessor_activation_receipt_id"])
                 ),
                 version=consumed_version,
             )
@@ -12758,9 +12238,7 @@ class SqliteExecutionUnitOfWork:
                 ),
             ).rowcount
             if consumed != 1:
-                raise UnitOfWorkConflict(
-                    "workflow spawn recovery activation consume CAS failed"
-                )
+                raise UnitOfWorkConflict("workflow spawn recovery activation consume CAS failed")
             _fault(fault, "workflow:spawn_admission:after_activation_write")
         parent_wait_receipt_id = self._derived_id(
             "workflow-spawn/child-wait/v1", continuation.spawn_operation_id
@@ -12811,7 +12289,7 @@ class SqliteExecutionUnitOfWork:
                 child_runtime_lease_epoch,wake_activation_receipt_id,
                 state,version,identity_hash,lifecycle_hash,created_at
             ) VALUES(?,?,?,?,?,?,?,?,?,?,'tool_batch_reserved',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'unconsumed',0,?,?,?)
-            """,
+            """,  # noqa: E501
             (
                 parent_wait_receipt_id,
                 continuation.spawn_operation_id,
@@ -12851,7 +12329,9 @@ class SqliteExecutionUnitOfWork:
         )
         _fault(fault, "workflow:spawn_admission:after_child_wait_write")
         changed = tx.connection.execute(
-            "UPDATE execution_effects SET state='succeeded',result_json=?,settled_at=?,version=version+1 WHERE effect_id=? AND state IN ('handed_off','unknown') AND version=?",
+            "UPDATE execution_effects SET"
+            " state='succeeded',result_json=?,settled_at=?,version=version+1 WHERE effect_id=? AND"
+            " state IN ('handed_off','unknown') AND version=?",
             (tool_result_json, now, str(effect["effect_id"]), int(effect["version"])),
         ).rowcount
         if changed != 1:
@@ -12912,7 +12392,9 @@ class SqliteExecutionUnitOfWork:
             ),
         )
         changed = tx.connection.execute(
-            "UPDATE workflow_spawn_continuations SET state='completed',completion_receipt_id=?,completion_path_kind=?,version=version+1,updated_at=? WHERE operation_id=? AND state='claimed' AND version=?",
+            "UPDATE workflow_spawn_continuations SET"
+            " state='completed',completion_receipt_id=?,completion_path_kind=?,version=version+1,updated_at=?"  # noqa: E501
+            " WHERE operation_id=? AND state='claimed' AND version=?",
             (
                 completion_receipt_id,
                 path_kind,
@@ -12960,9 +12442,7 @@ class SqliteExecutionUnitOfWork:
             RuntimeStartDisposition.CANCEL_PENDING: WorkflowSpawnChildControlKind.CANCEL,
             RuntimeStartDisposition.TERMINAL: WorkflowSpawnChildControlKind.TERMINAL,
         }[admission.disposition]
-        child_control = _create_workflow_spawn_child_control(
-            kind=control_kind, admission=admission
-        )
+        child_control = _create_workflow_spawn_child_control(kind=control_kind, admission=admission)
         return _create_workflow_spawn_tool_outcome(
             tool_result=tool_result,
             child_control=child_control,
@@ -13015,13 +12495,10 @@ class SqliteExecutionUnitOfWork:
                 or _workflow_spawn_continuation_ready(ready_row) != ready
                 or ready_row["consumed_at"] is None
                 or activation is None
-                or _workflow_spawn_ready_activation(tx.connection, activation)
-                .continuation_claim
+                or _workflow_spawn_ready_activation(tx.connection, activation).continuation_claim
                 != continuation
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn recovery settlement authority differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn recovery settlement authority differs")
             path_kind = "ready_recovery"
         ticket = tx.connection.execute(
             "SELECT * FROM workflow_launch_ticket_receipts WHERE ticket_receipt_id=?",
@@ -13049,8 +12526,7 @@ class SqliteExecutionUnitOfWork:
         if ticket_catalog == observed_catalog:
             raise UnitOfWorkConflict("workflow launch catalog is not stale")
         if (
-            str(effect["state"])
-            not in {EffectState.HANDED_OFF.value, EffectState.UNKNOWN.value}
+            str(effect["state"]) not in {EffectState.HANDED_OFF.value, EffectState.UNKNOWN.value}
             or str(effect["run_id"]) != continuation.parent_run_id
             or str(effect["request_hash"]) != str(row["effect_request_hash"])
             or int(effect["handoff_attempt"]) != int(row["handoff_attempt"])
@@ -13138,9 +12614,7 @@ class SqliteExecutionUnitOfWork:
                     if activation["workflow_lease_epoch"] is None
                     else int(activation["workflow_lease_epoch"])
                 ),
-                continuation_claim_epoch=int(
-                    activation["continuation_claim_epoch"]
-                ),
+                continuation_claim_epoch=int(activation["continuation_claim_epoch"]),
                 predecessor_activation_receipt_id=(
                     None
                     if activation["predecessor_activation_receipt_id"] is None
@@ -13163,9 +12637,7 @@ class SqliteExecutionUnitOfWork:
                 ),
             ).rowcount
             if changed != 1:
-                raise UnitOfWorkConflict(
-                    "workflow spawn recovery activation consume CAS failed"
-                )
+                raise UnitOfWorkConflict("workflow spawn recovery activation consume CAS failed")
             _fault(fault, "workflow:spawn_catalog_stale:after_activation_write")
         tx.connection.execute(
             """
@@ -13195,11 +12667,7 @@ class SqliteExecutionUnitOfWork:
                 str(completion_values["failure_evidence_id"]),
                 evidence_json,
                 evidence_hash,
-                (
-                    None
-                    if activation is None
-                    else str(activation["activation_receipt_id"])
-                ),
+                (None if activation is None else str(activation["activation_receipt_id"])),
                 completion_hash,
                 now,
             ),
@@ -13261,8 +12729,7 @@ class SqliteExecutionUnitOfWork:
             (continuation.spawn_operation_id,),
         ).fetchone()
         ready_row = tx.connection.execute(
-            "SELECT * FROM workflow_spawn_continuation_ready "
-            "WHERE ready_receipt_id=?",
+            "SELECT * FROM workflow_spawn_continuation_ready WHERE ready_receipt_id=?",
             (ready.ready_receipt_id,),
         ).fetchone()
         activation = tx.connection.execute(
@@ -13278,16 +12745,12 @@ class SqliteExecutionUnitOfWork:
             or _workflow_spawn_continuation_ready(ready_row) != ready
             or ready_row["consumed_at"] is None
             or activation is None
-            or _workflow_spawn_ready_activation(tx.connection, activation)
-            .continuation_claim
+            or _workflow_spawn_ready_activation(tx.connection, activation).continuation_claim
             != continuation
         ):
-            raise UnitOfWorkConflict(
-                "workflow spawn graph settlement authority differs"
-            )
+            raise UnitOfWorkConflict("workflow spawn graph settlement authority differs")
         ticket = tx.connection.execute(
-            "SELECT * FROM workflow_launch_ticket_receipts "
-            "WHERE ticket_receipt_id=?",
+            "SELECT * FROM workflow_launch_ticket_receipts WHERE ticket_receipt_id=?",
             (continuation.ticket_receipt_id,),
         ).fetchone()
         effect = tx.connection.execute(
@@ -13344,8 +12807,7 @@ class SqliteExecutionUnitOfWork:
                     == evidence.expected_implementation_hash
                 )
             )
-            or str(effect["state"])
-            not in {EffectState.HANDED_OFF.value, EffectState.UNKNOWN.value}
+            or str(effect["state"]) not in {EffectState.HANDED_OFF.value, EffectState.UNKNOWN.value}
             or str(effect["run_id"]) != continuation.parent_run_id
             or str(effect["request_hash"]) != str(row["effect_request_hash"])
             or int(effect["handoff_attempt"]) != int(row["handoff_attempt"])
@@ -13454,9 +12916,7 @@ class SqliteExecutionUnitOfWork:
             ),
         ).rowcount
         if changed != 1:
-            raise UnitOfWorkConflict(
-                "workflow spawn recovery activation consume CAS failed"
-            )
+            raise UnitOfWorkConflict("workflow spawn recovery activation consume CAS failed")
         _fault(fault, "workflow:spawn_graph_unavailable:after_activation_write")
         tx.connection.execute(
             "INSERT INTO workflow_spawn_completion_receipts("
@@ -13504,17 +12964,14 @@ class SqliteExecutionUnitOfWork:
         if changed != 1:
             raise UnitOfWorkConflict("workflow spawn completion CAS failed")
         _fault(fault, "workflow:spawn_graph_unavailable:after_continuation_write")
-        tx.register_after_commit_fault(
-            "workflow:spawn_graph_unavailable:after_commit"
-        )
+        tx.register_after_commit_fault("workflow:spawn_graph_unavailable:after_commit")
         return result
 
     async def settle_spawn_continuation_for_parent_terminal(
         self,
         transaction: WorkflowTransaction,
         ticket: WorkflowLaunchTicket,
-        ready_or_continuation: WorkflowSpawnContinuationReady
-        | WorkflowSpawnContinuationClaim,
+        ready_or_continuation: WorkflowSpawnContinuationReady | WorkflowSpawnContinuationClaim,
         parent_terminal_snapshot: WorkflowTerminalOutcome,
         *,
         now: float,
@@ -13531,27 +12988,18 @@ class SqliteExecutionUnitOfWork:
             ready_or_continuation,
             (WorkflowSpawnContinuationClaim, WorkflowSpawnContinuationReady),
         ):
-            raise TypeError(
-                "ready_or_continuation must be durable workflow spawn evidence"
-            )
+            raise TypeError("ready_or_continuation must be durable workflow spawn evidence")
         if not isinstance(parent_terminal_snapshot, WorkflowTerminalOutcome):
-            raise TypeError(
-                "parent_terminal_snapshot must be a WorkflowTerminalOutcome"
-            )
+            raise TypeError("parent_terminal_snapshot must be a WorkflowTerminalOutcome")
         operation_id = ready_or_continuation.spawn_operation_id
-        existing = await self.read_spawn_continuation_outcome(
-            transaction, operation_id
-        )
+        existing = await self.read_spawn_continuation_outcome(transaction, operation_id)
         if existing is not None:
             completion = tx.connection.execute(
-                "SELECT * FROM workflow_spawn_completion_receipts "
-                "WHERE spawn_operation_id=?",
+                "SELECT * FROM workflow_spawn_completion_receipts WHERE spawn_operation_id=?",
                 (operation_id,),
             ).fetchone()
             if completion is None:
-                raise UnitOfWorkConflict(
-                    "workflow spawn terminal completion disappeared"
-                )
+                raise UnitOfWorkConflict("workflow spawn terminal completion disappeared")
             path_kind = str(completion["path_kind"])
             if path_kind.startswith("parent_terminal_"):
                 evidence = _workflow_spawn_failure_evidence(completion)
@@ -13566,29 +13014,25 @@ class SqliteExecutionUnitOfWork:
                     parent_terminal_snapshot.outcome_hash,
                 )
                 durable_ticket = tx.connection.execute(
-                    "SELECT * FROM workflow_launch_ticket_receipts "
-                    "WHERE ticket_receipt_id=?",
+                    "SELECT * FROM workflow_launch_ticket_receipts WHERE ticket_receipt_id=?",
                     (ticket.ticket_receipt_id,),
                 ).fetchone()
                 if (
                     replay_identity != requested_identity
                     or durable_ticket is None
                     or _workflow_launch_ticket(durable_ticket) != ticket
-                    or ticket.ticket_receipt_id
-                    != str(completion["ticket_receipt_id"])
+                    or ticket.ticket_receipt_id != str(completion["ticket_receipt_id"])
                 ):
                     raise UnitOfWorkConflict(
                         "workflow spawn parent-terminal replay evidence differs"
                     )
-                ready_row = tx.connection.execute(
-                    "SELECT * FROM workflow_spawn_continuation_ready "
-                    "WHERE operation_id=?",
+                replay_ready_row = tx.connection.execute(
+                    "SELECT * FROM workflow_spawn_continuation_ready WHERE operation_id=?",
                     (operation_id,),
                 ).fetchone()
                 if path_kind == "parent_terminal_ticket_only":
                     continuation_row = tx.connection.execute(
-                        "SELECT * FROM workflow_spawn_continuations "
-                        "WHERE operation_id=?",
+                        "SELECT * FROM workflow_spawn_continuations WHERE operation_id=?",
                         (operation_id,),
                     ).fetchone()
                     if (
@@ -13597,8 +13041,7 @@ class SqliteExecutionUnitOfWork:
                             WorkflowSpawnContinuationClaim,
                         )
                         or continuation_row is None
-                        or ready_or_continuation.version + 1
-                        != int(continuation_row["version"])
+                        or ready_or_continuation.version + 1 != int(continuation_row["version"])
                         or (
                             ready_or_continuation.spawn_operation_id,
                             ready_or_continuation.ticket_receipt_id,
@@ -13634,45 +13077,31 @@ class SqliteExecutionUnitOfWork:
                         ready_or_continuation,
                         WorkflowSpawnContinuationReady,
                     )
-                    or ready_row is None
-                    or _workflow_spawn_continuation_ready(ready_row)
-                    != ready_or_continuation
+                    or replay_ready_row is None
+                    or _workflow_spawn_continuation_ready(replay_ready_row) != ready_or_continuation
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow spawn parent-terminal replay ready differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn parent-terminal replay ready differs")
             return existing
 
         now = _time(now)
-        if not self._verify_workflow_terminal(
-            tx.connection, parent_terminal_snapshot
-        ):
-            raise UnitOfWorkConflict(
-                "workflow spawn parent terminal receipt is forged or stale"
-            )
+        if not self._verify_workflow_terminal(tx.connection, parent_terminal_snapshot):
+            raise UnitOfWorkConflict("workflow spawn parent terminal receipt is forged or stale")
         continuation = tx.connection.execute(
             "SELECT * FROM workflow_spawn_continuations WHERE operation_id=?",
             (operation_id,),
         ).fetchone()
         issued = await self.read_issued(transaction, operation_id)
         if continuation is None or issued is None or issued[0] != ticket:
-            raise UnitOfWorkConflict(
-                "workflow spawn parent-terminal authority is missing"
-            )
+            raise UnitOfWorkConflict("workflow spawn parent-terminal authority is missing")
         request = issued[1]
         if (
             str(continuation["state"]) not in {"pending", "claimed"}
-            or str(continuation["ticket_receipt_id"])
-            != ticket.ticket_receipt_id
-            or str(continuation["parent_run_id"])
-            != parent_terminal_snapshot.run_id
-            or request.spawn_origin.parent_run_id
-            != parent_terminal_snapshot.run_id
+            or str(continuation["ticket_receipt_id"]) != ticket.ticket_receipt_id
+            or str(continuation["parent_run_id"]) != parent_terminal_snapshot.run_id
+            or request.spawn_origin.parent_run_id != parent_terminal_snapshot.run_id
             or request.request_key != operation_id
         ):
-            raise UnitOfWorkConflict(
-                "workflow spawn parent-terminal identity differs"
-            )
+            raise UnitOfWorkConflict("workflow spawn parent-terminal identity differs")
 
         ready_rows = tx.connection.execute(
             "SELECT * FROM workflow_spawn_continuation_ready "
@@ -13684,49 +13113,34 @@ class SqliteExecutionUnitOfWork:
             "WHERE spawn_operation_id=? ORDER BY created_at,activation_receipt_id",
             (operation_id,),
         ).fetchall()
-        active_rows = [
-            row for row in activation_rows if str(row["state"]) == "active"
-        ]
+        active_rows = [row for row in activation_rows if str(row["state"]) == "active"]
         ready_row: sqlite3.Row | None = None
         blocker: sqlite3.Row | None = None
         activation: sqlite3.Row | None = None
         if isinstance(ready_or_continuation, WorkflowSpawnContinuationClaim):
             if (
                 str(continuation["state"]) != "claimed"
-                or _workflow_spawn_continuation_claim(continuation)
-                != ready_or_continuation
+                or _workflow_spawn_continuation_claim(continuation) != ready_or_continuation
                 or ready_rows
                 or activation_rows
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn ticket-only terminal authority differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn ticket-only terminal authority differs")
             path_kind = "parent_terminal_ticket_only"
         else:
             if len(ready_rows) != 1:
-                raise UnitOfWorkConflict(
-                    "workflow spawn parent-terminal ready shape differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn parent-terminal ready shape differs")
             ready_row = ready_rows[0]
             assert ready_row is not None
             if (
-                _workflow_spawn_continuation_ready(ready_row)
-                != ready_or_continuation
-                or str(ready_row["ticket_receipt_id"])
-                != ticket.ticket_receipt_id
-                or str(ready_row["effect_id"])
-                != str(continuation["effect_id"])
-                or int(ready_row["handoff_attempt"])
-                != int(continuation["handoff_attempt"])
+                _workflow_spawn_continuation_ready(ready_row) != ready_or_continuation
+                or str(ready_row["ticket_receipt_id"]) != ticket.ticket_receipt_id
+                or str(ready_row["effect_id"]) != str(continuation["effect_id"])
+                or int(ready_row["handoff_attempt"]) != int(continuation["handoff_attempt"])
             ):
-                raise UnitOfWorkConflict(
-                    "workflow spawn parent-terminal ready evidence differs"
-                )
+                raise UnitOfWorkConflict("workflow spawn parent-terminal ready evidence differs")
             if not activation_rows:
                 if ready_row["consumed_at"] is not None or active_rows:
-                    raise UnitOfWorkConflict(
-                        "workflow spawn unactivated terminal shape differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn unactivated terminal shape differs")
                 blockers = tx.connection.execute(
                     "SELECT * FROM run_wait_blockers WHERE run_id=? "
                     "AND kind='tool' AND ledger_identity=? AND handoff_attempt=? "
@@ -13739,9 +13153,7 @@ class SqliteExecutionUnitOfWork:
                     ),
                 ).fetchall()
                 if len(blockers) != 1:
-                    raise UnitOfWorkConflict(
-                        "workflow spawn parent-terminal blocker differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn parent-terminal blocker differs")
                 blocker = blockers[0]
                 path_kind = "parent_terminal_ready_unactivated"
             else:
@@ -13751,29 +13163,19 @@ class SqliteExecutionUnitOfWork:
                     or active_rows[0] is not activation_rows[-1]
                     or str(continuation["state"]) != "claimed"
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow spawn activated terminal shape differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn activated terminal shape differs")
                 predecessor: str | None = None
                 for index, row in enumerate(activation_rows):
-                    expected_state = (
-                        "active" if index == len(activation_rows) - 1 else "superseded"
-                    )
+                    expected_state = "active" if index == len(activation_rows) - 1 else "superseded"
                     if (
-                        str(row["ready_receipt_id"])
-                        != str(ready_row["ready_receipt_id"])
-                        or str(row["parent_run_id"])
-                        != parent_terminal_snapshot.run_id
-                        or str(row["effect_id"])
-                        != str(continuation["effect_id"])
-                        or row["predecessor_activation_receipt_id"]
-                        != predecessor
+                        str(row["ready_receipt_id"]) != str(ready_row["ready_receipt_id"])
+                        or str(row["parent_run_id"]) != parent_terminal_snapshot.run_id
+                        or str(row["effect_id"]) != str(continuation["effect_id"])
+                        or row["predecessor_activation_receipt_id"] != predecessor
                         or str(row["state"]) != expected_state
                         or str(row["canonical_hash"])
                         != _workflow_spawn_activation_hash(
-                            activation_receipt_id=str(
-                                row["activation_receipt_id"]
-                            ),
+                            activation_receipt_id=str(row["activation_receipt_id"]),
                             ready_receipt_id=str(row["ready_receipt_id"]),
                             spawn_operation_id=str(row["spawn_operation_id"]),
                             parent_run_id=str(row["parent_run_id"]),
@@ -13786,9 +13188,7 @@ class SqliteExecutionUnitOfWork:
                                 if row["workflow_lease_epoch"] is None
                                 else int(row["workflow_lease_epoch"])
                             ),
-                            continuation_claim_epoch=int(
-                                row["continuation_claim_epoch"]
-                            ),
+                            continuation_claim_epoch=int(row["continuation_claim_epoch"]),
                             predecessor_activation_receipt_id=predecessor,
                             version=int(row["version"]),
                         )
@@ -13800,20 +13200,15 @@ class SqliteExecutionUnitOfWork:
                 activation = active_rows[0]
                 assert activation is not None
                 if (
-                    str(activation["owner_id"])
-                    != str(continuation["owner_id"])
+                    str(activation["owner_id"]) != str(continuation["owner_id"])
                     or int(activation["runtime_lease_epoch"])
                     != int(continuation["runtime_lease_epoch"])
-                    or int(activation["run_fence_epoch"])
-                    != int(continuation["run_fence_epoch"])
-                    or activation["workflow_lease_epoch"]
-                    != continuation["workflow_lease_epoch"]
+                    or int(activation["run_fence_epoch"]) != int(continuation["run_fence_epoch"])
+                    or activation["workflow_lease_epoch"] != continuation["workflow_lease_epoch"]
                     or int(activation["continuation_claim_epoch"])
                     != int(continuation["claim_epoch"])
                 ):
-                    raise UnitOfWorkConflict(
-                        "workflow spawn active terminal claim differs"
-                    )
+                    raise UnitOfWorkConflict("workflow spawn active terminal claim differs")
                 path_kind = "parent_terminal_activated"
 
         effect = tx.connection.execute(
@@ -13822,17 +13217,12 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         if (
             effect is None
-            or str(effect["state"])
-            not in {EffectState.HANDED_OFF.value, EffectState.UNKNOWN.value}
+            or str(effect["state"]) not in {EffectState.HANDED_OFF.value, EffectState.UNKNOWN.value}
             or str(effect["run_id"]) != parent_terminal_snapshot.run_id
-            or str(effect["request_hash"])
-            != str(continuation["effect_request_hash"])
-            or int(effect["handoff_attempt"])
-            != int(continuation["handoff_attempt"])
+            or str(effect["request_hash"]) != str(continuation["effect_request_hash"])
+            or int(effect["handoff_attempt"]) != int(continuation["handoff_attempt"])
         ):
-            raise UnitOfWorkConflict(
-                "workflow spawn parent-terminal Effect authority differs"
-            )
+            raise UnitOfWorkConflict("workflow spawn parent-terminal Effect authority differs")
 
         result = ToolResult.failed(
             CallId(str(effect["call_id"])),
@@ -13841,20 +13231,16 @@ class SqliteExecutionUnitOfWork:
         )
         result_json = _tool_result_json(result)
         result_hash = hashlib.sha256(result_json.encode()).hexdigest()
-        evidence: dict[str, JsonValue] = {
+        failure_evidence: dict[str, JsonValue] = {
             "kind": "workflow_parent_terminal_before_spawn",
             "terminal_receipt_id": parent_terminal_snapshot.receipt_id,
             "terminal_state": parent_terminal_snapshot.state,
             "terminal_outcome_hash": parent_terminal_snapshot.outcome_hash,
         }
-        evidence_json = canonical_json(evidence)
+        evidence_json = canonical_json(failure_evidence)
         evidence_hash = hashlib.sha256(evidence_json.encode()).hexdigest()
-        evidence_id = self._derived_id(
-            "workflow-spawn/failure-evidence/v1", evidence_hash
-        )
-        completion_receipt_id = self._derived_id(
-            "workflow-spawn/completion/v1", operation_id
-        )
+        evidence_id = self._derived_id("workflow-spawn/failure-evidence/v1", evidence_hash)
+        completion_receipt_id = self._derived_id("workflow-spawn/completion/v1", operation_id)
         completion_values: dict[str, object] = {
             "completion_receipt_id": completion_receipt_id,
             "spawn_operation_id": operation_id,
@@ -13868,14 +13254,12 @@ class SqliteExecutionUnitOfWork:
             "tool_result_json": result_json,
             "tool_result_hash": result_hash,
             "child_runtime_start_receipt_id": None,
-            "failure_evidence_kind": evidence["kind"],
+            "failure_evidence_kind": failure_evidence["kind"],
             "failure_evidence_id": evidence_id,
             "failure_evidence_json": evidence_json,
             "failure_evidence_hash": evidence_hash,
             "activation_chain_head_id": (
-                None
-                if activation is None
-                else str(activation["activation_receipt_id"])
+                None if activation is None else str(activation["activation_receipt_id"])
             ),
             "child_wait_receipt_id": None,
             "created_at": now,
@@ -13896,9 +13280,7 @@ class SqliteExecutionUnitOfWork:
             ),
         ).rowcount
         if changed != 1:
-            raise UnitOfWorkConflict(
-                "workflow spawn parent-terminal Effect CAS failed"
-            )
+            raise UnitOfWorkConflict("workflow spawn parent-terminal Effect CAS failed")
         _fault(fault, "workflow:spawn_parent_terminal:after_effect_write")
 
         if activation is not None:
@@ -13918,9 +13300,7 @@ class SqliteExecutionUnitOfWork:
                     if activation["workflow_lease_epoch"] is None
                     else int(activation["workflow_lease_epoch"])
                 ),
-                continuation_claim_epoch=int(
-                    activation["continuation_claim_epoch"]
-                ),
+                continuation_claim_epoch=int(activation["continuation_claim_epoch"]),
                 predecessor_activation_receipt_id=(
                     None
                     if activation["predecessor_activation_receipt_id"] is None
@@ -13941,9 +13321,7 @@ class SqliteExecutionUnitOfWork:
                 ),
             ).rowcount
             if changed != 1:
-                raise UnitOfWorkConflict(
-                    "workflow spawn parent-terminal activation CAS failed"
-                )
+                raise UnitOfWorkConflict("workflow spawn parent-terminal activation CAS failed")
             _fault(fault, "workflow:spawn_parent_terminal:after_activation_write")
 
         if ready_row is not None and activation is None:
@@ -13954,9 +13332,7 @@ class SqliteExecutionUnitOfWork:
                 (now, str(ready_row["ready_receipt_id"])),
             ).rowcount
             if changed != 1:
-                raise UnitOfWorkConflict(
-                    "workflow spawn parent-terminal ready CAS failed"
-                )
+                raise UnitOfWorkConflict("workflow spawn parent-terminal ready CAS failed")
             _fault(fault, "workflow:spawn_parent_terminal:after_ready_write")
         if blocker is not None:
             assert ready_row is not None
@@ -13973,9 +13349,7 @@ class SqliteExecutionUnitOfWork:
                 ),
             ).rowcount
             if changed != 1:
-                raise UnitOfWorkConflict(
-                    "workflow spawn parent-terminal blocker CAS failed"
-                )
+                raise UnitOfWorkConflict("workflow spawn parent-terminal blocker CAS failed")
             _fault(fault, "workflow:spawn_parent_terminal:after_blocker_write")
 
         _fault(fault, "workflow:spawn_parent_terminal:before_completion_write")
@@ -14000,7 +13374,7 @@ class SqliteExecutionUnitOfWork:
                 str(continuation["issue_authority_hash"]),
                 result_json,
                 result_hash,
-                str(evidence["kind"]),
+                str(failure_evidence["kind"]),
                 evidence_id,
                 evidence_json,
                 evidence_hash,
@@ -14025,13 +13399,9 @@ class SqliteExecutionUnitOfWork:
             ),
         ).rowcount
         if changed != 1:
-            raise UnitOfWorkConflict(
-                "workflow spawn parent-terminal continuation CAS failed"
-            )
+            raise UnitOfWorkConflict("workflow spawn parent-terminal continuation CAS failed")
         _fault(fault, "workflow:spawn_parent_terminal:after_continuation_write")
-        tx.register_after_commit_fault(
-            "workflow:spawn_parent_terminal:after_commit"
-        )
+        tx.register_after_commit_fault("workflow:spawn_parent_terminal:after_commit")
         return result
 
     async def verify(
@@ -14055,17 +13425,14 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("workflow launch catalog authority changed")
         profile = catalog.require(str(row["profile_key"]))
         payload = json.loads(str(row["canonical_payload"]))
-        stored_binding = (
-            payload.get("profile_binding") if isinstance(payload, dict) else None
-        )
+        stored_binding = payload.get("profile_binding") if isinstance(payload, dict) else None
         if (
             canonical_json(stored_binding)
             != canonical_json(_workflow_catalog_profile_json(profile))
             or profile.profile_fingerprint != str(row["profile_fingerprint"])
             or profile.workflow_name != str(row["workflow_name"])
             or profile.workflow_version != str(row["workflow_version"])
-            or profile.implementation_fingerprint
-            != str(row["implementation_fingerprint"])
+            or profile.implementation_fingerprint != str(row["implementation_fingerprint"])
         ):
             raise UnitOfWorkConflict("workflow launch profile binding changed")
         return _verified_workflow_launch_ticket(row)
@@ -14135,7 +13502,9 @@ class SqliteExecutionUnitOfWork:
         _fault(fault, "workflow:runtime_start:after_session_write")
         _fault(fault, "workflow:runtime_start:before_run_write")
         tx.connection.execute(
-            "INSERT INTO runs(run_id,execution_session_id,request_id,root_run_id,parent_run_id,profile_key,driver_kind,state,version,created_at,updated_at) VALUES(?,?,?,?,?,?,'workflow','running',1,?,?)",
+            "INSERT INTO"
+            " runs(run_id,execution_session_id,request_id,root_run_id,parent_run_id,profile_key,driver_kind,state,version,created_at,updated_at)"  # noqa: E501
+            " VALUES(?,?,?,?,?,?,'workflow','running',1,?,?)",
             (
                 verified.resolved_run_id,
                 verified.session_id,
@@ -14150,13 +13519,15 @@ class SqliteExecutionUnitOfWork:
         _fault(fault, "workflow:runtime_start:after_run_write")
         _fault(fault, "workflow:runtime_start:before_snapshot_write")
         tx.connection.execute(
-            "INSERT INTO run_start_snapshots(run_id,snapshot_json,snapshot_hash,created_at) VALUES(?,?,?,?)",
+            "INSERT INTO run_start_snapshots(run_id,snapshot_json,snapshot_hash,created_at)"
+            " VALUES(?,?,?,?)",
             (verified.resolved_run_id, snapshot_json, snapshot_hash, now),
         )
         _fault(fault, "workflow:runtime_start:after_snapshot_write")
         _fault(fault, "workflow:runtime_start:before_child_link_write")
         tx.connection.execute(
-            "INSERT INTO run_links(parent_run_id,child_run_id,attachment_policy,created_at) VALUES(?,?,?,?)",
+            "INSERT INTO run_links(parent_run_id,child_run_id,attachment_policy,created_at)"
+            " VALUES(?,?,?,?)",
             (
                 verified.parent_run_id,
                 verified.resolved_run_id,
@@ -14167,7 +13538,9 @@ class SqliteExecutionUnitOfWork:
         _fault(fault, "workflow:runtime_start:after_child_link_write")
         _fault(fault, "workflow:runtime_start:before_child_command_write")
         tx.connection.execute(
-            "INSERT INTO child_commands(command_id,parent_run_id,child_run_id,ticket_id,workflow_ticket_receipt_id,state,created_at,updated_at) VALUES(?,?,?,NULL,?,'pending',?,?)",
+            "INSERT INTO"
+            " child_commands(command_id,parent_run_id,child_run_id,ticket_id,workflow_ticket_receipt_id,state,created_at,updated_at)"  # noqa: E501
+            " VALUES(?,?,?,NULL,?,'pending',?,?)",
             (
                 verified.child_command_id,
                 verified.parent_run_id,
@@ -14191,7 +13564,8 @@ class SqliteExecutionUnitOfWork:
         _fault(fault, "workflow:runtime_start:after_event_write")
         _fault(fault, "workflow:runtime_start:before_runtime_lease_write")
         tx.connection.execute(
-            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at) VALUES(?,?,?,?,?)",
+            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at)"
+            " VALUES(?,?,?,?,?)",
             (
                 verified.resolved_run_id,
                 RUNTIME_LEASE_NAMESPACE,
@@ -14203,13 +13577,17 @@ class SqliteExecutionUnitOfWork:
         _fault(fault, "workflow:runtime_start:after_runtime_lease_write")
         _fault(fault, "workflow:runtime_start:before_run_fence_write")
         tx.connection.execute(
-            "INSERT INTO run_fences(run_id,owner_id,runtime_lease_epoch,epoch,state,acquired_at,released_at) VALUES(?,?,?,?, 'active',?,NULL)",
+            "INSERT INTO"
+            " run_fences(run_id,owner_id,runtime_lease_epoch,epoch,state,acquired_at,released_at)"
+            " VALUES(?,?,?,?, 'active',?,NULL)",
             (verified.resolved_run_id, claim.owner_id, 1, 1, now),
         )
         _fault(fault, "workflow:runtime_start:after_run_fence_write")
         _fault(fault, "workflow:runtime_start:before_receipt_write")
         tx.connection.execute(
-            "INSERT INTO runtime_start_receipts(ticket_receipt_id,run_id,trace_id,thread_id,committed_run_version,start_snapshot_hash,workflow_request_hash,created_at) VALUES(?,?,?,?,1,?,?,?)",
+            "INSERT INTO"
+            " runtime_start_receipts(ticket_receipt_id,run_id,trace_id,thread_id,committed_run_version,start_snapshot_hash,workflow_request_hash,created_at)"  # noqa: E501
+            " VALUES(?,?,?,?,1,?,?,?)",
             (
                 ticket.ticket_receipt_id,
                 verified.resolved_run_id,
@@ -14221,12 +13599,12 @@ class SqliteExecutionUnitOfWork:
             ),
         )
         _fault(fault, "workflow:runtime_start:after_receipt_write")
-        claim_id = self._derived_id(
-            "runtime-start-dispatch/v1", ticket.ticket_receipt_id
-        )
+        claim_id = self._derived_id("runtime-start-dispatch/v1", ticket.ticket_receipt_id)
         _fault(fault, "workflow:runtime_start:before_dispatch_claim_write")
         tx.connection.execute(
-            "INSERT INTO runtime_start_dispatch_claims(claim_id,ticket_receipt_id,run_id,owner_id,runtime_lease_epoch,claim_epoch,expires_at,version,state,created_at,updated_at) VALUES(?,?,?,?,1,1,?,0,'claimed',?,?)",
+            "INSERT INTO"
+            " runtime_start_dispatch_claims(claim_id,ticket_receipt_id,run_id,owner_id,runtime_lease_epoch,claim_epoch,expires_at,version,state,created_at,updated_at)"  # noqa: E501
+            " VALUES(?,?,?,?,1,1,?,0,'claimed',?,?)",
             (
                 claim_id,
                 ticket.ticket_receipt_id,
@@ -14277,8 +13655,7 @@ class SqliteExecutionUnitOfWork:
     ) -> RuntimeStartAdmission:
         tx = self._assert_open_workflow_transaction(transaction)
         ticket_row = tx.connection.execute(
-            "SELECT * FROM workflow_launch_ticket_receipts "
-            "WHERE ticket_receipt_id=?",
+            "SELECT * FROM workflow_launch_ticket_receipts WHERE ticket_receipt_id=?",
             (ticket.ticket_receipt_id,),
         ).fetchone()
         receipt_row = tx.connection.execute(
@@ -14290,9 +13667,7 @@ class SqliteExecutionUnitOfWork:
             or _workflow_launch_ticket(ticket_row) != ticket
             or receipt_row is None
         ):
-            raise UnitOfWorkConflict(
-                "workflow child Runtime admission receipt is missing"
-            )
+            raise UnitOfWorkConflict("workflow child Runtime admission receipt is missing")
         return self._classify_runtime_start_admission(
             tx.connection,
             receipt_row,
@@ -14313,17 +13688,13 @@ class SqliteExecutionUnitOfWork:
         tx = self._assert_open_workflow_transaction(transaction)
         child_run_id = _required(child_run_id, "child_run_id")
         command = tx.connection.execute(
-            "SELECT workflow_ticket_receipt_id FROM child_commands "
-            "WHERE child_run_id=?",
+            "SELECT workflow_ticket_receipt_id FROM child_commands WHERE child_run_id=?",
             (child_run_id,),
         ).fetchone()
         if command is None or command["workflow_ticket_receipt_id"] is None:
-            raise UnitOfWorkConflict(
-                "workflow child has no durable workflow launch ticket"
-            )
+            raise UnitOfWorkConflict("workflow child has no durable workflow launch ticket")
         ticket_row = tx.connection.execute(
-            "SELECT * FROM workflow_launch_ticket_receipts "
-            "WHERE ticket_receipt_id=?",
+            "SELECT * FROM workflow_launch_ticket_receipts WHERE ticket_receipt_id=?",
             (str(command["workflow_ticket_receipt_id"]),),
         ).fetchone()
         if ticket_row is None:
@@ -14348,9 +13719,7 @@ class SqliteExecutionUnitOfWork:
 
         if resume_row is None or str(resume_row["phase"]) != "retry_wait":
             return None
-        receipt = self._resume_receipt(
-            resume_row, connection=connection, include_activation=False
-        )
+        receipt = self._resume_receipt(resume_row, connection=connection, include_activation=False)
         if receipt.next_attempt_at is None:
             raise UnitOfWorkConflict("retry wait receipt has no due time")
         try:
@@ -14384,8 +13753,7 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         if (
             head is None
-            or str(head["checkpoint_id"])
-            != receipt.request.expected_checkpoint_head
+            or str(head["checkpoint_id"]) != receipt.request.expected_checkpoint_head
             or hashlib.sha256(str(head["checkpoint_json"]).encode()).hexdigest()
             != str(head["checkpoint_hash"])
         ):
@@ -14431,13 +13799,15 @@ class SqliteExecutionUnitOfWork:
         if (
             event is None
             or str(event["kind"]) != "workflow.retry_waiting"
-            or canonical_json(json.loads(str(event["payload_json"])))
-            != canonical_json(core)
+            or canonical_json(json.loads(str(event["payload_json"]))) != canonical_json(core)
         ):
             raise UnitOfWorkConflict("retry wait event binding changed")
-        if connection.execute(
-            "SELECT 1 FROM workflow_leases WHERE run_id=? LIMIT 1", (run_id,)
-        ).fetchone() is not None:
+        if (
+            connection.execute(
+                "SELECT 1 FROM workflow_leases WHERE run_id=? LIMIT 1", (run_id,)
+            ).fetchone()
+            is not None
+        ):
             raise UnitOfWorkConflict("retry wait retained an activation lease")
         fence = connection.execute(
             "SELECT state FROM run_fences WHERE run_id=?", (run_id,)
@@ -14456,9 +13826,7 @@ class SqliteExecutionUnitOfWork:
         )
 
     @staticmethod
-    def _read_workflow_terminal_outcome(
-        connection: sqlite3.Connection, run_id: str
-    ):
+    def _read_workflow_terminal_outcome(connection: sqlite3.Connection, run_id: str):
         from simple_harness.workflow.execution_ports import WorkflowTerminalOutcome
 
         row = connection.execute(
@@ -14524,7 +13892,10 @@ class SqliteExecutionUnitOfWork:
             "terminal_payload": terminal_payload,
             "delivery_facts": delivery_facts,
         }
-        if hashlib.sha256(canonical_json(canonical_outcome).encode()).hexdigest() != outcome.outcome_hash:
+        if (
+            hashlib.sha256(canonical_json(canonical_outcome).encode()).hexdigest()
+            != outcome.outcome_hash
+        ):
             return False
         run = connection.execute(
             "SELECT state,version FROM runs WHERE run_id=?", (outcome.run_id,)
@@ -14546,8 +13917,7 @@ class SqliteExecutionUnitOfWork:
             (str(row["terminal_fence_receipt_id"]), outcome.run_id),
         ).fetchone()
         fence = connection.execute(
-            "SELECT owner_id,runtime_lease_epoch,epoch,state FROM run_fences "
-            "WHERE run_id=?",
+            "SELECT owner_id,runtime_lease_epoch,epoch,state FROM run_fences WHERE run_id=?",
             (outcome.run_id,),
         ).fetchone()
         start = connection.execute(
@@ -14561,8 +13931,7 @@ class SqliteExecutionUnitOfWork:
             or int(run["version"]) != int(row["run_version"])
             or checkpoint is None
             or str(checkpoint["checkpoint_id"]) != outcome.checkpoint_id
-            or str(checkpoint["namespace"])
-            != str(row["checkpoint_namespace"])
+            or str(checkpoint["namespace"]) != str(row["checkpoint_namespace"])
             or int(checkpoint["version"]) != int(row["checkpoint_version"])
             or str(checkpoint["checkpoint_hash"]) != str(row["checkpoint_hash"])
             or hashlib.sha256(str(checkpoint["checkpoint_json"]).encode()).hexdigest()
@@ -14604,8 +13973,7 @@ class SqliteExecutionUnitOfWork:
         actual_delivery_ids = tuple(
             str(item["delivery_id"])
             for item in connection.execute(
-                "SELECT delivery_id FROM delivery_outbox WHERE run_id=? "
-                "ORDER BY delivery_id",
+                "SELECT delivery_id FROM delivery_outbox WHERE run_id=? ORDER BY delivery_id",
                 (outcome.run_id,),
             ).fetchall()
         )
@@ -14640,9 +14008,7 @@ class SqliteExecutionUnitOfWork:
         )
 
     @classmethod
-    def _verify_workflow_terminal(
-        cls, connection: sqlite3.Connection, outcome: object
-    ) -> bool:
+    def _verify_workflow_terminal(cls, connection: sqlite3.Connection, outcome: object) -> bool:
         try:
             return cls._verify_workflow_terminal_unchecked(connection, outcome)
         except (
@@ -14696,7 +14062,8 @@ class SqliteExecutionUnitOfWork:
             str(run["driver_kind"]),
         )
         if actual_run != expected_run or (
-            str(receipt_row["trace_id"]), str(receipt_row["thread_id"])
+            str(receipt_row["trace_id"]),
+            str(receipt_row["thread_id"]),
         ) != (verified.resolved_trace_id, verified.resolved_thread_id):
             raise UnitOfWorkConflict("generic Run identity differs from launch ticket")
         expected_claim_id = self._derived_id(
@@ -14815,12 +14182,9 @@ class SqliteExecutionUnitOfWork:
         if str(dispatch["state"]) != "consumed":
             raise UnitOfWorkConflict("bound workflow retained a claimed dispatch")
         request_payload = json.loads(str(start_receipt["request_json"]))
-        namespace = _required(
-            request_payload.get("checkpoint_namespace"), "checkpoint_namespace"
-        )
+        namespace = _required(request_payload.get("checkpoint_namespace"), "checkpoint_namespace")
         projection = connection.execute(
-            "SELECT owner_id,epoch,expires_at FROM workflow_leases "
-            "WHERE run_id=? AND namespace=?",
+            "SELECT owner_id,epoch,expires_at FROM workflow_leases WHERE run_id=? AND namespace=?",
             (run_id, namespace),
         ).fetchone()
         receipt = resume_receipt if resume_receipt is not None else start_receipt
@@ -14850,9 +14214,7 @@ class SqliteExecutionUnitOfWork:
         now: float,
     ) -> None:
         request_payload = json.loads(str(start_receipt["request_json"]))
-        namespace = _required(
-            request_payload.get("checkpoint_namespace"), "checkpoint_namespace"
-        )
+        namespace = _required(request_payload.get("checkpoint_namespace"), "checkpoint_namespace")
         workflow = connection.execute(
             "SELECT * FROM workflow_leases WHERE run_id=? AND namespace=?",
             (run_id, namespace),
@@ -14903,9 +14265,7 @@ class SqliteExecutionUnitOfWork:
             "SELECT * FROM workflow_leases WHERE run_id=? AND namespace=?",
             (run_id, RUNTIME_LEASE_NAMESPACE),
         ).fetchone()
-        fence = connection.execute(
-            "SELECT * FROM run_fences WHERE run_id=?", (run_id,)
-        ).fetchone()
+        fence = connection.execute("SELECT * FROM run_fences WHERE run_id=?", (run_id,)).fetchone()
         start_receipt_row = connection.execute(
             "SELECT * FROM workflow_start_admissions WHERE run_id=?", (run_id,)
         ).fetchone()
@@ -14938,9 +14298,7 @@ class SqliteExecutionUnitOfWork:
             )
             if retry_wake is None:
                 if start_receipt_row is None:
-                    raise UnitOfWorkConflict(
-                        "generic WAITING Run lacks pinned workflow admission"
-                    )
+                    raise UnitOfWorkConflict("generic WAITING Run lacks pinned workflow admission")
                 request_payload = json.loads(str(start_receipt_row["request_json"]))
                 namespace = _required(
                     request_payload.get("checkpoint_namespace"),
@@ -14955,12 +14313,10 @@ class SqliteExecutionUnitOfWork:
                 open_decision = None
                 blocker = None
                 if head is not None:
-                    if hashlib.sha256(
-                        str(head["checkpoint_json"]).encode()
-                    ).hexdigest() != str(head["checkpoint_hash"]):
-                        raise UnitOfWorkConflict(
-                            "pinned workflow checkpoint self-hash changed"
-                        )
+                    if hashlib.sha256(str(head["checkpoint_json"]).encode()).hexdigest() != str(
+                        head["checkpoint_hash"]
+                    ):
+                        raise UnitOfWorkConflict("pinned workflow checkpoint self-hash changed")
                     checkpoint_payload = json.loads(str(head["checkpoint_json"]))
                     interrupt = (
                         checkpoint_payload.get("interrupt")
@@ -14976,18 +14332,14 @@ class SqliteExecutionUnitOfWork:
                             (run_id, namespace, str(head["checkpoint_id"])),
                         ).fetchone()
                         if interrupt_operation is not None:
-                            operation_payload = json.loads(
-                                str(interrupt_operation["payload_json"])
-                            )
+                            operation_payload = json.loads(str(interrupt_operation["payload_json"]))
                             interrupt = (
                                 operation_payload.get("interrupt")
                                 if isinstance(operation_payload, dict)
                                 else None
                             )
                     interrupt_id = (
-                        interrupt.get("interrupt_id")
-                        if isinstance(interrupt, dict)
-                        else None
+                        interrupt.get("interrupt_id") if isinstance(interrupt, dict) else None
                     )
                     if isinstance(interrupt_id, str) and interrupt_id:
                         open_decision = connection.execute(
@@ -15044,17 +14396,11 @@ class SqliteExecutionUnitOfWork:
                 "cancelling",
                 "blocked",
             }:
-                raise UnitOfWorkConflict(
-                    "generic cancel state lacks workflow cancel authority"
-                )
-            return RuntimeStartAdmission(
-                receipt, RuntimeStartDisposition.CANCEL_PENDING
-            )
+                raise UnitOfWorkConflict("generic cancel state lacks workflow cancel authority")
+            return RuntimeStartAdmission(receipt, RuntimeStartDisposition.CANCEL_PENDING)
         if run_state in {"completed", "failed", "cancelled"}:
             terminal = self._read_workflow_terminal_outcome(connection, run_id)
-            if terminal is None or not self._verify_workflow_terminal(
-                connection, terminal
-            ):
+            if terminal is None or not self._verify_workflow_terminal(connection, terminal):
                 raise UnitOfWorkConflict("terminal workflow outcome is incomplete")
             return RuntimeStartAdmission(
                 receipt,
@@ -15080,13 +14426,9 @@ class SqliteExecutionUnitOfWork:
                 now=now,
             )
             if str(runtime["owner_id"]) != claim.owner_id:
-                return RuntimeStartAdmission(
-                    receipt, RuntimeStartDisposition.FOREIGN_ACTIVE
-                )
+                return RuntimeStartAdmission(receipt, RuntimeStartDisposition.FOREIGN_ACTIVE)
             if start_receipt_row is not None or resume_receipt_row is not None:
-                return RuntimeStartAdmission(
-                    receipt, RuntimeStartDisposition.ATTACH_CURRENT
-                )
+                return RuntimeStartAdmission(receipt, RuntimeStartDisposition.ATTACH_CURRENT)
             if str(dispatch["state"]) != "claimed":
                 raise UnitOfWorkConflict("consumed dispatch has no workflow receipt")
             activation = _runtime_start_activation(runtime, fence)
@@ -15105,9 +14447,7 @@ class SqliteExecutionUnitOfWork:
             )
         )
         old_runtime_epoch = 0 if runtime is None else int(runtime["epoch"])
-        old_fence_runtime_epoch = (
-            0 if fence is None else int(fence["runtime_lease_epoch"])
-        )
+        old_fence_runtime_epoch = 0 if fence is None else int(fence["runtime_lease_epoch"])
         workflow_epoch = 0
         workflow_namespace: str | None = None
         if start_receipt_row is not None:
@@ -15120,15 +14460,15 @@ class SqliteExecutionUnitOfWork:
                 (run_id, workflow_namespace),
             ).fetchone()
             if projection is not None and float(projection["expires_at"]) > now:
-                raise UnitOfWorkConflict(
-                    "live foreign workflow projection blocks Runtime takeover"
-                )
+                raise UnitOfWorkConflict("live foreign workflow projection blocks Runtime takeover")
             workflow_epoch = 0 if projection is None else int(projection["epoch"])
         next_epoch = max(old_runtime_epoch, old_fence_runtime_epoch, workflow_epoch) + 1
         expires_at = now + float(claim.lease_ttl_seconds)
         _fault(fault, "workflow:runtime_start:before_runtime_takeover_write")
         connection.execute(
-            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(run_id,namespace) DO UPDATE SET owner_id=excluded.owner_id,epoch=excluded.epoch,expires_at=excluded.expires_at",
+            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at)"
+            " VALUES(?,?,?,?,?) ON CONFLICT(run_id,namespace) DO UPDATE SET"
+            " owner_id=excluded.owner_id,epoch=excluded.epoch,expires_at=excluded.expires_at",
             (run_id, RUNTIME_LEASE_NAMESPACE, claim.owner_id, next_epoch, expires_at),
         )
         _fault(fault, "workflow:runtime_start:after_runtime_takeover_write")
@@ -15157,7 +14497,10 @@ class SqliteExecutionUnitOfWork:
         fence_epoch = 1 if fence is None else int(fence["epoch"]) + 1
         _fault(fault, "workflow:runtime_start:before_fence_takeover_write")
         connection.execute(
-            "INSERT INTO run_fences(run_id,owner_id,runtime_lease_epoch,epoch,state,acquired_at,released_at) VALUES(?,?,?,?, 'active',?,NULL) ON CONFLICT(run_id) DO UPDATE SET owner_id=excluded.owner_id,runtime_lease_epoch=excluded.runtime_lease_epoch,epoch=excluded.epoch,state='active',acquired_at=excluded.acquired_at,released_at=NULL",
+            "INSERT INTO"
+            " run_fences(run_id,owner_id,runtime_lease_epoch,epoch,state,acquired_at,released_at)"
+            " VALUES(?,?,?,?, 'active',?,NULL) ON CONFLICT(run_id) DO UPDATE SET"
+            " owner_id=excluded.owner_id,runtime_lease_epoch=excluded.runtime_lease_epoch,epoch=excluded.epoch,state='active',acquired_at=excluded.acquired_at,released_at=NULL",  # noqa: E501
             (run_id, claim.owner_id, next_epoch, fence_epoch, now),
         )
         _fault(fault, "workflow:runtime_start:after_fence_takeover_write")
@@ -15181,7 +14524,9 @@ class SqliteExecutionUnitOfWork:
                 raise UnitOfWorkConflict("consumed dispatch has no workflow receipt")
             _fault(fault, "workflow:runtime_start:before_dispatch_takeover_write")
             connection.execute(
-                "UPDATE runtime_start_dispatch_claims SET owner_id=?,runtime_lease_epoch=?,claim_epoch=claim_epoch+1,expires_at=?,version=version+1,updated_at=? WHERE claim_id=?",
+                "UPDATE runtime_start_dispatch_claims SET"
+                " owner_id=?,runtime_lease_epoch=?,claim_epoch=claim_epoch+1,expires_at=?,version=version+1,updated_at=?"  # noqa: E501
+                " WHERE claim_id=?",
                 (claim.owner_id, next_epoch, expires_at, now, str(dispatch["claim_id"])),
             )
             _fault(fault, "workflow:runtime_start:after_dispatch_takeover_write")
@@ -15247,7 +14592,9 @@ class SqliteExecutionUnitOfWork:
         self, snapshot_cursor: str | None, *, now: float
     ) -> tuple[tuple[ForkReceipt, ...], str | None]:
         rows = self.database.connection.execute(
-            "SELECT * FROM workflow_fork_receipts WHERE phase IN ('prepared','claimed','checkpointed') AND (? IS NULL OR fork_id>?) AND (claim_expires_at IS NULL OR claim_expires_at<=?) ORDER BY fork_id LIMIT 101",
+            "SELECT * FROM workflow_fork_receipts WHERE phase IN"
+            " ('prepared','claimed','checkpointed') AND (? IS NULL OR fork_id>?) AND"
+            " (claim_expires_at IS NULL OR claim_expires_at<=?) ORDER BY fork_id LIMIT 101",
             (snapshot_cursor, snapshot_cursor, now),
         ).fetchall()
         return tuple(self._fork_receipt(row) for row in rows[:100]), (
@@ -15256,9 +14603,7 @@ class SqliteExecutionUnitOfWork:
 
 
 def _workflow_catalog_profiles_json(authority: WorkflowCatalogAuthority) -> str:
-    return canonical_json(
-        [_workflow_catalog_profile_json(item) for item in authority.profiles]
-    )
+    return canonical_json([_workflow_catalog_profile_json(item) for item in authority.profiles])
 
 
 def _workflow_catalog_profile_json(item: object) -> dict[str, JsonValue]:
@@ -15314,18 +14659,12 @@ def _workflow_catalog_authority(row: sqlite3.Row) -> WorkflowCatalogAuthority:
                 description=_required(raw.get("description"), "profile.description"),
                 use_when=_required(raw.get("use_when"), "profile.use_when"),
                 avoid_when=_required(raw.get("avoid_when"), "profile.avoid_when"),
-                input_schema_ref=_required(
-                    raw.get("input_schema_ref"), "profile.input_schema_ref"
-                ),
+                input_schema_ref=_required(raw.get("input_schema_ref"), "profile.input_schema_ref"),
                 profile_fingerprint=_required(
                     raw.get("profile_fingerprint"), "profile.profile_fingerprint"
                 ),
-                workflow_name=_required(
-                    raw.get("workflow_name"), "profile.workflow_name"
-                ),
-                workflow_version=_required(
-                    raw.get("workflow_version"), "profile.workflow_version"
-                ),
+                workflow_name=_required(raw.get("workflow_name"), "profile.workflow_name"),
+                workflow_version=_required(raw.get("workflow_version"), "profile.workflow_version"),
                 implementation_fingerprint=_required(
                     raw.get("implementation_fingerprint"),
                     "profile.implementation_fingerprint",
@@ -15335,9 +14674,7 @@ def _workflow_catalog_authority(row: sqlite3.Row) -> WorkflowCatalogAuthority:
                 ),
                 manifest_hash=_required(raw.get("manifest_hash"), "profile.manifest_hash"),
                 state_schema_version=int(raw.get("state_schema_version", 0)),
-                start_input_schema=_start_input_schema_from_json(
-                    raw.get("start_input_schema")
-                ),
+                start_input_schema=_start_input_schema_from_json(raw.get("start_input_schema")),
                 terminal_projection_descriptor=_optional_json_object(
                     raw.get("terminal_projection_descriptor"),
                     "profile.terminal_projection_descriptor",
@@ -15383,9 +14720,7 @@ def _json_object(value: object, name: str) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], value)
 
 
-def _optional_json_object(
-    value: object, name: str
-) -> dict[str, JsonValue] | None:
+def _optional_json_object(value: object, name: str) -> dict[str, JsonValue] | None:
     if value is None:
         return None
     return _json_object(value, name)
@@ -15462,9 +14797,7 @@ def _workflow_launch_request_from_json(value: object) -> WorkflowLaunchRequest:
     ):
         item = raw[field_name]
         if item is not None and not isinstance(item, str):
-            raise UnitOfWorkConflict(
-                f"stored workflow launch {field_name} is malformed"
-            )
+            raise UnitOfWorkConflict(f"stored workflow launch {field_name} is malformed")
         optional_identifiers[field_name] = item
     catalog_generation = raw["catalog_generation"]
     tool_catalog_generation = raw["tool_catalog_generation"]
@@ -15492,9 +14825,7 @@ def _workflow_launch_request_from_json(value: object) -> WorkflowLaunchRequest:
             start_input=_json_object(raw["start_input"], "workflow launch start_input"),
             spawn_origin=WorkflowSpawnOrigin(
                 parent_run_id=_required(origin["parent_run_id"], "parent_run_id"),
-                parent_request_id=_required(
-                    origin["parent_request_id"], "parent_request_id"
-                ),
+                parent_request_id=_required(origin["parent_request_id"], "parent_request_id"),
                 turn_id=_required(origin["turn_id"], "turn_id"),
                 internal_tool_call_id=_required(
                     origin["internal_tool_call_id"], "internal_tool_call_id"
@@ -15516,9 +14847,7 @@ def _workflow_launch_ticket(row: sqlite3.Row) -> WorkflowLaunchTicket:
     return WorkflowLaunchTicket(
         ticket_receipt_id=str(row["ticket_receipt_id"]),
         payload_hash=str(row["payload_hash"]),
-        candidate_id=(
-            None if row["candidate_id"] is None else str(row["candidate_id"])
-        ),
+        candidate_id=(None if row["candidate_id"] is None else str(row["candidate_id"])),
         profile_key=str(row["profile_key"]),
         catalog_generation=int(row["catalog_generation"]),
     )
@@ -15537,9 +14866,7 @@ def _workflow_spawn_continuation_claim(
         runtime_lease_epoch=int(row["runtime_lease_epoch"]),
         run_fence_epoch=int(row["run_fence_epoch"]),
         workflow_lease_epoch=(
-            None
-            if row["workflow_lease_epoch"] is None
-            else int(row["workflow_lease_epoch"])
+            None if row["workflow_lease_epoch"] is None else int(row["workflow_lease_epoch"])
         ),
         claim_epoch=int(row["claim_epoch"]),
         expires_at=float(row["expires_at"]),
@@ -15674,9 +15001,7 @@ def _workflow_spawn_ready_activation(
         runtime_lease_epoch=int(row["runtime_lease_epoch"]),
         run_fence_epoch=int(row["run_fence_epoch"]),
         workflow_lease_epoch=(
-            None
-            if row["workflow_lease_epoch"] is None
-            else int(row["workflow_lease_epoch"])
+            None if row["workflow_lease_epoch"] is None else int(row["workflow_lease_epoch"])
         ),
         continuation_claim_epoch=int(row["continuation_claim_epoch"]),
         predecessor_activation_receipt_id=(
@@ -15720,12 +15045,10 @@ def _workflow_spawn_ready_activation(
         or str(runtime["owner_id"]) != str(row["owner_id"])
         or int(runtime["epoch"]) != int(row["runtime_lease_epoch"])
         or str(fence["owner_id"]) != str(row["owner_id"])
-        or int(fence["runtime_lease_epoch"])
-        != int(row["runtime_lease_epoch"])
+        or int(fence["runtime_lease_epoch"]) != int(row["runtime_lease_epoch"])
         or int(fence["epoch"]) != int(row["run_fence_epoch"])
         or str(fence["state"]) != "active"
-        or int(continuation_row["claim_epoch"])
-        != int(row["continuation_claim_epoch"])
+        or int(continuation_row["claim_epoch"]) != int(row["continuation_claim_epoch"])
         or str(continuation_row["owner_id"]) != str(row["owner_id"])
     ):
         raise UnitOfWorkConflict("workflow spawn activation authority disappeared")
@@ -15745,7 +15068,8 @@ def _workflow_spawn_ready_activation(
     workflow_lease: WorkflowLease | None = None
     if row["workflow_lease_epoch"] is not None:
         projection = connection.execute(
-            "SELECT * FROM workflow_leases WHERE run_id=? AND epoch=? AND owner_id=? AND namespace<>?",
+            "SELECT * FROM workflow_leases WHERE run_id=? AND epoch=? AND owner_id=? AND"
+            " namespace<>?",
             (
                 str(row["parent_run_id"]),
                 int(row["workflow_lease_epoch"]),
@@ -15834,9 +15158,7 @@ def _verified_workflow_launch_ticket(
         else:
             values[field_name] = str(value)
     payload = json.loads(str(row["canonical_payload"]))
-    binding = (
-        payload.get("profile_binding") if isinstance(payload, dict) else None
-    )
+    binding = payload.get("profile_binding") if isinstance(payload, dict) else None
     if not isinstance(binding, dict):
         raise UnitOfWorkConflict("workflow launch ticket profile binding is missing")
     schema = _start_input_schema_from_json(binding.get("start_input_schema"))
@@ -15866,10 +15188,7 @@ def _verified_workflow_launch_ticket(
             "ticket.implementation_fingerprint",
         ),
     )
-    if (
-        binding_columns != durable_columns
-        or payload_binding_columns != durable_columns[1:]
-    ):
+    if binding_columns != durable_columns or payload_binding_columns != durable_columns[1:]:
         raise UnitOfWorkConflict("workflow launch ticket binding columns differ")
     values.update(
         {
@@ -15882,9 +15201,7 @@ def _verified_workflow_launch_ticket(
             "checkpoint_namespace": _required(
                 binding.get("checkpoint_namespace"), "ticket.checkpoint_namespace"
             ),
-            "manifest_hash": _required(
-                binding.get("manifest_hash"), "ticket.manifest_hash"
-            ),
+            "manifest_hash": _required(binding.get("manifest_hash"), "ticket.manifest_hash"),
             "state_schema_version": int(binding.get("state_schema_version", 0)),
             "start_input_schema": schema,
             "terminal_projection_descriptor": _optional_json_object(
@@ -15974,12 +15291,8 @@ def _verified_workflow_launch_ticket(
         str(row["request_id"]),
         str(row["turn_id"]),
         None if row["requested_run_id"] is None else str(row["requested_run_id"]),
-        None
-        if row["requested_trace_id"] is None
-        else str(row["requested_trace_id"]),
-        None
-        if row["requested_thread_id"] is None
-        else str(row["requested_thread_id"]),
+        None if row["requested_trace_id"] is None else str(row["requested_trace_id"]),
+        None if row["requested_thread_id"] is None else str(row["requested_thread_id"]),
         str(row["resolved_run_id"]),
         str(row["resolved_trace_id"]),
         str(row["resolved_thread_id"]),
@@ -16032,8 +15345,7 @@ def _verified_workflow_launch_ticket(
         not isinstance(issue_authority_hash, str)
         or issue_authority_hash != str(row["issue_authority_hash"])
         or objective != str(row["objective"])
-        or canonical_json(launch_request.spawn_origin.to_json())
-        != str(row["spawn_origin_json"])
+        or canonical_json(launch_request.spawn_origin.to_json()) != str(row["spawn_origin_json"])
         or launch_request.spawn_origin.parent_run_id != str(row["parent_run_id"])
         or launch_request.root_run_id != str(row["root_run_id"])
         or launch_request.attachment_policy.value != str(row["attachment_policy"])
@@ -16102,9 +15414,7 @@ def _runtime_start_dispatch_record(
     )
 
 
-def _runtime_start_activation(
-    runtime: sqlite3.Row, fence: sqlite3.Row
-) -> RuntimeStartActivation:
+def _runtime_start_activation(runtime: sqlite3.Row, fence: sqlite3.Row) -> RuntimeStartActivation:
     from simple_harness.runtime.orchestration import RuntimeStartActivation
 
     run_id = str(runtime["run_id"])
@@ -16164,13 +15474,9 @@ def _validate_runtime_start_binding(
         raise UnitOfWorkConflict("workflow launch ticket verification was forged")
     if not isinstance(snapshot, StartSnapshot):
         raise TypeError("snapshot must be a StartSnapshot")
-    start_input_hash = hashlib.sha256(
-        canonical_json(_thaw(start.input)).encode()
-    ).hexdigest()
+    start_input_hash = hashlib.sha256(canonical_json(_thaw(start.input)).encode()).hexdigest()
     try:
-        validate_arguments(
-            _thaw(start.input), verified.start_input_schema.canonical_schema
-        )
+        validate_arguments(_thaw(start.input), verified.start_input_schema.canonical_schema)
     except (ArgumentsValidationError, SchemaDefinitionError) as exc:
         raise UnitOfWorkConflict("workflow start input violates durable schema") from exc
     expected = (
@@ -16200,9 +15506,11 @@ def _validate_runtime_start_binding(
         verified.state_schema_version,
         verified.start_input_schema.schema_ref,
         verified.start_input_schema.schema_hash,
-        None
-        if verified.terminal_projection_descriptor is None
-        else _thaw(verified.terminal_projection_descriptor),
+        (
+            None
+            if verified.terminal_projection_descriptor is None
+            else _thaw(verified.terminal_projection_descriptor)
+        ),
         verified.terminal_request_factory_hash,
         start_input_hash,
         _thaw(verified.capability_snapshot),
@@ -16234,9 +15542,11 @@ def _validate_runtime_start_binding(
         request.state_schema_version,
         request.start_input_schema_ref,
         request.start_input_schema_hash,
-        None
-        if request.terminal_projection_descriptor is None
-        else _thaw(request.terminal_projection_descriptor),
+        (
+            None
+            if request.terminal_projection_descriptor is None
+            else _thaw(request.terminal_projection_descriptor)
+        ),
         request.terminal_request_factory_hash,
         hashlib.sha256(canonical_json(_thaw(request.start_input)).encode()).hexdigest(),
         _thaw(request.capability_snapshot),
@@ -16308,9 +15618,7 @@ def _run_record(row: sqlite3.Row) -> RunRecord:
         execution_session_id=str(row["execution_session_id"]),
         request_id=str(row["request_id"]),
         root_run_id=str(row["root_run_id"]),
-        parent_run_id=None
-        if row["parent_run_id"] is None
-        else str(row["parent_run_id"]),
+        parent_run_id=None if row["parent_run_id"] is None else str(row["parent_run_id"]),
         profile_key=str(row["profile_key"]),
         driver_kind=str(row["driver_kind"]),
         state=RunState(row["state"]),
@@ -16332,9 +15640,7 @@ def _workflow_checkpoint(row: sqlite3.Row) -> WorkflowCheckpoint:
 def _admission_record(row: sqlite3.Row) -> AdmissionRecord:
     prompt = freeze_json(json.loads(str(row["prompt_json"])))
     response = (
-        None
-        if row["response_json"] is None
-        else freeze_json(json.loads(str(row["response_json"])))
+        None if row["response_json"] is None else freeze_json(json.loads(str(row["response_json"])))
     )
     return AdmissionRecord(
         admission_id=str(row["admission_id"]),
@@ -16373,14 +15679,10 @@ def _continuation_record(row: sqlite3.Row) -> ContinuationRecord:
         version=int(row["version"]),
         claimed_by=None if row["claimed_by"] is None else str(row["claimed_by"]),
         runtime_lease_epoch=(
-            None
-            if row["runtime_lease_epoch"] is None
-            else int(row["runtime_lease_epoch"])
+            None if row["runtime_lease_epoch"] is None else int(row["runtime_lease_epoch"])
         ),
         claim_epoch=int(row["claim_epoch"]),
-        ack_receipt_id=(
-            None if row["ack_receipt_id"] is None else str(row["ack_receipt_id"])
-        ),
+        ack_receipt_id=(None if row["ack_receipt_id"] is None else str(row["ack_receipt_id"])),
     )
 
 
@@ -16431,17 +15733,13 @@ def _profile_launch_ticket(row: sqlite3.Row) -> ProfileLaunchTicket:
         catalog_generation=int(row["catalog_generation"]),
         fingerprint=str(row["fingerprint"]),
         state=ProfileLaunchTicketState(str(row["state"])),
-        child_run_id=(
-            None if row["child_run_id"] is None else str(row["child_run_id"])
-        ),
+        child_run_id=(None if row["child_run_id"] is None else str(row["child_run_id"])),
     )
 
 
 def _child_command_record(row: sqlite3.Row) -> ChildCommandRecord:
     ticket_id = (
-        row["ticket_id"]
-        if row["ticket_id"] is not None
-        else row["workflow_ticket_receipt_id"]
+        row["ticket_id"] if row["ticket_id"] is not None else row["workflow_ticket_receipt_id"]
     )
     return ChildCommandRecord(
         command_id=str(row["command_id"]),
@@ -16467,9 +15765,7 @@ def _child_signal_record(row: sqlite3.Row) -> ChildSignalRecord:
         ),
         claim_epoch=int(row["claim_epoch"]),
         acked_at=None if row["acked_at"] is None else float(row["acked_at"]),
-        ack_receipt_id=(
-            None if row["ack_receipt_id"] is None else str(row["ack_receipt_id"])
-        ),
+        ack_receipt_id=(None if row["ack_receipt_id"] is None else str(row["ack_receipt_id"])),
     )
 
 
@@ -16528,13 +15824,9 @@ def _effect_record(row: sqlite3.Row) -> EffectRecord:
         fence_epoch=int(row["fence_epoch"]),
         authorization_receipt_ref=str(row["authorization_receipt_ref"]),
         handoff_receipt_ref=(
-            None
-            if row["handoff_receipt_ref"] is None
-            else str(row["handoff_receipt_ref"])
+            None if row["handoff_receipt_ref"] is None else str(row["handoff_receipt_ref"])
         ),
-        evidence_ref=(
-            None if row["evidence_ref"] is None else str(row["evidence_ref"])
-        ),
+        evidence_ref=(None if row["evidence_ref"] is None else str(row["evidence_ref"])),
         result=_tool_result(row["result_json"]),
         raw_call_id=(None if row["raw_call_id"] is None else str(row["raw_call_id"])),
         turn_ordinal=int(row["turn_ordinal"]),
@@ -16625,31 +15917,23 @@ def _provider_invocation_record(row: sqlite3.Row) -> ProviderInvocationRecord:
         ),
         target_digest=str(row["target_digest"]),
         estimator_snapshot=(
-            None
-            if row["estimator_json"] is None
-            else json.loads(str(row["estimator_json"]))
+            None if row["estimator_json"] is None else json.loads(str(row["estimator_json"]))
         ),
         estimator_digest=(
             None if row["estimator_digest"] is None else str(row["estimator_digest"])
         ),
         budget_charge=BudgetCharge.from_json(usage["budget"]),
         response_json=(
-            None
-            if row["response_json"] is None
-            else json.loads(str(row["response_json"]))
+            None if row["response_json"] is None else json.loads(str(row["response_json"]))
         ),
         usage_json=usage,
         error_code=(None if row["error_code"] is None else str(row["error_code"])),
         claimed_at=float(row["claimed_at"]),
-        handed_off_at=(
-            None if row["handed_off_at"] is None else float(row["handed_off_at"])
-        ),
+        handed_off_at=(None if row["handed_off_at"] is None else float(row["handed_off_at"])),
         settled_at=(None if row["settled_at"] is None else float(row["settled_at"])),
         version=int(row["version"]),
         request_json=(
-            None
-            if row["request_json"] is None
-            else json.loads(str(row["request_json"]))
+            None if row["request_json"] is None else json.loads(str(row["request_json"]))
         ),
         handoff_attempt=int(row["handoff_attempt"]),
         rehandoff_count=int(row["rehandoff_count"]),
@@ -16664,9 +15948,7 @@ def _wait_blocker_record(row: sqlite3.Row) -> WaitBlockerRecord:
         ledger_identity=str(row["ledger_identity"]),
         handoff_attempt=int(row["handoff_attempt"]),
         observed_version=int(row["observed_version"]),
-        resolution_id=(
-            None if row["resolution_id"] is None else str(row["resolution_id"])
-        ),
+        resolution_id=(None if row["resolution_id"] is None else str(row["resolution_id"])),
         wake_consumed=bool(row["wake_consumed"]),
         version=int(row["version"]),
     )

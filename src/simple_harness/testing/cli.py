@@ -18,14 +18,10 @@ from .runner import PROTOCOL_VERSION, run_conformance, validate_suite_names
 
 def parse_host_factory(spec: str) -> tuple[str, str]:
     if ":" not in spec:
-        raise ValueError(
-            f"Invalid host factory spec: {spec!r}. Expected format: 'module:factory'"
-        )
+        raise ValueError(f"Invalid host factory spec: {spec!r}. Expected format: 'module:factory'")
     module_name, factory_name = spec.split(":", 1)
     if not module_name or not factory_name:
-        raise ValueError(
-            f"Invalid host factory spec: {spec!r}. Both values must be non-empty"
-        )
+        raise ValueError(f"Invalid host factory spec: {spec!r}. Both values must be non-empty")
     return module_name, factory_name
 
 
@@ -37,9 +33,7 @@ def load_host_factory(module_name: str, factory_name: str) -> Any:
     try:
         factory = getattr(module, factory_name)
     except AttributeError as error:
-        raise AttributeError(
-            f"Module {module_name!r} has no attribute {factory_name!r}"
-        ) from error
+        raise AttributeError(f"Module {module_name!r} has no attribute {factory_name!r}") from error
     if not callable(factory):
         raise TypeError(f"Host factory {module_name}:{factory_name} is not callable")
     return factory
@@ -94,9 +88,7 @@ def run_conformance_cli(args: list[str] | None = None) -> int:
     print(f"Suites: {', '.join(suites)}")
     try:
         report = asyncio.run(
-            run_conformance(
-                factory, suites, artifact_sha256=parsed.artifact_sha256
-            )
+            run_conformance(factory, suites, artifact_sha256=parsed.artifact_sha256)
         )
     except Exception as error:
         print(f"Conformance runner error: {type(error).__name__}", file=sys.stderr)

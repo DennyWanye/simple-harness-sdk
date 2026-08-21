@@ -39,19 +39,16 @@ def test_live_foreign_lease_prevents_second_owner_and_zero_writes(
         return StatePatch({})
 
     workflow = compile_workflow(
-        WorkflowDefinition(
-            "lease", "1", 1, "node", (NodeDefinition("node", node),), {}, 3, 2
-        )
+        WorkflowDefinition("lease", "1", 1, "node", (NodeDefinition("node", node),), {}, 3, 2)
     )
+
     async def scenario() -> None:
         with Database.open(tmp_path / "foreign-lease.db") as database:
             uow = SqliteExecutionUnitOfWork(database)
             execution_ports = WorkflowExecutionPorts(
                 uow, CheckpointExecutionAdapter(database), uow, uow, uow
             )
-            store = SqliteNativeCheckpointStore(
-                execution_ports, blob_references=NoBlobReferences()
-            )
+            store = SqliteNativeCheckpointStore(execution_ports, blob_references=NoBlobReferences())
             first = WorkflowRunner(
                 registry=WorkflowRegistry((workflow,)),
                 checkpoint=store,
@@ -99,12 +96,18 @@ def test_live_foreign_lease_prevents_second_owner_and_zero_writes(
             )
             with pytest.raises(RuntimeError, match="active owner"):
                 await runner.run(run_id, context=WorkflowContext())
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?", (run_id,)
-            ).fetchone()[0] == 0
-            assert database.connection.execute(
-                "SELECT state FROM runs WHERE run_id=?", (run_id,)
-            ).fetchone()[0] == "created"
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?", (run_id,)
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM runs WHERE run_id=?", (run_id,)
+                ).fetchone()[0]
+                == "created"
+            )
 
     asyncio.run(scenario())
 
@@ -118,7 +121,11 @@ def test_registry_rejects_same_version_with_different_manifest() -> None:
         del state, context
         return StatePatch({"changed": True})
 
-    first = compile_workflow(WorkflowDefinition("immutable", "1", 1, "node", (NodeDefinition("node", one),), {}, 3, 2))
-    second = compile_workflow(WorkflowDefinition("immutable", "1", 1, "node", (NodeDefinition("node", two),), {}, 3, 2))
+    first = compile_workflow(
+        WorkflowDefinition("immutable", "1", 1, "node", (NodeDefinition("node", one),), {}, 3, 2)
+    )
+    second = compile_workflow(
+        WorkflowDefinition("immutable", "1", 1, "node", (NodeDefinition("node", two),), {}, 3, 2)
+    )
     with pytest.raises(ValueError, match="different manifest"):
         WorkflowRegistry((first, second))

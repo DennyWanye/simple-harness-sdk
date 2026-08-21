@@ -126,9 +126,7 @@ def test_sqlite_reopen_returns_durable_response_without_replay(tmp_path: Path) -
 def _ids(database: Database) -> tuple[str, ...]:
     return tuple(
         str(row[0])
-        for row in database.connection.execute(
-            "SELECT invocation_id FROM provider_invocations"
-        )
+        for row in database.connection.execute("SELECT invocation_id FROM provider_invocations")
     )
 
 
@@ -187,9 +185,7 @@ def test_restart_config_or_content_drift_keeps_one_row_and_zero_transport(
                 )
             )
         assert (
-            reopened.connection.execute(
-                "SELECT count(*) FROM provider_invocations"
-            ).fetchone()[0]
+            reopened.connection.execute("SELECT count(*) FROM provider_invocations").fetchone()[0]
             == 1
         )
     assert provider.calls == 0
@@ -244,15 +240,11 @@ def test_provider_schema_freezes_target_and_estimator_identity(tmp_path: Path) -
             "estimator_json",
             "estimator_digest",
         } <= database.column_names("provider_invocations")
-        indexes = database.connection.execute(
-            "PRAGMA index_list(provider_invocations)"
-        ).fetchall()
+        indexes = database.connection.execute("PRAGMA index_list(provider_invocations)").fetchall()
         unique_columns = {
             tuple(
                 str(column[2])
-                for column in database.connection.execute(
-                    f"PRAGMA index_info('{index[1]}')"
-                )
+                for column in database.connection.execute(f"PRAGMA index_info('{index[1]}')")
             )
             for index in indexes
             if index[2]

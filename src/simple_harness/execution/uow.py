@@ -192,9 +192,7 @@ class ContinuationTerminalResult:
 
 
 class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protocol):
-    def read_continuation(
-        self, continuation_id: str
-    ) -> ContinuationRecord | None: ...
+    def read_continuation(self, continuation_id: str) -> ContinuationRecord | None: ...
 
     def commit_runtime_wait_with_blocker(
         self,
@@ -377,9 +375,7 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         fault: FaultHook | None = None,
     ) -> ChildLaunchResult: ...
 
-    def read_child_command_for_run(
-        self, child_run_id: str
-    ) -> ChildCommandRecord | None: ...
+    def read_child_command_for_run(self, child_run_id: str) -> ChildCommandRecord | None: ...
 
     def is_workflow_spawn_child(self, child_run_id: str) -> bool: ...
 
@@ -447,9 +443,7 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         fault: FaultHook | None = None,
     ) -> ChildSignalAckResult: ...
 
-    def read_child_signal_ack_receipt(
-        self, receipt_id: str
-    ) -> ChildSignalAckReceipt | None: ...
+    def read_child_signal_ack_receipt(self, receipt_id: str) -> ChildSignalAckReceipt | None: ...
 
     def create_with_start_snapshot(
         self,

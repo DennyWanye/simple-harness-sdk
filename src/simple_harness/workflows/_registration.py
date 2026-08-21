@@ -63,17 +63,13 @@ def build_registration(
             schema_hash=hashlib.sha256(canonical_json(schema).encode()).hexdigest(),
         ),
     )
-    compiled = compile_workflow(
-        definition, dependency_lock_hash=SDK_DEPENDENCY_LOCK_HASH
-    )
+    compiled = compile_workflow(definition, dependency_lock_hash=SDK_DEPENDENCY_LOCK_HASH)
     return WorkflowDefinitionRegistration(
         profile=profile,
         definition=definition,
         dependency_lock_hash=compiled.manifest.dependency_lock_hash,
         expected_manifest_hash=workflow_manifest_hash(compiled.manifest),
-        expected_implementation_fingerprint=(
-            compiled.manifest.implementation_bundle_hash
-        ),
+        expected_implementation_fingerprint=(compiled.manifest.implementation_bundle_hash),
         transaction_owner=transaction_owner,
     )
 

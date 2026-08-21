@@ -61,7 +61,9 @@ def _channel(writer: str, value_type: JsonType = JsonType.STRING) -> ChannelSpec
     return ChannelSpec(value_type, ReducerKind.SINGLE_WRITER, frozenset({writer}))
 
 
-def _executable(definition: WorkflowDefinition) -> tuple[NativeWorkflowExecutable, InMemoryNativeCheckpointStore]:
+def _executable(
+    definition: WorkflowDefinition,
+) -> tuple[NativeWorkflowExecutable, InMemoryNativeCheckpointStore]:
     store = InMemoryNativeCheckpointStore()
     return _native(compile_workflow(definition), store), store
 
@@ -75,10 +77,15 @@ def test_native_engine_executes_linear_graph_to_terminal() -> None:
 
     executable, store = _executable(
         WorkflowDefinition(
-            "linear", "1", 1, "start",
+            "linear",
+            "1",
+            1,
+            "start",
             (NodeDefinition("start", start), NodeDefinition("finish", finish)),
             {"first": _channel("start"), "answer": _channel("finish")},
-            16, 8, edges=(Edge("start", "finish"), Edge("finish", "__end__")),
+            16,
+            8,
+            edges=(Edge("start", "finish"), Edge("finish", "__end__")),
         )
     )
     result = asyncio.run(
@@ -106,15 +113,17 @@ def test_native_engine_persists_conditional_route_before_frontier() -> None:
 
     executable, store = _executable(
         WorkflowDefinition(
-            "route", "1", 1, "start",
+            "route",
+            "1",
+            1,
+            "start",
             (NodeDefinition("start", start), NodeDefinition("right", selected)),
             {"choice": _channel("start"), "answer": _channel("right")},
-            16, 8,
+            16,
+            8,
             edges=(Edge("right", "__end__"),),
             conditional_edges=(
-                ConditionalEdge(
-                    "start", route, {"right": "right"}, selector_effect_policy="pure"
-                ),
+                ConditionalEdge("start", route, {"right": "right"}, selector_effect_policy="pure"),
             ),
         )
     )
@@ -131,9 +140,7 @@ def test_route_receives_only_frozen_checkpoint_time_and_immutable_state() -> Non
     seen_times: list[float] = []
 
     async def start(_state, _context):  # type: ignore[no-untyped-def]
-        return StatePatch(
-            {"choice": "done", "logical_timestamp": 999.0, "nested": {"safe": True}}
-        )
+        return StatePatch({"choice": "done", "logical_timestamp": 999.0, "nested": {"safe": True}})
 
     def route(state, context):  # type: ignore[no-untyped-def]
         seen_times.extend([state["logical_timestamp"], context.logical_timestamp])
@@ -163,9 +170,7 @@ def test_route_receives_only_frozen_checkpoint_time_and_immutable_state() -> Non
             8,
             edges=(Edge("done", "__end__"),),
             conditional_edges=(
-                ConditionalEdge(
-                    "start", route, {"done": "done"}, selector_effect_policy="pure"
-                ),
+                ConditionalEdge("start", route, {"done": "done"}, selector_effect_policy="pure"),
             ),
         )
     )
@@ -196,26 +201,28 @@ def test_native_engine_parallel_frontier_merges_deterministically() -> None:
 
     executable, _store = _executable(
         WorkflowDefinition(
-            "parallel", "1", 1, "root",
+            "parallel",
+            "1",
+            1,
+            "root",
             (
                 NodeDefinition("root", root),
                 NodeDefinition("left", left, dispatch=NodeDispatch.PARALLEL),
                 NodeDefinition("right", right, dispatch=NodeDispatch.PARALLEL),
             ),
             {"left": _channel("left"), "right": _channel("right")},
-            16, 8,
+            16,
+            8,
             edges=(
-                Edge("root", "left"), Edge("root", "right"),
-                Edge("left", "__end__"), Edge("right", "__end__"),
+                Edge("root", "left"),
+                Edge("root", "right"),
+                Edge("left", "__end__"),
+                Edge("right", "__end__"),
             ),
         )
     )
-    context = WorkflowContext(
-        ports={"native_execution_policy": NativeExecutionPolicy(2)}
-    )
-    result = asyncio.run(
-        executable.ainvoke({}, context, thread_id="thread", run_id="parallel-run")
-    )
+    context = WorkflowContext(ports={"native_execution_policy": NativeExecutionPolicy(2)})
+    result = asyncio.run(executable.ainvoke({}, context, thread_id="thread", run_id="parallel-run"))
     assert result == {"left": "L", "right": "R"}
 
 
@@ -234,10 +241,14 @@ def test_native_engine_retries_and_keeps_stable_pending_identity() -> None:
 
     executable, _store = _executable(
         WorkflowDefinition(
-            "retry", "1", 1, "flaky",
+            "retry",
+            "1",
+            1,
+            "flaky",
             (
                 NodeDefinition(
-                    "flaky", flaky,
+                    "flaky",
+                    flaky,
                     retry_policy=RetryPolicy(
                         max_attempts=2,
                         initial_delay_seconds=0,
@@ -246,7 +257,9 @@ def test_native_engine_retries_and_keeps_stable_pending_identity() -> None:
                     ),
                 ),
             ),
-            {"answer": _channel("flaky")}, 16, 8,
+            {"answer": _channel("flaky")},
+            16,
+            8,
             edges=(Edge("flaky", "__end__"),),
         )
     )
@@ -269,28 +282,36 @@ def test_native_engine_interrupt_reopens_and_consumes_stable_response() -> None:
 
     executable, store = _executable(
         WorkflowDefinition(
-            "interrupt", "1", 1, "approval",
+            "interrupt",
+            "1",
+            1,
+            "approval",
             (
                 NodeDefinition(
-                    "approval", approval, interrupt_capable=True,
-                    barrier=True, exclusive_superstep=True,
+                    "approval",
+                    approval,
+                    interrupt_capable=True,
+                    barrier=True,
+                    exclusive_superstep=True,
                     pre_interrupt_effect_policy="pure",
                 ),
             ),
-            {"approved": _channel("approval", JsonType.BOOLEAN)}, 16, 8,
+            {"approved": _channel("approval", JsonType.BOOLEAN)},
+            16,
+            8,
             edges=(Edge("approval", "__end__"),),
         )
     )
     with pytest.raises(WorkflowSuspended):
-        asyncio.run(
-            executable.ainvoke({}, WorkflowContext(), thread_id="thread", run_id="hitl")
-        )
+        asyncio.run(executable.ainvoke({}, WorkflowContext(), thread_id="thread", run_id="hitl"))
     assert store.interrupt is not None
     interrupt_id = str(store.interrupt["interrupt_id"])
     result = asyncio.run(
         executable.resume(
-            {interrupt_id: {"approved": True}}, WorkflowContext(),
-            thread_id="thread", run_id="hitl",
+            {interrupt_id: {"approved": True}},
+            WorkflowContext(),
+            thread_id="thread",
+            run_id="hitl",
         )
     )
     assert isinstance(result, Mapping)
@@ -303,15 +324,21 @@ def test_native_engine_max_supersteps_fails_durably() -> None:
 
     executable, store = _executable(
         WorkflowDefinition(
-            "max", "1", 1, "node", (NodeDefinition("node", node),), {}, 5, 4,
-            edges=(Edge("node", "node"),), loop_budgets={"loop": 3},
+            "max",
+            "1",
+            1,
+            "node",
+            (NodeDefinition("node", node),),
+            {},
+            5,
+            4,
+            edges=(Edge("node", "node"),),
+            loop_budgets={"loop": 3},
             loop_budget_bindings={"node->node": "loop"},
         )
     )
     with pytest.raises(WorkflowNodeError, match="max_supersteps"):
-        asyncio.run(
-            executable.ainvoke({}, WorkflowContext(), thread_id="thread", run_id="max-run")
-        )
+        asyncio.run(executable.ainvoke({}, WorkflowContext(), thread_id="thread", run_id="max-run"))
     assert store.failures
 
 
@@ -326,19 +353,34 @@ def test_native_engine_bounded_cycle_advances_epoch_and_exits() -> None:
 
     executable, store = _executable(
         WorkflowDefinition(
-            "cycle", "1", 1, "loop", (NodeDefinition("loop", loop),),
-            {"loop_counters": _channel("loop", JsonType.OBJECT)}, 16, 8,
-            conditional_edges=(ConditionalEdge(
-                "loop", select, {"again": "loop", "done": "__end__"},
-                selector_effect_policy="pure",
-            ),),
-            loop_budgets={"loop": 2}, loop_budget_bindings={"loop->loop": "loop"},
+            "cycle",
+            "1",
+            1,
+            "loop",
+            (NodeDefinition("loop", loop),),
+            {"loop_counters": _channel("loop", JsonType.OBJECT)},
+            16,
+            8,
+            conditional_edges=(
+                ConditionalEdge(
+                    "loop",
+                    select,
+                    {"again": "loop", "done": "__end__"},
+                    selector_effect_policy="pure",
+                ),
+            ),
+            loop_budgets={"loop": 2},
+            loop_budget_bindings={"loop->loop": "loop"},
         )
     )
-    result = asyncio.run(executable.ainvoke(
-        {"loop_counters": {"loop": 0}}, WorkflowContext(),
-        thread_id="thread", run_id="cycle",
-    ))
+    result = asyncio.run(
+        executable.ainvoke(
+            {"loop_counters": {"loop": 0}},
+            WorkflowContext(),
+            thread_id="thread",
+            run_id="cycle",
+        )
+    )
     assert isinstance(result, Mapping)
     assert result["loop_counters"] == {"loop": 2}
     assert store.snapshot is not None and store.snapshot.step == 2
@@ -353,15 +395,24 @@ def test_native_engine_join_fires_once_after_all_sources() -> None:
 
     executable, store = _executable(
         WorkflowDefinition(
-            "join", "1", 1, "root",
+            "join",
+            "1",
+            1,
+            "root",
             (
-                NodeDefinition("root", empty), NodeDefinition("left", empty),
-                NodeDefinition("right", empty), NodeDefinition("join", joined),
+                NodeDefinition("root", empty),
+                NodeDefinition("left", empty),
+                NodeDefinition("right", empty),
+                NodeDefinition("join", joined),
             ),
-            {"answer": _channel("join")}, 16, 8,
+            {"answer": _channel("join")},
+            16,
+            8,
             edges=(
-                Edge("root", "left"), Edge("root", "right"),
-                Edge(("left", "right"), "join"), Edge("join", "__end__"),
+                Edge("root", "left"),
+                Edge("root", "right"),
+                Edge(("left", "right"), "join"),
+                Edge("join", "__end__"),
             ),
         )
     )
@@ -395,17 +446,21 @@ def test_pending_result_after_commit_response_loss_does_not_rerun_node() -> None
     executable = _native(
         compile_workflow(
             WorkflowDefinition(
-                "pending", "1", 1, "node", (NodeDefinition("node", node),),
-                {"answer": _channel("node")}, 16, 8,
+                "pending",
+                "1",
+                1,
+                "node",
+                (NodeDefinition("node", node),),
+                {"answer": _channel("node")},
+                16,
+                8,
                 edges=(Edge("node", "__end__"),),
             )
         ),
         store,
     )
     with pytest.raises(ConnectionError, match="response lost"):
-        asyncio.run(
-            executable.ainvoke({}, WorkflowContext(), thread_id="thread", run_id="pending")
-        )
+        asyncio.run(executable.ainvoke({}, WorkflowContext(), thread_id="thread", run_id="pending"))
     result = asyncio.run(
         executable.ainvoke(None, WorkflowContext(), thread_id="thread", run_id="pending")
     )
@@ -441,44 +496,54 @@ def test_route_receipt_after_commit_response_loss_does_not_rerun_selector() -> N
     executable = _native(
         compile_workflow(
             WorkflowDefinition(
-                "route-loss", "1", 1, "start",
+                "route-loss",
+                "1",
+                1,
+                "start",
                 (NodeDefinition("start", start), NodeDefinition("done", done)),
-                {"choice": _channel("start"), "answer": _channel("done")}, 16, 8,
+                {"choice": _channel("start"), "answer": _channel("done")},
+                16,
+                8,
                 edges=(Edge("done", "__end__"),),
-                conditional_edges=(ConditionalEdge(
-                    "start", route, {"done": "done"}, selector_effect_policy="pure"
-                ),),
+                conditional_edges=(
+                    ConditionalEdge(
+                        "start", route, {"done": "done"}, selector_effect_policy="pure"
+                    ),
+                ),
             )
         ),
         store,
     )
     with pytest.raises(ConnectionError, match="route response lost"):
-        asyncio.run(executable.ainvoke(
-            {}, WorkflowContext(), thread_id="thread", run_id="route-loss"
-        ))
-    result = asyncio.run(executable.ainvoke(
-        None, WorkflowContext(), thread_id="thread", run_id="route-loss"
-    ))
+        asyncio.run(
+            executable.ainvoke({}, WorkflowContext(), thread_id="thread", run_id="route-loss")
+        )
+    result = asyncio.run(
+        executable.ainvoke(None, WorkflowContext(), thread_id="thread", run_id="route-loss")
+    )
     assert isinstance(result, Mapping)
     assert result["answer"] == "done" and selector_calls == 1
 
 
 def test_permanent_node_failure_is_recorded() -> None:
     async def fail(_state, _context):  # type: ignore[no-untyped-def]
-        raise WorkflowNodeError(
-            code=WorkflowErrorCode.PERMANENT, message_ref="permanent"
-        )
+        raise WorkflowNodeError(code=WorkflowErrorCode.PERMANENT, message_ref="permanent")
 
     executable, store = _executable(
         WorkflowDefinition(
-            "failure", "1", 1, "fail", (NodeDefinition("fail", fail),), {}, 16, 8,
+            "failure",
+            "1",
+            1,
+            "fail",
+            (NodeDefinition("fail", fail),),
+            {},
+            16,
+            8,
             edges=(Edge("fail", "__end__"),),
         )
     )
     with pytest.raises(WorkflowNodeError, match="permanent"):
-        asyncio.run(executable.ainvoke(
-            {}, WorkflowContext(), thread_id="thread", run_id="failure"
-        ))
+        asyncio.run(executable.ainvoke({}, WorkflowContext(), thread_id="thread", run_id="failure"))
     assert store.failures
 
 
@@ -494,17 +559,26 @@ def test_generic_delivery_is_canonical_and_terminal_is_last() -> None:
     intents = NativeWorkflowExecutable.terminal_intents(
         state, run_id="delivery", status="completed", error=None, recovery_action=None
     )
-    assert [intent.intent_id for intent in intents] == [
-        "a", "b", "delivery:run-terminal"
-    ]
+    assert [intent.intent_id for intent in intents] == ["a", "b", "delivery:run-terminal"]
     assert intents[-1].event_type == "workflow.final"
     with pytest.raises(Exception, match="private"):
         NativeWorkflowExecutable.terminal_intents(
-            {"values": {"delivery_intents": [{
-                "intent_id": "x", "kind": "assistant", "channel": "chat",
-                "payload": {"secret_token": "leak"},
-            }]}},
-            run_id="delivery", status="completed", error=None, recovery_action=None,
+            {
+                "values": {
+                    "delivery_intents": [
+                        {
+                            "intent_id": "x",
+                            "kind": "assistant",
+                            "channel": "chat",
+                            "payload": {"secret_token": "leak"},
+                        }
+                    ]
+                }
+            },
+            run_id="delivery",
+            status="completed",
+            error=None,
+            recovery_action=None,
         )
 
 
@@ -558,26 +632,12 @@ def test_generic_delivery_enforces_count_size_depth_items_and_unique_id_bounds()
             recovery_action=None,
         )
 
-    assert len(
-        project(
-            [
-                _delivery_intent(intent_id=f"item-{index}")
-                for index in range(16)
-            ]
-        )
-    ) == 17
+    assert len(project([_delivery_intent(intent_id=f"item-{index}") for index in range(16)])) == 17
     with pytest.raises(Exception, match="16"):
-        project(
-            [
-                _delivery_intent(intent_id=f"item-{index}")
-                for index in range(17)
-            ]
-        )
+        project([_delivery_intent(intent_id=f"item-{index}") for index in range(17)])
 
     # {"data":""} contributes 11 canonical UTF-8 bytes.
-    assert len(
-        project([_delivery_intent(payload={"data": "x" * (32 * 1024 - 11)})])
-    ) == 2
+    assert len(project([_delivery_intent(payload={"data": "x" * (32 * 1024 - 11)})])) == 2
     with pytest.raises(Exception, match="32KiB"):
         project([_delivery_intent(payload={"data": "x" * (32 * 1024 - 10)})])
 
@@ -589,9 +649,7 @@ def test_generic_delivery_enforces_count_size_depth_items_and_unique_id_bounds()
     with pytest.raises(Exception, match="depth 8"):
         project([_delivery_intent(payload=too_deep)])
 
-    assert len(
-        project([_delivery_intent(payload={"items": list(range(511))})])
-    ) == 2
+    assert len(project([_delivery_intent(payload={"items": list(range(511))})])) == 2
     with pytest.raises(Exception, match="512 items"):
         project([_delivery_intent(payload={"items": list(range(512))})])
 
@@ -620,9 +678,7 @@ def test_generic_delivery_rejects_private_keys_recursively(private_key: str) -> 
             {
                 "values": {
                     "delivery_intents": [
-                        _delivery_intent(
-                            payload={"safe": [{"nested": {private_key: "leak"}}]}
-                        )
+                        _delivery_intent(payload={"safe": [{"nested": {private_key: "leak"}}]})
                     ]
                 }
             },
@@ -642,12 +698,18 @@ def test_terminal_projection_descriptor_rejects_request_contract_drift() -> None
     assert descriptor.request_factory_hash == TERMINAL_REQUEST_FACTORY_HASH
     with pytest.raises(Exception, match="schema hash"):
         TerminalProjectionDescriptor(
-            "terminal.commit", "1", fingerprint, "b" * 64,
+            "terminal.commit",
+            "1",
+            fingerprint,
+            "b" * 64,
             TERMINAL_REQUEST_FACTORY_HASH,
         )
     with pytest.raises(Exception, match="factory hash"):
         TerminalProjectionDescriptor(
-            "terminal.commit", "1", fingerprint, TERMINAL_REQUEST_SCHEMA_HASH,
+            "terminal.commit",
+            "1",
+            fingerprint,
+            TERMINAL_REQUEST_SCHEMA_HASH,
             "c" * 64,
         )
 
@@ -688,10 +750,14 @@ def test_terminal_projection_prepare_reopens_without_rerunning_projector() -> No
         calls += 1
         assert context.run_id == "projection"
         return {
-            "intents": [{
-                "intent_id": "answer", "kind": "assistant", "channel": "chat",
-                "payload": {"answer": "ok"},
-            }],
+            "intents": [
+                {
+                    "intent_id": "answer",
+                    "kind": "assistant",
+                    "channel": "chat",
+                    "payload": {"answer": "ok"},
+                }
+            ],
             "blob_refs": [],
         }
 
@@ -717,35 +783,53 @@ def test_terminal_projection_prepare_reopens_without_rerunning_projector() -> No
                 raise ConnectionError("prepare response lost")
             return receipt
 
-    compiled = compile_workflow(WorkflowDefinition(
-        "projection", "1", 1, "node", (NodeDefinition("node", node),),
-        {"answer": _channel("node")}, 16, 8, edges=(Edge("node", "__end__"),),
-        terminal_projection_descriptor=descriptor,
-    ))
-    legacy = compile_workflow(WorkflowDefinition(
-        "projection", "1", 1, "node", (NodeDefinition("node", node),),
-        {"answer": _channel("node")}, 16, 8, edges=(Edge("node", "__end__"),),
-    ))
+    compiled = compile_workflow(
+        WorkflowDefinition(
+            "projection",
+            "1",
+            1,
+            "node",
+            (NodeDefinition("node", node),),
+            {"answer": _channel("node")},
+            16,
+            8,
+            edges=(Edge("node", "__end__"),),
+            terminal_projection_descriptor=descriptor,
+        )
+    )
+    legacy = compile_workflow(
+        WorkflowDefinition(
+            "projection",
+            "1",
+            1,
+            "node",
+            (NodeDefinition("node", node),),
+            {"answer": _channel("node")},
+            16,
+            8,
+            edges=(Edge("node", "__end__"),),
+        )
+    )
     assert compiled.manifest.terminal_projection_descriptor == descriptor
     assert compiled.manifest.definition_hash != legacy.manifest.definition_hash
     assert compiled.manifest.policy_hash != legacy.manifest.policy_hash
     assert (
-        compiled.manifest.implementation_bundle_hash
-        != legacy.manifest.implementation_bundle_hash
+        compiled.manifest.implementation_bundle_hash != legacy.manifest.implementation_bundle_hash
     )
     store = LosePrepareResponse()
     executable = NativeWorkflowExecutable(
-        compiled, store,
+        compiled,
+        store,
         terminal_projection_port=_TerminalProjectionPort(),
         terminal_commit_projection_port=CommitPort(),
     )
     with pytest.raises(ConnectionError, match="prepare response lost"):
-        asyncio.run(executable.ainvoke(
-            {}, WorkflowContext(), thread_id="thread", run_id="projection"
-        ))
-    result = asyncio.run(executable.ainvoke(
-        None, WorkflowContext(), thread_id="thread", run_id="projection"
-    ))
+        asyncio.run(
+            executable.ainvoke({}, WorkflowContext(), thread_id="thread", run_id="projection")
+        )
+    result = asyncio.run(
+        executable.ainvoke(None, WorkflowContext(), thread_id="thread", run_id="projection")
+    )
     assert isinstance(result, Mapping)
     assert calls == 1
     assert len(store.projection_prepares) == 1
@@ -760,21 +844,33 @@ def test_pinned_terminal_projection_cannot_downgrade_to_legacy() -> None:
     descriptor = TerminalProjectionDescriptor.create(
         capability_id="terminal.commit", version="1", projector_fingerprint="e" * 64
     )
-    compiled = compile_workflow(WorkflowDefinition(
-        "projection-missing", "1", 1, "node", (NodeDefinition("node", node),),
-        {"answer": _channel("node")}, 16, 8, edges=(Edge("node", "__end__"),),
-        terminal_projection_descriptor=descriptor,
-    ))
+    compiled = compile_workflow(
+        WorkflowDefinition(
+            "projection-missing",
+            "1",
+            1,
+            "node",
+            (NodeDefinition("node", node),),
+            {"answer": _channel("node")},
+            16,
+            8,
+            edges=(Edge("node", "__end__"),),
+            terminal_projection_descriptor=descriptor,
+        )
+    )
     assert compiled.manifest.terminal_projection_descriptor == descriptor
     executable = NativeWorkflowExecutable(
-        compiled, InMemoryNativeCheckpointStore(),
+        compiled,
+        InMemoryNativeCheckpointStore(),
         terminal_projection_port=_TerminalProjectionPort(),
         terminal_commit_projection_port=_TerminalCommitProjectionPort(),
     )
     with pytest.raises(Exception, match="unavailable"):
-        asyncio.run(executable.ainvoke(
-            {}, WorkflowContext(), thread_id="thread", run_id="projection-missing"
-        ))
+        asyncio.run(
+            executable.ainvoke(
+                {}, WorkflowContext(), thread_id="thread", run_id="projection-missing"
+            )
+        )
 
 
 def test_projector_runtime_error_is_converted_to_durable_engine_failure() -> None:

@@ -9,7 +9,6 @@ import pytest
 
 from simple_harness.testing import PROTOCOL_VERSION
 
-
 # Plugin is auto-loaded via entry point - don't load it again
 
 
@@ -47,9 +46,7 @@ def test_host_option_registered(pytestconfig):
 
 
 def test_suite_option_registered(pytestconfig):
-    assert pytestconfig.getoption("--simple-harness-suite") == (
-        "provider,tool,runtime,workflow"
-    )
+    assert pytestconfig.getoption("--simple-harness-suite") == ("provider,tool,runtime,workflow")
 
 
 # Sample conformance test that uses the fixture

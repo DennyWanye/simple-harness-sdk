@@ -35,9 +35,7 @@ class IdempotentSink:
             if self.calls == 1
             else ConversationMemoryApplyStatus.ALREADY_APPLIED
         )
-        return ConversationMemoryApplyResult(
-            intent.source_event_id, prior, status, "record-1"
-        )
+        return ConversationMemoryApplyResult(intent.source_event_id, prior, status, "record-1")
 
     async def close(self) -> None:
         self.closed = True

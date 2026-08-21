@@ -430,12 +430,14 @@ def test_completion_construction():
 
 def test_completion_from_json_string():
     """Test completion parsing from JSON string."""
-    value = json.dumps({
-        "schema_version": 1,
-        "lineage_id": "a" * 64,
-        "draft_index": 2,
-        "draft_path": "/tmp/draft-2",
-    })
+    value = json.dumps(
+        {
+            "schema_version": 1,
+            "lineage_id": "a" * 64,
+            "draft_index": 2,
+            "draft_path": "/tmp/draft-2",
+        }
+    )
 
     completion = CapabilityBuildCompletion.from_value(value)
     assert completion.draft_index == 2
@@ -466,11 +468,13 @@ def test_completion_invalid_json():
 def test_completion_missing_fields():
     """Test completion rejects incomplete objects."""
     with pytest.raises(CapabilityBuildError) as exc:
-        CapabilityBuildCompletion.from_value({
-            "schema_version": 1,
-            "lineage_id": "a" * 64,
-            # Missing draft_index and draft_path
-        })
+        CapabilityBuildCompletion.from_value(
+            {
+                "schema_version": 1,
+                "lineage_id": "a" * 64,
+                # Missing draft_index and draft_path
+            }
+        )
     assert exc.value.code == "builder_completion_invalid"
 
 

@@ -62,10 +62,7 @@ class CrashAtDurableWrite(Checkpoint):
         if (
             self.crash
             and checkpoint["phase"] == self.phase
-            and (
-                self.progress is None
-                or checkpoint["tool_result_progress"] == self.progress
-            )
+            and (self.progress is None or checkpoint["tool_result_progress"] == self.progress)
         ):
             self.crash = False
             raise RuntimeError(f"crash-after-{self.phase}-{self.progress}")
@@ -127,9 +124,7 @@ class DurableEffects:
             run_id=values["context"].run_id,
             call_id=call.call_id,
             tool_name=call.name,
-            request_hash=effect_request_hash(
-                tool_name=call.name, arguments=dict(call.arguments)
-            ),
+            request_hash=effect_request_hash(tool_name=call.name, arguments=dict(call.arguments)),
             arguments=call.arguments,
             state=EffectState.SUCCEEDED,
             version=2,
@@ -155,16 +150,12 @@ def _tool_response(content: str) -> ProviderResponse:
     )
 
 
-def test_tool_batch_checkpoint_reopen_never_replays_provider_and_raw_ids_are_turn_scoped() -> (
-    None
-):
+def test_tool_batch_checkpoint_reopen_never_replays_provider_and_raw_ids_are_turn_scoped() -> None:
     provider = ScriptedProviderCoordinator(
         [
             _tool_response("turn-1"),
             _tool_response("turn-2"),
-            ProviderResponse(
-                RequestId("fixture"), Message(MessageRole.ASSISTANT, "done")
-            ),
+            ProviderResponse(RequestId("fixture"), Message(MessageRole.ASSISTANT, "done")),
         ]
     )
     effects = DurableEffects()
@@ -229,9 +220,7 @@ def test_each_react_write_phase_reopens_without_duplicate_physical_effect(
     provider = LedgerFirstProvider(
         [
             _tool_response("turn-1"),
-            ProviderResponse(
-                RequestId("fixture"), Message(MessageRole.ASSISTANT, "done")
-            ),
+            ProviderResponse(RequestId("fixture"), Message(MessageRole.ASSISTANT, "done")),
         ]
     )
     effects = DurableEffects()

@@ -124,9 +124,7 @@ def _consumer_private_snapshot(
     result_hash = lineage.get("memory_result_hash")
     if (result_id is None) != (result_hash is None):
         raise ValueError("consumer Memory result id/hash must be present together")
-    if result_id is not None and (
-        not isinstance(result_id, str) or not result_id.strip()
-    ):
+    if result_id is not None and (not isinstance(result_id, str) or not result_id.strip()):
         raise ValueError("consumer Memory result id must be non-empty")
     if result_hash is not None and (
         not isinstance(result_hash, str)
@@ -135,17 +133,13 @@ def _consumer_private_snapshot(
     ):
         raise ValueError("consumer Memory result hash must be lowercase SHA-256")
     parsed_current = _private_message(private.get("current_message"))
-    if canonical_json(parsed_current.to_dict()) != canonical_json(
-        current_message.to_dict()
-    ):
+    if canonical_json(parsed_current.to_dict()) != canonical_json(current_message.to_dict()):
         raise ValueError("consumer prepared current message differs")
     provider_values = private.get("provider_messages")
     if not isinstance(provider_values, list) or not provider_values:
         raise TypeError("consumer prepared provider_messages must be a non-empty list")
     provider_messages = tuple(_private_message(item) for item in provider_values)
-    if canonical_json(provider_messages[-1].to_dict()) != canonical_json(
-        current_message.to_dict()
-    ):
+    if canonical_json(provider_messages[-1].to_dict()) != canonical_json(current_message.to_dict()):
         raise ValueError("consumer prepared provider messages omit current message")
     memory_messages: list[Message] = []
     for message in provider_messages:
@@ -154,13 +148,8 @@ def _consumer_private_snapshot(
         if metadata.get("source") != "memory":
             continue
         memory_messages.append(message)
-        if (
-            message.role is not MessageRole.USER
-            or metadata.get("trust") != "untrusted_data"
-        ):
-            raise ValueError(
-                "consumer prepared Memory messages must remain USER/untrusted data"
-            )
+        if message.role is not MessageRole.USER or metadata.get("trust") != "untrusted_data":
+            raise ValueError("consumer prepared Memory messages must remain USER/untrusted data")
     memory = private.get("memory")
     if memory is None:
         if memory_messages:
@@ -170,13 +159,8 @@ def _consumer_private_snapshot(
     else:
         if not isinstance(memory, dict):
             raise TypeError("consumer prepared Memory partition must be an object")
-        if (
-            memory.get("role") != "user"
-            or memory.get("trust") != "untrusted_data"
-        ):
-            raise ValueError(
-                "consumer prepared Memory partition must remain USER/untrusted data"
-            )
+        if memory.get("role") != "user" or memory.get("trust") != "untrusted_data":
+            raise ValueError("consumer prepared Memory partition must remain USER/untrusted data")
         if "result" not in memory:
             raise ValueError("consumer prepared Memory result is missing")
         if not memory_messages:
@@ -186,9 +170,7 @@ def _consumer_private_snapshot(
     return private, cast(str | None, result_id), cast(str | None, result_hash)
 
 
-def _consumer_release_candidate(
-    value: object, *, expected_context_query_id: str
-) -> str | None:
+def _consumer_release_candidate(value: object, *, expected_context_query_id: str) -> str | None:
     if not isinstance(value, Mapping):
         return None
     lineage = value.get("lineage")
@@ -238,10 +220,7 @@ def _validated_recall_payload(
     result: ConversationMemoryRecallResult,
     query: ConversationMemoryRecallQuery,
 ) -> dict[str, JsonValue]:
-    if (
-        result.context_query_id != query.context_query_id
-        or result.query_hash != query.query_hash
-    ):
+    if result.context_query_id != query.context_query_id or result.query_hash != query.query_hash:
         raise ConversationMemoryError(ConversationMemoryErrorCode.QUERY_CONFLICT)
     if not isinstance(result.result_id, str) or not result.result_id.strip():
         raise ConversationMemoryError(ConversationMemoryErrorCode.QUERY_CONFLICT)
@@ -262,9 +241,7 @@ def _validated_recall_payload(
     try:
         ConversationMemoryQueryStatus(result.status)
     except (TypeError, ValueError):
-        raise ConversationMemoryError(
-            ConversationMemoryErrorCode.QUERY_CONFLICT
-        ) from None
+        raise ConversationMemoryError(ConversationMemoryErrorCode.QUERY_CONFLICT) from None
     if not isinstance(result.payload, Mapping):
         raise ConversationMemoryError(ConversationMemoryErrorCode.QUERY_CONFLICT)
     memory_payload = thaw_json(cast(FrozenJsonValue, result.payload))
@@ -313,12 +290,8 @@ async def _release_consumer_staged_result(
     if record.memory_result_id is None:
         return record
     if memory is None:
-        raise TypeError(
-            "consumer prepared Memory lineage requires a conversation query port"
-        )
-    return await _release_staged_result(
-        memory, record, timeout_seconds=timeout_seconds
-    )
+        raise TypeError("consumer prepared Memory lineage requires a conversation query port")
+    return await _release_staged_result(memory, record, timeout_seconds=timeout_seconds)
 
 
 def context_input_hash(value: ConversationTurnInput) -> str:
@@ -423,9 +396,7 @@ async def prepare_sdk_conversation_context(
         lease_seconds=lease_seconds,
     )
     if claim.record.state in {ContextStageState.STAGED, ContextStageState.CONSUMED}:
-        return await _release_staged_result(
-            memory, claim.record, timeout_seconds=timeout_seconds
-        )
+        return await _release_staged_result(memory, claim.record, timeout_seconds=timeout_seconds)
     if claim.owner:
         query = ConversationMemoryRecallQuery.create(
             context_query_id=context_query_id(kind, identity_key),
@@ -443,9 +414,7 @@ async def prepare_sdk_conversation_context(
                     memory.recall_bounded(query), timeout=query.timeout_seconds
                 )
             except TimeoutError:
-                raise ConversationMemoryError(
-                    ConversationMemoryErrorCode.TIMEOUT
-                ) from None
+                raise ConversationMemoryError(ConversationMemoryErrorCode.TIMEOUT) from None
             memory_payload = _validated_recall_payload(result, query)
             private: dict[str, JsonValue] = {
                 "schema_version": 1,
@@ -498,18 +467,14 @@ async def prepare_sdk_conversation_context(
                 except BaseException:
                     pass
             raise
-        return await _release_staged_result(
-            memory, staged, timeout_seconds=timeout_seconds
-        )
+        return await _release_staged_result(memory, staged, timeout_seconds=timeout_seconds)
     for _ in range(max_waits):
         await asyncio.sleep(wait_seconds)
         winner = repository.get(stage_id)
         if winner is None:
             raise RuntimeError("context stage disappeared")
         if winner.state in {ContextStageState.STAGED, ContextStageState.CONSUMED}:
-            return await _release_staged_result(
-                memory, winner, timeout_seconds=timeout_seconds
-            )
+            return await _release_staged_result(memory, winner, timeout_seconds=timeout_seconds)
         if winner.state is ContextStageState.ABANDONED:
             raise RuntimeError("context stage was abandoned")
     raise TimeoutError("context preparation winner did not finish")
@@ -561,12 +526,10 @@ async def prepare_consumer_conversation_context(
             prepared, expected_context_query_id=expected_query_id
         )
         try:
-            private, memory_result_id, memory_result_hash = (
-                _consumer_private_snapshot(
-                    prepared,
-                    expected_context_query_id=expected_query_id,
-                    current_message=value.message,
-                )
+            private, memory_result_id, memory_result_hash = _consumer_private_snapshot(
+                prepared,
+                expected_context_query_id=expected_query_id,
+                current_message=value.message,
             )
         except BaseException:
             if memory is not None and release_candidate is not None:
@@ -582,9 +545,7 @@ async def prepare_consumer_conversation_context(
                     pass
             raise
         if memory_result_id is not None and memory is None:
-            raise TypeError(
-                "consumer prepared Memory lineage requires a conversation query port"
-            )
+            raise TypeError("consumer prepared Memory lineage requires a conversation query port")
         try:
             staged = complete_context_stage(
                 repository,

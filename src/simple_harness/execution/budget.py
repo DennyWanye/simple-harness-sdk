@@ -53,10 +53,7 @@ class BudgetCharge:
                 raise ValueError("unknown budget charge cannot have an amount")
         elif self.amount_micros is None:
             raise ValueError("known budget charge requires amount_micros")
-        if (
-            self.estimator_snapshot_id is not None
-            and not self.estimator_snapshot_id.strip()
-        ):
+        if self.estimator_snapshot_id is not None and not self.estimator_snapshot_id.strip():
             raise ValueError("estimator_snapshot_id must not be blank")
 
     @property
@@ -136,9 +133,7 @@ class BudgetPolicy:
         if self.hard_cap_micros is not None and not self.refuse_on_unknown:
             raise ValueError("hard caps must refuse unknown provider cost")
 
-    def authorize(
-        self, snapshot: BudgetSnapshot, *, reservation_micros: int | None
-    ) -> None:
+    def authorize(self, snapshot: BudgetSnapshot, *, reservation_micros: int | None) -> None:
         if self.refuse_on_unknown and snapshot.has_unknown_charge:
             logger.warning(
                 "budget.refused_on_unknown",
@@ -235,6 +230,7 @@ class FrozenPriceEstimator:
             amount,
             self.snapshot_id,
         )
+
     def estimate_upper_bound(self, request: ProviderRequest) -> BudgetCharge:
         if request.max_output_tokens is None:
             return BudgetCharge.unknown()
@@ -248,9 +244,7 @@ class FrozenPriceEstimator:
                         else [block.to_dict() for block in message.content]
                     ),
                     "name": message.name,
-                    "call_id": None
-                    if message.call_id is None
-                    else message.call_id.value,
+                    "call_id": None if message.call_id is None else message.call_id.value,
                     "metadata": thaw_json(cast(FrozenJsonValue, message.metadata)),
                 }
                 for message in request.messages
@@ -271,9 +265,7 @@ class FrozenPriceEstimator:
             + len(request.messages) * self.per_message_overhead_tokens
             + len(request.tools) * self.per_tool_overhead_tokens
         )
-        amount = self._priced(
-            input_bound, self.input_micros_per_million_tokens
-        ) + self._priced(
+        amount = self._priced(input_bound, self.input_micros_per_million_tokens) + self._priced(
             request.max_output_tokens, self.output_micros_per_million_tokens
         )
         return BudgetCharge(
@@ -283,9 +275,7 @@ class FrozenPriceEstimator:
         )
 
 
-def budget_policy_fingerprint(
-    policy: BudgetPolicy, estimator: FrozenPriceEstimator | None
-) -> str:
+def budget_policy_fingerprint(policy: BudgetPolicy, estimator: FrozenPriceEstimator | None) -> str:
     """Canonical identity for the provider budget authority frozen at composition."""
 
     payload: JsonValue = {

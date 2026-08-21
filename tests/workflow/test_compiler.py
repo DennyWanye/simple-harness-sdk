@@ -28,9 +28,7 @@ def _definition(*, edges: tuple[Edge, ...] = (Edge("start", "finish"),), **chang
         "entry_node": "start",
         "nodes": (NodeDefinition("start", _noop), NodeDefinition("finish", _noop)),
         "channels": {
-            "answer": ChannelSpec(
-                "string", ReducerKind.SINGLE_WRITER, frozenset({"finish"})
-            )
+            "answer": ChannelSpec("string", ReducerKind.SINGLE_WRITER, frozenset({"finish"}))
         },
         "recursion_limit": 9,
         "max_supersteps": 8,
@@ -81,9 +79,7 @@ def test_compile_validates_conditional_routes() -> None:
     definition = _definition(
         edges=(),
         conditional_edges=(
-            ConditionalEdge(
-                "start", route, {"done": "finish"}, selector_effect_policy="pure"
-            ),
+            ConditionalEdge("start", route, {"done": "finish"}, selector_effect_policy="pure"),
         ),
     )
     compiled = compile_workflow(definition)

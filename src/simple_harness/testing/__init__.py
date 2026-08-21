@@ -41,9 +41,7 @@ def run_conformance_suite(
 
     module_name, factory_name = parse_host_factory(host_factory)
     factory = load_host_factory(module_name, factory_name)
-    report = asyncio.run(
-        run_conformance(factory, suites, artifact_sha256=artifact_sha256)
-    )
+    report = asyncio.run(run_conformance(factory, suites, artifact_sha256=artifact_sha256))
     if json_output is not None:
         path = Path(json_output)
         path.parent.mkdir(parents=True, exist_ok=True)

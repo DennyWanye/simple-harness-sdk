@@ -20,9 +20,7 @@ class DurableReactCheckpoint:
         self._port = port
         self._clock = clock
 
-    def load_or_create(
-        self, run_id: RunId, lease: ExecutionLease
-    ) -> tuple[TerminationState, int]:
+    def load_or_create(self, run_id: RunId, lease: ExecutionLease) -> tuple[TerminationState, int]:
         stored = self._port.read_react_checkpoint(run_id.value)
         if stored is not None:
             return _state(stored), stored.version

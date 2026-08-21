@@ -55,6 +55,7 @@ def test_transaction_rolls_back_on_error(tmp_path: Path) -> None:
                     ("session-1", 1.0),
                 )
                 raise RuntimeError("fault")
-        assert database.connection.execute(
-            "SELECT count(*) FROM execution_sessions"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute("SELECT count(*) FROM execution_sessions").fetchone()[0]
+            == 0
+        )

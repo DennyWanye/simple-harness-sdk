@@ -150,9 +150,7 @@ def create_definition(
                 tool_execution_handler,
                 retry_policy=RetryPolicy(
                     max_attempts=2,
-                    retryable_codes=frozenset(
-                        {"retryable_network", "retryable_provider"}
-                    ),
+                    retryable_codes=frozenset({"retryable_network", "retryable_provider"}),
                 ),
                 interrupt_capable=True,
                 barrier=True,
@@ -295,10 +293,7 @@ def create_initial_state(
     """
     values: dict[str, JsonValue] = {
         "request": request,
-        "messages": [
-            dict(value)
-            for value in (messages or [{"role": "user", "content": request}])
-        ],
+        "messages": [dict(value) for value in (messages or [{"role": "user", "content": request}])],
         "plan_steps": list(plan_steps),
         "clarification_required": clarification_required,
         "clarification_question": clarification_question,

@@ -94,9 +94,7 @@ class Message:
                 ErrorCode.INVALID_MESSAGE,
                 "structured message content must contain ContentBlock values",
             )
-        if self.name is not None and (
-            not isinstance(self.name, str) or not self.name.strip()
-        ):
+        if self.name is not None and (not isinstance(self.name, str) or not self.name.strip()):
             raise ContractValidationError(
                 ErrorCode.INVALID_MESSAGE, "message name must be non-empty"
             )

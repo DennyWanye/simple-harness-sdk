@@ -67,9 +67,7 @@ class ProviderInvocationUnitOfWork(Protocol):
         execution_lease: ExecutionLease,
     ) -> ProviderInvocationRecord: ...
 
-    def read_provider_invocation(
-        self, invocation_id: str
-    ) -> ProviderInvocationRecord | None: ...
+    def read_provider_invocation(self, invocation_id: str) -> ProviderInvocationRecord | None: ...
 
     def hand_off_provider_invocation(
         self,
@@ -164,9 +162,7 @@ class ProviderInvocationFailedError(HarnessError):
 
 
 class ProviderInvocationConflictError(HarnessError):
-    def __init__(
-        self, public_message: str = "Provider invocation already handed off."
-    ) -> None:
+    def __init__(self, public_message: str = "Provider invocation already handed off.") -> None:
         super().__init__(
             "provider_invocation_conflict",
             public_message,
@@ -212,11 +208,7 @@ class ProviderInvocationCoordinator:
         self._clock = clock
 
     def resolve(self, run_id: RunId) -> ProviderBinding:
-        binding = (
-            self._legacy_binding
-            if self._resolver is None
-            else self._resolver.resolve(run_id)
-        )
+        binding = self._legacy_binding if self._resolver is None else self._resolver.resolve(run_id)
         if not isinstance(binding, ProviderBinding):
             raise TypeError("provider resolver must return ProviderBinding")
         return binding
@@ -252,10 +244,7 @@ class ProviderInvocationCoordinator:
         execution_lease: ExecutionLease,
         binding: ProviderBinding,
     ) -> ProviderInvocationRecord:
-        if (
-            execution_lease.run_id != run_id.value
-            or execution_lease.namespace != "runtime.kernel"
-        ):
+        if execution_lease.run_id != run_id.value or execution_lease.namespace != "runtime.kernel":
             raise ProviderInvocationConflictError(
                 "Provider invocation requires the canonical Run lease."
             )
@@ -295,9 +284,7 @@ class ProviderInvocationCoordinator:
             or claimed.target_digest != record.target_digest
             or claimed.estimator_digest != record.estimator_digest
         ):
-            raise ProviderInvocationConflictError(
-                "Provider invocation identity conflict."
-            )
+            raise ProviderInvocationConflictError("Provider invocation identity conflict.")
         return claimed
 
     def read_provider_budget(self, run_id: RunId) -> BudgetSnapshot:
@@ -314,10 +301,7 @@ class ProviderInvocationCoordinator:
         execution_lease: ExecutionLease,
         workflow_lease: WorkflowLease | None = None,
     ) -> ProviderResponse:
-        if (
-            execution_lease.run_id != run_id.value
-            or execution_lease.namespace != "runtime.kernel"
-        ):
+        if execution_lease.run_id != run_id.value or execution_lease.namespace != "runtime.kernel":
             raise ProviderInvocationConflictError(
                 "Provider invocation requires the canonical Run lease."
             )
@@ -365,10 +349,7 @@ class ProviderInvocationCoordinator:
             )
         except ValueError as exc:
             current = self._uow.read_provider_invocation(record.invocation_id)
-            if (
-                current is not None
-                and current.state is ProviderInvocationState.HANDED_OFF
-            ):
+            if current is not None and current.state is ProviderInvocationState.HANDED_OFF:
                 raise ProviderInvocationConflictError() from exc
             raise
 
@@ -380,24 +361,16 @@ class ProviderInvocationCoordinator:
                 at=self._clock(),
                 expected_version=handed_off.version,
             )
-            self._uow.settle_provider_invocation(
-                failed, expected_version=handed_off.version
-            )
+            self._uow.settle_provider_invocation(failed, expected_version=handed_off.version)
             raise
         except (ProviderCancelledError, asyncio.CancelledError) as exc:
-            unknown = await self._settle_unknown(
-                handed_off, "provider_cancelled_after_handoff"
-            )
+            unknown = await self._settle_unknown(handed_off, "provider_cancelled_after_handoff")
             raise ProviderInvocationUnknownError(unknown) from exc
         except BaseException as exc:
-            unknown = await self._settle_unknown(
-                handed_off, "provider_error_after_handoff"
-            )
+            unknown = await self._settle_unknown(handed_off, "provider_error_after_handoff")
             raise ProviderInvocationUnknownError(unknown) from exc
 
-        charge = self._response_charge(
-            response, handed_off.budget_charge, binding=binding
-        )
+        charge = self._response_charge(response, handed_off.budget_charge, binding=binding)
         usage_json = {
             "usage": (
                 None
@@ -420,25 +393,15 @@ class ProviderInvocationCoordinator:
             expected_version=handed_off.version,
         )
         try:
-            self._uow.settle_provider_invocation(
-                succeeded, expected_version=handed_off.version
-            )
+            self._uow.settle_provider_invocation(succeeded, expected_version=handed_off.version)
         except BaseException as exc:
             current = self._uow.read_provider_invocation(record.invocation_id)
-            if (
-                current is not None
-                and current.state is ProviderInvocationState.SUCCEEDED
-            ):
+            if current is not None and current.state is ProviderInvocationState.SUCCEEDED:
                 return provider_response_from_json(
                     thaw_json(cast(FrozenJsonValue, current.response_json))
                 )
-            if (
-                current is not None
-                and current.state is ProviderInvocationState.HANDED_OFF
-            ):
-                await self._settle_unknown(
-                    current, "provider_settlement_commit_unknown"
-                )
+            if current is not None and current.state is ProviderInvocationState.HANDED_OFF:
+                await self._settle_unknown(current, "provider_settlement_commit_unknown")
             current = self._uow.read_provider_invocation(record.invocation_id)
             raise ProviderInvocationUnknownError(current) from exc
         logger.info(
@@ -488,9 +451,7 @@ class ProviderInvocationCoordinator:
             expected_version=handed_off.version,
         )
         try:
-            self._uow.settle_provider_invocation(
-                unknown, expected_version=handed_off.version
-            )
+            self._uow.settle_provider_invocation(unknown, expected_version=handed_off.version)
         except ValueError:
             current = self._uow.read_provider_invocation(handed_off.invocation_id)
             if current is None or current.state not in {
@@ -561,15 +522,9 @@ class ProviderInvocationCoordinator:
                     extra={
                         "reconcile": True,
                         "model": response.model,
-                        "input_tokens": (
-                            response.usage.input_tokens if response.usage else None
-                        ),
-                        "output_tokens": (
-                            response.usage.output_tokens if response.usage else None
-                        ),
-                        "total_tokens": (
-                            response.usage.total_tokens if response.usage else None
-                        ),
+                        "input_tokens": (response.usage.input_tokens if response.usage else None),
+                        "output_tokens": (response.usage.output_tokens if response.usage else None),
+                        "total_tokens": (response.usage.total_tokens if response.usage else None),
                     },
                 )
             else:
@@ -600,15 +555,9 @@ class ProviderInvocationCoordinator:
         estimator = FrozenPriceEstimator(
             snapshot_id=str(snapshot["snapshot_id"]),
             pricing_key=str(snapshot["pricing_key"]),
-            input_micros_per_million_tokens=int(
-                snapshot["input_micros_per_million_tokens"]
-            ),
-            output_micros_per_million_tokens=int(
-                snapshot["output_micros_per_million_tokens"]
-            ),
-            fixed_request_overhead_tokens=int(
-                snapshot["fixed_request_overhead_tokens"]
-            ),
+            input_micros_per_million_tokens=int(snapshot["input_micros_per_million_tokens"]),
+            output_micros_per_million_tokens=int(snapshot["output_micros_per_million_tokens"]),
+            fixed_request_overhead_tokens=int(snapshot["fixed_request_overhead_tokens"]),
             per_message_overhead_tokens=int(snapshot["per_message_overhead_tokens"]),
             per_tool_overhead_tokens=int(snapshot["per_tool_overhead_tokens"]),
         )

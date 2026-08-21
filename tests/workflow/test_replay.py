@@ -141,9 +141,7 @@ def _seed(path: Path):  # type: ignore[no-untyped-def]
         ),
     )
     database.connection.commit()
-    ports = WorkflowExecutionPorts(
-        uow, CheckpointExecutionAdapter(database), uow, uow, uow
-    )
+    ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
     store = SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences())
     replay = WorkflowReplay(
         execution_ports=ports,
@@ -208,12 +206,8 @@ def test_public_replay_executes_real_prepare_claim_checkpoint_commit_and_reopen(
     )
     database.close()
 
-    database, _uow, replay, reopened_run_id, reopened_source = _open_seeded(
-        path, run_id, source
-    )
-    database.connection.execute(
-        "UPDATE runs SET version=version+1 WHERE run_id=?", (run_id,)
-    )
+    database, _uow, replay, reopened_run_id, reopened_source = _open_seeded(path, run_id, source)
+    database.connection.execute("UPDATE runs SET version=version+1 WHERE run_id=?", (run_id,))
     database.connection.commit()
     repeated = asyncio.run(
         replay.fork_checkpoint(
@@ -231,9 +225,12 @@ def test_public_replay_executes_real_prepare_claim_checkpoint_commit_and_reopen(
     ).fetchone()
     assert row is not None
     assert json.loads(row[0])["state"] == {"value": 2}
-    assert database.connection.execute(
-        "SELECT COUNT(*) FROM runs WHERE parent_run_id=?", (run_id,)
-    ).fetchone()[0] == 1
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM runs WHERE parent_run_id=?", (run_id,)
+        ).fetchone()[0]
+        == 1
+    )
     database.close()
 
 
@@ -241,14 +238,10 @@ def _open_seeded(path: Path, run_id: str, source: NativeSnapshotEnvelope):  # ty
     database = Database.open(path)
     uow = SqliteExecutionUnitOfWork(database)
     workflow = _workflow()
-    ports = WorkflowExecutionPorts(
-        uow, CheckpointExecutionAdapter(database), uow, uow, uow
-    )
+    ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
     replay = WorkflowReplay(
         execution_ports=ports,
-        native_store=SqliteNativeCheckpointStore(
-            ports, blob_references=NoBlobReferences()
-        ),
+        native_store=SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences()),
         registry=WorkflowRegistry((workflow,)),
         owner_id="fork-owner",
         clock=lambda: 4.0,

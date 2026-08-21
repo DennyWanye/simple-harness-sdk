@@ -109,9 +109,7 @@ def test_completed_same_invocation_returns_durable_result_without_replay() -> No
     assert provider.calls == 1
 
 
-def test_same_logical_call_with_different_target_has_one_row_and_zero_second_transport() -> (
-    None
-):
+def test_same_logical_call_with_different_target_has_one_row_and_zero_second_transport() -> None:
     uow = FakeProviderInvocationUnitOfWork()
     release = asyncio.Event()
     first_provider = RecordingProvider(release=release)

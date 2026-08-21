@@ -152,10 +152,7 @@ class ReActLoop:
         initial_messages: Sequence[Message],
         tool_cancel: CancellationToken | None = None,
     ) -> ReActResult:
-        if (
-            execution_lease.run_id != value.run_id.value
-            or run_fence.run_id != value.run_id
-        ):
+        if execution_lease.run_id != value.run_id.value or run_fence.run_id != value.run_id:
             raise ValueError("ReAct invocation authority belongs to another Run")
         tool_cancel = tool_cancel or CancellationToken()
         context = services.context.load(value.run_id)
@@ -169,16 +166,10 @@ class ReActLoop:
                 f"{value.run_id.value}:context:initial",
                 initial_messages,
             )
-        checkpoint = DurableReactCheckpoint(
-            services.react_checkpoint, clock=self._clock
-        )
-        state, checkpoint_version = checkpoint.load_or_create(
-            value.run_id, execution_lease
-        )
+        checkpoint = DurableReactCheckpoint(services.react_checkpoint, clock=self._clock)
+        state, checkpoint_version = checkpoint.load_or_create(value.run_id, execution_lease)
         if self._policy_fingerprint is not None:
-            if state.policy_fingerprint and (
-                state.policy_fingerprint != self._policy_fingerprint
-            ):
+            if state.policy_fingerprint and (state.policy_fingerprint != self._policy_fingerprint):
                 raise RuntimeError("ReAct policy fingerprint differs from checkpoint")
             if not state.policy_fingerprint:
                 if state.provider_turns_reserved_total or state.tool_calls_reserved_total:
@@ -196,8 +187,7 @@ class ReActLoop:
                     self._collaborator.limits, now=self._clock(), budget=budget
                 )
                 provider_request_id = (
-                    f"{value.run_id.value}:provider-turn:"
-                    f"{state.provider_turns_reserved_total}"
+                    f"{value.run_id.value}:provider-turn:{state.provider_turns_reserved_total}"
                 )
                 context = services.context.load(value.run_id)
                 request = ProviderRequest(
@@ -227,17 +217,12 @@ class ReActLoop:
             assert state.provider_request_id is not None
             if state.phase == "provider_reserved":
                 if state.provider_request_snapshot is None:
-                    raise RuntimeError(
-                        "provider_reserved checkpoint lacks frozen request"
-                    )
+                    raise RuntimeError("provider_reserved checkpoint lacks frozen request")
                 request = provider_request_from_json(
                     RequestId(state.provider_request_id),
                     state.provider_request_snapshot,
                 )
-                if (
-                    provider_request_fingerprint(request)
-                    != state.provider_request_fingerprint
-                ):
+                if provider_request_fingerprint(request) != state.provider_request_fingerprint:
                     raise RuntimeError("frozen Provider request fingerprint mismatch")
                 response = await services.provider.invoke(
                     value.run_id,
@@ -252,8 +237,7 @@ class ReActLoop:
                     raise RuntimeError("duplicate raw Provider call ID in one turn")
                 if response.tool_calls:
                     keys = tuple(
-                        _repeat_key(call.name, call.arguments)
-                        for call in response.tool_calls
+                        _repeat_key(call.name, call.arguments) for call in response.tool_calls
                     )
                     state = state.before_tool_batch(
                         keys,
@@ -280,9 +264,7 @@ class ReActLoop:
                     raise RuntimeError("response checkpoint lacks frozen response")
                 response_payload = state.provider_response_snapshot
                 if (
-                    hashlib.sha256(
-                        canonical_json(response_payload).encode()
-                    ).hexdigest()
+                    hashlib.sha256(canonical_json(response_payload).encode()).hexdigest()
                     != state.provider_response_digest
                 ):
                     raise RuntimeError("frozen Provider response digest mismatch")
@@ -309,14 +291,10 @@ class ReActLoop:
                     tool_result_progress=0,
                     last_observed_at=self._clock(),
                 )
-                state, _ = checkpoint.cas(
-                    value.run_id, execution_lease, checkpoint_version, state
-                )
+                state, _ = checkpoint.cas(value.run_id, execution_lease, checkpoint_version, state)
                 return ReActResult(response, state)
             _cancel(cancel, tool_cancel)
-            for call_ordinal in range(
-                state.tool_result_progress, len(response.tool_calls)
-            ):
+            for call_ordinal in range(state.tool_result_progress, len(response.tool_calls)):
                 call = response.tool_calls[call_ordinal]
                 executions = await self._effects.execute(
                     (call,),
@@ -361,12 +339,14 @@ class ReActLoop:
                     value.run_id, execution_lease, checkpoint_version, state
                 )
             if state.workflow_spawn_wait_receipt_id is not None:
-                stored = services.react_checkpoint.commit_pending_spawn_child_completion_and_react_ready(
-                    run_id=value.run_id.value,
-                    expected_checkpoint_version=checkpoint_version,
-                    execution_lease=execution_lease,
-                    run_fence=run_fence,
-                    now=self._clock(),
+                stored = (
+                    services.react_checkpoint.commit_pending_spawn_child_completion_and_react_ready(
+                        run_id=value.run_id.value,
+                        expected_checkpoint_version=checkpoint_version,
+                        execution_lease=execution_lease,
+                        run_fence=run_fence,
+                        now=self._clock(),
+                    )
                 )
                 checkpoint_payload = thaw_json(stored.checkpoint)
                 if not isinstance(checkpoint_payload, dict):

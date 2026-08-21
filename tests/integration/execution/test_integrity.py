@@ -45,4 +45,3 @@ def test_foreign_keys_fail_closed(tmp_path: Path) -> None:
                         1.0,
                     ),
                 )
-

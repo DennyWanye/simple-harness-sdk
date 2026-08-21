@@ -92,9 +92,7 @@ def test_provider_contract_is_stateless_and_performs_exactly_one_call() -> None:
             provider = OpenAICompatibleProvider(
                 client, "https://provider.invalid/v1", "fixture-model", Secret("secret")
             )
-            assert (
-                set(vars(provider)) == set() if hasattr(provider, "__dict__") else True
-            )
+            assert set(vars(provider)) == set() if hasattr(provider, "__dict__") else True
             return await provider.invoke(_request(), cancel=CancelToken())
 
     result = asyncio.run(exercise())

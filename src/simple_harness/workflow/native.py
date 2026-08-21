@@ -95,9 +95,7 @@ _DIAGNOSTIC_CODES = frozenset(
 )
 _STAGE_IDS = frozenset({"fetch", "score", "gap", "rerank", "synth", "cite", "persist"})
 _RETRY_ACTION_IDS = frozenset({"retry_from_start"})
-_PUBLIC_KEYS = frozenset(
-    {"metrics", "diagnostic_codes", "skipped_stage_ids", "retry_action_id"}
-)
+_PUBLIC_KEYS = frozenset({"metrics", "diagnostic_codes", "skipped_stage_ids", "retry_action_id"})
 _REQUIRED_PUBLIC_KEYS = frozenset({"metrics", "diagnostic_codes", "skipped_stage_ids"})
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _MAX_METRIC = 1_000_000
@@ -147,9 +145,7 @@ TERMINAL_REQUEST_FACTORY_HASH = hashlib.sha256(
 
 
 def _assert_terminal_request_factory_spec() -> None:
-    actual = hashlib.sha256(
-        canonical_json(_TERMINAL_REQUEST_FACTORY_SPEC).encode()
-    ).hexdigest()
+    actual = hashlib.sha256(canonical_json(_TERMINAL_REQUEST_FACTORY_SPEC).encode()).hexdigest()
     if actual != TERMINAL_REQUEST_FACTORY_HASH:
         raise InvalidStatePatch(
             "terminal_projection_request_factory_drift",
@@ -163,9 +159,7 @@ class _CommitUncertain(RuntimeError):
 
 def _identity(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise InvalidStatePatch(
-            "invalid_native_identity", f"Native {field_name} is required"
-        )
+        raise InvalidStatePatch("invalid_native_identity", f"Native {field_name} is required")
     return value.strip()
 
 
@@ -196,13 +190,9 @@ class NativeTask:
             or not isinstance(self.retry_attempt, int)
             or self.retry_attempt < 1
         ):
-            raise InvalidStatePatch(
-                "invalid_native_task", "Native task counters are invalid"
-            )
+            raise InvalidStatePatch("invalid_native_task", "Native task counters are invalid")
         if not all(isinstance(item, str) and item for item in self.task_path):
-            raise InvalidStatePatch(
-                "invalid_native_task", "Native task_path is invalid"
-            )
+            raise InvalidStatePatch("invalid_native_task", "Native task_path is invalid")
         detached = deepcopy(self.input)
         validate_json_value(detached, path="$.task.input")
         object.__setattr__(self, "input", detached)
@@ -244,17 +234,13 @@ class NativeExecutionInfo:
         ):
             object.__setattr__(self, name, _identity(getattr(self, name), name))
         if not isinstance(self.checkpoint_ns, str):
-            raise InvalidStatePatch(
-                "invalid_native_execution", "Native checkpoint_ns is invalid"
-            )
+            raise InvalidStatePatch("invalid_native_execution", "Native checkpoint_ns is invalid")
         if (
             isinstance(self.node_attempt, bool)
             or not isinstance(self.node_attempt, int)
             or self.node_attempt < 1
         ):
-            raise InvalidStatePatch(
-                "invalid_native_execution", "Native node_attempt is invalid"
-            )
+            raise InvalidStatePatch("invalid_native_execution", "Native node_attempt is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,12 +271,8 @@ class NodeTaskOutcome:
             raise TypeError("NodeTaskOutcome requires native task identity")
         if self.patch is not None and not isinstance(self.patch, StatePatch):
             raise TypeError("NodeTaskOutcome patch must be StatePatch")
-        if not all(
-            isinstance(item, str) and item for item in self.consumed_interrupt_ids
-        ):
-            raise InvalidStatePatch(
-                "invalid_native_outcome", "Consumed interrupt ids are invalid"
-            )
+        if not all(isinstance(item, str) and item for item in self.consumed_interrupt_ids):
+            raise InvalidStatePatch("invalid_native_outcome", "Consumed interrupt ids are invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,9 +298,7 @@ class NativeSnapshotEnvelope:
         for name in ("thread_id", "checkpoint_id", "run_id"):
             object.__setattr__(self, name, _identity(getattr(self, name), name))
         if not isinstance(self.checkpoint_ns, str):
-            raise InvalidStatePatch(
-                "invalid_native_snapshot", "Native checkpoint_ns is invalid"
-            )
+            raise InvalidStatePatch("invalid_native_snapshot", "Native checkpoint_ns is invalid")
         if self.engine_kind != _ENGINE_KIND or self.snapshot_version != _SNAPSHOT_VERSION:
             raise InvalidStatePatch(
                 "unsupported_native_snapshot", "Native snapshot version is unsupported"
@@ -370,16 +350,11 @@ class NativeSnapshotEnvelope:
             "state": deepcopy(dict(self.state)),
             "frontier": [task.to_dict() for task in self.frontier],
             "completed_activations": {
-                key: list(value)
-                for key, value in sorted(self.completed_activations.items())
+                key: list(value) for key, value in sorted(self.completed_activations.items())
             },
             "join_firings": list(self.join_firings),
-            "node_writes": {
-                key: deepcopy(dict(value)) for key, value in self.node_writes.items()
-            },
-            "interrupt": None
-            if self.interrupt is None
-            else deepcopy(dict(self.interrupt)),
+            "node_writes": {key: deepcopy(dict(value)) for key, value in self.node_writes.items()},
+            "interrupt": None if self.interrupt is None else deepcopy(dict(self.interrupt)),
             "metadata": deepcopy(dict(self.metadata)),
         }
 
@@ -491,9 +466,7 @@ class ProjectionContext:
         validate_json_value(summary, path="$.projection.state_summary")
         frozen = freeze_json(cast(JsonValue, summary))
         assert isinstance(frozen, Mapping)
-        object.__setattr__(
-            self, "state_summary", cast(Mapping[str, JsonValue], frozen)
-        )
+        object.__setattr__(self, "state_summary", cast(Mapping[str, JsonValue], frozen))
         for name in ("logical_timestamp", "deadline"):
             value = getattr(self, name)
             if value is not None and (
@@ -733,9 +706,7 @@ class InMemoryNativeCheckpointStore:
         if self.snapshot is None:
             self.snapshot = snapshot
         elif self.snapshot.run_id != snapshot.run_id:
-            raise InvalidStatePatch(
-                "checkpoint_conflict", "Genesis checkpoint identity changed"
-            )
+            raise InvalidStatePatch("checkpoint_conflict", "Genesis checkpoint identity changed")
         return self.snapshot
 
     async def load_execution(
@@ -748,27 +719,21 @@ class InMemoryNativeCheckpointStore:
     ) -> NativeExecution:
         snapshot = self.snapshot
         if snapshot is None:
-            raise InvalidStatePatch(
-                "checkpoint_missing", "Ephemeral workflow has no checkpoint"
-            )
+            raise InvalidStatePatch("checkpoint_missing", "Ephemeral workflow has no checkpoint")
         if (
             snapshot.run_id != run_id
             or snapshot.thread_id != thread_id
             or snapshot.checkpoint_ns != checkpoint_ns
             or (checkpoint_id is not None and snapshot.checkpoint_id != checkpoint_id)
         ):
-            raise InvalidStatePatch(
-                "checkpoint_identity_mismatch", "Checkpoint identity changed"
-            )
+            raise InvalidStatePatch("checkpoint_identity_mismatch", "Checkpoint identity changed")
         if self.retry_attempts:
             snapshot = replace(
                 snapshot,
                 frontier=tuple(
                     replace(
                         task,
-                        retry_attempt=self.retry_attempts.get(
-                            task.task_id, task.retry_attempt
-                        ),
+                        retry_attempt=self.retry_attempts.get(task.task_id, task.retry_attempt),
                     )
                     for task in snapshot.frontier
                 ),
@@ -778,9 +743,7 @@ class InMemoryNativeCheckpointStore:
             dict(self.pending),
             first_attempt_times=dict(self.first_attempt_times),
             route_selections=deepcopy(self.route_selections),
-            pending_consumed_interrupt_ids=tuple(
-                self.pending_consumed_interrupt_ids
-            ),
+            pending_consumed_interrupt_ids=tuple(self.pending_consumed_interrupt_ids),
         )
 
     async def history(
@@ -807,16 +770,12 @@ class InMemoryNativeCheckpointStore:
             raise TypeError("patch must be StatePatch")
         existing = self.pending.setdefault(task.task_id, patch)
         if existing != patch:
-            raise InvalidStatePatch(
-                "pending_write_conflict", "Pending task result changed"
-            )
+            raise InvalidStatePatch("pending_write_conflict", "Pending task result changed")
         first = execution_info.node_first_attempt_time
         if first is not None:
             existing_first = self.first_attempt_times.setdefault(task.task_id, first)
             if existing_first != first:
-                raise InvalidStatePatch(
-                    "pending_write_conflict", "First attempt time changed"
-                )
+                raise InvalidStatePatch("pending_write_conflict", "First attempt time changed")
         for interrupt_id in consumed_interrupt_ids:
             if interrupt_id not in self.pending_consumed_interrupt_ids:
                 self.pending_consumed_interrupt_ids.append(interrupt_id)
@@ -842,9 +801,7 @@ class InMemoryNativeCheckpointStore:
         task_id = _identity(task_id, "route task_id")
         existing = self.route_selections.setdefault(task_id, selection)
         if existing != selection:
-            raise InvalidStatePatch(
-                "route_nondeterminism", "Route selection changed"
-            )
+            raise InvalidStatePatch("route_nondeterminism", "Route selection changed")
         return deepcopy(existing)
 
     async def commit_frontier(
@@ -885,16 +842,12 @@ class InMemoryNativeCheckpointStore:
         for intent in intents:
             key = intent.get("event_key", intent.get("intent_id"))
             if not isinstance(key, str) or not key:
-                raise InvalidStatePatch(
-                    "invalid_delivery_intent", "Intent identity is required"
-                )
+                raise InvalidStatePatch("invalid_delivery_intent", "Intent identity is required")
             detached = deepcopy(dict(intent))
             validate_json_value(detached, path="$.intent")
             existing = self.materialized_intents.setdefault(key, detached)
             if existing != detached:
-                raise InvalidStatePatch(
-                    "outbox_intent_conflict", "Intent content changed"
-                )
+                raise InvalidStatePatch("outbox_intent_conflict", "Intent content changed")
             event_ids.append(_stable_id(snapshot.run_id, key))
         self.snapshot = next_snapshot
         self.pending.clear()
@@ -920,12 +873,8 @@ class InMemoryNativeCheckpointStore:
         **_: object,
     ) -> None:
         self._require_head(expected_head)
-        if not isinstance(next_attempt_at, (int, float)) or isinstance(
-            next_attempt_at, bool
-        ):
-            raise InvalidStatePatch(
-                "invalid_native_retry", "Retry time is invalid"
-            )
+        if not isinstance(next_attempt_at, (int, float)) or isinstance(next_attempt_at, bool):
+            raise InvalidStatePatch("invalid_native_retry", "Retry time is invalid")
         self.retry_attempts[task.task_id] = task.retry_attempt + 1
 
     async def commit_interrupt(
@@ -941,9 +890,7 @@ class InMemoryNativeCheckpointStore:
         validate_json_value(detached, path="$.interrupt")
         existing = self.interrupt
         if existing is not None and existing != detached:
-            raise InvalidStatePatch(
-                "interrupt_conflict", "Durable interrupt changed"
-            )
+            raise InvalidStatePatch("interrupt_conflict", "Durable interrupt changed")
         if detached.get("task_id") not in {None, task.task_id}:
             raise InvalidStatePatch(
                 "interrupt_identity_mismatch", "Interrupt belongs to another task"
@@ -1018,9 +965,7 @@ class InMemoryNativeCheckpointStore:
     def _require_head(self, expected_head: str) -> NativeSnapshotEnvelope:
         snapshot = self.snapshot
         if snapshot is None:
-            raise InvalidStatePatch(
-                "checkpoint_missing", "Ephemeral workflow has no checkpoint"
-            )
+            raise InvalidStatePatch("checkpoint_missing", "Ephemeral workflow has no checkpoint")
         if snapshot.checkpoint_id != expected_head:
             raise InvalidStatePatch("checkpoint_conflict", "Checkpoint head changed")
         return snapshot
@@ -1062,9 +1007,7 @@ class NativeWorkflowExecutable:
 
     def _descriptor(self) -> TerminalProjectionDescriptor | None:
         descriptor = getattr(self.manifest, "terminal_projection_descriptor", None)
-        if descriptor is not None and not isinstance(
-            descriptor, TerminalProjectionDescriptor
-        ):
+        if descriptor is not None and not isinstance(descriptor, TerminalProjectionDescriptor):
             raise InvalidStatePatch(
                 "invalid_terminal_projection_descriptor",
                 "Workflow manifest has an invalid terminal projection descriptor",
@@ -1122,9 +1065,7 @@ class NativeWorkflowExecutable:
             result[key] = expected
         return result
 
-    def _entry_task(
-        self, run_id: str, thread_id: str, checkpoint_ns: str
-    ) -> NativeTask:
+    def _entry_task(self, run_id: str, thread_id: str, checkpoint_ns: str) -> NativeTask:
         activation = _stable_id(run_id, thread_id, checkpoint_ns, "genesis")
         node_id = self.workflow.definition.entry_node
         return NativeTask(
@@ -1178,9 +1119,7 @@ class NativeWorkflowExecutable:
                 snapshot=genesis,
                 configurable=config,
             )
-        return await self._drive(
-            context, thread_id, run_id, checkpoint_ns, config, {}
-        )
+        return await self._drive(context, thread_id, run_id, checkpoint_ns, config, {})
 
     async def resume(
         self,
@@ -1239,9 +1178,7 @@ class NativeWorkflowExecutable:
                     message_ref="workflow_engine:max_supersteps",
                 )
                 await self.store.commit_engine_failure(
-                    operation_id=_stable_id(
-                        run_id, snapshot.checkpoint_id, "max_supersteps"
-                    ),
+                    operation_id=_stable_id(run_id, snapshot.checkpoint_id, "max_supersteps"),
                     expected_head=snapshot.checkpoint_id,
                     frontier=snapshot.frontier,
                     error=error,
@@ -1257,15 +1194,13 @@ class NativeWorkflowExecutable:
                     for task in sorted(snapshot.frontier, key=lambda item: item.task_id)
                 ]
                 delta = self.workflow.merge_patches(ordered_writes)
-                state = self.workflow.reduce_state(
-                    cast(WorkflowState, snapshot.state), delta
-                )
+                state = self.workflow.reduce_state(cast(WorkflowState, snapshot.state), delta)
                 state_value = cast(dict[str, JsonValue], dict(state))
                 frontier, completed, firings = await self._next_frontier(
                     snapshot, state, context, execution.route_selections, config
                 )
-                terminal_status, terminal_error, recovery_action = (
-                    self._terminal_projection(state_value, frontier)
+                terminal_status, terminal_error, recovery_action = self._terminal_projection(
+                    state_value, frontier
                 )
                 projection_prepare = await self._prepare_terminal_projection(
                     snapshot=snapshot,
@@ -1326,8 +1261,7 @@ class NativeWorkflowExecutable:
                         intents=intents,
                         blob_refs=tuple(
                             sorted(
-                                set(self._state_blob_refs(state_value))
-                                | set(projection_blob_refs)
+                                set(self._state_blob_refs(state_value)) | set(projection_blob_refs)
                             )
                         ),
                         terminal_status=terminal_status,
@@ -1359,9 +1293,7 @@ class NativeWorkflowExecutable:
                     )
                 )
                 await self.store.commit_engine_failure(
-                    operation_id=_stable_id(
-                        run_id, snapshot.checkpoint_id, "engine_failure"
-                    ),
+                    operation_id=_stable_id(run_id, snapshot.checkpoint_id, "engine_failure"),
                     expected_head=snapshot.checkpoint_id,
                     frontier=snapshot.frontier,
                     error=error,
@@ -1374,9 +1306,7 @@ class NativeWorkflowExecutable:
                     message_ref="workflow_engine:frontier_failure",
                 )
                 await self.store.commit_engine_failure(
-                    operation_id=_stable_id(
-                        run_id, snapshot.checkpoint_id, "engine_failure"
-                    ),
+                    operation_id=_stable_id(run_id, snapshot.checkpoint_id, "engine_failure"),
                     expected_head=snapshot.checkpoint_id,
                     frontier=snapshot.frontier,
                     error=error,
@@ -1452,9 +1382,7 @@ class NativeWorkflowExecutable:
             recovery_action=recovery_action,
         )
         input_hash = hashlib.sha256(canonical_json(request).encode()).hexdigest()
-        operation_id = _stable_id(
-            snapshot.run_id, snapshot.checkpoint_id, descriptor.digest
-        )
+        operation_id = _stable_id(snapshot.run_id, snapshot.checkpoint_id, descriptor.digest)
         existing = await self.store.read_terminal_projection_prepare(
             operation_id=operation_id,
             expected_head=snapshot.checkpoint_id,
@@ -1542,13 +1470,13 @@ class NativeWorkflowExecutable:
             if isinstance(raw_error, Mapping):
                 error: dict[str, JsonValue] = {
                     "code": str(raw_error.get("code") or "workflow_domain_error")[:80],
-                    "message": str(
-                        raw_error.get("user_message") or "Workflow could not complete."
-                    )[:500],
+                    "message": str(raw_error.get("user_message") or "Workflow could not complete.")[
+                        :500
+                    ],
                 }
-                recovery = str(
-                    raw_error.get("recovery_action") or "Adjust the input and retry."
-                )[:500]
+                recovery = str(raw_error.get("recovery_action") or "Adjust the input and retry.")[
+                    :500
+                ]
             else:
                 error = {
                     "code": "workflow_domain_error",
@@ -1575,19 +1503,13 @@ class NativeWorkflowExecutable:
             len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
             for value in refs
         ):
-            raise InvalidStatePatch(
-                "invalid_blob_refs", "blob_refs must contain SHA-256 digests"
-            )
+            raise InvalidStatePatch("invalid_blob_refs", "blob_refs must contain SHA-256 digests")
         return refs
 
     @staticmethod
     def _patch_blob_refs(patch: StatePatch) -> tuple[str, ...]:
         values = patch.to_dict()
-        return (
-            NativeWorkflowExecutable._state_blob_refs(values)
-            if "blob_refs" in values
-            else ()
-        )
+        return NativeWorkflowExecutable._state_blob_refs(values) if "blob_refs" in values else ()
 
     def _policy(self, context: WorkflowContext) -> NativeExecutionPolicy:
         raw = context.ports.get("native_execution_policy")
@@ -1694,9 +1616,7 @@ class NativeWorkflowExecutable:
             )
         except asyncio.CancelledError:
             if observer is not None:
-                await observer.node_finished(
-                    identity, "cancelled", error=asyncio.CancelledError()
-                )
+                await observer.node_finished(identity, "cancelled", error=asyncio.CancelledError())
             raise
         except _CommitUncertain as exc:
             assert exc.__cause__ is not None
@@ -1741,9 +1661,7 @@ class NativeWorkflowExecutable:
         if pending:
             nodes = [self.workflow.node(task.node_id) for task in pending]
             parallel = all(
-                str(node.dispatch) == "parallel"
-                and not node.barrier
-                and not node.interrupt_capable
+                str(node.dispatch) == "parallel" and not node.barrier and not node.interrupt_capable
                 for node in nodes
             )
             if parallel and self._policy(context).max_parallel_tasks > 1:
@@ -1776,9 +1694,7 @@ class NativeWorkflowExecutable:
                 if child_errors:
                     _, selected_error = min(child_errors, key=lambda item: item[0])
                     raise selected_error
-                outcomes = [
-                    value for value in gathered if isinstance(value, NodeTaskOutcome)
-                ]
+                outcomes = [value for value in gathered if isinstance(value, NodeTaskOutcome)]
             else:
                 for task in pending:
                     outcomes.append(
@@ -1793,11 +1709,7 @@ class NativeWorkflowExecutable:
                     )
 
         errors = [outcome for outcome in outcomes if outcome.error is not None]
-        suspends = [
-            outcome
-            for outcome in errors
-            if isinstance(outcome.error, WorkflowSuspended)
-        ]
+        suspends = [outcome for outcome in errors if isinstance(outcome.error, WorkflowSuspended)]
         if suspends:
             selected = min(suspends, key=lambda item: item.task.task_id)
             node = self.workflow.node(selected.task.node_id)
@@ -1847,18 +1759,13 @@ class NativeWorkflowExecutable:
                 (1 if retryable else 0, outcome.task.task_id, outcome, error, retryable)
             )
         if failures:
-            _, _, selected, error, retryable = min(
-                failures, key=lambda item: (item[0], item[1])
-            )
+            _, _, selected, error, retryable = min(failures, key=lambda item: (item[0], item[1]))
             if retryable:
                 node = self.workflow.node(selected.task.node_id)
                 delay = min(
                     node.retry_policy.max_delay_seconds,
                     node.retry_policy.initial_delay_seconds
-                    * (
-                        node.retry_policy.backoff_multiplier
-                        ** (selected.task.retry_attempt - 1)
-                    ),
+                    * (node.retry_policy.backoff_multiplier ** (selected.task.retry_attempt - 1)),
                 )
                 await self.store.commit_retry(
                     operation_id=_stable_id(
@@ -1890,9 +1797,7 @@ class NativeWorkflowExecutable:
                 )
                 status = "failed"
             if self.observer_port is not None:
-                await self.observer_port.node_finished(
-                    selected.identity, status, error=error
-                )
+                await self.observer_port.node_finished(selected.identity, status, error=error)
             raise error
 
         consumed = list(execution.pending_consumed_interrupt_ids)
@@ -1909,12 +1814,8 @@ class NativeWorkflowExecutable:
         context: WorkflowContext,
         route_selections: Mapping[str, Mapping[str, JsonValue]],
         config: Mapping[str, JsonValue],
-    ) -> tuple[
-        tuple[NativeTask, ...], Mapping[str, tuple[str, ...]], tuple[str, ...]
-    ]:
-        completed = {
-            key: list(value) for key, value in snapshot.completed_activations.items()
-        }
+    ) -> tuple[tuple[NativeTask, ...], Mapping[str, tuple[str, ...]], tuple[str, ...]]:
+        completed = {key: list(value) for key, value in snapshot.completed_activations.items()}
         firings = set(snapshot.join_firings)
         candidates: list[tuple[str, NativeTask, str]] = []
         tasks_by_node = {task.node_id: task for task in snapshot.frontier}
@@ -1958,9 +1859,7 @@ class NativeWorkflowExecutable:
                             expected_head=snapshot.checkpoint_id,
                             source=task.node_id,
                             selected_route=route,
-                            next_frontier_payload_hash=_stable_id(
-                                task.task_id, route, target
-                            ),
+                            next_frontier_payload_hash=_stable_id(task.task_id, route, target),
                             task_id=task.task_id,
                             configurable=config,
                         )
@@ -1971,9 +1870,7 @@ class NativeWorkflowExecutable:
                 targets.append(conditional.routes[route])
             else:
                 targets.extend(self.workflow.single_targets(task.node_id))
-            activation = _stable_id(
-                snapshot.checkpoint_id, task.task_id, task.join_epoch
-            )
+            activation = _stable_id(snapshot.checkpoint_id, task.task_id, task.join_epoch)
             for target in targets:
                 if target != "__end__":
                     candidates.append((target, task, activation))
@@ -1983,10 +1880,7 @@ class NativeWorkflowExecutable:
                 values = completed.setdefault(key, [])
                 if token not in values:
                     values.append(token)
-                source_tasks = {
-                    value.split(":", 1)[0]: value.split(":", 1)[1]
-                    for value in values
-                }
+                source_tasks = {value.split(":", 1)[0]: value.split(":", 1)[1] for value in values}
                 if all(source in source_tasks for source in edge.sources) and key not in firings:
                     firings.add(key)
                     synthetic = tasks_by_node.get(edge.sources[0], task)
@@ -2010,9 +1904,7 @@ class NativeWorkflowExecutable:
             )
             self.workflow.validate_loop_budget(source.node_id, target, state)
             invocation = f"{target}:{activation}:{epoch}"
-            task_id = _stable_id(
-                snapshot.run_id, snapshot.checkpoint_id, invocation
-            )
+            task_id = _stable_id(snapshot.run_id, snapshot.checkpoint_id, invocation)
             next_tasks[task_id] = NativeTask(
                 task_id,
                 target,
@@ -2092,9 +1984,7 @@ class NativeWorkflowExecutable:
         if status is None:
             return ()
         if status not in _TERMINAL_STATUSES:
-            raise InvalidStatePatch(
-                "invalid_terminal_status", "terminal status is not allowed"
-            )
+            raise InvalidStatePatch("invalid_terminal_status", "terminal status is not allowed")
         if not isinstance(run_id, str) or not run_id.strip():
             raise InvalidStatePatch("invalid_terminal_run", "terminal run_id is required")
         if not isinstance(state, Mapping):
@@ -2109,9 +1999,7 @@ class NativeWorkflowExecutable:
 
         values = state.get("values", {})
         if not isinstance(values, Mapping):
-            raise InvalidStatePatch(
-                "invalid_terminal_values", "terminal values must be an object"
-            )
+            raise InvalidStatePatch("invalid_terminal_values", "terminal values must be an object")
         raw_public = values.get("terminal_public")
         if raw_public is None:
             payload: dict[str, JsonValue] = {
@@ -2154,33 +2042,21 @@ class NativeWorkflowExecutable:
 
 def _terminal_public(raw: object) -> dict[str, JsonValue]:
     if not isinstance(raw, Mapping):
-        raise InvalidStatePatch(
-            "invalid_terminal_public", "terminal_public must be an object"
-        )
+        raise InvalidStatePatch("invalid_terminal_public", "terminal_public must be an object")
     keys = set(raw)
     if not all(isinstance(key, str) for key in keys):
-        raise InvalidStatePatch(
-            "invalid_terminal_public", "terminal_public keys must be strings"
-        )
+        raise InvalidStatePatch("invalid_terminal_public", "terminal_public keys must be strings")
     if not _REQUIRED_PUBLIC_KEYS.issubset(keys) or not keys.issubset(_PUBLIC_KEYS):
-        raise InvalidStatePatch(
-            "invalid_terminal_public", "terminal_public has an invalid schema"
-        )
+        raise InvalidStatePatch("invalid_terminal_public", "terminal_public has an invalid schema")
 
     raw_metrics = raw["metrics"]
     if not isinstance(raw_metrics, Mapping) or any(
         not isinstance(key, str) or key not in _METRIC_KEYS for key in raw_metrics
     ):
-        raise InvalidStatePatch(
-            "invalid_terminal_public", "terminal_public metrics are invalid"
-        )
+        raise InvalidStatePatch("invalid_terminal_public", "terminal_public metrics are invalid")
     metrics: dict[str, JsonValue] = {}
     for key, value in raw_metrics.items():
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or not 0 <= value <= _MAX_METRIC
-        ):
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= _MAX_METRIC:
             raise InvalidStatePatch(
                 "invalid_terminal_public", "terminal_public metric is out of bounds"
             )
@@ -2208,16 +2084,12 @@ def _terminal_public(raw: object) -> dict[str, JsonValue]:
     if "retry_action_id" in raw:
         retry_action = raw["retry_action_id"]
         if not isinstance(retry_action, str) or retry_action not in _RETRY_ACTION_IDS:
-            raise InvalidStatePatch(
-                "invalid_terminal_public", "terminal retry action is invalid"
-            )
+            raise InvalidStatePatch("invalid_terminal_public", "terminal retry action is invalid")
         result["retry_action_id"] = retry_action
     return result
 
 
-_DELIVERY_TEXT = frozenset(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-"
-)
+_DELIVERY_TEXT = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-")
 _PRIVATE_DELIVERY_KEYS = frozenset(
     {
         "topic",
@@ -2237,39 +2109,28 @@ def _delivery_text(value: object, field: str, maximum: int) -> str:
         or not 1 <= len(value) <= maximum
         or any(character not in _DELIVERY_TEXT for character in value)
     ):
-        raise InvalidStatePatch(
-            "invalid_delivery_intent", f"delivery {field} is invalid"
-        )
+        raise InvalidStatePatch("invalid_delivery_intent", f"delivery {field} is invalid")
     return value
 
 
 def _validate_delivery_payload(value: object) -> dict[str, JsonValue]:
     if not isinstance(value, Mapping):
-        raise InvalidStatePatch(
-            "invalid_delivery_intent", "delivery payload must be an object"
-        )
+        raise InvalidStatePatch("invalid_delivery_intent", "delivery payload must be an object")
     payload = deepcopy(dict(value))
     validate_json_value(payload, path="$.delivery.payload")
     if len(canonical_json(payload).encode("utf-8")) > 32 * 1024:
-        raise InvalidStatePatch(
-            "invalid_delivery_intent", "delivery payload exceeds 32KiB"
-        )
+        raise InvalidStatePatch("invalid_delivery_intent", "delivery payload exceeds 32KiB")
     items = 0
 
     def visit(current: JsonValue, depth: int) -> None:
         nonlocal items
         if depth > 8:
-            raise InvalidStatePatch(
-                "invalid_delivery_intent", "delivery payload exceeds depth 8"
-            )
+            raise InvalidStatePatch("invalid_delivery_intent", "delivery payload exceeds depth 8")
         if isinstance(current, dict):
             items += len(current)
             for key, child in current.items():
                 lowered = key.lower()
-                if (
-                    lowered in _PRIVATE_DELIVERY_KEYS
-                    or lowered.startswith(("_private", "secret_"))
-                ):
+                if lowered in _PRIVATE_DELIVERY_KEYS or lowered.startswith(("_private", "secret_")):
                     raise InvalidStatePatch(
                         "invalid_delivery_intent",
                         "delivery payload contains a private key",
@@ -2280,17 +2141,13 @@ def _validate_delivery_payload(value: object) -> dict[str, JsonValue]:
             for child in current:
                 visit(child, depth + 1)
         if items > 512:
-            raise InvalidStatePatch(
-                "invalid_delivery_intent", "delivery payload exceeds 512 items"
-            )
+            raise InvalidStatePatch("invalid_delivery_intent", "delivery payload exceeds 512 items")
 
     visit(payload, 1)
     return payload
 
 
-def _generic_delivery_intents(
-    raw: object, status: str
-) -> tuple[TerminalIntent, ...]:
+def _generic_delivery_intents(raw: object, status: str) -> tuple[TerminalIntent, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list) or len(raw) > 16:
@@ -2306,20 +2163,14 @@ def _generic_delivery_intents(
             "channel",
             "payload",
         }:
-            raise InvalidStatePatch(
-                "invalid_delivery_intent", "delivery intent schema differs"
-            )
+            raise InvalidStatePatch("invalid_delivery_intent", "delivery intent schema differs")
         intent_id = _delivery_text(item["intent_id"], "intent_id", 128)
         if intent_id in seen:
-            raise InvalidStatePatch(
-                "invalid_delivery_intent", "delivery intent_id must be unique"
-            )
+            raise InvalidStatePatch("invalid_delivery_intent", "delivery intent_id must be unique")
         seen.add(intent_id)
         kind = _delivery_text(item["kind"], "kind", 64)
         if kind == "final":
-            raise InvalidStatePatch(
-                "invalid_delivery_intent", "workflow.final is engine-owned"
-            )
+            raise InvalidStatePatch("invalid_delivery_intent", "workflow.final is engine-owned")
         channel = _delivery_text(item["channel"], "channel", 64)
         raw_payload = _validate_delivery_payload(item["payload"])
         payload = {**raw_payload, "status": status}
@@ -2365,10 +2216,7 @@ def _validate_projection_output(
                 "invalid_terminal_projection", "Terminal blob ref must be a string"
             )
         digest = ref.removeprefix("sha256:")
-        if (
-            len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
             raise InvalidStatePatch(
                 "invalid_terminal_projection",
                 "Terminal blob ref must contain a lowercase SHA-256 digest",
@@ -2420,9 +2268,7 @@ def _optional_json_object(
     try:
         validate_json_value(mutable, path="$.terminal.error")
     except (TypeError, ValueError) as exc:
-        raise InvalidStatePatch(
-            "invalid_terminal_error", f"{field} must contain JSON"
-        ) from exc
+        raise InvalidStatePatch("invalid_terminal_error", f"{field} must contain JSON") from exc
     return mutable
 
 

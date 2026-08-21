@@ -68,9 +68,7 @@ def _catalog_selection_snapshot() -> WorkflowCatalogSelectionSnapshot:
         1,
         "catalog-hash",
         profiles,
-        workflow_catalog_selection_hash(
-            "model_spawnable", 1, 1, "catalog-hash", profiles
-        ),
+        workflow_catalog_selection_hash("model_spawnable", 1, 1, "catalog-hash", profiles),
     )
 
 
@@ -102,9 +100,7 @@ def test_spawn_identity_is_payload_independent_and_child_is_attached() -> None:
     assert workflow_spawn_child_request_id(operation_id) == workflow_spawn_child_request_id(
         operation_id
     )
-    assert workflow_spawn_child_run_id(operation_id) == workflow_spawn_child_run_id(
-        operation_id
-    )
+    assert workflow_spawn_child_run_id(operation_id) == workflow_spawn_child_run_id(operation_id)
     assert workflow_spawn_child_request_id(operation_id) != workflow_spawn_child_run_id(
         operation_id
     )

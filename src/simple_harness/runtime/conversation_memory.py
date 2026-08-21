@@ -70,9 +70,7 @@ def canonicalize_memory_text(value: str) -> str:
 
     if not isinstance(value, str):
         raise TypeError("memory_text must be a string")
-    normalized = unicodedata.normalize("NFC", value).replace("\r\n", "\n").replace(
-        "\r", "\n"
-    )
+    normalized = unicodedata.normalize("NFC", value).replace("\r\n", "\n").replace("\r", "\n")
     if not normalized.strip():
         raise ValueError("memory_text must be non-empty")
     if "\x00" in normalized:
@@ -156,9 +154,7 @@ class ConversationContinuationInput:
         return {"message": self.message.to_dict(), "memory_text": self.memory_text}
 
     @classmethod
-    def from_json(
-        cls, value: Mapping[str, JsonValue]
-    ) -> ConversationContinuationInput:
+    def from_json(cls, value: Mapping[str, JsonValue]) -> ConversationContinuationInput:
         return cls(
             _message_from_json(value.get("message")),
             _optional_text(value.get("memory_text")),
@@ -314,9 +310,7 @@ class ConversationMemoryIntent:
             _validate_identity(getattr(self, name), name)
         role = ConversationMemoryRole(self.role)
         memory_text = (
-            None
-            if self.memory_text is None
-            else canonicalize_memory_text(self.memory_text)
+            None if self.memory_text is None else canonicalize_memory_text(self.memory_text)
         )
         payload_hash = hashlib.sha256(
             canonical_json(

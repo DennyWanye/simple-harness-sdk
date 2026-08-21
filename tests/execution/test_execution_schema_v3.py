@@ -42,8 +42,7 @@ def test_v2_history_fails_closed_without_mutation(tmp_path: Path) -> None:
         "name TEXT UNIQUE,checksum TEXT,applied_at TEXT)"
     )
     connection.execute(
-        "INSERT INTO sdk_schema_migrations VALUES(2,'0002_context_authority',"
-        "?,CURRENT_TIMESTAMP)",
+        "INSERT INTO sdk_schema_migrations VALUES(2,'0002_context_authority',?,CURRENT_TIMESTAMP)",
         ("0" * 64,),
     )
     connection.commit()

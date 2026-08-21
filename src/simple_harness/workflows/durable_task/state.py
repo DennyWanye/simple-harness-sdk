@@ -14,9 +14,8 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from simple_harness.contracts import JsonValue, freeze_json
+from simple_harness.contracts import JsonValue
 from simple_harness.workflow.contracts import canonical_json, validate_json_value
-
 
 PROPOSAL_STATE_SCHEMA_VERSION = 1
 
@@ -73,9 +72,7 @@ class GateConfigV1:
                 else None
             ),
             max_budget_usd=(
-                float(value["max_budget_usd"])
-                if value.get("max_budget_usd") is not None
-                else None
+                float(value["max_budget_usd"]) if value.get("max_budget_usd") is not None else None
             ),
             per_tool_max_consecutive=int(value.get("per_tool_max_consecutive", 8)),
         )
@@ -96,21 +93,12 @@ class GateStateV1:
     terminated_reason: str | None = None
 
     def __post_init__(self) -> None:
-        if (
-            self.started_at < 0
-            or self.turns_used < 0
-            or self.tools_used < 0
-            or self.cost_usd < 0
-        ):
+        if self.started_at < 0 or self.turns_used < 0 or self.tools_used < 0 or self.cost_usd < 0:
             raise ValueError("gate state counters are invalid")
-        consecutive = {
-            str(key): int(value) for key, value in self.per_tool_consecutive.items()
-        }
+        consecutive = {str(key): int(value) for key, value in self.per_tool_consecutive.items()}
         if any(value < 0 for value in consecutive.values()):
             raise ValueError("per-tool consecutive counters must not be negative")
-        last_sig = {
-            str(key): str(value) for key, value in self.per_tool_last_sig.items()
-        }
+        last_sig = {str(key): str(value) for key, value in self.per_tool_last_sig.items()}
         object.__setattr__(self, "per_tool_consecutive", consecutive)
         object.__setattr__(self, "per_tool_last_sig", last_sig)
 
@@ -322,9 +310,7 @@ class ProposalStateV1:
         if any(value < 0 for value in counters):
             raise ValueError("proposal state counters must not be negative")
         object.__setattr__(self, "messages", _json_objects(self.messages))
-        object.__setattr__(
-            self, "skill_refs", tuple(str(value) for value in self.skill_refs)
-        )
+        object.__setattr__(self, "skill_refs", tuple(str(value) for value in self.skill_refs))
         object.__setattr__(
             self,
             "active_todo_ids",
@@ -335,30 +321,14 @@ class ProposalStateV1:
             "tool_signature_repeat_window",
             tuple(str(value) for value in self.tool_signature_repeat_window),
         )
-        object.__setattr__(
-            self, "completion_outcomes", _json_objects(self.completion_outcomes)
-        )
-        object.__setattr__(
-            self, "verify_outcomes", _json_objects(self.verify_outcomes)
-        )
-        object.__setattr__(
-            self, "self_check_outcomes", _json_objects(self.self_check_outcomes)
-        )
-        object.__setattr__(
-            self, "evidence_refs", tuple(str(value) for value in self.evidence_refs)
-        )
-        object.__setattr__(
-            self, "provider_snapshot", _json_object(self.provider_snapshot)
-        )
-        object.__setattr__(
-            self, "model_snapshot", _json_object(self.model_snapshot)
-        )
-        object.__setattr__(
-            self, "fallback_attempts", _json_objects(self.fallback_attempts)
-        )
-        object.__setattr__(
-            self, "pending_tool_results", _json_object(self.pending_tool_results)
-        )
+        object.__setattr__(self, "completion_outcomes", _json_objects(self.completion_outcomes))
+        object.__setattr__(self, "verify_outcomes", _json_objects(self.verify_outcomes))
+        object.__setattr__(self, "self_check_outcomes", _json_objects(self.self_check_outcomes))
+        object.__setattr__(self, "evidence_refs", tuple(str(value) for value in self.evidence_refs))
+        object.__setattr__(self, "provider_snapshot", _json_object(self.provider_snapshot))
+        object.__setattr__(self, "model_snapshot", _json_object(self.model_snapshot))
+        object.__setattr__(self, "fallback_attempts", _json_objects(self.fallback_attempts))
+        object.__setattr__(self, "pending_tool_results", _json_object(self.pending_tool_results))
         object.__setattr__(
             self, "committed_tool_results", _json_object(self.committed_tool_results)
         )
@@ -389,9 +359,7 @@ class ProposalStateV1:
             "self_check_attempts": self.self_check_attempts,
             "completion_outcomes": [dict(value) for value in self.completion_outcomes],
             "verify_outcomes": [dict(value) for value in self.verify_outcomes],
-            "self_check_outcomes": [
-                dict(value) for value in self.self_check_outcomes
-            ],
+            "self_check_outcomes": [dict(value) for value in self.self_check_outcomes],
             "evidence_refs": list(self.evidence_refs),
             "provider_snapshot": dict(self.provider_snapshot),
             "model_snapshot": dict(self.model_snapshot),
@@ -410,9 +378,7 @@ class ProposalStateV1:
     def from_dict(cls, value: Mapping[str, object]) -> ProposalStateV1:
         raw_error = value.get("last_error")
         return cls(
-            schema_version=int(
-                value.get("schema_version", PROPOSAL_STATE_SCHEMA_VERSION)
-            ),
+            schema_version=int(value.get("schema_version", PROPOSAL_STATE_SCHEMA_VERSION)),
             messages=list(value.get("messages", [])),
             original_request=str(value.get("original_request", "")),
             request_id=str(value.get("request_id", "")),
@@ -422,11 +388,7 @@ class ProposalStateV1:
                 if value.get("system_prompt_ref") is not None
                 else None
             ),
-            prompt_ref=(
-                str(value["prompt_ref"])
-                if value.get("prompt_ref") is not None
-                else None
-            ),
+            prompt_ref=(str(value["prompt_ref"]) if value.get("prompt_ref") is not None else None),
             skill_refs=list(value.get("skill_refs", [])),
             compaction_summary=(
                 str(value["compaction_summary"])
@@ -434,9 +396,7 @@ class ProposalStateV1:
                 else None
             ),
             compaction_ref=(
-                str(value["compaction_ref"])
-                if value.get("compaction_ref") is not None
-                else None
+                str(value["compaction_ref"]) if value.get("compaction_ref") is not None else None
             ),
             token_estimate=int(value.get("token_estimate", 0)),
             iteration=int(value.get("iteration", 0)),
@@ -444,19 +404,13 @@ class ProposalStateV1:
             fix_rounds_used=int(value.get("fix_rounds_used", 0)),
             tools_used=int(value.get("tools_used", 0)),
             active_plan_id=(
-                str(value["active_plan_id"])
-                if value.get("active_plan_id") is not None
-                else None
+                str(value["active_plan_id"]) if value.get("active_plan_id") is not None else None
             ),
             active_step_id=(
-                str(value["active_step_id"])
-                if value.get("active_step_id") is not None
-                else None
+                str(value["active_step_id"]) if value.get("active_step_id") is not None else None
             ),
             active_todo_ids=list(value.get("active_todo_ids", [])),
-            tool_signature_repeat_window=list(
-                value.get("tool_signature_repeat_window", [])
-            ),
+            tool_signature_repeat_window=list(value.get("tool_signature_repeat_window", [])),
             completion_attempts=int(value.get("completion_attempts", 0)),
             verify_attempts=int(value.get("verify_attempts", 0)),
             self_check_attempts=int(value.get("self_check_attempts", 0)),
@@ -468,9 +422,7 @@ class ProposalStateV1:
             model_snapshot=dict(value.get("model_snapshot", {})),
             fallback_attempts=list(value.get("fallback_attempts", [])),
             last_error=(
-                ProposalErrorV1.from_dict(raw_error)
-                if isinstance(raw_error, Mapping)
-                else None
+                ProposalErrorV1.from_dict(raw_error) if isinstance(raw_error, Mapping) else None
             ),
             pending_tool_results=dict(value.get("pending_tool_results", {})),
             committed_tool_results=dict(value.get("committed_tool_results", {})),
@@ -546,9 +498,7 @@ class ProposalOutcomeV1:
             "compaction_summary": self.compaction_summary,
             "compaction_ref": self.compaction_ref,
             "token_estimate": self.token_estimate,
-            "gate_request": (
-                dict(self.gate_request) if self.gate_request is not None else None
-            ),
+            "gate_request": (dict(self.gate_request) if self.gate_request is not None else None),
             "error": self.error.to_dict() if self.error else None,
         }
         validate_json_value(payload)
@@ -558,9 +508,7 @@ class ProposalOutcomeV1:
     def from_dict(cls, value: Mapping[str, object]) -> ProposalOutcomeV1:
         raw_error = value.get("error")
         return cls(
-            schema_version=int(
-                value.get("schema_version", PROPOSAL_STATE_SCHEMA_VERSION)
-            ),
+            schema_version=int(value.get("schema_version", PROPOSAL_STATE_SCHEMA_VERSION)),
             assistant_content=str(value.get("assistant_content", "")),
             reasoning_summary_ref=(
                 str(value["reasoning_summary_ref"])
@@ -569,8 +517,7 @@ class ProposalOutcomeV1:
             ),
             raw_tool_proposals=list(value.get("raw_tool_proposals", [])),
             prepared_calls=[
-                PreparedToolCall.from_dict(item)
-                for item in value.get("prepared_calls", [])
+                PreparedToolCall.from_dict(item) for item in value.get("prepared_calls", [])
             ],
             stop_reason=str(value.get("stop_reason", "unknown")),
             usage=dict(value.get("usage", {})),
@@ -587,9 +534,7 @@ class ProposalOutcomeV1:
                 else None
             ),
             compaction_ref=(
-                str(value["compaction_ref"])
-                if value.get("compaction_ref") is not None
-                else None
+                str(value["compaction_ref"]) if value.get("compaction_ref") is not None else None
             ),
             token_estimate=int(value.get("token_estimate", 0)),
             gate_request=(
@@ -598,9 +543,7 @@ class ProposalOutcomeV1:
                 else None
             ),
             error=(
-                ProposalErrorV1.from_dict(raw_error)
-                if isinstance(raw_error, Mapping)
-                else None
+                ProposalErrorV1.from_dict(raw_error) if isinstance(raw_error, Mapping) else None
             ),
         )
 

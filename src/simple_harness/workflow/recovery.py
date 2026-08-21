@@ -194,9 +194,7 @@ async def quarantine_checkpoint(
     await recovery.quarantine(
         run_id=run_id, reason=reason, checkpoint=checkpoint, transaction=transaction
     )
-    return RecoveryRecord(
-        run_id, previous, WorkflowRunStatus.BLOCKED.value, "inspect", reason
-    )
+    return RecoveryRecord(run_id, previous, WorkflowRunStatus.BLOCKED.value, "inspect", reason)
 
 
 __all__ = ("FailureMapping", "RecoveryRecord")

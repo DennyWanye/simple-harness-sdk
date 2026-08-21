@@ -5,12 +5,11 @@ from __future__ import annotations
 
 import csv
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
-
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 sys.dont_write_bytecode = True
@@ -20,16 +19,12 @@ from check_source_provenance import ProvenanceError, validate  # noqa: E402
 
 
 def _rows() -> tuple[list[str], list[dict[str, str]]]:
-    with (REPOSITORY_ROOT / "source-manifest.tsv").open(
-        encoding="utf-8", newline=""
-    ) as handle:
+    with (REPOSITORY_ROOT / "source-manifest.tsv").open(encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, dialect="excel-tab")
         return list(reader.fieldnames or ()), list(reader)
 
 
-def _write_manifest(
-    path: Path, columns: list[str], rows: list[dict[str, str]]
-) -> None:
+def _write_manifest(path: Path, columns: list[str], rows: list[dict[str, str]]) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle, fieldnames=columns, dialect="excel-tab", lineterminator="\n"
@@ -43,9 +38,7 @@ def test_complete_frozen_source_manifest_is_approved() -> None:
         REPOSITORY_ROOT / "source-manifest.tsv",
         REPOSITORY_ROOT / "provenance/source-lock.json",
     )
-    lock = json.loads(
-        (REPOSITORY_ROOT / "provenance/source-lock.json").read_text(encoding="utf-8")
-    )
+    lock = json.loads((REPOSITORY_ROOT / "provenance/source-lock.json").read_text(encoding="utf-8"))
     assert count == 30 == len(lock["source_files"])
 
 

@@ -347,13 +347,9 @@ def _stage(row) -> ContextStageRecord:  # type: ignore[no-untyped-def]
         ),
         private_snapshot=snapshot,
         private_snapshot_hash=(
-            None
-            if row["private_snapshot_hash"] is None
-            else str(row["private_snapshot_hash"])
+            None if row["private_snapshot_hash"] is None else str(row["private_snapshot_hash"])
         ),
-        consumed_run_id=(
-            None if row["consumed_run_id"] is None else str(row["consumed_run_id"])
-        ),
+        consumed_run_id=(None if row["consumed_run_id"] is None else str(row["consumed_run_id"])),
         consumed_continuation_id=(
             None
             if row["consumed_continuation_id"] is None

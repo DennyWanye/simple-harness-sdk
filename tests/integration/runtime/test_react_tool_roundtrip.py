@@ -25,9 +25,7 @@ from .react_fakes import (
 
 
 def test_tool_roundtrip_uses_effect_executor_then_same_driver() -> None:
-    provider = ScriptedProviderCoordinator(
-        [response("calling", tool=True), response("42")]
-    )
+    provider = ScriptedProviderCoordinator([response("calling", tool=True), response("42")])
     tools = RecordingEffectExecutor()
     context = MemoryContext()
     result = asyncio.run(
@@ -39,9 +37,7 @@ def test_tool_roundtrip_uses_effect_executor_then_same_driver() -> None:
             ReActRunInput(
                 RunId("run-1"),
                 RequestId("request-1"),
-                tools=(
-                    ProviderToolSpec("calculator", "Calculate", {"type": "object"}),
-                ),
+                tools=(ProviderToolSpec("calculator", "Calculate", {"type": "object"}),),
                 max_output_tokens=10,
             ),
             services=services(provider, tools, context),

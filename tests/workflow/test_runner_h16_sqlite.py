@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from simple_harness.contracts import RunId, thaw_json
+from simple_harness.contracts import RunId
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import DecisionState, UnitOfWorkConflict
 from simple_harness.runtime.orchestration import RuntimeStartDispatchClaim
@@ -101,9 +101,7 @@ def test_runner_real_native_start_run_and_reopen(tmp_path: Path) -> None:
 
     def build(database):  # type: ignore[no-untyped-def]
         uow = SqliteExecutionUnitOfWork(database)
-        ports = WorkflowExecutionPorts(
-            uow, CheckpointExecutionAdapter(database), uow, uow, uow
-        )
+        ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
         store = SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences())
         return uow, WorkflowRunner(
             registry=WorkflowRegistry((compiled,)),
@@ -172,14 +170,10 @@ def test_runner_cancel_terminal_exact_replay_survives_reopen(tmp_path: Path) -> 
 
     def build(database):  # type: ignore[no-untyped-def]
         uow = SqliteExecutionUnitOfWork(database)
-        ports = WorkflowExecutionPorts(
-            uow, CheckpointExecutionAdapter(database), uow, uow, uow
-        )
+        ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
         return uow, WorkflowRunner(
             registry=WorkflowRegistry((compiled,)),
-            checkpoint=SqliteNativeCheckpointStore(
-                ports, blob_references=NoBlobReferences()
-            ),
+            checkpoint=SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences()),
             recovery=RecordingRecoveryPort(),
             trace=RecordingTracePort(),
             execution_ports=ports,
@@ -219,13 +213,19 @@ def test_runner_cancel_terminal_exact_replay_survives_reopen(tmp_path: Path) -> 
         replay = asyncio.run(runner.request_cancel(run_id, "user"))
         assert isinstance(replay.output, Mapping)
         assert (replay.output["cancel_id"], replay.output["generation"]) == first_identity
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_cancel_receipts WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == 1
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.cancelled'",
-            (run_id,),
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_cancel_receipts WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.cancelled'",
+                (run_id,),
+            ).fetchone()[0]
+            == 1
+        )
         assert uow.verify_workflow_cancel_terminal(
             run_id=run_id,
             cancel_id=str(first_identity[0]),
@@ -292,9 +292,7 @@ def test_runner_resume_receipt_settles_with_terminal_checkpoint_same_transaction
     path = tmp_path / "runner-resume.db"
     with Database.open(path) as database:
         uow = ObservedRenewUnitOfWork(database, renewed=renewed)
-        ports = WorkflowExecutionPorts(
-            uow, CheckpointExecutionAdapter(database), uow, uow, uow
-        )
+        ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
         store = SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences())
         runner = WorkflowRunner(
             registry=WorkflowRegistry((compiled,)),
@@ -351,14 +349,10 @@ def test_runner_resume_receipt_settles_with_terminal_checkpoint_same_transaction
                 owner="runner-recovery",
                 clock=lambda: clock_value,
             )
-            waiting = asyncio.run(
-                recovery_runner.recover(run_id, WorkflowContext())
-            )
+            waiting = asyncio.run(recovery_runner.recover(run_id, WorkflowContext()))
             assert waiting.status.value == "waiting"
             assert isinstance(waiting.output, Mapping)
-            assert waiting.output["interrupt"]["payload"] == {
-                "question": "continue?"
-            }
+            assert waiting.output["interrupt"]["payload"] == {"question": "continue?"}
             assert calls == 1
         decision = database.connection.execute(
             "SELECT decision_id FROM decisions WHERE run_id=? AND state='open'",
@@ -403,9 +397,12 @@ def test_runner_resume_receipt_settles_with_terminal_checkpoint_same_transaction
         uow.fail_resolve = False
         assert uow.read_decision(decision_id).state is DecisionState.OPEN
         assert uow.read_run(run_id).state.value == "waiting"
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_resume_admissions WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_resume_admissions WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == 0
+        )
         result = asyncio.run(
             runner.resolve_and_resume(
                 run_id,
@@ -423,10 +420,14 @@ def test_runner_resume_receipt_settles_with_terminal_checkpoint_same_transaction
             (run_id,),
         ).fetchone()
         assert receipt is not None and receipt[0] == "settled"
-        assert database.connection.execute(
-            "SELECT checkpoint_id FROM workflow_checkpoints WHERE run_id=? ORDER BY version DESC LIMIT 1",
-            (run_id,),
-        ).fetchone()[0] == receipt[1]
+        assert (
+            database.connection.execute(
+                "SELECT checkpoint_id FROM workflow_checkpoints WHERE run_id=? ORDER BY version"
+                " DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()[0]
+            == receipt[1]
+        )
         assert calls == 2
 
 
@@ -465,14 +466,10 @@ def test_runner_heartbeat_renews_before_long_node_checkpoint(tmp_path: Path) -> 
         )
         with Database.open(path) as database:
             uow = ObservedRenewUnitOfWork(database, renewed=renewed)
-            ports = WorkflowExecutionPorts(
-                uow, CheckpointExecutionAdapter(database), uow, uow, uow
-            )
+            ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
             runner = WorkflowRunner(
                 registry=WorkflowRegistry((compiled,)),
-                checkpoint=SqliteNativeCheckpointStore(
-                    ports, blob_references=NoBlobReferences()
-                ),
+                checkpoint=SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences()),
                 recovery=RecordingRecoveryPort(),
                 trace=RecordingTracePort(),
                 execution_ports=ports,
@@ -507,12 +504,18 @@ def test_runner_heartbeat_renews_before_long_node_checkpoint(tmp_path: Path) -> 
 
     run_id, _receipt_expiry = asyncio.run(scenario())
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == 2
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_leases WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == 2
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_leases WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_runner_heartbeat_loss_cancels_noncooperative_node_and_fences_write(
@@ -546,14 +549,10 @@ def test_runner_heartbeat_loss_cancels_noncooperative_node_and_fences_write(
         )
         with Database.open(path) as database:
             uow = ObservedRenewUnitOfWork(database, renewed=loss, fail=True)
-            ports = WorkflowExecutionPorts(
-                uow, CheckpointExecutionAdapter(database), uow, uow, uow
-            )
+            ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
             runner = WorkflowRunner(
                 registry=WorkflowRegistry((compiled,)),
-                checkpoint=SqliteNativeCheckpointStore(
-                    ports, blob_references=NoBlobReferences()
-                ),
+                checkpoint=SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences()),
                 recovery=RecordingRecoveryPort(),
                 trace=RecordingTracePort(),
                 execution_ports=ports,
@@ -582,12 +581,18 @@ def test_runner_heartbeat_loss_cancels_noncooperative_node_and_fences_write(
 
     run_id = asyncio.run(scenario())
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == 1
-        assert reopened.connection.execute(
-            "SELECT state FROM run_fences WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == "released"
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT state FROM run_fences WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == "released"
+        )
 
 
 def test_runner_precreated_start_rejects_missing_runtime_dispatch_authority(
@@ -612,14 +617,10 @@ def test_runner_precreated_start_rejects_missing_runtime_dispatch_authority(
     path = tmp_path / "precreated.db"
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
-        ports = WorkflowExecutionPorts(
-            uow, CheckpointExecutionAdapter(database), uow, uow, uow
-        )
+        ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
         runner = WorkflowRunner(
             registry=WorkflowRegistry((compiled,)),
-            checkpoint=SqliteNativeCheckpointStore(
-                ports, blob_references=NoBlobReferences()
-            ),
+            checkpoint=SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences()),
             recovery=RecordingRecoveryPort(),
             trace=RecordingTracePort(),
             execution_ports=ports,
@@ -629,36 +630,34 @@ def test_runner_precreated_start_rejects_missing_runtime_dispatch_authority(
             clock=lambda: 2.0,
         )
         request = StartAdmissionRequest(
-                request_key="precreated-key",
-                mode=StartMode.PRECREATED,
-                session_id="session",
-                request_id="request",
-                turn_id="turn",
-                profile_key="workflow.precreated",
-                driver_kind="workflow",
-                tool_catalog_generation=1,
-                workflow_name="precreated",
-                workflow_version="1",
-                requested_run_id="precreated-run",
-                requested_trace_id="precreated-trace",
-                requested_thread_id="precreated-thread",
-                resolved_run_id="precreated-run",
-                resolved_trace_id="precreated-trace",
-                resolved_thread_id="precreated-thread",
-                checkpoint_namespace="native",
-                manifest_hash=manifest_hash(compiled.manifest),
-                implementation_hash=compiled.manifest.implementation_bundle_hash,
-                state_schema_version=compiled.manifest.state_schema_version,
-                start_input_schema_ref="schema://workflow.precreated/v1",
-                start_input_schema_hash=hashlib.sha256(b"{}").hexdigest(),
-                terminal_projection_descriptor=None,
-                terminal_request_factory_hash=None,
-                start_input={},
-                capability_snapshot={},
-            )
-        payload_json, _fingerprint, run_id, trace_id, thread_id = uow._start_identity(
-            request
+            request_key="precreated-key",
+            mode=StartMode.PRECREATED,
+            session_id="session",
+            request_id="request",
+            turn_id="turn",
+            profile_key="workflow.precreated",
+            driver_kind="workflow",
+            tool_catalog_generation=1,
+            workflow_name="precreated",
+            workflow_version="1",
+            requested_run_id="precreated-run",
+            requested_trace_id="precreated-trace",
+            requested_thread_id="precreated-thread",
+            resolved_run_id="precreated-run",
+            resolved_trace_id="precreated-trace",
+            resolved_thread_id="precreated-thread",
+            checkpoint_namespace="native",
+            manifest_hash=manifest_hash(compiled.manifest),
+            implementation_hash=compiled.manifest.implementation_bundle_hash,
+            state_schema_version=compiled.manifest.state_schema_version,
+            start_input_schema_ref="schema://workflow.precreated/v1",
+            start_input_schema_hash=hashlib.sha256(b"{}").hexdigest(),
+            terminal_projection_descriptor=None,
+            terminal_request_factory_hash=None,
+            start_input={},
+            capability_snapshot={},
         )
+        payload_json, _fingerprint, run_id, trace_id, thread_id = uow._start_identity(request)
         start_snapshot = json.loads(payload_json)
         start_snapshot.update(
             {"resolved_run_id": run_id, "trace_id": trace_id, "thread_id": thread_id}
@@ -697,6 +696,9 @@ def test_runner_precreated_start_rejects_missing_runtime_dispatch_authority(
                     dispatch_claim=missing_dispatch,
                 )
             )
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_start_admissions"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_start_admissions"
+            ).fetchone()[0]
+            == 0
+        )

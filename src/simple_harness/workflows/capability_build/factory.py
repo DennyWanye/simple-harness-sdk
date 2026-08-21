@@ -14,8 +14,8 @@ from typing import cast
 
 from simple_harness.contracts import JsonValue, canonical_json
 from simple_harness.workflow.contracts import (
-    ChannelSpec,
     CapabilityBuildHostServices,
+    ChannelSpec,
     JsonType,
     ReducerKind,
     StatePatch,
@@ -32,7 +32,7 @@ from simple_harness.workflow.definition import (
 )
 from simple_harness.workflows._registration import build_registration
 
-from . import (
+from ._constants import (
     DEFAULT_FIX_BUDGET,
     DEFAULT_PROPOSAL_BUDGET,
     WORKFLOW_NAME,
@@ -90,10 +90,7 @@ class CapabilityBuildAdmission:
             or not 1 <= self.proposal_budget <= DEFAULT_PROPOSAL_BUDGET
         ):
             raise ValueError("proposal budget is outside capability-build admission")
-        if (
-            isinstance(self.fix_budget, bool)
-            or not 0 <= self.fix_budget <= DEFAULT_FIX_BUDGET
-        ):
+        if isinstance(self.fix_budget, bool) or not 0 <= self.fix_budget <= DEFAULT_FIX_BUDGET:
             raise ValueError("fix budget is outside capability-build admission")
 
     def to_json(self) -> dict[str, JsonValue]:
@@ -152,9 +149,7 @@ class CapabilityBuildExecutionState:
         }
 
     @classmethod
-    def from_json(
-        cls, value: Mapping[str, JsonValue]
-    ) -> CapabilityBuildExecutionState:
+    def from_json(cls, value: Mapping[str, JsonValue]) -> CapabilityBuildExecutionState:
         receipt = value.get("activation_receipt")
         if not isinstance(receipt, Mapping):
             raise ValueError("activation_receipt must be an object")
@@ -178,9 +173,7 @@ def _json_object(value: object, *, boundary: str) -> dict[str, JsonValue]:
 
 
 def _operation_key(admission_fingerprint: str, stage: str) -> str:
-    return hashlib.sha256(
-        f"{admission_fingerprint}|{stage}".encode()
-    ).hexdigest()
+    return hashlib.sha256(f"{admission_fingerprint}|{stage}".encode()).hexdigest()
 
 
 async def run_capability_build_specialization(
@@ -211,9 +204,7 @@ async def run_capability_build_specialization(
 
     admission_payload = admission.to_json()
     authorization = _json_object(
-        await cast(
-            CapabilityBuildAuthorizationPort, services.authorization
-        ).authorize_build(
+        await cast(CapabilityBuildAuthorizationPort, services.authorization).authorize_build(
             operation_key=_operation_key(fingerprint, "authorization"),
             admission=admission_payload,
         ),
@@ -233,9 +224,7 @@ async def run_capability_build_specialization(
     if not isinstance(source, str) or not source:
         raise ValueError("capability search omitted source")
     source_policy = _json_object(
-        await cast(
-            CapabilitySourcePolicyPort, services.source_policy
-        ).authorize_source(
+        await cast(CapabilitySourcePolicyPort, services.source_policy).authorize_source(
             source=source,
             operation_key=_operation_key(fingerprint, "source_policy"),
             admission=admission_payload,
@@ -367,23 +356,17 @@ def _stage_patch(
     )
 
 
-def _required_result(
-    state: WorkflowState, stage: str
-) -> dict[str, JsonValue]:
+def _required_result(state: WorkflowState, stage: str) -> dict[str, JsonValue]:
     result = dict(state.get("values") or {}).get(f"{stage}_result")
     if not isinstance(result, Mapping):
         raise ValueError(f"capability-build {stage} result is unavailable")
     return _json_object(result, boundary=stage)
 
 
-async def _authorization_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _authorization_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     admission = _admission_from_state(state)
     result = _json_object(
-        await cast(
-            CapabilityBuildAuthorizationPort, context.port("authorization")
-        ).authorize_build(
+        await cast(CapabilityBuildAuthorizationPort, context.port("authorization")).authorize_build(
             operation_key=_operation_key(admission.fingerprint, "authorization"),
             admission=admission.to_json(),
         ),
@@ -394,9 +377,7 @@ async def _authorization_handler(
     return _stage_patch(state, admission, "authorization", result)
 
 
-async def _search_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _search_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     admission = _admission_from_state(state)
     result = _json_object(
         await cast(CapabilitySearchPort, context.port("capability_search")).search(
@@ -412,15 +393,11 @@ async def _search_handler(
     return _stage_patch(state, admission, "search", result)
 
 
-async def _source_policy_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _source_policy_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     admission = _admission_from_state(state)
     search = _required_result(state, "search")
     result = _json_object(
-        await cast(
-            CapabilitySourcePolicyPort, context.port("source_policy")
-        ).authorize_source(
+        await cast(CapabilitySourcePolicyPort, context.port("source_policy")).authorize_source(
             source=cast(str, search["source"]),
             operation_key=_operation_key(admission.fingerprint, "source_policy"),
             admission=admission.to_json(),
@@ -432,9 +409,7 @@ async def _source_policy_handler(
     return _stage_patch(state, admission, "source_policy", result)
 
 
-async def _isolated_build_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _isolated_build_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     admission = _admission_from_state(state)
     search = _required_result(state, "search")
     source_policy = _required_result(state, "source_policy")
@@ -452,9 +427,7 @@ async def _isolated_build_handler(
     return _stage_patch(state, admission, "isolated_build", result)
 
 
-async def _package_store_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _package_store_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     admission = _admission_from_state(state)
     built = _required_result(state, "isolated_build")
     result = _json_object(
@@ -471,9 +444,7 @@ async def _package_store_handler(
     return _stage_patch(state, admission, "package_store", result)
 
 
-async def _activate_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _activate_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     admission = _admission_from_state(state)
     stored = _required_result(state, "package_store")
     package_ref = cast(str, stored["package_ref"])

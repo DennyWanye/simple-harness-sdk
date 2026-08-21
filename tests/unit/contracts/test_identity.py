@@ -67,4 +67,3 @@ def test_effect_identity_requires_call_identity() -> None:
 
 def test_event_id_is_not_interchangeable_with_run_id() -> None:
     assert EventId("same") != RunId("same")
-

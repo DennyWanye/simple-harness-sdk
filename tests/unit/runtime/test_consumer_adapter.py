@@ -18,8 +18,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from simple_harness.contracts import (
     CallId,
     ExecutionSessionId,
@@ -39,8 +37,8 @@ from simple_harness.providers import (
 from simple_harness.runtime import (
     AuthorizationRequest,
     AuthorizationResult,
-    RunStart,
     RunClient,
+    RunStart,
 )
 from simple_harness.runtime.consumer_adapter import (
     ConsumerRuntimePorts,
@@ -84,9 +82,7 @@ def _calculator_provider(model: str):
                 return ProviderResponse(
                     request_id=request.request_id,
                     message=Message(MessageRole.ASSISTANT, ""),
-                    tool_calls=(
-                        ProviderToolCall(CallId("call-1"), "calculate", {}),
-                    ),
+                    tool_calls=(ProviderToolCall(CallId("call-1"), "calculate", {}),),
                     usage=ProviderUsage(50, 20, 70),
                     model=model,
                     finish_reason="tool_calls",

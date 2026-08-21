@@ -36,9 +36,7 @@ class WorkflowProviderAdapter:
         self._activation = activation
         self._clock = clock
 
-    async def invoke(
-        self, request: ProviderRequest, *, cancel: CancelToken
-    ) -> ProviderResponse:
+    async def invoke(self, request: ProviderRequest, *, cancel: CancelToken) -> ProviderResponse:
         """Invoke Provider with activation's immutable lease state."""
         return await self.invoke_for_run(
             RunId(self._activation.execution_lease.run_id), request, cancel=cancel

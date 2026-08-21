@@ -5,11 +5,9 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
 import re
+from enum import StrEnum
 from types import TracebackType
-from typing import Any
-
 
 _ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
@@ -70,7 +68,7 @@ class HarnessError(RuntimeError):
             f"public_message={self.public_message!r}, retryable={self.retryable!r})"
         )
 
-    def with_traceback(self, tb: TracebackType | None) -> "HarnessError":
+    def with_traceback(self, tb: TracebackType | None) -> HarnessError:
         return super().with_traceback(tb)
 
 
@@ -82,4 +80,3 @@ class ContractValidationError(HarnessError, ValueError):
 
 
 __all__ = ("ErrorCode", "HarnessError", "ContractValidationError")
-

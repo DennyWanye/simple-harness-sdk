@@ -6,16 +6,13 @@ from __future__ import annotations
 import json
 import os
 import runpy
-from pathlib import Path
 import subprocess
 import sys
 import textwrap
-
+from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-VERSION = str(
-    runpy.run_path(str(REPOSITORY_ROOT / "src/simple_harness/version.py"))["__version__"]
-)
+VERSION = str(runpy.run_path(str(REPOSITORY_ROOT / "src/simple_harness/version.py"))["__version__"])
 
 
 def test_import_has_no_host_or_runtime_side_effects(tmp_path: Path) -> None:

@@ -34,9 +34,7 @@ ERROR_DISPOSITIONS: Mapping[WorkflowErrorCode, ErrorDisposition] = {
     WorkflowErrorCode.RETRYABLE_PROVIDER: ErrorDisposition(
         True, "The model provider is temporarily unavailable.", "retry"
     ),
-    WorkflowErrorCode.RETRYABLE_TOOL: ErrorDisposition(
-        True, "A tool failed temporarily.", "retry"
-    ),
+    WorkflowErrorCode.RETRYABLE_TOOL: ErrorDisposition(True, "A tool failed temporarily.", "retry"),
     WorkflowErrorCode.INVALID_STATE: ErrorDisposition(
         False, "The workflow state is invalid.", "inspect_or_cancel"
     ),
@@ -46,9 +44,7 @@ ERROR_DISPOSITIONS: Mapping[WorkflowErrorCode, ErrorDisposition] = {
     WorkflowErrorCode.PERMISSION_DENIED: ErrorDisposition(
         False, "Permission was denied.", "request_permission_or_cancel"
     ),
-    WorkflowErrorCode.CANCELLED: ErrorDisposition(
-        False, "The workflow was cancelled.", "none"
-    ),
+    WorkflowErrorCode.CANCELLED: ErrorDisposition(False, "The workflow was cancelled.", "none"),
     WorkflowErrorCode.LEASE_LOST: ErrorDisposition(
         True, "Workflow ownership changed while work was running.", "reclaim"
     ),

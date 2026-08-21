@@ -327,9 +327,7 @@ class ConversationMemoryQueryPort(Protocol):
         self, query: ConversationMemoryRecallQuery
     ) -> ConversationMemoryRecallResult: ...
 
-    async def release(
-        self, *, user_id: str, context_query_id: str, result_hash: str
-    ) -> None:
+    async def release(self, *, user_id: str, context_query_id: str, result_hash: str) -> None:
         """Idempotently release one retained recall result after staging."""
         ...
 
@@ -339,9 +337,7 @@ class ConversationMemoryQueryPort(Protocol):
 class ConversationMemorySinkPort(Protocol):
     """Idempotent sink for one canonical conversation Memory event."""
 
-    async def apply(
-        self, intent: ConversationMemoryIntent
-    ) -> ConversationMemoryApplyResult: ...
+    async def apply(self, intent: ConversationMemoryIntent) -> ConversationMemoryApplyResult: ...
 
     async def close(self) -> None: ...
 

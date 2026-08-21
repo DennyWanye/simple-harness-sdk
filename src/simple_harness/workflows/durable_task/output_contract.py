@@ -138,9 +138,7 @@ def _execution_obligations(request: str) -> tuple[bool, bool]:
     requires_test = bool(_TEST_EXECUTION_REQUEST.search(positive_request))
 
     # Only keep test obligation if explicitly requested
-    if not requires_write and not _EXPLICIT_TEST_EXECUTION_REQUEST.search(
-        positive_request
-    ):
+    if not requires_write and not _EXPLICIT_TEST_EXECUTION_REQUEST.search(positive_request):
         requires_test = False
 
     return requires_write, requires_test
@@ -213,11 +211,7 @@ def validate_receipt_backed_completion(
 
     # Tool-free requests pass only if explicitly allowed
     if not successful:
-        if (
-            not requires_write
-            and not requires_test
-            and _EXPLICIT_TOOL_FREE_REQUEST.search(request)
-        ):
+        if not requires_write and not requires_test and _EXPLICIT_TOOL_FREE_REQUEST.search(request):
             return {"passed": True, "reason": "explicit_tool_free_request", "evidence_refs": []}
         return {
             "passed": False,
@@ -228,9 +222,7 @@ def validate_receipt_backed_completion(
     # No obligations: any success is sufficient
     if not requires_write and not requires_test:
         evidence = [
-            str(r.get("stable_call_id", ""))
-            for r in successful
-            if str(r.get("stable_call_id", ""))
+            str(r.get("stable_call_id", "")) for r in successful if str(r.get("stable_call_id", ""))
         ]
         return {
             "passed": True,
@@ -252,9 +244,7 @@ def validate_receipt_backed_completion(
     ]
 
     test_receipts = [
-        result
-        for result in action_receipts
-        if str(result.get("tool_name", "")) in _TEST_TOOL_NAMES
+        result for result in action_receipts if str(result.get("tool_name", "")) in _TEST_TOOL_NAMES
     ]
 
     # Check write obligation

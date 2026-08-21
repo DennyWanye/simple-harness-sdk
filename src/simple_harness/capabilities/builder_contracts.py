@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import InitVar, dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
 from types import MappingProxyType
+from typing import Any, Literal
 
 from simple_harness.contracts import JsonValue, canonical_json, fingerprint_json
 
@@ -66,6 +67,7 @@ def _json_mapping(value: Mapping[str, Any], name: str) -> Mapping[str, JsonValue
     """Validate and freeze a JSON mapping."""
     try:
         import json
+
         payload = json.loads(canonical_json(dict(value)))
     except (TypeError, ValueError) as exc:
         raise CapabilityBuildError(
@@ -101,7 +103,12 @@ class CapabilityBuildSearchEvidence:
 
         # Validate catalog stamp structure
         stamp = dict(self.catalog_stamp)
-        required_keys = {"catalog_generation", "registry_revision", "binding_generation", "fingerprint"}
+        required_keys = {
+            "catalog_generation",
+            "registry_revision",
+            "binding_generation",
+            "fingerprint",
+        }
         if not required_keys.issubset(stamp.keys()):
             raise CapabilityBuildError(
                 "invalid_builder_payload",
@@ -123,6 +130,7 @@ class CapabilityBuildSearchEvidence:
             )
 
         import math
+
         if self.best_executable_score is not None and not math.isfinite(
             float(self.best_executable_score)
         ):
@@ -153,9 +161,7 @@ class CapabilityBuildSearchEvidence:
         }
 
     @classmethod
-    def from_dict(
-        cls, value: Mapping[str, object]
-    ) -> CapabilityBuildSearchEvidence:
+    def from_dict(cls, value: Mapping[str, object]) -> CapabilityBuildSearchEvidence:
         stamp = value.get("catalog_stamp")
         if not isinstance(stamp, Mapping):
             raise CapabilityBuildError(
@@ -170,9 +176,7 @@ class CapabilityBuildSearchEvidence:
             query_hash=str(value.get("query_hash") or ""),
             hit_count=int(value.get("hit_count") or 0),
             best_executable_score=(None if score is None else float(score)),
-            evidence_kind=str(
-                value.get("evidence_kind") or "search"
-            ),  # type: ignore[arg-type]
+            evidence_kind=str(value.get("evidence_kind") or "search"),  # type: ignore[arg-type]
         )
 
 
@@ -295,9 +299,7 @@ class CapabilityBuildLineage:
             "original_objective": self.original_objective,
             "original_args": dict(self.original_args),
             "original_args_fingerprint": self.original_args_fingerprint,
-            "original_objective_fingerprint": (
-                self.original_objective_fingerprint
-            ),
+            "original_objective_fingerprint": (self.original_objective_fingerprint),
             "search_receipt_ref": self.search_receipt_ref,
             "catalog_stamp_fingerprint": self.catalog_stamp_fingerprint,
             "operation_kind": self.operation_kind,
@@ -322,16 +324,10 @@ class CapabilityBuildLineage:
             original_objective=str(value.get("original_objective") or ""),
             original_args=dict(args),
             search_receipt_ref=str(value.get("search_receipt_ref") or ""),
-            catalog_stamp_fingerprint=str(
-                value.get("catalog_stamp_fingerprint") or ""
-            ),
-            operation_kind=str(
-                value.get("operation_kind") or "install"
-            ),  # type: ignore[arg-type]
+            catalog_stamp_fingerprint=str(value.get("catalog_stamp_fingerprint") or ""),
+            operation_kind=str(value.get("operation_kind") or "install"),  # type: ignore[arg-type]
             parent_version=(
-                str(value["parent_version"])
-                if value.get("parent_version") is not None
-                else None
+                str(value["parent_version"]) if value.get("parent_version") is not None else None
             ),
             parent_manifest_hash=(
                 str(value["parent_manifest_hash"])
@@ -348,10 +344,7 @@ class CapabilityBuildLineage:
 
         # Validate fingerprints if provided
         expected_args = value.get("original_args_fingerprint")
-        if (
-            expected_args is not None
-            and str(expected_args) != lineage.original_args_fingerprint
-        ):
+        if expected_args is not None and str(expected_args) != lineage.original_args_fingerprint:
             raise CapabilityBuildError(
                 "builder_lineage_mismatch",
                 "original args changed after builder admission",
@@ -359,8 +352,7 @@ class CapabilityBuildLineage:
         expected_objective = value.get("original_objective_fingerprint")
         if (
             expected_objective is not None
-            and str(expected_objective)
-            != lineage.original_objective_fingerprint
+            and str(expected_objective) != lineage.original_objective_fingerprint
         ):
             raise CapabilityBuildError(
                 "builder_lineage_mismatch",
@@ -457,10 +449,8 @@ class CapabilityBuildLaunch:
 
         # Validate lineage matches search evidence
         if (
-            self.lineage.search_receipt_ref
-            != self.search_evidence.receipt_ref
-            or self.lineage.catalog_stamp_fingerprint
-            != self.search_evidence.stamp_fingerprint
+            self.lineage.search_receipt_ref != self.search_evidence.receipt_ref
+            or self.lineage.catalog_stamp_fingerprint != self.search_evidence.stamp_fingerprint
         ):
             raise CapabilityBuildError(
                 "builder_search_lineage_mismatch",
@@ -469,13 +459,9 @@ class CapabilityBuildLaunch:
 
         # Validate staging paths
         workspace = Path(self.task_workspace).expanduser().resolve(strict=False)
-        managed_base = Path(self.managed_staging_base).expanduser().resolve(
-            strict=False
-        )
+        managed_base = Path(self.managed_staging_base).expanduser().resolve(strict=False)
         staging = Path(self.staging_root).expanduser().resolve(strict=False)
-        expected = (managed_base / self.lineage.lineage_id).resolve(
-            strict=False
-        )
+        expected = (managed_base / self.lineage.lineage_id).resolve(strict=False)
         if staging != expected:
             raise CapabilityBuildError(
                 "builder_staging_mismatch",
@@ -490,9 +476,7 @@ class CapabilityBuildLaunch:
 
         # Validate publish policy matches admission
         if self.publish_policy == "candidate_only":
-            if not isinstance(
-                self.candidate_admission, CapabilityBuildCandidateAdmissionV1
-            ):
+            if not isinstance(self.candidate_admission, CapabilityBuildCandidateAdmissionV1):
                 raise CapabilityBuildError(
                     "candidate_build_admission_required",
                     "candidate-only launch requires host-issued admission",
@@ -513,9 +497,7 @@ class CapabilityBuildLaunch:
 
     def draft_path(self, draft_index: int) -> Path:
         """Return the path for a given draft index (0..max_repair_drafts)."""
-        if not isinstance(draft_index, int) or not 0 <= draft_index <= (
-            self.max_repair_drafts
-        ):
+        if not isinstance(draft_index, int) or not 0 <= draft_index <= (self.max_repair_drafts):
             raise CapabilityBuildError(
                 "repair_budget_exhausted",
                 f"draft index must be between 0 and {self.max_repair_drafts}",
@@ -525,9 +507,7 @@ class CapabilityBuildLaunch:
     def source_revision(self, draft_index: int) -> str:
         """Return the source revision string for a given draft."""
         self.draft_path(draft_index)  # Validate index
-        return (
-            f"generated-{self.lineage.lineage_id[:20]}-draft-{draft_index}"
-        )
+        return f"generated-{self.lineage.lineage_id[:20]}-draft-{draft_index}"
 
     def to_dict(self) -> dict[str, JsonValue]:
         return {
@@ -544,16 +524,10 @@ class CapabilityBuildLaunch:
                 None
                 if self.candidate_admission is None
                 else {
-                    "builder_launch_id": (
-                        self.candidate_admission.builder_launch_id
-                    ),
+                    "builder_launch_id": (self.candidate_admission.builder_launch_id),
                     "child_run_id": self.candidate_admission.child_run_id,
-                    "child_start_hash": (
-                        self.candidate_admission.child_start_hash
-                    ),
-                    "expected_entry_kinds": list(
-                        self.candidate_admission.expected_entry_kinds
-                    ),
+                    "child_start_hash": (self.candidate_admission.child_start_hash),
+                    "expected_entry_kinds": list(self.candidate_admission.expected_entry_kinds),
                 }
             ),
             "max_repair_drafts": self.max_repair_drafts,
@@ -595,13 +569,9 @@ class CapabilityBuildLaunch:
             lineage=CapabilityBuildLineage.from_dict(lineage),
             search_evidence=CapabilityBuildSearchEvidence.from_dict(search),
             task_workspace=str(value.get("task_workspace") or ""),
-            managed_staging_base=str(
-                value.get("managed_staging_base") or ""
-            ),
+            managed_staging_base=str(value.get("managed_staging_base") or ""),
             staging_root=str(value.get("staging_root") or ""),
-            install_scope=str(
-                value.get("install_scope") or "run"
-            ),  # type: ignore[arg-type]
+            install_scope=str(value.get("install_scope") or "run"),  # type: ignore[arg-type]
             publish_policy=policy,  # type: ignore[arg-type]
             max_repair_drafts=int(value.get("max_repair_drafts") or -1),
         )
@@ -796,9 +766,7 @@ class CapabilityBuildEvidence:
             "install_request": self.install_request.to_dict(),
             "search_receipt_ref": self.search_receipt_ref,
             "catalog_stamp_fingerprint": self.catalog_stamp_fingerprint,
-            "original_objective_fingerprint": (
-                self.original_objective_fingerprint
-            ),
+            "original_objective_fingerprint": (self.original_objective_fingerprint),
             "original_args_fingerprint": self.original_args_fingerprint,
         }
 

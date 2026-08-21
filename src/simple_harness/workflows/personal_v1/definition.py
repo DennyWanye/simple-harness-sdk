@@ -41,9 +41,7 @@ PROFILE_KEY = "workflow.personal_v1"
 SELECTION_EXTENSION_KEY = "deskpet.companion.selection.v1"
 
 
-async def _execute_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _execute_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Execute personal workflow via runtime port.
 
     Args:
@@ -116,9 +114,7 @@ def create_definition() -> WorkflowDefinition:
 
 
 PERSONAL_WORKFLOW_V1_DEFINITION = create_definition()
-PERSONAL_WORKFLOW_V1: CompiledWorkflow = compile_workflow(
-    PERSONAL_WORKFLOW_V1_DEFINITION
-)
+PERSONAL_WORKFLOW_V1: CompiledWorkflow = compile_workflow(PERSONAL_WORKFLOW_V1_DEFINITION)
 
 
 def create_initial_state(
@@ -146,9 +142,7 @@ def create_initial_state(
     Raises:
         PersonalWorkflowSelectionError: If selection validation fails
     """
-    selection = PersonalWorkflowSelectionV1.from_authoritative_mapping(
-        personal_workflow_selection
-    )
+    selection = PersonalWorkflowSelectionV1.from_authoritative_mapping(personal_workflow_selection)
 
     return {
         "schema_version": STATE_SCHEMA_VERSION,

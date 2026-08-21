@@ -125,14 +125,10 @@ class Database:
             self._transaction_active = False
 
     def integrity_check(self) -> tuple[str, ...]:
-        return tuple(
-            str(row[0]) for row in self.connection.execute("PRAGMA integrity_check")
-        )
+        return tuple(str(row[0]) for row in self.connection.execute("PRAGMA integrity_check"))
 
     def foreign_key_violations(self) -> tuple[tuple[object, ...], ...]:
-        return tuple(
-            tuple(row) for row in self.connection.execute("PRAGMA foreign_key_check")
-        )
+        return tuple(tuple(row) for row in self.connection.execute("PRAGMA foreign_key_check"))
 
     def close(self) -> None:
         connection = self._connection
@@ -158,9 +154,7 @@ class Database:
         connection = self.connection
         tables = {
             str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_schema WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")
         }
         if "sdk_schema_migrations" not in tables:
             non_internal = {name for name in tables if not name.startswith("sqlite_")}
@@ -187,14 +181,10 @@ class Database:
                 raise
         applied = {
             int(row[0]): (str(row[1]), str(row[2]))
-            for row in connection.execute(
-                "SELECT version,name,checksum FROM sdk_schema_migrations"
-            )
+            for row in connection.execute("SELECT version,name,checksum FROM sdk_schema_migrations")
         }
         descriptor = fresh_descriptor()
-        if applied != {
-            SCHEMA_VERSION: (descriptor.name, descriptor.checksum)
-        }:
+        if applied != {SCHEMA_VERSION: (descriptor.name, descriptor.checksum)}:
             raise ExecutionSchemaIncompatible(
                 "execution database requires a fresh schema v3 storage set"
             )

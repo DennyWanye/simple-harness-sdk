@@ -27,7 +27,11 @@ class LiveRunIndex:
             return current
         task = asyncio.create_task(awaitable, name=f"simple-harness:{run_id}")
         self._tasks[run_id] = task
-        task.add_done_callback(lambda done, key=run_id: self._discard(key, done))
+
+        def discard(done: asyncio.Task[None], key: str = run_id) -> None:
+            self._discard(key, done)
+
+        task.add_done_callback(discard)
         return task
 
     def active_run_ids(self) -> tuple[str, ...]:
@@ -46,16 +50,12 @@ class LiveRunIndex:
         await asyncio.gather(task, return_exceptions=True)
 
     async def close(self, *, timeout_seconds: float) -> tuple[str, ...]:
-        active = tuple(
-            (run_id, task) for run_id, task in self._tasks.items() if not task.done()
-        )
+        active = tuple((run_id, task) for run_id, task in self._tasks.items() if not task.done())
         for _, task in active:
             task.cancel()
         if active:
             active_tasks = [task for _, task in active]
-            _done, pending = await asyncio.wait(
-                active_tasks, timeout=timeout_seconds
-            )
+            _done, pending = await asyncio.wait(active_tasks, timeout=timeout_seconds)
             for run_id, task in active:
                 if task in pending:
                     self._tasks.pop(run_id, None)

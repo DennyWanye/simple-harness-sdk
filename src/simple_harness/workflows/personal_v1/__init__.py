@@ -10,12 +10,6 @@ Exports:
 - personal_workflow_query_hash: Query normalization utility
 """
 
-from .ports import PersonalWorkflowRuntimePort
-from .selection import (
-    PersonalWorkflowSelectionError,
-    PersonalWorkflowSelectionV1,
-    personal_workflow_query_hash,
-)
 from .definition import (
     PERSONAL_WORKFLOW_V1,
     PERSONAL_WORKFLOW_V1_DEFINITION,
@@ -25,6 +19,12 @@ from .factory import (
     START_SCHEMA,
     START_SCHEMA_REF,
     build_personal_v1_registration,
+)
+from .ports import PersonalWorkflowRuntimePort
+from .selection import (
+    PersonalWorkflowSelectionError,
+    PersonalWorkflowSelectionV1,
+    personal_workflow_query_hash,
 )
 
 __all__ = [

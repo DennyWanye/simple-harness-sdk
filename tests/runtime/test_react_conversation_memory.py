@@ -35,9 +35,7 @@ def test_assistant_projection_uses_only_explicit_text_blocks() -> None:
 
 
 def test_waiting_and_failed_results_reject_typed_output() -> None:
-    output = ConversationTurnOutput(
-        Message(MessageRole.ASSISTANT, "answer"), "answer"
-    )
+    output = ConversationTurnOutput(Message(MessageRole.ASSISTANT, "answer"), "answer")
     for state in (RunState.WAITING, RunState.FAILED):
         with pytest.raises(ValueError, match="only COMPLETED"):
             DriverResult(state, {}, conversation_output=output)

@@ -132,9 +132,7 @@ def test_every_child_terminal_write_fault_rolls_back(
     point: str,
 ) -> None:
     if policy is AttachmentPolicy.DETACHED and ".signal." in point:
-        database, uow, lease, fence = _setup(
-            tmp_path / f"detached-no-{point}.db", policy
-        )
+        database, uow, lease, fence = _setup(tmp_path / f"detached-no-{point}.db", policy)
         result = _terminalize(uow, lease, fence, policy, state)
         assert result.signal is None
         assert (
@@ -152,15 +150,15 @@ def test_every_child_terminal_write_fault_rolls_back(
     database.close()
     with Database.open(path) as reopened:
         assert (
-            reopened.connection.execute(
-                "SELECT state FROM runs WHERE run_id='child-1'"
-            ).fetchone()[0]
+            reopened.connection.execute("SELECT state FROM runs WHERE run_id='child-1'").fetchone()[
+                0
+            ]
             == "running"
         )
         assert (
-            reopened.connection.execute(
-                "SELECT COUNT(*) FROM child_terminal_receipts"
-            ).fetchone()[0]
+            reopened.connection.execute("SELECT COUNT(*) FROM child_terminal_receipts").fetchone()[
+                0
+            ]
             == 0
         )
         assert (
@@ -221,9 +219,7 @@ def test_old_epoch_cannot_terminalize_after_runtime_takeover(
 
 
 def test_caller_cannot_override_durable_attachment_policy(tmp_path: Path) -> None:
-    database, uow, lease, fence = _setup(
-        tmp_path / "policy.db", AttachmentPolicy.DETACHED
-    )
+    database, uow, lease, fence = _setup(tmp_path / "policy.db", AttachmentPolicy.DETACHED)
     with pytest.raises(UnitOfWorkConflict, match="durable policy"):
         uow.finalize_child_and_enqueue_parent_signal(
             command_id="command-1",
@@ -238,9 +234,7 @@ def test_caller_cannot_override_durable_attachment_policy(tmp_path: Path) -> Non
             now=5.0,
         )
     assert (
-        database.connection.execute(
-            "SELECT COUNT(*) FROM child_terminal_receipts"
-        ).fetchone()[0]
+        database.connection.execute("SELECT COUNT(*) FROM child_terminal_receipts").fetchone()[0]
         == 0
     )
     database.close()

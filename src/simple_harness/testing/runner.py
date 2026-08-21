@@ -8,7 +8,6 @@ from __future__ import annotations
 import inspect
 import platform as platform_module
 import re
-import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from types import MappingProxyType
@@ -17,18 +16,17 @@ from typing import cast
 from simple_harness.version import __version__
 
 from .contracts import (
+    CaseObservation,
     CaseStatus,
-    ConformanceCaseUnavailable,
     ConformanceCaseResult,
+    ConformanceCaseUnavailable,
     ConformanceError,
     ConformanceHost,
     ConformanceHostMetadata,
     ConformanceReport,
-    CaseObservation,
 )
 from .suites import CASES_BY_SUITE
 from .verifiers import verify_observation
-
 
 PROTOCOL_VERSION = "1.0.0"
 _SENSITIVE_KEY_PARTS = (
@@ -43,9 +41,7 @@ _SENSITIVE_KEY_PARTS = (
     "token",
     "api_key",
 )
-_SECRET_TEXT = re.compile(
-    r"(?i)(?:bearer\s+\S+|(?:sk|tsk|key)[-_][A-Za-z0-9._-]{6,})"
-)
+_SECRET_TEXT = re.compile(r"(?i)(?:bearer\s+\S+|(?:sk|tsk|key)[-_][A-Za-z0-9._-]{6,})")
 _MAX_PUBLIC_TEXT = 1024
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -173,7 +169,8 @@ async def run_conformance(
             errors=(
                 ConformanceError(
                     "protocol_major_mismatch",
-                    f"Host protocol major {metadata.protocol_version} is incompatible with SDK {PROTOCOL_VERSION}",
+                    f"Host protocol major {metadata.protocol_version} is incompatible with SDK"
+                    f" {PROTOCOL_VERSION}",
                 ),
             ),
         )

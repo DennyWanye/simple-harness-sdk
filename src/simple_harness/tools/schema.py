@@ -13,9 +13,7 @@ from typing import Any
 
 from simple_harness.contracts import thaw_json
 
-_SUPPORTED_TYPES = frozenset(
-    {"object", "array", "string", "integer", "number", "boolean", "null"}
-)
+_SUPPORTED_TYPES = frozenset({"object", "array", "string", "integer", "number", "boolean", "null"})
 _SUPPORTED_KEYWORDS = frozenset(
     {
         "type",
@@ -148,8 +146,7 @@ def _json_equal(left: Any, right: Any) -> bool:
         return False
     if isinstance(left, Mapping):
         return len(left) == len(right) and all(
-            key in right and _json_equal(value, right[key])
-            for key, value in left.items()
+            key in right and _json_equal(value, right[key]) for key, value in left.items()
         )
     if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
         return len(left) == len(right) and all(
@@ -169,9 +166,7 @@ def _matches_type(value: Any, expected: str) -> bool:
         return isinstance(value, int) and not isinstance(value, bool)
     if expected == "number":
         return (
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and math.isfinite(value)
+            isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
         )
     if expected == "boolean":
         return isinstance(value, bool)
@@ -185,9 +180,7 @@ def _validate_schema_node(schema: Any, path: str) -> None:
         raise SchemaDefinitionError(f"{path}: schema must be an object")
     unknown = set(schema) - _SUPPORTED_KEYWORDS
     if unknown:
-        raise SchemaDefinitionError(
-            f"{path}: unsupported keyword(s): {', '.join(sorted(unknown))}"
-        )
+        raise SchemaDefinitionError(f"{path}: unsupported keyword(s): {', '.join(sorted(unknown))}")
     expected_type = schema.get("type")
     if expected_type not in _SUPPORTED_TYPES:
         raise SchemaDefinitionError(f"{path}.type: one supported type is required")
@@ -219,9 +212,7 @@ def _validate_schema_node(schema: Any, path: str) -> None:
             or len(set(required)) != len(required)
             or not set(required) <= set(properties)
         ):
-            raise SchemaDefinitionError(
-                f"{path}.required: unique property names are required"
-            )
+            raise SchemaDefinitionError(f"{path}.required: unique property names are required")
         for name, child in properties.items():
             if normalize_field_name(name) in _RESERVED_FIELDS:
                 raise SchemaDefinitionError(f"{path}.properties.{name}: reserved field")
@@ -250,19 +241,13 @@ def _validate_schema_node(schema: Any, path: str) -> None:
                 or not math.isfinite(schema[keyword])
             ):
                 raise SchemaDefinitionError(f"{path}.{keyword}: finite number required")
-        if (
-            "minimum" in schema
-            and "maximum" in schema
-            and schema["minimum"] > schema["maximum"]
-        ):
+        if "minimum" in schema and "maximum" in schema and schema["minimum"] > schema["maximum"]:
             raise SchemaDefinitionError(f"{path}: minimum exceeds maximum")
     elif "minimum" in schema or "maximum" in schema:
         raise SchemaDefinitionError(f"{path}: numeric bounds require number type")
 
 
-def _validate_bounds(
-    schema: Mapping[str, Any], path: str, minimum: str, maximum: str
-) -> None:
+def _validate_bounds(schema: Mapping[str, Any], path: str, minimum: str, maximum: str) -> None:
     for keyword in (minimum, maximum):
         if keyword in schema and (
             isinstance(schema[keyword], bool)

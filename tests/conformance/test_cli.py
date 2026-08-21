@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
-from pathlib import Path
+import json
 import textwrap
+from pathlib import Path
 
 import pytest
+from test_suite_runner import GOOD_VALUES
 
 from simple_harness.testing.cli import (
     load_host_factory,
@@ -18,8 +19,6 @@ from simple_harness.testing.cli import (
     run_conformance_cli,
     validate_suites,
 )
-from test_suite_runner import GOOD_VALUES
-
 
 ARTIFACT_SHA = "b" * 64
 
@@ -101,7 +100,9 @@ def test_run_conformance_cli_missing_suite(capsys):
 
 def test_run_conformance_cli_invalid_host_spec(capsys):
     """Test CLI with invalid host spec format."""
-    exit_code = run_conformance_cli(["--host", "invalid_spec", "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA])
+    exit_code = run_conformance_cli(
+        ["--host", "invalid_spec", "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA]
+    )
     assert exit_code == 2
     captured = capsys.readouterr()
     assert "Error" in captured.err
@@ -109,7 +110,9 @@ def test_run_conformance_cli_invalid_host_spec(capsys):
 
 def test_run_conformance_cli_invalid_suite(capsys):
     """Test CLI with invalid suite name."""
-    exit_code = run_conformance_cli(["--host", "json:dumps", "--suite", "invalid", "--artifact-sha256", ARTIFACT_SHA])
+    exit_code = run_conformance_cli(
+        ["--host", "json:dumps", "--suite", "invalid", "--artifact-sha256", ARTIFACT_SHA]
+    )
     assert exit_code == 2
     captured = capsys.readouterr()
     assert "Invalid suite names" in captured.err
@@ -118,7 +121,14 @@ def test_run_conformance_cli_invalid_suite(capsys):
 def test_run_conformance_cli_nonexistent_module(capsys):
     """Test CLI with non-existent module."""
     exit_code = run_conformance_cli(
-        ["--host", "nonexistent_xyz:factory", "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA]
+        [
+            "--host",
+            "nonexistent_xyz:factory",
+            "--suite",
+            "provider",
+            "--artifact-sha256",
+            ARTIFACT_SHA,
+        ]
     )
     assert exit_code == 2
     captured = capsys.readouterr()
@@ -126,9 +136,7 @@ def test_run_conformance_cli_nonexistent_module(capsys):
 
 
 def _write_host_module(tmp_path: Path, *, status: str = "pass") -> str:
-    module_name = "consumer_host_" + hashlib.sha256(
-        str(tmp_path).encode("utf-8")
-    ).hexdigest()[:12]
+    module_name = "consumer_host_" + hashlib.sha256(str(tmp_path).encode("utf-8")).hexdigest()[:12]
     module = tmp_path / f"{module_name}.py"
     module.write_text(
         textwrap.dedent(
@@ -191,7 +199,7 @@ def _write_host_module(tmp_path: Path, *, status: str = "pass") -> str:
 
             def build_host():
                 return Host()
-            """
+            """  # noqa: E501
         ),
         encoding="utf-8",
     )
@@ -202,7 +210,9 @@ def test_run_conformance_cli_success_without_json(capsys, tmp_path, monkeypatch)
     """CLI executes the shared provider runner."""
     monkeypatch.syspath_prepend(str(tmp_path))
     host = _write_host_module(tmp_path)
-    exit_code = run_conformance_cli(["--host", host, "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA])
+    exit_code = run_conformance_cli(
+        ["--host", host, "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA]
+    )
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "Simple Harness SDK Conformance Testing" in captured.out
@@ -217,7 +227,16 @@ def test_run_conformance_cli_success_with_json(capsys, tmp_path, monkeypatch):
     host = _write_host_module(tmp_path)
     json_file = tmp_path / "report.json"
     exit_code = run_conformance_cli(
-        ["--host", host, "--suite", "provider,tool", "--json", str(json_file), "--artifact-sha256", ARTIFACT_SHA]
+        [
+            "--host",
+            host,
+            "--suite",
+            "provider,tool",
+            "--json",
+            str(json_file),
+            "--artifact-sha256",
+            ARTIFACT_SHA,
+        ]
     )
     assert exit_code == 0
     captured = capsys.readouterr()
@@ -238,7 +257,14 @@ def test_run_conformance_cli_multiple_suites(capsys, tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
     host = _write_host_module(tmp_path)
     exit_code = run_conformance_cli(
-        ["--host", host, "--suite", "provider,tool,runtime,workflow", "--artifact-sha256", ARTIFACT_SHA]
+        [
+            "--host",
+            host,
+            "--suite",
+            "provider,tool,runtime,workflow",
+            "--artifact-sha256",
+            ARTIFACT_SHA,
+        ]
     )
     assert exit_code == 0
     captured = capsys.readouterr()
@@ -246,13 +272,16 @@ def test_run_conformance_cli_multiple_suites(capsys, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("status", ["skip", "fail", "error"])
-def test_run_conformance_cli_required_non_pass_is_nonzero(
-    status, capsys, tmp_path, monkeypatch
-):
+def test_run_conformance_cli_required_non_pass_is_nonzero(status, capsys, tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
     host = _write_host_module(tmp_path, status=status)
 
-    assert run_conformance_cli(["--host", host, "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA]) == 1
+    assert (
+        run_conformance_cli(
+            ["--host", host, "--suite", "provider", "--artifact-sha256", ARTIFACT_SHA]
+        )
+        == 1
+    )
     assert "FAIL" in capsys.readouterr().out
 
 

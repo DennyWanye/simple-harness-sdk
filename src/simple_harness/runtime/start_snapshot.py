@@ -67,9 +67,7 @@ class RunStart:
             raise ValueError("tool_catalog_generation must be a positive integer")
         for name in ("tool_catalog_fingerprint", "provider_budget_fingerprint"):
             value = getattr(self, name)
-            if value is not None and (
-                not isinstance(value, str) or len(value) != 64
-            ):
+            if value is not None and (not isinstance(value, str) or len(value) != 64):
                 raise ValueError(f"{name} must be a SHA-256 digest or None")
         if self.conversation is not None:
             if not isinstance(self.conversation, ConversationTurnInput):
@@ -101,9 +99,7 @@ class RunStart:
             frozen_context = freeze_json(dict(self.prepared_context))
             assert isinstance(frozen_context, Mapping)
             expected_hash = hashlib.sha256(
-                canonical_json(
-                    thaw_json(cast(FrozenJsonValue, frozen_context))
-                ).encode("utf-8")
+                canonical_json(thaw_json(cast(FrozenJsonValue, frozen_context))).encode("utf-8")
             ).hexdigest()
             if self.context_stage_hash != expected_hash:
                 raise ValueError("prepared context differs from context stage hash")
@@ -136,15 +132,12 @@ class StartSnapshot:
         if not isinstance(self.turn_id, str) or not self.turn_id.strip():
             raise ValueError("start snapshot turn_id is required")
         if self.policy_fingerprint is not None and (
-            not isinstance(self.policy_fingerprint, str)
-            or not self.policy_fingerprint.strip()
+            not isinstance(self.policy_fingerprint, str) or not self.policy_fingerprint.strip()
         ):
             raise ValueError("policy_fingerprint must be a non-empty string or None")
         for name in ("tool_catalog_fingerprint", "provider_budget_fingerprint"):
             value = getattr(self, name)
-            if value is not None and (
-                not isinstance(value, str) or len(value) != 64
-            ):
+            if value is not None and (not isinstance(value, str) or len(value) != 64):
                 raise ValueError(f"{name} must be a SHA-256 digest or None")
         if self.conversation is not None and not isinstance(
             self.conversation, ConversationTurnInput
@@ -173,9 +166,7 @@ class StartSnapshot:
             raise ValueError("durable context stage requires preparation mode")
         if self.prepared_context is not None:
             context = thaw_json(self.prepared_context)
-            expected_hash = hashlib.sha256(
-                canonical_json(context).encode("utf-8")
-            ).hexdigest()
+            expected_hash = hashlib.sha256(canonical_json(context).encode("utf-8")).hexdigest()
             if self.context_stage_hash != expected_hash:
                 raise ValueError("snapshot prepared context hash differs")
 
@@ -193,9 +184,7 @@ class StartSnapshot:
             "policy_fingerprint": self.policy_fingerprint,
             "tool_catalog_fingerprint": self.tool_catalog_fingerprint,
             "provider_budget_fingerprint": self.provider_budget_fingerprint,
-            "conversation": (
-                None if self.conversation is None else self.conversation.to_json()
-            ),
+            "conversation": (None if self.conversation is None else self.conversation.to_json()),
             "context_preparation_mode": (
                 None
                 if self.context_preparation_mode is None
@@ -204,9 +193,7 @@ class StartSnapshot:
             "context_stage_id": self.context_stage_id,
             "context_stage_hash": self.context_stage_hash,
             "prepared_context": (
-                None
-                if self.prepared_context is None
-                else thaw_json(self.prepared_context)
+                None if self.prepared_context is None else thaw_json(self.prepared_context)
             ),
             "workflow_admission": (
                 None
@@ -229,31 +216,21 @@ class StartSnapshot:
         driver_kind = value.get("driver_kind")
         generation = value.get("tool_catalog_generation")
         turn_id = value.get("turn_id")
-        start_input = (
-            value.get("start_input")
-            if legacy_workflow_snapshot
-            else value.get("input")
-        )
+        start_input = value.get("start_input") if legacy_workflow_snapshot else value.get("input")
         if not isinstance(profile_key, str) or not profile_key.strip():
             raise ValueError("start snapshot profile_key is required")
         if not isinstance(driver_kind, str) or not driver_kind.strip():
             raise ValueError("start snapshot driver_kind is required")
         if not isinstance(turn_id, str) or not turn_id.strip():
             raise ValueError("start snapshot turn_id is required")
-        if (
-            isinstance(generation, bool)
-            or not isinstance(generation, int)
-            or generation < 1
-        ):
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
             raise ValueError("start snapshot tool catalog generation is invalid")
         if not isinstance(start_input, dict):
             raise TypeError("start snapshot input must be a JSON object")
         workflow_admission_value = value.get("workflow_admission")
         if legacy_workflow_snapshot:
             workflow_admission_value = dict(value)
-        if workflow_admission_value is not None and not isinstance(
-            workflow_admission_value, dict
-        ):
+        if workflow_admission_value is not None and not isinstance(workflow_admission_value, dict):
             raise TypeError("workflow_admission must be a JSON object or null")
         admission = (
             None
@@ -263,14 +240,10 @@ class StartSnapshot:
         conversation_value = value.get("conversation") if schema_version == 5 else None
         if conversation_value is not None and not isinstance(conversation_value, dict):
             raise TypeError("conversation must be an object or null")
-        mode_value = (
-            value.get("context_preparation_mode") if schema_version == 5 else None
-        )
+        mode_value = value.get("context_preparation_mode") if schema_version == 5 else None
         if mode_value is not None and not isinstance(mode_value, str):
             raise TypeError("context_preparation_mode must be a string or null")
-        prepared_value = (
-            value.get("prepared_context") if schema_version == 5 else None
-        )
+        prepared_value = value.get("prepared_context") if schema_version == 5 else None
         if prepared_value is not None and not isinstance(prepared_value, dict):
             raise TypeError("prepared_context must be an object or null")
         return cls(
@@ -307,9 +280,7 @@ class StartSnapshot:
                 else None
             ),
             context_preparation_mode=(
-                ContextPreparationMode(mode_value)
-                if isinstance(mode_value, str)
-                else None
+                ContextPreparationMode(mode_value) if isinstance(mode_value, str) else None
             ),
             context_stage_id=(
                 _optional_string(value.get("context_stage_id"), "context_stage_id")
@@ -317,16 +288,12 @@ class StartSnapshot:
                 else None
             ),
             context_stage_hash=(
-                _optional_string(
-                    value.get("context_stage_hash"), "context_stage_hash"
-                )
+                _optional_string(value.get("context_stage_hash"), "context_stage_hash")
                 if schema_version == 5
                 else None
             ),
             prepared_context=(
-                freeze_json(prepared_value)
-                if isinstance(prepared_value, dict)
-                else None
+                freeze_json(prepared_value) if isinstance(prepared_value, dict) else None
             ),
         )
 
@@ -359,9 +326,7 @@ def bind_start_snapshot(
         prepared_context=(
             None
             if start.prepared_context is None
-            else freeze_json(
-                thaw_json(cast(FrozenJsonValue, start.prepared_context))
-            )
+            else freeze_json(thaw_json(cast(FrozenJsonValue, start.prepared_context)))
         ),
     )
 

@@ -51,9 +51,7 @@ class ChildLaunchRequest:
             raise TypeError("child entry requires ProfileLaunchTicketRef")
         for name in ("command_id", "child_run_id", "request_id"):
             object.__setattr__(self, name, _required(getattr(self, name), name))
-        object.__setattr__(
-            self, "attachment_policy", AttachmentPolicy(self.attachment_policy)
-        )
+        object.__setattr__(self, "attachment_policy", AttachmentPolicy(self.attachment_policy))
         for name in ("launch_payload", "start_snapshot"):
             value = getattr(self, name)
             if not isinstance(value, dict):

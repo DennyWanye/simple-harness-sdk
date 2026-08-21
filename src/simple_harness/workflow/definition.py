@@ -131,9 +131,7 @@ class Edge:
         if not sources or any(not source for source in sources):
             raise WorkflowDefinitionError("invalid_edge", "Edge source is required")
         if len(set(sources)) != len(sources):
-            raise WorkflowDefinitionError(
-                "invalid_join_edge", "Join edge sources must be unique"
-            )
+            raise WorkflowDefinitionError("invalid_join_edge", "Join edge sources must be unique")
         if not self.target:
             raise WorkflowDefinitionError("invalid_edge", "Edge target is required")
         object.__setattr__(self, "source", sources)
@@ -314,9 +312,7 @@ def compile_workflow_registration(
     if registration.transaction_owner is not transaction_owner:
         raise ValueError("workflow registration transaction owner mismatch")
     if dependency_lock_path is not None and dependency_lock_hash is not None:
-        raise ValueError(
-            "dependency_lock_path and dependency_lock_hash are mutually exclusive"
-        )
+        raise ValueError("dependency_lock_path and dependency_lock_hash are mutually exclusive")
     requested_hash = (
         registration.dependency_lock_hash
         if dependency_lock_path is None and dependency_lock_hash is None
@@ -332,10 +328,7 @@ def compile_workflow_registration(
         raise ValueError("workflow dependency lock hash mismatch")
     if workflow_manifest_hash(manifest) != registration.expected_manifest_hash:
         raise ValueError("workflow manifest hash mismatch")
-    if (
-        manifest.implementation_bundle_hash
-        != registration.expected_implementation_fingerprint
-    ):
+    if manifest.implementation_bundle_hash != registration.expected_implementation_fingerprint:
         raise ValueError("workflow implementation fingerprint mismatch")
     return compiled
 
@@ -362,25 +355,31 @@ def _callable_record(function: object) -> dict[str, JsonValue]:
 
 
 def _channel_payload(channels: Mapping[str, ChannelSpec]) -> dict[str, JsonValue]:
-    return cast(dict[str, JsonValue], {
-        name: {
-            "value_type": str(spec.value_type),
-            "reducer": str(spec.reducer),
-            "allowed_writers": sorted(spec.allowed_writers),
-            "item_id_key": spec.item_id_key,
-        }
-        for name, spec in sorted(channels.items())
-    })
+    return cast(
+        dict[str, JsonValue],
+        {
+            name: {
+                "value_type": str(spec.value_type),
+                "reducer": str(spec.reducer),
+                "allowed_writers": sorted(spec.allowed_writers),
+                "item_id_key": spec.item_id_key,
+            }
+            for name, spec in sorted(channels.items())
+        },
+    )
 
 
 def _retry_payload(policy: RetryPolicy) -> dict[str, JsonValue]:
-    return cast(dict[str, JsonValue], {
-        "max_attempts": policy.max_attempts,
-        "initial_delay_seconds": policy.initial_delay_seconds,
-        "backoff_multiplier": policy.backoff_multiplier,
-        "max_delay_seconds": policy.max_delay_seconds,
-        "retryable_codes": sorted(policy.retryable_codes),
-    })
+    return cast(
+        dict[str, JsonValue],
+        {
+            "max_attempts": policy.max_attempts,
+            "initial_delay_seconds": policy.initial_delay_seconds,
+            "backoff_multiplier": policy.backoff_multiplier,
+            "max_delay_seconds": policy.max_delay_seconds,
+            "retryable_codes": sorted(policy.retryable_codes),
+        },
+    )
 
 
 def _tool_payload(tool: ToolInventoryEntry) -> dict[str, JsonValue]:
@@ -486,9 +485,7 @@ def _cycle_bindings(
             budget_name = next(iter(definition.loop_budgets))
             order = {node_id: index for index, node_id in enumerate(sorted(component))}
             selected = {
-                edge: budget_name
-                for edge in internal_edges
-                if order[edge[1]] <= order[edge[0]]
+                edge: budget_name for edge in internal_edges if order[edge[1]] <= order[edge[0]]
             }
         if not selected:
             raise WorkflowDefinitionError(
@@ -549,8 +546,10 @@ def _validate_definition(definition: WorkflowDefinition) -> dict[str, NodeDefini
             "unsafe_recursion_limit",
             "recursion_limit must exceed the hard maximum supersteps",
         )
-    if any(not name or not isinstance(value, int) or isinstance(value, bool) or value < 1
-           for name, value in definition.loop_budgets.items()):
+    if any(
+        not name or not isinstance(value, int) or isinstance(value, bool) or value < 1
+        for name, value in definition.loop_budgets.items()
+    ):
         raise WorkflowDefinitionError(
             "invalid_loop_budget", "Loop budgets must be named positive integers"
         )
@@ -565,9 +564,7 @@ def _validate_definition(definition: WorkflowDefinition) -> dict[str, NodeDefini
     node_ids = [node.node_id for node in definition.nodes]
     duplicates = sorted({node_id for node_id in node_ids if node_ids.count(node_id) > 1})
     if duplicates:
-        raise WorkflowDefinitionError(
-            "duplicate_node", f"Duplicate nodes: {', '.join(duplicates)}"
-        )
+        raise WorkflowDefinitionError("duplicate_node", f"Duplicate nodes: {', '.join(duplicates)}")
     nodes = {node.node_id: node for node in definition.nodes}
     if not definition.entry_node:
         raise WorkflowDefinitionError("missing_entry", "Workflow entry node is required")
@@ -617,9 +614,7 @@ def _validate_definition(definition: WorkflowDefinition) -> dict[str, NodeDefini
         edge_keys.add(key)
         unknown_sources = sorted(set(edge.sources) - nodes.keys())
         if unknown_sources or (edge.target != END_NODE and edge.target not in nodes):
-            raise WorkflowDefinitionError(
-                "invalid_edge", f"Edge references missing node: {edge!r}"
-            )
+            raise WorkflowDefinitionError("invalid_edge", f"Edge references missing node: {edge!r}")
         for source in edge.sources:
             normal_sources.add(source)
             outgoing_targets[source].add(edge.target)
@@ -643,7 +638,11 @@ def _validate_definition(definition: WorkflowDefinition) -> dict[str, NodeDefini
                 f"Node {edge.source} mixes normal and conditional edges",
             )
         missing_targets = sorted(
-            {target for target in edge.routes.values() if target != END_NODE and target not in nodes}
+            {
+                target
+                for target in edge.routes.values()
+                if target != END_NODE and target not in nodes
+            }
         )
         if missing_targets:
             raise WorkflowDefinitionError(
@@ -812,9 +811,7 @@ class CompiledWorkflow:
     def is_cycle_edge(self, source: str, target: str) -> bool:
         return (source, target) in self._cycle_binding_by_edge
 
-    def validate_loop_budget(
-        self, source: str, target: str, state: Mapping[str, object]
-    ) -> None:
+    def validate_loop_budget(self, source: str, target: str, state: Mapping[str, object]) -> None:
         if not self.is_cycle_edge(source, target):
             return
         budget_name = self._cycle_binding_by_edge[(source, target)]
@@ -911,7 +908,9 @@ class CompiledWorkflow:
                                 f"Channel {channel} item id must be string or integer",
                             )
                         stable_id = canonical_json(item_id)
-                        if stable_id in items and canonical_json(items[stable_id]) != canonical_json(item):
+                        if stable_id in items and canonical_json(
+                            items[stable_id]
+                        ) != canonical_json(item):
                             raise StateMergeConflict(
                                 "stable_item_conflict",
                                 f"Channel {channel} has conflicting item id {item_id!r}",
@@ -992,9 +991,7 @@ class CompiledWorkflow:
             )
             result = await node.handler(
                 state,
-                context.for_node(
-                    identity, pure_before_interrupt=node.interrupt_capable
-                ),
+                context.for_node(identity, pure_before_interrupt=node.interrupt_capable),
             )
             if not isinstance(result, StatePatch):
                 raise InvalidStatePatch(
@@ -1042,9 +1039,8 @@ class CompiledWorkflow:
                 state=cast(Mapping[str, JsonValue], state),
             )
             logical_timestamp = state.get("logical_timestamp", 0.0)
-            if (
-                isinstance(logical_timestamp, bool)
-                or not isinstance(logical_timestamp, (int, float))
+            if isinstance(logical_timestamp, bool) or not isinstance(
+                logical_timestamp, (int, float)
             ):
                 raise InvalidStatePatch(
                     "invalid_logical_timestamp",
@@ -1060,9 +1056,7 @@ class CompiledWorkflow:
                 state=cast(Mapping[str, JsonValue], state),
                 logical_timestamp=float(logical_timestamp),
             )
-            frozen_state = freeze_json(
-                cast(JsonValue, copy.deepcopy(dict(state)))
-            )
+            frozen_state = freeze_json(cast(JsonValue, copy.deepcopy(dict(state))))
             assert isinstance(frozen_state, Mapping)
             route = edge.selector(cast(WorkflowState, frozen_state), route_context)
             if inspect.isawaitable(route):
@@ -1289,9 +1283,7 @@ def compile_workflow(
     dependency_lock_hash: str | None = None,
 ) -> CompiledWorkflow:
     if dependency_lock_path is not None and dependency_lock_hash is not None:
-        raise ValueError(
-            "dependency_lock_path and dependency_lock_hash are mutually exclusive"
-        )
+        raise ValueError("dependency_lock_path and dependency_lock_hash are mutually exclusive")
     nodes = _validate_definition(definition)
     callable_records = [
         {"kind": "node", "node_id": node.node_id, **_callable_record(node.handler)}
@@ -1320,8 +1312,7 @@ def compile_workflow(
             for node in definition.nodes
         ],
         "edges": [
-            {"sources": list(edge.sources), "target": edge.target}
-            for edge in definition.edges
+            {"sources": list(edge.sources), "target": edge.target} for edge in definition.edges
         ],
         "conditional_edges": [
             {
@@ -1341,7 +1332,9 @@ def compile_workflow(
         "schema_version": definition.state_schema_version,
         "channels": _channel_payload(definition.channels),
     }
-    tool_payload = [_tool_payload(tool) for tool in sorted(definition.tool_manifest, key=lambda x: x.name)]
+    tool_payload = [
+        _tool_payload(tool) for tool in sorted(definition.tool_manifest, key=lambda x: x.name)
+    ]
     policy_payload: dict[str, JsonValue] = {
         "custom": dict(definition.policy_manifest),
         "durability": DurabilityMode.SYNC.value,
@@ -1393,9 +1386,7 @@ def compile_workflow(
         # historical line-ending variants.
         line_ending = (
             "crlf"
-            if dependency_lock_path is not None
-            and lock_bytes is not None
-            and b"\r\n" in lock_bytes
+            if dependency_lock_path is not None and lock_bytes is not None and b"\r\n" in lock_bytes
             else "lf"
         )
         lock_hash = historical_dependency_lock_hashes[line_ending]

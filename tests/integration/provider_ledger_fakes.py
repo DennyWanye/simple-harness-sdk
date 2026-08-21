@@ -71,8 +71,7 @@ class FakeProviderInvocationUnitOfWork:
         return tuple(
             record
             for record in self.records.values()
-            if record.state
-            in {ProviderInvocationState.CLAIMED, ProviderInvocationState.HANDED_OFF}
+            if record.state in {ProviderInvocationState.CLAIMED, ProviderInvocationState.HANDED_OFF}
         )
 
     def read_provider_budget(self, run_id: RunId) -> BudgetSnapshot:

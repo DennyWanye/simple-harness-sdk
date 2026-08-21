@@ -75,9 +75,7 @@ def _distribution_identity(
         try:
             direct_url_value = json.loads(direct_url)
         except json.JSONDecodeError:
-            raise Arm64CandidateGateError(
-                "arm64-candidate-install-provenance-invalid"
-            ) from None
+            raise Arm64CandidateGateError("arm64-candidate-install-provenance-invalid") from None
         _require(
             not bool(direct_url_value.get("dir_info", {}).get("editable")),
             "arm64-candidate-wheel-required",
@@ -134,12 +132,8 @@ def _probe_memory_sqlite(path: Path) -> dict[str, object]:
     try:
         connection.execute("PRAGMA foreign_keys = ON")
         foreign_keys = int(connection.execute("PRAGMA foreign_keys").fetchone()[0])
-        journal_mode = str(
-            connection.execute("PRAGMA journal_mode").fetchone()[0]
-        ).lower()
-        integrity = str(
-            connection.execute("PRAGMA integrity_check").fetchone()[0]
-        )
+        journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
         violations = tuple(connection.execute("PRAGMA foreign_key_check").fetchall())
         schema_version_row = connection.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
@@ -242,8 +236,7 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
         if released is None:
             raise Arm64CandidateGateError("arm64-memory-outbox-record-missing")
         _require(
-            released.state is MemoryOutboxState.PENDING
-            and released.attempt_count == 1,
+            released.state is MemoryOutboxState.PENDING and released.attempt_count == 1,
             "arm64-memory-outbox-restart-state-invalid",
         )
     finally:
@@ -293,8 +286,7 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
         if settled is None:
             raise Arm64CandidateGateError("arm64-memory-outbox-record-missing")
         _require(
-            settled.state is MemoryOutboxState.APPLIED
-            and settled.attempt_count == 2,
+            settled.state is MemoryOutboxState.APPLIED and settled.attempt_count == 2,
             "arm64-memory-outbox-replay-failed",
         )
         outbox = {

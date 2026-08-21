@@ -74,9 +74,7 @@ def test_native_task_and_snapshot_are_detached_and_canonical() -> None:
         lambda: NativeTask("task", "node", "invoke", "activation", retry_attempt=0),
         lambda: NativeExecutionPolicy(0),
         lambda: NativeExecutionPolicy(True),
-        lambda: NativeSnapshotEnvelope(
-            "thread", "", "checkpoint", None, "run", 0, 0, {}, ()
-        ),
+        lambda: NativeSnapshotEnvelope("thread", "", "checkpoint", None, "run", 0, 0, {}, ()),
     ),
 )
 def test_native_contracts_reject_invalid_identity_or_bounds(build) -> None:
@@ -86,8 +84,15 @@ def test_native_contracts_reject_invalid_identity_or_bounds(build) -> None:
 
 def test_node_outcome_validates_patch_and_identity() -> None:
     identity = NodeExecutionIdentity(
-        "workflow", "v1", "thread-1", "run-1", "checkpoint-1", "", "task-1",
-        "node-1", 1,
+        "workflow",
+        "v1",
+        "thread-1",
+        "run-1",
+        "checkpoint-1",
+        "",
+        "task-1",
+        "node-1",
+        1,
     )
     outcome = NodeTaskOutcome(_task(), StatePatch({"value": 1}), (), None, identity)
     assert outcome.patch == StatePatch({"value": 1})
@@ -160,9 +165,7 @@ def test_in_memory_store_is_protocol_and_replays_exact_writes() -> None:
 def test_in_memory_store_rejects_stale_head_and_identity_drift() -> None:
     async def case() -> None:
         store = InMemoryNativeCheckpointStore()
-        await store.ensure_genesis(
-            operation_id="genesis", snapshot=_snapshot(), configurable={}
-        )
+        await store.ensure_genesis(operation_id="genesis", snapshot=_snapshot(), configurable={})
         with pytest.raises(InvalidStatePatch, match="head"):
             await store.commit_task_result(
                 operation_id="task-write",
@@ -175,9 +178,7 @@ def test_in_memory_store_rejects_stale_head_and_identity_drift() -> None:
                 configurable={},
             )
         with pytest.raises(InvalidStatePatch, match="identity"):
-            await store.load_execution(
-                run_id="other", thread_id="thread-1", checkpoint_ns=""
-            )
+            await store.load_execution(run_id="other", thread_id="thread-1", checkpoint_ns="")
 
     asyncio.run(case())
 
@@ -185,9 +186,7 @@ def test_in_memory_store_rejects_stale_head_and_identity_drift() -> None:
 def test_in_memory_store_rejects_non_idempotent_pending_write() -> None:
     async def case() -> None:
         store = InMemoryNativeCheckpointStore()
-        await store.ensure_genesis(
-            operation_id="genesis", snapshot=_snapshot(), configurable={}
-        )
+        await store.ensure_genesis(operation_id="genesis", snapshot=_snapshot(), configurable={})
         common = {
             "operation_id": "task-write",
             "expected_head": "checkpoint-1",
@@ -207,9 +206,7 @@ def test_in_memory_store_rejects_non_idempotent_pending_write() -> None:
 def test_in_memory_route_retry_interrupt_and_failure_contracts() -> None:
     async def case() -> None:
         store = InMemoryNativeCheckpointStore()
-        await store.ensure_genesis(
-            operation_id="genesis", snapshot=_snapshot(), configurable={}
-        )
+        await store.ensure_genesis(operation_id="genesis", snapshot=_snapshot(), configurable={})
         selected = await store.commit_route_selection(
             operation_id="route",
             expected_head="checkpoint-1",

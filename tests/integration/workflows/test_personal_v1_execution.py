@@ -13,16 +13,12 @@ Validates:
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from simple_harness.contracts import JsonValue
-from simple_harness.workflow.contracts import StatePatch, WorkflowContext, WorkflowState
+from simple_harness.workflow.contracts import WorkflowContext
 from simple_harness.workflows.personal_v1.definition import (
-    WORKFLOW_NAME,
-    WORKFLOW_VERSION,
     _execute_handler,
     create_initial_state,
 )

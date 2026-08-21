@@ -102,14 +102,12 @@ def _clone_definition(definition: WorkflowDefinition) -> WorkflowDefinition:
     return replace(
         definition,
         nodes=tuple(
-            replace(node, retry_policy=replace(node.retry_policy))
-            for node in definition.nodes
+            replace(node, retry_policy=replace(node.retry_policy)) for node in definition.nodes
         ),
         channels={name: replace(spec) for name, spec in definition.channels.items()},
         edges=tuple(replace(edge) for edge in definition.edges),
         conditional_edges=tuple(
-            replace(edge, routes=dict(edge.routes))
-            for edge in definition.conditional_edges
+            replace(edge, routes=dict(edge.routes)) for edge in definition.conditional_edges
         ),
         loop_budgets=dict(definition.loop_budgets),
         loop_budget_bindings=dict(definition.loop_budget_bindings),
@@ -117,18 +115,12 @@ def _clone_definition(definition: WorkflowDefinition) -> WorkflowDefinition:
         tool_manifest=tuple(
             replace(
                 tool,
-                effect_policy=(
-                    None
-                    if tool.effect_policy is None
-                    else replace(tool.effect_policy)
-                ),
+                effect_policy=(None if tool.effect_policy is None else replace(tool.effect_policy)),
             )
             for tool in definition.tool_manifest
         ),
         policy_manifest=copy.deepcopy(dict(definition.policy_manifest)),
-        terminal_projection_descriptor=(
-            None if terminal is None else replace(terminal)
-        ),
+        terminal_projection_descriptor=(None if terminal is None else replace(terminal)),
     )
 
 
@@ -137,8 +129,7 @@ def _sealed_compiled_workflow(workflow: CompiledWorkflow) -> CompiledWorkflow:
         definition_nodes = {node.node_id: node for node in workflow.definition.nodes}
         current_nodes = workflow._nodes
         if tuple(sorted(current_nodes)) != tuple(sorted(definition_nodes)) or any(
-            current_nodes[node_id] != node
-            for node_id, node in definition_nodes.items()
+            current_nodes[node_id] != node for node_id, node in definition_nodes.items()
         ):
             raise ValueError("compiled node map differs from definition")
         sealed = compile_workflow(
@@ -149,9 +140,7 @@ def _sealed_compiled_workflow(workflow: CompiledWorkflow) -> CompiledWorkflow:
             raise ValueError("compiled manifest differs from definition")
         return sealed
     except Exception as exc:
-        raise WorkflowDependencyUnavailable(
-            "workflow executable integrity check failed"
-        ) from exc
+        raise WorkflowDependencyUnavailable("workflow executable integrity check failed") from exc
 
 
 def _catalog_binding_json(
@@ -176,13 +165,9 @@ def _catalog_binding_json(
         "state_schema_version": binding.state_schema_version,
         "start_input_schema": binding.start_input_schema.to_json(),
         "terminal_projection_descriptor": (
-            None
-            if terminal is None
-            else thaw_json(cast(FrozenJsonValue, terminal))
+            None if terminal is None else thaw_json(cast(FrozenJsonValue, terminal))
         ),
-        "terminal_request_factory_hash": cast(
-            str | None, binding.terminal_request_factory_hash
-        ),
+        "terminal_request_factory_hash": cast(str | None, binding.terminal_request_factory_hash),
         "capability_snapshot": capability,
     }
 
@@ -207,16 +192,10 @@ def _verified_ticket_binding_json(
         "terminal_projection_descriptor": (
             None
             if ticket.terminal_projection_descriptor is None
-            else thaw_json(
-                cast(FrozenJsonValue, ticket.terminal_projection_descriptor)
-            )
+            else thaw_json(cast(FrozenJsonValue, ticket.terminal_projection_descriptor))
         ),
-        "terminal_request_factory_hash": cast(
-            str | None, ticket.terminal_request_factory_hash
-        ),
-        "capability_snapshot": thaw_json(
-            cast(FrozenJsonValue, ticket.capability_snapshot)
-        ),
+        "terminal_request_factory_hash": cast(str | None, ticket.terminal_request_factory_hash),
+        "capability_snapshot": thaw_json(cast(FrozenJsonValue, ticket.capability_snapshot)),
     }
 
 
@@ -310,9 +289,7 @@ class WorkflowRegistry:
         self, registration: WorkflowDefinitionRegistration
     ) -> RegisteredWorkflow:
         if not isinstance(registration, WorkflowDefinitionRegistration):
-            raise TypeError(
-                "registration must be a WorkflowDefinitionRegistration"
-            )
+            raise TypeError("registration must be a WorkflowDefinitionRegistration")
         owner = self._transaction_owner
         if owner is None:
             raise ValueError("workflow registry transaction owner is not bound")
@@ -321,15 +298,9 @@ class WorkflowRegistry:
             existing_registration = self._profile_registrations.get(key)
             if existing_registration is not None:
                 if existing_registration != registration:
-                    raise ValueError(
-                        "profile key already registered with different fingerprint"
-                    )
-                return self.require(
-                    registration.definition.name, registration.definition.version
-                )
-            compiled = compile_workflow_registration(
-                registration, transaction_owner=owner
-            )
+                    raise ValueError("profile key already registered with different fingerprint")
+                return self.require(registration.definition.name, registration.definition.version)
+            compiled = compile_workflow_registration(registration, transaction_owner=owner)
             entry = self.register(compiled)
             self._profile_registrations[key] = registration
             self._revision += 1
@@ -338,19 +309,14 @@ class WorkflowRegistry:
     def profile_registrations(self) -> tuple[WorkflowDefinitionRegistration, ...]:
         with self._lock:
             return tuple(
-                self._profile_registrations[key]
-                for key in sorted(self._profile_registrations)
+                self._profile_registrations[key] for key in sorted(self._profile_registrations)
             )
 
-    def profile_registration(
-        self, profile_key: str
-    ) -> WorkflowDefinitionRegistration | None:
+    def profile_registration(self, profile_key: str) -> WorkflowDefinitionRegistration | None:
         with self._lock:
             return self._profile_registrations.get(profile_key)
 
-    def register(
-        self, workflow: CompiledWorkflow, *, replace: bool = False
-    ) -> RegisteredWorkflow:
+    def register(self, workflow: CompiledWorkflow, *, replace: bool = False) -> RegisteredWorkflow:
         if not isinstance(workflow, CompiledWorkflow):
             raise TypeError("a registered workflow must be a CompiledWorkflow")
         manifest = workflow.manifest
@@ -361,9 +327,7 @@ class WorkflowRegistry:
             existing = self._entries.get(key)
             if existing is not None and not replace:
                 if manifest_hash(existing.manifest) != manifest_hash(manifest):
-                    raise ValueError(
-                        "workflow version already registered with different manifest"
-                    )
+                    raise ValueError("workflow version already registered with different manifest")
                 return existing
             entry = RegisteredWorkflow.seal(workflow)
             self._entries[key] = entry
@@ -375,9 +339,7 @@ class WorkflowRegistry:
             if self._entries.pop((workflow_name, workflow_version), None) is not None:
                 self._revision += 1
 
-    def get(
-        self, workflow_name: str, workflow_version: str
-    ) -> RegisteredWorkflow | None:
+    def get(self, workflow_name: str, workflow_version: str) -> RegisteredWorkflow | None:
         with self._lock:
             return self._entries.get((workflow_name, workflow_version))
 
@@ -392,8 +354,7 @@ class WorkflowRegistry:
                 entry = self._entries.get((workflow_name, workflow_version))
                 if entry is None:
                     raise WorkflowDependencyUnavailable(
-                        "workflow graph version unavailable: "
-                        f"{workflow_name}@{workflow_version}"
+                        f"workflow graph version unavailable: {workflow_name}@{workflow_version}"
                     )
                 entries.append(entry)
             return self._revision, tuple(entries)
@@ -418,9 +379,7 @@ class WorkflowRegistry:
         expected_implementation_hash: str | None = None,
     ) -> RegisteredWorkflow:
         with self._lock:
-            _revision, entries = self.snapshot_required(
-                ((workflow_name, workflow_version),)
-            )
+            _revision, entries = self.snapshot_required(((workflow_name, workflow_version),))
             entry = entries[0]
             entry.assert_integrity()
             if (
@@ -430,12 +389,9 @@ class WorkflowRegistry:
                 raise WorkflowDependencyUnavailable("workflow manifest hash mismatch")
             if (
                 expected_implementation_hash is not None
-                and entry.manifest.implementation_bundle_hash
-                != expected_implementation_hash
+                and entry.manifest.implementation_bundle_hash != expected_implementation_hash
             ):
-                raise WorkflowDependencyUnavailable(
-                    "workflow implementation hash mismatch"
-                )
+                raise WorkflowDependencyUnavailable("workflow implementation hash mismatch")
             return entry
 
     def versions(self) -> tuple[tuple[str, str], ...]:
@@ -445,10 +401,7 @@ class WorkflowRegistry:
     def implementation_hashes(self) -> tuple[str, ...]:
         with self._lock:
             return tuple(
-                sorted(
-                    item.manifest.implementation_bundle_hash
-                    for item in self._entries.values()
-                )
+                sorted(item.manifest.implementation_bundle_hash for item in self._entries.values())
             )
 
     def snapshot_all(
@@ -466,9 +419,7 @@ class WorkflowRegistry:
                         "workflow_name": entry.manifest.workflow_name,
                         "workflow_version": entry.manifest.workflow_version,
                         "manifest_hash": manifest_hash(entry.manifest),
-                        "implementation_hash": (
-                            entry.manifest.implementation_bundle_hash
-                        ),
+                        "implementation_hash": (entry.manifest.implementation_bundle_hash),
                     }
                 )
             digest = hashlib.sha256(canonical_json(content).encode()).hexdigest()
@@ -519,12 +470,8 @@ class WorkflowRunner:
     ) -> None:
         owner_identity = execution_ports.unit_of_work.transaction_owner
         if (
-            any(
-                authority.transaction_owner is not owner_identity
-                for authority in (checkpoint,)
-            )
-            or checkpoint.transaction_owner
-            is not execution_ports.checkpoint.transaction_owner
+            any(authority.transaction_owner is not owner_identity for authority in (checkpoint,))
+            or checkpoint.transaction_owner is not execution_ports.checkpoint.transaction_owner
         ):
             raise ValueError("workflow authorities have different transaction owners")
         if not isinstance(host_services, WorkflowHostServices):
@@ -602,9 +549,7 @@ class WorkflowRunner:
             manifest_hash=manifest_hash(manifest),
             state_schema_version=manifest.state_schema_version,
             start_input_schema=registration.start_input_schema,
-            terminal_projection_descriptor=(
-                None if terminal is None else terminal.to_dict()
-            ),
+            terminal_projection_descriptor=(None if terminal is None else terminal.to_dict()),
             terminal_request_factory_hash=(
                 None if terminal is None else terminal.request_factory_hash
             ),
@@ -635,9 +580,7 @@ class WorkflowRunner:
         if len({item.descriptor.key for item in ordered}) != len(ordered):
             raise ValueError("catalog registrations contain a duplicate profile")
         registry_revision, entries = self.registry.snapshot_required(
-            tuple(
-                (item.workflow_name, item.workflow_version) for item in ordered
-            )
+            tuple((item.workflow_name, item.workflow_version) for item in ordered)
         )
         bindings = []
         snapshot_profiles: list[dict[str, JsonValue]] = []
@@ -657,9 +600,7 @@ class WorkflowRunner:
             "generation": generation,
             "profiles": cast(JsonValue, snapshot_profiles),
         }
-        snapshot_hash = hashlib.sha256(
-            canonical_json(snapshot_payload).encode()
-        ).hexdigest()
+        snapshot_hash = hashlib.sha256(canonical_json(snapshot_payload).encode()).hexdigest()
         self.registry.require_snapshot_current(registry_revision, entries)
         return _create_verified_workflow_catalog_authority(authority, snapshot_hash)
 
@@ -672,10 +613,7 @@ class WorkflowRunner:
             _create_verified_workflow_graph_unavailable,
         )
 
-        if (
-            type(ticket) is not VerifiedWorkflowLaunchTicket
-            or not ticket._is_sdk_verified()
-        ):
+        if type(ticket) is not VerifiedWorkflowLaunchTicket or not ticket._is_sdk_verified():
             raise TypeError("graph proof requires an SDK-verified ticket")
         if not isinstance(activation, WorkflowSpawnReadyActivation):
             raise TypeError("graph proof requires a ready activation")
@@ -707,9 +645,7 @@ class WorkflowRunner:
         else:
             observed_hash = observed.manifest.implementation_bundle_hash
             if observed_hash == ticket.implementation_fingerprint:
-                raise WorkflowDependencyUnavailable(
-                    "workflow graph version is available"
-                )
+                raise WorkflowDependencyUnavailable("workflow graph version is available")
             observed_kind = "drift"
         self.registry.require_snapshot_current(revision, entries)
         return _create_verified_workflow_graph_unavailable(
@@ -831,9 +767,7 @@ class WorkflowRunner:
                 profile.workflow_name != workflow_name
                 or profile.workflow_version != workflow_version
             ):
-                raise ValueError(
-                    "workflow identity differs from the registered profile"
-                )
+                raise ValueError("workflow identity differs from the registered profile")
             validate_arguments(
                 copy.deepcopy(dict(start_input)),
                 profile.start_input_schema.canonical_schema,
@@ -845,8 +779,7 @@ class WorkflowRunner:
             raise ValueError("capability hash does not match snapshot")
         descriptor = entry.manifest.terminal_projection_descriptor
         request = StartAdmissionRequest(
-            request_key
-            or f"{session_id}:{request_id}:{turn_id}:{profile_key}:{workflow_name}",
+            request_key or f"{session_id}:{request_id}:{turn_id}:{profile_key}:{workflow_name}",
             StartMode.STANDALONE,
             session_id,
             request_id,
@@ -1002,9 +935,7 @@ class WorkflowRunner:
         )
         if claimed.activation is None:
             raise RuntimeError("recovered workflow resume lacks activation")
-        responses = thaw_json(
-            cast(FrozenJsonValue, claimed.request.responses)
-        )
+        responses = thaw_json(cast(FrozenJsonValue, claimed.request.responses))
         if not isinstance(responses, dict) or not responses:
             raise RuntimeError("recovered workflow resume responses are invalid")
         binding = ResumeCommitBinding(
@@ -1066,9 +997,10 @@ class WorkflowRunner:
         if decision.version != expected_version:
             raise ValueError("workflow decision version changed")
         durable_request = thaw_json(cast(FrozenJsonValue, decision.request))
-        if not isinstance(durable_request, Mapping) or str(
-            durable_request.get("nonce") or decision_id
-        ) != nonce:
+        if (
+            not isinstance(durable_request, Mapping)
+            or str(durable_request.get("nonce") or decision_id) != nonce
+        ):
             raise ValueError("workflow decision nonce changed")
         start_snapshot = StartSnapshot.from_json(snapshot)
         request = start_snapshot.workflow_admission
@@ -1076,11 +1008,7 @@ class WorkflowRunner:
             raise RuntimeError("workflow Run lacks its durable admission snapshot")
         native = await self.native_store.load_execution(
             run_id=run.run_id,
-            thread_id=(
-                request.resolved_thread_id
-                or request.requested_thread_id
-                or run.run_id
-            ),
+            thread_id=(request.resolved_thread_id or request.requested_thread_id or run.run_id),
             checkpoint_ns=request.checkpoint_namespace,
         )
         interrupt = native.snapshot.interrupt
@@ -1092,9 +1020,7 @@ class WorkflowRunner:
         request_hash = hashlib.sha256(
             canonical_json(cast(JsonValue, copy.deepcopy(dict(interrupt)))).encode()
         ).hexdigest()
-        responses: dict[str, JsonValue] = {
-            decision_id: copy.deepcopy(dict(response))
-        }
+        responses: dict[str, JsonValue] = {decision_id: copy.deepcopy(dict(response))}
         responses_hash = hashlib.sha256(
             canonical_json(cast(JsonValue, responses)).encode()
         ).hexdigest()
@@ -1203,16 +1129,10 @@ class WorkflowRunner:
         request: StartAdmissionRequest,
         responses: Mapping[str, JsonValue],
         precreated: tuple[ExecutionLease, RunFenceLease] | None,
-    ) -> tuple[
-        WorkflowActivation | None, ResumeCommitBinding | None, JsonValue | None
-    ]:
+    ) -> tuple[WorkflowActivation | None, ResumeCommitBinding | None, JsonValue | None]:
         native = await self.native_store.load_execution(
             run_id=run.run_id,
-            thread_id=(
-                request.resolved_thread_id
-                or request.requested_thread_id
-                or run.run_id
-            ),
+            thread_id=(request.resolved_thread_id or request.requested_thread_id or run.run_id),
             checkpoint_ns=request.checkpoint_namespace,
         )
         interrupt = native.snapshot.interrupt
@@ -1370,23 +1290,14 @@ class WorkflowRunner:
         if responses is not None or recovering:
             resumed_execution = await self.native_store.load_execution(
                 run_id=run.run_id,
-                thread_id=(
-                    request.resolved_thread_id
-                    or request.requested_thread_id
-                    or run.run_id
-                ),
+                thread_id=(request.resolved_thread_id or request.requested_thread_id or run.run_id),
                 checkpoint_ns=request.checkpoint_namespace,
             )
-            pinned_logical_timestamp = resumed_execution.snapshot.metadata.get(
-                "logical_timestamp"
-            )
-            if (
-                isinstance(pinned_logical_timestamp, bool)
-                or not isinstance(pinned_logical_timestamp, (int, float))
+            pinned_logical_timestamp = resumed_execution.snapshot.metadata.get("logical_timestamp")
+            if isinstance(pinned_logical_timestamp, bool) or not isinstance(
+                pinned_logical_timestamp, (int, float)
             ):
-                raise RuntimeError(
-                    "workflow reopen lacks a durable logical timestamp"
-                )
+                raise RuntimeError("workflow reopen lacks a durable logical timestamp")
             logical_timestamp = float(pinned_logical_timestamp)
         configurable: dict[str, JsonValue] = {
             "workflow_owner_id": activation.workflow_lease.owner_id,
@@ -1462,11 +1373,7 @@ class WorkflowRunner:
                     raise
 
         async def invoke_native() -> object:
-            thread_id = (
-                request.resolved_thread_id
-                or request.requested_thread_id
-                or run_id
-            )
+            thread_id = request.resolved_thread_id or request.requested_thread_id or run_id
             namespace = request.checkpoint_namespace
             initial = (
                 None
@@ -1528,15 +1435,11 @@ class WorkflowRunner:
                 heartbeat_task.cancel()
                 pending.append(heartbeat_task)
             await asyncio.gather(*pending, return_exceptions=True)
-        current = cast(
-            RunRecord | None, self.execution_ports.unit_of_work.read_run(run_id)
-        )
+        current = cast(RunRecord | None, self.execution_ports.unit_of_work.read_run(run_id))
         assert current is not None
         return WorkflowRunResult(run_id, _STATUS[current.state], output)
 
-    async def request_cancel(
-        self, run_id: str, reason: str = "user"
-    ) -> WorkflowRunResult:
+    async def request_cancel(self, run_id: str, reason: str = "user") -> WorkflowRunResult:
         return await self._request_cancel(run_id, reason=reason, precreated=None)
 
     async def request_cancel_precreated(
@@ -1568,9 +1471,7 @@ class WorkflowRunner:
                 run_id=run_id, generation=0
             )
             if durable is None or not durable.terminal:
-                raise RuntimeError(
-                    "cancelled workflow Run lacks a terminal cancel receipt"
-                )
+                raise RuntimeError("cancelled workflow Run lacks a terminal cancel receipt")
             return WorkflowRunResult(
                 run_id,
                 WorkflowRunStatus.CANCELLED,
@@ -1586,9 +1487,7 @@ class WorkflowRunner:
                 run_id=run_id, generation=0
             )
             if request is None:
-                raise RuntimeError(
-                    "cancel-requested workflow Run lacks its durable request"
-                )
+                raise RuntimeError("cancel-requested workflow Run lacks its durable request")
         if request is None:
             cancel_id = hashlib.sha256(
                 canonical_json(
@@ -1632,10 +1531,8 @@ class WorkflowRunner:
         )
         if outcome.terminal:
             return WorkflowRunResult(run_id, WorkflowRunStatus.CANCELLED)
-        resolution_snapshot = (
-            self.execution_ports.lifecycle.read_cancel_resolution_snapshot(
-                outcome.cancel_id
-            )
+        resolution_snapshot = self.execution_ports.lifecycle.read_cancel_resolution_snapshot(
+            outcome.cancel_id
         )
         if outcome.blocker_ids and resolution_snapshot is None:
             return WorkflowRunResult(
@@ -1648,13 +1545,9 @@ class WorkflowRunner:
                 },
             )
 
-        checkpoint_id = hashlib.sha256(
-            f"{outcome.cancel_id}|checkpoint".encode()
-        ).hexdigest()
+        checkpoint_id = hashlib.sha256(f"{outcome.cancel_id}|checkpoint".encode()).hexdigest()
         event_id = hashlib.sha256(f"{outcome.cancel_id}|event".encode()).hexdigest()
-        delivery_id = hashlib.sha256(
-            f"{outcome.cancel_id}|delivery".encode()
-        ).hexdigest()
+        delivery_id = hashlib.sha256(f"{outcome.cancel_id}|delivery".encode()).hexdigest()
 
         async def converge(tx: WorkflowTransaction):
             convergence = await self.execution_ports.lifecycle.claim_cancel_convergence(
@@ -1685,9 +1578,7 @@ class WorkflowRunner:
                     {
                         "delivery_id": delivery_id,
                         "sink_kind": "workflow.cancel",
-                        "idempotency_key": (
-                            f"workflow-cancel:{run_id}:{outcome.generation}"
-                        ),
+                        "idempotency_key": (f"workflow-cancel:{run_id}:{outcome.generation}"),
                         "payload": {
                             "run_id": run_id,
                             "status": "cancelled",
@@ -1749,6 +1640,7 @@ class WorkflowRunner:
 
         # If no checkpoint head, quarantine
         if snapshot.candidate.checkpoint_head is None:
+
             async def quarantine_tx(tx: WorkflowTransaction):
                 return await quarantine_checkpoint(
                     self.recovery,
@@ -1786,11 +1678,7 @@ class WorkflowRunner:
                 raise RuntimeError("workflow recovery admission is missing")
             native = await self.native_store.load_execution(
                 run_id=run_id,
-                thread_id=(
-                    request.resolved_thread_id
-                    or request.requested_thread_id
-                    or run_id
-                ),
+                thread_id=(request.resolved_thread_id or request.requested_thread_id or run_id),
                 checkpoint_ns=request.checkpoint_namespace,
                 checkpoint_id=snapshot.candidate.checkpoint_head,
             )
@@ -1814,12 +1702,8 @@ class WorkflowRunner:
                 manifest_hash=request.manifest_hash,
                 status=_STATUS.get(run.state, WorkflowRunStatus.BLOCKED),
                 active_nodes=tuple(task.node_id for task in native.snapshot.frontier),
-                values=cast(
-                    Mapping[str, JsonValue], copy.deepcopy(dict(native.snapshot.state))
-                ),
-                attempts={
-                    task.node_id: task.retry_attempt for task in native.snapshot.frontier
-                },
+                values=cast(Mapping[str, JsonValue], copy.deepcopy(dict(native.snapshot.state))),
+                attempts={task.node_id: task.retry_attempt for task in native.snapshot.frontier},
                 loop_counters={},
                 pending_interrupt=pending_interrupt,
                 revision=native.snapshot.step,
@@ -1838,9 +1722,7 @@ class WorkflowRunner:
             )
 
             async def repair_tx(tx: WorkflowTransaction):
-                return await repair_head_projection(
-                    self.recovery, checkpoint, transaction=tx
-                )
+                return await repair_head_projection(self.recovery, checkpoint, transaction=tx)
 
             record = await self.execution_ports.unit_of_work.run_atomic(
                 repair_tx, fault_label="workflow:recover-repair"
@@ -1858,9 +1740,7 @@ class WorkflowRunner:
             # Recovery must report their durable state without attempting a new
             # activation (which would either replay effects or consume an
             # interrupt without a response).
-            durable_output: dict[str, JsonValue] = copy.deepcopy(
-                dict(native.snapshot.state)
-            )
+            durable_output: dict[str, JsonValue] = copy.deepcopy(dict(native.snapshot.state))
             if pending_interrupt is not None:
                 durable_output["interrupt"] = {
                     "interrupt_id": pending_interrupt.interrupt_id,
@@ -1879,11 +1759,13 @@ class WorkflowRunner:
                 )
         except Exception as exc:
             # Checkpoint read or repair failed, quarantine
+            exception_name = exc.__class__.__name__
+
             async def quarantine_tx(tx: WorkflowTransaction):
                 return await quarantine_checkpoint(
                     self.recovery,
                     run_id=run_id,
-                    reason=f"checkpoint_repair_failed:{exc.__class__.__name__}",
+                    reason=f"checkpoint_repair_failed:{exception_name}",
                     checkpoint=checkpoint,
                     transaction=tx,
                 )

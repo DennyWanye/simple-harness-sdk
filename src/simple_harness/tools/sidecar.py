@@ -144,14 +144,10 @@ class Sidecar:
         if self.outcome_parser is None:
             if any(parser_fields):
                 raise ValueError("outcome parser metadata requires a typed parser port")
-        elif (
-            not isinstance(self.outcome_parser, OutcomeParserPort)
-            or parser_fields
-            != (
-                self.outcome_parser.parser_id,
-                self.outcome_parser.version,
-                self.outcome_parser.parser_hash,
-            )
+        elif not isinstance(self.outcome_parser, OutcomeParserPort) or parser_fields != (
+            self.outcome_parser.parser_id,
+            self.outcome_parser.version,
+            self.outcome_parser.parser_hash,
         ):
             raise ValueError("outcome parser port differs from inventory authority")
         resolver_fields = (
@@ -161,13 +157,11 @@ class Sidecar:
         if self.resource_scope_resolver is None:
             if any(resolver_fields):
                 raise ValueError("resource resolver metadata requires a typed resolver port")
-        elif (
-            not isinstance(self.resource_scope_resolver, ResourceScopeResolverPort)
-            or resolver_fields
-            != (
-                self.resource_scope_resolver.resolver_id,
-                self.resource_scope_resolver.version,
-            )
+        elif not isinstance(
+            self.resource_scope_resolver, ResourceScopeResolverPort
+        ) or resolver_fields != (
+            self.resource_scope_resolver.resolver_id,
+            self.resource_scope_resolver.version,
         ):
             raise ValueError("resource resolver port differs from inventory authority")
 
@@ -202,9 +196,7 @@ class Sidecar:
         resources = tuple(values)
         if any(not isinstance(value, ToolResource) for value in resources):
             raise TypeError("resource resolver must return ToolResource values")
-        identities = [
-            (value.namespace, value.resource_id, value.actions) for value in resources
-        ]
+        identities = [(value.namespace, value.resource_id, value.actions) for value in resources]
         if len(identities) != len(set(identities)):
             raise ValueError("resource resolver returned duplicate claims")
         return tuple(
@@ -324,9 +316,7 @@ def parse_tool_outcome(
                 "Shell Tool omitted a valid exit code.",
             )
         if exit_code != 0:
-            return _failed(
-                call_id, "shell_nonzero_exit", "Shell Tool exited unsuccessfully."
-            )
+            return _failed(call_id, "shell_nonzero_exit", "Shell Tool exited unsuccessfully.")
         return ToolResult.succeeded(call_id, cast(JsonValue, value))
     if parser is ToolOutcomeParser.ARTIFACT_ENVELOPE:
         path = value.get("path") if isinstance(value, Mapping) else None
@@ -357,15 +347,20 @@ def parse_tool_outcome(
         )
     activation_id = value.get("activation_id")
     state = str(value.get("state") or "").lower()
-    if not isinstance(activation_id, str) or not activation_id.strip() or state not in {
-        "proposed",
-        "pending",
-        "accepted",
-        "completed",
-        "rejected",
-        "failed",
-        "unknown",
-    }:
+    if (
+        not isinstance(activation_id, str)
+        or not activation_id.strip()
+        or state
+        not in {
+            "proposed",
+            "pending",
+            "accepted",
+            "completed",
+            "rejected",
+            "failed",
+            "unknown",
+        }
+    ):
         return _failed(
             call_id,
             "malformed_activation",
@@ -380,9 +375,7 @@ def parse_tool_outcome(
             public_message="Activation is pending.",
         )
     if state == "rejected":
-        return ToolResult.rejected(
-            call_id, "activation_rejected", "Activation was rejected."
-        )
+        return ToolResult.rejected(call_id, "activation_rejected", "Activation was rejected.")
     if state == "failed":
         return ToolResult.failed(call_id, "activation_failed", "Activation failed.")
     return ToolResult.unknown(call_id, "Activation outcome is not yet known.")

@@ -60,19 +60,14 @@ def test_start_and_memory_intent_rollback_together(tmp_path: Path) -> None:
         with pytest.raises(InjectedFault):
             _create(uow, _intent(), fault=fault)
         assert database.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
-        assert (
-            database.connection.execute("SELECT COUNT(*) FROM memory_outbox").fetchone()[0]
-            == 0
-        )
+        assert database.connection.execute("SELECT COUNT(*) FROM memory_outbox").fetchone()[0] == 0
 
 
 def test_replay_compares_memory_hash_and_non_text_settles_locally(tmp_path: Path) -> None:
     with Database.open(tmp_path / "execution.db") as database:
         uow = SqliteExecutionUnitOfWork(database)
         _create(uow, _intent(None))
-        row = database.connection.execute(
-            "SELECT state,memory_text FROM memory_outbox"
-        ).fetchone()
+        row = database.connection.execute("SELECT state,memory_text FROM memory_outbox").fetchone()
         assert tuple(row) == ("skipped_non_text", None)
         _create(uow, _intent(None))
         with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):

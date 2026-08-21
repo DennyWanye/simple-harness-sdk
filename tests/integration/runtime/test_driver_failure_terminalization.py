@@ -113,6 +113,4 @@ def test_driver_exception_terminalizes_failed_without_secondary_logger_error(
     assert "unexpected keyword argument" not in caplog.text
     assert "sdk_run_driver_failed" in caplog.text
     # The failure log carries the run_id as a structured field.
-    assert any(
-        getattr(record, "run_id", None) == "run-boom" for record in caplog.records
-    )
+    assert any(getattr(record, "run_id", None) == "run-boom" for record in caplog.records)

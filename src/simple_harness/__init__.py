@@ -62,8 +62,8 @@ from .runtime import (
     RuntimeServices,
     RuntimeUnitOfWork,
     SqliteContextPort,
-    build_runtime,
     build_production_runtime,
+    build_runtime,
     canonicalize_memory_text,
 )
 from .version import __version__

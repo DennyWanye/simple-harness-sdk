@@ -75,9 +75,7 @@ def test_recovery_marks_stranded_handed_off_unknown_without_provider_call() -> N
 
     async def exercise() -> None:
         coordinator = _coordinator(uow, provider)
-        record = await coordinator.prepare_claim(
-            RunId("run-1"), _request(), execution_lease=LEASE
-        )
+        record = await coordinator.prepare_claim(RunId("run-1"), _request(), execution_lease=LEASE)
         uow.hand_off_provider_invocation(
             record.invocation_id,
             expected_version=record.version,

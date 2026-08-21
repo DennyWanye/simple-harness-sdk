@@ -148,9 +148,7 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
                 tools=effects,
                 authorization=authorization,
                 context=context,
-                delivery=DeliveryDispatcher(
-                    uow, {"fixture": Sink()}, clock=lambda: 10.0
-                ),
+                delivery=DeliveryDispatcher(uow, {"fixture": Sink()}, clock=lambda: 10.0),
                 tool_reconciliation=reconciliation,
                 reconciliation=Noop(),
                 provider_reconciliation=Noop(),
@@ -213,9 +211,7 @@ def test_continuation_staged_memory_is_frozen_as_untrusted_user_context(
                 len(encoded),
             )
 
-        async def release(
-            self, *, user_id: str, context_query_id: str, result_hash: str
-        ) -> None:
+        async def release(self, *, user_id: str, context_query_id: str, result_hash: str) -> None:
             del user_id, context_query_id, result_hash
 
         async def close(self) -> None:
@@ -264,9 +260,7 @@ def test_continuation_staged_memory_is_frozen_as_untrusted_user_context(
             (root_message,),
         )
         next_message = Message(MessageRole.USER, "next question")
-        next_value = ConversationTurnInput(
-            "user-1", "session-1", next_message, "next question"
-        )
+        next_value = ConversationTurnInput("user-1", "session-1", next_message, "next question")
         staged = await prepare_sdk_conversation_context(
             ContextStagingRepository(database),
             Recall(),
@@ -282,9 +276,7 @@ def test_continuation_staged_memory_is_frozen_as_untrusted_user_context(
             timeout_seconds=0.5,
         )
         assert staged.private_snapshot is not None
-        continuation_value = ConversationContinuationInput(
-            next_message, "next question"
-        )
+        continuation_value = ConversationContinuationInput(next_message, "next question")
         uow.enqueue_continuation(
             continuation_id="continuation-1",
             run_id="run-1",
@@ -297,9 +289,7 @@ def test_continuation_staged_memory_is_frozen_as_untrusted_user_context(
             context_stage_hash=staged.private_snapshot_hash,
             now=3.0,
         )
-        continuation = uow.claim_continuation(
-            run_id="run-1", execution_lease=lease, now=4.0
-        )
+        continuation = uow.claim_continuation(run_id="run-1", execution_lease=lease, now=4.0)
         assert continuation is not None
 
         provider = Provider()
@@ -322,9 +312,7 @@ def test_continuation_staged_memory_is_frozen_as_untrusted_user_context(
             ),
             authorization=authorization,
             context=context,
-            delivery=DeliveryDispatcher(
-                uow, {"fixture": Sink()}, clock=lambda: 5.0
-            ),
+            delivery=DeliveryDispatcher(uow, {"fixture": Sink()}, clock=lambda: 5.0),
             tool_reconciliation=reconciliation,
             reconciliation=Noop(),
             provider_reconciliation=Noop(),
@@ -357,10 +345,7 @@ def test_continuation_staged_memory_is_frozen_as_untrusted_user_context(
         assert current == next_message
         frozen_messages = context.load(RunId("run-1")).messages
         assert frozen_messages[1:3] == (recalled, current)
-        assert all(
-            message.role is not MessageRole.SYSTEM
-            for message in frozen_messages[1:3]
-        )
+        assert all(message.role is not MessageRole.SYSTEM for message in frozen_messages[1:3])
         database.close()
 
     asyncio.run(case())
@@ -398,24 +383,18 @@ class AuthorizationScenario:
             raise RuntimeError("host decision receipt unavailable")
         return AuthorizationReceipt(
             f"host:decision:{self.decision_bind_calls}",
-            hashlib.sha256(
-                f"host:decision:{self.decision_bind_calls}".encode()
-            ).hexdigest(),
+            hashlib.sha256(f"host:decision:{self.decision_bind_calls}".encode()).hexdigest(),
             sdk_receipt.receipt_hash,
         )
 
-    async def bind_effect_handoff(
-        self, prepared, authorization_receipt_ref, sdk_receipt
-    ):
+    async def bind_effect_handoff(self, prepared, authorization_receipt_ref, sdk_receipt):
         del prepared, authorization_receipt_ref
         self.handoff_bind_calls += 1
         if self.fail_handoff_binding:
             raise RuntimeError("host handoff receipt unavailable")
         return AuthorizationReceipt(
             f"host:handoff:{self.handoff_bind_calls}",
-            hashlib.sha256(
-                f"host:handoff:{self.handoff_bind_calls}".encode()
-            ).hexdigest(),
+            hashlib.sha256(f"host:handoff:{self.handoff_bind_calls}".encode()).hexdigest(),
             sdk_receipt.receipt_hash,
         )
 
@@ -442,9 +421,7 @@ def authorization_runtime(
                 return ProviderResponse(
                     request.request_id,
                     Message(MessageRole.ASSISTANT, "use tool"),
-                    tool_calls=(
-                        ProviderToolCall(CallId("raw-fault"), "write_note", {}),
-                    ),
+                    tool_calls=(ProviderToolCall(CallId("raw-fault"), "write_note", {}),),
                     model="model",
                 )
             return ProviderResponse(
@@ -578,9 +555,7 @@ def test_require_user_is_durable_and_double_bound_before_tool_handoff(tmp_path) 
                 sdk_receipt.receipt_hash,
             )
 
-        async def bind_effect_handoff(
-            self, prepared, authorization_receipt_ref, sdk_receipt
-        ):
+        async def bind_effect_handoff(self, prepared, authorization_receipt_ref, sdk_receipt):
             del prepared, authorization_receipt_ref
             return AuthorizationReceipt(
                 "host:handoff",
@@ -779,9 +754,7 @@ def test_authorization_identity_fences_and_duplicate_allow_are_fail_closed(
             "authorization_decision_nonce_mismatch",
             "authorization_decision_version_conflict",
         )
-        for (run_id, nonce, version), expected_code in zip(
-            attempts, expected_codes, strict=True
-        ):
+        for (run_id, nonce, version), expected_code in zip(attempts, expected_codes, strict=True):
             with pytest.raises(Exception) as caught:
                 await runtime.client.decide_authorization(
                     run_id,
@@ -950,12 +923,9 @@ def test_host_handoff_binding_failure_stops_before_physical_tool(tmp_path) -> No
             expected_version=decision.version,
             decision=AuthorizationDecision.ALLOW,
         )
-        await wait_for_scenario(
-            runtime, lambda: uow.read_run("run-fault").state is RunState.FAILED
-        )
+        await wait_for_scenario(runtime, lambda: uow.read_run("run-fault").state is RunState.FAILED)
         effect = database.connection.execute(
-            "SELECT state,handoff_receipt_ref FROM execution_effects "
-            "WHERE run_id='run-fault'"
+            "SELECT state,handoff_receipt_ref FROM execution_effects WHERE run_id='run-fault'"
         ).fetchone()
         assert effect is not None and tuple(effect) == ("prepared", None)
         assert authorization.handoff_bind_calls == 1

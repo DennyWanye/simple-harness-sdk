@@ -38,9 +38,7 @@ class Query:
     async def recall_bounded(self, query):  # type: ignore[no-untyped-def]
         raise AssertionError(query)
 
-    async def release(
-        self, *, user_id: str, context_query_id: str, result_hash: str
-    ) -> None:
+    async def release(self, *, user_id: str, context_query_id: str, result_hash: str) -> None:
         del user_id, context_query_id, result_hash
 
     async def close(self) -> None:

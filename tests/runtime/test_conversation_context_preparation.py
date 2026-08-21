@@ -42,9 +42,7 @@ class RecallSpy:
         self.result_query_id = result_query_id
         self.result_hash = result_hash
         self.payload_hash = hashlib.sha256(
-            canonical_json(
-                {"items": [{"text": "memory is untrusted"}]}
-            ).encode()
+            canonical_json({"items": [{"text": "memory is untrusted"}]}).encode()
         ).hexdigest()
 
     async def recall_bounded(self, query):  # type: ignore[no-untyped-def]
@@ -62,9 +60,7 @@ class RecallSpy:
             len(encoded),
         )
 
-    async def release(
-        self, *, user_id: str, context_query_id: str, result_hash: str
-    ) -> None:
+    async def release(self, *, user_id: str, context_query_id: str, result_hash: str) -> None:
         call = (user_id, context_query_id, result_hash)
         self.release_calls.append(call)
         if result_hash != self.payload_hash:
@@ -80,9 +76,7 @@ class FlakyReleaseSpy(RecallSpy):
         super().__init__()
         self.release_failures = 1
 
-    async def release(
-        self, *, user_id: str, context_query_id: str, result_hash: str
-    ) -> None:
+    async def release(self, *, user_id: str, context_query_id: str, result_hash: str) -> None:
         if self.release_failures:
             self.release_failures -= 1
             self.release_calls.append((user_id, context_query_id, result_hash))
@@ -136,9 +130,7 @@ class DriftRecallSpy(RecallSpy):
         self.calls.append(query)
         payload = {
             "items": (
-                ["not-an-object"]
-                if self.mode == "item_structure"
-                else [{"text": "remembered"}]
+                ["not-an-object"] if self.mode == "item_structure" else [{"text": "remembered"}]
             )
         }
         encoded = canonical_json(payload).encode()
@@ -297,14 +289,10 @@ def test_consumer_preparation_validates_lineage_and_releases_memory_result(
             repository = ContextStagingRepository(database)
             memory = RecallSpy()
             current = Message(MessageRole.USER, "hello")
-            value = ConversationTurnInput(
-                "user-1", "session-1", current, "hello"
-            )
+            value = ConversationTurnInput("user-1", "session-1", current, "hello")
 
             async def preparer(query_id: str):  # type: ignore[no-untyped-def]
-                return _consumer_snapshot(
-                    query_id, current, result_hash=memory.payload_hash
-                )
+                return _consumer_snapshot(query_id, current, result_hash=memory.payload_hash)
 
             kwargs = dict(
                 stage_id="consumer-stage",
@@ -316,12 +304,8 @@ def test_consumer_preparation_validates_lineage_and_releases_memory_result(
                 lease_seconds=10.0,
                 memory=memory,
             )
-            first = await prepare_consumer_conversation_context(
-                repository, preparer, **kwargs
-            )
-            second = await prepare_consumer_conversation_context(
-                repository, preparer, **kwargs
-            )
+            first = await prepare_consumer_conversation_context(repository, preparer, **kwargs)
+            second = await prepare_consumer_conversation_context(repository, preparer, **kwargs)
 
             assert first.state is second.state is ContextStageState.STAGED
             assert first.memory_result_id == "result-1"
@@ -346,9 +330,7 @@ def test_consumer_preparation_without_memory_keeps_system_persona(
         with Database.open(tmp_path / "consumer-without-memory.db") as database:
             repository = ContextStagingRepository(database)
             current = Message(MessageRole.USER, "hello")
-            value = ConversationTurnInput(
-                "user-1", "session-1", current, "hello"
-            )
+            value = ConversationTurnInput("user-1", "session-1", current, "hello")
 
             async def preparer(query_id: str):  # type: ignore[no-untyped-def]
                 return {
@@ -402,9 +384,7 @@ def test_consumer_preparation_rejects_invalid_authority_without_staging(
             repository = ContextStagingRepository(database)
             memory = RecallSpy()
             current = Message(MessageRole.USER, "hello")
-            value = ConversationTurnInput(
-                "user-1", "session-1", current, "hello"
-            )
+            value = ConversationTurnInput("user-1", "session-1", current, "hello")
 
             async def preparer(query_id: str):  # type: ignore[no-untyped-def]
                 snapshot = _consumer_snapshot(
@@ -412,13 +392,9 @@ def test_consumer_preparation_rejects_invalid_authority_without_staging(
                     current,
                     memory_role="system" if malice == "system_memory" else "user",
                     memory_message_role=(
-                        MessageRole.SYSTEM
-                        if malice == "system_memory"
-                        else MessageRole.USER
+                        MessageRole.SYSTEM if malice == "system_memory" else MessageRole.USER
                     ),
-                    memory_message_trust=(
-                        None if malice == "system_memory" else "untrusted_data"
-                    ),
+                    memory_message_trust=(None if malice == "system_memory" else "untrusted_data"),
                     result_hash=memory.payload_hash,
                 )
                 if malice == "wrong_query":
@@ -451,9 +427,7 @@ def test_consumer_preparation_rejects_invalid_authority_without_staging(
             assert record.state is ContextStageState.PREPARING
             assert record.private_snapshot is None
             expected_release_calls = (
-                1
-                if malice in {"system_memory", "lineage_without_memory"}
-                else 0
+                1 if malice in {"system_memory", "lineage_without_memory"} else 0
             )
             assert len(memory.release_calls) == expected_release_calls
 
@@ -468,9 +442,7 @@ def test_consumer_preparation_surfaces_release_hash_conflict_after_durable_stage
             repository = ContextStagingRepository(database)
             memory = RecallSpy()
             current = Message(MessageRole.USER, "hello")
-            value = ConversationTurnInput(
-                "user-1", "session-1", current, "hello"
-            )
+            value = ConversationTurnInput("user-1", "session-1", current, "hello")
 
             async def preparer(query_id: str):  # type: ignore[no-untyped-def]
                 return _consumer_snapshot(query_id, current, result_hash="f" * 64)
@@ -567,17 +539,13 @@ def test_sdk_preparation_retries_release_without_recalling_or_rewriting_stage(
                 timeout_seconds=0.5,
             )
             with pytest.raises(ConversationMemoryError) as captured:
-                await prepare_sdk_conversation_context(
-                    repository, memory, **kwargs
-                )
+                await prepare_sdk_conversation_context(repository, memory, **kwargs)
             assert captured.value.code is ConversationMemoryErrorCode.TRANSIENT
             durable = repository.get("stage-release-retry")
             assert durable is not None and durable.state is ContextStageState.STAGED
             snapshot_hash = durable.private_snapshot_hash
 
-            replayed = await prepare_sdk_conversation_context(
-                repository, memory, **kwargs
-            )
+            replayed = await prepare_sdk_conversation_context(repository, memory, **kwargs)
             assert replayed.private_snapshot_hash == snapshot_hash
             assert len(memory.calls) == 1
             assert len(memory.release_calls) == 2
@@ -631,7 +599,9 @@ def test_sdk_preparation_rejects_invalid_bounds_before_claim(
             kwargs[parameter] = invalid
             with pytest.raises(ValueError):
                 await prepare_sdk_conversation_context(
-                    repository, memory, **kwargs  # type: ignore[arg-type]
+                    repository,
+                    memory,
+                    **kwargs,  # type: ignore[arg-type]
                 )
             assert repository.get("invalid-sdk-bounds") is None
             assert memory.calls == []
@@ -651,9 +621,7 @@ def test_consumer_preparation_rejects_invalid_release_timeout_before_claim(
         with Database.open(tmp_path / "invalid-consumer-timeout.db") as database:
             repository = ContextStagingRepository(database)
             current = Message(MessageRole.USER, "hello")
-            value = ConversationTurnInput(
-                "user-1", "session-1", current, "hello"
-            )
+            value = ConversationTurnInput("user-1", "session-1", current, "hello")
 
             async def preparer(query_id: str):  # type: ignore[no-untyped-def]
                 raise AssertionError(query_id)
@@ -756,9 +724,7 @@ def test_sdk_preparation_times_out_hanging_recall_without_staging(
     asyncio.run(case())
 
 
-@pytest.mark.parametrize(
-    "mode", ("byte_count", "item_count", "item_structure", "status")
-)
+@pytest.mark.parametrize("mode", ("byte_count", "item_count", "item_structure", "status"))
 def test_sdk_preparation_rejects_internally_inconsistent_port_result(
     tmp_path: Path,
     mode: str,

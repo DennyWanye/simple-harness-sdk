@@ -6,11 +6,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from test_ticket_generation import claim_child, create_root, issue_ticket
 
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import RunState
-
-from test_ticket_generation import claim_child, create_root, issue_ticket
 
 
 class InjectedFault(RuntimeError):

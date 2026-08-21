@@ -51,17 +51,13 @@ class MemoryTransaction:
         self.is_open = True
         self._unit_of_work = unit_of_work
 
-    async def read_workflow_operation(
-        self, operation_id: str
-    ) -> WorkflowOperationReceipt | None:
+    async def read_workflow_operation(self, operation_id: str) -> WorkflowOperationReceipt | None:
         return self._unit_of_work.receipts.get(operation_id)
 
     async def apply_workflow_operation(self, **values: object) -> Any:
         return copy.deepcopy(values["payload"])
 
-    async def write_workflow_operation(
-        self, receipt: WorkflowOperationReceipt
-    ) -> None:
+    async def write_workflow_operation(self, receipt: WorkflowOperationReceipt) -> None:
         if receipt.operation_id in self._unit_of_work.receipts:
             raise RuntimeError("duplicate operation receipt")
         self._unit_of_work.receipts[receipt.operation_id] = receipt
@@ -136,7 +132,9 @@ class RecordingRecoveryPort:
     def __init__(self) -> None:
         self.quarantined: list[tuple[str, str]] = []
 
-    def classify(self, error: BaseException, *, attempt: int, max_attempts: int) -> RecoveryDecision:
+    def classify(
+        self, error: BaseException, *, attempt: int, max_attempts: int
+    ) -> RecoveryDecision:
         if isinstance(error, RetryableNodeError) and attempt < max_attempts:
             return RecoveryDecision(RecoveryDisposition.RETRY, "retryable_node", 0.0)
         return RecoveryDecision(RecoveryDisposition.FAIL, "node_failed", None)

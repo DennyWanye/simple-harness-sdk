@@ -9,6 +9,7 @@ import pytest
 
 from simple_harness.contracts import CallId, RequestId, RunId
 from simple_harness.tools import (
+    CancellationToken,
     FunctionTool,
     MalformedToolArgumentsError,
     ToolCall,
@@ -16,7 +17,6 @@ from simple_harness.tools import (
     ToolRegistry,
     ToolResult,
     ToolSpec,
-    CancellationToken,
 )
 
 

@@ -62,9 +62,7 @@ def _build(
     host_services=WorkflowHostServices(),
 ):  # type: ignore[no-untyped-def]
     uow = SqliteExecutionUnitOfWork(database)
-    ports = WorkflowExecutionPorts(
-        uow, CheckpointExecutionAdapter(database), uow, uow, uow
-    )
+    ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
     store = SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences())
     runner = WorkflowRunner(
         registry=registry,
@@ -103,15 +101,14 @@ async def test_runner_injects_frozen_profile_services(tmp_path: Path) -> None:
             edges=(Edge("node", "__end__"),),
         )
     )
+
     class Service:
         async def execute(self, **kwargs):  # type: ignore[no-untyped-def]
             del kwargs
             return {}
 
     service = Service()
-    services = WorkflowHostServices(
-        personal_v1=PersonalWorkflowHostServices(runtime=service)
-    )
+    services = WorkflowHostServices(personal_v1=PersonalWorkflowHostServices(runtime=service))
     with Database.open(tmp_path / "services.db") as database:
         _uow, _ports, _store, runner = _build(
             database,
@@ -179,9 +176,12 @@ def test_runner_materializes_real_native_and_has_no_second_state_machine(
         _uow, _ports, _store, runner = _build(database, registry, "runner")
         run_id = asyncio.run(_start_and_run(runner, "request"))
         assert calls == ["native.node"]
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == 2
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == 2
+        )
 
 
 def test_shared_registry_never_caches_runner_bound_authorities(
@@ -211,9 +211,7 @@ def test_runner_rejects_split_transaction_authority_before_write(
         Database.open(tmp_path / "authority-a.db") as database_a,
         Database.open(tmp_path / "authority-b.db") as database_b,
     ):
-        _uow_a, _ports_a, store_a, _runner_a = _build(
-            database_a, registry, "a"
-        )
+        _uow_a, _ports_a, store_a, _runner_a = _build(database_a, registry, "a")
         uow_b = SqliteExecutionUnitOfWork(database_b)
         ports_b = WorkflowExecutionPorts(
             uow_b, CheckpointExecutionAdapter(database_b), uow_b, uow_b, uow_b
@@ -228,6 +226,4 @@ def test_runner_rejects_split_transaction_authority_before_write(
                 terminal_projection_port=LegacyTerminalProjectionPort(),
                 terminal_commit_projection_port=NoTerminalCommitProjectionPort(),
             )
-        assert database_b.connection.execute(
-            "SELECT COUNT(*) FROM runs"
-        ).fetchone()[0] == 0
+        assert database_b.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0

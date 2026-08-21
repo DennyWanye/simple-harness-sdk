@@ -67,10 +67,7 @@ def test_active_claim_is_hol_and_expired_runtime_epoch_reclaims(tmp_path) -> Non
     first = uow.claim_continuation(run_id="run-1", execution_lease=old_lease, now=3.0)
     assert first is not None and first.continuation_id == "c1"
     assert first.claim_epoch == 1 and first.runtime_lease_epoch == old_lease.epoch
-    assert (
-        uow.claim_continuation(run_id="run-1", execution_lease=old_lease, now=3.5)
-        is None
-    )
+    assert uow.claim_continuation(run_id="run-1", execution_lease=old_lease, now=3.5) is None
     _, new_lease = uow.claim_runtime_activation(
         run_id="run-1",
         owner_id="owner-1",
@@ -78,9 +75,7 @@ def test_active_claim_is_hol_and_expired_runtime_epoch_reclaims(tmp_path) -> Non
         now=5.0,
         lease_ttl_seconds=100.0,
     )
-    reclaimed = uow.claim_continuation(
-        run_id="run-1", execution_lease=new_lease, now=5.0
-    )
+    reclaimed = uow.claim_continuation(run_id="run-1", execution_lease=new_lease, now=5.0)
     assert reclaimed is not None and reclaimed.continuation_id == "c1"
     assert reclaimed.claim_epoch == 2
     assert reclaimed.runtime_lease_epoch == new_lease.epoch
@@ -211,9 +206,7 @@ def _terminal(
         terminal_state=RunState.COMPLETED,
         event_id="run-1:terminal:c1",
         terminal_payload={"answer": 42} if payload is None else payload,
-        deliveries=(
-            DeliverySpec("delivery-1", "memory", "delivery-key-1", {"answer": 42}),
-        ),
+        deliveries=(DeliverySpec("delivery-1", "memory", "delivery-key-1", {"answer": 42}),),
         continuation_claim=claim,
         run_fence=fence,
         execution_lease=lease,
@@ -254,10 +247,7 @@ def test_terminal_and_ack_fault_reopens_all_before(tmp_path, point) -> None:
             == 0
         )
         assert (
-            reopened.connection.execute(
-                "SELECT COUNT(*) FROM delivery_outbox"
-            ).fetchone()[0]
-            == 0
+            reopened.connection.execute("SELECT COUNT(*) FROM delivery_outbox").fetchone()[0] == 0
         )
         assert (
             reopened.connection.execute(
@@ -304,12 +294,8 @@ def test_terminal_and_ack_replay_requires_same_memory_intent(tmp_path) -> None:
         tmp_path / "terminal-memory-replay.db"
     )
     intent = _assistant_intent("answer")
-    first = _terminal(
-        uow, lease, fence, claim, run, memory_intent=intent
-    )
-    assert (
-        _terminal(uow, lease, fence, claim, run, memory_intent=intent) == first
-    )
+    first = _terminal(uow, lease, fence, claim, run, memory_intent=intent)
+    assert _terminal(uow, lease, fence, claim, run, memory_intent=intent) == first
     with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):
         _terminal(uow, lease, fence, claim, run, memory_intent=None)
     with pytest.raises(UnitOfWorkConflict, match="memory intent replay differs"):

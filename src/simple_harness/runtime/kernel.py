@@ -12,7 +12,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol, Self, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, Self, TypeVar, cast, runtime_checkable
 from uuid import uuid4
 
 from simple_harness.contracts import (
@@ -134,13 +134,10 @@ class DriverInvocation:
             or ready.run_fence != self.run_fence
             or ready.execution_lease.run_id != self.run.run_id
         ):
-            raise ValueError(
-                "workflow spawn ready activation differs from Driver authority"
-            )
+            raise ValueError("workflow spawn ready activation differs from Driver authority")
         recovery = self.workflow_recovery_work
         if recovery is not None and (
-            recovery.run_id != self.run.run_id
-            or self.workflow_start_dispatch is not None
+            recovery.run_id != self.run.run_id or self.workflow_start_dispatch is not None
         ):
             raise ValueError("workflow recovery carrier differs from Driver authority")
 
@@ -172,31 +169,23 @@ class DriverResult:
         if self.workflow_spawn_control is not None and (
             state is not RunState.WAITING or self.wait_blocker is not None
         ):
-            raise ValueError(
-                "workflow spawn control requires an exclusive WAITING result"
-            )
+            raise ValueError("workflow spawn control requires an exclusive WAITING result")
         if self.workflow_terminal is not None and state not in {
             RunState.COMPLETED,
             RunState.FAILED,
         }:
-            raise ValueError(
-                "workflow terminal outcome requires COMPLETED or FAILED state"
-            )
+            raise ValueError("workflow terminal outcome requires COMPLETED or FAILED state")
         if self.workflow_retry_wake is not None and (
             state is not RunState.WAITING or self.wait_blocker is not None
         ):
-            raise ValueError(
-                "workflow retry wake requires an exclusive WAITING result"
-            )
+            raise ValueError("workflow retry wake requires an exclusive WAITING result")
         if self.authorization_wait is not None and (
             state is not RunState.WAITING
             or self.wait_blocker is not None
             or self.workflow_spawn_control is not None
             or self.workflow_retry_wake is not None
         ):
-            raise ValueError(
-                "authorization wait requires an exclusive WAITING result"
-            )
+            raise ValueError("authorization wait requires an exclusive WAITING result")
 
 
 @runtime_checkable
@@ -242,9 +231,7 @@ class DriverCancellationCoordinator(Protocol):
 class ToolCatalogGenerationPort(Protocol):
     def current_generation(self) -> int: ...
 
-    def resolve(
-        self, generation: int, content_fingerprint: str
-    ) -> ToolCatalogSnapshot | None: ...
+    def resolve(self, generation: int, content_fingerprint: str) -> ToolCatalogSnapshot | None: ...
 
 
 @runtime_checkable
@@ -342,9 +329,7 @@ class _CanonicalWorkflowSpawnRuntimeCoordinator:
             authority = await self._uow.read_catalog(transaction)
             return workflow_catalog_selection_from_authority(authority)
 
-        return await self._uow.run_atomic(
-            operation, fault_label="runtime:workflow_spawn:catalog"
-        )
+        return await self._uow.run_atomic(operation, fault_label="runtime:workflow_spawn:catalog")
 
     async def continue_ready(
         self, activation: WorkflowSpawnReadyActivation
@@ -443,17 +428,13 @@ class _CanonicalWorkflowSpawnRuntimeCoordinator:
             try:
                 request = self._runner.prepare_start_admission(verified, start)
             except WorkflowDependencyUnavailable:
-                evidence = self._runner._prove_graph_unavailable(
-                    verified, activation
-                )
-                failed = (
-                    await self._uow.settle_spawn_continuation_graph_unavailable(
-                        transaction,
-                        activation.continuation_claim,
-                        activation.ready_receipt,
-                        evidence,
-                        now=self._clock(),
-                    )
+                evidence = self._runner._prove_graph_unavailable(verified, activation)
+                failed = await self._uow.settle_spawn_continuation_graph_unavailable(
+                    transaction,
+                    activation.continuation_claim,
+                    activation.ready_receipt,
+                    evidence,
+                    now=self._clock(),
                 )
                 return _create_workflow_spawn_failed(
                     tool_result=failed,
@@ -482,14 +463,10 @@ class _CanonicalWorkflowSpawnRuntimeCoordinator:
                 now=self._clock(),
             )
 
-        return await self._uow.run_atomic(
-            operation, fault_label="runtime:spawn_ready:continue"
-        )
+        return await self._uow.run_atomic(operation, fault_label="runtime:spawn_ready:continue")
 
 
-class RuntimeUnitOfWork(
-    ExecutionUnitOfWork, RunFencePort, WorkflowLaunchTicketPort, Protocol
-):
+class RuntimeUnitOfWork(ExecutionUnitOfWork, RunFencePort, WorkflowLaunchTicketPort, Protocol):
     @property
     def transaction_owner(self) -> object: ...
 
@@ -558,9 +535,7 @@ class RuntimePorts:
         if self.conversation_memory_enabled and (
             self.memory_dispatcher is None or self.context_staging is None
         ):
-            raise TypeError(
-                "enabled conversation Memory requires dispatcher and context staging"
-            )
+            raise TypeError("enabled conversation Memory requires dispatcher and context staging")
         if self.conversation_memory_enabled and self.context_preparation_mode is None:
             raise TypeError("enabled conversation Memory requires preparation mode")
         if self.context_preparation_mode is not None:
@@ -590,9 +565,7 @@ class RunClient:
     ) -> ContinuationRecord:
         self._runtime._require_started()
         if payload.get("kind") == "conversation_user":
-            raise ValueError(
-                "conversation_user continuations require signal_conversation"
-            )
+            raise ValueError("conversation_user continuations require signal_conversation")
         continuation = self._runtime._uow.enqueue_continuation(
             continuation_id=signal_id,
             run_id=_run_id(run_id),
@@ -688,6 +661,8 @@ class RunClient:
         if not isinstance(request, dict) or request.get("nonce") != nonce:
             raise HarnessError("authorization_decision_nonce_mismatch", "Decision nonce differs.")
         expires_at = request.get("expires_at")
+        if expires_at is not None and not isinstance(expires_at, (int, float)):
+            raise HarnessError("authorization_decision_invalid", "Decision expiry is invalid.")
         if expires_at is not None and self._runtime._now() >= float(expires_at):
             decision = AuthorizationDecision.DENY
             state = DecisionState.EXPIRED
@@ -746,9 +721,7 @@ class RunClient:
             raise TypeError("workflow spawn binder requires a typed selection")
         parent = self._runtime._uow.read_run(context.run_id)
         raw_snapshot = self._runtime._uow.read_start_snapshot(context.run_id)
-        checkpoint = self._runtime._ports.react_checkpoint.read_react_checkpoint(
-            context.run_id
-        )
+        checkpoint = self._runtime._ports.react_checkpoint.read_react_checkpoint(context.run_id)
         if parent is None or raw_snapshot is None or checkpoint is None:
             raise UnitOfWorkConflict("workflow spawn parent authority disappeared")
         parent_start = StartSnapshot.from_json(raw_snapshot)
@@ -764,8 +737,7 @@ class RunClient:
             or checkpoint.version != context.react_checkpoint_revision
             or parent.request_id != context.request_id
             or parent_start.turn_id != context.turn_id
-            or selection.profile_key
-            not in {item.profile_key for item in catalog.profiles}
+            or selection.profile_key not in {item.profile_key for item in catalog.profiles}
         ):
             raise UnitOfWorkConflict("workflow spawn binding differs from durable pin")
         origin = WorkflowSpawnOrigin(
@@ -826,9 +798,7 @@ class Runtime:
         if WORKFLOW_DRIVER_KIND in drivers:
             raise ValueError("workflow is an SDK-reserved driver key")
         workflow_profiles = tuple(
-            item
-            for item in profiles.values()
-            if item.driver_kind == WORKFLOW_DRIVER_KIND
+            item for item in profiles.values() if item.driver_kind == WORKFLOW_DRIVER_KIND
         )
         workflow_driver: RuntimeDriver | None = None
         workflow_spawn: WorkflowSpawnRuntimeCoordinator | None = None
@@ -850,12 +820,15 @@ class Runtime:
             workflow_driver = build_workflow_runtime_driver(workflow_runner)
             if type(workflow_driver) is not WorkflowRuntimeDriver:
                 raise TypeError("official workflow driver factory is invalid")
-            workflow_spawn = _CanonicalWorkflowSpawnRuntimeCoordinator(
-                uow=uow,
-                runner=workflow_runner,
-                owner_id=ports.owner_id,
-                lease_ttl_seconds=ports.lease_ttl_seconds,
-                clock=ports.clock,
+            workflow_spawn = cast(
+                WorkflowSpawnRuntimeCoordinator,
+                _CanonicalWorkflowSpawnRuntimeCoordinator(
+                    uow=uow,
+                    runner=workflow_runner,
+                    owner_id=ports.owner_id,
+                    lease_ttl_seconds=ports.lease_ttl_seconds,
+                    clock=ports.clock,
+                ),
             )
         if workflow_profiles and workflow_driver is None:
             raise ValueError("workflow profile requires the SDK-owned workflow driver")
@@ -863,9 +836,7 @@ class Runtime:
         self._workflow_runner = workflow_runner
         self._profiles = dict(profiles)
         self._drivers = dict(drivers)
-        self._cancellation_coordinators: dict[
-            str, DriverCancellationCoordinator
-        ] = {}
+        self._cancellation_coordinators: dict[str, DriverCancellationCoordinator] = {}
         if workflow_driver is not None:
             self._drivers[WORKFLOW_DRIVER_KIND] = workflow_driver
             self._cancellation_coordinators[WORKFLOW_DRIVER_KIND] = workflow_driver  # type: ignore[assignment]
@@ -890,9 +861,7 @@ class Runtime:
         self._fences: dict[str, RunFenceLease] = {}
         self._cancels: dict[str, CancelToken] = {}
         self._heartbeats: dict[str, asyncio.Task[None]] = {}
-        self._workflow_spawn_ready_activations: dict[
-            str, WorkflowSpawnReadyActivation
-        ] = {}
+        self._workflow_spawn_ready_activations: dict[str, WorkflowSpawnReadyActivation] = {}
         self._workflow_start_dispatches: dict[str, RuntimeStartDispatchClaim] = {}
         self._workflow_recovery_work: dict[str, WorkflowRecoveryWork] = {}
         self._child_signals = ChildSignalRuntime(uow, owner_id=ports.owner_id)
@@ -988,7 +957,7 @@ class Runtime:
                 continue
             try:
                 prior_ready = await self._uow.run_atomic(
-                    lambda tx, run_id=run.run_id: self._uow.read_spawn_ready_activation(
+                    lambda tx, run_id=run.run_id: self._uow.read_spawn_ready_activation(  # type: ignore[misc]
                         tx, run_id
                     ),
                     fault_label="runtime:spawn_ready:read",
@@ -1000,14 +969,12 @@ class Runtime:
                         and self._uow.is_workflow_spawn_child(run.run_id)
                     ):
                         admission = await self._uow.run_atomic(
-                            lambda tx, run_id=run.run_id: self._uow.resume_spawn_child_start(
+                            lambda tx, run_id=run.run_id: self._uow.resume_spawn_child_start(  # type: ignore[misc]
                                 tx,
                                 run_id,
                                 RuntimeActivationClaim(
                                     self._ports.owner_id,
-                                    lease_ttl_seconds=(
-                                        self._ports.lease_ttl_seconds
-                                    ),
+                                    lease_ttl_seconds=(self._ports.lease_ttl_seconds),
                                 ),
                                 now=self._now(),
                             ),
@@ -1017,14 +984,12 @@ class Runtime:
                             continue
                         activated = self._uow.read_run(run.run_id)
                         if activated is None:
-                            raise UnitOfWorkConflict(
-                                "workflow spawn child Run disappeared"
-                            )
+                            raise UnitOfWorkConflict("workflow spawn child Run disappeared")
                     else:
                         activated = await self._activate(run.run_id)
                 else:
                     ready_activation = await self._uow.run_atomic(
-                        lambda tx, prior=prior_ready: self._uow.reclaim_spawn_ready_activation(
+                        lambda tx, prior=prior_ready: self._uow.reclaim_spawn_ready_activation(  # type: ignore[misc]
                             tx,
                             prior,
                             self._ports.owner_id,
@@ -1036,15 +1001,11 @@ class Runtime:
                     self._register_spawn_ready_activation(ready_activation)
                     activated = self._uow.read_run(run.run_id)
                     if activated is None:
-                        raise UnitOfWorkConflict(
-                            "workflow spawn parent Run disappeared"
-                        )
+                        raise UnitOfWorkConflict("workflow spawn parent Run disappeared")
             except UnitOfWorkConflict:
                 continue
             if activated.state is RunState.CANCEL_REQUESTED:
-                await self._terminalize_cancelled(
-                    activated, reason="startup_recovery"
-                )
+                await self._terminalize_cancelled(activated, reason="startup_recovery")
             else:
                 self._schedule(activated.run_id)
 
@@ -1083,9 +1044,7 @@ class Runtime:
         for token in self._cancels.values():
             token.cancel()
         await self._live.close(timeout_seconds=self._ports.close_timeout_seconds)
-        heartbeat_tasks = tuple(
-            task for task in self._heartbeats.values() if not task.done()
-        )
+        heartbeat_tasks = tuple(task for task in self._heartbeats.values() if not task.done())
         for task in heartbeat_tasks:
             task.cancel()
         if heartbeat_tasks:
@@ -1204,18 +1163,14 @@ class Runtime:
             now=self._now(),
         ):
             try:
-                run, lease, _receipt = (
-                    self._uow.consume_resolved_wait_and_claim_activation(
-                        blocker_id=blocker.blocker_id,
-                        owner_id=self._ports.owner_id,
-                        namespace=RUNTIME_LEASE_NAMESPACE,
-                        now=self._now(),
-                        lease_ttl_seconds=self._ports.lease_ttl_seconds,
-                    )
+                run, lease, _receipt = self._uow.consume_resolved_wait_and_claim_activation(
+                    blocker_id=blocker.blocker_id,
+                    owner_id=self._ports.owner_id,
+                    namespace=RUNTIME_LEASE_NAMESPACE,
+                    now=self._now(),
+                    lease_ttl_seconds=self._ports.lease_ttl_seconds,
                 )
-                fence = await self._uow.acquire(
-                    RunId(run.run_id), lease, now=self._now()
-                )
+                fence = await self._uow.acquire(RunId(run.run_id), lease, now=self._now())
             except UnitOfWorkConflict:
                 continue
             self._leases[run.run_id] = lease
@@ -1252,16 +1207,14 @@ class Runtime:
     async def _drain_spawn_ready_once(self) -> None:
         cursor: str | None = None
         while True:
-            ready_values, cursor = self._uow.list_ready_spawn_continuations(
-                cursor, limit=100
-            )
+            ready_values, cursor = self._uow.list_ready_spawn_continuations(cursor, limit=100)
             for ready in ready_values:
                 blocker = self._uow.read_spawn_ready_blocker(ready)
                 if blocker is None:
                     continue
                 try:
                     activation = await self._uow.run_atomic(
-                        lambda tx, ready=ready, blocker=blocker: (
+                        lambda tx, ready=ready, blocker=blocker: (  # type: ignore[misc]
                             self._uow.consume_spawn_ready_and_claim_activation(
                                 tx,
                                 ready,
@@ -1282,9 +1235,7 @@ class Runtime:
             if cursor is None:
                 return
 
-    def _register_spawn_ready_activation(
-        self, activation: WorkflowSpawnReadyActivation
-    ) -> None:
+    def _register_spawn_ready_activation(self, activation: WorkflowSpawnReadyActivation) -> None:
         run_id = activation.execution_lease.run_id
         self._workflow_spawn_ready_activations[run_id] = activation
         self._leases[run_id] = activation.execution_lease
@@ -1367,9 +1318,7 @@ class Runtime:
             event_id=f"{start.run_id.value}:created",
             now=self._now(),
             user_id=(
-                "harness-system"
-                if start.conversation is None
-                else start.conversation.user_id
+                "harness-system" if start.conversation is None else start.conversation.user_id
             ),
             memory_intent=memory_intent,
             context_stage_id=start.context_stage_id,
@@ -1446,10 +1395,8 @@ class Runtime:
                 ready = self._workflow_spawn_ready_activations.get(run_id)
                 if ready is not None:
                     refreshed = await self._uow.run_atomic(
-                        lambda tx, receipt_id=ready.activation_receipt_id: (
-                            self._uow.read_spawn_ready_activation(
-                                tx, run_id, receipt_id
-                            )
+                        lambda tx, receipt_id=ready.activation_receipt_id: (  # type: ignore[misc]
+                            self._uow.read_spawn_ready_activation(tx, run_id, receipt_id)
                         ),
                         fault_label="runtime:spawn_ready:heartbeat_read",
                     )
@@ -1474,8 +1421,7 @@ class Runtime:
             snapshot = StartSnapshot.from_json(raw_snapshot)
             driver = self._drivers[snapshot.driver_kind]
             if snapshot.policy_fingerprint is not None and (
-                getattr(driver, "policy_fingerprint", None)
-                != snapshot.policy_fingerprint
+                getattr(driver, "policy_fingerprint", None) != snapshot.policy_fingerprint
             ):
                 error = HarnessError(
                     "runtime_policy_mismatch",
@@ -1502,8 +1448,7 @@ class Runtime:
                 catalog_matches = (
                     resolved_catalog is not None
                     and resolved_catalog.generation == snapshot.tool_catalog_generation
-                    and resolved_catalog.content_fingerprint
-                    == snapshot.tool_catalog_fingerprint
+                    and resolved_catalog.content_fingerprint == snapshot.tool_catalog_fingerprint
                 )
             else:
                 catalog_matches = (
@@ -1520,9 +1465,7 @@ class Runtime:
                 )
                 return
             if run.state is RunState.CANCEL_REQUESTED:
-                await self._terminalize_cancelled(
-                    run, snapshot=snapshot, reason="pre_drive_cancel"
-                )
+                await self._terminalize_cancelled(run, snapshot=snapshot, reason="pre_drive_cancel")
                 return
             continuation_claim = self._uow.claim_continuation(
                 run_id=run_id,
@@ -1538,9 +1481,7 @@ class Runtime:
                     execution_lease=self._leases[run_id],
                     run_fence=self._fences[run_id],
                     services=self._services,
-                    continuations=(
-                        () if continuation_claim is None else (continuation_claim,)
-                    ),
+                    continuations=(() if continuation_claim is None else (continuation_claim,)),
                     workflow_spawn_ready_activation=(
                         self._workflow_spawn_ready_activations.get(run_id)
                     ),
@@ -1560,9 +1501,7 @@ class Runtime:
                 ):
                     continuation_claim = None
             if result.workflow_spawn_control is not None:
-                await self._accept_workflow_spawn_control(
-                    run_id, result.workflow_spawn_control
-                )
+                await self._accept_workflow_spawn_control(run_id, result.workflow_spawn_control)
                 return
             current = self._uow.read_run(run_id)
             if current is None:
@@ -1570,9 +1509,7 @@ class Runtime:
             if result.state is RunState.WAITING:
                 if result.authorization_wait is not None:
                     if continuation_claim is not None:
-                        raise UnitOfWorkConflict(
-                            "authorization wait cannot ack a continuation"
-                        )
+                        raise UnitOfWorkConflict("authorization wait cannot ack a continuation")
                     pending = result.authorization_wait
                     prepared = pending.prepared
                     arguments = thaw_json(prepared.call.arguments)
@@ -1592,14 +1529,10 @@ class Runtime:
                             "metadata": metadata,
                             "nonce": pending.request.nonce,
                             "prompt": pending.request.prompt,
-                            "resources": [
-                                resource.to_json() for resource in prepared.resources
-                            ],
+                            "resources": [resource.to_json() for resource in prepared.resources],
                             "resources_digest": resource_digest(prepared.resources),
                             "sidecar_digest": (
-                                None
-                                if prepared.sidecar is None
-                                else prepared.sidecar.digest
+                                None if prepared.sidecar is None else prepared.sidecar.digest
                             ),
                             "tool_name": prepared.call.name,
                         },
@@ -1670,9 +1603,7 @@ class Runtime:
                 and current.state is RunState.CANCEL_REQUESTED
             ):
                 if continuation_claim is None:
-                    await self._terminalize_cancelled(
-                        current, reason="driver_cancelled"
-                    )
+                    await self._terminalize_cancelled(current, reason="driver_cancelled")
                 else:
                     await self._abandon_run_authority(run_id)
         except UnitOfWorkConflict:
@@ -1730,9 +1661,7 @@ class Runtime:
             token = self._cancels.get(value)
             latest = self._uow.read_run(value)
             assert latest is not None
-            await self._terminalize_cancelled(
-                latest, snapshot=snapshot, reason="user"
-            )
+            await self._terminalize_cancelled(latest, snapshot=snapshot, reason="user")
             if token is not None:
                 token.cancel()
             if value in self._live.active_run_ids():
@@ -1782,9 +1711,7 @@ class Runtime:
         if snapshot.driver_kind == WORKFLOW_DRIVER_KIND:
             coordinator = self._cancellation_coordinators.get(WORKFLOW_DRIVER_KIND)
             if coordinator is None:
-                raise UnitOfWorkConflict(
-                    "workflow cancellation coordinator is not registered"
-                )
+                raise UnitOfWorkConflict("workflow cancellation coordinator is not registered")
             if run.run_id not in self._leases or run.run_id not in self._fences:
                 await self._activate(run.run_id)
             outcome = await coordinator.cancel(
@@ -1801,9 +1728,7 @@ class Runtime:
                 cancel_id=outcome.cancel_id,
                 generation=outcome.generation,
             ):
-                raise UnitOfWorkConflict(
-                    "workflow cancel terminal receipt is not durable"
-                )
+                raise UnitOfWorkConflict("workflow cancel terminal receipt is not durable")
             self._drop_local_authority(run.run_id)
             return
         if run.run_id not in self._fences:
@@ -1838,9 +1763,7 @@ class Runtime:
                     "completed conversation requires typed conversation_output"
                 )
             if state is not RunState.COMPLETED and conversation_output is not None:
-                raise UnitOfWorkConflict(
-                    "non-completed conversation rejects conversation_output"
-                )
+                raise UnitOfWorkConflict("non-completed conversation rejects conversation_output")
             if conversation_output is not None:
                 memory_intent = MemoryIntentSpec.from_conversation(
                     ConversationMemoryIntent(
@@ -1869,9 +1792,7 @@ class Runtime:
         fence = self._fences[run.run_id]
         if run.parent_run_id is not None:
             if continuation_claim is not None:
-                raise UnitOfWorkConflict(
-                    "child continuation terminalization has no atomic command"
-                )
+                raise UnitOfWorkConflict("child continuation terminalization has no atomic command")
             committed = self._uow.read_child_terminal_result_for_run(run.run_id)
             if committed is not None:
                 if committed.terminal_state != state.value:
@@ -1933,9 +1854,7 @@ class Runtime:
                 run_fence=fence,
                 execution_lease=self._leases[run.run_id],
                 receipt_id=f"{identity}:receipt",
-                terminal_fence_receipt_ref=(
-                    f"runtime-fence:{fence.owner_id}:{fence.epoch}"
-                ),
+                terminal_fence_receipt_ref=(f"runtime-fence:{fence.owner_id}:{fence.epoch}"),
                 now=self._now(),
                 memory_intent=memory_intent,
             )
@@ -2018,15 +1937,11 @@ class Runtime:
                 raise UnitOfWorkConflict(
                     "workflow spawn CANCEL control lacks a cancel-pending child"
                 )
-            await self._terminalize_cancelled(
-                child, reason="workflow_spawn_child_control"
-            )
+            await self._terminalize_cancelled(child, reason="workflow_spawn_child_control")
             return
         elif child_control.kind is WorkflowSpawnChildControlKind.TERMINAL:
             if self._uow.read_child_terminal_result_for_run(child_run_id) is None:
-                raise UnitOfWorkConflict(
-                    "workflow spawn TERMINAL control lacks terminal receipt"
-                )
+                raise UnitOfWorkConflict("workflow spawn TERMINAL control lacks terminal receipt")
             return
         elif child_control.kind in {
             WorkflowSpawnChildControlKind.ATTACH,
@@ -2038,9 +1953,7 @@ class Runtime:
         if child_run_id not in self._live.active_run_ids():
             self._schedule(child_run_id)
 
-    def _register_recovered_spawn_child(
-        self, admission: RuntimeStartAdmission
-    ) -> bool:
+    def _register_recovered_spawn_child(self, admission: RuntimeStartAdmission) -> bool:
         if admission.disposition in {
             RuntimeStartDisposition.START_NEW,
             RuntimeStartDisposition.START_ORPHAN,
@@ -2064,19 +1977,13 @@ class Runtime:
             # No Driver authority is returned for this disposition.  Let the
             # canonical cancellation coordinator reacquire and converge it.
             return True
-        raise UnitOfWorkConflict(
-            "workflow child recovery control is not implemented"
-        )
+        raise UnitOfWorkConflict("workflow child recovery control is not implemented")
 
-    def _register_workflow_child_recovery(
-        self, admission: RuntimeStartAdmission
-    ) -> None:
+    def _register_workflow_child_recovery(self, admission: RuntimeStartAdmission) -> None:
         activation = admission.activation
         recovery_work = admission.recovery_work
         if activation is None or recovery_work is None:
-            raise UnitOfWorkConflict(
-                "workflow spawn RECOVER control lacks child authority"
-            )
+            raise UnitOfWorkConflict("workflow spawn RECOVER control lacks child authority")
         child_run_id = activation.execution_lease.run_id
         self._leases[child_run_id] = activation.execution_lease
         self._fences[child_run_id] = activation.run_fence
@@ -2089,15 +1996,11 @@ class Runtime:
                 name=f"simple-harness-heartbeat:{child_run_id}",
             )
 
-    def _register_workflow_child_start(
-        self, admission: RuntimeStartAdmission
-    ) -> None:
+    def _register_workflow_child_start(self, admission: RuntimeStartAdmission) -> None:
         activation = admission.activation
         dispatch_claim = admission.dispatch_claim
         if activation is None or dispatch_claim is None:
-            raise UnitOfWorkConflict(
-                "workflow spawn START control lacks child authority"
-            )
+            raise UnitOfWorkConflict("workflow spawn START control lacks child authority")
         child_run_id = activation.execution_lease.run_id
         self._leases[child_run_id] = activation.execution_lease
         self._fences[child_run_id] = activation.run_fence

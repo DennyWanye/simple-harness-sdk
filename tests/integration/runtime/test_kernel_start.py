@@ -16,8 +16,8 @@ from simple_harness.execution.uow import RunState
 from simple_harness.runtime import (
     DriverResult,
     RunStart,
-    RuntimePorts,
     RuntimeLifecycleState,
+    RuntimePorts,
     RuntimeProfile,
     SqliteContextPort,
     build_runtime,
@@ -86,9 +86,7 @@ def runtime(
             delivery=(
                 noop
                 if delivery_sink is None
-                else DeliveryDispatcher(
-                    uow, {"fixture": delivery_sink}, clock=clock
-                )
+                else DeliveryDispatcher(uow, {"fixture": delivery_sink}, clock=clock)
             ),
             tool_reconciliation=noop,
             reconciliation=noop,
@@ -104,9 +102,7 @@ def runtime(
     return value, uow, database
 
 
-async def seed_terminal_deliveries(
-    uow: SqliteExecutionUnitOfWork, *, count: int
-) -> None:
+async def seed_terminal_deliveries(uow: SqliteExecutionUnitOfWork, *, count: int) -> None:
     uow.create_with_start_snapshot(
         execution_session_id="session-delivery",
         run_id="run-delivery",
@@ -445,9 +441,7 @@ def test_fixed_root_has_no_classifier_and_rejects_override(tmp_path) -> None:
 def test_workflow_start_snapshot_requires_typed_admission() -> None:
     start = request("workflow-roundtrip")
     try:
-        bind_start_snapshot(
-            start, profile_key="workflow.demo", driver_kind="workflow"
-        )
+        bind_start_snapshot(start, profile_key="workflow.demo", driver_kind="workflow")
     except ValueError as error:
         assert "workflow admission" in str(error)
     else:

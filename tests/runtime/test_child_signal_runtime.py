@@ -38,9 +38,7 @@ class FakeSignalUnitOfWork:
             claim_epoch=1,
         )
 
-    def ack_child_signal_and_commit_parent_progress(
-        self, **kwargs: object
-    ) -> ChildSignalAckResult:
+    def ack_child_signal_and_commit_parent_progress(self, **kwargs: object) -> ChildSignalAckResult:
         self.ack_calls.append(kwargs)
         continuation = kwargs["continuation_payload"]
         event = kwargs["event_payload"]
@@ -56,9 +54,7 @@ class FakeSignalUnitOfWork:
             continuation_payload_hash=hashlib.sha256(
                 canonical_json(continuation).encode("utf-8")
             ).hexdigest(),
-            event_payload_hash=hashlib.sha256(
-                canonical_json(event).encode("utf-8")
-            ).hexdigest(),
+            event_payload_hash=hashlib.sha256(canonical_json(event).encode("utf-8")).hexdigest(),
             created_at=float(kwargs["now"]),
         )
         signal = ChildSignalRecord(
@@ -82,9 +78,7 @@ def test_runtime_uses_hol_claim_and_atomic_ack_with_stable_identities() -> None:
     uow = FakeSignalUnitOfWork()
     runtime = ChildSignalRuntime(uow, owner_id="runtime-a")
 
-    result = runtime.receive_one(
-        parent_run_id="root-1", now=10.0, lease_seconds=30.0
-    )
+    result = runtime.receive_one(parent_run_id="root-1", now=10.0, lease_seconds=30.0)
 
     assert result is not None
     assert uow.claim_calls == [
@@ -97,9 +91,7 @@ def test_runtime_uses_hol_claim_and_atomic_ack_with_stable_identities() -> None:
     ]
     assert uow.ack_calls[0]["claim_epoch"] == 1
     assert uow.ack_calls[0]["receipt_id"] == "child-signal:signal-1:receipt"
-    assert uow.ack_calls[0]["continuation_id"] == (
-        "child-signal:signal-1:continuation"
-    )
+    assert uow.ack_calls[0]["continuation_id"] == ("child-signal:signal-1:continuation")
     assert uow.ack_calls[0]["event_id"] == "child-signal:signal-1:acked"
 
 
@@ -107,9 +99,7 @@ def test_reconcile_does_not_ack_signal_while_parent_has_active_child() -> None:
     uow = FakeSignalUnitOfWork()
     runtime = ChildSignalRuntime(uow, owner_id="runtime-a")
 
-    results = runtime.reconcile_all(
-        now=10.0, blocked_parent_run_ids={"root-1"}
-    )
+    results = runtime.reconcile_all(now=10.0, blocked_parent_run_ids={"root-1"})
 
     assert results == ()
     assert uow.claim_calls == []

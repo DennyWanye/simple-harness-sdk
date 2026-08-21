@@ -41,9 +41,7 @@ def test_provider_reservation_survives_reopen_with_same_stable_identity(tmp_path
     database, uow, lease = _seed(path)
     checkpoint = DurableReactCheckpoint(uow, clock=lambda: 3.0)
     state, version = checkpoint.load_or_create(RunId("run-1"), lease)
-    reserved = state.before_provider(
-        TerminationLimits(), now=3.0, budget=BudgetSnapshot()
-    )
+    reserved = state.before_provider(TerminationLimits(), now=3.0, budget=BudgetSnapshot())
     reserved, version = checkpoint.cas(RunId("run-1"), lease, version, reserved)
     database.close()
 

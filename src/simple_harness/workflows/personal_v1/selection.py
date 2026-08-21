@@ -90,9 +90,7 @@ def _digest(value: object, name: str) -> str:
 
 def _closed_mapping(value: object, name: str) -> Mapping[str, Any]:
     """Validate and clone mapping, ensuring JSON-serializability."""
-    if not isinstance(value, Mapping) or any(
-        not isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
         raise PersonalWorkflowSelectionError(f"{name}_invalid")
     try:
         cloned = json.loads(_canonical_json(dict(value)))
@@ -174,9 +172,7 @@ class PersonalWorkflowSelectionV1:
         bindings = _closed_mapping(self.tool_bindings, "tool_bindings")
 
         # Validate and freeze lease entries
-        entries = tuple(
-            _closed_mapping(item, "lease_entry") for item in self.lease_entries
-        )
+        entries = tuple(_closed_mapping(item, "lease_entry") for item in self.lease_entries)
         if not entries:
             raise PersonalWorkflowSelectionError("lease_entries_required")
 
@@ -192,9 +188,7 @@ class PersonalWorkflowSelectionV1:
 
         # Verify selection_fingerprint matches full snapshot
         if self.selection_fingerprint != _hash(self._fingerprint_payload()):
-            raise PersonalWorkflowSelectionError(
-                "personal_selection_fingerprint_mismatch"
-            )
+            raise PersonalWorkflowSelectionError("personal_selection_fingerprint_mismatch")
 
     def _identity_payload(self) -> dict[str, object]:
         """Build identity payload for selection_id derivation."""
@@ -219,8 +213,7 @@ class PersonalWorkflowSelectionV1:
             "lease_entries": [dict(item) for item in self.lease_entries],
             "effect_topology": dict(self.effect_topology),
             "tool_bindings": {
-                name: dict(value)
-                for name, value in sorted(self.tool_bindings.items())
+                name: dict(value) for name, value in sorted(self.tool_bindings.items())
             },
         }
 
@@ -243,20 +236,15 @@ class PersonalWorkflowSelectionV1:
             "graph_hash": self.graph_hash,
             "query_hash": self.query_hash,
             "run_catalog_content_stamp": self.run_catalog_content_stamp,
-            "lease_entries": [
-                copy.deepcopy(dict(item)) for item in self.lease_entries
-            ],
+            "lease_entries": [copy.deepcopy(dict(item)) for item in self.lease_entries],
             "effect_topology": copy.deepcopy(dict(self.effect_topology)),
             "tool_bindings": {
-                name: copy.deepcopy(dict(value))
-                for name, value in self.tool_bindings.items()
+                name: copy.deepcopy(dict(value)) for name, value in self.tool_bindings.items()
             },
         }
 
     @classmethod
-    def from_authoritative_mapping(
-        cls, value: Mapping[str, Any]
-    ) -> PersonalWorkflowSelectionV1:
+    def from_authoritative_mapping(cls, value: Mapping[str, Any]) -> PersonalWorkflowSelectionV1:
         """Deserialize selection from authoritative mapping.
 
         Args:
@@ -286,9 +274,7 @@ class PersonalWorkflowSelectionV1:
             "tool_bindings",
         }
         if set(value) != required or value.get("schema_version") != 1:
-            raise PersonalWorkflowSelectionError(
-                "personal_selection_schema_invalid"
-            )
+            raise PersonalWorkflowSelectionError("personal_selection_schema_invalid")
 
         lease_entries = value["lease_entries"]
         if not isinstance(lease_entries, Sequence) or isinstance(
@@ -368,10 +354,7 @@ class PersonalWorkflowSelectionV1:
             "run_catalog_content_stamp": run_catalog_content_stamp,
             "lease_entries": [dict(item) for item in lease_entries],
             "effect_topology": dict(effect_topology),
-            "tool_bindings": {
-                name: dict(value)
-                for name, value in sorted(tool_bindings.items())
-            },
+            "tool_bindings": {name: dict(value) for name, value in sorted(tool_bindings.items())},
         }
 
         return cls(

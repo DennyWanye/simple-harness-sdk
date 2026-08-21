@@ -125,9 +125,7 @@ def ack(
 
 
 @pytest.mark.parametrize("fault_point", TERMINAL_POINTS)
-def test_child_terminal_fault_reopens_all_before(
-    tmp_path: Path, fault_point: str
-) -> None:
+def test_child_terminal_fault_reopens_all_before(tmp_path: Path, fault_point: str) -> None:
     path = tmp_path / "execution.db"
     database, uow, lease, fence = setup_child(path)
     with pytest.raises(InjectedFault, match=fault_point):
@@ -201,9 +199,7 @@ def test_signal_ack_after_commit_reopens_all_after_and_is_idempotent(
         assert repeated.signal.state is ChildSignalState.ACKED
         assert repeated.receipt.receipt_id == "receipt-signal-1"
         continuation = uow.read_continuation("continuation-child-1")
-        assert (
-            continuation is not None and continuation.state is ContinuationState.PENDING
-        )
+        assert continuation is not None and continuation.state is ContinuationState.PENDING
         assert uow.read_run("root-1").state is RunState.QUEUED  # type: ignore[union-attr]
         with pytest.raises(UnitOfWorkConflict, match="differently"):
             uow.ack_child_signal_and_commit_parent_progress(

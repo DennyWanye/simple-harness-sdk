@@ -82,9 +82,7 @@ def _unknown(tmp_path):
         execution_lease=lease,
     )
     record = uow.settle_provider_invocation(
-        record.settle_unknown(
-            error_code="transport_lost", at=4.0, expected_version=record.version
-        ),
+        record.settle_unknown(error_code="transport_lost", at=4.0, expected_version=record.version),
         expected_version=record.version,
     )
     assert record.state is ProviderInvocationState.UNKNOWN
@@ -104,9 +102,7 @@ def test_completed_provider_resolution_and_budget_are_one_transaction(tmp_path) 
     charge = BudgetCharge(BudgetChargeKind.TRUSTED_USAGE, 17, "fixture-price-v1")
     usage = {"usage": None, "budget": BudgetCharge.unknown().to_json()}
 
-    with pytest.raises(
-        RuntimeError, match="provider_reconciliation.ledger.after_write"
-    ):
+    with pytest.raises(RuntimeError, match="provider_reconciliation.ledger.after_write"):
         uow.record_provider_reconciliation(
             record,
             outcome=ResolutionOutcome.COMPLETED,
@@ -121,9 +117,7 @@ def test_completed_provider_resolution_and_budget_are_one_transaction(tmp_path) 
     assert after_rollback is not None
     assert after_rollback.state is ProviderInvocationState.UNKNOWN
     assert (
-        database.connection.execute(
-            "SELECT count(*) FROM reconciliation_resolutions"
-        ).fetchone()[0]
+        database.connection.execute("SELECT count(*) FROM reconciliation_resolutions").fetchone()[0]
         == 0
     )
     assert uow.read_provider_budget(RunId("run-1")).has_unknown_charge is True
@@ -183,9 +177,7 @@ def test_resolution_before_wait_is_not_lost_and_receipt_rejects_foreign_owner(
         owner_id="owner-a", namespace="runtime.kernel", now=7.0
     ) == (blocker,)
     assert (
-        uow.list_resolved_wait_blockers(
-            owner_id="owner-b", namespace="runtime.kernel", now=7.0
-        )
+        uow.list_resolved_wait_blockers(owner_id="owner-b", namespace="runtime.kernel", now=7.0)
         == ()
     )
     activated, replayed_lease, receipt = uow.consume_resolved_wait_and_claim_activation(
@@ -291,10 +283,5 @@ def test_wait_blocker_cannot_claim_a_stale_or_foreign_ledger_observation(
             now=5.0,
         )
     assert uow.read_run("run-1") == run
-    assert (
-        database.connection.execute(
-            "SELECT count(*) FROM run_wait_blockers"
-        ).fetchone()[0]
-        == 0
-    )
+    assert database.connection.execute("SELECT count(*) FROM run_wait_blockers").fetchone()[0] == 0
     database.close()

@@ -9,12 +9,13 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from simple_harness.contracts import (
     CallId,
     EffectId,
     FrozenJsonValue,
+    JsonValue,
     RunId,
     canonical_json,
     freeze_json,
@@ -64,7 +65,7 @@ def effect_request_hash(*, tool_name: str, arguments: object) -> str:
     if not isinstance(arguments, dict):
         raise TypeError("effect arguments must be a JSON object")
     payload = {"arguments": arguments, "tool_name": tool_name}
-    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical_json(cast(JsonValue, payload)).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

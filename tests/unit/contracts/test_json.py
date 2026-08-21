@@ -55,4 +55,3 @@ def test_freeze_and_thaw_defensively_copy_nested_values() -> None:
 
 def test_boolean_is_not_coerced_to_integer() -> None:
     assert canonical_json({"value": True}) == '{"value":true}'
-

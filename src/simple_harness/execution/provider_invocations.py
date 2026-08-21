@@ -190,11 +190,7 @@ def _message_from_json(value: object) -> Message:
     normalized_content = (
         content
         if isinstance(content, str)
-        else tuple(
-            ContentBlock.from_dict(item)
-            for item in content
-            if isinstance(item, dict)
-        )
+        else tuple(ContentBlock.from_dict(item) for item in content if isinstance(item, dict))
     )
     if isinstance(content, list) and len(normalized_content) != len(content):
         raise TypeError("stored provider content block is malformed")
@@ -290,13 +286,9 @@ class ProviderInvocationRecord:
         object.__setattr__(self, "state", ProviderInvocationState(self.state))
         for name in ("invocation_id", "request_fingerprint", "target_digest"):
             value = getattr(self, name)
-            if len(value) != 64 or any(
-                char not in "0123456789abcdef" for char in value
-            ):
+            if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
                 raise ValueError(f"{name} must be lowercase SHA-256")
-        if not isinstance(self.run_id, RunId) or not isinstance(
-            self.request_id, RequestId
-        ):
+        if not isinstance(self.run_id, RunId) or not isinstance(self.request_id, RequestId):
             raise TypeError("run_id and request_id must use typed identities")
         if not isinstance(self.target, ProviderTarget):
             raise TypeError("target must use ProviderTarget")
@@ -305,14 +297,10 @@ class ProviderInvocationRecord:
         if (self.estimator_snapshot is None) != (self.estimator_digest is None):
             raise ValueError("estimator snapshot and digest must be paired")
         if self.estimator_snapshot is not None:
-            estimator_snapshot = thaw_json(
-                cast(FrozenJsonValue, self.estimator_snapshot)
-            )
+            estimator_snapshot = thaw_json(cast(FrozenJsonValue, self.estimator_snapshot))
             if self.estimator_digest != _digest(estimator_snapshot):
                 raise ValueError("estimator_digest does not match snapshot")
-            object.__setattr__(
-                self, "estimator_snapshot", freeze_json(estimator_snapshot)
-            )
+            object.__setattr__(self, "estimator_snapshot", freeze_json(estimator_snapshot))
         if self.version < 1 or isinstance(self.version, bool):
             raise ValueError("version must be a positive integer")
         for name in ("handoff_attempt", "rehandoff_count"):
@@ -385,9 +373,7 @@ class ProviderInvocationRecord:
         if self.version != expected_version:
             raise ValueError("stale provider invocation version")
         if self.state is not state:
-            raise ValueError(
-                f"provider invocation is {self.state.value}, expected {state.value}"
-            )
+            raise ValueError(f"provider invocation is {self.state.value}, expected {state.value}")
 
     def hand_off(self, *, at: float, expected_version: int) -> ProviderInvocationRecord:
         self._expect(ProviderInvocationState.CLAIMED, expected_version)
@@ -414,9 +400,7 @@ class ProviderInvocationRecord:
             state=ProviderInvocationState.SUCCEEDED,
             response_json=response_json,
             usage_json=usage_json,
-            budget_charge=self.budget_charge
-            if budget_charge is None
-            else budget_charge,
+            budget_charge=self.budget_charge if budget_charge is None else budget_charge,
             settled_at=at,
             version=self.version + 1,
         )
@@ -450,13 +434,8 @@ class ProviderInvocationRecord:
         )
 
 
-def dataclass_replace(
-    record: ProviderInvocationRecord, **changes: Any
-) -> ProviderInvocationRecord:
-    values = {
-        name: getattr(record, name)
-        for name in ProviderInvocationRecord.__dataclass_fields__
-    }
+def dataclass_replace(record: ProviderInvocationRecord, **changes: Any) -> ProviderInvocationRecord:
+    values = {name: getattr(record, name) for name in ProviderInvocationRecord.__dataclass_fields__}
     values.update(changes)
     return ProviderInvocationRecord(**values)
 

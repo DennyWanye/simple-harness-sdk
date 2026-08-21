@@ -203,6 +203,7 @@ class _ConsumerToolExecutorAdapter:
             def make_handler(tool_name: str):
                 async def handler(arguments: dict, context):  # type: ignore[no-untyped-def]
                     from simple_harness.tools import ToolCall
+
                     call = ToolCall(context.call_id, tool_name, arguments)
                     tool_ctx = {
                         "run_id": str(context.run_id),
@@ -210,6 +211,7 @@ class _ConsumerToolExecutorAdapter:
                         "call_id": str(context.call_id) if context.call_id else None,
                     }
                     return await self._port.execute(call, tool_ctx)
+
                 return handler
 
             tool = FunctionTool(
@@ -254,9 +256,7 @@ class _DefaultToolCatalog:
     def current_generation(self) -> int:
         return 1
 
-    def resolve(
-        self, generation: int, content_fingerprint: str
-    ) -> ToolCatalogSnapshot | None:
+    def resolve(self, generation: int, content_fingerprint: str) -> ToolCatalogSnapshot | None:
         del generation, content_fingerprint
         return None
 

@@ -73,15 +73,13 @@ _APPROVAL_STEP = re.compile(
 # Convergence limits
 _MAX_CONSECUTIVE_DISCOVERY_SEARCHES = 3
 _MAX_CONSECUTIVE_FAILED_DESCRIBES = 2
-_REPEATABLE_DISCOVERY_SEARCH_TOOL_NAMES = frozenset(
-    {"capability_search", "tool_search"}
-)
+_REPEATABLE_DISCOVERY_SEARCH_TOOL_NAMES = frozenset({"capability_search", "tool_search"})
 
 # Provider failure detection
 _PROVIDER_BALANCE_FAILURE = re.compile(
     r"(?:\bstatus(?:_code)?[=:\s]+402\b|"
     r"\bhttp/\S+\s+402\b|"
-    r'\"(?:status|code)\"\s*:\s*402\b|'
+    r"\"(?:status|code)\"\s*:\s*402\b|"
     r"insufficient[_ -]?balance|余额不足|费用不足)",
     re.IGNORECASE,
 )
@@ -248,18 +246,12 @@ async def intake_handler(state: WorkflowState, context: WorkflowContext) -> Stat
         request_id=str(context.request_id or effective.get("request_id", "")),
         turn_id=str(context.turn_id or effective.get("turn_id", "")),
         system_prompt_ref=(
-            str(effective["system_prompt_ref"])
-            if effective.get("system_prompt_ref")
-            else None
+            str(effective["system_prompt_ref"]) if effective.get("system_prompt_ref") else None
         ),
-        prompt_ref=(
-            str(effective["prompt_ref"]) if effective.get("prompt_ref") else None
-        ),
+        prompt_ref=(str(effective["prompt_ref"]) if effective.get("prompt_ref") else None),
         skill_refs=list(effective.get("skill_refs", [])),
         compaction_summary=(
-            str(effective["compaction_summary"])
-            if effective.get("compaction_summary")
-            else None
+            str(effective["compaction_summary"]) if effective.get("compaction_summary") else None
         ),
         compaction_ref=(
             str(effective["compaction_ref"]) if effective.get("compaction_ref") else None
@@ -309,9 +301,7 @@ async def intake_handler(state: WorkflowState, context: WorkflowContext) -> Stat
     )
 
 
-async def clarify_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def clarify_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Request clarification from user if needed (HITL interrupt point)."""
     del context
     effective = _effective(state)
@@ -358,9 +348,7 @@ async def clarify_handler(
     # Append clarification to messages
     proposal = _proposal_state(effective).to_dict()
     messages = list(proposal["messages"])
-    messages.append(
-        {"role": "user", "content": answer, "message_id": "clarification-response"}
-    )
+    messages.append({"role": "user", "content": answer, "message_id": "clarification-response"})
     proposal["messages"] = messages
 
     return StatePatch(
@@ -397,9 +385,7 @@ async def plan_handler(state: WorkflowState, context: WorkflowContext) -> StateP
 
     steps: list[dict[str, JsonValue]] = []
     for index, raw in enumerate(raw_steps):
-        title = (
-            str(raw.get("title", "")) if isinstance(raw, Mapping) else str(raw)
-        )
+        title = str(raw.get("title", "")) if isinstance(raw, Mapping) else str(raw)
         step_id = _stable_id(run_id, index, title, prefix="step")
         steps.append(
             {
@@ -433,17 +419,13 @@ async def plan_handler(state: WorkflowState, context: WorkflowContext) -> StateP
     )
 
 
-async def wait_approval_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def wait_approval_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Wait for user approval of plan (HITL interrupt point)."""
     del context
     effective = _effective(state)
 
     if effective.get("workflow_status") == "cancelled":
-        return StatePatch(
-            {"values": _merged_values(state, {"approval_status": "cancelled"})}
-        )
+        return StatePatch({"values": _merged_values(state, {"approval_status": "cancelled"})})
 
     if not bool(effective.get("approval_required", True)):
         decision: object = {"approved": True}
@@ -461,9 +443,7 @@ async def wait_approval_handler(
 
     # Process decision
     approved = (
-        bool(decision.get("approved", False))
-        if isinstance(decision, Mapping)
-        else bool(decision)
+        bool(decision.get("approved", False)) if isinstance(decision, Mapping) else bool(decision)
     )
     action = (
         str(decision.get("action", "approve" if approved else "cancel"))
@@ -542,16 +522,10 @@ async def wait_approval_handler(
 async def approval_route(state: WorkflowState, context: WorkflowContext) -> str:
     """Route based on approval decision."""
     del context
-    return (
-        "approved"
-        if _effective(state).get("approval_status") == "approved"
-        else "finalize"
-    )
+    return "approved" if _effective(state).get("approval_status") == "approved" else "finalize"
 
 
-async def llm_proposal_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def llm_proposal_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Generate LLM proposal with tool calls.
 
     Calls ProposalPort to generate next proposal.
@@ -605,9 +579,7 @@ async def llm_proposal_handler(
     # Normalize outcome
     if not isinstance(outcome_raw, ProposalOutcomeV1):
         if not isinstance(outcome_raw, Mapping):
-            raise TypeError(
-                "ProposalPort.propose must return ProposalOutcomeV1 or its JSON form"
-            )
+            raise TypeError("ProposalPort.propose must return ProposalOutcomeV1 or its JSON form")
         outcome = ProposalOutcomeV1.from_dict(outcome_raw)
     else:
         outcome = outcome_raw
@@ -670,7 +642,11 @@ async def llm_proposal_handler(
             if source in DYNAMIC_SOURCES or call.tool_name.startswith(("plugin:", "mcp:")):
                 policy = await catalog_port.get_capability_policy(call.tool_name)
                 # Check if policy is sufficient for safe execution
-                if not policy or not policy.get("lifecycle_hash") or not policy.get("outcome_parser_hash"):
+                if (
+                    not policy
+                    or not policy.get("lifecycle_hash")
+                    or not policy.get("outcome_parser_hash")
+                ):
                     review.append(
                         {
                             "stable_call_id": call.stable_call_id,
@@ -763,9 +739,7 @@ def _drop_superseded_discovery_search_messages(
                         continue
                     function = raw_call.get("function")
                     names.add(
-                        str(function.get("name") or "")
-                        if isinstance(function, Mapping)
-                        else ""
+                        str(function.get("name") or "") if isinstance(function, Mapping) else ""
                     )
                     call_ids.add(str(raw_call.get("id") or ""))
                 if names and names.issubset(_REPEATABLE_DISCOVERY_SEARCH_TOOL_NAMES):
@@ -781,9 +755,7 @@ def _drop_superseded_discovery_search_messages(
     return compacted
 
 
-async def tool_execution_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def tool_execution_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Execute approved tool calls (HITL interrupt point).
 
     Handles authorization, dynamic tool review, convergence limits,
@@ -797,9 +769,7 @@ async def tool_execution_handler(
     outcome = _outcome(effective)
     proposal_state = _proposal_state(effective)
     dispatch_ids = {str(value) for value in effective.get("dispatch_call_ids", [])}
-    calls = [
-        call for call in outcome.prepared_calls if call.stable_call_id in dispatch_ids
-    ]
+    calls = [call for call in outcome.prepared_calls if call.stable_call_id in dispatch_ids]
 
     # Build authorization grants for approved mutating calls
     authorizations: dict[str, JsonValue] = {}
@@ -871,11 +841,8 @@ async def tool_execution_handler(
     blocked_search_ids: set[str] = set()
     if (
         calls
-        and all(
-            call.tool_name in _REPEATABLE_DISCOVERY_SEARCH_TOOL_NAMES for call in calls
-        )
-        and _consecutive_discovery_searches(proposal_state)
-        >= _MAX_CONSECUTIVE_DISCOVERY_SEARCHES
+        and all(call.tool_name in _REPEATABLE_DISCOVERY_SEARCH_TOOL_NAMES for call in calls)
+        and _consecutive_discovery_searches(proposal_state) >= _MAX_CONSECUTIVE_DISCOVERY_SEARCHES
     ):
         blocked_search_ids = {call.stable_call_id for call in calls}
 
@@ -883,8 +850,7 @@ async def tool_execution_handler(
     if (
         calls
         and all(call.tool_name == "tool_describe" for call in calls)
-        and _consecutive_failed_describes(proposal_state)
-        >= _MAX_CONSECUTIVE_FAILED_DESCRIBES
+        and _consecutive_failed_describes(proposal_state) >= _MAX_CONSECUTIVE_FAILED_DESCRIBES
     ):
         blocked_describe_ids = {call.stable_call_id for call in calls}
 
@@ -957,9 +923,7 @@ async def tool_execution_handler(
         if call is None:
             raise ValueError(f"dispatch returned unknown call id: {call_id}")
         payload = (
-            copy.deepcopy(dict(raw))
-            if isinstance(raw, Mapping)
-            else {"result": copy.deepcopy(raw)}
+            copy.deepcopy(dict(raw)) if isinstance(raw, Mapping) else {"result": copy.deepcopy(raw)}
         )
         payload.update(
             {
@@ -972,9 +936,7 @@ async def tool_execution_handler(
         validate_json_value(payload)
         normalized[call.stable_call_id] = payload
 
-    missing = [
-        call.stable_call_id for call in calls if call.stable_call_id not in normalized
-    ]
+    missing = [call.stable_call_id for call in calls if call.stable_call_id not in normalized]
     if missing:
         raise ValueError(f"dispatch omitted prepared call results: {', '.join(missing)}")
 
@@ -992,16 +954,17 @@ async def tool_execution_handler(
 
     # Compact messages (drop superseded searches)
     messages = list(proposal["messages"])
-    if calls and not blocked_search_ids and all(
-        call.tool_name in _REPEATABLE_DISCOVERY_SEARCH_TOOL_NAMES for call in calls
+    if (
+        calls
+        and not blocked_search_ids
+        and all(call.tool_name in _REPEATABLE_DISCOVERY_SEARCH_TOOL_NAMES for call in calls)
     ):
         messages = _drop_superseded_discovery_search_messages(messages)
 
     # Append assistant + tool messages
     if calls:
         raw_by_id = {
-            str(item.get("stable_call_id", "")): item
-            for item in outcome.raw_tool_proposals
+            str(item.get("stable_call_id", "")): item for item in outcome.raw_tool_proposals
         }
         messages.append(
             {
@@ -1094,12 +1057,8 @@ async def tool_execution_handler(
             if item.get("workflow_step_id") == active_step:
                 item["status"] = "completed"
                 break
-        next_todo = next(
-            (item for item in todos if item.get("status") != "completed"), None
-        )
-        proposal["active_step_id"] = (
-            str(next_todo["workflow_step_id"]) if next_todo else None
-        )
+        next_todo = next((item for item in todos if item.get("status") != "completed"), None)
+        proposal["active_step_id"] = str(next_todo["workflow_step_id"]) if next_todo else None
 
     run_id = str(state.get("run_id", ""))
     return StatePatch(
@@ -1118,9 +1077,7 @@ async def tool_execution_handler(
     )
 
 
-async def completion_decision_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def completion_decision_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Decide next action: loop/test/audit/finalize.
 
     Routes based on:
@@ -1134,9 +1091,7 @@ async def completion_decision_handler(
     outcome = _outcome(effective)
     todos = _todo_items(effective)
     incomplete = [
-        str(item["workflow_step_id"])
-        for item in todos
-        if item.get("status") != "completed"
+        str(item["workflow_step_id"]) for item in todos if item.get("status") != "completed"
     ]
 
     budgets = state.get("budgets", {})
@@ -1181,9 +1136,7 @@ async def completion_decision_handler(
     # Allow ArtifactPort to override decision
     artifact_port: ArtifactPort | None = context.ports.get("artifact")
     if artifact_port is not None and hasattr(artifact_port, "completion_decision"):
-        override = await artifact_port.completion_decision(
-            copy.deepcopy(decision), proposal_state
-        )
+        override = await artifact_port.completion_decision(copy.deepcopy(decision), proposal_state)
         if isinstance(override, Mapping):
             decision.update(copy.deepcopy(dict(override)))
 
@@ -1258,16 +1211,10 @@ async def test_handler(state: WorkflowState, context: WorkflowContext) -> StateP
     proposal = proposal_state.to_dict()
     proposal["verify_attempts"] = proposal_state.verify_attempts + 1
     proposal["verify_outcomes"] = [*proposal_state.verify_outcomes, result]
-    proposal["evidence_refs"] = list(
-        dict.fromkeys([*proposal_state.evidence_refs, *evidence])
-    )
+    proposal["evidence_refs"] = list(dict.fromkeys([*proposal_state.evidence_refs, *evidence]))
 
     return StatePatch(
-        {
-            "values": _merged_values(
-                state, {"proposal_state": proposal, "test_result": result}
-            )
-        }
+        {"values": _merged_values(state, {"proposal_state": proposal, "test_result": result})}
     )
 
 
@@ -1283,15 +1230,11 @@ async def audit_handler(state: WorkflowState, context: WorkflowContext) -> State
     proposal_state = _proposal_state(effective)
     todos = _todo_items(effective)
     incomplete = [
-        str(item["workflow_step_id"])
-        for item in todos
-        if item.get("status") != "completed"
+        str(item["workflow_step_id"]) for item in todos if item.get("status") != "completed"
     ]
 
     test_result = effective.get("test_result", {})
-    test_passed = isinstance(test_result, Mapping) and bool(
-        test_result.get("passed", False)
-    )
+    test_passed = isinstance(test_result, Mapping) and bool(test_result.get("passed", False))
 
     # Build audit result
     audit: dict[str, JsonValue] = {
@@ -1396,18 +1339,14 @@ async def audit_route(state: WorkflowState, context: WorkflowContext) -> str:
     return "fix" if _effective(state).get("audit_route") == "fix" else "finalize"
 
 
-async def finalize_handler(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def finalize_handler(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Prepare final output and delivery intents.
 
     Generates workflow report and final assistant message.
     """
     effective = _effective(state)
     run_id = (
-        context.identity.run_id
-        if context.identity is not None
-        else str(state.get("run_id", ""))
+        context.identity.run_id if context.identity is not None else str(state.get("run_id", ""))
     )
     if not run_id:
         raise ValueError("workflow run id is missing")
@@ -1475,4 +1414,3 @@ __all__ = [
     "tool_execution_handler",
     "wait_approval_handler",
 ]
-

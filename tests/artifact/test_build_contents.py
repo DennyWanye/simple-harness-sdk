@@ -39,16 +39,9 @@ def test_wheel_contains_only_package_and_distribution_metadata(
     _assert_clean(names)
     assert "simple_harness/__init__.py" in names
     assert "simple_harness/testing/arm64_candidate.py" in names
-    assert any(
-        name.endswith(".dist-info/licenses/LICENSES/Apache-2.0.txt")
-        for name in names
-    )
+    assert any(name.endswith(".dist-info/licenses/LICENSES/Apache-2.0.txt") for name in names)
     assert any(name.endswith(".dist-info/licenses/NOTICE") for name in names)
-    assert all(
-        name.startswith("simple_harness/")
-        or ".dist-info/" in name
-        for name in names
-    )
+    assert all(name.startswith("simple_harness/") or ".dist-info/" in name for name in names)
 
 
 def test_sdist_has_explicit_clean_source_surface(
@@ -87,9 +80,7 @@ def test_fresh_schema_v3_is_a_self_contained_static_artifact() -> None:
     legacy_tables: set[str] = set()
     for legacy_name in ("0001_initial.sql", "0002_context_authority.sql"):
         legacy_sql = (migrations / legacy_name).read_text(encoding="utf-8")
-        legacy_tables.update(
-            re.findall(r"CREATE TABLE ([a-z_]+)", legacy_sql)
-        )
+        legacy_tables.update(re.findall(r"CREATE TABLE ([a-z_]+)", legacy_sql))
     fresh_tables = set(re.findall(r"CREATE TABLE ([a-z_]+)", fresh_sql))
     assert legacy_tables <= fresh_tables
     assert {

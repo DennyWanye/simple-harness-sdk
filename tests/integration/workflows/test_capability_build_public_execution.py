@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
-from simple_harness.workflow import CapabilityBuildHostServices
 from simple_harness.workflow import (
+    CapabilityBuildHostServices,
     CheckpointExecutionAdapter,
     WorkflowContext,
     WorkflowExecutionPorts,
@@ -20,8 +20,8 @@ from simple_harness.workflow import (
     compile_workflow_registration,
 )
 from simple_harness.workflow.checkpoint import SqliteNativeCheckpointStore
-from simple_harness.workflow.recovery import RecoveryDecision, RecoveryDisposition
 from simple_harness.workflow.execution_ports import StartAdmissionRequest, StartMode
+from simple_harness.workflow.recovery import RecoveryDecision, RecoveryDisposition
 from simple_harness.workflows.capability_build import (
     CapabilityBuildAdmission,
     CapabilityBuildExecutionState,
@@ -170,9 +170,7 @@ def _runner(
 ):  # type: ignore[no-untyped-def]
     database = Database.open(path)
     uow = SqliteExecutionUnitOfWork(database, workflow_fault=workflow_fault)
-    ports = WorkflowExecutionPorts(
-        uow, CheckpointExecutionAdapter(database), uow, uow, uow
-    )
+    ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
     registry = WorkflowRegistry(transaction_owner=uow.transaction_owner)
     registration = build_capability_build_registration(
         generation=1, transaction_owner=uow.transaction_owner
@@ -180,9 +178,7 @@ def _runner(
     registry.register_definition(registration)
     runner = WorkflowRunner(
         registry=registry,
-        checkpoint=SqliteNativeCheckpointStore(
-            ports, blob_references=_BlobReferences()
-        ),
+        checkpoint=SqliteNativeCheckpointStore(ports, blob_references=_BlobReferences()),
         recovery=_Recovery(),
         trace=_Trace(),
         execution_ports=ports,
@@ -234,9 +230,7 @@ class _IdempotentPhysicalHost:
 
     async def authorize_source(self, *, source, operation_key, admission):  # type: ignore[no-untyped-def]
         del admission
-        return self._effect(
-            "source_policy", operation_key, {"allowed": True, "source": source}
-        )
+        return self._effect("source_policy", operation_key, {"allowed": True, "source": source})
 
     async def build(self, *, candidate, source_policy, operation_key, admission):  # type: ignore[no-untyped-def]
         del source_policy, admission
@@ -316,9 +310,7 @@ async def _native_config(
         capability_snapshot={},
     )
     admitted = await uow.run_atomic(
-        lambda transaction: uow.admit_start_standalone(
-            transaction, request, now=0.0
-        ),
+        lambda transaction: uow.admit_start_standalone(transaction, request, now=0.0),
         fault_label="test:admit_start",
     )
     activation = await uow.run_atomic(
@@ -355,13 +347,9 @@ async def _native_config(
 
 
 def _native(registration, uow, database):  # type: ignore[no-untyped-def]
-    ports = WorkflowExecutionPorts(
-        uow, CheckpointExecutionAdapter(database), uow, uow, uow
-    )
+    ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
     store = SqliteNativeCheckpointStore(ports, blob_references=_BlobReferences())
-    compiled = compile_workflow_registration(
-        registration, transaction_owner=uow.transaction_owner
-    )
+    compiled = compile_workflow_registration(registration, transaction_owner=uow.transaction_owner)
     return compiled.bind(
         store=store,
         terminal_projection_port=_TerminalProjection(),
@@ -432,9 +420,7 @@ async def test_public_specialization_runs_all_ports_and_activation_exactly_once(
         "activate",
     ]
 
-    reopened = CapabilityBuildExecutionState.from_json(
-        json.loads(json.dumps(completed.to_json()))
-    )
+    reopened = CapabilityBuildExecutionState.from_json(json.loads(json.dumps(completed.to_json())))
     recovered = await run_capability_build_specialization(
         admission=admission,
         services=services,
@@ -448,9 +434,7 @@ async def test_public_specialization_runs_all_ports_and_activation_exactly_once(
     ("proposal_budget", "fix_budget"),
     [(0, 3), (41, 3), (40, -1), (40, 4)],
 )
-def test_admission_rejects_out_of_profile_budgets(
-    proposal_budget: int, fix_budget: int
-) -> None:
+def test_admission_rejects_out_of_profile_budgets(proposal_budget: int, fix_budget: int) -> None:
     with pytest.raises(ValueError, match="budget"):
         CapabilityBuildAdmission(
             run_id="run-capability-2",
@@ -580,9 +564,7 @@ async def test_public_runner_rejects_missing_miss_receipt_before_nodes_or_ports(
     tmp_path: Path,
 ) -> None:
     calls: list[str] = []
-    database, uow, registration, runner = _runner(
-        tmp_path / "missing-receipt.sqlite", calls
-    )
+    database, uow, registration, runner = _runner(tmp_path / "missing-receipt.sqlite", calls)
     with pytest.raises(Exception, match="search_miss_receipt"):
         await runner.start(
             session_id="session",
@@ -681,9 +663,7 @@ async def test_each_physical_stage_reopens_with_stable_idempotency_key(
         "package_store",
         "activate",
     }
-    assert {item["operation_key"] for item in progress.values()} == set(
-        host.receipts
-    )
+    assert {item["operation_key"] for item in progress.values()} == set(host.receipts)
     assert len({item["admission_fingerprint"] for item in progress.values()}) == 1
     expected_attempts = {
         "authorization": 1,

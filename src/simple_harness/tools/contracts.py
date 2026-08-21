@@ -20,15 +20,16 @@ from simple_harness.contracts import (
     JsonValue,
     RequestId,
     RunId,
+    canonical_json,
     freeze_json,
     thaw_json,
-    canonical_json,
 )
 
 from .schema import validate_tool_schema
 
 if TYPE_CHECKING:
     from simple_harness.runtime.workflow_spawn import WorkflowSpawnToolContext
+
     from .sidecar import Sidecar
 
 
@@ -98,9 +99,7 @@ class ToolCall:
         if not isinstance(self.call_id, CallId):
             raise TypeError("call_id must use CallId")
         object.__setattr__(self, "name", _required(self.name, "name"))
-        object.__setattr__(
-            self, "arguments", _freeze_object(self.arguments, "arguments")
-        )
+        object.__setattr__(self, "arguments", _freeze_object(self.arguments, "arguments"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,9 +174,7 @@ class ToolResult:
         )
 
     @classmethod
-    def rejected(
-        cls, call_id: CallId, error_code: str, public_message: str
-    ) -> ToolResult:
+    def rejected(cls, call_id: CallId, error_code: str, public_message: str) -> ToolResult:
         return cls(
             call_id=call_id,
             outcome=ToolOutcome.REJECTED,
@@ -242,9 +239,7 @@ ToolHandler = Callable[[JsonObject, ToolContext], object | Awaitable[object]]
 class Tool(Protocol):
     spec: ToolSpec
 
-    def invoke(
-        self, arguments: JsonObject, context: ToolContext
-    ) -> object | Awaitable[object]: ...
+    def invoke(self, arguments: JsonObject, context: ToolContext) -> object | Awaitable[object]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,9 +251,7 @@ class FunctionTool:
         if not callable(self.handler):
             raise TypeError("handler must be callable")
 
-    def invoke(
-        self, arguments: JsonObject, context: ToolContext
-    ) -> object | Awaitable[object]:
+    def invoke(self, arguments: JsonObject, context: ToolContext) -> object | Awaitable[object]:
         detached = thaw_json(arguments)
         if not isinstance(detached, dict):
             raise TypeError("Tool arguments must thaw to a JSON object")

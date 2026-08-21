@@ -54,9 +54,7 @@ def test_missing_usage_uses_conservative_request_upper_bound() -> None:
 
 
 def test_missing_output_limit_cannot_be_estimated() -> None:
-    assert (
-        _estimator().estimate_upper_bound(_request(max_output_tokens=None)).is_unknown
-    )
+    assert _estimator().estimate_upper_bound(_request(max_output_tokens=None)).is_unknown
 
 
 def test_estimator_must_bind_to_the_provider_pricing_key() -> None:

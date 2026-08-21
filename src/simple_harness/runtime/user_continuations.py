@@ -23,9 +23,7 @@ class UserContinuationRuntime:
     def claim(
         self, *, run_id: str, execution_lease: ExecutionLease, now: float
     ) -> ContinuationRecord | None:
-        return self._uow.claim_continuation(
-            run_id=run_id, execution_lease=execution_lease, now=now
-        )
+        return self._uow.claim_continuation(run_id=run_id, execution_lease=execution_lease, now=now)
 
 
 __all__ = ("ContinuationUnitOfWork", "UserContinuationRuntime")

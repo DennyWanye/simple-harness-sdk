@@ -44,9 +44,7 @@ def test_host_authorization_port_receives_prepared_effect() -> None:
     class AllowAll:
         async def authorize(self, prepared: PreparedToolEffect) -> AuthorizationResult:
             assert prepared.effect_id == EffectId("effect-1")
-            return AuthorizationResult(
-                AuthorizationDecision.ALLOW, receipt_ref="authorization:1"
-            )
+            return AuthorizationResult(AuthorizationDecision.ALLOW, receipt_ref="authorization:1")
 
     port: AuthorizationPort = AllowAll()
     result = asyncio.run(port.authorize(_effect()))
@@ -60,12 +58,15 @@ def test_authorization_result_is_fail_closed() -> None:
         AuthorizationResult(AuthorizationDecision.ALLOW)
     with pytest.raises(ValueError):
         AuthorizationResult(AuthorizationDecision.DENY)
-    assert AuthorizationResult(
-        AuthorizationDecision.REQUIRE_USER,
-        reason_code="user_confirmation_required",
-        public_message="Confirmation is required.",
-        request=AuthorizationRequest("Confirm read.", "nonce-1"),
-    ).decision is AuthorizationDecision.REQUIRE_USER
+    assert (
+        AuthorizationResult(
+            AuthorizationDecision.REQUIRE_USER,
+            reason_code="user_confirmation_required",
+            public_message="Confirmation is required.",
+            request=AuthorizationRequest("Confirm read.", "nonce-1"),
+        ).decision
+        is AuthorizationDecision.REQUIRE_USER
+    )
 
 
 def test_host_receipt_must_bind_the_sdk_receipt_hash() -> None:
@@ -78,6 +79,4 @@ def test_host_receipt_must_bind_the_sdk_receipt_hash() -> None:
     host = AuthorizationReceipt("host:1", "a" * 64, sdk.receipt_hash)
     assert bind_authorization_receipts(sdk, host).startswith("authorization-binding-v1:")
     with pytest.raises(ValueError):
-        bind_authorization_receipts(
-            sdk, AuthorizationReceipt("host:2", "b" * 64, "c" * 64)
-        )
+        bind_authorization_receipts(sdk, AuthorizationReceipt("host:2", "b" * 64, "c" * 64))

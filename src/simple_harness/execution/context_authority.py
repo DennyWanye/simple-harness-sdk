@@ -70,9 +70,7 @@ class DurableToolCatalogResolver:
     def current_generation(self) -> int:
         return self._store.current_tool_catalog_generation()
 
-    def resolve(
-        self, generation: int, content_fingerprint: str
-    ) -> ToolCatalogSnapshot | None:
+    def resolve(self, generation: int, content_fingerprint: str) -> ToolCatalogSnapshot | None:
         snapshot = self._store.read_tool_catalog_snapshot(generation)
         if snapshot is None or snapshot.content_fingerprint != content_fingerprint:
             return None

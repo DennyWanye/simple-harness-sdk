@@ -13,16 +13,10 @@ Validates:
 
 from __future__ import annotations
 
-import pytest
-
 from simple_harness.workflow.contracts import (
-    StatePatch,
-    WorkflowContext,
     WorkflowState,
 )
 from simple_harness.workflows.durable_task import (
-    DEFAULT_FIX_ROUNDS,
-    DEFAULT_PROPOSAL_TURNS,
     create_initial_state,
 )
 
@@ -46,6 +40,7 @@ def test_initial_state_roundtrip():  # type: ignore[no-untyped-def]
 
     # Simulate checkpoint: all fields are JSON-serializable
     import json
+
     serialized = json.dumps(state)
     restored = json.loads(serialized)
 
@@ -76,6 +71,7 @@ def test_loop_counter_recovery():  # type: ignore[no-untyped-def]
 
     # Checkpoint and restore
     import json
+
     restored: WorkflowState = json.loads(json.dumps(state))
 
     assert restored["loop_counters"]["proposal_turns"] == 5
@@ -98,6 +94,7 @@ def test_budget_enforcement_after_recovery():  # type: ignore[no-untyped-def]
 
     # Checkpoint and restore
     import json
+
     restored: WorkflowState = json.loads(json.dumps(state))
 
     # Verify budget state preserved
@@ -127,6 +124,7 @@ def test_values_channel_recovery():  # type: ignore[no-untyped-def]
 
     # Checkpoint and restore
     import json
+
     restored: WorkflowState = json.loads(json.dumps(state))
 
     assert restored["values"]["string_value"] == "test"
@@ -155,6 +153,7 @@ def test_message_history_recovery():  # type: ignore[no-untyped-def]
 
     # Checkpoint and restore
     import json
+
     restored: WorkflowState = json.loads(json.dumps(state))
 
     assert len(restored["values"]["messages"]) == 3
@@ -176,6 +175,7 @@ def test_snapshot_metadata_recovery():  # type: ignore[no-untyped-def]
 
     # Checkpoint and restore
     import json
+
     restored: WorkflowState = json.loads(json.dumps(state))
 
     assert restored["values"]["provider_snapshot"]["provider"] == "anthropic"
@@ -201,6 +201,7 @@ def test_partial_completion_recovery():  # type: ignore[no-untyped-def]
 
     # Checkpoint and restore
     import json
+
     restored: WorkflowState = json.loads(json.dumps(state))
 
     # Verify progress markers preserved

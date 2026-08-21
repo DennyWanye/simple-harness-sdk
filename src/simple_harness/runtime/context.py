@@ -124,9 +124,7 @@ def _append_context_in_transaction(
     if not items or not all(isinstance(entry, Message) for entry in items):
         raise TypeError("entries must contain at least one Message")
     append_payload: list[JsonValue] = [entry.to_dict() for entry in items]
-    append_hash = hashlib.sha256(
-        canonical_json(append_payload).encode("utf-8")
-    ).hexdigest()
+    append_hash = hashlib.sha256(canonical_json(append_payload).encode("utf-8")).hexdigest()
     lease = connection.execute(
         """
         SELECT owner_id, epoch, expires_at FROM workflow_leases
@@ -160,9 +158,7 @@ def _append_context_in_transaction(
     existing_hash = receipts.get(append_id)
     if existing_hash is not None:
         if existing_hash != append_hash:
-            raise UnitOfWorkConflict(
-                "context append identity reused with different payload"
-            )
+            raise UnitOfWorkConflict("context append identity reused with different payload")
         return _snapshot_from_payload(current_payload)
     revision = current_payload.get("revision")
     if revision != expected_revision:
@@ -235,11 +231,7 @@ def _message(value: object) -> Message:
     normalized_content = (
         content
         if isinstance(content, str)
-        else tuple(
-            ContentBlock.from_dict(block)
-            for block in content
-            if isinstance(block, Mapping)
-        )
+        else tuple(ContentBlock.from_dict(block) for block in content if isinstance(block, Mapping))
     )
     if isinstance(content, list) and len(normalized_content) != len(content):
         raise TypeError("stored context content block is invalid")

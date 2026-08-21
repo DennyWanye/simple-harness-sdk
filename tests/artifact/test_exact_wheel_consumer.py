@@ -3,20 +3,20 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import runpy
-from pathlib import Path
 import subprocess
 import textwrap
+from pathlib import Path
 
 from conftest import BuildArtifacts
 
 VERSION = str(
-    runpy.run_path(
-        str(Path(__file__).resolve().parents[2] / "src/simple_harness/version.py")
-    )["__version__"]
+    runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/simple_harness/version.py"))[
+        "__version__"
+    ]
 )
 
 
@@ -233,13 +233,13 @@ def _consumer_files(root: Path) -> None:
 
             def build_host():
                 return Host()
-            """
+            """  # noqa: E501
         ),
         encoding="utf-8",
     )
     (root / "consumer_real.py").write_text(
         textwrap.dedent(
-            r'''
+            r"""
             import asyncio
             import hashlib
             import json
@@ -501,7 +501,7 @@ def _consumer_files(root: Path) -> None:
                 async def reopen(self):
                     path=self.root/"reopen.sqlite"; seam=WorkflowSeam(path); before=len(WORKFLOW_NODE_CALLS); run_id,result,run=await seam.execute(seam.host,{}); physical_before=len(WORKFLOW_NODE_CALLS)-before; await seam.close(); reopened=WorkflowSeam(path); recovered=await reopened.runner.recover(run_id,WorkflowContext()); restored=reopened.uow.read_run(run_id); physical_after=len(WORKFLOW_NODE_CALLS)-before; values={"reopened":restored is not None and recovered.run_id==run_id,"run_before":run_id,"run_after":restored.run_id,"physical_calls_before":physical_before,"physical_calls_after":physical_after,"completed":restored.state is RunState.COMPLETED}; await reopened.close(); return self.observation("workflow.reopen",values)
                 async def aclose(self): self.connection.close()
-            '''
+            """  # noqa: E501
         ),
         encoding="utf-8",
     )

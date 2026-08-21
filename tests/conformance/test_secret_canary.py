@@ -58,9 +58,7 @@ def test_error_response_body_and_secret_do_not_enter_public_exception() -> None:
             )
             with pytest.raises(ProviderServerError) as caught:
                 await provider.invoke(_request(), cancel=CancelToken())
-            rendered = (
-                str(caught.value) + repr(caught.value) + repr(caught.value.to_dict())
-            )
+            rendered = str(caught.value) + repr(caught.value) + repr(caught.value.to_dict())
             assert CANARY not in rendered
             assert "upstream body" not in rendered
 
@@ -83,9 +81,7 @@ def test_transport_private_cause_is_redacted_without_retry() -> None:
             )
             with pytest.raises(ProviderTransportError) as caught:
                 await provider.invoke(_request(), cancel=CancelToken())
-            rendered = (
-                str(caught.value) + repr(caught.value) + repr(caught.value.to_dict())
-            )
+            rendered = str(caught.value) + repr(caught.value) + repr(caught.value.to_dict())
             assert CANARY not in rendered
 
     asyncio.run(exercise())

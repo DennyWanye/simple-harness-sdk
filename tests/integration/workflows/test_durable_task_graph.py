@@ -16,9 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from simple_harness.contracts import JsonValue
 from simple_harness.workflow.contracts import (
-    NodeHandler,
     StatePatch,
     WorkflowContext,
     WorkflowState,
@@ -34,16 +32,12 @@ from simple_harness.workflows.durable_task import (
 
 
 # Mock handlers for testing graph structure
-async def _mock_intake(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _mock_intake(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Mock intake handler."""
     return {"values": {"intake_done": True}}
 
 
-async def _mock_clarify(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _mock_clarify(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Mock clarify handler."""
     clarification_required = state["values"].get("clarification_required", False)
     if clarification_required:
@@ -51,16 +45,12 @@ async def _mock_clarify(
     return {"values": {"clarification_skipped": True}}
 
 
-async def _mock_plan(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _mock_plan(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Mock plan handler."""
     return {"values": {"plan_done": True}}
 
 
-async def _mock_wait_approval(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _mock_wait_approval(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Mock wait_approval handler."""
     approval_required = state["values"].get("approval_required", True)
     if approval_required:
@@ -68,9 +58,7 @@ async def _mock_wait_approval(
     return {"values": {"approval_skipped": True}}
 
 
-async def _mock_llm_proposal(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _mock_llm_proposal(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Mock llm_proposal handler."""
     # Increment proposal counter
     current = state.get("loop_counters", {}).get("proposal_turns", 0)
@@ -80,30 +68,22 @@ async def _mock_llm_proposal(
     }
 
 
-async def _mock_tool_execution(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _mock_tool_execution(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Mock tool_execution handler."""
     return {"values": {"execution_done": True}}
 
 
-async def _mock_completion_decision(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _mock_completion_decision(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Mock completion_decision handler."""
     return {"values": {"decision_done": True}}
 
 
-async def _mock_test(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _mock_test(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Mock test handler."""
     return {"values": {"test_done": True}}
 
 
-async def _mock_audit(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _mock_audit(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Mock audit handler."""
     # Increment fix counter
     current = state.get("loop_counters", {}).get("fix_rounds", 0)
@@ -113,16 +93,12 @@ async def _mock_audit(
     }
 
 
-async def _mock_finalize(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _mock_finalize(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Mock finalize handler."""
     return {"values": {"finalize_done": True}}
 
 
-async def _mock_approval_route(
-    state: WorkflowState, context: WorkflowContext
-) -> str:
+async def _mock_approval_route(state: WorkflowState, context: WorkflowContext) -> str:
     """Mock approval route - choose based on test mode."""
     mode = state["values"].get("test_route_mode", "approved")
     if mode == "skip_approval":
@@ -130,17 +106,13 @@ async def _mock_approval_route(
     return "approved"
 
 
-async def _mock_completion_route(
-    state: WorkflowState, context: WorkflowContext
-) -> str:
+async def _mock_completion_route(state: WorkflowState, context: WorkflowContext) -> str:
     """Mock completion route - choose based on test mode."""
     mode = state["values"].get("test_route_mode", "finalize")
     return mode  # "loop", "test", "audit", "finalize"
 
 
-async def _mock_audit_route(
-    state: WorkflowState, context: WorkflowContext
-) -> str:
+async def _mock_audit_route(state: WorkflowState, context: WorkflowContext) -> str:
     """Mock audit route - choose based on test mode."""
     mode = state["values"].get("test_route_mode", "finalize")
     if mode == "fix":
@@ -195,9 +167,7 @@ def test_definition_nodes(definition):  # type: ignore[no-untyped-def]
     assert node_names == expected
 
     # Check interrupt-capable nodes
-    interrupt_nodes = {
-        node.node_id for node in definition.nodes if node.interrupt_capable
-    }
+    interrupt_nodes = {node.node_id for node in definition.nodes if node.interrupt_capable}
     assert interrupt_nodes == {"clarify", "wait_approval", "tool_execution"}
 
     # Check retry policies

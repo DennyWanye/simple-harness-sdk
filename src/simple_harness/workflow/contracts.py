@@ -49,9 +49,7 @@ def validate_json_value(value: object, *, path: str = "$") -> None:
         return
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise InvalidStatePatch(
-                "non_finite_number", f"{path} must contain a finite number"
-            )
+            raise InvalidStatePatch("non_finite_number", f"{path} must contain a finite number")
         return
     if isinstance(value, list):
         for index, item in enumerate(value):
@@ -60,9 +58,7 @@ def validate_json_value(value: object, *, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             if not isinstance(key, str):
-                raise InvalidStatePatch(
-                    "non_string_key", f"{path} contains a non-string key"
-                )
+                raise InvalidStatePatch("non_string_key", f"{path} contains a non-string key")
             validate_json_value(item, path=f"{path}.{key}")
         return
     raise InvalidStatePatch(
@@ -198,9 +194,7 @@ class ChannelSpec:
                 "channel_without_writer", "A channel must allow at least one writer"
             )
         if not self.item_id_key:
-            raise WorkflowDefinitionError(
-                "invalid_item_id_key", "item_id_key must not be empty"
-            )
+            raise WorkflowDefinitionError("invalid_item_id_key", "item_id_key must not be empty")
 
 
 @dataclass(frozen=True)
@@ -265,23 +259,36 @@ class NodeExecutionIdentity:
             attempt=attempt,
             first_attempt_time=getattr(execution_info, "node_first_attempt_time", None),
             activation_id=(
-                str(value)
-                if (value := getattr(execution_info, "activation_id", None))
-                else None
+                str(value) if (value := getattr(execution_info, "activation_id", None)) else None
             ),
             invocation_key=(
-                str(value)
-                if (value := getattr(execution_info, "invocation_key", None))
-                else None
+                str(value) if (value := getattr(execution_info, "invocation_key", None)) else None
             ),
         )
 
 
-PHYSICAL_WORKFLOW_PORT_NAMES = frozenset({
-    "llm", "search", "fetch", "tool", "effect", "permission", "artifact",
-    "output_contract", "receipt", "notifier", "evaluator", "blob", "retrieval",
-    "semantic", "llm_extract", "llm_inference", "llm_repair", "subagent_scheduler",
-})
+PHYSICAL_WORKFLOW_PORT_NAMES = frozenset(
+    {
+        "llm",
+        "search",
+        "fetch",
+        "tool",
+        "effect",
+        "permission",
+        "artifact",
+        "output_contract",
+        "receipt",
+        "notifier",
+        "evaluator",
+        "blob",
+        "retrieval",
+        "semantic",
+        "llm_extract",
+        "llm_inference",
+        "llm_repair",
+        "subagent_scheduler",
+    }
+)
 
 
 WORKFLOW_PORT_NAMES = frozenset(
@@ -474,15 +481,11 @@ class WorkflowHostServices:
             raise KeyError(f"workflow profile services unavailable: {profile_key}")
         return group.as_ports()
 
-    def bind_context(
-        self, profile_key: str, context: WorkflowContext
-    ) -> WorkflowContext:
+    def bind_context(self, profile_key: str, context: WorkflowContext) -> WorkflowContext:
         if not self.has_profile(profile_key):
             return context
         if context.ports:
-            raise ValueError(
-                "workflow ports are Runner-owned and cannot be supplied per call"
-            )
+            raise ValueError("workflow ports are Runner-owned and cannot be supplied per call")
         return replace(context, ports=self.ports_for(profile_key))
 
 
@@ -515,15 +518,8 @@ class WorkflowContext:
         *,
         pure_before_interrupt: bool = False,
     ) -> WorkflowContext:
-        ports = (
-            {}
-            if pure_before_interrupt
-            else self.ports
-        )
-        return replace(
-            self, ports=ports, identity=identity, _writer_node_id=identity.node_id
-        )
-
+        ports = {} if pure_before_interrupt else self.ports
+        return replace(self, ports=ports, identity=identity, _writer_node_id=identity.node_id)
 
 
 @dataclass(frozen=True)
@@ -547,12 +543,8 @@ class PureRouteContext:
         object.__setattr__(self, "state", frozen)
 
 
-NodeHandler: TypeAlias = Callable[
-    [WorkflowState, WorkflowContext], Awaitable[StatePatch]
-]
-RouteSelector: TypeAlias = Callable[
-    [WorkflowState, PureRouteContext], str | Awaitable[str]
-]
+NodeHandler: TypeAlias = Callable[[WorkflowState, WorkflowContext], Awaitable[StatePatch]]
+RouteSelector: TypeAlias = Callable[[WorkflowState, PureRouteContext], str | Awaitable[str]]
 
 
 @dataclass(frozen=True)
@@ -566,9 +558,7 @@ class RetryPolicy:
     def __post_init__(self) -> None:
         object.__setattr__(self, "retryable_codes", frozenset(self.retryable_codes))
         if self.max_attempts < 1:
-            raise WorkflowDefinitionError(
-                "invalid_retry_policy", "max_attempts must be at least 1"
-            )
+            raise WorkflowDefinitionError("invalid_retry_policy", "max_attempts must be at least 1")
         if self.initial_delay_seconds < 0 or self.max_delay_seconds < 0:
             raise WorkflowDefinitionError(
                 "invalid_retry_policy", "retry delays must not be negative"
@@ -679,9 +669,7 @@ class ToolInventoryEntry:
             "control",
             "provider",
         }:
-            raise WorkflowDefinitionError(
-                "invalid_tool_dispatch", "Unknown Tool dispatch kind"
-            )
+            raise WorkflowDefinitionError("invalid_tool_dispatch", "Unknown Tool dispatch kind")
         if self.completion_semantics not in {"sync", "accepted_async"}:
             raise WorkflowDefinitionError(
                 "invalid_tool_completion", "Unknown Tool completion semantics"
@@ -694,8 +682,7 @@ class ToolInventoryEntry:
         ):
             value = getattr(self, name)
             if value is not None and (
-                len(value) != 64
-                or any(character not in "0123456789abcdef" for character in value)
+                len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
             ):
                 raise WorkflowDefinitionError(
                     "invalid_tool_digest", f"{name} must be lowercase SHA-256"

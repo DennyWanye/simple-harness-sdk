@@ -53,9 +53,7 @@ class TerminalCoordinator:
             deliveries=deliveries,
             fence=fence,
             execution_lease=execution_lease,
-            terminal_fence_receipt_ref=(
-                f"runtime-fence:{fence.owner_id}:{fence.epoch}"
-            ),
+            terminal_fence_receipt_ref=(f"runtime-fence:{fence.owner_id}:{fence.epoch}"),
             now=now,
             memory_intent=memory_intent,
         )

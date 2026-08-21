@@ -42,9 +42,7 @@ def test_continuation_reopen_preserves_fifo_and_claim_owner(tmp_path: Path) -> N
         now=3.0,
         lease_ttl_seconds=100.0,
     )
-    first = UserContinuationRuntime(uow).claim(
-        run_id="root-1", execution_lease=lease, now=4.0
-    )
+    first = UserContinuationRuntime(uow).claim(run_id="root-1", execution_lease=lease, now=4.0)
     assert first is not None and first.continuation_id == "continuation-1"
     database.close()
 
@@ -64,7 +62,5 @@ def test_continuation_reopen_preserves_fifo_and_claim_owner(tmp_path: Path) -> N
             now=5.0,
         )
         assert acked.continuation.state is ContinuationState.ACKED
-        second = UserContinuationRuntime(uow).claim(
-            run_id="root-1", execution_lease=lease, now=6.0
-        )
+        second = UserContinuationRuntime(uow).claim(run_id="root-1", execution_lease=lease, now=6.0)
         assert second is not None and second.continuation_id == "continuation-2"

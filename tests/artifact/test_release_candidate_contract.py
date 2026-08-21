@@ -46,9 +46,7 @@ def _clean_project(root: Path) -> Path:
     repository = root / "source"
     package = repository / "src/simple_harness"
     package.mkdir(parents=True)
-    (package / "__init__.py").write_text(
-        "from .version import __version__\n", encoding="utf-8"
-    )
+    (package / "__init__.py").write_text("from .version import __version__\n", encoding="utf-8")
     (package / "version.py").write_text('__version__ = "0.1.1"\n', encoding="utf-8")
     (repository / "NOTICE").write_text("Simple Harness SDK\n", encoding="utf-8")
     (repository / "pyproject.toml").write_text(
@@ -87,16 +85,14 @@ def test_version_has_one_runtime_authority() -> None:
 
     assert 'dynamic = ["version"]' in pyproject
     assert 'path = "src/simple_harness/version.py"' in pyproject
-    assert 'from .version import __version__' in package
+    assert "from .version import __version__" in package
     assert '__version__ = "' in version
-    build_script = (
-        ROOT / "scripts/build/reproducibility.py"
-    ).read_text(encoding="utf-8")
+    build_script = (ROOT / "scripts/build/reproducibility.py").read_text(encoding="utf-8")
     assert 'VERSION = "0.1.1"' not in build_script
-    assert 'src/simple_harness/version.py' in build_script
+    assert "src/simple_harness/version.py" in build_script
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert 'simple_harness.__version__ == "0.1.0"' not in ci
-    assert 'src/simple_harness/version.py' in ci
+    assert "src/simple_harness/version.py" in ci
 
 
 def test_ci_builds_one_authoritative_artifact_for_python_311_to_313() -> None:
@@ -147,9 +143,9 @@ def test_authoritative_provenance_is_canonical_and_detects_tampering(
 
 
 def test_candidate_workflow_accepts_identity_inputs_and_never_publishes() -> None:
-    workflow = (
-        ROOT / ".github/workflows/release-candidate-conformance.yml"
-    ).read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/release-candidate-conformance.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "workflow_dispatch:" in workflow
     assert "candidate_commit:" in workflow

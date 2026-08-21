@@ -100,9 +100,7 @@ class TerminationState:
     def __post_init__(self) -> None:
         if not math.isfinite(self.started_at) or self.started_at < 0:
             raise ValueError("started_at must be a finite Unix epoch")
-        observed = (
-            self.started_at if self.last_observed_at is None else self.last_observed_at
-        )
+        observed = self.started_at if self.last_observed_at is None else self.last_observed_at
         if not math.isfinite(observed) or observed < self.started_at:
             raise ValueError("clock rollback detected")
         object.__setattr__(self, "last_observed_at", observed)
@@ -126,9 +124,10 @@ class TerminationState:
             value is not None for value in pending_values
         ):
             raise ValueError("pending workflow child completion is incomplete")
-        if self.pending_child_completion_hash is not None and len(
-            self.pending_child_completion_hash
-        ) != 64:
+        if (
+            self.pending_child_completion_hash is not None
+            and len(self.pending_child_completion_hash) != 64
+        ):
             raise ValueError("pending child completion hash is invalid")
         catalog_pin_values = (
             self.workflow_catalog_selection,
@@ -138,9 +137,10 @@ class TerminationState:
             value is not None for value in catalog_pin_values
         ):
             raise ValueError("workflow catalog selection pin is incomplete")
-        if self.workflow_catalog_selection_hash is not None and len(
-            self.workflow_catalog_selection_hash
-        ) != 64:
+        if (
+            self.workflow_catalog_selection_hash is not None
+            and len(self.workflow_catalog_selection_hash) != 64
+        ):
             raise ValueError("workflow catalog selection hash is invalid")
         if self.policy_fingerprint and (
             len(self.policy_fingerprint) != 64
@@ -229,12 +229,8 @@ class TerminationState:
             "workflow_spawn_wait_receipt_id": self.workflow_spawn_wait_receipt_id,
             "pending_child_completion": self.pending_child_completion,
             "pending_child_completion_hash": self.pending_child_completion_hash,
-            "pending_child_completion_append_id": (
-                self.pending_child_completion_append_id
-            ),
-            "last_workflow_spawn_wait_receipt_id": (
-                self.last_workflow_spawn_wait_receipt_id
-            ),
+            "pending_child_completion_append_id": (self.pending_child_completion_append_id),
+            "last_workflow_spawn_wait_receipt_id": (self.last_workflow_spawn_wait_receipt_id),
             "workflow_catalog_selection": self.workflow_catalog_selection,
             "workflow_catalog_selection_hash": self.workflow_catalog_selection_hash,
             "policy_fingerprint": self.policy_fingerprint,
@@ -255,18 +251,14 @@ class TerminationState:
             provider_request_id=_optional_string(value.get("provider_request_id")),
             tool_batch_id=_optional_string(value.get("tool_batch_id")),
             context_revision=(
-                None
-                if value.get("context_revision") is None
-                else _int(value["context_revision"])
+                None if value.get("context_revision") is None else _int(value["context_revision"])
             ),
             provider_request_snapshot=value.get("provider_request_snapshot"),  # type: ignore[arg-type]
             provider_request_fingerprint=_optional_string(
                 value.get("provider_request_fingerprint")
             ),
             provider_response_snapshot=value.get("provider_response_snapshot"),  # type: ignore[arg-type]
-            provider_response_digest=_optional_string(
-                value.get("provider_response_digest")
-            ),
+            provider_response_digest=_optional_string(value.get("provider_response_digest")),
             tool_result_progress=_int(value.get("tool_result_progress", 0)),
             workflow_spawn_wait_receipt_id=_optional_string(
                 value.get("workflow_spawn_wait_receipt_id")

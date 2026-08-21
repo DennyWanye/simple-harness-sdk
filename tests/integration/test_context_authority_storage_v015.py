@@ -54,9 +54,7 @@ def test_catalog_generation_is_content_addressed_and_survives_restart(
         assert changed.generation > first.generation
 
     with Database.open(path) as reopened:
-        restored = SqliteExecutionUnitOfWork(reopened).read_tool_catalog_snapshot(
-            first.generation
-        )
+        restored = SqliteExecutionUnitOfWork(reopened).read_tool_catalog_snapshot(first.generation)
         assert restored == first
 
 
@@ -86,9 +84,7 @@ def test_settlement_and_projection_receipt_commit_atomically_and_cursor_is_stabl
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
         assert uow.list_provider_projection_receipts() == receipts
-        assert uow.list_provider_projection_receipts(
-            after_sequence=receipt.sequence
-        ) == ()
+        assert uow.list_provider_projection_receipts(after_sequence=receipt.sequence) == ()
 
 
 def test_settlement_rolls_back_ledger_when_projection_outbox_write_cannot_finish(
@@ -128,9 +124,7 @@ def test_settlement_rolls_back_ledger_when_projection_outbox_write_cannot_finish
         assert restored.state is ProviderInvocationState.HANDED_OFF
         assert uow.list_provider_projection_receipts() == ()
 
-        settled = uow.settle_provider_invocation(
-            terminal, expected_version=handed_off.version
-        )
+        settled = uow.settle_provider_invocation(terminal, expected_version=handed_off.version)
         assert settled.state is ProviderInvocationState.FAILED
         assert len(uow.list_provider_projection_receipts()) == 1
 
@@ -153,15 +147,11 @@ def test_v015_database_requires_fresh_v3_storage_set(tmp_path: Path) -> None:
     path = tmp_path / "legacy.db"
     resources = files("simple_harness.execution.sqlite.migrations")
     first = resources.joinpath("0001_initial.sql").read_text(encoding="utf-8")
-    second = resources.joinpath("0002_context_authority.sql").read_text(
-        encoding="utf-8"
-    )
+    second = resources.joinpath("0002_context_authority.sql").read_text(encoding="utf-8")
     connection = sqlite3.connect(path)
     connection.executescript(
         "CREATE TABLE sdk_schema_migrations (version INTEGER PRIMARY KEY, "
-        "name TEXT NOT NULL UNIQUE, checksum TEXT NOT NULL, applied_at TEXT);"
-        + first
-        + second
+        "name TEXT NOT NULL UNIQUE, checksum TEXT NOT NULL, applied_at TEXT);" + first + second
     )
     connection.executemany(
         "INSERT INTO sdk_schema_migrations VALUES (?,?,?,CURRENT_TIMESTAMP)",
@@ -214,7 +204,10 @@ def test_v015_database_requires_fresh_v3_storage_set(tmp_path: Path) -> None:
     assert check.execute(
         "SELECT snapshot_json FROM run_start_snapshots WHERE run_id='run-v4'"
     ).fetchone() == (snapshot,)
-    assert check.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_outbox'"
-    ).fetchone() is None
+    assert (
+        check.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_outbox'"
+        ).fetchone()
+        is None
+    )
     check.close()

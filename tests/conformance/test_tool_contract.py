@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import FrozenInstanceError
 import hashlib
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -13,24 +13,24 @@ from simple_harness.contracts import CallId, EffectId, RequestId, RunId
 from simple_harness.tools import (
     CancellationToken,
     DuplicateToolCallError,
+    EffectKind,
+    EffectPolicy,
     FunctionTool,
     LateToolResultError,
     MalformedToolArgumentsError,
     SchemaDefinitionError,
+    Sidecar,
     ToolCall,
     ToolCallState,
     ToolContext,
-    ToolOutcome,
-    ToolRegistry,
-    ToolResult,
-    ToolSpec,
-    EffectKind,
-    EffectPolicy,
-    Sidecar,
     ToolDispatchKind,
     ToolInventoryRecord,
+    ToolOutcome,
     ToolOutcomeParser,
+    ToolRegistry,
     ToolResource,
+    ToolResult,
+    ToolSpec,
     builtin_outcome_parser,
     parse_tool_outcome,
 )
@@ -142,7 +142,9 @@ def test_tool_context_rejects_mismatched_call_and_effect_identity() -> None:
     assert context.effect_id == EffectId("effect-1")
     with pytest.raises(TypeError, match="call_id"):
         ToolContext(
-            RunId("run-1"), RequestId("request-1"), CancellationToken(),
+            RunId("run-1"),
+            RequestId("request-1"),
+            CancellationToken(),
             call_id="call-1",  # type: ignore[arg-type]
         )
 
@@ -151,12 +153,42 @@ def test_tool_context_rejects_mismatched_call_and_effect_identity() -> None:
     ("parser", "raw", "outcome", "error_code"),
     [
         (ToolOutcomeParser.SHELL_EXIT, {"exit_code": 9}, ToolOutcome.FAILED, "shell_nonzero_exit"),
-        (ToolOutcomeParser.SHELL_EXIT, {"stdout": "ok"}, ToolOutcome.FAILED, "malformed_shell_outcome"),
-        (ToolOutcomeParser.ARTIFACT_ENVELOPE, {"ok": True}, ToolOutcome.FAILED, "artifact_path_missing"),
-        (ToolOutcomeParser.CODE_ARRAY_OR_ERROR, {"code": "print(1)"}, ToolOutcome.FAILED, "malformed_code_outcome"),
-        (ToolOutcomeParser.ACTIVATION_PROPOSED, {"state": "proposed"}, ToolOutcome.FAILED, "malformed_activation"),
-        (ToolOutcomeParser.JSON_ERROR_ENVELOPE, {"status": "pending"}, ToolOutcome.UNKNOWN, "tool_outcome_unknown"),
-        (ToolOutcomeParser.JSON_ERROR_ENVELOPE, {"status": "unknown"}, ToolOutcome.UNKNOWN, "tool_outcome_unknown"),
+        (
+            ToolOutcomeParser.SHELL_EXIT,
+            {"stdout": "ok"},
+            ToolOutcome.FAILED,
+            "malformed_shell_outcome",
+        ),
+        (
+            ToolOutcomeParser.ARTIFACT_ENVELOPE,
+            {"ok": True},
+            ToolOutcome.FAILED,
+            "artifact_path_missing",
+        ),
+        (
+            ToolOutcomeParser.CODE_ARRAY_OR_ERROR,
+            {"code": "print(1)"},
+            ToolOutcome.FAILED,
+            "malformed_code_outcome",
+        ),
+        (
+            ToolOutcomeParser.ACTIVATION_PROPOSED,
+            {"state": "proposed"},
+            ToolOutcome.FAILED,
+            "malformed_activation",
+        ),
+        (
+            ToolOutcomeParser.JSON_ERROR_ENVELOPE,
+            {"status": "pending"},
+            ToolOutcome.UNKNOWN,
+            "tool_outcome_unknown",
+        ),
+        (
+            ToolOutcomeParser.JSON_ERROR_ENVELOPE,
+            {"status": "unknown"},
+            ToolOutcome.UNKNOWN,
+            "tool_outcome_unknown",
+        ),
     ],
 )
 def test_sdk_owned_outcome_parsers_fail_closed(
@@ -200,6 +232,7 @@ def test_registry_invokes_typed_parser_and_overwrites_untrusted_call_identity() 
         CancellationToken(),
         call_id=CallId("forged"),
     )
+
     async def invoke_both():
         return (
             await registry.invoke(ToolCall(CallId("call-a"), "shell", {}), untrusted),
@@ -309,9 +342,7 @@ def test_valid_arguments_reach_handler_and_return_five_outcomes() -> None:
     result = asyncio.run(registry.invoke(call, _context()))
 
     assert result.outcome is ToolOutcome.SUCCEEDED
-    assert seen == [
-        {"path": ".", "format": "short", "limit": 3, "tags": ["sdk"]}
-    ]
+    assert seen == [{"path": ".", "format": "short", "limit": 3, "tags": ["sdk"]}]
     assert registry.calls[CallId("call-1")] is ToolCallState.SETTLED
     assert {
         ToolResult.succeeded(CallId("a")).outcome,
@@ -399,9 +430,7 @@ def test_duplicate_call_id_never_invokes_handler_twice() -> None:
 
     async def scenario() -> None:
         registry = ToolRegistry([FunctionTool(_spec(), handler)])
-        call = ToolCall(
-            CallId("same"), "project_summary", {"path": ".", "format": "short"}
-        )
+        call = ToolCall(CallId("same"), "project_summary", {"path": ".", "format": "short"})
         assert (await registry.invoke(call, _context())).outcome is ToolOutcome.SUCCEEDED
         with pytest.raises(DuplicateToolCallError):
             await registry.invoke(call, _context())

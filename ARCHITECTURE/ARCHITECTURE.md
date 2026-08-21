@@ -78,11 +78,12 @@ last-updated: 2026-08-21
   各 1325 passed / 2 expected skips；consumer authority / recall release / finite bounds targeted
   74 passed；spawn-child recovery 全 8 参数在 Python 3.11 连续 20 轮
   （160 cases）通过；P0/P1 authority hardening targeted 76 passed；ARM64 public/artifact targeted
-  9 passed。release-owned mypy 12 files 无错误；冻结 H3 范围 `ruff check src tests` 为 476，
-  相对 frozen 484 baseline 减少 8；REUSE 340/340
-  compliant；broad H3 mypy 保持 frozen baseline 31 errors、无本 slice 新增；source provenance PASS；
+  9 passed。release-owned mypy 12 files 无错误；冻结 H3 范围 `ruff check src tests` 已由
+  484-error baseline 清零，`mypy src/simple_harness/runtime src/simple_harness/execution` 也由
+  31-error baseline 清零；全局规则未放宽，无法由 formatter 安全拆分的长 SQL / exact-wheel fixture
+  使用局部 `E501` 标注；REUSE 341/341 compliant，source provenance PASS；
   临时目录 wheel/sdist build + twine check PASS。以 Memory
-  candidate `bfc597df22762d6892381cb56b8ffcfb0f844e97` 完成本地非 ARM64 内部链路 smoke
+  candidate `87820fe2c4cdde21c3a9356ca461b93fe00aadcb` 完成本地非 ARM64 内部链路 smoke
   （不作为 A-ARM64 PASS）。
 
 ## 0.1.5 Context authority 当前事实（2026-08-21）

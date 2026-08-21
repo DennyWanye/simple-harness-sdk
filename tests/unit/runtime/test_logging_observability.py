@@ -47,8 +47,8 @@ from simple_harness.providers import (
 from simple_harness.runtime import (
     AuthorizationRequest,
     AuthorizationResult,
-    RunStart,
     RunClient,
+    RunStart,
 )
 from simple_harness.runtime.consumer_adapter import (
     ConsumerRuntimePorts,
@@ -244,9 +244,15 @@ def _logger_call_field_names(source: Path) -> set[str]:
     return names
 
 
-@pytest.mark.parametrize("file", [
-    "runtime/kernel.py", "execution/dispatch.py", "tools/executor.py", "execution/budget.py",
-])
+@pytest.mark.parametrize(
+    "file",
+    [
+        "runtime/kernel.py",
+        "execution/dispatch.py",
+        "tools/executor.py",
+        "execution/budget.py",
+    ],
+)
 def test_no_sensitive_field_names_in_log_calls(file: str) -> None:
     names = _logger_call_field_names(_SRC / file)
     assert not names & {"api_key", "secret", "prompt", "token", "key"}

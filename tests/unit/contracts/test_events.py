@@ -80,4 +80,3 @@ def test_event_timestamp_must_be_finite_and_non_negative(occurred_at: float) -> 
             occurred_at=occurred_at,
         )
     assert error.value.code == "invalid_event"
-

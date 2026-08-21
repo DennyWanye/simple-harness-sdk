@@ -19,9 +19,7 @@ class NoopDeliverySink:
     that need an explicit no-op sink.
     """
 
-    async def deliver(
-        self, payload: Mapping[str, JsonValue], *, idempotency_key: str
-    ) -> None:
+    async def deliver(self, payload: Mapping[str, JsonValue], *, idempotency_key: str) -> None:
         return None
 
 

@@ -110,9 +110,7 @@ def test_public_workflow_namespace_is_lazy_and_complete() -> None:
     assert workflow.WorkflowHostServices.__name__ == "WorkflowHostServices"
     assert callable(workflow.workflow_interrupt)
     assert hasattr(workflow.WorkflowRunner, "resolve_and_resume")
-    assert workflow.WorkflowDefinitionRegistration.__name__ == (
-        "WorkflowDefinitionRegistration"
-    )
+    assert workflow.WorkflowDefinitionRegistration.__name__ == ("WorkflowDefinitionRegistration")
 
 
 def test_definition_registration_checks_owner_and_all_fingerprints() -> None:
@@ -130,14 +128,13 @@ def test_definition_registration_checks_owner_and_all_fingerprints() -> None:
         definition=_definition(),
         dependency_lock_hash=compiled.manifest.dependency_lock_hash,
         expected_manifest_hash=workflow_manifest_hash(compiled.manifest),
-        expected_implementation_fingerprint=(
-            compiled.manifest.implementation_bundle_hash
-        ),
+        expected_implementation_fingerprint=(compiled.manifest.implementation_bundle_hash),
         transaction_owner=owner,
     )
-    assert compile_workflow_registration(
-        registration, transaction_owner=owner
-    ).manifest == compiled.manifest
+    assert (
+        compile_workflow_registration(registration, transaction_owner=owner).manifest
+        == compiled.manifest
+    )
     with pytest.raises(ValueError, match="transaction owner"):
         compile_workflow_registration(registration, transaction_owner=object())
 
@@ -183,6 +180,4 @@ def test_registry_profile_duplicate_is_idempotent_only_for_same_fingerprint() ->
     first = registry.register_definition(registration)
     assert registry.register_definition(registration) is first
     with pytest.raises(ValueError, match="profile key already registered"):
-        registry.register_definition(
-            replace(registration, expected_manifest_hash="0" * 64)
-        )
+        registry.register_definition(replace(registration, expected_manifest_hash="0" * 64))

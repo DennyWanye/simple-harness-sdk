@@ -98,9 +98,7 @@ class OpenAICompatibleProvider:
         )
         self._client = client
         self._secret = secret
-        if isinstance(timeout, bool) or (
-            isinstance(timeout, (int, float)) and timeout <= 0
-        ):
+        if isinstance(timeout, bool) or (isinstance(timeout, (int, float)) and timeout <= 0):
             raise ValueError("timeout must be positive")
         self._timeout = timeout
         self._redactor = SecretRedactor.from_secrets(secret)
@@ -116,9 +114,7 @@ class OpenAICompatibleProvider:
     def target(self) -> ProviderTarget:
         return self._target
 
-    async def invoke(
-        self, request: ProviderRequest, *, cancel: CancelToken
-    ) -> ProviderResponse:
+    async def invoke(self, request: ProviderRequest, *, cancel: CancelToken) -> ProviderResponse:
         if cancel.is_cancelled:
             raise ProviderCancelledError()
 
@@ -153,13 +149,9 @@ class OpenAICompatibleProvider:
                 timeout=self._timeout,
             )
         except httpx.TimeoutException as exc:
-            raise ProviderTimeoutError(
-                private_cause=self._redactor.exception(exc)
-            ) from None
+            raise ProviderTimeoutError(private_cause=self._redactor.exception(exc)) from None
         except httpx.RequestError as exc:
-            raise ProviderTransportError(
-                private_cause=self._redactor.exception(exc)
-            ) from None
+            raise ProviderTransportError(private_cause=self._redactor.exception(exc)) from None
 
         self._raise_for_status(response.status_code)
         try:
@@ -173,9 +165,7 @@ class OpenAICompatibleProvider:
     def _request_payload(self, request: ProviderRequest) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._target.model,
-            "messages": [
-                self._message_payload(message) for message in request.messages
-            ],
+            "messages": [self._message_payload(message) for message in request.messages],
         }
         if request.tools:
             payload["tools"] = [
@@ -197,11 +187,7 @@ class OpenAICompatibleProvider:
 
     @staticmethod
     def _message_payload(message: Message) -> dict[str, Any]:
-        role = (
-            message.role.value
-            if isinstance(message.role, MessageRole)
-            else str(message.role)
-        )
+        role = message.role.value if isinstance(message.role, MessageRole) else str(message.role)
         payload: dict[str, Any] = {
             "role": role,
             "content": (
@@ -287,11 +273,7 @@ class OpenAICompatibleProvider:
                 raise ProviderProtocolError()
             raw_id = raw_call.get("id")
             function = raw_call.get("function")
-            if (
-                not isinstance(raw_id, str)
-                or not raw_id
-                or not isinstance(function, Mapping)
-            ):
+            if not isinstance(raw_id, str) or not raw_id or not isinstance(function, Mapping):
                 raise ProviderProtocolError()
             name = function.get("name")
             arguments = function.get("arguments")
@@ -308,9 +290,7 @@ class OpenAICompatibleProvider:
                 normalized = _plain_mapping(arguments)
                 validate_json_value(normalized)
                 parsed.append(
-                    ProviderToolCall(
-                        call_id=CallId(raw_id), name=name, arguments=normalized
-                    )
+                    ProviderToolCall(call_id=CallId(raw_id), name=name, arguments=normalized)
                 )
             except (TypeError, ValueError):
                 raise ProviderProtocolError() from None
@@ -334,9 +314,7 @@ class OpenAICompatibleProvider:
             prompt_details = raw_usage.get("prompt_tokens_details")
             completion_details = raw_usage.get("completion_tokens_details")
             cache_tokens = (
-                prompt_details.get("cached_tokens")
-                if isinstance(prompt_details, Mapping)
-                else None
+                prompt_details.get("cached_tokens") if isinstance(prompt_details, Mapping) else None
             )
             reasoning_tokens = (
                 completion_details.get("reasoning_tokens")

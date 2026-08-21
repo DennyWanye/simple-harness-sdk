@@ -217,18 +217,13 @@ class WorkflowSpawnFailed:
 
 
 WorkflowSpawnHandlerOutcome: TypeAlias = WorkflowSpawnSucceeded | WorkflowSpawnFailed
-WorkflowSpawnCoordinatorOutcome: TypeAlias = (
-    WorkflowSpawnToolOutcome | WorkflowSpawnFailed
-)
+WorkflowSpawnCoordinatorOutcome: TypeAlias = WorkflowSpawnToolOutcome | WorkflowSpawnFailed
 
 
 def workflow_spawn_completion_receipt_id(spawn_operation_id: str) -> str:
     _required(spawn_operation_id, "spawn_operation_id")
     return hashlib.sha256(
-        (
-            "simple-harness.workflow.workflow-spawn/completion/v1|"
-            f"{spawn_operation_id}"
-        ).encode()
+        (f"simple-harness.workflow.workflow-spawn/completion/v1|{spawn_operation_id}").encode()
     ).hexdigest()
 
 
@@ -239,7 +234,7 @@ class WorkflowSpawnToolHandler(Protocol):
 
 
 def _construct(cls: type, /, **values: object):  # type: ignore[no-untyped-def]
-    self = object.__new__(cls)
+    self: object = object.__new__(cls)
     for name in cls.__dataclass_fields__:  # type: ignore[attr-defined]
         object.__setattr__(
             self,
@@ -250,7 +245,7 @@ def _construct(cls: type, /, **values: object):  # type: ignore[no-untyped-def]
 
 
 def _construct_context(cls: type, /, **values: object):  # type: ignore[no-untyped-def]
-    self = object.__new__(cls)
+    self: object = object.__new__(cls)
     for name in cls.__dataclass_fields__:  # type: ignore[attr-defined]
         object.__setattr__(
             self,
@@ -352,11 +347,7 @@ def _create_workflow_spawn_admission_outcome(
     result: WorkflowSpawnResult,
     suspension: WorkflowChildWaitBinding,
 ) -> WorkflowSpawnAdmissionOutcome:
-    if not (
-        child_start_ref.child_run_id
-        == result.child_run_id
-        == suspension.child_run_id
-    ):
+    if not (child_start_ref.child_run_id == result.child_run_id == suspension.child_run_id):
         raise ValueError("workflow spawn admission child identity differs")
     return _construct(
         WorkflowSpawnAdmissionOutcome,

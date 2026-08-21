@@ -46,9 +46,7 @@ def test_optional_service_group_only_controls_its_own_profile() -> None:
     owner = object()
     ports = _Ports()
     services = WorkflowHostServices(
-        durable_task=DurableTaskHostServices(
-            proposal=ports, workspace=ports
-        ),
+        durable_task=DurableTaskHostServices(proposal=ports, workspace=ports),
         personal_v1=PersonalWorkflowHostServices(runtime=ports),
     )
     registrations = build_official_workflow_registrations(
@@ -75,9 +73,7 @@ def test_all_ready_official_profiles_are_default_on() -> None:
     owner = object()
     ports = _Ports()
     services = WorkflowHostServices(
-        durable_task=DurableTaskHostServices(
-            proposal=ports, workspace=ports
-        ),
+        durable_task=DurableTaskHostServices(proposal=ports, workspace=ports),
         personal_v1=PersonalWorkflowHostServices(runtime=ports),
         capability_build=CapabilityBuildHostServices(
             proposal=ports,
@@ -103,9 +99,7 @@ def test_all_ready_official_profiles_are_default_on() -> None:
     registry = WorkflowRegistry(transaction_owner=owner)
     for registration in registrations:
         registry.register_definition(registration)
-    assert {
-        item.profile.descriptor.key for item in registry.profile_registrations()
-    } == {
+    assert {item.profile.descriptor.key for item in registry.profile_registrations()} == {
         "workflow.capability_build",
         "workflow.durable_task",
         "workflow.personal_v1",

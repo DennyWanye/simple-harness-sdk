@@ -148,8 +148,7 @@ class ProviderUsage:
     def __post_init__(self) -> None:
         values = (self.input_tokens, self.output_tokens, self.total_tokens)
         if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in values
+            isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values
         ):
             raise ValueError("token usage values must be non-negative integers")
         if self.total_tokens < self.input_tokens + self.output_tokens:

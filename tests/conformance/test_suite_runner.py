@@ -7,8 +7,7 @@ import asyncio
 import json
 from collections.abc import Mapping
 
-import pytest
-
+from simple_harness import __version__
 from simple_harness.testing import (
     PROTOCOL_VERSION,
     CaseObservation,
@@ -17,36 +16,99 @@ from simple_harness.testing import (
     run_conformance,
 )
 from simple_harness.testing.suites import CASES_BY_SUITE
-from simple_harness import __version__
-
 
 ARTIFACT_SHA = "a" * 64
 SECRET_CANARY = "sk-conformance-secret-DO-NOT-LEAK"
 
 
 GOOD_VALUES = {
-    "provider.physical_request": {"physical_calls": 1, "request_id": "req-1", "response_request_id": "req-1"},
-    "provider.typed_error": {"physical_calls": 1, "error_code": "provider_transport_error", "raw_body_exposed": False},
+    "provider.physical_request": {
+        "physical_calls": 1,
+        "request_id": "req-1",
+        "response_request_id": "req-1",
+    },
+    "provider.typed_error": {
+        "physical_calls": 1,
+        "error_code": "provider_transport_error",
+        "raw_body_exposed": False,
+    },
     "provider.usage": {"trusted_total_tokens": 3, "unknown_usage": None},
-    "provider.redaction": {"secret": SECRET_CANARY, "public_text": "[REDACTED]", "raw_body_exposed": False},
+    "provider.redaction": {
+        "secret": SECRET_CANARY,
+        "public_text": "[REDACTED]",
+        "raw_body_exposed": False,
+    },
     "tool.schema": {"closed": True, "bounded": True, "reserved_fields_rejected": True},
     "tool.five_state": {"states": ["succeeded", "partial", "rejected", "failed", "unknown"]},
-    "tool.reconcile": {"initial_state": "unknown", "final_state": "succeeded", "physical_calls_before": 1, "physical_calls_after": 1},
-    "tool.malformed_duplicate_late": {"accepted_results": 1, "rejected_results": 3, "physical_calls": 1},
+    "tool.reconcile": {
+        "initial_state": "unknown",
+        "final_state": "succeeded",
+        "physical_calls_before": 1,
+        "physical_calls_after": 1,
+    },
+    "tool.malformed_duplicate_late": {
+        "accepted_results": 1,
+        "rejected_results": 3,
+        "physical_calls": 1,
+    },
     "runtime.no_tool": {"terminal_state": "completed", "provider_calls": 1, "tool_calls": 0},
-    "runtime.one_tool": {"terminal_state": "completed", "provider_calls": 2, "tool_calls": 1, "correlation_match": True},
-    "runtime.multi_turn_tool": {"terminal_state": "completed", "provider_calls": 3, "tool_calls": 2, "unique_call_ids": True},
-    "runtime.session_persistence": {"reopened": True, "session_before": "session-1", "session_after": "session-1"},
-    "runtime.hitl": {"physical_calls_before": 0, "physical_calls_after": 1, "decision": "approved", "durable": True},
+    "runtime.one_tool": {
+        "terminal_state": "completed",
+        "provider_calls": 2,
+        "tool_calls": 1,
+        "correlation_match": True,
+    },
+    "runtime.multi_turn_tool": {
+        "terminal_state": "completed",
+        "provider_calls": 3,
+        "tool_calls": 2,
+        "unique_call_ids": True,
+    },
+    "runtime.session_persistence": {
+        "reopened": True,
+        "session_before": "session-1",
+        "session_after": "session-1",
+    },
+    "runtime.hitl": {
+        "physical_calls_before": 0,
+        "physical_calls_after": 1,
+        "decision": "approved",
+        "durable": True,
+    },
     "runtime.delivery": {"attempts": 2, "deliveries": 1, "settled": True},
-    "runtime.budget": {"terminations": ["max_turns", "max_tool_calls", "wall_clock", "cost", "repeated_tool"]},
-    "runtime.restart_without_replay": {"reopened": True, "physical_calls_before": 1, "physical_calls_after": 1, "reconciled": True},
-    "workflow.host_owned": {"registered": True, "completed": True, "definition_id": "host.workflow"},
+    "runtime.budget": {
+        "terminations": ["max_turns", "max_tool_calls", "wall_clock", "cost", "repeated_tool"]
+    },
+    "runtime.restart_without_replay": {
+        "reopened": True,
+        "physical_calls_before": 1,
+        "physical_calls_after": 1,
+        "reconciled": True,
+    },
+    "workflow.host_owned": {
+        "registered": True,
+        "completed": True,
+        "definition_id": "host.workflow",
+    },
     "workflow.official_durable_task": {"profile_key": "workflow.durable_task", "completed": True},
     "workflow.official_personal_v1": {"profile_key": "workflow.personal_v1", "completed": True},
-    "workflow.official_capability_build": {"profile_key": "workflow.capability_build", "completed": True},
-    "workflow.ticket_fingerprint": {"forged_ticket_rejected": True, "fingerprint_rejected": True, "child_runs": 0},
-    "workflow.reopen": {"reopened": True, "run_before": "run-1", "run_after": "run-1", "physical_calls_before": 1, "physical_calls_after": 1, "completed": True},
+    "workflow.official_capability_build": {
+        "profile_key": "workflow.capability_build",
+        "completed": True,
+    },
+    "workflow.ticket_fingerprint": {
+        "forged_ticket_rejected": True,
+        "fingerprint_rejected": True,
+        "child_runs": 0,
+    },
+    "workflow.reopen": {
+        "reopened": True,
+        "run_before": "run-1",
+        "run_after": "run-1",
+        "physical_calls_before": 1,
+        "physical_calls_after": 1,
+        "completed": True,
+    },
     "conversation.contract": {
         "dto_round_trip": True,
         "structured_preserved": True,
@@ -73,7 +135,7 @@ GOOD_VALUES = {
 class _Suite:
     def __init__(
         self,
-        host: "FakeHost",
+        host: FakeHost,
         name: str,
         *,
         overrides: Mapping[str, Mapping[str, object]] | None = None,
@@ -97,29 +159,75 @@ class _Suite:
             },
         )
 
-    async def physical_request(self): return await self._case("provider.physical_request")
-    async def typed_error(self): return await self._case("provider.typed_error")
-    async def usage(self): return await self._case("provider.usage")
-    async def redaction(self): return await self._case("provider.redaction")
-    async def schema(self): return await self._case("tool.schema")
-    async def five_state(self): return await self._case("tool.five_state")
-    async def reconcile(self): return await self._case("tool.reconcile")
-    async def malformed_duplicate_late(self): return await self._case("tool.malformed_duplicate_late")
-    async def no_tool(self): return await self._case("runtime.no_tool")
-    async def one_tool(self): return await self._case("runtime.one_tool")
-    async def multi_turn_tool(self): return await self._case("runtime.multi_turn_tool")
-    async def session_persistence(self): return await self._case("runtime.session_persistence")
-    async def hitl(self): return await self._case("runtime.hitl")
-    async def delivery(self): return await self._case("runtime.delivery")
-    async def budget(self): return await self._case("runtime.budget")
-    async def restart_without_replay(self): return await self._case("runtime.restart_without_replay")
-    async def host_owned(self): return await self._case("workflow.host_owned")
-    async def official_durable_task(self): return await self._case("workflow.official_durable_task")
-    async def official_personal_v1(self): return await self._case("workflow.official_personal_v1")
-    async def official_capability_build(self): return await self._case("workflow.official_capability_build")
-    async def ticket_fingerprint(self): return await self._case("workflow.ticket_fingerprint")
-    async def reopen(self): return await self._case("workflow.reopen")
-    async def conversation_contract(self): return await self._case("conversation.contract")
+    async def physical_request(self):
+        return await self._case("provider.physical_request")
+
+    async def typed_error(self):
+        return await self._case("provider.typed_error")
+
+    async def usage(self):
+        return await self._case("provider.usage")
+
+    async def redaction(self):
+        return await self._case("provider.redaction")
+
+    async def schema(self):
+        return await self._case("tool.schema")
+
+    async def five_state(self):
+        return await self._case("tool.five_state")
+
+    async def reconcile(self):
+        return await self._case("tool.reconcile")
+
+    async def malformed_duplicate_late(self):
+        return await self._case("tool.malformed_duplicate_late")
+
+    async def no_tool(self):
+        return await self._case("runtime.no_tool")
+
+    async def one_tool(self):
+        return await self._case("runtime.one_tool")
+
+    async def multi_turn_tool(self):
+        return await self._case("runtime.multi_turn_tool")
+
+    async def session_persistence(self):
+        return await self._case("runtime.session_persistence")
+
+    async def hitl(self):
+        return await self._case("runtime.hitl")
+
+    async def delivery(self):
+        return await self._case("runtime.delivery")
+
+    async def budget(self):
+        return await self._case("runtime.budget")
+
+    async def restart_without_replay(self):
+        return await self._case("runtime.restart_without_replay")
+
+    async def host_owned(self):
+        return await self._case("workflow.host_owned")
+
+    async def official_durable_task(self):
+        return await self._case("workflow.official_durable_task")
+
+    async def official_personal_v1(self):
+        return await self._case("workflow.official_personal_v1")
+
+    async def official_capability_build(self):
+        return await self._case("workflow.official_capability_build")
+
+    async def ticket_fingerprint(self):
+        return await self._case("workflow.ticket_fingerprint")
+
+    async def reopen(self):
+        return await self._case("workflow.reopen")
+
+    async def conversation_contract(self):
+        return await self._case("conversation.contract")
+
     async def conversation_schema_identity(self):
         return await self._case("conversation.schema_identity")
 
@@ -182,11 +290,7 @@ def test_all_suites_use_fresh_async_context_and_close() -> None:
     assert host.open_calls == list(CASES_BY_SUITE)
     assert host.close_calls == list(CASES_BY_SUITE)
     assert len({id(context) for context in host.contexts}) == len(CASES_BY_SUITE)
-    assert host.case_calls == [
-        case.case_id
-        for suite in CASES_BY_SUITE.values()
-        for case in suite
-    ]
+    assert host.case_calls == [case.case_id for suite in CASES_BY_SUITE.values() for case in suite]
     assert len(report.cases) == len(host.case_calls)
 
 

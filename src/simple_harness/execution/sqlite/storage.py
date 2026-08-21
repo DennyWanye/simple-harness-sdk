@@ -45,9 +45,7 @@ def prepare_execution_database(path: str | Path) -> Path:
     final = resolved.lstat()
     if not stat.S_ISREG(final.st_mode) or stat.S_ISLNK(final.st_mode):
         raise ExecutionStorageError("execution database path changed during validation")
-    if os.name == "posix" and (
-        final.st_uid != os.getuid() or stat.S_IMODE(final.st_mode) != 0o600
-    ):
+    if os.name == "posix" and (final.st_uid != os.getuid() or stat.S_IMODE(final.st_mode) != 0o600):
         raise ExecutionStorageError("execution database ownership changed during validation")
     return resolved
 

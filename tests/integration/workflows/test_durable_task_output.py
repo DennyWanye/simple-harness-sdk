@@ -15,8 +15,6 @@ are private implementation details and not directly tested.
 
 from __future__ import annotations
 
-import pytest
-
 from simple_harness.workflows.durable_task.output_contract import (
     validate_output_contract,
     validate_receipt_backed_completion,
@@ -266,4 +264,3 @@ def test_validate_output_contract_unknown_mode():  # type: ignore[no-untyped-def
 
     # Should treat as receipt_backed and fail (no tool results for write)
     assert result["mode"] == "unknown_mode"
-

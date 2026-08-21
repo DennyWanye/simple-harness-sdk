@@ -178,9 +178,7 @@ class ScriptedProvider:
         self.requests: list[ProviderRequest] = []
         self.physical_requests: list[ProviderRequest] = []
 
-    async def invoke(
-        self, request: ProviderRequest, *, cancel: CancelToken
-    ) -> ProviderResponse:
+    async def invoke(self, request: ProviderRequest, *, cancel: CancelToken) -> ProviderResponse:
         assert not cancel.is_cancelled
         self.requests.append(request)
         scripted = self.responses.pop(0)
@@ -261,9 +259,7 @@ class RecordingSink:
         self.order = order
         self.projections: list[tuple[str, bytes]] = []
 
-    async def deliver(
-        self, payload: Mapping[str, JsonValue], *, idempotency_key: str
-    ) -> None:
+    async def deliver(self, payload: Mapping[str, JsonValue], *, idempotency_key: str) -> None:
         mutable = thaw_json(payload)
         assert isinstance(mutable, dict)
         encoded = canonical_json(mutable).encode("utf-8")
@@ -389,9 +385,7 @@ async def make_seam(
 ) -> Seam:
     order = order or OrderSpy()
     recovery = recovery or RecoverySpy()
-    provider_reconciliation = (
-        provider_reconciliation or RecordingProviderReconciliation()
-    )
+    provider_reconciliation = provider_reconciliation or RecordingProviderReconciliation()
     database = Database.open(path)
     uow = SqliteExecutionUnitOfWork(database)
     provider = provider or ScriptedProvider(order)
@@ -458,9 +452,7 @@ async def make_seam(
             assert run is not None
             await effects.reconcile(
                 record,
-                context=ToolContext(
-                    RunId(str(run_id)), RequestId(run.request_id), _tool_cancel()
-                ),
+                context=ToolContext(RunId(str(run_id)), RequestId(run.request_id), _tool_cancel()),
                 current_fence_epoch=record.fence_epoch,
             )
 
@@ -507,9 +499,7 @@ async def make_seam(
         "agent.general": RuntimeProfile(
             "agent.general", "parent" if parent_driver is not None else "react"
         ),
-        "workflow.durable_task": RuntimeProfile(
-            "workflow.durable_task", "react"
-        ),
+        "workflow.durable_task": RuntimeProfile("workflow.durable_task", "react"),
     }
     drivers = {"react": react_driver}
     if parent_driver is not None:
@@ -656,16 +646,22 @@ def test_provider_tool_kernel_effect_and_same_driver_order(
         assert len(seam.react_driver.results) == 1
         assert seam.react_driver.results[0].state is RunState.COMPLETED
         assert seam.tool.calls == [{"x": 7}]
-        assert _count(
-            seam.database,
-            "SELECT count(*) FROM provider_invocations "
-            "WHERE run_id='run-tool' AND state='succeeded'",
-        ) == 2
-        assert _count(
-            seam.database,
-            "SELECT count(*) FROM execution_effects "
-            "WHERE run_id='run-tool' AND state='succeeded'",
-        ) == 1
+        assert (
+            _count(
+                seam.database,
+                "SELECT count(*) FROM provider_invocations "
+                "WHERE run_id='run-tool' AND state='succeeded'",
+            )
+            == 2
+        )
+        assert (
+            _count(
+                seam.database,
+                "SELECT count(*) FROM execution_effects "
+                "WHERE run_id='run-tool' AND state='succeeded'",
+            )
+            == 1
+        )
         checkpoint = seam.uow.read_react_checkpoint("run-tool")
         assert checkpoint is not None
         assert checkpoint.checkpoint["provider_turns_reserved_total"] == 2
@@ -840,8 +836,7 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
         assert seam.uow.read_run(child.run.run_id).state is RunState.FAILED
         assert seam.provider.physical_requests == []
         child_row = seam.database.connection.execute(
-            "SELECT run_id,root_run_id,parent_run_id,state FROM runs "
-            "WHERE run_id='child-composed'"
+            "SELECT run_id,root_run_id,parent_run_id,state FROM runs WHERE run_id='child-composed'"
         ).fetchone()
         assert tuple(child_row) == (
             "child-composed",
@@ -863,13 +858,10 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
         child_event_kinds = [
             str(row[0])
             for row in seam.database.connection.execute(
-                "SELECT kind FROM run_events WHERE run_id='child-composed' "
-                "ORDER BY durable_seq"
+                "SELECT kind FROM run_events WHERE run_id='child-composed' ORDER BY durable_seq"
             ).fetchall()
         ]
-        assert child_event_kinds.index("child.created") < child_event_kinds.index(
-            "child.failed"
-        )
+        assert child_event_kinds.index("child.created") < child_event_kinds.index("child.failed")
         pending_signal = seam.database.connection.execute(
             "SELECT signal_id,payload_json,state FROM child_signals "
             "WHERE parent_run_id='parent-composed' AND child_run_id='child-composed'"
@@ -883,17 +875,23 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
         root = seam.uow.read_run("parent-composed")
         assert root is not None and root.state is RunState.COMPLETED
         assert parent_driver.recovered_child_run_id == "child-composed"
-        assert _count(
-            seam.database,
-            "SELECT count(*) FROM child_signals "
-            "WHERE parent_run_id='parent-composed' AND child_run_id='child-composed' "
-            "AND state='acked'",
-        ) == 1
-        assert _count(
-            seam.database,
-            "SELECT count(*) FROM continuations WHERE run_id='parent-composed' "
-            "AND state='acked'",
-        ) == 1
+        assert (
+            _count(
+                seam.database,
+                "SELECT count(*) FROM child_signals "
+                "WHERE parent_run_id='parent-composed' AND child_run_id='child-composed' "
+                "AND state='acked'",
+            )
+            == 1
+        )
+        assert (
+            _count(
+                seam.database,
+                "SELECT count(*) FROM continuations WHERE run_id='parent-composed' "
+                "AND state='acked'",
+            )
+            == 1
+        )
         receipt = seam.database.connection.execute(
             "SELECT receipt_id,signal_id,continuation_id,event_id "
             "FROM child_signal_ack_receipts WHERE signal_id=?",
@@ -911,11 +909,14 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
         assert continuation_payload["signal_id"] == str(pending_signal[0])
         assert continuation_payload["child_run_id"] == "child-composed"
         assert continuation_payload["payload"]["status"] == "failed"
-        assert _count(
-            seam.database,
-            "SELECT count(*) FROM run_events WHERE event_id=?",
-            (str(receipt[3]),),
-        ) == 1
+        assert (
+            _count(
+                seam.database,
+                "SELECT count(*) FROM run_events WHERE event_id=?",
+                (str(receipt[3]),),
+            )
+            == 1
+        )
         terminal = _event_payload(seam.database, "parent-composed", "run.completed")
         assert terminal["correlation"] == {
             "recovered_child_run_id": "child-composed",
@@ -932,48 +933,61 @@ def test_attached_child_failure_wakes_parent_and_delivers_correlated_terminal(
                         },
                         "fence_epoch": terminal["fence_epoch"],
                         "message": "parent recovered after composed child provider failure",
-                        "terminal_fence_receipt_ref": terminal[
-                            "terminal_fence_receipt_ref"
-                        ],
+                        "terminal_fence_receipt_ref": terminal["terminal_fence_receipt_ref"],
                     }
                 ).encode("utf-8"),
             )
         ]
         for _ in range(100):
-            if _count(
-                seam.database,
-                "SELECT count(*) FROM delivery_outbox "
-                "WHERE run_id='parent-composed' AND state='delivered'",
-            ) == 1:
+            if (
+                _count(
+                    seam.database,
+                    "SELECT count(*) FROM delivery_outbox "
+                    "WHERE run_id='parent-composed' AND state='delivered'",
+                )
+                == 1
+            ):
                 break
             await asyncio.sleep(0)
         assert seam.sink.projections == expected_projections
-        assert _count(
-            seam.database,
-            "SELECT count(*) FROM delivery_outbox "
-            "WHERE run_id='parent-composed' AND state='delivered'",
-        ) == 1
-        assert _count(
-            seam.database,
-            "SELECT count(*) FROM delivery_outbox "
-            "WHERE run_id='parent-composed' AND state='pending'",
-        ) == 0
+        assert (
+            _count(
+                seam.database,
+                "SELECT count(*) FROM delivery_outbox "
+                "WHERE run_id='parent-composed' AND state='delivered'",
+            )
+            == 1
+        )
+        assert (
+            _count(
+                seam.database,
+                "SELECT count(*) FROM delivery_outbox "
+                "WHERE run_id='parent-composed' AND state='pending'",
+            )
+            == 0
+        )
         assert await seam.runtime.dispatch_deliveries_once() is False
         assert seam.sink.projections == expected_projections
 
         reopened = await seam.reopen(parent_driver=parent_driver)
         assert await reopened.runtime.dispatch_deliveries_once() is False
         assert reopened.sink.projections == expected_projections
-        assert _count(
-            reopened.database,
-            "SELECT count(*) FROM delivery_outbox "
-            "WHERE run_id='parent-composed' AND state='delivered'",
-        ) == 1
-        assert _count(
-            reopened.database,
-            "SELECT count(*) FROM delivery_outbox "
-            "WHERE run_id='parent-composed' AND state='pending'",
-        ) == 0
+        assert (
+            _count(
+                reopened.database,
+                "SELECT count(*) FROM delivery_outbox "
+                "WHERE run_id='parent-composed' AND state='delivered'",
+            )
+            == 1
+        )
+        assert (
+            _count(
+                reopened.database,
+                "SELECT count(*) FROM delivery_outbox "
+                "WHERE run_id='parent-composed' AND state='pending'",
+            )
+            == 0
+        )
 
     asyncio.run(case())
 

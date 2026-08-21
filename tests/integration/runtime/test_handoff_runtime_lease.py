@@ -73,9 +73,7 @@ class Allow:
 class Observe:
     async def observe(self, prepared):
         del prepared
-        return ReconciliationObservation(
-            ReconciliationState.STILL_UNKNOWN, "fixture:unknown"
-        )
+        return ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "fixture:unknown")
 
 
 def _seed(uow: SqliteExecutionUnitOfWork):
@@ -133,10 +131,7 @@ def test_stale_runtime_owner_cannot_write_or_hand_off_provider(tmp_path) -> None
         )
     assert provider.calls == 0
     assert (
-        database.connection.execute(
-            "SELECT count(*) FROM provider_invocations"
-        ).fetchone()[0]
-        == 0
+        database.connection.execute("SELECT count(*) FROM provider_invocations").fetchone()[0] == 0
     )
     database.close()
 
@@ -171,28 +166,19 @@ def test_stale_runtime_owner_cannot_prepare_or_hand_off_tool(tmp_path) -> None:
         reconciliation=Observe(),
         clock=lambda: 5.0,
     )
-    stale_fence = RunFenceLease(
-        RunId("run-1"), 1, stale.owner_id, stale.epoch
-    )
+    stale_fence = RunFenceLease(RunId("run-1"), 1, stale.owner_id, stale.epoch)
     with pytest.raises(UnitOfWorkConflict, match="lease"):
         asyncio.run(
             executor.execute(
                 effect_id=EffectId("effect-1"),
                 call=ToolCall(CallId("call-1"), "fixture", {}),
-                context=ToolContext(
-                    RunId("run-1"), RequestId("tool-request"), CancellationToken()
-                ),
+                context=ToolContext(RunId("run-1"), RequestId("tool-request"), CancellationToken()),
                 execution_lease=stale,
                 run_fence=stale_fence,
             )
         )
     assert handler_calls == 0
-    assert (
-        database.connection.execute(
-            "SELECT count(*) FROM execution_effects"
-        ).fetchone()[0]
-        == 0
-    )
+    assert database.connection.execute("SELECT count(*) FROM execution_effects").fetchone()[0] == 0
     database.close()
 
 
@@ -224,10 +210,10 @@ def _seed_workflow_authority(uow: SqliteExecutionUnitOfWork):
     request_hash = hashlib.sha256(request_json.encode()).hexdigest()
     uow.database.connection.execute(
         "INSERT INTO workflow_start_admissions(request_key,request_id,"
-            "request_fingerprint,request_json,mode,run_id,trace_id,thread_id,phase,"
-            "version,claim_action,claim_owner,claim_epoch,claim_expires_at,created_at,updated_at) "
-            "VALUES('workflow-start','workflow-request',?,?, 'precreated',"
-            "'workflow-run','workflow-trace','workflow-thread','claimed',0,'new',?,?,?,1,1)",
+        "request_fingerprint,request_json,mode,run_id,trace_id,thread_id,phase,"
+        "version,claim_action,claim_owner,claim_epoch,claim_expires_at,created_at,updated_at) "
+        "VALUES('workflow-start','workflow-request',?,?, 'precreated',"
+        "'workflow-run','workflow-trace','workflow-thread','claimed',0,'new',?,?,?,1,1)",
         (request_hash, request_json, lease.owner_id, lease.epoch, lease.expires_at),
     )
     uow.database.connection.execute(
@@ -236,13 +222,17 @@ def _seed_workflow_authority(uow: SqliteExecutionUnitOfWork):
         (lease.owner_id, lease.epoch, lease.expires_at),
     )
     uow.database.connection.commit()
-    return lease, fence, WorkflowLease(
-        "workflow-run",
-        lease.owner_id,
-        lease.epoch,
-        lease.expires_at,
-        lease.epoch,
-        "native",
+    return (
+        lease,
+        fence,
+        WorkflowLease(
+            "workflow-run",
+            lease.owner_id,
+            lease.epoch,
+            lease.expires_at,
+            lease.epoch,
+            "native",
+        ),
     )
 
 
@@ -325,9 +315,7 @@ def test_workflow_handoff_accepts_immutable_activation_token_after_heartbeat(
 
 
 @pytest.mark.parametrize("authority", ["missing", "expired", "mismatch"])
-def test_workflow_provider_handoff_requires_current_triple_fence(
-    tmp_path, authority: str
-) -> None:
+def test_workflow_provider_handoff_requires_current_triple_fence(tmp_path, authority: str) -> None:
     database = Database.open(tmp_path / f"workflow-provider-{authority}.db")
     uow = SqliteExecutionUnitOfWork(database)
     lease, _fence, workflow_lease = _seed_workflow_authority(uow)
@@ -375,16 +363,17 @@ def test_workflow_provider_handoff_requires_current_triple_fence(
             )
         )
     assert provider.calls == 0
-    assert database.connection.execute(
-        "SELECT state FROM provider_invocations WHERE run_id='workflow-run'"
-    ).fetchone()[0] == "claimed"
+    assert (
+        database.connection.execute(
+            "SELECT state FROM provider_invocations WHERE run_id='workflow-run'"
+        ).fetchone()[0]
+        == "claimed"
+    )
     database.close()
 
 
 @pytest.mark.parametrize("authority", ["missing", "expired", "mismatch"])
-def test_workflow_tool_handoff_requires_current_workflow_lease(
-    tmp_path, authority: str
-) -> None:
+def test_workflow_tool_handoff_requires_current_workflow_lease(tmp_path, authority: str) -> None:
     database = Database.open(tmp_path / f"workflow-tool-{authority}.db")
     uow = SqliteExecutionUnitOfWork(database)
     lease, fence, workflow_lease = _seed_workflow_authority(uow)
@@ -474,9 +463,7 @@ def test_run_fence_acquire_is_idempotent_for_same_runtime_lease(tmp_path) -> Non
 def test_stale_acquire_after_takeover_is_zero_write(tmp_path) -> None:
     database = Database.open(tmp_path / "takeover.db")
     uow = SqliteExecutionUnitOfWork(database)
-    _, stale = _seed_current_only(
-        uow, owner_id="same-owner", now=2.0, lease_ttl_seconds=1.0
-    )
+    _, stale = _seed_current_only(uow, owner_id="same-owner", now=2.0, lease_ttl_seconds=1.0)
     old_fence = asyncio.run(uow.acquire(RunId("run-1"), stale, now=2.0))
     _, current = uow.claim_runtime_activation(
         run_id="run-1",
@@ -502,11 +489,15 @@ def test_stale_acquire_after_takeover_is_zero_write(tmp_path) -> None:
     )
     assert current.epoch == stale.epoch + 1
     assert new_fence.epoch == old_fence.epoch + 1
-    assert after == before == (
-        "same-owner",
-        current.epoch,
-        new_fence.epoch,
-        "active",
+    assert (
+        after
+        == before
+        == (
+            "same-owner",
+            current.epoch,
+            new_fence.epoch,
+            "active",
+        )
     )
     database.close()
 
@@ -514,16 +505,12 @@ def test_stale_acquire_after_takeover_is_zero_write(tmp_path) -> None:
 def test_acquire_at_exact_expiry_is_zero_write(tmp_path) -> None:
     database = Database.open(tmp_path / "exact-expiry.db")
     uow = SqliteExecutionUnitOfWork(database)
-    _, lease = _seed_current_only(
-        uow, owner_id="owner-1", now=2.0, lease_ttl_seconds=3.0
-    )
+    _, lease = _seed_current_only(uow, owner_id="owner-1", now=2.0, lease_ttl_seconds=3.0)
 
     with pytest.raises(UnitOfWorkConflict, match="lease"):
         asyncio.run(uow.acquire(RunId("run-1"), lease, now=5.0))
 
-    assert database.connection.execute(
-        "SELECT COUNT(*) FROM run_fences"
-    ).fetchone()[0] == 0
+    assert database.connection.execute("SELECT COUNT(*) FROM run_fences").fetchone()[0] == 0
     database.close()
 
 
@@ -532,9 +519,7 @@ def test_new_runtime_lease_cannot_pair_with_old_fence_for_tool_handoff(
 ) -> None:
     database = Database.open(tmp_path / "mixed-fences.db")
     uow = SqliteExecutionUnitOfWork(database)
-    _, old_lease = _seed_current_only(
-        uow, owner_id="same-owner", now=2.0, lease_ttl_seconds=1.0
-    )
+    _, old_lease = _seed_current_only(uow, owner_id="same-owner", now=2.0, lease_ttl_seconds=1.0)
     old_fence = asyncio.run(uow.acquire(RunId("run-1"), old_lease, now=2.0))
     _, new_lease = uow.claim_runtime_activation(
         run_id="run-1",
@@ -575,18 +560,14 @@ def test_new_runtime_lease_cannot_pair_with_old_fence_for_tool_handoff(
             executor.execute(
                 effect_id=EffectId("effect-1"),
                 call=ToolCall(CallId("call-1"), "fixture", {}),
-                context=ToolContext(
-                    RunId("run-1"), RequestId("tool-request"), CancellationToken()
-                ),
+                context=ToolContext(RunId("run-1"), RequestId("tool-request"), CancellationToken()),
                 execution_lease=new_lease,
                 run_fence=old_fence,
             )
         )
 
     assert handler_calls == 0
-    assert database.connection.execute(
-        "SELECT COUNT(*) FROM execution_effects"
-    ).fetchone()[0] == 0
+    assert database.connection.execute("SELECT COUNT(*) FROM execution_effects").fetchone()[0] == 0
     database.close()
 
 
@@ -595,9 +576,7 @@ def test_direct_handoff_rejects_new_execution_lease_with_old_run_fence(
 ) -> None:
     database = Database.open(tmp_path / "direct-mixed-handoff.db")
     uow = SqliteExecutionUnitOfWork(database)
-    _, old_lease = _seed_current_only(
-        uow, owner_id="same-owner", now=2.0, lease_ttl_seconds=1.0
-    )
+    _, old_lease = _seed_current_only(uow, owner_id="same-owner", now=2.0, lease_ttl_seconds=1.0)
     old_fence = asyncio.run(uow.acquire(RunId("run-1"), old_lease, now=2.0))
     prepared = uow.prepare_effect(
         effect_id=EffectId("effect-1"),
@@ -635,9 +614,7 @@ def test_direct_handoff_rejects_new_execution_lease_with_old_run_fence(
     database.close()
 
 
-def test_multiple_tools_share_kernel_fence_until_terminal_commit(
-    tmp_path, monkeypatch
-) -> None:
+def test_multiple_tools_share_kernel_fence_until_terminal_commit(tmp_path, monkeypatch) -> None:
     database = Database.open(tmp_path / "multi-tool-terminal.db")
     uow = SqliteExecutionUnitOfWork(database)
     _, lease = _seed_current_only(uow, owner_id="kernel-owner", now=2.0)
@@ -694,8 +671,7 @@ def test_multiple_tools_share_kernel_fence_until_terminal_commit(
             )
         )
         row = database.connection.execute(
-            "SELECT runtime_lease_epoch,epoch,state FROM run_fences "
-            "WHERE run_id='run-1'"
+            "SELECT runtime_lease_epoch,epoch,state FROM run_fences WHERE run_id='run-1'"
         ).fetchone()
         assert tuple(row) == (lease.epoch, fence.epoch, "active")
 
@@ -707,9 +683,7 @@ def test_multiple_tools_share_kernel_fence_until_terminal_commit(
         terminal_state=RunState.COMPLETED,
         event_id="run-1:terminal:completed",
         terminal_payload={"ok": True},
-        deliveries=(
-            DeliverySpec("delivery-1", "fixture", "terminal:run-1", {"ok": True}),
-        ),
+        deliveries=(DeliverySpec("delivery-1", "fixture", "terminal:run-1", {"ok": True}),),
         fence=fence,
         execution_lease=lease,
         terminal_fence_receipt_ref="runtime-fence:kernel-owner:1",
@@ -718,9 +692,12 @@ def test_multiple_tools_share_kernel_fence_until_terminal_commit(
     assert calls == 3
     assert executor_fence_calls == 0
     assert result.run.state is RunState.COMPLETED
-    assert database.connection.execute(
-        "SELECT state FROM run_fences WHERE run_id='run-1'"
-    ).fetchone()[0] == "released"
+    assert (
+        database.connection.execute("SELECT state FROM run_fences WHERE run_id='run-1'").fetchone()[
+            0
+        ]
+        == "released"
+    )
     database.close()
 
 

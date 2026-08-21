@@ -29,9 +29,7 @@ def test_conversation_dto_canonical_golden_round_trip() -> None:
     )
     assert value.memory_text == "Caf\u00e9\nnext"
     assert ConversationTurnInput.from_json(value.to_json()) == value
-    output = ConversationTurnOutput(
-        Message(MessageRole.ASSISTANT, "answer"), "answer"
-    )
+    output = ConversationTurnOutput(Message(MessageRole.ASSISTANT, "answer"), "answer")
     assert ConversationTurnOutput.from_json(output.to_json()) == output
 
 

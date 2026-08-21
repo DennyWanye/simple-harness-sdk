@@ -39,4 +39,3 @@ def test_error_codes_have_a_stable_wire_format(code: str) -> None:
 def test_public_message_cannot_be_empty() -> None:
     with pytest.raises(ValueError, match="public_message"):
         HarnessError("invalid_request", "  ")
-

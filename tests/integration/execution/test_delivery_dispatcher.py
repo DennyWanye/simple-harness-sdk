@@ -142,11 +142,7 @@ def test_sink_success_before_settle_crash_retries_same_key_after_reopen(
             terminal_state=RunState.COMPLETED,
             event_id="run-1:completed",
             terminal_payload={"answer": 42},
-            deliveries=(
-                DeliverySpec(
-                    "delivery-1", "presenter", "terminal:run-1", {"answer": 42}
-                ),
-            ),
+            deliveries=(DeliverySpec("delivery-1", "presenter", "terminal:run-1", {"answer": 42}),),
             fence=fence,
             execution_lease=lease,
             terminal_fence_receipt_ref="runtime-fence:owner-1:1",

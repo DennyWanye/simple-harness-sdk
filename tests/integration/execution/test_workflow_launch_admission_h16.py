@@ -179,7 +179,11 @@ def _sqlite_runner(
 ) -> WorkflowRunner:
     class NoBlobReferences:
         async def validate_references(
-            self, transaction, *, blob_refs, **values  # type: ignore[no-untyped-def]
+            self,
+            transaction,
+            *,
+            blob_refs,
+            **values,  # type: ignore[no-untyped-def]
         ) -> None:
             del transaction, blob_refs, values
 
@@ -189,13 +193,20 @@ def _sqlite_runner(
 
     class LegacyProjection:
         def project_public(
-            self, workflow_name, workflow_version, raw, engine_status  # type: ignore[no-untyped-def]
+            self,
+            workflow_name,
+            workflow_version,
+            raw,
+            engine_status,  # type: ignore[no-untyped-def]
         ):
             del workflow_name, workflow_version, raw, engine_status
 
     class NoCommitProjection:
         def lookup(
-            self, workflow_name, workflow_version, descriptor  # type: ignore[no-untyped-def]
+            self,
+            workflow_name,
+            workflow_version,
+            descriptor,  # type: ignore[no-untyped-def]
         ):
             del workflow_name, workflow_version, descriptor
 
@@ -260,9 +271,7 @@ def _registration(*, generation: int = 1) -> WorkflowProfileRegistration:
     )
 
 
-def _catalog(
-    *, generation: int = 1, version: int = 1
-) -> VerifiedWorkflowCatalogAuthority:
+def _catalog(*, generation: int = 1, version: int = 1) -> VerifiedWorkflowCatalogAuthority:
     registration = _registration(generation=generation)
     return _runner().prepare_catalog_authority(generation, (registration,))
 
@@ -408,9 +417,7 @@ async def _spawn_issue_authority(
             checkpoint_hash=checkpoint_hash,
             now=0.3,
         )
-    request_hash = effect_request_hash(
-        tool_name="workflow_spawn", arguments=arguments
-    )
+    request_hash = effect_request_hash(tool_name="workflow_spawn", arguments=arguments)
     effect = uow.read_effect(EffectId(effect_id))
     if effect is None:
         effect = uow.prepare_effect(
@@ -474,9 +481,7 @@ async def _prepare_spawn_ready(
     *,
     catalog_authority: VerifiedWorkflowCatalogAuthority | None = None,
 ):  # type: ignore[no-untyped-def]
-    launch, ticket, _ = await _publish_and_issue(
-        uow, catalog_authority=catalog_authority
-    )
+    launch, ticket, _ = await _publish_and_issue(uow, catalog_authority=catalog_authority)
     issue_authority = await _spawn_issue_authority(uow)
     effect = uow.read_effect(EffectId(issue_authority.effect_id))
     assert effect is not None
@@ -521,9 +526,7 @@ async def _prepare_spawn_ready_activation(
     *,
     catalog_authority: VerifiedWorkflowCatalogAuthority | None = None,
 ):  # type: ignore[no-untyped-def]
-    parent, ready, blocker = await _prepare_spawn_ready(
-        uow, catalog_authority=catalog_authority
-    )
+    parent, ready, blocker = await _prepare_spawn_ready(uow, catalog_authority=catalog_authority)
     first = await _atomic(
         uow,
         lambda tx: uow.consume_spawn_ready_and_claim_activation(
@@ -545,12 +548,9 @@ def _terminalize_spawn_parent(
     now: float = 8.0,
 ):  # type: ignore[no-untyped-def]
     connection = uow.database.connection
-    run = connection.execute(
-        "SELECT state,version FROM runs WHERE run_id='parent-run'"
-    ).fetchone()
+    run = connection.execute("SELECT state,version FROM runs WHERE run_id='parent-run'").fetchone()
     fence = connection.execute(
-        "SELECT owner_id,runtime_lease_epoch,epoch FROM run_fences "
-        "WHERE run_id='parent-run'"
+        "SELECT owner_id,runtime_lease_epoch,epoch FROM run_fences WHERE run_id='parent-run'"
     ).fetchone()
     assert run is not None and fence is not None
     namespace = "react.termination.v1"
@@ -597,8 +597,7 @@ def _terminalize_spawn_parent(
     event_json = canonical_json(terminal_payload)
     durable_seq = int(
         connection.execute(
-            "SELECT COALESCE(MAX(durable_seq),0)+1 FROM run_events "
-            "WHERE run_id='parent-run'"
+            "SELECT COALESCE(MAX(durable_seq),0)+1 FROM run_events WHERE run_id='parent-run'"
         ).fetchone()[0]
     )
     connection.execute(
@@ -637,9 +636,7 @@ def _terminalize_spawn_parent(
         "terminal_payload": terminal_payload,
         "delivery_facts": [],
     }
-    outcome_hash = hashlib.sha256(
-        canonical_json(terminal_fields).encode()
-    ).hexdigest()
+    outcome_hash = hashlib.sha256(canonical_json(terminal_fields).encode()).hexdigest()
     connection.execute(
         "INSERT INTO workflow_terminal_receipts("
         "receipt_id,run_id,checkpoint_id,checkpoint_namespace,checkpoint_version,"
@@ -665,8 +662,7 @@ def _terminalize_spawn_parent(
     )
     connection.execute("DELETE FROM workflow_leases WHERE run_id='parent-run'")
     connection.execute(
-        "UPDATE run_fences SET state='released',released_at=? "
-        "WHERE run_id='parent-run'",
+        "UPDATE run_fences SET state='released',released_at=? WHERE run_id='parent-run'",
         (now,),
     )
     connection.execute(
@@ -838,21 +834,28 @@ def test_direct_spawn_admission_atomically_settles_effect_context_and_parent_wai
         parent = uow.read_run("parent-run")
         assert parent is not None and parent.state.value == "waiting"
         assert SqliteContextPort(database).load(RunId("parent-run")).revision == 2
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_spawn_child_wait_receipts"
-        ).fetchone()[0] == 1
-        assert database.connection.execute(
-            "SELECT state FROM run_fences WHERE run_id='parent-run'"
-        ).fetchone()[0] == "released"
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_leases WHERE run_id='parent-run'"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_spawn_child_wait_receipts"
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            database.connection.execute(
+                "SELECT state FROM run_fences WHERE run_id='parent-run'"
+            ).fetchone()[0]
+            == "released"
+        )
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_leases WHERE run_id='parent-run'"
+            ).fetchone()[0]
+            == 0
+        )
         replay = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.read_spawn_admission_outcome(
-                    tx, continuation.spawn_operation_id
-                ),
+                lambda tx: uow.read_spawn_admission_outcome(tx, continuation.spawn_operation_id),
             )
         )
         assert replay is not None
@@ -879,9 +882,7 @@ def test_direct_spawn_admission_atomically_settles_effect_context_and_parent_wai
         after_child_terminal = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.read_spawn_admission_outcome(
-                    tx, continuation.spawn_operation_id
-                ),
+                lambda tx: uow.read_spawn_admission_outcome(tx, continuation.spawn_operation_id),
             )
         )
         assert after_child_terminal == replay
@@ -944,9 +945,7 @@ def test_direct_spawn_admission_fault_reopen_is_atomic(
                         start,
                         request,
                         snapshot,
-                        RuntimeActivationClaim(
-                            "child-worker", lease_ttl_seconds=10.0
-                        ),
+                        RuntimeActivationClaim("child-worker", lease_ttl_seconds=10.0),
                         now=3.0,
                         fault=fault,
                     ),
@@ -969,17 +968,13 @@ def test_direct_spawn_admission_fault_reopen_is_atomic(
         assert parent.state.value == ("waiting" if persisted else "running")
         effect = uow.read_effect(EffectId(authority.effect_id))
         assert effect is not None
-        assert effect.state is (
-            EffectState.SUCCEEDED if persisted else EffectState.HANDED_OFF
-        )
+        assert effect.state is (EffectState.SUCCEEDED if persisted else EffectState.HANDED_OFF)
         context = SqliteContextPort(reopened).load(RunId("parent-run"))
         assert context.revision == 1 + int(persisted)
         outcome = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.read_spawn_admission_outcome(
-                    tx, continuation.spawn_operation_id
-                ),
+                lambda tx: uow.read_spawn_admission_outcome(tx, continuation.spawn_operation_id),
             )
         )
         assert (outcome is not None) is persisted
@@ -995,9 +990,7 @@ def test_ready_recovery_spawn_admission_consumes_activation_and_reopens(
         issued = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.read_issued(
-                    tx, activation.ready_receipt.spawn_operation_id
-                ),
+                lambda tx: uow.read_issued(tx, activation.ready_receipt.spawn_operation_id),
             )
         )
         assert issued is not None
@@ -1021,14 +1014,12 @@ def test_ready_recovery_spawn_admission_consumes_activation_and_reopens(
         )
         assert outcome.child_start_ref.child_run_id == "run-1"
         row = database.connection.execute(
-            "SELECT state FROM workflow_spawn_ready_activations "
-            "WHERE activation_receipt_id=?",
+            "SELECT state FROM workflow_spawn_ready_activations WHERE activation_receipt_id=?",
             (activation.activation_receipt_id,),
         ).fetchone()
         assert row is not None and str(row["state"]) == "consumed"
         completion = database.connection.execute(
-            "SELECT path_kind,activation_chain_head_id "
-            "FROM workflow_spawn_completion_receipts"
+            "SELECT path_kind,activation_chain_head_id FROM workflow_spawn_completion_receipts"
         ).fetchone()
         assert completion is not None
         assert tuple(completion) == (
@@ -1069,9 +1060,7 @@ def test_ready_recovery_spawn_admission_fault_reopen_is_atomic(
         issued = asyncio.run(
             _atomic(
                 base,
-                lambda tx: base.read_issued(
-                    tx, activation.ready_receipt.spawn_operation_id
-                ),
+                lambda tx: base.read_issued(tx, activation.ready_receipt.spawn_operation_id),
             )
         )
         assert issued is not None
@@ -1099,9 +1088,7 @@ def test_ready_recovery_spawn_admission_fault_reopen_is_atomic(
                         start,
                         request,
                         snapshot,
-                        RuntimeActivationClaim(
-                            "child-worker", lease_ttl_seconds=10.0
-                        ),
+                        RuntimeActivationClaim("child-worker", lease_ttl_seconds=10.0),
                         now=3.0,
                         fault=fault,
                     ),
@@ -1110,8 +1097,7 @@ def test_ready_recovery_spawn_admission_fault_reopen_is_atomic(
 
     with Database.open(path) as reopened:
         row = reopened.connection.execute(
-            "SELECT state FROM workflow_spawn_ready_activations "
-            "WHERE activation_receipt_id=?",
+            "SELECT state FROM workflow_spawn_ready_activations WHERE activation_receipt_id=?",
             (activation.activation_receipt_id,),
         ).fetchone()
         assert row is not None
@@ -1135,19 +1121,18 @@ def test_spawn_issue_claim_ready_and_read_are_one_durable_chain(
         uow = SqliteExecutionUnitOfWork(database)
         launch, ticket, _ = asyncio.run(_publish_and_issue(uow))
         issue_authority = asyncio.run(_spawn_issue_authority(uow))
-        issued = asyncio.run(
-            _atomic(uow, lambda tx: uow.read_issued(tx, launch.request_key))
-        )
+        issued = asyncio.run(_atomic(uow, lambda tx: uow.read_issued(tx, launch.request_key)))
         assert issued == (ticket, launch)
         continuation = database.connection.execute(
             "SELECT * FROM workflow_spawn_continuations WHERE operation_id=?",
             (launch.request_key,),
         ).fetchone()
         assert continuation is not None
-        assert tuple(
-            continuation[key]
-            for key in ("state", "effect_id", "handoff_attempt")
-        ) == ("pending", issue_authority.effect_id, 1)
+        assert tuple(continuation[key] for key in ("state", "effect_id", "handoff_attempt")) == (
+            "pending",
+            issue_authority.effect_id,
+            1,
+        )
 
         effect = uow.read_effect(EffectId(issue_authority.effect_id))
         assert effect is not None
@@ -1360,10 +1345,7 @@ def test_runtime_reopens_consumed_spawn_ready_activation_after_owner_expiry(
             assert successor.execution_lease.run_id == parent.run_id
             assert successor.execution_lease.owner_id == "recovery-worker"
             assert successor.execution_lease.epoch == first.execution_lease.epoch + 1
-            assert (
-                successor.predecessor_activation_receipt_id
-                == first.activation_receipt_id
-            )
+            assert successor.predecessor_activation_receipt_id == first.activation_receipt_id
             await runtime.close()
 
     asyncio.run(case())
@@ -1427,7 +1409,10 @@ def test_react_ready_carrier_continues_spawn_without_provider_or_tool_replay(
             assert control.child_start_ref.child_run_id == "run-1"
             assert control.child_control.kind is WorkflowSpawnChildControlKind.START
             assert uow.read_run(parent.run_id).state is RunState.WAITING  # type: ignore[union-attr]
-            assert uow.read_effect(EffectId(activation.ready_receipt.effect_id)).state is EffectState.SUCCEEDED  # type: ignore[union-attr]
+            assert (
+                uow.read_effect(EffectId(activation.ready_receipt.effect_id)).state
+                is EffectState.SUCCEEDED
+            )  # type: ignore[union-attr]
             scheduled: list[str] = []
             runtime._schedule = scheduled.append  # type: ignore[method-assign]
             await runtime._accept_workflow_spawn_control(parent.run_id, control)
@@ -1488,7 +1473,7 @@ def test_runtime_reopens_committed_spawn_child_before_first_schedule(
                 clock=lambda: now,
                 lease_ttl_seconds=10.0,
             ),
-                workflow_runner=_sqlite_runner(database, uow, clock=lambda: now),
+            workflow_runner=_sqlite_runner(database, uow, clock=lambda: now),
         )
 
     async def case() -> None:
@@ -1499,9 +1484,7 @@ def test_runtime_reopens_committed_spawn_child_before_first_schedule(
         with Database.open(path) as database:
             uow = SqliteExecutionUnitOfWork(database)
             _parent, activation = await _prepare_spawn_ready_activation(uow)
-            runtime = make_runtime(
-                database, uow, owner_id="parent-worker", now=3.0
-            )
+            runtime = make_runtime(database, uow, owner_id="parent-worker", now=3.0)
             coordinator = runtime._services.workflow_spawn
             assert coordinator is not None
             committed = await coordinator.continue_ready(activation)
@@ -1511,9 +1494,12 @@ def test_runtime_reopens_committed_spawn_child_before_first_schedule(
             assert replayed.child_start_ref == committed.child_start_ref
             assert replayed.suspension == committed.suspension
             assert replayed.child_control.kind is WorkflowSpawnChildControlKind.START
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM runs WHERE run_id='run-1'"
-            ).fetchone()[0] == 1
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM runs WHERE run_id='run-1'"
+                ).fetchone()[0]
+                == 1
+            )
             if bind_before_close:
                 raw_snapshot = uow.read_start_snapshot("run-1")
                 child_admission = committed.child_control.admission
@@ -1531,13 +1517,8 @@ def test_runtime_reopens_committed_spawn_child_before_first_schedule(
                 )
                 assert bound.activation is not None
                 attached = await coordinator.continue_ready(activation)
-                assert (
-                    attached.child_control.kind
-                    is WorkflowSpawnChildControlKind.ATTACH
-                )
-                await runtime._accept_workflow_spawn_control(
-                    "parent-run", attached
-                )
+                assert attached.child_control.kind is WorkflowSpawnChildControlKind.ATTACH
+                await runtime._accept_workflow_spawn_control("parent-run", attached)
 
         with Database.open(path) as database:
             lost = False
@@ -1552,12 +1533,8 @@ def test_runtime_reopens_committed_spawn_child_before_first_schedule(
                     lost = True
                     raise RuntimeError("simulated terminal response loss")
 
-            uow = SqliteExecutionUnitOfWork(
-                database, workflow_fault=lose_after_commit
-            )
-            runtime = make_runtime(
-                database, uow, owner_id="recovery-worker", now=2000.0
-            )
+            uow = SqliteExecutionUnitOfWork(database, workflow_fault=lose_after_commit)
+            runtime = make_runtime(database, uow, owner_id="recovery-worker", now=2000.0)
             replayed = None
             if recover_via_receipt:
                 coordinator = runtime._services.workflow_spawn
@@ -1571,9 +1548,7 @@ def test_runtime_reopens_committed_spawn_child_before_first_schedule(
                 )
             await runtime.start()
             if replayed is not None:
-                await runtime._accept_workflow_spawn_control(
-                    "parent-run", replayed
-                )
+                await runtime._accept_workflow_spawn_control("parent-run", replayed)
             await runtime.wait_idle(RunId("run-1"))
             child = uow.read_run("run-1")
             assert child is not None and child.state is RunState.COMPLETED
@@ -1586,9 +1561,12 @@ def test_runtime_reopens_committed_spawn_child_before_first_schedule(
             ).fetchone()
             assert signal is not None
             assert tuple(signal) == ("parent-run", "run-1", "pending")
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM child_signals WHERE child_run_id='run-1'"
-            ).fetchone()[0] == 1
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM child_signals WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == 1
+            )
             assert lost is lose_terminal_response
             await runtime.close()
 
@@ -1666,9 +1644,7 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
                 clock=lambda: now,
                 lease_ttl_seconds=10.0,
             ),
-            workflow_runner=_sqlite_runner(
-                database, uow, clock=lambda: now, compiled=compiled
-            ),
+            workflow_runner=_sqlite_runner(database, uow, clock=lambda: now, compiled=compiled),
         )
 
     async def case() -> None:
@@ -1676,15 +1652,11 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
         with Database.open(path) as database:
             uow = SqliteExecutionUnitOfWork(database)
             runner = _sqlite_runner(database, uow, compiled=compiled)
-            catalog_authority = runner.prepare_catalog_authority(
-                1, (_registration(),)
-            )
+            catalog_authority = runner.prepare_catalog_authority(1, (_registration(),))
             _parent, ready = await _prepare_spawn_ready_activation(
                 uow, catalog_authority=catalog_authority
             )
-            runtime = make_runtime(
-                database, uow, owner_id="parent-worker", now=3.0
-            )
+            runtime = make_runtime(database, uow, owner_id="parent-worker", now=3.0)
             coordinator = runtime._services.workflow_spawn
             assert coordinator is not None
             outcome = await coordinator.continue_ready(ready)
@@ -1698,8 +1670,7 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
             await runtime._accept_workflow_spawn_control("parent-run", waiting)
 
             decision = database.connection.execute(
-                "SELECT decision_id FROM decisions "
-                "WHERE run_id='run-1' AND state='open'"
+                "SELECT decision_id FROM decisions WHERE run_id='run-1' AND state='open'"
             ).fetchone()
             assert decision is not None
             decision_id = str(decision[0])
@@ -1723,20 +1694,14 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
             assert request is not None
             native = await runner.native_store.load_execution(
                 run_id="run-1",
-                thread_id=request.resolved_thread_id
-                or request.requested_thread_id
-                or "run-1",
+                thread_id=request.resolved_thread_id or request.requested_thread_id or "run-1",
                 checkpoint_ns=request.checkpoint_namespace,
             )
             interrupt = native.snapshot.interrupt
             assert isinstance(interrupt, dict)
-            request_hash = hashlib.sha256(
-                canonical_json(interrupt).encode()
-            ).hexdigest()
+            request_hash = hashlib.sha256(canonical_json(interrupt).encode()).hexdigest()
             responses = {decision_id: {"approved": True}}
-            responses_hash = hashlib.sha256(
-                canonical_json(responses).encode()
-            ).hexdigest()
+            responses_hash = hashlib.sha256(canonical_json(responses).encode()).hexdigest()
             resume_request = ResumeAdmissionRequest(
                 receipt_id="resume-run-1",
                 run_id="run-1",
@@ -1758,9 +1723,7 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
                 now=5.2,
                 lease_ttl_seconds=10.0,
             )
-            run_fence = await uow.acquire(
-                RunId("run-1"), execution_lease, now=5.2
-            )
+            run_fence = await uow.acquire(RunId("run-1"), execution_lease, now=5.2)
             claimed = await _atomic(
                 uow,
                 lambda tx: uow.claim_resume_precreated(
@@ -1778,9 +1741,7 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
 
         with Database.open(path) as database:
             uow = SqliteExecutionUnitOfWork(database)
-            runtime = make_runtime(
-                database, uow, owner_id="recovery-worker", now=30.0
-            )
+            runtime = make_runtime(database, uow, owner_id="recovery-worker", now=30.0)
             await runtime.start()
             await runtime.wait_idle(RunId("run-1"))
             child = uow.read_run("run-1")
@@ -1792,20 +1753,27 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
             assert receipt is not None and receipt[0] == "settled"
             assert receipt[1] is not None
             assert calls == 2
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM child_signals WHERE child_run_id='run-1'"
-            ).fetchone()[0] == 1
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM child_signals WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == 1
+            )
             workflow_terminal = uow.read_workflow_terminal_outcome("run-1")
             assert workflow_terminal is not None
             assert uow.verify_workflow_terminal(workflow_terminal)
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM workflow_terminal_receipts "
-                "WHERE run_id='run-1'"
-            ).fetchone()[0] == 1
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM workflow_terminal_fence_receipts "
-                "WHERE run_id='run-1'"
-            ).fetchone()[0] == 1
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM workflow_terminal_receipts WHERE run_id='run-1'"
+                ).fetchone()[0]
+                == 1
+            )
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM workflow_terminal_fence_receipts WHERE run_id='run-1'"
+                ).fetchone()[0]
+                == 1
+            )
             signal_row = database.connection.execute(
                 "SELECT payload_json FROM child_signals WHERE child_run_id='run-1'"
             ).fetchone()
@@ -1831,9 +1799,7 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
             assert claimed_signal is not None
             signal_payload = thaw_json(claimed_signal.payload)
             assert isinstance(signal_payload, dict)
-            continuation_id = (
-                f"child-signal:{claimed_signal.signal_id}:continuation"
-            )
+            continuation_id = f"child-signal:{claimed_signal.signal_id}:continuation"
 
             def fail_spawn_wait(point: str) -> None:
                 if point == "child_signal_ack.spawn_wait.after_write":
@@ -1856,22 +1822,23 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
                     event_payload={
                         "signal_id": claimed_signal.signal_id,
                         "continuation_id": continuation_id,
-                        "receipt_id": (
-                            f"child-signal:{claimed_signal.signal_id}:receipt"
-                        ),
+                        "receipt_id": (f"child-signal:{claimed_signal.signal_id}:receipt"),
                     },
                     now=30.4,
                     fault=fail_spawn_wait,
                 )
-            assert database.connection.execute(
-                "SELECT state FROM workflow_spawn_child_wait_receipts "
-                "WHERE child_run_id='run-1'"
-            ).fetchone()[0] == "unconsumed"
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM workflow_spawn_child_wait_receipts "
+                    "WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == "unconsumed"
+            )
             assert uow.read_run("parent-run").state is RunState.WAITING  # type: ignore[union-attr]
             assert uow.read_continuation(continuation_id) is None
-            signal_result = ChildSignalRuntime(
-                uow, owner_id="recovery-worker"
-            ).receive_one(parent_run_id="parent-run", now=31.0)
+            signal_result = ChildSignalRuntime(uow, owner_id="recovery-worker").receive_one(
+                parent_run_id="parent-run", now=31.0
+            )
             assert signal_result is not None
             wait = database.connection.execute(
                 "SELECT state,child_signal_id,continuation_id FROM "
@@ -1892,9 +1859,7 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
                 now=31.1,
                 lease_ttl_seconds=10.0,
             )
-            parent_fence = await uow.acquire(
-                RunId("parent-run"), parent_lease, now=31.1
-            )
+            parent_fence = await uow.acquire(RunId("parent-run"), parent_lease, now=31.1)
 
             def fail_claimed_wait(point: str) -> None:
                 if point == "continuation_claim.spawn_wait.after_write":
@@ -1907,23 +1872,30 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
                     now=31.2,
                     fault=fail_claimed_wait,
                 )
-            assert database.connection.execute(
-                "SELECT state FROM workflow_spawn_child_wait_receipts "
-                "WHERE child_run_id='run-1'"
-            ).fetchone()[0] == "woken"
-            assert uow.read_continuation(
-                signal_result.receipt.continuation_id
-            ).state.value == "pending"  # type: ignore[union-attr]
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM workflow_spawn_child_wait_receipts "
+                    "WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == "woken"
+            )
+            assert (
+                uow.read_continuation(signal_result.receipt.continuation_id).state.value
+                == "pending"
+            )  # type: ignore[union-attr]
             continuation = uow.claim_continuation(
                 run_id="parent-run",
                 execution_lease=parent_lease,
                 now=31.3,
             )
             assert continuation is not None
-            assert database.connection.execute(
-                "SELECT state FROM workflow_spawn_child_wait_receipts "
-                "WHERE child_run_id='run-1'"
-            ).fetchone()[0] == "claimed"
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM workflow_spawn_child_wait_receipts "
+                    "WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == "claimed"
+            )
 
             def fail_child_continue(point: str) -> None:
                 if point == "workflow:spawn_child_continue:after_wait_write":
@@ -1938,29 +1910,31 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
                     now=31.4,
                     fault=fail_child_continue,
                 )
-            assert uow.read_continuation(
-                continuation.continuation_id
-            ).state.value == "claimed"  # type: ignore[union-attr]
-            assert database.connection.execute(
-                "SELECT state FROM workflow_spawn_child_wait_receipts "
-                "WHERE child_run_id='run-1'"
-            ).fetchone()[0] == "claimed"
-            resumed_checkpoint = (
-                uow.ack_spawn_child_continuation_and_continue_batch(
-                    run_id="parent-run",
-                    continuation_claim=continuation,
-                    execution_lease=parent_lease,
-                    run_fence=parent_fence,
-                    now=31.4,
-                )
+            assert uow.read_continuation(continuation.continuation_id).state.value == "claimed"  # type: ignore[union-attr]
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM workflow_spawn_child_wait_receipts "
+                    "WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == "claimed"
+            )
+            resumed_checkpoint = uow.ack_spawn_child_continuation_and_continue_batch(
+                run_id="parent-run",
+                continuation_claim=continuation,
+                execution_lease=parent_lease,
+                run_fence=parent_fence,
+                now=31.4,
             )
             resumed_payload = thaw_json(resumed_checkpoint.checkpoint)
             assert isinstance(resumed_payload, dict)
             assert resumed_payload["phase"] == "tool_batch_reserved"
-            assert database.connection.execute(
-                "SELECT state FROM workflow_spawn_child_wait_receipts "
-                "WHERE child_run_id='run-1'"
-            ).fetchone()[0] == "acked_completion_pending"
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM workflow_spawn_child_wait_receipts "
+                    "WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == "acked_completion_pending"
+            )
 
             def fail_child_completion(point: str) -> None:
                 if point == "workflow:spawn_child_complete:after_context_write":
@@ -1978,17 +1952,18 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
                     now=31.5,
                     fault=fail_child_completion,
                 )
-            assert runtime._services.context.load(  # type: ignore[attr-defined]
-                RunId("parent-run")
-            ) == context_before_completion
-            ready_checkpoint = (
-                uow.commit_pending_spawn_child_completion_and_react_ready(
-                    run_id="parent-run",
-                    expected_checkpoint_version=resumed_checkpoint.version,
-                    execution_lease=parent_lease,
-                    run_fence=parent_fence,
-                    now=31.5,
+            assert (
+                runtime._services.context.load(  # type: ignore[attr-defined]
+                    RunId("parent-run")
                 )
+                == context_before_completion
+            )
+            ready_checkpoint = uow.commit_pending_spawn_child_completion_and_react_ready(
+                run_id="parent-run",
+                expected_checkpoint_version=resumed_checkpoint.version,
+                execution_lease=parent_lease,
+                run_fence=parent_fence,
+                now=31.5,
             )
             ready_payload = thaw_json(ready_checkpoint.checkpoint)
             assert isinstance(ready_payload, dict)
@@ -1996,42 +1971,39 @@ def test_runtime_recovers_claimed_spawn_child_resume_after_crash(
             context_after_completion = runtime._services.context.load(  # type: ignore[attr-defined]
                 RunId("parent-run")
             )
-            assert context_after_completion.revision == (
-                context_before_completion.revision + 1
-            )
+            assert context_after_completion.revision == (context_before_completion.revision + 1)
             completion_message = context_after_completion.messages[-1]
             assert completion_message.role is MessageRole.USER
             assert completion_message.name == "workflow_child_completion"
             completion_payload = json.loads(completion_message.content)
             assert completion_payload["child_run_id"] == "run-1"
             assert completion_payload["terminal"] == public_signal
-            assert database.connection.execute(
-                "SELECT state FROM workflow_spawn_child_wait_receipts "
-                "WHERE child_run_id='run-1'"
-            ).fetchone()[0] == "acked"
-            replayed_checkpoint = (
-                uow.commit_pending_spawn_child_completion_and_react_ready(
-                    run_id="parent-run",
-                    expected_checkpoint_version=resumed_checkpoint.version,
-                    execution_lease=parent_lease,
-                    run_fence=parent_fence,
-                    now=31.6,
-                )
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM workflow_spawn_child_wait_receipts "
+                    "WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == "acked"
+            )
+            replayed_checkpoint = uow.commit_pending_spawn_child_completion_and_react_ready(
+                run_id="parent-run",
+                expected_checkpoint_version=resumed_checkpoint.version,
+                execution_lease=parent_lease,
+                run_fence=parent_fence,
+                now=31.6,
             )
             assert replayed_checkpoint == ready_checkpoint
-            assert runtime._services.context.load(  # type: ignore[attr-defined]
-                RunId("parent-run")
-            ) == context_after_completion
+            assert (
+                runtime._services.context.load(  # type: ignore[attr-defined]
+                    RunId("parent-run")
+                )
+                == context_after_completion
+            )
             claimed_replay = await runtime._services.workflow_spawn.continue_ready(ready)  # type: ignore[union-attr]
             assert claimed_replay.child_start_ref == outcome.child_start_ref
             terminal = await runtime._services.workflow_spawn.continue_ready(ready)  # type: ignore[union-attr]
-            assert (
-                terminal.child_control.kind
-                is WorkflowSpawnChildControlKind.TERMINAL
-            )
-            await runtime._accept_workflow_spawn_control(
-                "parent-run", terminal
-            )
+            assert terminal.child_control.kind is WorkflowSpawnChildControlKind.TERMINAL
+            await runtime._accept_workflow_spawn_control("parent-run", terminal)
             await runtime.close()
 
     asyncio.run(case())
@@ -2064,9 +2036,7 @@ def test_runtime_drains_child_signal_and_resumes_react_parent_once(
         def read_provider_budget(self, _run_id):  # type: ignore[no-untyped-def]
             return BudgetSnapshot()
 
-        async def invoke(
-            self, _run_id, request, *, cancel, execution_lease
-        ):  # type: ignore[no-untyped-def]
+        async def invoke(self, _run_id, request, *, cancel, execution_lease):  # type: ignore[no-untyped-def]
             del cancel, execution_lease
             self.calls += 1
             return ProviderResponse(
@@ -2090,9 +2060,7 @@ def test_runtime_drains_child_signal_and_resumes_react_parent_once(
         with Database.open(path) as database:
             uow = SqliteExecutionUnitOfWork(database)
             runner = _sqlite_runner(database, uow, compiled=compiled)
-            catalog_authority = runner.prepare_catalog_authority(
-                1, (_registration(),)
-            )
+            catalog_authority = runner.prepare_catalog_authority(1, (_registration(),))
             _parent, ready = await _prepare_spawn_ready_activation(
                 uow, catalog_authority=catalog_authority
             )
@@ -2126,9 +2094,12 @@ def test_runtime_drains_child_signal_and_resumes_react_parent_once(
             await runtime.wait_idle(RunId("run-1"))
             child = uow.read_run("run-1")
             assert child is not None and child.state is RunState.COMPLETED
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM child_signals WHERE child_run_id='run-1'"
-            ).fetchone()[0] == 1
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM child_signals WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == 1
+            )
 
             await runtime.start()
             await runtime.wait_idle(RunId("parent-run"))
@@ -2152,9 +2123,7 @@ def test_runtime_drains_child_signal_and_resumes_react_parent_once(
                 if message.name == "workflow_child_completion"
             )
             assert len(completion_messages) == 1
-            assert json.loads(completion_messages[0].content)["child_run_id"] == (
-                "run-1"
-            )
+            assert json.loads(completion_messages[0].content)["child_run_id"] == ("run-1")
             await runtime.close()
 
     asyncio.run(case())
@@ -2179,9 +2148,7 @@ def test_parent_terminal_atomically_closes_pending_child_completion(
         with Database.open(path) as database:
             uow = SqliteExecutionUnitOfWork(database)
             runner = _sqlite_runner(database, uow)
-            catalog_authority = runner.prepare_catalog_authority(
-                1, (_registration(),)
-            )
+            catalog_authority = runner.prepare_catalog_authority(1, (_registration(),))
             _parent, ready = await _prepare_spawn_ready_activation(
                 uow, catalog_authority=catalog_authority
             )
@@ -2213,9 +2180,9 @@ def test_parent_terminal_atomically_closes_pending_child_completion(
             await runtime._accept_workflow_spawn_control("parent-run", outcome)
             await runtime.wait_idle(RunId("run-1"))
 
-            signal_result = ChildSignalRuntime(
-                uow, owner_id="parent-terminal-worker"
-            ).receive_one(parent_run_id="parent-run", now=4.0)
+            signal_result = ChildSignalRuntime(uow, owner_id="parent-terminal-worker").receive_one(
+                parent_run_id="parent-run", now=4.0
+            )
             assert signal_result is not None
             _running, execution_lease = uow.claim_runtime_activation(
                 run_id="parent-run",
@@ -2224,9 +2191,7 @@ def test_parent_terminal_atomically_closes_pending_child_completion(
                 now=4.1,
                 lease_ttl_seconds=10.0,
             )
-            run_fence = await uow.acquire(
-                RunId("parent-run"), execution_lease, now=4.1
-            )
+            run_fence = await uow.acquire(RunId("parent-run"), execution_lease, now=4.1)
             continuation = uow.claim_continuation(
                 run_id="parent-run",
                 execution_lease=execution_lease,
@@ -2268,14 +2233,19 @@ def test_parent_terminal_atomically_closes_pending_child_completion(
                     fault=fail_after_wait,
                 )
             assert uow.read_run("parent-run") == parent
-            assert database.connection.execute(
-                "SELECT state FROM workflow_spawn_child_wait_receipts "
-                "WHERE parent_run_id='parent-run'"
-            ).fetchone()[0] == "acked_completion_pending"
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM run_events "
-                "WHERE event_id='parent-run:cancelled'"
-            ).fetchone()[0] == 0
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM workflow_spawn_child_wait_receipts "
+                    "WHERE parent_run_id='parent-run'"
+                ).fetchone()[0]
+                == "acked_completion_pending"
+            )
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM run_events WHERE event_id='parent-run:cancelled'"
+                ).fetchone()[0]
+                == 0
+            )
 
             terminal = uow.commit_root_terminal_with_deliveries(
                 run_id="parent-run",
@@ -2291,15 +2261,12 @@ def test_parent_terminal_atomically_closes_pending_child_completion(
             )
             assert terminal.run.state is RunState.CANCELLED
             wait_after = database.connection.execute(
-                "SELECT * FROM workflow_spawn_child_wait_receipts "
-                "WHERE parent_run_id='parent-run'"
+                "SELECT * FROM workflow_spawn_child_wait_receipts WHERE parent_run_id='parent-run'"
             ).fetchone()
             assert wait_after is not None
             assert wait_after["state"] == "acked_parent_terminal"
             assert wait_after["parent_terminal_phase_kind"] == "completion_pending"
-            assert wait_after["pending_completion_terminal_receipt_id"] == (
-                "parent-run:cancelled"
-            )
+            assert wait_after["pending_completion_terminal_receipt_id"] == ("parent-run:cancelled")
             assert wait_after["child_completion_append_receipt_id"] is None
             durable = await _atomic(
                 uow,
@@ -2343,9 +2310,7 @@ def test_parent_terminal_closes_child_signal_continuation(
         with Database.open(tmp_path / "spawn-child-signal-terminal.db") as database:
             uow = SqliteExecutionUnitOfWork(database)
             runner = _sqlite_runner(database, uow)
-            catalog_authority = runner.prepare_catalog_authority(
-                1, (_registration(),)
-            )
+            catalog_authority = runner.prepare_catalog_authority(1, (_registration(),))
             _parent, ready = await _prepare_spawn_ready_activation(
                 uow, catalog_authority=catalog_authority
             )
@@ -2376,13 +2341,14 @@ def test_parent_terminal_closes_child_signal_continuation(
             outcome = await coordinator.continue_ready(ready)
             await runtime._accept_workflow_spawn_control("parent-run", outcome)
             await runtime.wait_idle(RunId("run-1"))
-            signal_result = ChildSignalRuntime(
-                uow, owner_id="signal-terminal-worker"
-            ).receive_one(parent_run_id="parent-run", now=4.0)
+            signal_result = ChildSignalRuntime(uow, owner_id="signal-terminal-worker").receive_one(
+                parent_run_id="parent-run", now=4.0
+            )
             assert signal_result is not None
-            assert uow.read_continuation(
-                signal_result.receipt.continuation_id
-            ).state.value == "pending"  # type: ignore[union-attr]
+            assert (
+                uow.read_continuation(signal_result.receipt.continuation_id).state.value
+                == "pending"
+            )  # type: ignore[union-attr]
             running, execution_lease = uow.claim_runtime_activation(
                 run_id="parent-run",
                 owner_id="signal-terminal-worker",
@@ -2390,9 +2356,7 @@ def test_parent_terminal_closes_child_signal_continuation(
                 now=4.1,
                 lease_ttl_seconds=10.0,
             )
-            run_fence = await uow.acquire(
-                RunId("parent-run"), execution_lease, now=4.1
-            )
+            run_fence = await uow.acquire(RunId("parent-run"), execution_lease, now=4.1)
             continuation = None
             if phase == "claimed":
                 continuation = uow.claim_continuation(
@@ -2443,13 +2407,17 @@ def test_parent_terminal_closes_child_signal_continuation(
                         fault=fail_after_quarantine,
                     )
             expected_continuation_state = "pending" if phase == "woken" else "claimed"
-            assert uow.read_continuation(
-                signal_result.receipt.continuation_id
-            ).state.value == expected_continuation_state  # type: ignore[union-attr]
-            assert database.connection.execute(
-                "SELECT state FROM workflow_spawn_child_wait_receipts "
-                "WHERE parent_run_id='parent-run'"
-            ).fetchone()[0] == phase
+            assert (
+                uow.read_continuation(signal_result.receipt.continuation_id).state.value
+                == expected_continuation_state
+            )  # type: ignore[union-attr]
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM workflow_spawn_child_wait_receipts "
+                    "WHERE parent_run_id='parent-run'"
+                ).fetchone()[0]
+                == phase
+            )
 
             if continuation is None:
                 committed_run = uow.commit_root_terminal_with_deliveries(
@@ -2465,33 +2433,26 @@ def test_parent_terminal_closes_child_signal_continuation(
                     now=4.3,
                 ).run
             else:
-                committed_run = (
-                    uow.commit_root_terminal_with_deliveries_and_ack_continuation(
-                        run_id="parent-run",
-                        expected_version=running.version,
-                        terminal_state=RunState.FAILED,
-                        event_id="parent-run:failed",
-                        terminal_payload={"error": "parent failed"},
-                        deliveries=(),
-                        continuation_claim=continuation,
-                        run_fence=run_fence,
-                        execution_lease=execution_lease,
-                        receipt_id="parent-run:continuation-terminal",
-                        terminal_fence_receipt_ref="parent-run:terminal-fence",
-                        now=4.3,
-                    ).terminal.run
-                )
+                committed_run = uow.commit_root_terminal_with_deliveries_and_ack_continuation(
+                    run_id="parent-run",
+                    expected_version=running.version,
+                    terminal_state=RunState.FAILED,
+                    event_id="parent-run:failed",
+                    terminal_payload={"error": "parent failed"},
+                    deliveries=(),
+                    continuation_claim=continuation,
+                    run_fence=run_fence,
+                    execution_lease=execution_lease,
+                    receipt_id="parent-run:continuation-terminal",
+                    terminal_fence_receipt_ref="parent-run:terminal-fence",
+                    now=4.3,
+                ).terminal.run
             assert committed_run.state is RunState.FAILED
-            continuation = uow.read_continuation(
-                signal_result.receipt.continuation_id
-            )
+            continuation = uow.read_continuation(signal_result.receipt.continuation_id)
             assert continuation is not None
-            assert continuation.state.value == (
-                "quarantined" if phase == "woken" else "acked"
-            )
+            assert continuation.state.value == ("quarantined" if phase == "woken" else "acked")
             wait = database.connection.execute(
-                "SELECT * FROM workflow_spawn_child_wait_receipts "
-                "WHERE parent_run_id='parent-run'"
+                "SELECT * FROM workflow_spawn_child_wait_receipts WHERE parent_run_id='parent-run'"
             ).fetchone()
             assert wait is not None
             assert wait["state"] == "acked_parent_terminal"
@@ -2499,13 +2460,12 @@ def test_parent_terminal_closes_child_signal_continuation(
                 "signal_pending" if phase == "woken" else "continuation_claimed"
             )
             if phase == "woken":
-                assert wait["late_signal_quarantine_receipt_id"] == (
-                    "parent-run:failed"
-                )
+                assert wait["late_signal_quarantine_receipt_id"] == ("parent-run:failed")
             else:
-                assert wait[
-                    "claimed_continuation_terminal_ack_receipt_id"
-                ] == "parent-run:continuation-terminal"
+                assert (
+                    wait["claimed_continuation_terminal_ack_receipt_id"]
+                    == "parent-run:continuation-terminal"
+                )
             durable = await _atomic(
                 uow,
                 lambda tx: uow.read_spawn_continuation_outcome(
@@ -2562,9 +2522,7 @@ def test_parent_terminal_requests_attached_child_cancel_before_child_can_finish(
         ) as database:
             uow = SqliteExecutionUnitOfWork(database)
             runner = _sqlite_runner(database, uow, compiled=compiled)
-            catalog_authority = runner.prepare_catalog_authority(
-                1, (_registration(),)
-            )
+            catalog_authority = runner.prepare_catalog_authority(1, (_registration(),))
             _parent, ready = await _prepare_spawn_ready_activation(
                 uow, catalog_authority=catalog_authority
             )
@@ -2622,10 +2580,9 @@ def test_parent_terminal_requests_attached_child_cancel_before_child_can_finish(
                 now=4.0,
                 lease_ttl_seconds=10.0,
             )
-            run_fence = await uow.acquire(
-                RunId("parent-run"), execution_lease, now=4.0
-            )
+            run_fence = await uow.acquire(RunId("parent-run"), execution_lease, now=4.0)
             if not pre_cancelled:
+
                 def fail_child_cancel(point: str) -> None:
                     if point == "root_terminal.child_cancel.receipt.after_write":
                         raise RuntimeError(point)
@@ -2646,14 +2603,19 @@ def test_parent_terminal_requests_attached_child_cancel_before_child_can_finish(
                     )
                 assert uow.read_run("parent-run").state is RunState.WAITING  # type: ignore[union-attr]
                 assert uow.read_run("run-1").state is RunState.RUNNING  # type: ignore[union-attr]
-                assert database.connection.execute(
-                    "SELECT COUNT(*) FROM workflow_cancel_receipts "
-                    "WHERE run_id='run-1'"
-                ).fetchone()[0] == 0
-                assert database.connection.execute(
-                    "SELECT state FROM workflow_spawn_child_wait_receipts "
-                    "WHERE parent_run_id='parent-run'"
-                ).fetchone()[0] == "unconsumed"
+                assert (
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM workflow_cancel_receipts WHERE run_id='run-1'"
+                    ).fetchone()[0]
+                    == 0
+                )
+                assert (
+                    database.connection.execute(
+                        "SELECT state FROM workflow_spawn_child_wait_receipts "
+                        "WHERE parent_run_id='parent-run'"
+                    ).fetchone()[0]
+                    == "unconsumed"
+                )
             terminal = uow.commit_root_terminal_with_deliveries(
                 run_id="parent-run",
                 expected_version=parent.version,
@@ -2680,8 +2642,7 @@ def test_parent_terminal_requests_attached_child_cancel_before_child_can_finish(
             ).fetchone()
             assert child_fence is not None and child_fence["state"] == "cancelled"
             wait = database.connection.execute(
-                "SELECT * FROM workflow_spawn_child_wait_receipts "
-                "WHERE parent_run_id='parent-run'"
+                "SELECT * FROM workflow_spawn_child_wait_receipts WHERE parent_run_id='parent-run'"
             ).fetchone()
             assert wait is not None
             assert wait["state"] == "acked_parent_terminal"
@@ -2693,9 +2654,7 @@ def test_parent_terminal_requests_attached_child_cancel_before_child_can_finish(
             else:
                 assert wait["child_cancel_request_id"] is None
                 assert wait["child_cancel_receipt_id"] is None
-                assert wait["reused_child_cancel_receipt_id"] == (
-                    prior_cancel.cancel_id
-                )
+                assert wait["reused_child_cancel_receipt_id"] == (prior_cancel.cancel_id)
             durable = await _atomic(
                 uow,
                 lambda tx: uow.read_spawn_continuation_outcome(
@@ -2705,9 +2664,7 @@ def test_parent_terminal_requests_attached_child_cancel_before_child_can_finish(
             assert durable == outcome.tool_result
 
             runtime._drop_local_authority("run-1")
-            await runtime._terminalize_cancelled(
-                child_after, reason="attached_parent_terminal"
-            )
+            await runtime._terminalize_cancelled(child_after, reason="attached_parent_terminal")
             cancelled_child = uow.read_run("run-1")
             assert cancelled_child is not None
             assert cancelled_child.state is RunState.CANCELLED
@@ -2730,46 +2687,53 @@ def test_parent_terminal_requests_attached_child_cancel_before_child_can_finish(
                     fault=fail_late_quarantine,
                 )
             assert uow.read_child_signal(late_signal_id).state.value == "pending"  # type: ignore[union-attr]
-            assert database.connection.execute(
-                "SELECT late_signal_quarantine_receipt_id FROM "
-                "workflow_spawn_child_wait_receipts "
-                "WHERE parent_run_id='parent-run'"
-            ).fetchone()[0] is None
-            assert uow.claim_next_child_signal(
-                parent_run_id="parent-run",
-                owner_id="late-signal-worker",
-                now=4.3,
-                lease_seconds=10.0,
-            ) is None
+            assert (
+                database.connection.execute(
+                    "SELECT late_signal_quarantine_receipt_id FROM "
+                    "workflow_spawn_child_wait_receipts "
+                    "WHERE parent_run_id='parent-run'"
+                ).fetchone()[0]
+                is None
+            )
+            assert (
+                uow.claim_next_child_signal(
+                    parent_run_id="parent-run",
+                    owner_id="late-signal-worker",
+                    now=4.3,
+                    lease_seconds=10.0,
+                )
+                is None
+            )
             late_signal = uow.read_child_signal(late_signal_id)
             assert late_signal is not None
             assert late_signal.state.value == "acked"
             wait = database.connection.execute(
-                "SELECT * FROM workflow_spawn_child_wait_receipts "
-                "WHERE parent_run_id='parent-run'"
+                "SELECT * FROM workflow_spawn_child_wait_receipts WHERE parent_run_id='parent-run'"
             ).fetchone()
             assert wait is not None
-            assert wait["late_signal_quarantine_receipt_id"] == (
-                late_signal.ack_receipt_id
-            )
-            late_continuation = uow.read_continuation(
-                str(wait["continuation_id"])
-            )
+            assert wait["late_signal_quarantine_receipt_id"] == (late_signal.ack_receipt_id)
+            late_continuation = uow.read_continuation(str(wait["continuation_id"]))
             assert late_continuation is not None
             assert late_continuation.state.value == "quarantined"
-            assert await _atomic(
-                uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, ready.ready_receipt.spawn_operation_id
-                ),
-            ) == outcome.tool_result
+            assert (
+                await _atomic(
+                    uow,
+                    lambda tx: uow.read_spawn_continuation_outcome(
+                        tx, ready.ready_receipt.spawn_operation_id
+                    ),
+                )
+                == outcome.tool_result
+            )
 
             release.set()
             await runtime.wait_idle(RunId("run-1"))
             assert uow.read_run("run-1").state is RunState.CANCELLED  # type: ignore[union-attr]
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM child_terminal_receipts WHERE child_run_id='run-1'"
-            ).fetchone()[0] == 1
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM child_terminal_receipts WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == 1
+            )
             await runtime.close()
 
     asyncio.run(case())
@@ -2842,9 +2806,7 @@ def test_native_child_terminal_fact_rolls_back_with_activation_release(
             assert child_activation is not None and dispatch_claim is not None
             issued = await _atomic(
                 uow,
-                lambda tx: uow.read_issued(
-                    tx, ready.ready_receipt.spawn_operation_id
-                ),
+                lambda tx: uow.read_issued(tx, ready.ready_receipt.spawn_operation_id),
             )
             assert issued is not None
             ticket, launch = issued
@@ -2881,9 +2843,7 @@ def test_native_child_terminal_fact_rolls_back_with_activation_release(
             uow.workflow_fault = crash
 
             async def terminal(tx):  # type: ignore[no-untyped-def]
-                checkpoint_json = canonical_json(
-                    {"checkpoint_id": "terminal-checkpoint"}
-                )
+                checkpoint_json = canonical_json({"checkpoint_id": "terminal-checkpoint"})
                 database.connection.execute(
                     "INSERT INTO workflow_checkpoints("
                     "checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,"
@@ -2926,31 +2886,49 @@ def test_native_child_terminal_fact_rolls_back_with_activation_release(
             command = uow.read_child_command_for_run("run-1")
             assert command is not None and command.state is ChildCommandState.PENDING
             assert uow.read_child_terminal_result_for_run("run-1") is None
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM child_signals WHERE child_run_id='run-1'"
-            ).fetchone()[0] == 0
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM run_events WHERE run_id='run-1' "
-                "AND kind='child.completed'"
-            ).fetchone()[0] == 0
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM run_events WHERE run_id='run-1' "
-                "AND kind='run.completed'"
-            ).fetchone()[0] == 0
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM workflow_terminal_fence_receipts "
-                "WHERE run_id='run-1'"
-            ).fetchone()[0] == 0
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM workflow_terminal_receipts "
-                "WHERE run_id='run-1'"
-            ).fetchone()[0] == 0
-            assert database.connection.execute(
-                "SELECT COUNT(*) FROM workflow_leases WHERE run_id='run-1'"
-            ).fetchone()[0] == 2
-            assert database.connection.execute(
-                "SELECT state FROM run_fences WHERE run_id='run-1'"
-            ).fetchone()[0] == "active"
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM child_signals WHERE child_run_id='run-1'"
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM run_events WHERE run_id='run-1' "
+                    "AND kind='child.completed'"
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM run_events WHERE run_id='run-1' AND kind='run.completed'"
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM workflow_terminal_fence_receipts WHERE run_id='run-1'"
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM workflow_terminal_receipts WHERE run_id='run-1'"
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM workflow_leases WHERE run_id='run-1'"
+                ).fetchone()[0]
+                == 2
+            )
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM run_fences WHERE run_id='run-1'"
+                ).fetchone()[0]
+                == "active"
+            )
 
     asyncio.run(case())
 
@@ -3017,11 +2995,11 @@ def test_spawn_ready_activation_reopens_and_reclaims_one_successor(
             _atomic(
                 uow,
                 lambda tx: uow.reclaim_spawn_ready_activation(
-                        tx,
-                        replay,
-                        "recovery-worker",
-                        now=2000.0,
-                        ttl_seconds=10.0,
+                    tx,
+                    replay,
+                    "recovery-worker",
+                    now=2000.0,
+                    ttl_seconds=10.0,
                 ),
             )
         )
@@ -3116,23 +3094,22 @@ def test_spawn_direct_catalog_stale_settles_and_reopens_exact_outcome(
         )
         assert result.outcome is ToolOutcome.FAILED
         assert result.error_code == "workflow_catalog_stale"
-        assert asyncio.run(
-            _atomic(
-                uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, launch.request_key
-                ),
+        assert (
+            asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.read_spawn_continuation_outcome(tx, launch.request_key),
+                )
             )
-        ) == result
+            == result
+        )
 
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
         replay = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, launch.request_key
-                ),
+                lambda tx: uow.read_spawn_continuation_outcome(tx, launch.request_key),
             )
         )
         assert replay == result
@@ -3199,9 +3176,7 @@ def test_spawn_outcome_reader_rejects_corrupt_completion_hash(tmp_path: Path) ->
             asyncio.run(
                 _atomic(
                     uow,
-                    lambda tx: uow.read_spawn_continuation_outcome(
-                        tx, launch.request_key
-                    ),
+                    lambda tx: uow.read_spawn_continuation_outcome(tx, launch.request_key),
                 )
             )
 
@@ -3254,11 +3229,7 @@ def test_spawn_catalog_stale_fault_reopen_is_atomic(
             if actual == fault_point:
                 raise RuntimeError(actual)
 
-        uow = (
-            SqliteExecutionUnitOfWork(database, workflow_fault=fault)
-            if persisted
-            else base
-        )
+        uow = SqliteExecutionUnitOfWork(database, workflow_fault=fault) if persisted else base
         with pytest.raises(RuntimeError, match=fault_point):
             asyncio.run(
                 _atomic(
@@ -3278,9 +3249,7 @@ def test_spawn_catalog_stale_fault_reopen_is_atomic(
         outcome = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, launch.request_key
-                ),
+                lambda tx: uow.read_spawn_continuation_outcome(tx, launch.request_key),
             )
         )
         effect = uow.read_effect(EffectId(issue_authority.effect_id))
@@ -3329,25 +3298,32 @@ def test_spawn_ready_catalog_stale_consumes_activation_and_reopens(
             (activation.activation_receipt_id,),
         ).fetchone()
         assert row is not None and row[0] == "consumed"
-        assert asyncio.run(
-            _atomic(
-                uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, activation.ready_receipt.spawn_operation_id
-                ),
+        assert (
+            asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.read_spawn_continuation_outcome(
+                        tx, activation.ready_receipt.spawn_operation_id
+                    ),
+                )
             )
-        ) == result
+            == result
+        )
 
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
-        assert asyncio.run(
-            _atomic(
-                uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, activation.ready_receipt.spawn_operation_id
-                ),
+        assert (
+            asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.read_spawn_continuation_outcome(
+                        tx, activation.ready_receipt.spawn_operation_id
+                    ),
+                )
             )
-        ) == result
+            == result
+        )
+
 
 def test_spawn_ready_graph_unavailable_proof_settles_and_reopens(
     tmp_path: Path,
@@ -3359,21 +3335,17 @@ def test_spawn_ready_graph_unavailable_proof_settles_and_reopens(
         issued = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.read_issued(
-                    tx, activation.ready_receipt.spawn_operation_id
-                ),
+                lambda tx: uow.read_issued(tx, activation.ready_receipt.spawn_operation_id),
             )
         )
         assert issued is not None
         ticket, _request = issued
         verified = asyncio.run(_atomic(uow, lambda tx: uow.verify(tx, ticket)))
         with pytest.raises(WorkflowDependencyUnavailable, match="available"):
-            _sqlite_runner(database, uow)._prove_graph_unavailable(
-                verified, activation
-            )
-        proof = _sqlite_runner(
-            database, uow, compiled=None
-        )._prove_graph_unavailable(verified, activation)
+            _sqlite_runner(database, uow)._prove_graph_unavailable(verified, activation)
+        proof = _sqlite_runner(database, uow, compiled=None)._prove_graph_unavailable(
+            verified, activation
+        )
         assert proof.observed_kind == "missing"
         result = asyncio.run(
             _atomic(
@@ -3389,25 +3361,31 @@ def test_spawn_ready_graph_unavailable_proof_settles_and_reopens(
         )
         assert result.outcome is ToolOutcome.FAILED
         assert result.error_code == "graph_version_unavailable"
-        assert asyncio.run(
-            _atomic(
-                uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, activation.ready_receipt.spawn_operation_id
-                ),
+        assert (
+            asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.read_spawn_continuation_outcome(
+                        tx, activation.ready_receipt.spawn_operation_id
+                    ),
+                )
             )
-        ) == result
+            == result
+        )
 
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
-        assert asyncio.run(
-            _atomic(
-                uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, activation.ready_receipt.spawn_operation_id
-                ),
+        assert (
+            asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.read_spawn_continuation_outcome(
+                        tx, activation.ready_receipt.spawn_operation_id
+                    ),
+                )
             )
-        ) == result
+            == result
+        )
 
 
 def test_spawn_ready_coordinator_returns_sealed_graph_failure(
@@ -3427,22 +3405,30 @@ def test_spawn_ready_coordinator_returns_sealed_graph_failure(
         outcome = asyncio.run(coordinator.continue_ready(activation))
         assert isinstance(outcome, WorkflowSpawnFailed)
         assert outcome.tool_result.error_code == "graph_version_unavailable"
-        assert asyncio.run(
-            _atomic(
-                uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, activation.ready_receipt.spawn_operation_id
-                ),
+        assert (
+            asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.read_spawn_continuation_outcome(
+                        tx, activation.ready_receipt.spawn_operation_id
+                    ),
+                )
             )
-        ) == outcome.tool_result
-        assert database.connection.execute(
-            "SELECT state FROM workflow_spawn_ready_activations "
-            "WHERE activation_receipt_id=?",
-            (activation.activation_receipt_id,),
-        ).fetchone()[0] == "consumed"
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE parent_run_id='parent-run'"
-        ).fetchone()[0] == 0
+            == outcome.tool_result
+        )
+        assert (
+            database.connection.execute(
+                "SELECT state FROM workflow_spawn_ready_activations WHERE activation_receipt_id=?",
+                (activation.activation_receipt_id,),
+            ).fetchone()[0]
+            == "consumed"
+        )
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE parent_run_id='parent-run'"
+            ).fetchone()[0]
+            == 0
+        )
 
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
@@ -3486,9 +3472,12 @@ def test_spawn_ready_coordinator_returns_sealed_catalog_stale_failure(
         outcome = asyncio.run(coordinator.continue_ready(activation))
         assert isinstance(outcome, WorkflowSpawnFailed)
         assert outcome.tool_result.error_code == "workflow_catalog_stale"
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE parent_run_id='parent-run'"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE parent_run_id='parent-run'"
+            ).fetchone()[0]
+            == 0
+        )
 
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
@@ -3631,34 +3620,40 @@ def test_spawn_parent_terminal_settles_all_durable_shapes_and_reopens(
         assert result.outcome is ToolOutcome.FAILED
         assert result.error_code == "workflow_parent_terminal_before_spawn"
         completion = database.connection.execute(
-            "SELECT path_kind FROM workflow_spawn_completion_receipts "
-            "WHERE spawn_operation_id=?",
+            "SELECT path_kind FROM workflow_spawn_completion_receipts WHERE spawn_operation_id=?",
             (launch.request_key,),
         ).fetchone()
         assert completion is not None and completion[0] == expected_path
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_spawn_ready_activations "
-            "WHERE spawn_operation_id=? AND state='active'",
-            (launch.request_key,),
-        ).fetchone()[0] == 0
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE parent_run_id='parent-run'"
-        ).fetchone()[0] == 0
-        assert asyncio.run(
-            _atomic(
-                uow,
-                lambda tx: uow.settle_spawn_continuation_for_parent_terminal(
-                    tx,
-                    ticket,
-                    authority,
-                    terminal,
-                    now=10.0,
-                ),
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_spawn_ready_activations "
+                "WHERE spawn_operation_id=? AND state='active'",
+                (launch.request_key,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE parent_run_id='parent-run'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.settle_spawn_continuation_for_parent_terminal(
+                        tx,
+                        ticket,
+                        authority,
+                        terminal,
+                        now=10.0,
+                    ),
+                )
             )
-        ) == result
-        with pytest.raises(
-            UnitOfWorkConflict, match="parent-terminal replay evidence differs"
-        ):
+            == result
+        )
+        with pytest.raises(UnitOfWorkConflict, match="parent-terminal replay evidence differs"):
             asyncio.run(
                 _atomic(
                     uow,
@@ -3698,14 +3693,15 @@ def test_spawn_parent_terminal_settles_all_durable_shapes_and_reopens(
 
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
-        assert asyncio.run(
-            _atomic(
-                uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, launch.request_key
-                ),
+        assert (
+            asyncio.run(
+                _atomic(
+                    uow,
+                    lambda tx: uow.read_spawn_continuation_outcome(tx, launch.request_key),
+                )
             )
-        ) == result
+            == result
+        )
 
 
 @pytest.mark.parametrize(
@@ -3767,11 +3763,7 @@ def test_spawn_parent_terminal_fault_reopen_is_atomic(
             if actual == fault_point:
                 raise RuntimeError(actual)
 
-        crashing = (
-            SqliteExecutionUnitOfWork(database, workflow_fault=fault)
-            if persisted
-            else base
-        )
+        crashing = SqliteExecutionUnitOfWork(database, workflow_fault=fault) if persisted else base
         with pytest.raises(RuntimeError, match=fault_point):
             asyncio.run(
                 _atomic(
@@ -3792,9 +3784,7 @@ def test_spawn_parent_terminal_fault_reopen_is_atomic(
         outcome = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.read_spawn_continuation_outcome(
-                    tx, ready.spawn_operation_id
-                ),
+                lambda tx: uow.read_spawn_continuation_outcome(tx, ready.spawn_operation_id),
             )
         )
         active = reopened.connection.execute(
@@ -3809,6 +3799,7 @@ def test_spawn_parent_terminal_fault_reopen_is_atomic(
         else:
             assert outcome is None
             assert active == (1 if shape == "activated" else 0)
+
 
 def test_react_graph_failure_clears_ready_carrier_before_normal_loop(
     tmp_path: Path,
@@ -3901,11 +3892,14 @@ def test_react_graph_failure_clears_ready_carrier_before_normal_loop(
             assert loop.calls == 1
             effect = uow.read_effect(EffectId(activation.ready_receipt.effect_id))
             assert effect is not None and effect.state is EffectState.FAILED
-            assert database.connection.execute(
-                "SELECT state FROM workflow_spawn_ready_activations "
-                "WHERE activation_receipt_id=?",
-                (activation.activation_receipt_id,),
-            ).fetchone()[0] == "consumed"
+            assert (
+                database.connection.execute(
+                    "SELECT state FROM workflow_spawn_ready_activations "
+                    "WHERE activation_receipt_id=?",
+                    (activation.activation_receipt_id,),
+                ).fetchone()[0]
+                == "consumed"
+            )
 
     asyncio.run(case())
 
@@ -3931,25 +3925,19 @@ def test_spawn_ready_graph_unavailable_fault_reopen_is_atomic(
         base = SqliteExecutionUnitOfWork(database)
         _, activation = asyncio.run(_prepare_spawn_ready_activation(base))
         operation_id = activation.ready_receipt.spawn_operation_id
-        issued = asyncio.run(
-            _atomic(base, lambda tx: base.read_issued(tx, operation_id))
-        )
+        issued = asyncio.run(_atomic(base, lambda tx: base.read_issued(tx, operation_id)))
         assert issued is not None
         ticket, _request = issued
         verified = asyncio.run(_atomic(base, lambda tx: base.verify(tx, ticket)))
-        proof = _sqlite_runner(
-            database, base, compiled=None
-        )._prove_graph_unavailable(verified, activation)
+        proof = _sqlite_runner(database, base, compiled=None)._prove_graph_unavailable(
+            verified, activation
+        )
 
         def crash(point: str) -> None:
             if point == fault_point:
                 raise RuntimeError(point)
 
-        crashing = (
-            SqliteExecutionUnitOfWork(database, workflow_fault=crash)
-            if persisted
-            else base
-        )
+        crashing = SqliteExecutionUnitOfWork(database, workflow_fault=crash) if persisted else base
         with pytest.raises(RuntimeError, match="spawn_graph_unavailable"):
             asyncio.run(
                 _atomic(
@@ -3976,8 +3964,7 @@ def test_spawn_ready_graph_unavailable_fault_reopen_is_atomic(
         effect = uow.read_effect(EffectId(activation.ready_receipt.effect_id))
         assert effect is not None
         activation_state = database.connection.execute(
-            "SELECT state FROM workflow_spawn_ready_activations "
-            "WHERE activation_receipt_id=?",
+            "SELECT state FROM workflow_spawn_ready_activations WHERE activation_receipt_id=?",
             (activation.activation_receipt_id,),
         ).fetchone()[0]
         if persisted:
@@ -4026,11 +4013,7 @@ def test_spawn_ready_catalog_stale_fault_reopen_is_atomic(
             if actual == fault_point:
                 raise RuntimeError(actual)
 
-        uow = (
-            SqliteExecutionUnitOfWork(database, workflow_fault=fault)
-            if persisted
-            else base
-        )
+        uow = SqliteExecutionUnitOfWork(database, workflow_fault=fault) if persisted else base
         with pytest.raises(RuntimeError, match=fault_point):
             asyncio.run(
                 _atomic(
@@ -4068,6 +4051,7 @@ def test_spawn_ready_catalog_stale_fault_reopen_is_atomic(
             assert outcome is None
             assert row[0] == "active"
 
+
 @pytest.mark.parametrize(
     ("fault_point", "persisted"),
     [
@@ -4093,11 +4077,7 @@ def test_spawn_ready_reclaim_fault_reopen_is_atomic(
             if actual == fault_point:
                 raise RuntimeError(actual)
 
-        uow = (
-            SqliteExecutionUnitOfWork(database, workflow_fault=fault)
-            if persisted
-            else base
-        )
+        uow = SqliteExecutionUnitOfWork(database, workflow_fault=fault) if persisted else base
         with pytest.raises(RuntimeError, match=fault_point):
             asyncio.run(
                 _atomic(
@@ -4242,9 +4222,7 @@ def test_expired_spawn_claim_requires_ready_and_current_takeover_authority(
             now=1001.0,
             lease_ttl_seconds=100.0,
         )
-        run_fence = asyncio.run(
-            uow.acquire(RunId("parent-run"), execution_lease, now=1001.0)
-        )
+        run_fence = asyncio.run(uow.acquire(RunId("parent-run"), execution_lease, now=1001.0))
         takeover = WorkflowSpawnIssueAuthority(
             react_checkpoint_revision=0,
             execution_lease=execution_lease,
@@ -4335,9 +4313,12 @@ def test_concurrent_exact_ticket_issue_has_one_durable_winner(tmp_path: Path) ->
     assert len(tickets) == 2
     assert tickets[0] == tickets[1]
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_launch_ticket_receipts"
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_launch_ticket_receipts"
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_concurrent_exact_runtime_admission_has_one_generic_run(tmp_path: Path) -> None:
@@ -4366,9 +4347,7 @@ def test_concurrent_exact_runtime_admission_has_one_generic_run(tmp_path: Path) 
                             start,
                             request,
                             snapshot,
-                            RuntimeActivationClaim(
-                                "owner", lease_ttl_seconds=10.0
-                            ),
+                            RuntimeActivationClaim("owner", lease_ttl_seconds=10.0),
                             now=3.0,
                         ),
                     )
@@ -4386,19 +4365,24 @@ def test_concurrent_exact_runtime_admission_has_one_generic_run(tmp_path: Path) 
         thread.join(5.0)
     assert not failures
     assert {
-        result.disposition for result in results  # type: ignore[union-attr]
+        result.disposition
+        for result in results  # type: ignore[union-attr]
     } == {
         RuntimeStartDisposition.START_NEW,
         RuntimeStartDisposition.START_ORPHAN,
     }
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE run_id=?",
-            (start.run_id.value,),
-        ).fetchone()[0] == 1
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runtime_start_receipts"
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id=?",
+                (start.run_id.value,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            reopened.connection.execute("SELECT COUNT(*) FROM runtime_start_receipts").fetchone()[0]
+            == 1
+        )
 
 
 def test_catalog_advance_rejects_old_ticket_before_generic_write(
@@ -4431,10 +4415,13 @@ def test_catalog_advance_rejects_old_ticket_before_generic_write(
                     ),
                 )
             )
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE run_id=?",
-            (start.run_id.value,),
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id=?",
+                (start.run_id.value,),
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -4444,9 +4431,7 @@ def test_catalog_advance_rejects_old_ticket_before_generic_write(
         "workflow:catalog:after_authority_write",
     ],
 )
-def test_catalog_publish_fault_rolls_back_after_reopen(
-    tmp_path: Path, fault_point: str
-) -> None:
+def test_catalog_publish_fault_rolls_back_after_reopen(tmp_path: Path, fault_point: str) -> None:
     path = tmp_path / f"catalog-{fault_point.rsplit(':', 1)[-1]}.db"
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
@@ -4459,15 +4444,16 @@ def test_catalog_publish_fault_rolls_back_after_reopen(
             asyncio.run(
                 _atomic(
                     uow,
-                    lambda tx: uow.publish_catalog(
-                        tx, _catalog(), 0, now=1.0, fault=fault
-                    ),
+                    lambda tx: uow.publish_catalog(tx, _catalog(), 0, now=1.0, fault=fault),
                 )
             )
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_catalog_authorities"
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_catalog_authorities"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_catalog_publish_after_commit_response_loss_replays_after_reopen(
@@ -4551,9 +4537,12 @@ def test_runtime_admission_dispatch_claim_and_recovery_lifecycle(
         assert dispatch.receipt.claim_epoch == 1
         assert dispatch.receipt.claim_expires_at == 13.0
         assert dispatch.activation == dispatch.receipt.activation
-        assert database.connection.execute(
-            "SELECT state FROM runtime_start_dispatch_claims"
-        ).fetchone()[0] == "consumed"
+        assert (
+            database.connection.execute(
+                "SELECT state FROM runtime_start_dispatch_claims"
+            ).fetchone()[0]
+            == "consumed"
+        )
 
         # Runtime heartbeat renews the durable record but the Driver keeps the
         # original stable claim capability; exact replay consumes/reads once.
@@ -4600,9 +4589,7 @@ def test_runtime_admission_dispatch_claim_and_recovery_lifecycle(
         )
         assert reopened_replay.receipt == dispatch.receipt
         assert reopened_replay.receipt.claim_action is StartClaimAction.NEW
-        database.connection.execute(
-            "UPDATE workflow_leases SET expires_at=8 WHERE run_id='run-1'"
-        )
+        database.connection.execute("UPDATE workflow_leases SET expires_at=8 WHERE run_id='run-1'")
         database.connection.execute(
             "UPDATE runtime_start_dispatch_claims SET expires_at=8 WHERE run_id='run-1'"
         )
@@ -4860,8 +4847,7 @@ def _seed_started_precreated(
         ),
     )
     connection.execute(
-        "UPDATE workflow_start_admissions SET phase='running',version=1 "
-        "WHERE run_id=?",
+        "UPDATE workflow_start_admissions SET phase='running',version=1 WHERE run_id=?",
         (verified.resolved_run_id,),
     )
     connection.commit()
@@ -4884,9 +4870,7 @@ def test_runtime_admission_recovers_unsettled_resume_not_start(
             _,
         ) = _seed_started_precreated(uow)
         response_payload = {"decision-1": {"approved": True}}
-        response_hash = hashlib.sha256(
-            canonical_json(response_payload).encode()
-        ).hexdigest()
+        response_hash = hashlib.sha256(canonical_json(response_payload).encode()).hexdigest()
         resume = ResumeAdmissionRequest(
             receipt_id="resume-1",
             run_id=verified.resolved_run_id,
@@ -4946,10 +4930,7 @@ def test_runtime_admission_recovers_unsettled_resume_not_start(
         )
         assert recovered.disposition is RuntimeStartDisposition.RECOVER_RESUME
         assert recovered.recovery_work is not None
-        assert (
-            recovered.recovery_work.receipt_kind
-            is WorkflowRecoveryReceiptKind.RESUME
-        )
+        assert recovered.recovery_work.receipt_kind is WorkflowRecoveryReceiptKind.RESUME
         assert recovered.recovery_work.receipt_id == "resume-1"
 
 
@@ -5045,9 +5026,7 @@ def test_runtime_admission_waiting_and_cancel_are_read_only(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize("now", [9.0, 20.0])
-def test_runtime_admission_retry_wait_returns_same_durable_wake(
-    tmp_path: Path, now: float
-) -> None:
+def test_runtime_admission_retry_wait_returns_same_durable_wake(tmp_path: Path, now: float) -> None:
     with Database.open(tmp_path / f"retry-{now}.db") as database:
         uow = SqliteExecutionUnitOfWork(database)
         (
@@ -5185,9 +5164,7 @@ def test_runtime_admission_terminal_requires_full_durable_outcome(
             "terminal_payload": terminal_payload,
             "delivery_facts": delivery_facts,
         }
-        outcome_hash = hashlib.sha256(
-            canonical_json(terminal_fields).encode()
-        ).hexdigest()
+        outcome_hash = hashlib.sha256(canonical_json(terminal_fields).encode()).hexdigest()
         database.connection.execute(
             "INSERT INTO workflow_checkpoints("
             "checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,"
@@ -5356,9 +5333,7 @@ def test_runtime_admission_terminal_requires_full_durable_outcome(
                             start,
                             request,
                             snapshot,
-                            RuntimeActivationClaim(
-                                "owner-b", lease_ttl_seconds=10.0
-                            ),
+                            RuntimeActivationClaim("owner-b", lease_ttl_seconds=10.0),
                             now=9.0,
                         ),
                     )
@@ -5388,9 +5363,7 @@ def test_runtime_admission_terminal_requires_full_durable_outcome(
                             start,
                             request,
                             snapshot,
-                            RuntimeActivationClaim(
-                                "owner-b", lease_ttl_seconds=10.0
-                            ),
+                            RuntimeActivationClaim("owner-b", lease_ttl_seconds=10.0),
                             now=9.0,
                         ),
                     )
@@ -5463,9 +5436,7 @@ def test_runtime_admission_terminal_requires_full_durable_outcome(
                         start,
                         request,
                         snapshot,
-                        RuntimeActivationClaim(
-                            "owner-b", lease_ttl_seconds=10.0
-                        ),
+                        RuntimeActivationClaim("owner-b", lease_ttl_seconds=10.0),
                         now=10.0,
                     ),
                 )
@@ -5552,9 +5523,7 @@ def test_admission_transaction_blocks_catalog_publish_until_pinned_commit(
                                 start,
                                 request,
                                 snapshot,
-                                RuntimeActivationClaim(
-                                    "owner-a", lease_ttl_seconds=10.0
-                                ),
+                                RuntimeActivationClaim("owner-a", lease_ttl_seconds=10.0),
                                 now=3.0,
                                 fault=barrier,
                             ),
@@ -5597,18 +5566,20 @@ def test_admission_transaction_blocks_catalog_publish_until_pinned_commit(
     assert len(admission_result) == len(publisher_result) == 1
     assert admission_result[0].disposition is RuntimeStartDisposition.START_NEW  # type: ignore[union-attr]
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT generation FROM workflow_catalog_authorities"
-        ).fetchone()[0] == 2
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runtime_start_receipts"
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT generation FROM workflow_catalog_authorities"
+            ).fetchone()[0]
+            == 2
+        )
+        assert (
+            reopened.connection.execute("SELECT COUNT(*) FROM runtime_start_receipts").fetchone()[0]
+            == 1
+        )
         uow = SqliteExecutionUnitOfWork(reopened)
         # Receipt-first replays preserve the committed generation-1 authority;
         # catalog generation 2 only rejects previously unadmitted tickets.
-        issued = asyncio.run(
-            _atomic(uow, lambda tx: uow.read_issued(tx, launch.request_key))
-        )
+        issued = asyncio.run(_atomic(uow, lambda tx: uow.read_issued(tx, launch.request_key)))
         assert issued is not None
         replayed_ticket = issued[0]
         assert replayed_ticket == ticket
@@ -5636,9 +5607,7 @@ def test_after_commit_response_loss_replays_ticket_and_runtime_admission(
     with Database.open(path) as database:
         base = SqliteExecutionUnitOfWork(database)
         authority = _catalog()
-        asyncio.run(
-            _atomic(base, lambda tx: base.publish_catalog(tx, authority, 0, now=1.0))
-        )
+        asyncio.run(_atomic(base, lambda tx: base.publish_catalog(tx, authority, 0, now=1.0)))
         issue_authority = asyncio.run(_spawn_issue_authority(base))
 
         def issue_fault(label: str) -> None:
@@ -5663,9 +5632,7 @@ def test_after_commit_response_loss_replays_ticket_and_runtime_admission(
     with Database.open(path) as reopened:
         base = SqliteExecutionUnitOfWork(reopened)
         launch = _launch_request()
-        issued = asyncio.run(
-            _atomic(base, lambda tx: base.read_issued(tx, launch.request_key))
-        )
+        issued = asyncio.run(_atomic(base, lambda tx: base.read_issued(tx, launch.request_key)))
         assert issued is not None
         ticket = issued[0]
         verified = asyncio.run(_atomic(base, lambda tx: base.verify(tx, ticket)))
@@ -5675,9 +5642,7 @@ def test_after_commit_response_loss_replays_ticket_and_runtime_admission(
             if label == "workflow:runtime_start:after_commit":
                 raise RuntimeError(label)
 
-        admission_uow = SqliteExecutionUnitOfWork(
-            reopened, workflow_fault=admission_fault
-        )
+        admission_uow = SqliteExecutionUnitOfWork(reopened, workflow_fault=admission_fault)
         with pytest.raises(RuntimeError, match="workflow:runtime_start:after_commit"):
             asyncio.run(
                 _atomic(
@@ -5698,9 +5663,7 @@ def test_after_commit_response_loss_replays_ticket_and_runtime_admission(
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
         launch = _launch_request()
-        issued = asyncio.run(
-            _atomic(uow, lambda tx: uow.read_issued(tx, launch.request_key))
-        )
+        issued = asyncio.run(_atomic(uow, lambda tx: uow.read_issued(tx, launch.request_key)))
         assert issued is not None
         ticket = issued[0]
         verified = asyncio.run(_atomic(uow, lambda tx: uow.verify(tx, ticket)))
@@ -5720,10 +5683,13 @@ def test_after_commit_response_loss_replays_ticket_and_runtime_admission(
             )
         )
         assert replay.disposition is RuntimeStartDisposition.START_ORPHAN
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE run_id=?",
-            (start.run_id.value,),
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id=?",
+                (start.run_id.value,),
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_ensure_and_recover_after_commit_response_loss_replay_exactly(
@@ -5754,9 +5720,7 @@ def test_ensure_and_recover_after_commit_response_loss_replay_exactly(
                 raise RuntimeError(label)
 
         losing = SqliteExecutionUnitOfWork(database, workflow_fault=ensure_loss)
-        with pytest.raises(
-            RuntimeError, match="workflow:ensure_precreated_start:after_commit"
-        ):
+        with pytest.raises(RuntimeError, match="workflow:ensure_precreated_start:after_commit"):
             asyncio.run(
                 _atomic(
                     losing,
@@ -5792,9 +5756,7 @@ def test_ensure_and_recover_after_commit_response_loss_replay_exactly(
         assert replay.action is PrecreatedStartAction.NEW_CLAIMED
         assert replay.receipt.claim_action is StartClaimAction.NEW
         assert replay.receipt.version == 0
-        reopened.connection.execute(
-            "UPDATE workflow_leases SET expires_at=6 WHERE run_id='run-1'"
-        )
+        reopened.connection.execute("UPDATE workflow_leases SET expires_at=6 WHERE run_id='run-1'")
         reopened.connection.execute(
             "UPDATE runtime_start_dispatch_claims SET expires_at=6 WHERE run_id='run-1'"
         )
@@ -5819,9 +5781,7 @@ def test_ensure_and_recover_after_commit_response_loss_replay_exactly(
                 raise RuntimeError(label)
 
         losing = SqliteExecutionUnitOfWork(reopened, workflow_fault=recover_loss)
-        with pytest.raises(
-            RuntimeError, match="workflow:recover_precreated_start:after_commit"
-        ):
+        with pytest.raises(RuntimeError, match="workflow:recover_precreated_start:after_commit"):
             asyncio.run(
                 _atomic(
                     losing,
@@ -5862,9 +5822,12 @@ def test_ensure_and_recover_after_commit_response_loss_replay_exactly(
         assert result.receipt.claim_action is StartClaimAction.RESUME
         assert result.receipt.claim_epoch == 2
         assert result.receipt.claim_expires_at == 30.0
-        assert reopened.connection.execute(
-            "SELECT version FROM workflow_start_admissions"
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute("SELECT version FROM workflow_start_admissions").fetchone()[
+                0
+            ]
+            == 1
+        )
 
 
 @pytest.mark.parametrize(
@@ -5923,15 +5886,24 @@ def test_ensure_each_authority_fault_rolls_back_after_reopen(
             )
 
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_start_admissions"
-        ).fetchone()[0] == 0
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_leases WHERE namespace='native'"
-        ).fetchone()[0] == 0
-        assert reopened.connection.execute(
-            "SELECT state FROM runtime_start_dispatch_claims"
-        ).fetchone()[0] == "claimed"
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_start_admissions"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_leases WHERE namespace='native'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT state FROM runtime_start_dispatch_claims"
+            ).fetchone()[0]
+            == "claimed"
+        )
 
 
 @pytest.mark.parametrize(
@@ -5979,9 +5951,7 @@ def test_recover_each_authority_fault_rolls_back_after_reopen(
                 ),
             )
         )
-        database.connection.execute(
-            "UPDATE workflow_leases SET expires_at=5 WHERE run_id='run-1'"
-        )
+        database.connection.execute("UPDATE workflow_leases SET expires_at=5 WHERE run_id='run-1'")
         database.connection.execute(
             "UPDATE runtime_start_dispatch_claims SET expires_at=5 WHERE run_id='run-1'"
         )
@@ -6067,9 +6037,7 @@ def test_launch_and_admission_faults_rollback_after_reopen(
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
         authority = _catalog()
-        asyncio.run(
-            _atomic(uow, lambda tx: uow.publish_catalog(tx, authority, 0, now=1.0))
-        )
+        asyncio.run(_atomic(uow, lambda tx: uow.publish_catalog(tx, authority, 0, now=1.0)))
         issue_authority = asyncio.run(_spawn_issue_authority(uow))
 
         def fault(label: str) -> None:
@@ -6112,15 +6080,24 @@ def test_launch_and_admission_faults_rollback_after_reopen(
 
     with Database.open(path) as reopened:
         expected_tickets = 0 if "launch_ticket" in fault_point else 1
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_launch_ticket_receipts"
-        ).fetchone()[0] == expected_tickets
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE run_id='run-1'"
-        ).fetchone()[0] == 0
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runtime_start_dispatch_claims"
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_launch_ticket_receipts"
+            ).fetchone()[0]
+            == expected_tickets
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id='run-1'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM runtime_start_dispatch_claims"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -6236,9 +6213,7 @@ def test_concurrent_different_runtime_admission_has_one_success_and_zero_extra_r
                             start,
                             candidate_request,
                             candidate_snapshot,
-                            RuntimeActivationClaim(
-                                "owner", lease_ttl_seconds=10.0
-                            ),
+                            RuntimeActivationClaim("owner", lease_ttl_seconds=10.0),
                             now=3.0,
                         ),
                     )
@@ -6251,9 +6226,7 @@ def test_concurrent_different_runtime_admission_has_one_success_and_zero_extra_r
 
     threads = [
         threading.Thread(target=admit, args=(request, snapshot)),
-        threading.Thread(
-            target=admit, args=(different_request, different_snapshot)
-        ),
+        threading.Thread(target=admit, args=(different_request, different_snapshot)),
     ]
     for thread in threads:
         thread.start()
@@ -6263,13 +6236,17 @@ def test_concurrent_different_runtime_admission_has_one_success_and_zero_extra_r
     assert len(failures) == 1
     assert isinstance(failures[0], UnitOfWorkConflict)
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE run_id=?",
-            (start.run_id.value,),
-        ).fetchone()[0] == 1
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runtime_start_receipts"
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id=?",
+                (start.run_id.value,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            reopened.connection.execute("SELECT COUNT(*) FROM runtime_start_receipts").fetchone()[0]
+            == 1
+        )
 
 
 def test_catalog_publisher_first_is_final_authority_for_admission(
@@ -6350,13 +6327,19 @@ def test_catalog_publisher_first_is_final_authority_for_admission(
     assert len(admission_failure) == 1
     assert isinstance(admission_failure[0], UnitOfWorkConflict)
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT generation FROM workflow_catalog_authorities"
-        ).fetchone()[0] == 2
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE run_id=?",
-            (start.run_id.value,),
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT generation FROM workflow_catalog_authorities"
+            ).fetchone()[0]
+            == 2
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id=?",
+                (start.run_id.value,),
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize("corruption", ["bytes", "ref", "hash"])
@@ -6388,10 +6371,13 @@ def test_durable_schema_reopen_is_only_validation_authority_and_corruption_fails
         uow = SqliteExecutionUnitOfWork(reopened)
         with pytest.raises((ValueError, UnitOfWorkConflict)):
             asyncio.run(_atomic(uow, lambda tx: uow.verify(tx, ticket)))
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE run_id=?",
-            (launch.requested_run_id,),
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id=?",
+                (launch.requested_run_id,),
+            ).fetchone()[0]
+            == 0
+        )
         assert launch.start_input["objective"] == "finish the durable task"
 
 
@@ -6466,9 +6452,7 @@ def test_fresh_runner_uses_durable_ticket_schema_and_compiled_binding_only(
                             spawn_origin=invalid_origin,
                             request_key=invalid_operation_id,
                             requested_run_id="invalid-run",
-                            child_command_id=workflow_spawn_child_command_id(
-                                invalid_operation_id
-                            ),
+                            child_command_id=workflow_spawn_child_command_id(invalid_operation_id),
                             start_input={"objective": 7},
                         ),
                         issue_authority,
@@ -6476,18 +6460,19 @@ def test_fresh_runner_uses_durable_ticket_schema_and_compiled_binding_only(
                     ),
                 )
             )
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_launch_ticket_receipts"
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_launch_ticket_receipts"
+            ).fetchone()[0]
+            == 1
+        )
 
         missing = _runner(WorkflowRegistry())
         with pytest.raises(Exception, match="graph version unavailable"):
             missing.prepare_start_admission(verified, start)
 
 
-@pytest.mark.parametrize(
-    "run_state", ["created", "admission_pending", "queued"]
-)
+@pytest.mark.parametrize("run_state", ["created", "admission_pending", "queued"])
 def test_runtime_admission_rejects_non_running_pre_dispatch_states_without_writes(
     tmp_path: Path, run_state: str
 ) -> None:
@@ -6510,9 +6495,7 @@ def test_runtime_admission_rejects_non_running_pre_dispatch_states_without_write
                 ),
             )
         )
-        database.connection.execute(
-            "UPDATE runs SET state=? WHERE run_id='run-1'", (run_state,)
-        )
+        database.connection.execute("UPDATE runs SET state=? WHERE run_id='run-1'", (run_state,))
         database.connection.commit()
         before = tuple(
             database.connection.execute(
@@ -6535,17 +6518,18 @@ def test_runtime_admission_rejects_non_running_pre_dispatch_states_without_write
                     ),
                 )
             )
-        assert tuple(
-            database.connection.execute(
-                "SELECT owner_id,epoch,expires_at FROM workflow_leases "
-                "WHERE run_id='run-1' AND namespace='runtime.kernel'"
-            ).fetchone()
-        ) == before
+        assert (
+            tuple(
+                database.connection.execute(
+                    "SELECT owner_id,epoch,expires_at FROM workflow_leases "
+                    "WHERE run_id='run-1' AND namespace='runtime.kernel'"
+                ).fetchone()
+            )
+            == before
+        )
 
 
-@pytest.mark.parametrize(
-    "run_state", ["created", "admission_pending", "queued"]
-)
+@pytest.mark.parametrize("run_state", ["created", "admission_pending", "queued"])
 def test_precreated_dispatch_rejects_non_running_run_before_workflow_writes(
     tmp_path: Path, run_state: str
 ) -> None:
@@ -6567,9 +6551,7 @@ def test_precreated_dispatch_rejects_non_running_run_before_workflow_writes(
                 ),
             )
         )
-        database.connection.execute(
-            "UPDATE runs SET state=? WHERE run_id='run-1'", (run_state,)
-        )
+        database.connection.execute("UPDATE runs SET state=? WHERE run_id='run-1'", (run_state,))
         database.connection.commit()
         with pytest.raises(UnitOfWorkConflict, match="generic Run identity"):
             asyncio.run(
@@ -6586,9 +6568,12 @@ def test_precreated_dispatch_rejects_non_running_run_before_workflow_writes(
                     ),
                 )
             )
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_start_admissions"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_start_admissions"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_precreated_recovery_rechecks_running_state_before_projection_write(
@@ -6596,12 +6581,8 @@ def test_precreated_recovery_rechecks_running_state_before_projection_write(
 ) -> None:
     with Database.open(tmp_path / "recover-non-running.db") as database:
         uow = SqliteExecutionUnitOfWork(database)
-        (_launch, ticket, _verified, start, request, snapshot, _, _) = (
-            _seed_started_precreated(uow)
-        )
-        database.connection.execute(
-            "UPDATE workflow_leases SET expires_at=5 WHERE run_id='run-1'"
-        )
+        (_launch, ticket, _verified, start, request, snapshot, _, _) = _seed_started_precreated(uow)
+        database.connection.execute("UPDATE workflow_leases SET expires_at=5 WHERE run_id='run-1'")
         database.connection.commit()
         recovery = asyncio.run(
             _atomic(
@@ -6617,9 +6598,7 @@ def test_precreated_recovery_rechecks_running_state_before_projection_write(
                 ),
             )
         )
-        database.connection.execute(
-            "UPDATE runs SET state='queued' WHERE run_id='run-1'"
-        )
+        database.connection.execute("UPDATE runs SET state='queued' WHERE run_id='run-1'")
         database.connection.commit()
         with pytest.raises(UnitOfWorkConflict, match="requires RUNNING"):
             asyncio.run(
@@ -6635,9 +6614,12 @@ def test_precreated_recovery_rechecks_running_state_before_projection_write(
                     ),
                 )
             )
-        assert database.connection.execute(
-            "SELECT version FROM workflow_start_admissions"
-        ).fetchone()[0] == 1
+        assert (
+            database.connection.execute("SELECT version FROM workflow_start_admissions").fetchone()[
+                0
+            ]
+            == 1
+        )
 
 
 @pytest.mark.parametrize(
@@ -6685,9 +6667,12 @@ def test_every_new_start_binding_field_is_independently_pinned_before_generic_wr
                     ),
                 )
             )
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE run_id<>'parent-run'"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id<>'parent-run'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -6774,10 +6759,7 @@ def test_live_dispositions_fail_closed_on_every_split_authority(
                 (),
             ),
             "dispatch_owner": (
-                (
-                    "UPDATE runtime_start_dispatch_claims SET owner_id='split' "
-                    "WHERE run_id='run-1'"
-                ),
+                ("UPDATE runtime_start_dispatch_claims SET owner_id='split' WHERE run_id='run-1'"),
                 (),
             ),
             "dispatch_runtime_epoch": (
@@ -6788,10 +6770,7 @@ def test_live_dispositions_fail_closed_on_every_split_authority(
                 (),
             ),
             "dispatch_expiry": (
-                (
-                    "UPDATE runtime_start_dispatch_claims SET expires_at=12 "
-                    "WHERE run_id='run-1'"
-                ),
+                ("UPDATE runtime_start_dispatch_claims SET expires_at=12 WHERE run_id='run-1'"),
                 (),
             ),
             "workflow_owner": (
@@ -6802,17 +6781,11 @@ def test_live_dispositions_fail_closed_on_every_split_authority(
                 (request.checkpoint_namespace,),
             ),
             "workflow_epoch": (
-                (
-                    "UPDATE workflow_leases SET epoch=2 WHERE run_id='run-1' "
-                    "AND namespace=?"
-                ),
+                ("UPDATE workflow_leases SET epoch=2 WHERE run_id='run-1' AND namespace=?"),
                 (request.checkpoint_namespace,),
             ),
             "workflow_expiry": (
-                (
-                    "UPDATE workflow_leases SET expires_at=12 WHERE run_id='run-1' "
-                    "AND namespace=?"
-                ),
+                ("UPDATE workflow_leases SET expires_at=12 WHERE run_id='run-1' AND namespace=?"),
                 (request.checkpoint_namespace,),
             ),
         }
@@ -6829,9 +6802,7 @@ def test_live_dispositions_fail_closed_on_every_split_authority(
                         start,
                         request,
                         snapshot,
-                        RuntimeActivationClaim(
-                            claim_owner, lease_ttl_seconds=10.0
-                        ),
+                        RuntimeActivationClaim(claim_owner, lease_ttl_seconds=10.0),
                         now=5.0,
                     ),
                 )
@@ -6843,9 +6814,7 @@ def test_waiting_rejects_wrong_namespace_and_unlinked_decision_or_blocker(
 ) -> None:
     with Database.open(tmp_path / "waiting-pinned.db") as database:
         uow = SqliteExecutionUnitOfWork(database)
-        (_launch, ticket, _verified, start, request, snapshot, _, _) = (
-            _seed_started_precreated(uow)
-        )
+        (_launch, ticket, _verified, start, request, snapshot, _, _) = _seed_started_precreated(uow)
         database.connection.execute(
             "UPDATE runs SET state='waiting',version=2 WHERE run_id='run-1'"
         )
@@ -6954,10 +6923,7 @@ def test_start_input_schema_enforces_all_frozen_resource_bounds_before_publish(
         }
     too_many_nodes = {
         "type": "object",
-        "properties": {
-            f"p{i}": {"type": "string", "enum": ["a", "b", "c"]}
-            for i in range(64)
-        },
+        "properties": {f"p{i}": {"type": "string", "enum": ["a", "b", "c"]} for i in range(64)},
         "additionalProperties": False,
     }
     invalid_schemas: list[tuple[object, str, bool]] = [
@@ -7013,12 +6979,18 @@ def test_start_input_schema_enforces_all_frozen_resource_bounds_before_publish(
                 )
         with pytest.raises(ValueError, match="schema_ref"):
             StartInputSchema("x" * 4097, {"type": "object"}, "0" * 64)
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_catalog_authorities"
-        ).fetchone()[0] == 0
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_launch_ticket_receipts"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_catalog_authorities"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_launch_ticket_receipts"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -7027,7 +6999,13 @@ def test_start_input_schema_enforces_all_frozen_resource_bounds_before_publish(
         {"objective": "x" * 65537},
         {
             "objective": "valid",
-            "nested": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": 1}}}}}}}}}}}}},
+            "nested": {
+                "x": {
+                    "x": {
+                        "x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": 1}}}}}}}}}}
+                    }
+                }
+            },
         },
     ],
 )
@@ -7044,9 +7022,12 @@ def test_actual_start_input_resource_limits_reject_before_ticket_write(
         )
         with pytest.raises(ValueError, match="byte|depth"):
             _launch_request(start_input=start_input)  # type: ignore[arg-type]
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_launch_ticket_receipts"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_launch_ticket_receipts"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -7138,9 +7119,7 @@ def test_consumed_dispatch_columns_are_audit_only_for_attach_and_takeover(
             )
         )
         assert attached.disposition is RuntimeStartDisposition.ATTACH_CURRENT
-        database.connection.execute(
-            "UPDATE workflow_leases SET expires_at=6 WHERE run_id='run-1'"
-        )
+        database.connection.execute("UPDATE workflow_leases SET expires_at=6 WHERE run_id='run-1'")
         database.connection.commit()
         recovered = asyncio.run(
             _atomic(
@@ -7205,12 +7184,15 @@ def test_expired_runtime_cannot_take_over_a_live_foreign_workflow_projection(
                     ),
                 )
             )
-        assert tuple(
-            database.connection.execute(
-                "SELECT namespace,owner_id,epoch,expires_at FROM workflow_leases "
-                "WHERE run_id='run-1' ORDER BY namespace"
-            ).fetchall()
-        ) == before
+        assert (
+            tuple(
+                database.connection.execute(
+                    "SELECT namespace,owner_id,epoch,expires_at FROM workflow_leases "
+                    "WHERE run_id='run-1' ORDER BY namespace"
+                ).fetchall()
+            )
+            == before
+        )
 
 
 @pytest.mark.parametrize(
@@ -7248,9 +7230,12 @@ def test_ticket_verify_recomputes_every_duplicated_sql_column(
         database.connection.commit()
         with pytest.raises(UnitOfWorkConflict, match="ticket|catalog"):
             asyncio.run(_atomic(uow, lambda tx: uow.verify(tx, ticket)))
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE run_id<>'parent-run'"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id<>'parent-run'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_schema_raw_preflight_rejects_extreme_depth_without_recursion_error() -> None:
@@ -7313,7 +7298,14 @@ def test_registered_workflow_and_typed_dispatch_results_are_immutable_and_bound(
             )
 
     resume_request = ResumeAdmissionRequest(
-        "resume-1", "run-1", 1, "checkpoint-1", (), {}, hashlib.sha256(b"{}").hexdigest(), StartMode.PRECREATED
+        "resume-1",
+        "run-1",
+        1,
+        "checkpoint-1",
+        (),
+        {},
+        hashlib.sha256(b"{}").hexdigest(),
+        StartMode.PRECREATED,
     )
     resume_receipt = ResumeAdmissionReceipt(
         resume_request,
@@ -7388,8 +7380,7 @@ def test_start_claim_receipt_first_settled_replays_after_terminal_and_reopen(
             (outcome, request.request_key),
         )
         database.connection.execute(
-            "UPDATE runs SET state='completed',version=version+1,updated_at=8 "
-            "WHERE run_id=?",
+            "UPDATE runs SET state='completed',version=version+1,updated_at=8 WHERE run_id=?",
             (first.receipt.run_id,),
         )
         database.connection.execute(
@@ -7485,8 +7476,7 @@ def test_start_claim_replay_rejects_forged_audit_expiry_after_heartbeat_and_reop
             lease_ttl_seconds=20.0,
         )
         database.connection.execute(
-            "UPDATE workflow_start_admissions SET claim_expires_at=99 "
-            "WHERE request_key=?",
+            "UPDATE workflow_start_admissions SET claim_expires_at=99 WHERE request_key=?",
             (request.request_key,),
         )
         database.connection.commit()
@@ -7514,12 +7504,15 @@ def test_start_claim_replay_rejects_forged_audit_expiry_after_heartbeat_and_reop
                     ),
                 )
             )
-        assert tuple(
-            reopened.connection.execute(
-                "SELECT phase,version,claim_action,claim_owner,claim_epoch,"
-                "claim_expires_at FROM workflow_start_admissions"
-            ).fetchone()
-        ) == before
+        assert (
+            tuple(
+                reopened.connection.execute(
+                    "SELECT phase,version,claim_action,claim_owner,claim_epoch,"
+                    "claim_expires_at FROM workflow_start_admissions"
+                ).fetchone()
+            )
+            == before
+        )
 
 
 def test_start_claim_schema_rejects_action_phase_and_version_drift(
@@ -7607,9 +7600,7 @@ def test_generic_state_start_resume_dispatch_matrix_fails_closed(
                     "UPDATE workflow_start_admissions SET phase=? WHERE run_id='run-1'",
                     (start_phase,),
                 )
-        database.connection.execute(
-            "UPDATE runs SET state=? WHERE run_id='run-1'", (run_state,)
-        )
+        database.connection.execute("UPDATE runs SET state=? WHERE run_id='run-1'", (run_state,))
         database.connection.execute(
             "UPDATE runtime_start_dispatch_claims SET state=? WHERE run_id='run-1'",
             (dispatch_state,),
@@ -7737,24 +7728,15 @@ def test_waiting_validates_active_or_released_authority_matrix(
                 (request.checkpoint_namespace,),
             ),
             "workflow_epoch": (
-                (
-                    "UPDATE workflow_leases SET epoch=2 WHERE run_id='run-1' "
-                    "AND namespace=?"
-                ),
+                ("UPDATE workflow_leases SET epoch=2 WHERE run_id='run-1' AND namespace=?"),
                 (request.checkpoint_namespace,),
             ),
             "workflow_expiry": (
-                (
-                    "UPDATE workflow_leases SET expires_at=7 WHERE run_id='run-1' "
-                    "AND namespace=?"
-                ),
+                ("UPDATE workflow_leases SET expires_at=7 WHERE run_id='run-1' AND namespace=?"),
                 (request.checkpoint_namespace,),
             ),
             "missing_runtime": (
-                (
-                    "DELETE FROM workflow_leases WHERE run_id='run-1' "
-                    "AND namespace='runtime.kernel'"
-                ),
+                ("DELETE FROM workflow_leases WHERE run_id='run-1' AND namespace='runtime.kernel'"),
                 (),
             ),
             "missing_workflow": (
@@ -7952,13 +7934,9 @@ def _seed_runtime_retry_wait(uow: SqliteExecutionUnitOfWork):  # type: ignore[no
             ),
         ),
     )
-    connection.execute(
-        "UPDATE runs SET state='waiting',version=2 WHERE run_id='run-1'"
-    )
+    connection.execute("UPDATE runs SET state='waiting',version=2 WHERE run_id='run-1'")
     connection.execute("DELETE FROM workflow_leases WHERE run_id='run-1'")
-    connection.execute(
-        "UPDATE run_fences SET state='released',released_at=7 WHERE run_id='run-1'"
-    )
+    connection.execute("UPDATE run_fences SET state='released',released_at=7 WHERE run_id='run-1'")
     connection.execute(
         "INSERT INTO run_events(event_id,run_id,durable_seq,kind,payload_json,created_at) "
         "VALUES('retry-wait-event','run-1',2,'workflow.retry_waiting',?,7)",
@@ -8006,13 +7984,9 @@ def test_retry_wake_recomputes_full_resume_snapshot_before_return(
                 "UPDATE workflow_resume_admissions SET expected_checkpoint_head='forged'"
             )
         elif mutation == "next_attempt_at":
-            database.connection.execute(
-                "UPDATE workflow_resume_admissions SET next_attempt_at=11"
-            )
+            database.connection.execute("UPDATE workflow_resume_admissions SET next_attempt_at=11")
         elif mutation == "outcome_json":
-            database.connection.execute(
-                "UPDATE workflow_resume_admissions SET outcome_json='{}'"
-            )
+            database.connection.execute("UPDATE workflow_resume_admissions SET outcome_json='{}'")
         elif mutation == "event_payload":
             database.connection.execute(
                 "UPDATE run_events SET payload_json='{}' WHERE event_id='retry-wait-event'"
@@ -8049,9 +8023,7 @@ def test_retry_wait_never_dispatches_from_incorrect_running_state_even_when_due(
     with Database.open(tmp_path / "retry-running.db") as database:
         uow = SqliteExecutionUnitOfWork(database)
         ticket, start, request, snapshot = _seed_runtime_retry_wait(uow)
-        database.connection.execute(
-            "UPDATE runs SET state='running' WHERE run_id='run-1'"
-        )
+        database.connection.execute("UPDATE runs SET state='running' WHERE run_id='run-1'")
         database.connection.commit()
         before = database.connection.total_changes
         with pytest.raises(UnitOfWorkConflict, match="resume phase"):

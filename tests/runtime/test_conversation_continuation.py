@@ -54,9 +54,12 @@ def test_two_user_continuations_keep_fifo_and_distinct_intents(tmp_path: Path) -
             now=3.0,
         )
         assert (first.fifo_seq, second.fifo_seq) == (1, 2)
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM memory_outbox WHERE continuation_id IS NOT NULL"
-        ).fetchone()[0] == 2
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM memory_outbox WHERE continuation_id IS NOT NULL"
+            ).fetchone()[0]
+            == 2
+        )
         assert (
             uow.enqueue_continuation(
                 continuation_id="continuation-1",

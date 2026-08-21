@@ -13,15 +13,11 @@ from simple_harness.testing import arm64_candidate
 
 
 def test_public_api_matches_frozen_snapshot() -> None:
-    snapshot = json.loads(
-        (Path(__file__).with_name("public-api.json")).read_text(encoding="utf-8")
-    )
+    snapshot = json.loads((Path(__file__).with_name("public-api.json")).read_text(encoding="utf-8"))
     assert list(simple_harness.__all__) == snapshot["simple_harness"]
     assert list(contracts.__all__) == snapshot["simple_harness.contracts"]
     assert list(runtime.__all__) == snapshot["simple_harness.runtime"]
-    assert list(arm64_candidate.__all__) == snapshot[
-        "simple_harness.testing.arm64_candidate"
-    ]
+    assert list(arm64_candidate.__all__) == snapshot["simple_harness.testing.arm64_candidate"]
     for name in snapshot["simple_harness.contracts"]:
         assert getattr(simple_harness, name) is getattr(contracts, name)
     for name in snapshot["simple_harness"]:

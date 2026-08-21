@@ -56,9 +56,7 @@ def test_invocation_identity_and_request_fingerprint_are_deterministic() -> None
     second = provider_invocation_id(RunId("run-1"), request.request_id)
     assert first == second
     assert len(first) == len(fingerprint) == 64
-    same_content = ProviderRequest(
-        request_id=RequestId("request-2"), messages=request.messages
-    )
+    same_content = ProviderRequest(request_id=RequestId("request-2"), messages=request.messages)
     assert provider_request_fingerprint(same_content) == fingerprint
     assert provider_invocation_id(RunId("run-1"), same_content.request_id) != first
 

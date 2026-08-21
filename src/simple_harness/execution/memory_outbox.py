@@ -44,9 +44,7 @@ class MemoryIntentSpec:
     payload_hash: str
 
     @classmethod
-    def from_conversation(
-        cls, intent: ConversationMemoryIntent
-    ) -> MemoryIntentSpec:
+    def from_conversation(cls, intent: ConversationMemoryIntent) -> MemoryIntentSpec:
         return cls(
             intent_id=intent.source_event_id,
             source_event_id=intent.source_event_id,
@@ -282,26 +280,20 @@ class MemoryDispatcher:
                     ConversationMemoryApplyStatus.ALREADY_APPLIED,
                 }
             ):
-                raise ConversationMemoryError(
-                    ConversationMemoryErrorCode.APPLY_CONFLICT
-                )
+                raise ConversationMemoryError(ConversationMemoryErrorCode.APPLY_CONFLICT)
         except ConversationMemoryError as error:
             if error.code in {
                 ConversationMemoryErrorCode.APPLY_CONFLICT,
                 ConversationMemoryErrorCode.PERMANENT,
             }:
-                self.repository.dead_letter(
-                    claim, error_code=error.code.value, now=self.clock()
-                )
+                self.repository.dead_letter(claim, error_code=error.code.value, now=self.clock())
             else:
                 self._release_transient(claim, error.code.value)
             return True
         except asyncio.CancelledError:
             raise
         except Exception:
-            self._release_transient(
-                claim, ConversationMemoryErrorCode.TRANSIENT.value
-            )
+            self._release_transient(claim, ConversationMemoryErrorCode.TRANSIENT.value)
             return True
         self.repository.applied(claim, now=self.clock())
         return True
@@ -338,9 +330,7 @@ def _record(row) -> MemoryOutboxRecord:  # type: ignore[no-untyped-def]
         intent_id=str(row["intent_id"]),
         source_event_id=str(row["source_event_id"]),
         run_id=str(row["run_id"]),
-        continuation_id=(
-            None if row["continuation_id"] is None else str(row["continuation_id"])
-        ),
+        continuation_id=(None if row["continuation_id"] is None else str(row["continuation_id"])),
         user_id=str(row["user_id"]),
         session_id=str(row["session_id"]),
         role=str(row["role"]),

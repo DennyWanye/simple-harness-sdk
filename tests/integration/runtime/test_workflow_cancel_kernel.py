@@ -214,9 +214,7 @@ def _fixture(path: Path):  # type: ignore[no-untyped-def]
             now=0.2,
             lease_ttl_seconds=30.0,
         )
-        parent_fence = await uow.acquire(
-            RunId(origin.parent_run_id), parent_lease, now=0.2
-        )
+        parent_fence = await uow.acquire(RunId(origin.parent_run_id), parent_lease, now=0.2)
         react_checkpoint = {
             "schema_version": 1,
             "started_at": 0.2,
@@ -252,9 +250,7 @@ def _fixture(path: Path):  # type: ignore[no-untyped-def]
             "start_input": {},
             "candidate_id": launch.candidate_id,
         }
-        request_hash = effect_request_hash(
-            tool_name="workflow_spawn", arguments=effect_arguments
-        )
+        request_hash = effect_request_hash(tool_name="workflow_spawn", arguments=effect_arguments)
         effect = uow.prepare_effect(
             effect_id=EffectId("kernel-cancel-spawn-effect"),
             run_id=RunId(origin.parent_run_id),
@@ -364,9 +360,7 @@ def _runtime_for(database: Database):  # type: ignore[no-untyped-def]
     )
     runner = WorkflowRunner(
         registry=WorkflowRegistry((compiled,)),
-        checkpoint=SqliteNativeCheckpointStore(
-            execution_ports, blob_references=NoBlobReferences()
-        ),
+        checkpoint=SqliteNativeCheckpointStore(execution_ports, blob_references=NoBlobReferences()),
         recovery=RecoveryPolicy(),  # type: ignore[arg-type]
         trace=Trace(),
         execution_ports=execution_ports,
@@ -450,9 +444,7 @@ def _seed_unknown_provider(
         workflow_lease=activation.workflow_lease,
     )
     record = uow.settle_provider_invocation(
-        record.settle_unknown(
-            error_code="transport_lost", at=2.2, expected_version=record.version
-        ),
+        record.settle_unknown(error_code="transport_lost", at=2.2, expected_version=record.version),
         expected_version=record.version,
     )
     assert record.state is ProviderInvocationState.UNKNOWN
@@ -531,26 +523,30 @@ def test_kernel_workflow_cancel_is_receipt_owned_and_reopens_exactly(
     assert uow.verify_workflow_cancel_terminal(
         run_id=run_id, cancel_id=row["cancel_id"], generation=row["generation"]
     )
-    assert database.connection.execute(
-        "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.cancelled'",
-        (run_id,),
-    ).fetchone()[0] == 1
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.cancelled'",
+            (run_id,),
+        ).fetchone()[0]
+        == 1
+    )
     database.close()
 
     with Database.open(path) as reopened:
         assert SqliteExecutionUnitOfWork(reopened).verify_workflow_cancel_terminal(
             run_id=run_id, cancel_id=row["cancel_id"], generation=row["generation"]
         )
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM delivery_outbox WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM delivery_outbox WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def _cancel_with_unknown_provider(path: Path):  # type: ignore[no-untyped-def]
     database, uow, runtime, runner, run_id, lease, fence = _fixture(path)
-    record, blocker = _seed_unknown_provider(
-        uow, runner, run_id, lease, fence
-    )
+    record, blocker = _seed_unknown_provider(uow, runner, run_id, lease, fence)
 
     async def cancel_once():  # type: ignore[no-untyped-def]
         await runtime.start()
@@ -560,25 +556,36 @@ def _cancel_with_unknown_provider(path: Path):  # type: ignore[no-untyped-def]
 
     asyncio.run(cancel_once())
     receipt = database.connection.execute(
-        "SELECT cancel_id,generation,phase,terminal FROM workflow_cancel_receipts "
-        "WHERE run_id=?",
+        "SELECT cancel_id,generation,phase,terminal FROM workflow_cancel_receipts WHERE run_id=?",
         (run_id,),
     ).fetchone()
     assert tuple(receipt) == (receipt["cancel_id"], 0, "cancelling", None)
-    assert database.connection.execute(
-        "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='run.cancelled'",
-        (run_id,),
-    ).fetchone()[0] == 0
-    assert database.connection.execute(
-        "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.cancelled'",
-        (run_id,),
-    ).fetchone()[0] == 0
-    assert database.connection.execute(
-        "SELECT COUNT(*) FROM delivery_outbox WHERE run_id=?", (run_id,)
-    ).fetchone()[0] == 0
-    assert database.connection.execute(
-        "SELECT COUNT(*) FROM workflow_leases WHERE run_id=?", (run_id,)
-    ).fetchone()[0] == 0
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='run.cancelled'",
+            (run_id,),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.cancelled'",
+            (run_id,),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM delivery_outbox WHERE run_id=?", (run_id,)
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM workflow_leases WHERE run_id=?", (run_id,)
+        ).fetchone()[0]
+        == 0
+    )
     database.close()
     return record, blocker, run_id, str(receipt["cancel_id"])
 
@@ -604,12 +611,18 @@ def test_cancel_requested_database_start_replays_receipt_and_stays_nonterminal(
             (run_id,),
         ).fetchone()
         assert tuple(receipt) == (cancel_id, 0, "cancelling", None)
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_leases WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == 0
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM delivery_outbox WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_leases WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM delivery_outbox WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_unknown_blocker_late_completion_converges_once_after_restart(
@@ -635,17 +648,18 @@ def test_unknown_blocker_late_completion_converges_once_after_restart(
             outcome=ResolutionOutcome.COMPLETED,
             response_json=provider_response_json(response),
             usage_json={"usage": None, "budget": BudgetCharge.unknown().to_json()},
-            budget_charge=BudgetCharge(
-                BudgetChargeKind.TRUSTED_USAGE, 1, "fixture-price-v1"
-            ),
+            budget_charge=BudgetCharge(BudgetChargeKind.TRUSTED_USAGE, 1, "fixture-price-v1"),
             evidence_ref="fixture:late-completed",
             now=4.0,
         )
         assert settled.state is ProviderInvocationState.SUCCEEDED
-        assert reopened.connection.execute(
-            "SELECT resolution_id FROM run_wait_blockers WHERE blocker_id=?",
-            (blocker.blocker_id,),
-        ).fetchone()["resolution_id"] is not None
+        assert (
+            reopened.connection.execute(
+                "SELECT resolution_id FROM run_wait_blockers WHERE blocker_id=?",
+                (blocker.blocker_id,),
+            ).fetchone()["resolution_id"]
+            is not None
+        )
 
         async def converge():  # type: ignore[no-untyped-def]
             await runtime.reconcile()
@@ -654,17 +668,24 @@ def test_unknown_blocker_late_completion_converges_once_after_restart(
             await runtime.close()
 
         asyncio.run(converge())
-        assert uow.verify_workflow_cancel_terminal(
-            run_id=run_id, cancel_id=cancel_id, generation=0
+        assert uow.verify_workflow_cancel_terminal(run_id=run_id, cancel_id=cancel_id, generation=0)
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='run.cancelled'",
+                (run_id,),
+            ).fetchone()[0]
+            == 0
         )
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='run.cancelled'",
-            (run_id,),
-        ).fetchone()[0] == 0
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.cancelled'",
-            (run_id,),
-        ).fetchone()[0] == 1
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM delivery_outbox WHERE run_id=?", (run_id,)
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.cancelled'",
+                (run_id,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM delivery_outbox WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            == 1
+        )

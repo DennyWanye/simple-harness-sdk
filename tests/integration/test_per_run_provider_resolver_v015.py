@@ -51,9 +51,7 @@ def test_resolver_keeps_provider_estimator_and_charge_on_each_run() -> None:
             asyncio.create_task(invoke("run-b")),
         )
         await asyncio.wait_for(
-            asyncio.gather(
-                *(provider.entered.wait() for provider in providers.values())
-            ),
+            asyncio.gather(*(provider.entered.wait() for provider in providers.values())),
             timeout=1,
         )
         release.set()

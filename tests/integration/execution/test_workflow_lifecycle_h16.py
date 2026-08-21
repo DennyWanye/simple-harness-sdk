@@ -95,9 +95,7 @@ def test_start_exact_replay_conflict_and_fault_reopen(tmp_path: Path) -> None:
         replay = asyncio.run(
             _atomic(
                 uow,
-                lambda transaction: uow.admit_start_standalone(
-                    transaction, request, now=9.0
-                ),
+                lambda transaction: uow.admit_start_standalone(transaction, request, now=9.0),
             )
         )
         assert replay == first
@@ -128,10 +126,7 @@ def test_start_exact_replay_conflict_and_fault_reopen(tmp_path: Path) -> None:
                     )
                 )
         with Database.open(fault_path) as reopened:
-            assert (
-                reopened.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
-                == 0
-            )
+            assert reopened.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
             assert (
                 reopened.connection.execute(
                     "SELECT COUNT(*) FROM workflow_start_admissions"
@@ -226,10 +221,7 @@ def test_activation_renews_both_leases_and_fault_rolls_back(tmp_path: Path) -> N
         uow = SqliteExecutionUnitOfWork(database)
         receipt, activation = _admit_and_claim(uow)
         assert activation.execution_lease.epoch == activation.workflow_lease.epoch
-        assert (
-            activation.execution_lease.expires_at
-            == activation.workflow_lease.expires_at
-        )
+        assert activation.execution_lease.expires_at == activation.workflow_lease.expires_at
 
         def fault(label: str) -> None:
             if label == "workflow:renew_activation:after_runtime_lease_write":
@@ -284,9 +276,7 @@ def test_standalone_live_heartbeat_reentry_keeps_original_claim_and_current_rows
         renewed = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.renew_activation(
-                    tx, acquired, now=3.0, ttl_seconds=30.0
-                ),
+                lambda tx: uow.renew_activation(tx, acquired, now=3.0, ttl_seconds=30.0),
             )
         )
         assert renewed.execution_lease.expires_at == 33.0
@@ -299,8 +289,7 @@ def test_standalone_live_heartbeat_reentry_keeps_original_claim_and_current_rows
         before_leases = tuple(
             tuple(row)
             for row in database.connection.execute(
-                "SELECT namespace,owner_id,epoch,expires_at FROM workflow_leases "
-                "ORDER BY namespace"
+                "SELECT namespace,owner_id,epoch,expires_at FROM workflow_leases ORDER BY namespace"
             ).fetchall()
         )
         before_fence = tuple(
@@ -338,24 +327,33 @@ def test_standalone_live_heartbeat_reentry_keeps_original_claim_and_current_rows
             )
         )
         assert replay == renewed
-        assert tuple(
-            database.connection.execute(
-                "SELECT phase,version,claim_action,claim_owner,claim_epoch,"
-                "claim_expires_at FROM workflow_start_admissions"
-            ).fetchone()
-        ) == before_receipt
-        assert tuple(
-            tuple(row)
-            for row in database.connection.execute(
-                "SELECT namespace,owner_id,epoch,expires_at FROM workflow_leases "
-                "ORDER BY namespace"
-            ).fetchall()
-        ) == before_leases
-        assert tuple(
-            database.connection.execute(
-                "SELECT epoch,owner_id,runtime_lease_epoch,state FROM run_fences"
-            ).fetchone()
-        ) == before_fence
+        assert (
+            tuple(
+                database.connection.execute(
+                    "SELECT phase,version,claim_action,claim_owner,claim_epoch,"
+                    "claim_expires_at FROM workflow_start_admissions"
+                ).fetchone()
+            )
+            == before_receipt
+        )
+        assert (
+            tuple(
+                tuple(row)
+                for row in database.connection.execute(
+                    "SELECT namespace,owner_id,epoch,expires_at FROM workflow_leases "
+                    "ORDER BY namespace"
+                ).fetchall()
+            )
+            == before_leases
+        )
+        assert (
+            tuple(
+                database.connection.execute(
+                    "SELECT epoch,owner_id,runtime_lease_epoch,state FROM run_fences"
+                ).fetchone()
+            )
+            == before_fence
+        )
 
         takeover = asyncio.run(
             _atomic(
@@ -391,9 +389,7 @@ def test_runtime_lease_lifecycle_updates_workflow_projection_atomically(
         receipt, activation = _admit_and_claim(uow)
         lease = activation.execution_lease
         if operation == "renew":
-            renewed = uow.renew_runtime_lease(
-                lease, now=3.0, lease_ttl_seconds=40.0
-            )
+            renewed = uow.renew_runtime_lease(lease, now=3.0, lease_ttl_seconds=40.0)
             expected_expiry = renewed.expires_at
         else:
             uow.release_runtime_lease(lease, now=3.0)
@@ -418,8 +414,7 @@ def test_runtime_lease_lifecycle_rejects_drifted_workflow_projection(
         uow = SqliteExecutionUnitOfWork(database)
         receipt, activation = _admit_and_claim(uow)
         database.connection.execute(
-            "UPDATE workflow_leases SET expires_at=31.0 "
-            "WHERE run_id=? AND namespace='native'",
+            "UPDATE workflow_leases SET expires_at=31.0 WHERE run_id=? AND namespace='native'",
             (receipt.run_id,),
         )
         with pytest.raises(UnitOfWorkConflict, match="not co-fenced"):
@@ -434,8 +429,7 @@ def test_runtime_lease_lifecycle_rejects_drifted_workflow_projection(
         expiries = tuple(
             row[0]
             for row in database.connection.execute(
-                "SELECT expires_at FROM workflow_leases WHERE run_id=? "
-                "ORDER BY namespace",
+                "SELECT expires_at FROM workflow_leases WHERE run_id=? ORDER BY namespace",
                 (receipt.run_id,),
             ).fetchall()
         )
@@ -465,14 +459,11 @@ def test_runtime_lease_projection_fault_rolls_back_runtime_write(
                     fault=fault,
                 )
             else:
-                uow.release_runtime_lease(
-                    activation.execution_lease, now=3.0, fault=fault
-                )
+                uow.release_runtime_lease(activation.execution_lease, now=3.0, fault=fault)
         expiries = tuple(
             row[0]
             for row in database.connection.execute(
-                "SELECT expires_at FROM workflow_leases WHERE run_id=? "
-                "ORDER BY namespace",
+                "SELECT expires_at FROM workflow_leases WHERE run_id=? ORDER BY namespace",
                 (receipt.run_id,),
             ).fetchall()
         )
@@ -491,11 +482,15 @@ def test_resume_receipt_claim_and_settle_share_checkpoint_authority(
             (receipt.run_id,),
         )
         database.connection.execute(
-            "INSERT INTO workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at) VALUES('head',?,'native','{}',?,1,0,3)",
+            "INSERT INTO"
+            " workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at)"  # noqa: E501
+            " VALUES('head',?,'native','{}',?,1,0,3)",
             (receipt.run_id, hashlib.sha256(b"{}").hexdigest()),
         )
         database.connection.execute(
-            "INSERT INTO decisions(decision_id,run_id,kind,state,request_json,response_json,version,created_at,resolved_at) VALUES('decision',?,'workflow_interrupt','allowed','{}','{}',1,3,3)",
+            "INSERT INTO"
+            " decisions(decision_id,run_id,kind,state,request_json,response_json,version,created_at,resolved_at)"  # noqa: E501
+            " VALUES('decision',?,'workflow_interrupt','allowed','{}','{}',1,3,3)",
             (receipt.run_id,),
         )
         database.connection.commit()
@@ -507,18 +502,14 @@ def test_resume_receipt_claim_and_settle_share_checkpoint_authority(
         )
 
         async def scenario():
-            admitted = await _atomic(
-                uow, lambda tx: uow.admit_resume(tx, request, now=4.0)
-            )
+            admitted = await _atomic(uow, lambda tx: uow.admit_resume(tx, request, now=4.0))
             claimed = await _atomic(
                 uow,
                 lambda tx: uow.claim_resume_standalone(
                     tx, "resume", admitted.version, "runner", now=5.0, ttl_seconds=30.0
                 ),
             )
-            binding = ResumeCommitBinding(
-                "resume", claimed.version, 2, claimed.request_fingerprint
-            )
+            binding = ResumeCommitBinding("resume", claimed.version, 2, claimed.request_fingerprint)
             settled = await _atomic(
                 uow,
                 lambda tx: uow.settle_resume(
@@ -546,11 +537,15 @@ def test_resume_claim_enforces_mode_and_retry_due_time(tmp_path: Path) -> None:
             (receipt.run_id,),
         )
         database.connection.execute(
-            "INSERT INTO workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at) VALUES('head',?,'native','{}',?,1,0,3)",
+            "INSERT INTO"
+            " workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at)"  # noqa: E501
+            " VALUES('head',?,'native','{}',?,1,0,3)",
             (receipt.run_id, hashlib.sha256(b"{}").hexdigest()),
         )
         database.connection.execute(
-            "INSERT INTO decisions(decision_id,run_id,kind,state,request_json,response_json,version,created_at,resolved_at) VALUES('decision',?,'workflow_interrupt','allowed','{}','{}',1,3,3)",
+            "INSERT INTO"
+            " decisions(decision_id,run_id,kind,state,request_json,response_json,version,created_at,resolved_at)"  # noqa: E501
+            " VALUES('decision',?,'workflow_interrupt','allowed','{}','{}',1,3,3)",
             (receipt.run_id,),
         )
         database.connection.commit()
@@ -726,11 +721,15 @@ def test_cancel_convergence_uses_final_resolution_not_wake_consumption(
         receipt, activation = _admit_and_claim(uow)
         outcome_hash = hashlib.sha256(b"resolution").hexdigest()
         database.connection.execute(
-            "INSERT INTO reconciliation_resolutions(resolution_id,kind,ledger_identity,handoff_attempt,outcome,outcome_hash,evidence_ref,payload_json,created_at) VALUES('resolution','tool','effect',1,'completed',?,'evidence','{}',2)",
+            "INSERT INTO"
+            " reconciliation_resolutions(resolution_id,kind,ledger_identity,handoff_attempt,outcome,outcome_hash,evidence_ref,payload_json,created_at)"  # noqa: E501
+            " VALUES('resolution','tool','effect',1,'completed',?,'evidence','{}',2)",
             (outcome_hash,),
         )
         database.connection.execute(
-            "INSERT INTO run_wait_blockers(blocker_id,run_id,kind,ledger_identity,handoff_attempt,observed_version,resolution_id,wake_consumed,created_at,resolved_at,version) VALUES('blocker',?,'tool','effect',1,1,'resolution',0,2,2,2)",
+            "INSERT INTO"
+            " run_wait_blockers(blocker_id,run_id,kind,ledger_identity,handoff_attempt,observed_version,resolution_id,wake_consumed,created_at,resolved_at,version)"  # noqa: E501
+            " VALUES('blocker',?,'tool','effect',1,1,'resolution',0,2,2,2)",
             (receipt.run_id,),
         )
         database.connection.commit()
@@ -740,9 +739,7 @@ def test_cancel_convergence_uses_final_resolution_not_wake_consumption(
                 uow,
                 lambda tx: uow.request_cancel(
                     tx,
-                    CancelWorkflowRequest(
-                        "cancel-resolution", receipt.run_id, "user", 0
-                    ),
+                    CancelWorkflowRequest("cancel-resolution", receipt.run_id, "user", 0),
                     0,
                     activation,
                     now=3.0,
@@ -783,9 +780,12 @@ def test_cancel_convergence_uses_final_resolution_not_wake_consumption(
 
         outcome = asyncio.run(scenario())
         assert outcome.terminal is True
-        assert database.connection.execute(
-            "SELECT wake_consumed FROM run_wait_blockers WHERE blocker_id='blocker'"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT wake_consumed FROM run_wait_blockers WHERE blocker_id='blocker'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_recovery_snapshot_cas_rejects_live_advance(tmp_path: Path) -> None:
@@ -844,22 +844,13 @@ def test_recovery_candidates_use_pinned_namespace_and_full_authority_snapshot(
         candidate = next(item for item in candidates if item.run_id == receipt.run_id)
         assert candidate.runtime_lease_owner == activation.execution_lease.owner_id
         assert candidate.runtime_lease_epoch == activation.execution_lease.epoch
-        assert (
-            candidate.runtime_lease_expires_at
-            == activation.execution_lease.expires_at
-        )
+        assert candidate.runtime_lease_expires_at == activation.execution_lease.expires_at
         assert candidate.workflow_lease_namespace == "native"
         assert candidate.workflow_lease_owner == activation.workflow_lease.owner_id
         assert candidate.workflow_lease_epoch == activation.workflow_lease.epoch
-        assert (
-            candidate.workflow_lease_expires_at
-            == activation.workflow_lease.expires_at
-        )
+        assert candidate.workflow_lease_expires_at == activation.workflow_lease.expires_at
         assert candidate.run_fence_owner == activation.run_fence.owner_id
-        assert (
-            candidate.run_fence_runtime_lease_epoch
-            == activation.run_fence.runtime_lease_epoch
-        )
+        assert candidate.run_fence_runtime_lease_epoch == activation.run_fence.runtime_lease_epoch
         assert candidate.run_fence_epoch == activation.run_fence.epoch
         assert candidate.run_fence_state == "active"
         assert candidate.checkpoint_head is None
@@ -872,14 +863,8 @@ def test_recovery_candidates_use_pinned_namespace_and_full_authority_snapshot(
             "UPDATE workflow_leases SET owner_id='new-runtime-owner' "
             "WHERE run_id=? AND namespace='runtime.kernel'"
         ),
-        (
-            "UPDATE workflow_leases SET expires_at=expires_at+1 "
-            "WHERE run_id=? AND namespace='native'"
-        ),
-        (
-            "UPDATE run_fences SET runtime_lease_epoch=runtime_lease_epoch+1 "
-            "WHERE run_id=?"
-        ),
+        "UPDATE workflow_leases SET expires_at=expires_at+1 WHERE run_id=? AND namespace='native'",
+        "UPDATE run_fences SET runtime_lease_epoch=runtime_lease_epoch+1 WHERE run_id=?",
         "UPDATE run_fences SET state='released',released_at=5 WHERE run_id=?",
     ),
 )
@@ -912,9 +897,12 @@ def test_recovery_snapshot_cas_binds_every_authority_field(
                     ),
                 )
             )
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_recovery_receipts"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_recovery_receipts"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_recovery_enumeration_is_workflow_only_stable_keyset_and_nullable(
@@ -968,11 +956,15 @@ def test_resume_retry_wait_releases_activation_and_reclaims_once(
             (receipt.run_id,),
         )
         database.connection.execute(
-            "INSERT INTO workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at) VALUES('head',?,'native','{}',?,1,0,3)",
+            "INSERT INTO"
+            " workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at)"  # noqa: E501
+            " VALUES('head',?,'native','{}',?,1,0,3)",
             (receipt.run_id, hashlib.sha256(b"{}").hexdigest()),
         )
         database.connection.execute(
-            "INSERT INTO decisions(decision_id,run_id,kind,state,request_json,response_json,version,created_at,resolved_at) VALUES('decision',?,'workflow_interrupt','allowed','{}','{}',1,3,3)",
+            "INSERT INTO"
+            " decisions(decision_id,run_id,kind,state,request_json,response_json,version,created_at,resolved_at)"  # noqa: E501
+            " VALUES('decision',?,'workflow_interrupt','allowed','{}','{}',1,3,3)",
             (receipt.run_id,),
         )
         database.connection.commit()
@@ -988,9 +980,7 @@ def test_resume_retry_wait_releases_activation_and_reclaims_once(
         )
 
         async def scenario():
-            admitted = await _atomic(
-                uow, lambda tx: uow.admit_resume(tx, request, now=4.0)
-            )
+            admitted = await _atomic(uow, lambda tx: uow.admit_resume(tx, request, now=4.0))
             claimed = await _atomic(
                 uow,
                 lambda tx: uow.claim_resume_standalone(
@@ -1002,9 +992,7 @@ def test_resume_retry_wait_releases_activation_and_reclaims_once(
                     ttl_seconds=30.0,
                 ),
             )
-            binding = ResumeCommitBinding(
-                "retry", claimed.version, 2, claimed.request_fingerprint
-            )
+            binding = ResumeCommitBinding("retry", claimed.version, 2, claimed.request_fingerprint)
             waiting = await _atomic(
                 uow,
                 lambda tx: uow.defer_resume_retry(
@@ -1120,13 +1108,19 @@ def test_cancel_each_authority_write_fault_rolls_back_after_reopen(
                 "cancel-fault-delivery",
             ),
         ):
-            assert reopened.connection.execute(
-                query,
-                (identity,),
-            ).fetchone()[0] == 0
-        assert reopened.connection.execute(
-            "SELECT phase FROM workflow_cancel_receipts WHERE cancel_id='cancel-fault'"
-        ).fetchone()[0] == "cancelling"
+            assert (
+                reopened.connection.execute(
+                    query,
+                    (identity,),
+                ).fetchone()[0]
+                == 0
+            )
+        assert (
+            reopened.connection.execute(
+                "SELECT phase FROM workflow_cancel_receipts WHERE cancel_id='cancel-fault'"
+            ).fetchone()[0]
+            == "cancelling"
+        )
 
 
 def test_recovery_receipt_replays_after_state_advance_and_reopen(tmp_path: Path) -> None:
@@ -1225,7 +1219,9 @@ def _seed_fork_source(uow, database):  # type: ignore[no-untyped-def]
         }
     )
     database.connection.execute(
-        "INSERT INTO workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at) VALUES('source-head',?,'native',?,?,?,0,3)",
+        "INSERT INTO"
+        " workflow_checkpoints(checkpoint_id,run_id,namespace,checkpoint_json,checkpoint_hash,lease_epoch,version,created_at)"  # noqa: E501
+        " VALUES('source-head',?,'native',?,?,?,0,3)",
         (
             receipt.run_id,
             checkpoint_json,
@@ -1285,16 +1281,17 @@ def test_fork_prepare_checkpoint_commit_and_commit_only_recovery(tmp_path: Path)
                 )
             return await _atomic(
                 uow,
-                lambda tx: uow.commit_fork(
-                    tx, lease, lease.expected_receipt_version, now=8.0
-                ),
+                lambda tx: uow.commit_fork(tx, lease, lease.expected_receipt_version, now=8.0),
             )
 
         committed = asyncio.run(reclaim_and_commit())
         assert committed.phase.value == "committed"
-        assert reopened.connection.execute(
-            "SELECT state FROM runs WHERE run_id=?", (committed.target_run_id,)
-        ).fetchone()[0] == "created"
+        assert (
+            reopened.connection.execute(
+                "SELECT state FROM runs WHERE run_id=?", (committed.target_run_id,)
+            ).fetchone()[0]
+            == "created"
+        )
 
 
 def test_fork_checkpoint_and_commit_response_loss_replay_exactly(
@@ -1311,7 +1308,11 @@ def test_fork_checkpoint_and_commit_response_loss_replay_exactly(
             _atomic(
                 uow,
                 lambda tx: uow.claim_fork(
-                    tx, request.fork_id, prepared.version, "forker", now=5.0,
+                    tx,
+                    request.fork_id,
+                    prepared.version,
+                    "forker",
+                    now=5.0,
                     ttl_seconds=30.0,
                 ),
             )
@@ -1348,9 +1349,7 @@ def test_fork_checkpoint_and_commit_response_loss_replay_exactly(
         committed = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.commit_fork(
-                    tx, lease, first.version, now=6.5
-                ),
+                lambda tx: uow.commit_fork(tx, lease, first.version, now=6.5),
             )
         )
     with Database.open(path) as reopened:
@@ -1358,20 +1357,24 @@ def test_fork_checkpoint_and_commit_response_loss_replay_exactly(
         exact = asyncio.run(
             _atomic(
                 uow,
-                lambda tx: uow.commit_fork(
-                    tx, lease, first.version, now=40.0
-                ),
+                lambda tx: uow.commit_fork(tx, lease, first.version, now=40.0),
             )
         )
         assert exact == committed
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE parent_run_id=?",
-            (request.source_run_id,),
-        ).fetchone()[0] == 1
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?",
-            (committed.target_run_id,),
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE parent_run_id=?",
+                (request.source_run_id,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?",
+                (committed.target_run_id,),
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_fork_claim_response_loss_replays_same_active_write_lease(
@@ -1442,7 +1445,11 @@ def test_fork_effect_snapshot_change_tombstones_reserved_child_atomically(
             _atomic(
                 uow,
                 lambda tx: uow.claim_fork(
-                    tx, request.fork_id, prepared.version, "forker", now=5.0,
+                    tx,
+                    request.fork_id,
+                    prepared.version,
+                    "forker",
+                    now=5.0,
                     ttl_seconds=30.0,
                 ),
             )
@@ -1479,13 +1486,19 @@ def test_fork_effect_snapshot_change_tombstones_reserved_child_atomically(
             )
         )
         assert rolled_back.phase.value == "rolled_back"
-        assert database.connection.execute(
-            "SELECT state FROM runs WHERE run_id=?", (rolled_back.target_run_id,)
-        ).fetchone()[0] == "reserved_fork"
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?",
-            (rolled_back.target_run_id,),
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute(
+                "SELECT state FROM runs WHERE run_id=?", (rolled_back.target_run_id,)
+            ).fetchone()[0]
+            == "reserved_fork"
+        )
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?",
+                (rolled_back.target_run_id,),
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -1495,9 +1508,7 @@ def test_fork_effect_snapshot_change_tombstones_reserved_child_atomically(
         "workflow:prepare_fork:after_workflow_fork_receipts_write",
     ),
 )
-def test_fork_prepare_each_write_fault_rolls_back(
-    tmp_path: Path, fault_label: str
-) -> None:
+def test_fork_prepare_each_write_fault_rolls_back(tmp_path: Path, fault_label: str) -> None:
     path = tmp_path / f"fork-prepare-{fault_label.rsplit(':', 1)[-1]}.db"
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
@@ -1511,18 +1522,22 @@ def test_fork_prepare_each_write_fault_rolls_back(
             asyncio.run(
                 _atomic(
                     uow,
-                    lambda tx: uow.prepare_fork(
-                        tx, request, snapshot, now=4.0, fault=fault
-                    ),
+                    lambda tx: uow.prepare_fork(tx, request, snapshot, now=4.0, fault=fault),
                 )
             )
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_fork_receipts WHERE fork_id='fork'"
-        ).fetchone()[0] == 0
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM runs WHERE state='reserved_fork'"
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_fork_receipts WHERE fork_id='fork'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE state='reserved_fork'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -1532,9 +1547,7 @@ def test_fork_prepare_each_write_fault_rolls_back(
         "workflow:checkpoint_fork:after_workflow_fork_receipts_write",
     ),
 )
-def test_fork_checkpoint_each_write_fault_rolls_back(
-    tmp_path: Path, fault_label: str
-) -> None:
+def test_fork_checkpoint_each_write_fault_rolls_back(tmp_path: Path, fault_label: str) -> None:
     path = tmp_path / f"fork-checkpoint-{fault_label.rsplit(':', 1)[-1]}.db"
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
@@ -1577,9 +1590,12 @@ def test_fork_checkpoint_each_write_fault_rolls_back(
             "SELECT phase,version,target_run_id FROM workflow_fork_receipts WHERE fork_id='fork'"
         ).fetchone()
         assert tuple(row[:2]) == ("claimed", 1)
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?", (row[2],)
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?", (row[2],)
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -1589,9 +1605,7 @@ def test_fork_checkpoint_each_write_fault_rolls_back(
         "workflow:commit_fork:after_workflow_fork_receipts_write",
     ),
 )
-def test_fork_commit_each_write_fault_rolls_back(
-    tmp_path: Path, fault_label: str
-) -> None:
+def test_fork_commit_each_write_fault_rolls_back(tmp_path: Path, fault_label: str) -> None:
     path = tmp_path / f"fork-commit-{fault_label.rsplit(':', 1)[-1]}.db"
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
@@ -1635,9 +1649,12 @@ def test_fork_commit_each_write_fault_rolls_back(
             "SELECT phase,target_run_id FROM workflow_fork_receipts WHERE fork_id='fork'"
         ).fetchone()
         assert row[0] == "checkpointed"
-        assert reopened.connection.execute(
-            "SELECT state FROM runs WHERE run_id=?", (row[1],)
-        ).fetchone()[0] == "reserved_fork"
+        assert (
+            reopened.connection.execute(
+                "SELECT state FROM runs WHERE run_id=?", (row[1],)
+            ).fetchone()[0]
+            == "reserved_fork"
+        )
 
 
 @pytest.mark.parametrize(
@@ -1667,9 +1684,7 @@ def test_cancel_request_fault_rolls_back_activation_and_receipt(
                     uow,
                     lambda tx: uow.request_cancel(
                         tx,
-                        CancelWorkflowRequest(
-                            "cancel-request-fault", receipt.run_id, "user", 0
-                        ),
+                        CancelWorkflowRequest("cancel-request-fault", receipt.run_id, "user", 0),
                         0,
                         activation,
                         now=3.0,
@@ -1678,18 +1693,31 @@ def test_cancel_request_fault_rolls_back_activation_and_receipt(
                 )
             )
     with Database.open(path) as reopened:
-        assert reopened.connection.execute(
-            "SELECT state FROM runs WHERE run_id=?", (receipt.run_id,)
-        ).fetchone()[0] == "created"
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_leases WHERE run_id=?", (receipt.run_id,)
-        ).fetchone()[0] == 2
-        assert reopened.connection.execute(
-            "SELECT state FROM run_fences WHERE run_id=?", (receipt.run_id,)
-        ).fetchone()[0] == "active"
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_cancel_receipts WHERE cancel_id='cancel-request-fault'"
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT state FROM runs WHERE run_id=?", (receipt.run_id,)
+            ).fetchone()[0]
+            == "created"
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_leases WHERE run_id=?", (receipt.run_id,)
+            ).fetchone()[0]
+            == 2
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT state FROM run_fences WHERE run_id=?", (receipt.run_id,)
+            ).fetchone()[0]
+            == "active"
+        )
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_cancel_receipts WHERE"
+                " cancel_id='cancel-request-fault'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -1699,9 +1727,7 @@ def test_cancel_request_fault_rolls_back_activation_and_receipt(
         "workflow:commit_recovery_outcome:after_workflow_recovery_receipts_write",
     ),
 )
-def test_recovery_outcome_each_write_fault_rolls_back(
-    tmp_path: Path, fault_label: str
-) -> None:
+def test_recovery_outcome_each_write_fault_rolls_back(tmp_path: Path, fault_label: str) -> None:
     path = tmp_path / f"recovery-{fault_label.rsplit(':', 1)[-1]}.db"
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
@@ -1739,9 +1765,12 @@ def test_recovery_outcome_each_write_fault_rolls_back(
                 "SELECT state,version FROM runs WHERE run_id=?", (receipt.run_id,)
             ).fetchone()
         ) == (snapshot.candidate.status, snapshot.candidate.run_version)
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_recovery_receipts"
-        ).fetchone()[0] == 0
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_recovery_receipts"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_resolved_recovery_claim_is_dedicated_fenced_and_reclaimable(
@@ -1752,11 +1781,15 @@ def test_resolved_recovery_claim_is_dedicated_fenced_and_reclaimable(
         uow = SqliteExecutionUnitOfWork(database)
         receipt, _activation = _admit_and_claim(uow)
         database.connection.execute(
-            "INSERT INTO reconciliation_resolutions(resolution_id,kind,ledger_identity,handoff_attempt,outcome,outcome_hash,evidence_ref,payload_json,created_at) VALUES('resolution','provider','invocation',1,'completed',?,'evidence','{}',3)",
+            "INSERT INTO"
+            " reconciliation_resolutions(resolution_id,kind,ledger_identity,handoff_attempt,outcome,outcome_hash,evidence_ref,payload_json,created_at)"  # noqa: E501
+            " VALUES('resolution','provider','invocation',1,'completed',?,'evidence','{}',3)",
             ("e" * 64,),
         )
         database.connection.execute(
-            "INSERT INTO run_wait_blockers(blocker_id,run_id,kind,ledger_identity,handoff_attempt,observed_version,resolution_id,wake_consumed,created_at,resolved_at,version) VALUES('blocker',?,'provider','invocation',1,1,'resolution',0,2,3,2)",
+            "INSERT INTO"
+            " run_wait_blockers(blocker_id,run_id,kind,ledger_identity,handoff_attempt,observed_version,resolution_id,wake_consumed,created_at,resolved_at,version)"  # noqa: E501
+            " VALUES('blocker',?,'provider','invocation',1,1,'resolution',0,2,3,2)",
             (receipt.run_id,),
         )
         database.connection.commit()
@@ -1786,9 +1819,12 @@ def test_resolved_recovery_claim_is_dedicated_fenced_and_reclaimable(
         first, reclaimed = asyncio.run(scenario())
         assert first.epoch == 1
         assert reclaimed.epoch == 2 and reclaimed.owner_id == "second"
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_cancel_receipts"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute("SELECT COUNT(*) FROM workflow_cancel_receipts").fetchone()[
+                0
+            ]
+            == 0
+        )
         assert tuple(
             database.connection.execute(
                 "SELECT owner_id,epoch FROM workflow_recovery_claims WHERE blocker_id='blocker'"

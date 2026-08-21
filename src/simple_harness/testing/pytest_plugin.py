@@ -87,15 +87,11 @@ def simple_harness_conformance_report(request: Any) -> ConformanceReport:
     factory = _factory(request)
     artifact_sha256 = request.config.getoption("--simple-harness-artifact-sha256")
     if not artifact_sha256:
-        raise pytest.UsageError(
-            "Conformance requires --simple-harness-artifact-sha256 SHA256"
-        )
+        raise pytest.UsageError("Conformance requires --simple-harness-artifact-sha256 SHA256")
     raw_suites = request.config.getoption("--simple-harness-suite")
     try:
         suites = validate_suite_names(tuple(item.strip() for item in raw_suites.split(",")))
-        report = asyncio.run(
-            run_conformance(factory, suites, artifact_sha256=artifact_sha256)
-        )
+        report = asyncio.run(run_conformance(factory, suites, artifact_sha256=artifact_sha256))
     except (TypeError, ValueError) as error:
         raise pytest.UsageError(f"Invalid conformance configuration: {error}") from error
     output = request.config.getoption("--simple-harness-json")

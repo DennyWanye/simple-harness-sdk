@@ -36,12 +36,23 @@ from simple_harness.workflow.errors import (
 def test_frozen_status_and_state_surface_is_not_reduced() -> None:
     assert {"cancel_requested", "cancelling"} <= {item.value for item in WorkflowRunStatus}
     assert {
-        "thread_id", "session_id", "active_step_id", "blob_refs", "artifact_refs",
-        "receipt_refs", "budgets",
+        "thread_id",
+        "session_id",
+        "active_step_id",
+        "blob_refs",
+        "artifact_refs",
+        "receipt_refs",
+        "budgets",
     } <= WorkflowState.__required_keys__
     assert {
-        "recursion_limit", "max_supersteps", "state_hash", "prompt_hash", "tool_hash",
-        "policy_hash", "callable_source_hash", "dependency_lock_hash",
+        "recursion_limit",
+        "max_supersteps",
+        "state_hash",
+        "prompt_hash",
+        "tool_hash",
+        "policy_hash",
+        "callable_source_hash",
+        "dependency_lock_hash",
     } <= {field.name for field in fields(WorkflowManifest)}
 
 
@@ -49,9 +60,7 @@ def test_definition_error_has_one_machine_readable_authority() -> None:
     from simple_harness.workflow.contracts import WorkflowDefinitionError
 
     assert WorkflowDefinitionError is ErrorVocabularyWorkflowDefinitionError
-    failure = WorkflowDefinitionError(
-        "invalid_definition", "invalid", details={"field": "entry"}
-    )
+    failure = WorkflowDefinitionError("invalid_definition", "invalid", details={"field": "entry"})
     assert isinstance(failure, WorkflowContractError)
     assert failure.code == "invalid_definition"
     assert failure.details == {"field": "entry"}
@@ -92,8 +101,14 @@ def test_pure_route_context_has_no_callable_or_live_port_surface() -> None:
     from simple_harness.workflow.contracts import PureRouteContext
 
     context = PureRouteContext(
-        "demo", "1", "run", "checkpoint", "task", "route",
-        {"logical_timestamp": 10.0, "value": "stable"}, 10.0,
+        "demo",
+        "1",
+        "run",
+        "checkpoint",
+        "task",
+        "route",
+        {"logical_timestamp": 10.0, "value": "stable"},
+        10.0,
     )
     assert not hasattr(context, "ports")
     assert not hasattr(context, "clock")
@@ -106,9 +121,7 @@ def test_pure_route_context_recursively_freezes_state() -> None:
     from simple_harness.workflow.contracts import PureRouteContext
 
     source = {"nested": {"items": [{"value": "frozen"}]}}
-    context = PureRouteContext(
-        "demo", "1", "run", "checkpoint", "task", "route", source, 10.0
-    )
+    context = PureRouteContext("demo", "1", "run", "checkpoint", "task", "route", source, 10.0)
     source["nested"]["items"][0]["value"] = "mutated"  # type: ignore[index]
     nested = context.state["nested"]
     assert isinstance(nested, Mapping)

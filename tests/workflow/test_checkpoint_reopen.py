@@ -43,31 +43,51 @@ def test_real_sqlite_native_checkpoint_reopens_without_copying_fake_state(
 ) -> None:
     workflow = compile_workflow(
         WorkflowDefinition(
-            "reopen", "1", 1, "node", (NodeDefinition("node", _node),), {}, 5, 4,
+            "reopen",
+            "1",
+            1,
+            "node",
+            (NodeDefinition("node", _node),),
+            {},
+            5,
+            4,
             edges=(Edge("node", "__end__"),),
         )
     )
     path = tmp_path / "execution.db"
     config = {
-        "run_id": "run-reopen", "thread_id": "thread", "checkpoint_ns": "native",
-        "workflow_name": "reopen", "workflow_version": "1",
-        "workflow_owner_id": "owner", "workflow_lease_epoch": 1,
+        "run_id": "run-reopen",
+        "thread_id": "thread",
+        "checkpoint_ns": "native",
+        "workflow_name": "reopen",
+        "workflow_version": "1",
+        "workflow_owner_id": "owner",
+        "workflow_lease_epoch": 1,
         "logical_timestamp": 2.0,
     }
     with Database.open(path) as database:
         uow = SqliteExecutionUnitOfWork(database)
         uow.create_with_start_snapshot(
-            execution_session_id="session", run_id="run-reopen", request_id="request",
-            profile_key="agent.general", driver_kind="workflow", snapshot={},
-            event_id="created", now=0.0,
+            execution_session_id="session",
+            run_id="run-reopen",
+            request_id="request",
+            profile_key="agent.general",
+            driver_kind="workflow",
+            snapshot={},
+            event_id="created",
+            now=0.0,
         )
         _run, lease = uow.claim_runtime_activation(
-            run_id="run-reopen", owner_id="owner", namespace="runtime.kernel", now=1.0,
+            run_id="run-reopen",
+            owner_id="owner",
+            namespace="runtime.kernel",
+            now=1.0,
             lease_ttl_seconds=30.0,
         )
         fence = asyncio.run(uow.acquire(RunId("run-reopen"), lease, now=1.0))
         database.connection.execute(
-            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at) VALUES('run-reopen','native','owner',?,?)",
+            "INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at)"
+            " VALUES('run-reopen','native','owner',?,?)",
             (lease.epoch, lease.expires_at),
         )
         database.connection.commit()
@@ -82,30 +102,37 @@ def test_real_sqlite_native_checkpoint_reopens_without_copying_fake_state(
             "workflow_namespace": "native",
             "workflow_epoch": lease.epoch,
         }
-        ports = WorkflowExecutionPorts(
-            uow, CheckpointExecutionAdapter(database), uow, uow, uow
-        )
+        ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(database), uow, uow, uow)
         store = SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences())
         result = asyncio.run(
             _native(workflow, store).ainvoke(
-                {}, WorkflowContext(), thread_id="thread", run_id="run-reopen",
-                checkpoint_ns="native", configurable=config,
+                {},
+                WorkflowContext(),
+                thread_id="thread",
+                run_id="run-reopen",
+                checkpoint_ns="native",
+                configurable=config,
             )
         )
         assert result == {}
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
-        ports = WorkflowExecutionPorts(
-            uow, CheckpointExecutionAdapter(reopened), uow, uow, uow
-        )
+        ports = WorkflowExecutionPorts(uow, CheckpointExecutionAdapter(reopened), uow, uow, uow)
         store = SqliteNativeCheckpointStore(ports, blob_references=NoBlobReferences())
         result = asyncio.run(
             _native(workflow, store).ainvoke(
-                None, WorkflowContext(), thread_id="thread", run_id="run-reopen",
-                checkpoint_ns="native", configurable=config,
+                None,
+                WorkflowContext(),
+                thread_id="thread",
+                run_id="run-reopen",
+                checkpoint_ns="native",
+                configurable=config,
             )
         )
         assert result == {}
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id='run-reopen'"
-        ).fetchone()[0] == 2
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id='run-reopen'"
+            ).fetchone()[0]
+            == 2
+        )

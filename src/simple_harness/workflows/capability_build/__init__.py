@@ -19,25 +19,18 @@ data contracts already defined in simple_harness.capabilities.builder_contracts.
 
 from __future__ import annotations
 
-__all__ = [
-    "WORKFLOW_PROFILE_KEY",
-    "WORKFLOW_NAME",
-    "WORKFLOW_VERSION",
-    "DEFAULT_PROPOSAL_BUDGET",
-    "DEFAULT_FIX_BUDGET",
-]
-
-WORKFLOW_PROFILE_KEY = "workflow.capability_build"
-WORKFLOW_NAME = "durable_task"
-WORKFLOW_VERSION = "capability_build_v1"
-DEFAULT_PROPOSAL_BUDGET = 40
-DEFAULT_FIX_BUDGET = 3
-
+from ._constants import (
+    DEFAULT_FIX_BUDGET,
+    DEFAULT_PROPOSAL_BUDGET,
+    WORKFLOW_NAME,
+    WORKFLOW_PROFILE_KEY,
+    WORKFLOW_VERSION,
+)
 from .factory import (
-    CapabilityBuildAdmission,
-    CapabilityBuildExecutionState,
     START_SCHEMA,
     START_SCHEMA_REF,
+    CapabilityBuildAdmission,
+    CapabilityBuildExecutionState,
     build_capability_build_definition,
     build_capability_build_registration,
     create_initial_state,
@@ -51,6 +44,14 @@ from .ports import (
     IsolatedBuildPort,
     PackageStorePort,
 )
+
+__all__ = [
+    "WORKFLOW_PROFILE_KEY",
+    "WORKFLOW_NAME",
+    "WORKFLOW_VERSION",
+    "DEFAULT_PROPOSAL_BUDGET",
+    "DEFAULT_FIX_BUDGET",
+]
 
 __all__ += [
     "CapabilityBuildAdmission",

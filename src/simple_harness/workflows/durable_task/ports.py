@@ -134,9 +134,7 @@ class FileInfo:
 
     __slots__ = ("path", "size", "modified_at", "checksum")
 
-    def __init__(
-        self, *, path: str, size: int, modified_at: float, checksum: str
-    ) -> None:
+    def __init__(self, *, path: str, size: int, modified_at: float, checksum: str) -> None:
         self.path = path
         self.size = size
         self.modified_at = modified_at
@@ -213,9 +211,7 @@ class CapabilityCatalogPort(Protocol):
 
     async def get_capability_source(self, name: str) -> str | None: ...
 
-    async def get_capability_policy(
-        self, name: str
-    ) -> Mapping[str, JsonValue] | None: ...
+    async def get_capability_policy(self, name: str) -> Mapping[str, JsonValue] | None: ...
 
 
 class WorkspacePort(Protocol):
@@ -233,9 +229,7 @@ class WorkspacePort(Protocol):
 class ArtifactPort(Protocol):
     """Optional evidence, testing, audit, and completion policy boundary."""
 
-    async def check_completion_evidence(
-        self, proposal_state: object, outcome: object
-    ) -> bool: ...
+    async def check_completion_evidence(self, proposal_state: object, outcome: object) -> bool: ...
 
     async def completion_decision(
         self, decision: Mapping[str, JsonValue], proposal_state: object
@@ -251,9 +245,7 @@ class ArtifactPort(Protocol):
 class AuthorizationPort(Protocol):
     """Commit an admission-issued authorization for one stable call."""
 
-    async def grant_authorization(
-        self, stable_call_id: str, authorization: object
-    ) -> None: ...
+    async def grant_authorization(self, stable_call_id: str, authorization: object) -> None: ...
 
 
 __all__ = [

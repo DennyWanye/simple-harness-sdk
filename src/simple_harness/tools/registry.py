@@ -62,9 +62,7 @@ class ToolRegistry:
 
     @property
     def calls(self) -> MappingProxyType[CallId, ToolCallState]:
-        return MappingProxyType(
-            {call_id: record.state for call_id, record in self._calls.items()}
-        )
+        return MappingProxyType({call_id: record.state for call_id, record in self._calls.items()})
 
     @property
     def sidecars(self) -> MappingProxyType[str, Sidecar]:
@@ -89,9 +87,7 @@ class ToolRegistry:
 
         if require_sidecars:
             missing = tuple(
-                name
-                for name, tool in sorted(self._tools.items())
-                if tool.spec.sidecar is None
+                name for name, tool in sorted(self._tools.items()) if tool.spec.sidecar is None
             )
             if missing:
                 raise ValueError(f"Tool sidecars are required: {missing}")
@@ -124,9 +120,7 @@ class ToolRegistry:
         try:
             validate_arguments(call.arguments, tool.spec.input_schema)
         except ArgumentsValidationError as exc:
-            raise MalformedToolArgumentsError(
-                f"{call.name} at {exc.path}: {exc.reason}"
-            ) from exc
+            raise MalformedToolArgumentsError(f"{call.name} at {exc.path}: {exc.reason}") from exc
         return tool
 
     async def invoke(
@@ -140,9 +134,7 @@ class ToolRegistry:
 
         tool = self.validate(call)
         if context.cancellation.cancelled:
-            return ToolResult.rejected(
-                call.call_id, "tool_cancelled", "Tool call was cancelled."
-            )
+            return ToolResult.rejected(call.call_id, "tool_cancelled", "Tool call was cancelled.")
         if call.call_id in self._calls:
             raise DuplicateToolCallError(call.call_id.value)
         trusted_context = replace(context, call_id=call.call_id)
@@ -179,14 +171,10 @@ class ToolRegistry:
                     retryable=result.retryable,
                 )
             elif result.call_id != call.call_id:
-                raise LateToolResultError(
-                    f"expected {call.call_id}, got {result.call_id}"
-                )
+                raise LateToolResultError(f"expected {call.call_id}, got {result.call_id}")
             return result
 
-        task = asyncio.create_task(
-            dispatch(), name=f"simple-harness-tool:{call.call_id}"
-        )
+        task = asyncio.create_task(dispatch(), name=f"simple-harness-tool:{call.call_id}")
         record = _CallRecord(ToolCallState.RUNNING, task)
         self._calls[call.call_id] = record
         cancellation_waiter = asyncio.create_task(context.cancellation.wait())

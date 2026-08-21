@@ -16,9 +16,7 @@ def _record(**changes: object) -> EffectRecord:
         "run_id": RunId("run-1"),
         "call_id": CallId("call-1"),
         "tool_name": "read_summary",
-        "request_hash": effect_request_hash(
-            tool_name="read_summary", arguments={"path": "."}
-        ),
+        "request_hash": effect_request_hash(tool_name="read_summary", arguments={"path": "."}),
         "arguments": {"path": "."},
         "state": EffectState.PREPARED,
         "version": 0,
@@ -79,12 +77,6 @@ def test_terminal_requires_matching_five_state_tool_result() -> None:
 def test_request_hash_binds_tool_name_and_arguments() -> None:
     original = effect_request_hash(tool_name="read", arguments={"path": "."})
 
-    assert original == effect_request_hash(
-        tool_name="read", arguments={"path": "."}
-    )
-    assert original != effect_request_hash(
-        tool_name="write", arguments={"path": "."}
-    )
-    assert original != effect_request_hash(
-        tool_name="read", arguments={"path": "other"}
-    )
+    assert original == effect_request_hash(tool_name="read", arguments={"path": "."})
+    assert original != effect_request_hash(tool_name="write", arguments={"path": "."})
+    assert original != effect_request_hash(tool_name="read", arguments={"path": "other"})

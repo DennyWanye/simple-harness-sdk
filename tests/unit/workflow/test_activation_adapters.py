@@ -73,18 +73,14 @@ def test_workflow_provider_adapter_forwards_exact_activation() -> None:
 
 def test_workflow_provider_adapter_rejects_request_for_another_run() -> None:
     """WorkflowProviderAdapter raises ValueError when run_id mismatches."""
-    adapter = WorkflowProviderAdapter(
-        _ProviderCoordinator(), _activation(), clock=lambda: 12.0
-    )
+    adapter = WorkflowProviderAdapter(_ProviderCoordinator(), _activation(), clock=lambda: 12.0)
     request = ProviderRequest(
         request_id=RequestId("request-1"),
         messages=(Message(role=MessageRole.USER, content="hello"),),
     )
 
     with pytest.raises(ValueError, match="does not match"):
-        asyncio.run(
-            adapter.invoke_for_run(RunId("run-2"), request, cancel=CancelToken())
-        )
+        asyncio.run(adapter.invoke_for_run(RunId("run-2"), request, cancel=CancelToken()))
 
 
 def test_workflow_effect_adapter_forwards_exact_activation() -> None:
@@ -123,9 +119,7 @@ def test_workflow_effect_adapter_forwards_exact_activation() -> None:
 
 def test_workflow_effect_adapter_rejects_context_for_another_run() -> None:
     """WorkflowEffectAdapter raises ValueError when context run_id mismatches."""
-    adapter = WorkflowEffectAdapter(
-        _EffectExecutor(), _activation(), clock=lambda: 12.0
-    )
+    adapter = WorkflowEffectAdapter(_EffectExecutor(), _activation(), clock=lambda: 12.0)
     call = ToolCall(CallId("call-1"), "tool-name", {})
     context = ToolContext(RunId("run-2"), RequestId("request-1"), {})
 

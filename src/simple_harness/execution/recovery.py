@@ -22,9 +22,7 @@ class ResolutionOutcome(StrEnum):
     CONFIRMED_NOT_STARTED = "confirmed_not_started"
 
 
-def recovery_identity(
-    kind: RecoveryKind, ledger_identity: str, handoff_attempt: int
-) -> str:
+def recovery_identity(kind: RecoveryKind, ledger_identity: str, handoff_attempt: int) -> str:
     if not ledger_identity.strip() or handoff_attempt < 1:
         raise ValueError("recovery identity requires ledger identity and attempt")
     return hashlib.sha256(

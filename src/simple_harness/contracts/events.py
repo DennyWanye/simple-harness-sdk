@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-import math
-from typing import Mapping
 
 from .errors import ContractValidationError, ErrorCode
 from .identity import CorrelationIds, EventId
@@ -41,9 +41,7 @@ class EventEnvelope:
 
     def __post_init__(self) -> None:
         if not isinstance(self.event_id, EventId):
-            raise ContractValidationError(
-                ErrorCode.INVALID_EVENT, "event_id must use EventId"
-            )
+            raise ContractValidationError(ErrorCode.INVALID_EVENT, "event_id must use EventId")
         try:
             kind = EventKind(self.kind)
         except (TypeError, ValueError) as error:
@@ -99,4 +97,3 @@ class EventEnvelope:
 
 
 __all__ = ("EventKind", "EventEnvelope")
-

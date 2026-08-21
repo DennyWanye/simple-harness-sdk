@@ -13,4 +13,3 @@ def test_builds_are_byte_for_byte_reproducible(
     second = {path.name: sha256(path) for path in reproducible_artifacts.second.iterdir()}
     assert first
     assert first == second
-

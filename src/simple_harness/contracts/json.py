@@ -7,18 +7,16 @@ from __future__ import annotations
 
 import json as _json
 import math
+from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Mapping, TypeAlias
+from typing import TypeAlias
 
 from .errors import ContractValidationError, ErrorCode
-
 
 JsonPrimitive: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
 FrozenJsonValue: TypeAlias = (
-    JsonPrimitive
-    | tuple["FrozenJsonValue", ...]
-    | Mapping[str, "FrozenJsonValue"]
+    JsonPrimitive | tuple["FrozenJsonValue", ...] | Mapping[str, "FrozenJsonValue"]
 )
 
 
@@ -71,9 +69,7 @@ def freeze_json(value: JsonValue) -> FrozenJsonValue:
 
     validate_json_value(value)
     if isinstance(value, dict):
-        return MappingProxyType(
-            {key: freeze_json(item) for key, item in value.items()}
-        )
+        return MappingProxyType({key: freeze_json(item) for key, item in value.items()})
     if isinstance(value, list):
         return tuple(freeze_json(item) for item in value)
     return value
@@ -96,6 +92,7 @@ def fingerprint_json(value: JsonValue) -> str:
     before hashing to ensure the fingerprint is stable across platforms.
     """
     import hashlib
+
     canonical = canonical_json(value)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -110,4 +107,3 @@ __all__ = (
     "thaw_json",
     "fingerprint_json",
 )
-

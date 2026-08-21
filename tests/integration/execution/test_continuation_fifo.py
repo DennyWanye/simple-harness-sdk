@@ -72,12 +72,7 @@ def test_enqueue_fault_reopens_all_before(tmp_path: Path, fault_point: str) -> N
         _enqueue(uow, "continuation-1", fault=_raise_at(fault_point))
     database.close()
     with Database.open(path) as reopened:
-        assert (
-            reopened.connection.execute(
-                "SELECT COUNT(*) FROM continuations"
-            ).fetchone()[0]
-            == 0
-        )
+        assert reopened.connection.execute("SELECT COUNT(*) FROM continuations").fetchone()[0] == 0
 
 
 def test_enqueue_after_commit_reopens_all_after(tmp_path: Path) -> None:
@@ -86,15 +81,10 @@ def test_enqueue_after_commit_reopens_all_after(tmp_path: Path) -> None:
     uow = SqliteExecutionUnitOfWork(database)
     _create(uow)
     with pytest.raises(InjectedFault, match="continuation_enqueue.after_commit"):
-        _enqueue(
-            uow, "continuation-1", fault=_raise_at("continuation_enqueue.after_commit")
-        )
+        _enqueue(uow, "continuation-1", fault=_raise_at("continuation_enqueue.after_commit"))
     database.close()
     with Database.open(path) as reopened:
-        assert (
-            _enqueue(SqliteExecutionUnitOfWork(reopened), "continuation-1").fifo_seq
-            == 1
-        )
+        assert _enqueue(SqliteExecutionUnitOfWork(reopened), "continuation-1").fifo_seq == 1
 
 
 @pytest.mark.parametrize(
@@ -188,9 +178,7 @@ def test_claim_after_commit_reopen_and_atomic_progress_preserve_fifo(
             now=105.0,
             lease_ttl_seconds=100.0,
         )
-        third = uow.claim_continuation(
-            run_id="run-1", execution_lease=resumed_lease, now=105.0
-        )
+        third = uow.claim_continuation(run_id="run-1", execution_lease=resumed_lease, now=105.0)
         assert third is not None and third.continuation_id == "continuation-3"
 
 

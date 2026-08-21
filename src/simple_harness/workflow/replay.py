@@ -130,9 +130,7 @@ class WorkflowReplay:
         self._clock = clock
         self.lease_ttl_seconds = lease_ttl_seconds
 
-    async def history(
-        self, run_id: str, *, limit: int | None = None
-    ) -> list[dict[str, JsonValue]]:
+    async def history(self, run_id: str, *, limit: int | None = None) -> list[dict[str, JsonValue]]:
         if limit is not None and limit < 0:
             raise ValueError("history limit cannot be negative")
         if self.execution_ports.unit_of_work.read_run(run_id) is None:
@@ -140,18 +138,18 @@ class WorkflowReplay:
         snapshots = await self.native_store.history(run_id=run_id, limit=limit)
         result: list[dict[str, JsonValue]] = []
         for snapshot in reversed(snapshots):
-            pending_writes = [
-                cast(JsonValue, item) for item in sorted(snapshot.node_writes)
-            ]
-            result.append({
-                "checkpoint_id": snapshot.checkpoint_id,
-                "checkpoint_ns": snapshot.checkpoint_ns,
-                "parent_checkpoint_id": snapshot.parent_checkpoint_id,
-                "state": snapshot.to_dict(),
-                "metadata": copy.deepcopy(dict(snapshot.metadata)),
-                "pending_writes": pending_writes,
-                "engine_kind": snapshot.engine_kind,
-            })
+            pending_writes = [cast(JsonValue, item) for item in sorted(snapshot.node_writes)]
+            result.append(
+                {
+                    "checkpoint_id": snapshot.checkpoint_id,
+                    "checkpoint_ns": snapshot.checkpoint_ns,
+                    "parent_checkpoint_id": snapshot.parent_checkpoint_id,
+                    "state": snapshot.to_dict(),
+                    "metadata": copy.deepcopy(dict(snapshot.metadata)),
+                    "pending_writes": pending_writes,
+                    "engine_kind": snapshot.engine_kind,
+                }
+            )
         return result
 
     @staticmethod
@@ -199,9 +197,7 @@ class WorkflowReplay:
         if not isinstance(run, RunRecord) or start is None:
             raise WorkflowReplayError("fork_source_not_found", "source run was not found")
         if run.driver_kind != "workflow" or run.version != expected_version:
-            raise WorkflowReplayError(
-                "fork_source_version_conflict", "source run identity changed"
-            )
+            raise WorkflowReplayError("fork_source_version_conflict", "source run identity changed")
         namespace = start.get("checkpoint_namespace")
         thread_id = start.get("thread_id")
         if not isinstance(namespace, str) or not isinstance(thread_id, str):
@@ -248,9 +244,7 @@ class WorkflowReplay:
         validate_json_value(detached_patch, path="$.state_patch")
         start_identity = self.execution_ports.unit_of_work.read_start_snapshot(run_id)
         namespace = (
-            start_identity.get("checkpoint_namespace")
-            if start_identity is not None
-            else None
+            start_identity.get("checkpoint_namespace") if start_identity is not None else None
         )
         if not isinstance(namespace, str):
             raise WorkflowReplayError(
@@ -265,9 +259,7 @@ class WorkflowReplay:
             state_patch=detached_patch,
         )
         if fork_key is not None and fork_key != calculated_key:
-            raise WorkflowReplayError(
-                "fork_key_mismatch", "fork key does not match the request"
-            )
+            raise WorkflowReplayError("fork_key_mismatch", "fork key does not match the request")
         fork_id = fork_key or calculated_key
         existing = self.execution_ports.replay.read_fork(fork_id)
         if existing is not None:
@@ -276,8 +268,7 @@ class WorkflowReplay:
                 or existing.request.source_namespace != namespace
                 or existing.request.source_checkpoint_id != checkpoint_id
                 or existing.request.source_run_version != expected_version
-                or canonical_json(dict(existing.request.patch))
-                != canonical_json(detached_patch)
+                or canonical_json(dict(existing.request.patch)) != canonical_json(detached_patch)
             ):
                 raise WorkflowReplayError(
                     "fork_request_conflict", "fork identity has another request"
@@ -285,12 +276,8 @@ class WorkflowReplay:
             if existing.phase is ForkPhase.COMMITTED:
                 return self._result(existing, created=False)
             if existing.phase is ForkPhase.ROLLED_BACK:
-                raise WorkflowReplayError(
-                    "fork_rolled_back", "fork request was rolled back"
-                )
-        run, start, source = await self._source(
-            run_id, checkpoint_id, expected_version
-        )
+                raise WorkflowReplayError("fork_rolled_back", "fork request was rolled back")
+        run, start, source = await self._source(run_id, checkpoint_id, expected_version)
         patch = self._validate_patch(detached_patch, source)
         workflow_name = start.get("workflow_name")
         workflow_version = start.get("workflow_version")
@@ -317,9 +304,7 @@ class WorkflowReplay:
             expected_implementation_hash=str(implementation),
         )
         if source.state_schema_version != entry.manifest.state_schema_version:
-            raise WorkflowReplayError(
-                "fork_state_schema_mismatch", "source state schema changed"
-            )
+            raise WorkflowReplayError("fork_state_schema_mismatch", "source state schema changed")
         snapshot = self.execution_ports.recovery.read_recovery_snapshot(run_id)
         if snapshot.candidate.run_version != run.version:
             raise WorkflowReplayError(
@@ -431,9 +416,7 @@ class WorkflowReplay:
                     "fork_source_changed", "source authority changed during fork"
                 )
         if receipt.phase is ForkPhase.CHECKPOINTED and lease.mode != "commit_only":
-            lease = replace(
-                lease, expected_receipt_version=receipt.version, mode="commit_only"
-            )
+            lease = replace(lease, expected_receipt_version=receipt.version, mode="commit_only")
 
         async def commit(transaction: WorkflowTransaction) -> ForkReceipt:
             return await self.execution_ports.replay.commit_fork(
@@ -468,9 +451,7 @@ class WorkflowReplay:
                 receipt.claim_epoch,
                 receipt.claim_expires_at,
                 receipt.version,
-                "commit_only"
-                if receipt.phase is ForkPhase.CHECKPOINTED
-                else "write",
+                "commit_only" if receipt.phase is ForkPhase.CHECKPOINTED else "write",
             )
 
         async def claim(transaction: WorkflowTransaction) -> ForkWriteLease:

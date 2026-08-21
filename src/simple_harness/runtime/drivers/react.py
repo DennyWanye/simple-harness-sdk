@@ -14,6 +14,7 @@ from typing import cast
 from simple_harness.contracts import (
     CallId,
     FrozenJsonValue,
+    JsonValue,
     RequestId,
     RunId,
     canonical_json,
@@ -53,6 +54,22 @@ from .react_loop import (
 )
 
 
+def _optional_float(value: object, field: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{field} must be numeric")
+    return float(value)
+
+
+def _optional_int(value: object, field: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field} must be an integer")
+    return value
+
+
 class ReActDriver:
     def __init__(
         self,
@@ -73,9 +90,7 @@ class ReActDriver:
         self.policy_fingerprint = policy_fingerprint
         self.provider_budget_fingerprint = provider_budget_fingerprint
 
-    async def start(
-        self, invocation: DriverInvocation, *, context, cancel
-    ) -> DriverResult:
+    async def start(self, invocation: DriverInvocation, *, context, cancel) -> DriverResult:
         if context is not invocation.services.context:
             raise ValueError("Runtime context service mismatch")
         expected_budget = invocation.start.provider_budget_fingerprint
@@ -94,15 +109,11 @@ class ReActDriver:
         if ready is not None:
             coordinator = invocation.services.workflow_spawn
             if coordinator is None:
-                raise RuntimeError(
-                    "workflow spawn ready activation lacks its SDK coordinator"
-                )
+                raise RuntimeError("workflow spawn ready activation lacks its SDK coordinator")
             outcome = await coordinator.continue_ready(ready)
             if isinstance(outcome, WorkflowSpawnFailed):
                 return await self.start(
-                    replace(
-                        invocation, workflow_spawn_ready_activation=None
-                    ),
+                    replace(invocation, workflow_spawn_ready_activation=None),
                     context=context,
                     cancel=cancel,
                 )
@@ -110,9 +121,7 @@ class ReActDriver:
                 RunState.WAITING,
                 {
                     "workflow_spawn_child_run_id": outcome.child_start_ref.child_run_id,
-                    "workflow_spawn_wait_receipt_id": (
-                        outcome.suspension.parent_wait_receipt_id
-                    ),
+                    "workflow_spawn_wait_receipt_id": (outcome.suspension.parent_wait_receipt_id),
                 },
                 workflow_spawn_control=outcome,
             )
@@ -123,9 +132,7 @@ class ReActDriver:
             payload = None if stored is None else thaw_json(stored.checkpoint)
             if isinstance(payload, dict) and payload.get("phase") == "child_wait":
                 if len(invocation.continuations) != 1:
-                    raise RuntimeError(
-                        "workflow child wait requires exactly one continuation"
-                    )
+                    raise RuntimeError("workflow child wait requires exactly one continuation")
                 invocation.services.react_checkpoint.ack_spawn_child_continuation_and_continue_batch(
                     run_id=invocation.run.run_id,
                     continuation_claim=invocation.continuations[0],
@@ -142,16 +149,12 @@ class ReActDriver:
                 conversation_value = continuation_payload.get("conversation")
                 if not isinstance(conversation_value, dict):
                     raise TypeError("conversation continuation envelope is required")
-                conversation = ConversationContinuationInput.from_json(
-                    conversation_value
-                )
+                conversation = ConversationContinuationInput.from_json(conversation_value)
                 continuation_messages = _continuation_prepared_messages(
                     continuation_payload.get("prepared_context"),
                     current_message=conversation.message,
                 )
-                current_context = invocation.services.context.load(
-                    RunId(invocation.run.run_id)
-                )
+                current_context = invocation.services.context.load(RunId(invocation.run.run_id))
                 invocation.services.context.append(
                     RunId(invocation.run.run_id),
                     invocation.execution_lease,
@@ -161,27 +164,19 @@ class ReActDriver:
                 )
         input_value = cast(Mapping[str, object], invocation.start.input)
         prepared_context = invocation.start.prepared_context
-        prepared_value = (
-            None if prepared_context is None else thaw_json(prepared_context)
-        )
+        prepared_value = None if prepared_context is None else thaw_json(prepared_context)
         prepared_messages = (
-            prepared_value.get("provider_messages")
-            if isinstance(prepared_value, dict)
-            else None
+            prepared_value.get("provider_messages") if isinstance(prepared_value, dict) else None
         )
         initial = _messages(
-            input_value.get("messages")
-            if prepared_messages is None
-            else prepared_messages
+            input_value.get("messages") if prepared_messages is None else prepared_messages
         )
         if invocation.start.conversation is not None and (
             not initial
             or canonical_json(initial[-1].to_dict())
             != canonical_json(invocation.start.conversation.message.to_dict())
         ):
-            raise ValueError(
-                "prepared current message differs from conversation envelope"
-            )
+            raise ValueError("prepared current message differs from conversation envelope")
         tools = _tools(
             input_value.get("capability_snapshot"),
             invocation.services.tools,
@@ -195,15 +190,9 @@ class ReActDriver:
                     RunId(invocation.run.run_id),
                     RequestId(invocation.run.request_id),
                     tools=tools,
-                    temperature=(
-                        None
-                        if input_value.get("temperature") is None
-                        else float(input_value["temperature"])
-                    ),
-                    max_output_tokens=(
-                        None
-                        if input_value.get("max_output_tokens") is None
-                        else int(input_value["max_output_tokens"])
+                    temperature=_optional_float(input_value.get("temperature"), "temperature"),
+                    max_output_tokens=_optional_int(
+                        input_value.get("max_output_tokens"), "max_output_tokens"
                     ),
                 ),
                 services=invocation.services,
@@ -310,9 +299,7 @@ def _messages(value: object) -> tuple[Message, ...]:
         normalized_content: MessageContent
         if isinstance(content, (list, tuple)):
             blocks = tuple(
-                ContentBlock.from_dict(block)
-                for block in content
-                if isinstance(block, Mapping)
+                ContentBlock.from_dict(block) for block in content if isinstance(block, Mapping)
             )
             if len(blocks) != len(content):
                 raise TypeError("ReAct structured content blocks must be objects")
@@ -353,9 +340,7 @@ def _continuation_prepared_messages(
     if len(messages) < 2 or canonical_json(messages[-1].to_dict()) != canonical_json(
         current_message.to_dict()
     ):
-        raise ValueError(
-            "prepared continuation current message differs from conversation envelope"
-        )
+        raise ValueError("prepared continuation current message differs from conversation envelope")
     for message in messages[:-1]:
         metadata = thaw_json(cast(FrozenJsonValue, message.metadata))
         if (
@@ -363,9 +348,7 @@ def _continuation_prepared_messages(
             or not isinstance(metadata, dict)
             or metadata.get("trust") != "untrusted_data"
         ):
-            raise ValueError(
-                "prepared continuation memory must remain USER/untrusted data"
-            )
+            raise ValueError("prepared continuation memory must remain USER/untrusted data")
     return messages
 
 
@@ -382,9 +365,7 @@ def _tools(
     if not isinstance(value, Mapping):
         raise TypeError("capability_snapshot must be an object")
     names = value.get("tools", ())
-    if not isinstance(names, (list, tuple)) or not all(
-        isinstance(name, str) for name in names
-    ):
+    if not isinstance(names, (list, tuple)) or not all(isinstance(name, str) for name in names):
         raise TypeError("capability_snapshot.tools must contain strings")
     if fingerprint is not None:
         resolver = getattr(catalog, "resolve", None)
@@ -427,7 +408,7 @@ def build_react_driver(
         "provider_budget_fingerprint": provider_fingerprint,
     }
     policy_fingerprint = hashlib.sha256(
-        canonical_json(policy_payload).encode("utf-8")
+        canonical_json(cast(JsonValue, policy_payload)).encode("utf-8")
     ).hexdigest()
     return ReActDriver(
         collaborator=AgentLoopCollaborator(limits=limits),

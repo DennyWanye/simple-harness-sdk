@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-import time
 import logging
 import secrets
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import cast
@@ -20,8 +20,6 @@ from simple_harness.contracts import (
     RunId,
     thaw_json,
 )
-
-logger = logging.getLogger(__name__)
 from simple_harness.execution.effects import (
     EffectRecord,
     EffectState,
@@ -53,6 +51,8 @@ from .reconciliation import (
     ToolReconciliationPort,
 )
 from .registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,9 +92,7 @@ class EffectExecutor:
         self._reconciliation = reconciliation
         self._clock = clock
 
-    def provider_tool_specs(
-        self, names: tuple[str, ...]
-    ) -> tuple[ProviderToolSpec, ...]:
+    def provider_tool_specs(self, names: tuple[str, ...]) -> tuple[ProviderToolSpec, ...]:
         """Project an allowlisted capability snapshot into Provider declarations."""
 
         requested = set(names)
@@ -181,9 +179,7 @@ class EffectExecutor:
             raise TypeError("authorization resources must be an array")
         resources: list[ToolResource] = []
         for raw in resources_raw:
-            if not isinstance(raw, Mapping) or not isinstance(
-                raw.get("actions"), (list, tuple)
-            ):
+            if not isinstance(raw, Mapping) or not isinstance(raw.get("actions"), (list, tuple)):
                 raise TypeError("authorization resource is malformed")
             resources.append(
                 ToolResource(
@@ -225,10 +221,7 @@ class EffectExecutor:
             or execution_lease.namespace != RUNTIME_LEASE_NAMESPACE
         ):
             raise ValueError("Tool execution lease belongs to another Run")
-        if (
-            run_fence.run_id != context.run_id
-            or run_fence.owner_id != execution_lease.owner_id
-        ):
+        if run_fence.run_id != context.run_id or run_fence.owner_id != execution_lease.owner_id:
             raise ValueError("Tool Run fence differs from runtime lease")
         trusted_context = replace(
             context,
@@ -273,8 +266,7 @@ class EffectExecutor:
                 )
                 if (
                     not_started_resolution is None
-                    or not_started_resolution.outcome
-                    is not ResolutionOutcome.CONFIRMED_NOT_STARTED
+                    or not_started_resolution.outcome is not ResolutionOutcome.CONFIRMED_NOT_STARTED
                 ):
                     return EffectExecution(
                         reconciled,
@@ -285,9 +277,7 @@ class EffectExecutor:
                     )
             elif existing.state is EffectState.PREPARED:
                 refresh_prepared_authority = True
-        prepared = await self._prepared(
-            effect_id=effect_id, call=call, context=trusted_context
-        )
+        prepared = await self._prepared(effect_id=effect_id, call=call, context=trusted_context)
         logger.info(
             "tool.invoked",
             extra={"tool": call.name, "args_keys": list(arguments)[:20]},
@@ -301,9 +291,7 @@ class EffectExecutor:
             if durable_decision.run_id != context.run_id.value:
                 raise ValueError("authorization decision belongs to another Run")
             if durable_decision.state is DecisionState.OPEN:
-                raise ToolAuthorizationPending(
-                    prepared, _authorization_request(durable_decision)
-                )
+                raise ToolAuthorizationPending(prepared, _authorization_request(durable_decision))
             if durable_decision.state is DecisionState.ALLOWED:
                 response = durable_decision.response
                 if not isinstance(response, Mapping):
@@ -336,7 +324,10 @@ class EffectExecutor:
             authorization = await prepare(prepared)
         else:
             authorization = None
-        if authorization is not None and authorization.decision is AuthorizationDecision.REQUIRE_USER:
+        if (
+            authorization is not None
+            and authorization.decision is AuthorizationDecision.REQUIRE_USER
+        ):
             assert authorization.request is not None
             request = AuthorizationRequest(
                 prompt=authorization.request.prompt,
@@ -359,8 +350,7 @@ class EffectExecutor:
                 result=ToolResult.rejected(
                     call.call_id,
                     authorization.reason_code or "authorization_denied",
-                    authorization.public_message
-                    or "Tool execution was not authorized.",
+                    authorization.public_message or "Tool execution was not authorized.",
                 ),
             )
         if authorization is not None:
@@ -425,9 +415,7 @@ class EffectExecutor:
         host_handoff_receipt = await handoff_binder(
             prepared, authorization_receipt_ref, sdk_handoff_receipt
         )
-        handoff_receipt_ref = bind_authorization_receipts(
-            sdk_handoff_receipt, host_handoff_receipt
-        )
+        handoff_receipt_ref = bind_authorization_receipts(sdk_handoff_receipt, host_handoff_receipt)
         handed_off = self._uow.mark_effect_handed_off(
             effect_id,
             expected_version=record.version,
@@ -441,9 +429,7 @@ class EffectExecutor:
             result = await self._registry.invoke(
                 call,
                 trusted_context,
-                accepted_result_call_id=(
-                    None if raw_call_id is None else CallId(raw_call_id)
-                ),
+                accepted_result_call_id=(None if raw_call_id is None else CallId(raw_call_id)),
             )
         except BaseException:
             self._uow.mark_effect_unknown(
@@ -451,8 +437,7 @@ class EffectExecutor:
                 expected_version=handed_off.version,
                 expected_fence_epoch=run_fence.epoch,
                 evidence_ref=(
-                    f"tool-dispatch-interrupted:{context.run_id.value}:"
-                    f"{effect_id.value}"
+                    f"tool-dispatch-interrupted:{context.run_id.value}:{effect_id.value}"
                 ),
                 now=self._clock(),
             )
@@ -471,9 +456,7 @@ class EffectExecutor:
             expected_version=handed_off.version,
             expected_fence_epoch=run_fence.epoch,
             result=result,
-            evidence_ref=(
-                f"tool-handler-result:{context.run_id.value}:{effect_id.value}"
-            ),
+            evidence_ref=(f"tool-handler-result:{context.run_id.value}:{effect_id.value}"),
             now=self._clock(),
         )
         logger.info(

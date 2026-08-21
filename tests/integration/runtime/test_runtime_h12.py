@@ -31,9 +31,7 @@ class ContinuationDriver:
     async def start(self, invocation, *, context, cancel):
         del context, cancel
         continuation_id = (
-            None
-            if not invocation.continuations
-            else invocation.continuations[0].continuation_id
+            None if not invocation.continuations else invocation.continuations[0].continuation_id
         )
         self.seen.append(continuation_id)
         if continuation_id == "continuation-2":
@@ -66,10 +64,7 @@ def test_two_queued_continuations_auto_drain_then_terminal_and_quarantine(
         assert uow.read_run("run-continuations").state is RunState.COMPLETED  # type: ignore[union-attr]
         assert uow.read_continuation("continuation-1").state is ContinuationState.ACKED  # type: ignore[union-attr]
         assert uow.read_continuation("continuation-2").state is ContinuationState.ACKED  # type: ignore[union-attr]
-        assert (
-            uow.read_continuation("continuation-3").state
-            is ContinuationState.QUARANTINED
-        )  # type: ignore[union-attr]
+        assert uow.read_continuation("continuation-3").state is ContinuationState.QUARANTINED  # type: ignore[union-attr]
         await value.close()
         database.close()
 

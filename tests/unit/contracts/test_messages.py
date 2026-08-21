@@ -51,4 +51,3 @@ def test_unknown_roles_are_stable_contract_errors(role: object) -> None:
     with pytest.raises(ContractValidationError) as error:
         Message(role=role, content="hello")  # type: ignore[arg-type]
     assert error.value.code == "invalid_message"
-

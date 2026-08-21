@@ -77,9 +77,7 @@ class DeliveryConflictError(RuntimeError):
 
 
 class DeliverySink(Protocol):
-    async def deliver(
-        self, payload: Mapping[str, JsonValue], *, idempotency_key: str
-    ) -> None: ...
+    async def deliver(self, payload: Mapping[str, JsonValue], *, idempotency_key: str) -> None: ...
 
 
 class DeliveryUnitOfWork(Protocol):

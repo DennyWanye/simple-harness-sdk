@@ -13,11 +13,8 @@ Validates:
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
-from simple_harness.contracts import JsonValue
 from simple_harness.workflow.contracts import (
     StatePatch,
     WorkflowContext,
@@ -27,9 +24,7 @@ from simple_harness.workflows.durable_task import create_definition, create_init
 
 
 # Handlers that trigger interrupts for testing
-async def _interrupt_clarify(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _interrupt_clarify(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Clarify handler that interrupts if clarification required."""
     if state["values"].get("clarification_required", False):
         # Simulate asking for clarification - return interrupt patch directly
@@ -42,9 +37,7 @@ async def _interrupt_clarify(
     return {"values": {"clarification_done": True}}
 
 
-async def _interrupt_wait_approval(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _interrupt_wait_approval(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Wait approval handler that interrupts if approval required."""
     if state["values"].get("approval_required", True):
         # Check if user has provided approval decision
@@ -59,9 +52,7 @@ async def _interrupt_wait_approval(
     return {"values": {"approval_done": True}}
 
 
-async def _interrupt_tool_execution(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _interrupt_tool_execution(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     """Tool execution handler that interrupts for authorization."""
     # Check if tools need authorization
     tool_calls = state["values"].get("pending_tool_calls", [])
@@ -77,21 +68,15 @@ async def _interrupt_tool_execution(
 
 
 # Non-interrupting handlers
-async def _simple_intake(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _simple_intake(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     return {"values": {"intake_done": True}}
 
 
-async def _simple_plan(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _simple_plan(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     return {"values": {"plan_done": True}}
 
 
-async def _simple_llm_proposal(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _simple_llm_proposal(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     current = state.get("loop_counters", {}).get("proposal_turns", 0)
     return {
         "values": {"proposal_done": True},
@@ -99,21 +84,15 @@ async def _simple_llm_proposal(
     }
 
 
-async def _simple_completion_decision(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _simple_completion_decision(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     return {"values": {"decision_done": True}}
 
 
-async def _simple_test(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _simple_test(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     return {"values": {"test_done": True}}
 
 
-async def _simple_audit(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _simple_audit(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     current = state.get("loop_counters", {}).get("fix_rounds", 0)
     return {
         "values": {"audit_done": True},
@@ -121,21 +100,15 @@ async def _simple_audit(
     }
 
 
-async def _simple_finalize(
-    state: WorkflowState, context: WorkflowContext
-) -> StatePatch:
+async def _simple_finalize(state: WorkflowState, context: WorkflowContext) -> StatePatch:
     return {"values": {"finalize_done": True}}
 
 
-async def _route_approved(
-    state: WorkflowState, context: WorkflowContext
-) -> str:
+async def _route_approved(state: WorkflowState, context: WorkflowContext) -> str:
     return "approved"
 
 
-async def _route_finalize(
-    state: WorkflowState, context: WorkflowContext
-) -> str:
+async def _route_finalize(state: WorkflowState, context: WorkflowContext) -> str:
     return "finalize"
 
 
@@ -161,9 +134,7 @@ def interrupt_definition():  # type: ignore[no-untyped-def]
 
 def test_clarification_interrupt_structure(interrupt_definition):  # type: ignore[no-untyped-def]
     """Verify clarify node is configured for interrupts."""
-    clarify_node = next(
-        n for n in interrupt_definition.nodes if n.node_id == "clarify"
-    )
+    clarify_node = next(n for n in interrupt_definition.nodes if n.node_id == "clarify")
     assert clarify_node.interrupt_capable is True
     assert clarify_node.barrier is True
     assert clarify_node.exclusive_superstep is True
@@ -172,9 +143,7 @@ def test_clarification_interrupt_structure(interrupt_definition):  # type: ignor
 
 def test_approval_interrupt_structure(interrupt_definition):  # type: ignore[no-untyped-def]
     """Verify wait_approval node is configured for interrupts."""
-    approval_node = next(
-        n for n in interrupt_definition.nodes if n.node_id == "wait_approval"
-    )
+    approval_node = next(n for n in interrupt_definition.nodes if n.node_id == "wait_approval")
     assert approval_node.interrupt_capable is True
     assert approval_node.barrier is True
     assert approval_node.exclusive_superstep is True
@@ -183,9 +152,7 @@ def test_approval_interrupt_structure(interrupt_definition):  # type: ignore[no-
 
 def test_tool_execution_interrupt_structure(interrupt_definition):  # type: ignore[no-untyped-def]
     """Verify tool_execution node is configured for interrupts."""
-    tool_node = next(
-        n for n in interrupt_definition.nodes if n.node_id == "tool_execution"
-    )
+    tool_node = next(n for n in interrupt_definition.nodes if n.node_id == "tool_execution")
     assert tool_node.interrupt_capable is True
     assert tool_node.barrier is True
     assert tool_node.exclusive_superstep is True

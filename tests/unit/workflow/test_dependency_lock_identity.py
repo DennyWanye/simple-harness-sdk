@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
 import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -36,9 +36,7 @@ def test_embedded_dependency_identity_matches_repository_lock() -> None:
 
 def test_dependency_identity_seams_fail_closed(tmp_path: Path) -> None:
     definition = build_durable_task_definition()
-    compiled = compile_workflow(
-        definition, dependency_lock_hash=SDK_DEPENDENCY_LOCK_HASH
-    )
+    compiled = compile_workflow(definition, dependency_lock_hash=SDK_DEPENDENCY_LOCK_HASH)
     assert compiled.manifest.dependency_lock_hash == SDK_DEPENDENCY_LOCK_HASH
 
     with pytest.raises(ValueError, match="lowercase SHA-256"):
@@ -53,9 +51,7 @@ def test_dependency_identity_seams_fail_closed(tmp_path: Path) -> None:
         compile_workflow(definition, dependency_lock_path=tmp_path / "missing.lock")
 
     owner = object()
-    registration = build_durable_task_registration(
-        generation=1, transaction_owner=owner
-    )
+    registration = build_durable_task_registration(generation=1, transaction_owner=owner)
     other_lock = tmp_path / "other.lock"
     other_lock.write_text("different dependency graph", encoding="utf-8")
     with pytest.raises(ValueError, match="dependency lock hash mismatch"):
@@ -65,16 +61,12 @@ def test_dependency_identity_seams_fail_closed(tmp_path: Path) -> None:
             dependency_lock_path=other_lock,
         )
 
-    custom_compiled = compile_workflow(
-        definition, dependency_lock_path=other_lock
-    )
+    custom_compiled = compile_workflow(definition, dependency_lock_path=other_lock)
     custom_registration = replace(
         registration,
         dependency_lock_hash=custom_compiled.manifest.dependency_lock_hash,
         expected_manifest_hash=workflow_manifest_hash(custom_compiled.manifest),
-        expected_implementation_fingerprint=(
-            custom_compiled.manifest.implementation_bundle_hash
-        ),
+        expected_implementation_fingerprint=(custom_compiled.manifest.implementation_bundle_hash),
     )
     custom_registry = WorkflowRegistry(transaction_owner=owner)
     custom_registry.register_definition(custom_registration)

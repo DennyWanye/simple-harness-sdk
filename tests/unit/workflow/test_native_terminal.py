@@ -111,9 +111,12 @@ def test_legacy_projection_has_exact_canonical_shape() -> None:
 
 
 def test_no_terminal_status_emits_no_intent() -> None:
-    assert NativeWorkflowExecutable.terminal_intents(
-        {}, run_id="run-1", status=None, error=None, recovery_action=None
-    ) == ()
+    assert (
+        NativeWorkflowExecutable.terminal_intents(
+            {}, run_id="run-1", status=None, error=None, recovery_action=None
+        )
+        == ()
+    )
 
 
 @pytest.mark.parametrize("status", ("", "running", "waiting"))

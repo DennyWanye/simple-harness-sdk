@@ -157,9 +157,7 @@ def response(content: str, *, tool: bool = False) -> ProviderResponse:
     return ProviderResponse(
         request_id=RequestId("fixture-response"),
         message=Message(role=MessageRole.ASSISTANT, content=content),
-        tool_calls=(ProviderToolCall(CallId("call-1"), "calculator", {"x": 1}),)
-        if tool
-        else (),
+        tool_calls=(ProviderToolCall(CallId("call-1"), "calculator", {"x": 1}),) if tool else (),
         model="model-1",
         finish_reason="tool_calls" if tool else "stop",
     )

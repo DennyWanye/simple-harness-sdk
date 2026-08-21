@@ -70,7 +70,11 @@ from simple_harness.workflow.native import (
 
 class _NoBlobReferences:
     async def validate_references(
-        self, transaction, *, blob_refs, **identity  # type: ignore[no-untyped-def]
+        self,
+        transaction,
+        *,
+        blob_refs,
+        **identity,  # type: ignore[no-untyped-def]
     ) -> None:
         del transaction, identity
         if blob_refs:
@@ -123,9 +127,7 @@ def _create_run(uow: SqliteExecutionUnitOfWork, run_id: str) -> dict[str, object
 
     async def admit_and_claim():  # type: ignore[no-untyped-def]
         admitted = await uow.run_atomic(
-            lambda transaction: uow.admit_start_standalone(
-                transaction, request, now=0.0
-            ),
+            lambda transaction: uow.admit_start_standalone(transaction, request, now=0.0),
             fault_label="test:admit_start",
         )
         return await uow.run_atomic(
@@ -173,7 +175,9 @@ def _apply_workflow_activation(config, activation):  # type: ignore[no-untyped-d
 
 
 def _store(
-    database: Database, *, fault=None  # type: ignore[no-untyped-def]
+    database: Database,
+    *,
+    fault=None,  # type: ignore[no-untyped-def]
 ) -> tuple[SqliteExecutionUnitOfWork, SqliteNativeCheckpointStore]:
     uow = SqliteExecutionUnitOfWork(database, workflow_fault=fault)
     ports = WorkflowExecutionPorts(
@@ -183,9 +187,7 @@ def _store(
         recovery=uow,
         replay=uow,
     )
-    return uow, SqliteNativeCheckpointStore(
-        ports, blob_references=_NoBlobReferences()
-    )
+    return uow, SqliteNativeCheckpointStore(ports, blob_references=_NoBlobReferences())
 
 
 def _claim_resume(
@@ -247,8 +249,7 @@ def _claim_resume(
     activation = claimed.activation
     assert activation is not None
     runtime_row = uow.database.connection.execute(
-        "SELECT owner_id,epoch,expires_at FROM workflow_leases "
-        "WHERE run_id=? AND namespace=?",
+        "SELECT owner_id,epoch,expires_at FROM workflow_leases WHERE run_id=? AND namespace=?",
         (run_id, activation.execution_lease.namespace),
     ).fetchone()
     assert runtime_row is not None
@@ -317,21 +318,30 @@ def test_real_sqlite_linear_close_reopen_preserves_terminal_checkpoint(
         uow, store = _store(database)
         config = _create_run(uow, "sqlite-linear")
         assert _invoke(_native(workflow, store), {}, config) == {"answer": "durable"}
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?",
-            (config["run_id"],),
-        ).fetchone()[0] == 2
-        assert database.connection.execute(
-            "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.final'",
-            (config["run_id"],),
-        ).fetchone()[0] == 1
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?",
+                (config["run_id"],),
+            ).fetchone()[0]
+            == 2
+        )
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.final'",
+                (config["run_id"],),
+            ).fetchone()[0]
+            == 1
+        )
     with Database.open(path) as reopened:
         _uow, store = _store(reopened)
         assert _invoke(_native(workflow, store), None, config) == {"answer": "durable"}
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.final'",
-            (config["run_id"],),
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM run_events WHERE run_id=? AND kind='workflow.final'",
+                (config["run_id"],),
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_real_sqlite_reopen_rejects_frozen_time_authority_drift(tmp_path: Path) -> None:
@@ -375,10 +385,13 @@ def test_real_sqlite_reopen_rejects_frozen_time_authority_drift(tmp_path: Path) 
         _uow, store = _store(reopened)
         with pytest.raises(Exception, match="time|logical_timestamp"):
             _invoke(_native(workflow, store), None, drifted)
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?",
-            (config["run_id"],),
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_checkpoints WHERE run_id=?",
+                (config["run_id"],),
+            ).fetchone()[0]
+            == 1
+        )
     assert calls == 1
 
 
@@ -451,9 +464,7 @@ def test_real_sqlite_retry_and_deterministic_join_survive_reopen(tmp_path: Path)
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            raise WorkflowNodeError(
-                code=WorkflowErrorCode.RETRYABLE_TOOL, message_ref="retry"
-            )
+            raise WorkflowNodeError(code=WorkflowErrorCode.RETRYABLE_TOOL, message_ref="retry")
         return StatePatch({})
 
     async def branch(_state, _context):  # type: ignore[no-untyped-def]
@@ -505,7 +516,8 @@ def test_real_sqlite_retry_and_deterministic_join_survive_reopen(tmp_path: Path)
         result = _invoke(_native(workflow, store), None, config)
         assert isinstance(result, Mapping) and result["answer"] == "joined"
         rows = reopened.connection.execute(
-            "SELECT checkpoint_json FROM workflow_checkpoints WHERE run_id=? ORDER BY version DESC LIMIT 1",
+            "SELECT checkpoint_json FROM workflow_checkpoints WHERE run_id=? ORDER BY version DESC"
+            " LIMIT 1",
             (config["run_id"],),
         ).fetchone()
         assert rows is not None and '"join_firings"' in str(rows[0])
@@ -549,9 +561,7 @@ def test_real_sqlite_bounded_cycle_and_parallel_frontier_are_deterministic(
     with Database.open(path) as database:
         uow, store = _store(database)
         config = _create_run(uow, "sqlite-cycle")
-        result = _invoke(
-            _native(cycle, store), {"loop_counters": {"loop": 0}}, config
-        )
+        result = _invoke(_native(cycle, store), {"loop_counters": {"loop": 0}}, config)
         assert isinstance(result, Mapping)
         assert result["loop_counters"] == {"loop": 2}
     with Database.open(path) as reopened:
@@ -621,12 +631,12 @@ def test_real_sqlite_terminal_delivery_frontier_after_commit_does_not_replay(
             {
                 "values": {
                     "delivery_intents": [
-                    {
-                        "intent_id": "answer",
-                        "kind": "assistant",
-                        "channel": "chat",
-                        "payload": {"answer": "once"},
-                    }
+                        {
+                            "intent_id": "answer",
+                            "kind": "assistant",
+                            "channel": "chat",
+                            "payload": {"answer": "once"},
+                        }
                     ]
                 }
             }
@@ -770,9 +780,7 @@ def test_real_sqlite_failures_are_durable_and_reopen_without_node_replay(
         nonlocal calls
         calls += 1
         if mode == "permanent":
-            raise WorkflowNodeError(
-                code=WorkflowErrorCode.PERMANENT, message_ref="permanent"
-            )
+            raise WorkflowNodeError(code=WorkflowErrorCode.PERMANENT, message_ref="permanent")
         if mode == "engine_validation":
             return StatePatch({"answer": "valid"})
         return StatePatch({})
@@ -821,11 +829,14 @@ def test_real_sqlite_failures_are_durable_and_reopen_without_node_replay(
         _uow, store = _store(reopened)
         with pytest.raises(WorkflowNodeError):
             _invoke(_native(workflow, store), None, config)
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_native_operations WHERE run_id=? "
-            "AND operation_kind IN ('failure','engine_failure')",
-            (config["run_id"],),
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_native_operations WHERE run_id=? "
+                "AND operation_kind IN ('failure','engine_failure')",
+                (config["run_id"],),
+            ).fetchone()[0]
+            == 1
+        )
     assert calls == first_calls
 
 
@@ -909,10 +920,13 @@ def test_real_sqlite_interrupt_suspend_resolve_reopen_resume_exactly_once(
             )
         )
         assert isinstance(result, Mapping) and result["approved"] is True
-        assert reopened.connection.execute(
-            "SELECT COUNT(*) FROM workflow_decision_consumptions WHERE decision_id=?",
-            (decision_id,),
-        ).fetchone()[0] == 1
+        assert (
+            reopened.connection.execute(
+                "SELECT COUNT(*) FROM workflow_decision_consumptions WHERE decision_id=?",
+                (decision_id,),
+            ).fetchone()[0]
+            == 1
+        )
     assert calls == 2
 
 
@@ -937,9 +951,7 @@ def test_real_effect_interrupt_effect_graph_reopens_without_physical_replay(
             self, prepared, authorization_receipt_ref, sdk_receipt
         ) -> AuthorizationReceipt:
             del prepared, authorization_receipt_ref
-            return AuthorizationReceipt(
-                "host:workflow-handoff", "a" * 64, sdk_receipt.receipt_hash
-            )
+            return AuthorizationReceipt("host:workflow-handoff", "a" * 64, sdk_receipt.receipt_hash)
 
     class Observe:
         async def observe(self, prepared):  # type: ignore[no-untyped-def]
@@ -959,9 +971,7 @@ def test_real_effect_interrupt_effect_graph_reopens_without_physical_replay(
         now=1.0,
         lease_ttl_seconds=100.0,
     )
-    run_fence = asyncio.run(
-        uow.acquire(RunId(str(config["run_id"])), runtime_lease, now=2.0)
-    )
+    run_fence = asyncio.run(uow.acquire(RunId(str(config["run_id"])), runtime_lease, now=2.0))
     current_run = uow.read_run(str(config["run_id"]))
     assert current_run is not None
     activation = asyncio.run(
@@ -1006,9 +1016,7 @@ def test_real_effect_interrupt_effect_graph_reopens_without_physical_replay(
     async def execute_phase(phase: str):
         execution = await executor.execute(
             effect_id=EffectId(f"effect-{phase}"),
-            call=ToolCall(
-                CallId(f"call-{phase}"), "phase_effect", {"phase": phase}
-            ),
+            call=ToolCall(CallId(f"call-{phase}"), "phase_effect", {"phase": phase}),
             context=ToolContext(
                 RunId(str(config["run_id"])),
                 RequestId(f"request-{phase}"),

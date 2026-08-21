@@ -5,13 +5,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import ClassVar
 
 from .errors import ContractValidationError, ErrorCode
 from .json import JsonValue
-
 
 _IDENTIFIER = re.compile(r"[!-~]{1,255}\Z")
 
@@ -88,9 +87,7 @@ class CorrelationIds:
                     f"{name} must use {expected_type.__name__}",
                 )
         if self.call_id is not None and not isinstance(self.call_id, CallId):
-            raise ContractValidationError(
-                ErrorCode.INVALID_IDENTIFIER, "call_id must use CallId"
-            )
+            raise ContractValidationError(ErrorCode.INVALID_IDENTIFIER, "call_id must use CallId")
         if self.effect_id is not None and not isinstance(self.effect_id, EffectId):
             raise ContractValidationError(
                 ErrorCode.INVALID_IDENTIFIER, "effect_id must use EffectId"
@@ -122,4 +119,3 @@ __all__ = (
     "EventId",
     "CorrelationIds",
 )
-
