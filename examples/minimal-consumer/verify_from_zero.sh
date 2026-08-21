@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
 # verify_from_zero.sh — simulate an external user integrating the SDK from zero.
 #
 # Steps:

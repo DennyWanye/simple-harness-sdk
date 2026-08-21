@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
 """Mock LLM Provider for demonstration purposes.
 
 In a real application, replace this with actual LLM API client.

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
 """Consumer-level conformance host for the SDK release gate.
 
 Implements the executable conformance protocol (``simple_harness.testing``)

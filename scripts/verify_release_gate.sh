@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
 # verify_release_gate.sh — harness SDK release gate for the dist/ wheel.
 #
 # Steps:

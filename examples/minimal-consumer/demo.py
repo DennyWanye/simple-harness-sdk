@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
 """Minimal Consumer Example - Main Entry Point
 
 Demonstrates basic Simple Harness SDK integration.

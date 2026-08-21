@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 DennyWanye
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Minimal Consumer Example
 
 Complete working example showing how to integrate Simple Harness SDK into your application.
