@@ -48,11 +48,19 @@ last-updated: 2026-08-21
 - CI 单次构建 authoritative wheel/sdist 并生成 canonical `BUILD_INFO.txt`/`SHA256SUMS`，
   Python 3.11–3.13 测同一 wheel。release 仅 manual dispatch 下载、校验并上传 program publisher
   已创建 release 的原 bytes，不响应 tag、也不重新 build。
+- `simple_harness.testing.arm64_candidate:run_core_gate` 是 zero-argument synchronous public gate：
+  只在 Linux ARM64 与两个非 editable、版本精确的 installed-wheel distributions 上运行。它用真实
+  Harness fresh v3 UOW、Memory SQLite backend/adapter 与 dispatcher，注入 Memory apply 成功但 ack 前
+  崩溃，关闭并重开两库后验证 outbox 以同 source event 收敛到单条 Memory record，同时 read-back WAL、
+  FK、integrity 与 0600。成功结果包含 `minimal_runtime`、`memory_outbox_restart`、`sqlite_reopen`
+  三个 true 值及 Python/架构/distribution identity；任何失败以 stable code 抛错/CLI 非零退出。
 - 2026-08-21 验证：H1 19 passed；H2 15 passed；Python 3.11/3.12/3.13 full pytest
-  各 1264 passed / 2 skipped；
-  release-owned mypy 11 files 无错误；full Ruff 476，相对 frozen 484 baseline 减少 8；
-  REUSE 338/338 compliant；H-WHEEL artifact suite 21 passed。P0/P1 authority hardening targeted
-  76 passed，mypy 11 files 无错误，full Ruff 481 与该 slice clean HEAD 完全相同（零新增）。
+  各 1278 passed / 2 expected skips；P0/P1 authority hardening targeted 76 passed；ARM64
+  public/artifact targeted 9 passed。release-owned mypy 12 files 无错误；full Ruff 481 与
+  `16d481b` pre-slice clean HEAD 完全相同、相对 frozen 484 baseline 减少 3；REUSE 340/340
+  compliant；source provenance PASS；临时目录 wheel/sdist build + twine check PASS。以 Memory
+  candidate `bfc597df22762d6892381cb56b8ffcfb0f844e97` 完成本地非 ARM64 内部链路 smoke
+  （不作为 A-ARM64 PASS）。
 
 ## 0.1.5 Context authority 当前事实（2026-08-21）
 

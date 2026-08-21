@@ -83,6 +83,7 @@ jobs:
             src/simple_harness/execution/context_staging.py \
             src/simple_harness/execution/memory_outbox.py \
             src/simple_harness/execution/sqlite/storage.py \
+            src/simple_harness/testing/arm64_candidate.py \
             scripts/build/authoritative_provenance.py
       - name: Type check public and release paths
         run: uv run --frozen --group dev mypy

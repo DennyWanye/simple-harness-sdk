@@ -110,5 +110,6 @@ files = [
   "src/simple_harness/execution/context_staging.py",
   "src/simple_harness/execution/memory_outbox.py",
   "src/simple_harness/execution/sqlite/storage.py",
+  "src/simple_harness/testing/arm64_candidate.py",
   "src/simple_harness/testing/sinks.py",
 ]

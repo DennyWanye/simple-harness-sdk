@@ -589,6 +589,28 @@ def test_exact_wheel_clean_python311_cli_and_pytest_protocol(
         capture_output=True,
         text=True,
     )
+    subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-c",
+            (
+                "import inspect,sys;"
+                "from pathlib import Path;"
+                "from simple_harness.testing import arm64_candidate as candidate;"
+                "assert tuple(inspect.signature(candidate.run_core_gate).parameters)==();"
+                "assert not inspect.iscoroutinefunction(candidate.run_core_gate);"
+                "assert 'simple_harness_memory' not in sys.modules;"
+                "origin=Path(candidate.__file__).resolve();"
+                "assert 'site-packages' in origin.parts;"
+                "assert origin.is_relative_to(Path(sys.prefix).resolve())"
+            ),
+        ],
+        check=True,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
     _consumer_files(tmp_path)
     report = tmp_path / "cli-report.json"
     clean_environment = dict(os.environ)
