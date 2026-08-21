@@ -30,6 +30,9 @@ last-updated: 2026-08-21
   private snapshot 把 recall 结果作为 USER/untrusted data，并在 start/continuation 原事务消费后清空
   private bytes、保留 lineage/hash；continuation 的 frozen prepared messages 连同本轮 message 一次性
   进入 ReAct durable context，Memory 数据不得提升为 SYSTEM。ReAct 恢复只读冻结 snapshot，不二次 recall。
+- `RunClient.signal()` 的 generic continuation namespace 明确拒绝保留的 `conversation_user` kind；
+  普通 user turn 只能通过 `signal_conversation()` 携带 typed DTO、durable context stage 与同事务 intent，
+  产品 generic payload 不能伪造该 authority。
 - `MemoryDispatcher` 用 claim token/expiry、transient backoff、permanent dead-letter 与幂等 sink
   恢复；apply 成功后 ack 前崩溃会以同 source event 重放。Runtime 在 recovery/drain 后启动 pump，
   close 时 bounded drain，并关闭 projection pump、query、sink 与 execution DB。关闭路径把
@@ -49,7 +52,7 @@ last-updated: 2026-08-21
   各 1264 passed / 2 skipped；
   release-owned mypy 11 files 无错误；full Ruff 476，相对 frozen 484 baseline 减少 8；
   REUSE 338/338 compliant；H-WHEEL artifact suite 21 passed。P0/P1 authority hardening targeted
-  75 passed，mypy 11 files 无错误，full Ruff 481 与该 slice clean HEAD 完全相同（零新增）。
+  76 passed，mypy 11 files 无错误，full Ruff 481 与该 slice clean HEAD 完全相同（零新增）。
 
 ## 0.1.5 Context authority 当前事实（2026-08-21）
 

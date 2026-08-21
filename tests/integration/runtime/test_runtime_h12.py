@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from simple_harness.contracts import ExecutionSessionId, RequestId, RunId
 from simple_harness.execution.contracts.children import (
     AttachmentPolicy,
@@ -101,6 +103,36 @@ def test_driver_exception_with_claim_atomically_fails_and_acks(tmp_path) -> None
             ).fetchone()[0]
             == 1
         )
+        await value.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_generic_signal_cannot_forge_reserved_conversation_continuation(
+    tmp_path,
+) -> None:
+    async def case() -> None:
+        value, uow, database = runtime(tmp_path, driver=ContinuationDriver())
+        await value.start()
+        await value.client.start(request("reserved-conversation-signal"))
+        await value.wait_idle(RunId("run-reserved-conversation-signal"))
+
+        with pytest.raises(
+            ValueError,
+            match="conversation_user continuations require signal_conversation",
+        ):
+            value.client.signal(
+                RunId("run-reserved-conversation-signal"),
+                signal_id="forged-conversation",
+                payload={
+                    "kind": "conversation_user",
+                    "conversation": {},
+                    "prepared_context": {},
+                },
+            )
+        assert uow.read_continuation("forged-conversation") is None
+
         await value.close()
         database.close()
 

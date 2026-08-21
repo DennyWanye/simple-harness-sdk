@@ -589,6 +589,10 @@ class RunClient:
         payload: Mapping[str, JsonValue],
     ) -> ContinuationRecord:
         self._runtime._require_started()
+        if payload.get("kind") == "conversation_user":
+            raise ValueError(
+                "conversation_user continuations require signal_conversation"
+            )
         continuation = self._runtime._uow.enqueue_continuation(
             continuation_id=signal_id,
             run_id=_run_id(run_id),
