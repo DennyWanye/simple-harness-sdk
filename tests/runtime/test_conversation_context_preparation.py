@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from simple_harness import Message, MessageRole, canonical_json, thaw_json
+from simple_harness import AgentIdentity, Message, MessageRole, canonical_json, thaw_json
 from simple_harness.execution.context_staging import (
     ContextStageKind,
     ContextStageState,
@@ -159,8 +159,7 @@ def test_sdk_preparation_has_one_logical_recall_and_reuses_private_bytes(
             repository = ContextStagingRepository(database)
             spy = RecallSpy()
             value = ConversationTurnInput(
-                "user-1",
-                "session-1",
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
                 Message(MessageRole.USER, "hello"),
                 "hello",
             )
@@ -210,8 +209,7 @@ def test_sdk_preparation_rejects_mismatched_recall_identity_without_staging(
         with Database.open(tmp_path / "execution.db") as database:
             repository = ContextStagingRepository(database)
             value = ConversationTurnInput(
-                "user-1",
-                "session-1",
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
                 Message(MessageRole.USER, "hello"),
                 "hello",
             )
@@ -289,7 +287,11 @@ def test_consumer_preparation_validates_lineage_and_releases_memory_result(
             repository = ContextStagingRepository(database)
             memory = RecallSpy()
             current = Message(MessageRole.USER, "hello")
-            value = ConversationTurnInput("user-1", "session-1", current, "hello")
+            value = ConversationTurnInput(
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
+                current,
+                "hello",
+            )
 
             async def preparer(query_id: str):  # type: ignore[no-untyped-def]
                 return _consumer_snapshot(query_id, current, result_hash=memory.payload_hash)
@@ -330,7 +332,11 @@ def test_consumer_preparation_without_memory_keeps_system_persona(
         with Database.open(tmp_path / "consumer-without-memory.db") as database:
             repository = ContextStagingRepository(database)
             current = Message(MessageRole.USER, "hello")
-            value = ConversationTurnInput("user-1", "session-1", current, "hello")
+            value = ConversationTurnInput(
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
+                current,
+                "hello",
+            )
 
             async def preparer(query_id: str):  # type: ignore[no-untyped-def]
                 return {
@@ -384,7 +390,11 @@ def test_consumer_preparation_rejects_invalid_authority_without_staging(
             repository = ContextStagingRepository(database)
             memory = RecallSpy()
             current = Message(MessageRole.USER, "hello")
-            value = ConversationTurnInput("user-1", "session-1", current, "hello")
+            value = ConversationTurnInput(
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
+                current,
+                "hello",
+            )
 
             async def preparer(query_id: str):  # type: ignore[no-untyped-def]
                 snapshot = _consumer_snapshot(
@@ -442,7 +452,11 @@ def test_consumer_preparation_surfaces_release_hash_conflict_after_durable_stage
             repository = ContextStagingRepository(database)
             memory = RecallSpy()
             current = Message(MessageRole.USER, "hello")
-            value = ConversationTurnInput("user-1", "session-1", current, "hello")
+            value = ConversationTurnInput(
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
+                current,
+                "hello",
+            )
 
             async def preparer(query_id: str):  # type: ignore[no-untyped-def]
                 return _consumer_snapshot(query_id, current, result_hash="f" * 64)
@@ -478,8 +492,7 @@ def test_sdk_preparation_releases_result_when_stage_completion_is_cancelled(
             repository = ContextStagingRepository(database)
             memory = RecallSpy()
             value = ConversationTurnInput(
-                "user-1",
-                "session-1",
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
                 Message(MessageRole.USER, "hello"),
                 "hello",
             )
@@ -521,8 +534,7 @@ def test_sdk_preparation_retries_release_without_recalling_or_rewriting_stage(
             repository = ContextStagingRepository(database)
             memory = FlakyReleaseSpy()
             value = ConversationTurnInput(
-                "user-1",
-                "session-1",
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
                 Message(MessageRole.USER, "hello"),
                 "hello",
             )
@@ -577,8 +589,7 @@ def test_sdk_preparation_rejects_invalid_bounds_before_claim(
             repository = ContextStagingRepository(database)
             memory = RecallSpy()
             value = ConversationTurnInput(
-                "user-1",
-                "session-1",
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
                 Message(MessageRole.USER, "hello"),
                 "hello",
             )
@@ -621,7 +632,11 @@ def test_consumer_preparation_rejects_invalid_release_timeout_before_claim(
         with Database.open(tmp_path / "invalid-consumer-timeout.db") as database:
             repository = ContextStagingRepository(database)
             current = Message(MessageRole.USER, "hello")
-            value = ConversationTurnInput("user-1", "session-1", current, "hello")
+            value = ConversationTurnInput(
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
+                current,
+                "hello",
+            )
 
             async def preparer(query_id: str):  # type: ignore[no-untyped-def]
                 raise AssertionError(query_id)
@@ -654,8 +669,7 @@ def test_sdk_preparation_rejects_port_results_outside_query_bounds(
             repository = ContextStagingRepository(database)
             memory = OutOfBoundsRecallSpy(mode)
             value = ConversationTurnInput(
-                "user-1",
-                "session-1",
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
                 Message(MessageRole.USER, "hello"),
                 "hello",
             )
@@ -693,8 +707,7 @@ def test_sdk_preparation_times_out_hanging_recall_without_staging(
             repository = ContextStagingRepository(database)
             memory = HangingRecallSpy()
             value = ConversationTurnInput(
-                "user-1",
-                "session-1",
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
                 Message(MessageRole.USER, "hello"),
                 "hello",
             )
@@ -734,8 +747,7 @@ def test_sdk_preparation_rejects_internally_inconsistent_port_result(
             repository = ContextStagingRepository(database)
             memory = DriftRecallSpy(mode)
             value = ConversationTurnInput(
-                "user-1",
-                "session-1",
+                AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
                 Message(MessageRole.USER, "hello"),
                 "hello",
             )

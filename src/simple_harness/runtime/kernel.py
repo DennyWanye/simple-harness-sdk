@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import time
@@ -16,15 +17,25 @@ from typing import TYPE_CHECKING, Protocol, Self, TypeVar, cast, runtime_checkab
 from uuid import uuid4
 
 from simple_harness.contracts import (
+    ContentBlock,
     ExecutionSessionId,
+    FrozenJsonValue,
     HarnessError,
     JsonValue,
+    Message,
+    MessageRole,
     RequestId,
     RunId,
+    canonical_json,
     thaw_json,
 )
 from simple_harness.execution.context_authority import ToolCatalogSnapshot
-from simple_harness.execution.context_staging import ContextStagingRepository
+from simple_harness.execution.context_staging import (
+    ContextStageKind,
+    ContextStageRecord,
+    ContextStageState,
+    ContextStagingRepository,
+)
 from simple_harness.execution.contracts.children import AttachmentPolicy
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySpec
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
@@ -51,15 +62,38 @@ from simple_harness.tools.sidecar import resource_digest
 from simple_harness.workflow.errors import WorkflowDependencyUnavailable
 
 from .admission import AdmissionPort, AllowAllAdmission
+from .agent_memory import (
+    AgentMemoryError,
+    AgentMemoryErrorCode,
+    AgentMemoryPort,
+    MemoryFailurePolicy,
+    MemoryRecallBounds,
+    MemoryRecallRequest,
+    MemoryRecallResult,
+    MemoryReleaseRequest,
+)
 from .child_coordinator import ChildCoordinator
 from .child_signal_runtime import ChildSignalRuntime
 from .context import ContextPort
+from .conversation_context import (
+    claim_context_preparation,
+    context_query_id,
+)
+from .conversation_context_provider import (
+    ConversationContextBounds,
+    ConversationContextProviderPort,
+    ConversationContextRequest,
+    CurrentMessageContextProvider,
+    source_snapshot_ref,
+)
 from .conversation_memory import (
     ContextPreparationMode,
     ConversationContinuationInput,
     ConversationMemoryIntent,
     ConversationMemoryRole,
+    ConversationTurnInput,
     ConversationTurnOutput,
+    _message_from_json,
 )
 from .live_index import LiveRunIndex
 from .orchestration import (
@@ -500,6 +534,9 @@ class RuntimePorts:
     memory_dispatcher: MemoryDispatcher | None = None
     context_staging: ContextStagingRepository | None = None
     context_preparation_mode: ContextPreparationMode | None = None
+    agent_memory: AgentMemoryPort | None = None
+    context_provider: ConversationContextProviderPort | None = None
+    memory_failure_policy: MemoryFailurePolicy = MemoryFailurePolicy.DEGRADE_RECALL_AND_RETRY_RECORD
 
     def __post_init__(self) -> None:
         for name in (
@@ -532,10 +569,12 @@ class RuntimePorts:
             or self.close_timeout_seconds <= 0
         ):
             raise ValueError("close_timeout_seconds must be finite and positive")
+        if self.conversation_memory_enabled and self.context_staging is None:
+            raise TypeError("enabled conversation Memory requires context staging")
         if self.conversation_memory_enabled and (
-            self.memory_dispatcher is None or self.context_staging is None
+            self.memory_dispatcher is None and self.agent_memory is None
         ):
-            raise TypeError("enabled conversation Memory requires dispatcher and context staging")
+            raise TypeError("enabled conversation Memory requires an Agent Memory authority")
         if self.conversation_memory_enabled and self.context_preparation_mode is None:
             raise TypeError("enabled conversation Memory requires preparation mode")
         if self.context_preparation_mode is not None:
@@ -544,6 +583,15 @@ class RuntimePorts:
                 "context_preparation_mode",
                 ContextPreparationMode(self.context_preparation_mode),
             )
+        if self.agent_memory is not None:
+            for method_name in ("recall_for_turn", "release_recall", "record_committed_turn"):
+                if not callable(getattr(self.agent_memory, method_name, None)):
+                    raise TypeError(f"memory must implement {method_name}")
+            if self.context_provider is None:
+                object.__setattr__(self, "context_provider", CurrentMessageContextProvider())
+        object.__setattr__(
+            self, "memory_failure_policy", MemoryFailurePolicy(self.memory_failure_policy)
+        )
 
 
 class RunClient:
@@ -551,7 +599,331 @@ class RunClient:
         self._runtime = runtime
 
     async def start(self, value: RunStart) -> RunRecord:
+        if self._runtime._ports.agent_memory is not None and value.conversation is None:
+            raise HarnessError(
+                "conversation_entrypoint_required",
+                "Enabled Agent Memory requires start_conversation().",
+            )
         return await self._runtime._start_run(value)
+
+    async def start_conversation(
+        self,
+        value: ConversationTurnInput,
+        *,
+        run_id: RunId | None = None,
+        request_id: RequestId | None = None,
+        turn_id: str | None = None,
+        tool_catalog_generation: int = 1,
+        input: Mapping[str, JsonValue] | None = None,
+    ) -> RunRecord:
+        """Prepare one durable Context stage and start a trusted conversation Turn."""
+
+        self._runtime._require_started()
+        if not isinstance(value, ConversationTurnInput):
+            raise TypeError("value must use ConversationTurnInput")
+        resolved_run = run_id or RunId(uuid4().hex)
+        resolved_request = request_id or RequestId(f"{resolved_run.value}:request")
+        resolved_turn = turn_id or resolved_run.value
+        start_input = dict(input or {"messages": [value.message.to_dict()]})
+        existing = self._runtime._uow.read_run(resolved_run.value)
+        if existing is not None:
+            raw = self._runtime._uow.read_start_snapshot(resolved_run.value)
+            if raw is None:
+                raise UnitOfWorkConflict("conversation start snapshot disappeared")
+            snapshot = StartSnapshot.from_json(raw)
+            if (
+                snapshot.conversation != value
+                or snapshot.turn_id != resolved_turn
+                or existing.request_id != resolved_request.value
+            ):
+                raise UnitOfWorkConflict("conversation start identity was reused differently")
+            return existing
+        memory = self._runtime._ports.agent_memory
+        if memory is None:
+            return await self._runtime._start_run(
+                RunStart(
+                    ExecutionSessionId(value.identity.session_id),
+                    resolved_run,
+                    resolved_request,
+                    resolved_turn,
+                    start_input,
+                    tool_catalog_generation,
+                    conversation=value,
+                )
+            )
+        staged = await self._prepare_agent_context(
+            kind=ContextStageKind.ROOT,
+            identity_key=resolved_run.value,
+            root_run_id=resolved_run.value,
+            continuation_id=None,
+            turn_id=resolved_turn,
+            value=value,
+        )
+        if staged.private_snapshot is None or staged.private_snapshot_hash is None:
+            raise UnitOfWorkConflict("prepared context bytes are unavailable")
+        return await self._runtime._start_run(
+            RunStart(
+                ExecutionSessionId(value.identity.session_id),
+                resolved_run,
+                resolved_request,
+                resolved_turn,
+                start_input,
+                tool_catalog_generation,
+                conversation=value,
+                context_preparation_mode=ContextPreparationMode.SDK_PREPARED,
+                context_stage_id=staged.stage_id,
+                context_stage_hash=staged.private_snapshot_hash,
+                prepared_context=staged.private_snapshot,
+            )
+        )
+
+    async def _prepare_agent_context(
+        self,
+        *,
+        kind: ContextStageKind,
+        identity_key: str,
+        root_run_id: str,
+        continuation_id: str | None,
+        turn_id: str,
+        value: ConversationTurnInput,
+    ) -> ContextStageRecord:
+        repository = self._runtime._ports.context_staging
+        memory = self._runtime._ports.agent_memory
+        provider = self._runtime._ports.context_provider
+        if repository is None or memory is None or provider is None:
+            raise RuntimeError("Agent Memory composition is incomplete")
+        stage_id = (
+            f"agent-memory-stage/v1/{context_query_id(kind, identity_key).rsplit('/', 1)[-1]}"
+        )
+        now = self._runtime._now()
+        claim = claim_context_preparation(
+            repository,
+            stage_id=stage_id,
+            kind=kind,
+            identity_key=identity_key,
+            value=value,
+            mode=ContextPreparationMode.SDK_PREPARED,
+            owner_id=self._runtime._ports.owner_id,
+            now=now,
+            lease_seconds=self._runtime._ports.lease_ttl_seconds,
+        )
+        if claim.record.state in {ContextStageState.STAGED, ContextStageState.CONSUMED}:
+            return claim.record
+        if not claim.owner:
+            for _ in range(100):
+                await asyncio.sleep(0.01)
+                winner = repository.get(stage_id)
+                if winner is not None and winner.state in {
+                    ContextStageState.STAGED,
+                    ContextStageState.CONSUMED,
+                }:
+                    return winner
+            raise TimeoutError("context preparation winner did not finish")
+        identity_payload = value.identity.to_json()
+        identity_hash = hashlib.sha256(canonical_json(identity_payload).encode("utf-8")).hexdigest()
+        with repository.database.transaction() as connection:
+            existing = connection.execute(
+                "SELECT identity_hash FROM agent_identity_bindings WHERE session_id=?",
+                (value.identity.session_id,),
+            ).fetchone()
+            if existing is not None and str(existing[0]) != identity_hash:
+                raise UnitOfWorkConflict("conversation session identity cannot be rebound")
+            connection.execute(
+                "INSERT OR IGNORE INTO agent_identity_bindings("
+                "session_id,deployment_id,household_id,actor_id,identity_hash,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    value.identity.session_id,
+                    value.identity.deployment_id,
+                    value.identity.household_id,
+                    value.identity.actor_id,
+                    identity_hash,
+                    now,
+                ),
+            )
+        ref = value.context_source_snapshot_ref or source_snapshot_ref(
+            {"current_message": value.message.to_dict()}
+        )
+        context_request = ConversationContextRequest(
+            preparation_id=stage_id,
+            identity=value.identity,
+            root_run_id=root_run_id,
+            continuation_id=continuation_id,
+            source_snapshot_ref=ref,
+            current_message=value.message,
+            bounds=ConversationContextBounds(),
+        )
+        product = await asyncio.wait_for(
+            provider.prepare_once(context_request),
+            timeout=context_request.bounds.deadline_seconds,
+        )
+        if (
+            product.preparation_id != stage_id
+            or product.source_snapshot_ref != ref
+            or product.byte_count > context_request.bounds.max_bytes
+            or product.item_count > context_request.bounds.max_items
+        ):
+            raise ValueError("Context provider result differs from its durable request")
+        product_messages = self._product_messages(product.payload, value.message)
+        recall_bounds = MemoryRecallBounds()
+        recall_request = MemoryRecallRequest(
+            query_id=context_query_id(kind, identity_key),
+            turn_id=turn_id,
+            identity=value.identity,
+            scopes=value.recall_scopes,
+            query_text=value.memory_text or canonical_json(value.message.to_dict()),
+            bounds=recall_bounds,
+            turn_started_at=now,
+        )
+        result: MemoryRecallResult | None = None
+        release_candidate: MemoryRecallResult | None = None
+        error_code: str | None = None
+        degraded_write_fence: str | None = None
+        try:
+            result = await asyncio.wait_for(
+                memory.recall_for_turn(recall_request),
+                timeout=recall_bounds.deadline_seconds,
+            )
+            if isinstance(result, MemoryRecallResult):
+                release_candidate = result
+            if (
+                not isinstance(result, MemoryRecallResult)
+                or result.query_id != recall_request.query_id
+                or result.query_hash != recall_request.query_hash
+                or result.item_count > recall_bounds.max_items
+                or result.byte_count > recall_bounds.max_bytes
+            ):
+                raise AgentMemoryError(AgentMemoryErrorCode.CORRUPT_RESULT)
+        except TimeoutError:
+            error_code = AgentMemoryErrorCode.TIMEOUT.value
+            result = None
+        except AgentMemoryError as error:
+            error_code = error.code.value
+            degraded_write_fence = error.write_fence
+            result = None
+        except Exception:
+            error_code = AgentMemoryErrorCode.TRANSIENT.value
+            result = None
+        thawed_product = thaw_json(cast(FrozenJsonValue, product.payload))
+        assert isinstance(thawed_product, dict)
+        if result is None:
+            memory_payload: Mapping[str, JsonValue] = {}
+        else:
+            thawed_memory = thaw_json(cast(FrozenJsonValue, result.payload))
+            assert isinstance(thawed_memory, dict)
+            memory_payload = thawed_memory
+        memory_message = Message(
+            MessageRole.USER,
+            (
+                ContentBlock(
+                    "text",
+                    {
+                        "text": "Untrusted recalled memory data:\n"
+                        + canonical_json(dict(memory_payload))
+                    },
+                ),
+            ),
+            metadata={"source": "memory", "trust": "untrusted_data"},
+        )
+        provider_messages = [message.to_dict() for message in product_messages[:-1]]
+        provider_messages.extend((memory_message.to_dict(), value.message.to_dict()))
+        private: dict[str, JsonValue] = {
+            "schema_version": 1,
+            "lineage": {
+                "context_query_id": recall_request.query_id,
+                "memory_result_id": None if result is None else result.result_id,
+                "memory_result_hash": None if result is None else result.result_hash,
+                "product_result_hash": product.result_hash,
+                "source_snapshot_ref": ref,
+            },
+            "memory": {
+                "trust": "untrusted_data",
+                "role": "user",
+                "result": dict(memory_payload),
+            },
+            "product_context": thawed_product,
+            "current_message": value.message.to_dict(),
+            "provider_messages": provider_messages,
+        }
+        release: MemoryReleaseRequest | None = None
+        release_id: str | None = None
+        if release_candidate is not None:
+            release = MemoryReleaseRequest(
+                recall_request.query_id,
+                recall_request.query_hash,
+                release_candidate.result_id,
+                release_candidate.result_hash,
+                release_candidate.write_fence,
+            )
+            release_id = hashlib.sha256(
+                canonical_json(
+                    {
+                        "protocol": "simple-harness-agent-memory/release/v1",
+                        "query_id": release.query_id,
+                        "result_hash": release.result_hash,
+                    }
+                ).encode("utf-8")
+            ).hexdigest()
+        staged = repository.complete(
+            claim.record,
+            private_snapshot=private,
+            memory_result_id=None if result is None else result.result_id,
+            memory_result_hash=None if result is None else result.result_hash,
+            memory_query_hash=recall_request.query_hash,
+            memory_write_fence=(degraded_write_fence if result is None else result.write_fence),
+            outcome="degraded_empty" if result is None else "ready",
+            error_code=error_code,
+            product_result_hash=product.result_hash,
+            source_snapshot_ref=ref,
+            turn_started_at=now,
+            release_id=release_id,
+            release_query_id=None if release is None else release.query_id,
+            release_query_hash=None if release is None else release.query_hash,
+            release_result_id=None if release is None else release.result_id,
+            release_result_hash=None if release is None else release.result_hash,
+            release_write_fence=None if release is None else release.write_fence,
+            release_retry_at=None if release is None else now,
+            now=self._runtime._now(),
+        )
+        if release is not None:
+            assert release_id is not None
+            try:
+                await asyncio.wait_for(memory.release_recall(release), timeout=1.0)
+            except Exception:
+                pass
+            else:
+                with repository.database.transaction() as connection:
+                    connection.execute(
+                        "UPDATE memory_recall_releases SET state='released',attempt_count=1,"
+                        "released_at=? WHERE release_id=?",
+                        (self._runtime._now(), release_id),
+                    )
+        return staged
+
+    @staticmethod
+    def _product_messages(
+        payload: Mapping[str, JsonValue], current: Message
+    ) -> tuple[Message, ...]:
+        raw = payload.get("provider_messages", payload.get("messages"))
+        if not isinstance(raw, (list, tuple)):
+            raise TypeError("Context provider must return a messages array")
+        messages: list[Message] = []
+        for item in raw:
+            if not isinstance(item, Mapping):
+                raise TypeError("Context provider messages must be objects")
+            thawed_item = thaw_json(cast(FrozenJsonValue, item))
+            if not isinstance(thawed_item, dict):
+                raise TypeError("Context provider message is invalid")
+            parsed = _message_from_json(thawed_item)
+            metadata = thaw_json(parsed.metadata)
+            if isinstance(metadata, Mapping) and metadata.get("source") == "memory":
+                raise ValueError("Context provider cannot forge the Memory partition")
+            messages.append(parsed)
+        if not messages or canonical_json(messages[-1].to_dict()) != canonical_json(
+            current.to_dict()
+        ):
+            raise ValueError("Context provider must preserve the current message as the final item")
+        return tuple(messages)
 
     def query(self, run_id: RunId) -> RunRecord | None:
         return self._runtime._uow.read_run(_run_id(run_id))
@@ -575,15 +947,15 @@ class RunClient:
         asyncio.create_task(self._runtime._wake_continuation(continuation.run_id))
         return continuation
 
-    def signal_conversation(
+    async def signal_conversation(
         self,
         run_id: RunId,
         *,
         continuation_id: str,
         value: ConversationContinuationInput,
-        context_stage_id: str,
-        context_stage_hash: str,
-        prepared_context: Mapping[str, JsonValue],
+        context_stage_id: str | None = None,
+        context_stage_hash: str | None = None,
+        prepared_context: Mapping[str, JsonValue] | None = None,
     ) -> ContinuationRecord:
         """Enqueue one ordinary user continuation with its durable context stage."""
 
@@ -593,11 +965,39 @@ class RunClient:
         raw = self._runtime._uow.read_start_snapshot(_run_id(run_id))
         if raw is None:
             raise KeyError(run_id.value)
+        run = self._runtime._uow.read_run(_run_id(run_id))
+        if run is None:
+            raise KeyError(run_id.value)
+        if run.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+            raise UnitOfWorkConflict("terminal Run rejects new continuations")
         start = StartSnapshot.from_json(raw)
         if start.conversation is None:
             raise UnitOfWorkConflict("Run has no conversation identity")
+        if self._runtime._ports.agent_memory is not None:
+            continuation_value = ConversationTurnInput(
+                start.conversation.identity,
+                value.message,
+                value.memory_text,
+                start.conversation.recall_scopes,
+                start.conversation.context_source_snapshot_ref,
+            )
+            stage = await self._prepare_agent_context(
+                kind=ContextStageKind.CONTINUATION,
+                identity_key=continuation_id,
+                root_run_id=run_id.value,
+                continuation_id=continuation_id,
+                turn_id=continuation_id,
+                value=continuation_value,
+            )
+            if stage.private_snapshot is None or stage.private_snapshot_hash is None:
+                raise UnitOfWorkConflict("prepared continuation context is unavailable")
+            context_stage_id = stage.stage_id
+            context_stage_hash = stage.private_snapshot_hash
+            prepared_context = stage.private_snapshot
+        if context_stage_id is None or context_stage_hash is None or prepared_context is None:
+            raise ValueError("conversation continuation requires durable prepared context")
         memory_intent: MemoryIntentSpec | None = None
-        if self._runtime._ports.conversation_memory_enabled:
+        if self._runtime._ports.memory_dispatcher is not None:
             intent = ConversationMemoryIntent(
                 f"harness-memory/v1/user-continuation/{continuation_id}",
                 start.conversation.user_id,
@@ -916,6 +1316,7 @@ class Runtime:
             await self._drain_resolved_waits_once()
             await self._drain_deliveries_bounded(100)
             await self._drain_memory_bounded(100)
+            await self._drain_recall_releases(100)
             for hook in self._start_hooks:
                 await hook()
                 self._started_hooks += 1
@@ -1125,6 +1526,7 @@ class Runtime:
                     pass
                 self._delivery_wake.clear()
                 empty = await self._drain_deliveries_bounded(100)
+                await self._drain_recall_releases(100)
                 if empty:
                     backoff = min(1.0, backoff * 2)
                 else:
@@ -1132,6 +1534,45 @@ class Runtime:
                     self._delivery_wake.set()
         except asyncio.CancelledError:
             return
+
+    async def _drain_recall_releases(self, limit: int) -> None:
+        memory = self._ports.agent_memory
+        staging = self._ports.context_staging
+        if memory is None or staging is None:
+            return
+        now = self._now()
+        rows = staging.database.connection.execute(
+            "SELECT release_id,query_id,query_hash,result_id,result_hash,write_fence,"
+            "attempt_count "
+            "FROM memory_recall_releases WHERE state='pending' AND retry_at<=? "
+            "ORDER BY retry_at,release_id LIMIT ?",
+            (now, limit),
+        ).fetchall()
+        for row in rows:
+            request = MemoryReleaseRequest(
+                str(row[1]),
+                str(row[2]),
+                str(row[3]),
+                str(row[4]),
+                None if row[5] is None else str(row[5]),
+            )
+            try:
+                await asyncio.wait_for(memory.release_recall(request), timeout=1.0)
+            except Exception:
+                attempts = int(row[6]) + 1
+                with staging.database.transaction() as connection:
+                    connection.execute(
+                        "UPDATE memory_recall_releases SET attempt_count=?,retry_at=? "
+                        "WHERE release_id=? AND state='pending'",
+                        (attempts, now + min(60.0, 2.0 ** min(attempts, 6)), str(row[0])),
+                    )
+            else:
+                with staging.database.transaction() as connection:
+                    connection.execute(
+                        "UPDATE memory_recall_releases SET state='released',attempt_count=?,"
+                        "released_at=? WHERE release_id=? AND state='pending'",
+                        (int(row[6]) + 1, self._now(), str(row[0])),
+                    )
 
     async def _drain_memory_bounded(self, limit: int) -> bool:
         dispatcher = self._ports.memory_dispatcher
@@ -1260,13 +1701,9 @@ class Runtime:
             await self._live.wait(value)
         finally:
             if parent_run_id is not None:
-                asyncio.create_task(
-                    self._release_child_signal_wait_handoff(parent_run_id, handoff)
-                )
+                asyncio.create_task(self._release_child_signal_wait_handoff(parent_run_id, handoff))
 
-    async def _release_child_signal_wait_handoff(
-        self, parent_run_id: str, handoff: object
-    ) -> None:
+    async def _release_child_signal_wait_handoff(self, parent_run_id: str, handoff: object) -> None:
         await asyncio.sleep(0)
         if self._child_signal_wait_handoffs.get(parent_run_id) is handoff:
             self._child_signal_wait_handoffs.pop(parent_run_id, None)
@@ -1318,7 +1755,7 @@ class Runtime:
             policy_fingerprint=getattr(driver, "policy_fingerprint", None),
         )
         memory_intent: MemoryIntentSpec | None = None
-        if self._ports.conversation_memory_enabled and start.conversation is not None:
+        if self._ports.memory_dispatcher is not None and start.conversation is not None:
             memory_intent = MemoryIntentSpec.from_conversation(
                 ConversationMemoryIntent(
                     f"harness-memory/v1/user/{start.run_id.value}",
@@ -1774,7 +2211,7 @@ class Runtime:
         snapshot = None if raw_snapshot is None else StartSnapshot.from_json(raw_snapshot)
         memory_intent: MemoryIntentSpec | None = None
         if (
-            self._ports.conversation_memory_enabled
+            self._ports.memory_dispatcher is not None
             and snapshot is not None
             and snapshot.conversation is not None
         ):

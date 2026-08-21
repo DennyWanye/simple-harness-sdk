@@ -26,7 +26,7 @@ def test_explicit_open_close_and_reopen(tmp_path: Path, wal: bool) -> None:
     database.close()
 
     with Database.open(path, wal=wal) as reopened:
-        assert reopened.schema_version == 3
+        assert reopened.schema_version == 4
         assert reopened.is_open
     assert not reopened.is_open
 

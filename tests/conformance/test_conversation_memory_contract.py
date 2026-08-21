@@ -7,11 +7,12 @@ import asyncio
 import inspect
 
 from simple_harness.runtime import (
-    ConversationMemoryApplyStatus,
-    ConversationMemoryErrorCode,
-    ConversationMemoryQueryPort,
-    ConversationMemoryQueryStatus,
-    ConversationMemorySinkPort,
+    AgentMemoryErrorCode,
+    AgentMemoryPort,
+    CommittedTurnStatus,
+    MemoryFailurePolicy,
+    MemoryRecallStatus,
+    ResourceOwnership,
 )
 from simple_harness.testing import (
     PROTOCOL_VERSION,
@@ -23,45 +24,41 @@ from simple_harness.testing.runner import validate_suite_names
 
 
 def test_conversation_port_signatures_and_stable_status_values() -> None:
-    assert tuple(inspect.signature(ConversationMemoryQueryPort.recall_bounded).parameters) == (
+    assert tuple(inspect.signature(AgentMemoryPort.recall_for_turn).parameters) == (
         "self",
-        "query",
+        "request",
     )
-    assert tuple(inspect.signature(ConversationMemoryQueryPort.release).parameters) == (
+    assert tuple(inspect.signature(AgentMemoryPort.release_recall).parameters) == (
         "self",
-        "user_id",
-        "context_query_id",
-        "result_hash",
+        "request",
     )
-    assert all(
-        parameter.kind is inspect.Parameter.KEYWORD_ONLY
-        for parameter in tuple(
-            inspect.signature(ConversationMemoryQueryPort.release).parameters.values()
-        )[1:]
-    )
-    assert tuple(inspect.signature(ConversationMemorySinkPort.apply).parameters) == (
+    assert tuple(inspect.signature(AgentMemoryPort.record_committed_turn).parameters) == (
         "self",
-        "intent",
+        "request",
     )
-    assert inspect.iscoroutinefunction(ConversationMemoryQueryPort.close)
-    assert inspect.iscoroutinefunction(ConversationMemoryQueryPort.release)
-    assert inspect.iscoroutinefunction(ConversationMemorySinkPort.close)
-    assert {value.value for value in ConversationMemoryQueryStatus} == {
-        "complete",
+    assert inspect.iscoroutinefunction(AgentMemoryPort.recall_for_turn)
+    assert inspect.iscoroutinefunction(AgentMemoryPort.release_recall)
+    assert inspect.iscoroutinefunction(AgentMemoryPort.record_committed_turn)
+    assert {value.value for value in MemoryRecallStatus} == {
+        "ready",
+        "empty",
         "truncated",
-        "timeout",
     }
-    assert {value.value for value in ConversationMemoryApplyStatus} == {
+    assert {value.value for value in CommittedTurnStatus} == {
         "applied",
         "already_applied",
+        "rejected_erased",
+        "conflict",
     }
-    assert {value.value for value in ConversationMemoryErrorCode} == {
-        "memory_query_conflict",
-        "memory_apply_conflict",
+    assert {value.value for value in AgentMemoryErrorCode} == {
         "memory_transient",
-        "memory_permanent",
         "memory_timeout",
+        "memory_corrupt_result",
+        "memory_conflict",
+        "memory_permanent",
     }
+    assert ResourceOwnership.BORROWED.value == "borrowed"
+    assert MemoryFailurePolicy.DEGRADE_RECALL_AND_RETRY_RECORD.value
 
 
 class _ConversationSuite:
@@ -80,7 +77,7 @@ class _ConversationSuite:
         return CaseObservation(
             "conversation.schema_identity",
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "history_rows": 1,
                 "fresh_only": True,
                 "foreign_keys": True,

@@ -14,6 +14,7 @@ from simple_harness.execution.sqlite import Database
 from simple_harness.runtime import (
     ContextPreparationMode,
     ProductionRuntimeConfig,
+    ResourceOwnership,
     RuntimeLifecycleState,
     RuntimeProfile,
     build_production_runtime,
@@ -31,29 +32,21 @@ class Delivery:
         return False
 
 
-class Query:
+class Memory:
     def __init__(self, trace: list[str]) -> None:
         self.trace = trace
 
-    async def recall_bounded(self, query):  # type: ignore[no-untyped-def]
-        raise AssertionError(query)
+    async def recall_for_turn(self, request):  # type: ignore[no-untyped-def]
+        raise AssertionError(request)
 
-    async def release(self, *, user_id: str, context_query_id: str, result_hash: str) -> None:
-        del user_id, context_query_id, result_hash
+    async def release_recall(self, request):  # type: ignore[no-untyped-def]
+        raise AssertionError(request)
 
-    async def close(self) -> None:
-        self.trace.append("query.close")
-
-
-class Sink:
-    def __init__(self, trace: list[str]) -> None:
-        self.trace = trace
-
-    async def apply(self, intent):  # type: ignore[no-untyped-def]
-        raise AssertionError(intent)
+    async def record_committed_turn(self, request):  # type: ignore[no-untyped-def]
+        raise AssertionError(request)
 
     async def close(self) -> None:
-        self.trace.append("sink.close")
+        self.trace.append("memory.close")
 
 
 class Pump:
@@ -78,8 +71,7 @@ class Driver:
 
 
 def _config(path: Path, trace: list[str], **changes) -> ProductionRuntimeConfig:
-    query = Query(trace)
-    sink = Sink(trace)
+    memory = Memory(trace)
     pump = Pump(trace)
     values = {
         "execution_path": path,
@@ -95,8 +87,8 @@ def _config(path: Path, trace: list[str], **changes) -> ProductionRuntimeConfig:
         "tool_catalog": Catalog(),
         "driver": Driver(),
         "profiles": {"agent.general": RuntimeProfile("agent.general", "react")},
-        "conversation_query": query,
-        "conversation_sink": sink,
+        "memory": memory,
+        "memory_ownership": ResourceOwnership.RUNTIME,
         "context_preparation_mode": ContextPreparationMode.SDK_PREPARED,
         "provider_budget_resolver": object(),
         "provider_projection_pump": pump,
@@ -114,10 +106,10 @@ def test_production_config_is_frozen_and_missing_authority_fails_fast(
     config = _config(tmp_path / "execution.db", [])
     with pytest.raises(FrozenInstanceError):
         config.owner_id = "changed"  # type: ignore[misc]
-    with pytest.raises(TypeError, match="conversation_sink"):
-        _config(tmp_path / "missing.db", [], conversation_sink=None)
-    with pytest.raises(TypeError, match="recall_bounded/release/close"):
-        _config(tmp_path / "missing-release.db", [], conversation_query=object())
+    with pytest.raises(TypeError, match="memory"):
+        _config(tmp_path / "missing.db", [], memory=None)
+    with pytest.raises(TypeError, match="recall_for_turn"):
+        _config(tmp_path / "missing-release.db", [], memory=object())
     with pytest.raises(ValueError, match="agent.general"):
         _config(tmp_path / "profile.db", [], profiles={})
 
@@ -139,8 +131,7 @@ def test_production_runtime_retains_authorities_and_closes_in_order(
         assert trace == [
             "pump.start",
             "pump.close",
-            "query.close",
-            "sink.close",
+            "memory.close",
         ]
         assert not authorities.context_staging.database.is_open
         with Database.open(path) as reopened:
@@ -153,3 +144,19 @@ def test_demo_builder_remains_distinct_from_production_builder() -> None:
     from simple_harness.runtime import build_consumer_runtime
 
     assert build_consumer_runtime is not build_production_runtime
+
+
+def test_production_build_failure_cleans_runtime_owned_memory(tmp_path: Path) -> None:
+    trace: list[str] = []
+
+    def fail_build(_uow) -> None:  # type: ignore[no-untyped-def]
+        raise RuntimeError("build failed")
+
+    config = _config(
+        tmp_path / "failed.db",
+        trace,
+        provider_builder=fail_build,
+    )
+    with pytest.raises(RuntimeError, match="build failed"):
+        build_production_runtime(config)
+    assert trace == ["memory.close"]

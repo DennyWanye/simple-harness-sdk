@@ -1,6 +1,6 @@
 # Public contracts
 
-The v0.1 contract surface is deliberately small, immutable, JSON-safe, and
+The contract surface is deliberately small, immutable, JSON-safe, and
 independent from every consumer product. All names documented here are also
 exported from `simple_harness`; consumers do not need deep imports.
 
@@ -65,3 +65,38 @@ accept a validated lowercase snake-case extension code for later modules.
 change requires an intentional snapshot change, documentation update, and
 SemVer review; consumers must not import private implementation helpers.
 
+## Agent Memory v1
+
+`AgentMemoryPort` is the only public Memory protocol. It has exactly three async methods:
+`recall_for_turn(request)`, `release_recall(request)`, and
+`record_committed_turn(request)`. Requests and results are frozen, slotted values with
+canonical SHA-256 identities.
+
+`AgentIdentity` binds `deployment_id`, `household_id`, `actor_id`, and `session_id`.
+`MemoryScopeRef` supports `personal(actor_id)` and `family(household_id)` recall scopes;
+automatic committed-turn writes target only the trusted actor's personal scope.
+
+Consumers compose Memory once through `ConsumerRuntimePorts(memory=...)` or
+`ProductionRuntimeConfig(memory=...)`, then enter conversations through
+`RunClient.start_conversation()` and `RunClient.signal_conversation()`. The SDK owns recall,
+USER/untrusted Context injection, replay reuse, and release retry; the committed-turn values
+define the delivery contract wired by the following durable-outbox slice.
+`ResourceOwnership.BORROWED` leaves the object open; `RUNTIME` closes it exactly once.
+
+`ConversationContextProviderPort` is a separate read-only source for product-owned persona,
+history, skills, and tool hints. It cannot supply or forge the Memory partition. Providers
+return the same durable `source_snapshot_ref` they received.
+
+Recall timeout, transient failure, or invalid output produces a durable empty Memory stage;
+provider invocation continues without leaking exception text, paths, or Memory payload into
+the public error state.
+
+### Migration from 0.2 query/sink ports
+
+| Retired public shape | Agent Memory v1 replacement |
+| --- | --- |
+| `ConversationMemoryQueryPort` + `ConversationMemorySinkPort` | one `AgentMemoryPort` |
+| `MemoryQueryPort` / `MemoryWritePort` | `AgentMemoryPort` |
+| consumer calls prepare/recall helpers before `start()` | `RunClient.start_conversation()` |
+| separate query/sink close ownership | one explicit `ResourceOwnership` |
+| `user_id` + `session_id` | `AgentIdentity` |

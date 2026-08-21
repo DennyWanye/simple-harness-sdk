@@ -31,6 +31,7 @@ from simple_harness.execution.sqlite import (
     SqliteExecutionUnitOfWork,
 )
 from simple_harness.execution.uow import RunState
+from simple_harness.runtime.agent_memory import AgentIdentity
 from simple_harness.runtime.conversation_memory import (
     ConversationMemoryIntent,
     ConversationMemoryRole,
@@ -177,8 +178,9 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
     memory_path = root / "memory.db"
     backend_type, adapter_type = _load_memory_authority()
     turn = ConversationTurnInput(
-        "user-arm64-gate",
-        "session-arm64-gate",
+        AgentIdentity(
+            "deployment-arm64-gate", "household-arm64-gate", "user-arm64-gate", "session-arm64-gate"
+        ),
         Message(MessageRole.USER, "remember the ARM64 candidate"),
         "remember the ARM64 candidate",
     )

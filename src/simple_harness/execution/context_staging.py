@@ -52,6 +52,13 @@ class ContextStageRecord:
     consumed_continuation_id: str | None
     created_at: float
     updated_at: float
+    memory_query_hash: str | None = None
+    memory_write_fence: str | None = None
+    outcome: str | None = None
+    error_code: str | None = None
+    product_result_hash: str | None = None
+    source_snapshot_ref: str | None = None
+    turn_started_at: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +182,20 @@ class ContextStagingRepository:
         memory_result_id: str | None,
         memory_result_hash: str | None,
         now: float,
+        memory_query_hash: str | None = None,
+        memory_write_fence: str | None = None,
+        outcome: str | None = None,
+        error_code: str | None = None,
+        product_result_hash: str | None = None,
+        source_snapshot_ref: str | None = None,
+        turn_started_at: float | None = None,
+        release_id: str | None = None,
+        release_query_id: str | None = None,
+        release_query_hash: str | None = None,
+        release_result_id: str | None = None,
+        release_result_hash: str | None = None,
+        release_write_fence: str | None = None,
+        release_retry_at: float | None = None,
     ) -> ContextStageRecord:
         if claim.state is not ContextStageState.PREPARING:
             raise UnitOfWorkConflict("only a preparing context stage can complete")
@@ -185,16 +206,65 @@ class ContextStagingRepository:
             raise ValueError("Memory result id/hash must be present together")
         if memory_result_hash is not None:
             _digest(memory_result_hash, "memory_result_hash")
+        for digest, name in (
+            (memory_query_hash, "memory_query_hash"),
+            (product_result_hash, "product_result_hash"),
+        ):
+            if digest is not None:
+                _digest(digest, name)
+        if outcome is not None and outcome not in {"ready", "degraded_empty"}:
+            raise ValueError("context stage outcome is invalid")
+        if turn_started_at is not None:
+            _time(turn_started_at, allow_zero=True)
+        release_values = (
+            release_id,
+            release_query_id,
+            release_query_hash,
+            release_result_id,
+            release_result_hash,
+            release_retry_at,
+        )
+        if any(value is not None for value in release_values) and not all(
+            value is not None for value in release_values
+        ):
+            raise ValueError("recall release fields must be present together")
+        if release_id is not None:
+            assert release_query_id is not None
+            assert release_query_hash is not None
+            assert release_result_id is not None
+            assert release_result_hash is not None
+            assert release_retry_at is not None
+            for value, name in (
+                (release_id, "release_id"),
+                (release_query_id, "release_query_id"),
+                (release_result_id, "release_result_id"),
+            ):
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{name} is required")
+            _digest(release_query_hash, "release_query_hash")
+            _digest(release_result_hash, "release_result_hash")
+            if release_write_fence is not None and not release_write_fence.strip():
+                raise ValueError("release_write_fence must be non-blank")
+            _time(release_retry_at, allow_zero=True)
         with self.database.transaction() as connection:
             changed = connection.execute(
                 "UPDATE context_preparation_staging SET state='staged',lease_owner=NULL,"
                 "lease_token=NULL,lease_expires_at=NULL,memory_result_id=?,"
-                "memory_result_hash=?,private_snapshot=?,private_snapshot_hash=?,"
+                "memory_result_hash=?,memory_query_hash=?,memory_write_fence=?,outcome=?,"
+                "error_code=?,product_result_hash=?,source_snapshot_ref=?,turn_started_at=?,"
+                "private_snapshot=?,private_snapshot_hash=?,"
                 "updated_at=? WHERE stage_id=? AND state='preparing' AND lease_owner=? "
                 "AND lease_token=?",
                 (
                     memory_result_id,
                     memory_result_hash,
+                    memory_query_hash,
+                    memory_write_fence,
+                    outcome,
+                    error_code,
+                    product_result_hash,
+                    source_snapshot_ref,
+                    turn_started_at,
                     snapshot_bytes,
                     snapshot_hash,
                     now,
@@ -205,6 +275,24 @@ class ContextStagingRepository:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("context stage completion CAS failed")
+            if release_id is not None:
+                connection.execute(
+                    "INSERT INTO memory_recall_releases("
+                    "release_id,stage_id,query_id,query_hash,result_id,result_hash,write_fence,"
+                    "state,attempt_count,retry_at,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,'pending',0,?,?)",
+                    (
+                        release_id,
+                        claim.stage_id,
+                        release_query_id,
+                        release_query_hash,
+                        release_result_id,
+                        release_result_hash,
+                        release_write_fence,
+                        release_retry_at,
+                        now,
+                    ),
+                )
         result = self.get(claim.stage_id)
         assert result is not None
         return result
@@ -357,6 +445,21 @@ def _stage(row) -> ContextStageRecord:  # type: ignore[no-untyped-def]
         ),
         created_at=float(row["created_at"]),
         updated_at=float(row["updated_at"]),
+        memory_query_hash=(
+            None if row["memory_query_hash"] is None else str(row["memory_query_hash"])
+        ),
+        memory_write_fence=(
+            None if row["memory_write_fence"] is None else str(row["memory_write_fence"])
+        ),
+        outcome=None if row["outcome"] is None else str(row["outcome"]),
+        error_code=None if row["error_code"] is None else str(row["error_code"]),
+        product_result_hash=(
+            None if row["product_result_hash"] is None else str(row["product_result_hash"])
+        ),
+        source_snapshot_ref=(
+            None if row["source_snapshot_ref"] is None else str(row["source_snapshot_ref"])
+        ),
+        turn_started_at=(None if row["turn_started_at"] is None else float(row["turn_started_at"])),
     )
 
 

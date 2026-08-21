@@ -186,7 +186,7 @@ class Database:
         descriptor = fresh_descriptor()
         if applied != {SCHEMA_VERSION: (descriptor.name, descriptor.checksum)}:
             raise ExecutionSchemaIncompatible(
-                "execution database requires a fresh schema v3 storage set"
+                "execution database requires a fresh schema v4 storage set"
             )
         if self.integrity_check() != ("ok",) or self.foreign_key_violations():
             raise RuntimeError("SDK execution database failed integrity validation")

@@ -1,29 +1,24 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Consumer adapter layer bridging simple consumer ports to SDK kernel ports.
-
-This module provides the missing link between external consumer implementations
-and the internal SDK kernel, making it easy for external projects to integrate
-Simple Harness SDK.
-
-``build_consumer_runtime`` is a demo/basic facade; production consumers should
-assemble ``RuntimePorts`` directly.
-"""
+"""Official production consumer composition for Simple Harness SDK."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
 from simple_harness.execution.context_authority import ToolCatalogSnapshot
+from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySink
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.sqlite import Database
 from simple_harness.execution.sqlite.uow import SqliteExecutionUnitOfWork
 from simple_harness.providers import (
     ProviderReconciliationObservation,
+    ProviderReconciliationPort,
     ProviderReconciliationState,
     ProviderRequest,
     ProviderResponse,
@@ -40,11 +35,24 @@ from simple_harness.tools import (
 from simple_harness.tools.reconciliation import (
     ReconciliationObservation,
     ReconciliationState,
+    ToolReconciliationPort,
 )
 
+from .agent_memory import AgentMemoryPort, MemoryFailurePolicy, ResourceOwnership
 from .context import SqliteContextPort
+from .conversation_context_provider import (
+    ConversationContextProviderPort,
+    CurrentMessageContextProvider,
+)
+from .conversation_memory import ContextPreparationMode
 from .drivers import build_react_driver
-from .kernel import Runtime, RuntimePorts, RuntimeProfile, build_runtime
+from .kernel import (
+    Runtime,
+    RuntimePorts,
+    RuntimeProfile,
+    RuntimeReconciliationPort,
+    build_runtime,
+)
 from .ports import (
     AuthorizationPort,
     ProviderPort,
@@ -54,6 +62,41 @@ from .ports import (
     AuthorizationRequest as ConsumerAuthRequest,
 )
 from .termination import TerminationLimits
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumerRuntimePolicies:
+    """Explicit defaults for local, unpriced and fail-closed operation."""
+
+    pricing_mode: str
+    external_delivery: bool
+    unknown_side_effect: str
+    estimator: FrozenPriceEstimator | None = None
+    budget_policy: BudgetPolicy = field(default_factory=BudgetPolicy)
+    tool_reconciliation: ToolReconciliationPort | None = None
+    provider_reconciliation: ProviderReconciliationPort | None = None
+    runtime_reconciliation: RuntimeReconciliationPort | None = None
+
+    @classmethod
+    def local_default(cls) -> ConsumerRuntimePolicies:
+        return cls("unpriced_local", False, "fail_closed")
+
+    def __post_init__(self) -> None:
+        if self.pricing_mode not in {"unpriced_local", "consumer_supplied"}:
+            raise ValueError("pricing_mode is invalid")
+        if self.unknown_side_effect not in {"fail_closed", "consumer_reconciles"}:
+            raise ValueError("unknown_side_effect is invalid")
+        if self.pricing_mode == "consumer_supplied" and self.estimator is None:
+            raise ValueError("consumer_supplied pricing requires estimator")
+        if self.unknown_side_effect == "consumer_reconciles" and any(
+            value is None
+            for value in (
+                self.tool_reconciliation,
+                self.provider_reconciliation,
+                self.runtime_reconciliation,
+            )
+        ):
+            raise ValueError("consumer_reconciles requires all reconciliation authorities")
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +131,27 @@ class ConsumerRuntimePorts:
     # Optional closed input schemas keyed by tool name. Tools without a
     # declared schema keep the fail-closed no-argument default.
     tool_schemas: Mapping[str, dict] = field(default_factory=dict)
+    memory: AgentMemoryPort | None = None
+    memory_ownership: ResourceOwnership = ResourceOwnership.BORROWED
+    memory_failure_policy: MemoryFailurePolicy = MemoryFailurePolicy.DEGRADE_RECALL_AND_RETRY_RECORD
+    context_provider: ConversationContextProviderPort = field(
+        default_factory=CurrentMessageContextProvider
+    )
+    policies: ConsumerRuntimePolicies = field(default_factory=ConsumerRuntimePolicies.local_default)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "memory_ownership", ResourceOwnership(self.memory_ownership))
+        object.__setattr__(
+            self, "memory_failure_policy", MemoryFailurePolicy(self.memory_failure_policy)
+        )
+        if not isinstance(self.policies, ConsumerRuntimePolicies):
+            raise TypeError("policies must use ConsumerRuntimePolicies")
+        if self.memory is not None:
+            for method_name in ("recall_for_turn", "release_recall", "record_committed_turn"):
+                if not callable(getattr(self.memory, method_name, None)):
+                    raise TypeError(f"memory must implement {method_name}")
+            if not callable(getattr(self.context_provider, "prepare_once", None)):
+                raise TypeError("context_provider must implement prepare_once")
 
 
 class _ConsumerAuthorizationAdapter:
@@ -261,17 +325,15 @@ class _DefaultToolCatalog:
         return None
 
 
-async def build_consumer_runtime(
+async def _build_consumer_runtime(
     ports: ConsumerRuntimePorts,
     delivery_sinks: Mapping[str, DeliverySink] | None = None,
 ) -> Runtime:
-    """Build a Runtime from consumer-provided simple ports.
+    """Build the official production Runtime from consumer-provided ports.
 
-    This is a demo/basic facade for external consumers. It bridges the simple
-    ConsumerRuntimePorts interface to the complex internal RuntimePorts interface,
-    but does NOT provide production-grade delivery, memory, or real pricing (the
-    price estimator is a zero-cost stub and reconciliation is a no-op). Production
-    consumers should assemble ``RuntimePorts`` directly.
+    Agent Memory is optional. When supplied, the Runtime owns recall staging,
+    retry/recovery orchestration and committed-turn delivery. Resources are
+    borrowed unless ``memory_ownership=RUNTIME`` is explicit.
 
     Args:
         ports: Consumer port implementations
@@ -306,6 +368,12 @@ async def build_consumer_runtime(
             await runtime.__aexit__(None, None, None)
     """
 
+    if ports.memory is not None:
+        memory_path = _memory_path(ports.memory)
+        execution_path = Path(ports.database_path).expanduser().resolve()
+        if memory_path is not None and execution_path == memory_path:
+            raise ValueError("execution and Memory databases must use different resolved paths")
+
     # Open database
     database = Database.open(ports.database_path)
     uow = SqliteExecutionUnitOfWork(database)
@@ -320,7 +388,7 @@ async def build_consumer_runtime(
     auth_adapter = _ConsumerAuthorizationAdapter(ports.authorization)
 
     # Build effect executor
-    tool_reconciliation = _DefaultToolReconciliation()
+    tool_reconciliation = ports.policies.tool_reconciliation or _DefaultToolReconciliation()
     effects = EffectExecutor(
         uow=uow,
         registry=tool_registry,
@@ -330,8 +398,8 @@ async def build_consumer_runtime(
 
     # Build provider coordinator
     provider_adapter = _ConsumerProviderAdapter(ports.provider, ports.model)
-    estimator = FrozenPriceEstimator("consumer-v1", "consumer", 0, 0)
-    budget_policy = BudgetPolicy()
+    estimator = ports.policies.estimator or FrozenPriceEstimator("consumer-v1", "consumer", 0, 0)
+    budget_policy = ports.policies.budget_policy
     provider_coordinator = ProviderInvocationCoordinator(
         uow=uow,
         provider=provider_adapter,
@@ -350,11 +418,23 @@ async def build_consumer_runtime(
         context=context,
         delivery=DeliveryDispatcher(uow, dict(delivery_sinks or {})),
         tool_reconciliation=tool_reconciliation,
-        reconciliation=_DefaultRuntimeReconciliation(),
-        provider_reconciliation=_DefaultProviderReconciliation(),
+        reconciliation=(
+            ports.policies.runtime_reconciliation or _DefaultRuntimeReconciliation()
+        ),
+        provider_reconciliation=(
+            ports.policies.provider_reconciliation or _DefaultProviderReconciliation()
+        ),
         react_checkpoint=uow,
         tool_catalog=_DefaultToolCatalog(),
         owner_id=ports.owner_id,
+        conversation_memory_enabled=ports.memory is not None,
+        context_staging=(None if ports.memory is None else ContextStagingRepository(database)),
+        context_preparation_mode=(
+            None if ports.memory is None else ContextPreparationMode.SDK_PREPARED
+        ),
+        agent_memory=ports.memory,
+        context_provider=ports.context_provider,
+        memory_failure_policy=ports.memory_failure_policy,
     )
 
     # Build ReAct driver
@@ -368,18 +448,62 @@ async def build_consumer_runtime(
     )
 
     # Build runtime
+    async_close_hooks: tuple[Callable[[], Awaitable[None]], ...] = ()
+    if ports.memory is not None and ports.memory_ownership is ResourceOwnership.RUNTIME:
+        close = getattr(ports.memory, "close", None)
+        if not callable(close):
+            uow.close()
+            raise TypeError("runtime-owned memory must expose close()")
+
+        async def close_memory() -> None:
+            outcome = close()
+            if hasattr(outcome, "__await__"):
+                await outcome
+
+        async_close_hooks = (close_memory,)
     runtime = build_runtime(
         uow=uow,  # type: ignore[arg-type]
         profiles={"agent.general": RuntimeProfile("agent.general", "react")},
         drivers={"react": driver},
         ports=runtime_ports,
         close_hook=uow.close,
+        async_close_hooks=async_close_hooks,
     )
 
     return runtime
 
 
+async def build_consumer_runtime(
+    ports: ConsumerRuntimePorts,
+    delivery_sinks: Mapping[str, DeliverySink] | None = None,
+) -> Runtime:
+    """Build the official Runtime and clean up an owned Memory on failure."""
+
+    try:
+        return await _build_consumer_runtime(ports, delivery_sinks)
+    except BaseException:
+        if ports.memory is not None and ports.memory_ownership is ResourceOwnership.RUNTIME:
+            close = getattr(ports.memory, "close", None)
+            if callable(close):
+                outcome = close()
+                if hasattr(outcome, "__await__"):
+                    await outcome
+        raise
+
+
+def _memory_path(memory: AgentMemoryPort) -> Path | None:
+    for value in (
+        getattr(memory, "db_path", None),
+        getattr(memory, "path", None),
+        getattr(getattr(memory, "database", None), "path", None),
+    ):
+        if isinstance(value, (str, Path)):
+            return Path(value).expanduser().resolve()
+    return None
+
+
 __all__ = (
+    "ConsumerRuntimePolicies",
     "ConsumerRuntimePorts",
     "build_consumer_runtime",
 )

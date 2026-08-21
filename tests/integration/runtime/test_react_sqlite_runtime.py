@@ -32,6 +32,7 @@ from simple_harness.providers import (
     ProviderToolCall,
 )
 from simple_harness.runtime import (
+    AgentIdentity,
     AgentLoopCollaborator,
     ConversationContinuationInput,
     ConversationMemoryQueryStatus,
@@ -222,7 +223,9 @@ def test_continuation_staged_memory_is_frozen_as_untrusted_user_context(
         uow = SqliteExecutionUnitOfWork(database)
         root_message = Message(MessageRole.USER, "root question")
         root_conversation = ConversationTurnInput(
-            "user-1", "session-1", root_message, "root question"
+            AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
+            root_message,
+            "root question",
         )
         start = StartSnapshot(
             profile_key="agent.general",
@@ -260,7 +263,11 @@ def test_continuation_staged_memory_is_frozen_as_untrusted_user_context(
             (root_message,),
         )
         next_message = Message(MessageRole.USER, "next question")
-        next_value = ConversationTurnInput("user-1", "session-1", next_message, "next question")
+        next_value = ConversationTurnInput(
+            AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
+            next_message,
+            "next question",
+        )
         staged = await prepare_sdk_conversation_context(
             ContextStagingRepository(database),
             Recall(),

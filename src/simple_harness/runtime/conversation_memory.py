@@ -27,6 +27,8 @@ from simple_harness.contracts.messages import (
     MessageRole,
 )
 
+from .agent_memory import AgentIdentity, MemoryScopeKind, MemoryScopeRef
+
 
 class ConversationMemoryRole(StrEnum):
     USER = "user"
@@ -106,35 +108,79 @@ def _conversation_message(
 
 @dataclass(frozen=True, slots=True)
 class ConversationTurnInput:
-    user_id: str
-    session_id: str
+    identity: AgentIdentity
     message: Message
     memory_text: str | None
+    recall_scopes: tuple[MemoryScopeRef, ...] = ()
+    context_source_snapshot_ref: str | None = None
 
     def __post_init__(self) -> None:
-        _validate_identity(self.user_id, "user_id")
-        _validate_identity(self.session_id, "session_id")
+        if not isinstance(self.identity, AgentIdentity):
+            raise TypeError("identity must use AgentIdentity")
         message, memory_text = _conversation_message(
             self.message, role=MessageRole.USER, memory_text=self.memory_text
         )
+        scopes = tuple(self.recall_scopes) or (
+            MemoryScopeRef.personal(self.identity.actor_id),
+            MemoryScopeRef.family(self.identity.household_id),
+        )
+        if not all(isinstance(scope, MemoryScopeRef) for scope in scopes):
+            raise TypeError("recall_scopes must contain MemoryScopeRef values")
+        allowed = {
+            (MemoryScopeKind.PERSONAL, self.identity.actor_id),
+            (MemoryScopeKind.FAMILY, self.identity.household_id),
+        }
+        if any((scope.kind, scope.owner_id) not in allowed for scope in scopes):
+            raise ValueError("recall scope is not owned by the trusted identity")
+        if len({(scope.kind, scope.owner_id) for scope in scopes}) != len(scopes):
+            raise ValueError("recall_scopes must be unique")
+        if self.context_source_snapshot_ref is not None:
+            _validate_identity(self.context_source_snapshot_ref, "context_source_snapshot_ref")
         object.__setattr__(self, "message", message)
         object.__setattr__(self, "memory_text", memory_text)
+        object.__setattr__(self, "recall_scopes", scopes)
+
+    @property
+    def user_id(self) -> str:
+        """Compatibility projection; trusted authority is ``identity.actor_id``."""
+
+        return self.identity.actor_id
+
+    @property
+    def session_id(self) -> str:
+        return self.identity.session_id
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
-            "user_id": self.user_id,
-            "session_id": self.session_id,
+            "identity": self.identity.to_json(),
             "message": self.message.to_dict(),
             "memory_text": self.memory_text,
+            "recall_scopes": [scope.to_json() for scope in self.recall_scopes],
+            "context_source_snapshot_ref": self.context_source_snapshot_ref,
         }
 
     @classmethod
     def from_json(cls, value: Mapping[str, JsonValue]) -> ConversationTurnInput:
+        identity = value.get("identity")
+        if not isinstance(identity, Mapping):
+            raise TypeError("conversation identity must be an object")
+        raw_scopes = value.get("recall_scopes")
+        if not isinstance(raw_scopes, list):
+            raise TypeError("recall_scopes must be an array")
+        scopes: list[MemoryScopeRef] = []
+        for raw_scope in raw_scopes:
+            if not isinstance(raw_scope, Mapping):
+                raise TypeError("recall scope must be an object")
+            scopes.append(MemoryScopeRef.from_json(raw_scope))
+        source_ref = value.get("context_source_snapshot_ref")
+        if source_ref is not None and not isinstance(source_ref, str):
+            raise TypeError("context_source_snapshot_ref must be a string or null")
         return cls(
-            _required_string(value.get("user_id"), "user_id"),
-            _required_string(value.get("session_id"), "session_id"),
+            AgentIdentity.from_json(identity),
             _message_from_json(value.get("message")),
             _optional_text(value.get("memory_text")),
+            tuple(scopes),
+            source_ref,
         )
 
 

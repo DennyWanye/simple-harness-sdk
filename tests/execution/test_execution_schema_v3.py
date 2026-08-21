@@ -15,15 +15,18 @@ from simple_harness.execution.sqlite import (
 )
 
 
-def test_fresh_v3_is_one_identity_with_conversation_tables(tmp_path: Path) -> None:
+def test_fresh_v4_is_one_identity_with_conversation_tables(tmp_path: Path) -> None:
     with Database.open(tmp_path / "execution.db") as database:
-        assert database.schema_version == SCHEMA_VERSION == 3
+        assert database.schema_version == SCHEMA_VERSION == 4
         assert {
             "execution_users",
             "memory_outbox",
             "context_preparation_staging",
             "tool_catalog_snapshots",
             "provider_projection_outbox",
+            "agent_identity_bindings",
+            "memory_recall_releases",
+            "committed_turn_outbox",
         } <= database.table_names()
         assert database.foreign_keys_enabled
         assert database.integrity_check() == ("ok",)
@@ -31,7 +34,7 @@ def test_fresh_v3_is_one_identity_with_conversation_tables(tmp_path: Path) -> No
         history = database.connection.execute(
             "SELECT version,name FROM sdk_schema_migrations"
         ).fetchall()
-        assert [tuple(row) for row in history] == [(3, "0003_fresh")]
+        assert [tuple(row) for row in history] == [(4, "0004_fresh")]
 
 
 def test_v2_history_fails_closed_without_mutation(tmp_path: Path) -> None:

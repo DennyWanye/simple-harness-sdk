@@ -143,7 +143,7 @@ def test_public_progress_normalization_never_blocks_business_arguments() -> None
     assert narration == "Reading file"
 
 
-def test_v015_database_requires_fresh_v3_storage_set(tmp_path: Path) -> None:
+def test_database_requires_fresh_v4_storage_set(tmp_path: Path) -> None:
     path = tmp_path / "legacy.db"
     resources = files("simple_harness.execution.sqlite.migrations")
     first = resources.joinpath("0001_initial.sql").read_text(encoding="utf-8")
@@ -194,7 +194,7 @@ def test_v015_database_requires_fresh_v3_storage_set(tmp_path: Path) -> None:
     connection.commit()
     connection.close()
 
-    with pytest.raises(ExecutionSchemaIncompatible, match="fresh schema v3"):
+    with pytest.raises(ExecutionSchemaIncompatible, match="fresh schema v4"):
         Database.open(path)
 
     check = sqlite3.connect(path)

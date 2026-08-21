@@ -116,7 +116,7 @@ GOOD_VALUES = {
         "stable_statuses": True,
     },
     "conversation.schema_identity": {
-        "schema_version": 3,
+        "schema_version": 4,
         "history_rows": 1,
         "fresh_only": True,
         "foreign_keys": True,

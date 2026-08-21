@@ -5,6 +5,24 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## Unreleased
+
+### Added
+- Official `AgentMemoryPort` v1 contract with trusted four-part identity, personal/family
+  scopes, canonical recall/release/committed-turn DTOs, stable errors, failure policy, and
+  explicit borrowed/runtime ownership.
+- `ConversationContextProviderPort` for product-owned non-Memory Context and automatic
+  `RunClient.start_conversation()` / continuation preparation.
+- Fresh execution schema v4 with immutable Agent identity bindings, richer Context staging,
+  durable recall-release retry, and the committed-turn outbox schema reserved for S2.
+
+### Changed
+- `build_consumer_runtime` is the official easy composition root and accepts one Memory
+  instance; recall failures degrade to a frozen empty partition and replay does not recall
+  again.
+- Old query/sink and reserved query/write ports are retired from public exports. Consumers
+  migrate to one `AgentMemoryPort` and no longer call preparation helpers manually.
+
 ## 0.2.0 — candidate
 
 **Focus:** Durable conversation Memory integration without replacing the 0.1.5

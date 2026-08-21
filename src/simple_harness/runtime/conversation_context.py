@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import math
+import warnings
 from collections.abc import Awaitable, Callable, Mapping
 from typing import cast
 
@@ -496,6 +497,12 @@ async def prepare_consumer_conversation_context(
     wait_seconds: float = 0.01,
     max_waits: int = 100,
 ) -> ContextStageRecord:
+    warnings.warn(
+        "prepare_consumer_conversation_context is an internal compatibility helper; "
+        "compose a ConversationContextProviderPort and use RunClient.start_conversation",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     _preparation_bounds(
         lease_seconds=lease_seconds,
         wait_seconds=wait_seconds,

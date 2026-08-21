@@ -4,6 +4,24 @@
 """Durable runtime lifecycle public surface."""
 
 from .admission import AdmissionPort, AdmissionVerdict, AllowAllAdmission
+from .agent_memory import (
+    AgentIdentity,
+    AgentMemoryError,
+    AgentMemoryErrorCode,
+    AgentMemoryPort,
+    CommittedTurn,
+    CommittedTurnReceipt,
+    CommittedTurnStatus,
+    MemoryFailurePolicy,
+    MemoryRecallBounds,
+    MemoryRecallRequest,
+    MemoryRecallResult,
+    MemoryRecallStatus,
+    MemoryReleaseRequest,
+    MemoryScopeKind,
+    MemoryScopeRef,
+    ResourceOwnership,
+)
 from .child_runs import (
     ChildLaunchRequest,
     ChildRunHandle,
@@ -11,7 +29,11 @@ from .child_runs import (
     ProfileLaunchTicketRef,
 )
 from .child_signal_runtime import ChildSignalRuntime, ChildSignalUnitOfWork
-from .consumer_adapter import ConsumerRuntimePorts, build_consumer_runtime
+from .consumer_adapter import (
+    ConsumerRuntimePolicies,
+    ConsumerRuntimePorts,
+    build_consumer_runtime,
+)
 from .context import ContextPort, ContextSnapshot, SqliteContextPort
 from .conversation_context import (
     claim_context_preparation,
@@ -21,6 +43,14 @@ from .conversation_context import (
     get_staged_context,
     prepare_consumer_conversation_context,
     prepare_sdk_conversation_context,
+)
+from .conversation_context_provider import (
+    ConversationContextBounds,
+    ConversationContextProviderPort,
+    ConversationContextRequest,
+    ConversationContextResult,
+    CurrentMessageContextProvider,
+    source_snapshot_ref,
 )
 from .conversation_memory import (
     ContextPreparationMode,
@@ -69,10 +99,6 @@ from .ports import (
     AuthorizationPort,
     AuthorizationRequest,
     AuthorizationResult,
-    ConversationMemoryQueryPort,
-    ConversationMemorySinkPort,
-    MemoryQueryPort,
-    MemoryWritePort,
     ProviderPort,
     ToolExecutorPort,
 )
@@ -97,6 +123,10 @@ __all__ = (
     "WORKFLOW_DRIVER_KIND",
     "AdmissionPort",
     "AdmissionVerdict",
+    "AgentIdentity",
+    "AgentMemoryError",
+    "AgentMemoryErrorCode",
+    "AgentMemoryPort",
     "AgentLoopCollaborator",
     "AllowAllAdmission",
     "AuthorizationPort",
@@ -108,22 +138,28 @@ __all__ = (
     "ChildSignalRuntime",
     "ChildSignalUnitOfWork",
     "ConsumerRuntimePorts",
+    "ConsumerRuntimePolicies",
+    "CommittedTurn",
+    "CommittedTurnReceipt",
+    "CommittedTurnStatus",
     "ContextPreparationMode",
     "ContextPort",
     "ContextSnapshot",
     "ContinuationUnitOfWork",
     "ConversationContinuationInput",
+    "ConversationContextBounds",
+    "ConversationContextProviderPort",
+    "ConversationContextRequest",
+    "ConversationContextResult",
     "ConversationMemoryApplyResult",
     "ConversationMemoryApplyStatus",
     "ConversationMemoryError",
     "ConversationMemoryErrorCode",
     "ConversationMemoryIntent",
-    "ConversationMemoryQueryPort",
     "ConversationMemoryQueryStatus",
     "ConversationMemoryRecallQuery",
     "ConversationMemoryRecallResult",
     "ConversationMemoryRole",
-    "ConversationMemorySinkPort",
     "ConversationTurnInput",
     "ConversationTurnOutput",
     "DriverCancelOutcome",
@@ -132,13 +168,21 @@ __all__ = (
     "DriverInvocation",
     "DriverResult",
     "EffectBatchExecutor",
-    "MemoryQueryPort",
-    "MemoryWritePort",
+    "CurrentMessageContextProvider",
+    "MemoryFailurePolicy",
+    "MemoryRecallBounds",
+    "MemoryRecallRequest",
+    "MemoryRecallResult",
+    "MemoryRecallStatus",
+    "MemoryReleaseRequest",
+    "MemoryScopeKind",
+    "MemoryScopeRef",
     "ProfileLaunchTicketRef",
     "ProviderPort",
     "ProductionRuntimeConfig",
     "ReconciliationPhase",
     "ReActDriver",
+    "ResourceOwnership",
     "RunClient",
     "RunStart",
     "Runtime",
@@ -172,4 +216,5 @@ __all__ = (
     "get_staged_context",
     "prepare_consumer_conversation_context",
     "prepare_sdk_conversation_context",
+    "source_snapshot_ref",
 )

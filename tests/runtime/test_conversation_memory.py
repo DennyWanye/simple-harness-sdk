@@ -7,7 +7,7 @@ import hashlib
 
 import pytest
 
-from simple_harness import ContentBlock, Message, MessageRole, canonical_json
+from simple_harness import AgentIdentity, ContentBlock, Message, MessageRole, canonical_json
 from simple_harness.runtime import (
     ConversationContinuationInput,
     ConversationMemoryIntent,
@@ -22,8 +22,7 @@ from simple_harness.runtime import (
 
 def test_conversation_dto_canonical_golden_round_trip() -> None:
     value = ConversationTurnInput(
-        "user-1",
-        "session-1",
+        AgentIdentity("deployment-1", "household-1", "user-1", "session-1"),
         Message(MessageRole.USER, "Cafe\u0301\r\nnext"),
         "Cafe\u0301\r\nnext",
     )

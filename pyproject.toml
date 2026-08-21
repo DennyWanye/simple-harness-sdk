@@ -100,6 +100,8 @@ python_version = "3.11"
 # Scoped to the public consumer surface and release-owned modules.
 # Legacy full-project typing debt remains outside the 0.2.0 release slice.
 files = [
+  "src/simple_harness/runtime/agent_memory.py",
+  "src/simple_harness/runtime/conversation_context_provider.py",
   "src/simple_harness/runtime/consumer_adapter.py",
   "src/simple_harness/runtime/ports.py",
   "src/simple_harness/runtime/conversation_memory.py",
@@ -112,4 +114,5 @@ files = [
   "src/simple_harness/execution/sqlite/storage.py",
   "src/simple_harness/testing/arm64_candidate.py",
   "src/simple_harness/testing/sinks.py",
+  "tests/typing/agent_memory_port.py",
 ]

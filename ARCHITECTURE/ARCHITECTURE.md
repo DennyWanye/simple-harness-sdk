@@ -1,62 +1,70 @@
 <!--
 SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
-last-updated: 2026-08-21
+last-updated: 2026-08-22
 -->
+<!-- last-calibrated: 869c76f2050b5f492b4edee68f4ce2400030b832 -->
 
-# Simple Harness SDK — 架构基线（v0.2.0 conversation Memory）
+# Simple Harness SDK — 架构基线（Agent Memory v1）
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
-## 0.2.0 conversation Memory 当前事实（2026-08-21）
+## Agent Memory v1 当前事实（2026-08-22）
 
-- `ConversationTurnInput` / `ConversationContinuationInput` / `ConversationTurnOutput`
-  保留完整 `Message`/`ContentBlock`，同时只允许显式 canonical `memory_text` 投影；纯非文本
-  turn 使用 `None` 并在本地结算，附件 body、reasoning 与 tool payload 不会自动进入 Memory。
-- `ConversationMemoryQueryPort.recall_bounded()` 与 `ConversationMemorySinkPort.apply()` 是稳定
-  async 边界，均有显式 `close()`；旧 reserved `MemoryQueryPort` / `MemoryWritePort` 仍可导入。
-- execution SQLite 只接受唯一、self-contained 的 `0003_fresh.sql` descriptor；loader 不读取或
-  拼接 legacy DDL。新库包含不可变 user/session 绑定、`context_preparation_staging` 与
-  `memory_outbox`；旧 v1/v2 history（包括 StartSnapshot v4 数据）稳定 fail-closed 且不迁移，
-  每次打开都开启并 read-back FK，POSIX DB 文件强制 0600 且拒绝 symlink/非普通文件。
-- root start、普通 user continuation、root terminal、continuation terminal 四条命令把对应
+- `AgentMemoryPort` 是唯一官方 Memory 边界：`recall_for_turn`、`release_recall`、
+  `record_committed_turn`。旧 query/sink 与 reserved query/write ports 已从两层 public surface 退休，
+  仅作为 schema v3 内部兼容代码保留。
+- `AgentIdentity(deployment_id, household_id, actor_id, session_id)` 是可信身份；每个 session 首次
+  conversation entry 前写入 immutable binding，任何 rebind 都在第二次 recall 前 fail-closed。
+  `MemoryScopeRef` 只允许 personal/family，automatic committed turn 只允许写可信 actor 的 personal scope。
+- `ConversationTurnInput` / `ConversationContinuationInput` 持有完整 identity、Message、canonical
+  `memory_text`、recall scopes 与可选 product `source_snapshot_ref`。附件 body、reasoning 与 tool payload
+  不会隐式进入 Memory。
+- `build_consumer_runtime` 与 `build_production_runtime` 统一接收一个 `memory=AgentMemoryPort`；
+  `ResourceOwnership.BORROWED` 不关闭消费者资源，`RUNTIME` 在 build failure 或重复 Runtime close 时
+  恰好关闭一次。同一 resolved path 同时作为 execution/Memory storage 会在组合时拒绝。
+- `RunClient.start_conversation()` / `signal_conversation()` 是 Memory-enabled 的正式入口：SDK 自动调用
+  product `ConversationContextProviderPort.prepare_once` 与一次 bounded recall，合并并冻结 Context stage，
+  再进入 durable start/continuation。generic `start()` 在 Memory enabled 时拒绝绕过该入口。
+- execution SQLite 只接受唯一、self-contained 的 `0004_fresh.sql`。新库包含 immutable
+  `agent_identity_bindings`、扩展后的 `context_preparation_staging`、durable
+  `memory_recall_releases`，以及供后续 S2 启用的 `committed_turn_outbox` schema；旧 schema 稳定
+  fail-closed 且不执行 in-place migration。
+- root start、普通 user continuation、root terminal、continuation terminal 四条命令把对应的**逐消息**
   Memory intent 与 execution 事实放在同一 SQLite 事务；replay 同时比较 canonical intent hash。
   replay 还按命令的 run/continuation/role authority 区分“原命令无 intent”和“原命令有 intent”：
   same intent 可重放，different/missing/后加 intent 均稳定 conflict。非文本 intent 直接进入
   `skipped_non_text`，不会调用 sink。
-- context preparation 先持久 claim identity/input hash 与有界 lease。`sdk_prepared` 只有 owner
-  发 deterministic query，并在 staging 前校验返回的 `context_query_id` 与 canonical `query_hash`
-  精确对应请求，错误关联 fail-closed 且不产生 staged context；`consumer_prepared` 也遵循单 winner。
-  consumer private snapshot v1 还强制 deterministic query lineage、当前 USER message，以及 Memory
-  result lineage / USER+untrusted partition / `source=memory` provider message 三者同现或同缺；persona/skills
-  等非 Memory SYSTEM message 保持允许。任何 SYSTEM/developer Memory、半个 result identity 或 query 漂移
-  都在 staging private bytes 前拒绝。
+  user intent 在 root start/continuation enqueue 即可投递，即使后续 Run failed/cancelled；assistant intent
+  才受 completed terminal 约束。该 v3 dispatcher 只为内部兼容；S2 将切换为 committed user+assistant
+  Turn envelope 与 receipt，v4 outbox 当前尚未投递。
+- context preparation 先持久 claim identity/input hash 与有界 lease。winner 调用 product provider 与
+  deterministic recall；replay 复用同一 frozen stage，不二次调用两者。product provider 只能提供
+  persona/history/skills/tool hints 等非 Memory Context，伪造 `source=memory` 会在冻结前拒绝。
   private snapshot 把 recall 结果作为 USER/untrusted data，并在 start/continuation 原事务消费后清空
   private bytes、保留 lineage/hash；continuation 的 frozen prepared messages 连同本轮 message 一次性
   进入 ReAct durable context，Memory 数据不得提升为 SYSTEM。ReAct 恢复只读冻结 snapshot，不二次 recall。
-- `ConversationMemoryQueryPort.release(user_id=..., context_query_id=..., result_hash=...)` 是幂等 recall
-  retention 边界。SDK/consumer preparation 都先 durable complete stage，再 bounded release；release 失败
-  不回滚 stage，重放以同 lineage 重试。已取得 result 后的逻辑错误/取消执行一次 best-effort release，
-  进程崩溃仍由 Memory retention horizon 兜底。
-- 所有 context preparation lease/wait/overall-timeout 参数先拒绝 bool、NaN 与正负无穷；SDK recall 由
-  finite overall timeout 包裹，并在 port 返回边界独立校验 deterministic query identity/hash、canonical
-  payload hash/bytes、items 结构与 count，以及 query item/byte 上限。hang、10 KiB-over-64 B、over-count
-  或内部统计漂移均不产生 staged private bytes，并对已取得的合法 result lineage best-effort release。
+- valid/corrupt recall result 的 release candidate 先写入 `memory_recall_releases` 再调用
+  `release_recall`；失败不回滚 stage，由运行时与 startup pump 持久重试直至 released。
+- recall timeout/transient/typed contract failure 统一冻结 `degraded_empty` stage；公开状态只保存稳定
+  error code 与可用 write fence，不包含 exception 文本、路径或 payload。Memory 始终作为 USER/
+  `untrusted_data` 注入，不能提升为 SYSTEM/developer authority。
 - `RunClient.signal()` 的 generic continuation namespace 明确拒绝保留的 `conversation_user` kind；
   普通 user turn 只能通过 `signal_conversation()` 携带 typed DTO、durable context stage 与同事务 intent，
   产品 generic payload 不能伪造该 authority。
-- `MemoryDispatcher` 用 claim token/expiry、transient backoff、permanent dead-letter 与幂等 sink
+- legacy `MemoryDispatcher` 用 claim token/expiry、transient backoff、permanent dead-letter 与幂等 sink
   恢复；apply 成功后 ack 前崩溃会以同 source event 重放。Runtime 在 recovery/drain 后启动 pump，
-  close 时 bounded drain，并关闭 projection pump、query、sink 与 execution DB。关闭路径把
+  close 时 bounded drain。Agent Memory release pump 独立恢复；统一 Memory resource 按显式 ownership
+  关闭且不会 double-close。关闭路径把
   `asyncio.wait` 输入物化，并只 cancel/gather 未完成任务，兼容 Python 3.11–3.13。
 - child terminal 与 parent signal 虽在同一 durable terminal 事务提交，wake pump 仍须等待该 child
   离开 process-local active task 生命周期后才可 claim/ack 对应 parent signal；因此
   `wait_idle(child)` 的完成边界不会与 parent 自动恢复竞速，startup recovery 在 Python 3.11–3.13
   保持相同可观察顺序。
 - `build_production_runtime(ProductionRuntimeConfig)` 是严格生产组合根：Provider、Tool、Auth、
-  Delivery、reconcilers、conversation Ports、context staging builder 都必须显式提供；同时保留
+  Delivery、reconcilers、统一 Agent Memory、Context provider 都必须显式组合；同时保留
   0.1.5 的 tool catalog、Provider budget resolver/projection pump、run binding 与 structured-message
-  services。`build_consumer_runtime` 仍是独立 demo/basic facade。
+  services。`ConsumerRuntimePorts`、policies 与 builder 现在也是顶层正式 public API。
 - StartSnapshot v5 新增 conversation envelope、preparation mode、stage identity/hash 与 private
   snapshot；v1–v4 仍可读。Memory enabled 缺 envelope/stage/mode 时 kernel fail-closed；disabled
   generic run 不创建 Memory intent。ReAct 完成结果经 typed `conversation_output`，通用 payload
@@ -67,15 +75,17 @@ last-updated: 2026-08-21
   tag、也不重新 build；artifact contract 静态拒绝 CI 重新引入 `SOURCE_DATE_EPOCH`。
 - `simple_harness.testing.arm64_candidate:run_core_gate` 是 zero-argument synchronous public gate：
   只在 Linux ARM64 与两个非 editable、版本精确的 installed-wheel distributions 上运行。它用真实
-  Harness fresh v3 UOW、Memory SQLite backend/adapter 与 dispatcher，注入 Memory apply 成功但 ack 前
+  Harness fresh v4 UOW、Memory SQLite backend/adapter 与 dispatcher，注入 Memory apply 成功但 ack 前
   崩溃，关闭并重开两库后验证 outbox 以同 source event 收敛到单条 Memory record，同时 read-back WAL、
   FK、integrity 与 0600。成功结果包含 `minimal_runtime`、`memory_outbox_restart`、`sqlite_reopen`
   三个 true 值及 Python/架构/distribution identity；任何失败以 stable code 抛错/CLI 非零退出。
 - root、`simple_harness.runtime` 与 `simple_harness.testing.arm64_candidate` 的 `__all__` 均由同一 public
   API snapshot 固定；conversation DTO/ports、production builder 与 ARM64 gate entrypoint 的增删或重排
   都会触发契约测试失败。
-- 2026-08-21 验证：H1 70 passed；H2 15 passed；Python 3.11/3.12/3.13 full pytest
-  各 1325 passed / 2 expected skips；consumer authority / recall release / finite bounds targeted
+- 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
+  1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、
+  atomic release-pending、replay、rebind、malicious product Context、ownership/build cleanup 与 legacy
+  public-port retirement targeted 全绿。此前 consumer authority / recall release / finite bounds targeted
   74 passed；spawn-child recovery 全 8 参数在 Python 3.11 连续 20 轮
   （160 cases）通过；P0/P1 authority hardening targeted 76 passed；ARM64 public/artifact targeted
   9 passed。release-owned mypy 12 files 无错误；冻结 H3 范围 `ruff check src tests` 已由
@@ -99,29 +109,30 @@ last-updated: 2026-08-21
 - `deskpet_public_progress` 是可选公开进度元数据；缺失、空白或类型错误时只剥离该字段，
   不阻断业务工具参数。8 MiB/block 与 16 MiB/Run 上限由产品 ingress 前置执行。
 
-## 1. Consumer Adapter 层（`runtime/consumer_adapter.py`，历史边界）
+## 1. Consumer Adapter 层（`runtime/consumer_adapter.py`，当前边界）
 
 外部消费者 → SDK kernel 的桥接层。核心入口 `build_consumer_runtime(ports: ConsumerRuntimePorts) -> Runtime`。
 
-**历史链路**（0.1.4 审计时）：
+**当前链路**（0.2.0）：
 
-1. `Database.open(ports.database_path)` 打开 SQLite（**行 294**，未见关闭 hook，见 §4）。
+1. `Database.open(ports.database_path)` 打开 SQLite（以 `build_consumer_runtime` 符号为准）。
 2. `SqliteExecutionUnitOfWork(database)` 建 uow。
 3. `_ConsumerToolExecutorAdapter.build_registry()` 把消费者的 `ToolExecutorPort` 包成 SDK `ToolRegistry`。
 4. `_ConsumerAuthorizationAdapter` / `_ConsumerProviderAdapter` 桥接 auth/provider。
-5. 组装 `RuntimePorts`（行 320-333），其中 `delivery=DeliveryDispatcher(uow, {"consumer": _DefaultDeliverySink()})`。
+5. 组装 `RuntimePorts`；缺省不注册 delivery sink，避免无声假投递。
 6. `build_react_driver` + `build_runtime` 返回 Runtime。
 
-**已知缺陷（H1 目标）**：
-- `_DefaultDeliverySink.deliver`（行 249-253）是 `pass`，但 `DeliveryDispatcher` 无异常即 `complete_delivery` → **假 DELIVERED**。
-- 工具 handler（行 199-203）`execute(call, {})` 传空字典，丢失 run/request/session 上下文。
-- `build_consumer_runtime` 是 demo 级 facade：缺 memory、真实计费（`FrozenPriceEstimator(...,0,0)`）、reconciliation 写死 `STILL_UNKNOWN`。
+**当前边界**：
+- 工具 handler 仍以简化 context 调用 consumer executor，不能替代严格 production authority。
+- `build_consumer_runtime` 是正式易用组合根：支持统一 Agent Memory、Context provider、ownership 与
+  显式 local policies；定价默认仍为 unpriced local，严格计费/调和需求使用 production builder。
 
 ## 2. Delivery Dispatcher（`execution/delivery.py`）
 
 - `DeliverySink.deliver(payload, *, idempotency_key)` — 消费者的投递实现。
 - `DeliveryDispatcher.run_once()`：`claim_delivery` → 找 sink → `sink.deliver()`；**无异常 → `complete_delivery`**；异常 → `release_delivery`（可重投）。
-- `__init__` 对空 `sinks` 抛 `ValueError("delivery sinks must have non-empty unique keys")`。
+- 空 `sinks` 合法；此时 `run_once()` 返回 `False`，delivery 保持 PENDING。只有空白 sink key
+  会在构造时被拒绝。
 - **缺陷根源**：只要 sink 存在且不抛异常，就标记 DELIVERED。no-op sink 满足"不抛异常"，于是假投递。
 
 ## 3. Driver Failure Terminalization（`runtime/kernel.py`）
@@ -133,10 +144,10 @@ last-updated: 2026-08-21
 
 - `Database.open()` / `close()` 显式拥有单连接；`SqliteExecutionUnitOfWork.close()` 转交关闭。
 - generic `build_runtime` 只关闭调用方注册的 hook，不擅自拥有外部资源。
-- `build_consumer_runtime` 注册 UoW close hook；`build_production_runtime` 还注册 projection/query
-  async hooks，并由 Memory dispatcher 关闭 sink，最后关闭 UoW/Database。
-- `Runtime.close()` 先 bounded drain delivery/Memory，再停后台任务并释放 leases/fences，最后按
-  组合根声明的 ownership 关闭资源；重复 close 幂等。
+- `build_consumer_runtime` 注册 UoW close hook；两个组合根均按 `ResourceOwnership` 决定是否关闭统一
+  Agent Memory，production 另外关闭 projection 等内部 owned resources。
+- `Runtime.close()` 先 bounded drain delivery/Memory，再停后台任务并释放 leases/fences，最后执行
+  组合根注册的 close hooks；重复 close 幂等，runtime-owned Agent Memory 恰好关闭一次。
 
 ## 5. CI / Release（当前）
 
@@ -148,8 +159,10 @@ last-updated: 2026-08-21
 - `release-candidate-conformance.yml` 按 candidate commit 与 artifact SHA 在 macOS ARM64、
   Windows x64、Linux ARM64 上消费 exact wheel，不拥有发布权限。
 
-## 6. Memory Port（`runtime/ports.py`）
+## 6. Agent Memory Port（`runtime/agent_memory.py`）
 
-- `MemoryQueryPort` / `MemoryWritePort` 保留为 0.1.4 reserved compatibility imports。
-- 0.2.0 的生产链路使用 `ConversationMemoryQueryPort` / `ConversationMemorySinkPort`；public
-  DTO 和 stable status/error enum 由 `runtime/conversation_memory.py` 统一定义。
+- 唯一 public protocol 是 `AgentMemoryPort` 的 recall/release/record 三方法。
+- `AgentIdentity`、personal/family scope、canonical request/result/committed-turn hash、stable error/status
+  与 ownership policy 由 `runtime/agent_memory.py` 定义。
+- 旧 `ConversationMemoryQueryPort` / `ConversationMemorySinkPort`、`MemoryQueryPort` /
+  `MemoryWritePort` 已退出 public export；旧逐消息 DTO/dispatcher 只服务 schema v3 内部兼容线。

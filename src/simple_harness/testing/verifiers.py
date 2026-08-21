@@ -188,7 +188,7 @@ def _conversation_contract(values: Mapping[str, JsonValue]) -> None:
 
 
 def _conversation_schema(values: Mapping[str, JsonValue]) -> None:
-    _equal(values, "schema_version", 3)
+    _equal(values, "schema_version", 4)
     _equal(values, "history_rows", 1)
     for name in ("fresh_only", "foreign_keys", "reopened"):
         _equal(values, name, True)
