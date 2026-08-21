@@ -61,9 +61,10 @@ last-updated: 2026-08-21
   snapshot；v1–v4 仍可读。Memory enabled 缺 envelope/stage/mode 时 kernel fail-closed；disabled
   generic run 不创建 Memory intent。ReAct 完成结果经 typed `conversation_output`，通用 payload
   只保留非敏感诊断。
-- CI 单次构建 authoritative wheel/sdist 并生成 canonical `BUILD_INFO.txt`/`SHA256SUMS`，
-  Python 3.11–3.13 测同一 wheel。release 仅 manual dispatch 下载、校验并上传 program publisher
-  已创建 release 的原 bytes，不响应 tag、也不重新 build。
+- CI 与本地 reproducibility gate 都使用无环境覆写的 plain `uv build`；CI 单次构建 authoritative
+  wheel/sdist 并生成 canonical `BUILD_INFO.txt`/`SHA256SUMS`，Python 3.11–3.13 测同一 wheel。
+  release 仅 manual dispatch 下载、校验并上传 program publisher 已创建 release 的原 bytes，不响应
+  tag、也不重新 build；artifact contract 静态拒绝 CI 重新引入 `SOURCE_DATE_EPOCH`。
 - `simple_harness.testing.arm64_candidate:run_core_gate` 是 zero-argument synchronous public gate：
   只在 Linux ARM64 与两个非 editable、版本精确的 installed-wheel distributions 上运行。它用真实
   Harness fresh v3 UOW、Memory SQLite backend/adapter 与 dispatcher，注入 Memory apply 成功但 ack 前
@@ -138,8 +139,9 @@ last-updated: 2026-08-21
 
 ## 5. CI / Release（当前）
 
-- `ci.yml`：单次 build + canonical provenance，Python 3.11/3.12/3.13 对同一 Actions
-  artifact 跑 full pytest；release-owned paths 独立 ruff/mypy，另跑 source provenance。
+- `ci.yml`：用与本地完全相同的 plain `uv build` 单次 build + canonical provenance，Python
+  3.11/3.12/3.13 对同一 Actions artifact 跑 full pytest；release-owned paths 独立 ruff/mypy，
+  另跑 source provenance。
 - `release.yml`：仅 manual dispatch，按 candidate commit / Actions run / artifact / wheel SHA /
   version 校验冻结制品，再上传原 bytes；无 tag trigger、无 `uv build`、不创建第二套制品。
 - `release-candidate-conformance.yml` 按 candidate commit 与 artifact SHA 在 macOS ARM64、

@@ -4,14 +4,12 @@
 from __future__ import annotations
 
 import hashlib
-import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from typing import NamedTuple
 
 import pytest
-
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,12 +28,9 @@ def sha256(path: Path) -> str:
 
 
 def _build(destination: Path) -> None:
-    environment = os.environ.copy()
-    environment["SOURCE_DATE_EPOCH"] = "0"
     subprocess.run(
         ["uv", "build", "--out-dir", str(destination)],
         cwd=REPOSITORY_ROOT,
-        env=environment,
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -58,4 +53,3 @@ def reproducible_artifacts(tmp_path_factory: pytest.TempPathFactory) -> BuildArt
 @pytest.fixture(scope="session")
 def python_executable() -> Path:
     return Path(sys.executable)
-

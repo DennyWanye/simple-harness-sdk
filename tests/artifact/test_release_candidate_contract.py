@@ -102,6 +102,7 @@ def test_version_has_one_runtime_authority() -> None:
 def test_ci_builds_one_authoritative_artifact_for_python_311_to_313() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert workflow.count("uv build --out-dir dist") == 1
+    assert "SOURCE_DATE_EPOCH" not in workflow
     assert 'python: ["3.11", "3.12", "3.13"]' in workflow
     assert "authoritative-distributions" in workflow
     assert "authoritative_provenance.py emit" in workflow

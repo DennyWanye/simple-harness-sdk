@@ -19,8 +19,6 @@ jobs:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v6
       - name: Build authoritative distributions once
-        env:
-          SOURCE_DATE_EPOCH: "0"
         run: uv build --out-dir dist
       - name: Record canonical authoritative provenance
         run: |
