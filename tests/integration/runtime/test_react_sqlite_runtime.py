@@ -213,6 +213,11 @@ def test_continuation_staged_memory_is_frozen_as_untrusted_user_context(
                 len(encoded),
             )
 
+        async def release(
+            self, *, user_id: str, context_query_id: str, result_hash: str
+        ) -> None:
+            del user_id, context_query_id, result_hash
+
         async def close(self) -> None:
             return None
 

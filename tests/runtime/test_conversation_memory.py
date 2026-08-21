@@ -85,6 +85,25 @@ def test_recall_query_and_result_hashes_are_canonical() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "timeout_seconds",
+    (float("nan"), float("inf"), float("-inf"), 0.0, -1.0, True),
+)
+def test_recall_query_rejects_nonfinite_or_nonpositive_timeout(
+    timeout_seconds: float,
+) -> None:
+    with pytest.raises(ValueError, match="finite and positive"):
+        ConversationMemoryRecallQuery.create(
+            context_query_id="query-invalid-timeout",
+            user_id="user-1",
+            session_id="session-1",
+            query_text="hello",
+            max_items=8,
+            max_bytes=4096,
+            timeout_seconds=timeout_seconds,
+        )
+
+
 def test_intent_has_no_consumer_supplied_event_id_or_payload_escape_hatch() -> None:
     intent = ConversationMemoryIntent(
         "harness-memory/v1/user/run-1",

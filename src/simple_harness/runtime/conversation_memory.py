@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -225,9 +226,10 @@ class ConversationMemoryRecallQuery:
         if (
             isinstance(self.timeout_seconds, bool)
             or not isinstance(self.timeout_seconds, (int, float))
+            or not math.isfinite(float(self.timeout_seconds))
             or self.timeout_seconds <= 0
         ):
-            raise ValueError("timeout_seconds must be positive")
+            raise ValueError("timeout_seconds must be finite and positive")
 
     @classmethod
     def create(

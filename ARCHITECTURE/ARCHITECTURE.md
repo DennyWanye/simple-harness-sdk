@@ -27,9 +27,21 @@ last-updated: 2026-08-21
 - context preparation 先持久 claim identity/input hash 与有界 lease。`sdk_prepared` 只有 owner
   发 deterministic query，并在 staging 前校验返回的 `context_query_id` 与 canonical `query_hash`
   精确对应请求，错误关联 fail-closed 且不产生 staged context；`consumer_prepared` 也遵循单 winner。
+  consumer private snapshot v1 还强制 deterministic query lineage、当前 USER message，以及 Memory
+  result lineage / USER+untrusted partition / `source=memory` provider message 三者同现或同缺；persona/skills
+  等非 Memory SYSTEM message 保持允许。任何 SYSTEM/developer Memory、半个 result identity 或 query 漂移
+  都在 staging private bytes 前拒绝。
   private snapshot 把 recall 结果作为 USER/untrusted data，并在 start/continuation 原事务消费后清空
   private bytes、保留 lineage/hash；continuation 的 frozen prepared messages 连同本轮 message 一次性
   进入 ReAct durable context，Memory 数据不得提升为 SYSTEM。ReAct 恢复只读冻结 snapshot，不二次 recall。
+- `ConversationMemoryQueryPort.release(user_id=..., context_query_id=..., result_hash=...)` 是幂等 recall
+  retention 边界。SDK/consumer preparation 都先 durable complete stage，再 bounded release；release 失败
+  不回滚 stage，重放以同 lineage 重试。已取得 result 后的逻辑错误/取消执行一次 best-effort release，
+  进程崩溃仍由 Memory retention horizon 兜底。
+- 所有 context preparation lease/wait/overall-timeout 参数先拒绝 bool、NaN 与正负无穷；SDK recall 由
+  finite overall timeout 包裹，并在 port 返回边界独立校验 deterministic query identity/hash、canonical
+  payload hash/bytes、items 结构与 count，以及 query item/byte 上限。hang、10 KiB-over-64 B、over-count
+  或内部统计漂移均不产生 staged private bytes，并对已取得的合法 result lineage best-effort release。
 - `RunClient.signal()` 的 generic continuation namespace 明确拒绝保留的 `conversation_user` kind；
   普通 user turn 只能通过 `signal_conversation()` 携带 typed DTO、durable context stage 与同事务 intent，
   产品 generic payload 不能伪造该 authority。

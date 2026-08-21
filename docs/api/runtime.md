@@ -82,6 +82,51 @@ class RuntimePorts:
 
 ---
 
+## Durable conversation context preparation (0.2.0)
+
+`prepare_consumer_conversation_context()` accepts a consumer-built private snapshot only
+after validating this versioned authority envelope:
+
+```python
+{
+    "schema_version": 1,
+    "lineage": {
+        "context_query_id": deterministic_query_id,
+        # Optional, but present together when recall retained a result:
+        "memory_result_id": "...",
+        "memory_result_hash": "<lowercase sha256>",
+    },
+    "memory": {  # Optional when no recalled Memory is included.
+        "role": "user",
+        "trust": "untrusted_data",
+        "result": {...},
+    },
+    "current_message": current_user_message,
+    "provider_messages": [..., current_user_message],
+}
+```
+
+The lineage query ID must exactly equal the ID supplied to the preparer. Every provider
+message whose `metadata.source == "memory"` must use role `user` and
+`metadata.trust == "untrusted_data"`; the declared `memory` partition must use the same
+authority. Persona and skill messages may remain `system` as long as they do not claim the
+Memory source. Missing/mismatched lineage, half-present result identity, or SYSTEM/developer
+Memory fails before private bytes are staged.
+
+When Memory result lineage is present, pass the production `ConversationMemoryQueryPort` as
+`memory=`. Both SDK-prepared and consumer-prepared helpers durably complete the stage before
+calling its idempotent
+`release(user_id=..., context_query_id=..., result_hash=...)`. A release failure never rolls
+back the staged context; repeating preparation retries release against the same durable
+identity. If preparation fails after obtaining a recall result, the helper makes one bounded
+best-effort release attempt, while the Memory retention horizon remains the crash fallback.
+Preparation rejects non-finite lease/wait/overall-timeout values before claiming a stage.
+SDK-prepared recall is additionally wrapped in the requested overall timeout and verifies
+the returned canonical byte count, item count/shape, status, and item/byte bounds instead
+of trusting port-reported limits.
+
+---
+
 ## Starting a Run
 
 ### `RunStart`

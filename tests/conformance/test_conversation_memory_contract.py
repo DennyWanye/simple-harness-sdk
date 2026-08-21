@@ -27,11 +27,24 @@ def test_conversation_port_signatures_and_stable_status_values() -> None:
         "self",
         "query",
     )
+    assert tuple(inspect.signature(ConversationMemoryQueryPort.release).parameters) == (
+        "self",
+        "user_id",
+        "context_query_id",
+        "result_hash",
+    )
+    assert all(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        for parameter in tuple(
+            inspect.signature(ConversationMemoryQueryPort.release).parameters.values()
+        )[1:]
+    )
     assert tuple(inspect.signature(ConversationMemorySinkPort.apply).parameters) == (
         "self",
         "intent",
     )
     assert inspect.iscoroutinefunction(ConversationMemoryQueryPort.close)
+    assert inspect.iscoroutinefunction(ConversationMemoryQueryPort.release)
     assert inspect.iscoroutinefunction(ConversationMemorySinkPort.close)
     assert {value.value for value in ConversationMemoryQueryStatus} == {
         "complete",

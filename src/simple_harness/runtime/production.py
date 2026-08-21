@@ -109,6 +109,11 @@ class ProductionRuntimeConfig:
         for name in required:
             if getattr(self, name) is None:
                 raise TypeError(f"{name} is required for production composition")
+        for method_name in ("recall_bounded", "release", "close"):
+            if not callable(getattr(self.conversation_query, method_name, None)):
+                raise TypeError(
+                    "conversation_query must implement recall_bounded/release/close"
+                )
         if not isinstance(self.execution_path, (str, Path)):
             raise TypeError("execution_path must be str or Path")
         if not self.owner_id.strip():

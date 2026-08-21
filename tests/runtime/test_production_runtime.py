@@ -38,6 +38,11 @@ class Query:
     async def recall_bounded(self, query):  # type: ignore[no-untyped-def]
         raise AssertionError(query)
 
+    async def release(
+        self, *, user_id: str, context_query_id: str, result_hash: str
+    ) -> None:
+        del user_id, context_query_id, result_hash
+
     async def close(self) -> None:
         self.trace.append("query.close")
 
@@ -113,6 +118,8 @@ def test_production_config_is_frozen_and_missing_authority_fails_fast(
         config.owner_id = "changed"  # type: ignore[misc]
     with pytest.raises(TypeError, match="conversation_sink"):
         _config(tmp_path / "missing.db", [], conversation_sink=None)
+    with pytest.raises(TypeError, match="recall_bounded/release/close"):
+        _config(tmp_path / "missing-release.db", [], conversation_query=object())
     with pytest.raises(ValueError, match="agent.general"):
         _config(tmp_path / "profile.db", [], profiles={})
 

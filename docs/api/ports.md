@@ -298,6 +298,34 @@ ports = RuntimePorts(
 
 ## Memory Ports (Optional)
 
+### ConversationMemoryQueryPort (0.2.0 production)
+
+This is the durable conversation-recall authority used by
+`ProductionRuntimeConfig.conversation_query`:
+
+```python
+class ConversationMemoryQueryPort(Protocol):
+    async def recall_bounded(
+        self, query: ConversationMemoryRecallQuery
+    ) -> ConversationMemoryRecallResult: ...
+
+    async def release(
+        self, *, user_id: str, context_query_id: str, result_hash: str
+    ) -> None: ...
+
+    async def close(self) -> None: ...
+```
+
+`recall_bounded` is wrapped by the SDK's finite overall timeout. The SDK independently
+checks query identity/hash, canonical result hash/byte count, item structure/count, and
+the caller's item/byte limits before staging. `release` must be idempotent: preparation
+durably stages first, then makes a bounded release call; replay may repeat that same call
+without repeating the logical release side effect. Production composition rejects a query
+port that omits any of `recall_bounded`, `release`, or `close`.
+
+`MemoryQueryPort` below is the legacy reserved interface; it is not the 0.2.0 conversation
+authority.
+
 ### MemoryQueryPort
 
 **Purpose**: Read-only access to long-term memory.

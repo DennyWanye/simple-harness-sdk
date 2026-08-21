@@ -327,6 +327,12 @@ class ConversationMemoryQueryPort(Protocol):
         self, query: ConversationMemoryRecallQuery
     ) -> ConversationMemoryRecallResult: ...
 
+    async def release(
+        self, *, user_id: str, context_query_id: str, result_hash: str
+    ) -> None:
+        """Idempotently release one retained recall result after staging."""
+        ...
+
     async def close(self) -> None: ...
 
 
