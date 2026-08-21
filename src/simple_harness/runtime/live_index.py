@@ -52,8 +52,9 @@ class LiveRunIndex:
         for _, task in active:
             task.cancel()
         if active:
+            active_tasks = [task for _, task in active]
             _done, pending = await asyncio.wait(
-                (task for _, task in active), timeout=timeout_seconds
+                active_tasks, timeout=timeout_seconds
             )
             for run_id, task in active:
                 if task in pending:

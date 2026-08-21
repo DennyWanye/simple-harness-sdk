@@ -28,7 +28,8 @@ last-updated: 2026-08-21
   lineage/hash；ReAct 恢复只读冻结 snapshot，不二次 recall。
 - `MemoryDispatcher` 用 claim token/expiry、transient backoff、permanent dead-letter 与幂等 sink
   恢复；apply 成功后 ack 前崩溃会以同 source event 重放。Runtime 在 recovery/drain 后启动 pump，
-  close 时 bounded drain，并关闭 projection pump、query、sink 与 execution DB。
+  close 时 bounded drain，并关闭 projection pump、query、sink 与 execution DB。关闭路径把
+  `asyncio.wait` 输入物化，并只 cancel/gather 未完成任务，兼容 Python 3.11–3.13。
 - `build_production_runtime(ProductionRuntimeConfig)` 是严格生产组合根：Provider、Tool、Auth、
   Delivery、reconcilers、conversation Ports、context staging builder 都必须显式提供；同时保留
   0.1.5 的 tool catalog、Provider budget resolver/projection pump、run binding 与 structured-message
@@ -40,8 +41,9 @@ last-updated: 2026-08-21
 - CI 单次构建 authoritative wheel/sdist 并生成 canonical `BUILD_INFO.txt`/`SHA256SUMS`，
   Python 3.11–3.13 测同一 wheel。release 仅 manual dispatch 下载、校验并上传 program publisher
   已创建 release 的原 bytes，不响应 tag、也不重新 build。
-- 2026-08-21 验证：H1 19 passed；H2 15 passed；full pytest 1264 passed / 2 skipped；
-  release-owned mypy 11 files 无错误；full Ruff 477，相对 frozen 484 baseline 减少 7；
+- 2026-08-21 验证：H1 19 passed；H2 15 passed；Python 3.11/3.12/3.13 full pytest
+  各 1264 passed / 2 skipped；
+  release-owned mypy 11 files 无错误；full Ruff 476，相对 frozen 484 baseline 减少 8；
   REUSE 338/338 compliant；H-WHEEL artifact suite 21 passed。
 
 ## 0.1.5 Context authority 当前事实（2026-08-21）

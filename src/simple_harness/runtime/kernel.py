@@ -1079,7 +1079,9 @@ class Runtime:
         for token in self._cancels.values():
             token.cancel()
         await self._live.close(timeout_seconds=self._ports.close_timeout_seconds)
-        heartbeat_tasks = tuple(self._heartbeats.values())
+        heartbeat_tasks = tuple(
+            task for task in self._heartbeats.values() if not task.done()
+        )
         for task in heartbeat_tasks:
             task.cancel()
         if heartbeat_tasks:
@@ -1121,7 +1123,7 @@ class Runtime:
                 self._delivery_pump_task,
                 self._memory_pump_task,
             )
-            if task is not None
+            if task is not None and not task.done()
         )
         self._wake_drain_task = None
         self._delivery_pump_task = None
