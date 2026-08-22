@@ -1,107 +1,129 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Durable runtime lifecycle public surface."""
+"""Durable runtime lifecycle public surface, resolved without eager cycles."""
 
-from .admission import AdmissionPort, AdmissionVerdict, AllowAllAdmission
-from .agent_memory import (
-    AgentIdentity,
-    AgentMemoryError,
-    AgentMemoryErrorCode,
-    AgentMemoryPort,
-    CommittedTurn,
-    CommittedTurnReceipt,
-    CommittedTurnStatus,
-    MemoryFailurePolicy,
-    MemoryRecallBounds,
-    MemoryRecallRequest,
-    MemoryRecallResult,
-    MemoryRecallStatus,
-    MemoryReleaseRequest,
-    MemoryScopeKind,
-    MemoryScopeRef,
-    ResourceOwnership,
-)
-from .child_runs import (
-    ChildLaunchRequest,
-    ChildRunHandle,
-    ChildRunUnitOfWork,
-    ProfileLaunchTicketRef,
-)
-from .child_signal_runtime import ChildSignalRuntime, ChildSignalUnitOfWork
-from .consumer_adapter import (
-    ConsumerRuntimePolicies,
-    ConsumerRuntimePorts,
-    build_consumer_runtime,
-)
-from .context import ContextPort, ContextSnapshot, SqliteContextPort
-from .conversation_context import (
-    claim_context_preparation,
-    complete_context_stage,
-    context_input_hash,
-    context_query_id,
-    get_staged_context,
-)
-from .conversation_context_provider import (
-    ConversationContextBounds,
-    ConversationContextProviderPort,
-    ConversationContextRequest,
-    ConversationContextResult,
-    CurrentMessageContextProvider,
-    source_snapshot_ref,
-)
-from .conversation_memory import (
-    ConversationContinuationInput,
-    ConversationTurnInput,
-    ConversationTurnOutput,
-)
-from .drivers.react import ReActDriver, build_react_driver
-from .drivers.react_loop import AgentLoopCollaborator, EffectBatchExecutor
-from .drivers.workflow import (
-    WORKFLOW_DRIVER_IMPLEMENTATION_FINGERPRINT,
-    WORKFLOW_DRIVER_KIND,
-    WorkflowRuntimeDriver,
-    build_workflow_runtime_driver,
-)
-from .kernel import (
-    ROOT_PROFILE_KEY,
-    DriverCancellationCoordinator,
-    DriverCancellationRecovery,
-    DriverCancelOutcome,
-    DriverInvocation,
-    DriverResult,
-    RunClient,
-    Runtime,
-    RuntimeDriver,
-    RuntimeLifecycleState,
-    RuntimePorts,
-    RuntimeProfile,
-    RuntimeReconciliationPort,
-    RuntimeServices,
-    RuntimeUnitOfWork,
-    ToolCatalogGenerationPort,
-    build_runtime,
-)
-from .ports import (
-    AuthorizationPort,
-    AuthorizationRequest,
-    AuthorizationResult,
-    ProviderPort,
-    ToolExecutorPort,
-)
-from .production import (
-    ProductionRuntimeConfig,
-    build_production_runtime,
-)
-from .reconciler import (
-    STARTUP_RECONCILIATION_ORDER,
-    ReconciliationPhase,
-    StartupReconciler,
-    StartupReconciliationSteps,
-)
-from .start_snapshot import RunStart, StartSnapshot
-from .terminal import TerminalCoordinator, ToolCatalogStale
-from .user_continuations import ContinuationUnitOfWork, UserContinuationRuntime
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+_MODULE_EXPORTS = {
+    ".admission": ("AdmissionPort", "AdmissionVerdict", "AllowAllAdmission"),
+    ".agent_memory": (
+        "AgentIdentity",
+        "AgentMemoryError",
+        "AgentMemoryErrorCode",
+        "AgentMemoryPort",
+        "CommittedTurn",
+        "CommittedTurnReceipt",
+        "CommittedTurnStatus",
+        "MemoryFailurePolicy",
+        "MemoryRecallBounds",
+        "MemoryRecallRequest",
+        "MemoryRecallResult",
+        "MemoryRecallStatus",
+        "MemoryReleaseRequest",
+        "MemoryScopeKind",
+        "MemoryScopeRef",
+        "ResourceOwnership",
+    ),
+    ".child_runs": (
+        "ChildLaunchRequest",
+        "ChildRunHandle",
+        "ChildRunUnitOfWork",
+        "ProfileLaunchTicketRef",
+    ),
+    ".child_signal_runtime": ("ChildSignalRuntime", "ChildSignalUnitOfWork"),
+    ".consumer_adapter": (
+        "ConsumerRuntimePolicies",
+        "ConsumerRuntimePorts",
+        "build_consumer_runtime",
+    ),
+    ".context": ("ContextPort", "ContextSnapshot", "SqliteContextPort"),
+    ".conversation_context": (
+        "claim_context_preparation",
+        "complete_context_stage",
+        "context_input_hash",
+        "context_query_id",
+        "get_staged_context",
+    ),
+    ".conversation_context_provider": (
+        "ConversationContextBounds",
+        "ConversationContextProviderPort",
+        "ConversationContextRequest",
+        "ConversationContextResult",
+        "CurrentMessageContextProvider",
+        "source_snapshot_ref",
+    ),
+    ".conversation_memory": (
+        "ConversationContinuationInput",
+        "ConversationTurnInput",
+        "ConversationTurnOutput",
+    ),
+    ".drivers.react": ("ReActDriver", "build_react_driver"),
+    ".drivers.react_loop": ("AgentLoopCollaborator", "EffectBatchExecutor"),
+    ".drivers.workflow": (
+        "WORKFLOW_DRIVER_IMPLEMENTATION_FINGERPRINT",
+        "WORKFLOW_DRIVER_KIND",
+        "WorkflowRuntimeDriver",
+        "build_workflow_runtime_driver",
+    ),
+    ".kernel": (
+        "ROOT_PROFILE_KEY",
+        "DriverCancellationCoordinator",
+        "DriverCancellationRecovery",
+        "DriverCancelOutcome",
+        "DriverInvocation",
+        "DriverResult",
+        "RunClient",
+        "Runtime",
+        "RuntimeDriver",
+        "RuntimeLifecycleState",
+        "RuntimePorts",
+        "RuntimeProfile",
+        "RuntimeReconciliationPort",
+        "RuntimeServices",
+        "RuntimeUnitOfWork",
+        "ToolCatalogGenerationPort",
+        "build_runtime",
+    ),
+    ".ports": (
+        "AuthorizationPort",
+        "AuthorizationRequest",
+        "AuthorizationResult",
+        "ProviderPort",
+        "ToolExecutorPort",
+    ),
+    ".production": ("ProductionRuntimeConfig", "build_production_runtime"),
+    ".reconciler": (
+        "STARTUP_RECONCILIATION_ORDER",
+        "ReconciliationPhase",
+        "StartupReconciler",
+        "StartupReconciliationSteps",
+    ),
+    ".start_snapshot": ("RunStart", "StartSnapshot"),
+    ".terminal": ("TerminalCoordinator", "ToolCatalogStale"),
+    ".user_continuations": ("ContinuationUnitOfWork", "UserContinuationRuntime"),
+}
+
+_EXPORT_TO_MODULE = {
+    name: module_name for module_name, names in _MODULE_EXPORTS.items() for name in names
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_TO_MODULE.get(name)
+    if module_name is None:
+        raise AttributeError(name)
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORT_TO_MODULE))
+
 
 __all__ = (
     "ROOT_PROFILE_KEY",

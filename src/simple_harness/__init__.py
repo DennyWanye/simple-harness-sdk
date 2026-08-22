@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Public package surface for Simple Harness SDK."""
+"""Public package surface for Simple Harness SDK.
+
+Runtime exports are resolved lazily so importing the standalone observability
+wire package does not initialize execution, providers, tools, or SQLite.
+"""
+
+from __future__ import annotations
+
+from typing import Any
 
 from .contracts import (
     CallId,
@@ -29,55 +37,72 @@ from .contracts import (
     thaw_json,
     validate_json_value,
 )
-from .runtime import (
-    ROOT_PROFILE_KEY,
-    AdmissionPort,
-    AdmissionVerdict,
-    AgentIdentity,
-    AgentMemoryError,
-    AgentMemoryErrorCode,
-    AgentMemoryPort,
-    AllowAllAdmission,
-    CommittedTurn,
-    CommittedTurnReceipt,
-    CommittedTurnStatus,
-    ConsumerRuntimePolicies,
-    ConsumerRuntimePorts,
-    ContextPort,
-    ContextSnapshot,
-    ConversationContextBounds,
-    ConversationContextProviderPort,
-    ConversationContextRequest,
-    ConversationContextResult,
-    ConversationContinuationInput,
-    ConversationTurnInput,
-    ConversationTurnOutput,
-    CurrentMessageContextProvider,
-    DriverInvocation,
-    DriverResult,
-    MemoryFailurePolicy,
-    MemoryRecallBounds,
-    MemoryRecallRequest,
-    MemoryRecallResult,
-    MemoryRecallStatus,
-    MemoryReleaseRequest,
-    MemoryScopeKind,
-    MemoryScopeRef,
-    ProductionRuntimeConfig,
-    ResourceOwnership,
-    RunClient,
-    Runtime,
-    RuntimeDriver,
-    RuntimePorts,
-    RuntimeProfile,
-    RuntimeServices,
-    RuntimeUnitOfWork,
-    SqliteContextPort,
-    build_consumer_runtime,
-    build_production_runtime,
-    build_runtime,
-)
 from .version import __version__
+
+_RUNTIME_EXPORTS = frozenset(
+    {
+        "ROOT_PROFILE_KEY",
+        "AdmissionPort",
+        "AdmissionVerdict",
+        "AgentIdentity",
+        "AgentMemoryError",
+        "AgentMemoryErrorCode",
+        "AgentMemoryPort",
+        "AllowAllAdmission",
+        "CommittedTurn",
+        "CommittedTurnReceipt",
+        "CommittedTurnStatus",
+        "ConsumerRuntimePolicies",
+        "ConsumerRuntimePorts",
+        "ContextPort",
+        "ContextSnapshot",
+        "ConversationContextBounds",
+        "ConversationContextProviderPort",
+        "ConversationContextRequest",
+        "ConversationContextResult",
+        "ConversationContinuationInput",
+        "ConversationTurnInput",
+        "ConversationTurnOutput",
+        "CurrentMessageContextProvider",
+        "DriverInvocation",
+        "DriverResult",
+        "MemoryFailurePolicy",
+        "MemoryRecallBounds",
+        "MemoryRecallRequest",
+        "MemoryRecallResult",
+        "MemoryRecallStatus",
+        "MemoryReleaseRequest",
+        "MemoryScopeKind",
+        "MemoryScopeRef",
+        "ProductionRuntimeConfig",
+        "ResourceOwnership",
+        "RunClient",
+        "Runtime",
+        "RuntimeDriver",
+        "RuntimePorts",
+        "RuntimeProfile",
+        "RuntimeServices",
+        "RuntimeUnitOfWork",
+        "SqliteContextPort",
+        "build_consumer_runtime",
+        "build_production_runtime",
+        "build_runtime",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _RUNTIME_EXPORTS:
+        raise AttributeError(name)
+    from . import runtime
+
+    value = getattr(runtime, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _RUNTIME_EXPORTS)
 
 __all__ = (
     "__version__",

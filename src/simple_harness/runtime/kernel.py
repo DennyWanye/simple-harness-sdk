@@ -1333,6 +1333,7 @@ class Runtime:
         self._started = False
         self._closing = False
         self._production_authorities: object | None = None
+        self._observability: object | None = None
         self.client = RunClient(self)
         self.children = ChildCoordinator(self)
 
@@ -1345,6 +1346,50 @@ class Runtime:
         """Explicit 0.1.5+ authorities retained by production composition."""
 
         return self._production_authorities
+
+    @property
+    def observability(self) -> object | None:
+        """Optional Host-injected observability composition object."""
+
+        return self._observability
+
+    def diagnostics_snapshot(self) -> dict[str, object]:
+        """Return the stable observability snapshot base without business payloads."""
+
+        if self._observability is None:
+            return {
+                "schema_version": 1,
+                "sdk_version": "unconfigured",
+                "lifecycle": "disabled",
+                "health": "healthy",
+                "queue_depth": 0,
+                "queue_capacity": 0,
+                "counters": {},
+            }
+        snapshot = getattr(self._observability, "diagnostics_snapshot", None)
+        if not callable(snapshot):
+            return {
+                "schema_version": 1,
+                "sdk_version": "unknown",
+                "lifecycle": "degraded",
+                "health": "degraded",
+                "queue_depth": 0,
+                "queue_capacity": 0,
+                "counters": {},
+            }
+        try:
+            value = snapshot()
+            return dict(value)
+        except BaseException:
+            return {
+                "schema_version": 1,
+                "sdk_version": "unknown",
+                "lifecycle": "degraded",
+                "health": "degraded",
+                "queue_depth": 0,
+                "queue_capacity": 0,
+                "counters": {},
+            }
 
     async def start(self) -> None:
         async with self._lifecycle_lock:

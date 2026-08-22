@@ -11,6 +11,14 @@ import pytest
 
 from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.sqlite import Database
+from simple_harness.observability import (
+    CorrelationContext,
+    ObservabilityEventV1,
+    ObservabilityRuntime,
+    Outcome,
+    RecordingSink,
+    Severity,
+)
 from simple_harness.runtime import (
     ProductionRuntimeConfig,
     ResourceOwnership,
@@ -158,3 +166,36 @@ def test_production_build_failure_cleans_runtime_owned_memory(tmp_path: Path) ->
     with pytest.raises(RuntimeError, match="build failed"):
         build_production_runtime(config)
     assert trace == ["memory.close"]
+
+
+def test_production_runtime_accepts_optional_observability_sink(tmp_path: Path) -> None:
+    async def case() -> None:
+        sink = RecordingSink()
+        runtime = build_production_runtime(
+            _config(
+                tmp_path / "observability.db",
+                [],
+                observability_sink=sink,
+                observability_queue_capacity=8,
+            )
+        )
+        assert isinstance(runtime.observability, ObservabilityRuntime)
+        accepted = runtime.observability.emit(
+            ObservabilityEventV1(
+                event_name="harness.runtime.composed",
+                occurred_at=1.0,
+                severity=Severity.INFO,
+                component="harness",
+                operation="runtime.compose",
+                outcome=Outcome.SUCCEEDED,
+                correlation=CorrelationContext.new_root(),
+            )
+        )
+        assert accepted
+        assert runtime.observability.flush(1)
+        assert len(sink.events()) == 1
+        assert runtime.diagnostics_snapshot()["health"] == "healthy"
+        await runtime.close()
+        assert runtime.diagnostics_snapshot()["lifecycle"] == "closed"
+
+    asyncio.run(case())

@@ -3,11 +3,25 @@ SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
 last-updated: 2026-08-23
 -->
-<!-- last-calibrated: fbb156f -->
+<!-- last-calibrated: 8b5c66581260dca682bc5781ab7af56f76144bb1 -->
 
 # Simple Harness SDK — 架构基线（Agent Memory v1）
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
+
+## SDK Observability S1 当前事实（2026-08-23）
+
+- SDK 现在拥有 import-pure 的 `simple_harness.observability` 边界：immutable V1
+  event/correlation wire contract、default-deny 有界 attributes、non-blocking `SafeEmitter`、
+  Noop/recording/mobile ring/composite/JSONL/logging sinks、sink failure counters 与基础
+  `diagnostics_snapshot()` schema。导入该边界不会初始化 runtime、execution、provider、Tool 或 SQLite；
+  顶层 runtime exports 改为 lazy resolve，同时保持既有 public API。
+- `ProductionRuntimeConfig` 可接收 Host sink，并拥有唯一 `ObservabilityRuntime`。事件进入固定容量队列，
+  sink 工作不在业务 caller thread 执行；overflow、sink exception、reentrancy、emit-after-close 与 close
+  timeout 只增加诊断计数，不改变 Run 结果。
+- JSONL 采用有界轮转、regular-file/no-symlink 检查和 `0600` 权限；ring buffer 固定容量。
+  Observability 不是 workflow、Context、Memory、authorization 或 retry authority。outbox/context/recovery
+  细粒度状态事件与 durable aggregate health query 属于后续 S2。
 
 ## Agent Memory v1 当前事实（2026-08-22）
 

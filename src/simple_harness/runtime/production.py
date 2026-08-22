@@ -18,6 +18,7 @@ from simple_harness.execution.delivery import DeliveryDispatcher
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.memory_outbox import MemoryDispatcher, MemoryOutboxRepository
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
+from simple_harness.observability import ObservabilityRuntime, ObservabilitySink
 from simple_harness.providers import ProviderReconciliationPort
 from simple_harness.tools.authorization import AuthorizationPort
 from simple_harness.tools.executor import EffectExecutor
@@ -59,6 +60,7 @@ class ProductionAuthorities:
     provider_projection_pump: ManagedProjectionPump
     run_binding: object
     structured_message_services: object
+    observability: ObservabilityRuntime
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +92,9 @@ class ProductionRuntimeConfig:
     memory_ownership: ResourceOwnership = ResourceOwnership.BORROWED
     memory_failure_policy: MemoryFailurePolicy = MemoryFailurePolicy.DEGRADE_RECALL_AND_RETRY_RECORD
     context_provider: ConversationContextProviderPort = CurrentMessageContextProvider()
+    observability_sink: ObservabilitySink | None = None
+    observability_queue_capacity: int = 256
+    observability_close_timeout_seconds: float = 1.0
 
     def __post_init__(self) -> None:
         required = (
@@ -126,6 +131,10 @@ class ProductionRuntimeConfig:
         object.__setattr__(
             self, "memory_failure_policy", MemoryFailurePolicy(self.memory_failure_policy)
         )
+        if self.observability_queue_capacity < 1:
+            raise ValueError("observability_queue_capacity must be positive")
+        if self.observability_close_timeout_seconds <= 0:
+            raise ValueError("observability_close_timeout_seconds must be positive")
 
 
 def build_production_runtime(config: ProductionRuntimeConfig) -> Runtime:
@@ -139,6 +148,11 @@ def build_production_runtime(config: ProductionRuntimeConfig) -> Runtime:
         raise ValueError("execution and Memory databases must use different resolved paths")
     database = Database.open(config.execution_path, wal=True)
     uow = SqliteExecutionUnitOfWork(database)
+    observability = ObservabilityRuntime(
+        config.observability_sink,
+        queue_capacity=config.observability_queue_capacity,
+        close_timeout=config.observability_close_timeout_seconds,
+    )
     try:
         provider = config.provider_builder(uow)
         tools = config.tools_builder(uow)
@@ -207,6 +221,7 @@ def build_production_runtime(config: ProductionRuntimeConfig) -> Runtime:
             close_hook=uow.close,
             start_hooks=(config.provider_projection_pump.start,),
             async_close_hooks=(
+                _async_close_observability(observability),
                 *memory_close_hooks,
                 config.provider_projection_pump.close,
             ),
@@ -218,13 +233,25 @@ def build_production_runtime(config: ProductionRuntimeConfig) -> Runtime:
             provider_projection_pump=config.provider_projection_pump,
             run_binding=config.run_binding,
             structured_message_services=config.structured_message_services,
+            observability=observability,
         )
+        runtime._observability = observability
         return runtime
     except BaseException:
+        observability.close(config.observability_close_timeout_seconds)
         uow.close()
         if config.memory_ownership is ResourceOwnership.RUNTIME:
             _close_owned_memory_after_build_failure(config.memory)
         raise
+
+
+def _async_close_observability(
+    observability: ObservabilityRuntime,
+) -> Callable[[], Awaitable[None]]:
+    async def close() -> None:
+        observability.close()
+
+    return close
 
 
 def _close_owned_memory_after_build_failure(memory: AgentMemoryPort) -> None:
