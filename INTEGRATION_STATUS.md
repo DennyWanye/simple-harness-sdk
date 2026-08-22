@@ -13,11 +13,13 @@ trusted `AgentIdentity`, Provider/Tool/Authorization ports, an optional product 
 and `memory=MemoryManager(...)`; the SDK owns automatic recall, frozen Context, committed-turn
 outbox delivery, retry, and recovery.
 
-The exact candidate passed the `simple_harness` product cutover and real macOS UI E2E. Local tag
+The exact candidate passed the `simple_harness` product cutover and real macOS UI E2E. The tag
 `v0.3.0` points to candidate source commit `fbb156f`; canonical `dist/BUILD_INFO.txt` and
 `SHA256SUMS` identify the validated wheel `cf629cee…`. The source branch, `main`, and tag have
 been pushed. The frozen wheel/sdist were uploaded to a draft GitHub Release and passed
-download-back checksum verification; the Release is not yet published.
+download-back checksum verification. They are now published at the
+[`v0.3.0` Release](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.3.0), and the
+public stable wheel URL returns the exact validated bytes.
 
 ## Consumer matrix
 
