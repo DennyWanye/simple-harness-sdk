@@ -67,7 +67,9 @@ last-updated: 2026-08-22
   permanent/conflict dead-letter；record 成功后 ack 前崩溃会以同 turn/hash 重放。
   `REJECTED_ERASED` 作为隐私安全的 applied no-op 收敛且日志只含 ID/hash/attempt/code。backlog 对所有
   state 提供计数，cleanup 只按 limit 删除 settled applied。Runtime 在 recovery/drain 后启动 pump，
-  close 时 bounded drain。Agent Memory release pump 独立恢复；统一 Memory resource 按显式 ownership
+  close 时 bounded drain；dispatcher 的单进程 run lock 保证 close drain 会等待已 claim 的慢速
+  committed-turn 调用完成，不能由 pump cancellation 留下仅因关闭竞态产生的 claimed backlog。
+  Agent Memory release pump 独立恢复；统一 Memory resource 按显式 ownership
   关闭且不会 double-close。关闭路径把
   `asyncio.wait` 输入物化，并只 cancel/gather 未完成任务，兼容 Python 3.11–3.13。
 - child terminal 与 parent signal 虽在同一 durable terminal 事务提交，wake pump 仍须等待该 child
@@ -106,8 +108,10 @@ last-updated: 2026-08-22
   product-neutral minimal/rich Context fixture 只使用 `ConsumerRuntimePorts(memory=...)` 与
   `ConsumerRuntimePolicies.local_default()`，覆盖四元 identity、personal/family scope、automatic recall、
   frozen replay/restart、committed turn、`REJECTED_ERASED` 与 `memory=None`。无 Memory 对话的 frozen
-  message metadata 现接受只读 Mapping 并保持 JSON object。Python 3.11/3.12/3.13 full pytest 各
-  1372 passed / 2 expected skips；candidate artifact/future-consumer/ARM64 contract targeted 33 passed。
+  message metadata 现接受只读 Mapping 并保持 JSON object。Python 3.11/3.12/3.13 final full pytest 各
+  1373 passed / 2 expected skips；candidate artifact/future-consumer/ARM64 contract targeted 33 passed。
+  exact-wheel 联测暴露的慢速 Memory inflight-close 竞态由 dispatcher run lock 收口，并由阻塞式
+  committed-turn close 回归锁定；加入该回归后的最终计数见 S5 finalize receipt。
   joint exact-wheel / extra resolver / cross-repo manifest 在 Memory 0.4 candidate commit 后执行。
 - 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
   1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、

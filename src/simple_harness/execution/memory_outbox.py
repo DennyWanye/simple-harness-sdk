@@ -287,8 +287,13 @@ class MemoryDispatcher:
         self.lease_seconds = lease_seconds
         self.max_backoff_seconds = max_backoff_seconds
         self._closed = False
+        self._run_lock = asyncio.Lock()
 
     async def run_once(self, *, fault: Callable[[str], None] | None = None) -> bool:
+        async with self._run_lock:
+            return await self._run_once(fault=fault)
+
+    async def _run_once(self, *, fault: Callable[[str], None] | None = None) -> bool:
         if self._closed:
             return False
         claim = self.repository.claim(

@@ -62,6 +62,18 @@ class _MemoryProbe:
         )
 
 
+class _BlockingMemoryProbe(_MemoryProbe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.allow_record = asyncio.Event()
+
+    async def record_committed_turn(self, request: CommittedTurn) -> CommittedTurnReceipt:
+        self.started.set()
+        await self.allow_record.wait()
+        return await super().record_committed_turn(request)
+
+
 def test_future_consumer_minimal_identity_scopes_committed_turn_and_memory_none(
     tmp_path: Path,
 ) -> None:
@@ -172,6 +184,33 @@ def test_future_consumer_erasure_receipt_converges_without_retry(tmp_path: Path)
                     "SELECT state,attempt_count,error_code FROM memory_outbox"
                 ).fetchone()
             ) == ("applied", 1, "rejected_erased")
+
+    asyncio.run(case())
+
+
+def test_runtime_close_waits_for_inflight_committed_turn(tmp_path: Path) -> None:
+    async def case() -> None:
+        memory = _BlockingMemoryProbe()
+        fixture = FutureConsumerFixture(tmp_path / "slow-memory.db", memory)
+        runtime = await fixture.build()
+
+        async def release_record() -> None:
+            await asyncio.sleep(0.01)
+            memory.allow_record.set()
+
+        async with runtime:
+            await fixture.complete_turn(
+                runtime,
+                identity=fixture.identity(
+                    household="home-a", actor="alice", session="session-slow"
+                ),
+                run_id="run-slow-memory",
+                text="wait for the committed turn",
+            )
+            await asyncio.wait_for(memory.started.wait(), timeout=1.0)
+            release_task = asyncio.create_task(release_record())
+        await release_task
+        assert len(memory.committed) == 1
 
     asyncio.run(case())
 
