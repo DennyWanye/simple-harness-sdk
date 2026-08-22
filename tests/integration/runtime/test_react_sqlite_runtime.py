@@ -35,8 +35,6 @@ from simple_harness.runtime import (
     AgentIdentity,
     AgentLoopCollaborator,
     ConversationContinuationInput,
-    ConversationMemoryQueryStatus,
-    ConversationMemoryRecallResult,
     ConversationTurnInput,
     DriverInvocation,
     EffectBatchExecutor,
@@ -47,7 +45,11 @@ from simple_harness.runtime import (
     SqliteContextPort,
     StartSnapshot,
     build_runtime,
-    prepare_sdk_conversation_context,
+)
+from simple_harness.runtime.conversation_context import prepare_sdk_conversation_context
+from simple_harness.runtime.conversation_memory import (
+    ConversationMemoryQueryStatus,
+    ConversationMemoryRecallResult,
 )
 from simple_harness.runtime.drivers import ReActDriver
 from simple_harness.tools import EffectExecutor, FunctionTool, ToolRegistry, ToolResult, ToolSpec

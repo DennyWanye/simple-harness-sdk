@@ -83,42 +83,14 @@ class RuntimePorts:
 
 ## Durable conversation context preparation (0.3.0)
 
-`prepare_consumer_conversation_context()` accepts a consumer-built private snapshot only
-after validating this versioned authority envelope:
-
-```python
-{
-    "schema_version": 1,
-    "lineage": {
-        "context_query_id": deterministic_query_id,
-        # Optional, but present together when recall retained a result:
-        "memory_result_id": "...",
-        "memory_result_hash": "<lowercase sha256>",
-    },
-    "memory": {  # Optional when no recalled Memory is included.
-        "role": "user",
-        "trust": "untrusted_data",
-        "result": {...},
-    },
-    "current_message": current_user_message,
-    "provider_messages": [..., current_user_message],
-}
-```
-
-The lineage query ID must exactly equal the ID supplied to the preparer. Every provider
-message whose `metadata.source == "memory"` must use role `user` and
-`metadata.trust == "untrusted_data"`; the declared `memory` partition must use the same
-authority. Persona and skill messages may remain `system` as long as they do not claim the
-Memory source. Missing/mismatched lineage, half-present result identity, or SYSTEM/developer
-Memory fails before private bytes are staged.
-
 The official 0.3 path passes one `AgentMemoryPort` as `memory=` to `ConsumerRuntimePorts` or
 `ProductionRuntimeConfig` and enters through `RunClient.start_conversation()` /
 `signal_conversation()`. The SDK invokes bounded recall, validates result identity/hash/count,
 freezes Memory as USER/untrusted Context, durably releases the result, and writes only the final
 committed user+assistant Turn. Memory SDK 0.4 `MemoryManager` implements this protocol directly.
-The older consumer-prepared helpers remain internal compatibility code; new consumers do not
-call them or maintain recall/release/write lifecycle themselves.
+The older consumer-prepared helpers and their query/sink DTOs remain private migration code only.
+They are absent from both package public surfaces and are unsupported for product composition;
+consumers do not call or maintain recall/release/write lifecycle themselves.
 
 Each `ConversationContinuationInput` may provide its own
 `context_source_snapshot_ref`. The SDK never reuses the root reference for a continuation; when

@@ -13,7 +13,8 @@ last-updated: 2026-08-22
 
 - `AgentMemoryPort` 是唯一官方 Memory 边界：`recall_for_turn`、`release_recall`、
   `record_committed_turn`。旧 query/sink 与 reserved query/write ports 已从两层 public surface 退休，
-  仅作为 schema v3 内部兼容代码保留。
+  manual preparation helpers、adapter-facing DTO 与 `ContextPreparationMode` 也不再公开，仅作为 schema v3
+  和内部回归兼容代码保留。
 - `AgentIdentity(deployment_id, household_id, actor_id, session_id)` 是可信身份；每个 session 首次
   conversation entry 前写入 immutable binding，任何 rebind 都在第二次 recall 前 fail-closed。
   `MemoryScopeRef` 只允许 personal/family，automatic committed turn 只允许写可信 actor 的 personal scope。
@@ -52,7 +53,8 @@ last-updated: 2026-08-22
 - context preparation 在 product provider 前先持久 claim identity/input hash、当轮有效
   `source_snapshot_ref` 与有界 lease。winner 调用 product provider 与 deterministic recall；replay 复用
   claim 中同一 ref 和 frozen stage，不二次调用两者；相同 continuation ID 改 ref 或 payload 稳定 conflict。
-  product provider 只能提供
+  非owner调用按Context request与lease horizon等待winner；正常慢provider不会被固定一秒误判为失败，owner
+  崩溃后由waiter在lease到期时CAS takeover，并继续生成同一stage hash/release identity。product provider 只能提供
   persona/history/skills/tool hints 等非 Memory Context，伪造 `source=memory` 会在冻结前拒绝。
   private snapshot 把 recall 结果作为 USER/untrusted data，并在 start/continuation 原事务消费后清空
   private bytes、保留 lineage/hash；continuation 的 frozen prepared messages 连同本轮 message 一次性

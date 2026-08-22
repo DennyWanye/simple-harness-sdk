@@ -39,13 +39,17 @@ SPDX-License-Identifier: Apache-2.0
   instance; recall failures degrade to a frozen empty partition and replay does not recall
   again.
 - Old query/sink and reserved query/write ports are retired from public exports. Consumers
-  migrate to one `AgentMemoryPort` and no longer call preparation helpers manually.
+  migrate to one `AgentMemoryPort`; manual preparation helpers, adapter-facing Memory DTOs and
+  `ContextPreparationMode` are private implementation details rather than compatibility exports.
 - Conversation start and continuation enqueue no longer create tentative Memory writes. A
   completed root or continuation commits its user+assistant pair atomically with terminal facts;
   failed/cancelled turns produce no outbox row and replay rejects missing, added, or changed turns.
 - Context preparation persists the effective root or continuation snapshot reference in the
   durable claim before invoking the product provider. Continuation replay reuses that exact
   reference; changing either the reference or payload for an existing continuation ID conflicts.
+- A duplicate caller now waits through the bounded Context request/lease horizon. If the durable
+  owner disappears, the waiter deterministically takes over the expired lease and freezes the same
+  stage instead of failing after a fixed one-second polling window.
 - Existing execution schema v1-v3 databases remain fail-closed in the normal loader. A closed,
   exact-v3 database can be upgraded only through the explicit offline migrator with a complete
   legacy identity map and a caller-selected same-directory backup path.

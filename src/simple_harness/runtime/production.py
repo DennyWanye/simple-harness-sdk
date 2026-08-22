@@ -77,7 +77,6 @@ class ProductionRuntimeConfig:
     driver: RuntimeDriver
     profiles: Mapping[str, RuntimeProfile]
     memory: AgentMemoryPort
-    context_preparation_mode: ContextPreparationMode
     provider_budget_resolver: object
     provider_projection_pump: ManagedProjectionPump
     run_binding: object
@@ -123,13 +122,6 @@ class ProductionRuntimeConfig:
             raise ValueError("owner_id is required")
         if "agent.general" not in self.profiles:
             raise ValueError("production profiles require agent.general")
-        object.__setattr__(
-            self,
-            "context_preparation_mode",
-            ContextPreparationMode(self.context_preparation_mode),
-        )
-        if self.context_preparation_mode is not ContextPreparationMode.SDK_PREPARED:
-            raise ValueError("official Agent Memory requires sdk_prepared Context")
         object.__setattr__(self, "memory_ownership", ResourceOwnership(self.memory_ownership))
         object.__setattr__(
             self, "memory_failure_policy", MemoryFailurePolicy(self.memory_failure_policy)
@@ -188,7 +180,7 @@ def build_production_runtime(config: ProductionRuntimeConfig) -> Runtime:
             ),
             conversation_memory_enabled=True,
             context_staging=staging,
-            context_preparation_mode=config.context_preparation_mode,
+            context_preparation_mode=ContextPreparationMode.SDK_PREPARED,
             agent_memory=config.memory,
             context_provider=config.context_provider,
             memory_failure_policy=config.memory_failure_policy,

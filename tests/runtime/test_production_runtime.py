@@ -12,7 +12,6 @@ import pytest
 from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.sqlite import Database
 from simple_harness.runtime import (
-    ContextPreparationMode,
     ProductionRuntimeConfig,
     ResourceOwnership,
     RuntimeLifecycleState,
@@ -89,7 +88,6 @@ def _config(path: Path, trace: list[str], **changes) -> ProductionRuntimeConfig:
         "profiles": {"agent.general": RuntimeProfile("agent.general", "react")},
         "memory": memory,
         "memory_ownership": ResourceOwnership.RUNTIME,
-        "context_preparation_mode": ContextPreparationMode.SDK_PREPARED,
         "provider_budget_resolver": object(),
         "provider_projection_pump": pump,
         "run_binding": object(),

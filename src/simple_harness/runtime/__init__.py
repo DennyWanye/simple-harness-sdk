@@ -41,8 +41,6 @@ from .conversation_context import (
     context_input_hash,
     context_query_id,
     get_staged_context,
-    prepare_consumer_conversation_context,
-    prepare_sdk_conversation_context,
 )
 from .conversation_context_provider import (
     ConversationContextBounds,
@@ -53,20 +51,9 @@ from .conversation_context_provider import (
     source_snapshot_ref,
 )
 from .conversation_memory import (
-    ContextPreparationMode,
     ConversationContinuationInput,
-    ConversationMemoryApplyResult,
-    ConversationMemoryApplyStatus,
-    ConversationMemoryError,
-    ConversationMemoryErrorCode,
-    ConversationMemoryIntent,
-    ConversationMemoryQueryStatus,
-    ConversationMemoryRecallQuery,
-    ConversationMemoryRecallResult,
-    ConversationMemoryRole,
     ConversationTurnInput,
     ConversationTurnOutput,
-    canonicalize_memory_text,
 )
 from .drivers.react import ReActDriver, build_react_driver
 from .drivers.react_loop import AgentLoopCollaborator, EffectBatchExecutor
@@ -142,7 +129,6 @@ __all__ = (
     "CommittedTurn",
     "CommittedTurnReceipt",
     "CommittedTurnStatus",
-    "ContextPreparationMode",
     "ContextPort",
     "ContextSnapshot",
     "ContinuationUnitOfWork",
@@ -151,15 +137,6 @@ __all__ = (
     "ConversationContextProviderPort",
     "ConversationContextRequest",
     "ConversationContextResult",
-    "ConversationMemoryApplyResult",
-    "ConversationMemoryApplyStatus",
-    "ConversationMemoryError",
-    "ConversationMemoryErrorCode",
-    "ConversationMemoryIntent",
-    "ConversationMemoryQueryStatus",
-    "ConversationMemoryRecallQuery",
-    "ConversationMemoryRecallResult",
-    "ConversationMemoryRole",
     "ConversationTurnInput",
     "ConversationTurnOutput",
     "DriverCancelOutcome",
@@ -208,13 +185,10 @@ __all__ = (
     "build_runtime",
     "build_react_driver",
     "build_workflow_runtime_driver",
-    "canonicalize_memory_text",
     "claim_context_preparation",
     "complete_context_stage",
     "context_input_hash",
     "context_query_id",
     "get_staged_context",
-    "prepare_consumer_conversation_context",
-    "prepare_sdk_conversation_context",
     "source_snapshot_ref",
 )

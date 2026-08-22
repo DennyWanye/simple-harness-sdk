@@ -11,7 +11,9 @@ consumer/production composition。Memory 写入现为 terminal-only committed us
 schema v1-v3 仍由正常 loader fail-closed；schema v3 只能通过显式、backup-first 的 offline migrator
 升级为 v4，迁移会输出可校验的 neutral manifest，并持久化 legacy disposition/cursor。当前 candidate
 version 为 0.3.0，wheel 公开 PEP 561 类型；root 与每个 continuation 独立绑定持久 Context snapshot
-reference，未显式提供时仅从当轮 current message 内容寻址生成。product-neutral future-consumer fixture
+reference，未显式提供时仅从当轮 current message 内容寻址生成。两层 public surface 只保留统一
+`AgentMemoryPort`，旧 query/sink、manual preparation 与 adapter-facing Memory DTO 已退休；非 owner 会按
+有界 request/lease horizon 等待，并在 owner lease 过期后 CAS takeover。product-neutral future-consumer fixture
 覆盖官方 Memory 组合，真实产品接入仍只由后续 `simple_harness` cutover 验证。
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Agent Memory/Context contracts、identity binding、context

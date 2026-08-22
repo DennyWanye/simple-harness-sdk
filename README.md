@@ -56,8 +56,9 @@ async with runtime:
 ```
 
 Consumers do not call recall/release/write manually. Non-text attachment, tool, and reasoning
-payloads are excluded unless the consumer supplies explicit `memory_text`. The old query/sink split has been
-retired from the public API. Public contracts are documented in
+payloads are excluded unless the consumer supplies explicit `memory_text`. The old query/sink
+split, manual preparation helpers, and their adapter-facing DTOs have been retired from both
+public package surfaces. Public contracts are documented in
 [`docs/api/contracts.md`](docs/api/contracts.md); consumer validation is covered
 by [`docs/conformance.md`](docs/conformance.md).
 

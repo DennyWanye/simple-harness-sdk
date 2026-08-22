@@ -222,7 +222,7 @@ class AuthorizationPort(Protocol):
         ...
 
 
-class MemoryQueryPort(Protocol):
+class _MemoryQueryPort(Protocol):
     """Read-only memory recall interface.
 
     reserved — declared but not yet wired into Runtime; do not assume recall is
@@ -272,7 +272,7 @@ class MemoryQueryPort(Protocol):
         ...
 
 
-class MemoryWritePort(Protocol):
+class _MemoryWritePort(Protocol):
     """Write interface for session-scoped working memory.
 
     reserved — declared but not yet wired into Runtime; do not assume working
@@ -320,7 +320,7 @@ class MemoryWritePort(Protocol):
         ...
 
 
-class ConversationMemoryQueryPort(Protocol):
+class _ConversationMemoryQueryPort(Protocol):
     """Durable, bounded conversation recall boundary."""
 
     async def recall_bounded(
@@ -334,7 +334,7 @@ class ConversationMemoryQueryPort(Protocol):
     async def close(self) -> None: ...
 
 
-class ConversationMemorySinkPort(Protocol):
+class _ConversationMemorySinkPort(Protocol):
     """Idempotent sink for one canonical conversation Memory event."""
 
     async def apply(self, intent: ConversationMemoryIntent) -> ConversationMemoryApplyResult: ...
@@ -348,8 +348,4 @@ __all__ = (
     "AuthorizationPort",
     "AuthorizationRequest",
     "AuthorizationResult",
-    "MemoryQueryPort",
-    "MemoryWritePort",
-    "ConversationMemoryQueryPort",
-    "ConversationMemorySinkPort",
 )

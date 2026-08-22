@@ -659,6 +659,17 @@ class RunClient:
             value=value,
         )
         if staged.private_snapshot is None or staged.private_snapshot_hash is None:
+            concurrent = self._runtime._uow.read_run(resolved_run.value)
+            raw = self._runtime._uow.read_start_snapshot(resolved_run.value)
+            if concurrent is not None and raw is not None:
+                snapshot = StartSnapshot.from_json(raw)
+                if (
+                    snapshot.conversation == value
+                    and snapshot.turn_id == resolved_turn
+                    and concurrent.request_id == resolved_request.value
+                    and snapshot.context_stage_id == staged.stage_id
+                ):
+                    return concurrent
             raise UnitOfWorkConflict("prepared context bytes are unavailable")
         return await self._runtime._start_run(
             RunStart(
@@ -709,15 +720,53 @@ class RunClient:
         if claim.record.state in {ContextStageState.STAGED, ContextStageState.CONSUMED}:
             return claim.record
         if not claim.owner:
-            for _ in range(100):
-                await asyncio.sleep(0.01)
+            context_bounds = ConversationContextBounds()
+            recall_bounds = MemoryRecallBounds()
+            loop = asyncio.get_running_loop()
+            wait_deadline = loop.time() + (
+                self._runtime._ports.lease_ttl_seconds
+                + context_bounds.deadline_seconds
+                + recall_bounds.deadline_seconds
+                + 1.0
+            )
+            while loop.time() < wait_deadline:
                 winner = repository.get(stage_id)
                 if winner is not None and winner.state in {
                     ContextStageState.STAGED,
                     ContextStageState.CONSUMED,
                 }:
                     return winner
-            raise TimeoutError("context preparation winner did not finish")
+                if winner is not None and winner.state is ContextStageState.ABANDONED:
+                    raise UnitOfWorkConflict("context preparation was abandoned")
+                current_now = self._runtime._now()
+                if (
+                    winner is not None
+                    and winner.state is ContextStageState.PREPARING
+                    and winner.lease_expires_at is not None
+                    and winner.lease_expires_at <= current_now
+                ):
+                    claim = claim_context_preparation(
+                        repository,
+                        stage_id=stage_id,
+                        kind=kind,
+                        identity_key=identity_key,
+                        value=value,
+                        mode=ContextPreparationMode.SDK_PREPARED,
+                        owner_id=self._runtime._ports.owner_id,
+                        now=current_now,
+                        lease_seconds=self._runtime._ports.lease_ttl_seconds,
+                    )
+                    if claim.record.state in {
+                        ContextStageState.STAGED,
+                        ContextStageState.CONSUMED,
+                    }:
+                        return claim.record
+                    if claim.owner:
+                        break
+                await asyncio.sleep(min(0.05, max(0.0, wait_deadline - loop.time())))
+            else:
+                raise TimeoutError("context preparation lease did not converge")
+        now = self._runtime._now()
         identity_payload = value.identity.to_json()
         identity_hash = hashlib.sha256(canonical_json(identity_payload).encode("utf-8")).hexdigest()
         with repository.database.transaction() as connection:

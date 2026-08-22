@@ -10,13 +10,15 @@ import pytest
 from simple_harness import AgentIdentity, ContentBlock, Message, MessageRole, canonical_json
 from simple_harness.runtime import (
     ConversationContinuationInput,
+    ConversationTurnInput,
+    ConversationTurnOutput,
+)
+from simple_harness.runtime.conversation_memory import (
     ConversationMemoryIntent,
     ConversationMemoryQueryStatus,
     ConversationMemoryRecallQuery,
     ConversationMemoryRecallResult,
     ConversationMemoryRole,
-    ConversationTurnInput,
-    ConversationTurnOutput,
 )
 
 

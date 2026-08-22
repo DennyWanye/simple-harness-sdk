@@ -39,7 +39,7 @@ from .conversation_memory import (
     ConversationMemoryRecallResult,
     ConversationTurnInput,
 )
-from .ports import ConversationMemoryQueryPort
+from .ports import _ConversationMemoryQueryPort
 
 
 def _preparation_bounds(
@@ -194,7 +194,7 @@ def _consumer_release_candidate(value: object, *, expected_context_query_id: str
 
 
 async def _release_recall_result(
-    memory: ConversationMemoryQueryPort,
+    memory: _ConversationMemoryQueryPort,
     *,
     user_id: str,
     query_id: str,
@@ -265,7 +265,7 @@ def _validated_recall_payload(
 
 
 async def _release_staged_result(
-    memory: ConversationMemoryQueryPort,
+    memory: _ConversationMemoryQueryPort,
     record: ContextStageRecord,
     *,
     timeout_seconds: float,
@@ -284,7 +284,7 @@ async def _release_staged_result(
 
 
 async def _release_consumer_staged_result(
-    memory: ConversationMemoryQueryPort | None,
+    memory: _ConversationMemoryQueryPort | None,
     record: ContextStageRecord,
     *,
     timeout_seconds: float,
@@ -369,7 +369,7 @@ def get_staged_context(
 
 async def prepare_sdk_conversation_context(
     repository: ContextStagingRepository,
-    memory: ConversationMemoryQueryPort,
+    memory: _ConversationMemoryQueryPort,
     *,
     stage_id: str,
     kind: ContextStageKind,
@@ -497,7 +497,7 @@ async def prepare_consumer_conversation_context(
     owner_id: str,
     now: Callable[[], float],
     lease_seconds: float,
-    memory: ConversationMemoryQueryPort | None = None,
+    memory: _ConversationMemoryQueryPort | None = None,
     release_timeout_seconds: float = 1.0,
     wait_seconds: float = 0.01,
     max_waits: int = 100,
@@ -603,6 +603,4 @@ __all__ = (
     "context_input_hash",
     "context_query_id",
     "get_staged_context",
-    "prepare_consumer_conversation_context",
-    "prepare_sdk_conversation_context",
 )

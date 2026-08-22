@@ -17,15 +17,17 @@ from simple_harness.execution.context_staging import (
     ContextStagingRepository,
 )
 from simple_harness.execution.sqlite import Database
-from simple_harness.runtime import (
+from simple_harness.runtime import ConversationTurnInput
+from simple_harness.runtime.conversation_context import (
+    context_query_id,
+    prepare_consumer_conversation_context,
+    prepare_sdk_conversation_context,
+)
+from simple_harness.runtime.conversation_memory import (
     ConversationMemoryError,
     ConversationMemoryErrorCode,
     ConversationMemoryQueryStatus,
     ConversationMemoryRecallResult,
-    ConversationTurnInput,
-    context_query_id,
-    prepare_consumer_conversation_context,
-    prepare_sdk_conversation_context,
 )
 
 

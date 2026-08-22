@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from simple_harness import (
     ConsumerRuntimePolicies,
     ConsumerRuntimePorts,
     ConversationContextResult,
+    CurrentMessageContextProvider,
     MemoryRecallRequest,
     MemoryRecallResult,
     MemoryRecallStatus,
@@ -27,9 +29,15 @@ from simple_harness import (
     RunId,
     canonical_json,
 )
+from simple_harness.execution.context_staging import ContextStageKind
 from simple_harness.execution.uow import RunState, UnitOfWorkConflict
 from simple_harness.providers import ProviderRequest, ProviderResponse
 from simple_harness.runtime import AuthorizationRequest, AuthorizationResult, ConversationTurnInput
+from simple_harness.runtime.conversation_context import (
+    claim_context_preparation,
+    context_query_id,
+)
+from simple_harness.runtime.conversation_memory import ContextPreparationMode
 from simple_harness.tools import ToolCall, ToolResult
 
 IDENTITY = AgentIdentity("deployment-1", "household-1", "actor-1", "session-1")
@@ -74,6 +82,17 @@ class _ForgedMemoryContextProvider:
             2,
             len(canonical_json(payload).encode()),
         )
+
+
+class _SlowContextProvider(CurrentMessageContextProvider):
+    def __init__(self, delay_seconds: float) -> None:
+        self.delay_seconds = delay_seconds
+        self.calls = 0
+
+    async def prepare_once(self, request):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        await asyncio.sleep(self.delay_seconds)
+        return await super().prepare_once(request)
 
 
 class _Memory:
@@ -135,9 +154,8 @@ def _ports(
     *,
     owned: bool = False,
     context_provider=None,  # type: ignore[no-untyped-def]
+    owner_id: str = "consumer-runtime",
 ) -> ConsumerRuntimePorts:
-    from simple_harness import CurrentMessageContextProvider
-
     return ConsumerRuntimePorts(
         provider=_Provider(),
         tool_executor=_Tools(),
@@ -147,6 +165,7 @@ def _ports(
         memory_ownership=(ResourceOwnership.RUNTIME if owned else ResourceOwnership.BORROWED),
         context_provider=context_provider or CurrentMessageContextProvider(),
         policies=ConsumerRuntimePolicies.local_default(),
+        owner_id=owner_id,
     )
 
 
@@ -332,15 +351,116 @@ def test_product_context_cannot_forge_memory_authority(tmp_path: Path) -> None:
     asyncio.run(case())
 
 
-def test_legacy_memory_ports_are_not_public() -> None:
+def test_duplicate_start_waits_for_slow_stage_winner_and_reuses_hash(tmp_path: Path) -> None:
+    async def case() -> None:
+        memory = _Memory()
+        context = _SlowContextProvider(1.1)
+        database = tmp_path / "execution.db"
+        first = await __import__("simple_harness").build_consumer_runtime(
+            _ports(database, memory, context_provider=context, owner_id="runtime-first")
+        )
+        second = await __import__("simple_harness").build_consumer_runtime(
+            _ports(database, memory, context_provider=context, owner_id="runtime-second")
+        )
+        value = ConversationTurnInput(
+            IDENTITY,
+            Message(MessageRole.USER, "slow context"),
+            "slow context",
+        )
+        run_id = RunId("run-slow-context")
+        async with first, second:
+            records = await asyncio.gather(
+                RunClient(first).start_conversation(value, run_id=run_id),
+                RunClient(second).start_conversation(value, run_id=run_id),
+            )
+            assert records[0].run_id == records[1].run_id == run_id.value
+            first_stage = first._ports.context_staging.get(
+                "agent-memory-stage/v1/"
+                + context_query_id(ContextStageKind.ROOT, run_id.value).rsplit("/", 1)[-1]
+            )
+            assert first_stage is not None
+            second_stage = second._ports.context_staging.get(first_stage.stage_id)
+            assert second_stage is not None
+            assert first_stage.private_snapshot_hash == second_stage.private_snapshot_hash
+            assert context.calls == 1
+            assert len(memory.recalls) == 1
+            assert len(memory.releases) == 1
+
+    asyncio.run(case())
+
+
+def test_expired_stage_owner_is_taken_over_without_second_recall(tmp_path: Path) -> None:
+    async def case() -> None:
+        memory = _Memory()
+        database = tmp_path / "execution.db"
+        runtime = await __import__("simple_harness").build_consumer_runtime(
+            _ports(database, memory, owner_id="recovery-runtime")
+        )
+        run_id = RunId("run-stage-takeover")
+        value = ConversationTurnInput(
+            IDENTITY,
+            Message(MessageRole.USER, "recover context"),
+            "recover context",
+        )
+        query_id = context_query_id(ContextStageKind.ROOT, run_id.value)
+        stage_id = f"agent-memory-stage/v1/{query_id.rsplit('/', 1)[-1]}"
+        repository = runtime._ports.context_staging
+        assert repository is not None
+        abandoned = claim_context_preparation(
+            repository,
+            stage_id=stage_id,
+            kind=ContextStageKind.ROOT,
+            identity_key=run_id.value,
+            value=value,
+            mode=ContextPreparationMode.SDK_PREPARED,
+            owner_id="crashed-runtime",
+            now=time.time(),
+            lease_seconds=0.05,
+        )
+        assert abandoned.owner
+        async with runtime:
+            record = await RunClient(runtime).start_conversation(value, run_id=run_id)
+            assert record.run_id == run_id.value
+            recovered = repository.get(stage_id)
+            assert recovered is not None and recovered.private_snapshot_hash
+            assert len(memory.recalls) == 1
+            assert len(memory.releases) == 1
+
+    asyncio.run(case())
+
+
+def test_legacy_memory_lifecycle_is_not_public() -> None:
     import simple_harness
     import simple_harness.runtime
+    import simple_harness.runtime.ports as runtime_ports
 
     for name in (
         "ConversationMemoryQueryPort",
         "ConversationMemorySinkPort",
         "MemoryQueryPort",
         "MemoryWritePort",
+        "ContextPreparationMode",
+        "ConversationMemoryApplyResult",
+        "ConversationMemoryApplyStatus",
+        "ConversationMemoryError",
+        "ConversationMemoryErrorCode",
+        "ConversationMemoryIntent",
+        "ConversationMemoryQueryStatus",
+        "ConversationMemoryRecallQuery",
+        "ConversationMemoryRecallResult",
+        "ConversationMemoryRole",
+        "canonicalize_memory_text",
+        "prepare_consumer_conversation_context",
+        "prepare_sdk_conversation_context",
     ):
         assert not hasattr(simple_harness, name)
         assert not hasattr(simple_harness.runtime, name)
+        assert name not in simple_harness.__all__
+        assert name not in simple_harness.runtime.__all__
+    for name in (
+        "ConversationMemoryQueryPort",
+        "ConversationMemorySinkPort",
+        "MemoryQueryPort",
+        "MemoryWritePort",
+    ):
+        assert not hasattr(runtime_ports, name)
