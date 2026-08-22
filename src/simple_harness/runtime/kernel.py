@@ -86,7 +86,6 @@ from .conversation_context_provider import (
     ConversationContextProviderPort,
     ConversationContextRequest,
     CurrentMessageContextProvider,
-    source_snapshot_ref,
 )
 from .conversation_memory import (
     ContextPreparationMode,
@@ -741,9 +740,9 @@ class RunClient:
                     now,
                 ),
             )
-        ref = value.context_source_snapshot_ref or source_snapshot_ref(
-            {"current_message": value.message.to_dict()}
-        )
+        ref = claim.record.source_snapshot_ref
+        if ref is None:
+            raise UnitOfWorkConflict("context preparation claim has no source snapshot ref")
         context_request = ConversationContextRequest(
             preparation_id=stage_id,
             identity=value.identity,
@@ -962,6 +961,21 @@ class RunClient:
         self._runtime._require_started()
         if not isinstance(value, ConversationContinuationInput):
             raise TypeError("value must use ConversationContinuationInput")
+        existing_continuation = self._runtime._uow.read_continuation(continuation_id)
+        if existing_continuation is not None:
+            existing_payload = thaw_json(existing_continuation.payload)
+            existing_conversation = (
+                existing_payload.get("conversation")
+                if isinstance(existing_payload, Mapping)
+                else None
+            )
+            if (
+                existing_continuation.run_id == _run_id(run_id)
+                and isinstance(existing_conversation, Mapping)
+                and canonical_json(dict(existing_conversation)) == canonical_json(value.to_json())
+            ):
+                return existing_continuation
+            raise UnitOfWorkConflict("continuation identity reused differently")
         raw = self._runtime._uow.read_start_snapshot(_run_id(run_id))
         if raw is None:
             raise KeyError(run_id.value)
@@ -979,7 +993,7 @@ class RunClient:
                 value.message,
                 value.memory_text,
                 start.conversation.recall_scopes,
-                start.conversation.context_source_snapshot_ref,
+                value.context_source_snapshot_ref,
             )
             stage = await self._prepare_agent_context(
                 kind=ContextStageKind.CONTINUATION,

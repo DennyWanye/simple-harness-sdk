@@ -120,6 +120,12 @@ committed user+assistant Turn. Memory SDK 0.4 `MemoryManager` implements this pr
 The older consumer-prepared helpers remain internal compatibility code; new consumers do not
 call them or maintain recall/release/write lifecycle themselves.
 
+Each `ConversationContinuationInput` may provide its own
+`context_source_snapshot_ref`. The SDK never reuses the root reference for a continuation; when
+the field is `None`, it derives a deterministic reference from only that continuation's current
+message. The effective reference is durable before provider invocation and remains fixed across
+crash recovery and replay.
+
 ---
 
 ## Starting a Run

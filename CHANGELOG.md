@@ -21,6 +21,9 @@ SPDX-License-Identifier: Apache-2.0
   explicit borrowed/runtime ownership.
 - `ConversationContextProviderPort` for product-owned non-Memory Context and automatic
   `RunClient.start_conversation()` / continuation preparation.
+- `ConversationContinuationInput.context_source_snapshot_ref` lets each continuation bind its
+  own product Context snapshot. When omitted, the SDK derives a deterministic content-addressed
+  reference from that continuation's current message.
 - Fresh execution schema v4 with immutable Agent identity bindings, richer Context staging,
   durable recall-release retry, and a terminal-only canonical committed-turn outbox.
 - Lease/epoch-fenced committed-turn dispatch with restart replay, bounded backlog cleanup,
@@ -40,6 +43,9 @@ SPDX-License-Identifier: Apache-2.0
 - Conversation start and continuation enqueue no longer create tentative Memory writes. A
   completed root or continuation commits its user+assistant pair atomically with terminal facts;
   failed/cancelled turns produce no outbox row and replay rejects missing, added, or changed turns.
+- Context preparation persists the effective root or continuation snapshot reference in the
+  durable claim before invoking the product provider. Continuation replay reuses that exact
+  reference; changing either the reference or payload for an existing continuation ID conflicts.
 - Existing execution schema v1-v3 databases remain fail-closed in the normal loader. A closed,
   exact-v3 database can be upgraded only through the explicit offline migrator with a complete
   legacy identity map and a caller-selected same-directory backup path.

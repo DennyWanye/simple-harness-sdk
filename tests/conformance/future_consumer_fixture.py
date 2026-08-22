@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from simple_harness import (
     ConsumerRuntimePorts,
     ConversationContextRequest,
     ConversationContextResult,
+    ConversationContinuationInput,
     ConversationTurnInput,
     CurrentMessageContextProvider,
     JsonValue,
@@ -31,12 +33,18 @@ from simple_harness.tools import ToolCall, ToolResult
 
 
 class DeterministicProvider:
-    def __init__(self) -> None:
+    def __init__(self, *, blocked: bool = False) -> None:
         self.requests: list[ProviderRequest] = []
+        self.blocked = blocked
+        self.started = asyncio.Event()
+        self.allow = asyncio.Event()
 
     async def invoke(self, request: ProviderRequest, *, cancel) -> ProviderResponse:  # type: ignore[no-untyped-def]
         del cancel
         self.requests.append(request)
+        self.started.set()
+        if self.blocked:
+            await self.allow.wait()
         return ProviderResponse(
             request.request_id,
             Message(MessageRole.ASSISTANT, "future consumer answer"),
@@ -89,11 +97,12 @@ class FutureConsumerFixture:
     database_path: Path
     memory: AgentMemoryPort | None
     rich_context: bool = False
+    block_provider: bool = False
     provider: DeterministicProvider = field(init=False)
     context_provider: CurrentMessageContextProvider | RichProductContextProvider = field(init=False)
 
     def __post_init__(self) -> None:
-        self.provider = DeterministicProvider()
+        self.provider = DeterministicProvider(blocked=self.block_provider)
         self.context_provider = (
             RichProductContextProvider() if self.rich_context else CurrentMessageContextProvider()
         )
@@ -124,6 +133,7 @@ class FutureConsumerFixture:
         identity: AgentIdentity,
         run_id: str,
         text: str,
+        context_source_snapshot_ref: str | None = None,
     ) -> None:
         typed_run_id = RunId(run_id)
         await RunClient(runtime).start_conversation(
@@ -131,10 +141,51 @@ class FutureConsumerFixture:
                 identity,
                 Message(MessageRole.USER, text),
                 text,
+                context_source_snapshot_ref=context_source_snapshot_ref,
             ),
             run_id=typed_run_id,
         )
         await runtime.wait_idle(typed_run_id)
+
+    @staticmethod
+    async def start_turn(
+        runtime: Runtime,
+        *,
+        identity: AgentIdentity,
+        run_id: str,
+        text: str,
+        context_source_snapshot_ref: str | None = None,
+    ) -> RunId:
+        typed_run_id = RunId(run_id)
+        await RunClient(runtime).start_conversation(
+            ConversationTurnInput(
+                identity,
+                Message(MessageRole.USER, text),
+                text,
+                context_source_snapshot_ref=context_source_snapshot_ref,
+            ),
+            run_id=typed_run_id,
+        )
+        return typed_run_id
+
+    @staticmethod
+    async def continue_turn(
+        runtime: Runtime,
+        *,
+        run_id: RunId,
+        continuation_id: str,
+        text: str,
+        context_source_snapshot_ref: str | None = None,
+    ) -> None:
+        await RunClient(runtime).signal_conversation(
+            run_id,
+            continuation_id=continuation_id,
+            value=ConversationContinuationInput(
+                Message(MessageRole.USER, text),
+                text,
+                context_source_snapshot_ref,
+            ),
+        )
 
 
 __all__ = (

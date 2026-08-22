@@ -30,6 +30,36 @@ def test_conversation_dto_canonical_golden_round_trip() -> None:
     assert ConversationTurnInput.from_json(value.to_json()) == value
     output = ConversationTurnOutput(Message(MessageRole.ASSISTANT, "answer"), "answer")
     assert ConversationTurnOutput.from_json(output.to_json()) == output
+    continuation = ConversationContinuationInput(
+        Message(MessageRole.USER, "continued"),
+        "continued",
+        "snapshot://continuation-1",
+    )
+    assert ConversationContinuationInput.from_json(continuation.to_json()) == continuation
+    assert hashlib.sha256(canonical_json(continuation.to_json()).encode()).hexdigest() == (
+        "b8b54707b6eba790d8cf204c7f300be59ab83f1e66dba3e808c47af807292092"
+    )
+    fallback = ConversationContinuationInput(
+        Message(MessageRole.USER, "continued"),
+        "continued",
+    )
+    assert fallback.context_source_snapshot_ref is None
+    assert ConversationContinuationInput.from_json(fallback.to_json()) == fallback
+    assert canonical_json(continuation.to_json()) != canonical_json(fallback.to_json())
+    with pytest.raises(ValueError, match="NUL"):
+        ConversationContinuationInput(
+            Message(MessageRole.USER, "continued"),
+            "continued",
+            "snapshot://bad\x00ref",
+        )
+    with pytest.raises(TypeError, match="string or null"):
+        ConversationContinuationInput.from_json(
+            {
+                "message": Message(MessageRole.USER, "continued").to_dict(),
+                "memory_text": "continued",
+                "context_source_snapshot_ref": 1,
+            }
+        )
 
 
 def test_structured_attachment_is_preserved_but_not_projected() -> None:

@@ -7,9 +7,12 @@ from simple_harness import (
     AgentMemoryPort,
     CommittedTurn,
     CommittedTurnReceipt,
+    ConversationContinuationInput,
     MemoryRecallRequest,
     MemoryRecallResult,
     MemoryReleaseRequest,
+    Message,
+    MessageRole,
 )
 
 
@@ -29,3 +32,12 @@ def accepts_memory(memory: AgentMemoryPort) -> AgentMemoryPort:
 
 
 STRUCTURAL_CONFORMANCE: AgentMemoryPort = accepts_memory(StructuralMemoryManager())
+CONTINUATION_WITH_EXPLICIT_REF = ConversationContinuationInput(
+    Message(MessageRole.USER, "continued"),
+    "continued",
+    "sha256:" + "a" * 64,
+)
+CONTINUATION_WITH_FALLBACK = ConversationContinuationInput(
+    Message(MessageRole.USER, "continued"),
+    "continued",
+)

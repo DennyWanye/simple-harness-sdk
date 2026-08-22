@@ -17,9 +17,10 @@ last-updated: 2026-08-22
 - `AgentIdentity(deployment_id, household_id, actor_id, session_id)` 是可信身份；每个 session 首次
   conversation entry 前写入 immutable binding，任何 rebind 都在第二次 recall 前 fail-closed。
   `MemoryScopeRef` 只允许 personal/family，automatic committed turn 只允许写可信 actor 的 personal scope。
-- `ConversationTurnInput` / `ConversationContinuationInput` 持有完整 identity、Message、canonical
-  `memory_text`、recall scopes 与可选 product `source_snapshot_ref`。附件 body、reasoning 与 tool payload
-  不会隐式进入 Memory。
+- `ConversationTurnInput` 持有完整 identity、Message、canonical `memory_text`、recall scopes 与可选
+  product `source_snapshot_ref`；`ConversationContinuationInput` 持有本轮 Message、`memory_text` 与独立的
+  可选 `source_snapshot_ref`。continuation 不继承 root ref；未提供时只按本轮 current message 生成
+  deterministic content-addressed ref。附件 body、reasoning 与 tool payload 不会隐式进入 Memory。
 - `build_consumer_runtime` 与 `build_production_runtime` 统一接收一个 `memory=AgentMemoryPort`；
   `ResourceOwnership.BORROWED` 不关闭消费者资源，`RUNTIME` 在 build failure 或重复 Runtime close 时
   恰好关闭一次。同一 resolved path 同时作为 execution/Memory storage 会在组合时拒绝。
@@ -48,8 +49,10 @@ last-updated: 2026-08-22
 - terminal replay 同时验证 committed-turn presence 与 canonical payload/hash：same 可重放，different、
   missing 或事后 added 均稳定 conflict。turn identity、完整四元 identity、personal actor scope、recall
   write fence 与 SDK 冻结的 `turn_started_at` 一起进入 canonical envelope。
-- context preparation 先持久 claim identity/input hash 与有界 lease。winner 调用 product provider 与
-  deterministic recall；replay 复用同一 frozen stage，不二次调用两者。product provider 只能提供
+- context preparation 在 product provider 前先持久 claim identity/input hash、当轮有效
+  `source_snapshot_ref` 与有界 lease。winner 调用 product provider 与 deterministic recall；replay 复用
+  claim 中同一 ref 和 frozen stage，不二次调用两者；相同 continuation ID 改 ref 或 payload 稳定 conflict。
+  product provider 只能提供
   persona/history/skills/tool hints 等非 Memory Context，伪造 `source=memory` 会在冻结前拒绝。
   private snapshot 把 recall 结果作为 USER/untrusted data，并在 start/continuation 原事务消费后清空
   private bytes、保留 lineage/hash；continuation 的 frozen prepared messages 连同本轮 message 一次性
@@ -116,6 +119,9 @@ last-updated: 2026-08-22
   conversation fixture、自动 recall/committed pair/frozen restart、`memory=None` 与 apply-before-ack restart
   全绿；Memory standalone、真实 `[harness]` extra 解析及 Harness 0.2/0.4 拒绝 artifact matrix 为 10 passed。
   本地 ignored `joint-manifest.json` 固定两包 commit、wheel/sdist/BUILD_INFO/SHA256SUMS hash；不上传原始证据。
+- 2026-08-22 A2-002 candidate correction：continuation Context ref 改为每轮独立 public input，claim 在
+  provider 前持久有效 ref，未提供时只对当轮 current message 内容寻址；root + 两次 continuation、两类
+  provider crash window、跨重启稳定 replay/conflict 与 installed-wheel public/type fixture 已纳入回归。
 - 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
   1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、
   atomic release-pending、replay、rebind、malicious product Context、ownership/build cleanup 与 legacy

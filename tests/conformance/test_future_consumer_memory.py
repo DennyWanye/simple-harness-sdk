@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 from pathlib import Path
 
+import pytest
 from future_consumer_fixture import FutureConsumerFixture, RichProductContextProvider
 
 from simple_harness import (
@@ -22,9 +24,14 @@ from simple_harness import (
     RunClient,
     RunId,
     canonical_json,
+    thaw_json,
 )
 from simple_harness.execution.sqlite import Database
-from simple_harness.execution.uow import RunState
+from simple_harness.execution.uow import RunState, UnitOfWorkConflict
+
+
+def _ref(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
 
 
 class _MemoryProbe:
@@ -72,6 +79,37 @@ class _BlockingMemoryProbe(_MemoryProbe):
         self.started.set()
         await self.allow_record.wait()
         return await super().record_committed_turn(request)
+
+
+class _InjectedCrash(BaseException):
+    pass
+
+
+class _CrashBeforeContinuationProvider(RichProductContextProvider):
+    def __init__(self, continuation_id: str) -> None:
+        super().__init__()
+        self.continuation_id = continuation_id
+        self.crashed = False
+
+    async def prepare_once(self, request):  # type: ignore[no-untyped-def]
+        if request.continuation_id == self.continuation_id and not self.crashed:
+            self.requests.append(request)
+            self.crashed = True
+            raise _InjectedCrash("claim persisted before provider")
+        return await super().prepare_once(request)
+
+
+class _CrashAfterProviderMemory(_MemoryProbe):
+    def __init__(self, continuation_id: str) -> None:
+        super().__init__()
+        self.continuation_id = continuation_id
+        self.crashed = False
+
+    async def recall_for_turn(self, request: MemoryRecallRequest) -> MemoryRecallResult:
+        if request.turn_id == self.continuation_id and not self.crashed:
+            self.crashed = True
+            raise _InjectedCrash("provider returned before stage completion")
+        return await super().recall_for_turn(request)
 
 
 def test_future_consumer_minimal_identity_scopes_committed_turn_and_memory_none(
@@ -158,6 +196,216 @@ def test_future_consumer_rich_context_is_frozen_across_replay_and_restart(
         assert second_context.requests == []
         assert second.provider.requests == []
         assert len(memory.recalls) == len(memory.committed) == 1
+
+    asyncio.run(case())
+
+
+def test_future_consumer_root_and_two_continuations_use_independent_refs(
+    tmp_path: Path,
+) -> None:
+    async def case() -> None:
+        memory = _MemoryProbe()
+        fixture = FutureConsumerFixture(
+            tmp_path / "continuation-refs.db",
+            memory,
+            rich_context=True,
+            block_provider=True,
+        )
+        runtime = await fixture.build()
+        identity = fixture.identity(household="home-a", actor="alice", session="session-refs")
+        async with runtime:
+            run_id = await fixture.start_turn(
+                runtime,
+                identity=identity,
+                run_id="run-refs",
+                text="root",
+                context_source_snapshot_ref=_ref("root"),
+            )
+            await asyncio.wait_for(fixture.provider.started.wait(), timeout=1.0)
+            await fixture.continue_turn(
+                runtime,
+                run_id=run_id,
+                continuation_id="continuation-1",
+                text="first continuation",
+                context_source_snapshot_ref=_ref("continuation-1"),
+            )
+            await fixture.continue_turn(
+                runtime,
+                run_id=run_id,
+                continuation_id="continuation-2",
+                text="fallback continuation",
+            )
+            with pytest.raises(UnitOfWorkConflict, match="reused differently"):
+                await fixture.continue_turn(
+                    runtime,
+                    run_id=run_id,
+                    continuation_id="continuation-1",
+                    text="first continuation",
+                    context_source_snapshot_ref=_ref("changed-ref"),
+                )
+            with pytest.raises(UnitOfWorkConflict, match="reused differently"):
+                await fixture.continue_turn(
+                    runtime,
+                    run_id=run_id,
+                    continuation_id="continuation-1",
+                    text="changed payload",
+                    context_source_snapshot_ref=_ref("continuation-1"),
+                )
+            rows = runtime._ports.context_staging.database.connection.execute(
+                "SELECT identity_key,source_snapshot_ref FROM context_preparation_staging "
+                "ORDER BY created_at,identity_key"
+            ).fetchall()
+            refs = {str(row[0]): str(row[1]) for row in rows}
+            assert refs["run-refs"] == _ref("root")
+            assert refs["continuation-1"] == _ref("continuation-1")
+            assert refs["continuation-2"].startswith("sha256:")
+            assert len(set(refs.values())) == 3
+            fallback = runtime._uow.read_continuation("continuation-2")
+            assert fallback is not None
+            fallback_payload = thaw_json(fallback.payload)
+            assert isinstance(fallback_payload, dict)
+            prepared = fallback_payload["prepared_context"]
+            assert isinstance(prepared, dict)
+            product = prepared["product_context"]
+            assert isinstance(product, dict)
+            current_message = product["current_message"]
+            assert isinstance(current_message, dict)
+            assert current_message["role"] == "user"
+            assert current_message["content"] == "fallback continuation"
+            fallback_json = canonical_json(product)
+            assert "first continuation" not in fallback_json
+            assert '"content":"root"' not in fallback_json
+            fixture.provider.allow.set()
+            await runtime.wait_idle(run_id)
+
+    asyncio.run(case())
+
+
+@pytest.mark.parametrize("crash_point", ("before_provider", "after_provider"))
+def test_continuation_preparation_crash_replays_the_claimed_ref(
+    tmp_path: Path,
+    crash_point: str,
+) -> None:
+    async def case() -> None:
+        continuation_id = f"continuation-{crash_point}"
+        memory: _MemoryProbe = (
+            _CrashAfterProviderMemory(continuation_id)
+            if crash_point == "after_provider"
+            else _MemoryProbe()
+        )
+        fixture = FutureConsumerFixture(
+            tmp_path / f"{crash_point}.db",
+            memory,
+            rich_context=True,
+            block_provider=True,
+        )
+        context = (
+            _CrashBeforeContinuationProvider(continuation_id)
+            if crash_point == "before_provider"
+            else RichProductContextProvider()
+        )
+        fixture.context_provider = context
+        runtime = await fixture.build()
+        identity = fixture.identity(household="home-a", actor="alice", session=crash_point)
+        await runtime.start()
+        run_id = await fixture.start_turn(
+            runtime,
+            identity=identity,
+            run_id=f"run-{crash_point}",
+            text="root",
+            context_source_snapshot_ref=_ref(f"root-{crash_point}"),
+        )
+        await asyncio.wait_for(fixture.provider.started.wait(), timeout=1.0)
+        with pytest.raises(_InjectedCrash):
+            await fixture.continue_turn(
+                runtime,
+                run_id=run_id,
+                continuation_id=continuation_id,
+                text="crash-safe continuation",
+                context_source_snapshot_ref=_ref(continuation_id),
+            )
+        repository = runtime._ports.context_staging
+        stage = repository.database.connection.execute(
+            "SELECT state,source_snapshot_ref FROM context_preparation_staging "
+            "WHERE identity_key=?",
+            (continuation_id,),
+        ).fetchone()
+        assert tuple(stage) == ("preparing", _ref(continuation_id))
+        with repository.database.transaction() as connection:
+            connection.execute(
+                "UPDATE context_preparation_staging SET lease_expires_at=0 "
+                "WHERE identity_key=?",
+                (continuation_id,),
+            )
+        await runtime.close()
+
+        reopened_fixture = FutureConsumerFixture(
+            fixture.database_path,
+            memory,
+            rich_context=True,
+            block_provider=True,
+        )
+        reopened_fixture.context_provider = context
+        reopened = await reopened_fixture.build()
+        async with reopened:
+            await reopened_fixture.continue_turn(
+                reopened,
+                run_id=run_id,
+                continuation_id=continuation_id,
+                text="crash-safe continuation",
+                context_source_snapshot_ref=_ref(continuation_id),
+            )
+            reopened_repository = reopened._ports.context_staging
+            replayed = reopened_repository.get(
+                "agent-memory-stage/v1/"
+                + memory.recalls[-1].query_id.rsplit("/", 1)[-1]
+            )
+            assert replayed is not None and replayed.state.value == "consumed"
+            assert replayed.source_snapshot_ref == _ref(continuation_id)
+            continuation_requests = [
+                request
+                for request in context.requests
+                if request.continuation_id == continuation_id
+            ]
+            assert len(continuation_requests) == 2
+            assert {request.source_snapshot_ref for request in continuation_requests} == {
+                _ref(continuation_id)
+            }
+            recalls_before_replay = len(memory.recalls)
+            requests_before_replay = len(context.requests)
+            await reopened_fixture.continue_turn(
+                reopened,
+                run_id=run_id,
+                continuation_id=continuation_id,
+                text="crash-safe continuation",
+                context_source_snapshot_ref=_ref(continuation_id),
+            )
+            assert len(memory.recalls) == recalls_before_replay == 2
+            assert len(context.requests) == requests_before_replay
+            with pytest.raises(UnitOfWorkConflict, match="reused differently"):
+                await reopened_fixture.continue_turn(
+                    reopened,
+                    run_id=run_id,
+                    continuation_id=continuation_id,
+                    text="crash-safe continuation",
+                    context_source_snapshot_ref=_ref(continuation_id + "-changed"),
+                )
+            with pytest.raises(UnitOfWorkConflict, match="reused differently"):
+                await reopened_fixture.continue_turn(
+                    reopened,
+                    run_id=run_id,
+                    continuation_id=continuation_id,
+                    text="changed crash-safe payload",
+                    context_source_snapshot_ref=_ref(continuation_id),
+                )
+            assert len(memory.recalls) == recalls_before_replay
+            assert len(context.requests) == requests_before_replay
+            assert reopened_repository.database.connection.execute(
+                "SELECT COUNT(*) FROM context_preparation_staging WHERE identity_key=?",
+                (continuation_id,),
+            ).fetchone()[0] == 1
+            reopened_fixture.provider.allow.set()
+            await reopened.wait_idle(run_id)
 
     asyncio.run(case())
 

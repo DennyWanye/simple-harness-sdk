@@ -495,6 +495,9 @@ When integrating the SDK, implement ports in this order:
 - [ ] Build Memory SDK 0.4 `MemoryManager`
 - [ ] Pass it once as `memory=` to `ConsumerRuntimePorts` or `ProductionRuntimeConfig`
 - [ ] Enter turns through `RunClient.start_conversation()` / `signal_conversation()`
+- [ ] Pass each continuation's product snapshot reference through
+  `ConversationContinuationInput.context_source_snapshot_ref`, or leave it `None` for the SDK's
+  current-message content-addressed fallback
 
 **Result**: Agent has long-term memory
 

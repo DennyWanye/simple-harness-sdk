@@ -29,6 +29,7 @@ from simple_harness.execution.context_staging import (
     ContextStagingRepository,
 )
 
+from .conversation_context_provider import source_snapshot_ref
 from .conversation_memory import (
     ContextPreparationMode,
     ConversationMemoryError,
@@ -324,6 +325,9 @@ def claim_context_preparation(
     now: float,
     lease_seconds: float,
 ) -> ContextStageClaim:
+    ref = value.context_source_snapshot_ref or source_snapshot_ref(
+        {"current_message": value.message.to_dict()}
+    )
     return repository.claim(
         stage_id=stage_id,
         kind=kind,
@@ -335,6 +339,7 @@ def claim_context_preparation(
         owner_id=owner_id,
         now=now,
         lease_seconds=lease_seconds,
+        source_snapshot_ref=ref,
     )
 
 

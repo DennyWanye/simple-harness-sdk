@@ -188,22 +188,33 @@ class ConversationTurnInput:
 class ConversationContinuationInput:
     message: Message
     memory_text: str | None
+    context_source_snapshot_ref: str | None = None
 
     def __post_init__(self) -> None:
         message, memory_text = _conversation_message(
             self.message, role=MessageRole.USER, memory_text=self.memory_text
         )
+        if self.context_source_snapshot_ref is not None:
+            _validate_identity(self.context_source_snapshot_ref, "context_source_snapshot_ref")
         object.__setattr__(self, "message", message)
         object.__setattr__(self, "memory_text", memory_text)
 
     def to_json(self) -> dict[str, JsonValue]:
-        return {"message": self.message.to_dict(), "memory_text": self.memory_text}
+        return {
+            "message": self.message.to_dict(),
+            "memory_text": self.memory_text,
+            "context_source_snapshot_ref": self.context_source_snapshot_ref,
+        }
 
     @classmethod
     def from_json(cls, value: Mapping[str, JsonValue]) -> ConversationContinuationInput:
+        source_ref = value.get("context_source_snapshot_ref")
+        if source_ref is not None and not isinstance(source_ref, str):
+            raise TypeError("context_source_snapshot_ref must be a string or null")
         return cls(
             _message_from_json(value.get("message")),
             _optional_text(value.get("memory_text")),
+            source_ref,
         )
 
 
@@ -402,6 +413,8 @@ class ConversationMemoryApplyResult:
 def _validate_identity(value: object, name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} is required")
+    if "\x00" in value:
+        raise ValueError(f"{name} must not contain NUL")
 
 
 def _required_string(value: JsonValue | None, name: str) -> str:

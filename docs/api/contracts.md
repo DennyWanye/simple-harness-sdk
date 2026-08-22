@@ -90,6 +90,13 @@ execution without creating Memory stages or outbox rows.
 history, skills, and tool hints. It cannot supply or forge the Memory partition. Providers
 return the same durable `source_snapshot_ref` they received.
 
+`ConversationTurnInput.context_source_snapshot_ref` binds the root Context snapshot.
+`ConversationContinuationInput.context_source_snapshot_ref` independently binds each
+continuation; it never inherits the root reference. If either input omits the field, the SDK
+derives a deterministic content-addressed reference from that turn's current message and stores
+the effective reference in the preparation claim before calling the provider. Reusing a
+continuation ID with a different reference or payload fails with a stable conflict.
+
 Recall timeout, transient failure, or invalid output produces a durable empty Memory stage;
 provider invocation continues without leaking exception text, paths, or Memory payload into
 the public error state.

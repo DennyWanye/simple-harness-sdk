@@ -84,6 +84,7 @@ class ContextStagingRepository:
         owner_id: str,
         now: float,
         lease_seconds: float,
+        source_snapshot_ref: str | None = None,
     ) -> ContextStageClaim:
         for value, name in (
             (stage_id, "stage_id"),
@@ -95,6 +96,12 @@ class ContextStagingRepository:
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} is required")
         _digest(input_hash, "input_hash")
+        if source_snapshot_ref is not None and (
+            not isinstance(source_snapshot_ref, str)
+            or not source_snapshot_ref.strip()
+            or "\x00" in source_snapshot_ref
+        ):
+            raise ValueError("source_snapshot_ref must be non-blank and contain no NUL")
         if mode not in {"sdk_prepared", "consumer_prepared"}:
             raise ValueError("context preparation mode is invalid")
         _time(now, allow_zero=True)
@@ -126,8 +133,9 @@ class ContextStagingRepository:
                     "stage_id,kind,identity_key,user_id,session_id,input_hash,mode,state,"
                     "lease_owner,lease_token,lease_expires_at,memory_result_id,"
                     "memory_result_hash,private_snapshot,private_snapshot_hash,"
-                    "consumed_run_id,consumed_continuation_id,created_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,'preparing',?,?,?,NULL,NULL,NULL,NULL,NULL,NULL,?,?)",
+                    "consumed_run_id,consumed_continuation_id,source_snapshot_ref,"
+                    "created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,'preparing',?,?,?,NULL,NULL,NULL,NULL,NULL,NULL,?,?,?)",
                     (
                         stage_id,
                         ContextStageKind(kind).value,
@@ -139,6 +147,7 @@ class ContextStagingRepository:
                         owner_id,
                         token,
                         now + lease_seconds,
+                        source_snapshot_ref,
                         now,
                         now,
                     ),
@@ -155,6 +164,7 @@ class ContextStagingRepository:
                 session_id=session_id,
                 input_hash=input_hash,
                 mode=mode,
+                source_snapshot_ref=source_snapshot_ref,
             )
             if (
                 record.state is ContextStageState.PREPARING
@@ -199,6 +209,13 @@ class ContextStagingRepository:
     ) -> ContextStageRecord:
         if claim.state is not ContextStageState.PREPARING:
             raise UnitOfWorkConflict("only a preparing context stage can complete")
+        if (
+            source_snapshot_ref is not None
+            and claim.source_snapshot_ref is not None
+            and source_snapshot_ref != claim.source_snapshot_ref
+        ):
+            raise UnitOfWorkConflict("context source snapshot ref differs from durable claim")
+        effective_source_snapshot_ref = source_snapshot_ref or claim.source_snapshot_ref
         snapshot_json = canonical_json(dict(private_snapshot))
         snapshot_bytes = snapshot_json.encode("utf-8")
         snapshot_hash = hashlib.sha256(snapshot_bytes).hexdigest()
@@ -263,7 +280,7 @@ class ContextStagingRepository:
                     outcome,
                     error_code,
                     product_result_hash,
-                    source_snapshot_ref,
+                    effective_source_snapshot_ref,
                     turn_started_at,
                     snapshot_bytes,
                     snapshot_hash,
@@ -472,6 +489,7 @@ def _same_stage_intent(
     session_id: str,
     input_hash: str,
     mode: str,
+    source_snapshot_ref: str | None,
 ) -> None:
     if (
         record.stage_id != stage_id
@@ -480,6 +498,7 @@ def _same_stage_intent(
         or record.session_id != session_id
         or record.input_hash != input_hash
         or record.mode != mode
+        or record.source_snapshot_ref != source_snapshot_ref
     ):
         raise UnitOfWorkConflict("context preparation identity reused differently")
 
