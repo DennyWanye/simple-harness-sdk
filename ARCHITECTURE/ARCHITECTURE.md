@@ -129,6 +129,8 @@ last-updated: 2026-08-22
   21/21 required 场景达到 `READY_FOR_AUDIT`。真实 macOS UI 覆盖 root/新 Session recall、PPT/权限/Artifact、
   长历史、恶意 Memory、冷重启、recall timeout、record transient 未提交即退出后的 startup recovery，
   以及 stop/cancel projection。此结论只适用于 simple_harness；未来消费者仍是接口就绪状态。
+- 2026-08-22 本地 promotion：canonical `dist/` 复用上述 exact wheel/sdist，`BUILD_INFO.txt` 与
+  `SHA256SUMS` 指向 `fbb156f`；local tag `v0.3.0` 指向同一 source commit。未 push/upload。
 - 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
   1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、
   atomic release-pending、replay、rebind、malicious product Context、ownership/build cleanup 与 legacy

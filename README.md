@@ -66,3 +66,6 @@ Integration status is deliberately narrow: `simple_harness` has completed exact-
 cutover, automated regression, and real macOS UI validation with a configured DeepSeek provider.
 AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
 and production paths were not modified, integrated, or tested in this program.
+
+The locally promoted `v0.3.0` tag points to source commit `fbb156f`; canonical `dist/` metadata
+identifies the exact validated wheel (`cf629cee…`). The tag and artifacts have not been pushed or uploaded.
