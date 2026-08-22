@@ -69,8 +69,8 @@ cutover, automated regression, and real macOS UI validation with a configured De
 AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
 and production paths were not modified, integrated, or tested in this program.
 
-The promoted `v0.3.0` tag points to source commit `fbb156f`; canonical `dist/` metadata identifies
-the exact validated wheel (`cf629cee…`). Source, `main`, and the tag are pushed. The locally
+The promoted `v0.4.0` tag points to source commit `bc6ae8d`; canonical `dist/` metadata identifies
+the exact validated wheel (`aaf8d79a…`). Source, `main`, and the tag are pushed. The locally
 frozen assets are published at the
-[`v0.3.0` GitHub Release](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.3.0)
+[`v0.4.0` GitHub Release](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.4.0)
 and passed public stable-URL download-back verification.

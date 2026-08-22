@@ -86,7 +86,7 @@ uv run python scripts/build/authoritative_provenance.py verify \
   --dist dist \
   --source-commit "$CANDIDATE_COMMIT" \
   --version "${RELEASE_TAG#v}"
-uvx --from "twine>=6.1,<7" twine check dist/*
+uvx --from "twine>=6.1,<7" twine check dist/*.whl dist/*.tar.gz
 ./scripts/verify_release_gate.sh
 (cd dist && shasum -a 256 -c SHA256SUMS)
 ```
@@ -152,4 +152,3 @@ git -C "$SDK_REPO" worktree remove "$RELEASE_DIR"
 Update `INTEGRATION_STATUS.md`, `ARCHITECTURE/ARCHITECTURE.md`, and the consumer handoff with the
 tag, source commit, wheel SHA-256, test result, and Release URL. Do not commit generated wheel,
 sdist, logs, credentials, or raw test evidence.
-

@@ -3,13 +3,16 @@ SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
 last-updated: 2026-08-23
 -->
-<!-- last-calibrated: e2fd2ad0501a55f1469416a70ff81a65a8e112d5 -->
+<!-- last-calibrated: bc6ae8df40a6ff23ec16332fdd0596b2814bf572 -->
 
 # Simple Harness SDK — 架构基线（Agent Memory v1）
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
 ## SDK Observability S1/S2 当前事实（2026-08-23）
+
+`v0.4.0` 已从 `bc6ae8d` 的干净 detached worktree 构建并发布；wheel SHA-256 为
+`aaf8d79a71b75bde0d71157a635b841eb557ea8889e2824571cacd7d8a58ecb6`，下载回验通过。
 
 - SDK 现在拥有 import-pure 的 `simple_harness.observability` 边界：immutable V1
   event/correlation wire contract、default-deny 有界 attributes、non-blocking `SafeEmitter`、
