@@ -43,6 +43,7 @@ class TerminalCoordinator:
         execution_lease: ExecutionLease,
         now: float,
         committed_turn: CommittedTurnSpec | None = None,
+        legacy_cursor_version: int | None = None,
     ) -> TerminalCommitResult:
         return self._uow.commit_root_terminal_with_deliveries(
             run_id=run.run_id,
@@ -56,6 +57,7 @@ class TerminalCoordinator:
             terminal_fence_receipt_ref=(f"runtime-fence:{fence.owner_id}:{fence.epoch}"),
             now=now,
             committed_turn=committed_turn,
+            legacy_cursor_version=legacy_cursor_version,
         )
 
 

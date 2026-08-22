@@ -29,9 +29,18 @@ last-updated: 2026-08-22
 - execution SQLite 只接受唯一、self-contained 的 `0004_fresh.sql`。新库包含 immutable
   `agent_identity_bindings`、扩展后的 `context_preparation_staging`、durable
   `memory_recall_releases`，以及 final `memory_outbox` committed-turn schema；旧 schema 稳定
-  fail-closed 且不执行 in-place migration。v3→v4 offline migrator 尚未获批：legacy completed Run 中
-  continuation 前的 tentative user event 缺少冻结 taxonomy，不能无损分类，故正常 loader 与显式迁移线
-  都不会猜测处理。
+  fail-closed 且不执行隐式/in-place migration。显式 `migrate_execution_v3_to_v4` 要求 Runtime 已关闭、
+  exact v3 descriptor、同目录新 backup path 与完整 `LegacyIdentityMap`；它以新 v4 文件校验后原子替换，
+  replace 后失败则从精确 backup 恢复。legacy `(user_id, session_id)` 可映射到重命名后的完整
+  `AgentIdentity`，migrator 会同步重写 execution session/actor 主键、相关 FK、snapshot 与 Context staging。
+- offline migrator 对每条 legacy Memory event 输出
+  `simple-harness/execution-migration-manifest/v1`：`KEEP_COMPLETED_PAIR`、`SUPPRESS_TENTATIVE`、
+  `SUPPRESS_TERMINAL`、`DEFERRED_TURN` 四类 disposition。completed continuation 的 assistant
+  `continuation_id=NULL` 只允许由唯一 terminal event、最大 durable sequence、唯一 receipt 与 claim epoch
+  交叉求解；零/多候选均 fail-closed。非终态最新 user 形成 versioned `legacy_turn_cursor`；迁移后每次
+  continuation enqueue 在同事务 CAS supersede 前一 cursor，terminal 在 committed-turn transaction 中
+  consume 当时 active cursor，failed/cancelled 仍为零 pair。source disposition 使用 `legacy-source`
+  namespace，迁移后 turn input 使用 `turn-input` namespace，避免 identity collision。
 - root start 与普通 user continuation enqueue 只提交执行/Context事实，不产生 tentative Memory intent。
   completed root/continuation terminal 才构造一份 canonical user+assistant `CommittedTurn`，并与 terminal
   state、delivery、parent wake 在同一 SQLite transaction 写入。failed/cancelled terminal 零 intent；
@@ -86,11 +95,12 @@ last-updated: 2026-08-22
 - root、`simple_harness.runtime` 与 `simple_harness.testing.arm64_candidate` 的 `__all__` 均由同一 public
   API snapshot 固定；conversation DTO/ports、production builder 与 ARM64 gate entrypoint 的增删或重排
   都会触发契约测试失败。
-- 2026-08-22 S2-T1～T6 验证：terminal/outbox fault、root/continuation replay、apply-before-ack restart、
+- 2026-08-22 S2-T1～T8 验证：terminal/outbox fault、root/continuation replay、apply-before-ack restart、
   `REJECTED_ERASED`、transient/permanent/conflict、claim takeover/stale epoch、bounded drain/cleanup 等
-  targeted 82 passed；Python 3.11/3.12/3.13 full pytest 各 1345 passed / 2 expected skips；ruff、
-  release-owned mypy、source provenance、REUSE 346/346、wheel/sdist build、twine 与 canonical artifact
-  provenance 全绿。S2-T7 不计入本验证，等待 frozen migration taxonomy 修订批准。
+  dispatcher 场景，以及 root/多 continuation legacy classification、NULL FK 歧义 fail-closed、renamed
+  target identity、连续 post-migration continuation、cursor/replace crash windows 均通过；Python
+  3.11/3.12/3.13 full pytest 各 1366 passed / 2 expected skips，ruff 与 release-owned mypy 全绿。
+  source provenance、REUSE、wheel/sdist/twine/canonical artifact 结果在本 slice 最终门禁记录。
 - 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
   1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、
   atomic release-pending、replay、rebind、malicious product Context、ownership/build cleanup 与 legacy

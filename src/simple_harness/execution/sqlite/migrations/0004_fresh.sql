@@ -868,6 +868,60 @@ CREATE INDEX memory_outbox_claim_idx
 CREATE INDEX memory_outbox_principal_idx
     ON memory_outbox(deployment_id, household_id, actor_id, session_id, created_at);
 
+CREATE TABLE legacy_memory_dispositions (
+    source_key TEXT PRIMARY KEY,
+    source_namespace TEXT NOT NULL CHECK(source_namespace IN ('legacy-source','turn-input')),
+    source_event_id TEXT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    turn_id TEXT,
+    disposition TEXT NOT NULL CHECK(disposition IN (
+        'keep_completed_pair','suppress_tentative','suppress_terminal','deferred_turn'
+    )),
+    payload_hash TEXT NOT NULL CHECK(length(payload_hash) = 64),
+    canonical_turn_json TEXT,
+    canonical_turn_hash TEXT CHECK(canonical_turn_hash IS NULL OR length(canonical_turn_hash) = 64),
+    causal_terminal_event_id TEXT REFERENCES run_events(event_id),
+    causal_continuation_id TEXT REFERENCES continuations(continuation_id),
+    causal_claim_epoch INTEGER CHECK(causal_claim_epoch IS NULL OR causal_claim_epoch >= 1),
+    created_at REAL NOT NULL CHECK(created_at >= 0),
+    updated_at REAL NOT NULL CHECK(updated_at >= 0),
+    UNIQUE(source_namespace, source_event_id)
+) STRICT;
+
+CREATE INDEX legacy_memory_dispositions_run_idx
+    ON legacy_memory_dispositions(run_id, disposition, source_key);
+
+CREATE TABLE legacy_turn_cursors (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
+    cursor_version INTEGER NOT NULL CHECK(cursor_version >= 1),
+    source_key TEXT NOT NULL UNIQUE,
+    source_namespace TEXT NOT NULL CHECK(source_namespace IN ('legacy-source','turn-input')),
+    source_event_id TEXT,
+    turn_id TEXT NOT NULL,
+    user_text TEXT NOT NULL CHECK(length(trim(user_text)) > 0),
+    input_hash TEXT NOT NULL CHECK(length(input_hash) = 64),
+    write_fence TEXT,
+    turn_started_at REAL NOT NULL CHECK(turn_started_at >= 0),
+    state TEXT NOT NULL CHECK(state IN ('active','consumed')),
+    consumed_terminal_state TEXT CHECK(
+        consumed_terminal_state IS NULL OR
+        consumed_terminal_state IN ('completed','failed','cancelled')
+    ),
+    committed_turn_hash TEXT CHECK(
+        committed_turn_hash IS NULL OR length(committed_turn_hash) = 64
+    ),
+    created_at REAL NOT NULL CHECK(created_at >= 0),
+    updated_at REAL NOT NULL CHECK(updated_at >= 0),
+    consumed_at REAL,
+    CHECK(
+        (state = 'active' AND consumed_terminal_state IS NULL
+            AND committed_turn_hash IS NULL AND consumed_at IS NULL)
+        OR
+        (state = 'consumed' AND consumed_terminal_state IS NOT NULL
+            AND consumed_at IS NOT NULL)
+    )
+) STRICT;
+
 CREATE TABLE agent_identity_bindings (
     session_id TEXT PRIMARY KEY,
     deployment_id TEXT NOT NULL,

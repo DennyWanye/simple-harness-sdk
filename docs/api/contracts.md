@@ -91,6 +91,29 @@ Recall timeout, transient failure, or invalid output produces a durable empty Me
 provider invocation continues without leaking exception text, paths, or Memory payload into
 the public error state.
 
+### Execution v3-to-v4 maintenance contract
+
+The normal SQLite loader remains fail-closed for old schemas. With the runtime fully closed,
+operators may call `migrate_execution_v3_to_v4` from `simple_harness.execution.sqlite`, supplying
+a new same-directory backup path and a complete `LegacyIdentityMap`. Each legacy
+`(user_id, session_id)` maps uniquely to one complete target `AgentIdentity`; target actor and
+session IDs may be renamed, and target session IDs must also be unique.
+
+The returned `ExecutionMigrationManifest` uses protocol
+`simple-harness/execution-migration-manifest/v1`. Each `MigrationManifestEntry` identifies the
+legacy source event, payload hash, Run, causal terminal/continuation/claim facts, optional
+canonical committed turn, and exactly one `LegacyDisposition`: `KEEP_COMPLETED_PAIR`,
+`SUPPRESS_TENTATIVE`, `SUPPRESS_TERMINAL`, or `DEFERRED_TURN`. `to_json()` emits a digest;
+`from_json()` validates protocol, schema pair, field types, and that digest. This neutral
+manifest is a coordinator/audit handoff; a Memory implementation does not import the Harness
+migrator.
+
+The explicit operation verifies an exact v3 descriptor and source integrity, creates and hashes
+the backup before transformation, builds a fresh v4 database, verifies counts/FKs/integrity, and
+atomically replaces the source. A failure after replacement restores the exact backup. Legacy
+terminal ambiguity is never resolved by timestamps: missing or multiple event/receipt/claim
+candidates fail closed.
+
 ### Migration from 0.2 query/sink ports
 
 | Retired public shape | Agent Memory v1 replacement |

@@ -2183,6 +2183,12 @@ class Runtime:
         raw_snapshot = self._uow.read_start_snapshot(run.run_id)
         snapshot = None if raw_snapshot is None else StartSnapshot.from_json(raw_snapshot)
         committed_turn: CommittedTurnSpec | None = None
+        legacy_cursor = self._uow.read_legacy_turn_cursor(run.run_id)
+        legacy_cursor_version = (
+            None
+            if legacy_cursor is None or legacy_cursor.state != "active"
+            else legacy_cursor.cursor_version
+        )
         if (
             self._ports.agent_memory is not None
             and snapshot is not None
@@ -2194,11 +2200,23 @@ class Runtime:
                 )
             if state is not RunState.COMPLETED and conversation_output is not None:
                 raise UnitOfWorkConflict("non-completed conversation rejects conversation_output")
-            if (
-                conversation_output is not None
-                and conversation_output.memory_text is not None
-            ):
-                if continuation_claim is None:
+            if conversation_output is not None and conversation_output.memory_text is not None:
+                if legacy_cursor_version is not None:
+                    assert legacy_cursor is not None
+                    user_text = legacy_cursor.user_text
+                    turn_id = legacy_cursor.turn_id
+                    committed_turn = CommittedTurnSpec.from_domain(
+                        CommittedTurn(
+                            turn_id,
+                            snapshot.conversation.identity,
+                            user_text,
+                            conversation_output.memory_text,
+                            MemoryScopeRef.personal(snapshot.conversation.identity.actor_id),
+                            legacy_cursor.write_fence,
+                            legacy_cursor.turn_started_at,
+                        )
+                    )
+                elif continuation_claim is None:
                     user_text = snapshot.conversation.memory_text
                     turn_id = snapshot.turn_id
                     stage_where = "consumed_run_id=?"
@@ -2215,7 +2233,7 @@ class Runtime:
                     turn_id = continuation_claim.continuation_id
                     stage_where = "consumed_continuation_id=?"
                     stage_identity = continuation_claim.continuation_id
-                if user_text is not None:
+                if legacy_cursor_version is None and user_text is not None:
                     staging = self._ports.context_staging
                     if staging is None:
                         raise UnitOfWorkConflict("committed turn lacks Context staging")
@@ -2324,6 +2342,7 @@ class Runtime:
                 terminal_fence_receipt_ref=(f"runtime-fence:{fence.owner_id}:{fence.epoch}"),
                 now=self._now(),
                 committed_turn=committed_turn,
+                legacy_cursor_version=legacy_cursor_version,
             )
             self._fences.pop(run.run_id, None)
             if deliveries:
@@ -2340,6 +2359,7 @@ class Runtime:
             execution_lease=self._leases[run.run_id],
             now=self._now(),
             committed_turn=committed_turn,
+            legacy_cursor_version=legacy_cursor_version,
         )
         self._fences.pop(run.run_id, None)
         if deliveries:

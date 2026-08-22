@@ -109,6 +109,23 @@ class WorkflowCheckpoint:
     version: int
 
 
+@dataclass(frozen=True, slots=True)
+class LegacyTurnCursorRecord:
+    run_id: str
+    cursor_version: int
+    source_key: str
+    source_namespace: str
+    source_event_id: str | None
+    turn_id: str
+    user_text: str
+    input_hash: str
+    write_fence: str | None
+    turn_started_at: float
+    state: str
+    consumed_terminal_state: str | None
+    committed_turn_hash: str | None
+
+
 class UnitOfWorkConflict(RuntimeError):
     code = "uow_conflict"
 
@@ -295,6 +312,8 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
 
     def read_react_checkpoint(self, run_id: str) -> WorkflowCheckpoint | None: ...
 
+    def read_legacy_turn_cursor(self, run_id: str) -> LegacyTurnCursorRecord | None: ...
+
     def cas_react_checkpoint(
         self,
         *,
@@ -321,6 +340,7 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         terminal_fence_receipt_ref: str,
         now: float,
         committed_turn: CommittedTurnSpec | None = None,
+        legacy_cursor_version: int | None = None,
         fault: FaultHook | None = None,
     ) -> TerminalCommitResult: ...
 
@@ -553,6 +573,7 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         terminal_fence_receipt_ref: str,
         now: float,
         committed_turn: CommittedTurnSpec | None = None,
+        legacy_cursor_version: int | None = None,
         fault: FaultHook | None = None,
     ) -> ContinuationTerminalResult: ...
 
@@ -571,6 +592,7 @@ __all__ = (
     "ExecutionLease",
     "ExecutionUnitOfWork",
     "FaultHook",
+    "LegacyTurnCursorRecord",
     "RunRecord",
     "RunState",
     "UnitOfWorkConflict",

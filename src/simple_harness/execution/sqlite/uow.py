@@ -81,6 +81,7 @@ from simple_harness.execution.uow import (
     DecisionState,
     ExecutionLease,
     FaultHook,
+    LegacyTurnCursorRecord,
     RunRecord,
     RunState,
     UnitOfWorkConflict,
@@ -567,6 +568,185 @@ def _verify_committed_turn_replay(
     expected = (intent.intent_id, intent.payload_json, intent.payload_hash)
     if len(rows) != 1 or tuple(rows[0]) != expected:
         raise UnitOfWorkConflict("committed-turn replay differs")
+
+
+def _cursor_input_hash(turn_id: str, user_text: str) -> str:
+    return hashlib.sha256(
+        canonical_json(
+            {
+                "protocol": "simple-harness/legacy-turn-cursor/v1",
+                "turn_id": turn_id,
+                "user_text": user_text,
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _supersede_legacy_cursor(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    continuation_id: str,
+    payload: Mapping[str, JsonValue],
+    context_stage_id: str | None,
+    now: float,
+    fault: FaultHook | None,
+) -> None:
+    cursor = connection.execute(
+        "SELECT * FROM legacy_turn_cursors WHERE run_id=? AND state='active'", (run_id,)
+    ).fetchone()
+    if cursor is None:
+        return
+    conversation = payload.get("conversation")
+    if not isinstance(conversation, Mapping):
+        raise UnitOfWorkConflict("migrated continuation lacks conversation input")
+    user_text = conversation.get("memory_text")
+    if not isinstance(user_text, str) or not user_text.strip() or "\x00" in user_text:
+        raise UnitOfWorkConflict("migrated continuation lacks textual Memory input")
+    if context_stage_id is None:
+        raise UnitOfWorkConflict("migrated continuation lacks Context stage")
+    stage = connection.execute(
+        "SELECT memory_write_fence,turn_started_at FROM context_preparation_staging "
+        "WHERE stage_id=? AND state='staged'",
+        (context_stage_id,),
+    ).fetchone()
+    if stage is None or stage["turn_started_at"] is None:
+        raise UnitOfWorkConflict("migrated continuation lacks durable recall lineage")
+    source_key = str(cursor["source_key"])
+    _fault(fault, "continuation_enqueue.legacy_disposition.before_write")
+    if str(cursor["source_namespace"]) == "legacy-source":
+        changed = connection.execute(
+            "UPDATE legacy_memory_dispositions SET disposition='suppress_tentative',updated_at=? "
+            "WHERE source_key=? AND disposition='deferred_turn'",
+            (now, source_key),
+        ).rowcount
+    else:
+        changed = connection.execute(
+            "INSERT INTO legacy_memory_dispositions(source_key,source_namespace,source_event_id,"
+            "run_id,turn_id,disposition,payload_hash,canonical_turn_json,canonical_turn_hash,"
+            "causal_terminal_event_id,causal_continuation_id,causal_claim_epoch,"
+            "created_at,updated_at) "
+            "VALUES(?,'turn-input',NULL,?,?,'suppress_tentative',?,NULL,NULL,NULL,NULL,NULL,?,?)",
+            (
+                source_key,
+                run_id,
+                str(cursor["turn_id"]),
+                str(cursor["input_hash"]),
+                now,
+                now,
+            ),
+        ).rowcount
+    if changed != 1:
+        raise UnitOfWorkConflict("legacy cursor disposition CAS failed")
+    _fault(fault, "continuation_enqueue.legacy_disposition.after_write")
+    version = int(cursor["cursor_version"])
+    _fault(fault, "continuation_enqueue.legacy_cursor.before_write")
+    changed = connection.execute(
+        "UPDATE legacy_turn_cursors SET cursor_version=cursor_version+1,source_key=?,"
+        "source_namespace='turn-input',source_event_id=NULL,turn_id=?,user_text=?,input_hash=?,"
+        "write_fence=?,turn_started_at=?,updated_at=? WHERE run_id=? AND state='active' "
+        "AND cursor_version=? AND source_key=?",
+        (
+            f"turn-input:{continuation_id}",
+            continuation_id,
+            user_text,
+            _cursor_input_hash(continuation_id, user_text),
+            None if stage["memory_write_fence"] is None else str(stage["memory_write_fence"]),
+            float(stage["turn_started_at"]),
+            now,
+            run_id,
+            version,
+            source_key,
+        ),
+    ).rowcount
+    if changed != 1:
+        raise UnitOfWorkConflict("legacy cursor supersession CAS failed")
+    _fault(fault, "continuation_enqueue.legacy_cursor.after_write")
+
+
+def _consume_legacy_cursor(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    terminal_state: RunState,
+    committed_turn: CommittedTurnSpec | None,
+    expected_version: int | None,
+    now: float,
+    fault_prefix: str,
+    fault: FaultHook | None,
+) -> None:
+    row = connection.execute(
+        "SELECT * FROM legacy_turn_cursors WHERE run_id=?", (run_id,)
+    ).fetchone()
+    if row is None:
+        if expected_version is not None:
+            raise UnitOfWorkConflict("legacy cursor disappeared")
+        return
+    if expected_version is None or int(row["cursor_version"]) != expected_version:
+        raise UnitOfWorkConflict("legacy cursor version differs")
+    if str(row["state"]) != "active":
+        raise UnitOfWorkConflict("legacy cursor is not active")
+    expected_hash: str | None = None
+    if terminal_state is RunState.COMPLETED:
+        if committed_turn is None:
+            raise UnitOfWorkConflict("completed migrated Run requires committed turn")
+        turn = committed_turn.turn
+        if (
+            turn.turn_id != str(row["turn_id"])
+            or turn.user_text != str(row["user_text"])
+            or turn.write_fence != (None if row["write_fence"] is None else str(row["write_fence"]))
+            or turn.turn_started_at != float(row["turn_started_at"])
+        ):
+            raise UnitOfWorkConflict("committed turn differs from active legacy cursor")
+        expected_hash = committed_turn.payload_hash
+    elif committed_turn is not None:
+        raise UnitOfWorkConflict("non-completed migrated Run rejects committed turn")
+    _fault(fault, f"{fault_prefix}.legacy_cursor.before_write")
+    changed = connection.execute(
+        "UPDATE legacy_turn_cursors SET state='consumed',consumed_terminal_state=?,"
+        "committed_turn_hash=?,updated_at=?,consumed_at=? WHERE run_id=? AND state='active' "
+        "AND cursor_version=?",
+        (
+            terminal_state.value,
+            expected_hash,
+            now,
+            now,
+            run_id,
+            expected_version,
+        ),
+    ).rowcount
+    if changed != 1:
+        raise UnitOfWorkConflict("legacy cursor terminal CAS failed")
+    _fault(fault, f"{fault_prefix}.legacy_cursor.after_write")
+
+
+def _verify_legacy_cursor_replay(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    terminal_state: RunState,
+    committed_turn: CommittedTurnSpec | None,
+    expected_version: int | None,
+) -> None:
+    row = connection.execute(
+        "SELECT cursor_version,state,consumed_terminal_state,committed_turn_hash "
+        "FROM legacy_turn_cursors WHERE run_id=?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        if expected_version is not None:
+            raise UnitOfWorkConflict("legacy cursor replay differs")
+        return
+    expected_hash = None if committed_turn is None else committed_turn.payload_hash
+    if (
+        expected_version is None
+        or int(row["cursor_version"]) != expected_version
+        or str(row["state"]) != "consumed"
+        or str(row["consumed_terminal_state"]) != terminal_state.value
+        or (None if row["committed_turn_hash"] is None else str(row["committed_turn_hash"]))
+        != expected_hash
+    ):
+        raise UnitOfWorkConflict("legacy cursor replay differs")
 
 
 def _consume_context_stage(
@@ -1499,6 +1679,36 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         return None if row is None else _workflow_checkpoint(row)
 
+    def read_legacy_turn_cursor(self, run_id: str) -> LegacyTurnCursorRecord | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM legacy_turn_cursors WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return LegacyTurnCursorRecord(
+            run_id=str(row["run_id"]),
+            cursor_version=int(row["cursor_version"]),
+            source_key=str(row["source_key"]),
+            source_namespace=str(row["source_namespace"]),
+            source_event_id=(
+                None if row["source_event_id"] is None else str(row["source_event_id"])
+            ),
+            turn_id=str(row["turn_id"]),
+            user_text=str(row["user_text"]),
+            input_hash=str(row["input_hash"]),
+            write_fence=None if row["write_fence"] is None else str(row["write_fence"]),
+            turn_started_at=float(row["turn_started_at"]),
+            state=str(row["state"]),
+            consumed_terminal_state=(
+                None
+                if row["consumed_terminal_state"] is None
+                else str(row["consumed_terminal_state"])
+            ),
+            committed_turn_hash=(
+                None if row["committed_turn_hash"] is None else str(row["committed_turn_hash"])
+            ),
+        )
+
     def cas_react_checkpoint(
         self,
         *,
@@ -1960,6 +2170,7 @@ class SqliteExecutionUnitOfWork:
         terminal_fence_receipt_ref: str,
         now: float,
         committed_turn: CommittedTurnSpec | None = None,
+        legacy_cursor_version: int | None = None,
         fault: FaultHook | None = None,
     ) -> TerminalCommitResult:
         run_id = _required(run_id, "run_id")
@@ -2048,6 +2259,13 @@ class SqliteExecutionUnitOfWork:
                     committed_turn,
                     run_id=run_id,
                 )
+                _verify_legacy_cursor_replay(
+                    self.database.connection,
+                    run_id=run_id,
+                    terminal_state=terminal_state,
+                    committed_turn=committed_turn,
+                    expected_version=legacy_cursor_version,
+                )
                 return TerminalCommitResult(existing_run, stored)
             raise UnitOfWorkConflict("another root terminal intent already won")
 
@@ -2101,6 +2319,16 @@ class SqliteExecutionUnitOfWork:
                     ),
                 )
                 _fault(fault, f"root_terminal.delivery.{index}.after_write")
+            _consume_legacy_cursor(
+                connection,
+                run_id=run_id,
+                terminal_state=terminal_state,
+                committed_turn=committed_turn,
+                expected_version=legacy_cursor_version,
+                now=now,
+                fault_prefix="root_terminal",
+                fault=fault,
+            )
             if committed_turn is not None:
                 _validate_committed_turn(connection, committed_turn, run_id=run_id)
                 _fault(fault, "root_terminal.committed_turn.before_write")
@@ -2757,6 +2985,15 @@ class SqliteExecutionUnitOfWork:
                 ),
             )
             _fault(fault, "continuation_enqueue.continuation.after_write")
+            _supersede_legacy_cursor(
+                connection,
+                run_id=run_id,
+                continuation_id=continuation_id,
+                payload=payload,
+                context_stage_id=context_stage_id,
+                now=now,
+                fault=fault,
+            )
             if context_stage_id is not None and context_stage_hash is not None:
                 _consume_context_stage(
                     connection,
@@ -3016,6 +3253,7 @@ class SqliteExecutionUnitOfWork:
         terminal_fence_receipt_ref: str,
         now: float,
         committed_turn: CommittedTurnSpec | None = None,
+        legacy_cursor_version: int | None = None,
         fault: FaultHook | None = None,
     ) -> ContinuationTerminalResult:
         run_id = _required(run_id, "run_id")
@@ -3059,6 +3297,7 @@ class SqliteExecutionUnitOfWork:
                     "committed_turn_hash": (
                         None if committed_turn is None else committed_turn.payload_hash
                     ),
+                    "legacy_cursor_version": legacy_cursor_version,
                 }
             ).encode()
         ).hexdigest()
@@ -3068,6 +3307,13 @@ class SqliteExecutionUnitOfWork:
                 self.database.connection,
                 committed_turn,
                 run_id=run_id,
+            )
+            _verify_legacy_cursor_replay(
+                self.database.connection,
+                run_id=run_id,
+                terminal_state=terminal_state,
+                committed_turn=committed_turn,
+                expected_version=legacy_cursor_version,
             )
             return self._replay_continuation_terminal(
                 existing,
@@ -3085,6 +3331,13 @@ class SqliteExecutionUnitOfWork:
                     connection,
                     committed_turn,
                     run_id=run_id,
+                )
+                _verify_legacy_cursor_replay(
+                    connection,
+                    run_id=run_id,
+                    terminal_state=terminal_state,
+                    committed_turn=committed_turn,
+                    expected_version=legacy_cursor_version,
                 )
                 return self._replay_continuation_terminal(
                     _continuation_progress_receipt(receipt_row),
@@ -3175,6 +3428,16 @@ class SqliteExecutionUnitOfWork:
                     ),
                 )
                 _fault(fault, f"continuation_terminal.delivery.{index}.after_write")
+            _consume_legacy_cursor(
+                connection,
+                run_id=run_id,
+                terminal_state=terminal_state,
+                committed_turn=committed_turn,
+                expected_version=legacy_cursor_version,
+                now=now,
+                fault_prefix="continuation_terminal",
+                fault=fault,
+            )
             if committed_turn is not None:
                 _validate_committed_turn(connection, committed_turn, run_id=run_id)
                 _fault(fault, "continuation_terminal.committed_turn.before_write")

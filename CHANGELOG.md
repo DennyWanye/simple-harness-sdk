@@ -17,6 +17,9 @@ SPDX-License-Identifier: Apache-2.0
   durable recall-release retry, and a terminal-only canonical committed-turn outbox.
 - Lease/epoch-fenced committed-turn dispatch with restart replay, bounded backlog cleanup,
   transient retry, permanent/conflict dead-letter, and privacy-safe `REJECTED_ERASED` settlement.
+- Backup-first explicit execution v3-to-v4 offline migration with a digest-verified neutral
+  manifest, deterministic four-way legacy event classification, target identity remapping,
+  and a versioned cursor for post-migration continuation supersession.
 
 ### Changed
 - `build_consumer_runtime` is the official easy composition root and accepts one Memory
@@ -27,8 +30,9 @@ SPDX-License-Identifier: Apache-2.0
 - Conversation start and continuation enqueue no longer create tentative Memory writes. A
   completed root or continuation commits its user+assistant pair atomically with terminal facts;
   failed/cancelled turns produce no outbox row and replay rejects missing, added, or changed turns.
-- Existing execution schema v1-v3 databases remain fail-closed. The explicit v3-to-v4 offline
-  migration is deferred pending a complete legacy-event classification contract.
+- Existing execution schema v1-v3 databases remain fail-closed in the normal loader. A closed,
+  exact-v3 database can be upgraded only through the explicit offline migrator with a complete
+  legacy identity map and a caller-selected same-directory backup path.
 
 ## 0.2.0 — candidate
 

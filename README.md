@@ -13,6 +13,13 @@ conversation completes. Terminal state, normal deliveries, and the Memory outbox
 one SQLite transaction; failed or cancelled turns never create a Memory write. The dispatcher
 survives restart and retries by stable turn identity without consumer-maintained glue code.
 
+The normal database loader never guesses across persistence versions. Operators upgrading an
+exact execution schema v3 file use the explicit backup-first
+`simple_harness.execution.sqlite.migrate_execution_v3_to_v4` maintenance API while the runtime
+is closed. It returns a digest-verified neutral manifest, supports mapping legacy user/session
+pairs to renamed complete `AgentIdentity` values, and leaves a caller-selected v3 backup beside
+the database.
+
 ```python
 from simple_harness import (
     AgentIdentity,
