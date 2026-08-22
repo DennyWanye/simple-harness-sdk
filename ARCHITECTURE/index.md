@@ -14,7 +14,8 @@ version 为 0.3.0，wheel 公开 PEP 561 类型；root 与每个 continuation �
 reference，未显式提供时仅从当轮 current message 内容寻址生成。两层 public surface 只保留统一
 `AgentMemoryPort`，旧 query/sink、manual preparation 与 adapter-facing Memory DTO 已退休；非 owner 会按
 有界 request/lease horizon 等待，并在 owner lease 过期后 CAS takeover。product-neutral future-consumer fixture
-覆盖官方 Memory 组合，真实产品接入仍只由后续 `simple_harness` cutover 验证。
+覆盖官方 Memory 组合；`simple_harness` 已完成 exact-wheel cutover、自动化与真实 macOS UI 验收。
+AIPhone、K6/AgentOS、NovelTagSystem 仍未修改或测试，只能声明接口就绪。
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Agent Memory/Context contracts、identity binding、context
   staging、release retry、resource ownership、production builder、installed-wheel Linux ARM64 core gate，以及 Provider/预算、

@@ -62,7 +62,7 @@ public package surfaces. Public contracts are documented in
 [`docs/api/contracts.md`](docs/api/contracts.md); consumer validation is covered
 by [`docs/conformance.md`](docs/conformance.md).
 
-Integration status for this candidate is deliberately narrow: `simple_harness` is the only
-consumer scheduled for real product/UI validation in this program and is not claimed integrated
-until that cutover completes. AIPhone and K6/AgentOS are interface-ready future consumers; their
-repositories and production paths have not been modified or tested here.
+Integration status is deliberately narrow: `simple_harness` has completed exact-wheel product
+cutover, automated regression, and real macOS UI validation with a configured DeepSeek provider.
+AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
+and production paths were not modified, integrated, or tested in this program.

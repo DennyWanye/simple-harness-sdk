@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
 last-updated: 2026-08-22
 -->
-<!-- last-calibrated: 869c76f2050b5f492b4edee68f4ce2400030b832 -->
+<!-- last-calibrated: fbb156f -->
 
 # Simple Harness SDK — 架构基线（Agent Memory v1）
 
@@ -124,6 +124,11 @@ last-updated: 2026-08-22
 - 2026-08-22 A2-002 candidate correction：continuation Context ref 改为每轮独立 public input，claim 在
   provider 前持久有效 ref，未提供时只对当轮 current message 内容寻址；root + 两次 continuation、两类
   provider crash window、跨重启稳定 replay/conflict 与 installed-wheel public/type fixture 已纳入回归。
+- 2026-08-22 产品验收：Harness `fbb156f` / 0.3.0 wheel `cf629cee…` 已由 simple_harness `4e797ccd`
+  通过 exact installed-origin/hash 门消费。Harness full `1379 passed, 2 skipped`；产品 Gate r4 的
+  21/21 required 场景达到 `READY_FOR_AUDIT`。真实 macOS UI 覆盖 root/新 Session recall、PPT/权限/Artifact、
+  长历史、恶意 Memory、冷重启、recall timeout、record transient 未提交即退出后的 startup recovery，
+  以及 stop/cancel projection。此结论只适用于 simple_harness；未来消费者仍是接口就绪状态。
 - 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
   1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、
   atomic release-pending、replay、rebind、malicious product Context、ownership/build cleanup 与 legacy
