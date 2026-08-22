@@ -2,6 +2,8 @@
 
 Current production architecture, persistence, and consumer boundaries are indexed in
 [`ARCHITECTURE/index.md`](ARCHITECTURE/index.md).
+The operator procedure for locally building, freezing, verifying, and distributing SDK releases
+is [`docs/build-and-release.md`](docs/build-and-release.md).
 
 An embeddable, durable agent runtime extracted from Simple Harness.
 
@@ -67,5 +69,6 @@ cutover, automated regression, and real macOS UI validation with a configured De
 AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
 and production paths were not modified, integrated, or tested in this program.
 
-The locally promoted `v0.3.0` tag points to source commit `fbb156f`; canonical `dist/` metadata
-identifies the exact validated wheel (`cf629cee…`). The tag and artifacts have not been pushed or uploaded.
+The promoted `v0.3.0` tag points to source commit `fbb156f`; canonical `dist/` metadata identifies
+the exact validated wheel (`cf629cee…`). Source, `main`, and the tag are pushed; the frozen
+wheel/sdist remain governed by the local build-and-release runbook until explicitly distributed.
