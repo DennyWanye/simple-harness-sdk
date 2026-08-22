@@ -54,6 +54,7 @@ from simple_harness.execution.uow import (
     UnitOfWorkConflict,
     WorkflowCheckpoint,
 )
+from simple_harness.observability import CorrelationContext, ObservabilityRuntime, Outcome
 from simple_harness.providers import CancelToken, ProviderReconciliationPort
 from simple_harness.tools.authorization import AuthorizationDecision, AuthorizationPort
 from simple_harness.tools.executor import EffectExecutor, ToolAuthorizationPending
@@ -536,6 +537,7 @@ class RuntimePorts:
     agent_memory: AgentMemoryPort | None = None
     context_provider: ConversationContextProviderPort | None = None
     memory_failure_policy: MemoryFailurePolicy = MemoryFailurePolicy.DEGRADE_RECALL_AND_RETRY_RECORD
+    observability: ObservabilityRuntime | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -1337,6 +1339,34 @@ class Runtime:
         self.client = RunClient(self)
         self.children = ChildCoordinator(self)
 
+    def _emit_transition(
+        self,
+        event_name: str,
+        *,
+        run_id: str,
+        outcome: Outcome,
+        operation: str,
+        request_id: str | None = None,
+        execution_session_id: str | None = None,
+        attributes: Mapping[str, object] | None = None,
+    ) -> None:
+        observability = self._ports.observability
+        if observability is None:
+            return
+        observability.emit_transition(
+            event_name,
+            component="runtime",
+            operation=operation,
+            outcome=outcome,
+            correlation=CorrelationContext.from_authority_ids(
+                run_id=run_id,
+                request_id=request_id,
+                execution_session_id=execution_session_id,
+                operation_id=operation,
+            ),
+            attributes={} if attributes is None else attributes,
+        )
+
     @property
     def state(self) -> RuntimeLifecycleState:
         return self._state
@@ -1365,6 +1395,8 @@ class Runtime:
                 "queue_depth": 0,
                 "queue_capacity": 0,
                 "counters": {},
+                "active_runs": len(self._live.active_run_ids()),
+                "authorities": self._authority_diagnostics_snapshot(),
             }
         snapshot = getattr(self._observability, "diagnostics_snapshot", None)
         if not callable(snapshot):
@@ -1376,10 +1408,17 @@ class Runtime:
                 "queue_depth": 0,
                 "queue_capacity": 0,
                 "counters": {},
+                "active_runs": len(self._live.active_run_ids()),
+                "authorities": self._degraded_authority_snapshot(
+                    "observability_snapshot_unavailable"
+                ),
             }
         try:
             value = snapshot()
-            return dict(value)
+            result = dict(value)
+            result["active_runs"] = len(self._live.active_run_ids())
+            result["authorities"] = self._authority_diagnostics_snapshot()
+            return result
         except BaseException:
             return {
                 "schema_version": 1,
@@ -1389,7 +1428,95 @@ class Runtime:
                 "queue_depth": 0,
                 "queue_capacity": 0,
                 "counters": {},
+                "active_runs": 0,
+                "authorities": self._degraded_authority_snapshot("snapshot_failed"),
             }
+
+    @staticmethod
+    def _degraded_authority_snapshot(error_code: str) -> dict[str, object]:
+        empty: dict[str, object] = {
+            "health": "degraded",
+            "counts": {},
+            "oldest_age_ms": None,
+        }
+        return {
+            "health": "degraded",
+            "error_code": error_code,
+            "context": dict(empty),
+            "outbox": dict(empty),
+            "recovery": dict(empty),
+            "recent_error_codes": {},
+        }
+
+    def _authority_diagnostics_snapshot(self) -> dict[str, object]:
+        staging = self._ports.context_staging
+        if staging is None:
+            return {
+                "health": "healthy",
+                "context": {"health": "disabled", "counts": {}, "oldest_age_ms": None},
+                "outbox": {"health": "disabled", "counts": {}, "oldest_age_ms": None},
+                "recovery": {"health": "disabled", "counts": {}, "oldest_age_ms": None},
+                "recent_error_codes": {},
+            }
+        started = time.monotonic()
+        try:
+            connection = staging.database.connection
+            now = self._now()
+
+            def group(table: str, state: str, created: str) -> dict[str, object]:
+                rows = connection.execute(
+                    f"SELECT {state},COUNT(*),MIN({created}) FROM {table} GROUP BY {state}"
+                ).fetchall()
+                counts = {str(row[0]): int(row[1]) for row in rows[:16]}
+                oldest = min(
+                    (float(row[2]) for row in rows[:16] if row[2] is not None),
+                    default=None,
+                )
+                return {
+                    "health": "healthy",
+                    "counts": counts,
+                    "oldest_age_ms": (
+                        None if oldest is None else max(0, int((now - oldest) * 1000))
+                    ),
+                }
+
+            context = group("context_preparation_staging", "state", "created_at")
+            outbox = group("memory_outbox", "state", "created_at")
+            recovery_rows = connection.execute(
+                "SELECT CASE WHEN resolved_at IS NULL THEN 'observed' "
+                "WHEN wake_consumed=0 THEN 'resolved' ELSE 'consumed' END AS status,"
+                "COUNT(*),MIN(created_at) FROM run_wait_blockers GROUP BY status"
+            ).fetchall()
+            recovery_counts = {str(row[0]): int(row[1]) for row in recovery_rows[:8]}
+            recovery_oldest = min(
+                (float(row[2]) for row in recovery_rows[:8] if row[2] is not None),
+                default=None,
+            )
+            errors = connection.execute(
+                "SELECT error_code,COUNT(*) FROM ("
+                "SELECT error_code FROM memory_outbox WHERE error_code IS NOT NULL UNION ALL "
+                "SELECT error_code FROM context_preparation_staging WHERE error_code IS NOT NULL"
+                ") GROUP BY error_code ORDER BY COUNT(*) DESC,error_code LIMIT 20"
+            ).fetchall()
+            if time.monotonic() - started > 0.25:
+                return self._degraded_authority_snapshot("snapshot_deadline")
+            return {
+                "health": "healthy",
+                "context": context,
+                "outbox": outbox,
+                "recovery": {
+                    "health": "healthy",
+                    "counts": recovery_counts,
+                    "oldest_age_ms": (
+                        None
+                        if recovery_oldest is None
+                        else max(0, int((now - recovery_oldest) * 1000))
+                    ),
+                },
+                "recent_error_codes": {str(row[0]): int(row[1]) for row in errors},
+            }
+        except BaseException:
+            return self._degraded_authority_snapshot("authority_query_failed")
 
     async def start(self) -> None:
         async with self._lifecycle_lock:
@@ -1458,6 +1585,20 @@ class Runtime:
         for run in (*root_runs, *child_runs):
             if run.run_id in self._live.active_run_ids():
                 continue
+            self._emit_transition(
+                "recovery.observed_state",
+                run_id=run.run_id,
+                outcome=Outcome.STARTED,
+                operation="recovery",
+                attributes={
+                    "entity_kind": "run",
+                    "entity_id": run.run_id,
+                    "to_state": run.state.value,
+                    "replayed": True,
+                    "history_complete": False,
+                    "state_version": run.version,
+                },
+            )
             try:
                 prior_ready = await self._uow.run_atomic(
                     lambda tx, run_id=run.run_id: self._uow.read_spawn_ready_activation(  # type: ignore[misc]
@@ -1511,6 +1652,19 @@ class Runtime:
                 await self._terminalize_cancelled(activated, reason="startup_recovery")
             else:
                 self._schedule(activated.run_id)
+            self._emit_transition(
+                "recovery.resolved",
+                run_id=run.run_id,
+                outcome=Outcome.SUCCEEDED,
+                operation="recovery",
+                attributes={
+                    "entity_kind": "run",
+                    "entity_id": run.run_id,
+                    "recovery_result": "scheduled",
+                    "history_complete": False,
+                    "state_version": activated.version,
+                },
+            )
 
     async def reconcile(self) -> None:
         self._require_started()
@@ -1870,6 +2024,38 @@ class Runtime:
             context_stage_id=start.context_stage_id,
             context_stage_hash=start.context_stage_hash,
         )
+        self._emit_transition(
+            "run.started",
+            run_id=created.run_id,
+            request_id=start.request_id.value,
+            execution_session_id=start.execution_session_id.value,
+            outcome=Outcome.STARTED,
+            operation="run_lifecycle",
+            attributes={
+                "entity_kind": "run",
+                "entity_id": created.run_id,
+                "run_id": created.run_id,
+                "to_state": created.state.value,
+                "state_version": created.version,
+                "replayed": created.state is not RunState.CREATED,
+            },
+        )
+        if start.context_stage_id is not None:
+            self._emit_transition(
+                "context.consumed",
+                run_id=created.run_id,
+                request_id=start.request_id.value,
+                execution_session_id=start.execution_session_id.value,
+                outcome=Outcome.SUCCEEDED,
+                operation="context_staging",
+                attributes={
+                    "entity_kind": "context_stage",
+                    "entity_id": start.context_stage_id,
+                    "from_state": "staged",
+                    "to_state": "consumed",
+                    "run_id": created.run_id,
+                },
+            )
         logger.info(
             "run.start",
             extra={
@@ -2399,6 +2585,7 @@ class Runtime:
                         "workflow child terminal result differs from Driver result"
                     )
                 self._drop_local_authority(run.run_id)
+                self._emit_run_terminal(run, state, replayed=True)
                 return
             command = self._uow.read_child_command_for_run(run.run_id)
             if command is None:
@@ -2434,6 +2621,7 @@ class Runtime:
                     execution_lease=self._leases[run.run_id],
                     now=self._now(),
                 )
+            self._emit_run_terminal(run, state)
             self._fences.pop(run.run_id, None)
             return
         if continuation_claim is not None:
@@ -2458,6 +2646,7 @@ class Runtime:
                 committed_turn=committed_turn,
                 legacy_cursor_version=legacy_cursor_version,
             )
+            self._emit_run_terminal(run, state)
             self._fences.pop(run.run_id, None)
             if deliveries:
                 self._delivery_wake.set()
@@ -2475,11 +2664,32 @@ class Runtime:
             committed_turn=committed_turn,
             legacy_cursor_version=legacy_cursor_version,
         )
+        self._emit_run_terminal(run, state)
         self._fences.pop(run.run_id, None)
         if deliveries:
             self._delivery_wake.set()
         if committed_turn is not None:
             self._memory_wake.set()
+
+    def _emit_run_terminal(
+        self, run: RunRecord, state: RunState, *, replayed: bool = False
+    ) -> None:
+        self._emit_transition(
+            "run.terminal",
+            run_id=run.run_id,
+            outcome=Outcome.TERMINAL,
+            operation="run_lifecycle",
+            attributes={
+                "entity_kind": "run",
+                "entity_id": run.run_id,
+                "run_id": run.run_id,
+                "from_state": run.state.value,
+                "to_state": state.value,
+                "state_version": run.version + (0 if replayed else 1),
+                "replayed": replayed,
+                "error_code": None if state is RunState.COMPLETED else state.value,
+            },
+        )
 
     async def _abandon_run_authority(self, run_id: str) -> None:
         fence = self._fences.pop(run_id, None)

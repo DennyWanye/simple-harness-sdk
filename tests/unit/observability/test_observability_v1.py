@@ -22,6 +22,7 @@ from simple_harness.observability import (
     LoggingSink,
     NoopSink,
     ObservabilityEventV1,
+    ObservabilityRuntime,
     Outcome,
     RecordingSink,
     RingBufferSink,
@@ -257,3 +258,51 @@ for prefix in ('simple_harness.runtime', 'simple_harness.execution',
     assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules), prefix
 """
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_authority_correlation_reconstructs_without_exposing_source_ids() -> None:
+    first = CorrelationContext.from_authority_ids(
+        run_id="run-private-1",
+        execution_session_id="session-private-1",
+        request_id="request-private-1",
+        call_id="call-private-1",
+        effect_id="effect-private-1",
+    )
+    second = CorrelationContext.from_authority_ids(
+        run_id="run-private-1",
+        execution_session_id="session-private-1",
+        request_id="request-private-1",
+        operation_id="outbox-private-1",
+    )
+    assert first.trace_id == second.trace_id
+    assert first.root_id == second.root_id
+    serialized = json.dumps([first.to_dict(), second.to_dict()])
+    assert "private" not in serialized
+    assert all(len(value) == 64 for value in first.to_dict().values())
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {"error_code": "exception-MEMORY正文-CANARY"},
+        {"error_code": "sk-live-API-KEY-CANARY"},
+        {"content": "provider-response-CANARY"},
+    ],
+)
+def test_runtime_forbidden_content_canaries_are_isolated(
+    attributes: dict[str, object],
+) -> None:
+    sink = RecordingSink()
+    runtime = ObservabilityRuntime(sink)
+    assert not runtime.emit_transition(
+        "provider_attempt.failed",
+        component="provider",
+        operation="invoke",
+        outcome=Outcome.FAILED,
+        correlation=CorrelationContext.new_root(),
+        attributes=attributes,
+    )
+    assert runtime.flush(1)
+    assert not sink.events()
+    assert runtime.counters.dropped == 1
+    runtime.close()

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
 from simple_harness.contracts import FrozenJsonValue, HarnessError, RunId, thaw_json
+from simple_harness.observability import CorrelationContext, ObservabilityRuntime, Outcome
 from simple_harness.providers import (
     CancelToken,
     Provider,
@@ -206,6 +207,37 @@ class ProviderInvocationCoordinator:
             self._legacy_binding = None
         self._resolver = resolver
         self._clock = clock
+        self._observability: ObservabilityRuntime | None = None
+
+    def _emit_attempt(
+        self,
+        record: ProviderInvocationRecord,
+        *,
+        outcome: Outcome,
+        error_code: str | None = None,
+    ) -> None:
+        if self._observability is None:
+            return
+        self._observability.emit_transition(
+            f"provider_attempt.{outcome.value}",
+            component="provider",
+            operation="invoke",
+            outcome=outcome,
+            correlation=CorrelationContext.from_authority_ids(
+                run_id=record.run_id.value,
+                request_id=record.request_id.value,
+                operation_id=record.invocation_id,
+            ),
+            attributes={
+                "entity_kind": "provider_attempt",
+                "entity_id": record.invocation_id,
+                "run_id": record.run_id.value,
+                "attempt": record.handoff_attempt,
+                "state_version": record.version,
+                "to_state": record.state.value,
+                "error_code": error_code,
+            },
+        )
 
     def resolve(self, run_id: RunId) -> ProviderBinding:
         binding = self._legacy_binding if self._resolver is None else self._resolver.resolve(run_id)
@@ -352,6 +384,7 @@ class ProviderInvocationCoordinator:
             if current is not None and current.state is ProviderInvocationState.HANDED_OFF:
                 raise ProviderInvocationConflictError() from exc
             raise
+        self._emit_attempt(handed_off, outcome=Outcome.STARTED)
 
         try:
             response = await binding.provider.invoke(request, cancel=cancel)
@@ -362,6 +395,7 @@ class ProviderInvocationCoordinator:
                 expected_version=handed_off.version,
             )
             self._uow.settle_provider_invocation(failed, expected_version=handed_off.version)
+            self._emit_attempt(failed, outcome=Outcome.FAILED, error_code=str(exc.code))
             raise
         except (ProviderCancelledError, asyncio.CancelledError) as exc:
             unknown = await self._settle_unknown(handed_off, "provider_cancelled_after_handoff")
@@ -413,6 +447,7 @@ class ProviderInvocationCoordinator:
                 "total_tokens": (response.usage.total_tokens if response.usage else None),
             },
         )
+        self._emit_attempt(succeeded, outcome=Outcome.SUCCEEDED)
         return response
 
     def _response_charge(
@@ -462,6 +497,7 @@ class ProviderInvocationCoordinator:
                 raise
         current = self._uow.read_provider_invocation(handed_off.invocation_id)
         assert current is not None
+        self._emit_attempt(current, outcome=Outcome.DEGRADED, error_code=error_code)
         return current
 
     async def reconcile_incomplete(

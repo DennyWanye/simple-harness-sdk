@@ -12,6 +12,7 @@ from simple_harness.execution.context_staging import (
     ContextStagingRepository,
 )
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
+from simple_harness.observability import ObservabilityRuntime, RecordingSink
 
 
 def test_expired_owner_is_taken_over_and_consumed_bytes_are_cleared(
@@ -104,3 +105,50 @@ def test_cleanup_retains_active_and_recent_staged_rows(tmp_path: Path) -> None:
         )
         assert repository.cleanup(now=10.0, older_than=1.0, limit=10) == 0
         assert repository.get("active") is not None
+
+
+def test_context_authority_events_follow_committed_state_without_content(
+    tmp_path: Path,
+) -> None:
+    with Database.open(tmp_path / "observed-context.db") as database:
+        sink = RecordingSink()
+        observability = ObservabilityRuntime(sink)
+        repository = ContextStagingRepository(database, observability)
+        digest = hashlib.sha256("MEMORY正文-CANARY".encode()).hexdigest()
+        claim = repository.claim(
+            stage_id="stage-observed",
+            kind=ContextStageKind.ROOT,
+            identity_key="run-observed",
+            user_id="user-observed",
+            session_id="session-observed",
+            input_hash=digest,
+            mode="sdk_prepared",
+            owner_id="owner-observed",
+            now=1.0,
+            lease_seconds=5.0,
+        )
+        repository.complete(
+            claim.record,
+            private_snapshot={"provider_messages": ["MEMORY正文-CANARY"]},
+            memory_result_id=None,
+            memory_result_hash=None,
+            now=2.0,
+            outcome="degraded_empty",
+            error_code="recall_empty",
+        )
+        repository.abandon("stage-observed", now=3.0)
+        assert observability.flush(1)
+        events = sink.events()
+        assert [item.event_name for item in events] == [
+            "context.preparing",
+            "context.degraded",
+            "context.abandoned",
+        ]
+        assert [item.attributes["from_state"] for item in events] == [
+            "new",
+            "preparing",
+            "staged",
+        ]
+        assert len({item.correlation.root_id for item in events}) == 1
+        assert "MEMORY正文-CANARY" not in str([item.to_dict() for item in events])
+        observability.close()

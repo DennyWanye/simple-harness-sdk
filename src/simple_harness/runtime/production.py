@@ -169,6 +169,11 @@ def build_production_runtime(config: ProductionRuntimeConfig) -> Runtime:
         staging = config.context_staging_builder(database)
         if not isinstance(staging, ContextStagingRepository):
             raise TypeError("context_staging_builder returned an invalid repository")
+        staging.observability = observability
+        if isinstance(provider, ProviderInvocationCoordinator):
+            provider._observability = observability
+        if isinstance(tools, EffectExecutor):
+            tools._observability = observability
         ports = RuntimePorts(
             provider=provider,
             tools=tools,
@@ -186,7 +191,7 @@ def build_production_runtime(config: ProductionRuntimeConfig) -> Runtime:
             lease_ttl_seconds=config.lease_ttl_seconds,
             close_timeout_seconds=config.close_timeout_seconds,
             memory_dispatcher=MemoryDispatcher(
-                MemoryOutboxRepository(database),
+                MemoryOutboxRepository(database, observability),
                 config.memory,
                 owner_id=config.owner_id,
                 clock=config.clock,
@@ -198,6 +203,7 @@ def build_production_runtime(config: ProductionRuntimeConfig) -> Runtime:
             agent_memory=config.memory,
             context_provider=config.context_provider,
             memory_failure_policy=config.memory_failure_policy,
+            observability=observability,
         )
         root_profile = config.profiles["agent.general"]
         memory_close_hooks: tuple[Callable[[], Awaitable[None]], ...] = ()

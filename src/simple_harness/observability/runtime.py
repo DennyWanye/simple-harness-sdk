@@ -10,10 +10,13 @@ import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from typing import cast
 
 from simple_harness.version import __version__
 
-from .contracts import ObservabilityEventV1
+from .contracts import ObservabilityEventV1, Outcome, Severity
+from .correlation import CorrelationContext
+from .redaction import SafeValue
 from .sinks import CompositeSink, NoopSink, ObservabilitySink
 from .snapshot import DiagnosticsSnapshotV1
 
@@ -102,6 +105,10 @@ class SafeEmitter:
             self._pending += 1
             self._bump(accepted=1)
             return True
+
+    def record_construction_drop(self) -> None:
+        with self._lock:
+            self._bump(dropped=1)
 
     def _run(self) -> None:
         while True:
@@ -196,6 +203,38 @@ class ObservabilityRuntime:
         )
 
     def emit(self, event: ObservabilityEventV1) -> bool:
+        return self._emitter.emit(event)
+
+    def emit_transition(
+        self,
+        event_name: str,
+        *,
+        component: str,
+        operation: str,
+        outcome: Outcome | str,
+        correlation: CorrelationContext,
+        attributes: Mapping[str, object] | None = None,
+        severity: Severity | str = Severity.INFO,
+        occurred_at: float | None = None,
+    ) -> bool:
+        """Construct and enqueue one event without affecting business code."""
+
+        try:
+            event = ObservabilityEventV1(
+                event_name=event_name,
+                occurred_at=time.time() if occurred_at is None else occurred_at,
+                severity=Severity(severity),
+                component=component,
+                operation=operation,
+                outcome=Outcome(outcome),
+                correlation=correlation,
+                attributes=cast(
+                    Mapping[str, SafeValue], {} if attributes is None else attributes
+                ),
+            )
+        except BaseException:
+            self._emitter.record_construction_drop()
+            return False
         return self._emitter.emit(event)
 
     def flush(self, timeout: float | None = None) -> bool:

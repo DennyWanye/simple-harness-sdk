@@ -34,6 +34,7 @@ from simple_harness.execution.uow import (
     DecisionState,
     ExecutionLease,
 )
+from simple_harness.observability import CorrelationContext, ObservabilityRuntime, Outcome
 from simple_harness.providers import ProviderToolSpec
 from simple_harness.workflow.lease import WorkflowLease
 
@@ -91,6 +92,38 @@ class EffectExecutor:
         self._authorization = authorization
         self._reconciliation = reconciliation
         self._clock = clock
+        self._observability: ObservabilityRuntime | None = None
+
+    def _emit_attempt(
+        self,
+        record: EffectRecord,
+        *,
+        outcome: Outcome,
+        error_code: str | None = None,
+    ) -> None:
+        if self._observability is None:
+            return
+        self._observability.emit_transition(
+            f"tool_attempt.{outcome.value}",
+            component="tool",
+            operation="invoke",
+            outcome=outcome,
+            correlation=CorrelationContext.from_authority_ids(
+                run_id=record.run_id.value,
+                call_id=record.call_id.value,
+                effect_id=record.effect_id.value,
+            ),
+            attributes={
+                "entity_kind": "tool_attempt",
+                "entity_id": record.effect_id.value,
+                "run_id": record.run_id.value,
+                "attempt": record.handoff_attempt,
+                "lease_epoch": record.fence_epoch,
+                "state_version": record.version,
+                "to_state": record.state.value,
+                "error_code": error_code,
+            },
+        )
 
     def provider_tool_specs(self, names: tuple[str, ...]) -> tuple[ProviderToolSpec, ...]:
         """Project an allowlisted capability snapshot into Provider declarations."""
@@ -425,6 +458,7 @@ class EffectExecutor:
             workflow_lease=workflow_lease,
             now=self._clock(),
         )
+        self._emit_attempt(handed_off, outcome=Outcome.STARTED)
         try:
             result = await self._registry.invoke(
                 call,
@@ -432,7 +466,7 @@ class EffectExecutor:
                 accepted_result_call_id=(None if raw_call_id is None else CallId(raw_call_id)),
             )
         except BaseException:
-            self._uow.mark_effect_unknown(
+            unknown = self._uow.mark_effect_unknown(
                 effect_id,
                 expected_version=handed_off.version,
                 expected_fence_epoch=run_fence.epoch,
@@ -440,6 +474,9 @@ class EffectExecutor:
                     f"tool-dispatch-interrupted:{context.run_id.value}:{effect_id.value}"
                 ),
                 now=self._clock(),
+            )
+            self._emit_attempt(
+                unknown, outcome=Outcome.DEGRADED, error_code="tool_dispatch_interrupted"
             )
             raise
         if result.call_id != call.call_id:
@@ -463,6 +500,12 @@ class EffectExecutor:
             "tool.effect_settled",
             extra={"tool": call.name, "effect_id": effect_id.value},
         )
+        tool_outcome = (
+            Outcome.SUCCEEDED
+            if settled.state is EffectState.SUCCEEDED
+            else Outcome.FAILED
+        )
+        self._emit_attempt(settled, outcome=tool_outcome, error_code=result.error_code)
         return EffectExecution(settled, result)
 
     async def reconcile(

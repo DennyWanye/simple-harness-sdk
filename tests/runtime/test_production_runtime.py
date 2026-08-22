@@ -194,8 +194,20 @@ def test_production_runtime_accepts_optional_observability_sink(tmp_path: Path) 
         assert accepted
         assert runtime.observability.flush(1)
         assert len(sink.events()) == 1
-        assert runtime.diagnostics_snapshot()["health"] == "healthy"
+        snapshot = runtime.diagnostics_snapshot()
+        assert snapshot["health"] == "healthy"
+        assert snapshot["active_runs"] == 0
+        assert snapshot["authorities"] == {
+            "health": "healthy",
+            "context": {"health": "healthy", "counts": {}, "oldest_age_ms": None},
+            "outbox": {"health": "healthy", "counts": {}, "oldest_age_ms": None},
+            "recovery": {"health": "healthy", "counts": {}, "oldest_age_ms": None},
+            "recent_error_codes": {},
+        }
         await runtime.close()
-        assert runtime.diagnostics_snapshot()["lifecycle"] == "closed"
+        closed = runtime.diagnostics_snapshot()
+        assert closed["lifecycle"] == "closed"
+        assert closed["authorities"]["health"] == "degraded"
+        assert closed["authorities"]["error_code"] == "authority_query_failed"
 
     asyncio.run(case())

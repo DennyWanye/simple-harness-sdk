@@ -14,6 +14,7 @@ from enum import StrEnum
 from uuid import uuid4
 
 from simple_harness.contracts import JsonValue, canonical_json
+from simple_harness.observability import CorrelationContext, ObservabilityRuntime, Outcome
 
 from .sqlite.database import Database
 from .uow import UnitOfWorkConflict
@@ -68,10 +69,81 @@ class ContextStageClaim:
 
 
 class ContextStagingRepository:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self, database: Database, observability: ObservabilityRuntime | None = None
+    ) -> None:
         self.database = database
+        self.observability = observability
+
+    def _emit(
+        self,
+        record: ContextStageRecord,
+        *,
+        event_name: str,
+        from_state: str,
+        outcome: Outcome,
+        replayed: bool = False,
+    ) -> None:
+        if self.observability is None:
+            return
+        self.observability.emit_transition(
+            event_name,
+            component="context",
+            operation="staging",
+            outcome=outcome,
+            correlation=CorrelationContext.from_authority_ids(
+                run_id=record.identity_key, operation_id=record.stage_id
+            ),
+            attributes={
+                "entity_kind": "context_stage",
+                "entity_id": record.stage_id,
+                "from_state": from_state,
+                "to_state": record.state.value,
+                "replayed": replayed,
+                "error_code": record.error_code,
+            },
+        )
 
     def claim(
+        self,
+        *,
+        stage_id: str,
+        kind: ContextStageKind,
+        identity_key: str,
+        user_id: str,
+        session_id: str,
+        input_hash: str,
+        mode: str,
+        owner_id: str,
+        now: float,
+        lease_seconds: float,
+        source_snapshot_ref: str | None = None,
+    ) -> ContextStageClaim:
+        claim = self._claim_authority(
+            stage_id=stage_id,
+            kind=kind,
+            identity_key=identity_key,
+            user_id=user_id,
+            session_id=session_id,
+            input_hash=input_hash,
+            mode=mode,
+            owner_id=owner_id,
+            now=now,
+            lease_seconds=lease_seconds,
+            source_snapshot_ref=source_snapshot_ref,
+        )
+        if claim.owner:
+            replayed = claim.record.created_at != claim.record.updated_at
+            self._emit(
+                claim.record,
+                event_name="context.preparing",
+                from_state="preparing" if replayed else "new",
+                outcome=Outcome.RETRYING if replayed else Outcome.STARTED,
+                replayed=replayed,
+            )
+        return claim
+
+    def _claim_authority(
         self,
         *,
         stage_id: str,
@@ -312,6 +384,13 @@ class ContextStagingRepository:
                 )
         result = self.get(claim.stage_id)
         assert result is not None
+        degraded = result.outcome == "degraded_empty"
+        self._emit(
+            result,
+            event_name="context.degraded" if degraded else "context.staged",
+            from_state=claim.state.value,
+            outcome=Outcome.DEGRADED if degraded else Outcome.SUCCEEDED,
+        )
         return result
 
     def get(self, stage_id: str) -> ContextStageRecord | None:
@@ -322,6 +401,10 @@ class ContextStagingRepository:
 
     def abandon(self, stage_id: str, *, now: float) -> ContextStageRecord:
         with self.database.transaction() as connection:
+            prior = connection.execute(
+                "SELECT state FROM context_preparation_staging WHERE stage_id=?",
+                (stage_id,),
+            ).fetchone()
             changed = connection.execute(
                 "UPDATE context_preparation_staging SET state='abandoned',"
                 "lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,"
@@ -334,6 +417,12 @@ class ContextStagingRepository:
                 raise UnitOfWorkConflict("context stage cannot be abandoned")
         result = self.get(stage_id)
         assert result is not None
+        self._emit(
+            result,
+            event_name="context.abandoned",
+            from_state="unknown" if prior is None else str(prior[0]),
+            outcome=Outcome.TERMINAL,
+        )
         return result
 
     def cleanup(self, *, now: float, older_than: float, limit: int) -> int:

@@ -13,7 +13,7 @@ trusted `AgentIdentity`, Provider/Tool/Authorization ports, an optional product 
 and `memory=MemoryManager(...)`; the SDK owns automatic recall, frozen Context, committed-turn
 outbox delivery, retry, and recovery.
 
-The exact candidate passed the `simple_harness` product cutover and real macOS UI E2E. The tag
+The exact candidate passed the `simple_harness` product cutover and real macOS UI E2E. Local tag
 `v0.3.0` points to candidate source commit `fbb156f`; canonical `dist/BUILD_INFO.txt` and
 `SHA256SUMS` identify the validated wheel `cf629cee…`. The source branch, `main`, and tag have
 been pushed. The frozen wheel/sdist were uploaded to a draft GitHub Release and passed

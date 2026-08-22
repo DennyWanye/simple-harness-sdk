@@ -10,10 +10,11 @@ import json
 import logging
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from simple_harness.contracts import canonical_json
+from simple_harness.observability import CorrelationContext, ObservabilityRuntime, Outcome
 from simple_harness.runtime.agent_memory import (
     AgentMemoryError,
     AgentMemoryErrorCode,
@@ -87,6 +88,7 @@ class MemoryOutboxRecord:
     error_code: str | None
     created_at: float
     settled_at: float | None
+    claimed_from_state: str | None = None
 
     def committed_turn(self) -> CommittedTurn:
         try:
@@ -109,8 +111,41 @@ class MemoryOutboxRecord:
 
 
 class MemoryOutboxRepository:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self, database: Database, observability: ObservabilityRuntime | None = None
+    ) -> None:
         self.database = database
+        self.observability = observability
+
+    def _emit(self, record: MemoryOutboxRecord, from_state: str) -> None:
+        if self.observability is None:
+            return
+        outcomes = {
+            MemoryOutboxState.CLAIMED: Outcome.STARTED,
+            MemoryOutboxState.APPLIED: Outcome.SUCCEEDED,
+            MemoryOutboxState.RETRY_WAIT: Outcome.RETRYING,
+            MemoryOutboxState.DEAD_LETTER: Outcome.TERMINAL,
+        }
+        self.observability.emit_transition(
+            f"memory_outbox.{record.state.value}",
+            component="memory_outbox",
+            operation="dispatch",
+            outcome=outcomes[record.state],
+            correlation=CorrelationContext.from_authority_ids(
+                run_id=record.run_id, operation_id=record.intent_id
+            ),
+            attributes={
+                "entity_kind": "memory_outbox",
+                "entity_id": record.intent_id,
+                "run_id": record.run_id,
+                "from_state": from_state,
+                "to_state": record.state.value,
+                "attempt": record.attempt_count,
+                "lease_epoch": record.claim_epoch,
+                "retry_count": max(0, record.attempt_count - 1),
+                "error_code": record.error_code,
+            },
+        )
 
     def read(self, intent_id: str) -> MemoryOutboxRecord | None:
         row = self.database.connection.execute(
@@ -131,7 +166,7 @@ class MemoryOutboxRepository:
         _positive_time(lease_seconds, "lease_seconds")
         with self.database.transaction() as connection:
             row = connection.execute(
-                "SELECT intent_id FROM memory_outbox WHERE "
+                "SELECT intent_id,state FROM memory_outbox WHERE "
                 "(state IN ('pending','retry_wait') AND retry_at<=?) OR "
                 "(state='claimed' AND claim_expires_at<=?) "
                 "ORDER BY retry_at,created_at,intent_id LIMIT 1",
@@ -140,6 +175,7 @@ class MemoryOutboxRepository:
             if row is None:
                 return None
             intent_id = str(row[0])
+            claimed_from_state = str(row[1])
             changed = connection.execute(
                 "UPDATE memory_outbox SET state='claimed',claim_owner=?,"
                 "claim_epoch=claim_epoch+1,claim_expires_at=?,attempt_count=attempt_count+1 "
@@ -151,7 +187,7 @@ class MemoryOutboxRepository:
                 raise UnitOfWorkConflict("memory outbox claim CAS failed")
         result = self.read(intent_id)
         assert result is not None
-        return result
+        return replace(result, claimed_from_state=claimed_from_state)
 
     def applied(
         self,
@@ -208,6 +244,7 @@ class MemoryOutboxRepository:
                 raise UnitOfWorkConflict("memory outbox release CAS failed")
         result = self.read(claim.intent_id)
         assert result is not None
+        self._emit(result, claim.state.value)
         return result
 
     def backlog(self) -> dict[str, int]:
@@ -264,6 +301,7 @@ class MemoryOutboxRepository:
                 raise UnitOfWorkConflict("memory outbox settlement CAS failed")
         result = self.read(claim.intent_id)
         assert result is not None
+        self._emit(result, claim.state.value)
         return result
 
 
@@ -303,6 +341,7 @@ class MemoryDispatcher:
         )
         if claim is None:
             return False
+        self.repository._emit(claim, claim.claimed_from_state or "unknown")
         try:
             receipt = await self.memory.record_committed_turn(claim.committed_turn())
             if fault is not None:

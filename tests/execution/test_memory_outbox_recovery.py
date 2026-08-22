@@ -25,6 +25,7 @@ from simple_harness.execution.memory_outbox import (
 )
 from simple_harness.execution.sqlite import Database
 from simple_harness.execution.uow import UnitOfWorkConflict
+from simple_harness.observability import ObservabilityRuntime, RecordingSink
 
 
 class InjectedCrash(BaseException):
@@ -214,6 +215,47 @@ def test_transient_retry_rejected_erased_and_backlog_cleanup(
             assert repository.backlog()["applied"] == 1
             assert repository.cleanup_applied(settled_before=clock[0], limit=1) == 1
             assert repository.backlog()["applied"] == 0
+
+    asyncio.run(case())
+
+
+def test_outbox_transition_events_are_ordered_correlated_and_content_free(
+    tmp_path: Path,
+) -> None:
+    async def case() -> None:
+        with Database.open(tmp_path / "observed-states.db") as database:
+            spec = _spec(answer="MEMORY正文-CANARY")
+            _insert(database, spec)
+            sink = RecordingSink()
+            observability = ObservabilityRuntime(sink)
+            clock = [1.0]
+            memory = IdempotentMemory()
+            memory.failures = 1
+            repository = MemoryOutboxRepository(database, observability)
+            dispatcher = MemoryDispatcher(
+                repository,
+                memory,
+                owner_id="worker",
+                clock=lambda: clock[0],
+            )
+            assert await dispatcher.run_once()
+            retrying = repository.read(spec.intent_id)
+            assert retrying is not None
+            clock[0] = retrying.retry_at
+            assert await dispatcher.run_once()
+            assert observability.flush(1)
+            events = sink.events()
+            assert [item.event_name for item in events] == [
+                "memory_outbox.claimed",
+                "memory_outbox.retry_wait",
+                "memory_outbox.claimed",
+                "memory_outbox.applied",
+            ]
+            assert [item.sequence for item in events] == [1, 2, 3, 4]
+            assert len({item.correlation.root_id for item in events}) == 1
+            serialized = "\n".join(str(item.to_dict()) for item in events)
+            assert "MEMORY正文-CANARY" not in serialized
+            observability.close()
 
     asyncio.run(case())
 

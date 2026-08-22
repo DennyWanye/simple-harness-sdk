@@ -3,13 +3,13 @@ SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
 last-updated: 2026-08-23
 -->
-<!-- last-calibrated: 8b5c66581260dca682bc5781ab7af56f76144bb1 -->
+<!-- last-calibrated: e2fd2ad0501a55f1469416a70ff81a65a8e112d5 -->
 
 # Simple Harness SDK — 架构基线（Agent Memory v1）
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
-## SDK Observability S1 当前事实（2026-08-23）
+## SDK Observability S1/S2 当前事实（2026-08-23）
 
 - SDK 现在拥有 import-pure 的 `simple_harness.observability` 边界：immutable V1
   event/correlation wire contract、default-deny 有界 attributes、non-blocking `SafeEmitter`、
@@ -20,8 +20,20 @@ last-updated: 2026-08-23
   sink 工作不在业务 caller thread 执行；overflow、sink exception、reentrancy、emit-after-close 与 close
   timeout 只增加诊断计数，不改变 Run 结果。
 - JSONL 采用有界轮转、regular-file/no-symlink 检查和 `0600` 权限；ring buffer 固定容量。
-  Observability 不是 workflow、Context、Memory、authorization 或 retry authority。outbox/context/recovery
-  细粒度状态事件与 durable aggregate health query 属于后续 S2。
+  Observability 不是 workflow、Context、Memory、authorization 或 retry authority。
+- S2 将同一个 `ObservabilityRuntime` 注入 Runtime、Context staging、Memory outbox、Provider 与 Tool
+  coordinator。Run start/terminal、Context `new→preparing→staged/degraded→consumed/abandoned`、outbox
+  claim/apply/retry/dead-letter、Provider/Tool attempt outcome 均只在对应 authority 操作返回后发射；
+  event 构造、allowlist 或 sink 失败只增加 dropped/error counter，不反馈业务结果。
+- correlation 从既有 run/request/call/effect authority ID 单向派生为固定长度 opaque IDs；run 是跨异步、
+  outbox 与 coordinator 的稳定 trace/root 锚点，request/call/effect 只扩展 parent/operation，不进入授权判断。
+  事件 attributes 不接收正文、异常文本、provider/tool payload 或认证材料。
+- startup recovery 对可恢复 durable Run 发射 `recovery.observed_state`，明确
+  `replayed=true, history_complete=false`，随后成功恢复才发射 `recovery.resolved`；不会伪造 post-commit
+  crash gap 中缺失的历史事件。
+- `Runtime.diagnostics_snapshot()` 在 emitter 基础健康上增加 active Run 数，以及 Context/outbox/recovery
+  的有界 status counts、oldest age 与最多 20 个稳定 error-code aggregates。查询只选择
+  status/timestamp/error-code 列；关闭、query error 或 250ms deadline 返回稳定 degraded section，不抛入业务。
 
 ## Agent Memory v1 当前事实（2026-08-22）
 
