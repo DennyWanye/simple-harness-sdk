@@ -38,6 +38,7 @@ def test_wheel_contains_only_package_and_distribution_metadata(
         names = archive.namelist()
     _assert_clean(names)
     assert "simple_harness/__init__.py" in names
+    assert "simple_harness/py.typed" in names
     assert "simple_harness/testing/arm64_candidate.py" in names
     assert any(name.endswith(".dist-info/licenses/LICENSES/Apache-2.0.txt") for name in names)
     assert any(name.endswith(".dist-info/licenses/NOTICE") for name in names)
@@ -54,6 +55,7 @@ def test_sdist_has_explicit_clean_source_surface(
     relative = ["/".join(PurePosixPath(name).parts[1:]) for name in names]
     assert "pyproject.toml" in relative
     assert "src/simple_harness/__init__.py" in relative
+    assert "src/simple_harness/py.typed" in relative
     assert "src/simple_harness/testing/arm64_candidate.py" in relative
     assert "tests/artifact/test_import_purity.py" in relative
 

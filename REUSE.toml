@@ -15,6 +15,7 @@ path = [
   "pyproject.toml",
   "provenance/*.json",
   "source-manifest.tsv",
+  "src/simple_harness/py.typed",
   "tests/**/*.json",
   "uv.lock",
 ]

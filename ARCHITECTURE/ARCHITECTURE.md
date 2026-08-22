@@ -94,7 +94,8 @@ last-updated: 2026-08-22
   三个 true 值及 Python/架构/distribution identity；任何失败以 stable code 抛错/CLI 非零退出。
 - root、`simple_harness.runtime` 与 `simple_harness.testing.arm64_candidate` 的 `__all__` 均由同一 public
   API snapshot 固定；conversation DTO/ports、production builder 与 ARM64 gate entrypoint 的增删或重排
-  都会触发契约测试失败。
+  都会触发契约测试失败。wheel 包含 PEP 561 `simple_harness/py.typed` marker；artifact gate 从隔离 venv
+  安装实际 wheel，并以 strict mypy 导入 public Agent Memory 与 execution migration manifest 类型。
 - 2026-08-22 S2-T1～T8 验证：terminal/outbox fault、root/continuation replay、apply-before-ack restart、
   `REJECTED_ERASED`、transient/permanent/conflict、claim takeover/stale epoch、bounded drain/cleanup 等
   dispatcher 场景，以及 root/多 continuation legacy classification、NULL FK 歧义 fail-closed、renamed

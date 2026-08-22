@@ -20,6 +20,8 @@ SPDX-License-Identifier: Apache-2.0
 - Backup-first explicit execution v3-to-v4 offline migration with a digest-verified neutral
   manifest, deterministic four-way legacy event classification, target identity remapping,
   and a versioned cursor for post-migration continuation supersession.
+- A packaged PEP 561 `py.typed` marker so strict type checking follows the public Agent Memory
+  and execution migration contracts from an installed wheel.
 
 ### Changed
 - `build_consumer_runtime` is the official easy composition root and accepts one Memory
