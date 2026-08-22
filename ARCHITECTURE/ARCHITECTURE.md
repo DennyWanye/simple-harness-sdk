@@ -1,7 +1,7 @@
 <!--
 SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
-last-updated: 2026-08-22
+last-updated: 2026-08-23
 -->
 <!-- last-calibrated: fbb156f -->
 
@@ -130,7 +130,8 @@ last-updated: 2026-08-22
   长历史、恶意 Memory、冷重启、recall timeout、record transient 未提交即退出后的 startup recovery，
   以及 stop/cancel projection。此结论只适用于 simple_harness；未来消费者仍是接口就绪状态。
 - 2026-08-22 本地 promotion：canonical `dist/` 复用上述 exact wheel/sdist，`BUILD_INFO.txt` 与
-  `SHA256SUMS` 指向 `fbb156f`；local tag `v0.3.0` 指向同一 source commit。未 push/upload。
+  `SHA256SUMS` 指向 `fbb156f`；tag `v0.3.0` 指向同一 source commit。2026-08-23 source、`main` 与 tag
+  已推送；冻结 wheel/sdist 继续由本地发布流程保管，未创建或上传 GitHub Release。
 - 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
   1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、
   atomic release-pending、replay、rebind、malicious product Context、ownership/build cleanup 与 legacy
