@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Simple Harness SDK 0.3.0 integration status
 
-## Candidate status
+## Release status
 
 Harness SDK 0.3.0 exposes the official Agent Memory v1 contract and production composition
 path. Memory SDK 0.4 `MemoryManager` implements that contract directly. Consumers provide
@@ -13,14 +13,15 @@ trusted `AgentIdentity`, Provider/Tool/Authorization ports, an optional product 
 and `memory=MemoryManager(...)`; the SDK owns automatic recall, frozen Context, committed-turn
 outbox delivery, retry, and recovery.
 
-The candidate is not externally published or tagged. Promotion remains gated on the later
-`simple_harness` product cutover and real UI E2E.
+The exact candidate passed the `simple_harness` product cutover and real macOS UI E2E. Local tag
+`v0.3.0` points to candidate source commit `fbb156f`; canonical `dist/BUILD_INFO.txt` and
+`SHA256SUMS` identify the validated wheel `cf629cee…`. Nothing was pushed or uploaded.
 
 ## Consumer matrix
 
 | Consumer | Status | Evidence boundary |
 | --- | --- | --- |
-| `simple_harness` | designated real-test consumer; cutover pending | S6 installs exact wheels and runs automated plus MCP UI scenarios |
+| `simple_harness` | integrated and real-UI validated | S6 installed exact wheels and passed automated plus Computer Use UI scenarios with DeepSeek |
 | AIPhone | interface ready, not integrated | product-neutral SDK fixture only; repository and runtime unchanged |
 | K6/AgentOS | interface ready, not integrated | product-neutral SDK fixture only; repository, PostgreSQL and runtime unchanged |
 | NovelTagSystem | out of scope | no repository, database, runtime, or test changes |

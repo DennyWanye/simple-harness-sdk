@@ -485,8 +485,9 @@ def test_candidate_docs_do_not_overstate_product_integration() -> None:
     status = (root / "INTEGRATION_STATUS.md").read_text(encoding="utf-8")
     contracts = (root / "docs/api/contracts.md").read_text(encoding="utf-8")
 
-    assert "simple_harness` is the only" in readme
-    assert "designated real-test consumer; cutover pending" in status
+    assert "`simple_harness` has completed exact-wheel product" in readme
+    assert "| `simple_harness` | integrated and real-UI validated |" in status
+    assert "Local tag\n`v0.3.0` points to candidate source commit `fbb156f`" in status
     for consumer in ("AIPhone", "K6/AgentOS"):
         assert f"| {consumer} | interface ready, not integrated |" in status
         assert consumer in contracts
