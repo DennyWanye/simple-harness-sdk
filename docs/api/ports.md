@@ -296,132 +296,26 @@ ports = RuntimePorts(
 
 ---
 
-## Memory Ports (Optional)
+## Agent Memory Port (Optional)
 
-### ConversationMemoryQueryPort (0.2.0 production)
-
-This is the durable conversation-recall authority used by
-`ProductionRuntimeConfig.conversation_query`:
+`AgentMemoryPort` is the only public automatic Memory boundary in 0.3.0:
 
 ```python
-class ConversationMemoryQueryPort(Protocol):
-    async def recall_bounded(
-        self, query: ConversationMemoryRecallQuery
-    ) -> ConversationMemoryRecallResult: ...
-
-    async def release(
-        self, *, user_id: str, context_query_id: str, result_hash: str
-    ) -> None: ...
-
-    async def close(self) -> None: ...
+class AgentMemoryPort(Protocol):
+    async def recall_for_turn(self, request: MemoryRecallRequest) -> MemoryRecallResult: ...
+    async def release_recall(self, request: MemoryReleaseRequest) -> None: ...
+    async def record_committed_turn(self, request: CommittedTurn) -> CommittedTurnReceipt: ...
 ```
 
-`recall_bounded` is wrapped by the SDK's finite overall timeout. The SDK independently
-checks query identity/hash, canonical result hash/byte count, item structure/count, and
-the caller's item/byte limits before staging. `release` must be idempotent: preparation
-durably stages first, then makes a bounded release call; replay may repeat that same call
-without repeating the logical release side effect. Production composition rejects a query
-port that omits any of `recall_bounded`, `release`, or `close`.
+Consumers normally do not implement these calls individually. Memory SDK 0.4 `MemoryManager`
+implements the protocol directly and is passed once as `memory=manager` to the official builder.
+Harness supplies trusted four-part identity and personal/family scopes, performs bounded recall,
+freezes the result as USER/untrusted data, and dispatches terminal-only committed turns through a
+durable outbox. `ResourceOwnership.BORROWED` is the default; select `RUNTIME` only when the Runtime
+should close the manager.
 
-`MemoryQueryPort` below is the legacy reserved interface; it is not the 0.2.0 conversation
-authority.
-
-### MemoryQueryPort
-
-**Purpose**: Read-only access to long-term memory.
-
-```python
-from simple_harness.runtime import MemoryQueryPort
-
-class MemoryQueryPort(Protocol):
-    async def recall_readonly(
-        self,
-        query: str,
-        limit: int,
-        scope: str,
-    ) -> list[dict[str, JsonValue]]:
-        """Return relevant memory entries.
-        
-        Args:
-            query: Natural language query
-            limit: Maximum results
-            scope: Memory scope (e.g., "user:123")
-        
-        Returns:
-            List of memory entries (JSON-safe dicts)
-        """
-        ...
-```
-
-**Example:**
-
-```python
-class MyMemoryQuery:
-    def __init__(self, db):
-        self.db = db
-    
-    async def recall_readonly(self, query, limit, scope):
-        # Vector search in your memory database
-        results = await self.db.vector_search(
-            query=query,
-            limit=limit,
-            scope=scope,
-        )
-        
-        return [
-            {
-                "content": r.text,
-                "timestamp": r.created_at,
-                "relevance": r.score,
-            }
-            for r in results
-        ]
-```
-
----
-
-### MemoryWritePort
-
-**Purpose**: Write session-scoped working memory (todos, notes).
-
-```python
-from simple_harness.runtime import MemoryWritePort
-
-class MemoryWritePort(Protocol):
-    async def replace_session_todos(
-        self,
-        session_id: str,
-        items: list[dict[str, JsonValue]],
-    ) -> None:
-        """Replace the full todo list for a session.
-        
-        Args:
-            session_id: Execution session ID
-            items: New todo list
-        """
-        ...
-```
-
-**Example:**
-
-```python
-class MyMemoryWrite:
-    def __init__(self, db):
-        self.db = db
-    
-    async def replace_session_todos(self, session_id, items):
-        # Atomic replace
-        async with self.db.transaction() as tx:
-            await tx.execute(
-                "DELETE FROM todos WHERE session_id = ?",
-                (session_id,)
-            )
-            for item in items:
-                await tx.execute(
-                    "INSERT INTO todos (session_id, content) VALUES (?, ?)",
-                    (session_id, item.get("content", ""))
-                )
-```
+The 0.2 query/sink split, reserved `MemoryQueryPort` / `MemoryWritePort`, public Memory adapters,
+and manual prepare/recall/append lifecycle are retired and are not exported compatibility surfaces.
 
 ---
 
@@ -598,9 +492,9 @@ When integrating the SDK, implement ports in this order:
 **Result**: Users can save and run custom workflows
 
 ### Phase 4: Memory Integration
-- [ ] `MemoryQueryPort` - Read memory
-- [ ] `MemoryWritePort` - Write working memory
-- [ ] Pass to `RuntimePorts`
+- [ ] Build Memory SDK 0.4 `MemoryManager`
+- [ ] Pass it once as `memory=` to `ConsumerRuntimePorts` or `ProductionRuntimeConfig`
+- [ ] Enter turns through `RunClient.start_conversation()` / `signal_conversation()`
 
 **Result**: Agent has long-term memory
 

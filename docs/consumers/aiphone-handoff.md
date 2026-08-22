@@ -1,5 +1,10 @@
 # AIPhone SDK Integration Handoff
 
+> Historical 0.1.1 design record. AIPhone has not integrated or tested Harness SDK 0.3.0 in the
+> current program. For the interface-ready Agent Memory v1 contract, use
+> [`../api/contracts.md`](../api/contracts.md); the query/write examples below are retired and
+> must not be used for a new integration.
+
 **Date:** 2026-08-17  
 **SDK Version:** v0.1.1  
 **Target:** AIPhone Mobile Application

@@ -222,7 +222,7 @@ official = build_official_workflow_registrations(
 )
 
 # Register with Runtime
-# (Note: Actual RuntimePorts integration TBD in SDK v0.1.2+)
+# Workflow registrations are composed through the current production/runtime builders.
 ```
 
 **Conditional registration:**

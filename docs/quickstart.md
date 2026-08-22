@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get started with Simple Harness SDK 0.1.2 in 10 minutes.
+Get started with Simple Harness SDK 0.3.0 in 10 minutes.
 
 > **Code block convention in this document:** exactly **one** code block is a
 > complete, self-contained, runnable program — the plain ` ```python ` block in
@@ -18,19 +18,19 @@ Get started with Simple Harness SDK 0.1.2 in 10 minutes.
 ## Installation
 
 The SDK is not published to PyPI or as a GitHub Release. The only way to get
-the 0.1.2 wheel is to clone the SDK repository and build it locally:
+the 0.3.0 candidate wheel is to clone the SDK repository and build it locally:
 
 ```bash
 git clone <sdk-repo-url>
 cd simple-harness-sdk
 uv build
 uv venv --seed --python 3.11 .venv
-.venv/bin/pip install dist/simple_harness_sdk-0.1.2-py3-none-any.whl
+.venv/bin/pip install dist/simple_harness_sdk-0.3.0-py3-none-any.whl
 ```
 
 Notes:
 
-- `uv build` produces `dist/simple_harness_sdk-0.1.2-py3-none-any.whl`.
+- `uv build` produces `dist/simple_harness_sdk-0.3.0-py3-none-any.whl`.
 - If your `python3` is already ≥ 3.11, `python3 -m venv .venv` works instead of
   the `uv venv` line.
 - All commands above run from the repository root; the install line uses a
@@ -45,7 +45,7 @@ Notes:
 Expected output:
 
 ```text
-0.1.2
+0.3.0
 ```
 
 ---
@@ -60,7 +60,7 @@ Save this complete program as `demo.py` (outside the SDK repository, e.g. in
 your own project directory):
 
 ```python
-"""Minimal Simple Harness SDK 0.1.2 example (self-contained, runnable).
+"""Minimal Simple Harness SDK 0.3.0 example (self-contained, runnable).
 
 Exit code 0 only when the run reaches the COMPLETED terminal state.
 """
@@ -271,7 +271,7 @@ class OpenAIProvider:
                 output_tokens=data["usage"]["completion_tokens"],
                 total_tokens=data["usage"]["total_tokens"],
             ),
-            model="consumer-model",  # must match the 0.1.2 adapter target
+            model="consumer-model",  # must match the configured consumer target
             finish_reason="stop",
         )
 ```
@@ -280,7 +280,7 @@ class OpenAIProvider:
 
 ### 2. Add Real Tools
 
-Implement file operations, API calls, etc. Note the 0.1.2 limitation: the
+Implement file operations, API calls, etc. The
 consumer adapter registers placeholder tool specs that reject all arguments,
 so tools must work with an empty argument mapping (upgrade path: use the
 10-Port `RuntimePorts` API, see [Ports API](api/ports.md)):
@@ -296,7 +296,30 @@ class FileToolExecutor:
 
 **See:** [Ports API](api/ports.md)
 
-### 3. Advanced: the 10-Port RuntimePorts API
+### 3. Add official Agent Memory
+
+Memory SDK 0.4 `MemoryManager` implements Harness `AgentMemoryPort` directly. Pass it once; do
+not add a public adapter or call recall/append yourself:
+
+```python fragment
+from simple_harness import ResourceOwnership
+from simple_harness_memory import MemoryManager
+
+memory = await MemoryManager.build_development("memory.db")
+ports = ConsumerRuntimePorts(
+    provider=my_provider,
+    tool_executor=my_tools,
+    authorization=my_authorization,
+    database_path="execution.db",
+    memory=memory,
+    memory_ownership=ResourceOwnership.RUNTIME,
+)
+```
+
+Use `RunClient.start_conversation()` with trusted `AgentIdentity`; Harness automatically performs
+bounded recall, freezes it as USER/untrusted Context, and dispatches one terminal committed turn.
+
+### 4. Advanced: the 10-Port RuntimePorts API
 
 `build_consumer_runtime` covers most consumers. If you need full control
 (custom tool schemas, workflows, memory, delivery sinks), drop down to the
@@ -316,7 +339,7 @@ runtime = build_runtime(
 
 **See:** [Ports API](api/ports.md), [Integration Guide](integration-guide.md)
 
-### 4. Run Conformance Tests
+### 5. Run Conformance Tests
 
 Verify your port implementations against the SDK conformance suite:
 

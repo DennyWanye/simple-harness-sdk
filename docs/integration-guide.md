@@ -2,7 +2,7 @@
 
 Complete step-by-step guide for integrating Simple Harness SDK into your application.
 
-> **Recommended integration path (0.1.2):** most consumers should start with
+> **Recommended integration path (0.3.0):** most consumers should start with
 > `build_consumer_runtime` — implement 3 Protocols (`ProviderPort`,
 > `ToolExecutorPort`, `AuthorizationPort`) and the SDK adapts them to the full
 > kernel. See the runnable walkthrough in [Quickstart](quickstart.md) and
@@ -63,7 +63,7 @@ Your Application
 ### Step 1: Install SDK
 
 The SDK is not published to PyPI or as a GitHub Release. Clone the SDK
-repository, build the 0.1.2 wheel locally, and install it (identical to the
+repository, build the 0.3.0 candidate wheel locally, and install it (identical to the
 [Quickstart](quickstart.md) installation — that document is the single source
 of truth for install commands):
 
@@ -72,7 +72,7 @@ git clone <sdk-repo-url>
 cd simple-harness-sdk
 uv build
 uv venv --seed --python 3.11 .venv
-.venv/bin/pip install dist/simple_harness_sdk-0.1.2-py3-none-any.whl
+.venv/bin/pip install dist/simple_harness_sdk-0.3.0-py3-none-any.whl
 ```
 
 ### Step 2: Implement ProviderPort
@@ -581,79 +581,30 @@ ports = RuntimePorts(
 
 ---
 
-## Phase 3: Memory Integration
+## Phase 3: Agent Memory Integration
 
-### Step 1: Implement MemoryQueryPort
-
-```python
-# memory/query.py
-
-from simple_harness.runtime import MemoryQueryPort
-
-class MyMemoryQuery:
-    """Read from long-term memory."""
-    
-    def __init__(self, memory_db):
-        self.db = memory_db
-    
-    async def recall_readonly(self, query, limit, scope):
-        """Search conversation history."""
-        
-        # Vector search
-        results = await self.db.vector_search(
-            query=query,
-            limit=limit,
-            scope=scope,
-        )
-        
-        return [
-            {
-                "content": r.text,
-                "timestamp": r.created_at,
-                "relevance": r.similarity_score,
-            }
-            for r in results
-        ]
-```
-
-### Step 2: Implement MemoryWritePort
+Install Memory SDK 0.4 with its Harness extra, build one `MemoryManager`, and pass it directly to
+the official consumer builder. The SDK owns recall, release, frozen Context, terminal committed
+turns, retry, and restart recovery.
 
 ```python
-# memory/write.py
+from simple_harness import ConsumerRuntimePorts, ResourceOwnership, build_consumer_runtime
+from simple_harness_memory import MemoryManager
 
-from simple_harness.runtime import MemoryWritePort
-
-class MyMemoryWrite:
-    """Write session working memory."""
-    
-    def __init__(self, memory_db):
-        self.db = memory_db
-    
-    async def replace_session_todos(self, session_id, items):
-        """Replace session todo list."""
-        
-        async with self.db.transaction() as tx:
-            await tx.execute(
-                "DELETE FROM session_todos WHERE session_id = ?",
-                (session_id,)
-            )
-            
-            for item in items:
-                await tx.execute(
-                    "INSERT INTO session_todos (session_id, content) VALUES (?, ?)",
-                    (session_id, item.get("content", ""))
-                )
+memory = await MemoryManager.build_development("memory.db")
+runtime = await build_consumer_runtime(ConsumerRuntimePorts(
+    provider=my_provider,
+    tool_executor=my_tools,
+    authorization=my_authorization,
+    database_path="execution.db",
+    memory=memory,
+    memory_ownership=ResourceOwnership.RUNTIME,
+))
 ```
 
-### Step 3: Wire Memory Ports
-
-```python
-ports = RuntimePorts(
-    ...
-    memory_query=MyMemoryQuery(memory_db),
-    memory_write=MyMemoryWrite(memory_db),
-)
-```
+Use a separate `ConversationContextProviderPort` only for product-owned persona, history, skills,
+or tool hints. It must not inject Memory authority. Start typed turns with trusted
+`AgentIdentity` through `RunClient.start_conversation()`; do not call recall or append manually.
 
 ---
 
@@ -720,7 +671,7 @@ Review conformance report and fix failures:
 
 **Solution:**
 ```bash
-.venv/bin/pip install dist/simple_harness_sdk-0.1.2-py3-none-any.whl
+.venv/bin/pip install dist/simple_harness_sdk-0.3.0-py3-none-any.whl
 .venv/bin/pip list | grep simple-harness
 ```
 

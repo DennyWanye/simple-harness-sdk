@@ -1,0 +1,146 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
+"""Product-neutral consumer using only the official Harness public composition."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from simple_harness import (
+    AgentIdentity,
+    AgentMemoryPort,
+    ConsumerRuntimePolicies,
+    ConsumerRuntimePorts,
+    ConversationContextRequest,
+    ConversationContextResult,
+    ConversationTurnInput,
+    CurrentMessageContextProvider,
+    JsonValue,
+    Message,
+    MessageRole,
+    RunClient,
+    RunId,
+    Runtime,
+    canonical_json,
+)
+from simple_harness.providers import ProviderRequest, ProviderResponse
+from simple_harness.runtime import AuthorizationRequest, AuthorizationResult
+from simple_harness.tools import ToolCall, ToolResult
+
+
+class DeterministicProvider:
+    def __init__(self) -> None:
+        self.requests: list[ProviderRequest] = []
+
+    async def invoke(self, request: ProviderRequest, *, cancel) -> ProviderResponse:  # type: ignore[no-untyped-def]
+        del cancel
+        self.requests.append(request)
+        return ProviderResponse(
+            request.request_id,
+            Message(MessageRole.ASSISTANT, "future consumer answer"),
+            model="consumer-model",
+            finish_reason="stop",
+        )
+
+
+class NoopTools:
+    async def execute(self, call: ToolCall, context) -> ToolResult:  # type: ignore[no-untyped-def]
+        raise AssertionError((call, context))
+
+
+class AllowAuthorization:
+    async def request_authorization(self, request: AuthorizationRequest) -> AuthorizationResult:
+        del request
+        return AuthorizationResult("allow")
+
+
+class RichProductContextProvider:
+    """Formal product Context with persona plus the current message, never Memory data."""
+
+    def __init__(self) -> None:
+        self.requests: list[ConversationContextRequest] = []
+
+    async def prepare_once(self, request: ConversationContextRequest) -> ConversationContextResult:
+        self.requests.append(request)
+        persona = Message(
+            MessageRole.SYSTEM,
+            "Answer concisely for this product.",
+            metadata={"source": "product_persona"},
+        )
+        payload: dict[str, JsonValue] = {
+            "schema_version": 1,
+            "source_snapshot_ref": request.source_snapshot_ref,
+            "provider_messages": [persona.to_dict(), request.current_message.to_dict()],
+            "current_message": request.current_message.to_dict(),
+        }
+        return ConversationContextResult(
+            request.preparation_id,
+            request.source_snapshot_ref,
+            payload,
+            2,
+            len(canonical_json(payload).encode("utf-8")),
+        )
+
+
+@dataclass(slots=True)
+class FutureConsumerFixture:
+    database_path: Path
+    memory: AgentMemoryPort | None
+    rich_context: bool = False
+    provider: DeterministicProvider = field(init=False)
+    context_provider: CurrentMessageContextProvider | RichProductContextProvider = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.provider = DeterministicProvider()
+        self.context_provider = (
+            RichProductContextProvider() if self.rich_context else CurrentMessageContextProvider()
+        )
+
+    async def build(self) -> Runtime:
+        from simple_harness import build_consumer_runtime
+
+        return await build_consumer_runtime(
+            ConsumerRuntimePorts(
+                provider=self.provider,
+                tool_executor=NoopTools(),
+                authorization=AllowAuthorization(),
+                database_path=str(self.database_path),
+                memory=self.memory,
+                context_provider=self.context_provider,
+                policies=ConsumerRuntimePolicies.local_default(),
+            )
+        )
+
+    @staticmethod
+    def identity(*, household: str, actor: str, session: str) -> AgentIdentity:
+        return AgentIdentity("future-consumer", household, actor, session)
+
+    @staticmethod
+    async def complete_turn(
+        runtime: Runtime,
+        *,
+        identity: AgentIdentity,
+        run_id: str,
+        text: str,
+    ) -> None:
+        typed_run_id = RunId(run_id)
+        await RunClient(runtime).start_conversation(
+            ConversationTurnInput(
+                identity,
+                Message(MessageRole.USER, text),
+                text,
+            ),
+            run_id=typed_run_id,
+        )
+        await runtime.wait_idle(typed_run_id)
+
+
+__all__ = (
+    "AllowAuthorization",
+    "DeterministicProvider",
+    "FutureConsumerFixture",
+    "NoopTools",
+    "RichProductContextProvider",
+)

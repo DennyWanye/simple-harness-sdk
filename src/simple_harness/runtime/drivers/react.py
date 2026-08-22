@@ -309,7 +309,7 @@ def _messages(value: object) -> tuple[Message, ...]:
         else:
             raise TypeError("ReAct message content must be text or content blocks")
         metadata = item.get("metadata", {})
-        if not isinstance(metadata, dict):
+        if not isinstance(metadata, Mapping):
             raise TypeError("ReAct message metadata must be an object")
         name = item.get("name")
         if name is not None and not isinstance(name, str):
@@ -323,7 +323,7 @@ def _messages(value: object) -> tuple[Message, ...]:
                 normalized_content,
                 name=name,
                 call_id=None if call_id is None else CallId(call_id),
-                metadata=metadata,
+                metadata=dict(metadata),
             )
         )
     return tuple(messages)

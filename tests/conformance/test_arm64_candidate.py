@@ -21,6 +21,10 @@ def test_arm64_core_gate_has_frozen_synchronous_public_signature() -> None:
         "Arm64CandidateGateError",
         "run_core_gate",
     )
+    source = inspect.getsource(arm64_candidate)
+    assert '_MEMORY_VERSION = "0.4.0"' in source
+    assert 'getattr(root, "MemoryManager", None)' in source
+    assert "ConversationMemoryAdapter" not in source
 
 
 def test_arm64_core_gate_fails_closed_before_candidate_execution(

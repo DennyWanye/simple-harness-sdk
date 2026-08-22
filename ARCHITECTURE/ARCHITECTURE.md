@@ -88,7 +88,7 @@ last-updated: 2026-08-22
   tag、也不重新 build；artifact contract 静态拒绝 CI 重新引入 `SOURCE_DATE_EPOCH`。
 - `simple_harness.testing.arm64_candidate:run_core_gate` 是 zero-argument synchronous public gate：
   只在 Linux ARM64 与两个非 editable、版本精确的 installed-wheel distributions 上运行。它用真实
-  Harness fresh v4 UOW、Memory SQLite backend/adapter 与 dispatcher，先 terminal commit 完整 Turn，再注入
+  Harness fresh v4 UOW、Memory SDK 0.4 `MemoryManager` 与 dispatcher，先 terminal commit 完整 Turn，再注入
   Memory record 成功但 ack 前崩溃，关闭并重开两库后验证 outbox 以同 turn/hash 收敛，同时 read-back WAL、
   FK、integrity 与 0600。成功结果包含 `minimal_runtime`、`memory_outbox_restart`、`sqlite_reopen`
   三个 true 值及 Python/架构/distribution identity；任何失败以 stable code 抛错/CLI 非零退出。
@@ -102,6 +102,13 @@ last-updated: 2026-08-22
   target identity、连续 post-migration continuation、cursor/replace crash windows 均通过；Python
   3.11/3.12/3.13 full pytest 各 1366 passed / 2 expected skips，ruff 与 release-owned mypy 全绿。
   source provenance、REUSE、wheel/sdist/twine/canonical artifact 结果在本 slice 最终门禁记录。
+- 2026-08-22 S5 Harness candidate half：version/public snapshot/metadata 已冻结为 0.3.0；
+  product-neutral minimal/rich Context fixture 只使用 `ConsumerRuntimePorts(memory=...)` 与
+  `ConsumerRuntimePolicies.local_default()`，覆盖四元 identity、personal/family scope、automatic recall、
+  frozen replay/restart、committed turn、`REJECTED_ERASED` 与 `memory=None`。无 Memory 对话的 frozen
+  message metadata 现接受只读 Mapping 并保持 JSON object。Python 3.11/3.12/3.13 full pytest 各
+  1372 passed / 2 expected skips；candidate artifact/future-consumer/ARM64 contract targeted 33 passed。
+  joint exact-wheel / extra resolver / cross-repo manifest 在 Memory 0.4 candidate commit 后执行。
 - 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
   1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、
   atomic release-pending、replay、rebind、malicious product Context、ownership/build cleanup 与 legacy
@@ -133,7 +140,7 @@ last-updated: 2026-08-22
 
 外部消费者 → SDK kernel 的桥接层。核心入口 `build_consumer_runtime(ports: ConsumerRuntimePorts) -> Runtime`。
 
-**当前链路**（0.2.0）：
+**当前链路**（0.3.0）：
 
 1. `Database.open(ports.database_path)` 打开 SQLite（以 `build_consumer_runtime` 符号为准）。
 2. `SqliteExecutionUnitOfWork(database)` 建 uow。
@@ -177,7 +184,8 @@ last-updated: 2026-08-22
 - `release.yml`：仅 manual dispatch，按 candidate commit / Actions run / artifact / wheel SHA /
   version 校验冻结制品，再上传原 bytes；无 tag trigger、无 `uv build`、不创建第二套制品。
 - `release-candidate-conformance.yml` 按 candidate commit 与 artifact SHA 在 macOS ARM64、
-  Windows x64、Linux ARM64 上消费 exact wheel，不拥有发布权限。
+  Windows x64、Linux ARM64 上消费 exact Harness/Memory wheels，不拥有发布权限；Linux ARM64 额外执行
+  `run_core_gate` 的 committed-turn apply-before-ack restart lane。
 
 ## 6. Agent Memory Port（`runtime/agent_memory.py`）
 

@@ -82,6 +82,9 @@ Consumers compose Memory once through `ConsumerRuntimePorts(memory=...)` or
 USER/untrusted Context injection, replay reuse, and release retry; the committed-turn values
 define the delivery contract wired by the following durable-outbox slice.
 `ResourceOwnership.BORROWED` leaves the object open; `RUNTIME` closes it exactly once.
+Memory SDK 0.4 `MemoryManager` implements `AgentMemoryPort` directly; consumers do not add an
+adapter or invoke its recall/record methods themselves. `memory=None` preserves ordinary durable
+execution without creating Memory stages or outbox rows.
 
 `ConversationContextProviderPort` is a separate read-only source for product-owned persona,
 history, skills, and tool hints. It cannot supply or forge the Memory partition. Providers
@@ -113,6 +116,10 @@ the backup before transformation, builds a fresh v4 database, verifies counts/FK
 atomically replaces the source. A failure after replacement restores the exact backup. Legacy
 terminal ambiguity is never resolved by timestamps: missing or multiple event/receipt/claim
 candidates fail closed.
+
+This candidate makes only an interface-readiness statement for future consumers. `simple_harness`
+is the sole product designated for the later real integration/UI gate. AIPhone and K6/AgentOS
+have not been integrated or tested and require no repository change to prove this SDK contract.
 
 ### Migration from 0.2 query/sink ports
 

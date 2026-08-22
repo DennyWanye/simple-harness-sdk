@@ -5,7 +5,15 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
-## Unreleased
+## 0.3.0 — candidate
+
+### Breaking
+- Execution persistence now uses fresh schema v4. The normal loader rejects schema v1-v3;
+  schema v3 requires the explicit backup-first offline migrator and a complete identity map.
+- The public query/sink and reserved query/write Memory ports are retired. Consumers pass one
+  `AgentMemoryPort` implementation, such as Memory SDK 0.4 `MemoryManager`, to the official
+  consumer or production builder; no public Memory adapter or manual recall/write lifecycle
+  remains.
 
 ### Added
 - Official `AgentMemoryPort` v1 contract with trusted four-part identity, personal/family

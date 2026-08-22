@@ -6,7 +6,8 @@ Current production architecture, persistence, and consumer boundaries are indexe
 An embeddable, durable agent runtime extracted from Simple Harness.
 
 The current SDK exposes one official Agent Memory v1 boundary. A consumer passes one
-`AgentMemoryPort`, a trusted four-part `AgentIdentity`, and its normal product ports; the
+`AgentMemoryPort`—Memory SDK 0.4 `MemoryManager` implements it directly—a trusted four-part
+`AgentIdentity`, and its normal product ports; the
 SDK automatically performs bounded recall, freezes the resulting Context, retries durable
 recall release, and writes exactly one canonical user+assistant committed turn only after a
 conversation completes. Terminal state, normal deliveries, and the Memory outbox row commit in
@@ -21,22 +22,27 @@ pairs to renamed complete `AgentIdentity` values, and leaves a caller-selected v
 the database.
 
 ```python
+from simple_harness_memory import MemoryManager
+
 from simple_harness import (
     AgentIdentity,
     ConsumerRuntimePorts,
     ConversationTurnInput,
     Message,
     MessageRole,
+    ResourceOwnership,
     RunClient,
     build_consumer_runtime,
 )
 
+memory = await MemoryManager.build_development("memory.db")
 ports = ConsumerRuntimePorts(
     provider=my_provider,
     tool_executor=my_tools,
     authorization=my_authorization,
     database_path="execution.db",
-    memory=my_memory,  # implements AgentMemoryPort
+    memory=memory,
+    memory_ownership=ResourceOwnership.RUNTIME,
 )
 runtime = await build_consumer_runtime(ports)
 async with runtime:
@@ -54,3 +60,8 @@ payloads are excluded unless the consumer supplies explicit `memory_text`. The o
 retired from the public API. Public contracts are documented in
 [`docs/api/contracts.md`](docs/api/contracts.md); consumer validation is covered
 by [`docs/conformance.md`](docs/conformance.md).
+
+Integration status for this candidate is deliberately narrow: `simple_harness` is the only
+consumer scheduled for real product/UI validation in this program and is not claimed integrated
+until that cutover completes. AIPhone and K6/AgentOS are interface-ready future consumers; their
+repositories and production paths have not been modified or tested here.

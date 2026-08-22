@@ -42,7 +42,7 @@ from simple_harness.version import __version__
 
 _HARNESS_DISTRIBUTION = "simple-harness-sdk"
 _MEMORY_DISTRIBUTION = "simple-harness-memory-sdk"
-_MEMORY_VERSION = "0.3.0"
+_MEMORY_VERSION = "0.4.0"
 
 
 class Arm64CandidateGateError(RuntimeError):
@@ -110,14 +110,11 @@ def _owner_only(path: Path) -> bool:
     )
 
 
-def _load_memory_authority() -> tuple[type[Any], type[Any]]:
+def _load_memory_authority() -> type[Any]:
     root = importlib.import_module("simple_harness_memory")
-    backends = importlib.import_module("simple_harness_memory.backends")
-    adapter = getattr(root, "ConversationMemoryAdapter", None)
-    backend = getattr(backends, "SQLiteMemoryBackend", None)
-    _require(callable(adapter), "arm64-memory-adapter-missing")
-    _require(callable(backend), "arm64-memory-backend-missing")
-    return cast(type[Any], backend), cast(type[Any], adapter)
+    manager = getattr(root, "MemoryManager", None)
+    _require(callable(manager), "arm64-memory-manager-missing")
+    return cast(type[Any], manager)
 
 
 def _execution_snapshot(turn: ConversationTurnInput) -> dict[str, object]:
@@ -145,7 +142,11 @@ def _probe_memory_sqlite(path: Path) -> dict[str, object]:
         ).fetchone()
         messages = connection.execute(
             "SELECT source_event_id,user_id,session_id,role,COUNT(*) "
-            "FROM messages GROUP BY source_event_id,user_id,session_id,role"
+            "FROM messages GROUP BY source_event_id,user_id,session_id,role "
+            "ORDER BY source_event_id"
+        ).fetchall()
+        receipts = connection.execute(
+            "SELECT turn_id,status,COUNT(*) FROM turn_receipts GROUP BY turn_id,status"
         ).fetchall()
     finally:
         connection.close()
@@ -153,18 +154,37 @@ def _probe_memory_sqlite(path: Path) -> dict[str, object]:
     _require(journal_mode == "wal", "arm64-memory-wal-disabled")
     _require(integrity == "ok" and not violations, "arm64-memory-integrity-failed")
     _require(schema_version_row is not None, "arm64-memory-schema-missing")
+    _require(len(messages) == 2, "arm64-memory-outbox-deduplication-failed")
+    stored_principal = str(messages[0][1])
+    _require(
+        len(stored_principal) == 64
+        and stored_principal != "user-arm64-gate"
+        and all(character in "0123456789abcdef" for character in stored_principal),
+        "arm64-memory-principal-projection-invalid",
+    )
     _require(
         messages
         == [
             (
-                "harness-memory/v1/user/run-arm64-gate",
-                "user-arm64-gate",
+                "agent-turn/v1/turn-arm64-gate/assistant",
+                stored_principal,
+                "session-arm64-gate",
+                "assistant",
+                1,
+            ),
+            (
+                "agent-turn/v1/turn-arm64-gate/user",
+                stored_principal,
                 "session-arm64-gate",
                 "user",
                 1,
-            )
+            ),
         ],
         "arm64-memory-outbox-deduplication-failed",
+    )
+    _require(
+        receipts == [("turn-arm64-gate", "applied", 1)],
+        "arm64-memory-turn-receipt-invalid",
     )
     _require(_owner_only(path), "arm64-memory-owner-mode-invalid")
     return {
@@ -173,14 +193,15 @@ def _probe_memory_sqlite(path: Path) -> dict[str, object]:
         "foreign_keys": True,
         "integrity": integrity,
         "mode": "0600",
-        "message_count": 1,
+        "message_count": 2,
+        "turn_receipt_count": 1,
     }
 
 
 async def _exercise_runtime(root: Path) -> dict[str, object]:
     execution_path = root / "execution.db"
     memory_path = root / "memory.db"
-    backend_type, adapter_type = _load_memory_authority()
+    manager_type = _load_memory_authority()
     turn = ConversationTurnInput(
         AgentIdentity(
             "deployment-arm64-gate", "household-arm64-gate", "user-arm64-gate", "session-arm64-gate"
@@ -195,14 +216,14 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
             "remember the ARM64 candidate",
             "ARM64 candidate acknowledged",
             MemoryScopeRef.personal(turn.user_id),
-            "a" * 64,
+            None,
             1.0,
         )
     )
 
     database = Database.open(execution_path, wal=True)
     first_dispatcher: MemoryDispatcher | None = None
-    first_backend: Any = None
+    first_manager: Any = None
     try:
         uow = SqliteExecutionUnitOfWork(database)
         run = uow.create_with_start_snapshot(
@@ -255,15 +276,13 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
             committed_turn=committed_turn,
             now=1.2,
         )
-        first_backend = backend_type(str(memory_path))
-        await first_backend.initialize()
-        first_adapter = adapter_type(first_backend)
+        first_manager = await manager_type.build_development(str(memory_path))
         first_repository = MemoryOutboxRepository(database)
         first_dispatcher = MemoryDispatcher(
             first_repository,
-            first_adapter,
+            first_manager,
             owner_id="arm64-gate-before-restart",
-            clock=lambda: 1.0,
+            clock=lambda: 2.0,
         )
 
         def crash_after_record(point: str) -> None:
@@ -284,13 +303,13 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
     finally:
         if first_dispatcher is not None:
             await first_dispatcher.close()
-        if first_backend is not None:
-            await first_backend.close()
+        if first_manager is not None:
+            await first_manager.close()
         database.close()
 
     reopened_database = Database.open(execution_path, wal=True)
     second_dispatcher: MemoryDispatcher | None = None
-    second_backend: Any = None
+    second_manager: Any = None
     try:
         _require(
             reopened_database.schema_version == SCHEMA_VERSION,
@@ -310,15 +329,13 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
             "arm64-execution-integrity-failed",
         )
         _require(_owner_only(execution_path), "arm64-execution-owner-mode-invalid")
-        second_backend = backend_type(str(memory_path))
-        await second_backend.initialize()
-        second_adapter = adapter_type(second_backend)
+        second_manager = await manager_type.build_development(str(memory_path))
         second_repository = MemoryOutboxRepository(reopened_database)
         second_dispatcher = MemoryDispatcher(
             second_repository,
-            second_adapter,
+            second_manager,
             owner_id="arm64-gate-after-restart",
-            clock=lambda: 3.0,
+            clock=lambda: 33.0,
         )
         _require(
             await second_dispatcher.run_once(),
@@ -339,8 +356,8 @@ async def _exercise_runtime(root: Path) -> dict[str, object]:
     finally:
         if second_dispatcher is not None:
             await second_dispatcher.close()
-        if second_backend is not None:
-            await second_backend.close()
+        if second_manager is not None:
+            await second_manager.close()
         reopened_database.close()
 
     memory_sqlite = _probe_memory_sqlite(memory_path)

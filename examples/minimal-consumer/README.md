@@ -26,7 +26,7 @@ walkthrough):
 ```bash
 git clone <sdk-repo-url> && cd simple-harness-sdk
 uv build
-pip install dist/simple_harness_sdk-0.1.2-py3-none-any.whl
+pip install dist/simple_harness_sdk-0.3.0-py3-none-any.whl
 ```
 
 ## Project Structure
@@ -88,9 +88,8 @@ Two simple tools:
 - `calculate`: Evaluate math expressions
 - `echo`: Echo back input
 
-Note: in SDK 0.1.2 the consumer adapter registers placeholder tool specs that
-reject all arguments, so tool calls must pass an empty argument mapping; the
-executor applies its own defaults.
+The consumer builder registers the configured closed tool schemas; undeclared schemas retain the
+fail-closed no-argument default.
 
 ### `ports/auth.py`
 Always-allow authorization (for demo purposes)
@@ -101,7 +100,7 @@ Always-allow authorization (for demo purposes)
 2. **Add real tools:** File I/O, web search, database queries
 3. **Add authorization UI:** Show permission dialogs to users
 4. **Enable workflows:** Add `workflow_registrations` and `workflow_services`
-5. **Add memory:** Implement `MemoryQueryPort` and `MemoryWritePort`
+5. **Add memory:** Pass Memory SDK 0.4 `MemoryManager` as `memory=` and use typed conversation entry
 
 ## See Also
 

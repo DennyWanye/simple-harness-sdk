@@ -16,7 +16,11 @@ on:
         required: true
         type: string
       artifact_sha256:
-        description: Lowercase SHA-256 of the exact wheel
+        description: Lowercase SHA-256 of the exact Harness wheel
+        required: true
+        type: string
+      memory_artifact_sha256:
+        description: Lowercase SHA-256 of the exact Memory wheel
         required: true
         type: string
       host_factory:
@@ -60,23 +64,29 @@ jobs:
         shell: bash
         env:
           EXPECTED_SHA256: ${{ inputs.artifact_sha256 }}
+          EXPECTED_MEMORY_SHA256: ${{ inputs.memory_artifact_sha256 }}
         run: |
-          WHEEL="$(find candidate -type f -name '*.whl' -print -quit)"
-          test -n "$WHEEL"
+          WHEEL="$(find candidate -type f -name 'simple_harness_sdk-*.whl' -print -quit)"
+          MEMORY_WHEEL="$(find candidate -type f -name 'simple_harness_memory_sdk-*.whl' -print -quit)"
+          test -n "$WHEEL" && test -n "$MEMORY_WHEEL"
           ACTUAL_SHA256="$(python -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$WHEEL")"
+          ACTUAL_MEMORY_SHA256="$(python -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$MEMORY_WHEEL")"
           test "$ACTUAL_SHA256" = "$EXPECTED_SHA256"
+          test "$ACTUAL_MEMORY_SHA256" = "$EXPECTED_MEMORY_SHA256"
           uv venv .candidate-venv --python 3.11
           if [ "${{ runner.os }}" = "Windows" ]; then
             PYTHON=.candidate-venv/Scripts/python.exe
           else
             PYTHON=.candidate-venv/bin/python
           fi
-          uv pip install --python "$PYTHON" "${WHEEL}[testing]"
+          uv pip install --python "$PYTHON" "${WHEEL}[testing]" "$MEMORY_WHEEL"
           EXPECTED_VERSION="$(python -c 'import runpy; print(runpy.run_path("src/simple_harness/version.py")["__version__"])')"
           "$PYTHON" -I - "$EXPECTED_VERSION" <<'PY'
           import sys
           import simple_harness
           assert simple_harness.__version__ == sys.argv[1], (simple_harness.__version__, sys.argv[1])
+          import simple_harness_memory
+          assert simple_harness_memory.__version__ == "0.4.0"
           PY
       - name: Verify import purity and SQLite schema reopen
         shell: bash
@@ -130,6 +140,12 @@ jobs:
               reopened.close()
           print("IMPORT_PURITY_AND_SCHEMA_REOPEN_PASS")
           PY
+      - name: Run Linux ARM64 committed-turn restart gate
+        if: ${{ matrix.platform == 'linux-arm64' }}
+        shell: bash
+        run: |
+          PYTHON=.candidate-venv/bin/python
+          "$PYTHON" -I -m simple_harness.testing.arm64_candidate
       - name: Run all five consumer conformance suites
         shell: bash
         env:
