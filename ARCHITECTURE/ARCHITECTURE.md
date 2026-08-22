@@ -111,8 +111,11 @@ last-updated: 2026-08-22
   message metadata 现接受只读 Mapping 并保持 JSON object。Python 3.11/3.12/3.13 final full pytest 各
   1373 passed / 2 expected skips；candidate artifact/future-consumer/ARM64 contract targeted 33 passed。
   exact-wheel 联测暴露的慢速 Memory inflight-close 竞态由 dispatcher run lock 收口，并由阻塞式
-  committed-turn close 回归锁定；加入该回归后的最终计数见 S5 finalize receipt。
-  joint exact-wheel / extra resolver / cross-repo manifest 在 Memory 0.4 candidate commit 后执行。
+  committed-turn close 回归锁定。最终 Harness 0.3.0 / Memory 0.4.0 authoritative wheel 在 clean
+  Python 3.11/3.12/3.13 中均由 site-packages 加载：strict mypy、四套通用 conformance、产品中立
+  conversation fixture、自动 recall/committed pair/frozen restart、`memory=None` 与 apply-before-ack restart
+  全绿；Memory standalone、真实 `[harness]` extra 解析及 Harness 0.2/0.4 拒绝 artifact matrix 为 10 passed。
+  本地 ignored `joint-manifest.json` 固定两包 commit、wheel/sdist/BUILD_INFO/SHA256SUMS hash；不上传原始证据。
 - 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
   1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、
   atomic release-pending、replay、rebind、malicious product Context、ownership/build cleanup 与 legacy
