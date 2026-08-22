@@ -613,6 +613,8 @@ class RunClient:
         request_id: RequestId | None = None,
         turn_id: str | None = None,
         tool_catalog_generation: int = 1,
+        tool_catalog_fingerprint: str | None = None,
+        provider_budget_fingerprint: str | None = None,
         input: Mapping[str, JsonValue] | None = None,
     ) -> RunRecord:
         """Prepare one durable Context stage and start a trusted conversation Turn."""
@@ -647,6 +649,8 @@ class RunClient:
                     resolved_turn,
                     start_input,
                     tool_catalog_generation,
+                    tool_catalog_fingerprint,
+                    provider_budget_fingerprint,
                     conversation=value,
                 )
             )
@@ -679,6 +683,8 @@ class RunClient:
                 resolved_turn,
                 start_input,
                 tool_catalog_generation,
+                tool_catalog_fingerprint,
+                provider_budget_fingerprint,
                 conversation=value,
                 context_preparation_mode=ContextPreparationMode.SDK_PREPARED,
                 context_stage_id=staged.stage_id,

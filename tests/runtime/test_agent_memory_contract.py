@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -41,6 +43,36 @@ from simple_harness.runtime.conversation_memory import ContextPreparationMode
 from simple_harness.tools import ToolCall, ToolResult
 
 IDENTITY = AgentIdentity("deployment-1", "household-1", "actor-1", "session-1")
+
+
+def test_start_conversation_freezes_catalog_and_per_run_budget_identity() -> None:
+    async def case() -> None:
+        start_run = AsyncMock(return_value=SimpleNamespace())
+        runtime = SimpleNamespace(
+            _require_started=lambda: None,
+            _uow=SimpleNamespace(read_run=lambda _run_id: None),
+            _ports=SimpleNamespace(agent_memory=None),
+            _start_run=start_run,
+        )
+
+        await RunClient(runtime).start_conversation(
+            ConversationTurnInput(
+                IDENTITY,
+                Message(MessageRole.USER, "hello"),
+                "hello",
+            ),
+            run_id=RunId("run-frozen-authority"),
+            tool_catalog_generation=7,
+            tool_catalog_fingerprint="c" * 64,
+            provider_budget_fingerprint="b" * 64,
+        )
+
+        start = start_run.await_args.args[0]
+        assert start.tool_catalog_generation == 7
+        assert start.tool_catalog_fingerprint == "c" * 64
+        assert start.provider_budget_fingerprint == "b" * 64
+
+    asyncio.run(case())
 
 
 class _Provider:
