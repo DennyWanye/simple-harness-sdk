@@ -70,5 +70,6 @@ AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers;
 and production paths were not modified, integrated, or tested in this program.
 
 The promoted `v0.3.0` tag points to source commit `fbb156f`; canonical `dist/` metadata identifies
-the exact validated wheel (`cf629cee…`). Source, `main`, and the tag are pushed; the frozen
-wheel/sdist remain governed by the local build-and-release runbook until explicitly distributed.
+the exact validated wheel (`cf629cee…`). Source, `main`, and the tag are pushed. The locally
+frozen assets are uploaded to a draft GitHub Release and passed download-back verification; the
+Release is not yet published.

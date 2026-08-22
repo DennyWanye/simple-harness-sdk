@@ -16,8 +16,8 @@ outbox delivery, retry, and recovery.
 The exact candidate passed the `simple_harness` product cutover and real macOS UI E2E. Local tag
 `v0.3.0` points to candidate source commit `fbb156f`; canonical `dist/BUILD_INFO.txt` and
 `SHA256SUMS` identify the validated wheel `cf629cee…`. The source branch, `main`, and tag have
-been pushed; the frozen wheel/sdist remain under the local publication flow, with no GitHub
-Release created or artifact uploaded.
+been pushed. The frozen wheel/sdist were uploaded to a draft GitHub Release and passed
+download-back checksum verification; the Release is not yet published.
 
 ## Consumer matrix
 

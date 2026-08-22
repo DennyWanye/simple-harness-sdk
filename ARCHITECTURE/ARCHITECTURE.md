@@ -131,7 +131,7 @@ last-updated: 2026-08-23
   以及 stop/cancel projection。此结论只适用于 simple_harness；未来消费者仍是接口就绪状态。
 - 2026-08-22 本地 promotion：canonical `dist/` 复用上述 exact wheel/sdist，`BUILD_INFO.txt` 与
   `SHA256SUMS` 指向 `fbb156f`；tag `v0.3.0` 指向同一 source commit。2026-08-23 source、`main` 与 tag
-  已推送；冻结 wheel/sdist 继续由本地发布流程保管，未创建或上传 GitHub Release。
+  已推送；本地冻结 wheel/sdist 已上传到 draft GitHub Release 并完成下载回验，Release 尚未正式发布。
 - 2026-08-22 Agent Memory v1 S1 验证：Python 3.11/3.12/3.13 full pytest 各
   1334 passed / 2 expected skips；canonical identity/scope/hash、automatic recall、durable empty、
   atomic release-pending、replay、rebind、malicious product Context、ownership/build cleanup 与 legacy
