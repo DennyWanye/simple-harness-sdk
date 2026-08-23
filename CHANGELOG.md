@@ -15,6 +15,8 @@ SPDX-License-Identifier: Apache-2.0
 ### Compatibility
 - Fresh execution schema v5 and the public command schema version remain unchanged. There is no
   migration or legacy-data compatibility path.
+- Released from source commit `441709e518aae041829e64796cabe13ab265abbf`; the frozen wheel
+  SHA-256 is `1298aa7d44f748ebf39265920d648f40c130bf014452dce3c6ae049aa5f6590c`.
 
 ## 0.5.0 — 2026-08-24
 
