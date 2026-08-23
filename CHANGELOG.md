@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
-## 0.5.0 — candidate
+## 0.5.0 — 2026-08-24
 
 ### Added
 - A closed durable command API: `submit_start`, `submit_continue`, `submit_cancel`, and
@@ -33,8 +33,8 @@ SPDX-License-Identifier: Apache-2.0
 - Agent Memory v1, observability v1, and the legacy RunClient surface remain compatible.
 - Normal open of schema v4 fails closed without writing; 0.5.0 creates fresh schema v5 only and
   provides no v4-to-v5 migration.
-- This candidate is awaiting the Memory SDK 0.5.1 exact-wheel compatibility matrix before tag or
-  release publication.
+- Released from source commit `ac2e2add7e6f5efb5d4dd7b26fb138f9d750d334` after the Memory
+  SDK 0.5.1 exact-wheel compatibility matrix passed (receipt commit `0b25ac54`).
 
 ## 0.3.0 — candidate
 

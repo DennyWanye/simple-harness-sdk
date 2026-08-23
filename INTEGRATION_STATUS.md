@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Simple Harness SDK 0.5.0 candidate integration status
+# Simple Harness SDK 0.5.0 integration status
 
 ## Release status
 
@@ -14,17 +14,19 @@ trusted `AgentIdentity`, Provider/Tool/Authorization ports, an optional product 
 and `memory=MemoryManager(...)`; the SDK owns automatic recall, frozen Context, committed-turn
 outbox delivery, retry, and recovery.
 
-No `v0.5.0` tag or release exists yet. Publication is blocked on the Memory SDK 0.5.1
-exact-wheel matrix against released Harness 0.4.0 and this Harness 0.5.0 candidate. The current
-promoted release remains
-[`v0.4.0` Release](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.4.0); the
-public stable wheel URL returns the exact validated bytes from source commit `bc6ae8d`.
+[`v0.5.0`](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.5.0) is the current
+non-draft, non-prerelease Latest release. Its annotated tag binds source commit
+`ac2e2add7e6f5efb5d4dd7b26fb138f9d750d334`; the frozen wheel SHA-256 is
+`d5ac29760304b0eeebd40dd26bac7f8e65d0700a4066699a9f0d5fca6ec3f94c`. Publication followed an
+independent code-audit PASS and the Memory SDK 0.5.1 exact-wheel matrix PASS recorded at receipt
+commit `0b25ac54`.
 
 The earlier 0.5.0 candidates built from `a9502f2` and `7fd6610` (wheel digest prefix
 `7d70b9fa2f59`) are withdrawn and must not be published. They were superseded after independent
 audit found output-convergence, stale-claim takeover, legacy preflight, and per-command output
-ownership blockers. Only a later `candidate-manifest.json` that binds all fixes and passes the
-Memory SDK 0.5.1 matrix is eligible for promotion.
+ownership blockers. The promoted `candidate-manifest.json` has SHA-256
+`9cc8363c33ecfef2a0c446d17ca89a02e0b58fe1b6fe6e4ae77a0ac2b706d59f` and binds all fixes; the
+withdrawn candidates remain ineligible for publication.
 
 ## Consumer matrix
 
@@ -41,9 +43,10 @@ and durable committed-turn delivery. It does not mean a product has adopted or t
 
 ## Compatibility and migration
 
-- Harness SDK candidate: `0.5.0`, Python 3.11–3.13.
+- Harness SDK release: `0.5.0`, Python 3.11–3.13.
 - Memory SDK integration: released Memory SDK 0.5 remains bound to Harness `>=0.4,<0.5`;
-  Memory SDK 0.5.1 will widen this only after the two-wheel matrix passes.
+  the Memory SDK 0.5.1 candidate passed its exact-wheel Harness 0.4/0.5 matrix before this
+  release was promoted.
 - New 0.5 databases use fresh execution schema v5.
 - Normal loading of execution schema v1-v4 fails closed. There is no v4-to-v5 migration;
   `migrate_execution_v3_to_v4` remains an offline maintenance API for the 0.4 line only.
