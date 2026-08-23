@@ -20,6 +20,11 @@ promoted release remains
 [`v0.4.0` Release](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.4.0); the
 public stable wheel URL returns the exact validated bytes from source commit `bc6ae8d`.
 
+The earlier 0.5.0 candidate built from `a9502f2` is withdrawn and must not be published. It was
+superseded after independent audit found output-convergence, stale-claim takeover, and legacy
+preflight blockers. Only a later `candidate-manifest.json` that binds the fixes and passes the
+Memory SDK 0.5.1 matrix is eligible for promotion.
+
 ## Consumer matrix
 
 | Consumer | Status | Evidence boundary |
