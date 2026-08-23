@@ -26,6 +26,7 @@ from simple_harness import (
     canonical_json,
 )
 from simple_harness.contracts import ExecutionSessionId, RequestId, RunId
+from simple_harness.execution.context_authority import ToolCatalogSnapshot
 from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.delivery import (
     DeliveryDispatcher,
@@ -34,6 +35,7 @@ from simple_harness.execution.delivery import (
 )
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import RunState
+from simple_harness.providers import ProviderToolSpec
 from simple_harness.runtime import (
     CommandOutputState,
     CommandState,
@@ -58,11 +60,26 @@ class NoopPort:
 
 
 class Catalog:
-    def __init__(self, generation: int = 1) -> None:
+    def __init__(
+        self, generation: int = 1, *, fingerprint: str | None = None
+    ) -> None:
         self.generation = generation
+        self.fingerprint = fingerprint
 
     def current_generation(self) -> int:
         return self.generation
+
+    def resolve(
+        self, generation: int, content_fingerprint: str
+    ) -> ToolCatalogSnapshot | None:
+        if generation != self.generation or content_fingerprint != self.fingerprint:
+            return None
+        return ToolCatalogSnapshot(
+            generation,
+            content_fingerprint,
+            (ProviderToolSpec("read_status", "Read status", {"type": "object"}),),
+            0.0,
+        )
 
 
 class Driver:
@@ -334,6 +351,99 @@ def test_durable_command_accepts_before_driver_and_projects_closed_output(tmp_pa
             assert persisted.output == snapshot.output
         finally:
             reopened.close()
+
+    asyncio.run(case())
+
+
+def test_command_catalog_fingerprint_is_durable_across_reopen(tmp_path) -> None:
+    async def case() -> None:
+        fingerprint = "a" * 64
+        value, uow, database = runtime(
+            tmp_path, catalog=Catalog(fingerprint=fingerprint)
+        )
+        await value.start()
+        intent = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "command-catalog-reopen",
+            RunId("run-catalog-reopen"),
+            RequestId("request-catalog-reopen"),
+            "turn-catalog-reopen",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-catalog"),
+                Message(MessageRole.USER, "hello"),
+                "hello",
+            ),
+            tool_catalog_fingerprint=fingerprint,
+        )
+        await value.client.submit_start(intent)
+        for _ in range(100):
+            command = await value.client.get_command(intent.command_id)
+            if command.receipt.state.terminal:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("command did not settle")
+        await value.wait_idle(intent.run_id)
+        start = uow.read_start_snapshot(intent.run_id.value)
+        assert start is not None
+        assert start["tool_catalog_generation"] == 1
+        assert start["tool_catalog_fingerprint"] == fingerprint
+        await value.close()
+        database.close()
+
+        restarted, restarted_uow, reopened = runtime(
+            tmp_path, catalog=Catalog(fingerprint=fingerprint), owner="owner-restarted"
+        )
+        try:
+            await restarted.start()
+            persisted = restarted_uow.read_start_snapshot(intent.run_id.value)
+            assert persisted is not None
+            assert persisted["tool_catalog_fingerprint"] == fingerprint
+            command = await restarted.client.get_command(intent.command_id)
+            assert command.receipt.state is CommandState.APPLIED
+        finally:
+            await restarted.close()
+            reopened.close()
+
+    asyncio.run(case())
+
+
+def test_command_catalog_fingerprint_drift_fails_before_driver(tmp_path) -> None:
+    async def case() -> None:
+        driver = Driver()
+        value, _, database = runtime(
+            tmp_path, driver=driver, catalog=Catalog(fingerprint="a" * 64)
+        )
+        await value.start()
+        intent = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "command-catalog-drift",
+            RunId("run-catalog-drift"),
+            RequestId("request-catalog-drift"),
+            "turn-catalog-drift",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-catalog"),
+                Message(MessageRole.USER, "hello"),
+                "hello",
+            ),
+            tool_catalog_fingerprint="b" * 64,
+        )
+        await value.client.submit_start(intent)
+        for _ in range(100):
+            command = await value.client.get_command(intent.command_id)
+            if command.receipt.state.terminal:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("command did not settle")
+        await value.wait_idle(intent.run_id)
+        run = value.client.query(intent.run_id)
+        assert run is not None and run.state is RunState.FAILED
+        assert driver.calls == 0
+        await value.close()
+        database.close()
 
     asyncio.run(case())
 

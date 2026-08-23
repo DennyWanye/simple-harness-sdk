@@ -2158,6 +2158,7 @@ class Runtime:
             intent.turn_id,
             dict(intent.input or {"messages": [intent.conversation.message.to_dict()]}),
             intent.tool_catalog_generation,
+            intent.tool_catalog_fingerprint,
             conversation=intent.conversation,
             context_preparation_mode=(
                 None if stage is None else ContextPreparationMode.SDK_PREPARED

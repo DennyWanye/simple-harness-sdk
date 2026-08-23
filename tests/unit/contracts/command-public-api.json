@@ -13,5 +13,6 @@
     "RunClient.get_command": "(command_id: str) -> CommandSnapshot"
   },
   "receipt_fields": ["command_id", "run_id", "kind", "accept_seq", "state", "version", "namespace", "projection_key_id", "intent_hash", "execution_schema_version"],
-  "snapshot_fields": ["receipt", "retry_state", "output_state", "output", "error_code"]
+  "snapshot_fields": ["receipt", "retry_state", "output_state", "output", "error_code"],
+  "start_intent_fields": ["namespace", "projection_key_id", "command_id", "run_id", "request_id", "turn_id", "conversation", "profile_key", "tool_catalog_generation", "input", "tool_catalog_fingerprint"]
 }

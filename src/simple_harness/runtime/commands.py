@@ -115,6 +115,7 @@ class StartCommandIntent:
     profile_key: str = "agent.general"
     tool_catalog_generation: int = 1
     input: Mapping[str, JsonValue] | None = None
+    tool_catalog_fingerprint: str | None = None
 
     kind = CommandKind.START
 
@@ -127,6 +128,8 @@ class StartCommandIntent:
             raise TypeError("conversation must use ConversationTurnInput")
         if isinstance(self.tool_catalog_generation, bool) or self.tool_catalog_generation < 1:
             raise ValueError("tool_catalog_generation must be positive")
+        if self.tool_catalog_fingerprint is not None:
+            _digest(self.tool_catalog_fingerprint, "tool_catalog_fingerprint")
         if self.input is not None:
             frozen = freeze_json(dict(self.input))
             assert isinstance(frozen, Mapping)
@@ -146,6 +149,7 @@ class StartCommandIntent:
             "conversation": self.conversation.to_json(),
             "profile_key": self.profile_key,
             "tool_catalog_generation": self.tool_catalog_generation,
+            "tool_catalog_fingerprint": self.tool_catalog_fingerprint,
             "input": (None if self.input is None else thaw_json(cast(FrozenJsonValue, self.input))),
         }
 
@@ -324,17 +328,21 @@ def command_intent_from_json(value: Mapping[str, JsonValue]) -> CommandIntent:
     raw_input = value.get("input")
     if raw_input is not None and not isinstance(raw_input, Mapping):
         raise TypeError("command input must be an object or null")
+    fingerprint = value.get("tool_catalog_fingerprint")
+    if fingerprint is not None and not isinstance(fingerprint, str):
+        raise TypeError("tool_catalog_fingerprint must be a string or null")
     return StartCommandIntent(
-        namespace,
-        projection_key_id,
-        command_id,
-        run_id,
-        request_id,
-        turn_id,
-        ConversationTurnInput.from_json(raw_conversation),
-        profile_key,
-        generation,
-        raw_input,
+        namespace=namespace,
+        projection_key_id=projection_key_id,
+        command_id=command_id,
+        run_id=run_id,
+        request_id=request_id,
+        turn_id=turn_id,
+        conversation=ConversationTurnInput.from_json(raw_conversation),
+        profile_key=profile_key,
+        tool_catalog_generation=generation,
+        input=raw_input,
+        tool_catalog_fingerprint=fingerprint,
     )
 
 

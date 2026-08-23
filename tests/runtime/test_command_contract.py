@@ -33,6 +33,7 @@ from simple_harness import (
     canonical_json,
 )
 from simple_harness.runtime import ConversationContinuationInput, ConversationTurnInput
+from simple_harness.runtime.commands import command_intent_from_json
 
 
 def _start() -> StartCommandIntent:
@@ -67,6 +68,7 @@ def test_command_contract_is_closed_and_matches_frozen_artifact() -> None:
     }
     assert artifact["receipt_fields"] == [field.name for field in fields(CommandReceipt)]
     assert artifact["snapshot_fields"] == [field.name for field in fields(CommandSnapshot)]
+    assert artifact["start_intent_fields"] == [field.name for field in fields(StartCommandIntent)]
 
 
 def test_command_intents_have_deterministic_canonical_identity() -> None:
@@ -75,7 +77,7 @@ def test_command_intents_have_deterministic_canonical_identity() -> None:
         start.intent_hash
         == hashlib.sha256(canonical_json(start.to_json()).encode("utf-8")).hexdigest()
     )
-    assert start.intent_hash == "edd0409b4af93105c6ce66cfe544b909245ccb73ee6702d5853fb97aa2f5f2b3"
+    assert start.to_json()["tool_catalog_fingerprint"] is None
     continuation = ContinueCommandIntent(
         start.namespace,
         start.projection_key_id,
@@ -91,6 +93,33 @@ def test_command_intents_have_deterministic_canonical_identity() -> None:
     assert continuation.kind is CommandKind.CONTINUE
     assert cancel.kind is CommandKind.CANCEL
     assert continuation.intent_hash != cancel.intent_hash != start.intent_hash
+
+
+def test_start_command_fingerprint_is_closed_and_round_trips() -> None:
+    value = _start()
+    bound = StartCommandIntent(
+        value.namespace,
+        value.projection_key_id,
+        value.command_id,
+        value.run_id,
+        value.request_id,
+        value.turn_id,
+        value.conversation,
+        tool_catalog_fingerprint="a" * 64,
+    )
+    assert bound.tool_catalog_fingerprint == "a" * 64
+    assert command_intent_from_json(bound.to_json()) == bound
+    with pytest.raises(ValueError, match="tool_catalog_fingerprint"):
+        StartCommandIntent(
+            value.namespace,
+            value.projection_key_id,
+            "invalid-fingerprint",
+            value.run_id,
+            value.request_id,
+            value.turn_id,
+            value.conversation,
+            tool_catalog_fingerprint="not-a-digest",
+        )
 
 
 def test_receipt_and_snapshot_reject_open_or_raw_payload_shapes() -> None:
