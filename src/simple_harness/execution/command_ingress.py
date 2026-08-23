@@ -86,7 +86,7 @@ class CommandIngress:
         elif run_state != "completed":
             output_state = CommandOutputState.PENDING
         else:
-            output_state = CommandOutputState.UNKNOWN
+            output_state = CommandOutputState.ABSENT
             output_row = self._database.connection.execute(
                 "SELECT command_id,output_json,output_hash FROM conversation_outputs "
                 "WHERE run_id=?",
@@ -98,11 +98,17 @@ class CommandIngress:
                 "ORDER BY accept_seq DESC LIMIT 1",
                 (receipt.run_id.value,),
             ).fetchone()
-            if output_row is not None and latest_command is not None:
+            owns_terminal_output = (
+                latest_command is not None
+                and str(latest_command[0]) == receipt.command_id
+            )
+            if owns_terminal_output:
+                output_state = CommandOutputState.UNKNOWN
+            if owns_terminal_output and output_row is not None:
                 output_json = str(output_row[1])
                 valid_hash = hashlib.sha256(output_json.encode()).hexdigest()
                 if (
-                    str(output_row[0]) == str(latest_command[0])
+                    str(output_row[0]) == receipt.command_id
                     and str(output_row[2]) == valid_hash
                 ):
                     try:

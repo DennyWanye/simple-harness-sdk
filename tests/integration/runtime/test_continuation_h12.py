@@ -184,6 +184,7 @@ TERMINAL_POINTS = tuple(
         "event",
         "delivery.0",
         "committed_turn",
+        "conversation_output",
         "fence",
         "run",
     )
@@ -193,6 +194,24 @@ TERMINAL_POINTS = tuple(
 
 def _terminal_setup(path: Path):
     database, uow, lease = setup(path)
+    database.connection.execute(
+        "INSERT INTO conversation_command_namespaces VALUES ('namespace','key',1)"
+    )
+    database.connection.execute(
+        "INSERT INTO conversation_run_modes VALUES ('run-1','namespace','command',?,1)",
+        ("a" * 64,),
+    )
+    database.connection.execute(
+        "INSERT INTO conversation_command_streams(run_id,namespace,next_accept_seq) "
+        "VALUES ('run-1','namespace',2)"
+    )
+    database.connection.execute(
+        "INSERT INTO conversation_commands(command_id,namespace,projection_key_id,run_id,"
+        "kind,accept_seq,intent_hash,state,created_at,updated_at) VALUES "
+        "('start-1','namespace','key','run-1','start',0,?,'applied',1,1),"
+        "('continue-1','namespace','key','run-1','continue',1,?,'applied',2,2)",
+        ("b" * 64, "c" * 64),
+    )
     fence = asyncio.run(uow.acquire(RunId("run-1"), lease, now=2.0))
     enqueue(uow, "c1")
     enqueue(uow, "c2")
@@ -227,6 +246,10 @@ def _terminal(
         terminal_fence_receipt_ref="fence:run-1:1",
         now=4.0,
         committed_turn=committed_turn,
+        conversation_output={
+            "message": {"role": "assistant", "content": "answer", "metadata": {}},
+            "memory_text": "answer",
+        },
         fault=fault,
     )
 
@@ -271,6 +294,10 @@ def test_terminal_and_ack_fault_reopens_all_before(tmp_path, point) -> None:
         )
         assert (
             reopened.connection.execute("SELECT COUNT(*) FROM delivery_outbox").fetchone()[0] == 0
+        )
+        assert (
+            reopened.connection.execute("SELECT COUNT(*) FROM conversation_outputs").fetchone()[0]
+            == 0
         )
         assert (
             reopened.connection.execute(

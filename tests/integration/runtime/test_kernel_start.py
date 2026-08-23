@@ -7,17 +7,26 @@ import asyncio
 import hashlib
 import time
 
+import pytest
+
 from simple_harness import (
     AdmissionVerdict,
     AgentIdentity,
     AllowAllAdmission,
     CancelCommandIntent,
+    CommittedTurnReceipt,
+    CommittedTurnStatus,
     ContinueCommandIntent,
+    ConversationContextResult,
+    MemoryRecallResult,
+    MemoryRecallStatus,
     Message,
     MessageRole,
     StartCommandIntent,
+    canonical_json,
 )
 from simple_harness.contracts import ExecutionSessionId, RequestId, RunId
+from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.delivery import (
     DeliveryDispatcher,
     DeliverySpec,
@@ -39,6 +48,7 @@ from simple_harness.runtime import (
     SqliteContextPort,
     build_runtime,
 )
+from simple_harness.runtime.conversation_memory import ContextPreparationMode
 from simple_harness.runtime.start_snapshot import bind_start_snapshot
 
 
@@ -66,6 +76,69 @@ class Driver:
         return DriverResult(self.state, {"answer": "ok"})
 
 
+class _ProviderCrashCut(BaseException):
+    pass
+
+
+class StableContextProvider:
+    def __init__(self, *, crash_first: bool = False) -> None:
+        self.crash_first = crash_first
+        self.requests = []
+
+    async def prepare_once(self, request):
+        self.requests.append(request)
+        if self.crash_first and len(self.requests) == 1:
+            raise _ProviderCrashCut("before provider result")
+        payload = {
+            "schema_version": 1,
+            "source_snapshot_ref": request.source_snapshot_ref,
+            "messages": [request.current_message.to_dict()],
+            "current_message": request.current_message.to_dict(),
+        }
+        return ConversationContextResult(
+            request.preparation_id,
+            request.source_snapshot_ref,
+            payload,
+            1,
+            len(canonical_json(payload).encode()),
+        )
+
+
+class StableMemory:
+    def __init__(self, *, crash_first: bool = False) -> None:
+        self.crash_first = crash_first
+        self.recalls = []
+        self.releases = []
+        self.committed = []
+
+    async def recall_for_turn(self, request):
+        self.recalls.append(request)
+        if self.crash_first and len(self.recalls) == 1:
+            raise _ProviderCrashCut("after provider result")
+        return MemoryRecallResult(
+            request.query_id,
+            request.query_hash,
+            f"result-{request.turn_id}",
+            {},
+            MemoryRecallStatus.READY,
+            0,
+            2,
+            f"fence-{request.turn_id}",
+        )
+
+    async def release_recall(self, request):
+        self.releases.append(request)
+
+    async def record_committed_turn(self, request):
+        self.committed.append(request)
+        return CommittedTurnReceipt(
+            request.turn_id,
+            request.payload_hash,
+            CommittedTurnStatus.APPLIED,
+            f"receipt-{request.turn_id}",
+        )
+
+
 def request(name: str = "one", *, generation: int = 1) -> RunStart:
     return RunStart(
         ExecutionSessionId("session-1"),
@@ -89,6 +162,8 @@ def runtime(
     delivery_sink=None,
     admission=None,
     lease_ttl_seconds=30.0,
+    agent_memory=None,
+    context_provider=None,
 ):
     database = Database.open(tmp_path / "runtime.db")
     uow = SqliteExecutionUnitOfWork(database)
@@ -118,6 +193,15 @@ def runtime(
             admission=admission or AllowAllAdmission(),
             lease_ttl_seconds=lease_ttl_seconds,
             close_timeout_seconds=close_timeout_seconds,
+            conversation_memory_enabled=agent_memory is not None,
+            context_staging=(
+                None if agent_memory is None else ContextStagingRepository(database)
+            ),
+            context_preparation_mode=(
+                None if agent_memory is None else ContextPreparationMode.SDK_PREPARED
+            ),
+            agent_memory=agent_memory,
+            context_provider=context_provider,
         ),
     )
     return value, uow, database
@@ -376,6 +460,87 @@ def test_startup_recovers_a_command_committed_before_runtime_start(tmp_path) -> 
     asyncio.run(case())
 
 
+@pytest.mark.parametrize("crash_point", ("before_provider", "after_provider"))
+@pytest.mark.parametrize("same_provider_instance", (False, True))
+def test_start_command_provider_crash_replays_stable_preparation_intent(
+    tmp_path, crash_point: str, same_provider_instance: bool
+) -> None:
+    async def case() -> None:
+        first_context = StableContextProvider(crash_first=crash_point == "before_provider")
+        crashing_memory = StableMemory(crash_first=crash_point == "after_provider")
+        first, _, first_database = runtime(
+            tmp_path,
+            owner="crashed-start-owner",
+            agent_memory=crashing_memory,
+            context_provider=first_context,
+        )
+        await first.start()
+        intent = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "start-provider-cut",
+            RunId("run-start-provider-cut"),
+            RequestId("request-start-provider-cut"),
+            "turn-start-provider-cut",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-start-cut"),
+                Message(MessageRole.USER, "start"),
+                "start",
+                context_source_snapshot_ref="sha256:" + "e" * 64,
+            ),
+        )
+        accepted = await first.client.submit_start(intent)
+        for _ in range(200):
+            task = first._command_pump_task
+            if task is not None and task.done():
+                break
+            await asyncio.sleep(0.01)
+        assert task is not None and task.done()
+        crashed = await first.client.get_command(intent.command_id)
+        assert crashed.receipt.state is CommandState.CONTEXT_CALL_INTENT
+        assert len(first_context.requests) == 1
+        if crash_point == "before_provider":
+            assert crashing_memory.recalls == []
+        else:
+            assert len(crashing_memory.recalls) == 1
+        first_request = first_context.requests[0]
+        await first.close()
+        first_database.connection.execute(
+            "UPDATE conversation_commands SET lease_expires_at=0 WHERE command_id=?",
+            (intent.command_id,),
+        )
+        first_database.connection.execute(
+            "UPDATE context_preparation_staging SET lease_expires_at=0 "
+            "WHERE identity_key=? AND state='preparing'",
+            (intent.run_id.value,),
+        )
+        first_database.close()
+
+        retry_context = (
+            first_context if same_provider_instance else StableContextProvider()
+        )
+        second, _, second_database = runtime(
+            tmp_path,
+            owner="recovered-start-owner",
+            agent_memory=StableMemory(),
+            context_provider=retry_context,
+        )
+        await second.start()
+        for _ in range(200):
+            recovered = await second.client.get_command(intent.command_id)
+            if recovered.receipt.state.terminal:
+                break
+            await asyncio.sleep(0.01)
+        assert recovered.receipt.state is CommandState.APPLIED
+        assert recovered.receipt.intent_hash == accepted.intent_hash == intent.intent_hash
+        assert retry_context.requests[-1] == first_request
+        assert first_request.preparation_id.startswith("agent-memory-stage/v1/")
+        await second.close()
+        second_database.close()
+
+    asyncio.run(case())
+
+
 def test_pre_call_cancel_public_snapshots_are_absent_without_driver_call(tmp_path) -> None:
     async def case() -> None:
         driver = Driver()
@@ -514,6 +679,133 @@ def test_dual_runtime_lease_takeover_treats_stale_owner_as_converged(tmp_path) -
     asyncio.run(case())
 
 
+@pytest.mark.parametrize("crash_point", ("before_provider", "after_provider"))
+@pytest.mark.parametrize("same_provider_instance", (False, True))
+def test_continue_command_provider_crash_replays_stable_preparation_intent(
+    tmp_path, crash_point: str, same_provider_instance: bool
+) -> None:
+    async def case() -> None:
+        waiting_driver = Driver(state=RunState.WAITING)
+        first, _, first_database = runtime(
+            tmp_path, driver=waiting_driver, owner="seed-waiting-owner"
+        )
+        await first.start()
+        start = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "start-provider-crash",
+            RunId("run-provider-crash"),
+            RequestId("request-provider-crash"),
+            "turn-provider-crash-root",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-provider-crash"),
+                Message(MessageRole.USER, "root"),
+                "root",
+            ),
+        )
+        await first.client.submit_start(start)
+        for _ in range(200):
+            start_snapshot = await first.client.get_command(start.command_id)
+            run = first.client.query(start.run_id)
+            if (
+                start_snapshot.receipt.state is CommandState.APPLIED
+                and run is not None
+                and run.state is RunState.WAITING
+            ):
+                break
+            await asyncio.sleep(0.01)
+        assert run is not None and run.state is RunState.WAITING
+        await first.close()
+        first_database.close()
+
+        first_context = StableContextProvider(crash_first=crash_point == "before_provider")
+        crashing_memory = StableMemory(crash_first=crash_point == "after_provider")
+        crashed_runtime, _, crashed_database = runtime(
+            tmp_path,
+            driver=Driver(state=RunState.COMPLETED),
+            owner="crashed-command-owner",
+            agent_memory=crashing_memory,
+            context_provider=first_context,
+        )
+        await crashed_runtime.start()
+        continuation = ContinueCommandIntent(
+            start.namespace,
+            start.projection_key_id,
+            "continue-provider-crash",
+            start.run_id,
+            "continuation-provider-crash",
+            "turn-provider-crash-continuation",
+            ConversationContinuationInput(
+                Message(MessageRole.USER, "continue"),
+                "continue",
+                "sha256:" + "d" * 64,
+            ),
+        )
+        accepted = await crashed_runtime.client.submit_continue(continuation)
+        accepted_intent_hash = accepted.intent_hash
+        for _ in range(200):
+            task = crashed_runtime._command_pump_task
+            if task is not None and task.done():
+                break
+            await asyncio.sleep(0.01)
+        assert task is not None and task.done()
+        crashed = await crashed_runtime.client.get_command(continuation.command_id)
+        assert crashed.receipt.state is CommandState.CONTEXT_CALL_INTENT
+        assert crashed.output_state is CommandOutputState.PENDING
+        assert len(first_context.requests) == 1
+        if crash_point == "before_provider":
+            assert crashing_memory.recalls == []
+        else:
+            assert len(crashing_memory.recalls) == 1
+        first_request = first_context.requests[0]
+        await crashed_runtime.close()
+        crashed_database.connection.execute(
+            "UPDATE conversation_commands SET lease_expires_at=0 WHERE command_id=?",
+            (continuation.command_id,),
+        )
+        crashed_database.connection.execute(
+            "UPDATE context_preparation_staging SET lease_expires_at=0 "
+            "WHERE identity_key=? AND state='preparing'",
+            (continuation.continuation_id,),
+        )
+        crashed_database.close()
+
+        retry_context = (
+            first_context if same_provider_instance else StableContextProvider()
+        )
+        healthy_memory = StableMemory()
+        recovered_runtime, _, recovered_database = runtime(
+            tmp_path,
+            driver=Driver(state=RunState.COMPLETED),
+            owner="recovered-command-owner",
+            agent_memory=healthy_memory,
+            context_provider=retry_context,
+        )
+        await recovered_runtime.start()
+        for _ in range(200):
+            recovered = await recovered_runtime.client.get_command(continuation.command_id)
+            if recovered.receipt.state.terminal:
+                break
+            await asyncio.sleep(0.01)
+        assert recovered.receipt.state is CommandState.APPLIED
+        assert recovered.receipt.intent_hash == accepted_intent_hash
+        assert recovered.output_state is CommandOutputState.PENDING
+        retry_request = retry_context.requests[-1]
+        assert retry_request == first_request
+        assert retry_request.preparation_id.startswith("agent-memory-stage/v1/")
+        prior = await recovered_runtime.client.get_command(start.command_id)
+        assert prior.output_state is CommandOutputState.PENDING
+        stored_hash = recovered_database.connection.execute(
+            "SELECT intent_hash FROM conversation_commands WHERE command_id=?",
+            (continuation.command_id,),
+        ).fetchone()
+        assert stored_hash is not None and str(stored_hash[0]) == continuation.intent_hash
+        await recovered_runtime.close()
+        recovered_database.close()
+
+    asyncio.run(case())
+
+
 def test_continue_command_is_fifo_and_owns_the_terminal_output(tmp_path) -> None:
     class TwoTurnDriver:
         def __init__(self) -> None:
@@ -573,6 +865,13 @@ def test_continue_command_is_fifo_and_owns_the_terminal_output(tmp_path) -> None
                 break
             await asyncio.sleep(0.01)
         assert snapshot.output is not None and snapshot.output.memory_text == "second answer"
+        prior_start = await value.client.get_command(start.command_id)
+        assert prior_start.receipt.state is CommandState.APPLIED
+        assert prior_start.output_state is CommandOutputState.ABSENT
+        assert prior_start.output is None
+        terminal_continuation = await value.client.get_command(continuation.command_id)
+        assert terminal_continuation.output_state is CommandOutputState.PRESENT
+        assert terminal_continuation.output == snapshot.output
         row = database.connection.execute(
             "SELECT command_id FROM conversation_outputs WHERE run_id=?",
             (start.run_id.value,),

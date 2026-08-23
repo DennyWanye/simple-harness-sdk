@@ -25,6 +25,9 @@ SPDX-License-Identifier: Apache-2.0
   run-mode reservation, while still reserving before any external call.
 - Root and continuation output writes now expose explicit before/after fault cuts inside the same
   terminal transaction.
+- A completed command can project only the `conversation_outputs` row that names that exact
+  command; earlier commands in the same Run remain `ABSENT` after a later continuation owns the
+  final output.
 
 ### Compatibility
 - Agent Memory v1, observability v1, and the legacy RunClient surface remain compatible.
