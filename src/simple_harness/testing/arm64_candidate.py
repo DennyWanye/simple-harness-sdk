@@ -42,7 +42,8 @@ from simple_harness.version import __version__
 
 _HARNESS_DISTRIBUTION = "simple-harness-sdk"
 _MEMORY_DISTRIBUTION = "simple-harness-memory-sdk"
-_MEMORY_VERSION = "0.4.0"
+_DEFAULT_MEMORY_VERSION = "0.5.0"
+_MEMORY_VERSION_ENV = "SIMPLE_HARNESS_MEMORY_CANDIDATE_VERSION"
 
 
 class Arm64CandidateGateError(RuntimeError):
@@ -383,10 +384,14 @@ async def _run_core_gate() -> dict[str, object]:
         "simple_harness",
         __version__,
     )
+    expected_memory_version = os.environ.get(
+        _MEMORY_VERSION_ENV, _DEFAULT_MEMORY_VERSION
+    ).strip()
+    _require(bool(expected_memory_version), "memory-candidate-version-required")
     memory_identity = _distribution_identity(
         _MEMORY_DISTRIBUTION,
         "simple_harness_memory",
-        _MEMORY_VERSION,
+        expected_memory_version,
     )
     with TemporaryDirectory(prefix="simple-harness-arm64-gate-") as raw:
         root = Path(raw)

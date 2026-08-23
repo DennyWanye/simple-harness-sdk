@@ -10,10 +10,9 @@ import argparse
 import csv
 import hashlib
 import json
-from pathlib import Path
 import re
 import sys
-
+from pathlib import Path
 
 REQUIRED_COLUMNS = (
     "schema_version",

@@ -22,7 +22,8 @@ def test_arm64_core_gate_has_frozen_synchronous_public_signature() -> None:
         "run_core_gate",
     )
     source = inspect.getsource(arm64_candidate)
-    assert '_MEMORY_VERSION = "0.4.0"' in source
+    assert '_DEFAULT_MEMORY_VERSION = "0.5.0"' in source
+    assert "SIMPLE_HARNESS_MEMORY_CANDIDATE_VERSION" in source
     assert 'getattr(root, "MemoryManager", None)' in source
     assert "ConversationMemoryAdapter" not in source
 

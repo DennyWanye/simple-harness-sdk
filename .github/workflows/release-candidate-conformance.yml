@@ -23,6 +23,10 @@ on:
         description: Lowercase SHA-256 of the exact Memory wheel
         required: true
         type: string
+      memory_version:
+        description: Exact Memory candidate version installed beside the Harness candidate
+        required: true
+        type: string
       host_factory:
         description: Consumer Host factory inside consumer-host (module:factory)
         required: true
@@ -65,6 +69,7 @@ jobs:
         env:
           EXPECTED_SHA256: ${{ inputs.artifact_sha256 }}
           EXPECTED_MEMORY_SHA256: ${{ inputs.memory_artifact_sha256 }}
+          EXPECTED_MEMORY_VERSION: ${{ inputs.memory_version }}
         run: |
           WHEEL="$(find candidate -type f -name 'simple_harness_sdk-*.whl' -print -quit)"
           MEMORY_WHEEL="$(find candidate -type f -name 'simple_harness_memory_sdk-*.whl' -print -quit)"
@@ -81,12 +86,12 @@ jobs:
           fi
           uv pip install --python "$PYTHON" "${WHEEL}[testing]" "$MEMORY_WHEEL"
           EXPECTED_VERSION="$(python -c 'import runpy; print(runpy.run_path("src/simple_harness/version.py")["__version__"])')"
-          "$PYTHON" -I - "$EXPECTED_VERSION" <<'PY'
+          "$PYTHON" -I - "$EXPECTED_VERSION" "$EXPECTED_MEMORY_VERSION" <<'PY'
           import sys
           import simple_harness
           assert simple_harness.__version__ == sys.argv[1], (simple_harness.__version__, sys.argv[1])
           import simple_harness_memory
-          assert simple_harness_memory.__version__ == "0.4.0"
+          assert simple_harness_memory.__version__ == sys.argv[2], (simple_harness_memory.__version__, sys.argv[2])
           PY
       - name: Verify import purity and SQLite schema reopen
         shell: bash
@@ -143,6 +148,8 @@ jobs:
       - name: Run Linux ARM64 committed-turn restart gate
         if: ${{ matrix.platform == 'linux-arm64' }}
         shell: bash
+        env:
+          SIMPLE_HARNESS_MEMORY_CANDIDATE_VERSION: ${{ inputs.memory_version }}
         run: |
           PYTHON=.candidate-venv/bin/python
           "$PYTHON" -I -m simple_harness.testing.arm64_candidate

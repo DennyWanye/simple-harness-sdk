@@ -298,7 +298,7 @@ class FileToolExecutor:
 
 ### 3. Add official Agent Memory
 
-Memory SDK 0.4 `MemoryManager` implements Harness `AgentMemoryPort` directly. Pass it once; do
+Memory SDK 0.5 `MemoryManager` implements Harness `AgentMemoryPort` directly. Pass it once; do
 not add a public adapter or call recall/append yourself:
 
 ```python fragment

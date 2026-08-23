@@ -8,7 +8,7 @@ is [`docs/build-and-release.md`](docs/build-and-release.md).
 An embeddable, durable agent runtime extracted from Simple Harness.
 
 The current SDK exposes one official Agent Memory v1 boundary. A consumer passes one
-`AgentMemoryPort`—Memory SDK 0.4 `MemoryManager` implements it directly—a trusted four-part
+`AgentMemoryPort`—Memory SDK 0.5 `MemoryManager` implements it directly—a trusted four-part
 `AgentIdentity`, and its normal product ports; the
 SDK automatically performs bounded recall, freezes the resulting Context, retries durable
 recall release, and writes exactly one canonical user+assistant committed turn only after a
@@ -69,8 +69,8 @@ cutover, automated regression, and real macOS UI validation with a configured De
 AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
 and production paths were not modified, integrated, or tested in this program.
 
-The promoted `v0.4.0` tag points to source commit `bc6ae8d`; canonical `dist/` metadata identifies
-the exact validated wheel (`aaf8d79a…`). Source, `main`, and the tag are pushed. The locally
-frozen assets are published at the
+Version 0.5.0 is an unpublished candidate that adds the durable command authority and fresh
+execution schema v5. Its exact wheel must pass the Memory SDK 0.5.1 compatibility matrix before
+tagging or publication. The currently promoted release remains
 [`v0.4.0` GitHub Release](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.4.0)
-and passed public stable-URL download-back verification.
+from source commit `bc6ae8d`, with validated wheel digest `aaf8d79a…`.

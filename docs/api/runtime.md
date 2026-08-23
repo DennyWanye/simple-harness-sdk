@@ -87,7 +87,7 @@ The official 0.3 path passes one `AgentMemoryPort` as `memory=` to `ConsumerRunt
 `ProductionRuntimeConfig` and enters through `RunClient.start_conversation()` /
 `signal_conversation()`. The SDK invokes bounded recall, validates result identity/hash/count,
 freezes Memory as USER/untrusted Context, durably releases the result, and writes only the final
-committed user+assistant Turn. Memory SDK 0.4 `MemoryManager` implements this protocol directly.
+committed user+assistant Turn. Memory SDK 0.5 `MemoryManager` implements this protocol directly.
 The older consumer-prepared helpers and their query/sink DTOs remain private migration code only.
 They are absent from both package public surfaces and are unsupported for product composition;
 consumers do not call or maintain recall/release/write lifecycle themselves.

@@ -82,7 +82,7 @@ Consumers compose Memory once through `ConsumerRuntimePorts(memory=...)` or
 USER/untrusted Context injection, replay reuse, and release retry; the committed-turn values
 define the delivery contract wired by the following durable-outbox slice.
 `ResourceOwnership.BORROWED` leaves the object open; `RUNTIME` closes it exactly once.
-Memory SDK 0.4 `MemoryManager` implements `AgentMemoryPort` directly; consumers do not add an
+Memory SDK 0.5 `MemoryManager` implements `AgentMemoryPort` directly; consumers do not add an
 adapter or invoke its recall/record methods themselves. `memory=None` preserves ordinary durable
 execution without creating Memory stages or outbox rows.
 

@@ -75,12 +75,17 @@ jobs:
       - name: Lint release paths
         run: |
           uv run --frozen --group dev ruff check \
+            src/simple_harness/runtime/commands.py \
+            src/simple_harness/runtime/kernel.py \
             src/simple_harness/runtime/conversation_memory.py \
             src/simple_harness/runtime/conversation_context.py \
             src/simple_harness/runtime/drivers/react.py \
             src/simple_harness/runtime/production.py \
             src/simple_harness/execution/context_staging.py \
             src/simple_harness/execution/memory_outbox.py \
+            src/simple_harness/execution/command_ingress.py \
+            src/simple_harness/execution/uow.py \
+            src/simple_harness/execution/sqlite/uow.py \
             src/simple_harness/execution/sqlite/migrations/execution_v3_to_v4.py \
             src/simple_harness/execution/sqlite/storage.py \
             src/simple_harness/testing/arm64_candidate.py \

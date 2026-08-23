@@ -307,7 +307,7 @@ class AgentMemoryPort(Protocol):
     async def record_committed_turn(self, request: CommittedTurn) -> CommittedTurnReceipt: ...
 ```
 
-Consumers normally do not implement these calls individually. Memory SDK 0.4 `MemoryManager`
+Consumers normally do not implement these calls individually. Memory SDK 0.5 `MemoryManager`
 implements the protocol directly and is passed once as `memory=manager` to the official builder.
 Harness supplies trusted four-part identity and personal/family scopes, performs bounded recall,
 freezes the result as USER/untrusted data, and dispatches terminal-only committed turns through a
@@ -492,7 +492,7 @@ When integrating the SDK, implement ports in this order:
 **Result**: Users can save and run custom workflows
 
 ### Phase 4: Memory Integration
-- [ ] Build Memory SDK 0.4 `MemoryManager`
+- [ ] Build Memory SDK 0.5 `MemoryManager`
 - [ ] Pass it once as `memory=` to `ConsumerRuntimePorts` or `ProductionRuntimeConfig`
 - [ ] Enter turns through `RunClient.start_conversation()` / `signal_conversation()`
 - [ ] Pass each continuation's product snapshot reference through

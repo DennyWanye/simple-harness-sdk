@@ -5,6 +5,23 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.5.0 — candidate
+
+### Added
+- A closed durable command API: `submit_start`, `submit_continue`, `submit_cancel`, and
+  `get_command`, with typed receipts, snapshots, and stable errors.
+- Fresh execution schema v5, which commits command acceptance before Memory preparation,
+  Provider, Tool, or delivery work begins.
+- Durable FIFO acceptance sequencing, replay/conflict detection, cancel fencing, lease recovery,
+  and terminal command-output projection for restart-safe product integration.
+
+### Compatibility
+- Agent Memory v1, observability v1, and the legacy RunClient surface remain compatible.
+- Normal open of schema v4 fails closed without writing; 0.5.0 creates fresh schema v5 only and
+  provides no v4-to-v5 migration.
+- This candidate is awaiting the Memory SDK 0.5.1 exact-wheel compatibility matrix before tag or
+  release publication.
+
 ## 0.3.0 — candidate
 
 ### Breaking

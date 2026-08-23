@@ -98,8 +98,10 @@ select = ["E", "F", "W", "I", "UP"]
 [tool.mypy]
 python_version = "3.11"
 # Scoped to the public consumer surface and release-owned modules.
-# Legacy full-project typing debt remains outside the 0.3.0 release slice.
+# Legacy full-project typing debt remains outside the release-owned surface.
 files = [
+  "src/simple_harness/runtime/commands.py",
+  "src/simple_harness/runtime/kernel.py",
   "src/simple_harness/runtime/agent_memory.py",
   "src/simple_harness/runtime/conversation_context_provider.py",
   "src/simple_harness/runtime/consumer_adapter.py",
@@ -111,6 +113,9 @@ files = [
   "src/simple_harness/execution/delivery.py",
   "src/simple_harness/execution/context_staging.py",
   "src/simple_harness/execution/memory_outbox.py",
+  "src/simple_harness/execution/command_ingress.py",
+  "src/simple_harness/execution/uow.py",
+  "src/simple_harness/execution/sqlite/uow.py",
   "src/simple_harness/execution/sqlite/migrations/execution_v3_to_v4.py",
   "src/simple_harness/execution/sqlite/storage.py",
   "src/simple_harness/testing/arm64_candidate.py",

@@ -583,7 +583,7 @@ ports = RuntimePorts(
 
 ## Phase 3: Agent Memory Integration
 
-Install Memory SDK 0.4 with its Harness extra, build one `MemoryManager`, and pass it directly to
+Install Memory SDK 0.5 with its Harness extra, build one `MemoryManager`, and pass it directly to
 the official consumer builder. The SDK owns recall, release, frozen Context, terminal committed
 turns, retry, and restart recovery.
 
