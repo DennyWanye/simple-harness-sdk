@@ -42,7 +42,7 @@ from simple_harness.version import __version__
 
 _HARNESS_DISTRIBUTION = "simple-harness-sdk"
 _MEMORY_DISTRIBUTION = "simple-harness-memory-sdk"
-_DEFAULT_MEMORY_VERSION = "0.5.0"
+_DEFAULT_MEMORY_VERSION = "0.5.1"
 _MEMORY_VERSION_ENV = "SIMPLE_HARNESS_MEMORY_CANDIDATE_VERSION"
 
 

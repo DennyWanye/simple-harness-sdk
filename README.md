@@ -69,8 +69,6 @@ cutover, automated regression, and real macOS UI validation with a configured De
 AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
 and production paths were not modified, integrated, or tested in this program.
 
-Version 0.5.0 is an unpublished candidate that adds the durable command authority and fresh
-execution schema v5. Its exact wheel must pass the Memory SDK 0.5.1 compatibility matrix before
-tagging or publication. The currently promoted release remains
-[`v0.4.0` GitHub Release](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.4.0)
-from source commit `bc6ae8d`, with validated wheel digest `aaf8d79a…`.
+Version 0.5.1 retains the durable command authority and fresh execution schema v5 while binding
+each accepted start command to its exact Tool catalog fingerprint. It is a fail-closed patch over
+the published 0.5.0 line and requires no schema migration.

@@ -5,6 +5,17 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.5.1 — 2026-08-24
+
+### Fixed
+- Durable start commands now carry a closed Tool catalog fingerprint through the public intent,
+  execution database, `RunStart`, and `StartSnapshot`; restart resolves the exact catalog snapshot
+  and fails closed before Driver/Provider handoff when that authority is unavailable or drifted.
+
+### Compatibility
+- Fresh execution schema v5 and the public command schema version remain unchanged. There is no
+  migration or legacy-data compatibility path.
+
 ## 0.5.0 — 2026-08-24
 
 ### Added

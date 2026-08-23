@@ -3,23 +3,20 @@ SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Simple Harness SDK 0.5.0 integration status
+# Simple Harness SDK 0.5.1 integration status
 
 ## Release status
 
-Harness SDK 0.5.0 adds the single durable command authority and fresh execution schema v5 while
+Harness SDK 0.5.1 retains the single durable command authority and fresh execution schema v5 while
 retaining the Agent Memory v1, production composition, and observability v1 contracts. Memory
 SDK 0.5 `MemoryManager` implements those retained contracts directly. Consumers provide
 trusted `AgentIdentity`, Provider/Tool/Authorization ports, an optional product Context provider,
 and `memory=MemoryManager(...)`; the SDK owns automatic recall, frozen Context, committed-turn
 outbox delivery, retry, and recovery.
 
-[`v0.5.0`](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.5.0) is the current
-non-draft, non-prerelease Latest release. Its annotated tag binds source commit
-`ac2e2add7e6f5efb5d4dd7b26fb138f9d750d334`; the frozen wheel SHA-256 is
-`d5ac29760304b0eeebd40dd26bac7f8e65d0700a4066699a9f0d5fca6ec3f94c`. Publication followed an
-independent code-audit PASS and the Memory SDK 0.5.1 exact-wheel matrix PASS recorded at receipt
-commit `0b25ac54`.
+Version 0.5.1 is the release candidate for the public Tool catalog fingerprint authority fix.
+Promotion requires the frozen exact-wheel gates and public redownload verification; this status
+will be replaced with the immutable tag, source commit, and asset digests after publication.
 
 The earlier 0.5.0 candidates built from `a9502f2` and `7fd6610` (wheel digest prefix
 `7d70b9fa2f59`) are withdrawn and must not be published. They were superseded after independent
@@ -43,7 +40,7 @@ and durable committed-turn delivery. It does not mean a product has adopted or t
 
 ## Compatibility and migration
 
-- Harness SDK release: `0.5.0`, Python 3.11–3.13.
+- Harness SDK release candidate: `0.5.1`, Python 3.11–3.13.
 - Memory SDK integration: released Memory SDK 0.5 remains bound to Harness `>=0.4,<0.5`;
   the Memory SDK 0.5.1 candidate passed its exact-wheel Harness 0.4/0.5 matrix before this
   release was promoted.

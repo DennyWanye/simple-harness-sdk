@@ -86,7 +86,7 @@ def test_version_has_one_runtime_authority() -> None:
     assert 'dynamic = ["version"]' in pyproject
     assert 'path = "src/simple_harness/version.py"' in pyproject
     assert "from .version import __version__" in package
-    assert '__version__ = "0.5.0"' in version
+    assert '__version__ = "0.5.1"' in version
     build_script = (ROOT / "scripts/build/reproducibility.py").read_text(encoding="utf-8")
     assert 'VERSION = "0.1.1"' not in build_script
     assert "src/simple_harness/version.py" in build_script
@@ -125,13 +125,13 @@ def test_authoritative_provenance_is_canonical_and_detects_tampering(
     module = _provenance_module()
     dist = tmp_path / "dist"
     dist.mkdir()
-    wheel = dist / "simple_harness_sdk-0.5.0-py3-none-any.whl"
-    sdist = dist / "simple_harness_sdk-0.5.0.tar.gz"
+    wheel = dist / "simple_harness_sdk-0.5.1-py3-none-any.whl"
+    sdist = dist / "simple_harness_sdk-0.5.1.tar.gz"
     wheel.write_bytes(b"wheel-bytes")
     sdist.write_bytes(b"sdist-bytes")
     commit = "a" * 40
     module.emit(dist, source_commit=commit, build_utc="2026-08-21T10:11:12Z")
-    module.verify(dist, source_commit=commit, version="0.5.0")
+    module.verify(dist, source_commit=commit, version="0.5.1")
     build_info = (dist / "BUILD_INFO.txt").read_text(encoding="utf-8").splitlines()
     assert [line.partition("=")[0] for line in build_info] == list(module.KEYS)
     sums = (dist / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
@@ -139,7 +139,7 @@ def test_authoritative_provenance_is_canonical_and_detects_tampering(
     assert all("  " in line for line in sums)
     wheel.write_bytes(b"tampered")
     with pytest.raises(module.ProvenanceError, match="checksum differs"):
-        module.verify(dist, source_commit=commit, version="0.5.0")
+        module.verify(dist, source_commit=commit, version="0.5.1")
 
 
 def test_candidate_workflow_accepts_identity_inputs_and_never_publishes() -> None:
