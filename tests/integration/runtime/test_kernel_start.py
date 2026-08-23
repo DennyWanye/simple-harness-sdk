@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import time
 
 from simple_harness import (
+    AdmissionVerdict,
     AgentIdentity,
+    AllowAllAdmission,
     CancelCommandIntent,
     ContinueCommandIntent,
     Message,
@@ -83,6 +87,8 @@ def runtime(
     sleep=asyncio.sleep,
     close_timeout_seconds=5.0,
     delivery_sink=None,
+    admission=None,
+    lease_ttl_seconds=30.0,
 ):
     database = Database.open(tmp_path / "runtime.db")
     uow = SqliteExecutionUnitOfWork(database)
@@ -109,6 +115,8 @@ def runtime(
             owner_id=owner,
             clock=clock,
             sleep=sleep,
+            admission=admission or AllowAllAdmission(),
+            lease_ttl_seconds=lease_ttl_seconds,
             close_timeout_seconds=close_timeout_seconds,
         ),
     )
@@ -246,6 +254,98 @@ def test_durable_command_accepts_before_driver_and_projects_closed_output(tmp_pa
     asyncio.run(case())
 
 
+def test_completed_command_missing_or_corrupt_output_is_unknown(tmp_path) -> None:
+    async def case() -> None:
+        value, _, database = runtime(tmp_path)
+        await value.start()
+        intent = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "command-missing-output",
+            RunId("run-missing-output"),
+            RequestId("request-missing-output"),
+            "turn-missing-output",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-missing"),
+                Message(MessageRole.USER, "hello"),
+                "hello",
+            ),
+        )
+        await value.client.submit_start(intent)
+        for _ in range(100):
+            missing = await value.client.get_command(intent.command_id)
+            if missing.receipt.state.terminal:
+                break
+            await asyncio.sleep(0.01)
+        assert missing.receipt.state is CommandState.APPLIED
+        assert missing.output_state is CommandOutputState.UNKNOWN
+        assert missing.output is None
+        await value.close()
+        database.close()
+
+        class OutputDriver:
+            async def start(self, invocation, *, context, cancel):
+                del invocation, context, cancel
+                return DriverResult(
+                    RunState.COMPLETED,
+                    {},
+                    conversation_output=ConversationTurnOutput(
+                        Message(MessageRole.ASSISTANT, "answer"), "answer"
+                    ),
+                )
+
+        corrupt_root = tmp_path / "corrupt"
+        corrupt_root.mkdir()
+        second, _, second_database = runtime(corrupt_root, driver=OutputDriver())
+        await second.start()
+        valid_intent = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "command-corrupt-output",
+            RunId("run-corrupt-output"),
+            RequestId("request-corrupt-output"),
+            "turn-corrupt-output",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-corrupt"),
+                Message(MessageRole.USER, "hello"),
+                "hello",
+            ),
+        )
+        await second.client.submit_start(valid_intent)
+        for _ in range(100):
+            valid = await second.client.get_command(valid_intent.command_id)
+            if valid.receipt.state.terminal:
+                break
+            await asyncio.sleep(0.01)
+        assert valid.receipt.state is CommandState.APPLIED
+        assert (
+            await second.client.get_command(valid_intent.command_id)
+        ).output_state is CommandOutputState.PRESENT
+        second_database.connection.execute(
+            "UPDATE conversation_outputs SET output_hash=? WHERE run_id=?",
+            ("0" * 64, valid_intent.run_id.value),
+        )
+        conflict = await second.client.get_command(valid_intent.command_id)
+        assert conflict.output_state is CommandOutputState.UNKNOWN
+        assert conflict.output is None
+        corrupt_json = "{"
+        second_database.connection.execute(
+            "UPDATE conversation_outputs SET output_json=?,output_hash=? WHERE run_id=?",
+            (
+                corrupt_json,
+                hashlib.sha256(corrupt_json.encode()).hexdigest(),
+                valid_intent.run_id.value,
+            ),
+        )
+        corrupt = await second.client.get_command(valid_intent.command_id)
+        assert corrupt.output_state is CommandOutputState.UNKNOWN
+        assert corrupt.output is None
+        await second.close()
+        second_database.close()
+
+    asyncio.run(case())
+
+
 def test_startup_recovers_a_command_committed_before_runtime_start(tmp_path) -> None:
     async def case() -> None:
         value, uow, database = runtime(tmp_path)
@@ -272,6 +372,144 @@ def test_startup_recovers_a_command_committed_before_runtime_start(tmp_path) -> 
         assert value.client.query(intent.run_id).state is RunState.COMPLETED
         await value.close()
         database.close()
+
+    asyncio.run(case())
+
+
+def test_pre_call_cancel_public_snapshots_are_absent_without_driver_call(tmp_path) -> None:
+    async def case() -> None:
+        driver = Driver()
+        value, uow, database = runtime(tmp_path, driver=driver)
+        start = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "start-cancelled-before-call",
+            RunId("run-cancelled-before-call"),
+            RequestId("request-cancelled-before-call"),
+            "turn-cancelled-before-call",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-pre-cancel"),
+                Message(MessageRole.USER, "do not run"),
+                "do not run",
+            ),
+        )
+        cancel = CancelCommandIntent(
+            start.namespace,
+            start.projection_key_id,
+            "cancel-before-call",
+            start.run_id,
+        )
+        uow.submit_start_command(start, now=1)
+        uow.submit_cancel_command(cancel, now=2)
+        await value.start()
+        start_snapshot = await value.client.get_command(start.command_id)
+        cancel_snapshot = await value.client.get_command(cancel.command_id)
+        assert start_snapshot.receipt.state is CommandState.CANCELLED
+        assert start_snapshot.output_state is CommandOutputState.ABSENT
+        assert cancel_snapshot.receipt.state is CommandState.APPLIED
+        assert cancel_snapshot.output_state is CommandOutputState.ABSENT
+        assert driver.calls == 0
+        assert value.client.query(start.run_id) is None
+        await value.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_dual_runtime_lease_takeover_treats_stale_owner_as_converged(tmp_path) -> None:
+    class SlowFirstAdmission:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def evaluate(self, start):
+            del start
+            self.calls += 1
+            if self.calls == 1:
+                self.entered.set()
+                await self.release.wait()
+            return AdmissionVerdict(True)
+
+    async def case() -> None:
+        slow = SlowFirstAdmission()
+        first, _, first_database = runtime(
+            tmp_path,
+            owner="command-owner-1",
+            clock=time.monotonic,
+            admission=slow,
+            lease_ttl_seconds=0.05,
+        )
+        await first.start()
+        intent = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "command-lease-takeover",
+            RunId("run-lease-takeover"),
+            RequestId("request-lease-takeover"),
+            "turn-lease-takeover",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-takeover"),
+                Message(MessageRole.USER, "hello"),
+                "hello",
+            ),
+        )
+        await first.client.submit_start(intent)
+        await asyncio.wait_for(slow.entered.wait(), timeout=1)
+        heartbeat = next(
+            task
+            for task in asyncio.all_tasks()
+            if task.get_name() == f"simple-harness-command-heartbeat:{intent.command_id}"
+        )
+        heartbeat.cancel()
+        await asyncio.gather(heartbeat, return_exceptions=True)
+        await asyncio.sleep(0.06)
+
+        second, _, second_database = runtime(
+            tmp_path,
+            owner="command-owner-2",
+            clock=time.monotonic,
+            lease_ttl_seconds=0.05,
+        )
+        await second.start()
+        for _ in range(100):
+            takeover = await second.client.get_command(intent.command_id)
+            if takeover.receipt.state is CommandState.APPLIED:
+                break
+            await asyncio.sleep(0.01)
+        assert takeover.receipt.state is CommandState.APPLIED
+
+        slow.release.set()
+        await asyncio.sleep(0.05)
+        assert first._command_pump_task is not None
+        assert not first._command_pump_task.done()
+
+        followup = StartCommandIntent(
+            "deployment/phone-2",
+            "key-2",
+            "command-after-stale-owner",
+            RunId("run-after-stale-owner"),
+            RequestId("request-after-stale-owner"),
+            "turn-after-stale-owner",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-followup"),
+                Message(MessageRole.USER, "again"),
+                "again",
+            ),
+        )
+        await first.client.submit_start(followup)
+        for _ in range(100):
+            settled = await first.client.get_command(followup.command_id)
+            if settled.receipt.state.terminal:
+                break
+            await asyncio.sleep(0.01)
+        assert settled.receipt.state is CommandState.APPLIED
+        assert first._command_pump_task is not None
+        assert not first._command_pump_task.done()
+        await first.close()
+        await second.close()
+        first_database.close()
+        second_database.close()
 
     asyncio.run(case())
 
@@ -427,10 +665,42 @@ def test_concurrent_start_publishes_ready_once_and_clients_fail_before_ready(
             assert getattr(error, "code", None) == "runtime_not_ready"
         else:
             raise AssertionError("client start must fail before READY")
+        assert database.connection.execute(
+            "SELECT count(*) FROM conversation_run_modes"
+        ).fetchone()[0] == 0
+        assert database.connection.execute(
+            "SELECT count(*) FROM conversation_command_namespaces"
+        ).fetchone()[0] == 0
         release.set()
         await asyncio.gather(first, second)
         assert calls == 1
         assert value.state is RuntimeLifecycleState.READY
+        try:
+            await value.client.start(object())  # type: ignore[arg-type]
+        except TypeError as error:
+            assert str(error) == "value must use RunStart"
+        else:
+            raise AssertionError("legacy start must reject an open input shape")
+        assert database.connection.execute(
+            "SELECT count(*) FROM conversation_run_modes"
+        ).fetchone()[0] == 0
+        try:
+            await value.client.start_conversation(
+                ConversationTurnInput(
+                    AgentIdentity("deployment", "household", "actor", "session-preflight"),
+                    Message(MessageRole.USER, "invalid"),
+                    "invalid",
+                ),
+                run_id=RunId("run-invalid-preflight"),
+                tool_catalog_generation=0,
+            )
+        except ValueError as error:
+            assert "tool_catalog_generation" in str(error)
+        else:
+            raise AssertionError("invalid conversation start must fail before reservation")
+        assert database.connection.execute(
+            "SELECT count(*) FROM conversation_run_modes"
+        ).fetchone()[0] == 0
         await value.close()
         assert value.state is RuntimeLifecycleState.CLOSED
         database.close()

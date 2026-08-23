@@ -705,6 +705,9 @@ class RunClient:
         self._runtime = runtime
 
     async def start(self, value: RunStart) -> RunRecord:
+        self._runtime._require_started()
+        if not isinstance(value, RunStart):
+            raise TypeError("value must use RunStart")
         if self._runtime._ports.agent_memory is not None and value.conversation is None:
             raise HarnessError(
                 "conversation_entrypoint_required",
@@ -766,6 +769,17 @@ class RunClient:
             Mapping[str, JsonValue],
             dict(input or {"messages": [value.message.to_dict()]}),
         )
+        preflight_start = RunStart(
+            ExecutionSessionId(value.identity.session_id),
+            resolved_run,
+            resolved_request,
+            resolved_turn,
+            start_input,
+            tool_catalog_generation,
+            tool_catalog_fingerprint,
+            provider_budget_fingerprint,
+            conversation=value,
+        )
         reserve = getattr(self._runtime._uow, "reserve_legacy_run_mode", None)
         if callable(reserve):
             reserve(
@@ -799,19 +813,7 @@ class RunClient:
             return existing
         memory = self._runtime._ports.agent_memory
         if memory is None:
-            return await self._runtime._start_run(
-                RunStart(
-                    ExecutionSessionId(value.identity.session_id),
-                    resolved_run,
-                    resolved_request,
-                    resolved_turn,
-                    start_input,
-                    tool_catalog_generation,
-                    tool_catalog_fingerprint,
-                    provider_budget_fingerprint,
-                    conversation=value,
-                )
-            )
+            return await self._runtime._start_run(preflight_start)
         staged = await self._prepare_agent_context(
             kind=ContextStageKind.ROOT,
             identity_key=resolved_run.value,
@@ -2002,26 +2004,48 @@ class Runtime:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                current = self._uow.get_command_receipt(claim.receipt.command_id)
-                if current.state.terminal:
-                    continue
-                definite = isinstance(error, (TypeError, ValueError, HarnessError, CommandError))
-                if definite or claim.attempt_count >= 8:
-                    self._uow.reject_command(
-                        claim,
-                        error_code=(
-                            CommandErrorCode.PERMANENT_FAILURE
-                            if definite
-                            else CommandErrorCode.RETRY_EXHAUSTED
-                        ),
-                        now=self._now(),
+                try:
+                    current = self._uow.get_command_receipt(claim.receipt.command_id)
+                    if current.state.terminal:
+                        continue
+                    definite = isinstance(
+                        error, (TypeError, ValueError, HarnessError, CommandError)
                     )
-                else:
-                    self._uow.retry_command(
-                        claim,
-                        error_code=CommandErrorCode.TRANSIENT_FAILURE.value,
-                        retry_at=self._now() + min(60.0, 2.0**claim.attempt_count),
-                        now=self._now(),
+                    if definite or claim.attempt_count >= 8:
+                        self._uow.reject_command(
+                            claim,
+                            error_code=(
+                                CommandErrorCode.PERMANENT_FAILURE
+                                if definite
+                                else CommandErrorCode.RETRY_EXHAUSTED
+                            ),
+                            now=self._now(),
+                        )
+                    else:
+                        self._uow.retry_command(
+                            claim,
+                            error_code=CommandErrorCode.TRANSIENT_FAILURE.value,
+                            retry_at=self._now() + min(60.0, 2.0**claim.attempt_count),
+                            now=self._now(),
+                        )
+                except CommandError as settlement_error:
+                    if settlement_error.code is not CommandErrorCode.INTENT_CONFLICT:
+                        logger.warning(
+                            "command.settlement_failed",
+                            extra={
+                                "command_id": claim.receipt.command_id,
+                                "run_id": claim.receipt.run_id.value,
+                                "error_code": settlement_error.code.value,
+                            },
+                        )
+                except Exception:
+                    logger.warning(
+                        "command.settlement_failed",
+                        extra={
+                            "command_id": claim.receipt.command_id,
+                            "run_id": claim.receipt.run_id.value,
+                            "error_code": CommandErrorCode.TRANSIENT_FAILURE.value,
+                        },
                     )
             finally:
                 heartbeat.cancel()

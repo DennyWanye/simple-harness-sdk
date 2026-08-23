@@ -14,6 +14,17 @@ SPDX-License-Identifier: Apache-2.0
   Provider, Tool, or delivery work begins.
 - Durable FIFO acceptance sequencing, replay/conflict detection, cancel fencing, lease recovery,
   and terminal command-output projection for restart-safe product integration.
+- Closed command output convergence: running is `PENDING`, valid completed output is `PRESENT`,
+  failed/cancelled is `ABSENT`, and missing, corrupt, or conflicting completed output is
+  fail-closed `UNKNOWN`.
+
+### Fixed
+- An expired command owner can no longer kill the sole command pump by attempting to settle a
+  claim already converged by its takeover owner; each command failure is isolated.
+- Legacy starts perform readiness and complete typed preflight validation before their permanent
+  run-mode reservation, while still reserving before any external call.
+- Root and continuation output writes now expose explicit before/after fault cuts inside the same
+  terminal transaction.
 
 ### Compatibility
 - Agent Memory v1, observability v1, and the legacy RunClient surface remain compatible.

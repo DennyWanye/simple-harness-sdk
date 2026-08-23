@@ -66,6 +66,7 @@ class CommandOutputState(StrEnum):
     PENDING = "pending"
     PRESENT = "present"
     ABSENT = "absent"
+    UNKNOWN = "unknown"
 
 
 class CommandErrorCode(StrEnum):

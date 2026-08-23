@@ -109,6 +109,10 @@ def test_receipt_and_snapshot_reject_open_or_raw_payload_shapes() -> None:
     snapshot = CommandSnapshot(receipt, CommandRetryState.READY, CommandOutputState.PENDING)
     assert snapshot.output is None
     assert not hasattr(snapshot, "raw_payload")
+    unknown = CommandSnapshot(
+        receipt, CommandRetryState.SETTLED, CommandOutputState.UNKNOWN
+    )
+    assert unknown.output is None
     with pytest.raises(TypeError):
         CommandReceipt(  # type: ignore[call-arg]
             start.command_id,

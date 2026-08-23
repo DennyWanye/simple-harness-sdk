@@ -74,6 +74,7 @@ def commit_terminal(
     items=None,
     now: float = 2.0,
     committed_turn: CommittedTurnSpec | None = None,
+    conversation_output=None,
 ):
     current = uow.read_run("run-1")
     assert current is not None
@@ -89,6 +90,7 @@ def commit_terminal(
         terminal_fence_receipt_ref="receipt://terminal/run-1/1",
         now=now,
         committed_turn=committed_turn,
+        conversation_output=conversation_output,
         fault=fault,
     )
 
@@ -116,11 +118,66 @@ WRITE_POINTS = (
     "root_terminal.delivery.1.after_write",
     "root_terminal.committed_turn.before_write",
     "root_terminal.committed_turn.after_write",
+    "root_terminal.conversation_output.before_write",
+    "root_terminal.conversation_output.after_write",
     "root_terminal.fence.before_write",
     "root_terminal.fence.after_write",
     "root_terminal.run.before_write",
     "root_terminal.run.after_write",
 )
+
+
+@pytest.mark.parametrize(
+    "fault_point",
+    (
+        "root_terminal.conversation_output.before_write",
+        "root_terminal.conversation_output.after_write",
+    ),
+)
+def test_terminal_output_fault_never_exposes_partial_completion(
+    tmp_path: Path, fault_point: str
+) -> None:
+    path = tmp_path / "output-fault.db"
+    database, uow, fence, runtime_lease = setup_root(path)
+    connection = database.connection
+    connection.execute(
+        "INSERT INTO conversation_command_namespaces VALUES ('namespace','key',1)"
+    )
+    connection.execute(
+        "INSERT INTO conversation_run_modes VALUES ('run-1','namespace','command',?,1)",
+        ("a" * 64,),
+    )
+    connection.execute(
+        "INSERT INTO conversation_command_streams(run_id,namespace) "
+        "VALUES ('run-1','namespace')"
+    )
+    connection.execute(
+        "INSERT INTO conversation_commands(command_id,namespace,projection_key_id,run_id,"
+        "kind,accept_seq,intent_hash,state,created_at,updated_at) "
+        "VALUES ('command-1','namespace','key','run-1','start',0,?,'applied',1,1)",
+        ("b" * 64,),
+    )
+    output = {
+        "message": {"role": "assistant", "content": "answer", "metadata": {}},
+        "memory_text": "answer",
+    }
+    with pytest.raises(InjectedFault, match=fault_point):
+        commit_terminal(
+            uow,
+            fence,
+            runtime_lease,
+            items=(),
+            conversation_output=output,
+            fault=raise_at(fault_point),
+        )
+    database.close()
+    with Database.open(path) as reopened:
+        assert reopened.connection.execute(
+            "SELECT state FROM runs WHERE run_id='run-1'"
+        ).fetchone()[0] == "running"
+        assert reopened.connection.execute(
+            "SELECT count(*) FROM conversation_outputs"
+        ).fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("fault_point", WRITE_POINTS)

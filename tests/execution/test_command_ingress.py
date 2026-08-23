@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from simple_harness import (
     CancelCommandIntent,
     CommandError,
     CommandErrorCode,
+    CommandOutputState,
     CommandState,
     ContinueCommandIntent,
     Message,
@@ -108,6 +111,8 @@ def test_fifo_cancel_fence_and_terminal_raw_clear(tmp_path: Path) -> None:
         assert ingress.get("continue-1").state is CommandState.CANCELLED
         assert ingress.raw_payload("continue-2") is None
         assert ingress.raw_payload("cancel-1") is None
+        assert ingress.snapshot("start-1").output_state is CommandOutputState.ABSENT
+        assert ingress.snapshot("cancel-1").output_state is CommandOutputState.ABSENT
         with pytest.raises(CommandError) as fenced:
             ingress.submit_continue(_continuation("continue-3", "c-3"), now=5)
         assert fenced.value.code is CommandErrorCode.CANCEL_FENCE
@@ -188,7 +193,52 @@ def test_legacy_reservation_is_permanent_and_mixed_mode_closed(tmp_path: Path) -
         )
         with pytest.raises(CommandError) as mixed:
             ingress.submit_start(_start(), now=1001)
-        assert mixed.value.code is CommandErrorCode.RUN_MODE_CONFLICT
+            assert mixed.value.code is CommandErrorCode.RUN_MODE_CONFLICT
+
+
+def test_legacy_and_command_start_race_has_exactly_one_mode_winner(tmp_path: Path) -> None:
+    for index in range(8):
+        path = tmp_path / f"race-{index}.db"
+        with Database.open(path):
+            pass
+        barrier = threading.Barrier(2)
+
+        def legacy() -> str:
+            with Database.open(path) as database:
+                barrier.wait()
+                try:
+                    CommandIngress(database).reserve_legacy_run(
+                        namespace="deployment/phone",
+                        projection_key_id="key-1",
+                        run_id="run-1",
+                        intent_hash="a" * 64,
+                        now=1,
+                    )
+                    return "legacy"
+                except CommandError as error:
+                    assert error.code is CommandErrorCode.RUN_MODE_CONFLICT
+                    return "conflict"
+
+        def command() -> str:
+            with Database.open(path) as database:
+                barrier.wait()
+                try:
+                    CommandIngress(database).submit_start(_start(), now=1)
+                    return "command"
+                except CommandError as error:
+                    assert error.code is CommandErrorCode.RUN_MODE_CONFLICT
+                    return "conflict"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            legacy_result = pool.submit(legacy)
+            command_result = pool.submit(command)
+            results = (legacy_result.result(), command_result.result())
+        assert sorted(results) in (["command", "conflict"], ["conflict", "legacy"])
+        with Database.open(path) as database:
+            mode = database.connection.execute(
+                "SELECT api_mode FROM conversation_run_modes WHERE run_id='run-1'"
+            ).fetchone()
+            assert mode is not None and str(mode[0]) in {"legacy", "command"}
 
 
 def test_normal_open_rejects_v4_without_writing_any_bytes(tmp_path: Path) -> None:

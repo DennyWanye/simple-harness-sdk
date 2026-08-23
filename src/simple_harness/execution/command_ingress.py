@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sqlite3
@@ -73,31 +74,44 @@ class CommandIngress:
         if row is None:
             raise CommandError(CommandErrorCode.NOT_FOUND)
         receipt = _receipt(row)
-        output_row = self._database.connection.execute(
-            "SELECT output_json FROM conversation_outputs WHERE run_id=?",
-            (receipt.run_id.value,),
+        output = None
+        run = self._database.connection.execute(
+            "SELECT state FROM runs WHERE run_id=?", (receipt.run_id.value,)
         ).fetchone()
-        if output_row is not None:
-            raw = json.loads(str(output_row[0]))
-            if not isinstance(raw, dict):
-                raise RuntimeError("conversation output row is corrupt")
-            output = ConversationTurnOutput.from_json(raw)
-            output_state = CommandOutputState.PRESENT
+        run_state = None if run is None else str(run[0])
+        if run_state in {"failed", "cancelled"} or (
+            run_state is None and receipt.state.terminal
+        ):
+            output_state = CommandOutputState.ABSENT
+        elif run_state != "completed":
+            output_state = CommandOutputState.PENDING
         else:
-            output = None
-            run = self._database.connection.execute(
-                "SELECT state FROM runs WHERE run_id=?", (receipt.run_id.value,)
+            output_state = CommandOutputState.UNKNOWN
+            output_row = self._database.connection.execute(
+                "SELECT command_id,output_json,output_hash FROM conversation_outputs "
+                "WHERE run_id=?",
+                (receipt.run_id.value,),
             ).fetchone()
-            output_state = (
-                CommandOutputState.ABSENT
-                if (run is not None and str(run[0]) in {"completed", "failed", "cancelled"})
-                or (
-                    run is None
-                    and receipt.kind is CommandKind.CANCEL
-                    and receipt.state is CommandState.APPLIED
-                )
-                else CommandOutputState.PENDING
-            )
+            latest_command = self._database.connection.execute(
+                "SELECT command_id FROM conversation_commands WHERE run_id=? "
+                "AND state='applied' AND kind IN ('start','continue') "
+                "ORDER BY accept_seq DESC LIMIT 1",
+                (receipt.run_id.value,),
+            ).fetchone()
+            if output_row is not None and latest_command is not None:
+                output_json = str(output_row[1])
+                valid_hash = hashlib.sha256(output_json.encode()).hexdigest()
+                if (
+                    str(output_row[0]) == str(latest_command[0])
+                    and str(output_row[2]) == valid_hash
+                ):
+                    try:
+                        raw = json.loads(output_json)
+                        if isinstance(raw, dict):
+                            output = ConversationTurnOutput.from_json(raw)
+                            output_state = CommandOutputState.PRESENT
+                    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                        pass
         if receipt.state.terminal:
             retry = CommandRetryState.SETTLED
         elif row["owner_id"] is not None:

@@ -12,17 +12,24 @@ import pytest
 from future_consumer_fixture import FutureConsumerFixture, RichProductContextProvider
 
 from simple_harness import (
+    CommandOutputState,
+    CommandState,
     CommittedTurn,
     CommittedTurnReceipt,
     CommittedTurnStatus,
+    ConversationTurnInput,
     JsonValue,
     MemoryRecallRequest,
     MemoryRecallResult,
     MemoryRecallStatus,
     MemoryReleaseRequest,
     MemoryScopeKind,
+    Message,
+    MessageRole,
+    RequestId,
     RunClient,
     RunId,
+    StartCommandIntent,
     canonical_json,
     thaw_json,
 )
@@ -81,6 +88,18 @@ class _BlockingMemoryProbe(_MemoryProbe):
         return await super().record_committed_turn(request)
 
 
+class _BlockingRecallMemory(_MemoryProbe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.allow_recall = asyncio.Event()
+
+    async def recall_for_turn(self, request: MemoryRecallRequest) -> MemoryRecallResult:
+        self.started.set()
+        await self.allow_recall.wait()
+        return await super().recall_for_turn(request)
+
+
 class _InjectedCrash(BaseException):
     pass
 
@@ -110,6 +129,17 @@ class _CrashAfterProviderMemory(_MemoryProbe):
             self.crashed = True
             raise _InjectedCrash("provider returned before stage completion")
         return await super().recall_for_turn(request)
+
+
+class _CrashFirstCommandRecall(_MemoryProbe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.crashed = asyncio.Event()
+
+    async def recall_for_turn(self, request: MemoryRecallRequest) -> MemoryRecallResult:
+        del request
+        self.crashed.set()
+        raise _InjectedCrash("command recall crash cut")
 
 
 def test_future_consumer_minimal_identity_scopes_committed_turn_and_memory_none(
@@ -151,6 +181,113 @@ def test_future_consumer_minimal_identity_scopes_committed_turn_and_memory_none(
             )
             record = RunClient(runtime_without_memory).query(RunId("run-without-memory"))
             assert record is not None and record.state is RunState.COMPLETED
+
+    asyncio.run(case())
+
+
+def test_command_commit_precedes_memory_and_provider_calls(tmp_path: Path) -> None:
+    async def case() -> None:
+        memory = _BlockingRecallMemory()
+        fixture = FutureConsumerFixture(tmp_path / "command-memory.db", memory)
+        runtime = await fixture.build()
+        identity = fixture.identity(household="home-a", actor="alice", session="command")
+        intent = StartCommandIntent(
+            "future-consumer/deployment",
+            "projection-key-1",
+            "command-memory-order",
+            RunId("run-command-memory-order"),
+            RequestId("request-command-memory-order"),
+            "turn-command-memory-order",
+            ConversationTurnInput(
+                identity,
+                Message(MessageRole.USER, "remember this"),
+                "remember this",
+            ),
+        )
+        async with runtime:
+            accepted = await RunClient(runtime).submit_start(intent)
+            assert accepted.state is CommandState.ACCEPTED
+            await asyncio.wait_for(memory.started.wait(), timeout=1)
+            blocked = await RunClient(runtime).get_command(intent.command_id)
+            assert blocked.receipt.state is CommandState.CONTEXT_CALL_INTENT
+            assert blocked.output_state is CommandOutputState.PENDING
+            assert fixture.provider.requests == []
+            memory.allow_recall.set()
+            for _ in range(200):
+                settled = await RunClient(runtime).get_command(intent.command_id)
+                if settled.receipt.state.terminal:
+                    break
+                await asyncio.sleep(0.01)
+            assert settled.receipt.state is CommandState.APPLIED
+            assert settled.output_state is CommandOutputState.PRESENT
+        assert len(memory.recalls) == len(memory.releases) == len(memory.committed) == 1
+        assert len(fixture.provider.requests) == 1
+
+    asyncio.run(case())
+
+
+def test_command_memory_crash_reclaims_durable_intent_after_lease_expiry(
+    tmp_path: Path,
+) -> None:
+    async def case() -> None:
+        path = tmp_path / "command-memory-crash.db"
+        crashing_memory = _CrashFirstCommandRecall()
+        first = FutureConsumerFixture(path, crashing_memory, rich_context=True)
+        runtime = await first.build()
+        await runtime.start()
+        identity = first.identity(household="home-a", actor="alice", session="crash")
+        intent = StartCommandIntent(
+            "future-consumer/deployment",
+            "projection-key-1",
+            "command-memory-crash",
+            RunId("run-command-memory-crash"),
+            RequestId("request-command-memory-crash"),
+            "turn-command-memory-crash",
+            ConversationTurnInput(
+                identity,
+                Message(MessageRole.USER, "recover me"),
+                "recover me",
+                context_source_snapshot_ref=_ref("command-memory-crash"),
+            ),
+        )
+        accepted = await RunClient(runtime).submit_start(intent)
+        assert accepted.state is CommandState.ACCEPTED
+        await asyncio.wait_for(crashing_memory.crashed.wait(), timeout=1)
+        for _ in range(100):
+            if runtime._command_pump_task is not None and runtime._command_pump_task.done():
+                break
+            await asyncio.sleep(0.01)
+        assert runtime._command_pump_task is not None and runtime._command_pump_task.done()
+        crashed = await RunClient(runtime).get_command(intent.command_id)
+        assert crashed.receipt.state is CommandState.CONTEXT_CALL_INTENT
+        assert crashed.output_state is CommandOutputState.PENDING
+        await runtime.close()
+
+        with Database.open(path) as database:
+            database.connection.execute(
+                "UPDATE conversation_commands SET lease_expires_at=0 WHERE command_id=?",
+                (intent.command_id,),
+            )
+            database.connection.execute(
+                "UPDATE context_preparation_staging SET lease_expires_at=0 "
+                "WHERE identity_key=? AND state='preparing'",
+                (intent.run_id.value,),
+            )
+
+        healthy_memory = _MemoryProbe()
+        second = FutureConsumerFixture(path, healthy_memory, rich_context=True)
+        recovered_runtime = await second.build()
+        async with recovered_runtime:
+            for _ in range(200):
+                recovered = await RunClient(recovered_runtime).get_command(intent.command_id)
+                if recovered.receipt.state.terminal:
+                    break
+                await asyncio.sleep(0.01)
+            assert recovered.receipt.state is CommandState.APPLIED
+            assert recovered.output_state is CommandOutputState.PRESENT
+        assert len(healthy_memory.recalls) == 1
+        assert len(healthy_memory.releases) == 1
+        assert len(healthy_memory.committed) == 1
 
     asyncio.run(case())
 

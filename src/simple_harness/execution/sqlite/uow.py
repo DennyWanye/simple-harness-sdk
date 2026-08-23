@@ -2637,12 +2637,14 @@ class SqliteExecutionUnitOfWork:
                     now=now,
                 )
                 _fault(fault, "root_terminal.committed_turn.after_write")
+            _fault(fault, "root_terminal.conversation_output.before_write")
             self._insert_conversation_output(
                 connection,
                 run_id=run_id,
                 output=conversation_output,
                 now=now,
             )
+            _fault(fault, "root_terminal.conversation_output.after_write")
             _fault(fault, "root_terminal.fence.before_write")
             changed = connection.execute(
                 """
@@ -3828,12 +3830,14 @@ class SqliteExecutionUnitOfWork:
             if changed != 1:
                 raise UnitOfWorkConflict("continuation terminal fence CAS failed")
             _fault(fault, "continuation_terminal.fence.after_write")
+            _fault(fault, "continuation_terminal.conversation_output.before_write")
             self._insert_conversation_output(
                 connection,
                 run_id=run_id,
                 output=conversation_output,
                 now=now,
             )
+            _fault(fault, "continuation_terminal.conversation_output.after_write")
             _fault(fault, "continuation_terminal.run.before_write")
             changed = connection.execute(
                 "UPDATE runs SET state=?,version=version+1,updated_at=? "
