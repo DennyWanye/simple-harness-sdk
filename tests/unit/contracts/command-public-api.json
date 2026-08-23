@@ -1,0 +1,16 @@
+{
+  "api_mode": ["legacy", "command"],
+  "command_kind": ["start", "continue", "cancel"],
+  "command_state": ["accepted", "context_call_intent", "context_ready", "applied", "rejected", "cancelled"],
+  "retry_state": ["ready", "claimed", "backoff", "settled"],
+  "output_state": ["pending", "present", "absent"],
+  "limits": {"message_bytes": 262144, "frame_bytes": 1048576},
+  "methods": {
+    "RunClient.submit_start": "(intent: StartCommandIntent) -> CommandReceipt",
+    "RunClient.submit_continue": "(intent: ContinueCommandIntent) -> CommandReceipt",
+    "RunClient.submit_cancel": "(intent: CancelCommandIntent) -> CommandReceipt",
+    "RunClient.get_command": "(command_id: str) -> CommandSnapshot"
+  },
+  "receipt_fields": ["command_id", "run_id", "kind", "accept_seq", "state", "version", "namespace", "projection_key_id", "intent_hash", "execution_schema_version"],
+  "snapshot_fields": ["receipt", "retry_state", "output_state", "output", "error_code"]
+}
