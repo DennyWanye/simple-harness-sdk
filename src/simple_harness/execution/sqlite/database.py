@@ -53,9 +53,15 @@ class Database:
             connection.execute("PRAGMA foreign_keys = ON")
             if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
                 raise RuntimeError("SQLite foreign key enforcement is unavailable")
+            existing = database._has_schema_descriptor()
+            if existing:
+                # Validate before any persistent PRAGMA.  In particular, opening a v4
+                # file as v5 must be a byte-for-byte, side-effect-free rejection.
+                database._initialize_or_validate()
             connection.execute(f"PRAGMA journal_mode = {'WAL' if wal else 'DELETE'}")
             connection.execute("PRAGMA synchronous = FULL")
-            database._initialize_or_validate()
+            if not existing:
+                database._initialize_or_validate()
         except BaseException:
             connection.close()
             database._connection = None
@@ -186,10 +192,18 @@ class Database:
         descriptor = fresh_descriptor()
         if applied != {SCHEMA_VERSION: (descriptor.name, descriptor.checksum)}:
             raise ExecutionSchemaIncompatible(
-                "execution database requires a fresh schema v4 storage set"
+                "execution database requires a fresh schema v5 storage set"
             )
         if self.integrity_check() != ("ok",) or self.foreign_key_violations():
             raise RuntimeError("SDK execution database failed integrity validation")
+
+    def _has_schema_descriptor(self) -> bool:
+        return (
+            self.connection.execute(
+                "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='sdk_schema_migrations'"
+            ).fetchone()
+            is not None
+        )
 
 
 __all__ = ("Database", "ExecutionSchemaIncompatible")

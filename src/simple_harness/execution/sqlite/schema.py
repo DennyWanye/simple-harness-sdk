@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Owned fresh schema v4 descriptor for SDK execution persistence."""
+"""Owned fresh schema v5 descriptor for SDK execution persistence."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import hashlib
 from dataclasses import dataclass
 from importlib.resources import files
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,10 +22,10 @@ class Migration:
 
 def fresh_descriptor() -> Migration:
     resources = files("simple_harness.execution.sqlite.migrations")
-    sql = resources.joinpath("0004_fresh.sql").read_text(encoding="utf-8")
+    sql = resources.joinpath("0005_fresh.sql").read_text(encoding="utf-8")
     return Migration(
         SCHEMA_VERSION,
-        "0004_fresh",
+        "0005_fresh",
         sql,
         hashlib.sha256(sql.encode()).hexdigest(),
     )

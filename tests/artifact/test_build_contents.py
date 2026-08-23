@@ -67,14 +67,14 @@ def test_required_workflows_are_present() -> None:
     assert (root / ".github/workflows/release-candidate-conformance.yml").is_file()
 
 
-def test_fresh_schema_v4_is_a_self_contained_static_artifact() -> None:
+def test_fresh_schema_v5_is_a_self_contained_static_artifact() -> None:
     root = Path(__file__).resolve().parents[2]
     sqlite_root = root / "src/simple_harness/execution/sqlite"
     loader = (sqlite_root / "schema.py").read_text(encoding="utf-8")
     migrations = sqlite_root / "migrations"
-    fresh_sql = (migrations / "0004_fresh.sql").read_text(encoding="utf-8")
+    fresh_sql = (migrations / "0005_fresh.sql").read_text(encoding="utf-8")
 
-    assert 'joinpath("0004_fresh.sql")' in loader
+    assert 'joinpath("0005_fresh.sql")' in loader
     assert "0001_initial.sql" not in loader
     assert "0002_context_authority.sql" not in loader
     assert loader.count(".read_text(") == 1
