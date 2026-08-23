@@ -103,12 +103,37 @@ def test_fifo_cancel_fence_and_terminal_raw_clear(tmp_path: Path) -> None:
             now=4,
         )
         assert (first.accept_seq, second.accept_seq, cancel.accept_seq) == (1, 2, 3)
+        assert cancel.state is CommandState.APPLIED
         assert ingress.get("start-1").state is CommandState.CANCELLED
         assert ingress.get("continue-1").state is CommandState.CANCELLED
         assert ingress.raw_payload("continue-2") is None
+        assert ingress.raw_payload("cancel-1") is None
         with pytest.raises(CommandError) as fenced:
             ingress.submit_continue(_continuation("continue-3", "c-3"), now=5)
         assert fenced.value.code is CommandErrorCode.CANCEL_FENCE
+
+
+def test_cancel_before_start_is_not_found_and_reserves_nothing(tmp_path: Path) -> None:
+    with Database.open(tmp_path / "execution.db") as database:
+        ingress = CommandIngress(database)
+        with pytest.raises(CommandError) as missing:
+            ingress.submit_cancel(
+                CancelCommandIntent(
+                    "deployment/phone", "key-1", "cancel-too-early", RunId("run-1")
+                ),
+                now=1,
+            )
+        assert missing.value.code is CommandErrorCode.NOT_FOUND
+        assert (
+            database.connection.execute("SELECT COUNT(*) FROM conversation_commands").fetchone()[0]
+            == 0
+        )
+        assert (
+            database.connection.execute(
+                "SELECT COUNT(*) FROM conversation_command_namespaces"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_claim_epoch_expiry_fifo_and_stale_result_fence(tmp_path: Path) -> None:

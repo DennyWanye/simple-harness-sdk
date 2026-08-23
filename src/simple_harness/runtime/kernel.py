@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import math
 import time
@@ -29,6 +30,7 @@ from simple_harness.contracts import (
     canonical_json,
     thaw_json,
 )
+from simple_harness.execution.command_ingress import CommandClaim
 from simple_harness.execution.context_authority import ToolCatalogSnapshot
 from simple_harness.execution.context_staging import (
     ContextStageKind,
@@ -49,9 +51,11 @@ from simple_harness.execution.uow import (
     DecisionState,
     ExecutionLease,
     ExecutionUnitOfWork,
+    FaultHook,
     RunRecord,
     RunState,
     UnitOfWorkConflict,
+    UnitOfWorkNotFound,
     WorkflowCheckpoint,
 )
 from simple_harness.observability import CorrelationContext, ObservabilityRuntime, Outcome
@@ -77,6 +81,17 @@ from .agent_memory import (
 )
 from .child_coordinator import ChildCoordinator
 from .child_signal_runtime import ChildSignalRuntime
+from .commands import (
+    CancelCommandIntent,
+    CommandError,
+    CommandErrorCode,
+    CommandReceipt,
+    CommandSnapshot,
+    CommandState,
+    ContinueCommandIntent,
+    StartCommandIntent,
+    command_intent_from_json,
+)
 from .context import ContextPort
 from .conversation_context import (
     claim_context_preparation,
@@ -511,6 +526,96 @@ class RuntimeUnitOfWork(ExecutionUnitOfWork, RunFencePort, WorkflowLaunchTicketP
         fault_label: str,
     ) -> T: ...
 
+    def submit_start_command(self, intent: StartCommandIntent, *, now: float) -> CommandReceipt: ...
+
+    def submit_continue_command(
+        self, intent: ContinueCommandIntent, *, now: float
+    ) -> CommandReceipt: ...
+
+    def submit_cancel_command(
+        self, intent: CancelCommandIntent, *, now: float
+    ) -> CommandReceipt: ...
+
+    def get_command_receipt(self, command_id: str) -> CommandReceipt: ...
+
+    def get_command_snapshot(self, command_id: str) -> CommandSnapshot: ...
+
+    def reserve_legacy_run_mode(self, *, run_id: str, intent_hash: str, now: float) -> None: ...
+
+    def require_legacy_or_unmanaged_run(self, run_id: str) -> None: ...
+
+    def claim_next_command(
+        self, *, owner_id: str, now: float, lease_seconds: float
+    ) -> CommandClaim | None: ...
+
+    def transition_command(
+        self,
+        claim: CommandClaim,
+        *,
+        expected: CommandState,
+        target: CommandState,
+        now: float,
+    ) -> CommandReceipt: ...
+
+    def retry_command(
+        self,
+        claim: CommandClaim,
+        *,
+        error_code: str,
+        retry_at: float,
+        now: float,
+    ) -> CommandReceipt: ...
+
+    def heartbeat_command(
+        self, claim: CommandClaim, *, now: float, lease_seconds: float
+    ) -> CommandClaim: ...
+
+    def reject_command(
+        self,
+        claim: CommandClaim,
+        *,
+        error_code: CommandErrorCode,
+        now: float,
+    ) -> CommandReceipt: ...
+
+    def apply_start_command(
+        self,
+        claim: CommandClaim,
+        *,
+        execution_session_id: str,
+        request_id: str,
+        profile_key: str,
+        driver_kind: str,
+        snapshot: Mapping[str, JsonValue],
+        event_id: str,
+        now: float,
+        user_id: str,
+        context_stage_id: str | None = None,
+        context_stage_hash: str | None = None,
+        fault: FaultHook | None = None,
+    ) -> RunRecord: ...
+
+    def apply_continue_command(
+        self,
+        claim: CommandClaim,
+        *,
+        continuation_id: str,
+        payload: Mapping[str, JsonValue],
+        now: float,
+        context_stage_id: str | None = None,
+        context_stage_hash: str | None = None,
+        fault: FaultHook | None = None,
+    ) -> ContinuationRecord: ...
+
+    def apply_cancel_command(
+        self,
+        claim: CommandClaim,
+        *,
+        event_id: str,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> RunRecord: ...
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimePorts:
@@ -605,7 +710,37 @@ class RunClient:
                 "conversation_entrypoint_required",
                 "Enabled Agent Memory requires start_conversation().",
             )
+        self._runtime._reserve_legacy_start(value)
         return await self._runtime._start_run(value)
+
+    async def submit_start(self, intent: StartCommandIntent) -> CommandReceipt:
+        self._runtime._require_started()
+        if not isinstance(intent, StartCommandIntent):
+            raise TypeError("intent must use StartCommandIntent")
+        receipt = self._runtime._uow.submit_start_command(intent, now=self._runtime._now())
+        self._runtime._command_wake.set()
+        return receipt
+
+    async def submit_continue(self, intent: ContinueCommandIntent) -> CommandReceipt:
+        self._runtime._require_started()
+        if not isinstance(intent, ContinueCommandIntent):
+            raise TypeError("intent must use ContinueCommandIntent")
+        receipt = self._runtime._uow.submit_continue_command(intent, now=self._runtime._now())
+        self._runtime._command_wake.set()
+        return receipt
+
+    async def submit_cancel(self, intent: CancelCommandIntent) -> CommandReceipt:
+        self._runtime._require_started()
+        if not isinstance(intent, CancelCommandIntent):
+            raise TypeError("intent must use CancelCommandIntent")
+        receipt = self._runtime._uow.submit_cancel_command(intent, now=self._runtime._now())
+        self._runtime._command_wake.set()
+        return receipt
+
+    async def get_command(self, command_id: str) -> CommandSnapshot:
+        if not isinstance(command_id, str) or not command_id.strip():
+            raise ValueError("command_id is required")
+        return self._runtime._uow.get_command_snapshot(command_id)
 
     async def start_conversation(
         self,
@@ -627,7 +762,28 @@ class RunClient:
         resolved_run = run_id or RunId(uuid4().hex)
         resolved_request = request_id or RequestId(f"{resolved_run.value}:request")
         resolved_turn = turn_id or resolved_run.value
-        start_input = dict(input or {"messages": [value.message.to_dict()]})
+        start_input = cast(
+            Mapping[str, JsonValue],
+            dict(input or {"messages": [value.message.to_dict()]}),
+        )
+        reserve = getattr(self._runtime._uow, "reserve_legacy_run_mode", None)
+        if callable(reserve):
+            reserve(
+                run_id=resolved_run.value,
+                intent_hash=hashlib.sha256(
+                    canonical_json(
+                        {
+                            "run_id": resolved_run.value,
+                            "request_id": resolved_request.value,
+                            "turn_id": resolved_turn,
+                            "conversation": value.to_json(),
+                            "input": dict(start_input),
+                            "tool_catalog_generation": tool_catalog_generation,
+                        }
+                    ).encode()
+                ).hexdigest(),
+                now=self._runtime._now(),
+            )
         existing = self._runtime._uow.read_run(resolved_run.value)
         if existing is not None:
             raw = self._runtime._uow.read_start_snapshot(resolved_run.value)
@@ -899,7 +1055,7 @@ class RunClient:
             },
             "product_context": thawed_product,
             "current_message": value.message.to_dict(),
-            "provider_messages": provider_messages,
+            "provider_messages": cast(JsonValue, provider_messages),
         }
         release: MemoryReleaseRequest | None = None
         release_id: str | None = None
@@ -971,7 +1127,7 @@ class RunClient:
             if not isinstance(thawed_item, dict):
                 raise TypeError("Context provider message is invalid")
             parsed = _message_from_json(thawed_item)
-            metadata = thaw_json(parsed.metadata)
+            metadata = thaw_json(cast(FrozenJsonValue, parsed.metadata))
             if isinstance(metadata, Mapping) and metadata.get("source") == "memory":
                 raise ValueError("Context provider cannot forge the Memory partition")
             messages.append(parsed)
@@ -992,6 +1148,7 @@ class RunClient:
         payload: Mapping[str, JsonValue],
     ) -> ContinuationRecord:
         self._runtime._require_started()
+        self._runtime._require_legacy_mode(_run_id(run_id))
         if payload.get("kind") == "conversation_user":
             raise ValueError("conversation_user continuations require signal_conversation")
         continuation = self._runtime._uow.enqueue_continuation(
@@ -1016,6 +1173,7 @@ class RunClient:
         """Enqueue one ordinary user continuation with its durable context stage."""
 
         self._runtime._require_started()
+        self._runtime._require_legacy_mode(_run_id(run_id))
         if not isinstance(value, ConversationContinuationInput):
             raise TypeError("value must use ConversationContinuationInput")
         existing_continuation = self._runtime._uow.read_continuation(continuation_id)
@@ -1150,6 +1308,7 @@ class RunClient:
         return resolved
 
     async def cancel(self, run_id: RunId) -> RunRecord:
+        self._runtime._require_legacy_mode(_run_id(run_id))
         return await self._runtime._cancel_run(run_id)
 
     async def workflow_spawn_catalog(self):  # type: ignore[no-untyped-def]
@@ -1325,6 +1484,8 @@ class Runtime:
         self._child_signals = ChildSignalRuntime(uow, owner_id=ports.owner_id)
         self._child_signal_wait_handoffs: dict[str, object] = {}
         self._wake_drain_task: asyncio.Task[None] | None = None
+        self._command_pump_task: asyncio.Task[None] | None = None
+        self._command_wake = asyncio.Event()
         self._delivery_pump_task: asyncio.Task[None] | None = None
         self._delivery_wake = asyncio.Event()
         self._memory_pump_task: asyncio.Task[None] | None = None
@@ -1338,6 +1499,32 @@ class Runtime:
         self._observability: object | None = None
         self.client = RunClient(self)
         self.children = ChildCoordinator(self)
+
+    def _reserve_legacy_start(self, start: RunStart) -> None:
+        self._uow.reserve_legacy_run_mode(
+            run_id=start.run_id.value,
+            intent_hash=hashlib.sha256(
+                canonical_json(
+                    {
+                        "execution_session_id": start.execution_session_id.value,
+                        "run_id": start.run_id.value,
+                        "request_id": start.request_id.value,
+                        "turn_id": start.turn_id,
+                        "input": thaw_json(cast(FrozenJsonValue, start.input)),
+                        "tool_catalog_generation": start.tool_catalog_generation,
+                        "conversation": (
+                            None if start.conversation is None else start.conversation.to_json()
+                        ),
+                    }
+                ).encode()
+            ).hexdigest(),
+            now=self._now(),
+        )
+
+    def _require_legacy_mode(self, run_id: str) -> None:
+        require = getattr(self._uow, "require_legacy_or_unmanaged_run", None)
+        if callable(require):
+            require(run_id)
 
     def _emit_transition(
         self,
@@ -1442,6 +1629,7 @@ class Runtime:
         return {
             "health": "degraded",
             "error_code": error_code,
+            "commands": dict(empty),
             "context": dict(empty),
             "outbox": dict(empty),
             "recovery": dict(empty),
@@ -1450,9 +1638,36 @@ class Runtime:
 
     def _authority_diagnostics_snapshot(self) -> dict[str, object]:
         staging = self._ports.context_staging
+        owner = self._uow.transaction_owner
+        try:
+            database_connection = getattr(owner, "connection", None)
+        except BaseException:
+            return self._degraded_authority_snapshot("authority_query_failed")
+        command_rows = (
+            []
+            if database_connection is None
+            else database_connection.execute(
+                "SELECT state,COUNT(*),MIN(created_at) FROM conversation_commands GROUP BY state"
+            ).fetchall()
+        )
+        command_counts = {str(row[0]): int(row[1]) for row in command_rows[:16]}
+        command_oldest = min(
+            (float(row[2]) for row in command_rows[:16] if row[2] is not None),
+            default=None,
+        )
+        commands = {
+            "health": "healthy",
+            "counts": command_counts,
+            "oldest_age_ms": (
+                None
+                if command_oldest is None
+                else max(0, int((self._now() - command_oldest) * 1000))
+            ),
+        }
         if staging is None:
             return {
                 "health": "healthy",
+                "commands": commands,
                 "context": {"health": "disabled", "counts": {}, "oldest_age_ms": None},
                 "outbox": {"health": "disabled", "counts": {}, "oldest_age_ms": None},
                 "recovery": {"health": "disabled", "counts": {}, "oldest_age_ms": None},
@@ -1502,6 +1717,7 @@ class Runtime:
                 return self._degraded_authority_snapshot("snapshot_deadline")
             return {
                 "health": "healthy",
+                "commands": commands,
                 "context": context,
                 "outbox": outbox,
                 "recovery": {
@@ -1540,6 +1756,7 @@ class Runtime:
     async def _start_once(self) -> None:
         try:
             await self._ports.reconciliation.reconcile()
+            await self._drain_commands_bounded(100)
             await self.recover(_startup=True)
             await self._drain_resolved_waits_once()
             await self._drain_deliveries_bounded(100)
@@ -1553,6 +1770,9 @@ class Runtime:
                     raise asyncio.CancelledError
                 self._wake_drain_task = asyncio.create_task(
                     self._wake_drain(), name="simple-harness-wake-drain"
+                )
+                self._command_pump_task = asyncio.create_task(
+                    self._command_pump(), name="simple-harness-command-pump"
                 )
                 self._delivery_pump_task = asyncio.create_task(
                     self._delivery_pump(), name="simple-harness-delivery-pump"
@@ -1740,12 +1960,14 @@ class Runtime:
             task
             for task in (
                 self._wake_drain_task,
+                self._command_pump_task,
                 self._delivery_pump_task,
                 self._memory_pump_task,
             )
             if task is not None and not task.done()
         )
         self._wake_drain_task = None
+        self._command_pump_task = None
         self._delivery_pump_task = None
         self._memory_pump_task = None
         for task in tasks:
@@ -1761,6 +1983,242 @@ class Runtime:
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             return
+
+    async def _drain_commands_bounded(self, limit: int) -> bool:
+        for _ in range(limit):
+            claim = self._uow.claim_next_command(
+                owner_id=self._ports.owner_id,
+                now=self._now(),
+                lease_seconds=self._ports.lease_ttl_seconds,
+            )
+            if claim is None:
+                return True
+            heartbeat = asyncio.create_task(
+                self._command_heartbeat(claim),
+                name=f"simple-harness-command-heartbeat:{claim.receipt.command_id}",
+            )
+            try:
+                await self._process_command(claim)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                current = self._uow.get_command_receipt(claim.receipt.command_id)
+                if current.state.terminal:
+                    continue
+                definite = isinstance(error, (TypeError, ValueError, HarnessError, CommandError))
+                if definite or claim.attempt_count >= 8:
+                    self._uow.reject_command(
+                        claim,
+                        error_code=(
+                            CommandErrorCode.PERMANENT_FAILURE
+                            if definite
+                            else CommandErrorCode.RETRY_EXHAUSTED
+                        ),
+                        now=self._now(),
+                    )
+                else:
+                    self._uow.retry_command(
+                        claim,
+                        error_code=CommandErrorCode.TRANSIENT_FAILURE.value,
+                        retry_at=self._now() + min(60.0, 2.0**claim.attempt_count),
+                        now=self._now(),
+                    )
+            finally:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+        return False
+
+    async def _command_heartbeat(self, claim: CommandClaim) -> None:
+        interval = max(0.01, self._ports.lease_ttl_seconds / 3.0)
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                self._uow.heartbeat_command(
+                    claim,
+                    now=self._now(),
+                    lease_seconds=self._ports.lease_ttl_seconds,
+                )
+        except (asyncio.CancelledError, Exception):
+            return
+
+    async def _command_pump(self) -> None:
+        backoff = 0.01
+        try:
+            while self._state is RuntimeLifecycleState.READY:
+                try:
+                    await asyncio.wait_for(self._command_wake.wait(), timeout=backoff)
+                except TimeoutError:
+                    pass
+                self._command_wake.clear()
+                empty = await self._drain_commands_bounded(100)
+                if empty:
+                    backoff = min(1.0, backoff * 2)
+                else:
+                    backoff = 0.01
+                    self._command_wake.set()
+        except asyncio.CancelledError:
+            return
+
+    async def _process_command(self, claim: CommandClaim) -> None:
+        raw = json.loads(claim.raw_payload_json)
+        if not isinstance(raw, Mapping):
+            raise TypeError("durable command payload is corrupt")
+        intent = command_intent_from_json(raw)
+        state = claim.receipt.state
+        if state is CommandState.ACCEPTED:
+            self._uow.transition_command(
+                claim,
+                expected=CommandState.ACCEPTED,
+                target=CommandState.CONTEXT_CALL_INTENT,
+                now=self._now(),
+            )
+            state = CommandState.CONTEXT_CALL_INTENT
+        if isinstance(intent, StartCommandIntent):
+            await self._process_start_command(claim, intent, state)
+        elif isinstance(intent, ContinueCommandIntent):
+            await self._process_continue_command(claim, intent, state)
+        else:
+            if state is CommandState.CONTEXT_CALL_INTENT:
+                self._uow.transition_command(
+                    claim,
+                    expected=state,
+                    target=CommandState.CONTEXT_READY,
+                    now=self._now(),
+                )
+            self._uow.apply_cancel_command(
+                claim,
+                event_id=f"{intent.command_id}:cancel",
+                now=self._now(),
+            )
+            current = self._uow.read_run(intent.run_id.value)
+            if current is not None:
+                token = self._cancels.get(intent.run_id.value)
+                if token is not None:
+                    token.cancel()
+                if intent.run_id.value in self._live.active_run_ids():
+                    await self._live.cancel(intent.run_id.value)
+                latest = self._uow.read_run(intent.run_id.value)
+                if latest is not None and latest.state is RunState.CANCEL_REQUESTED:
+                    await self._terminalize_cancelled(latest)
+
+    async def _process_start_command(
+        self, claim: CommandClaim, intent: StartCommandIntent, state: CommandState
+    ) -> None:
+        if intent.profile_key != self._root_profile_key:
+            raise UnitOfWorkConflict("command profile differs from Runtime root")
+        profile = self._profiles[self._root_profile_key]
+        driver = self._drivers[profile.driver_kind]
+        stage: ContextStageRecord | None = None
+        if self._ports.agent_memory is not None:
+            stage = await self.client._prepare_agent_context(
+                kind=ContextStageKind.ROOT,
+                identity_key=intent.run_id.value,
+                root_run_id=intent.run_id.value,
+                continuation_id=None,
+                turn_id=intent.turn_id,
+                value=intent.conversation,
+            )
+            if stage.private_snapshot is None or stage.private_snapshot_hash is None:
+                raise UnitOfWorkConflict("prepared command context is unavailable")
+        if state is CommandState.CONTEXT_CALL_INTENT:
+            self._uow.transition_command(
+                claim,
+                expected=state,
+                target=CommandState.CONTEXT_READY,
+                now=self._now(),
+            )
+        start = RunStart(
+            ExecutionSessionId(intent.conversation.identity.session_id),
+            intent.run_id,
+            intent.request_id,
+            intent.turn_id,
+            dict(intent.input or {"messages": [intent.conversation.message.to_dict()]}),
+            intent.tool_catalog_generation,
+            conversation=intent.conversation,
+            context_preparation_mode=(
+                None if stage is None else ContextPreparationMode.SDK_PREPARED
+            ),
+            context_stage_id=None if stage is None else stage.stage_id,
+            context_stage_hash=None if stage is None else stage.private_snapshot_hash,
+            prepared_context=None if stage is None else stage.private_snapshot,
+        )
+        verdict = await self._ports.admission.evaluate(start)
+        if not verdict.allowed:
+            raise HarnessError("admission_denied", "The Run was denied by admission.")
+        snapshot = bind_start_snapshot(
+            start,
+            profile_key=self._root_profile_key,
+            driver_kind=profile.driver_kind,
+            policy_fingerprint=getattr(driver, "policy_fingerprint", None),
+        )
+        created = self._uow.apply_start_command(
+            claim,
+            execution_session_id=start.execution_session_id.value,
+            request_id=start.request_id.value,
+            profile_key=self._root_profile_key,
+            driver_kind=profile.driver_kind,
+            snapshot=snapshot.to_json(),
+            event_id=f"{start.run_id.value}:created",
+            now=self._now(),
+            user_id=intent.conversation.user_id,
+            context_stage_id=start.context_stage_id,
+            context_stage_hash=start.context_stage_hash,
+        )
+        if created.state not in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+            activated = await self._activate(created.run_id)
+            self._schedule(activated.run_id)
+
+    async def _process_continue_command(
+        self, claim: CommandClaim, intent: ContinueCommandIntent, state: CommandState
+    ) -> None:
+        start_raw = self._uow.read_start_snapshot(intent.run_id.value)
+        if start_raw is None:
+            raise UnitOfWorkNotFound(intent.run_id.value)
+        start = StartSnapshot.from_json(start_raw)
+        stage: ContextStageRecord | None = None
+        if self._ports.agent_memory is not None:
+            if start.conversation is None:
+                raise UnitOfWorkConflict("command Run has no conversation identity")
+            stage = await self.client._prepare_agent_context(
+                kind=ContextStageKind.CONTINUATION,
+                identity_key=intent.continuation_id,
+                root_run_id=intent.run_id.value,
+                continuation_id=intent.continuation_id,
+                turn_id=intent.turn_id,
+                value=ConversationTurnInput(
+                    start.conversation.identity,
+                    intent.conversation.message,
+                    intent.conversation.memory_text,
+                    start.conversation.recall_scopes,
+                    intent.conversation.context_source_snapshot_ref,
+                ),
+            )
+            if stage.private_snapshot is None or stage.private_snapshot_hash is None:
+                raise UnitOfWorkConflict("prepared continuation command context is unavailable")
+        if state is CommandState.CONTEXT_CALL_INTENT:
+            self._uow.transition_command(
+                claim,
+                expected=state,
+                target=CommandState.CONTEXT_READY,
+                now=self._now(),
+            )
+        self._uow.apply_continue_command(
+            claim,
+            continuation_id=intent.continuation_id,
+            payload={
+                "kind": "conversation_user",
+                "conversation": intent.conversation.to_json(),
+                **(
+                    {}
+                    if stage is None or stage.private_snapshot is None
+                    else {"prepared_context": dict(stage.private_snapshot)}
+                ),
+            },
+            now=self._now(),
+            context_stage_id=None if stage is None else stage.stage_id,
+            context_stage_hash=None if stage is None else stage.private_snapshot_hash,
+        )
+        await self._wake_continuation(intent.run_id.value)
 
     async def _drain_deliveries_bounded(self, limit: int) -> bool:
         run_once = getattr(self._ports.delivery, "run_once", None)
@@ -2503,8 +2961,9 @@ class Runtime:
             if conversation_output is not None and conversation_output.memory_text is not None:
                 if legacy_cursor_version is not None:
                     assert legacy_cursor is not None
-                    user_text = legacy_cursor.user_text
-                    turn_id = legacy_cursor.turn_id
+                    user_text: str | None = legacy_cursor.user_text
+                    turn_id: str = legacy_cursor.turn_id
+                    assert user_text is not None
                     committed_turn = CommittedTurnSpec.from_domain(
                         CommittedTurn(
                             turn_id,
@@ -2644,6 +3103,9 @@ class Runtime:
                 terminal_fence_receipt_ref=(f"runtime-fence:{fence.owner_id}:{fence.epoch}"),
                 now=self._now(),
                 committed_turn=committed_turn,
+                conversation_output=(
+                    None if conversation_output is None else conversation_output.to_json()
+                ),
                 legacy_cursor_version=legacy_cursor_version,
             )
             self._emit_run_terminal(run, state)
@@ -2662,6 +3124,7 @@ class Runtime:
             execution_lease=self._leases[run.run_id],
             now=self._now(),
             committed_turn=committed_turn,
+            conversation_output=conversation_output,
             legacy_cursor_version=legacy_cursor_version,
         )
         self._emit_run_terminal(run, state)

@@ -141,6 +141,13 @@ class ConversationContextResult:
 
 
 class ConversationContextProviderPort(Protocol):
+    """Stable preparation authority.
+
+    A provider MUST replay the same result for the same ``preparation_id`` and
+    canonical request, and MUST reject reuse of that ID with a different request.
+    Physical retries are permitted; the durable logical preparation is singular.
+    """
+
     async def prepare_once(
         self, request: ConversationContextRequest
     ) -> ConversationContextResult: ...

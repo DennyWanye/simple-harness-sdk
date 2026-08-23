@@ -91,7 +91,10 @@ from simple_harness.execution.uow import (
 from simple_harness.providers import ProviderTarget, ProviderToolSpec
 from simple_harness.runtime.commands import (
     CancelCommandIntent,
+    CommandErrorCode,
     CommandReceipt,
+    CommandSnapshot,
+    CommandState,
     ContinueCommandIntent,
     StartCommandIntent,
 )
@@ -846,6 +849,66 @@ class SqliteExecutionUnitOfWork:
     def get_command_receipt(self, command_id: str) -> CommandReceipt:
         return CommandIngress(self.database).get(command_id)
 
+    def get_command_snapshot(self, command_id: str) -> CommandSnapshot:
+        return CommandIngress(self.database).snapshot(command_id)
+
+    def reserve_legacy_run_mode(self, *, run_id: str, intent_hash: str, now: float) -> None:
+        CommandIngress(self.database).reserve_legacy_run(
+            namespace="legacy/runtime",
+            projection_key_id="legacy-v1",
+            run_id=run_id,
+            intent_hash=intent_hash,
+            now=now,
+        )
+
+    def require_legacy_or_unmanaged_run(self, run_id: str) -> None:
+        CommandIngress(self.database).require_legacy_or_unmanaged(run_id)
+
+    def claim_next_command(
+        self, *, owner_id: str, now: float, lease_seconds: float
+    ) -> CommandClaim | None:
+        return CommandIngress(self.database).claim_next(
+            owner_id=owner_id, now=now, lease_seconds=lease_seconds
+        )
+
+    def transition_command(
+        self,
+        claim: CommandClaim,
+        *,
+        expected: CommandState,
+        target: CommandState,
+        now: float,
+    ) -> CommandReceipt:
+        return CommandIngress(self.database).transition(
+            claim, expected=expected, target=target, now=now
+        )
+
+    def retry_command(
+        self,
+        claim: CommandClaim,
+        *,
+        error_code: str,
+        retry_at: float,
+        now: float,
+    ) -> CommandReceipt:
+        return CommandIngress(self.database).retry(
+            claim, error_code=error_code, retry_at=retry_at, now=now
+        )
+
+    def heartbeat_command(
+        self, claim: CommandClaim, *, now: float, lease_seconds: float
+    ) -> CommandClaim:
+        return CommandIngress(self.database).heartbeat(claim, now=now, lease_seconds=lease_seconds)
+
+    def reject_command(
+        self,
+        claim: CommandClaim,
+        *,
+        error_code: CommandErrorCode,
+        now: float,
+    ) -> CommandReceipt:
+        return CommandIngress(self.database).reject(claim, error_code=error_code, now=now)
+
     def apply_start_command(
         self,
         claim: CommandClaim,
@@ -936,9 +999,7 @@ class SqliteExecutionUnitOfWork:
             existing = connection.execute(
                 "SELECT * FROM runs WHERE run_id=?", (claim.receipt.run_id.value,)
             ).fetchone()
-            if existing is None:
-                raise UnitOfWorkNotFound(claim.receipt.run_id.value)
-            if str(existing["state"]) not in {
+            if existing is not None and str(existing["state"]) not in {
                 "cancel_requested",
                 "cancelled",
                 "completed",
@@ -954,7 +1015,19 @@ class SqliteExecutionUnitOfWork:
                 )
             self._settle_applied_command(connection, claim=claim, now=now)
         record = self.read_run(claim.receipt.run_id.value)
-        assert record is not None
+        if record is None:
+            # Pre-apply cancel is a complete fence even though no Run was materialized.
+            return RunRecord(
+                claim.receipt.run_id.value,
+                "",
+                "",
+                claim.receipt.run_id.value,
+                None,
+                "",
+                "",
+                RunState.CANCELLED,
+                0,
+            )
         return record
 
     @staticmethod
@@ -972,6 +1045,59 @@ class SqliteExecutionUnitOfWork:
         ).rowcount
         if changed != 1:
             raise UnitOfWorkConflict("command apply stale-result fence failed")
+
+    @staticmethod
+    def _insert_conversation_output(
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        output: Mapping[str, JsonValue] | None,
+        now: float,
+    ) -> None:
+        if output is None:
+            return
+        command = connection.execute(
+            "SELECT command_id FROM conversation_commands "
+            "WHERE run_id=? AND state='applied' AND kind IN ('start','continue') "
+            "ORDER BY accept_seq DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if command is None:
+            return  # Legacy RunClient remains output-table neutral.
+        output_json = _object_json(output, "conversation_output")
+        output_hash = hashlib.sha256(output_json.encode()).hexdigest()
+        existing = connection.execute(
+            "SELECT command_id,output_json,output_hash FROM conversation_outputs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if existing is not None:
+            if tuple(existing) != (str(command[0]), output_json, output_hash):
+                raise UnitOfWorkConflict("conversation output replay differs")
+            return
+        connection.execute(
+            "INSERT INTO conversation_outputs VALUES (?,?,?,?,?)",
+            (run_id, str(command[0]), output_json, output_hash, now),
+        )
+
+    @staticmethod
+    def _verify_conversation_output_replay(
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        output: Mapping[str, JsonValue] | None,
+    ) -> None:
+        mode = connection.execute(
+            "SELECT api_mode FROM conversation_run_modes WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if mode is None or str(mode[0]) != "command":
+            return
+        row = connection.execute(
+            "SELECT output_json FROM conversation_outputs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        expected = None if output is None else _object_json(output, "conversation_output")
+        actual = None if row is None else str(row[0])
+        if actual != expected:
+            raise UnitOfWorkConflict("conversation output replay differs")
 
     @property
     def transaction_owner(self) -> object:
@@ -1747,6 +1873,7 @@ class SqliteExecutionUnitOfWork:
         now: float,
         fault: FaultHook | None,
     ) -> None:
+        _fault(fault, "runtime_cancel.event.before_write")
         self._insert_event(
             connection,
             event_id=event_id,
@@ -1755,11 +1882,13 @@ class SqliteExecutionUnitOfWork:
             payload={},
             now=now,
         )
+        _fault(fault, "runtime_cancel.event.after_write")
         open_decisions = connection.execute(
             "SELECT decision_id FROM decisions WHERE run_id=? AND state='open'", (run_id,)
         ).fetchall()
         for row in open_decisions:
             decision_id = str(row["decision_id"])
+            _fault(fault, "runtime_cancel.decision.before_write")
             changed = connection.execute(
                 "UPDATE decisions SET state='cancelled',response_json=?,"
                 "version=version+1,resolved_at=? "
@@ -1781,6 +1910,8 @@ class SqliteExecutionUnitOfWork:
                 payload={"decision_id": decision_id},
                 now=now,
             )
+            _fault(fault, "runtime_cancel.decision.after_write")
+        _fault(fault, "runtime_cancel.run.before_write")
         changed = connection.execute(
             """
             UPDATE runs SET state='cancel_requested',version=version+1,updated_at=?
@@ -1791,6 +1922,7 @@ class SqliteExecutionUnitOfWork:
         ).rowcount
         if changed != 1:
             raise UnitOfWorkConflict("runtime cancellation CAS failed")
+        _fault(fault, "runtime_cancel.run.after_write")
 
     def request_run_cancel(
         self,
@@ -1815,57 +1947,14 @@ class SqliteExecutionUnitOfWork:
         }:
             return existing
         with self.database.transaction() as connection:
-            _fault(fault, "runtime_cancel.event.before_write")
-            self._insert_event(
+            self._request_run_cancel_on_connection(
                 connection,
-                event_id=event_id,
                 run_id=run_id,
-                kind="run.cancel_requested",
-                payload={},
+                expected_version=expected_version,
+                event_id=event_id,
                 now=now,
+                fault=fault,
             )
-            _fault(fault, "runtime_cancel.event.after_write")
-            open_decisions = connection.execute(
-                "SELECT decision_id FROM decisions WHERE run_id=? AND state='open'",
-                (run_id,),
-            ).fetchall()
-            for row in open_decisions:
-                decision_id = str(row["decision_id"])
-                _fault(fault, "runtime_cancel.decision.before_write")
-                changed = connection.execute(
-                    "UPDATE decisions SET state='cancelled',response_json=?,"
-                    "version=version+1,resolved_at=? "
-                    "WHERE decision_id=? AND run_id=? AND state='open'",
-                    (
-                        canonical_json({"reason": "run_cancelled"}),
-                        now,
-                        decision_id,
-                        run_id,
-                    ),
-                ).rowcount
-                if changed != 1:
-                    raise UnitOfWorkConflict("decision cancellation CAS failed")
-                self._insert_event(
-                    connection,
-                    event_id=f"{event_id}:decision:{decision_id}",
-                    run_id=run_id,
-                    kind="decision.cancelled",
-                    payload={"decision_id": decision_id},
-                    now=now,
-                )
-                _fault(fault, "runtime_cancel.decision.after_write")
-            _fault(fault, "runtime_cancel.run.before_write")
-            changed = connection.execute(
-                """
-                UPDATE runs SET state = 'cancel_requested', version = version + 1, updated_at = ?
-                WHERE run_id = ? AND version = ?
-                  AND state NOT IN ('completed', 'failed', 'cancelled', 'cancel_requested')
-                """,
-                (now, run_id, expected_version),
-            ).rowcount
-            if changed != 1:
-                raise UnitOfWorkConflict("runtime cancellation CAS failed")
-            _fault(fault, "runtime_cancel.run.after_write")
         _fault(fault, "runtime_cancel.after_commit")
         record = self.read_run(run_id)
         assert record is not None
@@ -2373,6 +2462,7 @@ class SqliteExecutionUnitOfWork:
         terminal_fence_receipt_ref: str,
         now: float,
         committed_turn: CommittedTurnSpec | None = None,
+        conversation_output: Mapping[str, JsonValue] | None = None,
         legacy_cursor_version: int | None = None,
         fault: FaultHook | None = None,
     ) -> TerminalCommitResult:
@@ -2469,6 +2559,11 @@ class SqliteExecutionUnitOfWork:
                     committed_turn=committed_turn,
                     expected_version=legacy_cursor_version,
                 )
+                self._verify_conversation_output_replay(
+                    self.database.connection,
+                    run_id=run_id,
+                    output=conversation_output,
+                )
                 return TerminalCommitResult(existing_run, stored)
             raise UnitOfWorkConflict("another root terminal intent already won")
 
@@ -2542,6 +2637,12 @@ class SqliteExecutionUnitOfWork:
                     now=now,
                 )
                 _fault(fault, "root_terminal.committed_turn.after_write")
+            self._insert_conversation_output(
+                connection,
+                run_id=run_id,
+                output=conversation_output,
+                now=now,
+            )
             _fault(fault, "root_terminal.fence.before_write")
             changed = connection.execute(
                 """
@@ -2748,6 +2849,7 @@ class SqliteExecutionUnitOfWork:
             (execution_session_id, user_id, now),
         )
         _fault(fault, "root_start.session.after_write")
+        _fault(fault, "root_start.run.before_write")
         connection.execute(
             """
             INSERT INTO runs(
@@ -2766,11 +2868,14 @@ class SqliteExecutionUnitOfWork:
                 now,
             ),
         )
+        _fault(fault, "root_start.run.after_write")
+        _fault(fault, "root_start.snapshot.before_write")
         connection.execute(
             "INSERT INTO run_start_snapshots(run_id,snapshot_json,snapshot_hash,created_at) "
             "VALUES (?,?,?,?)",
             (run_id, snapshot_json, snapshot_hash, now),
         )
+        _fault(fault, "root_start.snapshot.after_write")
         if context_stage_id is not None and context_stage_hash is not None:
             _consume_context_stage(
                 connection,
@@ -2782,6 +2887,7 @@ class SqliteExecutionUnitOfWork:
                 consumed_continuation_id=None,
                 now=now,
             )
+        _fault(fault, "root_start.event.before_write")
         self._insert_event(
             connection,
             event_id=event_id,
@@ -2790,6 +2896,7 @@ class SqliteExecutionUnitOfWork:
             payload={"profile_key": profile_key, "driver_kind": driver_kind},
             now=now,
         )
+        _fault(fault, "root_start.event.after_write")
 
     def create_with_start_snapshot(
         self,
@@ -2842,74 +2949,23 @@ class SqliteExecutionUnitOfWork:
             )
             return existing
         with self.database.transaction() as connection:
-            _fault(fault, "root_start.session.before_write")
-            connection.execute(
-                "INSERT OR IGNORE INTO execution_users(user_id,created_at) VALUES(?,?)",
-                (user_id, now),
-            )
-            owner = connection.execute(
-                "SELECT user_id FROM execution_sessions WHERE session_id=?",
-                (execution_session_id,),
-            ).fetchone()
-            if owner is not None and str(owner[0]) != user_id:
-                raise UnitOfWorkConflict("execution session belongs to another user")
-            connection.execute(
-                "INSERT OR IGNORE INTO execution_sessions(session_id,user_id,created_at) "
-                "VALUES(?,?,?)",
-                (execution_session_id, user_id, now),
-            )
-            _fault(fault, "root_start.session.after_write")
-            _fault(fault, "root_start.run.before_write")
-            connection.execute(
-                """
-                INSERT INTO runs(
-                    run_id, execution_session_id, request_id, root_run_id,
-                    parent_run_id, profile_key, driver_kind, state, version,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, 'created', 0, ?, ?)
-                """,
-                (
-                    run_id,
-                    execution_session_id,
-                    request_id,
-                    run_id,
-                    profile_key,
-                    driver_kind,
-                    now,
-                    now,
-                ),
-            )
-            _fault(fault, "root_start.run.after_write")
-            _fault(fault, "root_start.snapshot.before_write")
-            connection.execute(
-                """
-                INSERT INTO run_start_snapshots(run_id, snapshot_json, snapshot_hash, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (run_id, snapshot_json, snapshot_hash, now),
-            )
-            _fault(fault, "root_start.snapshot.after_write")
-            if context_stage_id is not None and context_stage_hash is not None:
-                _consume_context_stage(
-                    connection,
-                    stage_id=context_stage_id,
-                    stage_hash=context_stage_hash,
-                    kind="root",
-                    expected_snapshot=snapshot.get("prepared_context"),
-                    consumed_run_id=run_id,
-                    consumed_continuation_id=None,
-                    now=now,
-                )
-            _fault(fault, "root_start.event.before_write")
-            self._insert_event(
+            self._create_start_on_connection(
                 connection,
-                event_id=event_id,
+                execution_session_id=execution_session_id,
                 run_id=run_id,
-                kind="run.created",
-                payload={"profile_key": profile_key, "driver_kind": driver_kind},
+                request_id=request_id,
+                profile_key=profile_key,
+                driver_kind=driver_kind,
+                snapshot=snapshot,
+                snapshot_json=snapshot_json,
+                snapshot_hash=snapshot_hash,
+                event_id=event_id,
                 now=now,
+                user_id=user_id,
+                context_stage_id=context_stage_id,
+                context_stage_hash=context_stage_hash,
+                fault=fault,
             )
-            _fault(fault, "root_start.event.after_write")
         _fault(fault, "root_start.after_commit")
         record = self.read_run(run_id)
         assert record is not None
@@ -3220,6 +3276,7 @@ class SqliteExecutionUnitOfWork:
             (run_id,),
         ).fetchone()
         sequence = int(row[0])
+        _fault(fault, "continuation_enqueue.continuation.before_write")
         connection.execute(
             """
             INSERT INTO continuations(
@@ -3238,6 +3295,7 @@ class SqliteExecutionUnitOfWork:
                 context_stage_hash,
             ),
         )
+        _fault(fault, "continuation_enqueue.continuation.after_write")
         _supersede_legacy_cursor(
             connection,
             run_id=run_id,
@@ -3291,63 +3349,17 @@ class SqliteExecutionUnitOfWork:
                 return existing
             raise UnitOfWorkConflict("continuation identity reused with different payload")
         with self.database.transaction() as connection:
-            run_row = connection.execute(
-                "SELECT r.state,s.user_id,r.execution_session_id FROM runs r "
-                "JOIN execution_sessions s ON s.session_id=r.execution_session_id "
-                "WHERE r.run_id=?",
-                (run_id,),
-            ).fetchone()
-            if run_row is None:
-                raise UnitOfWorkNotFound(run_id)
-            if str(run_row["state"]) in {"completed", "failed", "cancelled"}:
-                raise UnitOfWorkConflict("terminal Run rejects new continuations")
-            row = connection.execute(
-                "SELECT COALESCE(MAX(fifo_seq), 0) + 1 FROM continuations WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()
-            sequence = int(row[0])
-            _fault(fault, "continuation_enqueue.continuation.before_write")
-            connection.execute(
-                """
-                INSERT INTO continuations(
-                    continuation_id, run_id, fifo_seq, payload_json, state,
-                    version, claimed_by, runtime_lease_epoch, claim_epoch,
-                    ack_receipt_id, created_at, claimed_at, acked_at,
-                    context_stage_id, context_stage_hash
-                ) VALUES (?, ?, ?, ?, 'pending', 0, NULL, NULL, 0,
-                          NULL, ?, NULL, NULL, ?, ?)
-                """,
-                (
-                    continuation_id,
-                    run_id,
-                    sequence,
-                    payload_json,
-                    now,
-                    context_stage_id,
-                    context_stage_hash,
-                ),
-            )
-            _fault(fault, "continuation_enqueue.continuation.after_write")
-            _supersede_legacy_cursor(
+            self._enqueue_continuation_on_connection(
                 connection,
-                run_id=run_id,
                 continuation_id=continuation_id,
+                run_id=run_id,
                 payload=payload,
-                context_stage_id=context_stage_id,
+                payload_json=payload_json,
                 now=now,
+                context_stage_id=context_stage_id,
+                context_stage_hash=context_stage_hash,
                 fault=fault,
             )
-            if context_stage_id is not None and context_stage_hash is not None:
-                _consume_context_stage(
-                    connection,
-                    stage_id=context_stage_id,
-                    stage_hash=context_stage_hash,
-                    kind="continuation",
-                    expected_snapshot=payload.get("prepared_context"),
-                    consumed_run_id=None,
-                    consumed_continuation_id=continuation_id,
-                    now=now,
-                )
         _fault(fault, "continuation_enqueue.after_commit")
         result = self.read_continuation(continuation_id)
         assert result is not None
@@ -3596,6 +3608,7 @@ class SqliteExecutionUnitOfWork:
         terminal_fence_receipt_ref: str,
         now: float,
         committed_turn: CommittedTurnSpec | None = None,
+        conversation_output: Mapping[str, JsonValue] | None = None,
         legacy_cursor_version: int | None = None,
         fault: FaultHook | None = None,
     ) -> ContinuationTerminalResult:
@@ -3640,12 +3653,20 @@ class SqliteExecutionUnitOfWork:
                     "committed_turn_hash": (
                         None if committed_turn is None else committed_turn.payload_hash
                     ),
+                    "conversation_output": (
+                        None if conversation_output is None else dict(conversation_output)
+                    ),
                     "legacy_cursor_version": legacy_cursor_version,
                 }
             ).encode()
         ).hexdigest()
         existing = self._read_continuation_progress_receipt(receipt_id)
         if existing is not None:
+            self._verify_conversation_output_replay(
+                self.database.connection,
+                run_id=run_id,
+                output=conversation_output,
+            )
             _verify_committed_turn_replay(
                 self.database.connection,
                 committed_turn,
@@ -3807,6 +3828,12 @@ class SqliteExecutionUnitOfWork:
             if changed != 1:
                 raise UnitOfWorkConflict("continuation terminal fence CAS failed")
             _fault(fault, "continuation_terminal.fence.after_write")
+            self._insert_conversation_output(
+                connection,
+                run_id=run_id,
+                output=conversation_output,
+                now=now,
+            )
             _fault(fault, "continuation_terminal.run.before_write")
             changed = connection.execute(
                 "UPDATE runs SET state=?,version=version+1,updated_at=? "

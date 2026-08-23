@@ -4,6 +4,7 @@
   "command_state": ["accepted", "context_call_intent", "context_ready", "applied", "rejected", "cancelled"],
   "retry_state": ["ready", "claimed", "backoff", "settled"],
   "output_state": ["pending", "present", "absent"],
+  "error_code": ["command_not_found", "command_intent_conflict", "run_api_mode_conflict", "command_namespace_key_conflict", "command_cancel_fence", "command_payload_too_large", "command_retry_exhausted", "command_transient_failure", "command_permanent_failure"],
   "limits": {"message_bytes": 262144, "frame_bytes": 1048576},
   "methods": {
     "RunClient.submit_start": "(intent: StartCommandIntent) -> CommandReceipt",

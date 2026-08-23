@@ -76,6 +76,7 @@ class CommandErrorCode(StrEnum):
     CANCEL_FENCE = "command_cancel_fence"
     PAYLOAD_TOO_LARGE = "command_payload_too_large"
     RETRY_EXHAUSTED = "command_retry_exhausted"
+    TRANSIENT_FAILURE = "command_transient_failure"
     PERMANENT_FAILURE = "command_permanent_failure"
 
 
@@ -110,7 +111,7 @@ class StartCommandIntent:
     request_id: RequestId
     turn_id: str
     conversation: ConversationTurnInput
-    profile_key: str = "root"
+    profile_key: str = "agent.general"
     tool_catalog_generation: int = 1
     input: Mapping[str, JsonValue] | None = None
 
@@ -287,3 +288,57 @@ def _intent_hash(value: Mapping[str, JsonValue]) -> str:
 def _enforce_message_limit(value: Mapping[str, JsonValue]) -> None:
     if len(canonical_json(dict(value)).encode("utf-8")) > COMMAND_MESSAGE_MAX_BYTES:
         raise CommandError(CommandErrorCode.PAYLOAD_TOO_LARGE)
+
+
+def command_intent_from_json(value: Mapping[str, JsonValue]) -> CommandIntent:
+    raw_kind = value.get("kind")
+    if not isinstance(raw_kind, str):
+        raise TypeError("kind must be a string")
+    kind = CommandKind(raw_kind)
+    namespace = _json_text(value, "namespace")
+    projection_key_id = _json_text(value, "projection_key_id")
+    command_id = _json_text(value, "command_id")
+    run_id = RunId(_json_text(value, "run_id"))
+    if kind is CommandKind.CANCEL:
+        return CancelCommandIntent(namespace, projection_key_id, command_id, run_id)
+    raw_conversation = value.get("conversation")
+    if not isinstance(raw_conversation, Mapping):
+        raise TypeError("command conversation must be an object")
+    turn_id = _json_text(value, "turn_id")
+    if kind is CommandKind.CONTINUE:
+        return ContinueCommandIntent(
+            namespace,
+            projection_key_id,
+            command_id,
+            run_id,
+            _json_text(value, "continuation_id"),
+            turn_id,
+            ConversationContinuationInput.from_json(raw_conversation),
+        )
+    request_id = RequestId(_json_text(value, "request_id"))
+    profile_key = _json_text(value, "profile_key")
+    generation = value.get("tool_catalog_generation")
+    if isinstance(generation, bool) or not isinstance(generation, int):
+        raise TypeError("tool_catalog_generation must be an integer")
+    raw_input = value.get("input")
+    if raw_input is not None and not isinstance(raw_input, Mapping):
+        raise TypeError("command input must be an object or null")
+    return StartCommandIntent(
+        namespace,
+        projection_key_id,
+        command_id,
+        run_id,
+        request_id,
+        turn_id,
+        ConversationTurnInput.from_json(raw_conversation),
+        profile_key,
+        generation,
+        raw_input,
+    )
+
+
+def _json_text(value: Mapping[str, JsonValue], name: str) -> str:
+    item = value.get(name)
+    if not isinstance(item, str):
+        raise TypeError(f"{name} must be a string")
+    return item

@@ -340,6 +340,7 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         terminal_fence_receipt_ref: str,
         now: float,
         committed_turn: CommittedTurnSpec | None = None,
+        conversation_output: Mapping[str, JsonValue] | None = None,
         legacy_cursor_version: int | None = None,
         fault: FaultHook | None = None,
     ) -> TerminalCommitResult: ...
@@ -573,6 +574,7 @@ class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protoc
         terminal_fence_receipt_ref: str,
         now: float,
         committed_turn: CommittedTurnSpec | None = None,
+        conversation_output: Mapping[str, JsonValue] | None = None,
         legacy_cursor_version: int | None = None,
         fault: FaultHook | None = None,
     ) -> ContinuationTerminalResult: ...

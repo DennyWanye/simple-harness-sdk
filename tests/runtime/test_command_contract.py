@@ -60,6 +60,7 @@ def test_command_contract_is_closed_and_matches_frozen_artifact() -> None:
     assert artifact["command_state"] == [member.value for member in CommandState]
     assert artifact["retry_state"] == [member.value for member in CommandRetryState]
     assert artifact["output_state"] == [member.value for member in CommandOutputState]
+    assert artifact["error_code"] == [member.value for member in CommandErrorCode]
     assert artifact["limits"] == {
         "message_bytes": COMMAND_MESSAGE_MAX_BYTES,
         "frame_bytes": COMMAND_FRAME_MAX_BYTES,
@@ -74,7 +75,7 @@ def test_command_intents_have_deterministic_canonical_identity() -> None:
         start.intent_hash
         == hashlib.sha256(canonical_json(start.to_json()).encode("utf-8")).hexdigest()
     )
-    assert start.intent_hash == "04216265fd682be3a4f0c92e11bcdd478d46dcbb9aa85f3e92f205d7903d5bfa"
+    assert start.intent_hash == "edd0409b4af93105c6ce66cfe544b909245ccb73ee6702d5853fb97aa2f5f2b3"
     continuation = ContinueCommandIntent(
         start.namespace,
         start.projection_key_id,

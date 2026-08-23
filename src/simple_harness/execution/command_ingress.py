@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from dataclasses import dataclass
@@ -17,12 +18,16 @@ from simple_harness.runtime.commands import (
     CommandErrorCode,
     CommandIntent,
     CommandKind,
+    CommandOutputState,
     CommandReceipt,
+    CommandRetryState,
+    CommandSnapshot,
     CommandState,
     ContinueCommandIntent,
     RunApiMode,
     StartCommandIntent,
 )
+from simple_harness.runtime.conversation_memory import ConversationTurnOutput
 
 if TYPE_CHECKING:
     from .sqlite.database import Database
@@ -61,6 +66,50 @@ class CommandIngress:
             raise CommandError(CommandErrorCode.NOT_FOUND)
         return _receipt(row)
 
+    def snapshot(self, command_id: str) -> CommandSnapshot:
+        row = self._database.connection.execute(
+            "SELECT * FROM conversation_commands WHERE command_id=?", (command_id,)
+        ).fetchone()
+        if row is None:
+            raise CommandError(CommandErrorCode.NOT_FOUND)
+        receipt = _receipt(row)
+        output_row = self._database.connection.execute(
+            "SELECT output_json FROM conversation_outputs WHERE run_id=?",
+            (receipt.run_id.value,),
+        ).fetchone()
+        if output_row is not None:
+            raw = json.loads(str(output_row[0]))
+            if not isinstance(raw, dict):
+                raise RuntimeError("conversation output row is corrupt")
+            output = ConversationTurnOutput.from_json(raw)
+            output_state = CommandOutputState.PRESENT
+        else:
+            output = None
+            run = self._database.connection.execute(
+                "SELECT state FROM runs WHERE run_id=?", (receipt.run_id.value,)
+            ).fetchone()
+            output_state = (
+                CommandOutputState.ABSENT
+                if (run is not None and str(run[0]) in {"completed", "failed", "cancelled"})
+                or (
+                    run is None
+                    and receipt.kind is CommandKind.CANCEL
+                    and receipt.state is CommandState.APPLIED
+                )
+                else CommandOutputState.PENDING
+            )
+        if receipt.state.terminal:
+            retry = CommandRetryState.SETTLED
+        elif row["owner_id"] is not None:
+            retry = CommandRetryState.CLAIMED
+        elif row["last_error_code"] is not None:
+            retry = CommandRetryState.BACKOFF
+        else:
+            retry = CommandRetryState.READY
+        raw_error = row["last_error_code"]
+        error = None if raw_error is None else CommandErrorCode(str(raw_error))
+        return CommandSnapshot(receipt, retry, output_state, output, error)
+
     def raw_payload(self, command_id: str) -> str | None:
         row = self._database.connection.execute(
             "SELECT raw_payload_json FROM conversation_commands WHERE command_id=?",
@@ -95,6 +144,13 @@ class CommandIngress:
                 return
             if tuple(row) != (namespace, RunApiMode.LEGACY.value, intent_hash):
                 raise CommandError(CommandErrorCode.RUN_MODE_CONFLICT)
+
+    def require_legacy_or_unmanaged(self, run_id: str) -> None:
+        row = self._database.connection.execute(
+            "SELECT api_mode FROM conversation_run_modes WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is not None and str(row[0]) != RunApiMode.LEGACY.value:
+            raise CommandError(CommandErrorCode.RUN_MODE_CONFLICT)
 
     def claim_next(self, *, owner_id: str, now: float, lease_seconds: float) -> CommandClaim | None:
         now = _time(now)
@@ -227,6 +283,40 @@ class CommandIngress:
             assert row is not None
             return _receipt(row)
 
+    def reject(
+        self,
+        claim: CommandClaim,
+        *,
+        error_code: CommandErrorCode,
+        now: float,
+    ) -> CommandReceipt:
+        now = _time(now)
+        with self._database.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE conversation_commands
+                SET state='rejected',raw_payload_json=NULL,owner_id=NULL,lease_expires_at=NULL,
+                    last_error_code=?,version=version+1,updated_at=?
+                WHERE command_id=? AND owner_id=? AND claim_epoch=?
+                  AND state NOT IN ('applied','rejected','cancelled')
+                """,
+                (
+                    error_code.value,
+                    now,
+                    claim.receipt.command_id,
+                    claim.owner_id,
+                    claim.claim_epoch,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise CommandError(CommandErrorCode.INTENT_CONFLICT)
+            row = connection.execute(
+                "SELECT * FROM conversation_commands WHERE command_id=?",
+                (claim.receipt.command_id,),
+            ).fetchone()
+            assert row is not None
+            return _receipt(row)
+
     def heartbeat(self, claim: CommandClaim, *, now: float, lease_seconds: float) -> CommandClaim:
         now = _time(now)
         expires = now + lease_seconds
@@ -300,10 +390,9 @@ class CommandIngress:
                     raise CommandError(CommandErrorCode.RUN_MODE_CONFLICT)
                 accept_seq = 0
             else:
-                if mode is None or tuple(mode[:2]) != (
-                    intent.namespace,
-                    RunApiMode.COMMAND.value,
-                ):
+                if mode is None:
+                    raise CommandError(CommandErrorCode.NOT_FOUND)
+                if tuple(mode[:2]) != (intent.namespace, RunApiMode.COMMAND.value):
                     raise CommandError(CommandErrorCode.RUN_MODE_CONFLICT)
                 stream = connection.execute(
                     "SELECT next_accept_seq,cancel_fence_seq FROM conversation_command_streams "
@@ -346,12 +435,27 @@ class CommandIngress:
                 connection.execute(
                     """
                     UPDATE conversation_commands
-                    SET state='cancelled',raw_payload_json=NULL,version=version+1,updated_at=?
+                    SET state='cancelled',raw_payload_json=NULL,owner_id=NULL,
+                        lease_expires_at=NULL,version=version+1,updated_at=?
                     WHERE run_id=? AND accept_seq<? AND kind IN ('start','continue')
                       AND state='accepted'
                     """,
                     (now, intent.run_id.value, accept_seq),
                 )
+                run_exists = connection.execute(
+                    "SELECT 1 FROM runs WHERE run_id=?", (intent.run_id.value,)
+                ).fetchone()
+                unsettled = connection.execute(
+                    "SELECT 1 FROM conversation_commands WHERE run_id=? AND accept_seq<? "
+                    "AND state NOT IN ('applied','rejected','cancelled') LIMIT 1",
+                    (intent.run_id.value, accept_seq),
+                ).fetchone()
+                if run_exists is None and unsettled is None:
+                    connection.execute(
+                        "UPDATE conversation_commands SET state='applied',raw_payload_json=NULL,"
+                        "version=version+1,updated_at=? WHERE command_id=? AND state='accepted'",
+                        (now, intent.command_id),
+                    )
             row = connection.execute(
                 "SELECT * FROM conversation_commands WHERE command_id=?", (intent.command_id,)
             ).fetchone()

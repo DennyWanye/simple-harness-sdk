@@ -5,6 +5,14 @@ from __future__ import annotations
 
 import asyncio
 
+from simple_harness import (
+    AgentIdentity,
+    CancelCommandIntent,
+    ContinueCommandIntent,
+    Message,
+    MessageRole,
+    StartCommandIntent,
+)
 from simple_harness.contracts import ExecutionSessionId, RequestId, RunId
 from simple_harness.execution.delivery import (
     DeliveryDispatcher,
@@ -14,6 +22,11 @@ from simple_harness.execution.delivery import (
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import RunState
 from simple_harness.runtime import (
+    CommandOutputState,
+    CommandState,
+    ConversationContinuationInput,
+    ConversationTurnInput,
+    ConversationTurnOutput,
     DriverResult,
     RunStart,
     RuntimeLifecycleState,
@@ -163,6 +176,225 @@ def test_start_is_atomic_activated_and_idempotent(tmp_path) -> None:
         await value.wait_idle(RunId("run-one"))
         assert value.client.query(RunId("run-one")).state is RunState.WAITING
         assert driver.calls == 1
+        await value.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_durable_command_accepts_before_driver_and_projects_closed_output(tmp_path) -> None:
+    class CommandDriver:
+        def __init__(self) -> None:
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def start(self, invocation, *, context, cancel):
+            del invocation, context, cancel
+            self.entered.set()
+            await self.release.wait()
+            return DriverResult(
+                RunState.COMPLETED,
+                {"private": "not-the-public-output"},
+                conversation_output=ConversationTurnOutput(
+                    Message(MessageRole.ASSISTANT, "closed answer"), "closed answer"
+                ),
+            )
+
+    async def case() -> None:
+        driver = CommandDriver()
+        value, _, database = runtime(tmp_path, driver=driver)
+        await value.start()
+        intent = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "command-1",
+            RunId("run-command"),
+            RequestId("request-command"),
+            "turn-command",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-command"),
+                Message(MessageRole.USER, "hello"),
+                "hello",
+            ),
+        )
+        accepted = await value.client.submit_start(intent)
+        assert accepted.state is CommandState.ACCEPTED
+        await asyncio.wait_for(driver.entered.wait(), timeout=1)
+        in_flight = await value.client.get_command(intent.command_id)
+        assert in_flight.output_state is CommandOutputState.PENDING
+        driver.release.set()
+        await value.wait_idle(intent.run_id)
+        for _ in range(100):
+            snapshot = await value.client.get_command(intent.command_id)
+            if snapshot.output_state is CommandOutputState.PRESENT:
+                break
+            await asyncio.sleep(0.01)
+        assert snapshot.receipt.state is CommandState.APPLIED
+        assert snapshot.output is not None
+        assert snapshot.output.memory_text == "closed answer"
+        assert not hasattr(snapshot, "private")
+        await value.close()
+        database.close()
+
+        reopened = Database.open(tmp_path / "runtime.db")
+        try:
+            persisted = SqliteExecutionUnitOfWork(reopened).get_command_snapshot(intent.command_id)
+            assert persisted.output == snapshot.output
+        finally:
+            reopened.close()
+
+    asyncio.run(case())
+
+
+def test_startup_recovers_a_command_committed_before_runtime_start(tmp_path) -> None:
+    async def case() -> None:
+        value, uow, database = runtime(tmp_path)
+        intent = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "command-before-crash",
+            RunId("run-before-crash"),
+            RequestId("request-before-crash"),
+            "turn-before-crash",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-before-crash"),
+                Message(MessageRole.USER, "recover"),
+                "recover",
+            ),
+        )
+        accepted = uow.submit_start_command(intent, now=1)
+        assert accepted.state is CommandState.ACCEPTED
+        assert uow.read_run(intent.run_id.value) is None
+        await value.start()
+        await value.wait_idle(intent.run_id)
+        recovered = await value.client.get_command(intent.command_id)
+        assert recovered.receipt.state is CommandState.APPLIED
+        assert value.client.query(intent.run_id).state is RunState.COMPLETED
+        await value.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_continue_command_is_fifo_and_owns_the_terminal_output(tmp_path) -> None:
+    class TwoTurnDriver:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def start(self, invocation, *, context, cancel):
+            del invocation, context, cancel
+            self.calls += 1
+            if self.calls == 1:
+                return DriverResult(RunState.WAITING, {"waiting": True})
+            return DriverResult(
+                RunState.COMPLETED,
+                {},
+                conversation_output=ConversationTurnOutput(
+                    Message(MessageRole.ASSISTANT, "second answer"), "second answer"
+                ),
+            )
+
+    async def case() -> None:
+        driver = TwoTurnDriver()
+        value, _, database = runtime(tmp_path, driver=driver)
+        await value.start()
+        start = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "start-two-turn",
+            RunId("run-two-turn"),
+            RequestId("request-two-turn"),
+            "turn-1",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-two-turn"),
+                Message(MessageRole.USER, "first"),
+                "first",
+            ),
+        )
+        await value.client.submit_start(start)
+        for _ in range(100):
+            if (
+                run := value.client.query(start.run_id)
+            ) is not None and run.state is RunState.WAITING:
+                break
+            await asyncio.sleep(0.01)
+        continuation = ContinueCommandIntent(
+            start.namespace,
+            start.projection_key_id,
+            "continue-two-turn",
+            start.run_id,
+            "continuation-two-turn",
+            "turn-2",
+            ConversationContinuationInput(Message(MessageRole.USER, "second"), "second"),
+        )
+        accepted = await value.client.submit_continue(continuation)
+        assert accepted.accept_seq == 1
+        for _ in range(100):
+            snapshot = await value.client.get_command(continuation.command_id)
+            if snapshot.output_state is CommandOutputState.PRESENT:
+                break
+            await asyncio.sleep(0.01)
+        assert snapshot.output is not None and snapshot.output.memory_text == "second answer"
+        row = database.connection.execute(
+            "SELECT command_id FROM conversation_outputs WHERE run_id=?",
+            (start.run_id.value,),
+        ).fetchone()
+        assert row is not None and row[0] == continuation.command_id
+        await value.close()
+        database.close()
+
+    asyncio.run(case())
+
+
+def test_cancel_command_fences_and_converges_an_active_run(tmp_path) -> None:
+    class BlockingCommandDriver:
+        def __init__(self) -> None:
+            self.entered = asyncio.Event()
+
+        async def start(self, invocation, *, context, cancel):
+            del invocation, context, cancel
+            self.entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("cancelled driver must not return")
+
+    async def case() -> None:
+        driver = BlockingCommandDriver()
+        value, _, database = runtime(tmp_path, driver=driver)
+        await value.start()
+        start = StartCommandIntent(
+            "deployment/phone",
+            "key-1",
+            "start-cancel",
+            RunId("run-cancel-command"),
+            RequestId("request-cancel-command"),
+            "turn-cancel-command",
+            ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session-cancel"),
+                Message(MessageRole.USER, "wait"),
+                "wait",
+            ),
+        )
+        await value.client.submit_start(start)
+        await asyncio.wait_for(driver.entered.wait(), timeout=1)
+        cancel = CancelCommandIntent(
+            start.namespace,
+            start.projection_key_id,
+            "cancel-command",
+            start.run_id,
+        )
+        accepted = await value.client.submit_cancel(cancel)
+        assert accepted.accept_seq == 1
+        for _ in range(100):
+            snapshot = await value.client.get_command(cancel.command_id)
+            run = value.client.query(start.run_id)
+            if (
+                snapshot.receipt.state is CommandState.APPLIED
+                and run is not None
+                and run.state is RunState.CANCELLED
+            ):
+                break
+            await asyncio.sleep(0.01)
+        assert snapshot.output_state is CommandOutputState.ABSENT
         await value.close()
         database.close()
 

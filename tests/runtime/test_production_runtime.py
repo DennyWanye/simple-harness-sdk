@@ -199,6 +199,7 @@ def test_production_runtime_accepts_optional_observability_sink(tmp_path: Path) 
         assert snapshot["active_runs"] == 0
         assert snapshot["authorities"] == {
             "health": "healthy",
+            "commands": {"health": "healthy", "counts": {}, "oldest_age_ms": None},
             "context": {"health": "healthy", "counts": {}, "oldest_age_ms": None},
             "outbox": {"health": "healthy", "counts": {}, "oldest_age_ms": None},
             "recovery": {"health": "healthy", "counts": {}, "oldest_age_ms": None},
