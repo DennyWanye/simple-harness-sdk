@@ -5,6 +5,17 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.5.2 — 2026-08-24
+
+### Fixed
+- Durable start commands now deeply thaw their frozen JSON input before constructing `RunStart`.
+  Nested capability snapshots and message metadata therefore retain their canonical JSON shape
+  instead of being rejected after Memory Context staging.
+
+### Compatibility
+- Public APIs, command schema version, and fresh execution schema v5 are unchanged. There is no
+  migration or legacy-data compatibility path.
+
 ## 0.5.1 — 2026-08-24
 
 ### Fixed

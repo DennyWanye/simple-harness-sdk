@@ -624,7 +624,7 @@ def test_candidate_docs_do_not_overstate_product_integration() -> None:
 
     assert "`simple_harness` has completed exact-wheel product" in readme
     assert "| `simple_harness` | integrated and real-UI validated |" in status
-    assert "is the current\nnon-draft, non-prerelease Latest release" in status
+    assert "Version 0.5.2 is the release candidate" in status
     assert "Memory SDK 0.5.1" in status
     for consumer in ("AIPhone", "K6/AgentOS"):
         assert f"| {consumer} | interface ready, not integrated |" in status
