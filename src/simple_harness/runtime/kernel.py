@@ -2156,7 +2156,14 @@ class Runtime:
             intent.run_id,
             intent.request_id,
             intent.turn_id,
-            dict(intent.input or {"messages": [intent.conversation.message.to_dict()]}),
+            (
+                {"messages": [intent.conversation.message.to_dict()]}
+                if not intent.input
+                else cast(
+                    Mapping[str, JsonValue],
+                    thaw_json(cast(FrozenJsonValue, intent.input)),
+                )
+            ),
             intent.tool_catalog_generation,
             intent.tool_catalog_fingerprint,
             conversation=intent.conversation,

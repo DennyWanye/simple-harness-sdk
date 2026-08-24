@@ -409,6 +409,60 @@ def test_command_catalog_fingerprint_is_durable_across_reopen(tmp_path) -> None:
     asyncio.run(case())
 
 
+def test_command_nested_capability_snapshot_reaches_catalog_bound_run(tmp_path) -> None:
+    async def case() -> None:
+        fingerprint = "b" * 64
+        value, uow, database = runtime(
+            tmp_path,
+            catalog=Catalog(fingerprint=fingerprint),
+            agent_memory=StableMemory(),
+            context_provider=StableContextProvider(),
+        )
+        await value.start()
+        conversation = ConversationTurnInput(
+            AgentIdentity("deployment", "household", "actor", "session-tools"),
+            Message(MessageRole.USER, "use the readonly tool"),
+            "use the readonly tool",
+        )
+        intent = StartCommandIntent(
+            "deployment/phone",
+            "key-tools",
+            "command-tools",
+            RunId("run-tools"),
+            RequestId("request-tools"),
+            "turn-tools",
+            conversation,
+            input={
+                "messages": [conversation.message.to_dict()],
+                "capability_snapshot": {"tools": ["read_status"]},
+                "max_output_tokens": 4096,
+            },
+            tool_catalog_generation=1,
+            tool_catalog_fingerprint=fingerprint,
+        )
+
+        await value.client.submit_start(intent)
+        for _ in range(100):
+            command = await value.client.get_command(intent.command_id)
+            if command.receipt.state.terminal:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("command did not settle")
+
+        assert command.receipt.state is CommandState.APPLIED
+        start = uow.read_start_snapshot(intent.run_id.value)
+        assert start is not None
+        assert start["tool_catalog_generation"] == 1
+        assert start["tool_catalog_fingerprint"] == fingerprint
+        assert start["input"]["capability_snapshot"] == {"tools": ["read_status"]}
+        assert uow.read_run(intent.run_id.value) is not None
+        await value.close()
+        database.close()
+
+    asyncio.run(case())
+
+
 def test_command_catalog_fingerprint_drift_fails_before_driver(tmp_path) -> None:
     async def case() -> None:
         driver = Driver()

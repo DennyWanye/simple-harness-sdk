@@ -9,8 +9,20 @@ from pathlib import Path
 
 import pytest
 
+from simple_harness import (
+    AgentIdentity,
+    ConversationTurnInput,
+    MemoryRecallResult,
+    MemoryRecallStatus,
+    Message,
+    MessageRole,
+    StartCommandIntent,
+)
+from simple_harness.contracts import RequestId, RunId
+from simple_harness.execution.context_authority import ToolCatalogSnapshot
 from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.sqlite import Database
+from simple_harness.execution.uow import RunState
 from simple_harness.observability import (
     CorrelationContext,
     ObservabilityEventV1,
@@ -19,7 +31,10 @@ from simple_harness.observability import (
     RecordingSink,
     Severity,
 )
+from simple_harness.providers import ProviderToolSpec
 from simple_harness.runtime import (
+    CommandState,
+    DriverResult,
     ProductionRuntimeConfig,
     ResourceOwnership,
     RuntimeLifecycleState,
@@ -68,13 +83,54 @@ class Pump:
 
 
 class Catalog:
+    def __init__(self, fingerprint: str | None = None) -> None:
+        self.fingerprint = fingerprint
+
     def current_generation(self) -> int:
         return 1
+
+    def resolve(
+        self, generation: int, content_fingerprint: str
+    ) -> ToolCatalogSnapshot | None:
+        if generation != 1 or content_fingerprint != self.fingerprint:
+            return None
+        return ToolCatalogSnapshot(
+            1,
+            content_fingerprint,
+            (ProviderToolSpec("read_status", "Read status", {"type": "object"}),),
+            0.0,
+        )
 
 
 class Driver:
     async def start(self, invocation, *, context, cancel):  # type: ignore[no-untyped-def]
         raise AssertionError((invocation, context, cancel))
+
+
+class CommandMemory:
+    async def recall_for_turn(self, request):  # type: ignore[no-untyped-def]
+        return MemoryRecallResult(
+            request.query_id,
+            request.query_hash,
+            "memory-result",
+            {},
+            MemoryRecallStatus.READY,
+            0,
+            1,
+            "memory-fence",
+        )
+
+    async def release_recall(self, request):  # type: ignore[no-untyped-def]
+        del request
+
+    async def record_committed_turn(self, request):  # type: ignore[no-untyped-def]
+        raise AssertionError(request)
+
+
+class WaitingDriver:
+    async def start(self, invocation, *, context, cancel):  # type: ignore[no-untyped-def]
+        del invocation, context, cancel
+        return DriverResult(RunState.WAITING, {"reason": "fixture"})
 
 
 def _config(path: Path, trace: list[str], **changes) -> ProductionRuntimeConfig:
@@ -142,6 +198,58 @@ def test_production_runtime_retains_authorities_and_closes_in_order(
         assert not authorities.context_staging.database.is_open
         with Database.open(path) as reopened:
             assert reopened.integrity_check() == ("ok",)
+
+    asyncio.run(case())
+
+
+def test_production_submit_start_accepts_nested_catalog_bound_input(tmp_path) -> None:
+    async def case() -> None:
+        fingerprint = "c" * 64
+        runtime = build_production_runtime(
+            _config(
+                tmp_path / "catalog-command.db",
+                [],
+                memory=CommandMemory(),
+                memory_ownership=ResourceOwnership.BORROWED,
+                tool_catalog=Catalog(fingerprint),
+                driver=WaitingDriver(),
+            )
+        )
+        await runtime.start()
+        conversation = ConversationTurnInput(
+            AgentIdentity("deployment", "household", "actor", "session-tools"),
+            Message(MessageRole.USER, "read status"),
+            "read status",
+        )
+        intent = StartCommandIntent(
+            "deployment/phone",
+            "key-tools",
+            "command-tools",
+            RunId("run-tools"),
+            RequestId("request-tools"),
+            "turn-tools",
+            conversation,
+            input={
+                "messages": [conversation.message.to_dict()],
+                "capability_snapshot": {"tools": ["read_status"]},
+                "max_output_tokens": 4096,
+            },
+            tool_catalog_generation=1,
+            tool_catalog_fingerprint=fingerprint,
+        )
+
+        await runtime.client.submit_start(intent)
+        for _ in range(100):
+            command = await runtime.client.get_command(intent.command_id)
+            if command.receipt.state.terminal:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("production command did not settle")
+
+        assert command.receipt.state is CommandState.APPLIED
+        assert runtime.client.query(intent.run_id).state is RunState.WAITING
+        await runtime.close()
 
     asyncio.run(case())
 
