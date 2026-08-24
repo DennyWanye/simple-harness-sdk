@@ -14,9 +14,11 @@ trusted `AgentIdentity`, Provider/Tool/Authorization ports, an optional product 
 and `memory=MemoryManager(...)`; the SDK owns automatic recall, frozen Context, committed-turn
 outbox delivery, retry, and recovery.
 
-Version 0.5.2 is the release candidate for the nested durable start-input thaw fix. Promotion
-requires the frozen exact-wheel gates and public redownload verification; this status will be
-replaced with the immutable tag, source commit, and asset digests after publication.
+[`v0.5.2`](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.5.2) is the current
+non-draft, non-prerelease Latest release. Its annotated tag binds source commit
+`136b3539b938516156a9b336f38c6b4404d3adb8`; the frozen wheel SHA-256 is
+`09ba6041a0220cdd952f50e6ec8defcf1d8bbe60d9a044d9d7fc9106985639de`. All seven public assets
+were independently downloaded and compared byte-for-byte with the reproducible candidate.
 
 The earlier 0.5.0 candidates built from `a9502f2` and `7fd6610` (wheel digest prefix
 `7d70b9fa2f59`) are withdrawn and must not be published. They were superseded after independent
@@ -40,7 +42,7 @@ and durable committed-turn delivery. It does not mean a product has adopted or t
 
 ## Compatibility and migration
 
-- Harness SDK release candidate: `0.5.2`, Python 3.11–3.13.
+- Harness SDK release: `0.5.2`, Python 3.11–3.13.
 - Memory SDK integration: released Memory SDK 0.5 remains bound to Harness `>=0.4,<0.5`;
   the Memory SDK 0.5.1 candidate passed its exact-wheel Harness 0.4/0.5 matrix before this
   release was promoted.

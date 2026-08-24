@@ -72,4 +72,6 @@ and production paths were not modified, integrated, or tested in this program.
 Version 0.5.2 retains the durable command authority, Tool catalog fingerprint binding, and fresh
 execution schema v5 while correctly thawing nested durable start input before `RunStart`
 construction. It is a compatibility-preserving patch over 0.5.1 and requires no schema migration.
-The immutable tag, source commit, and asset digests will be recorded here after promotion.
+The immutable release is
+[`v0.5.2`](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.5.2), built from
+source commit `136b353` with wheel SHA-256 `09ba6041…`.
