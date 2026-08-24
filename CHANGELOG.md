@@ -5,6 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.6.1 — 2026-08-25
+
+### Fixed
+- `build_react_driver` now accepts a Run-local Tool exposure resolver and passes the resolved port
+  into every `ReActRunInput`. This closes the public composition seam required by a Host to use
+  same-Run progressive exposure; the rejected 0.6.0 prepublish artifact was never released.
+
 ## 0.6.0 — 2026-08-25
 
 ### Added

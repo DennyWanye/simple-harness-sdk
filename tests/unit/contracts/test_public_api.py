@@ -14,7 +14,7 @@ from simple_harness.testing import arm64_candidate
 
 def test_public_api_matches_frozen_snapshot() -> None:
     snapshot = json.loads((Path(__file__).with_name("public-api.json")).read_text(encoding="utf-8"))
-    assert simple_harness.__version__ == snapshot["version"] == "0.6.0"
+    assert simple_harness.__version__ == snapshot["version"] == "0.6.1"
     assert list(simple_harness.__all__) == snapshot["simple_harness"]
     assert list(contracts.__all__) == snapshot["simple_harness.contracts"]
     assert list(runtime.__all__) == snapshot["simple_harness.runtime"]

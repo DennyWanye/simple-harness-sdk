@@ -178,3 +178,16 @@ def test_public_react_builder_requires_and_freezes_hard_policy() -> None:
     )
     assert first.policy_fingerprint is not None
     assert first.policy_fingerprint != second.policy_fingerprint
+
+
+def test_public_react_builder_keeps_run_local_tool_exposure_resolver() -> None:
+    def resolver(_run_id: object) -> None:
+        return None
+
+    driver = build_react_driver(
+        limits=LIMITS,
+        budget_policy=BudgetPolicy(),
+        estimator=None,
+        tool_exposure_resolver=resolver,
+    )
+    assert driver._tool_exposure_resolver is resolver  # noqa: SLF001

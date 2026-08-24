@@ -3,11 +3,11 @@ SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Simple Harness SDK 0.6.0 candidate integration status
+# Simple Harness SDK 0.6.1 candidate integration status
 
 ## Release status
 
-Harness SDK 0.6.0 adds a provider-neutral Runtime capability catalog, same-Run progressive Tool
+Harness SDK 0.6.1 adds a provider-neutral Runtime capability catalog, same-Run progressive Tool
 exposure, and fresh execution schema v6 while retaining the Agent Memory v1, production
 composition, and observability v1 contracts. Memory
 SDK 0.5 `MemoryManager` implements those retained contracts directly. Consumers provide
@@ -15,9 +15,13 @@ trusted `AgentIdentity`, Provider/Tool/Authorization ports, an optional product 
 and `memory=MemoryManager(...)`; the SDK owns automatic recall, frozen Context, committed-turn
 outbox delivery, retry, and recovery.
 
-The 0.6.0 source is a candidate until its exact wheel passes the simple_harness Host and real-UI
+The 0.6.1 source is a candidate until its exact wheel passes the simple_harness Host and real-UI
 prepublish gate. The current published fallback remains v0.5.2; no release/tag claim is made here
 before immutable artifact download-back verification completes.
+
+The one-time 0.6.0 prepublish artifact failed Host composition because the public ReAct builder had
+no Run-local exposure resolver seam. It was not vendored, tagged, uploaded, or released and must not
+be promoted. The corrected candidate uses 0.6.1 rather than rebuilding the rejected version.
 
 The earlier 0.5.0 candidates built from `a9502f2` and `7fd6610` (wheel digest prefix
 `7d70b9fa2f59`) are withdrawn and must not be published. They were superseded after independent
@@ -30,7 +34,7 @@ withdrawn candidates remain ineligible for publication.
 
 | Consumer | Status | Evidence boundary |
 | --- | --- | --- |
-| `simple_harness` | 0.5.2 line validated; 0.6.0 candidate pending | Prior exact-wheel integration is historical evidence; the new catalog cutover still requires Host automation and real-UI prepublish gates |
+| `simple_harness` | 0.5.2 line validated; 0.6.1 candidate pending | Prior exact-wheel integration is historical evidence; the new catalog cutover still requires Host automation and real-UI prepublish gates |
 | AIPhone | interface ready, not integrated | product-neutral SDK fixture only; repository and runtime unchanged |
 | K6/AgentOS | interface ready, not integrated | product-neutral SDK fixture only; repository, PostgreSQL and runtime unchanged |
 | NovelTagSystem | out of scope | no repository, database, runtime, or test changes |
@@ -41,7 +45,7 @@ and durable committed-turn delivery. It does not mean a product has adopted or t
 
 ## Compatibility and migration
 
-- Harness SDK candidate: `0.6.0`, Python 3.11–3.13.
+- Harness SDK candidate: `0.6.1`, Python 3.11–3.13.
 - Memory SDK integration: released Memory SDK 0.5 remains bound to Harness `>=0.4,<0.5`;
   the Memory SDK 0.5.1 candidate passed its exact-wheel Harness 0.4/0.5 matrix before this
   release was promoted.

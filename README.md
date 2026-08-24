@@ -69,8 +69,10 @@ cutover, automated regression, and real macOS UI validation with a configured De
 AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
 and production paths were not modified, integrated, or tested in this program.
 
-Version 0.6.0 adds the provider-neutral Runtime capability catalog and same-Run progressive Tool
+Version 0.6.1 adds the provider-neutral Runtime capability catalog and same-Run progressive Tool
 exposure. Search, describe, and activation change visibility only; actual Tool execution retains
 the existing authorization and durable Effect authority. Fresh databases use execution schema v6;
 an exact v5 database requires the explicit backup-first offline v5-to-v6 migrator. Release source,
-artifact hashes, and the consuming Host pin are verified separately before publication.
+artifact hashes, and the consuming Host pin are verified separately before publication. The 0.6.0
+prepublish artifact was rejected before release because the public ReAct builder did not expose the
+Host resolver seam; 0.6.1 includes that seam.

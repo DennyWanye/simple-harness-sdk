@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import cast
 
@@ -43,6 +43,7 @@ from simple_harness.runtime.kernel import DriverInvocation, DriverResult
 from simple_harness.runtime.workflow_spawn import WorkflowSpawnFailed
 from simple_harness.tools.errors import UnknownToolError
 from simple_harness.tools.executor import ToolAuthorizationPending
+from simple_harness.tools.runtime_catalog import RunToolExposurePort
 
 from ..termination import TerminationBudgetExceeded, TerminationLimits
 from .react_loop import (
@@ -79,6 +80,7 @@ class ReActDriver:
         clock=time.time,
         policy_fingerprint: str | None = None,
         provider_budget_fingerprint: str | None = None,
+        tool_exposure_resolver: Callable[[RunId], RunToolExposurePort | None] | None = None,
     ) -> None:
         self._clock = clock
         self._loop = ReActLoop(
@@ -89,6 +91,7 @@ class ReActDriver:
         )
         self.policy_fingerprint = policy_fingerprint
         self.provider_budget_fingerprint = provider_budget_fingerprint
+        self._tool_exposure_resolver = tool_exposure_resolver
 
     async def start(self, invocation: DriverInvocation, *, context, cancel) -> DriverResult:
         if context is not invocation.services.context:
@@ -184,12 +187,18 @@ class ReActDriver:
             generation=invocation.start.tool_catalog_generation,
             fingerprint=invocation.start.tool_catalog_fingerprint,
         )
+        tool_exposure = (
+            None
+            if self._tool_exposure_resolver is None
+            else self._tool_exposure_resolver(RunId(invocation.run.run_id))
+        )
         try:
             result = await self._loop.run(
                 ReActRunInput(
                     RunId(invocation.run.run_id),
                     RequestId(invocation.run.request_id),
                     tools=tools,
+                    tool_exposure=tool_exposure,
                     temperature=_optional_float(input_value.get("temperature"), "temperature"),
                     max_output_tokens=_optional_int(
                         input_value.get("max_output_tokens"), "max_output_tokens"
@@ -385,6 +394,7 @@ def build_react_driver(
     budget_policy: BudgetPolicy,
     estimator: FrozenPriceEstimator | None,
     effects: EffectBatchExecutor | None = None,
+    tool_exposure_resolver: Callable[[RunId], RunToolExposurePort | None] | None = None,
     clock=time.time,
 ) -> ReActDriver:
     """Public hard-policy builder; every authority must be explicit and frozen."""
@@ -416,6 +426,7 @@ def build_react_driver(
         clock=clock,
         policy_fingerprint=policy_fingerprint,
         provider_budget_fingerprint=provider_fingerprint,
+        tool_exposure_resolver=tool_exposure_resolver,
     )
 
 
