@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 from simple_harness import (
     AgentIdentity,
@@ -19,6 +20,7 @@ from simple_harness import (
     ConversationContinuationInput,
     ConversationTurnInput,
     CurrentMessageContextProvider,
+    FrozenJsonValue,
     JsonValue,
     Message,
     MessageRole,
@@ -26,10 +28,24 @@ from simple_harness import (
     RunId,
     Runtime,
     canonical_json,
+    thaw_json,
 )
 from simple_harness.providers import ProviderRequest, ProviderResponse
 from simple_harness.runtime import AuthorizationRequest, AuthorizationResult
-from simple_harness.tools import ToolCall, ToolResult
+from simple_harness.tools import (
+    AuthorizationPort,
+    CatalogRunToolExposure,
+    ExecutableToolRecord,
+    FunctionTool,
+    JsonObject,
+    RuntimeToolCatalog,
+    Tool,
+    ToolCall,
+    ToolHandler,
+    ToolRegistry,
+    ToolResult,
+    ToolSpec,
+)
 
 
 class DeterministicProvider:
@@ -62,6 +78,35 @@ class AllowAuthorization:
     async def request_authorization(self, request: AuthorizationRequest) -> AuthorizationResult:
         del request
         return AuthorizationResult("allow")
+
+
+@dataclass(frozen=True, slots=True)
+class FutureConsumerCapabilityFixture:
+    """Neutral consumer composition: source metadata, permission, handler."""
+
+    source: ExecutableToolRecord
+    permission: AuthorizationPort
+    handler: ToolHandler
+
+    def build(
+        self, *, generation: int = 1
+    ) -> tuple[
+        RuntimeToolCatalog,
+        CatalogRunToolExposure,
+        ToolRegistry,
+    ]:
+        catalog = RuntimeToolCatalog((self.source,), generation=generation)
+        exposure = CatalogRunToolExposure(catalog)
+        schema = thaw_json(cast(FrozenJsonValue, self.source.input_schema))
+        if not isinstance(schema, dict):
+            raise TypeError("executable tool schema must be an object")
+        spec = ToolSpec(
+            self.source.provider_name,
+            self.source.description,
+            cast(JsonObject, schema),
+        )
+        registry = ToolRegistry((cast(Tool, FunctionTool(spec, self.handler)),))
+        return catalog, exposure, registry
 
 
 class RichProductContextProvider:
@@ -192,6 +237,7 @@ __all__ = (
     "AllowAuthorization",
     "DeterministicProvider",
     "FutureConsumerFixture",
+    "FutureConsumerCapabilityFixture",
     "NoopTools",
     "RichProductContextProvider",
 )

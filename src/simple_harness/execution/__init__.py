@@ -4,8 +4,10 @@
 """Durable execution contracts."""
 
 from .context_authority import (
+    CatalogHandlerBinding,
     DurableToolCatalogResolver,
     ProviderProjectionReceipt,
+    ResolvedCatalogHandlers,
     ToolCatalogSnapshot,
     ToolCatalogStore,
 )
@@ -26,9 +28,11 @@ from .fences import (
 )
 
 __all__ = (
+    "CatalogHandlerBinding",
     "EffectConflictError",
     "DurableToolCatalogResolver",
     "ProviderProjectionReceipt",
+    "ResolvedCatalogHandlers",
     "ToolCatalogSnapshot",
     "ToolCatalogStore",
     "EffectRecord",

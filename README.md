@@ -69,9 +69,8 @@ cutover, automated regression, and real macOS UI validation with a configured De
 AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
 and production paths were not modified, integrated, or tested in this program.
 
-Version 0.5.2 retains the durable command authority, Tool catalog fingerprint binding, and fresh
-execution schema v5 while correctly thawing nested durable start input before `RunStart`
-construction. It is a compatibility-preserving patch over 0.5.1 and requires no schema migration.
-The immutable release is
-[`v0.5.2`](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.5.2), built from
-source commit `136b353` with wheel SHA-256 `09ba6041…`.
+Version 0.6.0 adds the provider-neutral Runtime capability catalog and same-Run progressive Tool
+exposure. Search, describe, and activation change visibility only; actual Tool execution retains
+the existing authorization and durable Effect authority. Fresh databases use execution schema v6;
+an exact v5 database requires the explicit backup-first offline v5-to-v6 migrator. Release source,
+artifact hashes, and the consuming Host pin are verified separately before publication.

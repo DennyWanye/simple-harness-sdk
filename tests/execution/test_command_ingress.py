@@ -62,7 +62,7 @@ def _continuation(command_id: str, continuation_id: str) -> ContinueCommandInten
 
 def test_fresh_v5_schema_and_command_admission_replay_conflicts(tmp_path: Path) -> None:
     with Database.open(tmp_path / "execution.db") as database:
-        assert database.schema_version == 5
+        assert database.schema_version == 6
         assert {
             "conversation_command_namespaces",
             "conversation_run_modes",
@@ -262,7 +262,7 @@ def test_normal_open_rejects_v4_without_writing_any_bytes(tmp_path: Path) -> Non
     connection.close()
     before = path.read_bytes()
     before_stat = path.stat()
-    with pytest.raises(ExecutionSchemaIncompatible, match="fresh schema v5"):
+    with pytest.raises(ExecutionSchemaIncompatible, match="fresh schema v6"):
         Database.open(path, wal=True)
     assert path.read_bytes() == before
     assert path.stat().st_mtime_ns == before_stat.st_mtime_ns

@@ -16,6 +16,7 @@ from simple_harness.contracts import (
     RunId,
     canonical_json,
     freeze_json,
+    thaw_json,
 )
 from simple_harness.execution import (
     EffectRecord,
@@ -31,14 +32,18 @@ from simple_harness.tools import (
     AuthorizationReceipt,
     AuthorizationResult,
     CancellationToken,
+    CatalogRunToolExposure,
     EffectExecutor,
+    ExecutableToolRecord,
     FunctionTool,
     PreparedToolEffect,
     ReconciliationObservation,
     ReconciliationState,
+    RuntimeToolCatalog,
     Sidecar,
     ToolCall,
     ToolContext,
+    ToolExposureMode,
     ToolInventoryRecord,
     ToolRegistry,
     ToolResource,
@@ -716,3 +721,119 @@ def test_retry_prepared_uses_explicit_authority_refresh_before_dispatch() -> Non
     assert execution.result.outcome.value == "succeeded"
     assert uow.trace == ["refresh", "handoff", "settle"]
     assert calls == 1
+
+
+def test_terminal_activation_effect_replay_reapplies_visibility_without_handler() -> None:
+    schema = {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False,
+    }
+    catalog = RuntimeToolCatalog(
+        (
+            ExecutableToolRecord(
+                capability_id="builtin:finish",
+                namespace="builtin",
+                source="core",
+                source_revision="v1",
+                exposure_mode=ToolExposureMode.DIRECT,
+                provider_name="finish",
+                description="Finish.",
+                input_schema=schema,
+            ),
+            ExecutableToolRecord(
+                capability_id="mcp:fixture:read",
+                namespace="mcp:fixture",
+                source="fixture",
+                source_revision="incarnation-a",
+                exposure_mode=ToolExposureMode.DEFERRED,
+                provider_name="mcp_fixture_read",
+                description="Read fixture.",
+                input_schema=schema,
+            ),
+        ),
+        generation=1,
+    )
+    issue_port = CatalogRunToolExposure(catalog)
+    run_id = RunId("run-1")
+    issue_port.restore(run_id, None)
+    described = issue_port.describe(run_id, "mcp:fixture:read")
+    receipt = issue_port.prepare_activation(
+        run_id, "mcp:fixture:read", described.nonce
+    )
+    arguments = {"capability_id": "mcp:fixture:read", "nonce": described.nonce}
+    call = ToolCall(CallId("call-activate"), "tool_activate", arguments)
+    terminal = ToolResult.succeeded(call.call_id, receipt.to_json())
+    uow = FakeUow(
+        EffectRecord(
+            effect_id=EffectId("effect-activate"),
+            run_id=run_id,
+            call_id=call.call_id,
+            tool_name=call.name,
+            request_hash=effect_request_hash(tool_name=call.name, arguments=arguments),
+            arguments=call.arguments,
+            state=EffectState.SUCCEEDED,
+            version=2,
+            fence_epoch=1,
+            authorization_receipt_ref="authorization:1",
+            handoff_receipt_ref="handoff:1",
+            evidence_ref="terminal:1",
+            result=terminal,
+        )
+    )
+    handler_calls = 0
+
+    def handler(_arguments: object, _context: ToolContext) -> ToolResult:
+        nonlocal handler_calls
+        handler_calls += 1
+        raise AssertionError("terminal Effect replay must skip the handler")
+
+    executor = EffectExecutor(
+        uow=uow,
+        registry=ToolRegistry(
+            [
+                FunctionTool(
+                    ToolSpec(
+                        "tool_activate",
+                        "Activate.",
+                        {
+                            "type": "object",
+                            "properties": {
+                                "capability_id": {"type": "string"},
+                                "nonce": {"type": "string"},
+                            },
+                            "required": ["capability_id", "nonce"],
+                            "additionalProperties": False,
+                        },
+                    ),
+                    handler,
+                )
+            ]
+        ),
+        authorization=Allow(),
+        reconciliation=Observe(
+            ReconciliationObservation(ReconciliationState.STILL_UNKNOWN, "unused")
+        ),
+    )
+    execution = asyncio.run(
+        executor.execute(
+            effect_id=EffectId("effect-activate"),
+            call=call,
+            context=_context(),
+            execution_lease=LEASE,
+            run_fence=FENCE,
+        )
+    )
+    assert handler_calls == 0
+    assert uow.trace == []
+
+    restored_port = CatalogRunToolExposure(catalog)
+    restored_port.restore(run_id, None)
+    result_value = thaw_json(execution.result.value)
+    assert isinstance(result_value, dict)
+    restored_port.observe_tool_result(run_id, "tool_activate", result_value)
+    assert [item.name for item in restored_port.provider_specs(run_id)] == [
+        "finish",
+        "mcp_fixture_read",
+    ]

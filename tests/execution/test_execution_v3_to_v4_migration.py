@@ -447,7 +447,7 @@ def test_completed_null_continuation_resolves_unique_pair_and_preserves_facts(
     with pytest.raises(ValueError, match="digest differs"):
         type(manifest).from_json(tampered)
     with Database.open(path) as database:
-        assert database.schema_version == 5
+        assert database.schema_version == 6
         assert database.connection.execute("SELECT COUNT(*) FROM continuations").fetchone()[0] == 2
         assert (
             database.connection.execute("SELECT COUNT(*) FROM delivery_outbox").fetchone()[0] == 1

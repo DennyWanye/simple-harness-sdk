@@ -40,6 +40,7 @@ def test_wheel_contains_only_package_and_distribution_metadata(
     assert "simple_harness/__init__.py" in names
     assert "simple_harness/py.typed" in names
     assert "simple_harness/testing/arm64_candidate.py" in names
+    assert "simple_harness/tools/runtime_catalog.py" in names
     assert any(name.endswith(".dist-info/licenses/LICENSES/Apache-2.0.txt") for name in names)
     assert any(name.endswith(".dist-info/licenses/NOTICE") for name in names)
     assert all(name.startswith("simple_harness/") or ".dist-info/" in name for name in names)

@@ -194,7 +194,7 @@ def test_database_requires_fresh_v4_storage_set(tmp_path: Path) -> None:
     connection.commit()
     connection.close()
 
-    with pytest.raises(ExecutionSchemaIncompatible, match="fresh schema v5"):
+    with pytest.raises(ExecutionSchemaIncompatible, match="fresh schema v6"):
         Database.open(path)
 
     check = sqlite3.connect(path)

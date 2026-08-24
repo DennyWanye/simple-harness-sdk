@@ -49,11 +49,11 @@ def test_first_open_creates_only_clean_sdk_schema_v5(tmp_path: Path) -> None:
         tables = database.table_names()
         assert EXPECTED_TABLES <= tables
         assert not FORBIDDEN_PRODUCT_TERMS.intersection(tables)
-        assert database.schema_version == SCHEMA_VERSION == 5
+        assert database.schema_version == SCHEMA_VERSION == 6
         rows = database.connection.execute(
             "SELECT version, name, checksum FROM sdk_schema_migrations ORDER BY version"
         ).fetchall()
-        assert [tuple(row[:2]) for row in rows] == [(5, "0005_fresh")]
+        assert [tuple(row[:2]) for row in rows] == [(6, "0006_fresh")]
         assert all(len(row[2]) == 64 for row in rows)
     finally:
         database.close()
@@ -110,11 +110,11 @@ def test_database_refuses_foreign_or_future_schema(tmp_path: Path) -> None:
     path = tmp_path / "execution.db"
     with Database.open(path) as database:
         database.connection.execute(
-            "UPDATE sdk_schema_migrations SET version = 99 WHERE version = 5"
+            "UPDATE sdk_schema_migrations SET version = 99 WHERE version = 6"
         )
         database.connection.commit()
 
-    with pytest.raises(RuntimeError, match="fresh schema v5"):
+    with pytest.raises(RuntimeError, match="fresh schema v6"):
         Database.open(path)
 
 

@@ -47,6 +47,7 @@ from simple_harness.tools import (
     ToolContext,
     ToolOutcome,
 )
+from simple_harness.tools.runtime_catalog import RunToolExposurePort
 
 from ..termination import TerminationLimits, TerminationState
 
@@ -56,6 +57,7 @@ class ReActRunInput:
     run_id: RunId
     request_id: RequestId
     tools: tuple[ProviderToolSpec, ...] = ()
+    tool_exposure: RunToolExposurePort | None = None
     temperature: float | None = None
     max_output_tokens: int | None = None
 
@@ -168,6 +170,8 @@ class ReActLoop:
             )
         checkpoint = DurableReactCheckpoint(services.react_checkpoint, clock=self._clock)
         state, checkpoint_version = checkpoint.load_or_create(value.run_id, execution_lease)
+        if value.tool_exposure is not None:
+            value.tool_exposure.restore(value.run_id, state.tool_exposure_state)
         if self._policy_fingerprint is not None:
             if state.policy_fingerprint and (state.policy_fingerprint != self._policy_fingerprint):
                 raise RuntimeError("ReAct policy fingerprint differs from checkpoint")
@@ -190,10 +194,15 @@ class ReActLoop:
                     f"{value.run_id.value}:provider-turn:{state.provider_turns_reserved_total}"
                 )
                 context = services.context.load(value.run_id)
+                provider_tools = (
+                    value.tools
+                    if value.tool_exposure is None
+                    else value.tool_exposure.provider_specs(value.run_id)
+                )
                 request = ProviderRequest(
                     RequestId(provider_request_id),
                     context.messages,
-                    tools=value.tools,
+                    tools=provider_tools,
                     temperature=value.temperature,
                     max_output_tokens=value.max_output_tokens,
                 )
@@ -313,12 +322,23 @@ class ReActLoop:
                     if execution.effect is None:
                         raise RuntimeError("tool_outcome_unknown_without_ledger")
                     raise ToolEffectUnknownError(execution.effect)
+                result_value = thaw_json(result.value)
                 payload: dict[str, JsonValue] = {
                     "outcome": result.outcome.value,
-                    "value": thaw_json(result.value),
+                    "value": result_value,
                     "error_code": result.error_code,
                     "public_message": result.public_message,
                 }
+                if value.tool_exposure is not None and isinstance(result_value, dict):
+                    value.tool_exposure.observe_tool_result(
+                        value.run_id,
+                        call.name,
+                        result_value,
+                    )
+                    state = replace(
+                        state,
+                        tool_exposure_state=value.tool_exposure.checkpoint(value.run_id),
+                    )
                 context = services.context.append(
                     value.run_id,
                     execution_lease,

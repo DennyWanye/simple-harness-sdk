@@ -5,6 +5,25 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.6.0 — 2026-08-25
+
+### Added
+- Provider-neutral Runtime capability records for executable Tools, Skill resources, and Workflow
+  profiles, with bounded search/describe, nonce-bound activation receipts, and executable-only
+  Provider projection.
+- Run-local Tool exposure checkpoints. Each new ReAct `ready` attempt reprojects direct plus
+  activated Tools, while a `provider_reserved` request replays its exact frozen schema snapshot.
+- Fresh execution schema v6 and an explicit backup-first v5-to-v6 migrator. The legacy
+  ProviderToolSpec fingerprint remains separate from the complete v6 catalog envelope digest.
+
+### Safety and compatibility
+- Catalog visibility never invokes a handler or grants authorization. Target execution still goes
+  through ToolRegistry, authorization, EffectExecutor, and the durable effect ledger.
+- Terminal activation receipts deterministically restore visibility after restart; forged,
+  cross-Run, stale, out-of-order, missing, changed, or extra handler identities fail closed.
+- Normal loading still rejects legacy schemas. Operators must close the Runtime and explicitly run
+  `migrate_execution_v5_to_v6` with a caller-selected adjacent backup path.
+
 ## 0.5.2 — 2026-08-24
 
 ### Fixed

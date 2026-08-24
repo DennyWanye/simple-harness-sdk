@@ -3,22 +3,21 @@ SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Simple Harness SDK 0.5.2 integration status
+# Simple Harness SDK 0.6.0 candidate integration status
 
 ## Release status
 
-Harness SDK 0.5.2 retains the single durable command authority and fresh execution schema v5 while
-retaining the Agent Memory v1, production composition, and observability v1 contracts. Memory
+Harness SDK 0.6.0 adds a provider-neutral Runtime capability catalog, same-Run progressive Tool
+exposure, and fresh execution schema v6 while retaining the Agent Memory v1, production
+composition, and observability v1 contracts. Memory
 SDK 0.5 `MemoryManager` implements those retained contracts directly. Consumers provide
 trusted `AgentIdentity`, Provider/Tool/Authorization ports, an optional product Context provider,
 and `memory=MemoryManager(...)`; the SDK owns automatic recall, frozen Context, committed-turn
 outbox delivery, retry, and recovery.
 
-[`v0.5.2`](https://github.com/DennyWanye/simple-harness-sdk/releases/tag/v0.5.2) is the current
-non-draft, non-prerelease Latest release. Its annotated tag binds source commit
-`136b3539b938516156a9b336f38c6b4404d3adb8`; the frozen wheel SHA-256 is
-`09ba6041a0220cdd952f50e6ec8defcf1d8bbe60d9a044d9d7fc9106985639de`. All seven public assets
-were independently downloaded and compared byte-for-byte with the reproducible candidate.
+The 0.6.0 source is a candidate until its exact wheel passes the simple_harness Host and real-UI
+prepublish gate. The current published fallback remains v0.5.2; no release/tag claim is made here
+before immutable artifact download-back verification completes.
 
 The earlier 0.5.0 candidates built from `a9502f2` and `7fd6610` (wheel digest prefix
 `7d70b9fa2f59`) are withdrawn and must not be published. They were superseded after independent
@@ -31,7 +30,7 @@ withdrawn candidates remain ineligible for publication.
 
 | Consumer | Status | Evidence boundary |
 | --- | --- | --- |
-| `simple_harness` | integrated and real-UI validated | S6 installed exact wheels and passed automated plus Computer Use UI scenarios with DeepSeek |
+| `simple_harness` | 0.5.2 line validated; 0.6.0 candidate pending | Prior exact-wheel integration is historical evidence; the new catalog cutover still requires Host automation and real-UI prepublish gates |
 | AIPhone | interface ready, not integrated | product-neutral SDK fixture only; repository and runtime unchanged |
 | K6/AgentOS | interface ready, not integrated | product-neutral SDK fixture only; repository, PostgreSQL and runtime unchanged |
 | NovelTagSystem | out of scope | no repository, database, runtime, or test changes |
@@ -42,12 +41,13 @@ and durable committed-turn delivery. It does not mean a product has adopted or t
 
 ## Compatibility and migration
 
-- Harness SDK release: `0.5.2`, Python 3.11–3.13.
+- Harness SDK candidate: `0.6.0`, Python 3.11–3.13.
 - Memory SDK integration: released Memory SDK 0.5 remains bound to Harness `>=0.4,<0.5`;
   the Memory SDK 0.5.1 candidate passed its exact-wheel Harness 0.4/0.5 matrix before this
   release was promoted.
-- New 0.5 databases use fresh execution schema v5.
-- Normal loading of execution schema v1-v4 fails closed. There is no v4-to-v5 migration;
+- New 0.6 databases use fresh execution schema v6.
+- Normal loading of execution schema v1-v5 fails closed. Exact v5 has an explicit backup-first
+  offline v5-to-v6 migrator; there is no implicit migration. There remains no v4-to-v5 migration;
   `migrate_execution_v3_to_v4` remains an offline maintenance API for the 0.4 line only.
 - Retired public query/sink, reserved query/write ports, and consumer-managed Memory adapters are
   not compatibility surfaces in 0.5.0.

@@ -143,6 +143,26 @@ def test_checkpoint_roundtrip_preserves_workflow_catalog_pin() -> None:
     assert restored.workflow_catalog_selection_hash == selection_hash
 
 
+def test_checkpoint_roundtrip_preserves_tool_exposure_state() -> None:
+    exposure = {
+        "schema_version": 1,
+        "catalog_fingerprint": "b" * 64,
+        "revision": 2,
+        "activated_ids": ["mcp:filesystem:read_file"],
+    }
+    restored = TerminationState.from_json(
+        TerminationState(10, tool_exposure_state=exposure).to_json()
+    )
+    assert restored.tool_exposure_state == exposure
+
+
+def test_legacy_checkpoint_defaults_to_static_tool_exposure() -> None:
+    legacy = TerminationState(10).to_json()
+    legacy["schema_version"] = 2
+    legacy.pop("tool_exposure_state")
+    assert TerminationState.from_json(legacy).tool_exposure_state is None
+
+
 def test_public_react_builder_requires_and_freezes_hard_policy() -> None:
     with pytest.raises(TypeError):
         build_react_driver()  # type: ignore[call-arg]

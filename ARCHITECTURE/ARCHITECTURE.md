@@ -1,13 +1,43 @@
 <!--
 SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
-last-updated: 2026-08-23
+last-updated: 2026-08-25
 -->
-<!-- last-calibrated: bc6ae8df40a6ff23ec16332fdd0596b2814bf572 -->
+<!-- last-calibrated: f4fd99cd68f5a5cccf80f13bc33161a256f30c74 -->
 
 # Simple Harness SDK — 架构基线（Agent Memory v1）
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
+
+## Tool / Capability 目录当前生产链（2026-08-25）
+
+- `simple_harness.tools.RuntimeToolCatalog` 冻结 executable Tool、Skill resource、Workflow profile 三类
+  产品中立记录，提供 bounded search/describe 与 nonce-bound typed activation receipt；
+  `CatalogRunToolExposure` 只改变 Run-local visibility，不保存或调用 handler。
+- `simple_harness.tools.ToolRegistry` 仍是每个 Runtime 的显式 Tool 注册和执行边界：它不扫描 import、环境
+  或 Host 配置，负责唯一名称、参数 schema 校验、call-id 生命周期、取消与 handler dispatch。
+- `ToolCatalogSnapshot` / `DurableToolCatalogResolver` 冻结并解析 Provider tool schema；新的
+  `RuntimeToolCatalog` / `CatalogRunToolExposure` 则专门拥有 capability source、摘要搜索、describe、
+  `direct/deferred/hidden` 暴露策略与 Run-local 动态激活。既有
+  `workflows.capability_build.CapabilitySearchPort` / `CapabilityActivatePort` 和 durable-task
+  `CapabilityCatalogPort` 仍分别服务能力包构建/激活和工作流可用性查询，不与 Runtime Tool 披露边界混用。
+- `ReActRunInput.tool_exposure` 在每个新 `ready` reserve 前重新投影 direct+activated executable Tools；
+  `provider_reserved` 只从 durable request snapshot 重放，restart 不会偷换 schema。
+- SDK 继续保持产品中立：未来目录层只能接收消费者显式提供的 capability source、permission metadata
+  和 execution handler；不得 import simple_harness Host、MCP manager、Skill loader 或特定 Provider。
+- 目录/披露是可见性层，不是 authorization authority。搜索、describe、activate 不得执行工具，也不得
+  绕过既有 ToolRegistry、authorization、effect/UoW、workspace scope、确认、幂等与恢复边界。
+- `runtime/drivers/react.py::_tools()` 仍提供兼容静态输入；配置 `ReActRunInput.tool_exposure` 时，每个新的
+  ready reserve 都从 Run-local exposure 重新投影。`provider_reserved` 已把完整 request schema 持久化，
+  因而动态 projection 只能发生在新的 ready reserve 前，不能改写已 reserve request。
+- ReAct checkpoint schema v3 持久 exact exposure state；terminal activation Effect replay通过 body-free
+  typed receipt 确定性 reapply。fresh schema v6 单独存 Provider specs fingerprint 与完整 catalog envelope
+  digest；handler locator resolution 对 missing/changed/extra identity fail-closed。exact v5 只允许关闭 Runtime
+  后用显式 backup-first migrator 升级。
+- 当前 source candidate 版本权威是 0.6.0；simple_harness Host 仍消费已发布 0.4.0 immutable wheel。源码就绪、
+  release artifact 和 Host cutover 是三个不同状态，不能相互代替。
+
+上述是 0.6.0 source candidate 的当前实现事实；release artifact 与 Host cutover 尚未完成。
 
 ## SDK Observability S1/S2 当前事实（2026-08-23）
 
@@ -192,7 +222,7 @@ last-updated: 2026-08-23
 
 外部消费者 → SDK kernel 的桥接层。核心入口 `build_consumer_runtime(ports: ConsumerRuntimePorts) -> Runtime`。
 
-**当前链路**（0.3.0）：
+**0.3.0 历史链路（非当前 0.5.2 source 事实）**：
 
 1. `Database.open(ports.database_path)` 打开 SQLite（以 `build_consumer_runtime` 符号为准）。
 2. `SqliteExecutionUnitOfWork(database)` 建 uow。

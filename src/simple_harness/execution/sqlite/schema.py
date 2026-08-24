@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Owned fresh schema v5 descriptor for SDK execution persistence."""
+"""Owned fresh schema v6 descriptor for SDK execution persistence."""
 
 from __future__ import annotations
 
@@ -9,7 +9,18 @@ import hashlib
 from dataclasses import dataclass
 from importlib.resources import files
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+
+_V6_CATALOG_COLUMNS = """
+ALTER TABLE tool_catalog_snapshots ADD COLUMN provider_specs_fingerprint TEXT
+    CHECK(provider_specs_fingerprint IS NULL OR length(provider_specs_fingerprint) = 64);
+ALTER TABLE tool_catalog_snapshots ADD COLUMN catalog_envelope_json TEXT;
+ALTER TABLE tool_catalog_snapshots ADD COLUMN catalog_envelope_digest_v6 TEXT
+    CHECK(catalog_envelope_digest_v6 IS NULL OR length(catalog_envelope_digest_v6) = 64);
+CREATE UNIQUE INDEX tool_catalog_envelope_digest_v6_idx
+    ON tool_catalog_snapshots(catalog_envelope_digest_v6)
+    WHERE catalog_envelope_digest_v6 IS NOT NULL;
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,10 +33,10 @@ class Migration:
 
 def fresh_descriptor() -> Migration:
     resources = files("simple_harness.execution.sqlite.migrations")
-    sql = resources.joinpath("0005_fresh.sql").read_text(encoding="utf-8")
+    sql = resources.joinpath("0005_fresh.sql").read_text(encoding="utf-8") + _V6_CATALOG_COLUMNS
     return Migration(
         SCHEMA_VERSION,
-        "0005_fresh",
+        "0006_fresh",
         sql,
         hashlib.sha256(sql.encode()).hexdigest(),
     )

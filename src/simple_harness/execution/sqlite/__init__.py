@@ -7,11 +7,13 @@ from .database import Database, ExecutionSchemaIncompatible
 from .migrations import (
     ExecutionMigrationError,
     ExecutionMigrationManifest,
+    ExecutionV5ToV6MigrationReceipt,
     LegacyDisposition,
     LegacyIdentityBinding,
     LegacyIdentityMap,
     MigrationManifestEntry,
     migrate_execution_v3_to_v4,
+    migrate_execution_v5_to_v6,
 )
 from .schema import SCHEMA_VERSION
 from .storage import ExecutionStorageError
@@ -22,6 +24,7 @@ __all__ = (
     "ExecutionSchemaIncompatible",
     "ExecutionMigrationError",
     "ExecutionMigrationManifest",
+    "ExecutionV5ToV6MigrationReceipt",
     "LegacyDisposition",
     "LegacyIdentityBinding",
     "LegacyIdentityMap",
@@ -30,4 +33,5 @@ __all__ = (
     "SCHEMA_VERSION",
     "SqliteExecutionUnitOfWork",
     "migrate_execution_v3_to_v4",
+    "migrate_execution_v5_to_v6",
 )

@@ -83,6 +83,7 @@ class TerminationState:
     last_workflow_spawn_wait_receipt_id: str | None = None
     workflow_catalog_selection: JsonValue | None = None
     workflow_catalog_selection_hash: str | None = None
+    tool_exposure_state: JsonValue | None = None
     policy_fingerprint: str = ""
 
     @property
@@ -210,7 +211,7 @@ class TerminationState:
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "started_at": self.started_at,
             "last_observed_at": self.last_observed_at,
             "provider_turns_reserved_total": self.provider_turns_reserved_total,
@@ -233,12 +234,13 @@ class TerminationState:
             "last_workflow_spawn_wait_receipt_id": (self.last_workflow_spawn_wait_receipt_id),
             "workflow_catalog_selection": self.workflow_catalog_selection,
             "workflow_catalog_selection_hash": self.workflow_catalog_selection_hash,
+            "tool_exposure_state": self.tool_exposure_state,
             "policy_fingerprint": self.policy_fingerprint,
         }
 
     @classmethod
     def from_json(cls, value: Mapping[str, object]) -> TerminationState:
-        if value.get("schema_version") not in {1, 2}:
+        if value.get("schema_version") not in {1, 2, 3}:
             raise ValueError("unsupported ReAct checkpoint schema")
         return cls(
             started_at=_float(value["started_at"]),
@@ -277,6 +279,7 @@ class TerminationState:
             workflow_catalog_selection_hash=_optional_string(
                 value.get("workflow_catalog_selection_hash")
             ),
+            tool_exposure_state=value.get("tool_exposure_state"),  # type: ignore[arg-type]
             policy_fingerprint=str(value.get("policy_fingerprint") or ""),
         )
 

@@ -5845,6 +5845,7 @@ class SqliteExecutionUnitOfWork:
         specs: Sequence[ProviderToolSpec],
         *,
         created_at: float | None = None,
+        catalog_envelope: JsonValue | None = None,
     ) -> ToolCatalogSnapshot:
         ordered = tuple(specs)
         if len({spec.name for spec in ordered}) != len(ordered):
@@ -5859,15 +5860,33 @@ class SqliteExecutionUnitOfWork:
         ]
         encoded = canonical_json(payload)
         fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
+        envelope_encoded: str | None = None
+        envelope_digest: str | None = None
+        if catalog_envelope is not None:
+            if (
+                not isinstance(catalog_envelope, dict)
+                or catalog_envelope.get("schema_version") != 6
+            ):
+                raise ValueError("catalog envelope must use schema_version 6")
+            envelope_encoded = canonical_json(catalog_envelope)
+            envelope_digest = hashlib.sha256(envelope_encoded.encode()).hexdigest()
         now = _time(time.time() if created_at is None else created_at)
         with self.database.transaction() as connection:
             connection.execute(
-                "INSERT INTO tool_catalog_snapshots(content_fingerprint,specs_json,created_at) "
-                "VALUES (?,?,?) ON CONFLICT(content_fingerprint) DO NOTHING",
-                (fingerprint, encoded, now),
+                "INSERT INTO tool_catalog_snapshots(content_fingerprint,specs_json,created_at,"
+                "provider_specs_fingerprint,catalog_envelope_json,catalog_envelope_digest_v6) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(content_fingerprint) DO NOTHING",
+                (fingerprint, encoded, now, fingerprint, envelope_encoded, envelope_digest),
             )
         snapshot = self.read_tool_catalog_snapshot(content_fingerprint=fingerprint)
         assert snapshot is not None
+        if (
+            envelope_digest is not None
+            and snapshot.catalog_envelope_digest_v6 != envelope_digest
+        ):
+            raise UnitOfWorkConflict(
+                "Tool catalog Provider projection matches but v6 envelope differs"
+            )
         return snapshot
 
     def read_tool_catalog_snapshot(
@@ -5900,6 +5919,12 @@ class SqliteExecutionUnitOfWork:
             str(row["content_fingerprint"]),
             tuple(specs),
             float(row["created_at"]),
+            None
+            if row["catalog_envelope_json"] is None
+            else frozen_payload(json.loads(str(row["catalog_envelope_json"]))),
+            None
+            if row["catalog_envelope_digest_v6"] is None
+            else str(row["catalog_envelope_digest_v6"]),
         )
 
     def current_tool_catalog_generation(self) -> int:

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -18,6 +19,27 @@ class ToolCatalogSnapshot:
     content_fingerprint: str
     specs: tuple[ProviderToolSpec, ...]
     created_at: float
+    catalog_envelope: FrozenJsonValue | None = None
+    catalog_envelope_digest_v6: str | None = None
+
+    @property
+    def provider_specs_fingerprint(self) -> str:
+        """Legacy ProviderToolSpec identity retained for v5 Run compatibility."""
+
+        return self.content_fingerprint
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogHandlerBinding:
+    locator: str
+    identity_digest: str
+    handler: object
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCatalogHandlers:
+    snapshot: ToolCatalogSnapshot
+    handlers: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,10 +98,65 @@ class DurableToolCatalogResolver:
             return None
         return snapshot
 
+    def resolve_handlers(
+        self,
+        generation: int,
+        catalog_envelope_digest_v6: str,
+        bindings: tuple[CatalogHandlerBinding, ...],
+    ) -> ResolvedCatalogHandlers | None:
+        snapshot = self._store.read_tool_catalog_snapshot(generation)
+        if (
+            snapshot is None
+            or snapshot.catalog_envelope_digest_v6 != catalog_envelope_digest_v6
+            or snapshot.catalog_envelope is None
+        ):
+            return None
+        envelope = thaw_json(snapshot.catalog_envelope)
+        if not isinstance(envelope, dict) or envelope.get("schema_version") != 6:
+            return None
+        records = envelope.get("records")
+        if not isinstance(records, list):
+            return None
+        available = {binding.locator: binding for binding in bindings}
+        if len(available) != len(bindings):
+            return None
+        resolved: dict[str, object] = {}
+        used_locators: set[str] = set()
+        for record in records:
+            if not isinstance(record, dict):
+                return None
+            kind = record.get("kind")
+            if kind in {"skill_resource", "workflow_profile"}:
+                continue
+            if kind not in {"executable_tool", "legacy_static_tool"}:
+                return None
+            locator = record.get("handler_locator")
+            identity = record.get("handler_identity_digest")
+            provider_name = record.get("provider_name")
+            if (
+                not isinstance(locator, str)
+                or not locator
+                or not isinstance(identity, str)
+                or not identity
+                or not isinstance(provider_name, str)
+                or not provider_name
+            ):
+                return None
+            binding = available.get(locator)
+            if binding is None or binding.identity_digest != identity or provider_name in resolved:
+                return None
+            resolved[provider_name] = binding.handler
+            used_locators.add(locator)
+        if used_locators != set(available):
+            return None
+        return ResolvedCatalogHandlers(snapshot, resolved)
+
 
 __all__ = (
+    "CatalogHandlerBinding",
     "DurableToolCatalogResolver",
     "ProviderProjectionReceipt",
+    "ResolvedCatalogHandlers",
     "ToolCatalogSnapshot",
     "ToolCatalogStore",
 )
