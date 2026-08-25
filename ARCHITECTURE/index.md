@@ -23,14 +23,16 @@ typed activation receipt、Run-local exposure port 与 ReAct ready-attempt 动�
 重放原 request。fresh schema v6 分离 legacy Provider specs fingerprint 与完整 envelope digest，exact v5
 只能显式 backup-first 迁移。目录可见性不拥有授权、确认、scope 或 effect authority。simple_harness Host
 当前工作树将 0.6.2 的 morphology-safe discovery 与 privacy-safe handler diagnostics 固化为本地 candidate
-wheel（SHA-256 `92f5be18381ee3e5b96f8d338439f86000453a30c170faedcdb1a813e3f44d31`）；这只是本地 candidate
+wheel（source `67f5769ca5501f17e37193477d87a149203b6887`，SHA-256
+`ffb7c0619851f3c936fcc1d0cf527d07f49e87770291b85e57fe87032ac02c2e`）；这只是本地 candidate
 consumption，不是 tag/release 或 production promotion。Host 已修复 SDK authority/legacy
 ToolRegistry 的 split scope Store，并把物理 policy fingerprint 冻结进 RunStart，严格 stale 校验仍保留。
 真实 macOS UI CAP-1～CAP-5 已覆盖 filesystem、browser、Skill、external-origin policy 与完全重启后的独立
 根 Run；重启 Run 从 13 个基线工具重新激活到 16 个，并在 stale nonce 被拒绝后重新 describe/activate 自愈。
 Host 随后从 exact wheel 同步，packaged macOS app 在无 `PYTHONPATH` 条件下再次完成 13→14 与真实 README
-读取。正式发布稳定线仍保持原版本；干净不可变 source identity、artifact、release 与 consumer promotion
-继续分别验收。
+读取。source `67f5769…` 的最终 reproducible wheel 与完整真测 wheel 的 `simple_harness/` 运行时包逐文件
+相同；Host 重锁、重装后又完成一次无 `PYTHONPATH` 冷启动与可操作 UI 冒烟。正式发布稳定线仍保持原版本；
+tag、release 上传、download-back 与 consumer promotion 继续分别验收。
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Agent Memory/Context contracts、identity binding、context
   staging、release retry、resource ownership、production builder、installed-wheel Linux ARM64 core gate，以及 Provider/预算、

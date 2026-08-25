@@ -16,18 +16,19 @@ and `memory=MemoryManager(...)`; the SDK owns automatic recall, frozen Context, 
 outbox delivery, retry, and recovery.
 
 The 0.6.2 source and exact wheel are candidates. The simple_harness working tree currently vendors
-the candidate built from base source `322d77...` plus reviewed patch SHA-256
-`472ae6188b2e07aadadb4ea86906f357a0a28b3fccf11126169ee5d9dc31a9cb`, with wheel SHA-256
-`92f5be18381ee3e5b96f8d338439f86000453a30c170faedcdb1a813e3f44d31`; Host automation passed.
+the reproducible candidate built from source commit `67f5769ca5501f17e37193477d87a149203b6887`, with wheel
+SHA-256 `ffb7c0619851f3c936fcc1d0cf527d07f49e87770291b85e57fe87032ac02c2e`; Host automation passed.
 The Host now composes SDK authority and the physical ToolRegistry with one capability scope store and
 freezes the physical policy fingerprint into RunStart. A real macOS UI CAP-1 Run completed same-Run
 13→14→15 exposure, real filesystem search/read, and a correct README-based answer. CAP-2 through CAP-4 then passed
 the localhost browser, frozen Skill and external-origin safety gates. CAP-5 passed across a complete app/backend restart,
 including stale-nonce rejection and recovery. Finally, the Host installed the exact 0.6.2 wheel and a packaged macOS app
 started without `PYTHONPATH`, reported `sdk_version=0.6.2`, repeated 13→14 exposure and completed a real README read.
-This local candidate consumption is not a tag, release, or production promotion. The current published fallback remains
-v0.5.2; no release/tag claim is made until the source is represented by a clean immutable release commit, the exact
-artifact is rebuilt/verified from that identity, and publication is explicitly authorized.
+The final reproducible wheel from `67f5769...` has the same `simple_harness/` runtime package bytes as the wheel used for
+the full UI flow; Host re-lock/reinstall, exact SHA/origin verification and a second no-`PYTHONPATH` cold-start UI smoke
+also passed. This candidate consumption is not a tag, release, or production promotion. The current published fallback
+remains v0.5.2; no release/tag claim is made until tag creation, upload, download-back verification and promotion are
+explicitly authorized and completed.
 
 The one-time 0.6.0 prepublish artifact failed Host composition because the public ReAct builder had
 no Run-local exposure resolver seam. It was not vendored, tagged, uploaded, or released and must not
@@ -44,7 +45,7 @@ withdrawn candidates remain ineligible for publication.
 
 | Consumer | Status | Evidence boundary |
 | --- | --- | --- |
-| `simple_harness` | 0.6.2 candidate vendored locally; publication not authorized | Host automation, real UI CAP-1 through CAP-5 and exact-wheel packaged revalidation passed; clean immutable release provenance remains required before publication |
+| `simple_harness` | 0.6.2 candidate vendored locally; SDK release not authorized | Host automation, real UI CAP-1 through CAP-5, runtime-byte equivalence and final exact-wheel cold-start revalidation passed |
 | AIPhone | interface ready, not integrated | product-neutral SDK fixture only; repository and runtime unchanged |
 | K6/AgentOS | interface ready, not integrated | product-neutral SDK fixture only; repository, PostgreSQL and runtime unchanged |
 | NovelTagSystem | out of scope | no repository, database, runtime, or test changes |
