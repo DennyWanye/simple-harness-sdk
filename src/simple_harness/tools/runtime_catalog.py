@@ -39,6 +39,8 @@ _PROVIDER_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _PROFILE_KEY = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
+_ASCII_WORD = re.compile(r"^[a-z]+$")
+_SEARCH_PREFIX_LENGTH = 6
 
 MAX_CATALOG_RECORDS = 4096
 MAX_DESCRIPTION_BYTES = 4096
@@ -405,6 +407,25 @@ def _search_document(record: RuntimeCapabilityRecord) -> str:
             _schema_search_text(record),
         )
     ).casefold()
+
+
+def _query_search_tokens(query: str) -> tuple[str, ...]:
+    """Return exact tokens plus a conservative English morphology prefix.
+
+    Capability metadata is often authored in one grammatical form while a
+    model searches with another (for example ``translate`` vs
+    ``translation``).  A six-character prefix keeps discovery deterministic
+    and dependency-free without applying fuzzy matching to short words,
+    identifiers, or non-Latin text.
+    """
+
+    exact = tuple(dict.fromkeys(_SEARCH_TOKEN.findall(query))) or (query,)
+    expanded: list[str] = []
+    for token in exact:
+        expanded.append(token)
+        if len(token) > _SEARCH_PREFIX_LENGTH and _ASCII_WORD.fullmatch(token):
+            expanded.append(token[:_SEARCH_PREFIX_LENGTH])
+    return tuple(dict.fromkeys(expanded))
 
 
 @dataclass(frozen=True, slots=True)
@@ -790,7 +811,7 @@ class RuntimeToolCatalog:
             raise RuntimeToolCatalogError(
                 "catalog_search_cursor_invalid", "search cursor is invalid"
             )
-        tokens = tuple(dict.fromkeys(_SEARCH_TOKEN.findall(query))) or (query,)
+        tokens = _query_search_tokens(query)
         deferred = set(state.deferred_ids)
         ranked: list[tuple[int, RuntimeCapabilityRecord]] = []
         for record, document in zip(

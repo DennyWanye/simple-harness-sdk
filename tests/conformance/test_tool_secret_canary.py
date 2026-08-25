@@ -60,7 +60,7 @@ def test_malformed_error_does_not_disclose_secret_value() -> None:
     assert canary not in repr(caught.value)
 
 
-def test_handler_exception_does_not_disclose_secret_value() -> None:
+def test_handler_exception_does_not_disclose_secret_value(caplog) -> None:
     canary = "SDK_SECRET_CANARY_c43e3500"
 
     def handler(_arguments: object, _context: ToolContext) -> ToolResult:
@@ -85,3 +85,8 @@ def test_handler_exception_does_not_disclose_secret_value() -> None:
     assert result.error_code == "tool_handler_failed"
     assert result.public_message == "Tool execution failed."
     assert canary not in repr(result)
+    assert "sdk_tool_handler_failed" in caplog.text
+    assert "tool=read" in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
+    assert "stable_code=unclassified" in caplog.text
+    assert canary not in caplog.text

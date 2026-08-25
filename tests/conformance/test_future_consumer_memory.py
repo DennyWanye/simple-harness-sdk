@@ -623,11 +623,11 @@ def test_candidate_docs_do_not_overstate_product_integration() -> None:
     contracts = (root / "docs/api/contracts.md").read_text(encoding="utf-8")
 
     assert "`simple_harness` has completed exact-wheel product" in readme
-    assert "| `simple_harness` | 0.5.2 line validated; 0.6.1 candidate pending |" in status
-    assert "The 0.6.1 source is a candidate" in status
+    assert "| `simple_harness` | 0.6.2 candidate vendored locally; publication blocked |" in status
+    assert "The 0.6.2 source and exact wheel are candidates" in status
     assert "The current published fallback remains v0.5.2" in status
     assert "Latest release" not in status
-    assert "Memory SDK 0.5.1" in status
+    assert "Memory SDK 0.5.2" in status
     for consumer in ("AIPhone", "K6/AgentOS"):
         assert f"| {consumer} | interface ready, not integrated |" in status
         assert consumer in contracts

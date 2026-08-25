@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -32,6 +34,9 @@ from .errors import (
 )
 from .schema import ArgumentsValidationError, validate_arguments
 from .sidecar import Sidecar, inventory_digest
+
+logger = logging.getLogger(__name__)
+_SAFE_HANDLER_ERROR = re.compile(r"^[a-zA-Z0-9_.:-]{1,96}$")
 
 
 class ToolCallState(StrEnum):
@@ -152,10 +157,22 @@ class ToolRegistry:
                     raise TypeError("Tool handler must return ToolResult")
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - handler is an untrusted boundary
+            except Exception as exc:  # noqa: BLE001 - handler is an untrusted boundary
                 # Host exceptions can contain stderr, response bodies, paths,
                 # or credentials.  They are private diagnostic causes and do
                 # not cross the model-facing ToolResult boundary.
+                raw_code = str(exc).strip()
+                stable_code = (
+                    raw_code
+                    if _SAFE_HANDLER_ERROR.fullmatch(raw_code)
+                    else "unclassified"
+                )
+                logger.error(
+                    "sdk_tool_handler_failed tool=%s error_type=%s stable_code=%s",
+                    call.name,
+                    type(exc).__name__,
+                    stable_code,
+                )
                 return ToolResult.failed(
                     call.call_id,
                     "tool_handler_failed",

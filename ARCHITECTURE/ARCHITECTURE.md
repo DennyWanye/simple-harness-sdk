@@ -34,10 +34,10 @@ last-updated: 2026-08-25
   typed receipt 确定性 reapply。fresh schema v6 单独存 Provider specs fingerprint 与完整 catalog envelope
   digest；handler locator resolution 对 missing/changed/extra identity fail-closed。exact v5 只允许关闭 Runtime
   后用显式 backup-first migrator 升级。
-- 当前 source candidate 版本权威是 0.6.1；simple_harness Host 仍消费已发布 0.4.0 immutable wheel。源码就绪、
+- 当前 source candidate 版本权威是 0.6.2；simple_harness Host 已在本地消费 immutable candidate wheel。源码就绪、
   release artifact 和 Host cutover 是三个不同状态，不能相互代替。
 
-上述是 0.6.1 source candidate 的当前实现事实；release artifact 与 Host cutover 尚未完成。
+上述是 0.6.2 source candidate 的当前实现事实；公开 release 尚未执行。
 
 ## SDK Observability S1/S2 当前事实（2026-08-23）
 

@@ -127,6 +127,17 @@ def test_search_is_stable_bounded_and_descriptor_has_no_schema() -> None:
     assert error.value.code == "catalog_search_limit_invalid"
 
 
+def test_search_matches_conservative_english_morphology_prefix() -> None:
+    catalog = RuntimeToolCatalog(_records(), generation=1)
+    state = catalog.start_run(RunId("run-search-morphology"))
+
+    page = catalog.search(state, "translation Markdown preserve headings")
+
+    assert [item.capability_id for item in page.items] == [
+        "skill:translate-doc"
+    ]
+
+
 def test_describe_activate_then_provider_projection_is_executable_only() -> None:
     catalog = RuntimeToolCatalog(_records(), generation=1)
     state = catalog.start_run(RunId("run-activate"))

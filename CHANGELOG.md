@@ -5,6 +5,17 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.6.2 — 2026-08-25
+
+### Fixed
+- Runtime capability search now adds a conservative six-character prefix for long lowercase
+  English words, so common morphology differences such as `translation` versus `translate` do
+  not hide an otherwise exact Skill or Tool match. Short words, identifiers, and non-Latin text
+  retain exact matching.
+- Tool handler failures now emit a privacy-safe SDK diagnostic containing only the Tool name,
+  exception type, and an allowlisted stable code. Exception messages, response bodies, paths,
+  and credential-bearing values remain outside both logs and model-facing results.
+
 ## 0.6.1 — 2026-08-25
 
 ### Fixed
