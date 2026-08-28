@@ -196,6 +196,7 @@ class _ResourceResolver:
 class CapturePrepared(Allow):
     def __init__(self) -> None:
         self.prepared: PreparedToolEffect | None = None
+        self.decision_request: AuthorizationRequest | None = None
 
     async def prepare(self, prepared: PreparedToolEffect) -> AuthorizationResult:
         self.prepared = prepared
@@ -204,8 +205,9 @@ class CapturePrepared(Allow):
         )
 
     async def bind_decision(self, prepared, request, decision, sdk_receipt):
-        del request, decision
+        del decision
         self.prepared = prepared
+        self.decision_request = request
         return AuthorizationReceipt("host:decision:resource", "c" * 64, sdk_receipt.receipt_hash)
 
 
@@ -437,7 +439,11 @@ def test_durable_authorization_reopen_rechecks_sidecar_and_resource_hashes() -> 
         "call_id": "call-resource",
         "effect_id": "effect-resource",
         "expires_at": None,
-        "metadata": {},
+        "metadata": {
+            "skill_install_member_summary": [
+                {"name": "plan-test", "permissions": ["read_file"]}
+            ]
+        },
         "nonce": "nonce-resource",
         "prompt": "Allow read?",
         "resources": [value.to_json() for value in resources],
@@ -459,6 +465,8 @@ def test_durable_authorization_reopen_rechecks_sidecar_and_resource_hashes() -> 
     assert authorization.prepared is not None
     assert authorization.prepared.sidecar is sidecar
     assert authorization.prepared.resources == resources
+    assert authorization.decision_request is not None
+    assert thaw_json(authorization.decision_request.metadata) == request["metadata"]
 
     for field in ("sidecar_digest", "resources_digest"):
         tampered = dict(request)

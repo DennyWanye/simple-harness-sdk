@@ -563,7 +563,10 @@ def _authorization_request(decision: DecisionRecord) -> AuthorizationRequest:
         prompt=str(value["prompt"]),
         nonce=str(value["nonce"]),
         expires_at=None if expires_at is None else float(expires_at),
-        metadata=cast(Mapping[str, FrozenJsonValue], metadata),
+        metadata=cast(
+            dict[str, JsonValue],
+            thaw_json(cast(FrozenJsonValue, metadata)),
+        ),
     )
 
 
