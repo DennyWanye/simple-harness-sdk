@@ -92,6 +92,27 @@ class Driver:
         return DriverResult(self.state, {"answer": "ok"})
 
 
+class ModeRouterDriver:
+    def __init__(self) -> None:
+        self.modes: list[str] = []
+
+    async def start(self, invocation, *, context, cancel):  # type: ignore[no-untyped-def]
+        del context, cancel
+        self.modes.append(invocation.start.start_mode)
+        output = (
+            None
+            if invocation.start.start_mode == "host_control"
+            else ConversationTurnOutput(
+                Message(MessageRole.ASSISTANT, "ordinary response"), "ordinary response"
+            )
+        )
+        return DriverResult(
+            RunState.COMPLETED,
+            {"route": invocation.start.start_mode},
+            conversation_output=output,
+        )
+
+
 class _ProviderCrashCut(BaseException):
     pass
 
@@ -218,10 +239,84 @@ def test_host_control_is_memory_neutral_and_exactly_replayable(tmp_path) -> None
                 ).fetchone()[0]
                 == 0
             )
+            for table, column in (
+                ("context_preparation_staging", "identity_key"),
+                ("memory_outbox", "run_id"),
+                ("conversation_outputs", "run_id"),
+                ("workflow_checkpoints", "run_id"),
+                ("continuations", "run_id"),
+            ):
+                assert (
+                    database.connection.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE {column}=?",
+                        (start.run_id.value,),
+                    ).fetchone()[0]
+                    == 0
+                )
             with pytest.raises(CommandError):
                 value.client.signal(start.run_id, signal_id="public", payload={})
             with pytest.raises(CommandError):
                 await value.client.cancel(start.run_id)
+        finally:
+            await value.close()
+            database.close()
+
+    asyncio.run(case())
+
+
+@pytest.mark.parametrize("memory_enabled", (False, True))
+def test_public_start_rejects_typed_host_control_mode_before_reservation(
+    tmp_path, memory_enabled: bool
+) -> None:
+    async def case() -> None:
+        value, _, database = runtime(
+            tmp_path,
+            agent_memory=StableMemory() if memory_enabled else None,
+            context_provider=StableContextProvider() if memory_enabled else None,
+        )
+        try:
+            await value.start()
+            with pytest.raises(Exception, match="Host control Runs require start_host_control"):
+                await value.client.start(host_control_request("direct").to_run_start())
+        finally:
+            await value.close()
+            database.close()
+
+    asyncio.run(case())
+
+
+def test_host_control_session_owner_is_exact(tmp_path) -> None:
+    async def case() -> None:
+        value, _, database = runtime(tmp_path)
+        try:
+            await value.start()
+            first = host_control_request("owner-one")
+            await value.client.start_host_control(first)
+            await value.wait_idle(first.run_id)
+            same_owner = HostControlRunStartV1(
+                first.execution_session_id,
+                RunId("run-host-owner-two"),
+                RequestId("request-host-owner-two"),
+                "turn-host-owner-two",
+                {"attempt_ref": "owner-two"},
+                1,
+                HostControlAuthorityV1("skill.install.verify", "attempt:owner-two", "b" * 64, 2),
+                first.user_id,
+            )
+            await value.client.start_host_control(same_owner)
+            await value.wait_idle(same_owner.run_id)
+            wrong_owner = HostControlRunStartV1(
+                first.execution_session_id,
+                RunId("run-host-owner-wrong"),
+                RequestId("request-host-owner-wrong"),
+                "turn-host-owner-wrong",
+                {"attempt_ref": "owner-wrong"},
+                1,
+                HostControlAuthorityV1("skill.install.verify", "attempt:owner-wrong", "c" * 64, 3),
+                "another-user",
+            )
+            with pytest.raises(Exception, match="execution session belongs to another user"):
+                await value.client.start_host_control(wrong_owner)
         finally:
             await value.close()
             database.close()
@@ -307,7 +402,7 @@ def test_host_control_recovery_uses_v6_authority_without_memory_side_state(tmp_p
 
     async def case() -> None:
         memory = StableMemory()
-        driver = Driver()
+        driver = ModeRouterDriver()
         restarted, reopened_uow, reopened = runtime(
             tmp_path,
             driver=driver,
@@ -319,8 +414,22 @@ def test_host_control_recovery_uses_v6_authority_without_memory_side_state(tmp_p
             await restarted.start()
             await restarted.wait_idle(control.run_id)
             assert reopened_uow.read_run(control.run_id.value).state is RunState.COMPLETED
-            assert driver.calls == 1
             assert memory.recalls == memory.releases == memory.committed == []
+            conversation = ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "adjacent-session"),
+                Message(MessageRole.USER, "ordinary request"),
+                "ordinary request",
+            )
+            ordinary_run = RunId("run-adjacent-react")
+            await restarted.client.start_conversation(
+                conversation,
+                run_id=ordinary_run,
+                request_id=RequestId("request-adjacent-react"),
+                turn_id="turn-adjacent-react",
+            )
+            await restarted.wait_idle(ordinary_run)
+            assert driver.modes == ["host_control", "ordinary"]
+            assert len(memory.recalls) == len(memory.releases) == 1
         finally:
             await restarted.close()
             reopened.close()

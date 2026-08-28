@@ -717,6 +717,11 @@ class RunClient:
         self._runtime._require_started()
         if not isinstance(value, RunStart):
             raise TypeError("value must use RunStart")
+        if value.start_mode != "ordinary":
+            raise HarnessError(
+                "host_control_entrypoint_required",
+                "Host control Runs require start_host_control().",
+            )
         if self._runtime._ports.agent_memory is not None and value.conversation is None:
             raise HarnessError(
                 "conversation_entrypoint_required",

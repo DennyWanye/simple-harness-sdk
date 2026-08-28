@@ -47,7 +47,11 @@ class HostControlAuthorityV1:
             value not in "0123456789abcdef" for value in self.authority_hash
         ):
             raise ValueError("Host control authority_hash must be lowercase SHA-256")
-        if isinstance(self.generation, bool) or self.generation < 1:
+        if (
+            isinstance(self.generation, bool)
+            or not isinstance(self.generation, int)
+            or self.generation < 1
+        ):
             raise ValueError("Host control generation must be positive")
 
     def to_json(self) -> dict[str, JsonValue]:
@@ -313,8 +317,8 @@ class StartSnapshot:
         value = thaw_json(self.input)
         if not isinstance(value, dict):
             raise TypeError("start input must remain a JSON object")
-        return {
-            "schema_version": 6,
+        result: dict[str, JsonValue] = {
+            "schema_version": 6 if self.start_mode == "host_control" else 5,
             "profile_key": self.profile_key,
             "driver_kind": self.driver_kind,
             "turn_id": self.turn_id,
@@ -339,14 +343,17 @@ class StartSnapshot:
                 if self.workflow_admission is None
                 else start_admission_request_to_json(self.workflow_admission)
             ),
-            "start_mode": self.start_mode,
-            "host_control_authority": (
-                None
-                if self.host_control_authority is None
-                else self.host_control_authority.to_json()
-            ),
-            "host_control_user_id": self.host_control_user_id,
         }
+        if self.start_mode == "host_control":
+            assert self.host_control_authority is not None
+            result.update(
+                {
+                    "start_mode": "host_control",
+                    "host_control_authority": self.host_control_authority.to_json(),
+                    "host_control_user_id": self.host_control_user_id,
+                }
+            )
+        return result
 
     @classmethod
     def from_json(cls, value: Mapping[str, JsonValue]) -> StartSnapshot:
@@ -392,6 +399,12 @@ class StartSnapshot:
         prepared_value = value.get("prepared_context") if schema_version in {5, 6} else None
         if prepared_value is not None and not isinstance(prepared_value, dict):
             raise TypeError("prepared_context must be an object or null")
+        authority_value = value.get("host_control_authority")
+        if schema_version == 6:
+            if value.get("start_mode") != "host_control":
+                raise ValueError("v6 snapshot requires Host control mode")
+            if not isinstance(authority_value, dict):
+                raise TypeError("v6 snapshot requires Host control authority object")
         return cls(
             profile_key=profile_key,
             driver_kind=driver_kind,
@@ -444,8 +457,7 @@ class StartSnapshot:
             start_mode=(str(value.get("start_mode")) if schema_version == 6 else "ordinary"),
             host_control_authority=(
                 HostControlAuthorityV1.from_json(authority_value)
-                if schema_version == 6
-                and isinstance((authority_value := value.get("host_control_authority")), dict)
+                if schema_version == 6 and isinstance(authority_value, dict)
                 else None
             ),
             host_control_user_id=(

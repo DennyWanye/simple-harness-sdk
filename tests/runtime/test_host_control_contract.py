@@ -40,6 +40,9 @@ def test_v6_host_control_snapshot_strict_roundtrip() -> None:
     raw = snapshot.to_json()
     assert raw["schema_version"] == 6
     assert StartSnapshot.from_json(raw) == snapshot
+    ordinary = StartSnapshot("agent.general", "react", "ordinary", 1, {}).to_json()
+    assert ordinary["schema_version"] == 5
+    assert "start_mode" not in ordinary
 
 
 @pytest.mark.parametrize(
@@ -47,6 +50,8 @@ def test_v6_host_control_snapshot_strict_roundtrip() -> None:
     (
         {"start_mode": "ordinary"},
         {"host_control_authority": None},
+        {"host_control_authority": "not-an-object"},
+        {"host_control_authority": []},
         {"host_control_user_id": None},
         {"conversation": {"unexpected": True}},
     ),
@@ -73,3 +78,9 @@ def test_pre_v6_snapshots_are_always_ordinary(schema_version: int) -> None:
     parsed = StartSnapshot.from_json(raw)
     assert parsed.start_mode == "ordinary"
     assert parsed.host_control_authority is None
+
+
+@pytest.mark.parametrize("generation", (True, 1.0, "1", None))
+def test_host_control_authority_generation_requires_non_bool_int(generation) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises((TypeError, ValueError)):
+        HostControlAuthorityV1("purpose", "ref", "a" * 64, generation)
