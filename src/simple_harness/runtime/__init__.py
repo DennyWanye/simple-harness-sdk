@@ -118,7 +118,13 @@ _MODULE_EXPORTS = {
         "StartupReconciler",
         "StartupReconciliationSteps",
     ),
-    ".start_snapshot": ("RunStart", "StartSnapshot"),
+    ".start_snapshot": (
+        "HOST_CONTROL_INPUT_MAX_BYTES",
+        "HostControlAuthorityV1",
+        "HostControlRunStartV1",
+        "RunStart",
+        "StartSnapshot",
+    ),
     ".terminal": ("TerminalCoordinator", "ToolCatalogStale"),
     ".user_continuations": ("ContinuationUnitOfWork", "UserContinuationRuntime"),
 }
@@ -143,6 +149,9 @@ def __dir__() -> list[str]:
 
 __all__ = (
     "ROOT_PROFILE_KEY",
+    "HOST_CONTROL_INPUT_MAX_BYTES",
+    "HostControlAuthorityV1",
+    "HostControlRunStartV1",
     "STARTUP_RECONCILIATION_ORDER",
     "WORKFLOW_DRIVER_IMPLEMENTATION_FINGERPRINT",
     "WORKFLOW_DRIVER_KIND",

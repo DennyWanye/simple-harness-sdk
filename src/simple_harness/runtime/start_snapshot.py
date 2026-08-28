@@ -28,6 +28,117 @@ from simple_harness.workflow.execution_ports import (
 
 from .conversation_memory import ContextPreparationMode, ConversationTurnInput
 
+HOST_CONTROL_INPUT_MAX_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class HostControlAuthorityV1:
+    purpose: str
+    authority_ref: str
+    authority_hash: str
+    generation: int
+
+    def __post_init__(self) -> None:
+        if not self.purpose.strip() or len(self.purpose) > 128:
+            raise ValueError("Host control purpose is invalid")
+        if not self.authority_ref.strip() or len(self.authority_ref) > 512:
+            raise ValueError("Host control authority_ref is invalid")
+        if len(self.authority_hash) != 64 or any(
+            value not in "0123456789abcdef" for value in self.authority_hash
+        ):
+            raise ValueError("Host control authority_hash must be lowercase SHA-256")
+        if isinstance(self.generation, bool) or self.generation < 1:
+            raise ValueError("Host control generation must be positive")
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "schema": "host-control-authority-v1",
+            "purpose": self.purpose,
+            "authority_ref": self.authority_ref,
+            "authority_hash": self.authority_hash,
+            "generation": self.generation,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, JsonValue]) -> HostControlAuthorityV1:
+        if value.get("schema") != "host-control-authority-v1":
+            raise ValueError("unsupported Host control authority schema")
+        purpose = value.get("purpose")
+        authority_ref = value.get("authority_ref")
+        authority_hash = value.get("authority_hash")
+        generation = value.get("generation")
+        if not isinstance(purpose, str) or not isinstance(authority_ref, str):
+            raise TypeError("Host control authority text fields are required")
+        if not isinstance(authority_hash, str) or not isinstance(generation, int):
+            raise TypeError("Host control authority hash/generation are required")
+        return cls(purpose, authority_ref, authority_hash, generation)
+
+
+@dataclass(frozen=True, slots=True)
+class HostControlRunStartV1:
+    execution_session_id: ExecutionSessionId
+    run_id: RunId
+    request_id: RequestId
+    turn_id: str
+    input: Mapping[str, JsonValue]
+    tool_catalog_generation: int
+    authority: HostControlAuthorityV1
+    user_id: str
+    tool_catalog_fingerprint: str | None = None
+    provider_budget_fingerprint: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.authority, HostControlAuthorityV1):
+            raise TypeError("authority must use HostControlAuthorityV1")
+        if not self.user_id.strip() or len(self.user_id) > 256:
+            raise ValueError("Host control user_id is invalid")
+        ordinary = RunStart(
+            self.execution_session_id,
+            self.run_id,
+            self.request_id,
+            self.turn_id,
+            self.input,
+            self.tool_catalog_generation,
+            self.tool_catalog_fingerprint,
+            self.provider_budget_fingerprint,
+            start_mode="host_control",
+            host_control_authority=self.authority,
+            host_control_user_id=self.user_id,
+        )
+        if len(canonical_json(self.to_json()).encode("utf-8")) > HOST_CONTROL_INPUT_MAX_BYTES:
+            raise ValueError("Host control start exceeds the bounded envelope")
+        object.__setattr__(self, "input", ordinary.input)
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "schema": "host-control-run-start-v1",
+            "execution_session_id": self.execution_session_id.value,
+            "run_id": self.run_id.value,
+            "request_id": self.request_id.value,
+            "turn_id": self.turn_id,
+            "input": thaw_json(cast(FrozenJsonValue, self.input)),
+            "tool_catalog_generation": self.tool_catalog_generation,
+            "tool_catalog_fingerprint": self.tool_catalog_fingerprint,
+            "provider_budget_fingerprint": self.provider_budget_fingerprint,
+            "authority": self.authority.to_json(),
+            "user_id": self.user_id,
+        }
+
+    def to_run_start(self) -> RunStart:
+        return RunStart(
+            self.execution_session_id,
+            self.run_id,
+            self.request_id,
+            self.turn_id,
+            self.input,
+            self.tool_catalog_generation,
+            self.tool_catalog_fingerprint,
+            self.provider_budget_fingerprint,
+            start_mode="host_control",
+            host_control_authority=self.authority,
+            host_control_user_id=self.user_id,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class RunStart:
@@ -44,6 +155,9 @@ class RunStart:
     context_stage_id: str | None = None
     context_stage_hash: str | None = None
     prepared_context: Mapping[str, JsonValue] | None = None
+    start_mode: str = "ordinary"
+    host_control_authority: HostControlAuthorityV1 | None = None
+    host_control_user_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.execution_session_id, ExecutionSessionId):
@@ -104,6 +218,17 @@ class RunStart:
             if self.context_stage_hash != expected_hash:
                 raise ValueError("prepared context differs from context stage hash")
             object.__setattr__(self, "prepared_context", frozen_context)
+        if self.start_mode not in {"ordinary", "host_control"}:
+            raise ValueError("unsupported Run start mode")
+        if self.start_mode == "host_control":
+            if not isinstance(self.host_control_authority, HostControlAuthorityV1):
+                raise TypeError("Host control start requires typed authority")
+            if self.host_control_user_id is None or not self.host_control_user_id.strip():
+                raise ValueError("Host control start requires user identity")
+            if any(value is not None for value in (self.conversation, *stage_values)):
+                raise ValueError("Host control start rejects conversation/context fields")
+        elif self.host_control_authority is not None or self.host_control_user_id is not None:
+            raise ValueError("ordinary start rejects Host control authority")
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +247,9 @@ class StartSnapshot:
     context_stage_id: str | None = None
     context_stage_hash: str | None = None
     prepared_context: FrozenJsonValue | None = None
+    start_mode: str = "ordinary"
+    host_control_authority: HostControlAuthorityV1 | None = None
+    host_control_user_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.driver_kind == "workflow":
@@ -169,13 +297,24 @@ class StartSnapshot:
             expected_hash = hashlib.sha256(canonical_json(context).encode("utf-8")).hexdigest()
             if self.context_stage_hash != expected_hash:
                 raise ValueError("snapshot prepared context hash differs")
+        if self.start_mode not in {"ordinary", "host_control"}:
+            raise ValueError("unsupported snapshot start mode")
+        if self.start_mode == "host_control":
+            if not isinstance(self.host_control_authority, HostControlAuthorityV1):
+                raise TypeError("Host control snapshot requires typed authority")
+            if self.host_control_user_id is None or not self.host_control_user_id.strip():
+                raise ValueError("Host control snapshot requires user identity")
+            if any(value is not None for value in (self.conversation, *stage_values)):
+                raise ValueError("Host control snapshot rejects conversation/context fields")
+        elif self.host_control_authority is not None or self.host_control_user_id is not None:
+            raise ValueError("ordinary snapshot rejects Host control authority")
 
     def to_json(self) -> dict[str, JsonValue]:
         value = thaw_json(self.input)
         if not isinstance(value, dict):
             raise TypeError("start input must remain a JSON object")
         return {
-            "schema_version": 5,
+            "schema_version": 6,
             "profile_key": self.profile_key,
             "driver_kind": self.driver_kind,
             "turn_id": self.turn_id,
@@ -200,6 +339,13 @@ class StartSnapshot:
                 if self.workflow_admission is None
                 else start_admission_request_to_json(self.workflow_admission)
             ),
+            "start_mode": self.start_mode,
+            "host_control_authority": (
+                None
+                if self.host_control_authority is None
+                else self.host_control_authority.to_json()
+            ),
+            "host_control_user_id": self.host_control_user_id,
         }
 
     @classmethod
@@ -210,7 +356,7 @@ class StartSnapshot:
             and "start_input" in value
             and "workflow_name" in value
         )
-        if not legacy_workflow_snapshot and schema_version not in {1, 2, 3, 4, 5}:
+        if not legacy_workflow_snapshot and schema_version not in {1, 2, 3, 4, 5, 6}:
             raise ValueError("unsupported start snapshot schema")
         profile_key = value.get("profile_key")
         driver_kind = value.get("driver_kind")
@@ -237,13 +383,13 @@ class StartSnapshot:
             if workflow_admission_value is None
             else start_admission_request_from_json(workflow_admission_value)
         )
-        conversation_value = value.get("conversation") if schema_version == 5 else None
+        conversation_value = value.get("conversation") if schema_version in {5, 6} else None
         if conversation_value is not None and not isinstance(conversation_value, dict):
             raise TypeError("conversation must be an object or null")
-        mode_value = value.get("context_preparation_mode") if schema_version == 5 else None
+        mode_value = value.get("context_preparation_mode") if schema_version in {5, 6} else None
         if mode_value is not None and not isinstance(mode_value, str):
             raise TypeError("context_preparation_mode must be a string or null")
-        prepared_value = value.get("prepared_context") if schema_version == 5 else None
+        prepared_value = value.get("prepared_context") if schema_version in {5, 6} else None
         if prepared_value is not None and not isinstance(prepared_value, dict):
             raise TypeError("prepared_context must be an object or null")
         return cls(
@@ -255,7 +401,7 @@ class StartSnapshot:
             workflow_admission=admission,
             policy_fingerprint=(
                 _optional_string(value.get("policy_fingerprint"), "policy_fingerprint")
-                if schema_version in {3, 4, 5}
+                if schema_version in {3, 4, 5, 6}
                 else None
             ),
             tool_catalog_fingerprint=(
@@ -263,7 +409,7 @@ class StartSnapshot:
                     value.get("tool_catalog_fingerprint"),
                     "tool_catalog_fingerprint",
                 )
-                if schema_version in {4, 5}
+                if schema_version in {4, 5, 6}
                 else None
             ),
             provider_budget_fingerprint=(
@@ -271,7 +417,7 @@ class StartSnapshot:
                     value.get("provider_budget_fingerprint"),
                     "provider_budget_fingerprint",
                 )
-                if schema_version in {4, 5}
+                if schema_version in {4, 5, 6}
                 else None
             ),
             conversation=(
@@ -284,16 +430,28 @@ class StartSnapshot:
             ),
             context_stage_id=(
                 _optional_string(value.get("context_stage_id"), "context_stage_id")
-                if schema_version == 5
+                if schema_version in {5, 6}
                 else None
             ),
             context_stage_hash=(
                 _optional_string(value.get("context_stage_hash"), "context_stage_hash")
-                if schema_version == 5
+                if schema_version in {5, 6}
                 else None
             ),
             prepared_context=(
                 freeze_json(prepared_value) if isinstance(prepared_value, dict) else None
+            ),
+            start_mode=(str(value.get("start_mode")) if schema_version == 6 else "ordinary"),
+            host_control_authority=(
+                HostControlAuthorityV1.from_json(authority_value)
+                if schema_version == 6
+                and isinstance((authority_value := value.get("host_control_authority")), dict)
+                else None
+            ),
+            host_control_user_id=(
+                _optional_string(value.get("host_control_user_id"), "host_control_user_id")
+                if schema_version == 6
+                else None
             ),
         )
 
@@ -328,6 +486,9 @@ def bind_start_snapshot(
             if start.prepared_context is None
             else freeze_json(thaw_json(cast(FrozenJsonValue, start.prepared_context)))
         ),
+        start_mode=start.start_mode,
+        host_control_authority=start.host_control_authority,
+        host_control_user_id=start.host_control_user_id,
     )
 
 
@@ -339,4 +500,11 @@ def _optional_string(value: JsonValue | None, name: str) -> str | None:
     return value
 
 
-__all__ = ("RunStart", "StartSnapshot", "bind_start_snapshot")
+__all__ = (
+    "HOST_CONTROL_INPUT_MAX_BYTES",
+    "HostControlAuthorityV1",
+    "HostControlRunStartV1",
+    "RunStart",
+    "StartSnapshot",
+    "bind_start_snapshot",
+)

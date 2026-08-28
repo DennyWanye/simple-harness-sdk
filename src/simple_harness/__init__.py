@@ -78,6 +78,9 @@ _RUNTIME_EXPORTS = frozenset(
         "CurrentMessageContextProvider",
         "DriverInvocation",
         "DriverResult",
+        "HOST_CONTROL_INPUT_MAX_BYTES",
+        "HostControlAuthorityV1",
+        "HostControlRunStartV1",
         "MemoryFailurePolicy",
         "MemoryRecallBounds",
         "MemoryRecallRequest",
@@ -118,6 +121,7 @@ def __getattr__(name: str) -> Any:
 def __dir__() -> list[str]:
     return sorted(set(globals()) | _RUNTIME_EXPORTS)
 
+
 __all__ = (
     "__version__",
     "JsonPrimitive",
@@ -145,6 +149,9 @@ __all__ = (
     "HarnessError",
     "ContractValidationError",
     "ROOT_PROFILE_KEY",
+    "HOST_CONTROL_INPUT_MAX_BYTES",
+    "HostControlAuthorityV1",
+    "HostControlRunStartV1",
     "AdmissionPort",
     "AdmissionVerdict",
     "AgentIdentity",

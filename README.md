@@ -69,6 +69,12 @@ cutover, automated regression, and real macOS UI validation with a configured De
 AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
 and production paths were not modified, integrated, or tested in this program.
 
+Version 0.6.3 adds the typed `HostControlAuthorityV1` / `HostControlRunStartV1` contract and
+`RunClient.start_host_control`. Host control roots retain normal admission, durable Run ownership,
+driver execution, recovery, and terminal settlement while deliberately skipping conversation
+Memory preparation. The mode and complete authority are frozen in the v6 start snapshot; ordinary
+and Host-control identities cannot be reused across modes.
+
 Version 0.6.2 includes the provider-neutral Runtime capability catalog and same-Run progressive Tool
 exposure. Search, describe, and activation change visibility only; actual Tool execution retains
 the existing authorization and durable Effect authority. Fresh databases use execution schema v6;

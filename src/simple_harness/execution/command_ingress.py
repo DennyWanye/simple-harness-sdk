@@ -79,9 +79,7 @@ class CommandIngress:
             "SELECT state FROM runs WHERE run_id=?", (receipt.run_id.value,)
         ).fetchone()
         run_state = None if run is None else str(run[0])
-        if run_state in {"failed", "cancelled"} or (
-            run_state is None and receipt.state.terminal
-        ):
+        if run_state in {"failed", "cancelled"} or (run_state is None and receipt.state.terminal):
             output_state = CommandOutputState.ABSENT
         elif run_state != "completed":
             output_state = CommandOutputState.PENDING
@@ -99,18 +97,14 @@ class CommandIngress:
                 (receipt.run_id.value,),
             ).fetchone()
             owns_terminal_output = (
-                latest_command is not None
-                and str(latest_command[0]) == receipt.command_id
+                latest_command is not None and str(latest_command[0]) == receipt.command_id
             )
             if owns_terminal_output:
                 output_state = CommandOutputState.UNKNOWN
             if owns_terminal_output and output_row is not None:
                 output_json = str(output_row[1])
                 valid_hash = hashlib.sha256(output_json.encode()).hexdigest()
-                if (
-                    str(output_row[0]) == receipt.command_id
-                    and str(output_row[2]) == valid_hash
-                ):
+                if str(output_row[0]) == receipt.command_id and str(output_row[2]) == valid_hash:
                     try:
                         raw = json.loads(output_json)
                         if isinstance(raw, dict):
@@ -165,11 +159,22 @@ class CommandIngress:
             if tuple(row) != (namespace, RunApiMode.LEGACY.value, intent_hash):
                 raise CommandError(CommandErrorCode.RUN_MODE_CONFLICT)
 
+    def reserve_host_control_run(self, *, run_id: str, intent_hash: str, now: float) -> None:
+        """Fence one typed Host control identity from every public Run API."""
+
+        self.reserve_legacy_run(
+            namespace="host-control/v1",
+            projection_key_id="host-control-v1",
+            run_id=run_id,
+            intent_hash=intent_hash,
+            now=now,
+        )
+
     def require_legacy_or_unmanaged(self, run_id: str) -> None:
         row = self._database.connection.execute(
-            "SELECT api_mode FROM conversation_run_modes WHERE run_id=?", (run_id,)
+            "SELECT namespace,api_mode FROM conversation_run_modes WHERE run_id=?", (run_id,)
         ).fetchone()
-        if row is not None and str(row[0]) != RunApiMode.LEGACY.value:
+        if row is not None and tuple(row) != ("legacy/runtime", RunApiMode.LEGACY.value):
             raise CommandError(CommandErrorCode.RUN_MODE_CONFLICT)
 
     def claim_next(self, *, owner_id: str, now: float, lease_seconds: float) -> CommandClaim | None:

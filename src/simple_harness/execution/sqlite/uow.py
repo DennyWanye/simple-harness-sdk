@@ -861,6 +861,11 @@ class SqliteExecutionUnitOfWork:
             now=now,
         )
 
+    def reserve_host_control_run_mode(self, *, run_id: str, intent_hash: str, now: float) -> None:
+        CommandIngress(self.database).reserve_host_control_run(
+            run_id=run_id, intent_hash=intent_hash, now=now
+        )
+
     def require_legacy_or_unmanaged_run(self, run_id: str) -> None:
         CommandIngress(self.database).require_legacy_or_unmanaged(run_id)
 
@@ -5880,10 +5885,7 @@ class SqliteExecutionUnitOfWork:
             )
         snapshot = self.read_tool_catalog_snapshot(content_fingerprint=fingerprint)
         assert snapshot is not None
-        if (
-            envelope_digest is not None
-            and snapshot.catalog_envelope_digest_v6 != envelope_digest
-        ):
+        if envelope_digest is not None and snapshot.catalog_envelope_digest_v6 != envelope_digest:
             raise UnitOfWorkConflict(
                 "Tool catalog Provider projection matches but v6 envelope differs"
             )

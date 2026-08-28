@@ -119,7 +119,12 @@ from .orchestration import (
     WorkflowLaunchTicketPort,
     WorkflowSpawnReadyActivation,
 )
-from .start_snapshot import RunStart, StartSnapshot, bind_start_snapshot
+from .start_snapshot import (
+    HostControlRunStartV1,
+    RunStart,
+    StartSnapshot,
+    bind_start_snapshot,
+)
 from .terminal import TerminalCoordinator, ToolCatalogStale
 
 logger = logging.getLogger(__name__)
@@ -542,6 +547,10 @@ class RuntimeUnitOfWork(ExecutionUnitOfWork, RunFencePort, WorkflowLaunchTicketP
 
     def reserve_legacy_run_mode(self, *, run_id: str, intent_hash: str, now: float) -> None: ...
 
+    def reserve_host_control_run_mode(
+        self, *, run_id: str, intent_hash: str, now: float
+    ) -> None: ...
+
     def require_legacy_or_unmanaged_run(self, run_id: str) -> None: ...
 
     def claim_next_command(
@@ -715,6 +724,41 @@ class RunClient:
             )
         self._runtime._reserve_legacy_start(value)
         return await self._runtime._start_run(value)
+
+    async def start_host_control(self, value: HostControlRunStartV1) -> RunRecord:
+        """Start one Memory-neutral Host control root through typed authority."""
+
+        self._runtime._require_started()
+        if not isinstance(value, HostControlRunStartV1):
+            raise TypeError("value must use HostControlRunStartV1")
+        intent_hash = hashlib.sha256(canonical_json(value.to_json()).encode("utf-8")).hexdigest()
+        self._runtime._uow.reserve_host_control_run_mode(
+            run_id=value.run_id.value,
+            intent_hash=intent_hash,
+            now=self._runtime._now(),
+        )
+        existing = self._runtime._uow.read_run(value.run_id.value)
+        if existing is not None:
+            raw = self._runtime._uow.read_start_snapshot(value.run_id.value)
+            if raw is None:
+                raise UnitOfWorkConflict("Host control start snapshot disappeared")
+            snapshot = StartSnapshot.from_json(raw)
+            expected = value.to_run_start()
+            if (
+                snapshot.start_mode != "host_control"
+                or snapshot.host_control_authority != value.authority
+                or snapshot.host_control_user_id != value.user_id
+                or snapshot.turn_id != value.turn_id
+                or existing.execution_session_id != value.execution_session_id.value
+                or existing.request_id != value.request_id.value
+                or snapshot.input != expected.input
+                or snapshot.tool_catalog_generation != value.tool_catalog_generation
+                or snapshot.tool_catalog_fingerprint != value.tool_catalog_fingerprint
+                or snapshot.provider_budget_fingerprint != value.provider_budget_fingerprint
+            ):
+                raise UnitOfWorkConflict("Host control start identity was reused differently")
+            return existing
+        return await self._runtime._start_run(value.to_run_start())
 
     async def submit_start(self, intent: StartCommandIntent) -> CommandReceipt:
         self._runtime._require_started()
@@ -2462,20 +2506,29 @@ class Runtime:
 
     async def _start_run(self, start: RunStart) -> RunRecord:
         self._require_started()
-        if self._ports.conversation_memory_enabled and start.conversation is None:
+        host_control = start.start_mode == "host_control"
+        if (
+            self._ports.conversation_memory_enabled
+            and start.conversation is None
+            and not host_control
+        ):
             raise HarnessError(
                 "conversation_envelope_required",
                 "Enabled conversation Memory requires an explicit envelope.",
             )
-        if self._ports.conversation_memory_enabled and (
-            start.context_stage_id is None or start.prepared_context is None
+        if (
+            self._ports.conversation_memory_enabled
+            and not host_control
+            and (start.context_stage_id is None or start.prepared_context is None)
         ):
             raise HarnessError(
                 "context_stage_required",
                 "Enabled conversation Memory requires durable prepared context.",
             )
-        if self._ports.conversation_memory_enabled and (
-            start.context_preparation_mode is not self._ports.context_preparation_mode
+        if (
+            self._ports.conversation_memory_enabled
+            and not host_control
+            and (start.context_preparation_mode is not self._ports.context_preparation_mode)
         ):
             raise HarnessError(
                 "context_preparation_mode_mismatch",
@@ -2499,6 +2552,12 @@ class Runtime:
             driver_kind=profile.driver_kind,
             policy_fingerprint=getattr(driver, "policy_fingerprint", None),
         )
+        user_id = (
+            start.host_control_user_id
+            if host_control
+            else ("harness-system" if start.conversation is None else start.conversation.user_id)
+        )
+        assert user_id is not None
         created = self._uow.create_with_start_snapshot(
             execution_session_id=start.execution_session_id.value,
             run_id=start.run_id.value,
@@ -2508,9 +2567,7 @@ class Runtime:
             snapshot=snapshot.to_json(),
             event_id=f"{start.run_id.value}:created",
             now=self._now(),
-            user_id=(
-                "harness-system" if start.conversation is None else start.conversation.user_id
-            ),
+            user_id=user_id,
             context_stage_id=start.context_stage_id,
             context_stage_hash=start.context_stage_hash,
         )

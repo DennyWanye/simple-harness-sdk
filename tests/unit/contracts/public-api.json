@@ -1,5 +1,5 @@
 {
-  "version": "0.6.2",
+  "version": "0.6.3",
   "simple_harness": [
     "__version__",
     "JsonPrimitive",
@@ -27,6 +27,9 @@
     "HarnessError",
     "ContractValidationError",
     "ROOT_PROFILE_KEY",
+    "HOST_CONTROL_INPUT_MAX_BYTES",
+    "HostControlAuthorityV1",
+    "HostControlRunStartV1",
     "AdmissionPort",
     "AdmissionVerdict",
     "AgentIdentity",
@@ -115,6 +118,9 @@
   ],
   "simple_harness.runtime": [
     "ROOT_PROFILE_KEY",
+    "HOST_CONTROL_INPUT_MAX_BYTES",
+    "HostControlAuthorityV1",
+    "HostControlRunStartV1",
     "STARTUP_RECONCILIATION_ORDER",
     "WORKFLOW_DRIVER_IMPLEMENTATION_FINGERPRINT",
     "WORKFLOW_DRIVER_KIND",

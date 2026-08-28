@@ -18,6 +18,8 @@ from simple_harness import (
     CommittedTurnStatus,
     ContinueCommandIntent,
     ConversationContextResult,
+    HostControlAuthorityV1,
+    HostControlRunStartV1,
     MemoryRecallResult,
     MemoryRecallStatus,
     Message,
@@ -26,6 +28,7 @@ from simple_harness import (
     canonical_json,
 )
 from simple_harness.contracts import ExecutionSessionId, RequestId, RunId
+from simple_harness.execution.command_ingress import CommandError
 from simple_harness.execution.context_authority import ToolCatalogSnapshot
 from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.delivery import (
@@ -60,18 +63,14 @@ class NoopPort:
 
 
 class Catalog:
-    def __init__(
-        self, generation: int = 1, *, fingerprint: str | None = None
-    ) -> None:
+    def __init__(self, generation: int = 1, *, fingerprint: str | None = None) -> None:
         self.generation = generation
         self.fingerprint = fingerprint
 
     def current_generation(self) -> int:
         return self.generation
 
-    def resolve(
-        self, generation: int, content_fingerprint: str
-    ) -> ToolCatalogSnapshot | None:
+    def resolve(self, generation: int, content_fingerprint: str) -> ToolCatalogSnapshot | None:
         if generation != self.generation or content_fingerprint != self.fingerprint:
             return None
         return ToolCatalogSnapshot(
@@ -167,6 +166,168 @@ def request(name: str = "one", *, generation: int = 1) -> RunStart:
     )
 
 
+def host_control_request(name: str = "one") -> HostControlRunStartV1:
+    return HostControlRunStartV1(
+        ExecutionSessionId("session-host"),
+        RunId(f"run-host-{name}"),
+        RequestId(f"request-host-{name}"),
+        f"turn-host-{name}",
+        {"attempt_ref": name},
+        1,
+        HostControlAuthorityV1(
+            "skill.install.verify", f"attempt:{name}", hashlib.sha256(name.encode()).hexdigest(), 1
+        ),
+        "host-user",
+    )
+
+
+def test_host_control_is_memory_neutral_and_exactly_replayable(tmp_path) -> None:
+    async def case() -> None:
+        memory = StableMemory()
+        driver = Driver()
+        value, uow, database = runtime(
+            tmp_path,
+            driver=driver,
+            agent_memory=memory,
+            context_provider=StableContextProvider(),
+        )
+        try:
+            await value.start()
+            start = host_control_request()
+            first = await value.client.start_host_control(start)
+            await value.wait_idle(start.run_id)
+            replay = await value.client.start_host_control(start)
+            assert first.run_id == replay.run_id
+            assert driver.calls == 1
+            assert memory.recalls == memory.releases == memory.committed == []
+            snapshot = uow.read_start_snapshot(start.run_id.value)
+            assert snapshot is not None
+            assert snapshot["schema_version"] == 6
+            assert snapshot["start_mode"] == "host_control"
+            assert snapshot["host_control_authority"] == start.authority.to_json()
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM provider_invocations WHERE run_id=?",
+                    (start.run_id.value,),
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM execution_effects WHERE run_id=?", (start.run_id.value,)
+                ).fetchone()[0]
+                == 0
+            )
+            with pytest.raises(CommandError):
+                value.client.signal(start.run_id, signal_id="public", payload={})
+            with pytest.raises(CommandError):
+                await value.client.cancel(start.run_id)
+        finally:
+            await value.close()
+            database.close()
+
+    asyncio.run(case())
+
+
+def test_host_control_bidirectional_collision_and_changed_replay_fail_closed(tmp_path) -> None:
+    async def case() -> None:
+        value, _, database = runtime(tmp_path)
+        try:
+            await value.start()
+            control = host_control_request("collision")
+            await value.client.start_host_control(control)
+            await value.wait_idle(control.run_id)
+            with pytest.raises(CommandError):
+                await value.client.start(
+                    RunStart(
+                        control.execution_session_id,
+                        control.run_id,
+                        control.request_id,
+                        control.turn_id,
+                        {"attempt_ref": "collision"},
+                        1,
+                    )
+                )
+            changed = HostControlRunStartV1(
+                control.execution_session_id,
+                control.run_id,
+                control.request_id,
+                control.turn_id,
+                {"attempt_ref": "changed"},
+                1,
+                control.authority,
+                control.user_id,
+            )
+            with pytest.raises(CommandError):
+                await value.client.start_host_control(changed)
+
+            ordinary = request("ordinary-collision")
+            await value.client.start(ordinary)
+            await value.wait_idle(ordinary.run_id)
+            opposite = HostControlRunStartV1(
+                ordinary.execution_session_id,
+                ordinary.run_id,
+                ordinary.request_id,
+                ordinary.turn_id,
+                {"prompt": "ordinary-collision"},
+                1,
+                control.authority,
+                "host-user",
+            )
+            with pytest.raises(CommandError):
+                await value.client.start_host_control(opposite)
+        finally:
+            await value.close()
+            database.close()
+
+    asyncio.run(case())
+
+
+def test_host_control_recovery_uses_v6_authority_without_memory_side_state(tmp_path) -> None:
+    control = host_control_request("recover")
+    seeded, uow, database = runtime(tmp_path, agent_memory=StableMemory())
+    del seeded
+    intent_hash = hashlib.sha256(canonical_json(control.to_json()).encode()).hexdigest()
+    uow.reserve_host_control_run_mode(run_id=control.run_id.value, intent_hash=intent_hash, now=1.0)
+    snapshot = bind_start_snapshot(
+        control.to_run_start(), profile_key="agent.general", driver_kind="react"
+    )
+    uow.create_with_start_snapshot(
+        execution_session_id=control.execution_session_id.value,
+        run_id=control.run_id.value,
+        request_id=control.request_id.value,
+        profile_key="agent.general",
+        driver_kind="react",
+        snapshot=snapshot.to_json(),
+        event_id=f"{control.run_id.value}:created",
+        now=1.0,
+        user_id=control.user_id,
+    )
+    database.close()
+
+    async def case() -> None:
+        memory = StableMemory()
+        driver = Driver()
+        restarted, reopened_uow, reopened = runtime(
+            tmp_path,
+            driver=driver,
+            owner="recovery-owner",
+            agent_memory=memory,
+            context_provider=StableContextProvider(),
+        )
+        try:
+            await restarted.start()
+            await restarted.wait_idle(control.run_id)
+            assert reopened_uow.read_run(control.run_id.value).state is RunState.COMPLETED
+            assert driver.calls == 1
+            assert memory.recalls == memory.releases == memory.committed == []
+        finally:
+            await restarted.close()
+            reopened.close()
+
+    asyncio.run(case())
+
+
 def runtime(
     tmp_path,
     *,
@@ -211,9 +372,7 @@ def runtime(
             lease_ttl_seconds=lease_ttl_seconds,
             close_timeout_seconds=close_timeout_seconds,
             conversation_memory_enabled=agent_memory is not None,
-            context_staging=(
-                None if agent_memory is None else ContextStagingRepository(database)
-            ),
+            context_staging=(None if agent_memory is None else ContextStagingRepository(database)),
             context_preparation_mode=(
                 None if agent_memory is None else ContextPreparationMode.SDK_PREPARED
             ),
@@ -358,9 +517,7 @@ def test_durable_command_accepts_before_driver_and_projects_closed_output(tmp_pa
 def test_command_catalog_fingerprint_is_durable_across_reopen(tmp_path) -> None:
     async def case() -> None:
         fingerprint = "a" * 64
-        value, uow, database = runtime(
-            tmp_path, catalog=Catalog(fingerprint=fingerprint)
-        )
+        value, uow, database = runtime(tmp_path, catalog=Catalog(fingerprint=fingerprint))
         await value.start()
         intent = StartCommandIntent(
             "deployment/phone",
@@ -466,9 +623,7 @@ def test_command_nested_capability_snapshot_reaches_catalog_bound_run(tmp_path) 
 def test_command_catalog_fingerprint_drift_fails_before_driver(tmp_path) -> None:
     async def case() -> None:
         driver = Driver()
-        value, _, database = runtime(
-            tmp_path, driver=driver, catalog=Catalog(fingerprint="a" * 64)
-        )
+        value, _, database = runtime(tmp_path, driver=driver, catalog=Catalog(fingerprint="a" * 64))
         await value.start()
         intent = StartCommandIntent(
             "deployment/phone",
@@ -680,9 +835,7 @@ def test_start_command_provider_crash_replays_stable_preparation_intent(
         )
         first_database.close()
 
-        retry_context = (
-            first_context if same_provider_instance else StableContextProvider()
-        )
+        retry_context = first_context if same_provider_instance else StableContextProvider()
         second, _, second_database = runtime(
             tmp_path,
             owner="recovered-start-owner",
@@ -934,9 +1087,7 @@ def test_continue_command_provider_crash_replays_stable_preparation_intent(
         )
         crashed_database.close()
 
-        retry_context = (
-            first_context if same_provider_instance else StableContextProvider()
-        )
+        retry_context = first_context if same_provider_instance else StableContextProvider()
         healthy_memory = StableMemory()
         recovered_runtime, _, recovered_database = runtime(
             tmp_path,
@@ -1128,12 +1279,16 @@ def test_concurrent_start_publishes_ready_once_and_clients_fail_before_ready(
             assert getattr(error, "code", None) == "runtime_not_ready"
         else:
             raise AssertionError("client start must fail before READY")
-        assert database.connection.execute(
-            "SELECT count(*) FROM conversation_run_modes"
-        ).fetchone()[0] == 0
-        assert database.connection.execute(
-            "SELECT count(*) FROM conversation_command_namespaces"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute("SELECT count(*) FROM conversation_run_modes").fetchone()[0]
+            == 0
+        )
+        assert (
+            database.connection.execute(
+                "SELECT count(*) FROM conversation_command_namespaces"
+            ).fetchone()[0]
+            == 0
+        )
         release.set()
         await asyncio.gather(first, second)
         assert calls == 1
@@ -1144,9 +1299,10 @@ def test_concurrent_start_publishes_ready_once_and_clients_fail_before_ready(
             assert str(error) == "value must use RunStart"
         else:
             raise AssertionError("legacy start must reject an open input shape")
-        assert database.connection.execute(
-            "SELECT count(*) FROM conversation_run_modes"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute("SELECT count(*) FROM conversation_run_modes").fetchone()[0]
+            == 0
+        )
         try:
             await value.client.start_conversation(
                 ConversationTurnInput(
@@ -1161,9 +1317,10 @@ def test_concurrent_start_publishes_ready_once_and_clients_fail_before_ready(
             assert "tool_catalog_generation" in str(error)
         else:
             raise AssertionError("invalid conversation start must fail before reservation")
-        assert database.connection.execute(
-            "SELECT count(*) FROM conversation_run_modes"
-        ).fetchone()[0] == 0
+        assert (
+            database.connection.execute("SELECT count(*) FROM conversation_run_modes").fetchone()[0]
+            == 0
+        )
         await value.close()
         assert value.state is RuntimeLifecycleState.CLOSED
         database.close()
