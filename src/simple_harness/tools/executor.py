@@ -366,7 +366,12 @@ class EffectExecutor:
                 prompt=authorization.request.prompt,
                 nonce=secrets.token_urlsafe(32),
                 expires_at=authorization.request.expires_at,
-                metadata=authorization.request.metadata,
+                metadata=cast(
+                    dict[str, JsonValue],
+                    thaw_json(
+                        cast(FrozenJsonValue, authorization.request.metadata)
+                    ),
+                ),
             )
             raise ToolAuthorizationPending(prepared, request)
         if authorization is not None and authorization.decision is not AuthorizationDecision.ALLOW:
@@ -558,7 +563,10 @@ def _authorization_request(decision: DecisionRecord) -> AuthorizationRequest:
         prompt=str(value["prompt"]),
         nonce=str(value["nonce"]),
         expires_at=None if expires_at is None else float(expires_at),
-        metadata=cast(Mapping[str, FrozenJsonValue], metadata),
+        metadata=cast(
+            dict[str, JsonValue],
+            thaw_json(cast(FrozenJsonValue, metadata)),
+        ),
     )
 
 

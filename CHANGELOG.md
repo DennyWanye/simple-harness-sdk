@@ -5,6 +5,16 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.6.4 — 2026-08-29
+
+### Fixed
+- Reissuing a user-confirmation nonce now deeply thaws already-frozen authorization metadata
+  before constructing the replacement request. Nested lists and objects therefore survive the
+  durable confirmation boundary instead of failing strict JSON validation.
+
+### Compatibility
+- Public APIs and execution schema v6 are unchanged. This is a patch-only contract repair.
+
 ## 0.6.2 — 2026-08-25
 
 ### Fixed
