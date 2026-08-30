@@ -28,6 +28,7 @@ from simple_harness.contracts import (
 from .schema import validate_tool_schema
 
 if TYPE_CHECKING:
+    from simple_harness.execution.effects import TaskExecutionEnvelope
     from simple_harness.runtime.workflow_spawn import WorkflowSpawnToolContext
 
     from .sidecar import Sidecar
@@ -111,6 +112,7 @@ class ToolContext:
     workflow_spawn_context: WorkflowSpawnToolContext | None = None
     call_id: CallId | None = None
     effect_id: EffectId | None = None
+    task_execution_envelope: TaskExecutionEnvelope | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, RunId):
@@ -126,6 +128,18 @@ class ToolContext:
 
             if not isinstance(self.workflow_spawn_context, WorkflowSpawnToolContext):
                 raise TypeError("workflow_spawn_context must use the SDK typed context")
+        if self.task_execution_envelope is not None:
+            from simple_harness.execution.effects import TaskExecutionEnvelope
+
+            if not isinstance(self.task_execution_envelope, TaskExecutionEnvelope):
+                raise TypeError("task_execution_envelope must use TaskExecutionEnvelope")
+            envelope = self.task_execution_envelope
+            if envelope.run_id != self.run_id:
+                raise ValueError("TaskExecutionEnvelope belongs to another Run")
+            if self.call_id is not None and envelope.call_id != self.call_id:
+                raise ValueError("TaskExecutionEnvelope call differs")
+            if self.effect_id is not None and envelope.effect_id != self.effect_id:
+                raise ValueError("TaskExecutionEnvelope effect differs")
         object.__setattr__(self, "metadata", _freeze_object(self.metadata, "metadata"))
 
 

@@ -5,12 +5,320 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import hashlib
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol, cast
 
-from simple_harness.contracts import FrozenJsonValue, JsonValue, freeze_json, thaw_json
+from simple_harness.contracts import (
+    FrozenJsonValue,
+    JsonValue,
+    Message,
+    RunId,
+    canonical_json,
+    freeze_json,
+    thaw_json,
+)
 from simple_harness.providers import ProviderToolSpec
+from simple_harness.runtime.task_scope_protocol import TaskScopeRoute
+from simple_harness.tools.runtime_catalog import ToolExecutionPolicy
+
+from .effects import TaskExecutionEnvelope
+
+
+def _sha256(value: JsonValue) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _required(value: str, name: str) -> str:
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise ValueError(f"{name} is required")
+    return value
+
+
+def _digest(value: str, name: str) -> str:
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{name} must be lowercase SHA-256")
+    return value
+
+
+class ContextRouteState(StrEnum):
+    UNROUTED = "unrouted"
+    ROUTED_STANDALONE = "routed_standalone"
+    ROUTED_TASK = "routed_task"
+
+
+@dataclass(frozen=True, slots=True)
+class ContextRouteReceipt:
+    receipt_id: str
+    run_id: str
+    raw_call_id: str
+    effect_id: str
+    route: TaskScopeRoute
+    task_scope_id: str | None
+    binding_set_revision: int | None
+    recall_refs: tuple[str, ...] = ()
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported ContextRouteReceipt schema")
+        for value, name in (
+            (self.receipt_id, "receipt_id"),
+            (self.run_id, "run_id"),
+            (self.raw_call_id, "raw_call_id"),
+            (self.effect_id, "effect_id"),
+        ):
+            _required(value, name)
+        object.__setattr__(self, "route", TaskScopeRoute(self.route))
+        if self.route in {
+            TaskScopeRoute.CONTINUE_ACTIVE,
+            TaskScopeRoute.RESUME_EXISTING,
+            TaskScopeRoute.CREATE_NEW,
+        }:
+            if self.task_scope_id is None or self.binding_set_revision is None:
+                raise ValueError("task route requires TaskScope and binding revision")
+        elif self.task_scope_id is not None or self.binding_set_revision is not None:
+            raise ValueError("standalone route forbids TaskScope binding")
+        if self.binding_set_revision is not None and (
+            isinstance(self.binding_set_revision, bool) or self.binding_set_revision < 1
+        ):
+            raise ValueError("binding_set_revision must be positive")
+        refs = tuple(_required(item, "recall_ref") for item in self.recall_refs)
+        if len(set(refs)) != len(refs):
+            raise ValueError("recall_refs must be unique")
+        object.__setattr__(self, "recall_refs", refs)
+
+    @property
+    def route_state(self) -> ContextRouteState:
+        if self.route in {TaskScopeRoute.DIRECT_STANDALONE, TaskScopeRoute.MEMORY_STANDALONE}:
+            return ContextRouteState.ROUTED_STANDALONE
+        return ContextRouteState.ROUTED_TASK
+
+    @property
+    def receipt_hash(self) -> str:
+        return _sha256(self.to_json())
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "schema_version": self.schema_version,
+            "receipt_id": self.receipt_id,
+            "run_id": self.run_id,
+            "raw_call_id": self.raw_call_id,
+            "effect_id": self.effect_id,
+            "route": self.route.value,
+            "task_scope_id": self.task_scope_id,
+            "binding_set_revision": self.binding_set_revision,
+            "recall_refs": list(self.recall_refs),
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> ContextRouteReceipt:
+        expected = {
+            "schema_version",
+            "receipt_id",
+            "run_id",
+            "raw_call_id",
+            "effect_id",
+            "route",
+            "task_scope_id",
+            "binding_set_revision",
+            "recall_refs",
+        }
+        if set(value) != expected:
+            raise ValueError("ContextRouteReceipt fields differ")
+        refs = value["recall_refs"]
+        if not isinstance(refs, list) or not all(isinstance(item, str) for item in refs):
+            raise TypeError("recall_refs must be strings")
+        revision = value["binding_set_revision"]
+        schema_version = value["schema_version"]
+        if revision is not None and (isinstance(revision, bool) or not isinstance(revision, int)):
+            raise TypeError("binding_set_revision must be an integer or null")
+        if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+            raise TypeError("schema_version must be an integer")
+        return cls(
+            receipt_id=str(value["receipt_id"]),
+            run_id=str(value["run_id"]),
+            raw_call_id=str(value["raw_call_id"]),
+            effect_id=str(value["effect_id"]),
+            route=TaskScopeRoute(str(value["route"])),
+            task_scope_id=(None if value["task_scope_id"] is None else str(value["task_scope_id"])),
+            binding_set_revision=revision,
+            recall_refs=tuple(refs),
+            schema_version=schema_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RunContextAuthorityRequest:
+    run_id: RunId
+    provider_turn_ordinal: int
+    prior_context_revision: int
+    route_state: ContextRouteState
+    route_receipt: ContextRouteReceipt | None
+    tool_catalog_fingerprint: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, RunId):
+            raise TypeError("run_id must use RunId")
+        for value, name in (
+            (self.provider_turn_ordinal, "provider_turn_ordinal"),
+            (self.prior_context_revision, "prior_context_revision"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if self.provider_turn_ordinal < 1:
+            raise ValueError("provider_turn_ordinal must be positive")
+        object.__setattr__(self, "route_state", ContextRouteState(self.route_state))
+        if (self.route_state is ContextRouteState.UNROUTED) != (self.route_receipt is None):
+            raise ValueError("route state and receipt differ")
+        if self.route_receipt is not None and self.route_receipt.run_id != self.run_id.value:
+            raise ValueError("route receipt belongs to another Run")
+        _digest(self.tool_catalog_fingerprint, "tool_catalog_fingerprint")
+
+
+@dataclass(frozen=True, slots=True)
+class RunContextSnapshot:
+    snapshot_id: str
+    run_id: str
+    provider_turn_ordinal: int
+    prior_context_revision: int
+    snapshot_revision: int
+    source_revisions: Mapping[str, int]
+    messages: tuple[Message, ...]
+    tools: tuple[ProviderToolSpec, ...]
+    temperature: float | None
+    max_output_tokens: int | None
+    metadata: Mapping[str, JsonValue]
+    expected_request_fingerprint: str
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported RunContextSnapshot schema")
+        _required(self.snapshot_id, "snapshot_id")
+        _required(self.run_id, "run_id")
+        if self.provider_turn_ordinal < 1 or self.prior_context_revision < 0:
+            raise ValueError("invalid Context snapshot lineage")
+        if self.snapshot_revision < 1:
+            raise ValueError("snapshot_revision must be positive")
+        revisions = dict(self.source_revisions)
+        if not all(
+            isinstance(key, str)
+            and isinstance(item, int)
+            and not isinstance(item, bool)
+            and item >= 0
+            for key, item in revisions.items()
+        ):
+            raise ValueError("source_revisions are invalid")
+        object.__setattr__(self, "source_revisions", revisions)
+        object.__setattr__(self, "messages", tuple(self.messages))
+        object.__setattr__(self, "tools", tuple(self.tools))
+        if not self.messages or not all(isinstance(item, Message) for item in self.messages):
+            raise ValueError("Context snapshot requires Messages")
+        if not all(isinstance(item, ProviderToolSpec) for item in self.tools):
+            raise TypeError("Context snapshot tools are invalid")
+        frozen = freeze_json(dict(self.metadata))
+        assert isinstance(frozen, Mapping)
+        object.__setattr__(self, "metadata", frozen)
+        _digest(self.expected_request_fingerprint, "expected_request_fingerprint")
+
+    def request_payload(self) -> dict[str, JsonValue]:
+        return {
+            "messages": [
+                {
+                    "role": item.role.value,
+                    "content": (
+                        item.content
+                        if isinstance(item.content, str)
+                        else [block.to_dict() for block in item.content]
+                    ),
+                    "name": item.name,
+                    "call_id": None if item.call_id is None else item.call_id.value,
+                    "metadata": thaw_json(cast(FrozenJsonValue, item.metadata)),
+                }
+                for item in self.messages
+            ],
+            "tools": [
+                {
+                    "name": item.name,
+                    "description": item.description,
+                    "parameters": thaw_json(cast(FrozenJsonValue, item.parameters)),
+                }
+                for item in self.tools
+            ],
+            "temperature": self.temperature,
+            "max_output_tokens": self.max_output_tokens,
+            "metadata": thaw_json(cast(FrozenJsonValue, self.metadata)),
+        }
+
+    @property
+    def payload_hash(self) -> str:
+        return _sha256(self.request_payload())
+
+    def receipt_json(self) -> dict[str, JsonValue]:
+        return {
+            "schema_version": self.schema_version,
+            "snapshot_id": self.snapshot_id,
+            "run_id": self.run_id,
+            "provider_turn_ordinal": self.provider_turn_ordinal,
+            "prior_context_revision": self.prior_context_revision,
+            "snapshot_revision": self.snapshot_revision,
+            "source_revisions": dict(self.source_revisions),
+            "payload_hash": self.payload_hash,
+            "expected_request_fingerprint": self.expected_request_fingerprint,
+        }
+
+
+class RunContextAuthorityPort(Protocol):
+    def prepare_snapshot(
+        self, request: RunContextAuthorityRequest
+    ) -> Awaitable[RunContextSnapshot]: ...
+
+
+class RuntimeDecisionSinkPort(Protocol):
+    def record_no_recall(
+        self,
+        *,
+        run_id: RunId,
+        provider_turn_ordinal: int,
+        request_fingerprint: str,
+    ) -> Awaitable[ContextRouteReceipt]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TaskExecutionEnvelopeRequest:
+    run_id: RunId
+    call_id: str
+    effect_id: str
+    raw_call_id: str
+    turn_ordinal: int
+    call_ordinal: int
+    tool_name: str
+    policy: ToolExecutionPolicy
+    route_receipt: ContextRouteReceipt | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, RunId):
+            raise TypeError("run_id must use RunId")
+        for value, name in (
+            (self.call_id, "call_id"),
+            (self.effect_id, "effect_id"),
+            (self.raw_call_id, "raw_call_id"),
+            (self.tool_name, "tool_name"),
+        ):
+            _required(value, name)
+        if not isinstance(self.policy, ToolExecutionPolicy):
+            raise TypeError("policy must use ToolExecutionPolicy")
+        if self.route_receipt is not None and self.route_receipt.run_id != self.run_id.value:
+            raise ValueError("route receipt belongs to another Run")
+
+
+class TaskExecutionAuthorityPort(Protocol):
+    def issue_envelope(
+        self, request: TaskExecutionEnvelopeRequest
+    ) -> Awaitable[TaskExecutionEnvelope]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,9 +462,17 @@ class DurableToolCatalogResolver:
 
 __all__ = (
     "CatalogHandlerBinding",
+    "ContextRouteReceipt",
+    "ContextRouteState",
     "DurableToolCatalogResolver",
     "ProviderProjectionReceipt",
     "ResolvedCatalogHandlers",
+    "RunContextAuthorityPort",
+    "RunContextAuthorityRequest",
+    "RunContextSnapshot",
+    "RuntimeDecisionSinkPort",
+    "TaskExecutionAuthorityPort",
+    "TaskExecutionEnvelopeRequest",
     "ToolCatalogSnapshot",
     "ToolCatalogStore",
 )

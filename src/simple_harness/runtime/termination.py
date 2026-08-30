@@ -85,6 +85,11 @@ class TerminationState:
     workflow_catalog_selection_hash: str | None = None
     tool_exposure_state: JsonValue | None = None
     policy_fingerprint: str = ""
+    route_state: str = "unrouted"
+    route_receipt: JsonValue | None = None
+    route_receipt_hash: str | None = None
+    context_authority_receipt: JsonValue | None = None
+    context_authority_receipt_hash: str | None = None
 
     @property
     def turns(self) -> int:
@@ -148,6 +153,33 @@ class TerminationState:
             or any(ch not in "0123456789abcdef" for ch in self.policy_fingerprint)
         ):
             raise ValueError("termination policy fingerprint must be lowercase SHA-256")
+        if self.route_state not in {"unrouted", "routed_standalone", "routed_task"}:
+            raise ValueError("invalid durable route state")
+        if (self.route_receipt is None) != (self.route_receipt_hash is None):
+            raise ValueError("route receipt and hash must be paired")
+        if (self.context_authority_receipt is None) != (
+            self.context_authority_receipt_hash is None
+        ):
+            raise ValueError("Context authority receipt and hash must be paired")
+        for payload, digest, name in (
+            (self.route_receipt, self.route_receipt_hash, "route receipt"),
+            (
+                self.context_authority_receipt,
+                self.context_authority_receipt_hash,
+                "Context authority receipt",
+            ),
+        ):
+            if digest is not None:
+                import hashlib
+
+                from simple_harness.contracts import canonical_json
+
+                if (
+                    len(digest) != 64
+                    or hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+                    != digest
+                ):
+                    raise ValueError(f"{name} hash is invalid")
 
     def before_provider(
         self, limits: TerminationLimits, *, now: float, budget: BudgetSnapshot
@@ -169,6 +201,8 @@ class TerminationState:
             provider_response_snapshot=None,
             provider_response_digest=None,
             tool_result_progress=0,
+            context_authority_receipt=None,
+            context_authority_receipt_hash=None,
         )
 
     def before_tool_batch(
@@ -211,7 +245,7 @@ class TerminationState:
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "started_at": self.started_at,
             "last_observed_at": self.last_observed_at,
             "provider_turns_reserved_total": self.provider_turns_reserved_total,
@@ -236,11 +270,16 @@ class TerminationState:
             "workflow_catalog_selection_hash": self.workflow_catalog_selection_hash,
             "tool_exposure_state": self.tool_exposure_state,
             "policy_fingerprint": self.policy_fingerprint,
+            "route_state": self.route_state,
+            "route_receipt": self.route_receipt,
+            "route_receipt_hash": self.route_receipt_hash,
+            "context_authority_receipt": self.context_authority_receipt,
+            "context_authority_receipt_hash": self.context_authority_receipt_hash,
         }
 
     @classmethod
     def from_json(cls, value: Mapping[str, object]) -> TerminationState:
-        if value.get("schema_version") not in {1, 2, 3}:
+        if value.get("schema_version") not in {1, 2, 3, 4}:
             raise ValueError("unsupported ReAct checkpoint schema")
         return cls(
             started_at=_float(value["started_at"]),
@@ -281,6 +320,13 @@ class TerminationState:
             ),
             tool_exposure_state=value.get("tool_exposure_state"),  # type: ignore[arg-type]
             policy_fingerprint=str(value.get("policy_fingerprint") or ""),
+            route_state=str(value.get("route_state") or "unrouted"),
+            route_receipt=value.get("route_receipt"),  # type: ignore[arg-type]
+            route_receipt_hash=_optional_string(value.get("route_receipt_hash")),
+            context_authority_receipt=value.get("context_authority_receipt"),  # type: ignore[arg-type]
+            context_authority_receipt_hash=_optional_string(
+                value.get("context_authority_receipt_hash")
+            ),
         )
 
 

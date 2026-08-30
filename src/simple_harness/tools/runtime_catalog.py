@@ -62,6 +62,44 @@ class ToolExposureMode(StrEnum):
     DEFERRED = "deferred"
 
 
+class ToolEffectClass(StrEnum):
+    CONTEXT_CONTROL = "context_control"
+    PROJECT_EFFECT = "project_effect"
+    NON_PROJECT_EFFECT = "non_project_effect"
+
+
+class ToolRouteRequirement(StrEnum):
+    FORBIDDEN = "forbidden"
+    REQUIRED = "required"
+    OPTIONAL = "optional"
+
+
+class ToolTaskScopeRequirement(StrEnum):
+    FORBIDDEN = "forbidden"
+    REQUIRED = "required"
+    OPTIONAL = "optional"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionPolicy:
+    capability_id: str
+    capability_fingerprint: str
+    effect_class: ToolEffectClass
+    route_requirement: ToolRouteRequirement
+    task_scope_requirement: ToolTaskScopeRequirement
+
+    def __post_init__(self) -> None:
+        _required(self.capability_id, "capability_id")
+        _digest(self.capability_fingerprint, "capability_fingerprint")
+        object.__setattr__(self, "effect_class", ToolEffectClass(self.effect_class))
+        object.__setattr__(self, "route_requirement", ToolRouteRequirement(self.route_requirement))
+        object.__setattr__(
+            self,
+            "task_scope_requirement",
+            ToolTaskScopeRequirement(self.task_scope_requirement),
+        )
+
+
 class RuntimeToolCatalogError(ValueError):
     """Stable fail-closed catalog error without private source data."""
 
@@ -170,6 +208,9 @@ class ExecutableToolRecord:
     description: str
     input_schema: Mapping[str, JsonValue]
     search_terms: tuple[str, ...] = ()
+    effect_class: ToolEffectClass | str = ToolEffectClass.NON_PROJECT_EFFECT
+    route_requirement: ToolRouteRequirement | str = ToolRouteRequirement.OPTIONAL
+    task_scope_requirement: ToolTaskScopeRequirement | str = ToolTaskScopeRequirement.OPTIONAL
     kind: RuntimeCapabilityKind = field(default=RuntimeCapabilityKind.EXECUTABLE_TOOL, init=False)
 
     def __post_init__(self) -> None:
@@ -202,6 +243,31 @@ class ExecutableToolRecord:
         object.__setattr__(self, "provider_name", provider_name)
         object.__setattr__(self, "exposure_mode", _mode(self.exposure_mode))
         object.__setattr__(self, "input_schema", _schema(self.input_schema, "input_schema"))
+        object.__setattr__(self, "effect_class", ToolEffectClass(self.effect_class))
+        object.__setattr__(
+            self, "route_requirement", ToolRouteRequirement(self.route_requirement)
+        )
+        object.__setattr__(
+            self,
+            "task_scope_requirement",
+            ToolTaskScopeRequirement(self.task_scope_requirement),
+        )
+        if self.effect_class is ToolEffectClass.CONTEXT_CONTROL and (
+            self.route_requirement is not ToolRouteRequirement.FORBIDDEN
+            or self.task_scope_requirement is not ToolTaskScopeRequirement.FORBIDDEN
+        ):
+            raise RuntimeToolCatalogError(
+                "catalog_context_control_policy_invalid",
+                "context control must forbid route and TaskScope requirements",
+            )
+        if self.effect_class is ToolEffectClass.PROJECT_EFFECT and (
+            self.route_requirement is not ToolRouteRequirement.REQUIRED
+            or self.task_scope_requirement is not ToolTaskScopeRequirement.REQUIRED
+        ):
+            raise RuntimeToolCatalogError(
+                "catalog_project_effect_policy_invalid",
+                "project effect requires route and TaskScope authority",
+            )
 
     @property
     def projection_hash(self) -> str:
@@ -220,7 +286,22 @@ class ExecutableToolRecord:
             **_base_json(self),
             "provider_name": self.provider_name,
             "input_schema": thaw_json(cast(FrozenJsonValue, self.input_schema)),
+            "effect_class": cast(ToolEffectClass, self.effect_class).value,
+            "route_requirement": cast(ToolRouteRequirement, self.route_requirement).value,
+            "task_scope_requirement": cast(
+                ToolTaskScopeRequirement, self.task_scope_requirement
+            ).value,
         }
+
+    @property
+    def execution_policy(self) -> ToolExecutionPolicy:
+        return ToolExecutionPolicy(
+            self.capability_id,
+            hashlib.sha256(canonical_json(self.to_json()).encode("utf-8")).hexdigest(),
+            cast(ToolEffectClass, self.effect_class),
+            cast(ToolRouteRequirement, self.route_requirement),
+            cast(ToolTaskScopeRequirement, self.task_scope_requirement),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -684,6 +765,8 @@ class RunToolExposurePort(Protocol):
 
     def provider_specs(self, run_id: RunId) -> tuple[ProviderToolSpec, ...]: ...
 
+    def execution_policy(self, run_id: RunId, provider_name: str) -> ToolExecutionPolicy: ...
+
     def observe_tool_result(
         self, run_id: RunId, tool_name: str, result: Mapping[str, object]
     ) -> None: ...
@@ -985,6 +1068,25 @@ class RuntimeToolCatalog:
             if isinstance(record, ExecutableToolRecord) and record.capability_id in visible
         )
 
+    def execution_policy(
+        self, state: RunToolExposureState, provider_name: str
+    ) -> ToolExecutionPolicy:
+        self._validate_state(state)
+        visible = set(state.direct_ids) | set(state.activated_ids)
+        matches = tuple(
+            record
+            for record in self._snapshot.records
+            if isinstance(record, ExecutableToolRecord)
+            and record.capability_id in visible
+            and record.provider_name == provider_name
+        )
+        if len(matches) != 1:
+            raise RuntimeToolCatalogError(
+                "catalog_execution_policy_unavailable",
+                "visible Tool execution policy is unavailable",
+            )
+        return matches[0].execution_policy
+
     def audit_summary(self, state: RunToolExposureState) -> dict[str, JsonValue]:
         self._validate_state(state)
         sources = Counter(item.source for item in self._snapshot.records)
@@ -1085,6 +1187,10 @@ class CatalogRunToolExposure:
     def provider_specs(self, run_id: RunId) -> tuple[ProviderToolSpec, ...]:
         with self._lock:
             return self._catalog.provider_specs(self.state(run_id))
+
+    def execution_policy(self, run_id: RunId, provider_name: str) -> ToolExecutionPolicy:
+        with self._lock:
+            return self._catalog.execution_policy(self.state(run_id), provider_name)
 
     def search(
         self,
@@ -1234,6 +1340,10 @@ __all__ = (
     "RuntimeToolSearchPage",
     "SkillResourceRecord",
     "ToolActivationReceipt",
+    "ToolEffectClass",
+    "ToolExecutionPolicy",
     "ToolExposureMode",
+    "ToolRouteRequirement",
+    "ToolTaskScopeRequirement",
     "WorkflowProfileRecord",
 )

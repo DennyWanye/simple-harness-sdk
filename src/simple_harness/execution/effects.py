@@ -69,6 +69,89 @@ def effect_request_hash(*, tool_name: str, arguments: object) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskExecutionEnvelope:
+    run_id: RunId
+    call_id: CallId
+    effect_id: EffectId
+    raw_call_id: str
+    tool_name: str
+    capability_id: str
+    capability_fingerprint: str
+    route_receipt_id: str | None
+    route_receipt_hash: str | None
+    task_scope_id: str | None
+    root_id: str | None
+    root_identity_hash: str | None
+    binding_set_revision: int | None
+    idempotency_key: str
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported TaskExecutionEnvelope schema")
+        if not isinstance(self.run_id, RunId):
+            raise TypeError("run_id must use RunId")
+        if not isinstance(self.call_id, CallId):
+            raise TypeError("call_id must use CallId")
+        if not isinstance(self.effect_id, EffectId):
+            raise TypeError("effect_id must use EffectId")
+        for name in (
+            "raw_call_id",
+            "tool_name",
+            "capability_id",
+            "idempotency_key",
+        ):
+            if not str(getattr(self, name) or "").strip():
+                raise ValueError(f"{name} is required")
+        for name in ("capability_fingerprint", "route_receipt_hash", "root_identity_hash"):
+            value = getattr(self, name)
+            if value is not None and (
+                len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise ValueError(f"{name} must be lowercase SHA-256")
+        if (self.route_receipt_id is None) != (self.route_receipt_hash is None):
+            raise ValueError("route receipt identity/hash must be paired")
+        task_values = (
+            self.task_scope_id,
+            self.root_id,
+            self.root_identity_hash,
+            self.binding_set_revision,
+        )
+        if any(value is not None for value in task_values) and not all(
+            value is not None for value in task_values
+        ):
+            raise ValueError("TaskScope execution authority must be complete")
+        if self.binding_set_revision is not None and (
+            isinstance(self.binding_set_revision, bool) or self.binding_set_revision < 1
+        ):
+            raise ValueError("binding_set_revision must be positive")
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "schema_version": self.schema_version,
+            "run_id": self.run_id.value,
+            "call_id": self.call_id.value,
+            "effect_id": self.effect_id.value,
+            "raw_call_id": self.raw_call_id,
+            "tool_name": self.tool_name,
+            "capability_id": self.capability_id,
+            "capability_fingerprint": self.capability_fingerprint,
+            "route_receipt_id": self.route_receipt_id,
+            "route_receipt_hash": self.route_receipt_hash,
+            "task_scope_id": self.task_scope_id,
+            "root_id": self.root_id,
+            "root_identity_hash": self.root_identity_hash,
+            "binding_set_revision": self.binding_set_revision,
+            "idempotency_key": self.idempotency_key,
+        }
+
+    @property
+    def envelope_hash(self) -> str:
+        return hashlib.sha256(canonical_json(self.to_json()).encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class EffectRecord:
     effect_id: EffectId
     run_id: RunId
@@ -88,6 +171,7 @@ class EffectRecord:
     call_ordinal: int = 0
     handoff_attempt: int = 0
     rehandoff_count: int = 0
+    task_execution_envelope: TaskExecutionEnvelope | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.effect_id, EffectId):
@@ -134,6 +218,18 @@ class EffectRecord:
             raise ValueError("non-terminal effect cannot carry ToolResult")
         if self.state is EffectState.UNKNOWN and not self.evidence_ref:
             raise ValueError("unknown effect requires evidence_ref")
+        if self.task_execution_envelope is not None:
+            envelope = self.task_execution_envelope
+            if not isinstance(envelope, TaskExecutionEnvelope):
+                raise TypeError("task_execution_envelope must use TaskExecutionEnvelope")
+            if (
+                envelope.run_id != self.run_id
+                or envelope.call_id != self.call_id
+                or envelope.effect_id != self.effect_id
+                or envelope.tool_name != self.tool_name
+                or envelope.raw_call_id != self.raw_call_id
+            ):
+                raise ValueError("TaskExecutionEnvelope differs from effect identity")
 
     @property
     def terminal(self) -> bool:
@@ -162,6 +258,7 @@ class EffectUnitOfWork(Protocol):
         raw_call_id: str | None = None,
         turn_ordinal: int = 0,
         call_ordinal: int = 0,
+        task_execution_envelope: TaskExecutionEnvelope | None = None,
         fault: Callable[[str], None] | None = None,
     ) -> EffectRecord: ...
 
@@ -248,5 +345,6 @@ __all__ = (
     "EffectState",
     "EffectTransitionError",
     "EffectUnitOfWork",
+    "TaskExecutionEnvelope",
     "effect_request_hash",
 )
