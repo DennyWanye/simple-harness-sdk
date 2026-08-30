@@ -5,6 +5,19 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.7.0 — candidate
+
+### Breaking
+- Replaces unconditional pre-Provider Memory recall with an explicit, same-Run Context route
+  barrier. Host-issued Context snapshots become the sole Provider request authority.
+- Adds versioned Human Memory, TaskScope, evidence, disclosure, route receipt, and
+  per-effect Task execution authority contracts.
+
+### Safety
+- Route-required effects cannot cross the route barrier in the same Provider tool batch.
+- Durable Provider and effect replay bind exact Context, capability, root, and binding-set
+  revisions while excluding raw hidden reasoning and transport credentials.
+
 ## 0.6.4 — 2026-08-29
 
 ### Fixed
