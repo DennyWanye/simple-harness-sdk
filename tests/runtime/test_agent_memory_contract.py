@@ -22,7 +22,6 @@ from simple_harness import (
     CurrentMessageContextProvider,
     MemoryRecallRequest,
     MemoryRecallResult,
-    MemoryRecallStatus,
     MemoryScopeRef,
     Message,
     MessageRole,
@@ -131,41 +130,21 @@ class _Memory:
     def __init__(
         self,
         *,
-        fail: bool = False,
         path: Path | None = None,
-        release_failures: int = 0,
-        corrupt_result: bool = False,
     ) -> None:
-        self.fail = fail
         self.path = path
         self.recalls: list[MemoryRecallRequest] = []
         self.releases = []
         self.close_count = 0
-        self.release_failures = release_failures
-        self.corrupt_result = corrupt_result
         self.committed: list[CommittedTurn] = []
 
     async def recall_for_turn(self, request: MemoryRecallRequest) -> MemoryRecallResult:
         self.recalls.append(request)
-        if self.fail:
-            raise TimeoutError
-        payload = {"items": [{"text": "prefers concise answers"}]}
-        return MemoryRecallResult(
-            "wrong-query" if self.corrupt_result else request.query_id,
-            request.query_hash,
-            "result-1",
-            payload,
-            MemoryRecallStatus.READY,
-            1,
-            len(canonical_json(payload).encode()),
-            "epoch-1",
-        )
+        raise AssertionError("pre-provider automatic recall is forbidden")
 
     async def release_recall(self, request) -> None:  # type: ignore[no-untyped-def]
         self.releases.append(request)
-        if self.release_failures:
-            self.release_failures -= 1
-            raise TimeoutError
+        raise AssertionError("no automatic recall result exists to release")
 
     async def record_committed_turn(self, request: CommittedTurn) -> CommittedTurnReceipt:
         self.committed.append(request)
@@ -238,12 +217,11 @@ def test_identity_scope_and_committed_turn_hash_are_canonical() -> None:
         MemoryScopeRef("workspace", "owner-1")  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("fail", (False, True))
-def test_consumer_runtime_automatically_recalls_once_and_freezes_stage(
-    tmp_path: Path, fail: bool
+def test_consumer_runtime_skips_pre_provider_recall_and_freezes_ready_stage(
+    tmp_path: Path,
 ) -> None:
     async def case() -> None:
-        memory = _Memory(fail=fail)
+        memory = _Memory()
         runtime = await __import__("simple_harness").build_consumer_runtime(
             _ports(tmp_path / "execution.db", memory)
         )
@@ -260,14 +238,22 @@ def test_consumer_runtime_automatically_recalls_once_and_freezes_stage(
             await runtime.wait_idle(run_id)
             assert record.run_id == run_id.value
             assert RunClient(runtime).query(run_id).state is RunState.COMPLETED  # type: ignore[union-attr]
+            query_id = context_query_id(ContextStageKind.ROOT, run_id.value)
             stage = runtime._ports.context_staging.get(
-                "agent-memory-stage/v1/" + memory.recalls[0].query_id.rsplit("/", 1)[-1]
+                "agent-memory-stage/v1/" + query_id.rsplit("/", 1)[-1]
             )
             assert stage is not None
-            assert stage.outcome == ("degraded_empty" if fail else "ready")
+            assert stage.outcome == "ready"
             assert stage.private_snapshot_hash
             assert stage.turn_started_at is not None
-            assert len(memory.recalls) == 1
+            snapshot = runtime._uow.read_start_snapshot(run_id.value)
+            assert snapshot is not None
+            prepared = snapshot["prepared_context"]
+            assert isinstance(prepared, dict)
+            memory_partition = prepared["memory"]
+            assert isinstance(memory_partition, dict)
+            assert memory_partition["status"] == "not_queried"
+            assert memory.recalls == memory.releases == []
             await runtime._drain_memory_bounded(100)
             assert len(memory.committed) == 1
             assert memory.committed[0].user_text == "hello"
@@ -299,11 +285,11 @@ def test_runtime_owned_memory_closes_once_and_same_path_fails(tmp_path: Path) ->
     assert rejected.close_count == 1
 
 
-def test_replay_reuses_stage_identity_rebind_fails_before_second_recall(
+def test_replay_reuses_no_recall_stage_and_identity_rebind_fails(
     tmp_path: Path,
 ) -> None:
     async def case() -> None:
-        memory = _Memory(release_failures=1)
+        memory = _Memory()
         runtime = await __import__("simple_harness").build_consumer_runtime(
             _ports(tmp_path / "execution.db", memory)
         )
@@ -317,12 +303,12 @@ def test_replay_reuses_stage_identity_rebind_fails_before_second_recall(
             await client.start_conversation(value, run_id=RunId("run-1"))
             await runtime.wait_idle(RunId("run-1"))
             await client.start_conversation(value, run_id=RunId("run-1"))
-            assert len(memory.recalls) == 1
-            await asyncio.sleep(0.05)
-            releases = runtime._ports.context_staging.database.connection.execute(
-                "SELECT state FROM memory_recall_releases"
-            ).fetchall()
-            assert [str(row[0]) for row in releases] == ["released"]
+            assert memory.recalls == memory.releases == []
+            assert len(memory.committed) == 1
+            release_count = runtime._ports.context_staging.database.connection.execute(
+                "SELECT COUNT(*) FROM memory_recall_releases"
+            ).fetchone()[0]
+            assert release_count == 0
             rebound = ConversationTurnInput(
                 AgentIdentity("deployment-1", "household-1", "other", "session-1"),
                 Message(MessageRole.USER, "different actor"),
@@ -330,30 +316,34 @@ def test_replay_reuses_stage_identity_rebind_fails_before_second_recall(
             )
             with pytest.raises(UnitOfWorkConflict, match="session"):
                 await client.start_conversation(rebound, run_id=RunId("run-2"))
-            assert len(memory.recalls) == 1
+            assert memory.recalls == memory.releases == []
 
     asyncio.run(case())
 
 
-def test_corrupt_recall_degrades_and_durably_releases_write_fence(tmp_path: Path) -> None:
+def test_context_stage_records_not_queried_without_recall_release_row(tmp_path: Path) -> None:
     async def case() -> None:
-        memory = _Memory(corrupt_result=True)
+        memory = _Memory()
         runtime = await __import__("simple_harness").build_consumer_runtime(
             _ports(tmp_path / "execution.db", memory)
         )
         async with runtime:
             await RunClient(runtime).start_conversation(
                 ConversationTurnInput(IDENTITY, Message(MessageRole.USER, "hello"), "hello"),
-                run_id=RunId("run-corrupt"),
+                run_id=RunId("run-no-recall"),
             )
-            await runtime.wait_idle(RunId("run-corrupt"))
+            await runtime.wait_idle(RunId("run-no-recall"))
             row = runtime._ports.context_staging.database.connection.execute(
-                "SELECT s.outcome,s.error_code,r.state,r.write_fence "
-                "FROM context_preparation_staging AS s "
-                "JOIN memory_recall_releases AS r USING(stage_id)"
+                "SELECT outcome,error_code,memory_result_id,memory_result_hash,"
+                "memory_query_hash,memory_write_fence FROM context_preparation_staging"
             ).fetchone()
-            assert tuple(row) == ("degraded_empty", "memory_corrupt_result", "released", "epoch-1")
-            assert memory.releases[0].write_fence == "epoch-1"
+            assert tuple(row) == ("ready", None, None, None, None, None)
+            release_count = runtime._ports.context_staging.database.connection.execute(
+                "SELECT COUNT(*) FROM memory_recall_releases"
+            ).fetchone()[0]
+            assert release_count == 0
+            assert memory.recalls == memory.releases == []
+            assert len(memory.committed) == 1
 
     asyncio.run(case())
 
@@ -415,13 +405,12 @@ def test_duplicate_start_waits_for_slow_stage_winner_and_reuses_hash(tmp_path: P
             assert second_stage is not None
             assert first_stage.private_snapshot_hash == second_stage.private_snapshot_hash
             assert context.calls == 1
-            assert len(memory.recalls) == 1
-            assert len(memory.releases) == 1
+            assert memory.recalls == memory.releases == []
 
     asyncio.run(case())
 
 
-def test_expired_stage_owner_is_taken_over_without_second_recall(tmp_path: Path) -> None:
+def test_expired_stage_owner_is_taken_over_without_memory_query(tmp_path: Path) -> None:
     async def case() -> None:
         memory = _Memory()
         database = tmp_path / "execution.db"
@@ -455,8 +444,8 @@ def test_expired_stage_owner_is_taken_over_without_second_recall(tmp_path: Path)
             assert record.run_id == run_id.value
             recovered = repository.get(stage_id)
             assert recovered is not None and recovered.private_snapshot_hash
-            assert len(memory.recalls) == 1
-            assert len(memory.releases) == 1
+            assert recovered.outcome == "ready"
+            assert memory.recalls == memory.releases == []
 
     asyncio.run(case())
 
