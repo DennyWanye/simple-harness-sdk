@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -135,6 +136,53 @@ def test_task_execution_envelope_reopens_with_exact_effect_authority(tmp_path: P
     assert record is not None
     assert record.task_execution_envelope == envelope
     assert record.task_execution_envelope.envelope_hash == envelope.envelope_hash
+    reopened.close()
+
+
+def test_task_execution_envelope_reopen_rejects_payload_hash_drift(tmp_path: Path) -> None:
+    path = tmp_path / "effect-envelope-drift.db"
+    database, uow = _uow(path)
+    runtime_lease = _runtime_lease(uow)
+    fence = asyncio.run(uow.acquire(RunId("run-1"), runtime_lease, now=1.5))
+    envelope = TaskExecutionEnvelope(
+        RunId("run-1"),
+        CallId("call-1"),
+        EffectId("effect-1"),
+        "raw-1",
+        1,
+        0,
+        "read",
+        "host:read",
+        "a" * 64,
+        "route-1",
+        "b" * 64,
+        "task-1",
+        "root-1",
+        "c" * 64,
+        2,
+        "effect-1",
+    )
+    _prepare(
+        uow,
+        fence,
+        runtime_lease,
+        raw_call_id="raw-1",
+        turn_ordinal=1,
+        call_ordinal=0,
+        task_execution_envelope=envelope,
+    )
+    payload = envelope.to_json()
+    payload["binding_set_revision"] = 3
+    database.connection.execute(
+        "UPDATE execution_effects SET task_execution_envelope_json=? WHERE effect_id=?",
+        (json.dumps(payload), "effect-1"),
+    )
+    database.connection.commit()
+    database.close()
+
+    reopened, recovered = _uow(path)
+    with pytest.raises(ValueError, match="hash differs"):
+        recovered.read_effect(EffectId("effect-1"))
     reopened.close()
 
 

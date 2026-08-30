@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 from simple_harness.contracts import ContentBlock, Message, MessageRole, RequestId, canonical_json
@@ -70,7 +72,7 @@ def test_replay_rejects_changed_continuation_capability() -> None:
 def test_current_durable_response_rejects_missing_continuation_capability() -> None:
     payload = provider_response_json(_response(ContentBlock("output_text", {"text": "ok"})))
     payload.pop("continuation")
-    with pytest.raises(ValueError, match="continuation must be an object"):
+    with pytest.raises(ValueError, match="response fields differ"):
         provider_response_from_json(payload)
     restored = provider_response_from_json(payload, allow_legacy_public_response=True)
     assert restored.message.content[0].data["text"] == "ok"
@@ -83,12 +85,45 @@ def test_opaque_reference_is_bounded_public_identifier() -> None:
 
 def test_frozen_provider_binding_changes_with_continuation_capability() -> None:
     policy = BudgetPolicy()
-    disabled = provider_binding_fingerprint(
-        policy, None, ProviderContinuationCapability()
-    )
+    disabled = provider_binding_fingerprint(policy, None, ProviderContinuationCapability())
     opaque = provider_binding_fingerprint(
         policy,
         None,
         ProviderContinuationCapability(ProviderContinuationMode.OPAQUE_REFERENCE),
     )
     assert disabled != opaque
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error"),
+    (
+        (lambda value: value.__setitem__("private", "SECRET"), "response fields differ"),
+        (
+            lambda value: value["continuation"].__setitem__("schema_version", True),
+            "continuation schema",
+        ),
+        (
+            lambda value: value["message"].__setitem__("metadata", {"private": "SECRET"}),
+            "metadata must be empty",
+        ),
+        (
+            lambda value: value["message"].__setitem__(
+                "content", [{"type": "provider_private", "secret": "SECRET"}]
+            ),
+            "non-public content block",
+        ),
+        (
+            lambda value: value["message"].__setitem__("private", "SECRET"),
+            "message fields differ",
+        ),
+    ),
+)
+def test_durable_response_decoder_rejects_non_public_or_non_exact_payloads(
+    mutate,
+    error,  # type: ignore[no-untyped-def]
+) -> None:
+    payload = provider_response_json(_response(ContentBlock("output_text", {"text": "ok"})))
+    mutated = copy.deepcopy(payload)
+    mutate(mutated)
+    with pytest.raises(ValueError, match=error):
+        provider_response_from_json(mutated)

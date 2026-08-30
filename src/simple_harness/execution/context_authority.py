@@ -208,14 +208,21 @@ class RunContextSnapshot:
     schema_version: int = 1
 
     def __post_init__(self) -> None:
+        if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int):
+            raise TypeError("RunContextSnapshot schema_version must be an integer")
         if self.schema_version != 1:
             raise ValueError("unsupported RunContextSnapshot schema")
         _required(self.snapshot_id, "snapshot_id")
         _required(self.run_id, "run_id")
-        if self.provider_turn_ordinal < 1 or self.prior_context_revision < 0:
-            raise ValueError("invalid Context snapshot lineage")
-        if self.snapshot_revision < 1:
-            raise ValueError("snapshot_revision must be positive")
+        for value, name, minimum in (
+            (self.provider_turn_ordinal, "provider_turn_ordinal", 1),
+            (self.prior_context_revision, "prior_context_revision", 0),
+            (self.snapshot_revision, "snapshot_revision", 1),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+            if value < minimum:
+                raise ValueError(f"{name} is below its minimum")
         revisions = dict(self.source_revisions)
         if not all(
             isinstance(key, str)

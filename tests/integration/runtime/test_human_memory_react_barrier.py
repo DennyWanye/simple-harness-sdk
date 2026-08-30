@@ -4,16 +4,27 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Mapping
 from dataclasses import replace
 
 import pytest
 
-from simple_harness.contracts import CallId, JsonValue, RequestId, RunId
+from simple_harness.contracts import (
+    CallId,
+    EffectId,
+    JsonValue,
+    RequestId,
+    RunId,
+    canonical_json,
+    freeze_json,
+    thaw_json,
+)
 from simple_harness.execution.context_authority import (
     ContextRouteReceipt,
     RunContextSnapshot,
 )
+from simple_harness.execution.effects import TaskExecutionEnvelope
 from simple_harness.execution.provider_invocations import provider_request_fingerprint
 from simple_harness.providers import (
     CancelToken,
@@ -30,7 +41,7 @@ from simple_harness.runtime.drivers.react_loop import (
 )
 from simple_harness.runtime.task_scope_protocol import TaskScopeRoute
 from simple_harness.runtime.termination import TerminationLimits
-from simple_harness.tools import ToolResult
+from simple_harness.tools import CancellationToken, ToolResult
 from simple_harness.tools.executor import EffectExecution
 from simple_harness.tools.runtime_catalog import (
     ToolEffectClass,
@@ -133,9 +144,7 @@ def test_same_batch_project_effect_cannot_cross_context_route_barrier() -> None:
     tools = RouteEffectExecutor()
     result = asyncio.run(
         _loop(tools).run(
-            ReActRunInput(
-                RunId("run-1"), RequestId("request-1"), tool_exposure=PolicyExposure()
-            ),
+            ReActRunInput(RunId("run-1"), RequestId("request-1"), tool_exposure=PolicyExposure()),
             services=services(provider, tools, MemoryContext()),
             execution_lease=LEASE,
             run_fence=FENCE,
@@ -151,9 +160,17 @@ def test_same_batch_project_effect_cannot_cross_context_route_barrier() -> None:
 
 
 class ContextAuthority:
-    def __init__(self, context: MemoryContext) -> None:
+    def __init__(
+        self,
+        context: MemoryContext,
+        *,
+        snapshot_ids: tuple[str, ...] = ("snapshot-1",),
+        snapshot_revisions: tuple[int, ...] = (1,),
+    ) -> None:
         self.context = context
         self.calls = []
+        self.snapshot_ids = snapshot_ids
+        self.snapshot_revisions = snapshot_revisions
 
     async def prepare_snapshot(self, request):  # type: ignore[no-untyped-def]
         self.calls.append(request)
@@ -162,13 +179,14 @@ class ContextAuthority:
             tuple(self.context.messages),
             metadata={"authority": "host"},
         )
+        index = len(self.calls) - 1
         return RunContextSnapshot(
-            "snapshot-1",
+            self.snapshot_ids[index],
             request.run_id.value,
             request.provider_turn_ordinal,
             request.prior_context_revision,
-            1,
-            {"host": 1},
+            self.snapshot_revisions[index],
+            {"host": self.snapshot_revisions[index]},
             provider_request.messages,
             (),
             None,
@@ -188,6 +206,28 @@ class NoRecallSink:
             TaskScopeRoute.DIRECT_STANDALONE,
             None,
             None,
+        )
+
+
+class StaleTaskExecutionAuthority:
+    async def issue_envelope(self, request):  # type: ignore[no-untyped-def]
+        return TaskExecutionEnvelope(
+            request.run_id,
+            CallId(request.call_id),
+            EffectId(request.effect_id),
+            request.raw_call_id,
+            request.turn_ordinal,
+            request.call_ordinal,
+            request.tool_name,
+            request.policy.capability_id,
+            request.policy.capability_fingerprint,
+            request.route_receipt.receipt_id,
+            request.route_receipt.receipt_hash,
+            request.route_receipt.task_scope_id,
+            "root-1",
+            "d" * 64,
+            request.route_receipt.binding_set_revision - 1,
+            request.effect_id,
         )
 
 
@@ -283,6 +323,39 @@ def test_wrong_run_host_context_snapshot_fails_before_provider() -> None:
     assert provider.calls == []
 
 
+def test_stale_task_execution_binding_fails_before_tool_execution() -> None:
+    tools = RouteEffectExecutor()
+    runtime_services = replace(
+        services(ScriptedProviderCoordinator([]), tools, MemoryContext()),
+        task_execution_authority=StaleTaskExecutionAuthority(),
+    )
+    route_receipt = ContextRouteReceipt(
+        "route-task-1",
+        "run-1",
+        "raw-route",
+        "effect-route",
+        TaskScopeRoute.RESUME_EXISTING,
+        "task-1",
+        3,
+    )
+    with pytest.raises(RuntimeError, match="stale TaskScope binding authority"):
+        asyncio.run(
+            EffectBatchExecutor().execute(
+                (ProviderToolCall(CallId("raw-write"), "write_project", {}),),
+                services=runtime_services,
+                run_id=RunId("run-1"),
+                request_id=RequestId("request-1"),
+                execution_lease=LEASE,
+                run_fence=FENCE,
+                cancellation=CancellationToken(),
+                turn_ordinal=2,
+                tool_exposure=PolicyExposure(),
+                route_receipt=route_receipt,
+            )
+        )
+    assert tools.calls == []
+
+
 def test_provider_reserved_reopen_reuses_frozen_host_context_receipt() -> None:
     context = MemoryContext()
     checkpoint = Checkpoint()
@@ -335,3 +408,111 @@ def test_provider_reserved_reopen_reuses_frozen_host_context_receipt() -> None:
     )
     assert replay_authority.calls == []
     assert result.termination.context_authority_receipt_hash is not None
+    assert result.termination.context_snapshot_revision == 1
+    assert len(result.termination.context_snapshot_bindings) == 1
+
+
+def test_provider_reserved_reopen_rejects_context_snapshot_binding_drift() -> None:
+    context = MemoryContext()
+    checkpoint = Checkpoint()
+    first_services = replace(
+        services(
+            ScriptedProviderCoordinator([RuntimeError("provider crashed")]),
+            RouteEffectExecutor(),
+            context,
+            checkpoint=checkpoint,
+        ),
+        run_context_authority=ContextAuthority(context),
+        runtime_decision_sink=NoRecallSink(),
+    )
+    with pytest.raises(RuntimeError, match="provider crashed"):
+        asyncio.run(
+            _loop(RouteEffectExecutor()).run(
+                ReActRunInput(RunId("run-1"), RequestId("request-1")),
+                services=first_services,
+                execution_lease=LEASE,
+                run_fence=FENCE,
+                cancel=CancelToken(),
+                initial_messages=(),
+            )
+        )
+    assert checkpoint.value is not None
+    payload = thaw_json(checkpoint.value.checkpoint)
+    assert isinstance(payload, dict)
+    bindings = payload["context_snapshot_bindings"]
+    assert isinstance(bindings, dict)
+    bindings["snapshot-1"] = "e" * 64
+    checkpoint.value = replace(
+        checkpoint.value,
+        checkpoint=freeze_json(payload),
+        checkpoint_hash=hashlib.sha256(canonical_json(payload).encode()).hexdigest(),
+    )
+
+    provider = ScriptedProviderCoordinator([response("must-not-run")])
+    reopened_services = replace(
+        services(provider, RouteEffectExecutor(), context, checkpoint=checkpoint),
+        run_context_authority=ContextAuthority(context),
+        runtime_decision_sink=NoRecallSink(),
+    )
+    with pytest.raises(RuntimeError, match="authority receipt differs"):
+        asyncio.run(
+            _loop(RouteEffectExecutor()).run(
+                ReActRunInput(RunId("run-1"), RequestId("request-1")),
+                services=reopened_services,
+                execution_lease=LEASE,
+                run_fence=FENCE,
+                cancel=CancelToken(),
+                initial_messages=(),
+            )
+        )
+    assert provider.calls == []
+
+
+@pytest.mark.parametrize(
+    ("snapshot_ids", "snapshot_revisions", "error"),
+    (
+        (("snapshot-1", "snapshot-2"), (1, 1), "snapshot revision is stale"),
+        (("snapshot-1", "snapshot-1"), (1, 2), "snapshot identity changed payload"),
+    ),
+)
+def test_cross_turn_context_snapshot_lineage_rejects_before_provider_reservation(
+    snapshot_ids: tuple[str, ...],
+    snapshot_revisions: tuple[int, ...],
+    error: str,
+) -> None:
+    context = MemoryContext()
+    authority = ContextAuthority(
+        context,
+        snapshot_ids=snapshot_ids,
+        snapshot_revisions=snapshot_revisions,
+    )
+    route_call = ProviderResponse(
+        RequestId("fixture"),
+        response("route").message,
+        (ProviderToolCall(CallId("raw-route"), "context_route", {}),),
+    )
+    provider = ScriptedProviderCoordinator([route_call, response("must-not-run")])
+    runtime_services = replace(
+        services(provider, RouteEffectExecutor(), context),
+        run_context_authority=authority,
+        runtime_decision_sink=NoRecallSink(),
+    )
+
+    with pytest.raises(RuntimeError, match=error):
+        asyncio.run(
+            _loop(RouteEffectExecutor()).run(
+                ReActRunInput(
+                    RunId("run-1"),
+                    RequestId("request-1"),
+                    tool_exposure=PolicyExposure(),
+                ),
+                services=runtime_services,
+                execution_lease=LEASE,
+                run_fence=FENCE,
+                cancel=CancelToken(),
+                initial_messages=(),
+            )
+        )
+
+    assert len(provider.calls) == 1
+    assert len(authority.calls) == 2

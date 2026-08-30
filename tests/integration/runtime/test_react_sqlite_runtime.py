@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from dataclasses import replace
 
 import pytest
 
@@ -15,14 +16,14 @@ from simple_harness.contracts import (
     RunId,
     canonical_json,
 )
-from simple_harness.contracts.messages import Message, MessageRole
+from simple_harness.contracts.messages import ContentBlock, Message, MessageRole
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
 from simple_harness.execution.context_staging import (
     ContextStageKind,
     ContextStagingRepository,
 )
 from simple_harness.execution.delivery import DeliveryDispatcher
-from simple_harness.execution.dispatch import ProviderInvocationCoordinator
+from simple_harness.execution.dispatch import ProviderBinding, ProviderInvocationCoordinator
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import RunState
 from simple_harness.providers import (
@@ -30,6 +31,10 @@ from simple_harness.providers import (
     ProviderResponse,
     ProviderTarget,
     ProviderToolCall,
+)
+from simple_harness.providers.base import (
+    ProviderContinuationCapability,
+    ProviderContinuationMode,
 )
 from simple_harness.runtime import (
     AgentIdentity,
@@ -52,6 +57,7 @@ from simple_harness.runtime.conversation_memory import (
     ConversationMemoryRecallResult,
 )
 from simple_harness.runtime.drivers import ReActDriver
+from simple_harness.runtime.react_checkpoint import DurableReactCheckpoint
 from simple_harness.tools import EffectExecutor, FunctionTool, ToolRegistry, ToolResult, ToolSpec
 from simple_harness.tools.authorization import (
     AuthorizationDecision,
@@ -68,16 +74,45 @@ from simple_harness.tools.reconciliation import (
 class Provider:
     target = ProviderTarget("fixture", "model", "model", "local", "fixture")
 
-    def __init__(self) -> None:
+    def __init__(self, *, private_response: bool = False) -> None:
         self.requests = []
+        self.private_response = private_response
 
     async def invoke(self, request, *, cancel):
         assert not cancel.is_cancelled
         self.requests.append(request)
+        if self.private_response:
+            return ProviderResponse(
+                request.request_id,
+                Message(
+                    MessageRole.ASSISTANT,
+                    (
+                        ContentBlock("output_text", {"text": "done"}),
+                        ContentBlock("reasoning", {"text": "HIDDEN_REASONING_CANARY"}),
+                    ),
+                    metadata={"private": "PRIVATE_METADATA_CANARY"},
+                ),
+                model="model",
+                opaque_continuation_ref="opaque-public-ref-1",
+            )
         return ProviderResponse(
             request.request_id,
             Message(MessageRole.ASSISTANT, "done"),
             model="model",
+        )
+
+
+class OpaqueResolver:
+    def __init__(self, provider: Provider) -> None:
+        self.provider = provider
+
+    def resolve(self, run_id: RunId) -> ProviderBinding:
+        del run_id
+        return ProviderBinding(
+            self.provider,
+            None,
+            BudgetPolicy(),
+            ProviderContinuationCapability(ProviderContinuationMode.OPAQUE_REFERENCE),
         )
 
 
@@ -112,20 +147,60 @@ class Sink:
         del payload, idempotency_key
 
 
+def test_context_snapshot_lineage_reopens_from_real_sqlite(tmp_path) -> None:
+    path = tmp_path / "context-snapshot-lineage.db"
+    database = Database.open(path)
+    uow = SqliteExecutionUnitOfWork(database)
+    uow.create_with_start_snapshot(
+        execution_session_id="session-1",
+        run_id="run-1",
+        request_id="request-1",
+        profile_key="agent.general",
+        driver_kind="react",
+        snapshot={"catalog_generation": 1},
+        event_id="event-1",
+        now=1.0,
+    )
+    _, lease = uow.claim_runtime_activation(
+        run_id="run-1",
+        owner_id="runtime-1",
+        namespace="runtime.kernel",
+        now=2.0,
+        lease_ttl_seconds=100.0,
+    )
+    durable = DurableReactCheckpoint(uow, clock=lambda: 3.0)
+    state, version = durable.load_or_create(RunId("run-1"), lease)
+    state = replace(
+        state,
+        context_snapshot_revision=7,
+        context_snapshot_bindings=(("snapshot-7", "a" * 64),),
+    )
+    durable.cas(RunId("run-1"), lease, version, state)
+    database.close()
+
+    reopened = Database.open(path)
+    recovered = SqliteExecutionUnitOfWork(reopened)
+    recovered_state, _ = DurableReactCheckpoint(recovered, clock=lambda: 4.0).load_or_create(
+        RunId("run-1"), lease
+    )
+    assert recovered_state.context_snapshot_revision == 7
+    assert recovered_state.context_snapshot_bindings == (("snapshot-7", "a" * 64),)
+    reopened.close()
+
+
+@pytest.mark.parametrize("private_response", (False, True))
 def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
-    tmp_path,
+    tmp_path, private_response: bool
 ) -> None:
     async def case() -> None:
         database = Database.open(tmp_path / "react-runtime.db")
         uow = SqliteExecutionUnitOfWork(database)
-        provider = Provider()
+        provider = Provider(private_response=private_response)
         authorization = Authorization()
         reconciliation = Reconciliation()
         coordinator = ProviderInvocationCoordinator(
             uow=uow,
-            provider=provider,
-            budget_policy=BudgetPolicy(),
-            estimator=None,
+            resolver=OpaqueResolver(provider),
             clock=lambda: 10.0,
         )
         effects = EffectExecutor(
@@ -190,6 +265,26 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
             MessageRole.USER,
             MessageRole.ASSISTANT,
         ]
+        if private_response:
+            provider_rows = database.connection.execute(
+                "SELECT response_json FROM provider_invocations WHERE run_id='run-1'"
+            ).fetchall()
+            react_rows = database.connection.execute(
+                "SELECT checkpoint_json FROM workflow_checkpoints "
+                "WHERE run_id='run-1' AND namespace='react.termination.v1'"
+            ).fetchall()
+            context_rows = database.connection.execute(
+                "SELECT checkpoint_json FROM workflow_checkpoints "
+                "WHERE run_id='run-1' AND namespace='react.context.v1'"
+            ).fetchall()
+            for durable_rows in (provider_rows, react_rows, context_rows):
+                assert durable_rows
+                encoded = "\n".join(str(row[0]) for row in durable_rows)
+                assert "HIDDEN_REASONING_CANARY" not in encoded
+                assert "PRIVATE_METADATA_CANARY" not in encoded
+            assistant = context.load(RunId("run-1")).messages[-1]
+            assert assistant.metadata == {}
+            assert [block.type for block in assistant.content] == ["output_text"]
         await runtime.close()
         database.close()
 

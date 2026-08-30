@@ -89,6 +89,8 @@ class TaskExecutionEnvelope:
     schema_version: int = 1
 
     def __post_init__(self) -> None:
+        if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int):
+            raise TypeError("TaskExecutionEnvelope schema_version must be an integer")
         if self.schema_version != 1:
             raise ValueError("unsupported TaskExecutionEnvelope schema")
         if not isinstance(self.run_id, RunId):
@@ -103,7 +105,10 @@ class TaskExecutionEnvelope:
             "capability_id",
             "idempotency_key",
         ):
-            if not str(getattr(self, name) or "").strip():
+            value = getattr(self, name)
+            if not isinstance(value, str):
+                raise TypeError(f"{name} must be a string")
+            if not value.strip() or "\x00" in value:
                 raise ValueError(f"{name} is required")
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
@@ -115,10 +120,18 @@ class TaskExecutionEnvelope:
         for name in ("capability_fingerprint", "route_receipt_hash", "root_identity_hash"):
             value = getattr(self, name)
             if value is not None and (
-                len(value) != 64
+                not isinstance(value, str)
+                or len(value) != 64
                 or any(character not in "0123456789abcdef" for character in value)
             ):
                 raise ValueError(f"{name} must be lowercase SHA-256")
+        for name in ("route_receipt_id", "task_scope_id", "root_id"):
+            value = getattr(self, name)
+            if value is not None:
+                if not isinstance(value, str):
+                    raise TypeError(f"{name} must be a string or null")
+                if not value.strip() or "\x00" in value:
+                    raise ValueError(f"{name} must be a non-empty string or null")
         if (self.route_receipt_id is None) != (self.route_receipt_hash is None):
             raise ValueError("route receipt identity/hash must be paired")
         task_values = (
@@ -132,7 +145,9 @@ class TaskExecutionEnvelope:
         ):
             raise ValueError("TaskScope execution authority must be complete")
         if self.binding_set_revision is not None and (
-            isinstance(self.binding_set_revision, bool) or self.binding_set_revision < 1
+            isinstance(self.binding_set_revision, bool)
+            or not isinstance(self.binding_set_revision, int)
+            or self.binding_set_revision < 1
         ):
             raise ValueError("binding_set_revision must be positive")
 

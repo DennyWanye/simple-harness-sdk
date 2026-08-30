@@ -272,6 +272,21 @@ def provider_response_from_json(
 ) -> ProviderResponse:
     if not isinstance(value, dict):
         raise TypeError("stored provider response must be an object")
+    required_fields = {
+        "request_id",
+        "message",
+        "tool_calls",
+        "usage",
+        "model",
+        "finish_reason",
+        "provider_request_id",
+    }
+    expected_fields = required_fields | {"continuation"}
+    if allow_legacy_public_response and "continuation" not in value:
+        if set(value) != required_fields:
+            raise ValueError("stored legacy provider response fields differ")
+    elif set(value) != expected_fields:
+        raise ValueError("stored provider response fields differ")
     raw_request_id = value.get("request_id")
     raw_calls = value.get("tool_calls", [])
     raw_usage = value.get("usage")
@@ -281,6 +296,8 @@ def provider_response_from_json(
     for raw_call in raw_calls:
         if not isinstance(raw_call, dict):
             raise TypeError("stored provider tool call must be an object")
+        if set(raw_call) != {"call_id", "name", "arguments"}:
+            raise ValueError("stored provider tool call fields differ")
         call_id = raw_call.get("call_id")
         name = raw_call.get("name")
         arguments = raw_call.get("arguments")
@@ -295,6 +312,14 @@ def provider_response_from_json(
     if raw_usage is not None:
         if not isinstance(raw_usage, dict):
             raise ValueError("stored provider usage must be an object")
+        if set(raw_usage) != {
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cache_tokens",
+            "reasoning_tokens",
+        }:
+            raise ValueError("stored provider usage fields differ")
         usage = ProviderUsage(
             raw_usage.get("input_tokens"),  # type: ignore[arg-type]
             raw_usage.get("output_tokens"),  # type: ignore[arg-type]
@@ -313,9 +338,7 @@ def provider_response_from_json(
         continuation = {
             "schema_version": 1,
             "mode": ProviderContinuationMode.REASONING_DISABLED.value,
-            "public_content_types": list(
-                ProviderContinuationCapability().public_content_types
-            ),
+            "public_content_types": list(ProviderContinuationCapability().public_content_types),
             "capability_fingerprint": ProviderContinuationCapability().fingerprint,
             "opaque_ref": None,
         }
@@ -329,7 +352,12 @@ def provider_response_from_json(
         "opaque_ref",
     }:
         raise ValueError("stored provider continuation fields differ")
-    if continuation.get("schema_version") != 1:
+    continuation_schema = continuation.get("schema_version")
+    if (
+        isinstance(continuation_schema, bool)
+        or not isinstance(continuation_schema, int)
+        or continuation_schema != 1
+    ):
         raise ValueError("unsupported provider continuation schema")
     raw_types = continuation.get("public_content_types")
     if not isinstance(raw_types, list) or not all(isinstance(item, str) for item in raw_types):
@@ -350,9 +378,28 @@ def provider_response_from_json(
         raise ValueError("stored opaque continuation ref is malformed")
     if capability.mode is not ProviderContinuationMode.OPAQUE_REFERENCE and opaque_ref is not None:
         raise ValueError("stored opaque ref is forbidden for continuation mode")
+    message_value = value.get("message")
+    if not isinstance(message_value, dict) or set(message_value) != {
+        "role",
+        "content",
+        "name",
+        "call_id",
+        "metadata",
+    }:
+        raise ValueError("stored public provider message fields differ")
+    metadata = message_value.get("metadata")
+    if metadata != {}:
+        raise ValueError("stored public provider message metadata must be empty")
+    message = _message_from_json(message_value)
+    if message.role is not MessageRole.ASSISTANT:
+        raise ValueError("stored provider response message must be assistant public content")
+    if not isinstance(message.content, str):
+        for block in message.content:
+            if block.type not in capability.public_content_types:
+                raise ValueError("stored provider response contains a non-public content block")
     return ProviderResponse(
         request_id=RequestId(raw_request_id),
-        message=_message_from_json(value.get("message")),
+        message=message,
         tool_calls=tuple(calls),
         usage=usage,
         model=optional_text[0],

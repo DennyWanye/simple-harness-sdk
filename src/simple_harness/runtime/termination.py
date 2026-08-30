@@ -90,7 +90,9 @@ class TerminationState:
     route_receipt_hash: str | None = None
     context_authority_receipt: JsonValue | None = None
     context_authority_receipt_hash: str | None = None
-    source_schema_version: int = 4
+    context_snapshot_revision: int = 0
+    context_snapshot_bindings: tuple[tuple[str, str], ...] = ()
+    source_schema_version: int = 5
 
     @property
     def turns(self) -> int:
@@ -116,6 +118,7 @@ class TerminationState:
             self.tool_calls_reserved_total,
             self.repeat_streak,
             self.tool_result_progress,
+            self.context_snapshot_revision,
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError("durable termination totals must be non-negative")
@@ -156,8 +159,21 @@ class TerminationState:
             raise ValueError("termination policy fingerprint must be lowercase SHA-256")
         if self.route_state not in {"unrouted", "routed_standalone", "routed_task"}:
             raise ValueError("invalid durable route state")
-        if self.source_schema_version not in {1, 2, 3, 4}:
+        if self.source_schema_version not in {1, 2, 3, 4, 5}:
             raise ValueError("invalid source ReAct checkpoint schema")
+        snapshot_ids: set[str] = set()
+        for snapshot_id, payload_hash in self.context_snapshot_bindings:
+            if not isinstance(snapshot_id, str) or not snapshot_id.strip() or "\x00" in snapshot_id:
+                raise ValueError("Context snapshot identity is invalid")
+            if snapshot_id in snapshot_ids:
+                raise ValueError("Context snapshot identity is duplicated")
+            snapshot_ids.add(snapshot_id)
+            if (
+                not isinstance(payload_hash, str)
+                or len(payload_hash) != 64
+                or any(character not in "0123456789abcdef" for character in payload_hash)
+            ):
+                raise ValueError("Context snapshot payload hash is invalid")
         if (self.route_receipt is None) != (self.route_receipt_hash is None):
             raise ValueError("route receipt and hash must be paired")
         if (self.context_authority_receipt is None) != (
@@ -179,8 +195,7 @@ class TerminationState:
 
                 if (
                     len(digest) != 64
-                    or hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
-                    != digest
+                    or hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest() != digest
                 ):
                     raise ValueError(f"{name} hash is invalid")
 
@@ -248,7 +263,7 @@ class TerminationState:
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
-            "schema_version": 4,
+            "schema_version": 5,
             "started_at": self.started_at,
             "last_observed_at": self.last_observed_at,
             "provider_turns_reserved_total": self.provider_turns_reserved_total,
@@ -278,6 +293,11 @@ class TerminationState:
             "route_receipt_hash": self.route_receipt_hash,
             "context_authority_receipt": self.context_authority_receipt,
             "context_authority_receipt_hash": self.context_authority_receipt_hash,
+            "context_snapshot_revision": self.context_snapshot_revision,
+            "context_snapshot_bindings": {
+                snapshot_id: payload_hash
+                for snapshot_id, payload_hash in self.context_snapshot_bindings
+            },
         }
 
     @classmethod
@@ -286,9 +306,17 @@ class TerminationState:
         if (
             isinstance(source_schema_version, bool)
             or not isinstance(source_schema_version, int)
-            or source_schema_version not in {1, 2, 3, 4}
+            or source_schema_version not in {1, 2, 3, 4, 5}
         ):
             raise ValueError("unsupported ReAct checkpoint schema")
+        raw_snapshot_bindings = value.get("context_snapshot_bindings", {})
+        if not isinstance(raw_snapshot_bindings, Mapping):
+            raise TypeError("Context snapshot bindings must be an object")
+        snapshot_bindings: list[tuple[str, str]] = []
+        for snapshot_id, payload_hash in raw_snapshot_bindings.items():
+            if not isinstance(snapshot_id, str) or not isinstance(payload_hash, str):
+                raise TypeError("Context snapshot bindings must map strings to strings")
+            snapshot_bindings.append((snapshot_id, payload_hash))
         return cls(
             started_at=_float(value["started_at"]),
             last_observed_at=_float(value["last_observed_at"]),
@@ -335,6 +363,8 @@ class TerminationState:
             context_authority_receipt_hash=_optional_string(
                 value.get("context_authority_receipt_hash")
             ),
+            context_snapshot_revision=_int(value.get("context_snapshot_revision", 0)),
+            context_snapshot_bindings=tuple(sorted(snapshot_bindings)),
             source_schema_version=source_schema_version,
         )
 
