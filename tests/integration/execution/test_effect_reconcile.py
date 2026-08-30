@@ -29,8 +29,8 @@ from simple_harness.execution.recovery import ResolutionOutcome
 from simple_harness.execution.uow import DecisionRecord, DecisionState, ExecutionLease
 from simple_harness.tools import (
     AuthorizationDecision,
-    AuthorizationRequest,
     AuthorizationReceipt,
+    AuthorizationRequest,
     AuthorizationResult,
     CancellationToken,
     CatalogRunToolExposure,
@@ -42,9 +42,9 @@ from simple_harness.tools import (
     ReconciliationState,
     RuntimeToolCatalog,
     Sidecar,
+    ToolAuthorizationPending,
     ToolCall,
     ToolContext,
-    ToolAuthorizationPending,
     ToolExposureMode,
     ToolInventoryRecord,
     ToolRegistry,

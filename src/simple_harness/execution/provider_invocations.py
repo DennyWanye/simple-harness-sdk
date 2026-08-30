@@ -112,7 +112,7 @@ def provider_request_from_json(request_id: RequestId, value: object) -> Provider
             ProviderToolSpec(
                 str(item["name"]),
                 str(item["description"]),
-                parameters,  # type: ignore[arg-type]
+                parameters,
             )
         )
     metadata = value.get("metadata", {})
@@ -122,9 +122,9 @@ def provider_request_from_json(request_id: RequestId, value: object) -> Provider
         request_id,
         messages,
         tools=tuple(tools),
-        temperature=value.get("temperature"),  # type: ignore[arg-type]
-        max_output_tokens=value.get("max_output_tokens"),  # type: ignore[arg-type]
-        metadata=metadata,  # type: ignore[arg-type]
+        temperature=value.get("temperature"),
+        max_output_tokens=value.get("max_output_tokens"),
+        metadata=metadata,
     )
 
 
@@ -171,7 +171,7 @@ def _durable_public_message_json(
             raise ValueError("provider hidden reasoning cannot enter durable response state")
         content = public
     return {
-        "role": message.role.value,
+        "role": getattr(message.role, "value", str(message.role)),
         "content": content,
         "name": message.name,
         "call_id": None if message.call_id is None else message.call_id.value,
@@ -260,7 +260,7 @@ def _message_from_json(value: object) -> Message:
         content=normalized_content,
         name=name,
         call_id=None if raw_call_id is None else CallId(raw_call_id),
-        metadata=metadata,  # type: ignore[arg-type]
+        metadata=metadata,
     )
 
 
@@ -290,7 +290,7 @@ def provider_response_from_json(
             or not isinstance(arguments, dict)
         ):
             raise TypeError("stored provider tool call is malformed")
-        calls.append(ProviderToolCall(CallId(call_id), name, arguments))  # type: ignore[arg-type]
+        calls.append(ProviderToolCall(CallId(call_id), name, arguments))
     usage = None
     if raw_usage is not None:
         if not isinstance(raw_usage, dict):
@@ -299,8 +299,8 @@ def provider_response_from_json(
             raw_usage.get("input_tokens"),  # type: ignore[arg-type]
             raw_usage.get("output_tokens"),  # type: ignore[arg-type]
             raw_usage.get("total_tokens"),  # type: ignore[arg-type]
-            cache_tokens=raw_usage.get("cache_tokens"),  # type: ignore[arg-type]
-            reasoning_tokens=raw_usage.get("reasoning_tokens"),  # type: ignore[arg-type]
+            cache_tokens=raw_usage.get("cache_tokens"),
+            reasoning_tokens=raw_usage.get("reasoning_tokens"),
         )
     optional_text: list[str | None] = []
     for name in ("model", "finish_reason", "provider_request_id"):

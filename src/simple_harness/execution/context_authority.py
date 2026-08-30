@@ -241,7 +241,7 @@ class RunContextSnapshot:
         return {
             "messages": [
                 {
-                    "role": item.role.value,
+                    "role": getattr(item.role, "value", str(item.role)),
                     "content": (
                         item.content
                         if isinstance(item.content, str)
@@ -390,7 +390,7 @@ class ProviderProjectionReceipt:
 
 
 def frozen_payload(value: JsonValue) -> FrozenJsonValue:
-    return cast(FrozenJsonValue, freeze_json(value))
+    return freeze_json(value)
 
 
 class ToolCatalogStore(Protocol):

@@ -272,7 +272,7 @@ class ExecutableToolRecord:
     @property
     def projection_hash(self) -> str:
         schema = thaw_json(cast(FrozenJsonValue, self.input_schema))
-        return hashlib.sha256(canonical_json(cast(JsonValue, schema)).encode()).hexdigest()
+        return hashlib.sha256(canonical_json(schema).encode()).hexdigest()
 
     def provider_spec(self) -> ProviderToolSpec:
         return ProviderToolSpec(
