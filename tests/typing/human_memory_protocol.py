@@ -11,6 +11,8 @@ from simple_harness import (
     ContextRouteReceipt,
     ContextRouteState,
     DisclosureContext,
+    EpisodeMemoryPayload,
+    EvidenceSpanRef,
     FilesystemIdentity,
     FilesystemIdentityKind,
     HostIssuedRunBindingModeSnapshot,
@@ -21,13 +23,19 @@ from simple_harness import (
     MemoryAnalysisExecutorPort,
     MemoryAnalysisRequest,
     MemoryAnalysisResultEnvelope,
+    MemoryMutationPlan,
+    ProcedureMemoryPayload,
+    ProspectiveMemoryPayload,
+    RecallContext,
     RecallPlan,
+    RecallSelectorDomain,
     RunBindingModeSnapshotRequest,
     RunContextAuthorityPort,
     RunContextAuthorityRequest,
     RunContextSnapshot,
     RuntimeDecisionSinkPort,
     SanitizedEvidenceEnvelope,
+    SemanticMemoryPayload,
     TaskExecutionAuthorityPort,
     TaskExecutionEnvelope,
     TaskExecutionEnvelopeRequest,
@@ -119,6 +127,14 @@ CONTEXT_FRAGMENT_TYPE: type[ContextFragment] = ContextFragment
 CONTEXT_DECISION_TYPE: type[ContextAssemblyDecision] = ContextAssemblyDecision
 EVIDENCE_TYPE: type[SanitizedEvidenceEnvelope] = SanitizedEvidenceEnvelope
 RECALL_PLAN_TYPE: type[RecallPlan] = RecallPlan
+RECALL_CONTEXT_TYPE: type[RecallContext] = RecallContext
+RECALL_SELECTOR_TYPE: type[RecallSelectorDomain] = RecallSelectorDomain
+MEMORY_MUTATION_PLAN_TYPE: type[MemoryMutationPlan] = MemoryMutationPlan
+EPISODE_PAYLOAD_TYPE: type[EpisodeMemoryPayload] = EpisodeMemoryPayload
+SEMANTIC_PAYLOAD_TYPE: type[SemanticMemoryPayload] = SemanticMemoryPayload
+PROCEDURE_PAYLOAD_TYPE: type[ProcedureMemoryPayload] = ProcedureMemoryPayload
+PROSPECTIVE_PAYLOAD_TYPE: type[ProspectiveMemoryPayload] = ProspectiveMemoryPayload
+EVIDENCE_SPAN_TYPE: type[EvidenceSpanRef] = EvidenceSpanRef
 MEMORY_TYPES: tuple[LongTermMemoryType, ...] = tuple(LongTermMemoryType)
 TASK_PROPOSAL_TYPE: type[TaskScopeProposal] = TaskScopeProposal
 TASK_MUTATION_TYPE: type[TaskScopeMutationPlan] = TaskScopeMutationPlan

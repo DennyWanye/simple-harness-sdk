@@ -65,6 +65,31 @@ accept a validated lowercase snake-case extension code for later modules.
 change requires an intentional snapshot change, documentation update, and
 SemVer review; consumers must not import private implementation helpers.
 
+## Human Memory cognitive protocol (0.7.0 candidate)
+
+`EvidenceSpanRef` is a proposal that names exact admitted evidence, admission receipt, item,
+registered normalization, UTF-8 byte range, quote/hash, provenance, and support kind. Consumers
+must call `verify_evidence_span()` with an `EvidenceAuthorityVerifierPort`; caller-supplied DTOs
+or self-consistent hashes are not authority. A typed observation additionally resolves an
+evidence-bound `TypedObservationAuthorityReceipt`.
+
+`MemoryMutationPlan` uses one of four discriminated payloads: `EpisodeMemoryPayload`,
+`SemanticMemoryPayload`, `ProcedureMemoryPayload`, or `ProspectiveMemoryPayload`. Targets bind an
+existing revision or a same-type CREATE operation. Operations are normalized to stable topological
+order before canonical JSON and hashing. Every plan uses `MemoryMutationApplyMode.STRICT_ATOMIC`;
+`verify_memory_mutation_apply_receipt()` resolves a durable authority receipt and checks exact plan,
+all canonical operation IDs, and the single base-to-committed revision transition.
+
+`RecallContext` is Host authority. `RecallPlan.validate_narrowing(context, current_time=...)` rejects
+expired Context and requires every mandatory Host selector to remain present while values, time,
+disclosure, evidence, and budget can only narrow. `RecallDecision.validate_bindings()` binds the
+same Context, Plan, and evidence lineage. Unknown, external, untrusted, or unknown-purpose
+disclosure cannot select recalled memory.
+
+`ConversationEvidenceRegistration` is a post-ingestion Host authority record for primary
+conversation and causal-group membership. Invalid or absent metadata does not erase raw evidence;
+it only makes that evidence ineligible for the later Short-Horizon index.
+
 ## Agent Memory v1
 
 `AgentMemoryPort` is the only public Memory protocol. It has exactly three async methods:

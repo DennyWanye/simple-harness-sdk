@@ -25,6 +25,7 @@ from simple_harness.contracts import (
 )
 
 HUMAN_MEMORY_SCHEMA_VERSION = 1
+COGNITIVE_MEMORY_SCHEMA_VERSION = 2
 
 
 def _identifier(value: object, name: str, *, max_length: int = 256) -> str:
@@ -118,6 +119,15 @@ def _strings(value: object, name: str) -> tuple[str, ...]:
 
 def _canonical_hash(value: Mapping[str, JsonValue]) -> str:
     return hashlib.sha256(canonical_json(dict(value)).encode("utf-8")).hexdigest()
+
+
+def _domain_hash(domain: str, value: Mapping[str, JsonValue]) -> str:
+    """Canonical SHA-256 with an explicit wire-domain separator."""
+
+    _identifier(domain, "hash_domain", max_length=128)
+    return hashlib.sha256(
+        canonical_json({"domain": domain, "payload": dict(value)}).encode("utf-8")
+    ).hexdigest()
 
 
 def _freeze_object(value: object, name: str) -> Mapping[str, FrozenJsonValue]:
@@ -246,11 +256,15 @@ class DisclosureContext:
                 raise ValueError(
                     "trusted disclosure authority requires a trusted source and authority_ref"
                 )
-        if self.source in {
-            DisclosureSource.LLM_PROPOSAL,
-            DisclosureSource.USER_NATURAL_LANGUAGE,
-            DisclosureSource.UNKNOWN,
-        } and self.trust is not DisclosureTrust.UNTRUSTED_PROPOSAL:
+        if (
+            self.source
+            in {
+                DisclosureSource.LLM_PROPOSAL,
+                DisclosureSource.USER_NATURAL_LANGUAGE,
+                DisclosureSource.UNKNOWN,
+            }
+            and self.trust is not DisclosureTrust.UNTRUSTED_PROPOSAL
+        ):
             raise ValueError("natural-language and model sources cannot grant disclosure authority")
         if self.purpose is DisclosurePurpose.AUDIT and (
             self.source is not DisclosureSource.AUDIT_ACCESS_DECISION
@@ -324,6 +338,7 @@ class DisclosureContext:
 
 
 __all__ = (
+    "COGNITIVE_MEMORY_SCHEMA_VERSION",
     "HUMAN_MEMORY_SCHEMA_VERSION",
     "DeliveryRecipient",
     "DisclosureContext",

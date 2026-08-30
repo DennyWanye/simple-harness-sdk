@@ -36,6 +36,16 @@ exact provider delivery through `MemoryAnalysisDeliveryAuthorityPort`; public ha
 authority. The existing `MemoryAnalysisReceipt` remains the later Memory validator/application
 record and cannot stand in for Host delivery proof.
 
+The 0.7.0 cognitive wire is strict rather than free-form. `EvidenceSpanRef` identifies exact
+admitted UTF-8 bytes and can only be verified through Host/Memory authority resolvers; typed Tool
+observations are bound to the exact evidence, admission receipt, and item. Episode, Semantic,
+Procedure, and Prospective mutations use distinct payload and lifecycle types, revisioned targets,
+canonical dependency order, privacy-label joins, and a mandatory `strict_atomic` apply receipt.
+`RecallPlan` binds one unexpired Host `RecallContext` and may only narrow its memory type, scope,
+entity, time, event, environment, task-phase, disclosure, evidence, and budget authority. Registered
+conversation causal metadata is a separate post-ingestion authority record: invalid metadata never
+deletes raw evidence, but it is ineligible for the later Short-Horizon index.
+
 The normal database loader never guesses across persistence versions. Operators upgrading an
 exact execution schema v3 file use the explicit backup-first
 `simple_harness.execution.sqlite.migrate_execution_v3_to_v4` maintenance API while the runtime

@@ -1,7 +1,7 @@
 <!--
 SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
-last-updated: 2026-08-30
+last-updated: 2026-08-31
 -->
 <!-- last-calibrated: 716fb8513095c4ad1dc005cb0fefe991e584c156 -->
 
@@ -9,12 +9,27 @@ last-updated: 2026-08-30
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
-## Human Memory Program S1 当前边界（2026-08-30）
+## Human Memory Program S1 当前边界（2026-08-31）
 
 - `0.7.0` source candidate 公开严格、版本化的 Memory、TaskScope、Evidence、Disclosure DTO。Working Memory
   是 Context role，不属于四类长期存储 enum；长期类型精确为 Episode、Semantic、Procedure、Prospective。
 - 主模型只提出结构化 Recall/Mutation/TaskScope 操作。SDK 校验 canonical JSON、hash、schema、run/evidence
   绑定；SDK 不把 LLM 输出当成事实、权限或数据库状态 authority。
+- schema-v2 `EvidenceSpanRef` 不携带整段 canonical text，而是绑定 admitted envelope/receipt/item、唯一注册的
+  identity UTF-8 normalization、byte offsets、exact quote/hash、actor provenance 与 support kind；Memory 只能经
+  authority port 解析并复算。typed observation receipt 进一步绑定 exact evidence、admission 和 item，不能跨
+  evidence 重放。
+- Episode、Semantic、Procedure、Prospective 各自使用 exact-key typed payload 与专属 lifecycle；operation 独立
+  携带 epistemic/conflict/verification/valid-time/privacy attributes。existing target 固定 expected revision，
+  created-by target 只能引用同类型 CREATE。全 plan 先 canonical topological 排序再 wire/hash，并强制
+  `strict_atomic` authority receipt 覆盖全部 operation 和唯一 base→committed revision，不存在 partial-success wire。
+- `RecallContext` 冻结 Host 允许的 memory type、scope、entity、time、event、environment、task phase、retrieval
+  mode、Short-Horizon、disclosure、evidence 和预算。`RecallPlan` 精确绑定 context hash/revision，在可信当前时间
+  验证未过期，保留全部 mandatory selector 且只能选择非空子集/更窄时间和预算；Decision 再绑定 Plan/Context
+  evidence lineage。unknown、external、untrusted 或 unknown-purpose disclosure 默认不能产生 RECALL。
+- conversation causal metadata 在 raw evidence admission 后由 Host 独立注册，绑定 primary conversation、causal
+  group sequence/manifest、role/time/TaskScope/entities 和 Tool terminal receipt；Tool parent 必须在同组且早于
+  当前 item。缺失或非法 metadata 不删除 raw evidence，只使其不具备 Short-Horizon 资格。
 - `MemoryAnalysisExecutorPort` 返回 `MemoryAnalysisResultEnvelope`，其中
   `MemoryAnalysisDeliveryReceipt` 精确绑定 Host issuer、Run/job/request/result/attempt、nullable Provider
   response ID、Provider response hash 与始终存在的 Host durable receipt id/hash。公开 receipt 自洽不是

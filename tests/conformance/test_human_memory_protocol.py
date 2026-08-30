@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+import hashlib
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -21,11 +22,16 @@ from simple_harness.runtime.disclosure_protocol import (
     IntendedAudience,
 )
 from simple_harness.runtime.evidence_protocol import (
+    EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1,
     AnalysisBudget,
     AnalysisValidationStatus,
+    EvidenceActorRole,
+    EvidenceProvenance,
     EvidenceReasonCode,
     EvidenceRef,
     EvidenceSourceKind,
+    EvidenceSpanRef,
+    EvidenceSupportKind,
     ExecutionEvidence,
     ExecutionEvidenceKind,
     MemoryAnalysisReceipt,
@@ -37,21 +43,33 @@ from simple_harness.runtime.evidence_protocol import (
     SanitizedEvidenceReceipt,
 )
 from simple_harness.runtime.memory_protocol import (
+    ConflictStatus,
     ContextAssemblyBudget,
     ContextAssemblyDecision,
     ContextAssemblyReasonCode,
     ContextFragment,
     ContextFragmentType,
+    EpistemicStatus,
+    InformationAttribute,
     LongTermMemoryType,
     MemoryMutationKind,
     MemoryMutationOperation,
     MemoryMutationPlan,
+    MemoryMutationPlanOutcome,
+    PrivacyClass,
     RecallBudget,
+    RecallCandidateCountStage,
     RecallContext,
     RecallDecision,
     RecallDecisionOutcome,
     RecallPlan,
     RecallReasonCode,
+    RecallRetrievalMode,
+    RecallSelectorDomain,
+    SemanticLifecycleState,
+    SemanticMemoryPayload,
+    ValidTimeInterval,
+    VerificationState,
     WorkingMemoryRole,
 )
 from simple_harness.runtime.task_scope_protocol import (
@@ -92,6 +110,87 @@ def _disclosure(
 
 def _ref() -> EvidenceRef:
     return EvidenceRef("evidence-1", "a" * 64, 1)
+
+
+def _span() -> EvidenceSpanRef:
+    quote = "concise answers"
+    return EvidenceSpanRef(
+        span_id="span-1",
+        evidence_id="evidence-1",
+        envelope_hash="a" * 64,
+        sanitized_hash="c" * 64,
+        admission_receipt_id="receipt-1",
+        admission_receipt_hash="d" * 64,
+        source_kind=EvidenceSourceKind.USER_MESSAGE,
+        item_ordinal=1,
+        item_id="message-1",
+        item_json_pointer="/public_text",
+        start_byte=13,
+        end_byte=28,
+        exact_quote=quote,
+        quote_hash=hashlib.sha256(quote.encode("utf-8")).hexdigest(),
+        source_hash="e" * 64,
+        normalization_version=EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1,
+        actor_role=EvidenceActorRole.USER,
+        provenance=EvidenceProvenance.AUTHENTICATED_USER,
+        support_kind=EvidenceSupportKind.EXPLICIT_USER_ASSERTION,
+        typed_observation=None,
+    )
+
+
+def _recall_context(*, disclosure: DisclosureContext | None = None) -> RecallContext:
+    return RecallContext(
+        run_id="run-1",
+        subject="actor-1",
+        turn_id="turn-1",
+        context_revision=1,
+        expires_at=100.0,
+        query="What is my preference?",
+        active_task_scope_id=None,
+        available_memory_types=tuple(LongTermMemoryType),
+        short_horizon_allowed=True,
+        allowed_selector_domains=(
+            RecallSelectorDomain.MEMORY_TYPE,
+            RecallSelectorDomain.ENTITY,
+            RecallSelectorDomain.SHORT_HORIZON,
+        ),
+        allowed_retrieval_modes=tuple(RecallRetrievalMode),
+        allowed_task_scope_ids=(),
+        allowed_entity_constraints=("answer style",),
+        earliest_occurred_at=None,
+        latest_occurred_at=None,
+        event_constraint_refs=(),
+        environment_constraint_refs=(),
+        task_phase_authority_refs=(),
+        disclosure_context=_disclosure() if disclosure is None else disclosure,
+        evidence_refs=(_ref(),),
+        budget=RecallBudget(8, 16_384, 2048, 1000),
+    )
+
+
+def _semantic_operation(operation_id: str = "operation-1") -> MemoryMutationOperation:
+    return MemoryMutationOperation(
+        operation_id=operation_id,
+        kind=MemoryMutationKind.CREATE,
+        memory_type=LongTermMemoryType.SEMANTIC,
+        payload=SemanticMemoryPayload(
+            subject_entity="user:self",
+            predicate="answer_style",
+            object_value="concise",
+            qualifiers=(),
+        ),
+        target=None,
+        depends_on_operation_ids=(),
+        lifecycle_state=SemanticLifecycleState.ACTIVE,
+        epistemic_status=EpistemicStatus.EXPLICIT_USER,
+        conflict_status=ConflictStatus.UNCONTESTED,
+        verification_state=VerificationState.SOURCE_BOUND,
+        valid_time_interval=ValidTimeInterval(10.0, None),
+        proposed_privacy_class=PrivacyClass.PERSONAL,
+        proposed_information_attributes=(InformationAttribute.PREFERENCE,),
+        evidence_spans=(_span(),),
+        reason_code="explicit_user_assertion",
+    )
 
 
 def test_human_memory_protocol_is_available_from_official_public_surfaces() -> None:
@@ -253,40 +352,41 @@ def test_long_term_memory_enum_excludes_working_memory_and_plan_hash_is_stable()
     with pytest.raises(ValueError, match="extra"):
         RecallBudget.from_json({**budget.to_json(), "overflow": 1})
 
+    context = replace(_recall_context(), query="How should I format this?")
     plan = RecallPlan(
         plan_id="recall-plan-1",
         run_id="run-1",
         subject="actor-1",
+        context_hash=context.context_hash,
+        context_revision=context.context_revision,
         query="How should I format this?",
         requested_memory_types=(LongTermMemoryType.PROCEDURE, LongTermMemoryType.SEMANTIC),
         include_short_horizon=True,
+        selector_domains=(
+            RecallSelectorDomain.MEMORY_TYPE,
+            RecallSelectorDomain.ENTITY,
+            RecallSelectorDomain.SHORT_HORIZON,
+        ),
+        retrieval_modes=(RecallRetrievalMode.EXACT,),
         task_scope_ids=(),
         entity_constraints=("answer style",),
         earliest_occurred_at=None,
         latest_occurred_at=None,
+        event_constraint_refs=(),
+        environment_constraint_refs=(),
+        task_phase_authority_refs=(),
         disclosure_context=_disclosure(),
         evidence_refs=(_ref(),),
         budget=budget,
         idempotency_key="recall-plan-idem-1",
         reason_codes=(RecallReasonCode.USER_PREFERENCE_DEPENDENCY,),
     )
-    assert plan.plan_hash == fingerprint_json(plan.to_json())
-    changed = RecallPlan(
-        plan_id=plan.plan_id,
-        run_id=plan.run_id,
-        subject=plan.subject,
-        query=plan.query,
-        requested_memory_types=plan.requested_memory_types,
-        include_short_horizon=plan.include_short_horizon,
-        task_scope_ids=plan.task_scope_ids,
-        entity_constraints=plan.entity_constraints,
-        earliest_occurred_at=plan.earliest_occurred_at,
-        latest_occurred_at=plan.latest_occurred_at,
+    plan.validate_narrowing(context, current_time=50.0)
+    assert RecallPlan.from_json(plan.to_json()) == plan
+    assert plan.plan_hash != fingerprint_json(plan.to_json())
+    changed = replace(
+        plan,
         disclosure_context=_disclosure(recipient=DeliveryRecipient.EXTERNAL_PARTY),
-        evidence_refs=plan.evidence_refs,
-        budget=plan.budget,
-        idempotency_key=plan.idempotency_key,
-        reason_codes=plan.reason_codes,
     )
     assert changed.plan_hash != plan.plan_hash
 
@@ -296,30 +396,36 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
         decision_id="decision-1",
         run_id="run-1",
         subject="actor-1",
+        context_hash="e" * 64,
+        context_revision=1,
         plan_id="recall-plan-1",
         plan_hash="f" * 64,
         outcome=RecallDecisionOutcome.NO_RECALL,
         selected_memory_types=(),
         selected_memory_refs=(),
         filtered_candidate_count=0,
+        candidate_count_stage=RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
         disclosure_context=_disclosure(),
         evidence_refs=(_ref(),),
         reason_codes=(RecallReasonCode.NO_RECALL_CONTEXT_SUFFICIENT,),
         decided_at=11.0,
     )
-    assert decision.decision_hash == fingerprint_json(decision.to_json())
+    assert decision.decision_hash != fingerprint_json(decision.to_json())
     assert RecallDecision.from_json(decision.to_json()) == decision
-    with pytest.raises(ValueError, match="no_recall"):
+    with pytest.raises(ValueError, match="non-recall"):
         RecallDecision(
             decision_id="decision-2",
             run_id="run-1",
             subject="actor-1",
+            context_hash="e" * 64,
+            context_revision=1,
             plan_id="recall-plan-1",
             plan_hash="f" * 64,
             outcome=RecallDecisionOutcome.NO_RECALL,
             selected_memory_types=(LongTermMemoryType.SEMANTIC,),
             selected_memory_refs=("memory-1",),
-            filtered_candidate_count=0,
+            filtered_candidate_count=1,
+            candidate_count_stage=RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
             disclosure_context=_disclosure(),
             evidence_refs=(_ref(),),
             reason_codes=(RecallReasonCode.NO_RECALL_CONTEXT_SUFFICIENT,),
@@ -330,12 +436,15 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
             decision_id="decision-3",
             run_id="run-1",
             subject="actor-1",
+            context_hash="e" * 64,
+            context_revision=1,
             plan_id="recall-plan-1",
             plan_hash="f" * 64,
             outcome=RecallDecisionOutcome.NO_RECALL,
             selected_memory_types=(),
             selected_memory_refs=(),
             filtered_candidate_count=0,
+            candidate_count_stage=RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
             disclosure_context=_disclosure(),
             evidence_refs=(),
             reason_codes=(RecallReasonCode.NO_RECALL_CONTEXT_SUFFICIENT,),
@@ -356,26 +465,20 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
     payload["evidence_refs"] = []
     with pytest.raises(ValueError, match="evidence_refs"):
         RecallDecision.from_json(payload)
-    operation = MemoryMutationOperation(
-        "operation-1",
-        MemoryMutationKind.CREATE,
-        LongTermMemoryType.SEMANTIC,
-        None,
-        "User prefers concise answers.",
-        (_ref(),),
-        "explicit_user_assertion",
-    )
+    operation = _semantic_operation()
     mutation = MemoryMutationPlan(
         "mutation-plan-1",
         "run-1",
         "actor-1",
         1,
+        MemoryMutationPlanOutcome.MUTATE,
         (operation,),
         _disclosure(),
         (_ref(),),
         "mutation-idem-1",
     )
-    assert mutation.plan_hash == fingerprint_json(mutation.to_json())
+    assert MemoryMutationPlan.from_json(mutation.to_json()) == mutation
+    assert mutation.plan_hash != fingerprint_json(mutation.to_json())
 
 
 @pytest.mark.parametrize("route", tuple(TaskScopeRoute))
@@ -603,28 +706,25 @@ def test_every_persistent_protocol_dto_strictly_round_trips_and_rejects_extra_fi
         ),
         "context-idem-1",
     )
-    recall_context = RecallContext(
-        "run-1",
-        "actor-1",
-        "turn-1",
-        "What is my preference?",
-        None,
-        tuple(LongTermMemoryType),
-        disclosure,
-        (evidence_ref,),
-        recall_budget,
-    )
+    recall_context = _recall_context(disclosure=disclosure)
     recall_plan = RecallPlan(
         "recall-plan-1",
         "run-1",
         "actor-1",
+        recall_context.context_hash,
+        recall_context.context_revision,
         "What is my preference?",
         (LongTermMemoryType.SEMANTIC,),
         False,
+        (RecallSelectorDomain.MEMORY_TYPE, RecallSelectorDomain.ENTITY),
+        (RecallRetrievalMode.EXACT,),
         (),
         ("answer style",),
         None,
         None,
+        (),
+        (),
+        (),
         disclosure,
         (evidence_ref,),
         recall_budget,
@@ -635,31 +735,27 @@ def test_every_persistent_protocol_dto_strictly_round_trips_and_rejects_extra_fi
         "recall-decision-1",
         "run-1",
         "actor-1",
+        recall_context.context_hash,
+        recall_context.context_revision,
         recall_plan.plan_id,
         recall_plan.plan_hash,
         RecallDecisionOutcome.RECALL,
         (LongTermMemoryType.SEMANTIC,),
         ("memory-1",),
-        0,
+        1,
+        RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
         disclosure,
         (evidence_ref,),
         (RecallReasonCode.USER_PREFERENCE_DEPENDENCY,),
         13.0,
     )
-    memory_operation = MemoryMutationOperation(
-        "memory-operation-1",
-        MemoryMutationKind.CREATE,
-        LongTermMemoryType.SEMANTIC,
-        None,
-        "User prefers concise answers.",
-        (evidence_ref,),
-        "explicit_user_assertion",
-    )
+    memory_operation = _semantic_operation("memory-operation-1")
     memory_plan = MemoryMutationPlan(
         "memory-plan-1",
         "run-1",
         "actor-1",
         1,
+        MemoryMutationPlanOutcome.MUTATE,
         (memory_operation,),
         disclosure,
         (evidence_ref,),
@@ -778,3 +874,5 @@ def test_every_persistent_protocol_dto_strictly_round_trips_and_rejects_extra_fi
         assert restored == original
         with pytest.raises(ValueError, match="extra"):
             type(original).from_json({**raw, "unexpected": True})
+    EpistemicStatus,
+    InformationAttribute,

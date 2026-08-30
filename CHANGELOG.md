@@ -16,6 +16,9 @@ SPDX-License-Identifier: Apache-2.0
   Auto mode snapshot, Host-verified grant, and append-only binding-set receipt contracts.
 - Main-model analysis executors now return a strict result envelope with a separately verifiable
   Host-durable delivery receipt; Memory validation/application receipts retain their distinct role.
+- Replaces free-form cognitive mutation/recall drafts with schema-v2 typed Episode, Semantic,
+  Procedure, and Prospective payloads, exact Evidence spans, revisioned targets, canonical DAGs,
+  and Host-bound Recall selectors.
 
 ### Safety
 - Route-required effects cannot cross the route barrier in the same Provider tool batch.
@@ -32,6 +35,11 @@ SPDX-License-Identifier: Apache-2.0
   root. Context route schema v2 carries this authority; legacy v1 decoding is standalone-only.
 - Self-consistent analysis delivery DTOs are not provider-result authority: consumers must verify
   the exact Host durable delivery record, including issuer, request/result, attempt, and response.
+- Typed observations cannot replay across admitted evidence; conversation Tool causal parents must
+  precede the current item in the authenticated causal group.
+- Recall rejects expired Context, selector removal, evidence-lineage drift, and unknown, external,
+  or untrusted disclosure. Mutation plans require authority-resolved `strict_atomic` apply receipts
+  covering every canonical operation and one base-to-committed revision transition.
 
 ### Compatibility
 - Terminal committed-turn outbox delivery remains available for the staged Memory SDK cutover;
