@@ -18,12 +18,10 @@ from simple_harness import (
     CommittedTurnReceipt,
     CommittedTurnStatus,
     ConversationTurnInput,
-    JsonValue,
     MemoryRecallRequest,
     MemoryRecallResult,
     MemoryRecallStatus,
     MemoryReleaseRequest,
-    MemoryScopeKind,
     Message,
     MessageRole,
     RequestId,
@@ -33,8 +31,10 @@ from simple_harness import (
     canonical_json,
     thaw_json,
 )
+from simple_harness.execution.context_staging import ContextStageKind
 from simple_harness.execution.sqlite import Database
 from simple_harness.execution.uow import RunState, UnitOfWorkConflict
+from simple_harness.runtime.conversation_context import context_query_id
 
 
 def _ref(value: str) -> str:
@@ -50,7 +50,7 @@ class _MemoryProbe:
 
     async def recall_for_turn(self, request: MemoryRecallRequest) -> MemoryRecallResult:
         self.recalls.append(request)
-        payload: dict[str, JsonValue] = {"items": [{"text": "prefers concise answers"}]}
+        payload = {"items": [{"text": "prefers concise answers"}]}
         return MemoryRecallResult(
             request.query_id,
             request.query_hash,
@@ -88,16 +88,16 @@ class _BlockingMemoryProbe(_MemoryProbe):
         return await super().record_committed_turn(request)
 
 
-class _BlockingRecallMemory(_MemoryProbe):
+class _BlockingCommandContext(RichProductContextProvider):
     def __init__(self) -> None:
         super().__init__()
         self.started = asyncio.Event()
-        self.allow_recall = asyncio.Event()
+        self.allow_prepare = asyncio.Event()
 
-    async def recall_for_turn(self, request: MemoryRecallRequest) -> MemoryRecallResult:
+    async def prepare_once(self, request):  # type: ignore[no-untyped-def]
         self.started.set()
-        await self.allow_recall.wait()
-        return await super().recall_for_turn(request)
+        await self.allow_prepare.wait()
+        return await super().prepare_once(request)
 
 
 class _InjectedCrash(BaseException):
@@ -118,28 +118,31 @@ class _CrashBeforeContinuationProvider(RichProductContextProvider):
         return await super().prepare_once(request)
 
 
-class _CrashAfterProviderMemory(_MemoryProbe):
+class _CrashAfterContinuationProvider(RichProductContextProvider):
     def __init__(self, continuation_id: str) -> None:
         super().__init__()
         self.continuation_id = continuation_id
         self.crashed = False
 
-    async def recall_for_turn(self, request: MemoryRecallRequest) -> MemoryRecallResult:
-        if request.turn_id == self.continuation_id and not self.crashed:
+    async def prepare_once(self, request):  # type: ignore[no-untyped-def]
+        result = await super().prepare_once(request)
+        if request.continuation_id == self.continuation_id and not self.crashed:
             self.crashed = True
-            raise _InjectedCrash("provider returned before stage completion")
-        return await super().recall_for_turn(request)
+            raise _InjectedCrash("Context result returned before stage completion")
+        return result
 
 
-class _CrashFirstCommandRecall(_MemoryProbe):
+class _CrashFirstCommandContext(RichProductContextProvider):
     def __init__(self) -> None:
         super().__init__()
         self.crashed = asyncio.Event()
 
-    async def recall_for_turn(self, request: MemoryRecallRequest) -> MemoryRecallResult:
-        del request
-        self.crashed.set()
-        raise _InjectedCrash("command recall crash cut")
+    async def prepare_once(self, request):  # type: ignore[no-untyped-def]
+        result = await super().prepare_once(request)
+        if not self.crashed.is_set():
+            self.crashed.set()
+            raise _InjectedCrash("command Context crash cut")
+        return result
 
 
 def test_future_consumer_minimal_identity_scopes_committed_turn_and_memory_none(
@@ -157,13 +160,9 @@ def test_future_consumer_minimal_identity_scopes_committed_turn_and_memory_none(
                 run_id="run-with-memory",
                 text="remember concise answers",
             )
-        assert len(memory.recalls) == len(memory.releases) == len(memory.committed) == 1
-        recall = memory.recalls[0]
-        assert recall.identity == identity
-        assert {(scope.kind, scope.owner_id) for scope in recall.scopes} == {
-            (MemoryScopeKind.PERSONAL, "alice"),
-            (MemoryScopeKind.FAMILY, "home-a"),
-        }
+        assert memory.recalls == []
+        assert memory.releases == []
+        assert len(memory.committed) == 1
         assert memory.committed[0].identity == identity
         assert memory.committed[0].user_text == "remember concise answers"
         assert memory.committed[0].assistant_text == "future consumer answer"
@@ -185,10 +184,12 @@ def test_future_consumer_minimal_identity_scopes_committed_turn_and_memory_none(
     asyncio.run(case())
 
 
-def test_command_commit_precedes_memory_and_provider_calls(tmp_path: Path) -> None:
+def test_command_commit_precedes_host_context_and_provider_calls(tmp_path: Path) -> None:
     async def case() -> None:
-        memory = _BlockingRecallMemory()
+        memory = _MemoryProbe()
+        context = _BlockingCommandContext()
         fixture = FutureConsumerFixture(tmp_path / "command-memory.db", memory)
+        fixture.context_provider = context
         runtime = await fixture.build()
         identity = fixture.identity(household="home-a", actor="alice", session="command")
         intent = StartCommandIntent(
@@ -207,12 +208,13 @@ def test_command_commit_precedes_memory_and_provider_calls(tmp_path: Path) -> No
         async with runtime:
             accepted = await RunClient(runtime).submit_start(intent)
             assert accepted.state is CommandState.ACCEPTED
-            await asyncio.wait_for(memory.started.wait(), timeout=1)
+            await asyncio.wait_for(context.started.wait(), timeout=1)
             blocked = await RunClient(runtime).get_command(intent.command_id)
             assert blocked.receipt.state is CommandState.CONTEXT_CALL_INTENT
             assert blocked.output_state is CommandOutputState.PENDING
             assert fixture.provider.requests == []
-            memory.allow_recall.set()
+            assert memory.recalls == memory.releases == []
+            context.allow_prepare.set()
             for _ in range(200):
                 settled = await RunClient(runtime).get_command(intent.command_id)
                 if settled.receipt.state.terminal:
@@ -220,19 +222,22 @@ def test_command_commit_precedes_memory_and_provider_calls(tmp_path: Path) -> No
                 await asyncio.sleep(0.01)
             assert settled.receipt.state is CommandState.APPLIED
             assert settled.output_state is CommandOutputState.PRESENT
-        assert len(memory.recalls) == len(memory.releases) == len(memory.committed) == 1
+        assert memory.recalls == memory.releases == []
+        assert len(memory.committed) == 1
         assert len(fixture.provider.requests) == 1
 
     asyncio.run(case())
 
 
-def test_command_memory_crash_reclaims_durable_intent_after_lease_expiry(
+def test_command_context_crash_reclaims_durable_intent_after_lease_expiry(
     tmp_path: Path,
 ) -> None:
     async def case() -> None:
         path = tmp_path / "command-memory-crash.db"
-        crashing_memory = _CrashFirstCommandRecall()
+        crashing_memory = _MemoryProbe()
+        crashing_context = _CrashFirstCommandContext()
         first = FutureConsumerFixture(path, crashing_memory, rich_context=True)
+        first.context_provider = crashing_context
         runtime = await first.build()
         await runtime.start()
         identity = first.identity(household="home-a", actor="alice", session="crash")
@@ -252,7 +257,7 @@ def test_command_memory_crash_reclaims_durable_intent_after_lease_expiry(
         )
         accepted = await RunClient(runtime).submit_start(intent)
         assert accepted.state is CommandState.ACCEPTED
-        await asyncio.wait_for(crashing_memory.crashed.wait(), timeout=1)
+        await asyncio.wait_for(crashing_context.crashed.wait(), timeout=1)
         for _ in range(100):
             if runtime._command_pump_task is not None and runtime._command_pump_task.done():
                 break
@@ -285,8 +290,8 @@ def test_command_memory_crash_reclaims_durable_intent_after_lease_expiry(
                 await asyncio.sleep(0.01)
             assert recovered.receipt.state is CommandState.APPLIED
             assert recovered.output_state is CommandOutputState.PRESENT
-        assert len(healthy_memory.recalls) == 1
-        assert len(healthy_memory.releases) == 1
+        assert healthy_memory.recalls == []
+        assert healthy_memory.releases == []
         assert len(healthy_memory.committed) == 1
 
     asyncio.run(case())
@@ -317,7 +322,8 @@ def test_future_consumer_rich_context_is_frozen_across_replay_and_restart(
         context = first.context_provider
         assert isinstance(context, RichProductContextProvider)
         assert len(context.requests) == len(first.provider.requests) == 1
-        assert len(memory.recalls) == len(memory.committed) == 1
+        assert memory.recalls == memory.releases == []
+        assert len(memory.committed) == 1
 
         second = FutureConsumerFixture(path, memory, rich_context=True)
         reopened = await second.build()
@@ -332,7 +338,8 @@ def test_future_consumer_rich_context_is_frozen_across_replay_and_restart(
         assert isinstance(second_context, RichProductContextProvider)
         assert second_context.requests == []
         assert second.provider.requests == []
-        assert len(memory.recalls) == len(memory.committed) == 1
+        assert memory.recalls == memory.releases == []
+        assert len(memory.committed) == 1
 
     asyncio.run(case())
 
@@ -425,11 +432,7 @@ def test_continuation_preparation_crash_replays_the_claimed_ref(
 ) -> None:
     async def case() -> None:
         continuation_id = f"continuation-{crash_point}"
-        memory: _MemoryProbe = (
-            _CrashAfterProviderMemory(continuation_id)
-            if crash_point == "after_provider"
-            else _MemoryProbe()
-        )
+        memory = _MemoryProbe()
         fixture = FutureConsumerFixture(
             tmp_path / f"{crash_point}.db",
             memory,
@@ -439,7 +442,7 @@ def test_continuation_preparation_crash_replays_the_claimed_ref(
         context = (
             _CrashBeforeContinuationProvider(continuation_id)
             if crash_point == "before_provider"
-            else RichProductContextProvider()
+            else _CrashAfterContinuationProvider(continuation_id)
         )
         fixture.context_provider = context
         runtime = await fixture.build()
@@ -493,9 +496,10 @@ def test_continuation_preparation_crash_replays_the_claimed_ref(
                 context_source_snapshot_ref=_ref(continuation_id),
             )
             reopened_repository = reopened._ports.context_staging
+            replay_query_id = context_query_id(ContextStageKind.CONTINUATION, continuation_id)
             replayed = reopened_repository.get(
                 "agent-memory-stage/v1/"
-                + memory.recalls[-1].query_id.rsplit("/", 1)[-1]
+                + replay_query_id.rsplit("/", 1)[-1]
             )
             assert replayed is not None and replayed.state.value == "consumed"
             assert replayed.source_snapshot_ref == _ref(continuation_id)
@@ -508,7 +512,6 @@ def test_continuation_preparation_crash_replays_the_claimed_ref(
             assert {request.source_snapshot_ref for request in continuation_requests} == {
                 _ref(continuation_id)
             }
-            recalls_before_replay = len(memory.recalls)
             requests_before_replay = len(context.requests)
             await reopened_fixture.continue_turn(
                 reopened,
@@ -517,7 +520,7 @@ def test_continuation_preparation_crash_replays_the_claimed_ref(
                 text="crash-safe continuation",
                 context_source_snapshot_ref=_ref(continuation_id),
             )
-            assert len(memory.recalls) == recalls_before_replay == 2
+            assert memory.recalls == memory.releases == []
             assert len(context.requests) == requests_before_replay
             with pytest.raises(UnitOfWorkConflict, match="reused differently"):
                 await reopened_fixture.continue_turn(
@@ -535,7 +538,7 @@ def test_continuation_preparation_crash_replays_the_claimed_ref(
                     text="changed crash-safe payload",
                     context_source_snapshot_ref=_ref(continuation_id),
                 )
-            assert len(memory.recalls) == recalls_before_replay
+            assert memory.recalls == memory.releases == []
             assert len(context.requests) == requests_before_replay
             assert reopened_repository.database.connection.execute(
                 "SELECT COUNT(*) FROM context_preparation_staging WHERE identity_key=?",
