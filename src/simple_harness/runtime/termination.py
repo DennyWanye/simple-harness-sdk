@@ -9,9 +9,80 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from typing import cast
 
 from simple_harness.contracts import HarnessError, JsonValue
 from simple_harness.execution.budget import BudgetSnapshot
+
+_TERMINATION_V1_FIELDS = frozenset(
+    {
+        "schema_version",
+        "started_at",
+        "last_observed_at",
+        "provider_turns_reserved_total",
+        "tool_calls_reserved_total",
+        "repeat_key",
+        "repeat_streak",
+        "phase",
+        "provider_request_id",
+        "tool_batch_id",
+        "context_revision",
+        "provider_request_snapshot",
+        "provider_request_fingerprint",
+        "provider_response_snapshot",
+        "provider_response_digest",
+        "tool_result_progress",
+        "workflow_spawn_wait_receipt_id",
+        "pending_child_completion",
+        "pending_child_completion_hash",
+        "pending_child_completion_append_id",
+        "last_workflow_spawn_wait_receipt_id",
+        "workflow_catalog_selection",
+        "workflow_catalog_selection_hash",
+    }
+)
+_TERMINATION_FIELDS_BY_SCHEMA = {
+    1: _TERMINATION_V1_FIELDS,
+    2: _TERMINATION_V1_FIELDS | {"policy_fingerprint"},
+    3: _TERMINATION_V1_FIELDS | {"policy_fingerprint", "tool_exposure_state"},
+    4: _TERMINATION_V1_FIELDS
+    | {
+        "policy_fingerprint",
+        "tool_exposure_state",
+        "route_state",
+        "route_receipt",
+        "route_receipt_hash",
+        "context_authority_receipt",
+        "context_authority_receipt_hash",
+    },
+    5: _TERMINATION_V1_FIELDS
+    | {
+        "policy_fingerprint",
+        "tool_exposure_state",
+        "route_state",
+        "route_receipt",
+        "route_receipt_hash",
+        "context_authority_receipt",
+        "context_authority_receipt_hash",
+        "context_snapshot_revision",
+        "context_snapshot_bindings",
+    },
+}
+_TERMINATION_V1_REQUIRED_FIELDS = frozenset(
+    {
+        "schema_version",
+        "started_at",
+        "last_observed_at",
+        "provider_turns_reserved_total",
+        "tool_calls_reserved_total",
+        "repeat_key",
+        "repeat_streak",
+        "phase",
+        "provider_request_id",
+        "tool_batch_id",
+        "context_revision",
+    }
+)
 
 
 class TerminationReason(StrEnum):
@@ -309,7 +380,18 @@ class TerminationState:
             or source_schema_version not in {1, 2, 3, 4, 5}
         ):
             raise ValueError("unsupported ReAct checkpoint schema")
-        raw_snapshot_bindings = value.get("context_snapshot_bindings", {})
+        expected_fields = _TERMINATION_FIELDS_BY_SCHEMA[source_schema_version]
+        actual_fields = set(value)
+        if source_schema_version == 1:
+            if not _TERMINATION_V1_REQUIRED_FIELDS.issubset(actual_fields):
+                raise ValueError("legacy ReAct checkpoint fields are missing")
+            if not actual_fields.issubset(expected_fields):
+                raise ValueError("legacy ReAct checkpoint fields differ")
+        elif actual_fields != expected_fields:
+            raise ValueError("ReAct checkpoint fields differ")
+        raw_snapshot_bindings = (
+            value["context_snapshot_bindings"] if source_schema_version == 5 else {}
+        )
         if not isinstance(raw_snapshot_bindings, Mapping):
             raise TypeError("Context snapshot bindings must be an object")
         snapshot_bindings: list[tuple[str, str]] = []
@@ -324,23 +406,29 @@ class TerminationState:
             tool_calls_reserved_total=_int(value["tool_calls_reserved_total"]),
             repeat_key=_optional_string(value.get("repeat_key")),
             repeat_streak=_int(value["repeat_streak"]),
-            phase=str(value["phase"]),
+            phase=_required_checkpoint_string(value["phase"], "phase"),
             provider_request_id=_optional_string(value.get("provider_request_id")),
             tool_batch_id=_optional_string(value.get("tool_batch_id")),
             context_revision=(
                 None if value.get("context_revision") is None else _int(value["context_revision"])
             ),
-            provider_request_snapshot=value.get("provider_request_snapshot"),  # type: ignore[arg-type]
+            provider_request_snapshot=_optional_checkpoint_object(
+                value.get("provider_request_snapshot"), "provider_request_snapshot"
+            ),
             provider_request_fingerprint=_optional_string(
                 value.get("provider_request_fingerprint")
             ),
-            provider_response_snapshot=value.get("provider_response_snapshot"),  # type: ignore[arg-type]
+            provider_response_snapshot=_optional_checkpoint_object(
+                value.get("provider_response_snapshot"), "provider_response_snapshot"
+            ),
             provider_response_digest=_optional_string(value.get("provider_response_digest")),
             tool_result_progress=_int(value.get("tool_result_progress", 0)),
             workflow_spawn_wait_receipt_id=_optional_string(
                 value.get("workflow_spawn_wait_receipt_id")
             ),
-            pending_child_completion=value.get("pending_child_completion"),  # type: ignore[arg-type]
+            pending_child_completion=_optional_checkpoint_object(
+                value.get("pending_child_completion"), "pending_child_completion"
+            ),
             pending_child_completion_hash=_optional_string(
                 value.get("pending_child_completion_hash")
             ),
@@ -350,20 +438,38 @@ class TerminationState:
             last_workflow_spawn_wait_receipt_id=_optional_string(
                 value.get("last_workflow_spawn_wait_receipt_id")
             ),
-            workflow_catalog_selection=value.get("workflow_catalog_selection"),  # type: ignore[arg-type]
+            workflow_catalog_selection=_optional_checkpoint_object(
+                value.get("workflow_catalog_selection"), "workflow_catalog_selection"
+            ),
             workflow_catalog_selection_hash=_optional_string(
                 value.get("workflow_catalog_selection_hash")
             ),
-            tool_exposure_state=value.get("tool_exposure_state"),  # type: ignore[arg-type]
-            policy_fingerprint=str(value.get("policy_fingerprint") or ""),
-            route_state=str(value.get("route_state") or "unrouted"),
-            route_receipt=value.get("route_receipt"),  # type: ignore[arg-type]
+            tool_exposure_state=_optional_checkpoint_object(
+                value.get("tool_exposure_state"), "tool_exposure_state"
+            ),
+            policy_fingerprint=(
+                ""
+                if source_schema_version == 1
+                else _required_checkpoint_string(
+                    value["policy_fingerprint"], "policy_fingerprint", allow_empty=True
+                )
+            ),
+            route_state=(
+                "unrouted"
+                if source_schema_version < 4
+                else _required_checkpoint_string(value["route_state"], "route_state")
+            ),
+            route_receipt=_optional_checkpoint_object(value.get("route_receipt"), "route_receipt"),
             route_receipt_hash=_optional_string(value.get("route_receipt_hash")),
-            context_authority_receipt=value.get("context_authority_receipt"),  # type: ignore[arg-type]
+            context_authority_receipt=_optional_checkpoint_object(
+                value.get("context_authority_receipt"), "context_authority_receipt"
+            ),
             context_authority_receipt_hash=_optional_string(
                 value.get("context_authority_receipt_hash")
             ),
-            context_snapshot_revision=_int(value.get("context_snapshot_revision", 0)),
+            context_snapshot_revision=(
+                _int(value["context_snapshot_revision"]) if source_schema_version == 5 else 0
+            ),
             context_snapshot_bindings=tuple(sorted(snapshot_bindings)),
             source_schema_version=source_schema_version,
         )
@@ -375,6 +481,20 @@ def _optional_string(value: object) -> str | None:
     if not isinstance(value, str) or not value:
         raise ValueError("checkpoint identity must be a non-empty string")
     return value
+
+
+def _required_checkpoint_string(value: object, name: str, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str) or (not allow_empty and not value) or "\x00" in value:
+        raise TypeError(f"checkpoint {name} must be a string")
+    return value
+
+
+def _optional_checkpoint_object(value: object, name: str) -> JsonValue | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError(f"checkpoint {name} must be an object or null")
+    return cast(JsonValue, dict(value))
 
 
 def _int(value: object) -> int:

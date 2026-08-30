@@ -8,7 +8,14 @@ import copy
 import pytest
 
 from simple_harness.contracts import CallId, EffectId, RunId
+from simple_harness.execution.context_authority import TaskExecutionEnvelopeRequest
 from simple_harness.execution.effects import TaskExecutionEnvelope
+from simple_harness.tools.runtime_catalog import (
+    ToolEffectClass,
+    ToolExecutionPolicy,
+    ToolRouteRequirement,
+    ToolTaskScopeRequirement,
+)
 
 
 def _envelope(**changes: object) -> TaskExecutionEnvelope:
@@ -41,6 +48,7 @@ def _envelope(**changes: object) -> TaskExecutionEnvelope:
         ("raw_call_id", 1),
         ("tool_name", 1),
         ("capability_id", 1),
+        ("capability_fingerprint", None),
         ("route_receipt_id", 1),
         ("task_scope_id", 1),
         ("root_id", 1),
@@ -81,3 +89,27 @@ def test_constructor_and_decoder_reject_embedded_nul_task_root_identity() -> Non
     payload["task_scope_id"] = "task\x00private"
     with pytest.raises(ValueError, match="task_scope_id"):
         TaskExecutionEnvelope.from_json(payload)
+
+
+@pytest.mark.parametrize(("field", "value"), (("turn_ordinal", True), ("call_ordinal", -1)))
+def test_envelope_request_rejects_invalid_ordinals(field: str, value: object) -> None:
+    values: dict[str, object] = {
+        "run_id": RunId("run-1"),
+        "call_id": "call-1",
+        "effect_id": "effect-1",
+        "raw_call_id": "raw-1",
+        "turn_ordinal": 1,
+        "call_ordinal": 0,
+        "tool_name": "write_project",
+        "policy": ToolExecutionPolicy(
+            "host:write-project",
+            "a" * 64,
+            ToolEffectClass.PROJECT_EFFECT,
+            ToolRouteRequirement.REQUIRED,
+            ToolTaskScopeRequirement.REQUIRED,
+        ),
+        "route_receipt": None,
+    }
+    values[field] = value
+    with pytest.raises(ValueError, match="non-negative integer"):
+        TaskExecutionEnvelopeRequest(**values)  # type: ignore[arg-type]

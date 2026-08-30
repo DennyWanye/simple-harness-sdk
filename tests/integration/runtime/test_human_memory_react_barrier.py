@@ -14,9 +14,12 @@ from simple_harness.contracts import (
     CallId,
     EffectId,
     JsonValue,
+    Message,
+    MessageRole,
     RequestId,
     RunId,
     canonical_json,
+    fingerprint_json,
     freeze_json,
     thaw_json,
 )
@@ -33,11 +36,28 @@ from simple_harness.providers import (
     ProviderToolCall,
     ProviderToolSpec,
 )
+from simple_harness.runtime.disclosure_protocol import (
+    DeliveryRecipient,
+    DisclosureContext,
+    DisclosureGeneration,
+    DisclosurePurpose,
+    DisclosureReasonCode,
+    DisclosureSource,
+    DisclosureTrust,
+    IntendedAudience,
+)
 from simple_harness.runtime.drivers.react_loop import (
     AgentLoopCollaborator,
     EffectBatchExecutor,
     ReActLoop,
     ReActRunInput,
+)
+from simple_harness.runtime.evidence_protocol import (
+    EvidenceRef,
+    EvidenceSourceKind,
+    RemovedSpanSummary,
+    RemovedSpanType,
+    SanitizedEvidenceEnvelope,
 )
 from simple_harness.runtime.task_scope_protocol import TaskScopeRoute
 from simple_harness.runtime.termination import TerminationLimits
@@ -516,3 +536,296 @@ def test_cross_turn_context_snapshot_lineage_rejects_before_provider_reservation
 
     assert len(provider.calls) == 1
     assert len(authority.calls) == 2
+
+
+def _consumer_disclosure(*, unknown: bool = False) -> DisclosureContext:
+    if unknown:
+        return DisclosureContext(
+            "run-1",
+            "actor-1",
+            DeliveryRecipient.UNKNOWN,
+            None,
+            IntendedAudience.UNKNOWN,
+            DisclosurePurpose.UNKNOWN,
+            DisclosureSource.UNKNOWN,
+            DisclosureTrust.UNTRUSTED_PROPOSAL,
+            DisclosureGeneration.UNKNOWN,
+            None,
+            (
+                DisclosureReasonCode.UNKNOWN_RECIPIENT,
+                DisclosureReasonCode.UNKNOWN_PURPOSE,
+            ),
+        )
+    return DisclosureContext(
+        "run-1",
+        "actor-1",
+        DeliveryRecipient.USER_SELF,
+        "actor-1",
+        IntendedAudience.USER_SELF,
+        DisclosurePurpose.TASK_EXECUTION,
+        DisclosureSource.AUTHENTICATED_HOST,
+        DisclosureTrust.TRUSTED_AUTHORITY,
+        DisclosureGeneration.CURRENT,
+        "host-disclosure-1",
+        (DisclosureReasonCode.MINIMUM_NECESSARY,),
+    )
+
+
+class FakeMemoryConsumer:
+    def __init__(self) -> None:
+        self.recall_calls: list[str] = []
+
+    def sanitize(self, disclosure: DisclosureContext) -> SanitizedEvidenceEnvelope:
+        if disclosure.recipient is DeliveryRecipient.UNKNOWN:
+            raise ValueError("unknown disclosure cannot enter the Memory consumer")
+        raw = {
+            "public_text": "User prefers deterministic tests.",
+            "api_key": "CREDENTIAL_CANARY",
+            "hidden_reasoning": "HIDDEN_COT_CANARY",
+        }
+        public = {"public_text": raw["public_text"]}
+        return SanitizedEvidenceEnvelope(
+            "evidence-1",
+            "run-1",
+            "actor-1",
+            EvidenceSourceKind.USER_MESSAGE,
+            "turn-1/user",
+            fingerprint_json(raw),
+            public,
+            fingerprint_json(public),
+            "credential-filter/v1",
+            (
+                RemovedSpanSummary(RemovedSpanType.API_KEY, 1),
+                RemovedSpanSummary(RemovedSpanType.HIDDEN_REASONING, 1),
+            ),
+            disclosure,
+            (),
+        )
+
+    async def recall(self, evidence: SanitizedEvidenceEnvelope) -> str:
+        encoded = canonical_json(evidence.to_json())
+        assert "CREDENTIAL_CANARY" not in encoded
+        assert "HIDDEN_COT_CANARY" not in encoded
+        self.recall_calls.append(evidence.evidence_id)
+        return str(evidence.sanitized_payload["public_text"])
+
+
+class IntegratedContextAuthority:
+    def __init__(
+        self,
+        context: MemoryContext,
+        memory: FakeMemoryConsumer,
+        evidence: SanitizedEvidenceEnvelope,
+    ) -> None:
+        self.context = context
+        self.memory = memory
+        self.evidence = evidence
+        self.calls = []
+
+    async def prepare_snapshot(self, request):  # type: ignore[no-untyped-def]
+        self.calls.append(request)
+        messages = list(self.context.messages)
+        if request.route_state.value == "routed_task":
+            messages.append(Message(MessageRole.USER, await self.memory.recall(self.evidence)))
+        provider_request = ProviderRequest(
+            RequestId("hash-only"),
+            tuple(messages),
+            tools=PolicyExposure().provider_specs(request.run_id),
+            metadata={"authority": "integrated-host"},
+        )
+        revision = len(self.calls)
+        return RunContextSnapshot(
+            f"integrated-snapshot-{revision}",
+            request.run_id.value,
+            request.provider_turn_ordinal,
+            request.prior_context_revision,
+            revision,
+            {"host": revision, "memory": len(self.memory.recall_calls)},
+            provider_request.messages,
+            provider_request.tools,
+            None,
+            None,
+            provider_request.metadata,
+            provider_request_fingerprint(provider_request),
+        )
+
+
+class IntegratedEffects:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.project_envelopes: list[TaskExecutionEnvelope] = []
+
+    async def execute(self, **values):  # type: ignore[no-untyped-def]
+        call = values["call"]
+        context = values["context"]
+        self.calls.append(call.name)
+        if call.name == "context_route":
+            assert context.effect_id is not None
+            receipt = ContextRouteReceipt(
+                "integrated-route-1",
+                context.run_id.value,
+                str(values["raw_call_id"]),
+                context.effect_id.value,
+                TaskScopeRoute.RESUME_EXISTING,
+                "task-1",
+                3,
+                ("evidence-1",),
+            )
+            return EffectExecution(None, ToolResult.succeeded(call.call_id, receipt.to_json()))
+        envelope = context.task_execution_envelope
+        assert isinstance(envelope, TaskExecutionEnvelope)
+        self.project_envelopes.append(envelope)
+        return EffectExecution(None, ToolResult.succeeded(call.call_id, {"written": True}))
+
+
+class IntegratedTaskExecutionAuthority:
+    async def issue_envelope(self, request):  # type: ignore[no-untyped-def]
+        route = request.route_receipt
+        return TaskExecutionEnvelope(
+            request.run_id,
+            CallId(request.call_id),
+            EffectId(request.effect_id),
+            request.raw_call_id,
+            request.turn_ordinal,
+            request.call_ordinal,
+            request.tool_name,
+            request.policy.capability_id,
+            request.policy.capability_fingerprint,
+            None if route is None else route.receipt_id,
+            None if route is None else route.receipt_hash,
+            None if route is None else route.task_scope_id,
+            None if route is None else "root-1",
+            None if route is None else "d" * 64,
+            None if route is None else route.binding_set_revision,
+            request.effect_id,
+        )
+
+
+def test_integrated_fake_host_memory_consumer_reaches_project_effect_in_one_run() -> None:
+    memory = FakeMemoryConsumer()
+    evidence = memory.sanitize(_consumer_disclosure())
+    context = MemoryContext()
+    authority = IntegratedContextAuthority(context, memory, evidence)
+    effects = IntegratedEffects()
+    route_response = ProviderResponse(
+        RequestId("fixture"),
+        Message(MessageRole.ASSISTANT, "route"),
+        (ProviderToolCall(CallId("raw-route"), "context_route", {}),),
+    )
+    project_response = ProviderResponse(
+        RequestId("fixture"),
+        Message(MessageRole.ASSISTANT, "write"),
+        (ProviderToolCall(CallId("raw-write"), "write_project", {}),),
+    )
+    provider = ScriptedProviderCoordinator([route_response, project_response, response("done")])
+    runtime_services = replace(
+        services(provider, effects, context),
+        run_context_authority=authority,
+        task_execution_authority=IntegratedTaskExecutionAuthority(),
+    )
+
+    result = asyncio.run(
+        _loop(effects).run(
+            ReActRunInput(
+                RunId("run-1"),
+                RequestId("request-1"),
+                tool_exposure=PolicyExposure(),
+            ),
+            services=runtime_services,
+            execution_lease=LEASE,
+            run_fence=FENCE,
+            cancel=CancelToken(),
+            initial_messages=(),
+        )
+    )
+
+    assert result.termination.route_state == "routed_task"
+    assert effects.calls == ["context_route", "write_project"]
+    assert len(effects.project_envelopes) == 1
+    envelope = effects.project_envelopes[0]
+    assert envelope.task_scope_id == "task-1"
+    assert envelope.root_id == "root-1"
+    assert envelope.binding_set_revision == 3
+    assert envelope.idempotency_key == envelope.effect_id.value
+    assert len(authority.calls) == 3
+    assert memory.recall_calls == ["evidence-1", "evidence-1"]
+    assert any(
+        "deterministic tests" in str(message.content) for message in provider.calls[1][1].messages
+    )
+
+
+def test_integrated_consumer_negative_protocol_matrix_fails_closed() -> None:
+    memory = FakeMemoryConsumer()
+    with pytest.raises(ValueError, match="unknown disclosure"):
+        memory.sanitize(_consumer_disclosure(unknown=True))
+
+    evidence = memory.sanitize(_consumer_disclosure())
+    payload = evidence.to_json()
+    payload["unexpected"] = True
+    with pytest.raises(ValueError, match="extra"):
+        SanitizedEvidenceEnvelope.from_json(payload)
+
+    for refs in (
+        (EvidenceRef("evidence-a", "a" * 64, 2),),
+        (
+            EvidenceRef("evidence-a", "a" * 64, 1),
+            EvidenceRef("evidence-a", "b" * 64, 2),
+        ),
+    ):
+        with pytest.raises(ValueError):
+            SanitizedEvidenceEnvelope(
+                evidence.evidence_id,
+                evidence.run_id,
+                evidence.subject,
+                evidence.source_kind,
+                evidence.source_ref,
+                evidence.source_hash,
+                evidence.sanitized_payload,
+                evidence.sanitized_hash,
+                evidence.filter_policy_version,
+                evidence.removed_spans,
+                evidence.disclosure_context,
+                refs,
+            )
+
+    with pytest.raises(ValueError, match="bounded"):
+        SanitizedEvidenceEnvelope(
+            evidence.evidence_id,
+            evidence.run_id,
+            evidence.subject,
+            evidence.source_kind,
+            "x" * 1025,
+            evidence.source_hash,
+            evidence.sanitized_payload,
+            evidence.sanitized_hash,
+            evidence.filter_policy_version,
+            evidence.removed_spans,
+            evidence.disclosure_context,
+            (),
+        )
+
+
+def test_integrated_context_timeout_stops_before_provider() -> None:
+    class TimeoutAuthority:
+        async def prepare_snapshot(self, request):  # type: ignore[no-untyped-def]
+            del request
+            raise TimeoutError("fake Memory timeout")
+
+    context = MemoryContext()
+    provider = ScriptedProviderCoordinator([response("must-not-run")])
+    runtime_services = replace(
+        services(provider, IntegratedEffects(), context),
+        run_context_authority=TimeoutAuthority(),
+    )
+    with pytest.raises(TimeoutError, match="fake Memory timeout"):
+        asyncio.run(
+            _loop(IntegratedEffects()).run(
+                ReActRunInput(RunId("run-1"), RequestId("request-1")),
+                services=runtime_services,
+                execution_lease=LEASE,
+                run_fence=FENCE,
+                cancel=CancelToken(),
+                initial_messages=(),
+            )
+        )
+    assert provider.calls == []

@@ -119,6 +119,8 @@ class TaskExecutionEnvelope:
             raise ValueError("TaskExecutionEnvelope idempotency identity differs from effect")
         for name in ("capability_fingerprint", "route_receipt_hash", "root_identity_hash"):
             value = getattr(self, name)
+            if name == "capability_fingerprint" and value is None:
+                raise ValueError("capability_fingerprint must be lowercase SHA-256")
             if value is not None and (
                 not isinstance(value, str)
                 or len(value) != 64

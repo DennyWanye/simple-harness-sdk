@@ -329,6 +329,12 @@ class TaskExecutionEnvelopeRequest:
             (self.tool_name, "tool_name"),
         ):
             _required(value, name)
+        for value, name in (
+            (self.turn_ordinal, "turn_ordinal"),
+            (self.call_ordinal, "call_ordinal"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
         if not isinstance(self.policy, ToolExecutionPolicy):
             raise TypeError("policy must use ToolExecutionPolicy")
         if self.route_receipt is not None and self.route_receipt.run_id != self.run_id.value:

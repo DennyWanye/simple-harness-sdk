@@ -58,6 +58,43 @@ def test_opaque_continuation_persists_public_ref_but_never_hidden_reasoning() ->
     assert restored.opaque_continuation_ref == "provider-item-123"
 
 
+def test_public_block_projection_strips_nested_private_provider_fields() -> None:
+    payload = provider_response_json(
+        _response(
+            ContentBlock(
+                "output_text",
+                {
+                    "text": "visible",
+                    "provider_private": "PRIVATE_BLOCK_CANARY",
+                    "credential": {"token": "CREDENTIAL_BLOCK_CANARY"},
+                },
+            )
+        )
+    )
+    encoded = canonical_json(payload)
+    assert "visible" in encoded
+    assert "PRIVATE_BLOCK_CANARY" not in encoded
+    assert "CREDENTIAL_BLOCK_CANARY" not in encoded
+
+
+@pytest.mark.parametrize(
+    "credential",
+    (
+        "Bearer provider-secret-token",
+        "sk-providersecret123",
+        "AKIA1234567890ABCDEF",
+        "-----BEGIN PRIVATE KEY-----",
+    ),
+)
+def test_public_text_rejects_credential_canary_before_durable_encoding(
+    credential: str,
+) -> None:
+    with pytest.raises(ValueError, match="credential-like material"):
+        provider_response_json(
+            _response(ContentBlock("output_text", {"text": f"visible {credential}"}))
+        )
+
+
 def test_replay_rejects_changed_continuation_capability() -> None:
     payload = provider_response_json(_response(ContentBlock("output_text", {"text": "ok"})))
     with pytest.raises(ValueError, match="another continuation capability"):
@@ -115,6 +152,10 @@ def test_frozen_provider_binding_changes_with_continuation_capability() -> None:
         (
             lambda value: value["message"].__setitem__("private", "SECRET"),
             "message fields differ",
+        ),
+        (
+            lambda value: value["message"]["content"][0].__setitem__("provider_private", "SECRET"),
+            "public content projection differs",
         ),
     ),
 )

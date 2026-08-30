@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, cast
@@ -35,6 +36,25 @@ from simple_harness.providers.base import (
 )
 
 from .budget import BudgetCharge
+
+_PUBLIC_TEXT_BLOCK_FIELDS = {
+    "text": frozenset({"text"}),
+    "output_text": frozenset({"text"}),
+    "refusal": frozenset({"refusal"}),
+}
+_PUBLIC_MEDIA_BLOCK_FIELDS = {
+    "image": frozenset({"url", "data", "body", "media_type", "detail"}),
+    "audio": frozenset({"data", "format", "transcript"}),
+    "file": frozenset({"file_id", "filename", "mime_type", "url"}),
+}
+_PUBLIC_IMAGE_URL_FIELDS = frozenset({"image_url"})
+_PUBLIC_IMAGE_DETAIL_VALUES = frozenset({"auto", "low", "high"})
+_DURABLE_CREDENTIAL_PATTERNS = (
+    re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{8,}"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
+)
 
 
 class ProviderInvocationState(StrEnum):
@@ -152,6 +172,69 @@ def provider_target_digest(target: ProviderTarget) -> str:
     return _digest(provider_target_json(target))
 
 
+def _public_text(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise ValueError(f"public provider {name} must be non-empty text")
+    if any(pattern.search(value) for pattern in _DURABLE_CREDENTIAL_PATTERNS):
+        raise ValueError(f"public provider {name} contains credential-like material")
+    return value
+
+
+def _strict_public_content_block(block: ContentBlock) -> dict[str, JsonValue]:
+    """Return the exact durable/public projection for one provider content block.
+
+    A public block type is not enough to make arbitrary provider-owned fields
+    public.  Every supported type therefore has an explicit data schema.  The
+    physical response is projected to that schema; the durable decoder later
+    requires the stored block to equal this projection exactly.
+    """
+
+    data = thaw_json(cast(FrozenJsonValue, block.data))
+    if not isinstance(data, dict):
+        raise TypeError("public provider content block data must be an object")
+    if block.type in _PUBLIC_TEXT_BLOCK_FIELDS:
+        expected = _PUBLIC_TEXT_BLOCK_FIELDS[block.type]
+        key = next(iter(expected))
+        if key not in data:
+            raise ValueError("public provider content block fields differ")
+        return {"type": block.type, key: _public_text(data[key], key)}
+    if block.type == "image_url":
+        if not _PUBLIC_IMAGE_URL_FIELDS.issubset(data):
+            raise ValueError("public provider image_url block fields differ")
+        image_url = data["image_url"]
+        if not isinstance(image_url, dict):
+            raise ValueError("public provider image_url value fields differ")
+        if "url" not in image_url:
+            raise ValueError("public provider image_url requires url")
+        projected: dict[str, JsonValue] = {"url": _public_text(image_url["url"], "url")}
+        detail = image_url.get("detail")
+        if detail is not None:
+            if not isinstance(detail, str) or detail not in _PUBLIC_IMAGE_DETAIL_VALUES:
+                raise ValueError("public provider image_url detail is invalid")
+            projected["detail"] = detail
+        return {"type": block.type, "image_url": projected}
+    if block.type in _PUBLIC_MEDIA_BLOCK_FIELDS:
+        allowed = _PUBLIC_MEDIA_BLOCK_FIELDS[block.type]
+        public_data = {key: item for key, item in data.items() if key in allowed}
+        required_any = {
+            "image": {"url", "data", "body"},
+            "audio": {"data", "transcript"},
+            "file": {"file_id", "url"},
+        }[block.type]
+        if not required_any.intersection(public_data):
+            raise ValueError("public provider media block lacks public content")
+        projected_media: dict[str, JsonValue] = {}
+        for key, item in public_data.items():
+            if key == "detail":
+                if not isinstance(item, str) or item not in _PUBLIC_IMAGE_DETAIL_VALUES:
+                    raise ValueError("public provider image detail is invalid")
+                projected_media[key] = item
+            else:
+                projected_media[key] = _public_text(item, key)
+        return {"type": block.type, **projected_media}
+    raise ValueError("provider response contains an unsupported public content block")
+
+
 def _durable_public_message_json(
     message: Message, capability: ProviderContinuationCapability
 ) -> dict[str, JsonValue]:
@@ -166,7 +249,7 @@ def _durable_public_message_json(
                 continue
             if block.type not in capability.public_content_types:
                 raise ValueError("provider response contains a non-public content block")
-            public.append(block.to_dict())
+            public.append(_strict_public_content_block(block))
         if hidden_present and capability.mode is not ProviderContinuationMode.OPAQUE_REFERENCE:
             raise ValueError("provider hidden reasoning cannot enter durable response state")
         content = public
@@ -397,6 +480,8 @@ def provider_response_from_json(
         for block in message.content:
             if block.type not in capability.public_content_types:
                 raise ValueError("stored provider response contains a non-public content block")
+            if _strict_public_content_block(block) != block.to_dict():
+                raise ValueError("stored provider public content projection differs")
     return ProviderResponse(
         request_id=RequestId(raw_request_id),
         message=message,

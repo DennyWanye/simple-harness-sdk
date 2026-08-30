@@ -159,8 +159,43 @@ def test_checkpoint_roundtrip_preserves_tool_exposure_state() -> None:
 def test_legacy_checkpoint_defaults_to_static_tool_exposure() -> None:
     legacy = TerminationState(10).to_json()
     legacy["schema_version"] = 2
-    legacy.pop("tool_exposure_state")
+    for field in (
+        "tool_exposure_state",
+        "route_state",
+        "route_receipt",
+        "route_receipt_hash",
+        "context_authority_receipt",
+        "context_authority_receipt_hash",
+        "context_snapshot_revision",
+        "context_snapshot_bindings",
+    ):
+        legacy.pop(field)
     assert TerminationState.from_json(legacy).tool_exposure_state is None
+
+
+@pytest.mark.parametrize("mutation", ("missing_revision", "missing_bindings", "extra"))
+def test_current_checkpoint_schema_rejects_missing_or_extra_lineage_fields(mutation: str) -> None:
+    payload = TerminationState(
+        10,
+        context_snapshot_revision=7,
+        context_snapshot_bindings=(("snapshot-7", "a" * 64),),
+    ).to_json()
+    if mutation == "missing_revision":
+        payload.pop("context_snapshot_revision")
+    elif mutation == "missing_bindings":
+        payload.pop("context_snapshot_bindings")
+    else:
+        payload["unexpected_private"] = "CANARY"
+    with pytest.raises(ValueError, match="fields differ"):
+        TerminationState.from_json(payload)
+
+
+@pytest.mark.parametrize(("field", "value"), (("phase", 1), ("route_state", True)))
+def test_current_checkpoint_schema_rejects_string_coercion(field: str, value: object) -> None:
+    payload = TerminationState(10).to_json()
+    payload[field] = value  # type: ignore[assignment]
+    with pytest.raises(TypeError, match="must be a string"):
+        TerminationState.from_json(payload)
 
 
 def test_public_react_builder_requires_and_freezes_hard_policy() -> None:

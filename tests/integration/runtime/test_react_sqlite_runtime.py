@@ -87,7 +87,14 @@ class Provider:
                 Message(
                     MessageRole.ASSISTANT,
                     (
-                        ContentBlock("output_text", {"text": "done"}),
+                        ContentBlock(
+                            "output_text",
+                            {
+                                "text": "done",
+                                "provider_private": "NESTED_PRIVATE_CANARY",
+                                "credential": {"token": "NESTED_CREDENTIAL_CANARY"},
+                            },
+                        ),
                         ContentBlock("reasoning", {"text": "HIDDEN_REASONING_CANARY"}),
                     ),
                     metadata={"private": "PRIVATE_METADATA_CANARY"},
@@ -282,6 +289,8 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
                 encoded = "\n".join(str(row[0]) for row in durable_rows)
                 assert "HIDDEN_REASONING_CANARY" not in encoded
                 assert "PRIVATE_METADATA_CANARY" not in encoded
+                assert "NESTED_PRIVATE_CANARY" not in encoded
+                assert "NESTED_CREDENTIAL_CANARY" not in encoded
             assistant = context.load(RunId("run-1")).messages[-1]
             assert assistant.metadata == {}
             assert [block.type for block in assistant.content] == ["output_text"]
