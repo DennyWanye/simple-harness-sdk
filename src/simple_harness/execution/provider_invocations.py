@@ -172,8 +172,8 @@ def provider_target_digest(target: ProviderTarget) -> str:
     return _digest(provider_target_json(target))
 
 
-def _public_text(value: object, name: str) -> str:
-    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+def _public_text(value: object, name: str, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str) or (not allow_empty and not value.strip()) or "\x00" in value:
         raise ValueError(f"public provider {name} must be non-empty text")
     if any(pattern.search(value) for pattern in _DURABLE_CREDENTIAL_PATTERNS):
         raise ValueError(f"public provider {name} contains credential-like material")
@@ -236,10 +236,15 @@ def _strict_public_content_block(block: ContentBlock) -> dict[str, JsonValue]:
 
 
 def _durable_public_message_json(
-    message: Message, capability: ProviderContinuationCapability
+    message: Message,
+    capability: ProviderContinuationCapability,
+    *,
+    allow_empty_text: bool = False,
 ) -> dict[str, JsonValue]:
     if isinstance(message.content, str):
-        content: JsonValue = message.content
+        content: JsonValue = _public_text(
+            message.content, "content", allow_empty=allow_empty_text
+        )
     else:
         public: list[JsonValue] = []
         hidden_present = False
@@ -282,7 +287,11 @@ def provider_response_json(
         raise ValueError("opaque reasoning continuation requires a public reference")
     return {
         "request_id": response.request_id.value,
-        "message": _durable_public_message_json(response.message, capability),
+        "message": _durable_public_message_json(
+            response.message,
+            capability,
+            allow_empty_text=bool(response.tool_calls),
+        ),
         "tool_calls": [
             {
                 "call_id": call.call_id.value,
@@ -476,7 +485,9 @@ def provider_response_from_json(
     message = _message_from_json(message_value)
     if message.role is not MessageRole.ASSISTANT:
         raise ValueError("stored provider response message must be assistant public content")
-    if not isinstance(message.content, str):
+    if isinstance(message.content, str):
+        _public_text(message.content, "content", allow_empty=bool(calls))
+    else:
         for block in message.content:
             if block.type not in capability.public_content_types:
                 raise ValueError("stored provider response contains a non-public content block")

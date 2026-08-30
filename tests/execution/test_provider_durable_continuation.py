@@ -7,14 +7,21 @@ import copy
 
 import pytest
 
-from simple_harness.contracts import ContentBlock, Message, MessageRole, RequestId, canonical_json
+from simple_harness.contracts import (
+    CallId,
+    ContentBlock,
+    Message,
+    MessageRole,
+    RequestId,
+    canonical_json,
+)
 from simple_harness.execution.budget import BudgetPolicy
 from simple_harness.execution.dispatch import provider_binding_fingerprint
 from simple_harness.execution.provider_invocations import (
     provider_response_from_json,
     provider_response_json,
 )
-from simple_harness.providers import ProviderResponse
+from simple_harness.providers import ProviderResponse, ProviderToolCall
 from simple_harness.providers.base import (
     ProviderContinuationCapability,
     ProviderContinuationMode,
@@ -89,10 +96,30 @@ def test_public_block_projection_strips_nested_private_provider_fields() -> None
 def test_public_text_rejects_credential_canary_before_durable_encoding(
     credential: str,
 ) -> None:
-    with pytest.raises(ValueError, match="credential-like material"):
-        provider_response_json(
-            _response(ContentBlock("output_text", {"text": f"visible {credential}"}))
-        )
+    for content in (
+        f"visible {credential}",
+        (ContentBlock("output_text", {"text": f"visible {credential}"}),),
+    ):
+        response = ProviderResponse(RequestId("request-1"), Message(MessageRole.ASSISTANT, content))
+        with pytest.raises(ValueError, match="credential-like material"):
+            provider_response_json(response)
+
+
+def test_empty_assistant_content_is_only_public_with_tool_calls() -> None:
+    tool_response = ProviderResponse(
+        RequestId("request-1"),
+        Message(MessageRole.ASSISTANT, ""),
+        (ProviderToolCall(CallId("call-1"), "lookup", {}),),
+    )
+    payload = provider_response_json(tool_response)
+    assert provider_response_from_json(payload).message.content == ""
+
+    no_tool_response = ProviderResponse(
+        RequestId("request-2"),
+        Message(MessageRole.ASSISTANT, ""),
+    )
+    with pytest.raises(ValueError, match="non-empty text"):
+        provider_response_json(no_tool_response)
 
 
 def test_replay_rejects_changed_continuation_capability() -> None:
