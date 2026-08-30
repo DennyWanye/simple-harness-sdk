@@ -1,13 +1,29 @@
 <!--
 SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
-last-updated: 2026-08-25
+last-updated: 2026-08-30
 -->
-<!-- last-calibrated: f4fd99cd68f5a5cccf80f13bc33161a256f30c74 -->
+<!-- last-calibrated: 716fb8513095c4ad1dc005cb0fefe991e584c156 -->
 
 # Simple Harness SDK — 架构基线（Agent Memory v1）
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
+
+## Human Memory Program 实施前边界（2026-08-30）
+
+以下能力尚未实现，后续必须由版本化公共协议引入：
+
+- 当前 `AgentMemoryPort` 只有 turn 前自动 `recall_for_turn`、release 和 terminal
+  `record_committed_turn`；没有主模型提出的 `RecallPlan` / `MemoryMutationPlan` / `TaskScopeProposal` /
+  `TaskScopeMutationPlan`，也没有认知类型与审计 decision DTO。
+- 当前 Runtime 在首个 Provider attempt 前调用 Memory 并冻结结果；ReAct loop 只消费已组装 Context。
+  因而主模型没有记忆需求路由权，也不能在同一 Run 中先选择 route、再按需调用 Memory 后续推理。
+- 当前 conversation continuation 是同一 durable Run 的 signal，但 SDK 不保证一个永久主对话只有一个
+  foreground Run，也没有普通用户消息 FIFO 与 stop/pause/cancel 优先控制协议。
+- 当前 Context snapshot 能冻结 product context、Memory payload、tool catalog 和 current message，但没有
+  最近 10 个完整因果 turn group、五天短时域、TaskScope 临时投影、分区预算及 page-in 的统一契约。
+- SDK 仍应保持 product-neutral：TaskScope 的本地目录、文件视图与 UI 不归 SDK；SDK 只拥有中立协议、
+  Run/Context/Tool 状态机接缝和 durable replay 语义。
 
 ## Tool / Capability 目录当前生产链（2026-08-25）
 
@@ -34,10 +50,10 @@ last-updated: 2026-08-25
   typed receipt 确定性 reapply。fresh schema v6 单独存 Provider specs fingerprint 与完整 catalog envelope
   digest；handler locator resolution 对 missing/changed/extra identity fail-closed。exact v5 只允许关闭 Runtime
   后用显式 backup-first migrator 升级。
-- 当前 source candidate 版本权威是 0.6.2；simple_harness Host 已在本地消费 immutable candidate wheel。源码就绪、
+- 当前 source candidate 版本权威是 0.6.4；simple_harness Host 已在本地消费 immutable candidate wheel。源码就绪、
   release artifact 和 Host cutover 是三个不同状态，不能相互代替。
 
-上述是 0.6.2 source candidate 的当前实现事实；公开 release 尚未执行。
+上述是 0.6.4 source candidate 的当前实现事实；公开 release 尚未执行。
 
 ## SDK Observability S1/S2 当前事实（2026-08-23）
 
