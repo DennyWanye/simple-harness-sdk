@@ -31,8 +31,10 @@ def _sha256(value: JsonValue) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def _required(value: str, name: str) -> str:
-    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+def _required(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    if not value.strip() or "\x00" in value:
         raise ValueError(f"{name} is required")
     return value
 
@@ -72,6 +74,8 @@ class ContextRouteReceipt:
         ):
             _required(value, name)
         object.__setattr__(self, "route", TaskScopeRoute(self.route))
+        if self.task_scope_id is not None:
+            _required(self.task_scope_id, "task_scope_id")
         if self.route in {
             TaskScopeRoute.CONTINUE_ACTIVE,
             TaskScopeRoute.RESUME_EXISTING,
@@ -81,10 +85,13 @@ class ContextRouteReceipt:
                 raise ValueError("task route requires TaskScope and binding revision")
         elif self.task_scope_id is not None or self.binding_set_revision is not None:
             raise ValueError("standalone route forbids TaskScope binding")
-        if self.binding_set_revision is not None and (
-            isinstance(self.binding_set_revision, bool) or self.binding_set_revision < 1
-        ):
-            raise ValueError("binding_set_revision must be positive")
+        if self.binding_set_revision is not None:
+            if isinstance(self.binding_set_revision, bool) or not isinstance(
+                self.binding_set_revision, int
+            ):
+                raise TypeError("binding_set_revision must be an integer or null")
+            if self.binding_set_revision < 1:
+                raise ValueError("binding_set_revision must be positive")
         refs = tuple(_required(item, "recall_ref") for item in self.recall_refs)
         if len(set(refs)) != len(refs):
             raise ValueError("recall_refs must be unique")
@@ -137,13 +144,19 @@ class ContextRouteReceipt:
             raise TypeError("binding_set_revision must be an integer or null")
         if isinstance(schema_version, bool) or not isinstance(schema_version, int):
             raise TypeError("schema_version must be an integer")
+        route = value["route"]
+        if not isinstance(route, str):
+            raise TypeError("route must be a string")
+        task_scope_id = value["task_scope_id"]
+        if task_scope_id is not None and not isinstance(task_scope_id, str):
+            raise TypeError("task_scope_id must be a string or null")
         return cls(
-            receipt_id=str(value["receipt_id"]),
-            run_id=str(value["run_id"]),
-            raw_call_id=str(value["raw_call_id"]),
-            effect_id=str(value["effect_id"]),
-            route=TaskScopeRoute(str(value["route"])),
-            task_scope_id=(None if value["task_scope_id"] is None else str(value["task_scope_id"])),
+            receipt_id=_required(value["receipt_id"], "receipt_id"),
+            run_id=_required(value["run_id"], "run_id"),
+            raw_call_id=_required(value["raw_call_id"], "raw_call_id"),
+            effect_id=_required(value["effect_id"], "effect_id"),
+            route=TaskScopeRoute(route),
+            task_scope_id=task_scope_id,
             binding_set_revision=revision,
             recall_refs=tuple(refs),
             schema_version=schema_version,

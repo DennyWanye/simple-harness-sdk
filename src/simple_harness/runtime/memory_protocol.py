@@ -694,8 +694,8 @@ class RecallDecision:
     decision_id: str
     run_id: str
     subject: str
-    plan_id: str | None
-    plan_hash: str | None
+    plan_id: str
+    plan_hash: str
     outcome: RecallDecisionOutcome
     selected_memory_types: tuple[LongTermMemoryType, ...]
     selected_memory_refs: tuple[str, ...]
@@ -716,11 +716,8 @@ class RecallDecision:
             (self.subject, "subject"),
         ):
             _identifier(value, name)
-        _optional_identifier(self.plan_id, "plan_id")
-        if (self.plan_id is None) != (self.plan_hash is None):
-            raise ValueError("plan_id and plan_hash must both be set or both be null")
-        if self.plan_hash is not None:
-            _digest(self.plan_hash, "plan_hash")
+        _identifier(self.plan_id, "plan_id")
+        _digest(self.plan_hash, "plan_hash")
         object.__setattr__(self, "outcome", RecallDecisionOutcome(self.outcome))
         types = tuple(LongTermMemoryType(item) for item in self.selected_memory_types)
         refs_selected = tuple(
@@ -741,6 +738,8 @@ class RecallDecision:
         if self.disclosure_context.run_id != self.run_id:
             raise ValueError("disclosure_context run_id differs")
         evidence_refs = _evidence_refs(self.evidence_refs)
+        if self.outcome is RecallDecisionOutcome.NO_RECALL and not evidence_refs:
+            raise ValueError("no_recall requires evidence_refs")
         reasons = tuple(RecallReasonCode(reason) for reason in self.reason_codes)
         if not reasons or len(set(reasons)) != len(reasons):
             raise ValueError("reason_codes must be non-empty and unique")
@@ -803,13 +802,12 @@ class RecallDecision:
         decided_at = value["decided_at"]
         if isinstance(decided_at, bool) or not isinstance(decided_at, (int, float)):
             raise TypeError("decided_at must be numeric")
-        plan_hash = value["plan_hash"]
         return cls(
             decision_id=_identifier(value["decision_id"], "decision_id"),
             run_id=_identifier(value["run_id"], "run_id"),
             subject=_identifier(value["subject"], "subject"),
-            plan_id=_optional_identifier(value["plan_id"], "plan_id"),
-            plan_hash=None if plan_hash is None else _digest(plan_hash, "plan_hash"),
+            plan_id=_identifier(value["plan_id"], "plan_id"),
+            plan_hash=_digest(value["plan_hash"], "plan_hash"),
             outcome=RecallDecisionOutcome(value["outcome"]),  # type: ignore[arg-type]
             selected_memory_types=tuple(
                 LongTermMemoryType(item)

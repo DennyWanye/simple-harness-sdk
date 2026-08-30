@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
+
 from simple_harness.contracts import (
     CallId,
     EffectId,
@@ -126,3 +128,44 @@ def test_route_and_effect_authority_survive_checkpoint_roundtrip() -> None:
         route_receipt_hash=route.receipt_hash,
     )
     assert TerminationState.from_json(state.to_json()) == state
+
+
+def test_context_route_receipt_strict_json_roundtrip_and_rejects_coercion() -> None:
+    receipt = ContextRouteReceipt(
+        "route-1",
+        "run-1",
+        "raw-1",
+        "effect-1",
+        TaskScopeRoute.RESUME_EXISTING,
+        "task-1",
+        3,
+        ("memory-1",),
+    )
+    assert ContextRouteReceipt.from_json(receipt.to_json()) == receipt
+
+    for field in ("receipt_id", "run_id", "raw_call_id", "effect_id", "route"):
+        for invalid in (1, True, None):
+            payload = receipt.to_json()
+            payload[field] = invalid
+            with pytest.raises((TypeError, ValueError)):
+                ContextRouteReceipt.from_json(payload)
+    for field, invalid_values in {
+        "task_scope_id": (1, True, None),
+        "binding_set_revision": ("3", 3.0, True, None),
+        "schema_version": ("1", 1.0, True, None),
+        "recall_refs": (1, True, None, [1], [True], [None]),
+    }.items():
+        for invalid in invalid_values:
+            payload = receipt.to_json()
+            payload[field] = invalid
+            with pytest.raises((TypeError, ValueError)):
+                ContextRouteReceipt.from_json(payload)
+
+    for mutation in ({"extra": "field"}, {"receipt_id": None}):
+        payload = receipt.to_json()
+        if "extra" in mutation:
+            payload.update(mutation)
+        else:
+            payload.pop("receipt_id")
+        with pytest.raises(ValueError, match="fields differ"):
+            ContextRouteReceipt.from_json(payload)

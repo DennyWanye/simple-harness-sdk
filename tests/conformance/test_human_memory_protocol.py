@@ -293,8 +293,8 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
         decision_id="decision-1",
         run_id="run-1",
         subject="actor-1",
-        plan_id=None,
-        plan_hash=None,
+        plan_id="recall-plan-1",
+        plan_hash="f" * 64,
         outcome=RecallDecisionOutcome.NO_RECALL,
         selected_memory_types=(),
         selected_memory_refs=(),
@@ -305,13 +305,14 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
         decided_at=11.0,
     )
     assert decision.decision_hash == fingerprint_json(decision.to_json())
+    assert RecallDecision.from_json(decision.to_json()) == decision
     with pytest.raises(ValueError, match="no_recall"):
         RecallDecision(
             decision_id="decision-2",
             run_id="run-1",
             subject="actor-1",
-            plan_id=None,
-            plan_hash=None,
+            plan_id="recall-plan-1",
+            plan_hash="f" * 64,
             outcome=RecallDecisionOutcome.NO_RECALL,
             selected_memory_types=(LongTermMemoryType.SEMANTIC,),
             selected_memory_refs=("memory-1",),
@@ -321,6 +322,37 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
             reason_codes=(RecallReasonCode.NO_RECALL_CONTEXT_SUFFICIENT,),
             decided_at=11.0,
         )
+    with pytest.raises(ValueError, match="evidence_refs"):
+        RecallDecision(
+            decision_id="decision-3",
+            run_id="run-1",
+            subject="actor-1",
+            plan_id="recall-plan-1",
+            plan_hash="f" * 64,
+            outcome=RecallDecisionOutcome.NO_RECALL,
+            selected_memory_types=(),
+            selected_memory_refs=(),
+            filtered_candidate_count=0,
+            disclosure_context=_disclosure(),
+            evidence_refs=(),
+            reason_codes=(RecallReasonCode.NO_RECALL_CONTEXT_SUFFICIENT,),
+            decided_at=11.0,
+        )
+    for field, invalid_values in {
+        "plan_id": (1, True, None),
+        "plan_hash": (1, True, None),
+        "filtered_candidate_count": (1.0, True, None),
+        "decided_at": (True, None, "11"),
+    }.items():
+        for invalid in invalid_values:
+            payload = decision.to_json()
+            payload[field] = invalid
+            with pytest.raises((TypeError, ValueError)):
+                RecallDecision.from_json(payload)
+    payload = decision.to_json()
+    payload["evidence_refs"] = []
+    with pytest.raises(ValueError, match="evidence_refs"):
+        RecallDecision.from_json(payload)
     operation = MemoryMutationOperation(
         "operation-1",
         MemoryMutationKind.CREATE,
