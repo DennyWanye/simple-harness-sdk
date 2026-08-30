@@ -262,7 +262,7 @@ def test_normal_open_rejects_v4_without_writing_any_bytes(tmp_path: Path) -> Non
     connection.close()
     before = path.read_bytes()
     before_stat = path.stat()
-    with pytest.raises(ExecutionSchemaIncompatible, match="fresh schema v6"):
+    with pytest.raises(ExecutionSchemaIncompatible, match="fresh schema v7"):
         Database.open(path, wal=True)
     assert path.read_bytes() == before
     assert path.stat().st_mtime_ns == before_stat.st_mtime_ns

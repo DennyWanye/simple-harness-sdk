@@ -67,6 +67,15 @@ def test_replay_rejects_changed_continuation_capability() -> None:
         )
 
 
+def test_current_durable_response_rejects_missing_continuation_capability() -> None:
+    payload = provider_response_json(_response(ContentBlock("output_text", {"text": "ok"})))
+    payload.pop("continuation")
+    with pytest.raises(ValueError, match="continuation must be an object"):
+        provider_response_from_json(payload)
+    restored = provider_response_from_json(payload, allow_legacy_public_response=True)
+    assert restored.message.content[0].data["text"] == "ok"
+
+
 def test_opaque_reference_is_bounded_public_identifier() -> None:
     with pytest.raises(ValueError, match="bounded public identifier"):
         _response(ContentBlock("output_text", {"text": "ok"}), opaque_ref="x" * 1025)

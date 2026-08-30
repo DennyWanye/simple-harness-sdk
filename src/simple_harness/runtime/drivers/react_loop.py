@@ -397,12 +397,27 @@ class ReActLoop:
                     != state.provider_response_digest
                 ):
                     raise RuntimeError("frozen Provider response digest mismatch")
+                continuation_capability = _provider_continuation_capability(
+                    services, value.run_id
+                )
+                legacy_public_response = state.source_schema_version <= 3
                 response = provider_response_from_json(
                     response_payload,
-                    expected_capability=_provider_continuation_capability(
-                        services, value.run_id
-                    ),
+                    expected_capability=continuation_capability,
+                    allow_legacy_public_response=legacy_public_response,
                 )
+                if legacy_public_response:
+                    normalized_response = provider_response_json(
+                        response, capability=continuation_capability
+                    )
+                    state = replace(
+                        state,
+                        provider_response_snapshot=normalized_response,
+                        provider_response_digest=hashlib.sha256(
+                            canonical_json(normalized_response).encode()
+                        ).hexdigest(),
+                        source_schema_version=4,
+                    )
             batch_policies, barrier_rejections = _preflight_tool_batch(
                 response.tool_calls,
                 run_id=value.run_id,

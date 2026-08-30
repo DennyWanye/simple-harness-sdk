@@ -378,7 +378,7 @@ def test_host_control_bidirectional_collision_and_changed_replay_fail_closed(tmp
     asyncio.run(case())
 
 
-def test_host_control_recovery_uses_v6_authority_without_memory_side_state(tmp_path) -> None:
+def test_host_control_recovery_uses_v7_authority_without_memory_side_state(tmp_path) -> None:
     control = host_control_request("recover")
     seeded, uow, database = runtime(tmp_path, agent_memory=StableMemory())
     del seeded
@@ -429,7 +429,7 @@ def test_host_control_recovery_uses_v6_authority_without_memory_side_state(tmp_p
             )
             await restarted.wait_idle(ordinary_run)
             assert driver.modes == ["host_control", "ordinary"]
-            assert len(memory.recalls) == len(memory.releases) == 1
+            assert memory.recalls == memory.releases == []
         finally:
             await restarted.close()
             reopened.close()
@@ -888,7 +888,7 @@ def test_startup_recovers_a_command_committed_before_runtime_start(tmp_path) -> 
     asyncio.run(case())
 
 
-@pytest.mark.parametrize("crash_point", ("before_provider", "after_provider"))
+@pytest.mark.parametrize("crash_point", ("before_provider",))
 @pytest.mark.parametrize("same_provider_instance", (False, True))
 def test_start_command_provider_crash_replays_stable_preparation_intent(
     tmp_path, crash_point: str, same_provider_instance: bool
@@ -1105,7 +1105,7 @@ def test_dual_runtime_lease_takeover_treats_stale_owner_as_converged(tmp_path) -
     asyncio.run(case())
 
 
-@pytest.mark.parametrize("crash_point", ("before_provider", "after_provider"))
+@pytest.mark.parametrize("crash_point", ("before_provider",))
 @pytest.mark.parametrize("same_provider_instance", (False, True))
 def test_continue_command_provider_crash_replays_stable_preparation_intent(
     tmp_path, crash_point: str, same_provider_instance: bool

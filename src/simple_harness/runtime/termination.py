@@ -90,6 +90,7 @@ class TerminationState:
     route_receipt_hash: str | None = None
     context_authority_receipt: JsonValue | None = None
     context_authority_receipt_hash: str | None = None
+    source_schema_version: int = 4
 
     @property
     def turns(self) -> int:
@@ -155,6 +156,8 @@ class TerminationState:
             raise ValueError("termination policy fingerprint must be lowercase SHA-256")
         if self.route_state not in {"unrouted", "routed_standalone", "routed_task"}:
             raise ValueError("invalid durable route state")
+        if self.source_schema_version not in {1, 2, 3, 4}:
+            raise ValueError("invalid source ReAct checkpoint schema")
         if (self.route_receipt is None) != (self.route_receipt_hash is None):
             raise ValueError("route receipt and hash must be paired")
         if (self.context_authority_receipt is None) != (
@@ -279,7 +282,12 @@ class TerminationState:
 
     @classmethod
     def from_json(cls, value: Mapping[str, object]) -> TerminationState:
-        if value.get("schema_version") not in {1, 2, 3, 4}:
+        source_schema_version = value.get("schema_version")
+        if (
+            isinstance(source_schema_version, bool)
+            or not isinstance(source_schema_version, int)
+            or source_schema_version not in {1, 2, 3, 4}
+        ):
             raise ValueError("unsupported ReAct checkpoint schema")
         return cls(
             started_at=_float(value["started_at"]),
@@ -327,6 +335,7 @@ class TerminationState:
             context_authority_receipt_hash=_optional_string(
                 value.get("context_authority_receipt_hash")
             ),
+            source_schema_version=source_schema_version,
         )
 
 

@@ -268,6 +268,7 @@ def provider_response_from_json(
     value: object,
     *,
     expected_capability: ProviderContinuationCapability | None = None,
+    allow_legacy_public_response: bool = False,
 ) -> ProviderResponse:
     if not isinstance(value, dict):
         raise TypeError("stored provider response must be an object")
@@ -308,6 +309,16 @@ def provider_response_from_json(
             raise ValueError(f"stored provider {name} is malformed")
         optional_text.append(item)
     continuation = value.get("continuation")
+    if continuation is None and allow_legacy_public_response:
+        continuation = {
+            "schema_version": 1,
+            "mode": ProviderContinuationMode.REASONING_DISABLED.value,
+            "public_content_types": list(
+                ProviderContinuationCapability().public_content_types
+            ),
+            "capability_fingerprint": ProviderContinuationCapability().fingerprint,
+            "opaque_ref": None,
+        }
     if not isinstance(continuation, dict):
         raise ValueError("stored provider continuation must be an object")
     if set(continuation) != {

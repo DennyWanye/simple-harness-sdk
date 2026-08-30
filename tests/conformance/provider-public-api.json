@@ -5,6 +5,8 @@
     "Provider",
     "ProviderAuthenticationError",
     "ProviderCancelledError",
+    "ProviderContinuationCapability",
+    "ProviderContinuationMode",
     "ProviderError",
     "ProviderPaymentRequiredError",
     "ProviderProtocolError",
