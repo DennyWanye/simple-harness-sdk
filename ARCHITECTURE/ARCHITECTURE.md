@@ -25,11 +25,14 @@ last-updated: 2026-08-30
   evidence、交互事件和有效期；Auto mode 只能来自 Host 签发且绑定 Run/Context/configuration revision/hash
   的 snapshot。所有新 hash 使用 DTO-specific domain separator；公开 DTO 的字段自洽不等于 authority，
   `WorkspaceBindingAuthorityPort` 必须查验 Host durable exact record 后返回 grant，并在 commit 前再次验证。
-- `WorkspaceBindingSetReceipt` 绑定 grant、parent receipt、previous/new root-set digest 和严格
-  `base_revision + 1`。它属于 Host append authority lineage；已有 `ContextRouteReceipt` 与
+- `WorkspaceBindingSetReceipt` 携带 sorted unique root identity hashes，由集合重算 canonical digest；
+  genesis parent 固定为 null/empty-set digest，后续 revision 必须精确等于 parent roots 加 grant 的单个
+  新 root，并严格推进 `base_revision + 1`。它属于 Host append authority lineage；schema v2
+  `ContextRouteReceipt` 与
   `TaskExecutionEnvelope` 分别携带 exact binding-set receipt id/hash，使当前 Run 继续冻结旧 revision，
   新 root 只能由后续可信 route 生效。generic `AuthorizationReceipt`、opaque ref 与
   `RunContextSnapshot.metadata` 均不能替代该链，Auto 也不替代高风险 Tool 的既有授权。
+  `ContextRouteReceipt` v1 decoder 只兼容无 authority 的 standalone 历史 wire；project v1 fail-closed。
 - `RunContextAuthorityPort` 是每个新 Provider turn 的唯一 Context authority。snapshot 在 Provider reservation
   前冻结，绑定 run、turn ordinal、prior revision、payload/request fingerprint，并跨轮检查 revision 单调性及
   snapshot ID→payload hash 不变性；崩溃恢复重放已冻结的同一 request，不再次请求 Host。

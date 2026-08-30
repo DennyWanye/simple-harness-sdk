@@ -27,6 +27,9 @@ SPDX-License-Identifier: Apache-2.0
 - Generic Tool authorization receipts and model metadata are not workspace authority. Project
   route receipts and per-effect envelopes bind the exact binding-set receipt identity/hash in
   addition to its frozen revision and root identity.
+- Binding-set receipts commit the sorted unique root identity set: genesis uses the canonical
+  empty-set parent digest and every later receipt verifies exact parent-set union one new grant
+  root. Context route schema v2 carries this authority; legacy v1 decoding is standalone-only.
 - Self-consistent analysis delivery DTOs are not provider-result authority: consumers must verify
   the exact Host durable delivery record, including issuer, request/result, attempt, and response.
 

@@ -20,8 +20,11 @@ cannot cross the same-batch barrier, and project effects require a Host-issued
 `TaskExecutionEnvelope`. Workspace binding append authority is a separate strict public chain:
 the model may submit a mode-free exact-root proposal, while Manual decisions and Auto mode
 snapshots must be verified against Host-durable records before the Host returns a typed grant.
-The append receipt binds the parent/root-set digest and the new revision; route receipts and
-effect envelopes then freeze that exact binding-set receipt identity and hash. Generic Tool
+The append receipt carries the sorted unique root identity set and binds its canonical digest,
+exact parent receipt, grant, and new revision; genesis is fixed to the canonical empty-set digest.
+`ContextRouteReceipt` v2 and effect envelopes then freeze that exact binding-set receipt identity
+and hash. The decoder accepts v1 only for legacy no-authority standalone routes; project v1 fails
+closed. Generic Tool
 authorization receipts and `RunContextSnapshot.metadata` are not workspace authority. Memory SDK
 evidence/state storage, Host TaskScope archives, dynamic
 Context assembly, and the single-conversation UI are later release units rather than 0.7.0

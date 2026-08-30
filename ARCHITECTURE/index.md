@@ -11,8 +11,10 @@ SPDX-License-Identifier: Apache-2.0
 route receipt 尚未可见时会在 ledger/handoff 前拒绝。fresh execution schema v7 持久绑定
 `TaskExecutionEnvelope`。`WorkspaceBindingAuthorityPort` 现定义独立的 Manual challenge/decision 与 Host
 Run-mode snapshot 验证链；只有 Host durable lookup 后返回的 grant 才能进入 append transaction，随后
-`WorkspaceBindingSetReceipt` 将 parent/root-set digest 与 base→new revision 固定。route receipt 和每个
-project effect envelope 都交叉绑定该 binding-set receipt id/hash，generic Tool authorization receipt 或
+`WorkspaceBindingSetReceipt` 携带 sorted unique root identity hashes：genesis 固定 canonical empty-set
+parent，后续只能验证为 exact parent set 加 grant 的一个新 root，并固定 base→new revision。schema v2
+route receipt 和每个 project effect envelope 都交叉绑定该 binding-set receipt id/hash；v1 decoder 只
+兼容无 authority standalone，project v1 fail-closed。generic Tool authorization receipt 或
 `RunContextSnapshot.metadata` 不具备此 authority。ReAct checkpoint schema v5 跨轮保留 snapshot revision 与 ID→payload hash，
 Provider durable response 只接受 public allowlist，隐藏推理和私有 metadata 不进入 ledger、checkpoint 或
 Context。旧 `AgentMemoryPort.record_committed_turn` terminal outbox 仍保留；生产 kernel 不再自动调用

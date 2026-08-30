@@ -4,6 +4,7 @@
 """Static structural-conformance fixture for Host main-model analysis executors."""
 
 from simple_harness import (
+    EMPTY_WORKSPACE_BINDING_ROOT_SET_DIGEST,
     CanonicalWorkspaceRoot,
     ContextAssemblyDecision,
     ContextFragment,
@@ -40,6 +41,8 @@ from simple_harness import (
     WorkspaceBindingAuthorityGrant,
     WorkspaceBindingAuthorityPort,
     WorkspaceBindingProposal,
+    WorkspaceBindingSetReceipt,
+    workspace_binding_root_set_digest,
 )
 
 
@@ -137,3 +140,6 @@ FILESYSTEM_IDENTITY_TYPE: type[FilesystemIdentity] = FilesystemIdentity
 FILESYSTEM_IDENTITY_KIND: FilesystemIdentityKind = FilesystemIdentityKind.POSIX_INODE
 CANONICAL_WORKSPACE_ROOT_TYPE: type[CanonicalWorkspaceRoot] = CanonicalWorkspaceRoot
 WORKSPACE_BINDING_PROPOSAL_TYPE: type[WorkspaceBindingProposal] = WorkspaceBindingProposal
+WORKSPACE_BINDING_SET_RECEIPT_TYPE: type[WorkspaceBindingSetReceipt] = WorkspaceBindingSetReceipt
+EMPTY_ROOT_SET_DIGEST: str = EMPTY_WORKSPACE_BINDING_ROOT_SET_DIGEST
+ROOT_SET_DIGEST: str = workspace_binding_root_set_digest(("a" * 64,))

@@ -109,6 +109,7 @@ _MODULE_EXPORTS = {
         "TaskScopeSearchRequest",
     ),
     ".workspace_binding_protocol": (
+        "EMPTY_WORKSPACE_BINDING_ROOT_SET_DIGEST",
         "WORKSPACE_BINDING_SCHEMA_VERSION",
         "CanonicalWorkspaceRoot",
         "FilesystemIdentity",
@@ -125,6 +126,7 @@ _MODULE_EXPORTS = {
         "WorkspaceBindingMode",
         "WorkspaceBindingProposal",
         "WorkspaceBindingSetReceipt",
+        "workspace_binding_root_set_digest",
     ),
     ".child_runs": (
         "ChildLaunchRequest",
@@ -421,6 +423,8 @@ __all__ = (
     "WorkspaceBindingMode",
     "WorkspaceBindingProposal",
     "WorkspaceBindingSetReceipt",
+    "EMPTY_WORKSPACE_BINDING_ROOT_SET_DIGEST",
+    "workspace_binding_root_set_digest",
     "RemovedSpanSummary",
     "RemovedSpanType",
     "build_consumer_runtime",

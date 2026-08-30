@@ -101,8 +101,8 @@ def test_route_and_effect_authority_survive_checkpoint_roundtrip() -> None:
         TaskScopeRoute.RESUME_EXISTING,
         "task-1",
         3,
-        "binding-set-3",
-        "d" * 64,
+        binding_set_receipt_id="binding-set-3",
+        binding_set_receipt_hash="d" * 64,
     )
     envelope = TaskExecutionEnvelope(
         RunId("run-1"),
@@ -143,9 +143,9 @@ def test_context_route_receipt_strict_json_roundtrip_and_rejects_coercion() -> N
         TaskScopeRoute.RESUME_EXISTING,
         "task-1",
         3,
-        "binding-set-3",
-        "d" * 64,
         ("memory-1",),
+        binding_set_receipt_id="binding-set-3",
+        binding_set_receipt_hash="d" * 64,
     )
     assert ContextRouteReceipt.from_json(receipt.to_json()) == receipt
 
@@ -177,3 +177,46 @@ def test_context_route_receipt_strict_json_roundtrip_and_rejects_coercion() -> N
             payload.pop("receipt_id")
         with pytest.raises(ValueError, match="fields differ"):
             ContextRouteReceipt.from_json(payload)
+
+
+def test_context_route_receipt_v1_only_decodes_legacy_standalone_wire() -> None:
+    legacy = ContextRouteReceipt(
+        "route-legacy",
+        "run-1",
+        "raw-1",
+        "effect-1",
+        TaskScopeRoute.DIRECT_STANDALONE,
+        None,
+        None,
+        ("memory-1",),
+        1,
+    )
+    assert legacy.recall_refs == ("memory-1",)
+    assert legacy.binding_set_receipt_id is None
+    assert set(legacy.to_json()) == {
+        "schema_version",
+        "receipt_id",
+        "run_id",
+        "raw_call_id",
+        "effect_id",
+        "route",
+        "task_scope_id",
+        "binding_set_revision",
+        "recall_refs",
+    }
+    assert ContextRouteReceipt.from_json(legacy.to_json()) == legacy
+
+    project_v1 = legacy.to_json()
+    project_v1.update(
+        route=TaskScopeRoute.RESUME_EXISTING.value,
+        task_scope_id="task-1",
+        binding_set_revision=1,
+    )
+    with pytest.raises(ValueError, match="v1 only supports"):
+        ContextRouteReceipt.from_json(project_v1)
+
+    v1_with_authority_fields = legacy.to_json()
+    v1_with_authority_fields["binding_set_receipt_id"] = None
+    v1_with_authority_fields["binding_set_receipt_hash"] = None
+    with pytest.raises(ValueError, match="v1 fields differ"):
+        ContextRouteReceipt.from_json(v1_with_authority_fields)

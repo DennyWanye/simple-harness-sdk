@@ -388,8 +388,8 @@ def test_stale_task_execution_binding_fails_before_tool_execution() -> None:
         TaskScopeRoute.RESUME_EXISTING,
         "task-1",
         3,
-        "binding-set-3",
-        "e" * 64,
+        binding_set_receipt_id="binding-set-3",
+        binding_set_receipt_hash="e" * 64,
     )
     with pytest.raises(RuntimeError, match="stale TaskScope binding authority"):
         asyncio.run(
@@ -424,8 +424,8 @@ def test_new_binding_revision_is_unusable_until_a_later_trusted_route_freezes_it
         TaskScopeRoute.RESUME_EXISTING,
         "task-1",
         3,
-        "binding-set-3",
-        "e" * 64,
+        binding_set_receipt_id="binding-set-3",
+        binding_set_receipt_hash="e" * 64,
     )
     with pytest.raises(RuntimeError, match="stale TaskScope binding authority"):
         asyncio.run(
@@ -452,8 +452,8 @@ def test_new_binding_revision_is_unusable_until_a_later_trusted_route_freezes_it
         TaskScopeRoute.RESUME_EXISTING,
         "task-1",
         4,
-        "binding-set-4",
-        "f" * 64,
+        binding_set_receipt_id="binding-set-4",
+        binding_set_receipt_hash="f" * 64,
     )
     asyncio.run(
         EffectBatchExecutor().execute(
@@ -765,9 +765,9 @@ class IntegratedEffects:
                 TaskScopeRoute.RESUME_EXISTING,
                 "task-1",
                 3,
-                "binding-set-3",
-                "e" * 64,
                 ("evidence-1",),
+                binding_set_receipt_id="binding-set-3",
+                binding_set_receipt_hash="e" * 64,
             )
             return EffectExecution(None, ToolResult.succeeded(call.call_id, receipt.to_json()))
         envelope = context.task_execution_envelope

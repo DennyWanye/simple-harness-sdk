@@ -60,13 +60,13 @@ class ContextRouteReceipt:
     route: TaskScopeRoute
     task_scope_id: str | None
     binding_set_revision: int | None
+    recall_refs: tuple[str, ...] = ()
+    schema_version: int = 2
     binding_set_receipt_id: str | None = None
     binding_set_receipt_hash: str | None = None
-    recall_refs: tuple[str, ...] = ()
-    schema_version: int = 1
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if self.schema_version not in {1, 2}:
             raise ValueError("unsupported ContextRouteReceipt schema")
         for value, name in (
             (self.receipt_id, "receipt_id"),
@@ -76,6 +76,15 @@ class ContextRouteReceipt:
         ):
             _required(value, name)
         object.__setattr__(self, "route", TaskScopeRoute(self.route))
+        if self.schema_version == 1 and (
+            self.route
+            not in {TaskScopeRoute.DIRECT_STANDALONE, TaskScopeRoute.MEMORY_STANDALONE}
+            or self.task_scope_id is not None
+            or self.binding_set_revision is not None
+            or self.binding_set_receipt_id is not None
+            or self.binding_set_receipt_hash is not None
+        ):
+            raise ValueError("ContextRouteReceipt v1 only supports no-authority standalone routes")
         if self.task_scope_id is not None:
             _required(self.task_scope_id, "task_scope_id")
         if self.route in {
@@ -129,7 +138,7 @@ class ContextRouteReceipt:
         return _sha256(self.to_json())
 
     def to_json(self) -> dict[str, JsonValue]:
-        return {
+        payload: dict[str, JsonValue] = {
             "schema_version": self.schema_version,
             "receipt_id": self.receipt_id,
             "run_id": self.run_id,
@@ -138,14 +147,19 @@ class ContextRouteReceipt:
             "route": self.route.value,
             "task_scope_id": self.task_scope_id,
             "binding_set_revision": self.binding_set_revision,
-            "binding_set_receipt_id": self.binding_set_receipt_id,
-            "binding_set_receipt_hash": self.binding_set_receipt_hash,
             "recall_refs": list(self.recall_refs),
         }
+        if self.schema_version == 2:
+            payload["binding_set_receipt_id"] = self.binding_set_receipt_id
+            payload["binding_set_receipt_hash"] = self.binding_set_receipt_hash
+        return payload
 
     @classmethod
     def from_json(cls, value: Mapping[str, object]) -> ContextRouteReceipt:
-        expected = {
+        schema_version = value.get("schema_version")
+        if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+            raise TypeError("schema_version must be an integer")
+        legacy_expected = {
             "schema_version",
             "receipt_id",
             "run_id",
@@ -154,21 +168,23 @@ class ContextRouteReceipt:
             "route",
             "task_scope_id",
             "binding_set_revision",
-            "binding_set_receipt_id",
-            "binding_set_receipt_hash",
             "recall_refs",
         }
-        if set(value) != expected:
-            raise ValueError("ContextRouteReceipt fields differ")
+        expected = legacy_expected | {"binding_set_receipt_id", "binding_set_receipt_hash"}
+        if schema_version == 1:
+            if set(value) != legacy_expected:
+                raise ValueError("ContextRouteReceipt v1 fields differ")
+        elif schema_version == 2:
+            if set(value) != expected:
+                raise ValueError("ContextRouteReceipt fields differ")
+        else:
+            raise ValueError("unsupported ContextRouteReceipt schema")
         refs = value["recall_refs"]
         if not isinstance(refs, list) or not all(isinstance(item, str) for item in refs):
             raise TypeError("recall_refs must be strings")
         revision = value["binding_set_revision"]
-        schema_version = value["schema_version"]
         if revision is not None and (isinstance(revision, bool) or not isinstance(revision, int)):
             raise TypeError("binding_set_revision must be an integer or null")
-        if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-            raise TypeError("schema_version must be an integer")
         route = value["route"]
         if not isinstance(route, str):
             raise TypeError("route must be a string")
@@ -190,10 +206,14 @@ class ContextRouteReceipt:
             route=TaskScopeRoute(route),
             task_scope_id=task_scope_id,
             binding_set_revision=revision,
-            binding_set_receipt_id=optional_text("binding_set_receipt_id"),
-            binding_set_receipt_hash=optional_text("binding_set_receipt_hash"),
             recall_refs=tuple(refs),
             schema_version=schema_version,
+            binding_set_receipt_id=(
+                optional_text("binding_set_receipt_id") if schema_version == 2 else None
+            ),
+            binding_set_receipt_hash=(
+                optional_text("binding_set_receipt_hash") if schema_version == 2 else None
+            ),
         )
 
 

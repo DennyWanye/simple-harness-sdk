@@ -35,6 +35,24 @@ def _domain_hash(domain: str, payload: dict[str, JsonValue]) -> str:
     return _canonical_hash({"protocol": domain, "payload": payload})
 
 
+def workspace_binding_root_set_digest(root_identity_hashes: tuple[str, ...]) -> str:
+    """Return the canonical commitment for one sorted, duplicate-free root set."""
+
+    if not isinstance(root_identity_hashes, tuple):
+        raise TypeError("root_identity_hashes must be a tuple")
+    hashes = tuple(_digest(item, "root_identity_hash") for item in root_identity_hashes)
+    if hashes != tuple(sorted(hashes)):
+        raise ValueError("root_identity_hashes must be sorted")
+    if len(set(hashes)) != len(hashes):
+        raise ValueError("root_identity_hashes must be unique")
+    return _domain_hash(
+        "workspace-binding/root-set/v1", {"root_identity_hashes": list(hashes)}
+    )
+
+
+EMPTY_WORKSPACE_BINDING_ROOT_SET_DIGEST = workspace_binding_root_set_digest(())
+
+
 def _canonical_path(value: object, name: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{name} must be a string")
@@ -1057,6 +1075,7 @@ class WorkspaceBindingSetReceipt:
     parent_receipt_hash: str | None
     previous_root_set_digest: str
     root_set_digest: str
+    root_identity_hashes: tuple[str, ...]
     appended_root: CanonicalWorkspaceRoot
     grant_id: str
     grant_hash: str
@@ -1087,15 +1106,30 @@ class WorkspaceBindingSetReceipt:
         if self.base_binding_set_revision == 0:
             if self.parent_receipt_id is not None or self.parent_receipt_hash is not None:
                 raise ValueError("genesis binding-set receipt must not claim a parent")
+            if self.previous_root_set_digest != EMPTY_WORKSPACE_BINDING_ROOT_SET_DIGEST:
+                raise ValueError("genesis binding-set receipt must commit the empty parent set")
         else:
             if self.parent_receipt_id is None or self.parent_receipt_hash is None:
                 raise ValueError("non-genesis binding-set receipt must identify its parent")
             _identifier(self.parent_receipt_id, "parent_receipt_id")
             _digest(self.parent_receipt_hash, "parent_receipt_hash")
-        if self.previous_root_set_digest == self.root_set_digest:
-            raise ValueError("binding-set receipt must change the root-set digest")
         if not isinstance(self.appended_root, CanonicalWorkspaceRoot):
             raise TypeError("appended_root must use CanonicalWorkspaceRoot")
+        if not isinstance(self.root_identity_hashes, tuple):
+            raise TypeError("root_identity_hashes must be a tuple")
+        hashes = self.root_identity_hashes
+        if not hashes:
+            raise ValueError("binding-set receipt must contain at least one root")
+        canonical_digest = workspace_binding_root_set_digest(hashes)
+        if self.root_set_digest != canonical_digest:
+            raise ValueError("root_set_digest differs from root_identity_hashes")
+        if self.appended_root.root_identity_hash not in hashes:
+            raise ValueError("appended root is absent from root_identity_hashes")
+        if self.base_binding_set_revision == 0 and hashes != (
+            self.appended_root.root_identity_hash,
+        ):
+            raise ValueError("genesis binding-set receipt must contain exactly the appended root")
+        object.__setattr__(self, "root_identity_hashes", hashes)
         object.__setattr__(
             self,
             "receipt_hash",
@@ -1114,6 +1148,7 @@ class WorkspaceBindingSetReceipt:
             "parent_receipt_hash": self.parent_receipt_hash,
             "previous_root_set_digest": self.previous_root_set_digest,
             "root_set_digest": self.root_set_digest,
+            "root_identity_hashes": list(self.root_identity_hashes),
             "appended_root": self.appended_root.to_json(),
             "grant_id": self.grant_id,
             "grant_hash": self.grant_hash,
@@ -1134,6 +1169,37 @@ class WorkspaceBindingSetReceipt:
         if any(left != right for left, right in exact):
             raise ValueError("Workspace binding-set receipt differs from grant")
 
+    def verify_parent_and_grant(
+        self,
+        parent: WorkspaceBindingSetReceipt | None,
+        grant: WorkspaceBindingAuthorityGrant,
+    ) -> None:
+        """Verify the exact append transition and its durable authority grant."""
+
+        self.verify_grant(grant)
+        if self.base_binding_set_revision == 0:
+            if parent is not None:
+                raise ValueError("genesis binding-set receipt must not have a parent")
+            return
+        if parent is None:
+            raise ValueError("non-genesis binding-set receipt requires its exact parent")
+        exact_parent = (
+            (self.binding_id, parent.binding_id),
+            (self.task_scope_id, parent.task_scope_id),
+            (self.base_binding_set_revision, parent.binding_set_revision),
+            (self.parent_receipt_id, parent.receipt_id),
+            (self.parent_receipt_hash, parent.receipt_hash),
+            (self.previous_root_set_digest, parent.root_set_digest),
+        )
+        if any(left != right for left, right in exact_parent):
+            raise ValueError("Workspace binding-set receipt differs from exact parent")
+        appended_hash = self.appended_root.root_identity_hash
+        if appended_hash in parent.root_identity_hashes:
+            raise ValueError("binding-set append must add a new root identity")
+        expected_hashes = tuple(sorted((*parent.root_identity_hashes, appended_hash)))
+        if self.root_identity_hashes != expected_hashes:
+            raise ValueError("binding-set roots are not the exact parent union appended root")
+
     @classmethod
     def from_json(cls, value: Mapping[str, object]) -> WorkspaceBindingSetReceipt:
         expected = {
@@ -1147,6 +1213,7 @@ class WorkspaceBindingSetReceipt:
             "parent_receipt_hash",
             "previous_root_set_digest",
             "root_set_digest",
+            "root_identity_hashes",
             "appended_root",
             "grant_id",
             "grant_hash",
@@ -1157,6 +1224,11 @@ class WorkspaceBindingSetReceipt:
         raw_root = value["appended_root"]
         if not isinstance(raw_root, Mapping):
             raise TypeError("appended_root must be an object")
+        raw_hashes = value["root_identity_hashes"]
+        if not isinstance(raw_hashes, list) or not all(
+            isinstance(item, str) for item in raw_hashes
+        ):
+            raise TypeError("root_identity_hashes must be strings")
         return cls(
             receipt_id=_identifier(value["receipt_id"], "receipt_id"),
             binding_id=_identifier(value["binding_id"], "binding_id"),
@@ -1181,6 +1253,7 @@ class WorkspaceBindingSetReceipt:
                 value["previous_root_set_digest"], "previous_root_set_digest"
             ),
             root_set_digest=_digest(value["root_set_digest"], "root_set_digest"),
+            root_identity_hashes=tuple(raw_hashes),
             appended_root=CanonicalWorkspaceRoot.from_json(raw_root),
             grant_id=_identifier(value["grant_id"], "grant_id"),
             grant_hash=_digest(value["grant_hash"], "grant_hash"),
@@ -1222,6 +1295,7 @@ class WorkspaceBindingAuthorityPort(Protocol):
 
 
 __all__ = (
+    "EMPTY_WORKSPACE_BINDING_ROOT_SET_DIGEST",
     "WORKSPACE_BINDING_SCHEMA_VERSION",
     "CanonicalWorkspaceRoot",
     "FilesystemIdentity",
@@ -1238,4 +1312,5 @@ __all__ = (
     "WorkspaceBindingMode",
     "WorkspaceBindingProposal",
     "WorkspaceBindingSetReceipt",
+    "workspace_binding_root_set_digest",
 )
