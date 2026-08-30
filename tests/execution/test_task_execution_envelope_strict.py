@@ -35,6 +35,8 @@ def _envelope(**changes: object) -> TaskExecutionEnvelope:
         "root_id": "root-1",
         "root_identity_hash": "c" * 64,
         "binding_set_revision": 2,
+        "binding_set_receipt_id": "binding-set-2",
+        "binding_set_receipt_hash": "d" * 64,
         "idempotency_key": "effect-1",
         "schema_version": 1,
     }
@@ -54,6 +56,8 @@ def _envelope(**changes: object) -> TaskExecutionEnvelope:
         ("root_id", 1),
         ("binding_set_revision", True),
         ("binding_set_revision", 1.5),
+        ("binding_set_receipt_id", 1),
+        ("binding_set_receipt_hash", "bad"),
         ("schema_version", True),
     ),
 )
@@ -72,6 +76,8 @@ def test_constructor_rejects_non_exact_identity_and_revision_types(
         ("root_id", 1),
         ("binding_set_revision", True),
         ("binding_set_revision", 2.0),
+        ("binding_set_receipt_id", 1),
+        ("binding_set_receipt_hash", "bad"),
         ("schema_version", True),
     ),
 )
@@ -89,6 +95,30 @@ def test_constructor_and_decoder_reject_embedded_nul_task_root_identity() -> Non
     payload["task_scope_id"] = "task\x00private"
     with pytest.raises(ValueError, match="task_scope_id"):
         TaskExecutionEnvelope.from_json(payload)
+
+
+def test_legacy_standalone_constructor_remains_valid_but_missing_project_receipt_fails() -> None:
+    standalone = TaskExecutionEnvelope(
+        RunId("run-1"),
+        CallId("call-1"),
+        EffectId("effect-1"),
+        "raw-1",
+        1,
+        0,
+        "read_public",
+        "host:read-public",
+        "a" * 64,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "effect-1",
+    )
+    assert standalone.binding_set_receipt_id is None
+    with pytest.raises(ValueError, match="execution authority must be complete"):
+        _envelope(binding_set_receipt_id=None, binding_set_receipt_hash=None)
 
 
 @pytest.mark.parametrize(("field", "value"), (("turn_ordinal", True), ("call_ordinal", -1)))

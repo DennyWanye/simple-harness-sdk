@@ -12,6 +12,10 @@ SPDX-License-Identifier: Apache-2.0
   barrier. Host-issued Context snapshots become the sole Provider request authority.
 - Adds versioned Human Memory, TaskScope, evidence, disclosure, route receipt, and
   per-effect Task execution authority contracts.
+- Adds strict typed workspace-root identity, Manual authorization challenge/decision, Host-issued
+  Auto mode snapshot, Host-verified grant, and append-only binding-set receipt contracts.
+- Main-model analysis executors now return a strict result envelope with a separately verifiable
+  Host-durable delivery receipt; Memory validation/application receipts retain their distinct role.
 
 ### Safety
 - Route-required effects cannot cross the route barrier in the same Provider tool batch.
@@ -20,6 +24,11 @@ SPDX-License-Identifier: Apache-2.0
 - Context snapshot revisions and snapshot ID/payload bindings are monotonic across Provider turns.
   Public response recovery rejects extra fields, private metadata, unsupported content blocks,
   and non-integral schema values before replay.
+- Generic Tool authorization receipts and model metadata are not workspace authority. Project
+  route receipts and per-effect envelopes bind the exact binding-set receipt identity/hash in
+  addition to its frozen revision and root identity.
+- Self-consistent analysis delivery DTOs are not provider-result authority: consumers must verify
+  the exact Host durable delivery record, including issuer, request/result, attempt, and response.
 
 ### Compatibility
 - Terminal committed-turn outbox delivery remains available for the staged Memory SDK cutover;

@@ -119,6 +119,8 @@ def test_task_execution_envelope_reopens_with_exact_effect_authority(tmp_path: P
         "c" * 64,
         2,
         "effect-1",
+        binding_set_receipt_id="binding-set-2",
+        binding_set_receipt_hash="d" * 64,
     )
     _prepare(
         uow,
@@ -165,6 +167,8 @@ def test_prepare_rejects_poisoned_task_execution_envelope_before_insert_and_reop
         "c" * 64,
         2,
         envelope_effect_id,
+        binding_set_receipt_id="binding-set-2",
+        binding_set_receipt_hash="d" * 64,
     )
 
     with pytest.raises(ValueError, match="differs from effect identity"):
@@ -212,6 +216,8 @@ def test_task_execution_envelope_reopen_rejects_payload_hash_drift(tmp_path: Pat
         "c" * 64,
         2,
         "effect-1",
+        binding_set_receipt_id="binding-set-2",
+        binding_set_receipt_hash="d" * 64,
     )
     _prepare(
         uow,

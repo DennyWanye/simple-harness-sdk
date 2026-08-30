@@ -15,6 +15,21 @@ last-updated: 2026-08-30
   是 Context role，不属于四类长期存储 enum；长期类型精确为 Episode、Semantic、Procedure、Prospective。
 - 主模型只提出结构化 Recall/Mutation/TaskScope 操作。SDK 校验 canonical JSON、hash、schema、run/evidence
   绑定；SDK 不把 LLM 输出当成事实、权限或数据库状态 authority。
+- `MemoryAnalysisExecutorPort` 返回 `MemoryAnalysisResultEnvelope`，其中
+  `MemoryAnalysisDeliveryReceipt` 精确绑定 Host issuer、Run/job/request/result/attempt、nullable Provider
+  response ID、Provider response hash 与始终存在的 Host durable receipt id/hash。公开 receipt 自洽不是
+  provider delivery authority；consumer 必须通过 `MemoryAnalysisDeliveryAuthorityPort` 查验 Host durable
+  exact record。它与 `MemoryAnalysisReceipt` 严格分层，后者只证明 Memory validator/apply 结果。
+- `WorkspaceBindingProposal` 只携带 subject、TaskScope、typed canonical root/filesystem identity 与 base
+  revision，不允许模型选择 mode。Manual challenge/decision 固定 nonce、channel、actor、authorization
+  evidence、交互事件和有效期；Auto mode 只能来自 Host 签发且绑定 Run/Context/configuration revision/hash
+  的 snapshot。所有新 hash 使用 DTO-specific domain separator；公开 DTO 的字段自洽不等于 authority，
+  `WorkspaceBindingAuthorityPort` 必须查验 Host durable exact record 后返回 grant，并在 commit 前再次验证。
+- `WorkspaceBindingSetReceipt` 绑定 grant、parent receipt、previous/new root-set digest 和严格
+  `base_revision + 1`。它属于 Host append authority lineage；已有 `ContextRouteReceipt` 与
+  `TaskExecutionEnvelope` 分别携带 exact binding-set receipt id/hash，使当前 Run 继续冻结旧 revision，
+  新 root 只能由后续可信 route 生效。generic `AuthorizationReceipt`、opaque ref 与
+  `RunContextSnapshot.metadata` 均不能替代该链，Auto 也不替代高风险 Tool 的既有授权。
 - `RunContextAuthorityPort` 是每个新 Provider turn 的唯一 Context authority。snapshot 在 Provider reservation
   前冻结，绑定 run、turn ordinal、prior revision、payload/request fingerprint，并跨轮检查 revision 单调性及
   snapshot ID→payload hash 不变性；崩溃恢复重放已冻结的同一 request，不再次请求 Host。
@@ -25,7 +40,7 @@ last-updated: 2026-08-30
   覆盖。整个 tool batch 在任何 Effect prepare 前预检；同批先 route、后 project effect 仍会以
   `ROUTE_BARRIER_NOT_OBSERVED` 拒绝且不产生 effect ledger/handoff。
 - Host 注入的 `TaskExecutionEnvelope` 绑定 run/call/effect、route receipt、capability fingerprint、TaskScope、
-  exact root identity、binding-set revision 和 idempotency。fresh execution schema v7 保存 envelope JSON/hash，
+  exact root identity、binding-set revision、binding-set receipt id/hash 和 idempotency。fresh execution schema v7 保存 envelope JSON/hash，
   malformed、wrong-run 或 stale authority 在物理 effect 前 fail-closed。
 - production kernel 已移除每轮自动 `recall_for_turn`/`release_recall`；无召回必须写 exact
   `DIRECT_STANDALONE` decision，显式 recall 通过同一 Run 的 tool continuation 完成。terminal-only

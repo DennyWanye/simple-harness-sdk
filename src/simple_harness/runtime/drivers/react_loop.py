@@ -164,6 +164,10 @@ class EffectBatchExecutor:
                     or route_receipt.route_state is not ContextRouteState.ROUTED_TASK
                     or envelope.task_scope_id != route_receipt.task_scope_id
                     or envelope.binding_set_revision != route_receipt.binding_set_revision
+                    or envelope.binding_set_receipt_id
+                    != route_receipt.binding_set_receipt_id
+                    or envelope.binding_set_receipt_hash
+                    != route_receipt.binding_set_receipt_hash
                 ):
                     raise RuntimeError(
                         "project TaskExecutionEnvelope has stale TaskScope binding authority"
@@ -639,6 +643,8 @@ _HOST_ONLY_ARGUMENTS = frozenset(
         "task_execution_envelope",
         "route_receipt",
         "binding_set_revision",
+        "binding_set_receipt_id",
+        "binding_set_receipt_hash",
         "root_identity_hash",
     }
 )

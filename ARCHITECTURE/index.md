@@ -9,11 +9,19 @@ SPDX-License-Identifier: Apache-2.0
 已经把自动 pre-Provider recall 改为显式的同 Run route seam：每个新的 Provider turn 只能消费 Host 经
 `RunContextAuthorityPort` 返回并由 SDK 校验、冻结的 Context snapshot；同批 route-required effect 在
 route receipt 尚未可见时会在 ledger/handoff 前拒绝。fresh execution schema v7 持久绑定
-`TaskExecutionEnvelope`，ReAct checkpoint schema v5 跨轮保留 snapshot revision 与 ID→payload hash，
+`TaskExecutionEnvelope`。`WorkspaceBindingAuthorityPort` 现定义独立的 Manual challenge/decision 与 Host
+Run-mode snapshot 验证链；只有 Host durable lookup 后返回的 grant 才能进入 append transaction，随后
+`WorkspaceBindingSetReceipt` 将 parent/root-set digest 与 base→new revision 固定。route receipt 和每个
+project effect envelope 都交叉绑定该 binding-set receipt id/hash，generic Tool authorization receipt 或
+`RunContextSnapshot.metadata` 不具备此 authority。ReAct checkpoint schema v5 跨轮保留 snapshot revision 与 ID→payload hash，
 Provider durable response 只接受 public allowlist，隐藏推理和私有 metadata 不进入 ledger、checkpoint 或
 Context。旧 `AgentMemoryPort.record_committed_turn` terminal outbox 仍保留；生产 kernel 不再自动调用
 `recall_for_turn`/`release_recall`。Memory SDK 的新 evidence/认知状态和 Host TaskScope 产品实现不属于本仓
 当前能力，仍由后续 release unit 完成。
+
+Main-model analysis 的 provider delivery 由独立的 `MemoryAnalysisResultEnvelope` 承载：其中 Host
+durable `MemoryAnalysisDeliveryReceipt` 必须经 injected authority lookup 验证；Memory 后续产生的
+`MemoryAnalysisReceipt` 仍只负责 validator/apply，两者不可互相替代。
 
 2026-08-25 Tool/Capability：SDK 0.6.2 起已提供三类 capability record、bounded search/describe、
 typed activation receipt、Run-local exposure port 与 ReAct ready-attempt 动态投影；Provider reserved 仍精确

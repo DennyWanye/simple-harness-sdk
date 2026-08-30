@@ -87,6 +87,8 @@ class TaskExecutionEnvelope:
     binding_set_revision: int | None
     idempotency_key: str
     schema_version: int = 1
+    binding_set_receipt_id: str | None = None
+    binding_set_receipt_hash: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int):
@@ -117,7 +119,12 @@ class TaskExecutionEnvelope:
             raise ValueError("TaskExecutionEnvelope ordinals must be non-negative")
         if self.idempotency_key != self.effect_id.value:
             raise ValueError("TaskExecutionEnvelope idempotency identity differs from effect")
-        for name in ("capability_fingerprint", "route_receipt_hash", "root_identity_hash"):
+        for name in (
+            "capability_fingerprint",
+            "route_receipt_hash",
+            "root_identity_hash",
+            "binding_set_receipt_hash",
+        ):
             value = getattr(self, name)
             if name == "capability_fingerprint" and value is None:
                 raise ValueError("capability_fingerprint must be lowercase SHA-256")
@@ -127,7 +134,12 @@ class TaskExecutionEnvelope:
                 or any(character not in "0123456789abcdef" for character in value)
             ):
                 raise ValueError(f"{name} must be lowercase SHA-256")
-        for name in ("route_receipt_id", "task_scope_id", "root_id"):
+        for name in (
+            "route_receipt_id",
+            "task_scope_id",
+            "root_id",
+            "binding_set_receipt_id",
+        ):
             value = getattr(self, name)
             if value is not None:
                 if not isinstance(value, str):
@@ -141,6 +153,8 @@ class TaskExecutionEnvelope:
             self.root_id,
             self.root_identity_hash,
             self.binding_set_revision,
+            self.binding_set_receipt_id,
+            self.binding_set_receipt_hash,
         )
         if any(value is not None for value in task_values) and not all(
             value is not None for value in task_values
@@ -171,6 +185,8 @@ class TaskExecutionEnvelope:
             "root_id": self.root_id,
             "root_identity_hash": self.root_identity_hash,
             "binding_set_revision": self.binding_set_revision,
+            "binding_set_receipt_id": self.binding_set_receipt_id,
+            "binding_set_receipt_hash": self.binding_set_receipt_hash,
             "idempotency_key": self.idempotency_key,
         }
 
@@ -193,6 +209,8 @@ class TaskExecutionEnvelope:
             "root_id",
             "root_identity_hash",
             "binding_set_revision",
+            "binding_set_receipt_id",
+            "binding_set_receipt_hash",
             "idempotency_key",
         }
         if set(value) != expected:
@@ -224,23 +242,25 @@ class TaskExecutionEnvelope:
         if not all(isinstance(value[name], str) for name in required_text):
             raise TypeError("TaskExecutionEnvelope required identities must be strings")
         return cls(
-            RunId(cast(str, value["run_id"])),
-            CallId(cast(str, value["call_id"])),
-            EffectId(cast(str, value["effect_id"])),
-            cast(str, value["raw_call_id"]),
-            cast(int, value["turn_ordinal"]),
-            cast(int, value["call_ordinal"]),
-            cast(str, value["tool_name"]),
-            cast(str, value["capability_id"]),
-            cast(str, value["capability_fingerprint"]),
-            optional_text("route_receipt_id"),
-            optional_text("route_receipt_hash"),
-            optional_text("task_scope_id"),
-            optional_text("root_id"),
-            optional_text("root_identity_hash"),
-            revision,
-            cast(str, value["idempotency_key"]),
-            cast(int, value["schema_version"]),
+            run_id=RunId(cast(str, value["run_id"])),
+            call_id=CallId(cast(str, value["call_id"])),
+            effect_id=EffectId(cast(str, value["effect_id"])),
+            raw_call_id=cast(str, value["raw_call_id"]),
+            turn_ordinal=cast(int, value["turn_ordinal"]),
+            call_ordinal=cast(int, value["call_ordinal"]),
+            tool_name=cast(str, value["tool_name"]),
+            capability_id=cast(str, value["capability_id"]),
+            capability_fingerprint=cast(str, value["capability_fingerprint"]),
+            route_receipt_id=optional_text("route_receipt_id"),
+            route_receipt_hash=optional_text("route_receipt_hash"),
+            task_scope_id=optional_text("task_scope_id"),
+            root_id=optional_text("root_id"),
+            root_identity_hash=optional_text("root_identity_hash"),
+            binding_set_revision=revision,
+            idempotency_key=cast(str, value["idempotency_key"]),
+            schema_version=cast(int, value["schema_version"]),
+            binding_set_receipt_id=optional_text("binding_set_receipt_id"),
+            binding_set_receipt_hash=optional_text("binding_set_receipt_hash"),
         )
 
     @property

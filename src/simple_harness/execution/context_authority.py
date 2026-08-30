@@ -60,6 +60,8 @@ class ContextRouteReceipt:
     route: TaskScopeRoute
     task_scope_id: str | None
     binding_set_revision: int | None
+    binding_set_receipt_id: str | None = None
+    binding_set_receipt_hash: str | None = None
     recall_refs: tuple[str, ...] = ()
     schema_version: int = 1
 
@@ -81,9 +83,22 @@ class ContextRouteReceipt:
             TaskScopeRoute.RESUME_EXISTING,
             TaskScopeRoute.CREATE_NEW,
         }:
-            if self.task_scope_id is None or self.binding_set_revision is None:
+            if (
+                self.task_scope_id is None
+                or self.binding_set_revision is None
+                or self.binding_set_receipt_id is None
+                or self.binding_set_receipt_hash is None
+            ):
                 raise ValueError("task route requires TaskScope and binding revision")
-        elif self.task_scope_id is not None or self.binding_set_revision is not None:
+        elif any(
+            item is not None
+            for item in (
+                self.task_scope_id,
+                self.binding_set_revision,
+                self.binding_set_receipt_id,
+                self.binding_set_receipt_hash,
+            )
+        ):
             raise ValueError("standalone route forbids TaskScope binding")
         if self.binding_set_revision is not None:
             if isinstance(self.binding_set_revision, bool) or not isinstance(
@@ -92,6 +107,12 @@ class ContextRouteReceipt:
                 raise TypeError("binding_set_revision must be an integer or null")
             if self.binding_set_revision < 1:
                 raise ValueError("binding_set_revision must be positive")
+        if (self.binding_set_receipt_id is None) != (self.binding_set_receipt_hash is None):
+            raise ValueError("binding-set receipt identity/hash must be paired")
+        if self.binding_set_receipt_id is not None:
+            _required(self.binding_set_receipt_id, "binding_set_receipt_id")
+        if self.binding_set_receipt_hash is not None:
+            _digest(self.binding_set_receipt_hash, "binding_set_receipt_hash")
         refs = tuple(_required(item, "recall_ref") for item in self.recall_refs)
         if len(set(refs)) != len(refs):
             raise ValueError("recall_refs must be unique")
@@ -117,6 +138,8 @@ class ContextRouteReceipt:
             "route": self.route.value,
             "task_scope_id": self.task_scope_id,
             "binding_set_revision": self.binding_set_revision,
+            "binding_set_receipt_id": self.binding_set_receipt_id,
+            "binding_set_receipt_hash": self.binding_set_receipt_hash,
             "recall_refs": list(self.recall_refs),
         }
 
@@ -131,6 +154,8 @@ class ContextRouteReceipt:
             "route",
             "task_scope_id",
             "binding_set_revision",
+            "binding_set_receipt_id",
+            "binding_set_receipt_hash",
             "recall_refs",
         }
         if set(value) != expected:
@@ -150,6 +175,13 @@ class ContextRouteReceipt:
         task_scope_id = value["task_scope_id"]
         if task_scope_id is not None and not isinstance(task_scope_id, str):
             raise TypeError("task_scope_id must be a string or null")
+
+        def optional_text(name: str) -> str | None:
+            item = value[name]
+            if item is not None and not isinstance(item, str):
+                raise TypeError(f"{name} must be a string or null")
+            return item
+
         return cls(
             receipt_id=_required(value["receipt_id"], "receipt_id"),
             run_id=_required(value["run_id"], "run_id"),
@@ -158,6 +190,8 @@ class ContextRouteReceipt:
             route=TaskScopeRoute(route),
             task_scope_id=task_scope_id,
             binding_set_revision=revision,
+            binding_set_receipt_id=optional_text("binding_set_receipt_id"),
+            binding_set_receipt_hash=optional_text("binding_set_receipt_hash"),
             recall_refs=tuple(refs),
             schema_version=schema_version,
         )

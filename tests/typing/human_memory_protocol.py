@@ -4,16 +4,24 @@
 """Static structural-conformance fixture for Host main-model analysis executors."""
 
 from simple_harness import (
+    CanonicalWorkspaceRoot,
     ContextAssemblyDecision,
     ContextFragment,
     ContextRouteReceipt,
     ContextRouteState,
     DisclosureContext,
+    FilesystemIdentity,
+    FilesystemIdentityKind,
+    HostIssuedRunBindingModeSnapshot,
     LongTermMemoryType,
+    ManualWorkspaceBindingAuthorizationReceipt,
+    ManualWorkspaceBindingChallenge,
+    MemoryAnalysisDeliveryAuthorityPort,
     MemoryAnalysisExecutorPort,
     MemoryAnalysisRequest,
-    MemoryAnalysisResult,
+    MemoryAnalysisResultEnvelope,
     RecallPlan,
+    RunBindingModeSnapshotRequest,
     RunContextAuthorityPort,
     RunContextAuthorityRequest,
     RunContextSnapshot,
@@ -29,12 +37,22 @@ from simple_harness import (
     ToolExecutionPolicy,
     ToolRouteRequirement,
     ToolTaskScopeRequirement,
+    WorkspaceBindingAuthorityGrant,
+    WorkspaceBindingAuthorityPort,
+    WorkspaceBindingProposal,
 )
 
 
 class StructuralMemoryAnalysisExecutor:
-    async def analyze_memory(self, request: MemoryAnalysisRequest) -> MemoryAnalysisResult:
+    async def analyze_memory(self, request: MemoryAnalysisRequest) -> MemoryAnalysisResultEnvelope:
         raise NotImplementedError(request)
+
+
+class StructuralMemoryAnalysisDeliveryAuthority:
+    async def verify_analysis_delivery(
+        self, request: MemoryAnalysisRequest, envelope: MemoryAnalysisResultEnvelope
+    ) -> None:
+        raise NotImplementedError(request, envelope)
 
 
 class StructuralRunContextAuthority:
@@ -51,6 +69,33 @@ class StructuralTaskExecutionAuthority:
         raise NotImplementedError(request)
 
 
+class StructuralWorkspaceBindingAuthority:
+    async def verify_manual_authorization(
+        self,
+        proposal: WorkspaceBindingProposal,
+        challenge: ManualWorkspaceBindingChallenge,
+        receipt: ManualWorkspaceBindingAuthorizationReceipt,
+    ) -> WorkspaceBindingAuthorityGrant:
+        raise NotImplementedError(proposal, challenge, receipt)
+
+    async def issue_run_binding_mode_snapshot(
+        self, request: RunBindingModeSnapshotRequest
+    ) -> HostIssuedRunBindingModeSnapshot:
+        raise NotImplementedError(request)
+
+    async def authorize_auto_binding(
+        self,
+        proposal: WorkspaceBindingProposal,
+        snapshot: HostIssuedRunBindingModeSnapshot,
+    ) -> WorkspaceBindingAuthorityGrant:
+        raise NotImplementedError(proposal, snapshot)
+
+    async def verify_binding_grant(
+        self, proposal: WorkspaceBindingProposal, grant: WorkspaceBindingAuthorityGrant
+    ) -> None:
+        raise NotImplementedError(proposal, grant)
+
+
 def accepts_executor(value: MemoryAnalysisExecutorPort) -> MemoryAnalysisExecutorPort:
     return value
 
@@ -58,8 +103,14 @@ def accepts_executor(value: MemoryAnalysisExecutorPort) -> MemoryAnalysisExecuto
 STRUCTURAL_EXECUTOR: MemoryAnalysisExecutorPort = accepts_executor(
     StructuralMemoryAnalysisExecutor()
 )
+STRUCTURAL_ANALYSIS_DELIVERY_AUTHORITY: MemoryAnalysisDeliveryAuthorityPort = (
+    StructuralMemoryAnalysisDeliveryAuthority()
+)
 STRUCTURAL_CONTEXT_AUTHORITY: RunContextAuthorityPort = StructuralRunContextAuthority()
 STRUCTURAL_TASK_AUTHORITY: TaskExecutionAuthorityPort = StructuralTaskExecutionAuthority()
+STRUCTURAL_WORKSPACE_BINDING_AUTHORITY: WorkspaceBindingAuthorityPort = (
+    StructuralWorkspaceBindingAuthority()
+)
 DISCLOSURE_TYPE: type[DisclosureContext] = DisclosureContext
 CONTEXT_FRAGMENT_TYPE: type[ContextFragment] = ContextFragment
 CONTEXT_DECISION_TYPE: type[ContextAssemblyDecision] = ContextAssemblyDecision
@@ -82,3 +133,7 @@ TOOL_EFFECT_CLASS: ToolEffectClass = ToolEffectClass.PROJECT_EFFECT
 TOOL_EXECUTION_POLICY_TYPE: type[ToolExecutionPolicy] = ToolExecutionPolicy
 TOOL_ROUTE_REQUIREMENT: ToolRouteRequirement = ToolRouteRequirement.REQUIRED
 TOOL_TASK_SCOPE_REQUIREMENT: ToolTaskScopeRequirement = ToolTaskScopeRequirement.REQUIRED
+FILESYSTEM_IDENTITY_TYPE: type[FilesystemIdentity] = FilesystemIdentity
+FILESYSTEM_IDENTITY_KIND: FilesystemIdentityKind = FilesystemIdentityKind.POSIX_INODE
+CANONICAL_WORKSPACE_ROOT_TYPE: type[CanonicalWorkspaceRoot] = CanonicalWorkspaceRoot
+WORKSPACE_BINDING_PROPOSAL_TYPE: type[WorkspaceBindingProposal] = WorkspaceBindingProposal

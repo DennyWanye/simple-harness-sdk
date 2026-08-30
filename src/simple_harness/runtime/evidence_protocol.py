@@ -733,6 +733,198 @@ class MemoryAnalysisResult:
         )
 
 
+def _analysis_domain_hash(domain: str, payload: dict[str, JsonValue]) -> str:
+    return _canonical_hash({"protocol": domain, "payload": payload})
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryAnalysisDeliveryReceipt:
+    """Host record proving durable delivery of one exact provider result.
+
+    This receipt is separate from :class:`MemoryAnalysisReceipt`, which records
+    Memory-side validation/application. Its public hashes are audit material,
+    not authority; consumers must call ``MemoryAnalysisDeliveryAuthorityPort``.
+    """
+
+    receipt_id: str
+    issuer_id: str
+    run_id: str
+    job_id: str
+    request_hash: str
+    result_hash: str
+    attempt: int
+    provider_response_id: str | None
+    provider_response_hash: str
+    issued_at: float
+    host_receipt_id: str
+    host_receipt_hash: str
+    schema_version: int = HUMAN_MEMORY_SCHEMA_VERSION
+    receipt_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.schema_version != HUMAN_MEMORY_SCHEMA_VERSION:
+            raise ValueError("unsupported MemoryAnalysisDeliveryReceipt schema_version")
+        for value, name in (
+            (self.receipt_id, "receipt_id"),
+            (self.issuer_id, "issuer_id"),
+            (self.run_id, "run_id"),
+            (self.job_id, "job_id"),
+            (self.host_receipt_id, "host_receipt_id"),
+        ):
+            _identifier(value, name)
+        _optional_identifier(self.provider_response_id, "provider_response_id")
+        for value, name in (
+            (self.request_hash, "request_hash"),
+            (self.result_hash, "result_hash"),
+            (self.provider_response_hash, "provider_response_hash"),
+            (self.host_receipt_hash, "host_receipt_hash"),
+        ):
+            _digest(value, name)
+        _positive_int(self.attempt, "attempt")
+        issued_at = _non_negative_number(self.issued_at, "issued_at")
+        object.__setattr__(self, "issued_at", issued_at)
+        object.__setattr__(
+            self,
+            "receipt_hash",
+            _analysis_domain_hash("memory-analysis/delivery-receipt/v1", self.to_json()),
+        )
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "schema_version": self.schema_version,
+            "receipt_id": self.receipt_id,
+            "issuer_id": self.issuer_id,
+            "run_id": self.run_id,
+            "job_id": self.job_id,
+            "request_hash": self.request_hash,
+            "result_hash": self.result_hash,
+            "attempt": self.attempt,
+            "provider_response_id": self.provider_response_id,
+            "provider_response_hash": self.provider_response_hash,
+            "issued_at": self.issued_at,
+            "host_receipt_id": self.host_receipt_id,
+            "host_receipt_hash": self.host_receipt_hash,
+        }
+
+    def _verify_result_link(self, result: MemoryAnalysisResult) -> None:
+        if not isinstance(result, MemoryAnalysisResult):
+            raise TypeError("result must use MemoryAnalysisResult")
+        exact = (
+            (self.job_id, result.job_id),
+            (self.run_id, result.run_id),
+            (self.request_hash, result.request_hash),
+            (self.result_hash, result.result_hash),
+            (self.provider_response_id, result.provider_response_id),
+        )
+        if any(left != right for left, right in exact):
+            raise ValueError("Memory analysis delivery differs from result")
+
+    def verify_result(
+        self, request: MemoryAnalysisRequest, result: MemoryAnalysisResult
+    ) -> None:
+        if not isinstance(request, MemoryAnalysisRequest):
+            raise TypeError("request must use MemoryAnalysisRequest")
+        self._verify_result_link(result)
+        exact = (
+            (self.job_id, request.job_id),
+            (self.run_id, request.run_id),
+            (self.request_hash, request.request_hash),
+            (self.attempt, request.attempt),
+        )
+        if any(left != right for left, right in exact):
+            raise ValueError("Memory analysis delivery differs from request or result")
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> MemoryAnalysisDeliveryReceipt:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "receipt_id",
+                "issuer_id",
+                "run_id",
+                "job_id",
+                "request_hash",
+                "result_hash",
+                "attempt",
+                "provider_response_id",
+                "provider_response_hash",
+                "issued_at",
+                "host_receipt_id",
+                "host_receipt_hash",
+            },
+            "MemoryAnalysisDeliveryReceipt",
+        )
+        return cls(
+            receipt_id=_identifier(value["receipt_id"], "receipt_id"),
+            issuer_id=_identifier(value["issuer_id"], "issuer_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            job_id=_identifier(value["job_id"], "job_id"),
+            request_hash=_digest(value["request_hash"], "request_hash"),
+            result_hash=_digest(value["result_hash"], "result_hash"),
+            attempt=_positive_int(value["attempt"], "attempt"),
+            provider_response_id=_optional_identifier(
+                value["provider_response_id"], "provider_response_id"
+            ),
+            provider_response_hash=_digest(
+                value["provider_response_hash"], "provider_response_hash"
+            ),
+            issued_at=_non_negative_number(value["issued_at"], "issued_at"),
+            host_receipt_id=_identifier(value["host_receipt_id"], "host_receipt_id"),
+            host_receipt_hash=_digest(value["host_receipt_hash"], "host_receipt_hash"),
+            schema_version=_schema_version(
+                value["schema_version"], "MemoryAnalysisDeliveryReceipt"
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryAnalysisResultEnvelope:
+    result: MemoryAnalysisResult
+    delivery_receipt: MemoryAnalysisDeliveryReceipt
+    schema_version: int = HUMAN_MEMORY_SCHEMA_VERSION
+    envelope_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.schema_version != HUMAN_MEMORY_SCHEMA_VERSION:
+            raise ValueError("unsupported MemoryAnalysisResultEnvelope schema_version")
+        if not isinstance(self.result, MemoryAnalysisResult):
+            raise TypeError("result must use MemoryAnalysisResult")
+        if not isinstance(self.delivery_receipt, MemoryAnalysisDeliveryReceipt):
+            raise TypeError("delivery_receipt must use MemoryAnalysisDeliveryReceipt")
+        self.delivery_receipt._verify_result_link(self.result)
+        object.__setattr__(
+            self,
+            "envelope_hash",
+            _analysis_domain_hash("memory-analysis/result-envelope/v1", self.to_json()),
+        )
+
+    def verify_request(self, request: MemoryAnalysisRequest) -> None:
+        self.delivery_receipt.verify_result(request, self.result)
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "schema_version": self.schema_version,
+            "result": self.result.to_json(),
+            "delivery_receipt": self.delivery_receipt.to_json(),
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> MemoryAnalysisResultEnvelope:
+        _exact_keys(
+            value,
+            {"schema_version", "result", "delivery_receipt"},
+            "MemoryAnalysisResultEnvelope",
+        )
+        return cls(
+            result=MemoryAnalysisResult.from_json(_object(value["result"], "result")),
+            delivery_receipt=MemoryAnalysisDeliveryReceipt.from_json(
+                _object(value["delivery_receipt"], "delivery_receipt")
+            ),
+            schema_version=_schema_version(value["schema_version"], "MemoryAnalysisResultEnvelope"),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryAnalysisReceipt:
     receipt_id: str
@@ -835,7 +1027,17 @@ class MemoryAnalysisReceipt:
 
 
 class MemoryAnalysisExecutorPort(Protocol):
-    async def analyze_memory(self, request: MemoryAnalysisRequest) -> MemoryAnalysisResult: ...
+    async def analyze_memory(
+        self, request: MemoryAnalysisRequest
+    ) -> MemoryAnalysisResultEnvelope: ...
+
+
+class MemoryAnalysisDeliveryAuthorityPort(Protocol):
+    """Verifies an exact delivery against Host durable state or authenticated proof."""
+
+    async def verify_analysis_delivery(
+        self, request: MemoryAnalysisRequest, envelope: MemoryAnalysisResultEnvelope
+    ) -> None: ...
 
 
 __all__ = (
@@ -846,10 +1048,13 @@ __all__ = (
     "EvidenceSourceKind",
     "ExecutionEvidence",
     "ExecutionEvidenceKind",
+    "MemoryAnalysisDeliveryAuthorityPort",
+    "MemoryAnalysisDeliveryReceipt",
     "MemoryAnalysisExecutorPort",
     "MemoryAnalysisReceipt",
     "MemoryAnalysisRequest",
     "MemoryAnalysisResult",
+    "MemoryAnalysisResultEnvelope",
     "RemovedSpanSummary",
     "RemovedSpanType",
     "SanitizedEvidenceEnvelope",

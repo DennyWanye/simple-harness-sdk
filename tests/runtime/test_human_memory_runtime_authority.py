@@ -101,6 +101,8 @@ def test_route_and_effect_authority_survive_checkpoint_roundtrip() -> None:
         TaskScopeRoute.RESUME_EXISTING,
         "task-1",
         3,
+        "binding-set-3",
+        "d" * 64,
     )
     envelope = TaskExecutionEnvelope(
         RunId("run-1"),
@@ -119,6 +121,8 @@ def test_route_and_effect_authority_survive_checkpoint_roundtrip() -> None:
         "c" * 64,
         3,
         "effect-2",
+        binding_set_receipt_id=route.binding_set_receipt_id,
+        binding_set_receipt_hash=route.binding_set_receipt_hash,
     )
     assert len(envelope.envelope_hash) == 64
     state = TerminationState(
@@ -139,6 +143,8 @@ def test_context_route_receipt_strict_json_roundtrip_and_rejects_coercion() -> N
         TaskScopeRoute.RESUME_EXISTING,
         "task-1",
         3,
+        "binding-set-3",
+        "d" * 64,
         ("memory-1",),
     )
     assert ContextRouteReceipt.from_json(receipt.to_json()) == receipt
@@ -152,6 +158,8 @@ def test_context_route_receipt_strict_json_roundtrip_and_rejects_coercion() -> N
     for field, invalid_values in {
         "task_scope_id": (1, True, None),
         "binding_set_revision": ("3", 3.0, True, None),
+        "binding_set_receipt_id": (1, True, None),
+        "binding_set_receipt_hash": (1, True, None, "bad"),
         "schema_version": ("1", 1.0, True, None),
         "recall_refs": (1, True, None, [1], [True], [None]),
     }.items():

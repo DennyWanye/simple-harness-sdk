@@ -246,8 +246,39 @@ class StaleTaskExecutionAuthority:
             request.route_receipt.task_scope_id,
             "root-1",
             "d" * 64,
-            request.route_receipt.binding_set_revision - 1,
+            request.route_receipt.binding_set_revision,
             request.effect_id,
+            binding_set_receipt_id=request.route_receipt.binding_set_receipt_id,
+            binding_set_receipt_hash="f" * 64,
+        )
+
+
+class FixedBindingTaskExecutionAuthority:
+    def __init__(self, revision: int, receipt_id: str, receipt_hash: str) -> None:
+        self.revision = revision
+        self.receipt_id = receipt_id
+        self.receipt_hash = receipt_hash
+
+    async def issue_envelope(self, request):  # type: ignore[no-untyped-def]
+        return TaskExecutionEnvelope(
+            request.run_id,
+            CallId(request.call_id),
+            EffectId(request.effect_id),
+            request.raw_call_id,
+            request.turn_ordinal,
+            request.call_ordinal,
+            request.tool_name,
+            request.policy.capability_id,
+            request.policy.capability_fingerprint,
+            request.route_receipt.receipt_id,
+            request.route_receipt.receipt_hash,
+            request.route_receipt.task_scope_id,
+            "new-root",
+            "9" * 64,
+            self.revision,
+            request.effect_id,
+            binding_set_receipt_id=self.receipt_id,
+            binding_set_receipt_hash=self.receipt_hash,
         )
 
 
@@ -357,6 +388,8 @@ def test_stale_task_execution_binding_fails_before_tool_execution() -> None:
         TaskScopeRoute.RESUME_EXISTING,
         "task-1",
         3,
+        "binding-set-3",
+        "e" * 64,
     )
     with pytest.raises(RuntimeError, match="stale TaskScope binding authority"):
         asyncio.run(
@@ -374,6 +407,69 @@ def test_stale_task_execution_binding_fails_before_tool_execution() -> None:
             )
         )
     assert tools.calls == []
+
+
+def test_new_binding_revision_is_unusable_until_a_later_trusted_route_freezes_it() -> None:
+    tools = RouteEffectExecutor()
+    authority = FixedBindingTaskExecutionAuthority(4, "binding-set-4", "f" * 64)
+    runtime_services = replace(
+        services(ScriptedProviderCoordinator([]), tools, MemoryContext()),
+        task_execution_authority=authority,
+    )
+    current_route = ContextRouteReceipt(
+        "route-task-3",
+        "run-1",
+        "raw-route-3",
+        "effect-route-3",
+        TaskScopeRoute.RESUME_EXISTING,
+        "task-1",
+        3,
+        "binding-set-3",
+        "e" * 64,
+    )
+    with pytest.raises(RuntimeError, match="stale TaskScope binding authority"):
+        asyncio.run(
+            EffectBatchExecutor().execute(
+                (ProviderToolCall(CallId("raw-write-current"), "write_project", {}),),
+                services=runtime_services,
+                run_id=RunId("run-1"),
+                request_id=RequestId("request-current"),
+                execution_lease=LEASE,
+                run_fence=FENCE,
+                cancellation=CancellationToken(),
+                turn_ordinal=2,
+                tool_exposure=PolicyExposure(),
+                route_receipt=current_route,
+            )
+        )
+    assert tools.calls == []
+
+    later_route = ContextRouteReceipt(
+        "route-task-4",
+        "run-2",
+        "raw-route-4",
+        "effect-route-4",
+        TaskScopeRoute.RESUME_EXISTING,
+        "task-1",
+        4,
+        "binding-set-4",
+        "f" * 64,
+    )
+    asyncio.run(
+        EffectBatchExecutor().execute(
+            (ProviderToolCall(CallId("raw-write-later"), "write_project", {}),),
+            services=runtime_services,
+            run_id=RunId("run-2"),
+            request_id=RequestId("request-later"),
+            execution_lease=LEASE,
+            run_fence=FENCE,
+            cancellation=CancellationToken(),
+            turn_ordinal=1,
+            tool_exposure=PolicyExposure(),
+            route_receipt=later_route,
+        )
+    )
+    assert [call["call"].name for call in tools.calls] == ["write_project"]
 
 
 def test_provider_reserved_reopen_reuses_frozen_host_context_receipt() -> None:
@@ -669,6 +765,8 @@ class IntegratedEffects:
                 TaskScopeRoute.RESUME_EXISTING,
                 "task-1",
                 3,
+                "binding-set-3",
+                "e" * 64,
                 ("evidence-1",),
             )
             return EffectExecution(None, ToolResult.succeeded(call.call_id, receipt.to_json()))
@@ -698,6 +796,8 @@ class IntegratedTaskExecutionAuthority:
             None if route is None else "d" * 64,
             None if route is None else route.binding_set_revision,
             request.effect_id,
+            binding_set_receipt_id=None if route is None else route.binding_set_receipt_id,
+            binding_set_receipt_hash=None if route is None else route.binding_set_receipt_hash,
         )
 
 

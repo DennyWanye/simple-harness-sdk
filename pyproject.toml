@@ -107,6 +107,7 @@ files = [
   "src/simple_harness/runtime/evidence_protocol.py",
   "src/simple_harness/runtime/memory_protocol.py",
   "src/simple_harness/runtime/task_scope_protocol.py",
+  "src/simple_harness/runtime/workspace_binding_protocol.py",
   "src/simple_harness/runtime/conversation_context_provider.py",
   "src/simple_harness/runtime/consumer_adapter.py",
   "src/simple_harness/runtime/ports.py",

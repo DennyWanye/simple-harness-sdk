@@ -17,9 +17,21 @@ The legacy `AgentMemoryPort.record_committed_turn` terminal outbox remains avail
 cross-repository cutover, but the production kernel no longer performs automatic
 `recall_for_turn`/`release_recall`. Provider persistence is public-only, route-required effects
 cannot cross the same-batch barrier, and project effects require a Host-issued
-`TaskExecutionEnvelope`. Memory SDK evidence/state storage, Host TaskScope archives, dynamic
+`TaskExecutionEnvelope`. Workspace binding append authority is a separate strict public chain:
+the model may submit a mode-free exact-root proposal, while Manual decisions and Auto mode
+snapshots must be verified against Host-durable records before the Host returns a typed grant.
+The append receipt binds the parent/root-set digest and the new revision; route receipts and
+effect envelopes then freeze that exact binding-set receipt identity and hash. Generic Tool
+authorization receipts and `RunContextSnapshot.metadata` are not workspace authority. Memory SDK
+evidence/state storage, Host TaskScope archives, dynamic
 Context assembly, and the single-conversation UI are later release units rather than 0.7.0
 product claims.
+
+Main-model analysis uses two deliberately separate receipt layers. The Host executor returns a
+`MemoryAnalysisResultEnvelope` with a `MemoryAnalysisDeliveryReceipt`, and consumers verify that
+exact provider delivery through `MemoryAnalysisDeliveryAuthorityPort`; public hashes alone are not
+authority. The existing `MemoryAnalysisReceipt` remains the later Memory validator/application
+record and cannot stand in for Host delivery proof.
 
 The normal database loader never guesses across persistence versions. Operators upgrading an
 exact execution schema v3 file use the explicit backup-first
@@ -78,7 +90,10 @@ AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers;
 and production paths were not modified, integrated, or tested in this program.
 
 Version 0.7.0 is the Human Memory protocol candidate: it replaces unconditional pre-Provider
-recall with an explicit same-Run Context route barrier and Host-issued Context authority. Version
+recall with an explicit same-Run Context route barrier and Host-issued Context authority. It also
+adds typed, domain-separated Manual/Auto workspace-binding proposals, challenges, receipts,
+Host-verified grants and append-only binding-set lineage; the SDK defines these contracts but does
+not implement Host filesystem membership or binding persistence. Version
 0.6.4 preserves nested authorization metadata when a user-confirmation nonce is reissued;
 its public APIs and execution schema v6 are unchanged. Version 0.6.3 added the typed
 `HostControlAuthorityV1` / `HostControlRunStartV1` contract and
