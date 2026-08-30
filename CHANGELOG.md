@@ -17,6 +17,13 @@ SPDX-License-Identifier: Apache-2.0
 - Route-required effects cannot cross the route barrier in the same Provider tool batch.
 - Durable Provider and effect replay bind exact Context, capability, root, and binding-set
   revisions while excluding raw hidden reasoning and transport credentials.
+- Context snapshot revisions and snapshot ID/payload bindings are monotonic across Provider turns.
+  Public response recovery rejects extra fields, private metadata, unsupported content blocks,
+  and non-integral schema values before replay.
+
+### Compatibility
+- Terminal committed-turn outbox delivery remains available for the staged Memory SDK cutover;
+  automatic pre-Provider recall and recall-release calls are no longer part of the production loop.
 
 ## 0.6.4 — 2026-08-29
 

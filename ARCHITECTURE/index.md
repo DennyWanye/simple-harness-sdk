@@ -5,18 +5,15 @@ SPDX-License-Identifier: Apache-2.0
 
 # ARCHITECTURE 目录
 
-记录 Simple Harness SDK 的架构生产事实。当前 source candidate 版本权威为 `0.6.4`；覆盖官方 Agent Memory v1、可信四元 identity、
-fresh execution schema v4、SDK 自动 Context/recall staging、durable recall release retry、统一
-consumer/production composition，以及 Harness Observability S2 authority-transition instrumentation。
-Memory 写入现为 terminal-only committed user+assistant Turn；旧
-schema v1-v3 仍由正常 loader fail-closed；schema v3 只能通过显式、backup-first 的 offline migrator
-升级为 v4，迁移会输出可校验的 neutral manifest，并持久化 legacy disposition/cursor。当前 candidate
-wheel 公开 PEP 561 类型；root 与每个 continuation 独立绑定持久 Context snapshot
-reference，未显式提供时仅从当轮 current message 内容寻址生成。两层 public surface 只保留统一
-`AgentMemoryPort`，旧 query/sink、manual preparation 与 adapter-facing Memory DTO 已退休；非 owner 会按
-有界 request/lease horizon 等待，并在 owner lease 过期后 CAS takeover。product-neutral future-consumer fixture
-覆盖官方 Memory 组合；`simple_harness` 已完成 exact-wheel cutover、自动化与真实 macOS UI 验收。
-AIPhone、K6/AgentOS、NovelTagSystem 仍未修改或测试，只能声明接口就绪。
+记录 Simple Harness SDK 的架构生产事实。当前 source candidate 版本权威为 `0.7.0`。Human Memory S1
+已经把自动 pre-Provider recall 改为显式的同 Run route seam：每个新的 Provider turn 只能消费 Host 经
+`RunContextAuthorityPort` 返回并由 SDK 校验、冻结的 Context snapshot；同批 route-required effect 在
+route receipt 尚未可见时会在 ledger/handoff 前拒绝。fresh execution schema v7 持久绑定
+`TaskExecutionEnvelope`，ReAct checkpoint schema v5 跨轮保留 snapshot revision 与 ID→payload hash，
+Provider durable response 只接受 public allowlist，隐藏推理和私有 metadata 不进入 ledger、checkpoint 或
+Context。旧 `AgentMemoryPort.record_committed_turn` terminal outbox 仍保留；生产 kernel 不再自动调用
+`recall_for_turn`/`release_recall`。Memory SDK 的新 evidence/认知状态和 Host TaskScope 产品实现不属于本仓
+当前能力，仍由后续 release unit 完成。
 
 2026-08-25 Tool/Capability：SDK 0.6.2 起已提供三类 capability record、bounded search/describe、
 typed activation receipt、Run-local exposure port 与 ReAct ready-attempt 动态投影；Provider reserved 仍精确
@@ -38,7 +35,7 @@ tag、release 上传、download-back 与 consumer promotion 继续分别验收�
   staging、release retry、resource ownership、production builder、installed-wheel Linux ARM64 core gate，以及 Provider/预算、
   结构化消息、工具 catalog 与 projection outbox 权威边界。
 
-Human Memory Program 的新协议尚未进入生产代码；实施前差距已明确记录在 `ARCHITECTURE.md`，不得把目标
-协议误当成现有能力。
+Human Memory Program 当前只完成 Harness SDK 的 S1 source candidate 边界；不得把后续 Memory SDK、Host
+TaskScope、动态 Context、单主对话 UI 或数字孪生体目标误当成已有产品能力。
 
 <!-- last-updated: 2026-08-30 -->

@@ -7,14 +7,19 @@ is [`docs/build-and-release.md`](docs/build-and-release.md).
 
 An embeddable, durable agent runtime extracted from Simple Harness.
 
-The current SDK exposes one official Agent Memory v1 boundary. A consumer passes one
-`AgentMemoryPort`—Memory SDK 0.5 `MemoryManager` implements it directly—a trusted four-part
-`AgentIdentity`, and its normal product ports; the
-SDK automatically performs bounded recall, freezes the resulting Context, retries durable
-recall release, and writes exactly one canonical user+assistant committed turn only after a
-conversation completes. Terminal state, normal deliveries, and the Memory outbox row commit in
-one SQLite transaction; failed or cancelled turns never create a Memory write. The dispatcher
-survives restart and retries by stable turn identity without consumer-maintained glue code.
+Version 0.7.0 is the current Human Memory protocol source candidate. A Host supplies the exact
+Context snapshot for every new Provider turn through `RunContextAuthorityPort`; the SDK validates
+and durably freezes that snapshot before Provider reservation. Recall is explicit and same-Run:
+the main model proposes a strict route/recall operation, while deterministic SDK and Host code
+validate receipts and effect authority. A no-recall turn performs no Memory ranking call.
+
+The legacy `AgentMemoryPort.record_committed_turn` terminal outbox remains available during the
+cross-repository cutover, but the production kernel no longer performs automatic
+`recall_for_turn`/`release_recall`. Provider persistence is public-only, route-required effects
+cannot cross the same-batch barrier, and project effects require a Host-issued
+`TaskExecutionEnvelope`. Memory SDK evidence/state storage, Host TaskScope archives, dynamic
+Context assembly, and the single-conversation UI are later release units rather than 0.7.0
+product claims.
 
 The normal database loader never guesses across persistence versions. Operators upgrading an
 exact execution schema v3 file use the explicit backup-first
@@ -22,6 +27,9 @@ exact execution schema v3 file use the explicit backup-first
 is closed. It returns a digest-verified neutral manifest, supports mapping legacy user/session
 pairs to renamed complete `AgentIdentity` values, and leaves a caller-selected v3 backup beside
 the database.
+
+The following is the retained 0.6.x terminal committed-turn compatibility composition; it is not
+the new 0.7.0 recall path:
 
 ```python
 from simple_harness_memory import MemoryManager
@@ -57,10 +65,10 @@ async with runtime:
     )
 ```
 
-Consumers do not call recall/release/write manually. Non-text attachment, tool, and reasoning
-payloads are excluded unless the consumer supplies explicit `memory_text`. The old query/sink
-split, manual preparation helpers, and their adapter-facing DTOs have been retired from both
-public package surfaces. Public contracts are documented in
+Consumers do not call the retired automatic recall/release lifecycle. Non-text attachment, tool,
+private provider metadata, and hidden reasoning payloads are excluded from durable public Context.
+The old query/sink split and adapter-facing Memory DTOs remain retired from both public package
+surfaces. Public contracts are documented in
 [`docs/api/contracts.md`](docs/api/contracts.md); consumer validation is covered
 by [`docs/conformance.md`](docs/conformance.md).
 

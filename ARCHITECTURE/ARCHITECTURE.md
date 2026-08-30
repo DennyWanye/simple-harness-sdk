@@ -5,25 +5,33 @@ last-updated: 2026-08-30
 -->
 <!-- last-calibrated: 716fb8513095c4ad1dc005cb0fefe991e584c156 -->
 
-# Simple Harness SDK — 架构基线（Agent Memory v1）
+# Simple Harness SDK — 架构基线（Human Memory S1 candidate）
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
-## Human Memory Program 实施前边界（2026-08-30）
+## Human Memory Program S1 当前边界（2026-08-30）
 
-以下能力尚未实现，后续必须由版本化公共协议引入：
-
-- 当前 `AgentMemoryPort` 只有 turn 前自动 `recall_for_turn`、release 和 terminal
-  `record_committed_turn`；没有主模型提出的 `RecallPlan` / `MemoryMutationPlan` / `TaskScopeProposal` /
-  `TaskScopeMutationPlan`，也没有认知类型与审计 decision DTO。
-- 当前 Runtime 在首个 Provider attempt 前调用 Memory 并冻结结果；ReAct loop 只消费已组装 Context。
-  因而主模型没有记忆需求路由权，也不能在同一 Run 中先选择 route、再按需调用 Memory 后续推理。
-- 当前 conversation continuation 是同一 durable Run 的 signal，但 SDK 不保证一个永久主对话只有一个
-  foreground Run，也没有普通用户消息 FIFO 与 stop/pause/cancel 优先控制协议。
-- 当前 Context snapshot 能冻结 product context、Memory payload、tool catalog 和 current message，但没有
-  最近 10 个完整因果 turn group、五天短时域、TaskScope 临时投影、分区预算及 page-in 的统一契约。
-- SDK 仍应保持 product-neutral：TaskScope 的本地目录、文件视图与 UI 不归 SDK；SDK 只拥有中立协议、
-  Run/Context/Tool 状态机接缝和 durable replay 语义。
+- `0.7.0` source candidate 公开严格、版本化的 Memory、TaskScope、Evidence、Disclosure DTO。Working Memory
+  是 Context role，不属于四类长期存储 enum；长期类型精确为 Episode、Semantic、Procedure、Prospective。
+- 主模型只提出结构化 Recall/Mutation/TaskScope 操作。SDK 校验 canonical JSON、hash、schema、run/evidence
+  绑定；SDK 不把 LLM 输出当成事实、权限或数据库状态 authority。
+- `RunContextAuthorityPort` 是每个新 Provider turn 的唯一 Context authority。snapshot 在 Provider reservation
+  前冻结，绑定 run、turn ordinal、prior revision、payload/request fingerprint，并跨轮检查 revision 单调性及
+  snapshot ID→payload hash 不变性；崩溃恢复重放已冻结的同一 request，不再次请求 Host。
+- Provider continuation capability 和其 fingerprint 随 Run 冻结。durable response decoder 使用 exact-key
+  public allowlist；Context 只追加由同一 public projection 重建的 assistant message，raw hidden reasoning、
+  私有 metadata 与 transport credentials 不持久化。
+- 私有 tool catalog 为每个 capability 冻结 effect class、route requirement 和 TaskScope requirement，模型不可
+  覆盖。整个 tool batch 在任何 Effect prepare 前预检；同批先 route、后 project effect 仍会以
+  `ROUTE_BARRIER_NOT_OBSERVED` 拒绝且不产生 effect ledger/handoff。
+- Host 注入的 `TaskExecutionEnvelope` 绑定 run/call/effect、route receipt、capability fingerprint、TaskScope、
+  exact root identity、binding-set revision 和 idempotency。fresh execution schema v7 保存 envelope JSON/hash，
+  malformed、wrong-run 或 stale authority 在物理 effect 前 fail-closed。
+- production kernel 已移除每轮自动 `recall_for_turn`/`release_recall`；无召回必须写 exact
+  `DIRECT_STANDALONE` decision，显式 recall 通过同一 Run 的 tool continuation 完成。terminal-only
+  `record_committed_turn` durable outbox 暂时保留，供后续 Host↔Memory evidence ingestion 接线。
+- SDK 仍保持 product-neutral：唯一主对话、TaskScope archive、本地目录/bindings、五天短时域、动态 Context
+  assembler、前瞻调度和 UI 不在 S1 内实现。
 
 ## Tool / Capability 目录当前生产链（2026-08-25）
 
@@ -50,10 +58,10 @@ last-updated: 2026-08-30
   typed receipt 确定性 reapply。fresh schema v6 单独存 Provider specs fingerprint 与完整 catalog envelope
   digest；handler locator resolution 对 missing/changed/extra identity fail-closed。exact v5 只允许关闭 Runtime
   后用显式 backup-first migrator 升级。
-- 当前 source candidate 版本权威是 0.6.4；simple_harness Host 已在本地消费 immutable candidate wheel。源码就绪、
-  release artifact 和 Host cutover 是三个不同状态，不能相互代替。
+- Tool/Capability 子系统的已发布基线仍来自 0.6.4，未被 0.7.0 S1 改写；仓库整体 source candidate
+  版本权威已是 0.7.0。源码就绪、release artifact 和 Host cutover 是三个不同状态，不能相互代替。
 
-上述是 0.6.4 source candidate 的当前实现事实；公开 release 尚未执行。
+上述目录链路是 0.6.4 延续到 0.7.0 的实现事实；0.7.0 公开 release 尚未执行。
 
 ## SDK Observability S1/S2 当前事实（2026-08-23）
 
@@ -84,7 +92,12 @@ last-updated: 2026-08-30
   的有界 status counts、oldest age 与最多 20 个稳定 error-code aggregates。查询只选择
   status/timestamp/error-code 列；关闭、query error 或 250ms deadline 返回稳定 degraded section，不抛入业务。
 
-## Agent Memory v1 当前事实（2026-08-22）
+## Agent Memory v1 自动召回历史基线（0.6.x，已由 0.7.0 S1 取代）
+
+本节保留 0.6.x 的迁移与恢复事实，便于审查 breaking change。凡涉及 pre-Provider
+`recall_for_turn`、recall release 或 automatic Context preparation 的描述均不是 0.7.0 当前生产路径；
+0.7.0 当前权威以本文件顶部 “Human Memory Program S1 当前边界” 为准。terminal committed-turn outbox
+仍被保留，因此其 terminal/replay 段落继续适用。
 
 - `AgentMemoryPort` 是唯一官方 Memory 边界：`recall_for_turn`、`release_recall`、
   `record_committed_turn`。旧 query/sink 与 reserved query/write ports 已从两层 public surface 退休，
