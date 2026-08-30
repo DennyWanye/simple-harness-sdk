@@ -62,7 +62,7 @@ def _continuation(command_id: str, continuation_id: str) -> ContinueCommandInten
 
 def test_fresh_v5_schema_and_command_admission_replay_conflicts(tmp_path: Path) -> None:
     with Database.open(tmp_path / "execution.db") as database:
-        assert database.schema_version == 6
+        assert database.schema_version == 7
         assert {
             "conversation_command_namespaces",
             "conversation_run_modes",

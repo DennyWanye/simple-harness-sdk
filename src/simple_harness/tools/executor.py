@@ -278,6 +278,7 @@ class EffectExecutor:
                 or existing.raw_call_id != raw_call_id
                 or existing.turn_ordinal != turn_ordinal
                 or existing.call_ordinal != call_ordinal
+                or existing.task_execution_envelope != context.task_execution_envelope
             ):
                 raise ValueError("Tool effect identity conflicts with frozen intent")
             if existing.terminal:
@@ -436,6 +437,7 @@ class EffectExecutor:
                 raw_call_id=raw_call_id,
                 turn_ordinal=turn_ordinal,
                 call_ordinal=call_ordinal,
+                task_execution_envelope=context.task_execution_envelope,
             )
         sdk_handoff_receipt = sdk_authorization_receipt(
             "effect-handoff",

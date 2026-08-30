@@ -53,7 +53,11 @@ from simple_harness.execution.delivery import (
     TerminalCommitResult,
     delivery_payload_json,
 )
-from simple_harness.execution.effects import EffectRecord, EffectState
+from simple_harness.execution.effects import (
+    EffectRecord,
+    EffectState,
+    TaskExecutionEnvelope,
+)
 from simple_harness.execution.fences import RunFenceLease
 from simple_harness.execution.provider_invocations import (
     ProviderInvocationRecord,
@@ -5256,6 +5260,7 @@ class SqliteExecutionUnitOfWork:
         raw_call_id: str | None = None,
         turn_ordinal: int = 0,
         call_ordinal: int = 0,
+        task_execution_envelope: TaskExecutionEnvelope | None = None,
         fault: FaultHook | None = None,
     ) -> EffectRecord:
         tool_name = _required(tool_name, "tool_name")
@@ -5274,6 +5279,16 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("effect runtime lease and Run fence differ")
         now = _time(now)
         arguments_json = canonical_json(arguments)  # type: ignore[arg-type]
+        envelope_json = (
+            None
+            if task_execution_envelope is None
+            else canonical_json(task_execution_envelope.to_json())
+        )
+        envelope_hash = (
+            None
+            if task_execution_envelope is None
+            else task_execution_envelope.envelope_hash
+        )
         if raw_call_id is not None:
             raw_call_id = _required(raw_call_id, "raw_call_id")
         if any(
@@ -5292,6 +5307,7 @@ class SqliteExecutionUnitOfWork:
                 or existing.raw_call_id != raw_call_id
                 or existing.turn_ordinal != turn_ordinal
                 or existing.call_ordinal != call_ordinal
+                or existing.task_execution_envelope != task_execution_envelope
             ):
                 raise UnitOfWorkConflict("effect identity reused with different intent")
             if existing.state is EffectState.PREPARED and (
@@ -5322,8 +5338,9 @@ class SqliteExecutionUnitOfWork:
                     request_hash, authorization_receipt_ref, handoff_receipt_ref,
                     evidence_ref, fence_epoch, state, result_json, prepared_at,
                     handed_off_at, settled_at, version
+                    , task_execution_envelope_json, task_execution_envelope_hash
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 'prepared',
-                          NULL, ?, NULL, NULL, 0)
+                          NULL, ?, NULL, NULL, 0, ?, ?)
                 """,
                 (
                     effect_id.value,
@@ -5338,6 +5355,8 @@ class SqliteExecutionUnitOfWork:
                     authorization_receipt_ref,
                     run_fence.epoch,
                     now,
+                    envelope_json,
+                    envelope_hash,
                 ),
             )
             _fault(fault, "effect_prepare.after_write")
@@ -16390,6 +16409,18 @@ def _tool_result(value: object) -> ToolResult | None:
 
 
 def _effect_record(row: sqlite3.Row) -> EffectRecord:
+    envelope_json = row["task_execution_envelope_json"]
+    envelope_hash = row["task_execution_envelope_hash"]
+    if (envelope_json is None) != (envelope_hash is None):
+        raise ValueError("stored TaskExecutionEnvelope payload/hash differ")
+    envelope = None
+    if envelope_json is not None:
+        payload = json.loads(str(envelope_json))
+        if not isinstance(payload, dict):
+            raise TypeError("stored TaskExecutionEnvelope must be an object")
+        envelope = TaskExecutionEnvelope.from_json(payload)
+        if envelope.envelope_hash != str(envelope_hash):
+            raise ValueError("stored TaskExecutionEnvelope hash differs")
     return EffectRecord(
         effect_id=EffectId(str(row["effect_id"])),
         run_id=RunId(str(row["run_id"])),
@@ -16411,6 +16442,7 @@ def _effect_record(row: sqlite3.Row) -> EffectRecord:
         call_ordinal=int(row["call_ordinal"]),
         handoff_attempt=int(row["handoff_attempt"]),
         rehandoff_count=int(row["rehandoff_count"]),
+        task_execution_envelope=envelope,
     )
 
 

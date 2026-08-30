@@ -10,6 +10,7 @@ import pytest
 
 from simple_harness.contracts import CallId, EffectId, RunId
 from simple_harness.execution import EffectState, effect_request_hash
+from simple_harness.execution.effects import TaskExecutionEnvelope
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.tools import ToolResult
 
@@ -92,6 +93,48 @@ def test_prepare_fault_is_before_or_after_atomic(
     assert (recovered.read_effect(EffectId("effect-1")) is not None) is persisted
     assert reopened.integrity_check() == ("ok",)
     assert reopened.foreign_key_violations() == ()
+    reopened.close()
+
+
+def test_task_execution_envelope_reopens_with_exact_effect_authority(tmp_path: Path) -> None:
+    path = tmp_path / "effect-envelope.db"
+    database, uow = _uow(path)
+    runtime_lease = _runtime_lease(uow)
+    fence = asyncio.run(uow.acquire(RunId("run-1"), runtime_lease, now=1.5))
+    envelope = TaskExecutionEnvelope(
+        RunId("run-1"),
+        CallId("call-1"),
+        EffectId("effect-1"),
+        "raw-1",
+        1,
+        0,
+        "read",
+        "host:read",
+        "a" * 64,
+        "route-1",
+        "b" * 64,
+        "task-1",
+        "root-1",
+        "c" * 64,
+        2,
+        "effect-1",
+    )
+    _prepare(
+        uow,
+        fence,
+        runtime_lease,
+        raw_call_id="raw-1",
+        turn_ordinal=1,
+        call_ordinal=0,
+        task_execution_envelope=envelope,
+    )
+    database.close()
+
+    reopened, recovered = _uow(path)
+    record = recovered.read_effect(EffectId("effect-1"))
+    assert record is not None
+    assert record.task_execution_envelope == envelope
+    assert record.task_execution_envelope.envelope_hash == envelope.envelope_hash
     reopened.close()
 
 

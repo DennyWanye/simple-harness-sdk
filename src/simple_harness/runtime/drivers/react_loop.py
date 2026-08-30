@@ -146,6 +146,8 @@ class EffectBatchExecutor:
                     or envelope.call_id != internal_call_id
                     or envelope.effect_id != effect_id
                     or envelope.raw_call_id != call.call_id.value
+                    or envelope.turn_ordinal != turn_ordinal
+                    or envelope.call_ordinal != call_ordinal
                     or envelope.tool_name != call.name
                     or envelope.capability_id != policy.capability_id
                     or envelope.capability_fingerprint != policy.capability_fingerprint
@@ -156,6 +158,15 @@ class EffectBatchExecutor:
                     or envelope.route_receipt_hash != route_receipt.receipt_hash
                 ):
                     raise RuntimeError("Host TaskExecutionEnvelope route receipt differs")
+                if policy.effect_class is ToolEffectClass.PROJECT_EFFECT and (
+                    route_receipt is None
+                    or route_receipt.route_state is not ContextRouteState.ROUTED_TASK
+                    or envelope.task_scope_id != route_receipt.task_scope_id
+                    or envelope.binding_set_revision != route_receipt.binding_set_revision
+                ):
+                    raise RuntimeError(
+                        "project TaskExecutionEnvelope has stale TaskScope binding authority"
+                    )
             elif policy is not None and policy.effect_class is ToolEffectClass.PROJECT_EFFECT:
                 raise RuntimeError("project effect requires Host TaskExecutionEnvelope authority")
             return await services.tools.execute(

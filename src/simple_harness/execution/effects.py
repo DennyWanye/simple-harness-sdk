@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
@@ -74,6 +74,8 @@ class TaskExecutionEnvelope:
     call_id: CallId
     effect_id: EffectId
     raw_call_id: str
+    turn_ordinal: int
+    call_ordinal: int
     tool_name: str
     capability_id: str
     capability_fingerprint: str
@@ -103,6 +105,13 @@ class TaskExecutionEnvelope:
         ):
             if not str(getattr(self, name) or "").strip():
                 raise ValueError(f"{name} is required")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (self.turn_ordinal, self.call_ordinal)
+        ):
+            raise ValueError("TaskExecutionEnvelope ordinals must be non-negative")
+        if self.idempotency_key != self.effect_id.value:
+            raise ValueError("TaskExecutionEnvelope idempotency identity differs from effect")
         for name in ("capability_fingerprint", "route_receipt_hash", "root_identity_hash"):
             value = getattr(self, name)
             if value is not None and (
@@ -134,6 +143,8 @@ class TaskExecutionEnvelope:
             "call_id": self.call_id.value,
             "effect_id": self.effect_id.value,
             "raw_call_id": self.raw_call_id,
+            "turn_ordinal": self.turn_ordinal,
+            "call_ordinal": self.call_ordinal,
             "tool_name": self.tool_name,
             "capability_id": self.capability_id,
             "capability_fingerprint": self.capability_fingerprint,
@@ -145,6 +156,75 @@ class TaskExecutionEnvelope:
             "binding_set_revision": self.binding_set_revision,
             "idempotency_key": self.idempotency_key,
         }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> TaskExecutionEnvelope:
+        expected = {
+            "schema_version",
+            "run_id",
+            "call_id",
+            "effect_id",
+            "raw_call_id",
+            "turn_ordinal",
+            "call_ordinal",
+            "tool_name",
+            "capability_id",
+            "capability_fingerprint",
+            "route_receipt_id",
+            "route_receipt_hash",
+            "task_scope_id",
+            "root_id",
+            "root_identity_hash",
+            "binding_set_revision",
+            "idempotency_key",
+        }
+        if set(value) != expected:
+            raise ValueError("TaskExecutionEnvelope fields differ")
+        for name in ("turn_ordinal", "call_ordinal", "schema_version"):
+            item = value[name]
+            if isinstance(item, bool) or not isinstance(item, int):
+                raise TypeError(f"{name} must be an integer")
+        revision = value["binding_set_revision"]
+        if revision is not None and (isinstance(revision, bool) or not isinstance(revision, int)):
+            raise TypeError("binding_set_revision must be an integer or null")
+
+        def optional_text(name: str) -> str | None:
+            item = value[name]
+            if item is not None and not isinstance(item, str):
+                raise TypeError(f"{name} must be a string or null")
+            return item
+
+        required_text = (
+            "run_id",
+            "call_id",
+            "effect_id",
+            "raw_call_id",
+            "tool_name",
+            "capability_id",
+            "capability_fingerprint",
+            "idempotency_key",
+        )
+        if not all(isinstance(value[name], str) for name in required_text):
+            raise TypeError("TaskExecutionEnvelope required identities must be strings")
+        return cls(
+            RunId(cast(str, value["run_id"])),
+            CallId(cast(str, value["call_id"])),
+            EffectId(cast(str, value["effect_id"])),
+            cast(str, value["raw_call_id"]),
+            cast(int, value["turn_ordinal"]),
+            cast(int, value["call_ordinal"]),
+            cast(str, value["tool_name"]),
+            cast(str, value["capability_id"]),
+            cast(str, value["capability_fingerprint"]),
+            optional_text("route_receipt_id"),
+            optional_text("route_receipt_hash"),
+            optional_text("task_scope_id"),
+            optional_text("root_id"),
+            optional_text("root_identity_hash"),
+            revision,
+            cast(str, value["idempotency_key"]),
+            cast(int, value["schema_version"]),
+        )
 
     @property
     def envelope_hash(self) -> str:
@@ -228,6 +308,8 @@ class EffectRecord:
                 or envelope.effect_id != self.effect_id
                 or envelope.tool_name != self.tool_name
                 or envelope.raw_call_id != self.raw_call_id
+                or envelope.turn_ordinal != self.turn_ordinal
+                or envelope.call_ordinal != self.call_ordinal
             ):
                 raise ValueError("TaskExecutionEnvelope differs from effect identity")
 

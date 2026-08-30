@@ -105,6 +105,8 @@ def test_route_and_effect_authority_survive_checkpoint_roundtrip() -> None:
         CallId("call-1"),
         EffectId("effect-2"),
         "raw-2",
+        1,
+        0,
         "write_file",
         "host:write_file",
         "b" * 64,
