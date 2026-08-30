@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, cast
 
 from simple_harness.contracts import FrozenJsonValue, JsonValue
 
@@ -21,8 +21,12 @@ from .disclosure_protocol import (
     _freeze_object,
     _identifier,
     _non_negative_number,
+    _object,
+    _objects,
     _optional_identifier,
     _positive_int,
+    _schema_version,
+    _strings,
     _thaw_object,
 )
 
@@ -187,6 +191,55 @@ class SanitizedEvidenceEnvelope:
             "evidence_refs": [ref.to_json() for ref in self.evidence_refs],
         }
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> SanitizedEvidenceEnvelope:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "evidence_id",
+                "run_id",
+                "subject",
+                "source_kind",
+                "source_ref",
+                "source_hash",
+                "sanitized_payload",
+                "sanitized_hash",
+                "filter_policy_version",
+                "removed_spans",
+                "disclosure_context",
+                "evidence_refs",
+            },
+            "SanitizedEvidenceEnvelope",
+        )
+        return cls(
+            evidence_id=_identifier(value["evidence_id"], "evidence_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            subject=_identifier(value["subject"], "subject"),
+            source_kind=EvidenceSourceKind(value["source_kind"]),  # type: ignore[arg-type]
+            source_ref=_identifier(value["source_ref"], "source_ref", max_length=1024),
+            source_hash=_digest(value["source_hash"], "source_hash"),
+            sanitized_payload=cast(
+                Mapping[str, FrozenJsonValue],
+                _object(value["sanitized_payload"], "sanitized_payload"),
+            ),
+            sanitized_hash=_digest(value["sanitized_hash"], "sanitized_hash"),
+            filter_policy_version=_identifier(
+                value["filter_policy_version"], "filter_policy_version"
+            ),
+            removed_spans=tuple(
+                RemovedSpanSummary.from_json(item)
+                for item in _objects(value["removed_spans"], "removed_spans")
+            ),
+            disclosure_context=DisclosureContext.from_json(
+                _object(value["disclosure_context"], "disclosure_context")
+            ),
+            evidence_refs=_refs_from_json(value["evidence_refs"]),
+            schema_version=_schema_version(
+                value["schema_version"], "SanitizedEvidenceEnvelope"
+            ),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SanitizedEvidenceReceipt:
@@ -283,6 +336,56 @@ class SanitizedEvidenceReceipt:
         if expected != actual:
             raise ValueError("sanitized evidence receipt does not bind the envelope")
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> SanitizedEvidenceReceipt:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "receipt_id",
+                "run_id",
+                "subject",
+                "evidence_id",
+                "envelope_hash",
+                "source_hash",
+                "sanitized_hash",
+                "filter_policy_version",
+                "accepted",
+                "reason_codes",
+                "disclosure_context",
+                "evidence_refs",
+                "admitted_at",
+            },
+            "SanitizedEvidenceReceipt",
+        )
+        accepted = value["accepted"]
+        if not isinstance(accepted, bool):
+            raise TypeError("accepted must be a boolean")
+        return cls(
+            receipt_id=_identifier(value["receipt_id"], "receipt_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            subject=_identifier(value["subject"], "subject"),
+            evidence_id=_identifier(value["evidence_id"], "evidence_id"),
+            envelope_hash=_digest(value["envelope_hash"], "envelope_hash"),
+            source_hash=_digest(value["source_hash"], "source_hash"),
+            sanitized_hash=_digest(value["sanitized_hash"], "sanitized_hash"),
+            filter_policy_version=_identifier(
+                value["filter_policy_version"], "filter_policy_version"
+            ),
+            accepted=accepted,
+            reason_codes=tuple(
+                EvidenceReasonCode(item) for item in _strings(value["reason_codes"], "reason_codes")
+            ),
+            disclosure_context=DisclosureContext.from_json(
+                _object(value["disclosure_context"], "disclosure_context")
+            ),
+            evidence_refs=_refs_from_json(value["evidence_refs"]),
+            admitted_at=_non_negative_number(value["admitted_at"], "admitted_at"),
+            schema_version=_schema_version(
+                value["schema_version"], "SanitizedEvidenceReceipt"
+            ),
+        )
+
 
 class ExecutionEvidenceKind(StrEnum):
     PROVIDER_INVOCATION = "provider_invocation"
@@ -343,6 +446,42 @@ class ExecutionEvidence:
             "occurred_at": self.occurred_at,
         }
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> ExecutionEvidence:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "event_id",
+                "run_id",
+                "subject",
+                "kind",
+                "public_payload",
+                "disclosure_context",
+                "evidence_refs",
+                "idempotency_key",
+                "occurred_at",
+            },
+            "ExecutionEvidence",
+        )
+        return cls(
+            event_id=_identifier(value["event_id"], "event_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            subject=_identifier(value["subject"], "subject"),
+            kind=ExecutionEvidenceKind(value["kind"]),  # type: ignore[arg-type]
+            public_payload=cast(
+                Mapping[str, FrozenJsonValue],
+                _object(value["public_payload"], "public_payload"),
+            ),
+            disclosure_context=DisclosureContext.from_json(
+                _object(value["disclosure_context"], "disclosure_context")
+            ),
+            evidence_refs=_refs_from_json(value["evidence_refs"]),
+            idempotency_key=_identifier(value["idempotency_key"], "idempotency_key"),
+            occurred_at=_non_negative_number(value["occurred_at"], "occurred_at"),
+            schema_version=_schema_version(value["schema_version"], "ExecutionEvidence"),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class AnalysisBudget:
@@ -368,6 +507,23 @@ class AnalysisBudget:
             "deadline_ms": self.deadline_ms,
             "max_cost_microunits": self.max_cost_microunits,
         }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> AnalysisBudget:
+        _exact_keys(
+            value,
+            {"max_input_tokens", "max_output_tokens", "deadline_ms", "max_cost_microunits"},
+            "AnalysisBudget",
+        )
+        cost = value["max_cost_microunits"]
+        if isinstance(cost, bool) or not isinstance(cost, int) or cost < 0:
+            raise ValueError("max_cost_microunits must be a non-negative integer")
+        return cls(
+            _positive_int(value["max_input_tokens"], "max_input_tokens"),
+            _positive_int(value["max_output_tokens"], "max_output_tokens"),
+            _positive_int(value["deadline_ms"], "deadline_ms"),
+            cost,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,6 +593,53 @@ class MemoryAnalysisRequest:
             "idempotency_key": self.idempotency_key,
         }
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> MemoryAnalysisRequest:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "job_id",
+                "run_id",
+                "subject",
+                "ordered_evidence_refs",
+                "prompt_version",
+                "result_schema_version",
+                "policy_version",
+                "provider_id",
+                "model_id",
+                "model_config_hash",
+                "attempt",
+                "budget",
+                "disclosure_context",
+                "idempotency_key",
+            },
+            "MemoryAnalysisRequest",
+        )
+        return cls(
+            job_id=_identifier(value["job_id"], "job_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            subject=_identifier(value["subject"], "subject"),
+            ordered_evidence_refs=_refs_from_json(
+                value["ordered_evidence_refs"], "ordered_evidence_refs"
+            ),
+            prompt_version=_identifier(value["prompt_version"], "prompt_version"),
+            result_schema_version=_identifier(
+                value["result_schema_version"], "result_schema_version"
+            ),
+            policy_version=_identifier(value["policy_version"], "policy_version"),
+            provider_id=_identifier(value["provider_id"], "provider_id"),
+            model_id=_identifier(value["model_id"], "model_id"),
+            model_config_hash=_digest(value["model_config_hash"], "model_config_hash"),
+            attempt=_positive_int(value["attempt"], "attempt"),
+            budget=AnalysisBudget.from_json(_object(value["budget"], "budget")),
+            disclosure_context=DisclosureContext.from_json(
+                _object(value["disclosure_context"], "disclosure_context")
+            ),
+            idempotency_key=_identifier(value["idempotency_key"], "idempotency_key"),
+            schema_version=_schema_version(value["schema_version"], "MemoryAnalysisRequest"),
+        )
+
 
 class AnalysisValidationStatus(StrEnum):
     ACCEPTED = "accepted"
@@ -486,6 +689,48 @@ class MemoryAnalysisResult:
             "cost_microunits": self.cost_microunits,
             "latency_ms": self.latency_ms,
         }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> MemoryAnalysisResult:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "job_id",
+                "run_id",
+                "request_hash",
+                "provider_response_id",
+                "structured_result",
+                "input_tokens",
+                "output_tokens",
+                "cost_microunits",
+                "latency_ms",
+            },
+            "MemoryAnalysisResult",
+        )
+        counts: dict[str, int] = {}
+        for name in ("input_tokens", "output_tokens", "cost_microunits", "latency_ms"):
+            count = value[name]
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+            counts[name] = count
+        return cls(
+            job_id=_identifier(value["job_id"], "job_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            request_hash=_digest(value["request_hash"], "request_hash"),
+            provider_response_id=_optional_identifier(
+                value["provider_response_id"], "provider_response_id"
+            ),
+            structured_result=cast(
+                Mapping[str, FrozenJsonValue],
+                _object(value["structured_result"], "structured_result"),
+            ),
+            input_tokens=counts["input_tokens"],
+            output_tokens=counts["output_tokens"],
+            cost_microunits=counts["cost_microunits"],
+            latency_ms=counts["latency_ms"],
+            schema_version=_schema_version(value["schema_version"], "MemoryAnalysisResult"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -549,6 +794,44 @@ class MemoryAnalysisReceipt:
             "committed_revision": self.committed_revision,
             "committed_at": self.committed_at,
         }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> MemoryAnalysisReceipt:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "receipt_id",
+                "job_id",
+                "run_id",
+                "request_hash",
+                "result_hash",
+                "validator_version",
+                "validation_status",
+                "reason_codes",
+                "committed_revision",
+                "committed_at",
+            },
+            "MemoryAnalysisReceipt",
+        )
+        revision = value["committed_revision"]
+        if revision is not None:
+            revision = _positive_int(revision, "committed_revision")
+        return cls(
+            receipt_id=_identifier(value["receipt_id"], "receipt_id"),
+            job_id=_identifier(value["job_id"], "job_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            request_hash=_digest(value["request_hash"], "request_hash"),
+            result_hash=_digest(value["result_hash"], "result_hash"),
+            validator_version=_identifier(value["validator_version"], "validator_version"),
+            validation_status=AnalysisValidationStatus(value["validation_status"]),  # type: ignore[arg-type]
+            reason_codes=tuple(
+                EvidenceReasonCode(item) for item in _strings(value["reason_codes"], "reason_codes")
+            ),
+            committed_revision=revision,
+            committed_at=_non_negative_number(value["committed_at"], "committed_at"),
+            schema_version=_schema_version(value["schema_version"], "MemoryAnalysisReceipt"),
+        )
 
 
 class MemoryAnalysisExecutorPort(Protocol):

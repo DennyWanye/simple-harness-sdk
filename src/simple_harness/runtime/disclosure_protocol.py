@@ -90,6 +90,32 @@ def _exact_keys(value: Mapping[str, object], expected: set[str], name: str) -> N
         raise ValueError(f"{name} fields differ; missing={missing}, extra={extra}")
 
 
+def _schema_version(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} schema_version must be an integer")
+    if value != HUMAN_MEMORY_SCHEMA_VERSION:
+        raise ValueError(f"unsupported {name} schema_version")
+    return value
+
+
+def _object(value: object, name: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a JSON object")
+    return value
+
+
+def _objects(value: object, name: str) -> tuple[Mapping[str, object], ...]:
+    if not isinstance(value, list) or not all(isinstance(item, Mapping) for item in value):
+        raise TypeError(f"{name} must be an array of objects")
+    return tuple(value)
+
+
+def _strings(value: object, name: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"{name} must be an array of strings")
+    return tuple(value)
+
+
 def _canonical_hash(value: Mapping[str, JsonValue]) -> str:
     return hashlib.sha256(canonical_json(dict(value)).encode("utf-8")).hexdigest()
 
@@ -280,9 +306,7 @@ class DisclosureContext:
         reasons = value["reason_codes"]
         if not isinstance(reasons, list) or not all(isinstance(item, str) for item in reasons):
             raise TypeError("reason_codes must be an array of strings")
-        schema_version = value["schema_version"]
-        if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-            raise TypeError("schema_version must be an integer")
+        schema_version = _schema_version(value["schema_version"], "DisclosureContext")
         return cls(
             run_id=_identifier(value["run_id"], "run_id"),
             subject=_identifier(value["subject"], "subject"),

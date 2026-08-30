@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -16,11 +17,16 @@ from .disclosure_protocol import (
     _bounded_text,
     _canonical_hash,
     _digest,
+    _exact_keys,
     _identifier,
+    _object,
+    _objects,
     _optional_identifier,
     _positive_int,
+    _schema_version,
+    _strings,
 )
-from .evidence_protocol import EvidenceRef, _evidence_refs
+from .evidence_protocol import EvidenceRef, _evidence_refs, _refs_from_json
 
 
 class TaskScopeRoute(StrEnum):
@@ -129,6 +135,59 @@ class TaskScopeProposal:
             "reason_codes": [reason.value for reason in self.reason_codes],
         }
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> TaskScopeProposal:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "proposal_id",
+                "run_id",
+                "subject",
+                "route",
+                "target_task_scope_id",
+                "goal",
+                "project_hint",
+                "confidence_millionths",
+                "disclosure_context",
+                "evidence_refs",
+                "idempotency_key",
+                "reason_codes",
+            },
+            "TaskScopeProposal",
+        )
+        confidence = value["confidence_millionths"]
+        if isinstance(confidence, bool) or not isinstance(confidence, int):
+            raise TypeError("confidence_millionths must be an integer")
+        goal = value["goal"]
+        if goal is not None:
+            goal = _bounded_text(goal, "goal", max_bytes=16_384)
+        project_hint = value["project_hint"]
+        if project_hint is not None:
+            project_hint = _bounded_text(project_hint, "project_hint", max_bytes=2048)
+        return cls(
+            proposal_id=_identifier(value["proposal_id"], "proposal_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            subject=_identifier(value["subject"], "subject"),
+            route=TaskScopeRoute(value["route"]),  # type: ignore[arg-type]
+            target_task_scope_id=_optional_identifier(
+                value["target_task_scope_id"], "target_task_scope_id"
+            ),
+            goal=goal,
+            project_hint=project_hint,
+            confidence_millionths=confidence,
+            disclosure_context=DisclosureContext.from_json(
+                _object(value["disclosure_context"], "disclosure_context")
+            ),
+            evidence_refs=_refs_from_json(value["evidence_refs"]),
+            idempotency_key=_identifier(value["idempotency_key"], "idempotency_key"),
+            reason_codes=tuple(
+                TaskScopeReasonCode(item)
+                for item in _strings(value["reason_codes"], "reason_codes")
+            ),
+            schema_version=_schema_version(value["schema_version"], "TaskScopeProposal"),
+        )
+
 
 class TaskScopeMutationOutcome(StrEnum):
     MUTATE = "mutate"
@@ -181,6 +240,21 @@ class TaskScopeMutationOperation:
             "evidence_refs": [ref.to_json() for ref in self.evidence_refs],
             "reason_code": self.reason_code,
         }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> TaskScopeMutationOperation:
+        _exact_keys(
+            value,
+            {"operation_id", "kind", "value", "evidence_refs", "reason_code"},
+            "TaskScopeMutationOperation",
+        )
+        return cls(
+            operation_id=_identifier(value["operation_id"], "operation_id"),
+            kind=TaskScopeMutationKind(value["kind"]),  # type: ignore[arg-type]
+            value=_bounded_text(value["value"], "value", max_bytes=32_768),
+            evidence_refs=_refs_from_json(value["evidence_refs"]),
+            reason_code=_identifier(value["reason_code"], "reason_code"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +329,55 @@ class TaskScopeMutationPlan:
             "idempotency_key": self.idempotency_key,
         }
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> TaskScopeMutationPlan:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "plan_id",
+                "run_id",
+                "subject",
+                "task_scope_id",
+                "base_revision",
+                "outcome",
+                "operations",
+                "closure_reason",
+                "source_turn_id",
+                "disclosure_context",
+                "evidence_refs",
+                "idempotency_key",
+            },
+            "TaskScopeMutationPlan",
+        )
+        closure_reason = value["closure_reason"]
+        if closure_reason is not None:
+            closure_reason = _bounded_text(
+                closure_reason, "closure_reason", max_bytes=4096
+            )
+        return cls(
+            plan_id=_identifier(value["plan_id"], "plan_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            subject=_identifier(value["subject"], "subject"),
+            task_scope_id=_identifier(value["task_scope_id"], "task_scope_id"),
+            base_revision=_positive_int(value["base_revision"], "base_revision"),
+            outcome=TaskScopeMutationOutcome(value["outcome"]),  # type: ignore[arg-type]
+            operations=tuple(
+                TaskScopeMutationOperation.from_json(item)
+                for item in _objects(value["operations"], "operations")
+            ),
+            closure_reason=closure_reason,
+            source_turn_id=_identifier(value["source_turn_id"], "source_turn_id"),
+            disclosure_context=DisclosureContext.from_json(
+                _object(value["disclosure_context"], "disclosure_context")
+            ),
+            evidence_refs=_refs_from_json(value["evidence_refs"]),
+            idempotency_key=_identifier(value["idempotency_key"], "idempotency_key"),
+            schema_version=_schema_version(
+                value["schema_version"], "TaskScopeMutationPlan"
+            ),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class TaskScopeSearchRequest:
@@ -306,6 +429,39 @@ class TaskScopeSearchRequest:
             "idempotency_key": self.idempotency_key,
         }
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> TaskScopeSearchRequest:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "search_id",
+                "run_id",
+                "subject",
+                "query",
+                "max_candidates",
+                "disclosure_context",
+                "evidence_refs",
+                "idempotency_key",
+            },
+            "TaskScopeSearchRequest",
+        )
+        return cls(
+            search_id=_identifier(value["search_id"], "search_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            subject=_identifier(value["subject"], "subject"),
+            query=_bounded_text(value["query"], "query", max_bytes=8192),
+            max_candidates=_positive_int(value["max_candidates"], "max_candidates"),
+            disclosure_context=DisclosureContext.from_json(
+                _object(value["disclosure_context"], "disclosure_context")
+            ),
+            evidence_refs=_refs_from_json(value["evidence_refs"]),
+            idempotency_key=_identifier(value["idempotency_key"], "idempotency_key"),
+            schema_version=_schema_version(
+                value["schema_version"], "TaskScopeSearchRequest"
+            ),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class TaskScopeCandidate:
@@ -341,6 +497,34 @@ class TaskScopeCandidate:
             "relevance_millionths": self.relevance_millionths,
             "project_refs": list(self.project_refs),
         }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> TaskScopeCandidate:
+        _exact_keys(
+            value,
+            {
+                "task_scope_id",
+                "canonical_revision",
+                "title",
+                "status",
+                "relevance_millionths",
+                "project_refs",
+            },
+            "TaskScopeCandidate",
+        )
+        relevance = value["relevance_millionths"]
+        if isinstance(relevance, bool) or not isinstance(relevance, int):
+            raise TypeError("relevance_millionths must be an integer")
+        return cls(
+            task_scope_id=_identifier(value["task_scope_id"], "task_scope_id"),
+            canonical_revision=_positive_int(
+                value["canonical_revision"], "canonical_revision"
+            ),
+            title=_bounded_text(value["title"], "title", max_bytes=1024),
+            status=_identifier(value["status"], "status"),
+            relevance_millionths=relevance,
+            project_refs=_strings(value["project_refs"], "project_refs"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,6 +577,45 @@ class TaskScopeSearchReceipt:
             "reason_codes": [reason.value for reason in self.reason_codes],
         }
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> TaskScopeSearchReceipt:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "receipt_id",
+                "run_id",
+                "subject",
+                "search_id",
+                "request_hash",
+                "candidates",
+                "permission_filter_revision",
+                "reason_codes",
+            },
+            "TaskScopeSearchReceipt",
+        )
+        return cls(
+            receipt_id=_identifier(value["receipt_id"], "receipt_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            subject=_identifier(value["subject"], "subject"),
+            search_id=_identifier(value["search_id"], "search_id"),
+            request_hash=_digest(value["request_hash"], "request_hash"),
+            candidates=tuple(
+                TaskScopeCandidate.from_json(item)
+                for item in _objects(value["candidates"], "candidates")
+            ),
+            permission_filter_revision=_positive_int(
+                value["permission_filter_revision"], "permission_filter_revision"
+            ),
+            reason_codes=tuple(
+                TaskScopeReasonCode(item)
+                for item in _strings(value["reason_codes"], "reason_codes")
+            ),
+            schema_version=_schema_version(
+                value["schema_version"], "TaskScopeSearchReceipt"
+            ),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class TaskScopeOpenRequest:
@@ -442,6 +665,40 @@ class TaskScopeOpenRequest:
             "evidence_refs": [ref.to_json() for ref in self.evidence_refs],
             "idempotency_key": self.idempotency_key,
         }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> TaskScopeOpenRequest:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "open_id",
+                "run_id",
+                "subject",
+                "task_scope_id",
+                "expected_revision",
+                "disclosure_context",
+                "evidence_refs",
+                "idempotency_key",
+            },
+            "TaskScopeOpenRequest",
+        )
+        expected_revision = value["expected_revision"]
+        if expected_revision is not None:
+            expected_revision = _positive_int(expected_revision, "expected_revision")
+        return cls(
+            open_id=_identifier(value["open_id"], "open_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            subject=_identifier(value["subject"], "subject"),
+            task_scope_id=_identifier(value["task_scope_id"], "task_scope_id"),
+            expected_revision=expected_revision,
+            disclosure_context=DisclosureContext.from_json(
+                _object(value["disclosure_context"], "disclosure_context")
+            ),
+            evidence_refs=_refs_from_json(value["evidence_refs"]),
+            idempotency_key=_identifier(value["idempotency_key"], "idempotency_key"),
+            schema_version=_schema_version(value["schema_version"], "TaskScopeOpenRequest"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,6 +751,45 @@ class TaskScopeOpenReceipt:
             "canonical_state_hash": self.canonical_state_hash,
             "root_refs": list(self.root_refs),
         }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> TaskScopeOpenReceipt:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "receipt_id",
+                "run_id",
+                "subject",
+                "open_id",
+                "request_hash",
+                "task_scope_id",
+                "canonical_revision",
+                "binding_set_revision",
+                "canonical_state_hash",
+                "root_refs",
+            },
+            "TaskScopeOpenReceipt",
+        )
+        return cls(
+            receipt_id=_identifier(value["receipt_id"], "receipt_id"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            subject=_identifier(value["subject"], "subject"),
+            open_id=_identifier(value["open_id"], "open_id"),
+            request_hash=_digest(value["request_hash"], "request_hash"),
+            task_scope_id=_identifier(value["task_scope_id"], "task_scope_id"),
+            canonical_revision=_positive_int(
+                value["canonical_revision"], "canonical_revision"
+            ),
+            binding_set_revision=_positive_int(
+                value["binding_set_revision"], "binding_set_revision"
+            ),
+            canonical_state_hash=_digest(
+                value["canonical_state_hash"], "canonical_state_hash"
+            ),
+            root_refs=_strings(value["root_refs"], "root_refs"),
+            schema_version=_schema_version(value["schema_version"], "TaskScopeOpenReceipt"),
+        )
 
 
 __all__ = (

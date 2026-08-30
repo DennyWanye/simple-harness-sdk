@@ -7,6 +7,8 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+import simple_harness
+import simple_harness.runtime as runtime
 from simple_harness.contracts import canonical_json, fingerprint_json
 from simple_harness.runtime.disclosure_protocol import (
     DeliveryRecipient,
@@ -24,6 +26,8 @@ from simple_harness.runtime.evidence_protocol import (
     EvidenceReasonCode,
     EvidenceRef,
     EvidenceSourceKind,
+    ExecutionEvidence,
+    ExecutionEvidenceKind,
     MemoryAnalysisReceipt,
     MemoryAnalysisRequest,
     MemoryAnalysisResult,
@@ -33,11 +37,17 @@ from simple_harness.runtime.evidence_protocol import (
     SanitizedEvidenceReceipt,
 )
 from simple_harness.runtime.memory_protocol import (
+    ContextAssemblyBudget,
+    ContextAssemblyDecision,
+    ContextAssemblyReasonCode,
+    ContextFragment,
+    ContextFragmentType,
     LongTermMemoryType,
     MemoryMutationKind,
     MemoryMutationOperation,
     MemoryMutationPlan,
     RecallBudget,
+    RecallContext,
     RecallDecision,
     RecallDecisionOutcome,
     RecallPlan,
@@ -45,13 +55,18 @@ from simple_harness.runtime.memory_protocol import (
     WorkingMemoryRole,
 )
 from simple_harness.runtime.task_scope_protocol import (
+    TaskScopeCandidate,
     TaskScopeMutationKind,
     TaskScopeMutationOperation,
     TaskScopeMutationOutcome,
     TaskScopeMutationPlan,
+    TaskScopeOpenReceipt,
+    TaskScopeOpenRequest,
     TaskScopeProposal,
     TaskScopeReasonCode,
     TaskScopeRoute,
+    TaskScopeSearchReceipt,
+    TaskScopeSearchRequest,
 )
 
 
@@ -77,6 +92,25 @@ def _disclosure(
 
 def _ref() -> EvidenceRef:
     return EvidenceRef("evidence-1", "a" * 64, 1)
+
+
+def test_human_memory_protocol_is_available_from_official_public_surfaces() -> None:
+    public_names = (
+        "DisclosureContext",
+        "ContextFragment",
+        "ContextAssemblyDecision",
+        "SanitizedEvidenceEnvelope",
+        "MemoryAnalysisExecutorPort",
+        "LongTermMemoryType",
+        "RecallPlan",
+        "TaskScopeProposal",
+        "TaskScopeMutationPlan",
+        "TaskScopeRoute",
+    )
+    for name in public_names:
+        assert name in simple_harness.__all__
+        assert name in runtime.__all__
+        assert getattr(simple_harness, name) is getattr(runtime, name)
 
 
 def test_disclosure_is_strict_canonical_and_authority_cannot_be_forged() -> None:
@@ -415,3 +449,297 @@ def test_memory_analysis_contract_binds_model_configuration_usage_and_validator(
     )
     assert receipt.result_hash == result.result_hash
     assert canonical_json(result.to_json())
+
+
+def test_every_persistent_protocol_dto_strictly_round_trips_and_rejects_extra_fields() -> None:
+    disclosure = _disclosure()
+    evidence_ref = _ref()
+    payload = {"public_text": "hello"}
+    envelope = SanitizedEvidenceEnvelope(
+        "evidence-2",
+        "run-1",
+        "actor-1",
+        EvidenceSourceKind.USER_MESSAGE,
+        "turn-1/user",
+        "b" * 64,
+        payload,
+        fingerprint_json(payload),
+        "credential-filter/v1",
+        (RemovedSpanSummary(RemovedSpanType.ACCESS_TOKEN, 1),),
+        disclosure,
+        (evidence_ref,),
+    )
+    evidence_receipt = SanitizedEvidenceReceipt(
+        "receipt-1",
+        "run-1",
+        "actor-1",
+        envelope.evidence_id,
+        envelope.envelope_hash,
+        envelope.source_hash,
+        envelope.sanitized_hash,
+        envelope.filter_policy_version,
+        True,
+        (EvidenceReasonCode.SANITIZED_AND_ACCEPTED,),
+        disclosure,
+        (evidence_ref,),
+        10.0,
+    )
+    execution = ExecutionEvidence(
+        "event-1",
+        "run-1",
+        "actor-1",
+        ExecutionEvidenceKind.ROUTE_DECISION,
+        {"outcome": "no_recall"},
+        disclosure,
+        (evidence_ref,),
+        "event-idem-1",
+        10.0,
+    )
+    analysis_budget = AnalysisBudget(4096, 1024, 3000, 100_000)
+    analysis_request = MemoryAnalysisRequest(
+        "analysis-job-1",
+        "run-1",
+        "actor-1",
+        (evidence_ref,),
+        "memory-analysis/v1",
+        "memory-mutation/v1",
+        "memory-policy/v1",
+        "provider-1",
+        "model-1",
+        "c" * 64,
+        1,
+        analysis_budget,
+        disclosure,
+        "analysis-idem-1",
+    )
+    analysis_result = MemoryAnalysisResult(
+        analysis_request.job_id,
+        "run-1",
+        analysis_request.request_hash,
+        "provider-response-1",
+        {"outcome": "no_mutation"},
+        500,
+        30,
+        200,
+        250,
+    )
+    analysis_receipt = MemoryAnalysisReceipt(
+        "analysis-receipt-1",
+        analysis_request.job_id,
+        "run-1",
+        analysis_request.request_hash,
+        analysis_result.result_hash,
+        "validator/v1",
+        AnalysisValidationStatus.ACCEPTED,
+        (EvidenceReasonCode.VALIDATOR_ACCEPTED,),
+        1,
+        12.0,
+    )
+    recall_budget = RecallBudget(8, 16_384, 2048, 1000)
+    context_fragment = ContextFragment(
+        "fragment-1",
+        "run-1",
+        "actor-1",
+        ContextFragmentType.RECENT_CAUSAL_WINDOW,
+        "snapshot://recent-10",
+        1,
+        "e" * 64,
+        120,
+        640,
+        disclosure,
+        (evidence_ref,),
+    )
+    context_budget = ContextAssemblyBudget(8192, 65_536, 2048, 512)
+    context_decision = ContextAssemblyDecision(
+        "context-decision-1",
+        "run-1",
+        "actor-1",
+        (context_fragment.fragment_id,),
+        ("fragment-omitted",),
+        ("snapshot://context-1",),
+        context_budget,
+        120,
+        640,
+        disclosure,
+        (evidence_ref,),
+        (
+            ContextAssemblyReasonCode.INCLUDED,
+            ContextAssemblyReasonCode.TOKEN_BUDGET_OMITTED,
+        ),
+        "context-idem-1",
+    )
+    recall_context = RecallContext(
+        "run-1",
+        "actor-1",
+        "turn-1",
+        "What is my preference?",
+        None,
+        tuple(LongTermMemoryType),
+        disclosure,
+        (evidence_ref,),
+        recall_budget,
+    )
+    recall_plan = RecallPlan(
+        "recall-plan-1",
+        "run-1",
+        "actor-1",
+        "What is my preference?",
+        (LongTermMemoryType.SEMANTIC,),
+        False,
+        (),
+        ("answer style",),
+        None,
+        None,
+        disclosure,
+        (evidence_ref,),
+        recall_budget,
+        "recall-idem-1",
+        (RecallReasonCode.USER_PREFERENCE_DEPENDENCY,),
+    )
+    recall_decision = RecallDecision(
+        "recall-decision-1",
+        "run-1",
+        "actor-1",
+        recall_plan.plan_id,
+        recall_plan.plan_hash,
+        RecallDecisionOutcome.RECALL,
+        (LongTermMemoryType.SEMANTIC,),
+        ("memory-1",),
+        0,
+        disclosure,
+        (evidence_ref,),
+        (RecallReasonCode.USER_PREFERENCE_DEPENDENCY,),
+        13.0,
+    )
+    memory_operation = MemoryMutationOperation(
+        "memory-operation-1",
+        MemoryMutationKind.CREATE,
+        LongTermMemoryType.SEMANTIC,
+        None,
+        "User prefers concise answers.",
+        (evidence_ref,),
+        "explicit_user_assertion",
+    )
+    memory_plan = MemoryMutationPlan(
+        "memory-plan-1",
+        "run-1",
+        "actor-1",
+        1,
+        (memory_operation,),
+        disclosure,
+        (evidence_ref,),
+        "memory-plan-idem-1",
+    )
+    task_proposal = TaskScopeProposal(
+        "proposal-1",
+        "run-1",
+        "actor-1",
+        TaskScopeRoute.CREATE_NEW,
+        None,
+        "Implement the protocol",
+        None,
+        900_000,
+        disclosure,
+        (evidence_ref,),
+        "proposal-idem-1",
+        (TaskScopeReasonCode.MULTI_STEP_TASK,),
+    )
+    task_operation = TaskScopeMutationOperation(
+        "task-operation-1",
+        TaskScopeMutationKind.PLAN_STEP_ADD,
+        "Implement protocol DTOs",
+        (evidence_ref,),
+        "step_added",
+    )
+    task_plan = TaskScopeMutationPlan(
+        "task-plan-1",
+        "run-1",
+        "actor-1",
+        "task-1",
+        1,
+        TaskScopeMutationOutcome.MUTATE,
+        (task_operation,),
+        None,
+        "turn-1",
+        disclosure,
+        (evidence_ref,),
+        "task-plan-idem-1",
+    )
+    search_request = TaskScopeSearchRequest(
+        "search-1",
+        "run-1",
+        "actor-1",
+        "old memory task",
+        5,
+        disclosure,
+        (evidence_ref,),
+        "search-idem-1",
+    )
+    candidate = TaskScopeCandidate("task-1", 2, "Memory task", "active", 900_000, ("p-1",))
+    search_receipt = TaskScopeSearchReceipt(
+        "search-receipt-1",
+        "run-1",
+        "actor-1",
+        search_request.search_id,
+        search_request.request_hash,
+        (candidate,),
+        1,
+        (TaskScopeReasonCode.EXACT_OPEN_REQUIRED,),
+    )
+    open_request = TaskScopeOpenRequest(
+        "open-1",
+        "run-1",
+        "actor-1",
+        "task-1",
+        2,
+        disclosure,
+        (evidence_ref,),
+        "open-idem-1",
+    )
+    open_receipt = TaskScopeOpenReceipt(
+        "open-receipt-1",
+        "run-1",
+        "actor-1",
+        open_request.open_id,
+        open_request.request_hash,
+        "task-1",
+        2,
+        1,
+        "d" * 64,
+        ("root-1",),
+    )
+    values = (
+        disclosure,
+        evidence_ref,
+        RemovedSpanSummary(RemovedSpanType.ACCESS_TOKEN, 1),
+        envelope,
+        evidence_receipt,
+        execution,
+        analysis_budget,
+        analysis_request,
+        analysis_result,
+        analysis_receipt,
+        recall_budget,
+        context_fragment,
+        context_budget,
+        context_decision,
+        recall_context,
+        recall_plan,
+        recall_decision,
+        memory_operation,
+        memory_plan,
+        task_proposal,
+        task_operation,
+        task_plan,
+        search_request,
+        candidate,
+        search_receipt,
+        open_request,
+        open_receipt,
+    )
+    for original in values:
+        raw = original.to_json()
+        restored = type(original).from_json(raw)
+        assert restored == original
+        with pytest.raises(ValueError, match="extra"):
+            type(original).from_json({**raw, "unexpected": True})
