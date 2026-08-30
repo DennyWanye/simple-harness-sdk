@@ -6,6 +6,8 @@
 from .base import (
     CancelToken,
     Provider,
+    ProviderContinuationCapability,
+    ProviderContinuationMode,
     ProviderRequest,
     ProviderResponse,
     ProviderTarget,
@@ -40,6 +42,8 @@ __all__ = (
     "Provider",
     "ProviderAuthenticationError",
     "ProviderCancelledError",
+    "ProviderContinuationCapability",
+    "ProviderContinuationMode",
     "ProviderError",
     "ProviderPaymentRequiredError",
     "ProviderProtocolError",

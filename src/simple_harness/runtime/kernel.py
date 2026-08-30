@@ -18,13 +18,11 @@ from typing import TYPE_CHECKING, Protocol, Self, TypeVar, cast, runtime_checkab
 from uuid import uuid4
 
 from simple_harness.contracts import (
-    ContentBlock,
     ExecutionSessionId,
     FrozenJsonValue,
     HarnessError,
     JsonValue,
     Message,
-    MessageRole,
     RequestId,
     RunId,
     canonical_json,
@@ -73,14 +71,9 @@ from simple_harness.workflow.errors import WorkflowDependencyUnavailable
 
 from .admission import AdmissionPort, AllowAllAdmission
 from .agent_memory import (
-    AgentMemoryError,
-    AgentMemoryErrorCode,
     AgentMemoryPort,
     CommittedTurn,
     MemoryFailurePolicy,
-    MemoryRecallBounds,
-    MemoryRecallRequest,
-    MemoryRecallResult,
     MemoryReleaseRequest,
     MemoryScopeRef,
 )
@@ -710,7 +703,7 @@ class RuntimePorts:
                 ContextPreparationMode(self.context_preparation_mode),
             )
         if self.agent_memory is not None:
-            for method_name in ("recall_for_turn", "release_recall", "record_committed_turn"):
+            for method_name in ("record_committed_turn",):
                 if not callable(getattr(self.agent_memory, method_name, None)):
                     raise TypeError(f"memory must implement {method_name}")
             if self.context_provider is None:
@@ -924,10 +917,10 @@ class RunClient:
         value: ConversationTurnInput,
     ) -> ContextStageRecord:
         repository = self._runtime._ports.context_staging
-        memory = self._runtime._ports.agent_memory
         provider = self._runtime._ports.context_provider
-        if repository is None or memory is None or provider is None:
-            raise RuntimeError("Agent Memory composition is incomplete")
+        if repository is None or provider is None:
+            raise RuntimeError("conversation Context composition is incomplete")
+        del turn_id
         stage_id = (
             f"agent-memory-stage/v1/{context_query_id(kind, identity_key).rsplit('/', 1)[-1]}"
         )
@@ -947,12 +940,10 @@ class RunClient:
             return claim.record
         if not claim.owner:
             context_bounds = ConversationContextBounds()
-            recall_bounds = MemoryRecallBounds()
             loop = asyncio.get_running_loop()
             wait_deadline = loop.time() + (
                 self._runtime._ports.lease_ttl_seconds
                 + context_bounds.deadline_seconds
-                + recall_bounds.deadline_seconds
                 + 1.0
             )
             while loop.time() < wait_deadline:
@@ -1039,140 +1030,39 @@ class RunClient:
         ):
             raise ValueError("Context provider result differs from its durable request")
         product_messages = self._product_messages(product.payload, value.message)
-        recall_bounds = MemoryRecallBounds()
-        recall_request = MemoryRecallRequest(
-            query_id=context_query_id(kind, identity_key),
-            turn_id=turn_id,
-            identity=value.identity,
-            scopes=value.recall_scopes,
-            query_text=value.memory_text or canonical_json(value.message.to_dict()),
-            bounds=recall_bounds,
-            turn_started_at=now,
-        )
-        result: MemoryRecallResult | None = None
-        release_candidate: MemoryRecallResult | None = None
-        error_code: str | None = None
-        degraded_write_fence: str | None = None
-        try:
-            result = await asyncio.wait_for(
-                memory.recall_for_turn(recall_request),
-                timeout=recall_bounds.deadline_seconds,
-            )
-            if isinstance(result, MemoryRecallResult):
-                release_candidate = result
-            if (
-                not isinstance(result, MemoryRecallResult)
-                or result.query_id != recall_request.query_id
-                or result.query_hash != recall_request.query_hash
-                or result.item_count > recall_bounds.max_items
-                or result.byte_count > recall_bounds.max_bytes
-            ):
-                raise AgentMemoryError(AgentMemoryErrorCode.CORRUPT_RESULT)
-        except TimeoutError:
-            error_code = AgentMemoryErrorCode.TIMEOUT.value
-            result = None
-        except AgentMemoryError as error:
-            error_code = error.code.value
-            degraded_write_fence = error.write_fence
-            result = None
-        except Exception:
-            error_code = AgentMemoryErrorCode.TRANSIENT.value
-            result = None
         thawed_product = thaw_json(cast(FrozenJsonValue, product.payload))
         assert isinstance(thawed_product, dict)
-        if result is None:
-            memory_payload: Mapping[str, JsonValue] = {}
-        else:
-            thawed_memory = thaw_json(cast(FrozenJsonValue, result.payload))
-            assert isinstance(thawed_memory, dict)
-            memory_payload = thawed_memory
-        memory_message = Message(
-            MessageRole.USER,
-            (
-                ContentBlock(
-                    "text",
-                    {
-                        "text": "Untrusted recalled memory data:\n"
-                        + canonical_json(dict(memory_payload))
-                    },
-                ),
-            ),
-            metadata={"source": "memory", "trust": "untrusted_data"},
-        )
-        provider_messages = [message.to_dict() for message in product_messages[:-1]]
-        provider_messages.extend((memory_message.to_dict(), value.message.to_dict()))
+        provider_messages = [message.to_dict() for message in product_messages]
         private: dict[str, JsonValue] = {
             "schema_version": 1,
             "lineage": {
-                "context_query_id": recall_request.query_id,
-                "memory_result_id": None if result is None else result.result_id,
-                "memory_result_hash": None if result is None else result.result_hash,
+                "context_query_id": context_query_id(kind, identity_key),
+                "memory_result_id": None,
+                "memory_result_hash": None,
                 "product_result_hash": product.result_hash,
                 "source_snapshot_ref": ref,
             },
             "memory": {
-                "trust": "untrusted_data",
-                "role": "user",
-                "result": dict(memory_payload),
+                "status": "not_queried",
             },
             "product_context": thawed_product,
             "current_message": value.message.to_dict(),
             "provider_messages": cast(JsonValue, provider_messages),
         }
-        release: MemoryReleaseRequest | None = None
-        release_id: str | None = None
-        if release_candidate is not None:
-            release = MemoryReleaseRequest(
-                recall_request.query_id,
-                recall_request.query_hash,
-                release_candidate.result_id,
-                release_candidate.result_hash,
-                release_candidate.write_fence,
-            )
-            release_id = hashlib.sha256(
-                canonical_json(
-                    {
-                        "protocol": "simple-harness-agent-memory/release/v1",
-                        "query_id": release.query_id,
-                        "result_hash": release.result_hash,
-                    }
-                ).encode("utf-8")
-            ).hexdigest()
-        staged = repository.complete(
+        return repository.complete(
             claim.record,
             private_snapshot=private,
-            memory_result_id=None if result is None else result.result_id,
-            memory_result_hash=None if result is None else result.result_hash,
-            memory_query_hash=recall_request.query_hash,
-            memory_write_fence=(degraded_write_fence if result is None else result.write_fence),
-            outcome="degraded_empty" if result is None else "ready",
-            error_code=error_code,
+            memory_result_id=None,
+            memory_result_hash=None,
+            memory_query_hash=None,
+            memory_write_fence=None,
+            outcome="ready",
+            error_code=None,
             product_result_hash=product.result_hash,
             source_snapshot_ref=ref,
             turn_started_at=now,
-            release_id=release_id,
-            release_query_id=None if release is None else release.query_id,
-            release_query_hash=None if release is None else release.query_hash,
-            release_result_id=None if release is None else release.result_id,
-            release_result_hash=None if release is None else release.result_hash,
-            release_write_fence=None if release is None else release.write_fence,
-            release_retry_at=None if release is None else now,
             now=self._runtime._now(),
         )
-        if release is not None:
-            assert release_id is not None
-            try:
-                await asyncio.wait_for(memory.release_recall(release), timeout=1.0)
-            except Exception:
-                pass
-            else:
-                with repository.database.transaction() as connection:
-                    connection.execute(
-                        "UPDATE memory_recall_releases SET state='released',attempt_count=1,"
-                        "released_at=? WHERE release_id=?",
-                        (self._runtime._now(), release_id),
-                    )
-        return staged
 
     @staticmethod
     def _product_messages(

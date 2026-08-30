@@ -129,7 +129,7 @@ class ProductionRuntimeConfig:
         for name in required:
             if getattr(self, name) is None:
                 raise TypeError(f"{name} is required for production composition")
-        for method_name in ("recall_for_turn", "release_recall", "record_committed_turn"):
+        for method_name in ("record_committed_turn",):
             if not callable(getattr(self.memory, method_name, None)):
                 raise TypeError(f"memory must implement {method_name}")
         if not isinstance(self.execution_path, (str, Path)):

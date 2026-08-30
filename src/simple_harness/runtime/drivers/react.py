@@ -13,7 +13,6 @@ from typing import cast
 
 from simple_harness.contracts import (
     CallId,
-    FrozenJsonValue,
     JsonValue,
     RequestId,
     RunId,
@@ -29,12 +28,15 @@ from simple_harness.contracts.messages import (
 from simple_harness.execution.budget import (
     BudgetPolicy,
     FrozenPriceEstimator,
-    budget_policy_fingerprint,
 )
-from simple_harness.execution.dispatch import ProviderInvocationUnknownError
+from simple_harness.execution.dispatch import (
+    ProviderInvocationUnknownError,
+    provider_binding_fingerprint,
+)
 from simple_harness.execution.recovery import RecoveryKind, WaitBlockerSpec
 from simple_harness.execution.uow import RunState
 from simple_harness.providers import ProviderToolSpec
+from simple_harness.providers.base import ProviderContinuationCapability
 from simple_harness.runtime.conversation_memory import (
     ConversationContinuationInput,
     ConversationTurnOutput,
@@ -350,14 +352,6 @@ def _continuation_prepared_messages(
         current_message.to_dict()
     ):
         raise ValueError("prepared continuation current message differs from conversation envelope")
-    for message in messages[:-1]:
-        metadata = thaw_json(cast(FrozenJsonValue, message.metadata))
-        if (
-            message.role is not MessageRole.USER
-            or not isinstance(metadata, dict)
-            or metadata.get("trust") != "untrusted_data"
-        ):
-            raise ValueError("prepared continuation memory must remain USER/untrusted data")
     return messages
 
 
@@ -395,6 +389,7 @@ def build_react_driver(
     estimator: FrozenPriceEstimator | None,
     effects: EffectBatchExecutor | None = None,
     tool_exposure_resolver: Callable[[RunId], RunToolExposurePort | None] | None = None,
+    continuation_capability: ProviderContinuationCapability = ProviderContinuationCapability(),
     clock=time.time,
 ) -> ReActDriver:
     """Public hard-policy builder; every authority must be explicit and frozen."""
@@ -405,7 +400,11 @@ def build_react_driver(
         raise TypeError("budget_policy must use BudgetPolicy")
     if estimator is not None and not isinstance(estimator, FrozenPriceEstimator):
         raise TypeError("estimator must use FrozenPriceEstimator or None")
-    provider_fingerprint = budget_policy_fingerprint(budget_policy, estimator)
+    if not isinstance(continuation_capability, ProviderContinuationCapability):
+        raise TypeError("continuation_capability must use ProviderContinuationCapability")
+    provider_fingerprint = provider_binding_fingerprint(
+        budget_policy, estimator, continuation_capability
+    )
     policy_payload = {
         "limits": {
             "max_consecutive_same_tool": limits.max_consecutive_same_tool,

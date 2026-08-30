@@ -29,6 +29,10 @@ from simple_harness.providers import (
     ProviderToolSpec,
     ProviderUsage,
 )
+from simple_harness.providers.base import (
+    ProviderContinuationCapability,
+    ProviderContinuationMode,
+)
 
 from .budget import BudgetCharge
 
@@ -148,10 +152,54 @@ def provider_target_digest(target: ProviderTarget) -> str:
     return _digest(provider_target_json(target))
 
 
-def provider_response_json(response: ProviderResponse) -> dict[str, JsonValue]:
+def _durable_public_message_json(
+    message: Message, capability: ProviderContinuationCapability
+) -> dict[str, JsonValue]:
+    if isinstance(message.content, str):
+        content: JsonValue = message.content
+    else:
+        public: list[JsonValue] = []
+        hidden_present = False
+        for block in message.content:
+            if block.type in {"reasoning", "thinking", "chain_of_thought"}:
+                hidden_present = True
+                continue
+            if block.type not in capability.public_content_types:
+                raise ValueError("provider response contains a non-public content block")
+            public.append(block.to_dict())
+        if hidden_present and capability.mode is not ProviderContinuationMode.OPAQUE_REFERENCE:
+            raise ValueError("provider hidden reasoning cannot enter durable response state")
+        content = public
+    return {
+        "role": message.role.value,
+        "content": content,
+        "name": message.name,
+        "call_id": None if message.call_id is None else message.call_id.value,
+        "metadata": {},
+    }
+
+
+def provider_response_json(
+    response: ProviderResponse,
+    *,
+    capability: ProviderContinuationCapability | None = None,
+) -> dict[str, JsonValue]:
+    capability = capability or ProviderContinuationCapability()
+    if capability.mode is ProviderContinuationMode.REJECT:
+        raise ValueError("provider continuation capability is rejected")
+    has_hidden = not isinstance(response.message.content, str) and any(
+        block.type in {"reasoning", "thinking", "chain_of_thought"}
+        for block in response.message.content
+    )
+    if (
+        has_hidden
+        and capability.mode is ProviderContinuationMode.OPAQUE_REFERENCE
+        and response.opaque_continuation_ref is None
+    ):
+        raise ValueError("opaque reasoning continuation requires a public reference")
     return {
         "request_id": response.request_id.value,
-        "message": _message_json(response.message),
+        "message": _durable_public_message_json(response.message, capability),
         "tool_calls": [
             {
                 "call_id": call.call_id.value,
@@ -174,6 +222,13 @@ def provider_response_json(response: ProviderResponse) -> dict[str, JsonValue]:
         "model": response.model,
         "finish_reason": response.finish_reason,
         "provider_request_id": response.provider_request_id,
+        "continuation": {
+            "schema_version": 1,
+            "mode": capability.mode.value,
+            "public_content_types": list(capability.public_content_types),
+            "capability_fingerprint": capability.fingerprint,
+            "opaque_ref": response.opaque_continuation_ref,
+        },
     }
 
 
@@ -209,7 +264,11 @@ def _message_from_json(value: object) -> Message:
     )
 
 
-def provider_response_from_json(value: object) -> ProviderResponse:
+def provider_response_from_json(
+    value: object,
+    *,
+    expected_capability: ProviderContinuationCapability | None = None,
+) -> ProviderResponse:
     if not isinstance(value, dict):
         raise TypeError("stored provider response must be an object")
     raw_request_id = value.get("request_id")
@@ -248,6 +307,38 @@ def provider_response_from_json(value: object) -> ProviderResponse:
         if item is not None and not isinstance(item, str):
             raise ValueError(f"stored provider {name} is malformed")
         optional_text.append(item)
+    continuation = value.get("continuation")
+    if not isinstance(continuation, dict):
+        raise ValueError("stored provider continuation must be an object")
+    if set(continuation) != {
+        "schema_version",
+        "mode",
+        "public_content_types",
+        "capability_fingerprint",
+        "opaque_ref",
+    }:
+        raise ValueError("stored provider continuation fields differ")
+    if continuation.get("schema_version") != 1:
+        raise ValueError("unsupported provider continuation schema")
+    raw_types = continuation.get("public_content_types")
+    if not isinstance(raw_types, list) or not all(isinstance(item, str) for item in raw_types):
+        raise TypeError("stored provider public content types are malformed")
+    capability = ProviderContinuationCapability(
+        ProviderContinuationMode(str(continuation.get("mode"))),
+        tuple(raw_types),
+    )
+    if continuation.get("capability_fingerprint") != capability.fingerprint:
+        raise ValueError("stored provider continuation capability hash differs")
+    if (
+        expected_capability is not None
+        and capability.fingerprint != expected_capability.fingerprint
+    ):
+        raise ValueError("stored Provider response uses another continuation capability")
+    opaque_ref = continuation.get("opaque_ref")
+    if opaque_ref is not None and not isinstance(opaque_ref, str):
+        raise ValueError("stored opaque continuation ref is malformed")
+    if capability.mode is not ProviderContinuationMode.OPAQUE_REFERENCE and opaque_ref is not None:
+        raise ValueError("stored opaque ref is forbidden for continuation mode")
     return ProviderResponse(
         request_id=RequestId(raw_request_id),
         message=_message_from_json(value.get("message")),
@@ -256,6 +347,7 @@ def provider_response_from_json(value: object) -> ProviderResponse:
         model=optional_text[0],
         finish_reason=optional_text[1],
         provider_request_id=optional_text[2],
+        opaque_continuation_ref=opaque_ref,
     )
 
 

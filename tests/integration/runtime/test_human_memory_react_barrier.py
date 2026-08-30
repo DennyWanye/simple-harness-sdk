@@ -7,6 +7,8 @@ import asyncio
 from collections.abc import Mapping
 from dataclasses import replace
 
+import pytest
+
 from simple_harness.contracts import CallId, JsonValue, RequestId, RunId
 from simple_harness.execution.context_authority import (
     ContextRouteReceipt,
@@ -40,6 +42,7 @@ from simple_harness.tools.runtime_catalog import (
 from .react_fakes import (
     FENCE,
     LEASE,
+    Checkpoint,
     MemoryContext,
     ScriptedProviderCoordinator,
     response,
@@ -188,6 +191,25 @@ class NoRecallSink:
         )
 
 
+class WrongRunContextAuthority(ContextAuthority):
+    async def prepare_snapshot(self, request):  # type: ignore[no-untyped-def]
+        snapshot = await super().prepare_snapshot(request)
+        return RunContextSnapshot(
+            snapshot.snapshot_id,
+            "another-run",
+            snapshot.provider_turn_ordinal,
+            snapshot.prior_context_revision,
+            snapshot.snapshot_revision,
+            snapshot.source_revisions,
+            snapshot.messages,
+            snapshot.tools,
+            snapshot.temperature,
+            snapshot.max_output_tokens,
+            snapshot.metadata,
+            snapshot.expected_request_fingerprint,
+        )
+
+
 def test_host_context_snapshot_is_exact_provider_request_and_no_recall_is_durable() -> None:
     context = MemoryContext()
     authority = ContextAuthority(context)
@@ -214,4 +236,102 @@ def test_host_context_snapshot_is_exact_provider_request_and_no_recall_is_durabl
     assert request.metadata["authority"] == "host"
     assert len(authority.calls) == 1
     assert result.termination.route_state == "routed_standalone"
+    assert result.termination.context_authority_receipt_hash is not None
+
+
+def test_host_context_authority_without_no_recall_sink_fails_closed() -> None:
+    context = MemoryContext()
+    runtime_services = services(
+        ScriptedProviderCoordinator([response("done")]), RouteEffectExecutor(), context
+    )
+    runtime_services = replace(
+        runtime_services,
+        run_context_authority=ContextAuthority(context),
+    )
+    with pytest.raises(RuntimeError, match="no-recall decision sink"):
+        asyncio.run(
+            _loop(RouteEffectExecutor()).run(
+                ReActRunInput(RunId("run-1"), RequestId("request-1")),
+                services=runtime_services,
+                execution_lease=LEASE,
+                run_fence=FENCE,
+                cancel=CancelToken(),
+                initial_messages=(),
+            )
+        )
+
+
+def test_wrong_run_host_context_snapshot_fails_before_provider() -> None:
+    context = MemoryContext()
+    provider = ScriptedProviderCoordinator([response("must-not-run")])
+    runtime_services = replace(
+        services(provider, RouteEffectExecutor(), context),
+        run_context_authority=WrongRunContextAuthority(context),
+        runtime_decision_sink=NoRecallSink(),
+    )
+    with pytest.raises(RuntimeError, match="lineage differs"):
+        asyncio.run(
+            _loop(RouteEffectExecutor()).run(
+                ReActRunInput(RunId("run-1"), RequestId("request-1")),
+                services=runtime_services,
+                execution_lease=LEASE,
+                run_fence=FENCE,
+                cancel=CancelToken(),
+                initial_messages=(),
+            )
+        )
+    assert provider.calls == []
+
+
+def test_provider_reserved_reopen_reuses_frozen_host_context_receipt() -> None:
+    context = MemoryContext()
+    checkpoint = Checkpoint()
+    authority = ContextAuthority(context)
+    first_services = services(
+        ScriptedProviderCoordinator([RuntimeError("provider crashed")]),
+        RouteEffectExecutor(),
+        context,
+        checkpoint=checkpoint,
+    )
+    first_services = replace(
+        first_services,
+        run_context_authority=authority,
+        runtime_decision_sink=NoRecallSink(),
+    )
+    with pytest.raises(RuntimeError, match="provider crashed"):
+        asyncio.run(
+            _loop(RouteEffectExecutor()).run(
+                ReActRunInput(RunId("run-1"), RequestId("request-1")),
+                services=first_services,
+                execution_lease=LEASE,
+                run_fence=FENCE,
+                cancel=CancelToken(),
+                initial_messages=(),
+            )
+        )
+    assert len(authority.calls) == 1
+
+    replay_authority = ContextAuthority(context)
+    reopened_services = services(
+        ScriptedProviderCoordinator([response("done")]),
+        RouteEffectExecutor(),
+        context,
+        checkpoint=checkpoint,
+    )
+    reopened_services = replace(
+        reopened_services,
+        run_context_authority=replay_authority,
+        runtime_decision_sink=NoRecallSink(),
+    )
+    result = asyncio.run(
+        _loop(RouteEffectExecutor()).run(
+            ReActRunInput(RunId("run-1"), RequestId("request-1")),
+            services=reopened_services,
+            execution_lease=LEASE,
+            run_fence=FENCE,
+            cancel=CancelToken(),
+            initial_messages=(),
+        )
+    )
+    assert replay_authority.calls == []
     assert result.termination.context_authority_receipt_hash is not None

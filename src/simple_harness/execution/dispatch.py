@@ -6,13 +6,20 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
-from simple_harness.contracts import FrozenJsonValue, HarnessError, RunId, thaw_json
+from simple_harness.contracts import (
+    FrozenJsonValue,
+    HarnessError,
+    RunId,
+    canonical_json,
+    thaw_json,
+)
 from simple_harness.observability import CorrelationContext, ObservabilityRuntime, Outcome
 from simple_harness.providers import (
     CancelToken,
@@ -28,6 +35,10 @@ from simple_harness.providers import (
     ProviderRequestRejectedError,
     ProviderResponse,
     ProviderServerError,
+)
+from simple_harness.providers.base import (
+    ProviderContinuationCapability,
+    ProviderContinuationMode,
 )
 
 from .budget import (
@@ -121,6 +132,26 @@ class ProviderInvocationUnitOfWork(Protocol):
     ) -> ProviderInvocationRecord: ...
 
 
+def provider_binding_fingerprint(
+    budget_policy: BudgetPolicy,
+    estimator: FrozenPriceEstimator | None,
+    continuation_capability: ProviderContinuationCapability,
+) -> str:
+    return hashlib.sha256(
+        canonical_json(
+            {
+                "schema_version": 2,
+                "budget_policy_fingerprint": budget_policy_fingerprint(
+                    budget_policy, estimator
+                ),
+                "continuation_capability_fingerprint": (
+                    continuation_capability.fingerprint
+                ),
+            }
+        ).encode()
+    ).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderBinding:
     """Immutable physical Provider and budget authority for one Run."""
@@ -128,14 +159,21 @@ class ProviderBinding:
     provider: Provider
     estimator: FrozenPriceEstimator | None
     budget_policy: BudgetPolicy
+    continuation_capability: ProviderContinuationCapability = ProviderContinuationCapability()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.continuation_capability, ProviderContinuationCapability):
+            raise TypeError("continuation_capability must use ProviderContinuationCapability")
+        if self.continuation_capability.mode is ProviderContinuationMode.REJECT:
+            raise ValueError("provider is rejected by durable continuation policy")
         if self.estimator is not None:
             self.estimator.bind(self.provider.target)
 
     @property
     def budget_fingerprint(self) -> str:
-        return budget_policy_fingerprint(self.budget_policy, self.estimator)
+        return provider_binding_fingerprint(
+            self.budget_policy, self.estimator, self.continuation_capability
+        )
 
 
 class ProviderBindingResolver(Protocol):
@@ -324,6 +362,11 @@ class ProviderInvocationCoordinator:
 
         return self._uow.read_provider_budget(run_id)
 
+    def continuation_capability_for(
+        self, run_id: RunId
+    ) -> ProviderContinuationCapability:
+        return self.resolve(run_id).continuation_capability
+
     async def invoke(
         self,
         run_id: RunId,
@@ -348,7 +391,8 @@ class ProviderInvocationCoordinator:
             if record.response_json is None:
                 raise ProviderInvocationUnknownError(record)
             return provider_response_from_json(
-                thaw_json(cast(FrozenJsonValue, record.response_json))
+                thaw_json(cast(FrozenJsonValue, record.response_json)),
+                expected_capability=binding.continuation_capability,
             )
         if record.state is ProviderInvocationState.FAILED:
             raise ProviderInvocationFailedError(record.error_code)
@@ -419,8 +463,23 @@ class ProviderInvocationCoordinator:
             ),
             "budget": charge.to_json(),
         }
+        try:
+            durable_response = provider_response_json(
+                response, capability=binding.continuation_capability
+            )
+        except ValueError as exc:
+            failed = handed_off.settle_failed(
+                error_code="provider_response_not_durable",
+                at=self._clock(),
+                expected_version=handed_off.version,
+            )
+            self._uow.settle_provider_invocation(failed, expected_version=handed_off.version)
+            self._emit_attempt(
+                failed, outcome=Outcome.FAILED, error_code="provider_response_not_durable"
+            )
+            raise ProviderProtocolError(private_cause=exc) from exc
         succeeded = handed_off.settle_succeeded(
-            response_json=provider_response_json(response),
+            response_json=durable_response,
             usage_json=usage_json,
             budget_charge=charge,
             at=self._clock(),
@@ -432,7 +491,8 @@ class ProviderInvocationCoordinator:
             current = self._uow.read_provider_invocation(record.invocation_id)
             if current is not None and current.state is ProviderInvocationState.SUCCEEDED:
                 return provider_response_from_json(
-                    thaw_json(cast(FrozenJsonValue, current.response_json))
+                    thaw_json(cast(FrozenJsonValue, current.response_json)),
+                    expected_capability=binding.continuation_capability,
                 )
             if current is not None and current.state is ProviderInvocationState.HANDED_OFF:
                 await self._settle_unknown(current, "provider_settlement_commit_unknown")
@@ -547,7 +607,10 @@ class ProviderInvocationCoordinator:
                 self._uow.record_provider_reconciliation(
                     record,
                     outcome=ResolutionOutcome.COMPLETED,
-                    response_json=provider_response_json(response),
+                    response_json=provider_response_json(
+                        response,
+                        capability=self.resolve(record.run_id).continuation_capability,
+                    ),
                     usage_json=usage_json,
                     budget_charge=charge,
                     evidence_ref=observation.evidence_ref,
@@ -609,4 +672,5 @@ __all__ = (
     "ProviderInvocationFailedError",
     "ProviderInvocationUnitOfWork",
     "ProviderInvocationUnknownError",
+    "provider_binding_fingerprint",
 )

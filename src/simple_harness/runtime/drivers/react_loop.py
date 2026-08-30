@@ -44,8 +44,10 @@ from simple_harness.providers import (
     ProviderResponse,
     ProviderToolSpec,
 )
+from simple_harness.providers.base import ProviderContinuationCapability
 from simple_harness.runtime.kernel import RuntimeServices
 from simple_harness.runtime.react_checkpoint import DurableReactCheckpoint
+from simple_harness.runtime.task_scope_protocol import TaskScopeRoute
 from simple_harness.tools import (
     CancellationToken,
     JsonObject,
@@ -369,7 +371,12 @@ class ReActLoop:
                     )
                 else:
                     state = replace(state, phase="response_reserved")
-                response_snapshot = provider_response_json(response)
+                continuation_capability = _provider_continuation_capability(
+                    services, value.run_id
+                )
+                response_snapshot = provider_response_json(
+                    response, capability=continuation_capability
+                )
                 state = replace(
                     state,
                     provider_response_snapshot=response_snapshot,
@@ -390,7 +397,12 @@ class ReActLoop:
                     != state.provider_response_digest
                 ):
                     raise RuntimeError("frozen Provider response digest mismatch")
-                response = provider_response_from_json(response_payload)
+                response = provider_response_from_json(
+                    response_payload,
+                    expected_capability=_provider_continuation_capability(
+                        services, value.run_id
+                    ),
+                )
             batch_policies, barrier_rejections = _preflight_tool_batch(
                 response.tool_calls,
                 run_id=value.run_id,
@@ -407,9 +419,15 @@ class ReActLoop:
                 (response.message,),
             )
             if not response.tool_calls:
-                if (
-                    state.route_state == ContextRouteState.UNROUTED.value
-                    and services.runtime_decision_sink is not None
+                if state.route_state == ContextRouteState.UNROUTED.value:
+                    if services.run_context_authority is not None and (
+                        services.runtime_decision_sink is None
+                    ):
+                        raise RuntimeError(
+                            "Host Context authority requires a no-recall decision sink"
+                        )
+                if state.route_state == ContextRouteState.UNROUTED.value and (
+                    services.runtime_decision_sink is not None
                 ):
                     receipt = await services.runtime_decision_sink.record_no_recall(
                         run_id=value.run_id,
@@ -418,7 +436,8 @@ class ReActLoop:
                     )
                     if (
                         receipt.run_id != value.run_id.value
-                        or receipt.route_state is not ContextRouteState.ROUTED_STANDALONE
+                        or receipt.route is not TaskScopeRoute.DIRECT_STANDALONE
+                        or receipt.recall_refs
                     ):
                         raise RuntimeError("Host no-recall receipt differs from terminal Run")
                     state = replace(
@@ -695,6 +714,18 @@ def _verify_context_authority_receipt(
         != provider_request_fingerprint(request)
     ):
         raise RuntimeError("frozen Host Context authority receipt differs")
+
+
+def _provider_continuation_capability(
+    services: RuntimeServices, run_id: RunId
+) -> ProviderContinuationCapability:
+    resolver = getattr(services.provider, "continuation_capability_for", None)
+    if resolver is None:
+        return ProviderContinuationCapability()
+    capability = resolver(run_id)
+    if not isinstance(capability, ProviderContinuationCapability):
+        raise TypeError("Provider continuation capability is invalid")
+    return capability
 
 
 def _internal_effect_identity(

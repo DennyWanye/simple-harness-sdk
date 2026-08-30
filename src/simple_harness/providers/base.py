@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from simple_harness.contracts.identity import CallId, RequestId
-from simple_harness.contracts.json import JsonValue, freeze_json
+from simple_harness.contracts.json import JsonValue, canonical_json, freeze_json
 from simple_harness.contracts.messages import Message
 
 
@@ -161,6 +163,47 @@ class ProviderUsage:
                 raise ValueError(f"{name} must be a non-negative integer or None")
 
 
+class ProviderContinuationMode(StrEnum):
+    PUBLIC_STATELESS = "public_stateless"
+    OPAQUE_REFERENCE = "opaque_reference"
+    REASONING_DISABLED = "reasoning_disabled"
+    REJECT = "reject"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderContinuationCapability:
+    mode: ProviderContinuationMode = ProviderContinuationMode.REASONING_DISABLED
+    public_content_types: tuple[str, ...] = (
+        "text",
+        "output_text",
+        "image",
+        "image_url",
+        "audio",
+        "file",
+        "refusal",
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mode", ProviderContinuationMode(self.mode))
+        types = tuple(self.public_content_types)
+        if not types or any(not isinstance(item, str) or not item.strip() for item in types):
+            raise ValueError("public_content_types must be non-empty strings")
+        if len(set(types)) != len(types):
+            raise ValueError("public_content_types must be unique")
+        object.__setattr__(self, "public_content_types", types)
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "schema_version": 1,
+            "mode": self.mode.value,
+            "public_content_types": list(self.public_content_types),
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        return hashlib.sha256(canonical_json(self.to_json()).encode()).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderRequest:
     """One stateless model invocation."""
@@ -209,6 +252,7 @@ class ProviderResponse:
     model: str | None = None
     finish_reason: str | None = None
     provider_request_id: str | None = None
+    opaque_continuation_ref: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.request_id, RequestId):
@@ -220,6 +264,13 @@ class ProviderResponse:
             raise TypeError("tool_calls must contain ProviderToolCall values")
         if self.usage is not None and not isinstance(self.usage, ProviderUsage):
             raise TypeError("usage must use ProviderUsage")
+        if self.opaque_continuation_ref is not None and (
+            not isinstance(self.opaque_continuation_ref, str)
+            or not self.opaque_continuation_ref.strip()
+            or "\x00" in self.opaque_continuation_ref
+            or len(self.opaque_continuation_ref.encode("utf-8")) > 1024
+        ):
+            raise ValueError("opaque_continuation_ref must be a bounded public identifier")
 
 
 @runtime_checkable

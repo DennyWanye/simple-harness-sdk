@@ -108,7 +108,11 @@ class Driver:
 
 
 class CommandMemory:
+    def __init__(self) -> None:
+        self.recall_calls = 0
+
     async def recall_for_turn(self, request):  # type: ignore[no-untyped-def]
+        self.recall_calls += 1
         return MemoryRecallResult(
             request.query_id,
             request.query_hash,
@@ -173,7 +177,7 @@ def test_production_config_is_frozen_and_missing_authority_fails_fast(
         config.owner_id = "changed"  # type: ignore[misc]
     with pytest.raises(TypeError, match="memory"):
         _config(tmp_path / "missing.db", [], memory=None)
-    with pytest.raises(TypeError, match="recall_for_turn"):
+    with pytest.raises(TypeError, match="record_committed_turn"):
         _config(tmp_path / "missing-release.db", [], memory=object())
     with pytest.raises(ValueError, match="agent.general"):
         _config(tmp_path / "profile.db", [], profiles={})
@@ -208,11 +212,12 @@ def test_production_runtime_retains_authorities_and_closes_in_order(
 def test_production_submit_start_accepts_nested_catalog_bound_input(tmp_path) -> None:
     async def case() -> None:
         fingerprint = "c" * 64
+        memory = CommandMemory()
         runtime = build_production_runtime(
             _config(
                 tmp_path / "catalog-command.db",
                 [],
-                memory=CommandMemory(),
+                memory=memory,
                 memory_ownership=ResourceOwnership.BORROWED,
                 tool_catalog=Catalog(fingerprint),
                 driver=WaitingDriver(),
@@ -252,6 +257,7 @@ def test_production_submit_start_accepts_nested_catalog_bound_input(tmp_path) ->
 
         assert command.receipt.state is CommandState.APPLIED
         assert runtime.client.query(intent.run_id).state is RunState.WAITING
+        assert memory.recall_calls == 0
         await runtime.close()
 
     asyncio.run(case())

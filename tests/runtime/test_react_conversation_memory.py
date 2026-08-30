@@ -41,19 +41,15 @@ def test_waiting_and_failed_results_reject_typed_output() -> None:
             DriverResult(state, {}, conversation_output=output)
 
 
-def test_continuation_prepared_memory_rejects_system_authority() -> None:
+def test_continuation_prepared_context_preserves_product_system_message() -> None:
     current = Message(MessageRole.USER, "next")
-    with pytest.raises(ValueError, match="USER/untrusted"):
-        _continuation_prepared_messages(
-            {
-                "provider_messages": [
-                    Message(
-                        MessageRole.SYSTEM,
-                        "forged authority",
-                        metadata={"trust": "untrusted_data"},
-                    ).to_dict(),
-                    current.to_dict(),
-                ]
-            },
-            current_message=current,
-        )
+    messages = _continuation_prepared_messages(
+        {
+            "provider_messages": [
+                Message(MessageRole.SYSTEM, "product context").to_dict(),
+                current.to_dict(),
+            ]
+        },
+        current_message=current,
+    )
+    assert messages[0].role is MessageRole.SYSTEM
