@@ -13,6 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from simple_harness.execution.context_authority import (
+    RunContextAuthorityPort,
+    RuntimeDecisionSinkPort,
+    TaskExecutionAuthorityPort,
+)
 from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.delivery import DeliveryDispatcher
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
@@ -83,6 +88,9 @@ class ProductionRuntimeConfig:
     provider_projection_pump: ManagedProjectionPump
     run_binding: object
     structured_message_services: object
+    run_context_authority: RunContextAuthorityPort
+    runtime_decision_sink: RuntimeDecisionSinkPort
+    task_execution_authority: TaskExecutionAuthorityPort
     owner_id: str
     workflow_runner: object | None = None
     clock: Callable[[], float] = time.time
@@ -114,6 +122,9 @@ class ProductionRuntimeConfig:
             "provider_projection_pump",
             "run_binding",
             "structured_message_services",
+            "run_context_authority",
+            "runtime_decision_sink",
+            "task_execution_authority",
         )
         for name in required:
             if getattr(self, name) is None:
@@ -204,6 +215,9 @@ def build_production_runtime(config: ProductionRuntimeConfig) -> Runtime:
             context_provider=config.context_provider,
             memory_failure_policy=config.memory_failure_policy,
             observability=observability,
+            run_context_authority=config.run_context_authority,
+            runtime_decision_sink=config.runtime_decision_sink,
+            task_execution_authority=config.task_execution_authority,
         )
         root_profile = config.profiles["agent.general"]
         memory_close_hooks: tuple[Callable[[], Awaitable[None]], ...] = ()

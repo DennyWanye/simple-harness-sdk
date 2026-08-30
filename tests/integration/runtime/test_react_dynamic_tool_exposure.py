@@ -16,6 +16,12 @@ from simple_harness.runtime.drivers.react_loop import (
     ReActRunInput,
 )
 from simple_harness.runtime.termination import TerminationLimits
+from simple_harness.tools.runtime_catalog import (
+    ToolEffectClass,
+    ToolExecutionPolicy,
+    ToolRouteRequirement,
+    ToolTaskScopeRequirement,
+)
 
 from .react_fakes import (
     FENCE,
@@ -47,6 +53,16 @@ class Exposure:
         if not self.activated:
             return direct
         return (*direct, ProviderToolSpec("late_tool", "Late", {"type": "object"}))
+
+    def execution_policy(self, run_id: RunId, provider_name: str) -> ToolExecutionPolicy:
+        assert run_id == RunId("run-1")
+        return ToolExecutionPolicy(
+            f"fixture:{provider_name}",
+            "a" * 64,
+            ToolEffectClass.NON_PROJECT_EFFECT,
+            ToolRouteRequirement.OPTIONAL,
+            ToolTaskScopeRequirement.OPTIONAL,
+        )
 
     def observe_tool_result(
         self, run_id: RunId, tool_name: str, result: Mapping[str, object]

@@ -156,6 +156,9 @@ def _config(path: Path, trace: list[str], **changes) -> ProductionRuntimeConfig:
         "provider_projection_pump": pump,
         "run_binding": object(),
         "structured_message_services": object(),
+        "run_context_authority": object(),
+        "runtime_decision_sink": object(),
+        "task_execution_authority": object(),
         "owner_id": "production-worker",
     }
     values.update(changes)

@@ -31,7 +31,12 @@ from simple_harness.contracts import (
     thaw_json,
 )
 from simple_harness.execution.command_ingress import CommandClaim
-from simple_harness.execution.context_authority import ToolCatalogSnapshot
+from simple_harness.execution.context_authority import (
+    RunContextAuthorityPort,
+    RuntimeDecisionSinkPort,
+    TaskExecutionAuthorityPort,
+    ToolCatalogSnapshot,
+)
 from simple_harness.execution.context_staging import (
     ContextStageKind,
     ContextStageRecord,
@@ -358,6 +363,9 @@ class RuntimeServices:
     react_checkpoint: ReactCheckpointPort
     tool_catalog: ToolCatalogGenerationPort | None = None
     workflow_spawn: WorkflowSpawnRuntimeCoordinator | None = None
+    run_context_authority: RunContextAuthorityPort | None = None
+    runtime_decision_sink: RuntimeDecisionSinkPort | None = None
+    task_execution_authority: TaskExecutionAuthorityPort | None = None
 
 
 class _CanonicalWorkflowSpawnRuntimeCoordinator:
@@ -652,6 +660,9 @@ class RuntimePorts:
     context_provider: ConversationContextProviderPort | None = None
     memory_failure_policy: MemoryFailurePolicy = MemoryFailurePolicy.DEGRADE_RECALL_AND_RETRY_RECORD
     observability: ObservabilityRuntime | None = None
+    run_context_authority: RunContextAuthorityPort | None = None
+    runtime_decision_sink: RuntimeDecisionSinkPort | None = None
+    task_execution_authority: TaskExecutionAuthorityPort | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -1523,6 +1534,9 @@ class Runtime:
             react_checkpoint=ports.react_checkpoint,
             tool_catalog=ports.tool_catalog,
             workflow_spawn=workflow_spawn,
+            run_context_authority=ports.run_context_authority,
+            runtime_decision_sink=ports.runtime_decision_sink,
+            task_execution_authority=ports.task_execution_authority,
         )
         self._live = LiveRunIndex()
         self._leases: dict[str, ExecutionLease] = {}
