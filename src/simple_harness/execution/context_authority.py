@@ -329,11 +329,15 @@ class TaskExecutionEnvelopeRequest:
             (self.tool_name, "tool_name"),
         ):
             _required(value, name)
-        for value, name in (
+        for ordinal_value, name in (
             (self.turn_ordinal, "turn_ordinal"),
             (self.call_ordinal, "call_ordinal"),
         ):
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            if (
+                isinstance(ordinal_value, bool)
+                or not isinstance(ordinal_value, int)
+                or ordinal_value < 0
+            ):
                 raise ValueError(f"{name} must be a non-negative integer")
         if not isinstance(self.policy, ToolExecutionPolicy):
             raise TypeError("policy must use ToolExecutionPolicy")

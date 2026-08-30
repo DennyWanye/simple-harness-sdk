@@ -139,6 +139,57 @@ def test_task_execution_envelope_reopens_with_exact_effect_authority(tmp_path: P
     reopened.close()
 
 
+@pytest.mark.parametrize("poisoned_identity", ["run", "call", "effect"])
+def test_prepare_rejects_poisoned_task_execution_envelope_before_insert_and_reopen(
+    tmp_path: Path, poisoned_identity: str
+) -> None:
+    path = tmp_path / f"effect-envelope-wrong-{poisoned_identity}.db"
+    database, uow = _uow(path)
+    runtime_lease = _runtime_lease(uow)
+    fence = asyncio.run(uow.acquire(RunId("run-1"), runtime_lease, now=1.5))
+    envelope_effect_id = "effect-2" if poisoned_identity == "effect" else "effect-1"
+    envelope = TaskExecutionEnvelope(
+        RunId("run-2" if poisoned_identity == "run" else "run-1"),
+        CallId("call-2" if poisoned_identity == "call" else "call-1"),
+        EffectId(envelope_effect_id),
+        "raw-1",
+        1,
+        0,
+        "read",
+        "host:read",
+        "a" * 64,
+        "route-1",
+        "b" * 64,
+        "task-1",
+        "root-1",
+        "c" * 64,
+        2,
+        envelope_effect_id,
+    )
+
+    with pytest.raises(ValueError, match="differs from effect identity"):
+        _prepare(
+            uow,
+            fence,
+            runtime_lease,
+            raw_call_id="raw-1",
+            turn_ordinal=1,
+            call_ordinal=0,
+            task_execution_envelope=envelope,
+        )
+    assert database.connection.execute(
+        "SELECT COUNT(*) FROM execution_effects"
+    ).fetchone()[0] == 0
+    database.close()
+
+    reopened, recovered = _uow(path)
+    assert recovered.read_effect(EffectId("effect-1")) is None
+    assert reopened.connection.execute(
+        "SELECT COUNT(*) FROM execution_effects"
+    ).fetchone()[0] == 0
+    reopened.close()
+
+
 def test_task_execution_envelope_reopen_rejects_payload_hash_drift(tmp_path: Path) -> None:
     path = tmp_path / "effect-envelope-drift.db"
     database, uow = _uow(path)

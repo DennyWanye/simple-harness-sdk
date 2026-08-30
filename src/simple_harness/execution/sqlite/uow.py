@@ -5278,6 +5278,29 @@ class SqliteExecutionUnitOfWork:
         ):
             raise UnitOfWorkConflict("effect runtime lease and Run fence differ")
         now = _time(now)
+        if raw_call_id is not None:
+            raw_call_id = _required(raw_call_id, "raw_call_id")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (turn_ordinal, call_ordinal)
+        ):
+            raise ValueError("effect ordinals must be non-negative integers")
+        if task_execution_envelope is not None:
+            if not isinstance(task_execution_envelope, TaskExecutionEnvelope):
+                raise TypeError(
+                    "task_execution_envelope must use TaskExecutionEnvelope"
+                )
+            if (
+                task_execution_envelope.run_id != run_id
+                or task_execution_envelope.call_id != call_id
+                or task_execution_envelope.effect_id != effect_id
+                or task_execution_envelope.raw_call_id != raw_call_id
+                or task_execution_envelope.turn_ordinal != turn_ordinal
+                or task_execution_envelope.call_ordinal != call_ordinal
+                or task_execution_envelope.tool_name != tool_name
+                or task_execution_envelope.idempotency_key != effect_id.value
+            ):
+                raise ValueError("TaskExecutionEnvelope differs from effect identity")
         arguments_json = canonical_json(arguments)  # type: ignore[arg-type]
         envelope_json = (
             None
@@ -5289,13 +5312,6 @@ class SqliteExecutionUnitOfWork:
             if task_execution_envelope is None
             else task_execution_envelope.envelope_hash
         )
-        if raw_call_id is not None:
-            raw_call_id = _required(raw_call_id, "raw_call_id")
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in (turn_ordinal, call_ordinal)
-        ):
-            raise ValueError("effect ordinals must be non-negative integers")
         existing = self.read_effect(effect_id)
         if existing is not None:
             if (

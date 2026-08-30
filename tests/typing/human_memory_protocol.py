@@ -37,6 +37,20 @@ class StructuralMemoryAnalysisExecutor:
         raise NotImplementedError(request)
 
 
+class StructuralRunContextAuthority:
+    async def prepare_snapshot(
+        self, request: RunContextAuthorityRequest
+    ) -> RunContextSnapshot:
+        raise NotImplementedError(request)
+
+
+class StructuralTaskExecutionAuthority:
+    async def issue_envelope(
+        self, request: TaskExecutionEnvelopeRequest
+    ) -> TaskExecutionEnvelope:
+        raise NotImplementedError(request)
+
+
 def accepts_executor(value: MemoryAnalysisExecutorPort) -> MemoryAnalysisExecutorPort:
     return value
 
@@ -44,6 +58,8 @@ def accepts_executor(value: MemoryAnalysisExecutorPort) -> MemoryAnalysisExecuto
 STRUCTURAL_EXECUTOR: MemoryAnalysisExecutorPort = accepts_executor(
     StructuralMemoryAnalysisExecutor()
 )
+STRUCTURAL_CONTEXT_AUTHORITY: RunContextAuthorityPort = StructuralRunContextAuthority()
+STRUCTURAL_TASK_AUTHORITY: TaskExecutionAuthorityPort = StructuralTaskExecutionAuthority()
 DISCLOSURE_TYPE: type[DisclosureContext] = DisclosureContext
 CONTEXT_FRAGMENT_TYPE: type[ContextFragment] = ContextFragment
 CONTEXT_DECISION_TYPE: type[ContextAssemblyDecision] = ContextAssemblyDecision
