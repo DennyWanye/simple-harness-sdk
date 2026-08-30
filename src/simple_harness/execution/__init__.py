@@ -5,9 +5,17 @@
 
 from .context_authority import (
     CatalogHandlerBinding,
+    ContextRouteReceipt,
+    ContextRouteState,
     DurableToolCatalogResolver,
     ProviderProjectionReceipt,
     ResolvedCatalogHandlers,
+    RunContextAuthorityPort,
+    RunContextAuthorityRequest,
+    RunContextSnapshot,
+    RuntimeDecisionSinkPort,
+    TaskExecutionAuthorityPort,
+    TaskExecutionEnvelopeRequest,
     ToolCatalogSnapshot,
     ToolCatalogStore,
 )
@@ -18,6 +26,7 @@ from .effects import (
     EffectState,
     EffectTransitionError,
     EffectUnitOfWork,
+    TaskExecutionEnvelope,
     effect_request_hash,
 )
 from .fences import (
@@ -29,10 +38,19 @@ from .fences import (
 
 __all__ = (
     "CatalogHandlerBinding",
+    "ContextRouteReceipt",
+    "ContextRouteState",
     "EffectConflictError",
     "DurableToolCatalogResolver",
     "ProviderProjectionReceipt",
     "ResolvedCatalogHandlers",
+    "RunContextAuthorityPort",
+    "RunContextAuthorityRequest",
+    "RunContextSnapshot",
+    "RuntimeDecisionSinkPort",
+    "TaskExecutionAuthorityPort",
+    "TaskExecutionEnvelope",
+    "TaskExecutionEnvelopeRequest",
     "ToolCatalogSnapshot",
     "ToolCatalogStore",
     "EffectRecord",
