@@ -25,7 +25,9 @@ S1 `a2-003` 现已冻结 schema-v2 cognitive wire：EvidenceSpan 由 admitted ev
 byte range，typed observation 绑定 exact evidence/admission/item；四类长期记忆使用独立 payload/lifecycle、
 revision target、canonical DAG 与 strict-atomic authority receipt。RecallPlan 必须绑定未过期 RecallContext，
 保留 Host mandatory selector 并只允许缩窄；unknown/external/untrusted disclosure 默认不能产生 RECALL。
-RecallDecision 已单独升级为 strict schema v4：每个 selected item 明确区分 cognitive-memory
+RecallContext 还把 Host 当前 Procedure applicability fingerprint 集合纳入 canonical hash，模型计划没有
+对应可写字段，不能扩大或伪造当前适用性。RecallDecision 已单独升级为 strict schema v4：每个 selected item
+明确区分 cognitive-memory
 和 Short-Horizon source，前者绑定 memory type/exact revision，后者绑定 exact chunk ref 且禁止伪造
 memory type。NEEDS_USER_CONFIRMATION 使用有序、完整的 atomic group/member，不接受部分冲突组。
 typed result/page 与 ContextFragment v2 继续绑定 decision/result/item/use；Context assembly 按 fragment

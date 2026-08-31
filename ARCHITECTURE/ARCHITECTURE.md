@@ -60,7 +60,9 @@ last-updated: 2026-08-31
   ack 的 exact outbox payload。协议只证明 Host 事实与预期转换，Memory 仍负责 deterministic qualification、current-head
   CAS、scope/receipt 复验与原子 replay fence；SDK 不启动 timer，也不因此授权外部动作。
 - `RecallContext` 冻结 Host 允许的 memory type、scope、entity、time、event、environment、task phase、retrieval
-  mode、Short-Horizon、disclosure、evidence 和预算。`RecallPlan` 精确绑定 context hash/revision，在可信当前时间
+  mode、Short-Horizon、当前 Procedure applicability fingerprint 集合、disclosure、evidence 和预算；这些
+  applicability fingerprints 进入 canonical context hash，模型的 `RecallPlan` 不携带也不能改写。`RecallPlan`
+  精确绑定 context hash/revision，在可信当前时间
   验证未过期，保留全部 mandatory selector 且只能选择非空子集/更窄时间和预算；Short-Horizon-only
   不要求伪造 `MEMORY_TYPE` selector。Decision 再绑定 Plan/Context evidence lineage。RecallDecision 使用独立
   strict schema v4：selected item 以 discriminated source kind 区分 cognitive memory 和 Short-Horizon，

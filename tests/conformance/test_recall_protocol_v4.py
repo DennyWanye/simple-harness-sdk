@@ -99,6 +99,7 @@ def _context() -> RecallContext:
         (),
         (),
         (),
+        (),
         _disclosure(),
         (_ref(),),
         RecallBudget(8, 16_384, 2_048, 1_000),
@@ -238,6 +239,7 @@ def _result(decision: RecallDecision) -> TypedRecallResultV1:
 
 def test_v4_mixed_and_short_only_decisions_round_trip_and_v3_wire_rejects() -> None:
     context = _context()
+    assert RecallContext.from_json(context.to_json()) == context
     plan = _plan(context)
     mixed = _decision(context, plan)
     mixed.validate_bindings(context, plan, current_time=50.0)
@@ -263,6 +265,24 @@ def test_v4_mixed_and_short_only_decisions_round_trip_and_v3_wire_rejects() -> N
         RecallDecision.from_json(old_wire)
     with pytest.raises(ValueError, match="fields differ"):
         RecallDecision.from_json({"memory_ref": "memory-1"})
+
+
+def test_recall_context_binds_host_procedure_applicability_authority() -> None:
+    context = _context()
+    authorized = replace(
+        context,
+        procedure_applicability_fingerprints=("a" * 64, "b" * 64),
+    )
+    assert authorized.context_hash != context.context_hash
+    assert RecallContext.from_json(authorized.to_json()) == authorized
+
+    with pytest.raises(ValueError, match="unique"):
+        replace(
+            context,
+            procedure_applicability_fingerprints=("a" * 64, "a" * 64),
+        )
+    with pytest.raises(ValueError, match="digest"):
+        replace(context, procedure_applicability_fingerprints=("not-a-digest",))
 
 
 def test_typed_result_page_and_context_use_are_hash_bound_without_naked_refs() -> None:

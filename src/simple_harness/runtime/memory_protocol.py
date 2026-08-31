@@ -909,6 +909,24 @@ def _bounded_identifiers(
     return result
 
 
+def _bounded_digests(
+    value: object,
+    name: str,
+    *,
+    max_items: int = 128,
+) -> tuple[str, ...]:
+    """Validate a bounded Host-owned set of canonical SHA-256 authorities."""
+
+    if not isinstance(value, (tuple, list)):
+        raise TypeError(f"{name} must be an array")
+    result = tuple(_digest(item, f"{name} item") for item in value)
+    if len(result) > max_items:
+        raise ValueError(f"{name} exceeds the item limit")
+    if len(set(result)) != len(result):
+        raise ValueError(f"{name} must be unique")
+    return result
+
+
 def _bounded_enum_tuple(
     value: object,
     name: str,
@@ -970,6 +988,7 @@ class RecallContext:
     event_constraint_refs: tuple[str, ...]
     environment_constraint_refs: tuple[str, ...]
     task_phase_authority_refs: tuple[str, ...]
+    procedure_applicability_fingerprints: tuple[str, ...]
     disclosure_context: DisclosureContext
     evidence_refs: tuple[EvidenceRef, ...]
     budget: RecallBudget
@@ -1053,6 +1072,10 @@ class RecallContext:
         phases = _bounded_identifiers(
             self.task_phase_authority_refs, "task_phase_authority_refs"
         )
+        procedure_applicability = _bounded_digests(
+            self.procedure_applicability_fingerprints,
+            "procedure_applicability_fingerprints",
+        )
         _validate_recall_selector_consistency(
             domains,
             memory_types=types,
@@ -1087,6 +1110,11 @@ class RecallContext:
         object.__setattr__(self, "event_constraint_refs", events)
         object.__setattr__(self, "environment_constraint_refs", environments)
         object.__setattr__(self, "task_phase_authority_refs", phases)
+        object.__setattr__(
+            self,
+            "procedure_applicability_fingerprints",
+            procedure_applicability,
+        )
         object.__setattr__(self, "evidence_refs", evidence_refs)
         object.__setattr__(
             self,
@@ -1115,6 +1143,9 @@ class RecallContext:
             "event_constraint_refs": list(self.event_constraint_refs),
             "environment_constraint_refs": list(self.environment_constraint_refs),
             "task_phase_authority_refs": list(self.task_phase_authority_refs),
+            "procedure_applicability_fingerprints": list(
+                self.procedure_applicability_fingerprints
+            ),
             "disclosure_context": self.disclosure_context.to_json(),
             "evidence_refs": [item.to_json() for item in self.evidence_refs],
             "budget": self.budget.to_json(),
@@ -1130,6 +1161,7 @@ class RecallContext:
             "allowed_entity_constraints", "earliest_occurred_at",
             "latest_occurred_at", "event_constraint_refs",
             "environment_constraint_refs", "task_phase_authority_refs",
+            "procedure_applicability_fingerprints",
             "disclosure_context", "evidence_refs", "budget",
         }
         _exact_keys(value, expected, "RecallContext")
@@ -1179,6 +1211,10 @@ class RecallContext:
             ),
             task_phase_authority_refs=_strings(
                 value["task_phase_authority_refs"], "task_phase_authority_refs"
+            ),
+            procedure_applicability_fingerprints=_strings(
+                value["procedure_applicability_fingerprints"],
+                "procedure_applicability_fingerprints",
             ),
             disclosure_context=DisclosureContext.from_json(
                 _object(value["disclosure_context"], "disclosure_context")

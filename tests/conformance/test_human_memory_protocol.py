@@ -166,6 +166,7 @@ def _recall_context(*, disclosure: DisclosureContext | None = None) -> RecallCon
         event_constraint_refs=(),
         environment_constraint_refs=(),
         task_phase_authority_refs=(),
+        procedure_applicability_fingerprints=("f" * 64,),
         disclosure_context=_disclosure() if disclosure is None else disclosure,
         evidence_refs=(_ref(),),
         budget=RecallBudget(8, 16_384, 2048, 1000),

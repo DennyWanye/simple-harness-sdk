@@ -1117,6 +1117,7 @@ def _recall_context() -> RecallContext:
         event_constraint_refs=("event-authority-1",),
         environment_constraint_refs=("environment-authority-1",),
         task_phase_authority_refs=("phase-authority-1",),
+        procedure_applicability_fingerprints=("f" * 64,),
         disclosure_context=_disclosure(),
         evidence_refs=(_ref(),),
         budget=RecallBudget(10, 20_000, 2_000, 2_000),
