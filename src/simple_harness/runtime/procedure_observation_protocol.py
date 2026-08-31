@@ -11,11 +11,10 @@ outcomes have no authority.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol, cast
+from typing import Final, Protocol, cast
 
 from simple_harness.contracts import JsonValue
 
@@ -34,7 +33,7 @@ from .evidence_protocol import EvidenceSpanRef
 from .memory_protocol import ProcedureLifecycleState, ProcedureRiskLevel
 
 PROCEDURE_OBSERVATION_AUTHORITY_SCHEMA_VERSION = 1
-PROCEDURE_APPLICABILITY_FINGERPRINT_VERSION = 1
+PROCEDURE_APPLICABILITY_FINGERPRINT_VERSION = 2
 
 
 class ProcedureObservationKind(StrEnum):
@@ -53,6 +52,30 @@ class ProcedureHazard(StrEnum):
     DELETE = "delete"
     PAYMENT = "payment"
     PERMISSION = "permission"
+
+
+_SAFE_SUCCESS_TRANSITIONS: Final[
+    dict[ProcedureLifecycleState, frozenset[ProcedureLifecycleState]]
+] = {
+    ProcedureLifecycleState.DRAFT: frozenset(
+        {
+            ProcedureLifecycleState.DRAFT,
+            ProcedureLifecycleState.ELIGIBLE_FOR_ACTIVATION,
+        }
+    ),
+    ProcedureLifecycleState.ELIGIBLE_FOR_ACTIVATION: frozenset(
+        {
+            ProcedureLifecycleState.ELIGIBLE_FOR_ACTIVATION,
+            ProcedureLifecycleState.ACTIVE,
+        }
+    ),
+    ProcedureLifecycleState.ACTIVE: frozenset(
+        {ProcedureLifecycleState.ACTIVE, ProcedureLifecycleState.REINFORCED}
+    ),
+    ProcedureLifecycleState.REINFORCED: frozenset(
+        {ProcedureLifecycleState.REINFORCED}
+    ),
+}
 
 
 def _schema_version(value: object, name: str) -> int:
@@ -85,13 +108,10 @@ class ProcedureApplicabilityContext:
         _digest(self.input_schema_hash, "input_schema_hash")
         if self.fingerprint_version != PROCEDURE_APPLICABILITY_FINGERPRINT_VERSION:
             raise ValueError("unsupported Procedure applicability fingerprint_version")
-        material = "\x1f".join(
-            (self.tool_id, self.environment, self.tool_version, self.input_schema_hash)
-        )
         object.__setattr__(
             self,
             "fingerprint",
-            hashlib.sha256(material.encode("utf-8")).hexdigest(),
+            _domain_hash("simple-harness/procedure-applicability/v2", self.to_json()),
         )
 
     def to_json(self) -> dict[str, JsonValue]:
@@ -198,17 +218,13 @@ class ProcedureObservationIntent:
             ):
                 raise ValueError("non-attributable terminal failure cannot change lifecycle state")
             if outcome is ProcedureObservationOutcome.SUCCESS and (
-                transition_to is ProcedureLifecycleState.ACTIVE
-                and (risk is not ProcedureRiskLevel.LOW or hazard is not ProcedureHazard.NONE)
+                risk is not ProcedureRiskLevel.LOW or hazard is not ProcedureHazard.NONE
+            ) and transition_to is not transition_from:
+                raise ValueError("non-low-risk observation cannot change Procedure lifecycle")
+            safe_targets = _SAFE_SUCCESS_TRANSITIONS.get(transition_from)
+            if outcome is ProcedureObservationOutcome.SUCCESS and (
+                safe_targets is None or transition_to not in safe_targets
             ):
-                raise ValueError("high-risk observation cannot transition Procedure to active")
-            if outcome is ProcedureObservationOutcome.SUCCESS and transition_to not in {
-                transition_from,
-                ProcedureLifecycleState.DRAFT,
-                ProcedureLifecycleState.ELIGIBLE_FOR_ACTIVATION,
-                ProcedureLifecycleState.ACTIVE,
-                ProcedureLifecycleState.REINFORCED,
-            }:
                 raise ValueError("successful observation has an invalid expected transition")
         elif receipt_id is not None or receipt_hash is not None or outcome is not None:
             raise ValueError("applicability snapshot cannot carry a terminal outcome")

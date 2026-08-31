@@ -13,7 +13,7 @@ import pytest
 
 import simple_harness
 import simple_harness.runtime as runtime
-from simple_harness.contracts import fingerprint_json
+from simple_harness.contracts import canonical_json, fingerprint_json
 from simple_harness.runtime import MemoryScopeRef
 from simple_harness.runtime.evidence_protocol import (
     EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1,
@@ -151,10 +151,17 @@ def test_procedure_authority_is_ref_only_exact_once_and_round_trips_strictly() -
     intent, authority, reference = _procedure_authority()
     port = _ProcedureAuthorityPort(authority)
     assert PROCEDURE_OBSERVATION_AUTHORITY_SCHEMA_VERSION == 1
-    assert PROCEDURE_APPLICABILITY_FINGERPRINT_VERSION == 1
-    assert _applicability().fingerprint == _sha(
-        "\x1f".join(("tool.publish", "macos", "1.2.3", "e" * 64))
+    assert PROCEDURE_APPLICABILITY_FINGERPRINT_VERSION == 2
+    applicability = _applicability()
+    expected = _sha(
+        canonical_json(
+            {
+                "domain": "simple-harness/procedure-applicability/v2",
+                "payload": applicability.to_json(),
+            }
+        )
     )
+    assert applicability.fingerprint == expected
     assert asyncio.run(
         verify_procedure_observation_authority(reference, port, current_time=10.0)
     ) is authority
@@ -194,7 +201,7 @@ def test_procedure_authority_time_window_is_half_open(
         {"scope": MemoryScopeRef.family("household-1")},
         {"target_revision": 4},
         {"terminal_receipt_hash": "9" * 64},
-        {"transition_to": ProcedureLifecycleState.REINFORCED},
+        {"transition_to": ProcedureLifecycleState.ELIGIBLE_FOR_ACTIVATION},
         {"run_id": "run-2"},
         {"operation_id": "procedure-operation-2"},
     ),
@@ -207,7 +214,7 @@ def test_procedure_intent_hash_binds_identity_scope_receipt_transition_and_opera
 
 
 def test_procedure_protocol_rejects_unsafe_transition_and_legacy_or_unknown_wire() -> None:
-    with pytest.raises(ValueError, match="high-risk observation"):
+    with pytest.raises(ValueError, match="non-low-risk observation"):
         _procedure_intent(hazard=ProcedureHazard.PUBLISH)
     with pytest.raises(ValueError, match="non-attributable"):
         _procedure_intent(
@@ -217,6 +224,11 @@ def test_procedure_protocol_rejects_unsafe_transition_and_legacy_or_unknown_wire
         )
     with pytest.raises(ValueError, match="invalid expected transition"):
         _procedure_intent(transition_to=ProcedureLifecycleState.SUPERSEDED)
+    with pytest.raises(ValueError, match="invalid expected transition"):
+        _procedure_intent(
+            transition_from=ProcedureLifecycleState.DRAFT,
+            transition_to=ProcedureLifecycleState.REINFORCED,
+        )
     _, authority, reference = _procedure_authority()
     for decoder, wire in (
         (ProcedureObservationIntent.from_json, _procedure_intent().to_json()),
@@ -231,6 +243,50 @@ def test_procedure_protocol_rejects_unsafe_transition_and_legacy_or_unknown_wire
         legacy["schema_version"] = 0
         with pytest.raises(ValueError, match="unsupported"):
             decoder(legacy)
+
+
+@pytest.mark.parametrize(
+    "source, target",
+    (
+        (ProcedureLifecycleState.DRAFT, ProcedureLifecycleState.DRAFT),
+        (
+            ProcedureLifecycleState.DRAFT,
+            ProcedureLifecycleState.ELIGIBLE_FOR_ACTIVATION,
+        ),
+        (
+            ProcedureLifecycleState.ELIGIBLE_FOR_ACTIVATION,
+            ProcedureLifecycleState.ACTIVE,
+        ),
+        (ProcedureLifecycleState.ACTIVE, ProcedureLifecycleState.REINFORCED),
+        (ProcedureLifecycleState.REINFORCED, ProcedureLifecycleState.REINFORCED),
+    ),
+)
+def test_procedure_success_only_accepts_exact_safe_state_graph(
+    source: ProcedureLifecycleState, target: ProcedureLifecycleState
+) -> None:
+    assert _procedure_intent(transition_from=source, transition_to=target)
+
+
+def test_procedure_non_low_risk_never_progresses_from_observation() -> None:
+    assert _procedure_intent(
+        risk_level=ProcedureRiskLevel.MEDIUM,
+        transition_to=ProcedureLifecycleState.ELIGIBLE_FOR_ACTIVATION,
+        transition_from=ProcedureLifecycleState.ELIGIBLE_FOR_ACTIVATION,
+    )
+    with pytest.raises(ValueError, match="non-low-risk observation"):
+        _procedure_intent(risk_level=ProcedureRiskLevel.MEDIUM)
+
+
+def test_procedure_applicability_fingerprint_has_no_unit_separator_collision() -> None:
+    left = ProcedureApplicabilityContext("tool\x1fmac", "os", "1", "e" * 64)
+    right = ProcedureApplicabilityContext("tool", "mac\x1fos", "1", "e" * 64)
+    assert "\x1f".join(
+        (left.tool_id, left.environment, left.tool_version, left.input_schema_hash)
+    ) == "\x1f".join(
+        (right.tool_id, right.environment, right.tool_version, right.input_schema_hash)
+    )
+    assert left.to_json() != right.to_json()
+    assert left.fingerprint != right.fingerprint
 
 
 def _prospective_intent(**changes: object) -> ProspectiveSignalIntent:

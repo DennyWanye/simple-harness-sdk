@@ -56,7 +56,8 @@ evidence span、terminal receipt/outcome、版本化 applicability fingerprint�
 clock/event/ack receipt、outbox（仅 ack）、occurrence 和 lifecycle transition。两者完整 authority 只能由 Host
 resolver 返回，校验窗口统一为 `issued_at <= now < expires_at`，并携带 nonce/replay identity；Memory 后续仍须
 复验当前 head/scope/receipt，并把 replay fence、decision、CAS 和 outbox 放在同一事务。Procedure applicability
-fingerprint v1 与 Memory pure kernel 使用相同的四字段 `SHA256("\x1f" join)`，避免 exact-wheel 漂移。
+fingerprint v2 使用 exact fields + version 的 canonical domain hash，避免字段分隔符碰撞；Memory pure kernel
+必须复用同一算法，避免 exact-wheel 漂移。
 
 Main-model analysis 的 provider delivery 由独立的 `MemoryAnalysisResultEnvelope` 承载：其中 Host
 durable `MemoryAnalysisDeliveryReceipt` 必须经 injected authority lookup 验证；Memory 后续产生的
