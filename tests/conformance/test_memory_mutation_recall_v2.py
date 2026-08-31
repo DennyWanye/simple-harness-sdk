@@ -7,7 +7,7 @@ import asyncio
 import hashlib
 from copy import deepcopy
 from dataclasses import replace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -34,7 +34,17 @@ from simple_harness.runtime.evidence_protocol import (
     EvidenceSupportKind,
     ProposedTypedObservationRef,
 )
+from simple_harness.runtime.memory_action_protocol import (
+    MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION,
+    MemoryActionAuthority,
+    MemoryActionAuthorityRef,
+    MemoryActionIntent,
+    MemoryActionKind,
+    issue_memory_action_authority,
+    verify_memory_action_authority,
+)
 from simple_harness.runtime.memory_protocol import (
+    MEMORY_MUTATION_SCHEMA_VERSION,
     RECALL_DECISION_SCHEMA_VERSION,
     ConflictStatus,
     CreatedByOperationTarget,
@@ -44,9 +54,13 @@ from simple_harness.runtime.memory_protocol import (
     ExistingMemoryTarget,
     InformationAttribute,
     LongTermMemoryType,
+    MemoryActionConfirmationItem,
     MemoryMutationApplyMode,
+    MemoryMutationApplyOutcome,
+    MemoryMutationApplyReasonCode,
     MemoryMutationApplyReceipt,
     MemoryMutationApplyReceiptRef,
+    MemoryMutationApplyResult,
     MemoryMutationKind,
     MemoryMutationOperation,
     MemoryMutationPlan,
@@ -83,6 +97,8 @@ def _sha(value: str) -> str:
 
 def test_cognitive_mutation_and_recall_contracts_are_public() -> None:
     names = (
+        "MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION",
+        "MEMORY_MUTATION_SCHEMA_VERSION",
         "EpisodeMemoryPayload",
         "SemanticMemoryPayload",
         "ProcedureMemoryPayload",
@@ -91,6 +107,17 @@ def test_cognitive_mutation_and_recall_contracts_are_public() -> None:
         "MemoryMutationApplyMode",
         "MemoryMutationApplyReceipt",
         "MemoryMutationApplyReceiptRef",
+        "MemoryActionAuthority",
+        "MemoryActionAuthorityPort",
+        "MemoryActionAuthorityRef",
+        "MemoryActionConfirmationItem",
+        "MemoryActionIntent",
+        "MemoryActionKind",
+        "MemoryMutationApplyOutcome",
+        "MemoryMutationApplyReasonCode",
+        "MemoryMutationApplyResult",
+        "issue_memory_action_authority",
+        "verify_memory_action_authority",
         "verify_memory_mutation_apply_receipt",
         "RecallSelectorDomain",
         "RecallRetrievalMode",
@@ -202,17 +229,18 @@ def _semantic_operation(
     )
 
 
-def test_mutation_v2_target_union_no_mutation_and_order_independent_dag() -> None:
+def test_mutation_v3_target_union_no_mutation_and_order_independent_dag() -> None:
     create = _semantic_operation("create")
     revise = _semantic_operation(
         "revise",
-        kind=MemoryMutationKind.REVISE,
+        kind=MemoryMutationKind.CONTEST,
         target=CreatedByOperationTarget("create"),
         depends_on=("create",),
     )
     plan = MemoryMutationPlan(
         plan_id="mutation-1",
         run_id="run-1",
+        turn_id="turn-1",
         subject="user-1",
         base_revision=4,
         outcome=MemoryMutationPlanOutcome.MUTATE,
@@ -249,6 +277,7 @@ def test_mutation_v2_target_union_no_mutation_and_order_independent_dag() -> Non
     no_mutation = MemoryMutationPlan(
         "mutation-2",
         "run-1",
+        "turn-1",
         "user-1",
         4,
         MemoryMutationPlanOutcome.NO_MUTATION,
@@ -260,12 +289,14 @@ def test_mutation_v2_target_union_no_mutation_and_order_independent_dag() -> Non
     assert MemoryMutationPlan.from_json(no_mutation.to_json()) == no_mutation
     with pytest.raises(ValueError, match="no_mutation"):
         MemoryMutationPlan(
-            "bad", "run-1", "user-1", 4, MemoryMutationPlanOutcome.NO_MUTATION,
+            "bad", "run-1", "turn-1", "user-1", 4,
+            MemoryMutationPlanOutcome.NO_MUTATION,
             (create,), _disclosure(), (_ref(),), "bad-idem",
         )
     with pytest.raises(ValueError, match="unknown"):
         MemoryMutationPlan(
-            "bad", "run-1", "user-1", 4, MemoryMutationPlanOutcome.MUTATE,
+            "bad", "run-1", "turn-1", "user-1", 4,
+            MemoryMutationPlanOutcome.MUTATE,
             (_semantic_operation("x", depends_on=("missing",)),),
             _disclosure(), (_ref(),), "bad-idem",
         )
@@ -281,7 +312,8 @@ def test_mutation_v2_target_union_no_mutation_and_order_independent_dag() -> Non
     assert MemoryMutationOperation.from_json(suppress.to_json()) == suppress
     with pytest.raises(ValueError, match="cycle"):
         MemoryMutationPlan(
-            "cycle", "run-1", "user-1", 4, MemoryMutationPlanOutcome.MUTATE,
+            "cycle", "run-1", "turn-1", "user-1", 4,
+            MemoryMutationPlanOutcome.MUTATE,
             (
                 replace(
                     revise,
@@ -392,13 +424,20 @@ def test_mutation_plan_rejects_invalid_created_by_producer_and_uncovered_span() 
     )
     consumer = _semantic_operation(
         "consumer",
-        kind=MemoryMutationKind.REVISE,
+        kind=MemoryMutationKind.CONTEST,
         target=CreatedByOperationTarget("producer"),
         depends_on=("producer",),
     )
+    with pytest.raises(ValueError, match="exact ExistingMemoryTarget"):
+        _semantic_operation(
+            "unsafe-revise",
+            kind=MemoryMutationKind.REVISE,
+            target=CreatedByOperationTarget("producer"),
+            depends_on=("producer",),
+        )
     with pytest.raises(ValueError, match="producer must be a create"):
         MemoryMutationPlan(
-            "bad-producer", "run-1", "user-1", 4,
+            "bad-producer", "run-1", "turn-1", "user-1", 4,
             MemoryMutationPlanOutcome.MUTATE, (producer_not_create, consumer),
             _disclosure(), (_ref(),), "bad-producer-idem",
         )
@@ -420,7 +459,7 @@ def test_mutation_plan_rejects_invalid_created_by_producer_and_uncovered_span() 
     )
     with pytest.raises(ValueError, match="same memory_type"):
         MemoryMutationPlan(
-            "bad-type", "run-1", "user-1", 4,
+            "bad-type", "run-1", "turn-1", "user-1", 4,
             MemoryMutationPlanOutcome.MUTATE,
             (episode_create, wrong_type_consumer), _disclosure(), (_ref(),),
             "bad-type-idem",
@@ -428,10 +467,321 @@ def test_mutation_plan_rejects_invalid_created_by_producer_and_uncovered_span() 
 
     with pytest.raises(ValueError, match="cover every evidence span"):
         MemoryMutationPlan(
-            "bad-evidence", "run-1", "user-1", 4,
+            "bad-evidence", "run-1", "turn-1", "user-1", 4,
             MemoryMutationPlanOutcome.MUTATE, (create,), _disclosure(),
             (EvidenceRef("evidence-1", "f" * 64, 1),), "bad-evidence-idem",
         )
+
+
+class _ActionAuthority:
+    def __init__(self, authority: MemoryActionAuthority) -> None:
+        self.authority = authority
+        self.calls = 0
+
+    async def resolve_memory_action_authority(
+        self, reference: MemoryActionAuthorityRef
+    ) -> MemoryActionAuthority:
+        del reference
+        self.calls += 1
+        return self.authority
+
+
+def _authorized_revise_plan() -> tuple[
+    MemoryMutationPlan,
+    MemoryMutationOperation,
+    MemoryActionIntent,
+    MemoryActionAuthority,
+    MemoryActionAuthorityRef,
+]:
+    operation = _semantic_operation(
+        "revise-authorized",
+        kind=MemoryMutationKind.REVISE,
+        target=ExistingMemoryTarget("memory-1", 7),
+    )
+    proposal = MemoryMutationPlan(
+        plan_id="action-plan-1",
+        run_id="run-1",
+        turn_id="turn-1",
+        subject="user-1",
+        base_revision=7,
+        outcome=MemoryMutationPlanOutcome.MUTATE,
+        operations=(operation,),
+        disclosure_context=_disclosure(),
+        evidence_refs=(_ref(),),
+        idempotency_key="action-plan-idem-1",
+    )
+    intent = proposal.action_intent(operation.operation_id)
+    authority = issue_memory_action_authority(
+        intent,
+        authority_id="memory-action-authority-1",
+        issued_at=10.0,
+        expires_at=20.0,
+        nonce="host-memory-action-nonce-1",
+        issuer_ref="host-memory-action-authority:v1",
+    )
+    reference = MemoryActionAuthorityRef.from_authority(authority)
+    operation_with_ref = replace(operation, action_authority_ref=reference)
+    plan_with_ref = replace(proposal, operations=(operation_with_ref,))
+    return plan_with_ref, operation_with_ref, intent, authority, reference
+
+
+def test_memory_action_authority_is_host_resolved_once_and_non_circular() -> None:
+    plan, operation, intent, authority, reference = _authorized_revise_plan()
+    assert MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION == 1
+    assert MEMORY_MUTATION_SCHEMA_VERSION == 3
+    assert operation.operation_intent_hash == intent.operation_intent_hash
+    assert plan.action_intent(operation.operation_id) == intent
+    proposal_without_ref = replace(operation, action_authority_ref=None)
+    assert proposal_without_ref.operation_intent_hash == operation.operation_intent_hash
+    assert replace(plan, operations=(proposal_without_ref,)).plan_hash != plan.plan_hash
+
+    port = _ActionAuthority(authority)
+    verified = asyncio.run(
+        verify_memory_action_authority(
+            intent,
+            reference,
+            port,
+            current_time=15.0,
+        )
+    )
+    assert verified is authority
+    assert port.calls == 1
+    assert len(authority.replay_identity) == 64
+    assert MemoryActionIntent.from_json(intent.to_json()) == intent
+    assert MemoryActionAuthority.from_json(authority.to_json()) == authority
+    assert MemoryActionAuthorityRef.from_json(reference.to_json()) == reference
+    with pytest.raises(TypeError, match="reference"):
+        asyncio.run(
+            verify_memory_action_authority(
+                intent,
+                cast(MemoryActionAuthorityRef, authority),
+                port,
+                current_time=15.0,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    (
+        {"subject": "other-user"},
+        {"action": MemoryActionKind.SUPERSEDE},
+        {"target_memory_id": "memory-2"},
+        {"target_revision": 8},
+        {"evidence_refs": (EvidenceRef("evidence-2", "c" * 64, 1),)},
+        {"evidence_span_hashes": ("d" * 64,)},
+        {"run_id": "run-2"},
+        {"turn_id": "turn-2"},
+        {"plan_id": "action-plan-2"},
+        {"operation_id": "revise-other"},
+        {"operation_intent_hash": "e" * 64},
+    ),
+)
+def test_memory_action_authority_rejects_every_changed_intent(
+    changed: dict[str, object],
+) -> None:
+    _plan, _operation, intent, authority, reference = _authorized_revise_plan()
+    changed_intent = replace(intent, **cast(Any, changed))
+    port = _ActionAuthority(authority)
+    with pytest.raises(ValueError, match="intent differs"):
+        asyncio.run(
+            verify_memory_action_authority(
+                changed_intent,
+                reference,
+                port,
+                current_time=15.0,
+            )
+        )
+    assert port.calls == 1
+
+
+@pytest.mark.parametrize(
+    "changed",
+    (
+        {"authority_id": "other-authority"},
+        {"authority_hash": "f" * 64},
+        {"issuer_ref": "other-host-authority:v1"},
+        {"replay_identity": "0" * 64},
+    ),
+)
+def test_memory_action_authority_rejects_changed_reference(
+    changed: dict[str, object],
+) -> None:
+    _plan, _operation, intent, authority, reference = _authorized_revise_plan()
+    port = _ActionAuthority(authority)
+    with pytest.raises(ValueError, match="differs from reference"):
+        asyncio.run(
+            verify_memory_action_authority(
+                intent,
+                replace(reference, **cast(Any, changed)),
+                port,
+                current_time=15.0,
+            )
+        )
+    assert port.calls == 1
+
+
+@pytest.mark.parametrize(
+    "changed",
+    (
+        {"nonce": "different-host-nonce"},
+        {"issuer_ref": "different-host-authority:v1"},
+        {"issued_at": 11.0},
+        {"expires_at": 21.0},
+    ),
+)
+def test_memory_action_authority_rejects_changed_host_record(
+    changed: dict[str, object],
+) -> None:
+    _plan, _operation, intent, authority, reference = _authorized_revise_plan()
+    port = _ActionAuthority(replace(authority, **cast(Any, changed)))
+    with pytest.raises(ValueError, match="differs from reference"):
+        asyncio.run(
+            verify_memory_action_authority(
+                intent,
+                reference,
+                port,
+                current_time=15.0,
+            )
+        )
+    assert port.calls == 1
+
+
+def test_memory_action_authority_expiry_and_strict_wire_fail_closed() -> None:
+    plan, operation, intent, authority, reference = _authorized_revise_plan()
+    for current_time, reason in ((9.0, "not yet valid"), (20.0, "expired")):
+        port = _ActionAuthority(authority)
+        with pytest.raises(ValueError, match=reason):
+            asyncio.run(
+                verify_memory_action_authority(
+                    intent,
+                    reference,
+                    port,
+                    current_time=current_time,
+                )
+            )
+        assert port.calls == 1
+
+    for decoder, original in (
+        (MemoryActionIntent.from_json, intent.to_json()),
+        (MemoryActionAuthority.from_json, authority.to_json()),
+        (MemoryActionAuthorityRef.from_json, reference.to_json()),
+    ):
+        old = deepcopy(original)
+        old["schema_version"] = 0
+        with pytest.raises(ValueError, match="unsupported"):
+            decoder(old)
+        extra = deepcopy(original)
+        extra["legacy_authority"] = True
+        with pytest.raises(ValueError, match="fields differ"):
+            decoder(extra)
+
+    old_operation = operation.to_json()
+    old_operation.pop("operation_intent_hash")
+    old_operation.pop("action_authority_ref")
+    with pytest.raises(ValueError, match="fields differ"):
+        MemoryMutationOperation.from_json(old_operation)
+    old_plan = plan.to_json()
+    old_plan["schema_version"] = 2
+    with pytest.raises(ValueError, match="unsupported"):
+        MemoryMutationPlan.from_json(old_plan)
+    receipt = MemoryMutationApplyReceipt(
+        receipt_id="strict-wire-receipt",
+        authority_ref="memory-apply-authority:v3",
+        plan_id=plan.plan_id,
+        plan_hash=plan.plan_hash,
+        run_id=plan.run_id,
+        subject=plan.subject,
+        base_revision=plan.base_revision,
+        committed_revision=plan.base_revision + 1,
+        canonical_operation_ids=(operation.operation_id,),
+        apply_mode=MemoryMutationApplyMode.STRICT_ATOMIC,
+        committed_at=15.0,
+    )
+    old_receipt = receipt.to_json()
+    old_receipt["schema_version"] = 2
+    with pytest.raises(ValueError, match="unsupported"):
+        MemoryMutationApplyReceipt.from_json(old_receipt)
+
+
+def test_support_kind_and_contest_never_grant_memory_action_authority() -> None:
+    plan, operation, intent, authority, reference = _authorized_revise_plan()
+    correction = replace(
+        operation.evidence_spans[0],
+        support_kind=EvidenceSupportKind.EXPLICIT_USER_CORRECTION,
+    )
+    relabeled = replace(operation, evidence_spans=(correction,))
+    relabeled_plan = replace(plan, operations=(relabeled,))
+    assert relabeled.operation_intent_hash != operation.operation_intent_hash
+    assert relabeled_plan.action_intent(relabeled.operation_id) != intent
+    with pytest.raises(ValueError, match="intent differs"):
+        asyncio.run(
+            verify_memory_action_authority(
+                relabeled_plan.action_intent(relabeled.operation_id),
+                reference,
+                _ActionAuthority(authority),
+                current_time=15.0,
+            )
+        )
+
+    with pytest.raises(ValueError, match="only valid"):
+        replace(
+            operation,
+            kind=MemoryMutationKind.CONTEST,
+            action_authority_ref=reference,
+        )
+
+
+def test_memory_mutation_apply_result_has_strict_confirmation_matrix() -> None:
+    plan, operation, _intent, _authority, _reference = _authorized_revise_plan()
+    proposal = replace(plan, operations=(replace(operation, action_authority_ref=None),))
+    item = MemoryActionConfirmationItem(proposal.action_intent(operation.operation_id))
+    confirmation = MemoryMutationApplyResult(
+        result_id="mutation-result-confirm-1",
+        plan_id=proposal.plan_id,
+        plan_hash=proposal.plan_hash,
+        run_id=proposal.run_id,
+        turn_id=proposal.turn_id,
+        subject=proposal.subject,
+        outcome=MemoryMutationApplyOutcome.NEEDS_USER_CONFIRMATION,
+        receipt_ref=None,
+        confirmation_items=(item,),
+        reason_code=MemoryMutationApplyReasonCode.ACTION_AUTHORITY_REQUIRED,
+        decided_at=15.0,
+    )
+    confirmation.validate_plan(proposal)
+    assert MemoryMutationApplyResult.from_json(confirmation.to_json()) == confirmation
+
+    receipt_ref = MemoryMutationApplyReceiptRef("receipt-1", "a" * 64)
+    committed = MemoryMutationApplyResult(
+        result_id="mutation-result-committed-1",
+        plan_id=plan.plan_id,
+        plan_hash=plan.plan_hash,
+        run_id=plan.run_id,
+        turn_id=plan.turn_id,
+        subject=plan.subject,
+        outcome=MemoryMutationApplyOutcome.COMMITTED,
+        receipt_ref=receipt_ref,
+        confirmation_items=(),
+        reason_code=MemoryMutationApplyReasonCode.COMMITTED,
+        decided_at=16.0,
+    )
+    committed.validate_plan(plan)
+    rejected = replace(
+        committed,
+        result_id="mutation-result-rejected-1",
+        outcome=MemoryMutationApplyOutcome.REJECTED,
+        receipt_ref=None,
+        reason_code=MemoryMutationApplyReasonCode.ACTION_AUTHORITY_REJECTED,
+    )
+    assert MemoryMutationApplyResult.from_json(rejected.to_json()) == rejected
+
+    with pytest.raises(ValueError, match="requires confirmation_items"):
+        replace(confirmation, confirmation_items=())
+    with pytest.raises(ValueError, match="cannot carry receipt"):
+        replace(rejected, receipt_ref=receipt_ref)
+    with pytest.raises(ValueError, match="committed result requires"):
+        replace(committed, confirmation_items=(item,))
 
 
 @pytest.mark.parametrize(
@@ -1126,12 +1476,12 @@ def test_strict_atomic_apply_receipt_binds_entire_canonical_plan() -> None:
     create = _semantic_operation("create")
     revise = _semantic_operation(
         "revise",
-        kind=MemoryMutationKind.REVISE,
+        kind=MemoryMutationKind.CONTEST,
         target=CreatedByOperationTarget("create"),
         depends_on=("create",),
     )
     plan = MemoryMutationPlan(
-        "atomic-plan", "run-1", "user-1", 4,
+        "atomic-plan", "run-1", "turn-1", "user-1", 4,
         MemoryMutationPlanOutcome.MUTATE, (revise, create), _disclosure(),
         (_ref(),), "atomic-plan-idem",
     )

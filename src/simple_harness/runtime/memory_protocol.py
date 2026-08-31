@@ -57,8 +57,14 @@ from .evidence_protocol import (
     _refs_from_json,
 )
 from .information_classification_protocol import InformationAttribute, PrivacyClass
+from .memory_action_protocol import (
+    MemoryActionAuthorityRef,
+    MemoryActionIntent,
+    MemoryActionKind,
+)
 
 RECALL_DECISION_SCHEMA_VERSION = 3
+MEMORY_MUTATION_SCHEMA_VERSION = 3
 
 
 class LongTermMemoryType(StrEnum):
@@ -2438,6 +2444,8 @@ class MemoryMutationOperation:
     proposed_information_attributes: tuple[InformationAttribute, ...]
     evidence_spans: tuple[EvidenceSpanRef, ...]
     reason_code: str
+    action_authority_ref: MemoryActionAuthorityRef | None = None
+    operation_intent_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         _identifier(self.operation_id, "operation_id")
@@ -2499,6 +2507,22 @@ class MemoryMutationOperation:
             raise ValueError("evidence_spans must contain unique bounded EvidenceSpanRef values")
         _validate_epistemic_evidence_matrix(epistemic, verification, spans)
         _identifier(self.reason_code, "reason_code")
+        protected_action = kind in {
+            MemoryMutationKind.REVISE,
+            MemoryMutationKind.SUPERSEDE,
+            MemoryMutationKind.SUPPRESS,
+        }
+        if protected_action and not isinstance(self.target, ExistingMemoryTarget):
+            raise ValueError(
+                "existing-memory action authority requires an exact ExistingMemoryTarget"
+            )
+        if self.action_authority_ref is not None:
+            if type(self.action_authority_ref) is not MemoryActionAuthorityRef:
+                raise TypeError("action_authority_ref must use MemoryActionAuthorityRef")
+            if not protected_action:
+                raise ValueError(
+                    "action_authority_ref is only valid for revise/supersede/suppress"
+                )
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "memory_type", memory_type)
         object.__setattr__(self, "depends_on_operation_ids", dependencies)
@@ -2509,6 +2533,37 @@ class MemoryMutationOperation:
         object.__setattr__(self, "proposed_privacy_class", privacy)
         object.__setattr__(self, "proposed_information_attributes", attributes)
         object.__setattr__(self, "evidence_spans", spans)
+        object.__setattr__(
+            self,
+            "operation_intent_hash",
+            _domain_hash(
+                "simple-harness/memory-mutation-operation-intent/v3",
+                self._intent_json(),
+            ),
+        )
+
+    def _intent_json(self) -> dict[str, JsonValue]:
+        """Canonical mutation intent, deliberately excluding Host authority ref."""
+
+        return {
+            "operation_id": self.operation_id,
+            "kind": self.kind.value,
+            "memory_type": self.memory_type.value,
+            "payload": None if self.payload is None else self.payload.to_json(),
+            "target": None if self.target is None else self.target.to_json(),
+            "depends_on_operation_ids": list(self.depends_on_operation_ids),
+            "lifecycle_state": self.lifecycle_state.value,
+            "epistemic_status": self.epistemic_status.value,
+            "conflict_status": self.conflict_status.value,
+            "verification_state": self.verification_state.value,
+            "valid_time_interval": self.valid_time_interval.to_json(),
+            "proposed_privacy_class": self.proposed_privacy_class.value,
+            "proposed_information_attributes": [
+                item.value for item in self.proposed_information_attributes
+            ],
+            "evidence_spans": [item.to_json() for item in self.evidence_spans],
+            "reason_code": self.reason_code,
+        }
 
     def effective_privacy_class(
         self, *trusted_floors: PrivacyClass
@@ -2542,25 +2597,14 @@ class MemoryMutationOperation:
         )
 
     def to_json(self) -> dict[str, JsonValue]:
-        return {
-            "operation_id": self.operation_id,
-            "kind": self.kind.value,
-            "memory_type": self.memory_type.value,
-            "payload": None if self.payload is None else self.payload.to_json(),
-            "target": None if self.target is None else self.target.to_json(),
-            "depends_on_operation_ids": list(self.depends_on_operation_ids),
-            "lifecycle_state": self.lifecycle_state.value,
-            "epistemic_status": self.epistemic_status.value,
-            "conflict_status": self.conflict_status.value,
-            "verification_state": self.verification_state.value,
-            "valid_time_interval": self.valid_time_interval.to_json(),
-            "proposed_privacy_class": self.proposed_privacy_class.value,
-            "proposed_information_attributes": [
-                item.value for item in self.proposed_information_attributes
-            ],
-            "evidence_spans": [item.to_json() for item in self.evidence_spans],
-            "reason_code": self.reason_code,
-        }
+        value = self._intent_json()
+        value["operation_intent_hash"] = self.operation_intent_hash
+        value["action_authority_ref"] = (
+            None
+            if self.action_authority_ref is None
+            else self.action_authority_ref.to_json()
+        )
+        return value
 
     @classmethod
     def from_json(cls, value: Mapping[str, object]) -> MemoryMutationOperation:
@@ -2569,13 +2613,15 @@ class MemoryMutationOperation:
             "depends_on_operation_ids", "lifecycle_state", "epistemic_status",
             "conflict_status", "verification_state", "valid_time_interval",
             "proposed_privacy_class", "proposed_information_attributes",
-            "evidence_spans", "reason_code",
+            "evidence_spans", "reason_code", "operation_intent_hash",
+            "action_authority_ref",
         }
         _exact_keys(value, expected, "MemoryMutationOperation")
         memory_type = LongTermMemoryType(value["memory_type"])  # type: ignore[arg-type]
         lifecycle_type = _LIFECYCLE_TYPES[memory_type]
         payload_value = value["payload"]
-        return cls(
+        action_ref_value = value["action_authority_ref"]
+        operation = cls(
             operation_id=_identifier(value["operation_id"], "operation_id"),
             kind=MemoryMutationKind(value["kind"]),  # type: ignore[arg-type]
             memory_type=memory_type,
@@ -2604,13 +2650,26 @@ class MemoryMutationOperation:
                 for item in _objects(value["evidence_spans"], "evidence_spans")
             ),
             reason_code=_identifier(value["reason_code"], "reason_code"),
+            action_authority_ref=(
+                None
+                if action_ref_value is None
+                else MemoryActionAuthorityRef.from_json(
+                    _object(action_ref_value, "action_authority_ref")
+                )
+            ),
         )
+        if operation.operation_intent_hash != _digest(
+            value["operation_intent_hash"], "operation_intent_hash"
+        ):
+            raise ValueError("operation_intent_hash does not bind operation intent")
+        return operation
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryMutationPlan:
     plan_id: str
     run_id: str
+    turn_id: str
     subject: str
     base_revision: int
     outcome: MemoryMutationPlanOutcome
@@ -2619,15 +2678,16 @@ class MemoryMutationPlan:
     evidence_refs: tuple[EvidenceRef, ...]
     idempotency_key: str
     apply_mode: MemoryMutationApplyMode = MemoryMutationApplyMode.STRICT_ATOMIC
-    schema_version: int = COGNITIVE_MEMORY_SCHEMA_VERSION
+    schema_version: int = MEMORY_MUTATION_SCHEMA_VERSION
     plan_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != COGNITIVE_MEMORY_SCHEMA_VERSION:
+        if self.schema_version != MEMORY_MUTATION_SCHEMA_VERSION:
             raise ValueError("unsupported MemoryMutationPlan schema_version")
         for value, name in (
             (self.plan_id, "plan_id"),
             (self.run_id, "run_id"),
+            (self.turn_id, "turn_id"),
             (self.subject, "subject"),
             (self.idempotency_key, "idempotency_key"),
         ):
@@ -2692,7 +2752,41 @@ class MemoryMutationPlan:
         object.__setattr__(
             self,
             "plan_hash",
-            _domain_hash("simple-harness/memory-mutation-plan/v2", self.to_json()),
+            _domain_hash("simple-harness/memory-mutation-plan/v3", self.to_json()),
+        )
+
+    def action_intent(self, operation_id: str) -> MemoryActionIntent:
+        """Build the exact non-circular Host authorization commitment."""
+
+        _identifier(operation_id, "operation_id")
+        operation = next(
+            (item for item in self.operations if item.operation_id == operation_id),
+            None,
+        )
+        if operation is None:
+            raise KeyError("memory_action_operation_not_found")
+        if operation.kind not in {
+            MemoryMutationKind.REVISE,
+            MemoryMutationKind.SUPERSEDE,
+            MemoryMutationKind.SUPPRESS,
+        }:
+            raise ValueError("operation does not require MemoryActionAuthority")
+        if not isinstance(operation.target, ExistingMemoryTarget):
+            raise ValueError("memory action requires an exact ExistingMemoryTarget")
+        return MemoryActionIntent(
+            subject=self.subject,
+            action=MemoryActionKind(operation.kind.value),
+            target_memory_id=operation.target.memory_id,
+            target_revision=operation.target.revision,
+            evidence_refs=self.evidence_refs,
+            evidence_span_hashes=tuple(
+                span.span_hash for span in operation.evidence_spans
+            ),
+            run_id=self.run_id,
+            turn_id=self.turn_id,
+            plan_id=self.plan_id,
+            operation_id=operation.operation_id,
+            operation_intent_hash=operation.operation_intent_hash,
         )
 
     @staticmethod
@@ -2730,6 +2824,7 @@ class MemoryMutationPlan:
             "schema_version": self.schema_version,
             "plan_id": self.plan_id,
             "run_id": self.run_id,
+            "turn_id": self.turn_id,
             "subject": self.subject,
             "base_revision": self.base_revision,
             "outcome": self.outcome.value,
@@ -2748,6 +2843,7 @@ class MemoryMutationPlan:
                 "schema_version",
                 "plan_id",
                 "run_id",
+                "turn_id",
                 "subject",
                 "base_revision",
                 "outcome",
@@ -2762,6 +2858,7 @@ class MemoryMutationPlan:
         return cls(
             plan_id=_identifier(value["plan_id"], "plan_id"),
             run_id=_identifier(value["run_id"], "run_id"),
+            turn_id=_identifier(value["turn_id"], "turn_id"),
             subject=_identifier(value["subject"], "subject"),
             base_revision=_positive_int(value["base_revision"], "base_revision"),
             outcome=MemoryMutationPlanOutcome(value["outcome"]),  # type: ignore[arg-type]
@@ -2775,7 +2872,7 @@ class MemoryMutationPlan:
             evidence_refs=_refs_from_json(value["evidence_refs"]),
             idempotency_key=_identifier(value["idempotency_key"], "idempotency_key"),
             apply_mode=MemoryMutationApplyMode(value["apply_mode"]),  # type: ignore[arg-type]
-            schema_version=_cognitive_schema_version(
+            schema_version=_memory_mutation_schema_version(
                 value["schema_version"], "MemoryMutationPlan"
             ),
         )
@@ -2811,6 +2908,239 @@ class MemoryMutationApplyReceiptRef:
         )
 
 
+class MemoryMutationApplyOutcome(StrEnum):
+    COMMITTED = "committed"
+    NEEDS_USER_CONFIRMATION = "needs_user_confirmation"
+    REJECTED = "rejected"
+
+
+class MemoryMutationApplyReasonCode(StrEnum):
+    COMMITTED = "memory_mutation_committed"
+    NO_MUTATION = "memory_mutation_no_mutation"
+    ACTION_AUTHORITY_REQUIRED = "memory_action_authority_required"
+    ACTION_AUTHORITY_REJECTED = "memory_action_authority_rejected"
+    VALIDATION_REJECTED = "memory_mutation_validation_rejected"
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryActionConfirmationItem:
+    """Exact action intent the Host may present for authenticated confirmation."""
+
+    intent: MemoryActionIntent
+    item_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.intent) is not MemoryActionIntent:
+            raise TypeError("intent must use MemoryActionIntent")
+        object.__setattr__(
+            self,
+            "item_hash",
+            _domain_hash(
+                "simple-harness/memory-action-confirmation-item/v1",
+                self.to_json(),
+            ),
+        )
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {"intent": self.intent.to_json(), "intent_hash": self.intent.intent_hash}
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> MemoryActionConfirmationItem:
+        _exact_keys(
+            value,
+            {"intent", "intent_hash"},
+            "MemoryActionConfirmationItem",
+        )
+        intent = MemoryActionIntent.from_json(_object(value["intent"], "intent"))
+        if _digest(value["intent_hash"], "intent_hash") != intent.intent_hash:
+            raise ValueError("MemoryActionConfirmationItem intent_hash differs")
+        return cls(intent)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryMutationApplyResult:
+    """Stable result wire; confirmation is not represented as an exception."""
+
+    result_id: str
+    plan_id: str
+    plan_hash: str
+    run_id: str
+    turn_id: str
+    subject: str
+    outcome: MemoryMutationApplyOutcome
+    receipt_ref: MemoryMutationApplyReceiptRef | None
+    confirmation_items: tuple[MemoryActionConfirmationItem, ...]
+    reason_code: MemoryMutationApplyReasonCode
+    decided_at: float
+    schema_version: int = MEMORY_MUTATION_SCHEMA_VERSION
+    result_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.schema_version != MEMORY_MUTATION_SCHEMA_VERSION:
+            raise ValueError("unsupported MemoryMutationApplyResult schema_version")
+        for value, name in (
+            (self.result_id, "result_id"),
+            (self.plan_id, "plan_id"),
+            (self.run_id, "run_id"),
+            (self.turn_id, "turn_id"),
+            (self.subject, "subject"),
+        ):
+            _identifier(value, name)
+        _digest(self.plan_hash, "plan_hash")
+        outcome = MemoryMutationApplyOutcome(self.outcome)
+        reason = MemoryMutationApplyReasonCode(self.reason_code)
+        if (
+            self.receipt_ref is not None
+            and type(self.receipt_ref) is not MemoryMutationApplyReceiptRef
+        ):
+            raise TypeError("receipt_ref must use MemoryMutationApplyReceiptRef")
+        items = tuple(self.confirmation_items)
+        if not all(type(item) is MemoryActionConfirmationItem for item in items):
+            raise TypeError("confirmation_items must use MemoryActionConfirmationItem")
+        if len(items) > 128 or len({item.intent.intent_hash for item in items}) != len(items):
+            raise ValueError("confirmation_items must be bounded and unique")
+        if outcome is MemoryMutationApplyOutcome.COMMITTED:
+            if self.receipt_ref is None or items:
+                raise ValueError("committed result requires only receipt_ref")
+            if reason not in {
+                MemoryMutationApplyReasonCode.COMMITTED,
+                MemoryMutationApplyReasonCode.NO_MUTATION,
+            }:
+                raise ValueError("committed result reason differs")
+        elif outcome is MemoryMutationApplyOutcome.NEEDS_USER_CONFIRMATION:
+            if self.receipt_ref is not None or not items:
+                raise ValueError(
+                    "needs_user_confirmation requires confirmation_items and no receipt"
+                )
+            if reason is not MemoryMutationApplyReasonCode.ACTION_AUTHORITY_REQUIRED:
+                raise ValueError("needs_user_confirmation reason differs")
+        else:
+            if self.receipt_ref is not None or items:
+                raise ValueError("rejected result cannot carry receipt or confirmation items")
+            if reason not in {
+                MemoryMutationApplyReasonCode.ACTION_AUTHORITY_REJECTED,
+                MemoryMutationApplyReasonCode.VALIDATION_REJECTED,
+            }:
+                raise ValueError("rejected result reason differs")
+        decided_at = _trusted_current_time(self.decided_at)
+        object.__setattr__(self, "outcome", outcome)
+        object.__setattr__(self, "confirmation_items", items)
+        object.__setattr__(self, "reason_code", reason)
+        object.__setattr__(self, "decided_at", decided_at)
+        object.__setattr__(
+            self,
+            "result_hash",
+            _domain_hash(
+                "simple-harness/memory-mutation-apply-result/v3",
+                self.to_json(),
+            ),
+        )
+
+    def validate_plan(self, plan: MemoryMutationPlan) -> None:
+        if type(plan) is not MemoryMutationPlan:
+            raise TypeError("plan must use MemoryMutationPlan")
+        if (
+            self.plan_id,
+            self.plan_hash,
+            self.run_id,
+            self.turn_id,
+            self.subject,
+        ) != (
+            plan.plan_id,
+            plan.plan_hash,
+            plan.run_id,
+            plan.turn_id,
+            plan.subject,
+        ):
+            raise ValueError("apply result does not exactly bind mutation plan")
+        if self.outcome is MemoryMutationApplyOutcome.COMMITTED:
+            expected = (
+                MemoryMutationApplyReasonCode.NO_MUTATION
+                if plan.outcome is MemoryMutationPlanOutcome.NO_MUTATION
+                else MemoryMutationApplyReasonCode.COMMITTED
+            )
+            if self.reason_code is not expected:
+                raise ValueError("committed result reason differs from plan outcome")
+        if self.outcome is MemoryMutationApplyOutcome.NEEDS_USER_CONFIRMATION:
+            expected_intents = {
+                plan.action_intent(operation.operation_id).intent_hash
+                for operation in plan.operations
+                if operation.kind
+                in {
+                    MemoryMutationKind.REVISE,
+                    MemoryMutationKind.SUPERSEDE,
+                    MemoryMutationKind.SUPPRESS,
+                }
+                and operation.action_authority_ref is None
+            }
+            actual_intents = {item.intent.intent_hash for item in self.confirmation_items}
+            if actual_intents != expected_intents:
+                raise ValueError("confirmation items do not exactly cover missing authorities")
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "schema_version": self.schema_version,
+            "result_id": self.result_id,
+            "plan_id": self.plan_id,
+            "plan_hash": self.plan_hash,
+            "run_id": self.run_id,
+            "turn_id": self.turn_id,
+            "subject": self.subject,
+            "outcome": self.outcome.value,
+            "receipt_ref": None if self.receipt_ref is None else self.receipt_ref.to_json(),
+            "confirmation_items": [item.to_json() for item in self.confirmation_items],
+            "reason_code": self.reason_code.value,
+            "decided_at": self.decided_at,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> MemoryMutationApplyResult:
+        _exact_keys(
+            value,
+            {
+                "schema_version",
+                "result_id",
+                "plan_id",
+                "plan_hash",
+                "run_id",
+                "turn_id",
+                "subject",
+                "outcome",
+                "receipt_ref",
+                "confirmation_items",
+                "reason_code",
+                "decided_at",
+            },
+            "MemoryMutationApplyResult",
+        )
+        receipt_value = value["receipt_ref"]
+        return cls(
+            result_id=_identifier(value["result_id"], "result_id"),
+            plan_id=_identifier(value["plan_id"], "plan_id"),
+            plan_hash=_digest(value["plan_hash"], "plan_hash"),
+            run_id=_identifier(value["run_id"], "run_id"),
+            turn_id=_identifier(value["turn_id"], "turn_id"),
+            subject=_identifier(value["subject"], "subject"),
+            outcome=MemoryMutationApplyOutcome(value["outcome"]),  # type: ignore[arg-type]
+            receipt_ref=(
+                None
+                if receipt_value is None
+                else MemoryMutationApplyReceiptRef.from_json(
+                    _object(receipt_value, "receipt_ref")
+                )
+            ),
+            confirmation_items=tuple(
+                MemoryActionConfirmationItem.from_json(item)
+                for item in _objects(value["confirmation_items"], "confirmation_items")
+            ),
+            reason_code=MemoryMutationApplyReasonCode(value["reason_code"]),  # type: ignore[arg-type]
+            decided_at=_trusted_current_time(value["decided_at"]),
+            schema_version=_memory_mutation_schema_version(
+                value["schema_version"], "MemoryMutationApplyResult"
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryMutationApplyReceipt:
     """Authority-issued receipt for one indivisible plan transaction."""
@@ -2826,11 +3156,11 @@ class MemoryMutationApplyReceipt:
     canonical_operation_ids: tuple[str, ...]
     apply_mode: MemoryMutationApplyMode
     committed_at: float
-    schema_version: int = COGNITIVE_MEMORY_SCHEMA_VERSION
+    schema_version: int = MEMORY_MUTATION_SCHEMA_VERSION
     receipt_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != COGNITIVE_MEMORY_SCHEMA_VERSION:
+        if self.schema_version != MEMORY_MUTATION_SCHEMA_VERSION:
             raise ValueError("unsupported MemoryMutationApplyReceipt schema_version")
         for value, name in (
             (self.receipt_id, "receipt_id"),
@@ -2858,7 +3188,7 @@ class MemoryMutationApplyReceipt:
             self,
             "receipt_hash",
             _domain_hash(
-                "simple-harness/memory-mutation-apply-receipt/v2",
+                "simple-harness/memory-mutation-apply-receipt/v3",
                 self.to_json(),
             ),
         )
@@ -2943,7 +3273,7 @@ class MemoryMutationApplyReceipt:
             committed_at=cast(
                 float, _optional_timestamp(value["committed_at"], "committed_at")
             ),
-            schema_version=_cognitive_schema_version(
+            schema_version=_memory_mutation_schema_version(
                 value["schema_version"], "MemoryMutationApplyReceipt"
             ),
         )
@@ -2986,6 +3316,14 @@ def _cognitive_schema_version(value: object, name: str) -> int:
     return value
 
 
+def _memory_mutation_schema_version(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} schema_version must be an integer")
+    if value != MEMORY_MUTATION_SCHEMA_VERSION:
+        raise ValueError(f"unsupported {name} schema_version")
+    return value
+
+
 def _recall_decision_schema_version(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{name} schema_version must be an integer")
@@ -2995,6 +3333,7 @@ def _recall_decision_schema_version(value: object, name: str) -> int:
 
 
 __all__ = (
+    "MEMORY_MUTATION_SCHEMA_VERSION",
     "ConflictStatus",
     "ContextAssemblyBudget",
     "ContextAssemblyDecision",
@@ -3008,10 +3347,15 @@ __all__ = (
     "ExistingMemoryTarget",
     "InformationAttribute",
     "LongTermMemoryType",
+    "MemoryActionConfirmationItem",
+    "MemoryActionAuthorityRef",
     "MemoryMutationApplyAuthorityPort",
     "MemoryMutationApplyMode",
+    "MemoryMutationApplyOutcome",
+    "MemoryMutationApplyReasonCode",
     "MemoryMutationApplyReceipt",
     "MemoryMutationApplyReceiptRef",
+    "MemoryMutationApplyResult",
     "MemoryMutationKind",
     "MemoryMutationOperation",
     "MemoryMutationPlan",

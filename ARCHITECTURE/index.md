@@ -37,6 +37,14 @@ typed receipt；Mutation DTO 同时冻结 epistemic/evidence matrix，Memory rep
 conversation causal metadata 是 raw evidence 入库后的独立 Host registration，非法 metadata 不删除原始证据，
 只失去后续 Short-Horizon 资格。
 
+S1 `a2-006` 已新增 Host-owned `MemoryActionAuthority`：Mutation schema v3 的
+REVISE/SUPERSEDE/SUPPRESS 只能引用 `MemoryActionAuthorityRef`，Memory 必须经 Host durable authority port
+单次解析并校验 exact subject/action/existing target revision/evidence/run/turn/plan/operation/expiry/nonce/issuer/hash。
+`operation_intent_hash` 明确排除 authority ref，避免 plan/authority hash 循环；Memory repository 仍必须在同一
+mutation transaction 唯一消费 `replay_identity`。缺 authority 使用 typed
+`MemoryMutationApplyResult.NEEDS_USER_CONFIRMATION`，不伪装成异常或 Recall outcome；CREATE 不需要 action
+authority，CONTEST 不得携带 action ref，也不因此取得覆盖、删除或任意降级无关记忆的权限。
+
 Main-model analysis 的 provider delivery 由独立的 `MemoryAnalysisResultEnvelope` 承载：其中 Host
 durable `MemoryAnalysisDeliveryReceipt` 必须经 injected authority lookup 验证；Memory 后续产生的
 `MemoryAnalysisReceipt` 仍只负责 validator/apply，两者不可互相替代。
@@ -60,6 +68,7 @@ tag、release 上传、download-back 与 consumer promotion 继续分别验收�
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Agent Memory/Context contracts、identity binding、context
   staging、release retry、resource ownership、production builder、installed-wheel Linux ARM64 core gate，以及 Provider/预算、
   结构化消息、工具 catalog 与 projection outbox 权威边界。
+- [PROJECT_STATUS.md](./PROJECT_STATUS.md) — 当前 SDK candidate 模块完成度、最近里程碑与跨仓开放门禁。
 
 Human Memory Program 当前只完成 Harness SDK 的 S1 source candidate 边界；不得把后续 Memory SDK、Host
 TaskScope、动态 Context、单主对话 UI 或数字孪生体目标误当成已有产品能力。

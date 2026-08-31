@@ -472,6 +472,7 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
     mutation = MemoryMutationPlan(
         "mutation-plan-1",
         "run-1",
+        "turn-1",
         "actor-1",
         1,
         MemoryMutationPlanOutcome.MUTATE,
@@ -757,6 +758,7 @@ def test_every_persistent_protocol_dto_strictly_round_trips_and_rejects_extra_fi
     memory_plan = MemoryMutationPlan(
         "memory-plan-1",
         "run-1",
+        "turn-1",
         "actor-1",
         1,
         MemoryMutationPlanOutcome.MUTATE,

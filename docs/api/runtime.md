@@ -98,6 +98,37 @@ the field is `None`, it derives a deterministic reference from only that continu
 message. The effective reference is durable before provider invocation and remains fixed across
 crash recovery and replay.
 
+### Host-issued memory action authority
+
+Changes to an existing stored memory use the strict public
+`MemoryActionAuthority` protocol. The Host issues an authority for exactly one
+`REVISE`, `SUPERSEDE`, or `SUPPRESS` intent. The intent binds the subject, exact
+target memory ID and revision, canonical evidence references and span hashes,
+run and turn, mutation plan and operation IDs, and the operation-intent hash.
+The authority also carries its issuer, nonce, issue and expiry times, and a
+domain-separated hash.
+
+`MemoryMutationOperation` carries only a `MemoryActionAuthorityRef`; a complete
+authority included in model output is not trusted. The Memory consumer resolves
+the reference exactly once through the Host-owned `MemoryActionAuthorityPort`,
+strictly verifies every binding, and atomically consumes `replay_identity` in
+the same transaction that commits the mutation. The port owns durable lookup,
+not the transaction-local replay fence. An idempotent replay is permitted only
+when it resolves to the same already-committed receipt.
+
+The operation-intent hash excludes the authority reference, preventing a hash
+cycle while the final plan hash still commits to the reference. Protected
+actions may target only an `ExistingMemoryTarget`; same-plan
+`CreatedByOperationTarget` chains are rejected. `CONTEST` never accepts action
+authority and remains a conservative conflict candidate that the Memory
+consumer must validate against deterministic conflict rules.
+
+`MemoryMutationApplyResult` reports one of `COMMITTED`,
+`NEEDS_USER_CONFIRMATION`, or `REJECTED`. A missing authority for an otherwise
+valid protected operation is represented by typed confirmation items, not by a
+recall outcome or an exception. Schema-2 mutation wires and legacy authority
+wires are rejected rather than migrated implicitly.
+
 ---
 
 ## Starting a Run
