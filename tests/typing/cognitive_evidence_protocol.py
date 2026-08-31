@@ -4,9 +4,11 @@
 """Static consumer fixture for cognitive evidence authority contracts."""
 
 from simple_harness import (
+    CONVERSATION_EVIDENCE_SCHEMA_VERSION,
     EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION,
     AdmittedEvidenceAuthority,
     ConversationEvidenceAuthorityVerifierPort,
+    ConversationEvidenceMetadata,
     ConversationEvidenceRegistration,
     ConversationEvidenceRegistrationRef,
     EvidenceAuthorityVerifierPort,
@@ -16,6 +18,7 @@ from simple_harness import (
     PrivacyClass,
     ProposedTypedObservationRef,
     TypedObservationAuthorityReceipt,
+    authorize_conversation_public_text,
     verify_evidence_span,
 )
 
@@ -42,7 +45,15 @@ CONVERSATION_VERIFIER: ConversationEvidenceAuthorityVerifierPort = StructuralCon
 PRIVACY_CLASS_TYPE: type[PrivacyClass] = PrivacyClass
 INFORMATION_ATTRIBUTE_TYPE: type[InformationAttribute] = InformationAttribute
 EVIDENCE_ITEM_AUTHORITY_SCHEMA: int = EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION
+CONVERSATION_EVIDENCE_SCHEMA: int = CONVERSATION_EVIDENCE_SCHEMA_VERSION
 
 
 async def resolve_verified_authority(span: EvidenceSpanRef) -> EvidenceItemAuthority:
     return await verify_evidence_span(span, EVIDENCE_VERIFIER)
+
+
+def derive_recall_metadata(
+    metadata: ConversationEvidenceMetadata,
+    admitted: AdmittedEvidenceAuthority,
+) -> ConversationEvidenceMetadata:
+    return authorize_conversation_public_text(metadata, admitted)

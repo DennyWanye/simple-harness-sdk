@@ -30,6 +30,7 @@ from simple_harness.runtime.disclosure_protocol import (
     IntendedAudience,
 )
 from simple_harness.runtime.evidence_protocol import (
+    CONVERSATION_EVIDENCE_SCHEMA_VERSION,
     EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION,
     EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1,
     AdmittedEvidenceAuthority,
@@ -50,6 +51,7 @@ from simple_harness.runtime.evidence_protocol import (
     SanitizedEvidenceEnvelope,
     SanitizedEvidenceReceipt,
     TypedObservationAuthorityReceipt,
+    authorize_conversation_public_text,
     verify_conversation_evidence_registration,
     verify_evidence_span,
 )
@@ -66,6 +68,7 @@ from simple_harness.runtime.memory_protocol import PrivacyClass as MemoryPrivacy
 def test_cognitive_evidence_contract_is_on_official_public_surfaces() -> None:
     names = (
         "COGNITIVE_MEMORY_SCHEMA_VERSION",
+        "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
         "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
         "EvidenceSpanRef",
         "EvidenceAuthorityVerifierPort",
@@ -78,6 +81,7 @@ def test_cognitive_evidence_contract_is_on_official_public_surfaces() -> None:
         "ConversationEvidenceAuthorityVerifierPort",
         "verify_evidence_span",
         "verify_conversation_evidence_registration",
+        "authorize_conversation_public_text",
     )
     for name in names:
         assert name in simple_harness.__all__
@@ -610,6 +614,7 @@ def _registration(
     *, secondary: bool = False
 ) -> tuple[ConversationEvidenceRegistration, ConversationEvidenceRegistrationRef]:
     envelope, admission = _admitted()
+    item_authority = _item_authority(_span(envelope, admission))
     metadata = ConversationEvidenceMetadata(
         metadata_id="conversation-metadata-1",
         authority_issuer_id="host-conversation-registry-1",
@@ -634,6 +639,10 @@ def _registration(
         tool_causal_link=None,
         entities=("python",),
     )
+    metadata = authorize_conversation_public_text(
+        metadata,
+        AdmittedEvidenceAuthority(envelope, admission, item_authority),
+    )
     metadata_receipt = ConversationEvidenceMetadataReceipt(
         receipt_id="conversation-metadata-receipt-1",
         metadata_id=metadata.metadata_id,
@@ -656,6 +665,7 @@ def _registration(
         admission,
         metadata,
         metadata_receipt,
+        recall_item_authority=item_authority,
     )
     reference = ConversationEvidenceRegistrationRef(
         registration.registration_id,
@@ -682,11 +692,38 @@ def test_conversation_metadata_is_post_ingestion_authority_registration() -> Non
         verify_conversation_evidence_registration(reference, _ConversationVerifier(registration))
     )
     assert metadata.belongs_to_primary_conversation
+    assert metadata.has_authorized_public_text
+    assert metadata.schema_version == CONVERSATION_EVIDENCE_SCHEMA_VERSION
+    assert metadata.public_text_json_pointer == "/public_text"
+    assert metadata.public_text_hash == _sha_text(
+        str(registration.envelope.sanitized_payload["public_text"])
+    )
+    assert metadata.effective_privacy_class is PrivacyClass.PERSONAL
+    assert metadata.information_attributes == (InformationAttribute.PREFERENCE,)
+    assert (
+        metadata.classification_authority_ref
+        == "host-classification-policy-1"
+    )
     assert ConversationEvidenceMetadata.from_json(metadata.to_json()) == metadata
     assert (
         ConversationEvidenceMetadataReceipt.from_json(registration.metadata_receipt.to_json())
         == registration.metadata_receipt
     )
+    with pytest.raises(ValueError, match="unsupported.*schema_version"):
+        replace(registration.metadata_receipt, schema_version=2)
+    with pytest.raises(ValueError, match="unsupported.*schema_version"):
+        replace(registration, schema_version=2)
+    assert set(registration.to_json()) == {
+        "schema_version",
+        "registration_id",
+        "evidence_id",
+        "envelope_hash",
+        "admission_receipt_id",
+        "admission_receipt_hash",
+        "metadata",
+        "metadata_receipt",
+        "recall_item_authority",
+    }
     assert "conversation_metadata" not in registration.envelope.to_json()
 
     bad_group = metadata.to_json()
@@ -697,6 +734,14 @@ def test_conversation_metadata_is_post_ingestion_authority_registration() -> Non
     extra["model_claimed_primary"] = True
     with pytest.raises(ValueError, match="extra"):
         ConversationEvidenceMetadata.from_json(extra)
+    legacy = metadata.to_json()
+    legacy["schema_version"] = 2
+    with pytest.raises(ValueError, match="unsupported.*schema_version"):
+        ConversationEvidenceMetadata.from_json(legacy)
+    with pytest.raises(ValueError, match="all present or all absent"):
+        replace(metadata, public_text_hash=None)
+    with pytest.raises(ValueError, match="RFC 6901"):
+        replace(metadata, public_text_json_pointer="/bad~2escape")
 
     secondary, secondary_ref = _registration(secondary=True)
     with pytest.raises(ValueError, match="primary conversation"):
@@ -727,6 +772,76 @@ def test_conversation_metadata_is_post_ingestion_authority_registration() -> Non
                     metadata, role=ConversationEvidenceRole.ASSISTANT
                 ).metadata_hash,
             ),
+            recall_item_authority=registration.recall_item_authority,
+        )
+
+
+def test_conversation_recall_text_is_host_derived_and_absence_denies_indexing() -> None:
+    registration, reference = _registration()
+    metadata = registration.metadata
+    forged = replace(metadata, public_text_json_pointer="/result/version")
+    with pytest.raises(ValueError, match="differs from item authority"):
+        ConversationEvidenceRegistration(
+            "forged-pointer-registration",
+            registration.envelope,
+            registration.admission_receipt,
+            forged,
+            replace(
+                registration.metadata_receipt,
+                metadata_hash=forged.metadata_hash,
+            ),
+            recall_item_authority=registration.recall_item_authority,
+        )
+
+    for field_name, forged_value in (
+        ("public_text_hash", "f" * 64),
+        ("effective_privacy_class", PrivacyClass.PUBLIC),
+        ("information_attributes", (InformationAttribute.IDENTITY,)),
+        ("classification_authority_ref", "model-selected-policy"),
+    ):
+        forged_classification = replace(metadata, **{field_name: forged_value})
+        with pytest.raises(ValueError, match="differs from item authority"):
+            ConversationEvidenceRegistration(
+                f"forged-{field_name}",
+                registration.envelope,
+                registration.admission_receipt,
+                forged_classification,
+                replace(
+                    registration.metadata_receipt,
+                    metadata_hash=forged_classification.metadata_hash,
+                ),
+                recall_item_authority=registration.recall_item_authority,
+            )
+
+    absent = replace(
+        metadata,
+        public_text_json_pointer=None,
+        public_text_hash=None,
+        public_text_normalization_version=None,
+        evidence_item_authority_id=None,
+        evidence_item_authority_hash=None,
+        effective_privacy_class=None,
+        information_attributes=None,
+        classification_authority_ref=None,
+    )
+    durable_but_not_indexable = ConversationEvidenceRegistration(
+        "unindexed-registration",
+        registration.envelope,
+        registration.admission_receipt,
+        absent,
+        replace(registration.metadata_receipt, metadata_hash=absent.metadata_hash),
+    )
+    assert not durable_but_not_indexable.short_horizon_eligible
+    absent_ref = replace(
+        reference,
+        registration_id=durable_but_not_indexable.registration_id,
+        registration_hash=durable_but_not_indexable.registration_hash,
+    )
+    with pytest.raises(ValueError, match="no authorized public_text"):
+        asyncio.run(
+            verify_conversation_evidence_registration(
+                absent_ref, _ConversationVerifier(durable_but_not_indexable)
+            )
         )
 
 

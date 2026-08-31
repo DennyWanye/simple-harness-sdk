@@ -58,6 +58,7 @@ _MODULE_EXPORTS = {
         "IntendedAudience",
     ),
     ".evidence_protocol": (
+        "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
         "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
         "EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1",
         "AdmittedEvidenceAuthority",
@@ -94,6 +95,7 @@ _MODULE_EXPORTS = {
         "SanitizedEvidenceEnvelope",
         "SanitizedEvidenceReceipt",
         "TypedObservationAuthorityReceipt",
+        "authorize_conversation_public_text",
         "verify_conversation_evidence_registration",
         "verify_evidence_span",
     ),
@@ -343,6 +345,7 @@ def __dir__() -> list[str]:
 
 __all__ = (
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
+    "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
     "MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION",
     "MEMORY_MUTATION_SCHEMA_VERSION",
     "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
@@ -363,6 +366,7 @@ __all__ = (
     "EvidenceSupportKind",
     "ProposedTypedObservationRef",
     "TypedObservationAuthorityReceipt",
+    "authorize_conversation_public_text",
     "ROOT_PROFILE_KEY",
     "HOST_CONTROL_INPUT_MAX_BYTES",
     "HostControlAuthorityV1",

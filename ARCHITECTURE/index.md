@@ -35,7 +35,11 @@ NO_RECALL/REJECTED 的 candidate count 恒为零，v2 与未引用的旧 v1 Deci
 typed observation 仅允许 Tool/Trusted Tool 或 External/External Source 两组 exact provenance 且必须解析
 typed receipt；Mutation DTO 同时冻结 epistemic/evidence matrix，Memory repository 后续仍复验 authority。
 conversation causal metadata 是 raw evidence 入库后的独立 Host registration，非法 metadata 不删除原始证据，
-只失去后续 Short-Horizon 资格。
+只失去后续 Short-Horizon 资格。该 registration 现使用独立
+`CONVERSATION_EVIDENCE_SCHEMA_VERSION=3`：可召回 item 必须 all-or-none 绑定 Host 已验证
+`EvidenceItemAuthority` 派生的 RFC 6901 `public_text` pointer、UTF-8 SHA-256、effective privacy、canonical
+information attributes、classification authority ref 与 item-authority id/hash；没有该绑定的 evidence 仍永久保存，
+但不得进入索引。v2 conversation metadata/receipt/registration fail closed。
 
 S1 `a2-006` 已新增 Host-owned `MemoryActionAuthority`：Mutation schema v4 的
 REVISE/SUPERSEDE/SUPPRESS 只能引用 `MemoryActionAuthorityRef`，Memory 必须经 Host durable authority port

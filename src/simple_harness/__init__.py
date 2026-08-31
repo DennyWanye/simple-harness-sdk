@@ -42,6 +42,7 @@ from .version import __version__
 _RUNTIME_EXPORTS = frozenset(
     {
         "COGNITIVE_MEMORY_SCHEMA_VERSION",
+        "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
         "MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION",
         "PROCEDURE_APPLICABILITY_FINGERPRINT_VERSION",
         "PROCEDURE_OBSERVATION_AUTHORITY_SCHEMA_VERSION",
@@ -65,6 +66,7 @@ _RUNTIME_EXPORTS = frozenset(
         "EvidenceSupportKind",
         "ProposedTypedObservationRef",
         "TypedObservationAuthorityReceipt",
+        "authorize_conversation_public_text",
         "ConflictStatus",
         "CreatedByOperationTarget",
         "EpisodeLifecycleState",
@@ -318,6 +320,7 @@ def __dir__() -> list[str]:
 __all__ = (
     "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
+    "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
     "MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION",
     "MEMORY_MUTATION_SCHEMA_VERSION",
     "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
@@ -338,6 +341,7 @@ __all__ = (
     "EvidenceSupportKind",
     "ProposedTypedObservationRef",
     "TypedObservationAuthorityReceipt",
+    "authorize_conversation_public_text",
     "JsonPrimitive",
     "JsonValue",
     "FrozenJsonValue",

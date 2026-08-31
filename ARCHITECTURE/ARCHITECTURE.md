@@ -26,6 +26,12 @@ last-updated: 2026-08-31
   解析 exact typed receipt。Mutation strict DTO 冻结 EpistemicStatus/evidence matrix：VERIFIED_EXTERNAL 只能
   由 External/External Source typed observation + SOURCE_VERIFIED 支持，普通 user/model/context 不能授权；
   Memory repository 对实际 authority 的复验仍是提交前必要条件。
+- Conversation evidence 使用独立 schema v3。Host 只能从已验证 `AdmittedEvidenceAuthority` / exact
+  `EvidenceItemAuthority` 派生 authorized `public_text` binding：RFC 6901 pointer、identity-UTF8 SHA-256、
+  item-authority id/hash、effective privacy、sorted unique information attributes 与 classification authority ref
+  必须全有或全无。registration 复算 pointer 指向的 admitted string 与全部分类字段；无 binding 的原始 evidence
+  继续永久保存但 `short_horizon_eligible=False`，Memory/调用方不能自行选择或扫描其他字符串。conversation v2
+  wire 不再接受。
 - Episode、Semantic、Procedure、Prospective 各自使用 exact-key typed payload 与专属 lifecycle；operation 独立
   携带 epistemic/conflict/verification/valid-time/privacy attributes。existing target 固定 expected revision，
   created-by target 只能引用同类型 CREATE。Mutation schema v4 进一步要求 REVISE/SUPERSEDE/SUPPRESS 只作用于

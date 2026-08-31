@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Protocol, cast
 
@@ -100,6 +100,7 @@ class EvidenceSupportKind(StrEnum):
 
 EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1 = "sanitized-string-identity-utf8/v1"
 EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION = 3
+CONVERSATION_EVIDENCE_SCHEMA_VERSION = 3
 
 
 def _normalize_evidence_text(value: str, version: str) -> str:
@@ -383,6 +384,29 @@ def _cognitive_schema_version(value: object, name: str) -> int:
     return value
 
 
+def _conversation_evidence_schema_version(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} schema_version must be an integer")
+    if value != CONVERSATION_EVIDENCE_SCHEMA_VERSION:
+        raise ValueError(f"unsupported {name} schema_version")
+    return value
+
+
+def _rfc6901_absolute_pointer(value: object, name: str) -> str:
+    pointer = _bounded_text(value, name, max_bytes=2048)
+    if not pointer.startswith("/"):
+        raise ValueError(f"{name} must be an RFC 6901 absolute pointer")
+    index = 0
+    while index < len(pointer):
+        if pointer[index] == "~":
+            if index + 1 >= len(pointer) or pointer[index + 1] not in {"0", "1"}:
+                raise ValueError(f"{name} contains an invalid RFC 6901 escape")
+            index += 2
+            continue
+        index += 1
+    return pointer
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceRef:
     """Ordered evidence reference.
@@ -540,11 +564,19 @@ class ConversationEvidenceMetadata:
     task_scope_id: str | None
     tool_causal_link: ConversationToolCausalLink | None
     entities: tuple[str, ...]
-    schema_version: int = COGNITIVE_MEMORY_SCHEMA_VERSION
+    public_text_json_pointer: str | None = None
+    public_text_hash: str | None = None
+    public_text_normalization_version: str | None = None
+    evidence_item_authority_id: str | None = None
+    evidence_item_authority_hash: str | None = None
+    effective_privacy_class: PrivacyClass | None = None
+    information_attributes: tuple[InformationAttribute, ...] | None = None
+    classification_authority_ref: str | None = None
+    schema_version: int = CONVERSATION_EVIDENCE_SCHEMA_VERSION
     metadata_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != COGNITIVE_MEMORY_SCHEMA_VERSION:
+        if self.schema_version != CONVERSATION_EVIDENCE_SCHEMA_VERSION:
             raise ValueError("unsupported ConversationEvidenceMetadata schema_version")
         for value, name in (
             (self.metadata_id, "metadata_id"),
@@ -591,15 +623,62 @@ class ConversationEvidenceMetadata:
         if len(entities) > 128 or len(set(entities)) != len(entities):
             raise ValueError("entities must be unique and bounded")
         object.__setattr__(self, "entities", entities)
+        recall_values = (
+            self.public_text_json_pointer,
+            self.public_text_hash,
+            self.public_text_normalization_version,
+            self.evidence_item_authority_id,
+            self.evidence_item_authority_hash,
+            self.effective_privacy_class,
+            self.information_attributes,
+            self.classification_authority_ref,
+        )
+        present = tuple(value is not None for value in recall_values)
+        if any(present) and not all(present):
+            raise ValueError("authorized public_text fields must be all present or all absent")
+        if all(present):
+            pointer = _rfc6901_absolute_pointer(
+                cast(str, self.public_text_json_pointer),
+                "public_text_json_pointer",
+            )
+            _digest(self.public_text_hash, "public_text_hash")
+            _normalize_evidence_text(
+                "", cast(str, self.public_text_normalization_version)
+            )
+            _identifier(self.evidence_item_authority_id, "evidence_item_authority_id")
+            _digest(self.evidence_item_authority_hash, "evidence_item_authority_hash")
+            privacy = PrivacyClass(cast(str, self.effective_privacy_class))
+            raw_attributes = self.information_attributes
+            if not isinstance(raw_attributes, (tuple, list)):
+                raise TypeError("information_attributes must be an array")
+            try:
+                attributes = tuple(InformationAttribute(item) for item in raw_attributes)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("information_attributes contains an unknown value") from exc
+            if len(attributes) > 32 or len(set(attributes)) != len(attributes):
+                raise ValueError("information_attributes must be unique and bounded")
+            attributes = tuple(sorted(attributes, key=lambda item: item.value))
+            _identifier(
+                self.classification_authority_ref,
+                "classification_authority_ref",
+                max_length=1024,
+            )
+            object.__setattr__(self, "public_text_json_pointer", pointer)
+            object.__setattr__(self, "effective_privacy_class", privacy)
+            object.__setattr__(self, "information_attributes", attributes)
         object.__setattr__(
             self,
             "metadata_hash",
-            _domain_hash("simple-harness/conversation-evidence-metadata/v2", self.to_json()),
+            _domain_hash("simple-harness/conversation-evidence-metadata/v3", self.to_json()),
         )
 
     @property
     def belongs_to_primary_conversation(self) -> bool:
         return self.conversation_id == self.primary_conversation_id
+
+    @property
+    def has_authorized_public_text(self) -> bool:
+        return self.public_text_json_pointer is not None
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
@@ -628,6 +707,22 @@ class ConversationEvidenceMetadata:
                 None if self.tool_causal_link is None else self.tool_causal_link.to_json()
             ),
             "entities": list(self.entities),
+            "public_text_json_pointer": self.public_text_json_pointer,
+            "public_text_hash": self.public_text_hash,
+            "public_text_normalization_version": self.public_text_normalization_version,
+            "evidence_item_authority_id": self.evidence_item_authority_id,
+            "evidence_item_authority_hash": self.evidence_item_authority_hash,
+            "effective_privacy_class": (
+                None
+                if self.effective_privacy_class is None
+                else self.effective_privacy_class.value
+            ),
+            "information_attributes": (
+                None
+                if self.information_attributes is None
+                else [item.value for item in self.information_attributes]
+            ),
+            "classification_authority_ref": self.classification_authority_ref,
         }
 
     @classmethod
@@ -658,6 +753,14 @@ class ConversationEvidenceMetadata:
                 "task_scope_id",
                 "tool_causal_link",
                 "entities",
+                "public_text_json_pointer",
+                "public_text_hash",
+                "public_text_normalization_version",
+                "evidence_item_authority_id",
+                "evidence_item_authority_hash",
+                "effective_privacy_class",
+                "information_attributes",
+                "classification_authority_ref",
             },
             "ConversationEvidenceMetadata",
         )
@@ -700,7 +803,60 @@ class ConversationEvidenceMetadata:
                 else ConversationToolCausalLink.from_json(_object(tool_link, "tool_causal_link"))
             ),
             entities=_strings(value["entities"], "entities"),
-            schema_version=_cognitive_schema_version(
+            public_text_json_pointer=(
+                None
+                if value["public_text_json_pointer"] is None
+                else _bounded_text(
+                    value["public_text_json_pointer"],
+                    "public_text_json_pointer",
+                    max_bytes=2048,
+                )
+            ),
+            public_text_hash=(
+                None
+                if value["public_text_hash"] is None
+                else _digest(value["public_text_hash"], "public_text_hash")
+            ),
+            public_text_normalization_version=_optional_identifier(
+                value["public_text_normalization_version"],
+                "public_text_normalization_version",
+            ),
+            evidence_item_authority_id=_optional_identifier(
+                value["evidence_item_authority_id"], "evidence_item_authority_id"
+            ),
+            evidence_item_authority_hash=(
+                None
+                if value["evidence_item_authority_hash"] is None
+                else _digest(
+                    value["evidence_item_authority_hash"],
+                    "evidence_item_authority_hash",
+                )
+            ),
+            effective_privacy_class=(
+                None
+                if value["effective_privacy_class"] is None
+                else PrivacyClass(value["effective_privacy_class"])  # type: ignore[arg-type]
+            ),
+            information_attributes=(
+                None
+                if value["information_attributes"] is None
+                else tuple(
+                    InformationAttribute(item)
+                    for item in _strings(
+                        value["information_attributes"], "information_attributes"
+                    )
+                )
+            ),
+            classification_authority_ref=(
+                None
+                if value["classification_authority_ref"] is None
+                else _identifier(
+                    value["classification_authority_ref"],
+                    "classification_authority_ref",
+                    max_length=1024,
+                )
+            ),
+            schema_version=_conversation_evidence_schema_version(
                 value["schema_version"], "ConversationEvidenceMetadata"
             ),
         )
@@ -722,11 +878,11 @@ class ConversationEvidenceMetadataReceipt:
     metadata_hash: str
     issuer_ref: str
     accepted: bool
-    schema_version: int = COGNITIVE_MEMORY_SCHEMA_VERSION
+    schema_version: int = CONVERSATION_EVIDENCE_SCHEMA_VERSION
     receipt_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != COGNITIVE_MEMORY_SCHEMA_VERSION:
+        if self.schema_version != CONVERSATION_EVIDENCE_SCHEMA_VERSION:
             raise ValueError("unsupported ConversationEvidenceMetadataReceipt schema_version")
         _identifier(self.receipt_id, "receipt_id")
         _identifier(self.metadata_id, "metadata_id")
@@ -752,7 +908,7 @@ class ConversationEvidenceMetadataReceipt:
             self,
             "receipt_hash",
             _domain_hash(
-                "simple-harness/conversation-evidence-metadata-receipt/v2",
+                "simple-harness/conversation-evidence-metadata-receipt/v3",
                 self.to_json(),
             ),
         )
@@ -821,7 +977,7 @@ class ConversationEvidenceMetadataReceipt:
             metadata_hash=_digest(value["metadata_hash"], "metadata_hash"),
             issuer_ref=_identifier(value["issuer_ref"], "issuer_ref", max_length=1024),
             accepted=accepted,
-            schema_version=_cognitive_schema_version(
+            schema_version=_conversation_evidence_schema_version(
                 value["schema_version"], "ConversationEvidenceMetadataReceipt"
             ),
         )
@@ -1103,11 +1259,12 @@ class ConversationEvidenceRegistration:
     admission_receipt: SanitizedEvidenceReceipt
     metadata: ConversationEvidenceMetadata
     metadata_receipt: ConversationEvidenceMetadataReceipt
-    schema_version: int = COGNITIVE_MEMORY_SCHEMA_VERSION
+    recall_item_authority: EvidenceItemAuthority | None = None
+    schema_version: int = CONVERSATION_EVIDENCE_SCHEMA_VERSION
     registration_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != COGNITIVE_MEMORY_SCHEMA_VERSION:
+        if self.schema_version != CONVERSATION_EVIDENCE_SCHEMA_VERSION:
             raise ValueError("unsupported ConversationEvidenceRegistration schema_version")
         _identifier(self.registration_id, "registration_id")
         if not isinstance(self.envelope, SanitizedEvidenceEnvelope):
@@ -1181,15 +1338,46 @@ class ConversationEvidenceRegistration:
         )
         if expected_receipt_binding != actual_metadata_binding:
             raise ValueError("conversation metadata authority receipt differs")
+        if metadata.has_authorized_public_text:
+            if type(self.recall_item_authority) is not EvidenceItemAuthority:
+                raise ValueError(
+                    "authorized public_text requires exact EvidenceItemAuthority"
+                )
+            expected_recall_binding = _derive_authorized_public_text_binding(
+                envelope,
+                admission,
+                cast(EvidenceItemAuthority, self.recall_item_authority),
+            )
+            actual_recall_binding = (
+                metadata.public_text_json_pointer,
+                metadata.public_text_hash,
+                metadata.public_text_normalization_version,
+                metadata.evidence_item_authority_id,
+                metadata.evidence_item_authority_hash,
+                metadata.effective_privacy_class,
+                metadata.information_attributes,
+                metadata.classification_authority_ref,
+            )
+            if actual_recall_binding != expected_recall_binding:
+                raise ValueError(
+                    "conversation authorized public_text differs from item authority"
+                )
+        elif self.recall_item_authority is not None:
+            raise ValueError(
+                "recall_item_authority requires authorized public_text metadata"
+            )
         object.__setattr__(
             self,
             "registration_hash",
-            _domain_hash("simple-harness/conversation-evidence-registration/v2", self.to_json()),
+            _domain_hash("simple-harness/conversation-evidence-registration/v3", self.to_json()),
         )
 
     @property
     def short_horizon_eligible(self) -> bool:
-        return self.metadata.belongs_to_primary_conversation
+        return (
+            self.metadata.belongs_to_primary_conversation
+            and self.metadata.has_authorized_public_text
+        )
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
@@ -1201,6 +1389,11 @@ class ConversationEvidenceRegistration:
             "admission_receipt_hash": self.admission_receipt.receipt_hash,
             "metadata": self.metadata.to_json(),
             "metadata_receipt": self.metadata_receipt.to_json(),
+            "recall_item_authority": (
+                None
+                if self.recall_item_authority is None
+                else self.recall_item_authority.to_json()
+            ),
         }
 
 
@@ -1244,7 +1437,9 @@ async def verify_conversation_evidence_registration(
     ):
         raise ValueError("conversation evidence registration reference differs")
     if not registration.short_horizon_eligible:
-        raise ValueError("conversation evidence is not from the primary conversation")
+        if not registration.metadata.belongs_to_primary_conversation:
+            raise ValueError("conversation evidence is not from the primary conversation")
+        raise ValueError("conversation evidence has no authorized public_text")
     return registration.metadata
 
 
@@ -1346,6 +1541,66 @@ class EvidenceItemAuthority:
         }
 
 
+def _derive_authorized_public_text_binding(
+    envelope: SanitizedEvidenceEnvelope,
+    receipt: SanitizedEvidenceReceipt,
+    authority: EvidenceItemAuthority,
+) -> tuple[
+    str,
+    str,
+    str,
+    str,
+    str,
+    PrivacyClass,
+    tuple[InformationAttribute, ...],
+    str,
+]:
+    """Derive the only recallable text binding from trusted admitted evidence."""
+
+    receipt.verify(envelope)
+    if type(authority) is not EvidenceItemAuthority:
+        raise TypeError("authority must use exact EvidenceItemAuthority")
+    if authority.authority_hash != _domain_hash(
+        "simple-harness/evidence-item-authority/v3", authority.to_json()
+    ):
+        raise ValueError("EvidenceItemAuthority hash differs")
+    if (
+        authority.evidence_id,
+        authority.envelope_hash,
+        authority.sanitized_hash,
+        authority.source_hash,
+        authority.source_kind,
+    ) != (
+        envelope.evidence_id,
+        envelope.envelope_hash,
+        envelope.sanitized_hash,
+        envelope.source_hash,
+        envelope.source_kind,
+    ):
+        raise ValueError("EvidenceItemAuthority differs from admitted evidence")
+    pointer = _rfc6901_absolute_pointer(
+        authority.item_json_pointer, "item_json_pointer"
+    )
+    public_text = _resolve_json_pointer(
+        _thaw_object(envelope.sanitized_payload), pointer
+    )
+    if not isinstance(public_text, str):
+        raise ValueError("authorized public_text pointer must resolve to a string")
+    normalized = _normalize_evidence_text(
+        public_text, authority.normalization_version
+    )
+    return (
+        pointer,
+        _canonical_text_digest(normalized),
+        authority.normalization_version,
+        authority.authority_id,
+        authority.authority_hash,
+        authority.required_privacy_class,
+        authority.required_information_attributes,
+        authority.classification_authority_ref,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class TypedObservationAuthorityReceipt:
     """Trusted resolver result; it is never accepted from the model payload."""
@@ -1435,6 +1690,58 @@ class AdmittedEvidenceAuthority:
             raise TypeError("receipt must use SanitizedEvidenceReceipt")
         if type(self.item_authority) is not EvidenceItemAuthority:
             raise TypeError("item_authority must use EvidenceItemAuthority")
+
+
+def authorize_conversation_public_text(
+    metadata: ConversationEvidenceMetadata,
+    admitted: AdmittedEvidenceAuthority,
+) -> ConversationEvidenceMetadata:
+    """Host-only derivation of the text and classification eligible for recall.
+
+    Consumers never provide a pointer or classification.  The Host first
+    resolves ``AdmittedEvidenceAuthority`` and this function derives every
+    optional recall field as one all-or-none binding.
+    """
+
+    if type(metadata) is not ConversationEvidenceMetadata:
+        raise TypeError("metadata must use exact ConversationEvidenceMetadata")
+    if type(admitted) is not AdmittedEvidenceAuthority:
+        raise TypeError("admitted must use exact AdmittedEvidenceAuthority")
+    envelope = admitted.envelope
+    if (
+        metadata.evidence_id,
+        metadata.envelope_hash,
+        metadata.admission_receipt_id,
+        metadata.admission_receipt_hash,
+        metadata.run_id,
+        metadata.subject,
+        metadata.source_hash,
+        metadata.sanitized_hash,
+    ) != (
+        envelope.evidence_id,
+        envelope.envelope_hash,
+        admitted.receipt.receipt_id,
+        admitted.receipt.receipt_hash,
+        envelope.run_id,
+        envelope.subject,
+        envelope.source_hash,
+        envelope.sanitized_hash,
+    ):
+        raise ValueError("conversation metadata differs from admitted evidence")
+    binding = _derive_authorized_public_text_binding(
+        envelope, admitted.receipt, admitted.item_authority
+    )
+    return replace(
+        metadata,
+        public_text_json_pointer=binding[0],
+        public_text_hash=binding[1],
+        public_text_normalization_version=binding[2],
+        evidence_item_authority_id=binding[3],
+        evidence_item_authority_hash=binding[4],
+        effective_privacy_class=binding[5],
+        information_attributes=binding[6],
+        classification_authority_ref=binding[7],
+    )
 
 
 class EvidenceAuthorityVerifierPort(Protocol):
@@ -2311,6 +2618,7 @@ class MemoryAnalysisDeliveryAuthorityPort(Protocol):
 
 
 __all__ = (
+    "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
     "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
     "EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1",
     "AdmittedEvidenceAuthority",
@@ -2347,6 +2655,7 @@ __all__ = (
     "SanitizedEvidenceEnvelope",
     "SanitizedEvidenceReceipt",
     "TypedObservationAuthorityReceipt",
+    "authorize_conversation_public_text",
     "verify_conversation_evidence_registration",
     "verify_evidence_span",
 )
