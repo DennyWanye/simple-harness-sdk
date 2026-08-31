@@ -38,8 +38,11 @@ last-updated: 2026-08-31
   `plan_intent_hash` 和 `operation_intent_hash` 都排除 ref，因此用户确认后注入 ref 不形成 plan-hash 循环，
   但最终 `plan_hash` 仍承诺 ref。缺授权返回 typed
   `MemoryMutationApplyResult.NEEDS_USER_CONFIRMATION`；invalid authority 返回 typed REJECTED，成功才携带 receipt。
-  CREATE 不需要 action authority；CONTEST 禁止携带 action ref，且 Memory consumer 仍须用确定性同槽/不同值或
-  既有冲突规则验证，不能因模型自报 CONTEST 降级无关记忆。全 plan 先 canonical topological 排序再 wire/hash，
+  CREATE 不需要 action authority；CONTEST 禁止携带 action ref、必须提出 `CONTESTED` conflict flag，并禁止四类
+  memory 的 destructive terminal lifecycle。由于 Harness proposal 不携带可信 target current state，Memory consumer
+  还必须验证 CONTEST 的 payload 与 lifecycle 相对 target exact unchanged，只允许 conflict flag 变化，并用确定性
+  同槽/不同值或既有冲突规则验证，不能因模型自报 CONTEST 降级无关记忆。COMMITTED apply result 也会复验每个
+  protected existing operation 都携带 action authority ref。全 plan 先 canonical topological 排序再 wire/hash，
   并强制 `strict_atomic` authority receipt 覆盖全部 operation 和唯一 base→committed revision，不存在
   partial-success wire；schema v3 Mutation plan/receipt 和旧 action/operation wire 明确拒绝，不提供 decoder/migration。
 - `RecallContext` 冻结 Host 允许的 memory type、scope、entity、time、event、environment、task phase、retrieval

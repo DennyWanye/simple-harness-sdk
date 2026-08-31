@@ -44,8 +44,10 @@ action schema v2 还绑定 authority-free whole-plan `plan_intent_hash` 与 cano
 被插入或修改时旧授权必然失效。plan/operation intent hash 都明确排除 authority ref，避免 plan/authority hash
 循环，而最终 `plan_hash` 仍承诺 ref；Memory repository 仍必须在同一
 mutation transaction 唯一消费 `replay_identity`。缺 authority 使用 typed
-`MemoryMutationApplyResult.NEEDS_USER_CONFIRMATION`，不伪装成异常或 Recall outcome；CREATE 不需要 action
-authority，CONTEST 不得携带 action ref，也不因此取得覆盖、删除或任意降级无关记忆的权限。
+`MemoryMutationApplyResult.NEEDS_USER_CONFIRMATION`，不伪装成异常或 Recall outcome；COMMITTED 会复验全部
+protected existing operation 已携带 ref。CREATE 不需要 action authority；CONTEST 不得携带 action ref、必须是
+CONTESTED、禁止 destructive terminal lifecycle，也不因此取得覆盖、删除或任意降级无关记忆的权限。Memory
+consumer 仍必须把 CONTEST payload/lifecycle 与可信 target state 做 exact unchanged 比较，只允许 conflict flag 变化。
 
 Main-model analysis 的 provider delivery 由独立的 `MemoryAnalysisResultEnvelope` 承载：其中 Host
 durable `MemoryAnalysisDeliveryReceipt` 必须经 injected authority lookup 验证；Memory 后续产生的

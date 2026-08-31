@@ -2334,6 +2334,26 @@ _LIFECYCLE_TYPES: dict[LongTermMemoryType, type[CognitiveLifecycleState]] = {
 }
 
 
+_CONTEST_DESTRUCTIVE_LIFECYCLES: frozenset[CognitiveLifecycleState] = frozenset(
+    {
+        EpisodeLifecycleState.SUPERSEDED,
+        EpisodeLifecycleState.REJECTED,
+        EpisodeLifecycleState.FORGOTTEN,
+        SemanticLifecycleState.SUPERSEDED,
+        SemanticLifecycleState.REJECTED,
+        SemanticLifecycleState.FORGOTTEN,
+        ProcedureLifecycleState.INAPPLICABLE,
+        ProcedureLifecycleState.SUPERSEDED,
+        ProcedureLifecycleState.FORGOTTEN,
+        ProspectiveLifecycleState.COMPLETED,
+        ProspectiveLifecycleState.CANCELLED,
+        ProspectiveLifecycleState.EXPIRED,
+        ProspectiveLifecycleState.SUPERSEDED,
+        ProspectiveLifecycleState.FORGOTTEN,
+    }
+)
+
+
 def _payload_memory_type(payload: MemoryMutationPayload) -> LongTermMemoryType:
     if isinstance(payload, EpisodeMemoryPayload):
         return LongTermMemoryType.EPISODE
@@ -2485,6 +2505,13 @@ class MemoryMutationOperation:
         epistemic = EpistemicStatus(self.epistemic_status)
         conflict = ConflictStatus(self.conflict_status)
         verification = VerificationState(self.verification_state)
+        if kind is MemoryMutationKind.CONTEST:
+            if conflict is not ConflictStatus.CONTESTED:
+                raise ValueError("contest requires contested conflict_status")
+            if lifecycle in _CONTEST_DESTRUCTIVE_LIFECYCLES:
+                raise ValueError(
+                    "contest cannot propose a destructive terminal lifecycle"
+                )
         if not isinstance(self.valid_time_interval, ValidTimeInterval):
             raise TypeError("valid_time_interval must use ValidTimeInterval")
         privacy = PrivacyClass(self.proposed_privacy_class)
@@ -3097,6 +3124,21 @@ class MemoryMutationApplyResult:
             )
             if self.reason_code is not expected:
                 raise ValueError("committed result reason differs from plan outcome")
+            missing_authority = tuple(
+                operation.operation_id
+                for operation in plan.operations
+                if operation.kind
+                in {
+                    MemoryMutationKind.REVISE,
+                    MemoryMutationKind.SUPERSEDE,
+                    MemoryMutationKind.SUPPRESS,
+                }
+                and operation.action_authority_ref is None
+            )
+            if missing_authority:
+                raise ValueError(
+                    "committed result requires action authority for every protected operation"
+                )
         if self.outcome is MemoryMutationApplyOutcome.NEEDS_USER_CONFIRMATION:
             expected_intents = {
                 plan.action_intent(operation.operation_id).intent_hash

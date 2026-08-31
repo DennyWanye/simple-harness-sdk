@@ -124,13 +124,19 @@ all plan metadata, so inserting or changing another operation invalidates the
 old authority. Protected
 actions may target only an `ExistingMemoryTarget`; same-plan
 `CreatedByOperationTarget` chains are rejected. `CONTEST` never accepts action
-authority and remains a conservative conflict candidate that the Memory
-consumer must validate against deterministic conflict rules.
+authority, must propose `CONTESTED`, and cannot propose any cognitive memory
+type's destructive terminal lifecycle. It remains a conservative conflict
+candidate: because the Harness proposal does not carry trusted current target
+state, the Memory consumer must prove that its payload and lifecycle exactly
+match the target and that only the conflict flag changes, then apply its
+deterministic same-slot/different-value conflict rules.
 
 `MemoryMutationApplyResult` reports one of `COMMITTED`,
 `NEEDS_USER_CONFIRMATION`, or `REJECTED`. A missing authority for an otherwise
 valid protected operation is represented by typed confirmation items, not by a
-recall outcome or an exception. Schema-3 mutation wires and legacy authority
+recall outcome or an exception. A `COMMITTED` result is invalid unless every
+protected existing-memory operation carries an action-authority reference.
+Schema-3 mutation wires and legacy authority
 wires are rejected rather than migrated implicitly.
 
 ---

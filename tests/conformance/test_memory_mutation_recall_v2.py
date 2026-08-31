@@ -219,7 +219,11 @@ def _semantic_operation(
         depends_on_operation_ids=depends_on,
         lifecycle_state=SemanticLifecycleState.ACTIVE,
         epistemic_status=EpistemicStatus.EXPLICIT_USER,
-        conflict_status=ConflictStatus.UNCONTESTED,
+        conflict_status=(
+            ConflictStatus.CONTESTED
+            if kind is MemoryMutationKind.CONTEST
+            else ConflictStatus.UNCONTESTED
+        ),
         verification_state=VerificationState.SOURCE_BOUND,
         valid_time_interval=ValidTimeInterval(10.0, None),
         proposed_privacy_class=PrivacyClass.PERSONAL,
@@ -800,8 +804,118 @@ def test_support_kind_and_contest_never_grant_memory_action_authority() -> None:
         replace(
             operation,
             kind=MemoryMutationKind.CONTEST,
+            conflict_status=ConflictStatus.CONTESTED,
             action_authority_ref=reference,
         )
+
+
+@pytest.mark.parametrize(
+    ("memory_type", "payload", "terminal_lifecycle"),
+    (
+        *(
+            (
+                LongTermMemoryType.EPISODE,
+                EpisodeMemoryPayload(
+                    "contested episode",
+                    ("user:self",),
+                    ("decision",),
+                    ("choose python",),
+                    ("selected",),
+                    ("use python",),
+                    10.0,
+                    11.0,
+                    "thread-contest",
+                ),
+                lifecycle,
+            )
+            for lifecycle in (
+                EpisodeLifecycleState.SUPERSEDED,
+                EpisodeLifecycleState.REJECTED,
+                EpisodeLifecycleState.FORGOTTEN,
+            )
+        ),
+        *(
+            (
+                LongTermMemoryType.SEMANTIC,
+                SemanticMemoryPayload(
+                    "user:self",
+                    "runtime_preference",
+                    {"runtime": "python"},
+                    ("primary",),
+                ),
+                lifecycle,
+            )
+            for lifecycle in (
+                SemanticLifecycleState.SUPERSEDED,
+                SemanticLifecycleState.REJECTED,
+                SemanticLifecycleState.FORGOTTEN,
+            )
+        ),
+        *(
+            (
+                LongTermMemoryType.PROCEDURE,
+                ProcedureMemoryPayload(
+                    "release checklist",
+                    ("software release",),
+                    ("test", "publish"),
+                    ProcedureRiskLevel.HIGH,
+                ),
+                lifecycle,
+            )
+            for lifecycle in (
+                ProcedureLifecycleState.INAPPLICABLE,
+                ProcedureLifecycleState.SUPERSEDED,
+                ProcedureLifecycleState.FORGOTTEN,
+            )
+        ),
+        *(
+            (
+                LongTermMemoryType.PROSPECTIVE,
+                ProspectiveMemoryPayload(
+                    "publish release",
+                    ProspectiveTimeTrigger(100.0, "Asia/Shanghai"),
+                ),
+                lifecycle,
+            )
+            for lifecycle in (
+                ProspectiveLifecycleState.COMPLETED,
+                ProspectiveLifecycleState.CANCELLED,
+                ProspectiveLifecycleState.EXPIRED,
+                ProspectiveLifecycleState.SUPERSEDED,
+                ProspectiveLifecycleState.FORGOTTEN,
+            )
+        ),
+    ),
+)
+def test_contest_rejects_destructive_terminal_lifecycle_for_every_memory_type(
+    memory_type: LongTermMemoryType,
+    payload: object,
+    terminal_lifecycle: object,
+) -> None:
+    contest = _semantic_operation(
+        "contest-terminal",
+        kind=MemoryMutationKind.CONTEST,
+        target=ExistingMemoryTarget("memory-contested", 3),
+    )
+    with pytest.raises(ValueError, match="destructive terminal"):
+        replace(
+            contest,
+            memory_type=memory_type,
+            payload=cast(Any, payload),
+            lifecycle_state=cast(Any, terminal_lifecycle),
+        )
+
+
+def test_contest_requires_contested_conflict_status() -> None:
+    contest = _semantic_operation(
+        "contest-status",
+        kind=MemoryMutationKind.CONTEST,
+        target=ExistingMemoryTarget("memory-contested", 3),
+    )
+    with pytest.raises(ValueError, match="requires contested"):
+        replace(contest, conflict_status=ConflictStatus.UNCONTESTED)
+    with pytest.raises(ValueError, match="requires contested"):
+        replace(contest, conflict_status=ConflictStatus.RESOLVED)
 
 
 def test_memory_mutation_apply_result_has_strict_confirmation_matrix() -> None:
@@ -839,6 +953,9 @@ def test_memory_mutation_apply_result_has_strict_confirmation_matrix() -> None:
         decided_at=16.0,
     )
     committed.validate_plan(plan)
+    unauthorized_committed = replace(committed, plan_hash=proposal.plan_hash)
+    with pytest.raises(ValueError, match="every protected operation"):
+        unauthorized_committed.validate_plan(proposal)
     rejected = replace(
         committed,
         result_id="mutation-result-rejected-1",
