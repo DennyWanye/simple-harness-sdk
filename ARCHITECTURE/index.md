@@ -49,6 +49,15 @@ apply receipt 都会复验全部 protected existing operation 已携带 ref。CR
 CONTESTED、禁止 destructive terminal lifecycle，也不因此取得覆盖、删除或任意降级无关记忆的权限。Memory
 consumer 仍必须把 CONTEST payload/lifecycle 与可信 target state 做 exact unchanged 比较，只允许 conflict flag 变化。
 
+S3 Procedure/Prospective 的 Host authority seam 也已补齐，但还不是 Memory repository 实现。
+`ProcedureObservationAuthority` 以 ref-only wire 绑定 exact subject/scope/memory revision、TaskScope、admitted
+evidence span、terminal receipt/outcome、版本化 applicability fingerprint、risk/hazard、预期 lifecycle transition
+及 Run/operation；`ProspectiveSignalAuthority` 绑定 exact typed trigger/hash、scheduler registration revision、
+clock/event/ack receipt、outbox（仅 ack）、occurrence 和 lifecycle transition。两者完整 authority 只能由 Host
+resolver 返回，校验窗口统一为 `issued_at <= now < expires_at`，并携带 nonce/replay identity；Memory 后续仍须
+复验当前 head/scope/receipt，并把 replay fence、decision、CAS 和 outbox 放在同一事务。Procedure applicability
+fingerprint v1 与 Memory pure kernel 使用相同的四字段 `SHA256("\x1f" join)`，避免 exact-wheel 漂移。
+
 Main-model analysis 的 provider delivery 由独立的 `MemoryAnalysisResultEnvelope` 承载：其中 Host
 durable `MemoryAnalysisDeliveryReceipt` 必须经 injected authority lookup 验证；Memory 后续产生的
 `MemoryAnalysisReceipt` 仍只负责 validator/apply，两者不可互相替代。

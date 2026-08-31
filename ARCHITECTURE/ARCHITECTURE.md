@@ -45,6 +45,14 @@ last-updated: 2026-08-31
   receipt 都会复验每个 protected existing operation 携带 action authority ref。全 plan 先 canonical topological 排序再 wire/hash，
   并强制 `strict_atomic` authority receipt 覆盖全部 operation 和唯一 base→committed revision，不存在
   partial-success wire；schema v3 Mutation plan/receipt 和旧 action/operation wire 明确拒绝，不提供 decoder/migration。
+- Procedure observation 与 Prospective scheduler/runtime signal 不再使用 caller 自报的 terminal outcome、clock
+  或 event 字符串。公开 consumer wire 只允许 `ProcedureObservationAuthorityRef` / `ProspectiveSignalAuthorityRef`；
+  完整 Host authority 经各自 resolver 单次返回，绑定 subject、`MemoryScopeRef`、exact memory revision、receipt、
+  expected lifecycle transition、Run/operation、有效期、nonce、issuer、canonical authority hash 和 replay identity。
+  Procedure 还绑定 TaskScope、admitted evidence span、applicability v1 四字段 fingerprint、risk/hazard；高风险 observation
+  不能授权 active。Prospective 还绑定 typed trigger/hash、scheduler registration revision、occurrence，以及 registration
+  ack 的 exact outbox payload。协议只证明 Host 事实与预期转换，Memory 仍负责 deterministic qualification、current-head
+  CAS、scope/receipt 复验与原子 replay fence；SDK 不启动 timer，也不因此授权外部动作。
 - `RecallContext` 冻结 Host 允许的 memory type、scope、entity、time、event、environment、task phase、retrieval
   mode、Short-Horizon、disclosure、evidence 和预算。`RecallPlan` 精确绑定 context hash/revision，在可信当前时间
   验证未过期，保留全部 mandatory selector 且只能选择非空子集/更窄时间和预算；Decision 再绑定 Plan/Context
