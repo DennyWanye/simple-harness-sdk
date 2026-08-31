@@ -22,6 +22,10 @@ SPDX-License-Identifier: Apache-2.0
 - Replaces Recall Decision schema v2 with the strict v3 wire. `RECALL` contains selected memories
   only; `NEEDS_USER_CONFIRMATION` contains typed conflict-group candidates only. There is no legacy
   Recall Decision decoder during the prototype phase.
+- Moves `PrivacyClass` and `InformationAttribute` to one dependency-free classification protocol,
+  while preserving the existing Memory imports as re-exports. Evidence item authority is now a
+  Host-only schema-v3 record, versioned by public `EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION`, with mandatory privacy, information attributes, and classification
+  authority; no v2 decoder or optional classification default exists.
 
 ### Safety
 - Route-required effects cannot cross the route barrier in the same Provider tool batch.
@@ -40,6 +44,13 @@ SPDX-License-Identifier: Apache-2.0
   the exact Host durable delivery record, including issuer, request/result, attempt, and response.
 - Typed observations cannot replay across admitted evidence; conversation Tool causal parents must
   precede the current item in the authenticated causal group.
+- Span verification requires the exact Host `AdmittedEvidenceAuthority` type, validates the v3 item
+  authority hash/bindings, resolves admitted evidence once, and returns that verified item authority
+  so downstream classification joins reuse the same proof.
+- Typed observations accept only Tool/Trusted Tool or External/External Source provenance and always
+  require the exact resolved receipt. Mutation DTO validation binds epistemic labels to evidence:
+  in particular, `VERIFIED_EXTERNAL` requires an external typed observation and source-verified
+  state, while user/model/Context evidence cannot self-grant external verification.
 - Recall rejects expired Context, selector removal, evidence-lineage drift, and unknown, external,
   or untrusted disclosure. Conflicting candidates pass the same disclosure gate, require at least
   two unique candidates per group, and cannot overlap selected results. Outcome-specific reason

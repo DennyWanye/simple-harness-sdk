@@ -32,6 +32,7 @@ from simple_harness.runtime.evidence_protocol import (
     EvidenceSourceKind,
     EvidenceSpanRef,
     EvidenceSupportKind,
+    ProposedTypedObservationRef,
 )
 from simple_harness.runtime.memory_protocol import (
     RECALL_DECISION_SCHEMA_VERSION,
@@ -124,7 +125,27 @@ def _ref() -> EvidenceRef:
     return EvidenceRef("evidence-1", "b" * 64, 1)
 
 
-def _span() -> EvidenceSpanRef:
+def _typed_observation() -> ProposedTypedObservationRef:
+    return ProposedTypedObservationRef(
+        schema_id="com.simple-harness.observation",
+        schema_version=1,
+        registered_schema_hash="1" * 64,
+        observation_receipt_id="observation-receipt-1",
+        observation_receipt_hash="2" * 64,
+        authority_issuer_id="host-observation-registry-1",
+        json_pointer="/result/version",
+        value_hash="3" * 64,
+    )
+
+
+def _span(
+    *,
+    source_kind: EvidenceSourceKind = EvidenceSourceKind.USER_MESSAGE,
+    actor_role: EvidenceActorRole = EvidenceActorRole.USER,
+    provenance: EvidenceProvenance = EvidenceProvenance.AUTHENTICATED_USER,
+    support_kind: EvidenceSupportKind = EvidenceSupportKind.EXPLICIT_USER_ASSERTION,
+    typed_observation: ProposedTypedObservationRef | None = None,
+) -> EvidenceSpanRef:
     quote = "Python 3.12"
     return EvidenceSpanRef(
         span_id="span-1",
@@ -133,7 +154,7 @@ def _span() -> EvidenceSpanRef:
         sanitized_hash="c" * 64,
         admission_receipt_id="receipt-1",
         admission_receipt_hash="d" * 64,
-        source_kind=EvidenceSourceKind.USER_MESSAGE,
+        source_kind=source_kind,
         item_ordinal=1,
         item_id="message-1",
         item_json_pointer="/public_text",
@@ -143,10 +164,10 @@ def _span() -> EvidenceSpanRef:
         quote_hash=_sha(quote),
         source_hash="e" * 64,
         normalization_version=EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1,
-        actor_role=EvidenceActorRole.USER,
-        provenance=EvidenceProvenance.AUTHENTICATED_USER,
-        support_kind=EvidenceSupportKind.EXPLICIT_USER_ASSERTION,
-        typed_observation=None,
+        actor_role=actor_role,
+        provenance=provenance,
+        support_kind=support_kind,
+        typed_observation=typed_observation,
     )
 
 
@@ -279,6 +300,87 @@ def test_mutation_v2_target_union_no_mutation_and_order_independent_dag() -> Non
         )
     with pytest.raises(ValueError, match="unique"):
         replace(create, depends_on_operation_ids=("x", "x"))
+
+
+def test_mutation_epistemic_status_requires_exact_evidence_provenance() -> None:
+    explicit = _semantic_operation("explicit")
+    model_span = _span(
+        source_kind=EvidenceSourceKind.ASSISTANT_MESSAGE,
+        actor_role=EvidenceActorRole.ASSISTANT,
+        provenance=EvidenceProvenance.MODEL_OUTPUT,
+        support_kind=EvidenceSupportKind.MODEL_INFERENCE,
+    )
+    with pytest.raises(ValueError, match="explicit_user"):
+        replace(explicit, evidence_spans=(model_span,))
+    assert replace(
+        explicit,
+        epistemic_status=EpistemicStatus.LLM_INFERENCE,
+        verification_state=VerificationState.UNVERIFIED,
+        evidence_spans=(model_span,),
+    ).epistemic_status is EpistemicStatus.LLM_INFERENCE
+    with pytest.raises(ValueError, match="llm_inference"):
+        replace(
+            explicit,
+            epistemic_status=EpistemicStatus.LLM_INFERENCE,
+            verification_state=VerificationState.UNVERIFIED,
+        )
+
+    external_span = _span(
+        source_kind=EvidenceSourceKind.PROVIDER_RECORD,
+        actor_role=EvidenceActorRole.EXTERNAL,
+        provenance=EvidenceProvenance.EXTERNAL_SOURCE,
+        support_kind=EvidenceSupportKind.TYPED_OBSERVATION,
+        typed_observation=_typed_observation(),
+    )
+    verified_external = replace(
+        explicit,
+        epistemic_status=EpistemicStatus.VERIFIED_EXTERNAL,
+        verification_state=VerificationState.SOURCE_VERIFIED,
+        evidence_spans=(external_span,),
+    )
+    assert verified_external.epistemic_status is EpistemicStatus.VERIFIED_EXTERNAL
+    for untrusted in (
+        _span(),
+        model_span,
+        _span(support_kind=EvidenceSupportKind.CONTEXT_ONLY),
+    ):
+        with pytest.raises(ValueError, match="external typed authority"):
+            replace(verified_external, evidence_spans=(untrusted,))
+    with pytest.raises(ValueError, match="source_verified"):
+        replace(
+            verified_external,
+            verification_state=VerificationState.SOURCE_BOUND,
+        )
+
+    tool_span = _span(
+        source_kind=EvidenceSourceKind.TOOL_RESULT,
+        actor_role=EvidenceActorRole.TOOL,
+        provenance=EvidenceProvenance.TRUSTED_TOOL,
+        support_kind=EvidenceSupportKind.TYPED_OBSERVATION,
+        typed_observation=_typed_observation(),
+    )
+    observed_tool = replace(
+        explicit,
+        epistemic_status=EpistemicStatus.OBSERVED_BEHAVIOR,
+        verification_state=VerificationState.SOURCE_BOUND,
+        evidence_spans=(tool_span,),
+    )
+    assert observed_tool.epistemic_status is EpistemicStatus.OBSERVED_BEHAVIOR
+    runtime_span = _span(
+        source_kind=EvidenceSourceKind.RUNTIME_EVENT,
+        actor_role=EvidenceActorRole.RUNTIME,
+        provenance=EvidenceProvenance.HOST_RUNTIME,
+        support_kind=EvidenceSupportKind.RUNTIME_EVENT,
+    )
+    assert replace(observed_tool, evidence_spans=(runtime_span,)).evidence_spans
+    with pytest.raises(ValueError, match="trusted Tool or Runtime"):
+        replace(observed_tool, evidence_spans=(_span(),))
+
+    with pytest.raises(ValueError, match="trusted typed observation"):
+        replace(
+            explicit,
+            verification_state=VerificationState.SOURCE_VERIFIED,
+        )
 
 
 def test_mutation_plan_rejects_invalid_created_by_producer_and_uncovered_span() -> None:

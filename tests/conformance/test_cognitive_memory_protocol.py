@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import cast
 
 import pytest
@@ -30,6 +30,7 @@ from simple_harness.runtime.disclosure_protocol import (
     IntendedAudience,
 )
 from simple_harness.runtime.evidence_protocol import (
+    EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION,
     EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1,
     AdmittedEvidenceAuthority,
     ConversationEvidenceMetadata,
@@ -52,13 +53,25 @@ from simple_harness.runtime.evidence_protocol import (
     verify_conversation_evidence_registration,
     verify_evidence_span,
 )
+from simple_harness.runtime.information_classification_protocol import (
+    InformationAttribute,
+    PrivacyClass,
+)
+from simple_harness.runtime.memory_protocol import (
+    InformationAttribute as MemoryInformationAttribute,
+)
+from simple_harness.runtime.memory_protocol import PrivacyClass as MemoryPrivacyClass
 
 
 def test_cognitive_evidence_contract_is_on_official_public_surfaces() -> None:
     names = (
         "COGNITIVE_MEMORY_SCHEMA_VERSION",
+        "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
         "EvidenceSpanRef",
         "EvidenceAuthorityVerifierPort",
+        "EvidenceItemAuthority",
+        "PrivacyClass",
+        "InformationAttribute",
         "ProposedTypedObservationRef",
         "ConversationEvidenceMetadata",
         "ConversationEvidenceRegistration",
@@ -70,6 +83,8 @@ def test_cognitive_evidence_contract_is_on_official_public_surfaces() -> None:
         assert name in simple_harness.__all__
         assert name in runtime.__all__
         assert getattr(simple_harness, name) is getattr(runtime, name)
+    assert MemoryPrivacyClass is PrivacyClass
+    assert MemoryInformationAttribute is InformationAttribute
 
 
 def _sha_text(value: str) -> str:
@@ -183,6 +198,7 @@ def _span(
 
 def _item_authority(span: EvidenceSpanRef) -> EvidenceItemAuthority:
     return EvidenceItemAuthority(
+        schema_version=EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION,
         authority_id="item-authority-1",
         evidence_id=span.evidence_id,
         envelope_hash=span.envelope_hash,
@@ -195,8 +211,46 @@ def _item_authority(span: EvidenceSpanRef) -> EvidenceItemAuthority:
         normalization_version=span.normalization_version,
         actor_role=span.actor_role,
         provenance=span.provenance,
+        required_privacy_class=PrivacyClass.PERSONAL,
+        required_information_attributes=(InformationAttribute.PREFERENCE,),
+        classification_authority_ref="host-classification-policy-1",
         issuer_ref="host-evidence-store-1",
     )
+
+
+def _typed_authority(
+    envelope: SanitizedEvidenceEnvelope,
+    receipt: SanitizedEvidenceReceipt,
+) -> tuple[TypedObservationAuthorityReceipt, ProposedTypedObservationRef]:
+    authority = TypedObservationAuthorityReceipt(
+        receipt_id="observation-receipt-1",
+        evidence_id=envelope.evidence_id,
+        envelope_hash=envelope.envelope_hash,
+        sanitized_hash=envelope.sanitized_hash,
+        admission_receipt_id=receipt.receipt_id,
+        admission_receipt_hash=receipt.receipt_hash,
+        item_ordinal=1,
+        item_id="message-1",
+        item_json_pointer="/public_text",
+        schema_id="com.simple-harness.provider-record",
+        schema_version=2,
+        registered_schema_hash="1" * 64,
+        json_pointer="/result/version",
+        value_hash=_sha_json("3.12"),
+        accepted=True,
+        issuer_ref="host-observation-registry-1",
+    )
+    proposal = ProposedTypedObservationRef(
+        schema_id=authority.schema_id,
+        schema_version=authority.schema_version,
+        registered_schema_hash=authority.registered_schema_hash,
+        observation_receipt_id=authority.receipt_id,
+        observation_receipt_hash=authority.receipt_hash,
+        authority_issuer_id=authority.issuer_ref,
+        json_pointer=authority.json_pointer,
+        value_hash=authority.value_hash,
+    )
+    return authority, proposal
 
 
 class _EvidenceVerifier:
@@ -207,8 +261,10 @@ class _EvidenceVerifier:
     ) -> None:
         self.admitted = admitted
         self.observation = observation
+        self.admitted_resolve_count = 0
 
     async def resolve_admitted_evidence(self, span: EvidenceSpanRef) -> AdmittedEvidenceAuthority:
+        self.admitted_resolve_count += 1
         return self.admitted
 
     async def resolve_typed_observation(
@@ -223,7 +279,14 @@ def test_span_safe_path_resolves_admitted_evidence_and_checks_utf8() -> None:
     envelope, receipt = _admitted()
     span = _span(envelope, receipt)
     admitted = AdmittedEvidenceAuthority(envelope, receipt, _item_authority(span))
-    asyncio.run(verify_evidence_span(span, _EvidenceVerifier(admitted)))
+    verifier = _EvidenceVerifier(admitted)
+    verified = asyncio.run(verify_evidence_span(span, verifier))
+    assert verified is admitted.item_authority
+    assert verifier.admitted_resolve_count == 1
+    assert verified.required_privacy_class is PrivacyClass.PERSONAL
+    assert verified.required_information_attributes == (
+        InformationAttribute.PREFERENCE,
+    )
     assert EvidenceSpanRef.from_json(span.to_json()) == span
 
     second = _span(envelope, receipt, span_id="span-2", quote="3.12")
@@ -254,6 +317,145 @@ def test_span_safe_path_resolves_admitted_evidence_and_checks_utf8() -> None:
     with pytest.raises(ValueError, match="support kind"):
         asyncio.run(
             verify_evidence_span(wrong_provenance, _EvidenceVerifier(wrong_provenance_admitted))
+        )
+
+
+def test_evidence_item_classification_v3_is_required_canonical_and_hash_bound() -> None:
+    envelope, receipt = _admitted()
+    span = _span(envelope, receipt)
+    authority = _item_authority(span)
+    init_values = {
+        item.name: getattr(authority, item.name)
+        for item in fields(EvidenceItemAuthority)
+        if item.init
+    }
+
+    for missing in (
+        "schema_version",
+        "required_privacy_class",
+        "required_information_attributes",
+        "classification_authority_ref",
+    ):
+        incomplete = dict(init_values)
+        del incomplete[missing]
+        with pytest.raises(TypeError):
+            EvidenceItemAuthority(**incomplete)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="schema_version"):
+        replace(authority, schema_version=2)
+    with pytest.raises(ValueError, match="classification_authority_ref"):
+        replace(authority, classification_authority_ref="")
+    with pytest.raises(ValueError, match="unique"):
+        replace(
+            authority,
+            required_information_attributes=(
+                InformationAttribute.HEALTH,
+                InformationAttribute.HEALTH,
+            ),
+        )
+    with pytest.raises(ValueError, match="item limit"):
+        replace(
+            authority,
+            required_information_attributes=tuple(
+                InformationAttribute.PREFERENCE for _ in range(33)
+            ),
+        )
+
+    first = replace(
+        authority,
+        required_information_attributes=(
+            InformationAttribute.PREFERENCE,
+            InformationAttribute.FINANCIAL,
+            InformationAttribute.HEALTH,
+        ),
+    )
+    second = replace(
+        authority,
+        required_information_attributes=(
+            InformationAttribute.HEALTH,
+            InformationAttribute.PREFERENCE,
+            InformationAttribute.FINANCIAL,
+        ),
+    )
+    assert first.required_information_attributes == (
+        InformationAttribute.FINANCIAL,
+        InformationAttribute.HEALTH,
+        InformationAttribute.PREFERENCE,
+    )
+    assert first.authority_hash == second.authority_hash
+    assert (
+        first.to_json()["schema_version"]
+        == EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION
+        == 3
+    )
+    assert not hasattr(EvidenceItemAuthority, "from_json")
+
+    object.__setattr__(authority, "required_privacy_class", PrivacyClass.RESTRICTED)
+    with pytest.raises(ValueError, match="hash differs"):
+        asyncio.run(
+            verify_evidence_span(
+                span,
+                _EvidenceVerifier(
+                    AdmittedEvidenceAuthority(envelope, receipt, authority)
+                ),
+            )
+        )
+
+
+def test_admitted_evidence_requires_exact_host_authority_types() -> None:
+    envelope, receipt = _admitted()
+    span = _span(envelope, receipt)
+    authority = _item_authority(span)
+
+    class _AuthoritySubclass(EvidenceItemAuthority):
+        pass
+
+    subclass = _AuthoritySubclass(
+        **{
+            item.name: getattr(authority, item.name)
+            for item in fields(EvidenceItemAuthority)
+            if item.init
+        }
+    )
+    with pytest.raises(TypeError, match="item_authority"):
+        AdmittedEvidenceAuthority(envelope, receipt, subclass)
+
+    class _DuckAuthority:
+        pass
+
+    with pytest.raises(TypeError, match="item_authority"):
+        AdmittedEvidenceAuthority(
+            envelope,
+            receipt,
+            _DuckAuthority(),  # type: ignore[arg-type]
+        )
+
+    class _AdmittedSubclass(AdmittedEvidenceAuthority):
+        pass
+
+    admitted_subclass = _AdmittedSubclass(envelope, receipt, authority)
+    with pytest.raises(TypeError, match="exact AdmittedEvidenceAuthority"):
+        asyncio.run(
+            verify_evidence_span(
+                span,
+                _EvidenceVerifier(admitted_subclass),
+            )
+        )
+
+    class _DuckAdmitted:
+        pass
+
+    duck_admitted = _DuckAdmitted()
+    duck_admitted.envelope = envelope
+    duck_admitted.receipt = receipt
+    duck_admitted.item_authority = authority
+
+    with pytest.raises(TypeError, match="exact AdmittedEvidenceAuthority"):
+        asyncio.run(
+            verify_evidence_span(
+                span,
+                _EvidenceVerifier(duck_admitted),  # type: ignore[arg-type]
+            )
         )
 
 
@@ -345,6 +547,63 @@ def test_typed_observation_is_only_proposal_until_authority_resolution() -> None
                 replay_span, _EvidenceVerifier(replay_authority, authority_receipt)
             )
         )
+
+
+def test_external_typed_observation_requires_exact_external_provenance_and_receipt() -> None:
+    envelope, receipt = _admitted(
+        "external observed version 3.12",
+        source_kind=EvidenceSourceKind.PROVIDER_RECORD,
+    )
+    authority_receipt, proposal = _typed_authority(envelope, receipt)
+    external_span = _span(
+        envelope,
+        receipt,
+        quote="external observed version 3.12",
+        source_kind=EvidenceSourceKind.PROVIDER_RECORD,
+        actor_role=EvidenceActorRole.EXTERNAL,
+        provenance=EvidenceProvenance.EXTERNAL_SOURCE,
+        support_kind=EvidenceSupportKind.TYPED_OBSERVATION,
+        observation=proposal,
+    )
+    admitted = AdmittedEvidenceAuthority(
+        envelope,
+        receipt,
+        _item_authority(external_span),
+    )
+    assert asyncio.run(
+        verify_evidence_span(
+            external_span,
+            _EvidenceVerifier(admitted, authority_receipt),
+        )
+    ) is admitted.item_authority
+    with pytest.raises(ValueError, match="not registered"):
+        asyncio.run(
+            verify_evidence_span(external_span, _EvidenceVerifier(admitted))
+        )
+
+    for actor_role, provenance in (
+        (EvidenceActorRole.USER, EvidenceProvenance.AUTHENTICATED_USER),
+        (EvidenceActorRole.ASSISTANT, EvidenceProvenance.MODEL_OUTPUT),
+        (EvidenceActorRole.EXTERNAL, EvidenceProvenance.TRUSTED_TOOL),
+        (EvidenceActorRole.TOOL, EvidenceProvenance.EXTERNAL_SOURCE),
+    ):
+        spoofed = replace(
+            external_span,
+            actor_role=actor_role,
+            provenance=provenance,
+        )
+        spoofed_admitted = AdmittedEvidenceAuthority(
+            envelope,
+            receipt,
+            _item_authority(spoofed),
+        )
+        with pytest.raises(ValueError, match="typed observation.*provenance"):
+            asyncio.run(
+                verify_evidence_span(
+                    spoofed,
+                    _EvidenceVerifier(spoofed_admitted, authority_receipt),
+                )
+            )
 
 
 def _registration(

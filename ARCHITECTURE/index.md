@@ -28,6 +28,12 @@ revision target、canonical DAG 与 strict-atomic authority receipt。RecallPlan
 RecallDecision 已单独升级为 schema v3：RECALL 只携带 selected，NEEDS_USER_CONFIRMATION 只携带
 通过资格与 disclosure gate 的 typed conflict candidates，每组至少两个唯一候选；outcome/reason 矩阵固定，
 NO_RECALL/REJECTED 的 candidate count 恒为零，v2 与未引用的旧 v1 Decision decoder 均不可执行读取。
+分类 enum 的唯一事实源是无依赖 `information_classification_protocol`；EvidenceItemAuthority 使用公开
+`EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION=3`
+由 Host 强制附带 privacy floor、canonical attributes 和 classification authority ref。span verification
+只接受 exact Host authority type，一次 resolve 后返回同一 verified item authority 供后续 join 复用。
+typed observation 仅允许 Tool/Trusted Tool 或 External/External Source 两组 exact provenance 且必须解析
+typed receipt；Mutation DTO 同时冻结 epistemic/evidence matrix，Memory repository 后续仍复验 authority。
 conversation causal metadata 是 raw evidence 入库后的独立 Host registration，非法 metadata 不删除原始证据，
 只失去后续 Short-Horizon 资格。
 

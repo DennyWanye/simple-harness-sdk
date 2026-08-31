@@ -3,6 +3,7 @@
   "simple_harness": [
     "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
+    "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
     "EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1",
     "AdmittedEvidenceAuthority",
     "ConversationEvidenceAuthorityVerifierPort",
@@ -255,6 +256,7 @@
   ],
   "simple_harness.runtime": [
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
+    "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
     "EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1",
     "AdmittedEvidenceAuthority",
     "ConversationEvidenceAuthorityVerifierPort",

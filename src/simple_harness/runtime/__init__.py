@@ -58,6 +58,7 @@ _MODULE_EXPORTS = {
         "IntendedAudience",
     ),
     ".evidence_protocol": (
+        "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
         "EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1",
         "AdmittedEvidenceAuthority",
         "AnalysisBudget",
@@ -96,6 +97,10 @@ _MODULE_EXPORTS = {
         "verify_conversation_evidence_registration",
         "verify_evidence_span",
     ),
+    ".information_classification_protocol": (
+        "InformationAttribute",
+        "PrivacyClass",
+    ),
     ".memory_protocol": (
         "ConflictStatus",
         "ContextAssemblyBudget",
@@ -108,7 +113,6 @@ _MODULE_EXPORTS = {
         "EpisodeMemoryPayload",
         "EpistemicStatus",
         "ExistingMemoryTarget",
-        "InformationAttribute",
         "LongTermMemoryType",
         "MemoryMutationApplyAuthorityPort",
         "MemoryMutationApplyMode",
@@ -118,7 +122,6 @@ _MODULE_EXPORTS = {
         "MemoryMutationOperation",
         "MemoryMutationPlan",
         "MemoryMutationPlanOutcome",
-        "PrivacyClass",
         "ProcedureLifecycleState",
         "ProcedureMemoryPayload",
         "ProcedureRiskLevel",
@@ -300,6 +303,7 @@ def __dir__() -> list[str]:
 
 __all__ = (
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
+    "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
     "EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1",
     "AdmittedEvidenceAuthority",
     "ConversationEvidenceAuthorityVerifierPort",

@@ -18,7 +18,14 @@ last-updated: 2026-08-31
 - schema-v2 `EvidenceSpanRef` 不携带整段 canonical text，而是绑定 admitted envelope/receipt/item、唯一注册的
   identity UTF-8 normalization、byte offsets、exact quote/hash、actor provenance 与 support kind；Memory 只能经
   authority port 解析并复算。typed observation receipt 进一步绑定 exact evidence、admission 和 item，不能跨
-  evidence 重放。
+  evidence 重放。分类 enum 统一来自无依赖 `information_classification_protocol`；Host-only
+  `EvidenceItemAuthority` 使用公开 `EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION=3`，强制携带 privacy floor、canonical information attributes 与
+  classification authority ref。verification 只接受 exact authority type 并返回同一次 resolve 的 verified
+  item authority，不存在 schema v2 decoder 或缺省分类。
+- typed observation 的可信 provenance 只有 Tool/Trusted Tool 与 External/External Source 两种，且两者都必须
+  解析 exact typed receipt。Mutation strict DTO 冻结 EpistemicStatus/evidence matrix：VERIFIED_EXTERNAL 只能
+  由 External/External Source typed observation + SOURCE_VERIFIED 支持，普通 user/model/context 不能授权；
+  Memory repository 对实际 authority 的复验仍是提交前必要条件。
 - Episode、Semantic、Procedure、Prospective 各自使用 exact-key typed payload 与专属 lifecycle；operation 独立
   携带 epistemic/conflict/verification/valid-time/privacy attributes。existing target 固定 expected revision，
   created-by target 只能引用同类型 CREATE。全 plan 先 canonical topological 排序再 wire/hash，并强制

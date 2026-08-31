@@ -48,11 +48,15 @@ from .disclosure_protocol import (
     _strings,
 )
 from .evidence_protocol import (
+    EvidenceActorRole,
+    EvidenceProvenance,
     EvidenceRef,
     EvidenceSpanRef,
+    EvidenceSupportKind,
     _evidence_refs,
     _refs_from_json,
 )
+from .information_classification_protocol import InformationAttribute, PrivacyClass
 
 RECALL_DECISION_SCHEMA_VERSION = 3
 
@@ -1927,32 +1931,12 @@ class VerificationState(StrEnum):
     REPEATED_OBSERVATION = "repeated_observation"
 
 
-class PrivacyClass(StrEnum):
-    PUBLIC = "public"
-    PERSONAL = "personal"
-    SENSITIVE = "sensitive"
-    RESTRICTED = "restricted"
-
-
 _PRIVACY_ORDER = {
     PrivacyClass.PUBLIC: 0,
     PrivacyClass.PERSONAL: 1,
     PrivacyClass.SENSITIVE: 2,
     PrivacyClass.RESTRICTED: 3,
 }
-
-
-class InformationAttribute(StrEnum):
-    IDENTITY = "identity"
-    PREFERENCE = "preference"
-    GOAL = "goal"
-    WORK = "work"
-    RELATIONSHIP = "relationship"
-    FAMILY = "family"
-    HEALTH = "health"
-    LOCATION = "location"
-    FINANCIAL = "financial"
-    OTHER = "other"
 
 
 class ProcedureRiskLevel(StrEnum):
@@ -2366,6 +2350,77 @@ def _payload_from_json(value: object) -> MemoryMutationPayload:
     return _PAYLOAD_TYPES[memory_type].from_json(payload)  # type: ignore[attr-defined,return-value]
 
 
+def _validate_epistemic_evidence_matrix(
+    epistemic: EpistemicStatus,
+    verification: VerificationState,
+    spans: tuple[EvidenceSpanRef, ...],
+) -> None:
+    authenticated_user = any(
+        span.support_kind
+        in {
+            EvidenceSupportKind.EXPLICIT_USER_ASSERTION,
+            EvidenceSupportKind.EXPLICIT_USER_CORRECTION,
+        }
+        and span.actor_role is EvidenceActorRole.USER
+        and span.provenance is EvidenceProvenance.AUTHENTICATED_USER
+        for span in spans
+    )
+    external_typed = any(
+        span.support_kind is EvidenceSupportKind.TYPED_OBSERVATION
+        and span.typed_observation is not None
+        and span.actor_role is EvidenceActorRole.EXTERNAL
+        and span.provenance is EvidenceProvenance.EXTERNAL_SOURCE
+        for span in spans
+    )
+    observed_behavior = any(
+        (
+            span.support_kind is EvidenceSupportKind.TYPED_OBSERVATION
+            and span.typed_observation is not None
+            and span.actor_role is EvidenceActorRole.TOOL
+            and span.provenance is EvidenceProvenance.TRUSTED_TOOL
+        )
+        or (
+            span.support_kind is EvidenceSupportKind.RUNTIME_EVENT
+            and span.actor_role is EvidenceActorRole.RUNTIME
+            and span.provenance is EvidenceProvenance.HOST_RUNTIME
+        )
+        for span in spans
+    )
+    model_inference = any(
+        span.support_kind is EvidenceSupportKind.MODEL_INFERENCE
+        and span.actor_role is EvidenceActorRole.ASSISTANT
+        and span.provenance is EvidenceProvenance.MODEL_OUTPUT
+        for span in spans
+    )
+    trusted_typed = any(
+        span.support_kind is EvidenceSupportKind.TYPED_OBSERVATION
+        and span.typed_observation is not None
+        and (span.actor_role, span.provenance)
+        in {
+            (EvidenceActorRole.TOOL, EvidenceProvenance.TRUSTED_TOOL),
+            (EvidenceActorRole.EXTERNAL, EvidenceProvenance.EXTERNAL_SOURCE),
+        }
+        for span in spans
+    )
+
+    if epistemic is EpistemicStatus.EXPLICIT_USER and not authenticated_user:
+        raise ValueError("explicit_user requires authenticated user evidence")
+    if epistemic is EpistemicStatus.VERIFIED_EXTERNAL:
+        if not external_typed:
+            raise ValueError("verified_external requires external typed authority")
+        if verification is not VerificationState.SOURCE_VERIFIED:
+            raise ValueError("verified_external requires source_verified state")
+    if epistemic is EpistemicStatus.OBSERVED_BEHAVIOR and not observed_behavior:
+        raise ValueError("observed_behavior requires trusted Tool or Runtime evidence")
+    if epistemic is EpistemicStatus.LLM_INFERENCE and not model_inference:
+        raise ValueError("llm_inference requires model inference evidence")
+    if verification in {
+        VerificationState.SOURCE_VERIFIED,
+        VerificationState.REPEATED_OBSERVATION,
+    } and not trusted_typed:
+        raise ValueError("verified states require trusted typed observation evidence")
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryMutationOperation:
     operation_id: str
@@ -2442,6 +2497,7 @@ class MemoryMutationOperation:
             or len({item.span_id for item in spans}) != len(spans)
         ):
             raise ValueError("evidence_spans must contain unique bounded EvidenceSpanRef values")
+        _validate_epistemic_evidence_matrix(epistemic, verification, spans)
         _identifier(self.reason_code, "reason_code")
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "memory_type", memory_type)

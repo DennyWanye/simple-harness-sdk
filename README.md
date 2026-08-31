@@ -41,6 +41,13 @@ admitted UTF-8 bytes and can only be verified through Host/Memory authority reso
 observations are bound to the exact evidence, admission receipt, and item. Episode, Semantic,
 Procedure, and Prospective mutations use distinct payload and lifecycle types, revisioned targets,
 canonical dependency order, privacy-label joins, and a mandatory `strict_atomic` apply receipt.
+The dependency-free classification protocol is the single enum source for privacy and information
+labels. A Host-resolved Evidence item authority uses the public
+`EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION` (v3) and supplies the mandatory privacy
+floor, canonical attributes, and classification authority reference returned by span verification.
+External verified facts require an exact External/External Source typed observation receipt;
+user assertions, model output, and Context-only spans cannot grant that status. Mutation DTO
+validation freezes this epistemic/provenance relationship before repository authority is rechecked.
 `RecallPlan` binds one unexpired Host `RecallContext` and may only narrow its memory type, scope,
 entity, time, event, environment, task-phase, disclosure, evidence, and budget authority. Registered
 conversation causal metadata is a separate post-ingestion authority record: invalid metadata never

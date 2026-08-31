@@ -67,11 +67,23 @@ SemVer review; consumers must not import private implementation helpers.
 
 ## Human Memory cognitive protocol (0.7.0 candidate)
 
-`EvidenceSpanRef` is a proposal that names exact admitted evidence, admission receipt, item,
+`PrivacyClass` and `InformationAttribute` are defined once in the dependency-free
+`information_classification_protocol`; `memory_protocol` re-exports those exact enum objects for
+source compatibility. `EvidenceSpanRef` is a proposal that names exact admitted evidence, admission receipt, item,
 registered normalization, UTF-8 byte range, quote/hash, provenance, and support kind. Consumers
 must call `verify_evidence_span()` with an `EvidenceAuthorityVerifierPort`; caller-supplied DTOs
 or self-consistent hashes are not authority. A typed observation additionally resolves an
-evidence-bound `TypedObservationAuthorityReceipt`.
+evidence-bound `TypedObservationAuthorityReceipt`. Its Host-only `EvidenceItemAuthority` is schema
+v3 (`EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION`) and requires a policy privacy floor, canonical information attributes, and a classification
+authority reference. Verification returns that exact authority from the single admitted-evidence
+resolution; schema v2 and duck/subclass authority records are rejected.
+
+Typed observations admit exactly two trusted provenance pairs: Tool/Trusted Tool and
+External/External Source; both require the exact resolved typed-observation receipt. The strict
+Memory mutation DTO also freezes epistemic provenance: explicit-user, observed-behavior,
+LLM-inference, and verified-external labels require their corresponding evidence shapes.
+`VERIFIED_EXTERNAL` specifically requires an External/External Source typed observation and
+`SOURCE_VERIFIED`; proposal validation never replaces the Memory repository's authority recheck.
 
 `MemoryMutationPlan` uses one of four discriminated payloads: `EpisodeMemoryPayload`,
 `SemanticMemoryPayload`, `ProcedureMemoryPayload`, or `ProspectiveMemoryPayload`. Targets bind an

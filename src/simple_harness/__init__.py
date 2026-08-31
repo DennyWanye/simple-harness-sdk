@@ -42,6 +42,7 @@ from .version import __version__
 _RUNTIME_EXPORTS = frozenset(
     {
         "COGNITIVE_MEMORY_SCHEMA_VERSION",
+        "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
         "EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1",
         "AdmittedEvidenceAuthority",
         "ConversationEvidenceAuthorityVerifierPort",
@@ -262,6 +263,7 @@ def __dir__() -> list[str]:
 __all__ = (
     "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
+    "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
     "EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1",
     "AdmittedEvidenceAuthority",
     "ConversationEvidenceAuthorityVerifierPort",

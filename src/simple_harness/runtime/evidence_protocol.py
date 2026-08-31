@@ -32,6 +32,7 @@ from .disclosure_protocol import (
     _strings,
     _thaw_object,
 )
+from .information_classification_protocol import InformationAttribute, PrivacyClass
 
 
 class EvidenceSourceKind(StrEnum):
@@ -98,6 +99,7 @@ class EvidenceSupportKind(StrEnum):
 
 
 EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1 = "sanitized-string-identity-utf8/v1"
+EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION = 3
 
 
 def _normalize_evidence_text(value: str, version: str) -> str:
@@ -1250,6 +1252,7 @@ async def verify_conversation_evidence_registration(
 class EvidenceItemAuthority:
     """Host-issued provenance for one item inside an admitted envelope."""
 
+    schema_version: int
     authority_id: str
     evidence_id: str
     envelope_hash: str
@@ -1262,10 +1265,15 @@ class EvidenceItemAuthority:
     normalization_version: str
     actor_role: EvidenceActorRole
     provenance: EvidenceProvenance
+    required_privacy_class: PrivacyClass
+    required_information_attributes: tuple[InformationAttribute, ...]
+    classification_authority_ref: str
     issuer_ref: str
     authority_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if self.schema_version != EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION:
+            raise ValueError("unsupported EvidenceItemAuthority schema_version")
         _identifier(self.authority_id, "authority_id")
         _identifier(self.evidence_id, "evidence_id")
         for value, name in (
@@ -1283,15 +1291,40 @@ class EvidenceItemAuthority:
         _normalize_evidence_text("", self.normalization_version)
         object.__setattr__(self, "actor_role", EvidenceActorRole(self.actor_role))
         object.__setattr__(self, "provenance", EvidenceProvenance(self.provenance))
+        privacy = PrivacyClass(self.required_privacy_class)
+        if not isinstance(self.required_information_attributes, (tuple, list)):
+            raise TypeError("required_information_attributes must be an array")
+        try:
+            attributes = tuple(
+                InformationAttribute(item)
+                for item in self.required_information_attributes
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "required_information_attributes contains an unknown value"
+            ) from exc
+        if len(attributes) > 32:
+            raise ValueError("required_information_attributes exceeds the item limit")
+        if len(set(attributes)) != len(attributes):
+            raise ValueError("required_information_attributes must be unique")
+        attributes = tuple(sorted(attributes, key=lambda item: item.value))
+        _identifier(
+            self.classification_authority_ref,
+            "classification_authority_ref",
+            max_length=1024,
+        )
         _identifier(self.issuer_ref, "issuer_ref", max_length=1024)
+        object.__setattr__(self, "required_privacy_class", privacy)
+        object.__setattr__(self, "required_information_attributes", attributes)
         object.__setattr__(
             self,
             "authority_hash",
-            _domain_hash("simple-harness/evidence-item-authority/v2", self.to_json()),
+            _domain_hash("simple-harness/evidence-item-authority/v3", self.to_json()),
         )
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
+            "schema_version": self.schema_version,
             "authority_id": self.authority_id,
             "evidence_id": self.evidence_id,
             "envelope_hash": self.envelope_hash,
@@ -1304,6 +1337,11 @@ class EvidenceItemAuthority:
             "normalization_version": self.normalization_version,
             "actor_role": self.actor_role.value,
             "provenance": self.provenance.value,
+            "required_privacy_class": self.required_privacy_class.value,
+            "required_information_attributes": [
+                item.value for item in self.required_information_attributes
+            ],
+            "classification_authority_ref": self.classification_authority_ref,
             "issuer_ref": self.issuer_ref,
         }
 
@@ -1391,11 +1429,11 @@ class AdmittedEvidenceAuthority:
     item_authority: EvidenceItemAuthority
 
     def __post_init__(self) -> None:
-        if not isinstance(self.envelope, SanitizedEvidenceEnvelope):
+        if type(self.envelope) is not SanitizedEvidenceEnvelope:
             raise TypeError("envelope must use SanitizedEvidenceEnvelope")
-        if not isinstance(self.receipt, SanitizedEvidenceReceipt):
+        if type(self.receipt) is not SanitizedEvidenceReceipt:
             raise TypeError("receipt must use SanitizedEvidenceReceipt")
-        if not isinstance(self.item_authority, EvidenceItemAuthority):
+        if type(self.item_authority) is not EvidenceItemAuthority:
             raise TypeError("item_authority must use EvidenceItemAuthority")
 
 
@@ -1441,6 +1479,13 @@ def _verify_evidence_span_authority(
 ) -> None:
     """Fail closed unless a proposal is proven against trusted admitted data."""
 
+    if authority.schema_version != EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION:
+        raise ValueError("unsupported EvidenceItemAuthority schema_version")
+    expected_authority_hash = _domain_hash(
+        "simple-harness/evidence-item-authority/v3", authority.to_json()
+    )
+    if authority.authority_hash != expected_authority_hash:
+        raise ValueError("EvidenceItemAuthority hash differs")
     receipt.verify(envelope)
     if (
         span.admission_receipt_id != receipt.receipt_id
@@ -1506,10 +1551,6 @@ def _verify_evidence_span_authority(
             EvidenceActorRole.USER,
             EvidenceProvenance.AUTHENTICATED_USER,
         ),
-        EvidenceSupportKind.TYPED_OBSERVATION: (
-            EvidenceActorRole.TOOL,
-            EvidenceProvenance.TRUSTED_TOOL,
-        ),
         EvidenceSupportKind.RUNTIME_EVENT: (
             EvidenceActorRole.RUNTIME,
             EvidenceProvenance.HOST_RUNTIME,
@@ -1519,6 +1560,14 @@ def _verify_evidence_span_authority(
             EvidenceProvenance.MODEL_OUTPUT,
         ),
     }
+    if span.support_kind is EvidenceSupportKind.TYPED_OBSERVATION and (
+        span.actor_role,
+        span.provenance,
+    ) not in {
+        (EvidenceActorRole.TOOL, EvidenceProvenance.TRUSTED_TOOL),
+        (EvidenceActorRole.EXTERNAL, EvidenceProvenance.EXTERNAL_SOURCE),
+    }:
+        raise ValueError("typed observation conflicts with trusted provenance")
     required = expected_provenance.get(span.support_kind)
     if required is not None and (span.actor_role, span.provenance) != required:
         raise ValueError("evidence support kind conflicts with trusted provenance")
@@ -1584,7 +1633,7 @@ def _verify_evidence_span_authority(
 async def verify_evidence_span(
     span: EvidenceSpanRef,
     verifier: EvidenceAuthorityVerifierPort,
-) -> None:
+) -> EvidenceItemAuthority:
     """Production-safe span verification through the injected authority port.
 
     Callers cannot supply an ``EvidenceItemAuthority`` directly.  The trusted
@@ -1593,6 +1642,10 @@ async def verify_evidence_span(
     """
 
     admitted = await verifier.resolve_admitted_evidence(span)
+    if type(admitted) is not AdmittedEvidenceAuthority:
+        raise TypeError(
+            "authority resolver must return exact AdmittedEvidenceAuthority"
+        )
     typed_receipt = None
     if span.typed_observation is not None:
         typed_receipt = await verifier.resolve_typed_observation(span.typed_observation)
@@ -1603,6 +1656,7 @@ async def verify_evidence_span(
         admitted.item_authority,
         typed_observation_receipt=typed_receipt,
     )
+    return admitted.item_authority
 
 
 class ExecutionEvidenceKind(StrEnum):
@@ -2257,6 +2311,7 @@ class MemoryAnalysisDeliveryAuthorityPort(Protocol):
 
 
 __all__ = (
+    "EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION",
     "EVIDENCE_NORMALIZATION_IDENTITY_UTF8_V1",
     "AdmittedEvidenceAuthority",
     "AnalysisBudget",
