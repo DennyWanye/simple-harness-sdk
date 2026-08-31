@@ -41,8 +41,8 @@ last-updated: 2026-08-31
   CREATE 不需要 action authority；CONTEST 禁止携带 action ref、必须提出 `CONTESTED` conflict flag，并禁止四类
   memory 的 destructive terminal lifecycle。由于 Harness proposal 不携带可信 target current state，Memory consumer
   还必须验证 CONTEST 的 payload 与 lifecycle 相对 target exact unchanged，只允许 conflict flag 变化，并用确定性
-  同槽/不同值或既有冲突规则验证，不能因模型自报 CONTEST 降级无关记忆。COMMITTED apply result 也会复验每个
-  protected existing operation 都携带 action authority ref。全 plan 先 canonical topological 排序再 wire/hash，
+  同槽/不同值或既有冲突规则验证，不能因模型自报 CONTEST 降级无关记忆。COMMITTED apply result 与可信 apply
+  receipt 都会复验每个 protected existing operation 携带 action authority ref。全 plan 先 canonical topological 排序再 wire/hash，
   并强制 `strict_atomic` authority receipt 覆盖全部 operation 和唯一 base→committed revision，不存在
   partial-success wire；schema v3 Mutation plan/receipt 和旧 action/operation wire 明确拒绝，不提供 decoder/migration。
 - `RecallContext` 冻结 Host 允许的 memory type、scope、entity、time、event、environment、task phase、retrieval

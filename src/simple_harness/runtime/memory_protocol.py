@@ -3289,6 +3289,21 @@ class MemoryMutationApplyReceipt:
         )
         if self.canonical_operation_ids != expected_ids:
             raise ValueError("apply receipt does not cover all canonical operations")
+        missing_authority = tuple(
+            operation.operation_id
+            for operation in plan.operations
+            if operation.kind
+            in {
+                MemoryMutationKind.REVISE,
+                MemoryMutationKind.SUPERSEDE,
+                MemoryMutationKind.SUPPRESS,
+            }
+            and operation.action_authority_ref is None
+        )
+        if missing_authority:
+            raise ValueError(
+                "apply receipt requires action authority for every protected operation"
+            )
         expected_committed_revision = plan.base_revision + (
             1 if plan.outcome is MemoryMutationPlanOutcome.MUTATE else 0
         )

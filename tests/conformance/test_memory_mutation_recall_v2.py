@@ -1716,3 +1716,41 @@ def test_strict_atomic_apply_receipt_binds_entire_canonical_plan() -> None:
                 plan, partial_ref, _ApplyAuthority(partial)
             )
         )
+
+
+def test_apply_receipt_rejects_protected_plan_without_action_authority() -> None:
+    authorized_plan, operation, _intent, _authority, _reference = (
+        _authorized_revise_plan()
+    )
+    unauthorized_plan = replace(
+        authorized_plan,
+        operations=(replace(operation, action_authority_ref=None),),
+    )
+    receipt = MemoryMutationApplyReceipt(
+        receipt_id="unauthorized-apply-receipt",
+        authority_ref="memory-apply-authority:v4",
+        plan_id=unauthorized_plan.plan_id,
+        plan_hash=unauthorized_plan.plan_hash,
+        run_id=unauthorized_plan.run_id,
+        subject=unauthorized_plan.subject,
+        base_revision=unauthorized_plan.base_revision,
+        committed_revision=unauthorized_plan.base_revision + 1,
+        canonical_operation_ids=(operation.operation_id,),
+        apply_mode=MemoryMutationApplyMode.STRICT_ATOMIC,
+        committed_at=60.0,
+    )
+    with pytest.raises(ValueError, match="every protected operation"):
+        receipt.validate_plan(unauthorized_plan)
+
+    receipt_ref = MemoryMutationApplyReceiptRef(
+        receipt.receipt_id,
+        receipt.receipt_hash,
+    )
+    with pytest.raises(ValueError, match="every protected operation"):
+        asyncio.run(
+            verify_memory_mutation_apply_receipt(
+                unauthorized_plan,
+                receipt_ref,
+                _ApplyAuthority(receipt),
+            )
+        )

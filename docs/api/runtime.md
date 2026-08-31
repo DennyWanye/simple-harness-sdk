@@ -134,8 +134,9 @@ deterministic same-slot/different-value conflict rules.
 `MemoryMutationApplyResult` reports one of `COMMITTED`,
 `NEEDS_USER_CONFIRMATION`, or `REJECTED`. A missing authority for an otherwise
 valid protected operation is represented by typed confirmation items, not by a
-recall outcome or an exception. A `COMMITTED` result is invalid unless every
-protected existing-memory operation carries an action-authority reference.
+recall outcome or an exception. A `COMMITTED` result and its trusted apply
+receipt are invalid unless every protected existing-memory operation carries
+an action-authority reference.
 Schema-3 mutation wires and legacy authority
 wires are rejected rather than migrated implicitly.
 
