@@ -19,6 +19,8 @@ SPDX-License-Identifier: Apache-2.0
 - Replaces free-form cognitive mutation/recall drafts with schema-v2 typed Episode, Semantic,
   Procedure, and Prospective payloads, exact Evidence spans, revisioned targets, canonical DAGs,
   and Host-bound Recall selectors.
+- Upgrades cognitive mutation to strict schema v5 with explicit Semantic `claim | relation` payloads;
+  V1 exposes only `applies_to`, exact existing/same-plan-created endpoints and a closed type matrix.
 - Replaces Recall Decision schema v2 with the strict v3 wire. `RECALL` contains selected memories
   only; `NEEDS_USER_CONFIRMATION` contains typed conflict-group candidates only. There is no legacy
   Recall Decision decoder during the prototype phase.
@@ -57,7 +59,9 @@ SPDX-License-Identifier: Apache-2.0
   codes prevent rejected/no-recall decisions from impersonating positive dependencies; both deny
   outcomes expose a zero candidate count. The unreferenced private v1 Recall Decision decoder is
   removed. Mutation plans require authority-resolved `strict_atomic` apply receipts covering every
-  canonical operation and one base-to-committed revision transition.
+  canonical operation and one base-to-committed revision transition. Semantic relation plans reject
+  missing/forward dependencies, non-CREATE producers, relation endpoints, illegal types, self loops
+  and malformed wire before they can create partial Memory state.
 
 ### Compatibility
 - Terminal committed-turn outbox delivery remains available for the staged Memory SDK cutover;

@@ -75,8 +75,8 @@ durable `MemoryAnalysisDeliveryReceipt` 必须经 injected authority lookup 验�
 2026-09-01 的 relation 增量把 mutation wire 升级为 strict schema v5：Semantic payload 显式区分
 `claim | relation`，V1 relation 只允许 `applies_to`，same-plan endpoint 必须经显式 dependency 引用 CREATE，
 并限制为 Semantic claim → Procedure/Prospective；普通 mutation target 的同类型规则不变。package-root 公开
-validation diagnostic 只输出稳定 bounded reason，不回显不可信输入。这里仅代表 Harness source candidate；
-Memory 持久化、数字孪生图投影与 Host durable audit 仍未由本仓完成。
+validation diagnostic 只输出稳定 bounded reason，不回显不可信输入。跨仓 Memory v7 candidate 已通过原子关系持久化、
+公开 committed receipt view 与数字孪生图投影的 exact-wheel 验收；Host durable pre-admission audit 仍未完成。
 
 2026-08-25 Tool/Capability：SDK 0.6.2 起已提供三类 capability record、bounded search/describe、
 typed activation receipt、Run-local exposure port 与 ReAct ready-attempt 动态投影；Provider reserved 仍精确
