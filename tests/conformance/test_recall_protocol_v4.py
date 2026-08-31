@@ -40,6 +40,10 @@ from simple_harness.runtime import (
     RecallFragmentAuthorityBindingV1,
     RecallItemBindingV1,
     RecallItemKind,
+    RecallPageBindingKind,
+    RecallPageConfirmationGroupBindingV1,
+    RecallPageConfirmationMemberBindingV1,
+    RecallPageSelectedItemBindingV1,
     RecallPlan,
     RecallReasonCode,
     RecallResultPageRequestV1,
@@ -269,9 +273,18 @@ def test_typed_result_page_and_context_use_are_hash_bound_without_naked_refs() -
     result.validate_decision(decision)
     assert TypedRecallResultV1.from_json(result.to_json()) == result
 
-    bindings = tuple(
+    item_bindings = tuple(
         RecallItemBindingV1(item.selected_item.item_id, item.result_item_hash)
         for item in result.items
+    )
+    page_bindings = tuple(
+        RecallPageSelectedItemBindingV1(
+            RecallPageBindingKind.SELECTED_ITEM,
+            ordinal,
+            binding.item_id,
+            binding.item_hash,
+        )
+        for ordinal, binding in enumerate(item_bindings, 1)
     )
     page_request = RecallResultPageRequestV1(
         result.result_id, result.result_hash, 1, 0, 8, 16_384, 51.0
@@ -282,7 +295,7 @@ def test_typed_result_page_and_context_use_are_hash_bound_without_naked_refs() -
         page_request.result_hash,
         1,
         0,
-        bindings,
+        page_bindings,
         512,
         True,
     )
@@ -291,19 +304,20 @@ def test_typed_result_page_and_context_use_are_hash_bound_without_naked_refs() -
 
     fragment_payload = result.items[0].to_json()["public_payload"]
     authority = RecallFragmentAuthorityBindingV1(
-        decision.decision_id,
-        decision.decision_hash,
-        result.result_id,
-        result.result_hash,
-        bindings[0].item_id,
-        bindings[0].item_hash,
-        None,
-        None,
-        page.page_id,
-        page.page_hash,
-        None,
-        None,
-        result.items[0].selected_item.public_payload_hash,
+        decision_id=decision.decision_id,
+        decision_hash=decision.decision_hash,
+        result_id=result.result_id,
+        result_hash=result.result_hash,
+        item_id=item_bindings[0].item_id,
+        item_hash=item_bindings[0].item_hash,
+        conflict_group_id=None,
+        confirmation_hash=None,
+        result_group_hash=None,
+        page_id=page.page_id,
+        page_hash=page.page_hash,
+        use_receipt_id=None,
+        use_receipt_hash=None,
+        public_payload_hash=result.items[0].selected_item.public_payload_hash,
     )
     fragment = ContextFragment(
         "fragment-1",
@@ -349,7 +363,7 @@ def test_typed_result_page_and_context_use_are_hash_bound_without_naked_refs() -
         decision.decision_hash,
         result.result_id,
         result.result_hash,
-        bindings,
+        item_bindings,
         snapshot_bindings,
         manifest_hash,
         52.0,
@@ -409,8 +423,74 @@ def test_atomic_confirmation_result_cannot_page_a_partial_group() -> None:
     with pytest.raises(ValueError, match="complete or ordered"):
         TypedRecallConfirmationGroupV1(group, typed_members[:1])
 
+    member_bindings = tuple(
+        RecallPageConfirmationMemberBindingV1(
+            member.member.ordinal,
+            member.member.item_id,
+            member.result_member_hash,
+        )
+        for member in typed_members
+    )
+    group_binding = RecallPageConfirmationGroupBindingV1(
+        RecallPageBindingKind.CONFIRMATION_GROUP,
+        group,
+        typed_group.result_group_hash,
+        member_bindings,
+    )
+    page = RecallResultPageV1(
+        "confirmation-page-1",
+        "confirmation-result-1",
+        "7" * 64,
+        1,
+        0,
+        (group_binding,),
+        256,
+        True,
+    )
+    assert RecallResultPageV1.from_json(page.to_json()) == page
+    with pytest.raises(ValueError, match="complete and ordered"):
+        replace(group_binding, member_bindings=member_bindings[:1])
+    with pytest.raises(ValueError, match="complete and ordered"):
+        replace(group_binding, member_bindings=tuple(reversed(member_bindings)))
+
+    group_payload = typed_group.to_json()
+    group_payload_hash = fingerprint_json(group_payload)
+    group_authority = RecallFragmentAuthorityBindingV1(
+        decision_id="confirmation-decision-1",
+        decision_hash="6" * 64,
+        result_id="confirmation-result-1",
+        result_hash="7" * 64,
+        item_id=None,
+        item_hash=None,
+        conflict_group_id=group.conflict_group_id,
+        confirmation_hash=group.confirmation_hash,
+        result_group_hash=typed_group.result_group_hash,
+        page_id=page.page_id,
+        page_hash=page.page_hash,
+        use_receipt_id=None,
+        use_receipt_hash=None,
+        public_payload_hash=group_payload_hash,
+    )
+    confirmation_fragment = ContextFragment(
+        "confirmation-fragment-1",
+        "run-1",
+        "user-1",
+        ContextFragmentType.RECALL_CONFIRMATION,
+        "result-bound:group-1",
+        1,
+        group_payload,
+        group_payload_hash,
+        64,
+        256,
+        _disclosure(),
+        (_ref(),),
+        group_authority,
+    )
+    assert ContextFragment.from_json(confirmation_fragment.to_json()) == confirmation_fragment
+
 
 def test_budget_maxima_capability_order_and_official_exports_are_frozen() -> None:
+    assert simple_harness.RecallBudgetV1 is RecallBudget
     for kwargs, field in (
         ({"max_items": 33, "max_bytes": 1, "max_tokens": 1, "deadline_ms": 1}, "max_items"),
         ({"max_items": 1, "max_bytes": 65_537, "max_tokens": 1, "deadline_ms": 1}, "max_bytes"),
@@ -464,6 +544,8 @@ def test_budget_maxima_capability_order_and_official_exports_are_frozen() -> Non
         "RecallConfirmationGroupV4",
         "TypedRecallResultV1",
         "RecallResultPageRequestV1",
+        "RecallPageSelectedItemBindingV1",
+        "RecallPageConfirmationGroupBindingV1",
         "RecallContextUseAuthorizationRequestV1",
         "RecallContextUseReceiptV1",
         "ContextFragmentV2",

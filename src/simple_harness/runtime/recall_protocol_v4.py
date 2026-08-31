@@ -46,6 +46,7 @@ from .memory_protocol import (
     ContextAssemblyReasonCode,
     ContextFragmentType,
     LongTermMemoryType,
+    RecallBudget,
     RecallCandidateCountStage,
     RecallContext,
     RecallDecisionOutcome,
@@ -129,46 +130,7 @@ class RecallItemKind(StrEnum):
     CONFIRMATION_MEMBER = "confirmation_member"
 
 
-@dataclass(frozen=True, slots=True)
-class RecallBudgetV1:
-    max_items: int
-    max_bytes: int
-    max_tokens: int
-    deadline_ms: int
-
-    def __post_init__(self) -> None:
-        limits = {
-            "max_items": RECALL_MAX_ITEMS,
-            "max_bytes": RECALL_MAX_BYTES,
-            "max_tokens": RECALL_MAX_TOKENS,
-            "deadline_ms": RECALL_MAX_DEADLINE_MS,
-        }
-        for name, maximum in limits.items():
-            value = _positive_int(getattr(self, name), name)
-            if value > maximum:
-                raise ValueError(f"{name} exceeds protocol maximum {maximum}")
-
-    def to_json(self) -> dict[str, JsonValue]:
-        return {
-            "max_items": self.max_items,
-            "max_bytes": self.max_bytes,
-            "max_tokens": self.max_tokens,
-            "deadline_ms": self.deadline_ms,
-        }
-
-    @classmethod
-    def from_json(cls, value: Mapping[str, object]) -> RecallBudgetV1:
-        _exact_keys(
-            value,
-            {"max_items", "max_bytes", "max_tokens", "deadline_ms"},
-            "RecallBudgetV1",
-        )
-        return cls(
-            _positive_int(value["max_items"], "max_items"),
-            _positive_int(value["max_bytes"], "max_bytes"),
-            _positive_int(value["max_tokens"], "max_tokens"),
-            _positive_int(value["deadline_ms"], "deadline_ms"),
-        )
+RecallBudgetV1 = RecallBudget
 
 
 @dataclass(frozen=True, slots=True)
@@ -1084,6 +1046,166 @@ class RecallResultPageRequestV1:
         )
 
 
+class RecallPageBindingKind(StrEnum):
+    SELECTED_ITEM = "selected_item"
+    CONFIRMATION_GROUP = "confirmation_group"
+
+
+@dataclass(frozen=True, slots=True)
+class RecallPageSelectedItemBindingV1:
+    binding_kind: RecallPageBindingKind
+    ordinal: int
+    item_id: str
+    item_hash: str
+
+    def __post_init__(self) -> None:
+        kind = RecallPageBindingKind(self.binding_kind)
+        if kind is not RecallPageBindingKind.SELECTED_ITEM:
+            raise ValueError("selected page binding discriminator differs")
+        _positive_int(self.ordinal, "ordinal")
+        _identifier(self.item_id, "item_id")
+        _digest(self.item_hash, "item_hash")
+        object.__setattr__(self, "binding_kind", kind)
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "binding_kind": self.binding_kind.value,
+            "ordinal": self.ordinal,
+            "item_id": self.item_id,
+            "item_hash": self.item_hash,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> RecallPageSelectedItemBindingV1:
+        _exact_keys(
+            value,
+            {"binding_kind", "ordinal", "item_id", "item_hash"},
+            "RecallPageSelectedItemBindingV1",
+        )
+        return cls(
+            RecallPageBindingKind(value["binding_kind"]),  # type: ignore[arg-type]
+            _positive_int(value["ordinal"], "ordinal"),
+            _identifier(value["item_id"], "item_id"),
+            _digest(value["item_hash"], "item_hash"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RecallPageConfirmationMemberBindingV1:
+    ordinal: int
+    item_id: str
+    item_hash: str
+
+    def __post_init__(self) -> None:
+        _positive_int(self.ordinal, "ordinal")
+        _identifier(self.item_id, "item_id")
+        _digest(self.item_hash, "item_hash")
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {"ordinal": self.ordinal, "item_id": self.item_id, "item_hash": self.item_hash}
+
+    @classmethod
+    def from_json(
+        cls, value: Mapping[str, object]
+    ) -> RecallPageConfirmationMemberBindingV1:
+        _exact_keys(
+            value,
+            {"ordinal", "item_id", "item_hash"},
+            "RecallPageConfirmationMemberBindingV1",
+        )
+        return cls(
+            _positive_int(value["ordinal"], "ordinal"),
+            _identifier(value["item_id"], "item_id"),
+            _digest(value["item_hash"], "item_hash"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RecallPageConfirmationGroupBindingV1:
+    binding_kind: RecallPageBindingKind
+    group: RecallConfirmationGroupV4
+    result_group_hash: str
+    member_bindings: tuple[RecallPageConfirmationMemberBindingV1, ...]
+
+    def __post_init__(self) -> None:
+        kind = RecallPageBindingKind(self.binding_kind)
+        if kind is not RecallPageBindingKind.CONFIRMATION_GROUP:
+            raise ValueError("confirmation page binding discriminator differs")
+        if not isinstance(self.group, RecallConfirmationGroupV4):
+            raise TypeError("group must use RecallConfirmationGroupV4")
+        _digest(self.result_group_hash, "result_group_hash")
+        if not isinstance(self.member_bindings, (tuple, list)) or not all(
+            isinstance(item, RecallPageConfirmationMemberBindingV1)
+            for item in self.member_bindings
+        ):
+            raise TypeError("member_bindings must contain typed confirmation members")
+        members = tuple(self.member_bindings)
+        if tuple((item.ordinal, item.item_id) for item in members) != tuple(
+            (item.ordinal, item.item_id) for item in self.group.members
+        ):
+            raise ValueError("confirmation page group must be complete and ordered")
+        object.__setattr__(self, "binding_kind", kind)
+        object.__setattr__(self, "member_bindings", members)
+
+    @property
+    def ordinal(self) -> int:
+        return self.group.ordinal
+
+    @property
+    def conflict_group_id(self) -> str:
+        return self.group.conflict_group_id
+
+    @property
+    def confirmation_hash(self) -> str:
+        return self.group.confirmation_hash
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "binding_kind": self.binding_kind.value,
+            "group": self.group.to_json(),
+            "result_group_hash": self.result_group_hash,
+            "member_bindings": [item.to_json() for item in self.member_bindings],
+        }
+
+    @classmethod
+    def from_json(
+        cls, value: Mapping[str, object]
+    ) -> RecallPageConfirmationGroupBindingV1:
+        _exact_keys(
+            value,
+            {
+                "binding_kind",
+                "group",
+                "result_group_hash",
+                "member_bindings",
+            },
+            "RecallPageConfirmationGroupBindingV1",
+        )
+        return cls(
+            RecallPageBindingKind(value["binding_kind"]),  # type: ignore[arg-type]
+            RecallConfirmationGroupV4.from_json(_object(value["group"], "group")),
+            _digest(value["result_group_hash"], "result_group_hash"),
+            tuple(
+                RecallPageConfirmationMemberBindingV1.from_json(item)
+                for item in _objects(value["member_bindings"], "member_bindings")
+            ),
+        )
+
+
+RecallResultPageBindingV1 = (
+    RecallPageSelectedItemBindingV1 | RecallPageConfirmationGroupBindingV1
+)
+
+
+def _page_binding_from_json(value: Mapping[str, object]) -> RecallResultPageBindingV1:
+    binding_kind = value.get("binding_kind")
+    if binding_kind == RecallPageBindingKind.SELECTED_ITEM.value:
+        return RecallPageSelectedItemBindingV1.from_json(value)
+    if binding_kind == RecallPageBindingKind.CONFIRMATION_GROUP.value:
+        return RecallPageConfirmationGroupBindingV1.from_json(value)
+    raise ValueError("unsupported recall page binding_kind")
+
+
 @dataclass(frozen=True, slots=True)
 class RecallResultPageV1:
     page_id: str
@@ -1091,7 +1213,7 @@ class RecallResultPageV1:
     result_hash: str
     page_ordinal: int
     item_offset: int
-    item_bindings: tuple[RecallItemBindingV1, ...]
+    bindings: tuple[RecallResultPageBindingV1, ...]
     byte_count: int
     complete: bool
     page_hash: str = field(init=False)
@@ -1102,23 +1224,34 @@ class RecallResultPageV1:
         _digest(self.result_hash, "result_hash")
         _positive_int(self.page_ordinal, "page_ordinal")
         _non_negative_int(self.item_offset, "item_offset")
-        if not isinstance(self.item_bindings, (tuple, list)) or not all(
-            isinstance(item, RecallItemBindingV1) for item in self.item_bindings
+        if not isinstance(self.bindings, (tuple, list)) or not all(
+            isinstance(
+                item,
+                (RecallPageSelectedItemBindingV1, RecallPageConfirmationGroupBindingV1),
+            )
+            for item in self.bindings
         ):
-            raise TypeError("item_bindings must contain RecallItemBindingV1 values")
-        bindings = tuple(self.item_bindings)
-        if (
-            not bindings
-            or len(bindings) > RECALL_MAX_ITEMS
-            or len({item.item_id for item in bindings}) != len(bindings)
-        ):
-            raise ValueError("page item_bindings must be non-empty, unique, and bounded")
+            raise TypeError("bindings must contain typed recall page bindings")
+        bindings = tuple(self.bindings)
+        if not bindings or len(bindings) > RECALL_MAX_ITEMS:
+            raise ValueError("page bindings must be non-empty and bounded")
+        expected_ordinals = tuple(range(self.item_offset + 1, self.item_offset + len(bindings) + 1))
+        if tuple(item.ordinal for item in bindings) != expected_ordinals:
+            raise ValueError("page binding ordinals must be contiguous from item_offset")
+        carrier_ids = tuple(
+            item.item_id
+            if isinstance(item, RecallPageSelectedItemBindingV1)
+            else item.conflict_group_id
+            for item in bindings
+        )
+        if len(set(carrier_ids)) != len(carrier_ids):
+            raise ValueError("page binding carrier IDs must be unique")
         _non_negative_int(self.byte_count, "byte_count")
         if self.byte_count > RECALL_MAX_BYTES:
             raise ValueError("page byte_count exceeds maximum")
         if not isinstance(self.complete, bool):
             raise TypeError("complete must be a boolean")
-        object.__setattr__(self, "item_bindings", bindings)
+        object.__setattr__(self, "bindings", bindings)
         object.__setattr__(
             self, "page_hash", _domain_hash("simple-harness/recall-result-page/v1", self.to_json())
         )
@@ -1130,7 +1263,7 @@ class RecallResultPageV1:
             "result_hash": self.result_hash,
             "page_ordinal": self.page_ordinal,
             "item_offset": self.item_offset,
-            "item_bindings": [item.to_json() for item in self.item_bindings],
+            "bindings": [item.to_json() for item in self.bindings],
             "byte_count": self.byte_count,
             "complete": self.complete,
         }
@@ -1145,7 +1278,7 @@ class RecallResultPageV1:
                 "result_hash",
                 "page_ordinal",
                 "item_offset",
-                "item_bindings",
+                "bindings",
                 "byte_count",
                 "complete",
             },
@@ -1161,8 +1294,8 @@ class RecallResultPageV1:
             _positive_int(value["page_ordinal"], "page_ordinal"),
             _non_negative_int(value["item_offset"], "item_offset"),
             tuple(
-                RecallItemBindingV1.from_json(item)
-                for item in _objects(value["item_bindings"], "item_bindings")
+                _page_binding_from_json(item)
+                for item in _objects(value["bindings"], "bindings")
             ),
             _non_negative_int(value["byte_count"], "byte_count"),
             complete,
@@ -1497,6 +1630,7 @@ class RecallFragmentAuthorityBindingV1:
     item_hash: str | None
     conflict_group_id: str | None
     confirmation_hash: str | None
+    result_group_hash: str | None
     page_id: str | None
     page_hash: str | None
     use_receipt_id: str | None
@@ -1519,12 +1653,18 @@ class RecallFragmentAuthorityBindingV1:
             raise ValueError("binding requires exactly one item or confirmation group")
         if (self.item_hash is None) != (item_id is None):
             raise ValueError("item_id and item_hash must appear together")
-        if (self.confirmation_hash is None) != (group_id is None):
-            raise ValueError("conflict_group_id and confirmation_hash must appear together")
+        if (self.confirmation_hash is None) != (group_id is None) or (
+            self.result_group_hash is None
+        ) != (group_id is None):
+            raise ValueError(
+                "conflict_group_id, confirmation_hash, and result_group_hash must appear together"
+            )
         if self.item_hash is not None:
             _digest(self.item_hash, "item_hash")
         if self.confirmation_hash is not None:
             _digest(self.confirmation_hash, "confirmation_hash")
+        if self.result_group_hash is not None:
+            _digest(self.result_group_hash, "result_group_hash")
         page_id = _optional_identifier(self.page_id, "page_id")
         receipt_id = _optional_identifier(self.use_receipt_id, "use_receipt_id")
         if (page_id is None) == (receipt_id is None):
@@ -1557,6 +1697,7 @@ class RecallFragmentAuthorityBindingV1:
             "item_hash": self.item_hash,
             "conflict_group_id": self.conflict_group_id,
             "confirmation_hash": self.confirmation_hash,
+            "result_group_hash": self.result_group_hash,
             "page_id": self.page_id,
             "page_hash": self.page_hash,
             "use_receipt_id": self.use_receipt_id,
@@ -1577,6 +1718,7 @@ class RecallFragmentAuthorityBindingV1:
                 "item_hash",
                 "conflict_group_id",
                 "confirmation_hash",
+                "result_group_hash",
                 "page_id",
                 "page_hash",
                 "use_receipt_id",
@@ -1596,6 +1738,9 @@ class RecallFragmentAuthorityBindingV1:
             None
             if value["confirmation_hash"] is None
             else _digest(value["confirmation_hash"], "confirmation_hash"),
+            None
+            if value["result_group_hash"] is None
+            else _digest(value["result_group_hash"], "result_group_hash"),
             _optional_identifier(value["page_id"], "page_id"),
             None if value["page_hash"] is None else _digest(value["page_hash"], "page_hash"),
             _optional_identifier(value["use_receipt_id"], "use_receipt_id"),
@@ -1921,6 +2066,11 @@ __all__ = (
     "RecallFragmentAuthorityBindingV1",
     "RecallItemBindingV1",
     "RecallItemKind",
+    "RecallPageBindingKind",
+    "RecallPageConfirmationGroupBindingV1",
+    "RecallPageConfirmationMemberBindingV1",
+    "RecallPageSelectedItemBindingV1",
+    "RecallResultPageBindingV1",
     "RecallResultPageRequestV1",
     "RecallResultPageV1",
     "RecallSelectedItemV4",

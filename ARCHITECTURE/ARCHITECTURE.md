@@ -70,12 +70,16 @@ last-updated: 2026-08-31
   只接受 v4，旧 v3/v2 wire fail closed。
 - typed Recall result 将每个返回 item 绑定 v4 decision item、source content hash 与独立 public payload
   hash；分页请求只能通过 result `(id, hash)` 和有界坐标获取，naked source ref 不是 capability。
+  page response 是 selected-item 或完整 confirmation-group 的 discriminated union；group 内嵌决策组并
+  exact 绑定全部有序 member/result hashes，单个冲突 member 不可表达为 page carrier。
   recalled `ContextFragment` schema v2 必须携带 decision/result/item 以及 page-or-use authority binding，
   confirmation 还必须绑定 exact group/member；非 recall fragment 反而禁止这些权限字段。
   `RecallContextUseAuthorizationRequest`/`RecallContextUseReceipt` 将公开 item hashes、snapshot fragment
   `(id, hash)` manifest 与 provider attempt 连成 authority chain，`ContextAssemblyDecision` schema v2 同样
   按 fragment `(id, hash)` 组装。item/byte/token/deadline 都有严格上限；canonical hashes 使用
-  DTO-specific domain，不把 ref 自洽当成 Host authority。Memory executor 与 Host provider adapter 仍是跨仓责任。
+  DTO-specific domain，不把 ref 自洽当成 Host authority。`RecallBudgetV1` 与官方
+  `RecallContext`/`RecallPlan` 共用同一 `RecallBudget` runtime identity 和 canonical parser，不存在
+  两套平行预算类。Memory executor 与 Host provider adapter 仍是跨仓责任。
 - conversation causal metadata 在 raw evidence admission 后由 Host 独立注册，绑定 primary conversation、causal
   group sequence/manifest、role/time/TaskScope/entities 和 Tool terminal receipt；Tool parent 必须在同组且早于
   当前 item。缺失或非法 metadata 不删除 raw evidence，只使其不具备 Short-Horizon 资格。

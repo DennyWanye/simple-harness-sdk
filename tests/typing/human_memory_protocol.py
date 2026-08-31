@@ -31,6 +31,8 @@ from simple_harness import (
     RecallContextUseAuthorizationRequestV1,
     RecallContextUseReceiptV1,
     RecallDecisionV4,
+    RecallPageConfirmationGroupBindingV1,
+    RecallPageSelectedItemBindingV1,
     RecallPlan,
     RecallResultPageRequestV1,
     RecallSelectedItemV4,
@@ -135,6 +137,12 @@ RECALL_DECISION_TYPE: type[RecallDecisionV4] = RecallDecisionV4
 RECALL_SELECTED_ITEM_TYPE: type[RecallSelectedItemV4] = RecallSelectedItemV4
 RECALL_RESULT_TYPE: type[TypedRecallResultV1] = TypedRecallResultV1
 RECALL_PAGE_REQUEST_TYPE: type[RecallResultPageRequestV1] = RecallResultPageRequestV1
+RECALL_PAGE_SELECTED_BINDING_TYPE: type[RecallPageSelectedItemBindingV1] = (
+    RecallPageSelectedItemBindingV1
+)
+RECALL_PAGE_GROUP_BINDING_TYPE: type[RecallPageConfirmationGroupBindingV1] = (
+    RecallPageConfirmationGroupBindingV1
+)
 RECALL_USE_REQUEST_TYPE: type[RecallContextUseAuthorizationRequestV1] = (
     RecallContextUseAuthorizationRequestV1
 )
