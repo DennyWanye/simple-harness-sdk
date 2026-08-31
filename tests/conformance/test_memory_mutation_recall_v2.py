@@ -45,6 +45,7 @@ from simple_harness.runtime.memory_action_protocol import (
 )
 from simple_harness.runtime.memory_protocol import (
     MEMORY_MUTATION_SCHEMA_VERSION,
+    MEMORY_MUTATION_VALIDATION_DIAGNOSTIC_SCHEMA_VERSION,
     RECALL_DECISION_SCHEMA_VERSION,
     ConflictStatus,
     CreatedByOperationTarget,
@@ -65,6 +66,8 @@ from simple_harness.runtime.memory_protocol import (
     MemoryMutationOperation,
     MemoryMutationPlan,
     MemoryMutationPlanOutcome,
+    MemoryMutationValidationDiagnostic,
+    MemoryMutationValidationReasonCode,
     PrivacyClass,
     ProcedureLifecycleState,
     ProcedureMemoryPayload,
@@ -88,9 +91,13 @@ from simple_harness.runtime.memory_protocol import (
     RecallSelectorDomain,
     RecallSourceKind,
     SemanticLifecycleState,
+    SemanticMemoryKind,
     SemanticMemoryPayload,
+    SemanticRelationKind,
+    SemanticRelationMemoryPayload,
     ValidTimeInterval,
     VerificationState,
+    parse_memory_mutation_plan,
     verify_memory_mutation_apply_receipt,
 )
 
@@ -150,8 +157,15 @@ def test_cognitive_mutation_and_recall_contracts_are_public() -> None:
     names = (
         "MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION",
         "MEMORY_MUTATION_SCHEMA_VERSION",
+        "MEMORY_MUTATION_VALIDATION_DIAGNOSTIC_SCHEMA_VERSION",
         "EpisodeMemoryPayload",
         "SemanticMemoryPayload",
+        "SemanticMemoryKind",
+        "SemanticRelationKind",
+        "SemanticRelationMemoryPayload",
+        "MemoryMutationValidationDiagnostic",
+        "MemoryMutationValidationReasonCode",
+        "parse_memory_mutation_plan",
         "ProcedureMemoryPayload",
         "ProspectiveMemoryPayload",
         "MemoryMutationPlanOutcome",
@@ -285,7 +299,55 @@ def _semantic_operation(
     )
 
 
-def test_mutation_v4_target_union_no_mutation_and_order_independent_dag() -> None:
+def _procedure_operation(operation_id: str) -> MemoryMutationOperation:
+    return replace(
+        _semantic_operation(operation_id),
+        memory_type=LongTermMemoryType.PROCEDURE,
+        payload=ProcedureMemoryPayload(
+            name="Release checklist",
+            applicability=("Python 3.12",),
+            steps=("run tests", "publish"),
+            proposed_risk_level=ProcedureRiskLevel.LOW,
+        ),
+        lifecycle_state=ProcedureLifecycleState.ACTIVE,
+    )
+
+
+def _prospective_operation(operation_id: str) -> MemoryMutationOperation:
+    return replace(
+        _semantic_operation(operation_id),
+        memory_type=LongTermMemoryType.PROSPECTIVE,
+        payload=ProspectiveMemoryPayload(
+            action="Update the changelog",
+            trigger=ProspectiveTimeTrigger(20.0, "UTC"),
+        ),
+        lifecycle_state=ProspectiveLifecycleState.PENDING,
+    )
+
+
+def _relation_operation(
+    operation_id: str = "create-relation",
+    *,
+    source: ExistingMemoryTarget | CreatedByOperationTarget = CreatedByOperationTarget(
+        "create-claim"
+    ),
+    target: ExistingMemoryTarget | CreatedByOperationTarget = CreatedByOperationTarget(
+        "create-procedure"
+    ),
+    depends_on: tuple[str, ...] = ("create-claim", "create-procedure"),
+) -> MemoryMutationOperation:
+    return replace(
+        _semantic_operation(operation_id),
+        payload=SemanticRelationMemoryPayload(
+            relation_kind=SemanticRelationKind.APPLIES_TO,
+            source_endpoint=source,
+            target_endpoint=target,
+        ),
+        depends_on_operation_ids=depends_on,
+    )
+
+
+def test_mutation_v5_target_union_no_mutation_and_order_independent_dag() -> None:
     create = _semantic_operation("create")
     revise = _semantic_operation(
         "revise",
@@ -388,6 +450,359 @@ def test_mutation_v4_target_union_no_mutation_and_order_independent_dag() -> Non
         )
     with pytest.raises(ValueError, match="unique"):
         replace(create, depends_on_operation_ids=("x", "x"))
+
+
+def test_mutation_v5_semantic_relation_roundtrip_and_cross_type_created_endpoints() -> None:
+    claim = _semantic_operation("create-claim")
+    procedure = _procedure_operation("create-procedure")
+    relation = _relation_operation()
+    plan = MemoryMutationPlan(
+        plan_id="relation-plan-1",
+        run_id="run-1",
+        turn_id="turn-1",
+        subject="user-1",
+        base_revision=4,
+        outcome=MemoryMutationPlanOutcome.MUTATE,
+        operations=(claim, procedure, relation),
+        disclosure_context=_disclosure(),
+        evidence_refs=(_ref(),),
+        idempotency_key="relation-plan-idem-1",
+    )
+    assert MEMORY_MUTATION_SCHEMA_VERSION == 5
+    assert [item.operation_id for item in plan.operations] == [
+        "create-claim",
+        "create-procedure",
+        "create-relation",
+    ]
+    wire = plan.to_json()
+    operations_wire = cast(list[dict[str, object]], wire["operations"])
+    relation_wire = operations_wire[-1]["payload"]
+    assert isinstance(relation.payload, SemanticRelationMemoryPayload)
+    assert relation.payload.semantic_kind is SemanticMemoryKind.RELATION
+    assert relation_wire == relation.payload.to_json()
+    assert cast(dict[str, object], relation_wire)["semantic_kind"] == "relation"
+    assert "qualifiers" not in cast(dict[str, object], relation_wire)
+    assert MemoryMutationPlan.from_json(wire) == plan
+    assert parse_memory_mutation_plan(wire) == plan
+
+    assert isinstance(claim.payload, SemanticMemoryPayload)
+    assert claim.payload.semantic_kind is SemanticMemoryKind.CLAIM
+    claim_wire = claim.payload.to_json()
+    assert claim_wire["semantic_kind"] == SemanticMemoryKind.CLAIM.value
+    assert SemanticMemoryPayload.from_json(claim_wire) == claim.payload
+    legacy_claim = deepcopy(claim_wire)
+    legacy_claim.pop("semantic_kind")
+    with pytest.raises(ValueError, match="fields differ"):
+        SemanticMemoryPayload.from_json(legacy_claim)
+
+    prospective = _prospective_operation("create-prospective")
+    prospective_relation = _relation_operation(
+        target=CreatedByOperationTarget("create-prospective"),
+        depends_on=("create-claim", "create-prospective"),
+    )
+    prospective_plan = replace(
+        plan,
+        plan_id="prospective-relation-plan",
+        operations=(claim, prospective, prospective_relation),
+        idempotency_key="prospective-relation-plan-idem",
+    )
+    assert MemoryMutationPlan.from_json(prospective_plan.to_json()) == prospective_plan
+
+
+def test_mutation_v5_semantic_relation_dependency_and_endpoint_matrix_fail_closed() -> None:
+    claim = _semantic_operation("create-claim")
+    procedure = _procedure_operation("create-procedure")
+
+    with pytest.raises(ValueError, match="explicit dependencies"):
+        MemoryMutationPlan(
+            "missing-dependency",
+            "run-1",
+            "turn-1",
+            "user-1",
+            4,
+            MemoryMutationPlanOutcome.MUTATE,
+            (claim, procedure, _relation_operation(depends_on=("create-claim",))),
+            _disclosure(),
+            (_ref(),),
+            "missing-dependency-idem",
+        )
+
+    wrong_target = _semantic_operation("create-target-claim")
+    with pytest.raises(ValueError, match="Procedure or Prospective"):
+        MemoryMutationPlan(
+            "wrong-target",
+            "run-1",
+            "turn-1",
+            "user-1",
+            4,
+            MemoryMutationPlanOutcome.MUTATE,
+            (
+                claim,
+                wrong_target,
+                _relation_operation(
+                    target=CreatedByOperationTarget("create-target-claim"),
+                    depends_on=("create-claim", "create-target-claim"),
+                ),
+            ),
+            _disclosure(),
+            (_ref(),),
+            "wrong-target-idem",
+        )
+
+    relation_source = _relation_operation(
+        "create-relation-source",
+        source=ExistingMemoryTarget("memory-claim", 1),
+        target=ExistingMemoryTarget("memory-procedure", 1),
+        depends_on=(),
+    )
+    relation_to_relation = _relation_operation(
+        source=CreatedByOperationTarget("create-relation-source"),
+        depends_on=("create-relation-source", "create-procedure"),
+    )
+    with pytest.raises(ValueError, match="relation endpoint"):
+        MemoryMutationPlan(
+            "relation-endpoint",
+            "run-1",
+            "turn-1",
+            "user-1",
+            4,
+            MemoryMutationPlanOutcome.MUTATE,
+            (relation_source, procedure, relation_to_relation),
+            _disclosure(),
+            (_ref(),),
+            "relation-endpoint-idem",
+        )
+
+    non_create_claim = replace(
+        claim,
+        operation_id="contest-claim",
+        kind=MemoryMutationKind.CONTEST,
+        target=ExistingMemoryTarget("memory-claim", 1),
+        conflict_status=ConflictStatus.CONTESTED,
+    )
+    relation_from_non_create = _relation_operation(
+        source=CreatedByOperationTarget("contest-claim"),
+        depends_on=("contest-claim", "create-procedure"),
+    )
+    with pytest.raises(ValueError, match="endpoint producer must be a create"):
+        MemoryMutationPlan(
+            "non-create-endpoint",
+            "run-1",
+            "turn-1",
+            "user-1",
+            4,
+            MemoryMutationPlanOutcome.MUTATE,
+            (non_create_claim, procedure, relation_from_non_create),
+            _disclosure(),
+            (_ref(),),
+            "non-create-endpoint-idem",
+        )
+
+    with pytest.raises(ValueError, match="self relation"):
+        SemanticRelationMemoryPayload(
+            SemanticRelationKind.APPLIES_TO,
+            ExistingMemoryTarget("same", 1),
+            ExistingMemoryTarget("same", 1),
+        )
+    with pytest.raises(ValueError, match="self relation"):
+        SemanticRelationMemoryPayload(
+            SemanticRelationKind.APPLIES_TO,
+            ExistingMemoryTarget("same", 1),
+            ExistingMemoryTarget("same", 2),
+        )
+
+    relation_wire = _relation_operation(
+        source=ExistingMemoryTarget("memory-claim", 1),
+        target=ExistingMemoryTarget("memory-procedure", 1),
+        depends_on=(),
+    ).payload
+    assert isinstance(relation_wire, SemanticRelationMemoryPayload)
+    with pytest.raises(ValueError, match="fields differ"):
+        SemanticRelationMemoryPayload.from_json(
+            {**relation_wire.to_json(), "qualifiers": []}
+        )
+
+
+def test_mutation_v5_validation_diagnostic_is_bounded_and_credential_safe() -> None:
+    assert MEMORY_MUTATION_VALIDATION_DIAGNOSTIC_SCHEMA_VERSION == 1
+    secret = "tsk_SECRET_SHOULD_NEVER_ECHO"
+    malformed: dict[str, object] = {
+        "schema_version": MEMORY_MUTATION_SCHEMA_VERSION,
+        "credential": secret,
+    }
+    result = parse_memory_mutation_plan(malformed)
+    assert isinstance(result, MemoryMutationValidationDiagnostic)
+    assert result.reason_code is MemoryMutationValidationReasonCode.INVALID_WIRE
+    encoded = str(result.to_json())
+    assert secret not in encoded
+    assert len(result.message.encode("utf-8")) <= 256
+    assert MemoryMutationValidationDiagnostic.from_json(result.to_json()) == result
+    tampered_diagnostic = result.to_json()
+    tampered_diagnostic["message"] = secret
+    with pytest.raises(ValueError, match="differs from reason_code"):
+        MemoryMutationValidationDiagnostic.from_json(tampered_diagnostic)
+
+    v4 = deepcopy(_relation_operation(
+        source=ExistingMemoryTarget("memory-claim", 1),
+        target=ExistingMemoryTarget("memory-procedure", 1),
+        depends_on=(),
+    ).to_json())
+    unsupported = parse_memory_mutation_plan(
+        {"schema_version": 4, "operations": [v4], "credential": secret}
+    )
+    assert isinstance(unsupported, MemoryMutationValidationDiagnostic)
+    assert (
+        unsupported.reason_code
+        is MemoryMutationValidationReasonCode.UNSUPPORTED_SCHEMA_VERSION
+    )
+    assert secret not in str(unsupported.to_json())
+
+
+def test_mutation_v5_relation_admission_diagnostics_are_stable() -> None:
+    claim = _semantic_operation("create-claim")
+    procedure = _procedure_operation("create-procedure")
+    relation = _relation_operation()
+    valid_plan = MemoryMutationPlan(
+        "diagnostic-plan",
+        "run-1",
+        "turn-1",
+        "user-1",
+        4,
+        MemoryMutationPlanOutcome.MUTATE,
+        (claim, procedure, relation),
+        _disclosure(),
+        (_ref(),),
+        "diagnostic-plan-idem",
+    )
+    base_wire = valid_plan.to_json()
+
+    def wire_with_operations(
+        *operations: MemoryMutationOperation,
+    ) -> dict[str, object]:
+        wire = cast(dict[str, object], deepcopy(base_wire))
+        wire["operations"] = [operation.to_json() for operation in operations]
+        return wire
+
+    def assert_reason(
+        wire: dict[str, object], reason: MemoryMutationValidationReasonCode
+    ) -> None:
+        result = parse_memory_mutation_plan(wire)
+        assert isinstance(result, MemoryMutationValidationDiagnostic)
+        assert result.reason_code is reason
+        assert len(result.message.encode("utf-8")) <= 256
+
+    missing_dependency = replace(
+        relation, depends_on_operation_ids=("create-claim",)
+    )
+    assert_reason(
+        wire_with_operations(claim, procedure, missing_dependency),
+        MemoryMutationValidationReasonCode.RELATION_ENDPOINT_DEPENDENCY_REQUIRED,
+    )
+
+    assert_reason(
+        wire_with_operations(relation, claim, procedure),
+        MemoryMutationValidationReasonCode.INVALID_DEPENDENCY_ORDER,
+    )
+
+    non_create_claim = replace(
+        claim,
+        operation_id="contest-claim",
+        kind=MemoryMutationKind.CONTEST,
+        target=ExistingMemoryTarget("memory-claim", 1),
+        conflict_status=ConflictStatus.CONTESTED,
+    )
+    non_create_relation = _relation_operation(
+        source=CreatedByOperationTarget("contest-claim"),
+        depends_on=("contest-claim", "create-procedure"),
+    )
+    assert_reason(
+        wire_with_operations(non_create_claim, procedure, non_create_relation),
+        MemoryMutationValidationReasonCode.RELATION_ENDPOINT_CREATE_REQUIRED,
+    )
+
+    assert_reason(
+        wire_with_operations(claim, claim, procedure, relation),
+        MemoryMutationValidationReasonCode.DUPLICATE_OPERATION,
+    )
+
+    unknown_kind_wire = cast(dict[str, object], deepcopy(base_wire))
+    unknown_operations = cast(list[dict[str, object]], unknown_kind_wire["operations"])
+    unknown_relation_payload = cast(
+        dict[str, object], unknown_operations[-1]["payload"]
+    )
+    unknown_relation_payload["relation_kind"] = "supports"
+    assert_reason(
+        unknown_kind_wire,
+        MemoryMutationValidationReasonCode.INVALID_RELATION_KIND,
+    )
+
+    wrong_target = _semantic_operation("create-target-claim")
+    wrong_type_relation = _relation_operation(
+        target=CreatedByOperationTarget("create-target-claim"),
+        depends_on=("create-claim", "create-target-claim"),
+    )
+    assert_reason(
+        wire_with_operations(claim, wrong_target, wrong_type_relation),
+        MemoryMutationValidationReasonCode.INVALID_RELATION_TARGET_TYPE,
+    )
+
+    wrong_source = _procedure_operation("create-source-procedure")
+    wrong_source_relation = _relation_operation(
+        source=CreatedByOperationTarget("create-source-procedure"),
+        depends_on=("create-source-procedure", "create-procedure"),
+    )
+    assert_reason(
+        wire_with_operations(wrong_source, procedure, wrong_source_relation),
+        MemoryMutationValidationReasonCode.INVALID_RELATION_SOURCE_TYPE,
+    )
+
+    self_relation_wire = cast(dict[str, object], deepcopy(base_wire))
+    self_operations = cast(list[dict[str, object]], self_relation_wire["operations"])
+    self_payload = cast(dict[str, object], self_operations[-1]["payload"])
+    self_payload["source_endpoint"] = ExistingMemoryTarget("same", 1).to_json()
+    self_payload["target_endpoint"] = ExistingMemoryTarget("same", 2).to_json()
+    assert_reason(
+        self_relation_wire,
+        MemoryMutationValidationReasonCode.RELATION_SELF_LOOP,
+    )
+
+    relation_source = _relation_operation(
+        "create-relation-source",
+        source=ExistingMemoryTarget("memory-claim", 1),
+        target=ExistingMemoryTarget("memory-procedure", 1),
+        depends_on=(),
+    )
+    relation_endpoint = _relation_operation(
+        source=CreatedByOperationTarget("create-relation-source"),
+        depends_on=("create-relation-source", "create-procedure"),
+    )
+    assert_reason(
+        wire_with_operations(relation_source, procedure, relation_endpoint),
+        MemoryMutationValidationReasonCode.RELATION_ENDPOINT_MUST_BE_CLAIM,
+    )
+
+    missing_evidence_wire = cast(dict[str, object], deepcopy(base_wire))
+    missing_evidence_wire["evidence_refs"] = []
+    assert_reason(
+        missing_evidence_wire,
+        MemoryMutationValidationReasonCode.EVIDENCE_REF_REQUIRED,
+    )
+
+    assert {
+        item.value for item in MemoryMutationValidationReasonCode
+    } >= {
+        "invalid_memory_mutation_plan_wire",
+        "relation_endpoint_dependency_required",
+        "invalid_dependency_order",
+        "relation_endpoint_create_required",
+        "duplicate_operation",
+        "invalid_relation_kind",
+        "invalid_relation_source_type",
+        "invalid_relation_target_type",
+        "relation_self_loop",
+        "relation_endpoint_must_be_claim",
+        "evidence_ref_required",
+    }
 
 
 def test_mutation_epistemic_status_requires_exact_evidence_provenance() -> None:
@@ -584,7 +999,7 @@ def _authorized_revise_plan() -> tuple[
 def test_memory_action_authority_is_host_resolved_once_and_non_circular() -> None:
     plan, operation, intent, authority, reference = _authorized_revise_plan()
     assert MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION == 2
-    assert MEMORY_MUTATION_SCHEMA_VERSION == 4
+    assert MEMORY_MUTATION_SCHEMA_VERSION == 5
     assert operation.operation_intent_hash == intent.operation_intent_hash
     assert plan.action_intent(operation.operation_id) == intent
     proposal_without_ref = replace(operation, action_authority_ref=None)

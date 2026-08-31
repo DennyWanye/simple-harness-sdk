@@ -1,7 +1,7 @@
 <!--
 SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
-last-updated: 2026-08-31
+last-updated: 2026-09-01
 -->
 <!-- last-calibrated: 716fb8513095c4ad1dc005cb0fefe991e584c156 -->
 
@@ -9,7 +9,7 @@ last-updated: 2026-08-31
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
-## Human Memory Program S1 当前边界（2026-08-31）
+## Human Memory Program S1 当前边界（2026-09-01）
 
 - `0.7.0` source candidate 公开严格、版本化的 Memory、TaskScope、Evidence、Disclosure DTO。Working Memory
   是 Context role，不属于四类长期存储 enum；长期类型精确为 Episode、Semantic、Procedure、Prospective。
@@ -34,7 +34,12 @@ last-updated: 2026-08-31
   wire 不再接受。
 - Episode、Semantic、Procedure、Prospective 各自使用 exact-key typed payload 与专属 lifecycle；operation 独立
   携带 epistemic/conflict/verification/valid-time/privacy attributes。existing target 固定 expected revision，
-  created-by target 只能引用同类型 CREATE。Mutation schema v4 进一步要求 REVISE/SUPERSEDE/SUPPRESS 只作用于
+  普通 mutation target 的 created-by ref 只能引用同类型 CREATE。Mutation schema v5 为 Semantic payload 增加
+  `claim | relation` 二级 discriminator；V1 relation 仅开放 `applies_to`，使用 existing exact ref 或显式 dependency
+  指向同 plan CREATE 的 endpoint。created endpoint 允许关系专用的跨 memory type，但 source 必须是 Semantic claim，
+  target 只能是 Procedure/Prospective；self relation 与 relation-as-created-endpoint 均 fail closed。claim 保留 qualifiers，
+  relation 不接受 qualifiers。v5 还提供 package-root public、bounded、credential-safe validation diagnostic；它只返回
+  稳定 reason code/固定消息，不持久化 Host audit，也不回显不可信 wire。REVISE/SUPERSEDE/SUPPRESS 仍只作用于
   exact `ExistingMemoryTarget`，并可携带的唯一授权 wire 是无 authority 的 `MemoryActionAuthorityRef`；完整 Host
   authority 绑定 subject/action/target revision、canonical evidence/span hashes、run/turn、plan/operation、
   authority-free `plan_intent_hash`、canonical operation index、稳定 `operation_intent_hash`、有效期、nonce、issuer
@@ -50,7 +55,7 @@ last-updated: 2026-08-31
   同槽/不同值或既有冲突规则验证，不能因模型自报 CONTEST 降级无关记忆。COMMITTED apply result 与可信 apply
   receipt 都会复验每个 protected existing operation 携带 action authority ref。全 plan 先 canonical topological 排序再 wire/hash，
   并强制 `strict_atomic` authority receipt 覆盖全部 operation 和唯一 base→committed revision，不存在
-  partial-success wire；schema v3 Mutation plan/receipt 和旧 action/operation wire 明确拒绝，不提供 decoder/migration。
+  partial-success wire；schema v4 Mutation plan/receipt 和旧 action/operation wire明确拒绝，不提供 decoder/migration。
 - Procedure observation 与 Prospective scheduler/runtime signal 不再使用 caller 自报的 terminal outcome、clock
   或 event 字符串。公开 consumer wire 只允许 `ProcedureObservationAuthorityRef` / `ProspectiveSignalAuthorityRef`；
   完整 Host authority 经各自 resolver 单次返回，绑定 subject、`MemoryScopeRef`、exact memory revision、receipt、

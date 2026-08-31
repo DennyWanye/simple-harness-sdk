@@ -45,7 +45,8 @@ conversation causal metadata 是 raw evidence 入库后的独立 Host registrati
 information attributes、classification authority ref 与 item-authority id/hash；没有该绑定的 evidence 仍永久保存，
 但不得进入索引。v2 conversation metadata/receipt/registration fail closed。
 
-S1 `a2-006` 已新增 Host-owned `MemoryActionAuthority`：Mutation schema v4 的
+S1 `a2-006` 已新增 Host-owned `MemoryActionAuthority`：该授权约束最初随 mutation schema v4 引入，
+当前继续由 schema v5 承载；
 REVISE/SUPERSEDE/SUPPRESS 只能引用 `MemoryActionAuthorityRef`，Memory 必须经 Host durable authority port
 单次解析并校验 exact subject/action/existing target revision/evidence/run/turn/plan/operation/expiry/nonce/issuer/hash。
 action schema v2 还绑定 authority-free whole-plan `plan_intent_hash` 与 canonical operation index；其他 operation
@@ -71,6 +72,12 @@ Main-model analysis 的 provider delivery 由独立的 `MemoryAnalysisResultEnve
 durable `MemoryAnalysisDeliveryReceipt` 必须经 injected authority lookup 验证；Memory 后续产生的
 `MemoryAnalysisReceipt` 仍只负责 validator/apply，两者不可互相替代。
 
+2026-09-01 的 relation 增量把 mutation wire 升级为 strict schema v5：Semantic payload 显式区分
+`claim | relation`，V1 relation 只允许 `applies_to`，same-plan endpoint 必须经显式 dependency 引用 CREATE，
+并限制为 Semantic claim → Procedure/Prospective；普通 mutation target 的同类型规则不变。package-root 公开
+validation diagnostic 只输出稳定 bounded reason，不回显不可信输入。这里仅代表 Harness source candidate；
+Memory 持久化、数字孪生图投影与 Host durable audit 仍未由本仓完成。
+
 2026-08-25 Tool/Capability：SDK 0.6.2 起已提供三类 capability record、bounded search/describe、
 typed activation receipt、Run-local exposure port 与 ReAct ready-attempt 动态投影；Provider reserved 仍精确
 重放原 request。fresh schema v6 分离 legacy Provider specs fingerprint 与完整 envelope digest，exact v5
@@ -95,4 +102,4 @@ tag、release 上传、download-back 与 consumer promotion 继续分别验收�
 Human Memory Program 当前只完成 Harness SDK 的 S1 source candidate 边界；不得把后续 Memory SDK、Host
 TaskScope、动态 Context、单主对话 UI 或数字孪生体目标误当成已有产品能力。
 
-<!-- last-updated: 2026-08-31 -->
+<!-- last-updated: 2026-09-01 -->

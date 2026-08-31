@@ -64,7 +64,8 @@ from .memory_action_protocol import (
 )
 
 RECALL_DECISION_SCHEMA_VERSION = 4
-MEMORY_MUTATION_SCHEMA_VERSION = 4
+MEMORY_MUTATION_SCHEMA_VERSION = 5
+MEMORY_MUTATION_VALIDATION_DIAGNOSTIC_SCHEMA_VERSION = 1
 
 
 class LongTermMemoryType(StrEnum):
@@ -72,6 +73,38 @@ class LongTermMemoryType(StrEnum):
     SEMANTIC = "semantic"
     PROCEDURE = "procedure"
     PROSPECTIVE = "prospective"
+
+
+class SemanticMemoryKind(StrEnum):
+    CLAIM = "claim"
+    RELATION = "relation"
+
+
+class SemanticRelationKind(StrEnum):
+    APPLIES_TO = "applies_to"
+
+
+class MemoryMutationValidationReasonCode(StrEnum):
+    INVALID_WIRE = "invalid_memory_mutation_plan_wire"
+    UNSUPPORTED_SCHEMA_VERSION = "memory_mutation_unsupported_schema_version"
+    DUPLICATE_OPERATION = "duplicate_operation"
+    RELATION_ENDPOINT_DEPENDENCY_REQUIRED = "relation_endpoint_dependency_required"
+    INVALID_DEPENDENCY_ORDER = "invalid_dependency_order"
+    RELATION_ENDPOINT_CREATE_REQUIRED = "relation_endpoint_create_required"
+    INVALID_RELATION_KIND = "invalid_relation_kind"
+    INVALID_RELATION_SOURCE_TYPE = "invalid_relation_source_type"
+    INVALID_RELATION_TARGET_TYPE = "invalid_relation_target_type"
+    RELATION_SELF_LOOP = "relation_self_loop"
+    RELATION_ENDPOINT_MUST_BE_CLAIM = "relation_endpoint_must_be_claim"
+    EVIDENCE_REF_REQUIRED = "evidence_ref_required"
+
+
+class _MemoryMutationAdmissionError(ValueError):
+    def __init__(
+        self, reason_code: MemoryMutationValidationReasonCode, message: str
+    ) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 class WorkingMemoryRole(StrEnum):
@@ -2163,6 +2196,9 @@ class SemanticMemoryPayload:
     predicate: str
     object_value: JsonValue
     qualifiers: tuple[str, ...]
+    semantic_kind: SemanticMemoryKind = field(
+        init=False, default=SemanticMemoryKind.CLAIM
+    )
     object_value_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -2180,6 +2216,7 @@ class SemanticMemoryPayload:
     def to_json(self) -> dict[str, JsonValue]:
         return {
             "memory_type": LongTermMemoryType.SEMANTIC.value,
+            "semantic_kind": self.semantic_kind.value,
             "subject_entity": self.subject_entity,
             "predicate": self.predicate,
             "object_value": thaw_json(cast(FrozenJsonValue, self.object_value)),
@@ -2192,13 +2229,15 @@ class SemanticMemoryPayload:
         _exact_keys(
             value,
             {
-                "memory_type", "subject_entity", "predicate", "object_value",
+                "memory_type", "semantic_kind", "subject_entity", "predicate", "object_value",
                 "object_value_hash", "qualifiers",
             },
             "SemanticMemoryPayload",
         )
         if value["memory_type"] != LongTermMemoryType.SEMANTIC.value:
             raise ValueError("SemanticMemoryPayload discriminator differs")
+        if value["semantic_kind"] != SemanticMemoryKind.CLAIM.value:
+            raise ValueError("SemanticMemoryPayload semantic_kind differs")
         expected_hash = _digest(value["object_value_hash"], "object_value_hash")
         payload = cls(
             _bounded_text(value["subject_entity"], "subject_entity", max_bytes=2048),
@@ -2209,6 +2248,85 @@ class SemanticMemoryPayload:
         if payload.object_value_hash != expected_hash:
             raise ValueError("object_value_hash does not bind object_value")
         return payload
+
+
+SemanticRelationEndpoint = ExistingMemoryTarget | CreatedByOperationTarget
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticRelationMemoryPayload:
+    relation_kind: SemanticRelationKind
+    source_endpoint: SemanticRelationEndpoint
+    target_endpoint: SemanticRelationEndpoint
+    semantic_kind: SemanticMemoryKind = field(
+        init=False, default=SemanticMemoryKind.RELATION
+    )
+
+    def __post_init__(self) -> None:
+        try:
+            relation_kind = SemanticRelationKind(self.relation_kind)
+        except (TypeError, ValueError) as exc:
+            raise _MemoryMutationAdmissionError(
+                MemoryMutationValidationReasonCode.INVALID_RELATION_KIND,
+                "semantic relation kind is unsupported",
+            ) from exc
+        object.__setattr__(self, "relation_kind", relation_kind)
+        for endpoint, name in (
+            (self.source_endpoint, "source_endpoint"),
+            (self.target_endpoint, "target_endpoint"),
+        ):
+            if not isinstance(
+                endpoint, (ExistingMemoryTarget, CreatedByOperationTarget)
+            ):
+                raise TypeError(f"{name} must use an exact semantic relation endpoint")
+        same_existing_memory = (
+            isinstance(self.source_endpoint, ExistingMemoryTarget)
+            and isinstance(self.target_endpoint, ExistingMemoryTarget)
+            and self.source_endpoint.memory_id == self.target_endpoint.memory_id
+        )
+        if self.source_endpoint == self.target_endpoint or same_existing_memory:
+            raise _MemoryMutationAdmissionError(
+                MemoryMutationValidationReasonCode.RELATION_SELF_LOOP,
+                "semantic relation cannot be a self relation",
+            )
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "memory_type": LongTermMemoryType.SEMANTIC.value,
+            "semantic_kind": self.semantic_kind.value,
+            "relation_kind": self.relation_kind.value,
+            "source_endpoint": self.source_endpoint.to_json(),
+            "target_endpoint": self.target_endpoint.to_json(),
+        }
+
+    @classmethod
+    def from_json(
+        cls, value: Mapping[str, object]
+    ) -> SemanticRelationMemoryPayload:
+        _exact_keys(
+            value,
+            {
+                "memory_type",
+                "semantic_kind",
+                "relation_kind",
+                "source_endpoint",
+                "target_endpoint",
+            },
+            "SemanticRelationMemoryPayload",
+        )
+        if value["memory_type"] != LongTermMemoryType.SEMANTIC.value:
+            raise ValueError("SemanticRelationMemoryPayload discriminator differs")
+        if value["semantic_kind"] != SemanticMemoryKind.RELATION.value:
+            raise ValueError("SemanticRelationMemoryPayload semantic_kind differs")
+        source = _mutation_target_from_json(value["source_endpoint"])
+        target = _mutation_target_from_json(value["target_endpoint"])
+        if source is None or target is None:
+            raise ValueError("semantic relation endpoints are required")
+        return cls(
+            relation_kind=cast(SemanticRelationKind, value["relation_kind"]),
+            source_endpoint=source,
+            target_endpoint=target,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2375,6 +2493,7 @@ class ProspectiveMemoryPayload:
 MemoryMutationPayload = (
     EpisodeMemoryPayload
     | SemanticMemoryPayload
+    | SemanticRelationMemoryPayload
     | ProcedureMemoryPayload
     | ProspectiveMemoryPayload
 )
@@ -2382,7 +2501,6 @@ MemoryMutationPayload = (
 
 _PAYLOAD_TYPES: dict[LongTermMemoryType, type[MemoryMutationPayload]] = {
     LongTermMemoryType.EPISODE: EpisodeMemoryPayload,
-    LongTermMemoryType.SEMANTIC: SemanticMemoryPayload,
     LongTermMemoryType.PROCEDURE: ProcedureMemoryPayload,
     LongTermMemoryType.PROSPECTIVE: ProspectiveMemoryPayload,
 }
@@ -2419,7 +2537,7 @@ _CONTEST_DESTRUCTIVE_LIFECYCLES: frozenset[CognitiveLifecycleState] = frozenset(
 def _payload_memory_type(payload: MemoryMutationPayload) -> LongTermMemoryType:
     if isinstance(payload, EpisodeMemoryPayload):
         return LongTermMemoryType.EPISODE
-    if isinstance(payload, SemanticMemoryPayload):
+    if isinstance(payload, (SemanticMemoryPayload, SemanticRelationMemoryPayload)):
         return LongTermMemoryType.SEMANTIC
     if isinstance(payload, ProcedureMemoryPayload):
         return LongTermMemoryType.PROCEDURE
@@ -2435,7 +2553,27 @@ def _payload_from_json(value: object) -> MemoryMutationPayload:
         memory_type = LongTermMemoryType(raw_type)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
         raise ValueError("payload has an unknown memory_type discriminator") from exc
+    if memory_type is LongTermMemoryType.SEMANTIC:
+        semantic_kind = payload.get("semantic_kind")
+        if semantic_kind == SemanticMemoryKind.CLAIM.value:
+            return SemanticMemoryPayload.from_json(payload)
+        if semantic_kind == SemanticMemoryKind.RELATION.value:
+            return SemanticRelationMemoryPayload.from_json(payload)
+        raise ValueError("semantic payload has an unknown semantic_kind discriminator")
     return _PAYLOAD_TYPES[memory_type].from_json(payload)  # type: ignore[attr-defined,return-value]
+
+
+def _relation_created_endpoint_ids(
+    operation: MemoryMutationOperation,
+) -> tuple[str, ...]:
+    payload = operation.payload
+    if not isinstance(payload, SemanticRelationMemoryPayload):
+        return ()
+    return tuple(
+        endpoint.operation_id
+        for endpoint in (payload.source_endpoint, payload.target_endpoint)
+        if isinstance(endpoint, CreatedByOperationTarget)
+    )
 
 
 def _validate_epistemic_evidence_matrix(
@@ -2593,7 +2731,10 @@ class MemoryMutationOperation:
             or not all(isinstance(item, EvidenceSpanRef) for item in spans)
             or len({item.span_id for item in spans}) != len(spans)
         ):
-            raise ValueError("evidence_spans must contain unique bounded EvidenceSpanRef values")
+            raise _MemoryMutationAdmissionError(
+                MemoryMutationValidationReasonCode.EVIDENCE_REF_REQUIRED,
+                "evidence_spans must contain unique bounded EvidenceSpanRef values",
+            )
         _validate_epistemic_evidence_matrix(epistemic, verification, spans)
         _identifier(self.reason_code, "reason_code")
         protected_action = kind in {
@@ -2626,7 +2767,7 @@ class MemoryMutationOperation:
             self,
             "operation_intent_hash",
             _domain_hash(
-                "simple-harness/memory-mutation-operation-intent/v3",
+                "simple-harness/memory-mutation-operation-intent/v4",
                 self._intent_json(),
             ),
         )
@@ -2793,19 +2934,43 @@ class MemoryMutationPlan:
         if len(operations) > 128:
             raise ValueError("operations exceeds the item limit")
         if len({item.operation_id for item in operations}) != len(operations):
-            raise ValueError("operation_id values must be unique")
+            raise _MemoryMutationAdmissionError(
+                MemoryMutationValidationReasonCode.DUPLICATE_OPERATION,
+                "operation_id values must be unique",
+            )
         if outcome is MemoryMutationPlanOutcome.NO_MUTATION and operations:
             raise ValueError("no_mutation outcome requires empty operations")
         if outcome is MemoryMutationPlanOutcome.MUTATE and not operations:
             raise ValueError("mutate outcome requires operations")
         operation_ids = {item.operation_id for item in operations}
-        for operation in operations:
+        operation_positions = {
+            operation.operation_id: index for index, operation in enumerate(operations)
+        }
+        for operation_index, operation in enumerate(operations):
             dependencies = set(operation.depends_on_operation_ids)
             if isinstance(operation.target, CreatedByOperationTarget):
                 dependencies.add(operation.target.operation_id)
+            relation_endpoint_ids = set(_relation_created_endpoint_ids(operation))
+            if not relation_endpoint_ids.issubset(dependencies):
+                raise _MemoryMutationAdmissionError(
+                    MemoryMutationValidationReasonCode.RELATION_ENDPOINT_DEPENDENCY_REQUIRED,
+                    "created semantic relation endpoints require explicit dependencies",
+                )
+            dependencies.update(relation_endpoint_ids)
             unknown = dependencies - operation_ids
             if unknown:
-                raise ValueError(f"operation has unknown dependencies: {sorted(unknown)}")
+                raise _MemoryMutationAdmissionError(
+                    MemoryMutationValidationReasonCode.INVALID_DEPENDENCY_ORDER,
+                    "operation has unknown dependencies",
+                )
+            if any(
+                operation_positions[endpoint_id] >= operation_index
+                for endpoint_id in relation_endpoint_ids
+            ):
+                raise _MemoryMutationAdmissionError(
+                    MemoryMutationValidationReasonCode.INVALID_DEPENDENCY_ORDER,
+                    "created semantic relation endpoint must precede the relation",
+                )
         by_id = {item.operation_id: item for item in operations}
         for operation in operations:
             if isinstance(operation.target, CreatedByOperationTarget):
@@ -2818,6 +2983,45 @@ class MemoryMutationPlan:
                     raise ValueError(
                         "created_by_operation producer must have the same memory_type"
                     )
+            if isinstance(operation.payload, SemanticRelationMemoryPayload):
+                relation = operation.payload
+                for endpoint, role in (
+                    (relation.source_endpoint, "source"),
+                    (relation.target_endpoint, "target"),
+                ):
+                    if not isinstance(endpoint, CreatedByOperationTarget):
+                        continue
+                    producer = by_id[endpoint.operation_id]
+                    if producer.kind is not MemoryMutationKind.CREATE:
+                        raise _MemoryMutationAdmissionError(
+                            MemoryMutationValidationReasonCode.RELATION_ENDPOINT_CREATE_REQUIRED,
+                            "semantic relation endpoint producer must be a create operation",
+                        )
+                    if role == "source":
+                        if isinstance(producer.payload, SemanticRelationMemoryPayload):
+                            raise _MemoryMutationAdmissionError(
+                                MemoryMutationValidationReasonCode.RELATION_ENDPOINT_MUST_BE_CLAIM,
+                                "semantic relation cannot be a relation endpoint",
+                            )
+                        if not isinstance(producer.payload, SemanticMemoryPayload):
+                            raise _MemoryMutationAdmissionError(
+                                MemoryMutationValidationReasonCode.INVALID_RELATION_SOURCE_TYPE,
+                                "applies_to source must be a Semantic claim",
+                            )
+                    else:
+                        if isinstance(producer.payload, SemanticRelationMemoryPayload):
+                            raise _MemoryMutationAdmissionError(
+                                MemoryMutationValidationReasonCode.INVALID_RELATION_TARGET_TYPE,
+                                "applies_to target must be Procedure or Prospective",
+                            )
+                        if producer.memory_type not in {
+                            LongTermMemoryType.PROCEDURE,
+                            LongTermMemoryType.PROSPECTIVE,
+                        }:
+                            raise _MemoryMutationAdmissionError(
+                                MemoryMutationValidationReasonCode.INVALID_RELATION_TARGET_TYPE,
+                                "applies_to target must be Procedure or Prospective",
+                            )
         operations = self._stable_topological_operations(operations)
         if not isinstance(self.disclosure_context, DisclosureContext):
             raise TypeError("disclosure_context must use DisclosureContext")
@@ -2825,15 +3029,19 @@ class MemoryMutationPlan:
             raise ValueError("disclosure_context run_id differs")
         evidence_refs = _evidence_refs(self.evidence_refs)
         if not evidence_refs:
-            raise ValueError("MemoryMutationPlan requires evidence_refs")
+            raise _MemoryMutationAdmissionError(
+                MemoryMutationValidationReasonCode.EVIDENCE_REF_REQUIRED,
+                "MemoryMutationPlan requires evidence_refs",
+            )
         evidence_coverage = {
             (item.evidence_id, item.content_hash) for item in evidence_refs
         }
         for operation in operations:
             for span in operation.evidence_spans:
                 if (span.evidence_id, span.envelope_hash) not in evidence_coverage:
-                    raise ValueError(
-                        "MemoryMutationPlan evidence_refs do not cover every evidence span"
+                    raise _MemoryMutationAdmissionError(
+                        MemoryMutationValidationReasonCode.EVIDENCE_REF_REQUIRED,
+                        "MemoryMutationPlan evidence_refs do not cover every evidence span",
                     )
         object.__setattr__(self, "operations", operations)
         object.__setattr__(self, "outcome", outcome)
@@ -2843,14 +3051,14 @@ class MemoryMutationPlan:
             self,
             "plan_intent_hash",
             _domain_hash(
-                "simple-harness/memory-mutation-plan-intent/v4",
+                "simple-harness/memory-mutation-plan-intent/v5",
                 self._intent_json(),
             ),
         )
         object.__setattr__(
             self,
             "plan_hash",
-            _domain_hash("simple-harness/memory-mutation-plan/v4", self.to_json()),
+            _domain_hash("simple-harness/memory-mutation-plan/v5", self.to_json()),
         )
 
     def action_intent(self, operation_id: str) -> MemoryActionIntent:
@@ -2904,6 +3112,7 @@ class MemoryMutationPlan:
             dependencies = set(item.depends_on_operation_ids)
             if isinstance(item.target, CreatedByOperationTarget):
                 dependencies.add(item.target.operation_id)
+            dependencies.update(_relation_created_endpoint_ids(item))
             remaining[item.operation_id] = dependencies
         ordered: list[MemoryMutationOperation] = []
         while remaining:
@@ -3001,6 +3210,125 @@ class MemoryMutationPlan:
         ):
             raise ValueError("plan_intent_hash does not bind mutation plan intent")
         return plan
+
+
+_MEMORY_MUTATION_VALIDATION_MESSAGES = {
+    MemoryMutationValidationReasonCode.INVALID_WIRE: (
+        "Memory mutation plan wire is invalid."
+    ),
+    MemoryMutationValidationReasonCode.UNSUPPORTED_SCHEMA_VERSION: (
+        "Memory mutation plan schema version is unsupported."
+    ),
+    MemoryMutationValidationReasonCode.DUPLICATE_OPERATION: (
+        "Memory mutation plan contains a duplicate operation."
+    ),
+    MemoryMutationValidationReasonCode.RELATION_ENDPOINT_DEPENDENCY_REQUIRED: (
+        "Semantic relation endpoint dependencies are required."
+    ),
+    MemoryMutationValidationReasonCode.INVALID_DEPENDENCY_ORDER: (
+        "Semantic relation dependency order is invalid."
+    ),
+    MemoryMutationValidationReasonCode.RELATION_ENDPOINT_CREATE_REQUIRED: (
+        "Semantic relation endpoint producer is not a create operation."
+    ),
+    MemoryMutationValidationReasonCode.INVALID_RELATION_KIND: (
+        "Semantic relation kind is unsupported."
+    ),
+    MemoryMutationValidationReasonCode.INVALID_RELATION_SOURCE_TYPE: (
+        "Semantic relation source type is invalid."
+    ),
+    MemoryMutationValidationReasonCode.INVALID_RELATION_TARGET_TYPE: (
+        "Semantic relation target type is invalid."
+    ),
+    MemoryMutationValidationReasonCode.RELATION_SELF_LOOP: (
+        "Semantic relation cannot reference itself."
+    ),
+    MemoryMutationValidationReasonCode.RELATION_ENDPOINT_MUST_BE_CLAIM: (
+        "Semantic relation source endpoint must be a claim."
+    ),
+    MemoryMutationValidationReasonCode.EVIDENCE_REF_REQUIRED: (
+        "Memory mutation evidence is missing or incomplete."
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryMutationValidationDiagnostic:
+    reason_code: MemoryMutationValidationReasonCode
+    schema_version: int = MEMORY_MUTATION_VALIDATION_DIAGNOSTIC_SCHEMA_VERSION
+    message: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.schema_version != MEMORY_MUTATION_VALIDATION_DIAGNOSTIC_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported MemoryMutationValidationDiagnostic schema_version"
+            )
+        reason_code = MemoryMutationValidationReasonCode(self.reason_code)
+        object.__setattr__(self, "reason_code", reason_code)
+        object.__setattr__(
+            self,
+            "message",
+            _MEMORY_MUTATION_VALIDATION_MESSAGES[reason_code],
+        )
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "schema_version": self.schema_version,
+            "reason_code": self.reason_code.value,
+            "message": self.message,
+        }
+
+    @classmethod
+    def from_json(
+        cls, value: Mapping[str, object]
+    ) -> MemoryMutationValidationDiagnostic:
+        _exact_keys(
+            value,
+            {"schema_version", "reason_code", "message"},
+            "MemoryMutationValidationDiagnostic",
+        )
+        schema_version = value["schema_version"]
+        if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+            raise TypeError(
+                "MemoryMutationValidationDiagnostic schema_version must be an integer"
+            )
+        diagnostic = cls(
+            reason_code=MemoryMutationValidationReasonCode(value["reason_code"]),  # type: ignore[arg-type]
+            schema_version=schema_version,
+        )
+        if value["message"] != diagnostic.message:
+            raise ValueError(
+                "MemoryMutationValidationDiagnostic message differs from reason_code"
+            )
+        return diagnostic
+
+
+def parse_memory_mutation_plan(
+    value: object,
+) -> MemoryMutationPlan | MemoryMutationValidationDiagnostic:
+    """Parse untrusted model wire without reflecting its contents in diagnostics."""
+
+    if not isinstance(value, Mapping):
+        return MemoryMutationValidationDiagnostic(
+            MemoryMutationValidationReasonCode.INVALID_WIRE,
+        )
+    schema_version = value.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        return MemoryMutationValidationDiagnostic(
+            MemoryMutationValidationReasonCode.INVALID_WIRE,
+        )
+    if schema_version != MEMORY_MUTATION_SCHEMA_VERSION:
+        return MemoryMutationValidationDiagnostic(
+            MemoryMutationValidationReasonCode.UNSUPPORTED_SCHEMA_VERSION,
+        )
+    try:
+        return MemoryMutationPlan.from_json(value)
+    except _MemoryMutationAdmissionError as exc:
+        return MemoryMutationValidationDiagnostic(exc.reason_code)
+    except (KeyError, TypeError, ValueError):
+        return MemoryMutationValidationDiagnostic(
+            MemoryMutationValidationReasonCode.INVALID_WIRE,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3533,6 +3861,7 @@ __all__ = (
     "CONTEXT_ASSEMBLY_SCHEMA_VERSION",
     "CONTEXT_FRAGMENT_SCHEMA_VERSION",
     "MEMORY_MUTATION_SCHEMA_VERSION",
+    "MEMORY_MUTATION_VALIDATION_DIAGNOSTIC_SCHEMA_VERSION",
     "ConflictStatus",
     "ContextAssemblyBudget",
     "ContextAssemblyDecision",
@@ -3562,6 +3891,8 @@ __all__ = (
     "MemoryMutationOperation",
     "MemoryMutationPlan",
     "MemoryMutationPlanOutcome",
+    "MemoryMutationValidationDiagnostic",
+    "MemoryMutationValidationReasonCode",
     "PrivacyClass",
     "ProcedureLifecycleState",
     "ProcedureMemoryPayload",
@@ -3606,7 +3937,11 @@ __all__ = (
     "RECALL_MAX_TOKENS",
     "RECALL_RESULT_SCHEMA_VERSION",
     "SemanticLifecycleState",
+    "SemanticMemoryKind",
     "SemanticMemoryPayload",
+    "SemanticRelationEndpoint",
+    "SemanticRelationKind",
+    "SemanticRelationMemoryPayload",
     "ValidTimeInterval",
     "VerificationState",
     "TypedRecallConfirmationGroupV1",
@@ -3614,5 +3949,6 @@ __all__ = (
     "TypedRecallResultItemV1",
     "TypedRecallResultV1",
     "WorkingMemoryRole",
+    "parse_memory_mutation_plan",
     "verify_memory_mutation_apply_receipt",
 )
