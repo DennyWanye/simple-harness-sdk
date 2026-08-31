@@ -229,7 +229,7 @@ def _semantic_operation(
     )
 
 
-def test_mutation_v3_target_union_no_mutation_and_order_independent_dag() -> None:
+def test_mutation_v4_target_union_no_mutation_and_order_independent_dag() -> None:
     create = _semantic_operation("create")
     revise = _semantic_operation(
         "revise",
@@ -527,13 +527,17 @@ def _authorized_revise_plan() -> tuple[
 
 def test_memory_action_authority_is_host_resolved_once_and_non_circular() -> None:
     plan, operation, intent, authority, reference = _authorized_revise_plan()
-    assert MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION == 1
-    assert MEMORY_MUTATION_SCHEMA_VERSION == 3
+    assert MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION == 2
+    assert MEMORY_MUTATION_SCHEMA_VERSION == 4
     assert operation.operation_intent_hash == intent.operation_intent_hash
     assert plan.action_intent(operation.operation_id) == intent
     proposal_without_ref = replace(operation, action_authority_ref=None)
+    authority_free_plan = replace(plan, operations=(proposal_without_ref,))
     assert proposal_without_ref.operation_intent_hash == operation.operation_intent_hash
-    assert replace(plan, operations=(proposal_without_ref,)).plan_hash != plan.plan_hash
+    assert authority_free_plan.plan_intent_hash == plan.plan_intent_hash
+    assert authority_free_plan.plan_hash != plan.plan_hash
+    assert intent.plan_intent_hash == plan.plan_intent_hash
+    assert intent.canonical_operation_index == 1
 
     port = _ActionAuthority(authority)
     verified = asyncio.run(
@@ -573,7 +577,9 @@ def test_memory_action_authority_is_host_resolved_once_and_non_circular() -> Non
         {"run_id": "run-2"},
         {"turn_id": "turn-2"},
         {"plan_id": "action-plan-2"},
+        {"plan_intent_hash": "9" * 64},
         {"operation_id": "revise-other"},
+        {"canonical_operation_index": 2},
         {"operation_intent_hash": "e" * 64},
     ),
 )
@@ -593,6 +599,68 @@ def test_memory_action_authority_rejects_every_changed_intent(
             )
         )
     assert port.calls == 1
+
+
+def test_memory_action_authority_binds_whole_plan_and_canonical_index() -> None:
+    plan, operation, intent, authority, reference = _authorized_revise_plan()
+    authority_free_operation = replace(operation, action_authority_ref=None)
+
+    trailing_create = _semantic_operation("zz-extra-create")
+    trailing_plan = replace(
+        plan,
+        operations=(authority_free_operation, trailing_create),
+    )
+    trailing_intent = trailing_plan.action_intent(operation.operation_id)
+    assert trailing_intent.operation_intent_hash == intent.operation_intent_hash
+    assert trailing_intent.canonical_operation_index == intent.canonical_operation_index
+    assert trailing_intent.plan_intent_hash != intent.plan_intent_hash
+    with pytest.raises(ValueError, match="intent differs"):
+        asyncio.run(
+            verify_memory_action_authority(
+                trailing_intent,
+                reference,
+                _ActionAuthority(authority),
+                current_time=15.0,
+            )
+        )
+
+    changed_trailing = replace(
+        trailing_create,
+        reason_code="different_other_operation_reason",
+    )
+    changed_plan = replace(
+        plan,
+        operations=(authority_free_operation, changed_trailing),
+    )
+    assert changed_plan.plan_intent_hash != trailing_plan.plan_intent_hash
+    with pytest.raises(ValueError, match="intent differs"):
+        asyncio.run(
+            verify_memory_action_authority(
+                changed_plan.action_intent(operation.operation_id),
+                reference,
+                _ActionAuthority(authority),
+                current_time=15.0,
+            )
+        )
+
+    leading_create = _semantic_operation("create-before-authorized-revise")
+    leading_plan = replace(
+        plan,
+        operations=(authority_free_operation, leading_create),
+    )
+    leading_intent = leading_plan.action_intent(operation.operation_id)
+    assert leading_intent.operation_intent_hash == intent.operation_intent_hash
+    assert leading_intent.canonical_operation_index == 2
+    assert leading_intent.plan_intent_hash != intent.plan_intent_hash
+    with pytest.raises(ValueError, match="intent differs"):
+        asyncio.run(
+            verify_memory_action_authority(
+                leading_intent,
+                reference,
+                _ActionAuthority(authority),
+                current_time=15.0,
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -668,7 +736,7 @@ def test_memory_action_authority_expiry_and_strict_wire_fail_closed() -> None:
         (MemoryActionAuthorityRef.from_json, reference.to_json()),
     ):
         old = deepcopy(original)
-        old["schema_version"] = 0
+        old["schema_version"] = MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION - 1
         with pytest.raises(ValueError, match="unsupported"):
             decoder(old)
         extra = deepcopy(original)
@@ -682,9 +750,13 @@ def test_memory_action_authority_expiry_and_strict_wire_fail_closed() -> None:
     with pytest.raises(ValueError, match="fields differ"):
         MemoryMutationOperation.from_json(old_operation)
     old_plan = plan.to_json()
-    old_plan["schema_version"] = 2
+    old_plan["schema_version"] = MEMORY_MUTATION_SCHEMA_VERSION - 1
     with pytest.raises(ValueError, match="unsupported"):
         MemoryMutationPlan.from_json(old_plan)
+    tampered_plan_intent = plan.to_json()
+    tampered_plan_intent["plan_intent_hash"] = "0" * 64
+    with pytest.raises(ValueError, match="does not bind"):
+        MemoryMutationPlan.from_json(tampered_plan_intent)
     receipt = MemoryMutationApplyReceipt(
         receipt_id="strict-wire-receipt",
         authority_ref="memory-apply-authority:v3",
@@ -699,7 +771,7 @@ def test_memory_action_authority_expiry_and_strict_wire_fail_closed() -> None:
         committed_at=15.0,
     )
     old_receipt = receipt.to_json()
-    old_receipt["schema_version"] = 2
+    old_receipt["schema_version"] = MEMORY_MUTATION_SCHEMA_VERSION - 1
     with pytest.raises(ValueError, match="unsupported"):
         MemoryMutationApplyReceipt.from_json(old_receipt)
 

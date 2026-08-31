@@ -64,7 +64,7 @@ from .memory_action_protocol import (
 )
 
 RECALL_DECISION_SCHEMA_VERSION = 3
-MEMORY_MUTATION_SCHEMA_VERSION = 3
+MEMORY_MUTATION_SCHEMA_VERSION = 4
 
 
 class LongTermMemoryType(StrEnum):
@@ -2679,6 +2679,7 @@ class MemoryMutationPlan:
     idempotency_key: str
     apply_mode: MemoryMutationApplyMode = MemoryMutationApplyMode.STRICT_ATOMIC
     schema_version: int = MEMORY_MUTATION_SCHEMA_VERSION
+    plan_intent_hash: str = field(init=False)
     plan_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -2751,20 +2752,33 @@ class MemoryMutationPlan:
         object.__setattr__(self, "apply_mode", apply_mode)
         object.__setattr__(
             self,
+            "plan_intent_hash",
+            _domain_hash(
+                "simple-harness/memory-mutation-plan-intent/v4",
+                self._intent_json(),
+            ),
+        )
+        object.__setattr__(
+            self,
             "plan_hash",
-            _domain_hash("simple-harness/memory-mutation-plan/v3", self.to_json()),
+            _domain_hash("simple-harness/memory-mutation-plan/v4", self.to_json()),
         )
 
     def action_intent(self, operation_id: str) -> MemoryActionIntent:
         """Build the exact non-circular Host authorization commitment."""
 
         _identifier(operation_id, "operation_id")
-        operation = next(
-            (item for item in self.operations if item.operation_id == operation_id),
+        indexed_operation = next(
+            (
+                (index, item)
+                for index, item in enumerate(self.operations, start=1)
+                if item.operation_id == operation_id
+            ),
             None,
         )
-        if operation is None:
+        if indexed_operation is None:
             raise KeyError("memory_action_operation_not_found")
+        canonical_operation_index, operation = indexed_operation
         if operation.kind not in {
             MemoryMutationKind.REVISE,
             MemoryMutationKind.SUPERSEDE,
@@ -2785,7 +2799,9 @@ class MemoryMutationPlan:
             run_id=self.run_id,
             turn_id=self.turn_id,
             plan_id=self.plan_id,
+            plan_intent_hash=self.plan_intent_hash,
             operation_id=operation.operation_id,
+            canonical_operation_index=canonical_operation_index,
             operation_intent_hash=operation.operation_intent_hash,
         )
 
@@ -2819,7 +2835,9 @@ class MemoryMutationPlan:
 
         return self._stable_topological_operations(self.operations)
 
-    def to_json(self) -> dict[str, JsonValue]:
+    def _intent_json(self) -> dict[str, JsonValue]:
+        """Canonical whole-plan commitment excluding every action authority ref."""
+
         return {
             "schema_version": self.schema_version,
             "plan_id": self.plan_id,
@@ -2828,12 +2846,24 @@ class MemoryMutationPlan:
             "subject": self.subject,
             "base_revision": self.base_revision,
             "outcome": self.outcome.value,
-            "operations": [operation.to_json() for operation in self.operations],
+            "operations": [
+                {
+                    **operation._intent_json(),
+                    "operation_intent_hash": operation.operation_intent_hash,
+                }
+                for operation in self.operations
+            ],
             "disclosure_context": self.disclosure_context.to_json(),
             "evidence_refs": [ref.to_json() for ref in self.evidence_refs],
             "idempotency_key": self.idempotency_key,
             "apply_mode": self.apply_mode.value,
         }
+
+    def to_json(self) -> dict[str, JsonValue]:
+        value = self._intent_json()
+        value["operations"] = [operation.to_json() for operation in self.operations]
+        value["plan_intent_hash"] = self.plan_intent_hash
+        return value
 
     @classmethod
     def from_json(cls, value: Mapping[str, object]) -> MemoryMutationPlan:
@@ -2852,10 +2882,11 @@ class MemoryMutationPlan:
                 "evidence_refs",
                 "idempotency_key",
                 "apply_mode",
+                "plan_intent_hash",
             },
             "MemoryMutationPlan",
         )
-        return cls(
+        plan = cls(
             plan_id=_identifier(value["plan_id"], "plan_id"),
             run_id=_identifier(value["run_id"], "run_id"),
             turn_id=_identifier(value["turn_id"], "turn_id"),
@@ -2876,6 +2907,11 @@ class MemoryMutationPlan:
                 value["schema_version"], "MemoryMutationPlan"
             ),
         )
+        if plan.plan_intent_hash != _digest(
+            value["plan_intent_hash"], "plan_intent_hash"
+        ):
+            raise ValueError("plan_intent_hash does not bind mutation plan intent")
+        return plan
 
 
 @dataclass(frozen=True, slots=True)
@@ -3031,7 +3067,7 @@ class MemoryMutationApplyResult:
             self,
             "result_hash",
             _domain_hash(
-                "simple-harness/memory-mutation-apply-result/v3",
+                "simple-harness/memory-mutation-apply-result/v4",
                 self.to_json(),
             ),
         )
@@ -3188,7 +3224,7 @@ class MemoryMutationApplyReceipt:
             self,
             "receipt_hash",
             _domain_hash(
-                "simple-harness/memory-mutation-apply-receipt/v3",
+                "simple-harness/memory-mutation-apply-receipt/v4",
                 self.to_json(),
             ),
         )

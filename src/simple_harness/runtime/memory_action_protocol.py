@@ -30,7 +30,7 @@ from .disclosure_protocol import (
 )
 from .evidence_protocol import EvidenceRef, _evidence_refs
 
-MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION = 1
+MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION = 2
 
 
 class MemoryActionKind(StrEnum):
@@ -81,7 +81,9 @@ class MemoryActionIntent:
     run_id: str
     turn_id: str
     plan_id: str
+    plan_intent_hash: str
     operation_id: str
+    canonical_operation_index: int
     operation_intent_hash: str
     schema_version: int = MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION
     intent_hash: str = field(init=False)
@@ -106,6 +108,8 @@ class MemoryActionIntent:
         if len(refs) > 64:
             raise ValueError("MemoryActionIntent evidence_refs exceeds the item limit")
         span_hashes = _canonical_span_hashes(self.evidence_span_hashes)
+        _digest(self.plan_intent_hash, "plan_intent_hash")
+        _positive_int(self.canonical_operation_index, "canonical_operation_index")
         _digest(self.operation_intent_hash, "operation_intent_hash")
         object.__setattr__(self, "action", action)
         object.__setattr__(self, "evidence_refs", refs)
@@ -113,7 +117,7 @@ class MemoryActionIntent:
         object.__setattr__(
             self,
             "intent_hash",
-            _domain_hash("simple-harness/memory-action-intent/v1", self.to_json()),
+            _domain_hash("simple-harness/memory-action-intent/v2", self.to_json()),
         )
 
     def to_json(self) -> dict[str, JsonValue]:
@@ -128,7 +132,9 @@ class MemoryActionIntent:
             "run_id": self.run_id,
             "turn_id": self.turn_id,
             "plan_id": self.plan_id,
+            "plan_intent_hash": self.plan_intent_hash,
             "operation_id": self.operation_id,
+            "canonical_operation_index": self.canonical_operation_index,
             "operation_intent_hash": self.operation_intent_hash,
         }
 
@@ -147,7 +153,9 @@ class MemoryActionIntent:
                 "run_id",
                 "turn_id",
                 "plan_id",
+                "plan_intent_hash",
                 "operation_id",
+                "canonical_operation_index",
                 "operation_intent_hash",
             },
             "MemoryActionIntent",
@@ -162,7 +170,11 @@ class MemoryActionIntent:
             run_id=_identifier(value["run_id"], "run_id"),
             turn_id=_identifier(value["turn_id"], "turn_id"),
             plan_id=_identifier(value["plan_id"], "plan_id"),
+            plan_intent_hash=_digest(value["plan_intent_hash"], "plan_intent_hash"),
             operation_id=_identifier(value["operation_id"], "operation_id"),
+            canonical_operation_index=_positive_int(
+                value["canonical_operation_index"], "canonical_operation_index"
+            ),
             operation_intent_hash=_digest(
                 value["operation_intent_hash"], "operation_intent_hash"
             ),
@@ -204,7 +216,7 @@ class MemoryActionAuthority:
             self,
             "replay_identity",
             _domain_hash(
-                "simple-harness/memory-action-replay-identity/v1",
+                "simple-harness/memory-action-replay-identity/v2",
                 {
                     "authority_id": self.authority_id,
                     "intent_hash": self.intent.intent_hash,
@@ -216,7 +228,7 @@ class MemoryActionAuthority:
         object.__setattr__(
             self,
             "authority_hash",
-            _domain_hash("simple-harness/memory-action-authority/v1", self.to_json()),
+            _domain_hash("simple-harness/memory-action-authority/v2", self.to_json()),
         )
 
     def to_json(self) -> dict[str, JsonValue]:
@@ -291,7 +303,7 @@ class MemoryActionAuthorityRef:
         object.__setattr__(
             self,
             "ref_hash",
-            _domain_hash("simple-harness/memory-action-authority-ref/v1", self.to_json()),
+            _domain_hash("simple-harness/memory-action-authority-ref/v2", self.to_json()),
         )
 
     def to_json(self) -> dict[str, JsonValue]:

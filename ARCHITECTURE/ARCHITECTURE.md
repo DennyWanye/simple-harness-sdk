@@ -28,17 +28,20 @@ last-updated: 2026-08-31
   Memory repository 对实际 authority 的复验仍是提交前必要条件。
 - Episode、Semantic、Procedure、Prospective 各自使用 exact-key typed payload 与专属 lifecycle；operation 独立
   携带 epistemic/conflict/verification/valid-time/privacy attributes。existing target 固定 expected revision，
-  created-by target 只能引用同类型 CREATE。Mutation schema v3 进一步要求 REVISE/SUPERSEDE/SUPPRESS 只作用于
+  created-by target 只能引用同类型 CREATE。Mutation schema v4 进一步要求 REVISE/SUPERSEDE/SUPPRESS 只作用于
   exact `ExistingMemoryTarget`，并可携带的唯一授权 wire 是无 authority 的 `MemoryActionAuthorityRef`；完整 Host
-  authority 绑定 subject/action/target revision、canonical evidence/span hashes、run/turn、plan/operation、稳定
-  `operation_intent_hash`、有效期、nonce、issuer 和 authority hash。Memory 通过 Host port 单次解析后，仍须在
+  authority 绑定 subject/action/target revision、canonical evidence/span hashes、run/turn、plan/operation、
+  authority-free `plan_intent_hash`、canonical operation index、稳定 `operation_intent_hash`、有效期、nonce、issuer
+  和 authority hash。whole-plan commitment 包含全部 canonical operations 与 plan metadata，因此其他 operation
+  的插入或修改也使旧授权失效。Memory 通过 Host port 单次解析后，仍须在
   mutation transaction 原子唯一消费 `replay_identity`；直接构造 DTO、模型 support kind 或 ref 均无权限。
-  `operation_intent_hash` 排除 ref，因此用户确认后注入 ref 不形成 plan-hash 循环。缺授权返回 typed
+  `plan_intent_hash` 和 `operation_intent_hash` 都排除 ref，因此用户确认后注入 ref 不形成 plan-hash 循环，
+  但最终 `plan_hash` 仍承诺 ref。缺授权返回 typed
   `MemoryMutationApplyResult.NEEDS_USER_CONFIRMATION`；invalid authority 返回 typed REJECTED，成功才携带 receipt。
   CREATE 不需要 action authority；CONTEST 禁止携带 action ref，且 Memory consumer 仍须用确定性同槽/不同值或
   既有冲突规则验证，不能因模型自报 CONTEST 降级无关记忆。全 plan 先 canonical topological 排序再 wire/hash，
   并强制 `strict_atomic` authority receipt 覆盖全部 operation 和唯一 base→committed revision，不存在
-  partial-success wire；schema v2 Mutation plan/receipt 和旧 operation wire 明确拒绝，不提供 decoder/migration。
+  partial-success wire；schema v3 Mutation plan/receipt 和旧 action/operation wire 明确拒绝，不提供 decoder/migration。
 - `RecallContext` 冻结 Host 允许的 memory type、scope、entity、time、event、environment、task phase、retrieval
   mode、Short-Horizon、disclosure、evidence 和预算。`RecallPlan` 精确绑定 context hash/revision，在可信当前时间
   验证未过期，保留全部 mandatory selector 且只能选择非空子集/更窄时间和预算；Decision 再绑定 Plan/Context

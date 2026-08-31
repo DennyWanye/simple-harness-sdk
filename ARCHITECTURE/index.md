@@ -37,10 +37,12 @@ typed receipt；Mutation DTO 同时冻结 epistemic/evidence matrix，Memory rep
 conversation causal metadata 是 raw evidence 入库后的独立 Host registration，非法 metadata 不删除原始证据，
 只失去后续 Short-Horizon 资格。
 
-S1 `a2-006` 已新增 Host-owned `MemoryActionAuthority`：Mutation schema v3 的
+S1 `a2-006` 已新增 Host-owned `MemoryActionAuthority`：Mutation schema v4 的
 REVISE/SUPERSEDE/SUPPRESS 只能引用 `MemoryActionAuthorityRef`，Memory 必须经 Host durable authority port
 单次解析并校验 exact subject/action/existing target revision/evidence/run/turn/plan/operation/expiry/nonce/issuer/hash。
-`operation_intent_hash` 明确排除 authority ref，避免 plan/authority hash 循环；Memory repository 仍必须在同一
+action schema v2 还绑定 authority-free whole-plan `plan_intent_hash` 与 canonical operation index；其他 operation
+被插入或修改时旧授权必然失效。plan/operation intent hash 都明确排除 authority ref，避免 plan/authority hash
+循环，而最终 `plan_hash` 仍承诺 ref；Memory repository 仍必须在同一
 mutation transaction 唯一消费 `replay_identity`。缺 authority 使用 typed
 `MemoryMutationApplyResult.NEEDS_USER_CONFIRMATION`，不伪装成异常或 Recall outcome；CREATE 不需要 action
 authority，CONTEST 不得携带 action ref，也不因此取得覆盖、删除或任意降级无关记忆的权限。

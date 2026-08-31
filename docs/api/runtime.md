@@ -104,7 +104,8 @@ Changes to an existing stored memory use the strict public
 `MemoryActionAuthority` protocol. The Host issues an authority for exactly one
 `REVISE`, `SUPERSEDE`, or `SUPPRESS` intent. The intent binds the subject, exact
 target memory ID and revision, canonical evidence references and span hashes,
-run and turn, mutation plan and operation IDs, and the operation-intent hash.
+run and turn, mutation plan and operation IDs, the authority-free whole-plan
+intent hash, canonical operation index, and the operation-intent hash.
 The authority also carries its issuer, nonce, issue and expiry times, and a
 domain-separated hash.
 
@@ -116,8 +117,11 @@ the same transaction that commits the mutation. The port owns durable lookup,
 not the transaction-local replay fence. An idempotent replay is permitted only
 when it resolves to the same already-committed receipt.
 
-The operation-intent hash excludes the authority reference, preventing a hash
-cycle while the final plan hash still commits to the reference. Protected
+The whole-plan and operation-intent hashes exclude every authority reference,
+preventing a hash cycle while the final plan hash still commits to the
+reference. The whole-plan commitment contains every canonical operation and
+all plan metadata, so inserting or changing another operation invalidates the
+old authority. Protected
 actions may target only an `ExistingMemoryTarget`; same-plan
 `CreatedByOperationTarget` chains are rejected. `CONTEST` never accepts action
 authority and remains a conservative conflict candidate that the Memory
@@ -126,7 +130,7 @@ consumer must validate against deterministic conflict rules.
 `MemoryMutationApplyResult` reports one of `COMMITTED`,
 `NEEDS_USER_CONFIRMATION`, or `REJECTED`. A missing authority for an otherwise
 valid protected operation is represented by typed confirmation items, not by a
-recall outcome or an exception. Schema-2 mutation wires and legacy authority
+recall outcome or an exception. Schema-3 mutation wires and legacy authority
 wires are rejected rather than migrated implicitly.
 
 ---
