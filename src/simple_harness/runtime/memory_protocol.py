@@ -63,7 +63,7 @@ from .memory_action_protocol import (
     MemoryActionKind,
 )
 
-RECALL_DECISION_SCHEMA_VERSION = 3
+RECALL_DECISION_SCHEMA_VERSION = 4
 MEMORY_MUTATION_SCHEMA_VERSION = 4
 
 
@@ -88,12 +88,13 @@ class ContextFragmentType(StrEnum):
     SHORT_HORIZON = "short_horizon"
     TASK_SCOPE_PROJECTION = "task_scope_projection"
     RECALLED_MEMORY = "recalled_memory"
+    RECALL_CONFIRMATION = "recall_confirmation"
     TOOL_CATALOG = "tool_catalog"
     SKILL_INSTRUCTIONS = "skill_instructions"
 
 
 @dataclass(frozen=True, slots=True)
-class ContextFragment:
+class LegacyContextFragmentV1:
     fragment_id: str
     run_id: str
     subject: str
@@ -156,7 +157,7 @@ class ContextFragment:
         }
 
     @classmethod
-    def from_json(cls, value: Mapping[str, object]) -> ContextFragment:
+    def from_json(cls, value: Mapping[str, object]) -> LegacyContextFragmentV1:
         _exact_keys(
             value,
             {
@@ -256,7 +257,7 @@ class ContextAssemblyReasonCode(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class ContextAssemblyDecision:
+class LegacyContextAssemblyDecisionV1:
     decision_id: str
     run_id: str
     subject: str
@@ -355,7 +356,7 @@ class ContextAssemblyDecision:
         }
 
     @classmethod
-    def from_json(cls, value: Mapping[str, object]) -> ContextAssemblyDecision:
+    def from_json(cls, value: Mapping[str, object]) -> LegacyContextAssemblyDecisionV1:
         _exact_keys(
             value,
             {
@@ -504,8 +505,16 @@ class RecallBudget:
     deadline_ms: int
 
     def __post_init__(self) -> None:
-        for name in ("max_items", "max_bytes", "max_tokens", "deadline_ms"):
-            _positive_int(getattr(self, name), name)
+        limits = {
+            "max_items": 32,
+            "max_bytes": 65_536,
+            "max_tokens": 8_192,
+            "deadline_ms": 2_000,
+        }
+        for name, maximum in limits.items():
+            value = _positive_int(getattr(self, name), name)
+            if value > maximum:
+                raise ValueError(f"{name} exceeds protocol maximum {maximum}")
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
@@ -1362,7 +1371,10 @@ class RecallPlan:
             if not requested <= allowed:
                 raise ValueError(f"RecallPlan expands {name}")
         mandatory_domains = set(context.allowed_selector_domains) - {
-            RecallSelectorDomain.SHORT_HORIZON
+            RecallSelectorDomain.SHORT_HORIZON,
+            # Available long-term types are a maximum capability. A valid
+            # short-horizon-only plan must be able to narrow them to none.
+            RecallSelectorDomain.MEMORY_TYPE,
         }
         if not mandatory_domains <= set(self.selector_domains):
             raise ValueError("RecallPlan removes a mandatory Host selector domain")
@@ -1394,6 +1406,20 @@ class RecallPlan:
             fingerprint_json(item.to_json()) for item in self.evidence_refs
         } <= allowed_evidence:
             raise ValueError("RecallPlan evidence_refs expand Host evidence")
+
+    def unsupported_capabilities(self) -> tuple[str, ...]:
+        """Return every V1-unsupported capability in deterministic order."""
+
+        ordered: tuple[tuple[object, str], ...] = (
+            (RecallSelectorDomain.EVENT, "selector:event"),
+            (RecallSelectorDomain.ENVIRONMENT, "selector:environment"),
+            (RecallSelectorDomain.TASK_PHASE, "selector:task_phase"),
+            (RecallRetrievalMode.EXACT, "retrieval:exact"),
+            (RecallRetrievalMode.TEMPORAL, "retrieval:temporal"),
+            (RecallRetrievalMode.GRAPH, "retrieval:graph"),
+        )
+        present = set(self.selector_domains) | set(self.retrieval_modes)
+        return tuple(label for capability, label in ordered if capability in present)
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
@@ -1490,7 +1516,7 @@ class RecallPlan:
 
 
 @dataclass(frozen=True, slots=True)
-class RecallDecision:
+class LegacyRecallDecisionV3:
     decision_id: str
     run_id: str
     subject: str
@@ -1725,7 +1751,7 @@ class RecallDecision:
         }
 
     @classmethod
-    def from_json(cls, value: Mapping[str, object]) -> RecallDecision:
+    def from_json(cls, value: Mapping[str, object]) -> LegacyRecallDecisionV3:
         schema_version: int | None = None
         if "schema_version" in value:
             schema_version = _recall_decision_schema_version(
@@ -3425,13 +3451,55 @@ def _recall_decision_schema_version(value: object, name: str) -> int:
     return value
 
 
+# Task 5 is an intentionally breaking prototype cut. Rebind the official
+# names only after the older declarations have loaded so no v3 wire remains on
+# the public surface while mutation contracts in this module stay untouched.
+from .recall_protocol_v4 import (  # noqa: E402, F401, I001
+    CONTEXT_ASSEMBLY_SCHEMA_VERSION,
+    CONTEXT_FRAGMENT_SCHEMA_VERSION,
+    RECALL_CONTEXT_USE_SCHEMA_VERSION,
+    RECALL_MAX_BYTES,
+    RECALL_MAX_DEADLINE_MS,
+    RECALL_MAX_ITEMS,
+    RECALL_MAX_TOKENS,
+    RECALL_RESULT_SCHEMA_VERSION,
+    ContextAssemblyDecisionV2,
+    ContextAssemblyDecisionV2 as ContextAssemblyDecision,
+    ContextFragmentBindingV2,
+    ContextFragmentV2,
+    ContextFragmentV2 as ContextFragment,
+    RecallBudgetV1,
+    RecallConfirmationGroupV4,
+    RecallConfirmationMemberV4,
+    RecallContextUseAuthorizationRequestV1,
+    RecallContextUseReceiptV1,
+    RecallDecisionV4,
+    RecallDecisionV4 as RecallDecision,
+    RecallFragmentAuthorityBindingV1,
+    RecallItemBindingV1,
+    RecallItemKind,
+    RecallResultPageRequestV1,
+    RecallResultPageV1,
+    RecallSelectedItemV4,
+    RecallSourceKind,
+    TypedRecallConfirmationGroupV1,
+    TypedRecallConfirmationMemberV1,
+    TypedRecallResultItemV1,
+    TypedRecallResultV1,
+)
+
 __all__ = (
+    "CONTEXT_ASSEMBLY_SCHEMA_VERSION",
+    "CONTEXT_FRAGMENT_SCHEMA_VERSION",
     "MEMORY_MUTATION_SCHEMA_VERSION",
     "ConflictStatus",
     "ContextAssemblyBudget",
     "ContextAssemblyDecision",
+    "ContextAssemblyDecisionV2",
     "ContextAssemblyReasonCode",
     "ContextFragment",
+    "ContextFragmentBindingV2",
+    "ContextFragmentV2",
     "ContextFragmentType",
     "CreatedByOperationTarget",
     "EpisodeLifecycleState",
@@ -3463,20 +3531,42 @@ __all__ = (
     "ProspectiveTimeTrigger",
     "ProspectiveTriggerKind",
     "RecallBudget",
+    "RecallBudgetV1",
     "RecallCandidateCountStage",
-    "RecallConfirmationItem",
+    "RecallConfirmationGroupV4",
+    "RecallConfirmationMemberV4",
     "RecallContext",
+    "RecallContextUseAuthorizationRequestV1",
+    "RecallContextUseReceiptV1",
     "RecallDecision",
+    "RecallDecisionV4",
     "RecallDecisionOutcome",
     "RecallPlan",
+    "RecallFragmentAuthorityBindingV1",
+    "RecallItemBindingV1",
+    "RecallItemKind",
+    "RecallResultPageRequestV1",
+    "RecallResultPageV1",
+    "RecallSelectedItemV4",
+    "RecallSourceKind",
     "RecallReasonCode",
     "RecallRetrievalMode",
     "RecallSelectorDomain",
     "RECALL_DECISION_SCHEMA_VERSION",
+    "RECALL_CONTEXT_USE_SCHEMA_VERSION",
+    "RECALL_MAX_BYTES",
+    "RECALL_MAX_DEADLINE_MS",
+    "RECALL_MAX_ITEMS",
+    "RECALL_MAX_TOKENS",
+    "RECALL_RESULT_SCHEMA_VERSION",
     "SemanticLifecycleState",
     "SemanticMemoryPayload",
     "ValidTimeInterval",
     "VerificationState",
+    "TypedRecallConfirmationGroupV1",
+    "TypedRecallConfirmationMemberV1",
+    "TypedRecallResultItemV1",
+    "TypedRecallResultV1",
     "WorkingMemoryRole",
     "verify_memory_mutation_apply_receipt",
 )

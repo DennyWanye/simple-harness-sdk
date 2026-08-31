@@ -8,6 +8,7 @@ from simple_harness import (
     CanonicalWorkspaceRoot,
     ContextAssemblyDecision,
     ContextFragment,
+    ContextFragmentBindingV2,
     ContextRouteReceipt,
     ContextRouteState,
     DisclosureContext,
@@ -27,7 +28,12 @@ from simple_harness import (
     ProcedureMemoryPayload,
     ProspectiveMemoryPayload,
     RecallContext,
+    RecallContextUseAuthorizationRequestV1,
+    RecallContextUseReceiptV1,
+    RecallDecisionV4,
     RecallPlan,
+    RecallResultPageRequestV1,
+    RecallSelectedItemV4,
     RecallSelectorDomain,
     RunBindingModeSnapshotRequest,
     RunContextAuthorityPort,
@@ -46,6 +52,7 @@ from simple_harness import (
     ToolExecutionPolicy,
     ToolRouteRequirement,
     ToolTaskScopeRequirement,
+    TypedRecallResultV1,
     WorkspaceBindingAuthorityGrant,
     WorkspaceBindingAuthorityPort,
     WorkspaceBindingProposal,
@@ -67,16 +74,12 @@ class StructuralMemoryAnalysisDeliveryAuthority:
 
 
 class StructuralRunContextAuthority:
-    async def prepare_snapshot(
-        self, request: RunContextAuthorityRequest
-    ) -> RunContextSnapshot:
+    async def prepare_snapshot(self, request: RunContextAuthorityRequest) -> RunContextSnapshot:
         raise NotImplementedError(request)
 
 
 class StructuralTaskExecutionAuthority:
-    async def issue_envelope(
-        self, request: TaskExecutionEnvelopeRequest
-    ) -> TaskExecutionEnvelope:
+    async def issue_envelope(self, request: TaskExecutionEnvelopeRequest) -> TaskExecutionEnvelope:
         raise NotImplementedError(request)
 
 
@@ -128,6 +131,15 @@ CONTEXT_DECISION_TYPE: type[ContextAssemblyDecision] = ContextAssemblyDecision
 EVIDENCE_TYPE: type[SanitizedEvidenceEnvelope] = SanitizedEvidenceEnvelope
 RECALL_PLAN_TYPE: type[RecallPlan] = RecallPlan
 RECALL_CONTEXT_TYPE: type[RecallContext] = RecallContext
+RECALL_DECISION_TYPE: type[RecallDecisionV4] = RecallDecisionV4
+RECALL_SELECTED_ITEM_TYPE: type[RecallSelectedItemV4] = RecallSelectedItemV4
+RECALL_RESULT_TYPE: type[TypedRecallResultV1] = TypedRecallResultV1
+RECALL_PAGE_REQUEST_TYPE: type[RecallResultPageRequestV1] = RecallResultPageRequestV1
+RECALL_USE_REQUEST_TYPE: type[RecallContextUseAuthorizationRequestV1] = (
+    RecallContextUseAuthorizationRequestV1
+)
+RECALL_USE_RECEIPT_TYPE: type[RecallContextUseReceiptV1] = RecallContextUseReceiptV1
+CONTEXT_FRAGMENT_BINDING_TYPE: type[ContextFragmentBindingV2] = ContextFragmentBindingV2
 RECALL_SELECTOR_TYPE: type[RecallSelectorDomain] = RecallSelectorDomain
 MEMORY_MUTATION_PLAN_TYPE: type[MemoryMutationPlan] = MemoryMutationPlan
 EPISODE_PAYLOAD_TYPE: type[EpisodeMemoryPayload] = EpisodeMemoryPayload

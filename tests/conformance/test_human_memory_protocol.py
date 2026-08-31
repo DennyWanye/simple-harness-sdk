@@ -48,6 +48,7 @@ from simple_harness.runtime.memory_protocol import (
     ContextAssemblyDecision,
     ContextAssemblyReasonCode,
     ContextFragment,
+    ContextFragmentBindingV2,
     ContextFragmentType,
     EpistemicStatus,
     InformationAttribute,
@@ -62,10 +63,13 @@ from simple_harness.runtime.memory_protocol import (
     RecallContext,
     RecallDecision,
     RecallDecisionOutcome,
+    RecallItemKind,
     RecallPlan,
     RecallReasonCode,
     RecallRetrievalMode,
+    RecallSelectedItemV4,
     RecallSelectorDomain,
+    RecallSourceKind,
     SemanticLifecycleState,
     SemanticMemoryPayload,
     ValidTimeInterval,
@@ -401,9 +405,8 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
         plan_id="recall-plan-1",
         plan_hash="f" * 64,
         outcome=RecallDecisionOutcome.NO_RECALL,
-        selected_memory_types=(),
-        selected_memory_refs=(),
-        confirmation_items=(),
+        selected_items=(),
+        confirmation_groups=(),
         filtered_candidate_count=0,
         candidate_count_stage=RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
         disclosure_context=_disclosure(),
@@ -413,7 +416,7 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
     )
     assert decision.decision_hash != fingerprint_json(decision.to_json())
     assert RecallDecision.from_json(decision.to_json()) == decision
-    with pytest.raises(ValueError, match="non-recall"):
+    with pytest.raises(ValueError, match="non-content"):
         RecallDecision(
             decision_id="decision-2",
             run_id="run-1",
@@ -423,9 +426,21 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
             plan_id="recall-plan-1",
             plan_hash="f" * 64,
             outcome=RecallDecisionOutcome.NO_RECALL,
-            selected_memory_types=(LongTermMemoryType.SEMANTIC,),
-            selected_memory_refs=("memory-1",),
-            confirmation_items=(),
+            selected_items=(
+                RecallSelectedItemV4(
+                    "item-1",
+                    1,
+                    RecallItemKind.SELECTED,
+                    RecallSourceKind.COGNITIVE_MEMORY,
+                    "memory-1",
+                    "a" * 64,
+                    "b" * 64,
+                    LongTermMemoryType.SEMANTIC,
+                    1,
+                    None,
+                ),
+            ),
+            confirmation_groups=(),
             filtered_candidate_count=1,
             candidate_count_stage=RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
             disclosure_context=_disclosure(),
@@ -443,9 +458,8 @@ def test_recall_decision_and_memory_mutation_bind_evidence_and_revision() -> Non
             plan_id="recall-plan-1",
             plan_hash="f" * 64,
             outcome=RecallDecisionOutcome.NO_RECALL,
-            selected_memory_types=(),
-            selected_memory_refs=(),
-            confirmation_items=(),
+            selected_items=(),
+            confirmation_groups=(),
             filtered_candidate_count=0,
             candidate_count_stage=RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
             disclosure_context=_disclosure(),
@@ -678,6 +692,7 @@ def test_every_persistent_protocol_dto_strictly_round_trips_and_rejects_extra_fi
         12.0,
     )
     recall_budget = RecallBudget(8, 16_384, 2048, 1000)
+    fragment_payload = {"content": "recent context"}
     context_fragment = ContextFragment(
         "fragment-1",
         "run-1",
@@ -685,19 +700,21 @@ def test_every_persistent_protocol_dto_strictly_round_trips_and_rejects_extra_fi
         ContextFragmentType.RECENT_CAUSAL_WINDOW,
         "snapshot://recent-10",
         1,
-        "e" * 64,
+        fragment_payload,
+        fingerprint_json(fragment_payload),
         120,
         640,
         disclosure,
         (evidence_ref,),
+        None,
     )
     context_budget = ContextAssemblyBudget(8192, 65_536, 2048, 512)
     context_decision = ContextAssemblyDecision(
         "context-decision-1",
         "run-1",
         "actor-1",
-        (context_fragment.fragment_id,),
-        ("fragment-omitted",),
+        (ContextFragmentBindingV2(context_fragment.fragment_id, context_fragment.fragment_hash),),
+        (ContextFragmentBindingV2("fragment-omitted", "f" * 64),),
         ("snapshot://context-1",),
         context_budget,
         120,
@@ -744,8 +761,20 @@ def test_every_persistent_protocol_dto_strictly_round_trips_and_rejects_extra_fi
         recall_plan.plan_id,
         recall_plan.plan_hash,
         RecallDecisionOutcome.RECALL,
-        (LongTermMemoryType.SEMANTIC,),
-        ("memory-1",),
+        (
+            RecallSelectedItemV4(
+                "item-1",
+                1,
+                RecallItemKind.SELECTED,
+                RecallSourceKind.COGNITIVE_MEMORY,
+                "memory-1",
+                "a" * 64,
+                "b" * 64,
+                LongTermMemoryType.SEMANTIC,
+                1,
+                None,
+            ),
+        ),
         (),
         1,
         RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
@@ -880,5 +909,5 @@ def test_every_persistent_protocol_dto_strictly_round_trips_and_rejects_extra_fi
         assert restored == original
         with pytest.raises(ValueError, match="extra"):
             type(original).from_json({**raw, "unexpected": True})
-    EpistemicStatus,
-    InformationAttribute,
+    (EpistemicStatus,)
+    (InformationAttribute,)

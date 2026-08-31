@@ -61,11 +61,21 @@ last-updated: 2026-08-31
   CAS、scope/receipt 复验与原子 replay fence；SDK 不启动 timer，也不因此授权外部动作。
 - `RecallContext` 冻结 Host 允许的 memory type、scope、entity、time、event、environment、task phase、retrieval
   mode、Short-Horizon、disclosure、evidence 和预算。`RecallPlan` 精确绑定 context hash/revision，在可信当前时间
-  验证未过期，保留全部 mandatory selector 且只能选择非空子集/更窄时间和预算；Decision 再绑定 Plan/Context
-  evidence lineage。RecallDecision 使用独立 schema v3：`RECALL` 只允许 selected memories，
-  `NEEDS_USER_CONFIRMATION` 只允许 typed conflict candidates 且每组至少两个唯一引用；两者都执行 disclosure
-  gate；outcome/reason 矩阵固定，NO_RECALL/REJECTED 的 candidate count 恒为零，v2 wire 和未引用的旧 v1
-  Decision decoder 均不可执行读取。unknown、external、untrusted 或 unknown-purpose disclosure 默认不能披露记忆。
+  验证未过期，保留全部 mandatory selector 且只能选择非空子集/更窄时间和预算；Short-Horizon-only
+  不要求伪造 `MEMORY_TYPE` selector。Decision 再绑定 Plan/Context evidence lineage。RecallDecision 使用独立
+  strict schema v4：selected item 以 discriminated source kind 区分 cognitive memory 和 Short-Horizon，
+  长期记忆强制 memory type/exact revision，短时域强制 exact chunk ref 且禁止 memory type/revision。
+  `NEEDS_USER_CONFIRMATION` 只接受至少两个成员的完整有序 atomic group，不存在 partial-group
+  消费。unknown、external、untrusted 或 unknown-purpose disclosure 默认不能披露记忆；公开 decoder
+  只接受 v4，旧 v3/v2 wire fail closed。
+- typed Recall result 将每个返回 item 绑定 v4 decision item、source content hash 与独立 public payload
+  hash；分页请求只能通过 result `(id, hash)` 和有界坐标获取，naked source ref 不是 capability。
+  recalled `ContextFragment` schema v2 必须携带 decision/result/item 以及 page-or-use authority binding，
+  confirmation 还必须绑定 exact group/member；非 recall fragment 反而禁止这些权限字段。
+  `RecallContextUseAuthorizationRequest`/`RecallContextUseReceipt` 将公开 item hashes、snapshot fragment
+  `(id, hash)` manifest 与 provider attempt 连成 authority chain，`ContextAssemblyDecision` schema v2 同样
+  按 fragment `(id, hash)` 组装。item/byte/token/deadline 都有严格上限；canonical hashes 使用
+  DTO-specific domain，不把 ref 自洽当成 Host authority。Memory executor 与 Host provider adapter 仍是跨仓责任。
 - conversation causal metadata 在 raw evidence admission 后由 Host 独立注册，绑定 primary conversation、causal
   group sequence/manifest、role/time/TaskScope/entities 和 Tool terminal receipt；Tool parent 必须在同组且早于
   当前 item。缺失或非法 metadata 不删除 raw evidence，只使其不具备 Short-Horizon 资格。

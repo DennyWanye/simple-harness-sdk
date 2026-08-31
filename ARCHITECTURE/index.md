@@ -25,9 +25,11 @@ S1 `a2-003` 现已冻结 schema-v2 cognitive wire：EvidenceSpan 由 admitted ev
 byte range，typed observation 绑定 exact evidence/admission/item；四类长期记忆使用独立 payload/lifecycle、
 revision target、canonical DAG 与 strict-atomic authority receipt。RecallPlan 必须绑定未过期 RecallContext，
 保留 Host mandatory selector 并只允许缩窄；unknown/external/untrusted disclosure 默认不能产生 RECALL。
-RecallDecision 已单独升级为 schema v3：RECALL 只携带 selected，NEEDS_USER_CONFIRMATION 只携带
-通过资格与 disclosure gate 的 typed conflict candidates，每组至少两个唯一候选；outcome/reason 矩阵固定，
-NO_RECALL/REJECTED 的 candidate count 恒为零，v2 与未引用的旧 v1 Decision decoder 均不可执行读取。
+RecallDecision 已单独升级为 strict schema v4：每个 selected item 明确区分 cognitive-memory
+和 Short-Horizon source，前者绑定 memory type/exact revision，后者绑定 exact chunk ref 且禁止伪造
+memory type。NEEDS_USER_CONFIRMATION 使用有序、完整的 atomic group/member，不接受部分冲突组。
+typed result/page 与 ContextFragment v2 继续绑定 decision/result/item/use；Context assembly 按 fragment
+`(id, hash)` 组装。公开 parser 只接受 v4，v3 与 naked source ref fail closed。
 分类 enum 的唯一事实源是无依赖 `information_classification_protocol`；EvidenceItemAuthority 使用公开
 `EVIDENCE_ITEM_AUTHORITY_SCHEMA_VERSION=3`
 由 Host 强制附带 privacy floor、canonical attributes 和 classification authority ref。span verification

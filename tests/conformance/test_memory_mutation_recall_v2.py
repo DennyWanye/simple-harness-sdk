@@ -75,14 +75,18 @@ from simple_harness.runtime.memory_protocol import (
     ProspectiveTimeTrigger,
     RecallBudget,
     RecallCandidateCountStage,
-    RecallConfirmationItem,
+    RecallConfirmationGroupV4,
+    RecallConfirmationMemberV4,
     RecallContext,
     RecallDecision,
     RecallDecisionOutcome,
+    RecallItemKind,
     RecallPlan,
     RecallReasonCode,
     RecallRetrievalMode,
+    RecallSelectedItemV4,
     RecallSelectorDomain,
+    RecallSourceKind,
     SemanticLifecycleState,
     SemanticMemoryPayload,
     ValidTimeInterval,
@@ -93,6 +97,53 @@ from simple_harness.runtime.memory_protocol import (
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _selected_item(
+    item_id: str = "item-1",
+    *,
+    memory_type: LongTermMemoryType = LongTermMemoryType.PROCEDURE,
+    source_ref: str = "memory-1",
+    revision: int = 1,
+) -> RecallSelectedItemV4:
+    return RecallSelectedItemV4(
+        item_id=item_id,
+        ordinal=1,
+        item_kind=RecallItemKind.SELECTED,
+        source_kind=RecallSourceKind.COGNITIVE_MEMORY,
+        source_ref=source_ref,
+        source_content_hash=_sha(f"source:{source_ref}:{revision}"),
+        public_payload_hash=_sha(f"payload:{source_ref}:{revision}"),
+        memory_type=memory_type,
+        source_revision=revision,
+        chunk_ref=None,
+    )
+
+
+def _confirmation_group(
+    *,
+    memory_type: LongTermMemoryType = LongTermMemoryType.PROCEDURE,
+    group_id: str = "conflict-1",
+) -> RecallConfirmationGroupV4:
+    members = tuple(
+        RecallConfirmationMemberV4(
+            item_id=f"confirmation-{ordinal}",
+            ordinal=ordinal,
+            item_kind=RecallItemKind.CONFIRMATION_MEMBER,
+            source_ref="memory-1",
+            source_revision=ordinal,
+            memory_type=memory_type,
+            source_content_hash=_sha(f"source:memory-1:{ordinal}"),
+            public_payload_hash=_sha(f"payload:memory-1:{ordinal}"),
+        )
+        for ordinal in (1, 2)
+    )
+    return RecallConfirmationGroupV4(
+        conflict_group_id=group_id,
+        conflict_group_hash=_sha(f"group:{group_id}"),
+        ordinal=1,
+        members=members,
+    )
 
 
 def test_cognitive_mutation_and_recall_contracts_are_public() -> None:
@@ -121,7 +172,8 @@ def test_cognitive_mutation_and_recall_contracts_are_public() -> None:
         "verify_memory_mutation_apply_receipt",
         "RecallSelectorDomain",
         "RecallRetrievalMode",
-        "RecallConfirmationItem",
+        "RecallConfirmationGroupV4",
+        "RecallSelectedItemV4",
         "RECALL_DECISION_SCHEMA_VERSION",
         "PrivacyClass",
         "InformationAttribute",
@@ -1129,7 +1181,8 @@ def test_recall_plan_binds_context_and_only_narrows_every_authority_dimension() 
     (
         ("requested_memory_types", ["episode"]),
         (
-            "retrieval_modes", ["full_text"],
+            "retrieval_modes",
+            ["full_text"],
         ),
         ("task_scope_ids", ["task-3"]),
         ("entity_constraints", ["user:someone-else"]),
@@ -1167,9 +1220,7 @@ def test_recall_plan_cannot_drop_a_host_domain_with_its_constraint(
     encoded = cast(dict[str, object], deepcopy(_recall_plan(context).to_json()))
     encoded[field] = []
     encoded["selector_domains"] = [
-        item
-        for item in cast(list[str], encoded["selector_domains"])
-        if item != domain.value
+        item for item in cast(list[str], encoded["selector_domains"]) if item != domain.value
     ]
     with pytest.raises(ValueError, match="mandatory Host selector"):
         RecallPlan.from_json(encoded).validate_narrowing(context, current_time=50.0)
@@ -1213,9 +1264,8 @@ def test_recall_decision_binds_context_plan_and_post_gate_candidate_count() -> N
         plan_id=plan.plan_id,
         plan_hash=plan.plan_hash,
         outcome=RecallDecisionOutcome.RECALL,
-        selected_memory_types=(LongTermMemoryType.PROCEDURE,),
-        selected_memory_refs=("memory-1",),
-        confirmation_items=(),
+        selected_items=(_selected_item(),),
+        confirmation_groups=(),
         filtered_candidate_count=2,
         candidate_count_stage=RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
         disclosure_context=_disclosure(),
@@ -1240,7 +1290,7 @@ def _confirmation_decision(
     context: RecallContext,
     plan: RecallPlan,
     *,
-    confirmation_items: tuple[RecallConfirmationItem, ...] | None = None,
+    confirmation_groups: tuple[RecallConfirmationGroupV4, ...] | None = None,
     filtered_candidate_count: int = 2,
     disclosure_context: DisclosureContext | None = None,
 ) -> RecallDecision:
@@ -1253,17 +1303,8 @@ def _confirmation_decision(
         plan_id=plan.plan_id,
         plan_hash=plan.plan_hash,
         outcome=RecallDecisionOutcome.NEEDS_USER_CONFIRMATION,
-        selected_memory_types=(),
-        selected_memory_refs=(),
-        confirmation_items=confirmation_items
-        or (
-            RecallConfirmationItem(
-                "conflict-1", LongTermMemoryType.PROCEDURE, "memory-2"
-            ),
-            RecallConfirmationItem(
-                "conflict-1", LongTermMemoryType.PROCEDURE, "memory-1"
-            ),
-        ),
+        selected_items=(),
+        confirmation_groups=confirmation_groups or (_confirmation_group(),),
         filtered_candidate_count=filtered_candidate_count,
         candidate_count_stage=RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
         disclosure_context=disclosure_context or context.disclosure_context,
@@ -1273,121 +1314,53 @@ def _confirmation_decision(
     )
 
 
-def test_recall_confirmation_v3_is_canonical_and_binds_plan() -> None:
+def test_recall_confirmation_v4_is_atomic_and_binds_plan() -> None:
     context = _recall_context()
     plan = _recall_plan(context)
     decision = _confirmation_decision(context, plan)
 
-    assert decision.schema_version == RECALL_DECISION_SCHEMA_VERSION == 3
-    assert [item.memory_ref for item in decision.confirmation_items] == [
-        "memory-1",
-        "memory-2",
-    ]
+    assert decision.schema_version == RECALL_DECISION_SCHEMA_VERSION == 4
+    assert [item.source_revision for item in decision.confirmation_groups[0].members] == [1, 2]
     decision.validate_bindings(context, plan, current_time=50.0)
     assert RecallDecision.from_json(decision.to_json()) == decision
-    assert replace(
-        decision,
-        confirmation_items=tuple(reversed(decision.confirmation_items)),
-    ).decision_hash == decision.decision_hash
-
-    unordered = (
-        RecallConfirmationItem(
-            "conflict-b", LongTermMemoryType.SEMANTIC, "memory-4"
-        ),
-        RecallConfirmationItem(
-            "conflict-a", LongTermMemoryType.SEMANTIC, "memory-2"
-        ),
-        RecallConfirmationItem(
-            "conflict-b", LongTermMemoryType.PROCEDURE, "memory-3"
-        ),
-        RecallConfirmationItem(
-            "conflict-a", LongTermMemoryType.PROCEDURE, "memory-1"
-        ),
-    )
-    canonical = _confirmation_decision(
-        context,
-        plan,
-        confirmation_items=unordered,
-        filtered_candidate_count=4,
-    )
-    assert canonical.confirmation_items == tuple(
-        sorted(
-            unordered,
-            key=lambda item: (
-                item.conflict_group_ref,
-                item.memory_type.value,
-                item.memory_ref,
-            ),
+    with pytest.raises(ValueError, match="ordinals"):
+        replace(
+            decision.confirmation_groups[0],
+            members=tuple(reversed(decision.confirmation_groups[0].members)),
         )
-    )
-    assert replace(
-        canonical,
-        confirmation_items=tuple(reversed(unordered)),
-    ).decision_hash == canonical.decision_hash
 
 
-def test_recall_confirmation_v3_rejects_old_or_inexact_wire() -> None:
+def test_recall_confirmation_v4_rejects_v3_or_inexact_wire() -> None:
     context = _recall_context()
     plan = _recall_plan(context)
     encoded = _confirmation_decision(context, plan).to_json()
 
-    encoded["schema_version"] = 2
-    with pytest.raises(ValueError, match="unsupported RecallDecision schema_version"):
+    encoded["schema_version"] = 3
+    with pytest.raises(ValueError, match="unsupported RecallDecisionV4 schema_version"):
         RecallDecision.from_json(encoded)
 
     encoded = _confirmation_decision(context, plan).to_json()
-    encoded["schema_version"] = 2
-    del encoded["confirmation_items"]
-    with pytest.raises(ValueError, match="unsupported RecallDecision schema_version"):
-        RecallDecision.from_json(encoded)
-
-    encoded = _confirmation_decision(context, plan).to_json()
-    del encoded["confirmation_items"]
+    del encoded["confirmation_groups"]
     with pytest.raises(ValueError, match="fields differ"):
         RecallDecision.from_json(encoded)
 
 
-def test_recall_confirmation_v3_rejects_invalid_conflict_groups_and_counts() -> None:
+def test_recall_confirmation_v4_rejects_invalid_conflict_groups_and_counts() -> None:
     context = _recall_context()
     plan = _recall_plan(context)
 
-    with pytest.raises(ValueError, match="at least two"):
-        _confirmation_decision(
-            context,
-            plan,
-            confirmation_items=(
-                RecallConfirmationItem(
-                    "conflict-1", LongTermMemoryType.PROCEDURE, "memory-1"
-                ),
-            ),
-        )
+    group = _confirmation_group()
+    with pytest.raises(ValueError, match="2..128"):
+        replace(group, members=(group.members[0],))
 
-    with pytest.raises(ValueError, match="globally unique"):
-        _confirmation_decision(
-            context,
-            plan,
-            confirmation_items=(
-                RecallConfirmationItem(
-                    "conflict-1", LongTermMemoryType.PROCEDURE, "memory-1"
-                ),
-                RecallConfirmationItem(
-                    "conflict-1", LongTermMemoryType.PROCEDURE, "memory-2"
-                ),
-                RecallConfirmationItem(
-                    "conflict-2", LongTermMemoryType.PROCEDURE, "memory-1"
-                ),
-                RecallConfirmationItem(
-                    "conflict-2", LongTermMemoryType.PROCEDURE, "memory-3"
-                ),
-            ),
-            filtered_candidate_count=4,
-        )
+    with pytest.raises(ValueError, match="distinct exact revisions"):
+        replace(group, members=(group.members[0], replace(group.members[1], source_revision=1)))
 
     with pytest.raises(ValueError, match="candidate count"):
         _confirmation_decision(context, plan, filtered_candidate_count=1)
 
 
-def test_recall_confirmation_v3_requires_exact_outcome_reason_and_safe_disclosure() -> None:
+def test_recall_confirmation_v4_requires_exact_outcome_reason_and_safe_disclosure() -> None:
     context = _recall_context()
     plan = _recall_plan(context)
     confirmation = _confirmation_decision(context, plan)
@@ -1397,25 +1370,23 @@ def test_recall_confirmation_v3_requires_exact_outcome_reason_and_safe_disclosur
             confirmation,
             reason_codes=(RecallReasonCode.PROCEDURE_DEPENDENCY,),
         )
-    with pytest.raises(ValueError, match="confirmation items"):
-        replace(confirmation, confirmation_items=())
-    with pytest.raises(ValueError, match="non-recall"):
+    with pytest.raises(ValueError, match="complete groups"):
+        replace(confirmation, confirmation_groups=())
+    with pytest.raises(ValueError, match="ordinary selected items|only complete groups"):
         replace(
             confirmation,
-            selected_memory_types=(LongTermMemoryType.PROCEDURE,),
-            selected_memory_refs=("selected-memory",),
+            selected_items=(_selected_item(),),
             filtered_candidate_count=3,
         )
-    with pytest.raises(ValueError, match="cannot require confirmation"):
+    with pytest.raises(ValueError, match="ordinary selected items|forbids confirmation_groups"):
         replace(
             confirmation,
             outcome=RecallDecisionOutcome.RECALL,
-            selected_memory_types=(LongTermMemoryType.PROCEDURE,),
-            selected_memory_refs=("selected-memory",),
+            selected_items=(_selected_item(),),
             filtered_candidate_count=3,
             reason_codes=(RecallReasonCode.PROCEDURE_DEPENDENCY,),
         )
-    with pytest.raises(ValueError, match="incompatible reason"):
+    with pytest.raises(ValueError, match="no-recall outcome has incompatible reason"):
         RecallDecision(
             decision_id="no-recall-with-confirmation-reason",
             run_id=context.run_id,
@@ -1425,9 +1396,8 @@ def test_recall_confirmation_v3_requires_exact_outcome_reason_and_safe_disclosur
             plan_id=plan.plan_id,
             plan_hash=plan.plan_hash,
             outcome=RecallDecisionOutcome.NO_RECALL,
-            selected_memory_types=(),
-            selected_memory_refs=(),
-            confirmation_items=(),
+            selected_items=(),
+            confirmation_groups=(),
             filtered_candidate_count=0,
             candidate_count_stage=RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
             disclosure_context=context.disclosure_context,
@@ -1435,7 +1405,7 @@ def test_recall_confirmation_v3_requires_exact_outcome_reason_and_safe_disclosur
             reason_codes=(RecallReasonCode.NEEDS_USER_CONFIRMATION,),
             decided_at=50.0,
         )
-    with pytest.raises(ValueError, match="outcome cannot include confirmation items"):
+    with pytest.raises(ValueError, match="non-content outcome"):
         replace(
             confirmation,
             outcome=RecallDecisionOutcome.REJECTED,
@@ -1456,26 +1426,19 @@ def test_recall_confirmation_v3_requires_exact_outcome_reason_and_safe_disclosur
         )
 
 
-def test_recall_confirmation_v3_rejects_unrequested_types_at_binding() -> None:
+def test_recall_confirmation_v4_rejects_unrequested_types_at_binding() -> None:
     context = _recall_context()
     plan = _recall_plan(context)
     decision = _confirmation_decision(
         context,
         plan,
-        confirmation_items=(
-            RecallConfirmationItem(
-                "conflict-1", LongTermMemoryType.SEMANTIC, "memory-1"
-            ),
-            RecallConfirmationItem(
-                "conflict-1", LongTermMemoryType.SEMANTIC, "memory-2"
-            ),
-        ),
+        confirmation_groups=(_confirmation_group(memory_type=LongTermMemoryType.SEMANTIC),),
     )
     with pytest.raises(ValueError, match="unrequested memory type"):
         decision.validate_bindings(context, plan, current_time=50.0)
 
 
-def test_recall_decision_v3_freezes_outcome_reason_type_and_count_matrix() -> None:
+def test_recall_decision_v4_freezes_outcome_reason_source_and_count_matrix() -> None:
     context = _recall_context()
     plan = _recall_plan(context)
     recall = RecallDecision(
@@ -1487,9 +1450,8 @@ def test_recall_decision_v3_freezes_outcome_reason_type_and_count_matrix() -> No
         plan_id=plan.plan_id,
         plan_hash=plan.plan_hash,
         outcome=RecallDecisionOutcome.RECALL,
-        selected_memory_types=(LongTermMemoryType.PROCEDURE,),
-        selected_memory_refs=("memory-1",),
-        confirmation_items=(),
+        selected_items=(_selected_item(),),
+        confirmation_groups=(),
         filtered_candidate_count=1,
         candidate_count_stage=RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES,
         disclosure_context=context.disclosure_context,
@@ -1498,16 +1460,8 @@ def test_recall_decision_v3_freezes_outcome_reason_type_and_count_matrix() -> No
         decided_at=50.0,
     )
 
-    with pytest.raises(ValueError, match="selected memory types"):
-        replace(recall, selected_memory_types=())
-    with pytest.raises(ValueError, match="types exceed"):
-        replace(
-            recall,
-            selected_memory_types=(
-                LongTermMemoryType.PROCEDURE,
-                LongTermMemoryType.SEMANTIC,
-            ),
-        )
+    with pytest.raises(ValueError, match="requires selected_items"):
+        replace(recall, selected_items=())
     for reason in (
         RecallReasonCode.NO_ELIGIBLE_MEMORY,
         RecallReasonCode.BUDGET_EXHAUSTED,
@@ -1515,15 +1469,14 @@ def test_recall_decision_v3_freezes_outcome_reason_type_and_count_matrix() -> No
         RecallReasonCode.INVALID_PLAN,
         RecallReasonCode.NEEDS_USER_CONFIRMATION,
     ):
-        with pytest.raises(ValueError, match="only dependency reasons"):
+        with pytest.raises(ValueError, match="requires dependency reasons"):
             replace(recall, reason_codes=(reason,))
 
     no_recall = replace(
         recall,
         decision_id="matrix-no-recall",
         outcome=RecallDecisionOutcome.NO_RECALL,
-        selected_memory_types=(),
-        selected_memory_refs=(),
+        selected_items=(),
         filtered_candidate_count=0,
         reason_codes=(RecallReasonCode.NO_ELIGIBLE_MEMORY,),
     )
@@ -1535,7 +1488,7 @@ def test_recall_decision_v3_freezes_outcome_reason_type_and_count_matrix() -> No
     ):
         with pytest.raises(ValueError, match="no-recall.*incompatible reason"):
             replace(no_recall, reason_codes=(reason,))
-    with pytest.raises(ValueError, match="cannot disclose candidate counts"):
+    with pytest.raises(ValueError, match="cannot disclose candidate count"):
         replace(no_recall, filtered_candidate_count=1)
 
     unsafe_disclosure = replace(
@@ -1557,11 +1510,11 @@ def test_recall_decision_v3_freezes_outcome_reason_type_and_count_matrix() -> No
     ):
         with pytest.raises(ValueError, match="rejected.*incompatible reason"):
             replace(rejected, reason_codes=(reason,))
-    with pytest.raises(ValueError, match="cannot disclose candidate counts"):
+    with pytest.raises(ValueError, match="cannot disclose candidate count"):
         replace(rejected, filtered_candidate_count=1)
 
     confirmation = _confirmation_decision(context, plan)
-    with pytest.raises(ValueError, match="incompatible reason"):
+    with pytest.raises(ValueError, match="compatible confirmation reason"):
         replace(
             confirmation,
             reason_codes=(
@@ -1569,13 +1522,16 @@ def test_recall_decision_v3_freezes_outcome_reason_type_and_count_matrix() -> No
                 RecallReasonCode.NO_ELIGIBLE_MEMORY,
             ),
         )
-    assert replace(
-        confirmation,
-        reason_codes=(
-            RecallReasonCode.NEEDS_USER_CONFIRMATION,
-            RecallReasonCode.PROCEDURE_DEPENDENCY,
-        ),
-    ).outcome is RecallDecisionOutcome.NEEDS_USER_CONFIRMATION
+    assert (
+        replace(
+            confirmation,
+            reason_codes=(
+                RecallReasonCode.NEEDS_USER_CONFIRMATION,
+                RecallReasonCode.PROCEDURE_DEPENDENCY,
+            ),
+        ).outcome
+        is RecallDecisionOutcome.NEEDS_USER_CONFIRMATION
+    )
 
 
 def test_recall_context_and_plan_require_domain_constraint_consistency() -> None:
@@ -1636,13 +1592,10 @@ def test_recall_outcome_defaults_to_deny_for_unsafe_disclosure(
             plan_id=plan.plan_id,
             plan_hash=plan.plan_hash,
             outcome=RecallDecisionOutcome.RECALL,
-            selected_memory_types=(LongTermMemoryType.PROCEDURE,),
-            selected_memory_refs=("memory-1",),
-            confirmation_items=(),
+            selected_items=(_selected_item(),),
+            confirmation_groups=(),
             filtered_candidate_count=1,
-            candidate_count_stage=(
-                RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES
-            ),
+            candidate_count_stage=(RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES),
             disclosure_context=disclosure,
             evidence_refs=plan.evidence_refs,
             reason_codes=(RecallReasonCode.PROCEDURE_DEPENDENCY,),

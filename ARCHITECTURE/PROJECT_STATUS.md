@@ -12,7 +12,8 @@ SPDX-License-Identifier: Apache-2.0
 
 | 能力 | 当前状态 | 证据与边界 |
 |---|---|---|
-| S1 cognitive/evidence strict wire | Harness candidate 已完成 | schema-v2 cognitive wire、EvidenceItemAuthority v3、RecallDecision v3；Memory SDK 与 Host 产品能力仍需各自验收。 |
+| S1 cognitive/evidence strict wire | Harness candidate 已完成 | schema-v2 cognitive wire、EvidenceItemAuthority v3、RecallDecision v4；Memory SDK 与 Host 产品能力仍需各自验收。 |
+| S3 typed recall/use/assembly wire | Harness candidate 已完成 | v4 source-aware decision、atomic confirmation groups、typed result/page、ContextFragment/assembly v2 与 use authorization/receipt 已冻结；Memory executor/provider adapter 仍是跨仓门禁。 |
 | S3 Short-Horizon recall-text authority | Harness candidate 已完成 | Conversation evidence schema v3 将唯一 public_text pointer/hash 与 effective classification、item authority exact 绑定；无授权绑定只保留原始 evidence，不可索引。 |
 | S1 Host action authority | Harness candidate 已完成 | `MemoryActionAuthority` schema v2 与 mutation schema v4 已冻结；whole-plan commitment 防跨 operation 重放，COMMITTED result/receipt fail-closed 检查 protected refs，CONTEST 不能表达 destructive terminal lifecycle。 |
 | S3 Procedure/Prospective Host authority | Harness candidate 已完成 | 两套 schema v1 ref-only authority 已冻结：Procedure terminal/applicability 与 Prospective scheduler/event/ack signal 都必须 Host resolve，exact scope/revision/receipt/transition binding，半开有效期和 replay identity。Memory consumer 尚待跨仓实现。 |
@@ -21,6 +22,11 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 最近里程碑
 
+- **2026-08-31 — Harness typed Recall v4 candidate**：公开 recall wire 升级为 source-aware v4，
+  Short-Horizon-only 与 mixed source 都可精确表达；confirmation 以完整有序组处理。typed result/page、
+  use authorization/receipt、recalled ContextFragment v2 和 `(fragment_id, fragment_hash)` assembly 形成
+  连续 hash/authority 链，预算上限与 canonical domain 严格验证。本里程碑不包含 Memory
+  持久化、Host provider adapter 或真实召回质量验收。
 - **2026-08-31 — Harness conversation recall-text authority candidate**：Conversation metadata/receipt/registration
   升级为 strict schema v3；Host 从 verified item authority 一次派生 pointer/hash/privacy/attributes/classification，
   registration exact 复算。未授权 item 保留原始 evidence 但不可进入 Short-Horizon index，旧 v2 wire fail closed。
