@@ -44,7 +44,11 @@ canonical dependency order, privacy-label joins, and a mandatory `strict_atomic`
 `RecallPlan` binds one unexpired Host `RecallContext` and may only narrow its memory type, scope,
 entity, time, event, environment, task-phase, disclosure, evidence, and budget authority. Registered
 conversation causal metadata is a separate post-ingestion authority record: invalid metadata never
-deletes raw evidence, but it is ineligible for the later Short-Horizon index.
+deletes raw evidence, but it is ineligible for the later Short-Horizon index. Recall Decision wire
+v3 separates selected results from typed conflicting candidates: confirmation groups contain at
+least two post-gate candidates, are disclosure-gated, and never enter Context as selected facts.
+Outcome-specific reasons prevent deny/success ambiguity, while no-recall and rejected results expose
+zero candidate counts so denied retrieval cannot leak filtered population size.
 
 The normal database loader never guesses across persistence versions. Operators upgrading an
 exact execution schema v3 file use the explicit backup-first

@@ -54,6 +54,8 @@ from .evidence_protocol import (
     _refs_from_json,
 )
 
+RECALL_DECISION_SCHEMA_VERSION = 3
+
 
 class LongTermMemoryType(StrEnum):
     EPISODE = "episode"
@@ -415,11 +417,73 @@ class RecallReasonCode(StrEnum):
     NEEDS_USER_CONFIRMATION = "recall_needs_user_confirmation"
 
 
+_RECALL_DEPENDENCY_REASONS = frozenset(
+    {
+        RecallReasonCode.USER_PREFERENCE_DEPENDENCY,
+        RecallReasonCode.PAST_EVENT_DEPENDENCY,
+        RecallReasonCode.USER_FACT_DEPENDENCY,
+        RecallReasonCode.PROCEDURE_DEPENDENCY,
+        RecallReasonCode.FUTURE_INTENTION_DEPENDENCY,
+        RecallReasonCode.SHORT_HORIZON_DEPENDENCY,
+        RecallReasonCode.TASK_RESUME_DEPENDENCY,
+    }
+)
+_NO_RECALL_REASONS = frozenset(
+    {
+        RecallReasonCode.NO_RECALL_CONTEXT_SUFFICIENT,
+        RecallReasonCode.BUDGET_EXHAUSTED,
+        RecallReasonCode.NO_ELIGIBLE_MEMORY,
+    }
+)
+_REJECTED_REASONS = frozenset(
+    {
+        RecallReasonCode.DISCLOSURE_DENIED,
+        RecallReasonCode.INVALID_PLAN,
+    }
+)
+
+
 class RecallDecisionOutcome(StrEnum):
     NO_RECALL = "no_recall"
     RECALL = "recall"
     NEEDS_USER_CONFIRMATION = "needs_user_confirmation"
     REJECTED = "rejected"
+
+
+@dataclass(frozen=True, slots=True)
+class RecallConfirmationItem:
+    """A post-gate conflicting candidate that requires user confirmation."""
+
+    conflict_group_ref: str
+    memory_type: LongTermMemoryType
+    memory_ref: str
+
+    def __post_init__(self) -> None:
+        _identifier(self.conflict_group_ref, "conflict_group_ref")
+        object.__setattr__(self, "memory_type", LongTermMemoryType(self.memory_type))
+        _identifier(self.memory_ref, "memory_ref")
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "conflict_group_ref": self.conflict_group_ref,
+            "memory_type": self.memory_type.value,
+            "memory_ref": self.memory_ref,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, object]) -> RecallConfirmationItem:
+        _exact_keys(
+            value,
+            {"conflict_group_ref", "memory_type", "memory_ref"},
+            "RecallConfirmationItem",
+        )
+        return cls(
+            conflict_group_ref=_identifier(
+                value["conflict_group_ref"], "conflict_group_ref"
+            ),
+            memory_type=LongTermMemoryType(value["memory_type"]),  # type: ignore[arg-type]
+            memory_ref=_identifier(value["memory_ref"], "memory_ref"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -707,146 +771,6 @@ class LegacyRecallPlanV1:
                 RecallReasonCode(item) for item in _strings(value["reason_codes"], "reason_codes")
             ),
             schema_version=_schema_version(value["schema_version"], "RecallPlan"),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class LegacyRecallDecisionV1:
-    decision_id: str
-    run_id: str
-    subject: str
-    plan_id: str
-    plan_hash: str
-    outcome: RecallDecisionOutcome
-    selected_memory_types: tuple[LongTermMemoryType, ...]
-    selected_memory_refs: tuple[str, ...]
-    filtered_candidate_count: int
-    disclosure_context: DisclosureContext
-    evidence_refs: tuple[EvidenceRef, ...]
-    reason_codes: tuple[RecallReasonCode, ...]
-    decided_at: float
-    schema_version: int = HUMAN_MEMORY_SCHEMA_VERSION
-    decision_hash: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        if self.schema_version != HUMAN_MEMORY_SCHEMA_VERSION:
-            raise ValueError("unsupported RecallDecision schema_version")
-        for value, name in (
-            (self.decision_id, "decision_id"),
-            (self.run_id, "run_id"),
-            (self.subject, "subject"),
-        ):
-            _identifier(value, name)
-        _identifier(self.plan_id, "plan_id")
-        _digest(self.plan_hash, "plan_hash")
-        object.__setattr__(self, "outcome", RecallDecisionOutcome(self.outcome))
-        types = tuple(LongTermMemoryType(item) for item in self.selected_memory_types)
-        refs_selected = tuple(
-            _identifier(item, "selected_memory_ref") for item in self.selected_memory_refs
-        )
-        if len(set(types)) != len(types) or len(set(refs_selected)) != len(refs_selected):
-            raise ValueError("selected memory values must be unique")
-        if (
-            isinstance(self.filtered_candidate_count, bool)
-            or not isinstance(self.filtered_candidate_count, int)
-            or self.filtered_candidate_count < 0
-        ):
-            raise ValueError("filtered_candidate_count must be non-negative")
-        if self.outcome is RecallDecisionOutcome.NO_RECALL and (types or refs_selected):
-            raise ValueError("no_recall cannot select memories")
-        if not isinstance(self.disclosure_context, DisclosureContext):
-            raise TypeError("disclosure_context must use DisclosureContext")
-        if self.disclosure_context.run_id != self.run_id:
-            raise ValueError("disclosure_context run_id differs")
-        evidence_refs = _evidence_refs(self.evidence_refs)
-        if self.outcome is RecallDecisionOutcome.NO_RECALL and not evidence_refs:
-            raise ValueError("no_recall requires evidence_refs")
-        reasons = tuple(RecallReasonCode(reason) for reason in self.reason_codes)
-        if not reasons or len(set(reasons)) != len(reasons):
-            raise ValueError("reason_codes must be non-empty and unique")
-        if (
-            isinstance(self.decided_at, bool)
-            or not isinstance(self.decided_at, (int, float))
-            or float(self.decided_at) < 0
-        ):
-            raise ValueError("decided_at must be a non-negative timestamp")
-        object.__setattr__(self, "selected_memory_types", types)
-        object.__setattr__(self, "selected_memory_refs", refs_selected)
-        object.__setattr__(self, "evidence_refs", evidence_refs)
-        object.__setattr__(self, "reason_codes", reasons)
-        object.__setattr__(self, "decided_at", float(self.decided_at))
-        object.__setattr__(self, "decision_hash", _canonical_hash(self.to_json()))
-
-    def to_json(self) -> dict[str, JsonValue]:
-        return {
-            "schema_version": self.schema_version,
-            "decision_id": self.decision_id,
-            "run_id": self.run_id,
-            "subject": self.subject,
-            "plan_id": self.plan_id,
-            "plan_hash": self.plan_hash,
-            "outcome": self.outcome.value,
-            "selected_memory_types": [item.value for item in self.selected_memory_types],
-            "selected_memory_refs": list(self.selected_memory_refs),
-            "filtered_candidate_count": self.filtered_candidate_count,
-            "disclosure_context": self.disclosure_context.to_json(),
-            "evidence_refs": [ref.to_json() for ref in self.evidence_refs],
-            "reason_codes": [reason.value for reason in self.reason_codes],
-            "decided_at": self.decided_at,
-        }
-
-    @classmethod
-    def from_json(cls, value: Mapping[str, object]) -> LegacyRecallDecisionV1:
-        _exact_keys(
-            value,
-            {
-                "schema_version",
-                "decision_id",
-                "run_id",
-                "subject",
-                "plan_id",
-                "plan_hash",
-                "outcome",
-                "selected_memory_types",
-                "selected_memory_refs",
-                "filtered_candidate_count",
-                "disclosure_context",
-                "evidence_refs",
-                "reason_codes",
-                "decided_at",
-            },
-            "RecallDecision",
-        )
-        filtered = value["filtered_candidate_count"]
-        if isinstance(filtered, bool) or not isinstance(filtered, int):
-            raise TypeError("filtered_candidate_count must be an integer")
-        decided_at = value["decided_at"]
-        if isinstance(decided_at, bool) or not isinstance(decided_at, (int, float)):
-            raise TypeError("decided_at must be numeric")
-        return cls(
-            decision_id=_identifier(value["decision_id"], "decision_id"),
-            run_id=_identifier(value["run_id"], "run_id"),
-            subject=_identifier(value["subject"], "subject"),
-            plan_id=_identifier(value["plan_id"], "plan_id"),
-            plan_hash=_digest(value["plan_hash"], "plan_hash"),
-            outcome=RecallDecisionOutcome(value["outcome"]),  # type: ignore[arg-type]
-            selected_memory_types=tuple(
-                LongTermMemoryType(item)
-                for item in _strings(value["selected_memory_types"], "selected_memory_types")
-            ),
-            selected_memory_refs=_strings(
-                value["selected_memory_refs"], "selected_memory_refs"
-            ),
-            filtered_candidate_count=filtered,
-            disclosure_context=DisclosureContext.from_json(
-                _object(value["disclosure_context"], "disclosure_context")
-            ),
-            evidence_refs=_refs_from_json(value["evidence_refs"]),
-            reason_codes=tuple(
-                RecallReasonCode(item) for item in _strings(value["reason_codes"], "reason_codes")
-            ),
-            decided_at=float(decided_at),
-            schema_version=_schema_version(value["schema_version"], "RecallDecision"),
         )
 
 
@@ -1567,17 +1491,18 @@ class RecallDecision:
     outcome: RecallDecisionOutcome
     selected_memory_types: tuple[LongTermMemoryType, ...]
     selected_memory_refs: tuple[str, ...]
+    confirmation_items: tuple[RecallConfirmationItem, ...]
     filtered_candidate_count: int
     candidate_count_stage: RecallCandidateCountStage
     disclosure_context: DisclosureContext
     evidence_refs: tuple[EvidenceRef, ...]
     reason_codes: tuple[RecallReasonCode, ...]
     decided_at: float
-    schema_version: int = COGNITIVE_MEMORY_SCHEMA_VERSION
+    schema_version: int = RECALL_DECISION_SCHEMA_VERSION
     decision_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != COGNITIVE_MEMORY_SCHEMA_VERSION:
+        if self.schema_version != RECALL_DECISION_SCHEMA_VERSION:
             raise ValueError("unsupported RecallDecision schema_version")
         for value, name in (
             (self.decision_id, "decision_id"), (self.run_id, "run_id"),
@@ -1599,6 +1524,35 @@ class RecallDecision:
         selected = _bounded_identifiers(
             self.selected_memory_refs, "selected_memory_refs"
         )
+        if not isinstance(self.confirmation_items, (tuple, list)) or not all(
+            isinstance(item, RecallConfirmationItem)
+            for item in self.confirmation_items
+        ):
+            raise TypeError(
+                "confirmation_items must contain RecallConfirmationItem values"
+            )
+        confirmation = tuple(
+            sorted(
+                self.confirmation_items,
+                key=lambda item: (
+                    item.conflict_group_ref,
+                    item.memory_type.value,
+                    item.memory_ref,
+                ),
+            )
+        )
+        if len(confirmation) > 128:
+            raise ValueError("confirmation_items exceeds the item limit")
+        confirmation_refs = tuple(item.memory_ref for item in confirmation)
+        if len(set(confirmation_refs)) != len(confirmation_refs):
+            raise ValueError("confirmation memory_ref values must be globally unique")
+        group_counts: dict[str, int] = {}
+        for item in confirmation:
+            group_counts[item.conflict_group_ref] = (
+                group_counts.get(item.conflict_group_ref, 0) + 1
+            )
+        if any(count < 2 for count in group_counts.values()):
+            raise ValueError("each confirmation conflict group requires at least two items")
         if isinstance(self.filtered_candidate_count, bool) or not isinstance(
             self.filtered_candidate_count, int
         ) or self.filtered_candidate_count < 0:
@@ -1606,17 +1560,43 @@ class RecallDecision:
         stage = RecallCandidateCountStage(self.candidate_count_stage)
         if stage is not RecallCandidateCountStage.AFTER_ALL_ELIGIBILITY_GATES:
             raise ValueError("candidate count must be after all eligibility gates")
-        if len(selected) > self.filtered_candidate_count:
-            raise ValueError("selected memories exceed post-gate candidate count")
+        if len(selected) + len(confirmation) > self.filtered_candidate_count:
+            raise ValueError("decision memories exceed post-gate candidate count")
         if self.outcome is not RecallDecisionOutcome.RECALL and (types or selected):
             raise ValueError("non-recall outcome cannot select memories")
-        if self.outcome is RecallDecisionOutcome.RECALL and not selected:
-            raise ValueError("recall outcome requires selected memories")
+        if self.outcome is RecallDecisionOutcome.RECALL:
+            if not selected:
+                raise ValueError("recall outcome requires selected memories")
+            if not types:
+                raise ValueError("recall outcome requires selected memory types")
+            if len(types) > len(selected):
+                raise ValueError(
+                    "selected memory types exceed selected memory references"
+                )
+            if confirmation:
+                raise ValueError("recall outcome cannot require confirmation")
+        elif self.outcome is RecallDecisionOutcome.NEEDS_USER_CONFIRMATION:
+            if not confirmation:
+                raise ValueError(
+                    "needs-user-confirmation outcome requires confirmation items"
+                )
+        elif confirmation:
+            raise ValueError("outcome cannot include confirmation items")
+        if self.outcome in {
+            RecallDecisionOutcome.NO_RECALL,
+            RecallDecisionOutcome.REJECTED,
+        } and self.filtered_candidate_count != 0:
+            raise ValueError(
+                "no-recall and rejected outcomes cannot disclose candidate counts"
+            )
         if not isinstance(self.disclosure_context, DisclosureContext):
             raise TypeError("disclosure_context must use DisclosureContext")
         if self.disclosure_context.run_id != self.run_id:
             raise ValueError("disclosure_context run_id differs")
-        if self.outcome is RecallDecisionOutcome.RECALL:
+        if self.outcome in {
+            RecallDecisionOutcome.RECALL,
+            RecallDecisionOutcome.NEEDS_USER_CONFIRMATION,
+        }:
             _validate_recall_disclosure(self.disclosure_context)
         evidence = _evidence_refs(self.evidence_refs)
         if not evidence:
@@ -1630,11 +1610,33 @@ class RecallDecision:
                 required=True,
             ),
         )
+        reason_set = set(reasons)
+        if self.outcome is RecallDecisionOutcome.RECALL:
+            if not reason_set <= _RECALL_DEPENDENCY_REASONS:
+                raise ValueError("recall outcome requires only dependency reasons")
+        elif self.outcome is RecallDecisionOutcome.NEEDS_USER_CONFIRMATION:
+            allowed = _RECALL_DEPENDENCY_REASONS | {
+                RecallReasonCode.NEEDS_USER_CONFIRMATION
+            }
+            if RecallReasonCode.NEEDS_USER_CONFIRMATION not in reason_set:
+                raise ValueError(
+                    "needs-user-confirmation outcome requires confirmation reason"
+                )
+            if not reason_set <= allowed:
+                raise ValueError(
+                    "needs-user-confirmation outcome has an incompatible reason"
+                )
+        elif self.outcome is RecallDecisionOutcome.NO_RECALL:
+            if not reason_set <= _NO_RECALL_REASONS:
+                raise ValueError("no-recall outcome has an incompatible reason")
+        elif not reason_set <= _REJECTED_REASONS:
+            raise ValueError("rejected outcome has an incompatible reason")
         decided_at = _optional_timestamp(self.decided_at, "decided_at")
         if decided_at is None:
             raise ValueError("decided_at is required")
         object.__setattr__(self, "selected_memory_types", types)
         object.__setattr__(self, "selected_memory_refs", selected)
+        object.__setattr__(self, "confirmation_items", confirmation)
         object.__setattr__(self, "candidate_count_stage", stage)
         object.__setattr__(self, "evidence_refs", evidence)
         object.__setattr__(self, "reason_codes", reasons)
@@ -1642,7 +1644,7 @@ class RecallDecision:
         object.__setattr__(
             self,
             "decision_hash",
-            _domain_hash("simple-harness/recall-decision/v2", self.to_json()),
+            _domain_hash("simple-harness/recall-decision/v3", self.to_json()),
         )
 
     def validate_bindings(
@@ -1663,6 +1665,14 @@ class RecallDecision:
             raise ValueError("RecallDecision plan binding differs")
         if not set(self.selected_memory_types) <= set(plan.requested_memory_types):
             raise ValueError("RecallDecision selects an unrequested memory type")
+        if not {
+            item.memory_type for item in self.confirmation_items
+        } <= set(plan.requested_memory_types):
+            raise ValueError("RecallDecision confirms an unrequested memory type")
+        if set(self.selected_memory_refs) & {
+            item.memory_ref for item in self.confirmation_items
+        }:
+            raise ValueError("RecallDecision selected and confirmation refs overlap")
         if self.disclosure_context.to_json() != plan.disclosure_context.to_json():
             raise ValueError("RecallDecision disclosure differs from RecallPlan")
         plan_evidence = {
@@ -1676,7 +1686,10 @@ class RecallDecision:
         }
         if decision_evidence != plan_evidence or not decision_evidence <= context_evidence:
             raise ValueError("RecallDecision evidence_refs do not bind Plan/Context")
-        if self.outcome is RecallDecisionOutcome.RECALL:
+        if self.outcome in {
+            RecallDecisionOutcome.RECALL,
+            RecallDecisionOutcome.NEEDS_USER_CONFIRMATION,
+        }:
             _validate_recall_disclosure(self.disclosure_context)
 
     def to_json(self) -> dict[str, JsonValue]:
@@ -1692,6 +1705,7 @@ class RecallDecision:
             "outcome": self.outcome.value,
             "selected_memory_types": [item.value for item in self.selected_memory_types],
             "selected_memory_refs": list(self.selected_memory_refs),
+            "confirmation_items": [item.to_json() for item in self.confirmation_items],
             "filtered_candidate_count": self.filtered_candidate_count,
             "candidate_count_stage": self.candidate_count_stage.value,
             "disclosure_context": self.disclosure_context.to_json(),
@@ -1702,10 +1716,16 @@ class RecallDecision:
 
     @classmethod
     def from_json(cls, value: Mapping[str, object]) -> RecallDecision:
+        schema_version: int | None = None
+        if "schema_version" in value:
+            schema_version = _recall_decision_schema_version(
+                value["schema_version"], "RecallDecision"
+            )
         expected = {
             "schema_version", "decision_id", "run_id", "subject", "context_hash",
             "context_revision", "plan_id", "plan_hash", "outcome",
-            "selected_memory_types", "selected_memory_refs", "filtered_candidate_count",
+            "selected_memory_types", "selected_memory_refs", "confirmation_items",
+            "filtered_candidate_count",
             "candidate_count_stage", "disclosure_context", "evidence_refs",
             "reason_codes", "decided_at",
         }
@@ -1729,6 +1749,10 @@ class RecallDecision:
             selected_memory_refs=_strings(
                 value["selected_memory_refs"], "selected_memory_refs"
             ),
+            confirmation_items=tuple(
+                RecallConfirmationItem.from_json(item)
+                for item in _objects(value["confirmation_items"], "confirmation_items")
+            ),
             filtered_candidate_count=count,
             candidate_count_stage=RecallCandidateCountStage(value["candidate_count_stage"]),  # type: ignore[arg-type]
             disclosure_context=DisclosureContext.from_json(
@@ -1740,9 +1764,7 @@ class RecallDecision:
                 for item in _strings(value["reason_codes"], "reason_codes")
             ),
             decided_at=cast(float, _optional_timestamp(value["decided_at"], "decided_at")),
-            schema_version=_cognitive_schema_version(
-                value["schema_version"], "RecallDecision"
-            ),
+            schema_version=cast(int, schema_version),
         )
 
 
@@ -2908,6 +2930,14 @@ def _cognitive_schema_version(value: object, name: str) -> int:
     return value
 
 
+def _recall_decision_schema_version(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} schema_version must be an integer")
+    if value != RECALL_DECISION_SCHEMA_VERSION:
+        raise ValueError(f"unsupported {name} schema_version")
+    return value
+
+
 __all__ = (
     "ConflictStatus",
     "ContextAssemblyBudget",
@@ -2941,6 +2971,7 @@ __all__ = (
     "ProspectiveTriggerKind",
     "RecallBudget",
     "RecallCandidateCountStage",
+    "RecallConfirmationItem",
     "RecallContext",
     "RecallDecision",
     "RecallDecisionOutcome",
@@ -2948,6 +2979,7 @@ __all__ = (
     "RecallReasonCode",
     "RecallRetrievalMode",
     "RecallSelectorDomain",
+    "RECALL_DECISION_SCHEMA_VERSION",
     "SemanticLifecycleState",
     "SemanticMemoryPayload",
     "ValidTimeInterval",

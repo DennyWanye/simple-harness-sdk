@@ -84,7 +84,14 @@ all canonical operation IDs, and the single base-to-committed revision transitio
 expired Context and requires every mandatory Host selector to remain present while values, time,
 disclosure, evidence, and budget can only narrow. `RecallDecision.validate_bindings()` binds the
 same Context, Plan, and evidence lineage. Unknown, external, untrusted, or unknown-purpose
-disclosure cannot select recalled memory.
+disclosure cannot select recalled memory or expose conflicting candidates. Recall Decision wire v3
+uses `RecallConfirmationItem` to represent post-gate conflicts. `RECALL` carries selected memories
+only; `NEEDS_USER_CONFIRMATION` carries at least two unique candidates per conflict group and no
+selected memory. Recall reasons are outcome-specific: dependency reasons are only valid for recall
+or confirmation, no-recall reasons cannot masquerade as rejection, and rejection reasons cannot
+masquerade as a successful lookup. `NO_RECALL` and `REJECTED` always expose a zero candidate count.
+Schema v2 Recall Decisions are rejected; the former private v1 Decision decoder was unreferenced
+and has been removed rather than retained as an executable migration path.
 
 `ConversationEvidenceRegistration` is a post-ingestion Host authority record for primary
 conversation and causal-group membership. Invalid or absent metadata does not erase raw evidence;

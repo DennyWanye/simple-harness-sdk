@@ -25,6 +25,9 @@ S1 `a2-003` 现已冻结 schema-v2 cognitive wire：EvidenceSpan 由 admitted ev
 byte range，typed observation 绑定 exact evidence/admission/item；四类长期记忆使用独立 payload/lifecycle、
 revision target、canonical DAG 与 strict-atomic authority receipt。RecallPlan 必须绑定未过期 RecallContext，
 保留 Host mandatory selector 并只允许缩窄；unknown/external/untrusted disclosure 默认不能产生 RECALL。
+RecallDecision 已单独升级为 schema v3：RECALL 只携带 selected，NEEDS_USER_CONFIRMATION 只携带
+通过资格与 disclosure gate 的 typed conflict candidates，每组至少两个唯一候选；outcome/reason 矩阵固定，
+NO_RECALL/REJECTED 的 candidate count 恒为零，v2 与未引用的旧 v1 Decision decoder 均不可执行读取。
 conversation causal metadata 是 raw evidence 入库后的独立 Host registration，非法 metadata 不删除原始证据，
 只失去后续 Short-Horizon 资格。
 

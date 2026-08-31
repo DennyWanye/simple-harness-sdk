@@ -26,7 +26,10 @@ last-updated: 2026-08-31
 - `RecallContext` 冻结 Host 允许的 memory type、scope、entity、time、event、environment、task phase、retrieval
   mode、Short-Horizon、disclosure、evidence 和预算。`RecallPlan` 精确绑定 context hash/revision，在可信当前时间
   验证未过期，保留全部 mandatory selector 且只能选择非空子集/更窄时间和预算；Decision 再绑定 Plan/Context
-  evidence lineage。unknown、external、untrusted 或 unknown-purpose disclosure 默认不能产生 RECALL。
+  evidence lineage。RecallDecision 使用独立 schema v3：`RECALL` 只允许 selected memories，
+  `NEEDS_USER_CONFIRMATION` 只允许 typed conflict candidates 且每组至少两个唯一引用；两者都执行 disclosure
+  gate；outcome/reason 矩阵固定，NO_RECALL/REJECTED 的 candidate count 恒为零，v2 wire 和未引用的旧 v1
+  Decision decoder 均不可执行读取。unknown、external、untrusted 或 unknown-purpose disclosure 默认不能披露记忆。
 - conversation causal metadata 在 raw evidence admission 后由 Host 独立注册，绑定 primary conversation、causal
   group sequence/manifest、role/time/TaskScope/entities 和 Tool terminal receipt；Tool parent 必须在同组且早于
   当前 item。缺失或非法 metadata 不删除 raw evidence，只使其不具备 Short-Horizon 资格。

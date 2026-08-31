@@ -19,6 +19,9 @@ SPDX-License-Identifier: Apache-2.0
 - Replaces free-form cognitive mutation/recall drafts with schema-v2 typed Episode, Semantic,
   Procedure, and Prospective payloads, exact Evidence spans, revisioned targets, canonical DAGs,
   and Host-bound Recall selectors.
+- Replaces Recall Decision schema v2 with the strict v3 wire. `RECALL` contains selected memories
+  only; `NEEDS_USER_CONFIRMATION` contains typed conflict-group candidates only. There is no legacy
+  Recall Decision decoder during the prototype phase.
 
 ### Safety
 - Route-required effects cannot cross the route barrier in the same Provider tool batch.
@@ -38,8 +41,12 @@ SPDX-License-Identifier: Apache-2.0
 - Typed observations cannot replay across admitted evidence; conversation Tool causal parents must
   precede the current item in the authenticated causal group.
 - Recall rejects expired Context, selector removal, evidence-lineage drift, and unknown, external,
-  or untrusted disclosure. Mutation plans require authority-resolved `strict_atomic` apply receipts
-  covering every canonical operation and one base-to-committed revision transition.
+  or untrusted disclosure. Conflicting candidates pass the same disclosure gate, require at least
+  two unique candidates per group, and cannot overlap selected results. Outcome-specific reason
+  codes prevent rejected/no-recall decisions from impersonating positive dependencies; both deny
+  outcomes expose a zero candidate count. The unreferenced private v1 Recall Decision decoder is
+  removed. Mutation plans require authority-resolved `strict_atomic` apply receipts covering every
+  canonical operation and one base-to-committed revision transition.
 
 ### Compatibility
 - Terminal committed-turn outbox delivery remains available for the staged Memory SDK cutover;
