@@ -25,9 +25,9 @@ SPDX-License-Identifier: Apache-2.0
 
 - **2026-09-01 — Harness Semantic relation schema-v5 candidate**：Semantic claim 显式携带
   `semantic_kind=claim` 并保留 qualifiers；一等 relation payload 只开放 `applies_to`，冻结 exact endpoint、
-  dependency DAG、类型矩阵、自环/relation endpoint 拒绝和 strict v4 fail-closed。新增 package-root validation
+  dependency DAG、类型矩阵、自环/relation endpoint 拒绝和 strict v5 fail-closed。新增 package-root validation
   diagnostic 仅给稳定 bounded reason，不回显 credential-bearing wire；Memory transaction/graph 与 Host durable
-  audit 尚未在本仓宣称完成。focused conformance、全量 1727 tests、ruff 与 mypy 均通过。
+  audit 尚未在本仓宣称完成。focused conformance、全量 1728 tests、ruff 与 mypy 均通过。
 - **2026-08-31 — Procedure recall applicability authority**：`RecallContext` 现在绑定 Host 当前可用的
   canonical applicability fingerprint 集合并纳入 context hash；`RecallPlan` 没有对应可写字段，因此主模型只能
   继承这项 authority，Memory 可对 Procedure revision 做 exact current-applicability gate。
