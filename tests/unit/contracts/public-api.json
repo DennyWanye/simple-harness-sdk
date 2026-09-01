@@ -1,5 +1,5 @@
 {
-  "version": "0.7.0",
+  "version": "0.7.1",
   "simple_harness": [
     "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
@@ -79,6 +79,7 @@
     "CommandState",
     "ContinueCommandIntent",
     "ConflictStatus",
+    "ContextRouteOrigin",
     "ContextRouteReceipt",
     "ContextRouteState",
     "ConsumerRuntimePolicies",
@@ -400,6 +401,7 @@
     "CommandState",
     "ContinueCommandIntent",
     "ConflictStatus",
+    "ContextRouteOrigin",
     "ContextRouteReceipt",
     "ContextRouteState",
     "ContextPort",

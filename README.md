@@ -7,7 +7,7 @@ is [`docs/build-and-release.md`](docs/build-and-release.md).
 
 An embeddable, durable agent runtime extracted from Simple Harness.
 
-Version 0.7.0 is the current Human Memory protocol source candidate. A Host supplies the exact
+Version 0.7.1 is the current Human Memory protocol source candidate. A Host supplies the exact
 Context snapshot for every new Provider turn through `RunContextAuthorityPort`; the SDK validates
 and durably freezes that snapshot before Provider reservation. Recall is explicit and same-Run:
 the main model proposes a strict route/recall operation, while deterministic SDK and Host code
@@ -22,12 +22,15 @@ the model may submit a mode-free exact-root proposal, while Manual decisions and
 snapshots must be verified against Host-durable records before the Host returns a typed grant.
 The append receipt carries the sorted unique root identity set and binds its canonical digest,
 exact parent receipt, grant, and new revision; genesis is fixed to the canonical empty-set digest.
-`ContextRouteReceipt` v2 and effect envelopes then freeze that exact binding-set receipt identity
-and hash. The decoder accepts v1 only for legacy no-authority standalone routes; project v1 fails
-closed. Generic Tool
+`ContextRouteReceipt` v3 and effect envelopes then freeze that exact binding-set receipt identity
+and hash. `origin=context_tool` retains raw call/effect provenance; `origin=host_initial` instead
+requires Host authority ref/hash and forbids fabricated call/effect identities. Ordinary start
+snapshot v7 freezes the complete initial route/hash, and ReAct checkpoint v6 initializes it before
+the first Provider turn. The decoder accepts v1 only for legacy no-authority standalone routes;
+project v1 fails closed. Generic Tool
 authorization receipts and `RunContextSnapshot.metadata` are not workspace authority. Memory SDK
 evidence/state storage, Host TaskScope archives, dynamic
-Context assembly, and the single-conversation UI are later release units rather than 0.7.0
+Context assembly, and the single-conversation UI are later release units rather than 0.7.1
 product claims.
 
 Main-model analysis uses two deliberately separate receipt layers. The Host executor returns a
@@ -36,7 +39,7 @@ exact provider delivery through `MemoryAnalysisDeliveryAuthorityPort`; public ha
 authority. The existing `MemoryAnalysisReceipt` remains the later Memory validator/application
 record and cannot stand in for Host delivery proof.
 
-The 0.7.0 cognitive wire is strict rather than free-form. `EvidenceSpanRef` identifies exact
+The 0.7.1 cognitive wire is strict rather than free-form. `EvidenceSpanRef` identifies exact
 admitted UTF-8 bytes and can only be verified through Host/Memory authority resolvers; typed Tool
 observations are bound to the exact evidence, admission receipt, and item. Episode, Semantic,
 Procedure, and Prospective mutations use distinct payload and lifecycle types, revisioned targets,
@@ -65,7 +68,7 @@ pairs to renamed complete `AgentIdentity` values, and leaves a caller-selected v
 the database.
 
 The following is the retained 0.6.x terminal committed-turn compatibility composition; it is not
-the new 0.7.0 recall path:
+the new 0.7.1 recall path:
 
 ```python
 from simple_harness_memory import MemoryManager
@@ -113,7 +116,7 @@ cutover, automated regression, and real macOS UI validation with a configured De
 AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
 and production paths were not modified, integrated, or tested in this program.
 
-Version 0.7.0 is the Human Memory protocol candidate: it replaces unconditional pre-Provider
+Version 0.7.1 is the Human Memory protocol candidate: it replaces unconditional pre-Provider
 recall with an explicit same-Run Context route barrier and Host-issued Context authority. It also
 adds typed, domain-separated Manual/Auto workspace-binding proposals, challenges, receipts,
 Host-verified grants and append-only binding-set lineage; the SDK defines these contracts but does

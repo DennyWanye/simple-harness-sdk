@@ -5,6 +5,7 @@
 
 from .context_authority import (
     CatalogHandlerBinding,
+    ContextRouteOrigin,
     ContextRouteReceipt,
     ContextRouteState,
     DurableToolCatalogResolver,
@@ -38,6 +39,7 @@ from .fences import (
 
 __all__ = (
     "CatalogHandlerBinding",
+    "ContextRouteOrigin",
     "ContextRouteReceipt",
     "ContextRouteState",
     "EffectConflictError",

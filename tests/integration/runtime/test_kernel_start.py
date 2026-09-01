@@ -29,7 +29,11 @@ from simple_harness import (
 )
 from simple_harness.contracts import ExecutionSessionId, RequestId, RunId
 from simple_harness.execution.command_ingress import CommandError
-from simple_harness.execution.context_authority import ToolCatalogSnapshot
+from simple_harness.execution.context_authority import (
+    ContextRouteOrigin,
+    ContextRouteReceipt,
+    ToolCatalogSnapshot,
+)
 from simple_harness.execution.context_staging import ContextStagingRepository
 from simple_harness.execution.delivery import (
     DeliveryDispatcher,
@@ -55,6 +59,7 @@ from simple_harness.runtime import (
 )
 from simple_harness.runtime.conversation_memory import ContextPreparationMode
 from simple_harness.runtime.start_snapshot import bind_start_snapshot
+from simple_harness.runtime.task_scope_protocol import TaskScopeRoute
 
 
 class NoopPort:
@@ -187,6 +192,24 @@ def request(name: str = "one", *, generation: int = 1) -> RunStart:
     )
 
 
+def initial_route(run_id: str, *, binding_revision: int = 3) -> ContextRouteReceipt:
+    return ContextRouteReceipt(
+        "route-initial-1",
+        run_id,
+        None,
+        None,
+        TaskScopeRoute.RESUME_EXISTING,
+        "task-1",
+        binding_revision,
+        schema_version=3,
+        binding_set_receipt_id=f"binding-set-{binding_revision}",
+        binding_set_receipt_hash="d" * 64,
+        origin=ContextRouteOrigin.HOST_INITIAL,
+        host_authority_ref="host-execution:claim-1",
+        host_authority_hash="e" * 64,
+    )
+
+
 def host_control_request(name: str = "one") -> HostControlRunStartV1:
     return HostControlRunStartV1(
         ExecutionSessionId("session-host"),
@@ -200,6 +223,53 @@ def host_control_request(name: str = "one") -> HostControlRunStartV1:
         ),
         "host-user",
     )
+
+
+def test_ordinary_start_replay_binds_initial_route_in_request_identity(tmp_path) -> None:
+    async def case() -> None:
+        driver = Driver()
+        value, uow, database = runtime(tmp_path, driver=driver)
+        route = initial_route("run-route")
+        start = RunStart(
+            ExecutionSessionId("session-route"),
+            RunId("run-route"),
+            RequestId("request-route"),
+            "turn-route",
+            {"prompt": "route"},
+            1,
+            initial_route_receipt=route,
+            initial_route_receipt_hash=route.receipt_hash,
+        )
+        try:
+            await value.start()
+            first = await value.client.start(start)
+            await value.wait_idle(start.run_id)
+            replay = await value.client.start(start)
+            assert replay.run_id == first.run_id
+            assert driver.calls == 1
+
+            changed = initial_route("run-route", binding_revision=4)
+            with pytest.raises(CommandError):
+                await value.client.start(
+                    RunStart(
+                        start.execution_session_id,
+                        start.run_id,
+                        start.request_id,
+                        start.turn_id,
+                        start.input,
+                        1,
+                        initial_route_receipt=changed,
+                        initial_route_receipt_hash=changed.receipt_hash,
+                    )
+                )
+            snapshot = uow.read_start_snapshot("run-route")
+            assert snapshot is not None
+            assert snapshot["initial_route_receipt_hash"] == route.receipt_hash
+        finally:
+            await value.close()
+            database.close()
+
+    asyncio.run(case())
 
 
 def test_host_control_is_memory_neutral_and_exactly_replayable(tmp_path) -> None:

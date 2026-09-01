@@ -5,6 +5,19 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.7.1 — candidate
+
+### Added
+- Adds `ContextRouteReceipt` v3 with origin-specific `context_tool` and `host_initial`
+  provenance. Host-initial routes require exact TaskScope/binding receipts and Host authority while
+  forbidding fabricated tool call/effect identities.
+- Adds ordinary `StartSnapshot` schema v7 and ReAct checkpoint schema v6 so an initial Host route
+  is frozen before the first Provider turn and recovered with conflict detection.
+
+### Compatibility
+- Start snapshot schemas 1–6 still decode without an initial route; Host-control snapshots remain
+  schema v6. Context route receipt v1/v2 decoding is unchanged.
+
 ## 0.7.0 — candidate
 
 ### Breaking

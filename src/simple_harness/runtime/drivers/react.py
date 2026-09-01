@@ -205,6 +205,8 @@ class ReActDriver:
                     max_output_tokens=_optional_int(
                         input_value.get("max_output_tokens"), "max_output_tokens"
                     ),
+                    initial_route_receipt=invocation.start.initial_route_receipt,
+                    initial_route_receipt_hash=invocation.start.initial_route_receipt_hash,
                 ),
                 services=invocation.services,
                 execution_lease=invocation.execution_lease,

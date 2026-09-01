@@ -15,9 +15,11 @@ from simple_harness.contracts import (
     RequestId,
     RunId,
     canonical_json,
+    thaw_json,
 )
 from simple_harness.contracts.messages import ContentBlock, Message, MessageRole
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
+from simple_harness.execution.context_authority import ContextRouteOrigin, ContextRouteReceipt
 from simple_harness.execution.context_staging import (
     ContextStageKind,
     ContextStagingRepository,
@@ -58,6 +60,7 @@ from simple_harness.runtime.conversation_memory import (
 )
 from simple_harness.runtime.drivers import ReActDriver
 from simple_harness.runtime.react_checkpoint import DurableReactCheckpoint
+from simple_harness.runtime.task_scope_protocol import TaskScopeRoute
 from simple_harness.tools import EffectExecutor, FunctionTool, ToolRegistry, ToolResult, ToolSpec
 from simple_harness.tools.authorization import (
     AuthorizationDecision,
@@ -244,6 +247,21 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
             ),
         )
         await runtime.start()
+        route = ContextRouteReceipt(
+            "route-initial-1",
+            "run-1",
+            None,
+            None,
+            TaskScopeRoute.RESUME_EXISTING,
+            "task-1",
+            3,
+            schema_version=3,
+            binding_set_receipt_id="binding-set-3",
+            binding_set_receipt_hash="d" * 64,
+            origin=ContextRouteOrigin.HOST_INITIAL,
+            host_authority_ref="host-execution:claim-1",
+            host_authority_hash="e" * 64,
+        )
         await runtime.client.start(
             RunStart(
                 ExecutionSessionId("session-1"),
@@ -252,6 +270,8 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
                 "turn-1",
                 {"messages": [{"role": "user", "content": "hello"}]},
                 1,
+                initial_route_receipt=route,
+                initial_route_receipt_hash=route.receipt_hash,
             )
         )
         await runtime.wait_idle(RunId("run-1"))
@@ -268,6 +288,8 @@ def test_real_runtime_provider_context_checkpoint_and_terminal_are_connected(
         checkpoint = uow.read_react_checkpoint("run-1")
         assert checkpoint is not None
         assert checkpoint.checkpoint["provider_turns_reserved_total"] == 1
+        assert checkpoint.checkpoint["route_state"] == "routed_task"
+        assert thaw_json(checkpoint.checkpoint["route_receipt"]) == route.to_json()
         assert [message.role for message in context.load(RunId("run-1")).messages] == [
             MessageRole.USER,
             MessageRole.ASSISTANT,

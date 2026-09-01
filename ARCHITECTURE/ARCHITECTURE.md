@@ -11,7 +11,7 @@ last-updated: 2026-09-01
 
 ## Human Memory Program S1 当前边界（2026-09-01）
 
-- `0.7.0` source candidate 公开严格、版本化的 Memory、TaskScope、Evidence、Disclosure DTO。Working Memory
+- `0.7.1` source candidate 公开严格、版本化的 Memory、TaskScope、Evidence、Disclosure DTO。Working Memory
   是 Context role，不属于四类长期存储 enum；长期类型精确为 Episode、Semantic、Procedure、Prospective。
 - 主模型只提出结构化 Recall/Mutation/TaskScope 操作。SDK 校验 canonical JSON、hash、schema、run/evidence
   绑定；SDK 不把 LLM 输出当成事实、权限或数据库状态 authority。
@@ -32,6 +32,11 @@ last-updated: 2026-09-01
   必须全有或全无。registration 复算 pointer 指向的 admitted string 与全部分类字段；无 binding 的原始 evidence
   继续永久保存但 `short_horizon_eligible=False`，Memory/调用方不能自行选择或扫描其他字符串。conversation v2
   wire 不再接受。
+- S4 execution seam 使用 `ContextRouteReceipt` v3 区分 `context_tool` 与 `host_initial`；后者只接受
+  `ROUTED_TASK`、exact run/TaskScope/binding receipt 及 Host authority ref/hash，并拒绝 raw-call/effect
+  伪 provenance。ordinary `StartSnapshot` schema v7 冻结完整 route JSON/hash；schema 1–6 解码为无
+  initial route，Host-control v6 不变。ReAct checkpoint schema v6 仅在首次 CAS 初始化 route，恢复时
+  exact mismatch fail closed。
 - Episode、Semantic、Procedure、Prospective 各自使用 exact-key typed payload 与专属 lifecycle；operation 独立
   携带 epistemic/conflict/verification/valid-time/privacy attributes。existing target 固定 expected revision，
   普通 mutation target 的 created-by ref 只能引用同类型 CREATE。Mutation schema v5 为 Semantic payload 增加
@@ -151,10 +156,10 @@ last-updated: 2026-09-01
   typed receipt 确定性 reapply。fresh schema v6 单独存 Provider specs fingerprint 与完整 catalog envelope
   digest；handler locator resolution 对 missing/changed/extra identity fail-closed。exact v5 只允许关闭 Runtime
   后用显式 backup-first migrator 升级。
-- Tool/Capability 子系统的已发布基线仍来自 0.6.4，未被 0.7.0 S1 改写；仓库整体 source candidate
-  版本权威已是 0.7.0。源码就绪、release artifact 和 Host cutover 是三个不同状态，不能相互代替。
+- Tool/Capability 子系统的已发布基线仍来自 0.6.4，未被 0.7.1 Human Memory candidate 改写；仓库整体
+  source candidate 版本权威已是 0.7.1。源码就绪、release artifact 和 Host cutover 是三个不同状态，不能相互代替。
 
-上述目录链路是 0.6.4 延续到 0.7.0 的实现事实；0.7.0 公开 release 尚未执行。
+上述目录链路是 0.6.4 延续到 0.7.1 的实现事实；0.7.1 公开 release 尚未执行。
 
 ## SDK Observability S1/S2 当前事实（2026-08-23）
 
@@ -185,11 +190,11 @@ last-updated: 2026-09-01
   的有界 status counts、oldest age 与最多 20 个稳定 error-code aggregates。查询只选择
   status/timestamp/error-code 列；关闭、query error 或 250ms deadline 返回稳定 degraded section，不抛入业务。
 
-## Agent Memory v1 自动召回历史基线（0.6.x，已由 0.7.0 S1 取代）
+## Agent Memory v1 自动召回历史基线（0.6.x，已由 0.7.1 Human Memory candidate 取代）
 
 本节保留 0.6.x 的迁移与恢复事实，便于审查 breaking change。凡涉及 pre-Provider
-`recall_for_turn`、recall release 或 automatic Context preparation 的描述均不是 0.7.0 当前生产路径；
-0.7.0 当前权威以本文件顶部 “Human Memory Program S1 当前边界” 为准。terminal committed-turn outbox
+`recall_for_turn`、recall release 或 automatic Context preparation 的描述均不是 0.7.1 当前生产路径；
+0.7.1 当前权威以本文件顶部 “Human Memory Program S1 当前边界” 为准。terminal committed-turn outbox
 仍被保留，因此其 terminal/replay 段落继续适用。
 
 - `AgentMemoryPort` 是唯一官方 Memory 边界：`recall_for_turn`、`release_recall`、

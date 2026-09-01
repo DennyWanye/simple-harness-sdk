@@ -120,6 +120,7 @@ def test_checkpoint_roundtrip_preserves_durable_totals_and_phase() -> None:
     assert restored == state
     assert restored.provider_request_id == "provider-turn:1"
     assert restored.policy_fingerprint == "a" * 64
+    assert restored.to_json()["schema_version"] == 6
 
 
 def test_checkpoint_roundtrip_preserves_workflow_catalog_pin() -> None:
@@ -171,6 +172,15 @@ def test_legacy_checkpoint_defaults_to_static_tool_exposure() -> None:
     ):
         legacy.pop(field)
     assert TerminationState.from_json(legacy).tool_exposure_state is None
+
+
+def test_v5_checkpoint_remains_readable_and_unrouted() -> None:
+    legacy = TerminationState(10).to_json()
+    legacy["schema_version"] = 5
+    restored = TerminationState.from_json(legacy)
+    assert restored.source_schema_version == 5
+    assert restored.route_state == "unrouted"
+    assert restored.route_receipt is None
 
 
 @pytest.mark.parametrize("mutation", ("missing_revision", "missing_bindings", "extra"))

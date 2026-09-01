@@ -7,9 +7,11 @@ import pytest
 
 from simple_harness.contracts import RunId
 from simple_harness.execution.budget import BudgetSnapshot
+from simple_harness.execution.context_authority import ContextRouteOrigin, ContextRouteReceipt
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import UnitOfWorkConflict
 from simple_harness.runtime.react_checkpoint import DurableReactCheckpoint
+from simple_harness.runtime.task_scope_protocol import TaskScopeRoute
 from simple_harness.runtime.termination import TerminationLimits
 
 
@@ -34,6 +36,24 @@ def _seed(path):
         lease_ttl_seconds=100.0,
     )
     return database, uow, lease
+
+
+def _initial_route(*, binding_revision: int = 3) -> ContextRouteReceipt:
+    return ContextRouteReceipt(
+        "route-initial-1",
+        "run-1",
+        None,
+        None,
+        TaskScopeRoute.RESUME_EXISTING,
+        "task-1",
+        binding_revision,
+        schema_version=3,
+        binding_set_receipt_id=f"binding-set-{binding_revision}",
+        binding_set_receipt_hash="d" * 64,
+        origin=ContextRouteOrigin.HOST_INITIAL,
+        host_authority_ref="host-execution:claim-1",
+        host_authority_hash="e" * 64,
+    )
 
 
 def test_provider_reservation_survives_reopen_with_same_stable_identity(tmp_path) -> None:
@@ -73,4 +93,70 @@ def test_checkpoint_cas_rejects_second_writer_without_partial_total(tmp_path) ->
     stored = uow.read_react_checkpoint("run-1")
     assert stored is not None
     assert stored.checkpoint["tool_calls_reserved_total"] == 2
+    database.close()
+
+
+def test_first_checkpoint_atomically_initializes_and_recovers_host_route(tmp_path) -> None:
+    path = tmp_path / "checkpoint-initial-route.db"
+    database, uow, lease = _seed(path)
+    route = _initial_route()
+    state, version = DurableReactCheckpoint(uow, clock=lambda: 3.0).load_or_create(
+        RunId("run-1"),
+        lease,
+        initial_route_receipt=route,
+        initial_route_receipt_hash=route.receipt_hash,
+    )
+    assert state.route_state == "routed_task"
+    assert state.route_receipt == route.to_json()
+    stored = uow.read_react_checkpoint("run-1")
+    assert stored is not None
+    assert stored.checkpoint["schema_version"] == 6
+    database.close()
+
+    with Database.open(path) as reopened:
+        recovered, recovered_version = DurableReactCheckpoint(
+            SqliteExecutionUnitOfWork(reopened), clock=lambda: 4.0
+        ).load_or_create(
+            RunId("run-1"),
+            lease,
+            initial_route_receipt=route,
+            initial_route_receipt_hash=route.receipt_hash,
+        )
+        assert recovered == state
+        assert recovered_version == version
+
+
+def test_existing_unrouted_checkpoint_conflicts_with_routed_start(tmp_path) -> None:
+    database, uow, lease = _seed(tmp_path / "checkpoint-unrouted-conflict.db")
+    checkpoint = DurableReactCheckpoint(uow, clock=lambda: 3.0)
+    checkpoint.load_or_create(RunId("run-1"), lease)
+    route = _initial_route()
+    with pytest.raises(RuntimeError, match="differs from start snapshot"):
+        checkpoint.load_or_create(
+            RunId("run-1"),
+            lease,
+            initial_route_receipt=route,
+            initial_route_receipt_hash=route.receipt_hash,
+        )
+    database.close()
+
+
+def test_existing_routed_checkpoint_rejects_changed_binding(tmp_path) -> None:
+    database, uow, lease = _seed(tmp_path / "checkpoint-binding-conflict.db")
+    checkpoint = DurableReactCheckpoint(uow, clock=lambda: 3.0)
+    route = _initial_route()
+    checkpoint.load_or_create(
+        RunId("run-1"),
+        lease,
+        initial_route_receipt=route,
+        initial_route_receipt_hash=route.receipt_hash,
+    )
+    changed = _initial_route(binding_revision=4)
+    with pytest.raises(RuntimeError, match="differs from start snapshot"):
+        checkpoint.load_or_create(
+            RunId("run-1"),
+            lease,
+            initial_route_receipt=changed,
+            initial_route_receipt_hash=changed.receipt_hash,
+        )
     database.close()

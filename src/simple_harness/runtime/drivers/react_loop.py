@@ -76,6 +76,8 @@ class ReActRunInput:
     tool_exposure: RunToolExposurePort | None = None
     temperature: float | None = None
     max_output_tokens: int | None = None
+    initial_route_receipt: ContextRouteReceipt | None = None
+    initial_route_receipt_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +234,13 @@ class ReActLoop:
         if execution_lease.run_id != value.run_id.value or run_fence.run_id != value.run_id:
             raise ValueError("ReAct invocation authority belongs to another Run")
         tool_cancel = tool_cancel or CancellationToken()
+        checkpoint = DurableReactCheckpoint(services.react_checkpoint, clock=self._clock)
+        state, checkpoint_version = checkpoint.load_or_create(
+            value.run_id,
+            execution_lease,
+            initial_route_receipt=value.initial_route_receipt,
+            initial_route_receipt_hash=value.initial_route_receipt_hash,
+        )
         context = services.context.load(value.run_id)
         if context.revision == 0:
             if not initial_messages:
@@ -243,8 +252,6 @@ class ReActLoop:
                 f"{value.run_id.value}:context:initial",
                 initial_messages,
             )
-        checkpoint = DurableReactCheckpoint(services.react_checkpoint, clock=self._clock)
-        state, checkpoint_version = checkpoint.load_or_create(value.run_id, execution_lease)
         if value.tool_exposure is not None:
             value.tool_exposure.restore(value.run_id, state.tool_exposure_state)
         if self._policy_fingerprint is not None:

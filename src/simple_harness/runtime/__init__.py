@@ -10,6 +10,7 @@ from typing import Any
 
 _MODULE_EXPORTS = {
     "simple_harness.execution.context_authority": (
+        "ContextRouteOrigin",
         "ContextRouteReceipt",
         "ContextRouteState",
         "RunContextAuthorityPort",
@@ -453,6 +454,7 @@ __all__ = (
     "CommandState",
     "ContinueCommandIntent",
     "ConflictStatus",
+    "ContextRouteOrigin",
     "ContextRouteReceipt",
     "ContextRouteState",
     "ContextPort",

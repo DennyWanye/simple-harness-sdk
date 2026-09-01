@@ -5,17 +5,20 @@ SPDX-License-Identifier: Apache-2.0
 
 # ARCHITECTURE 目录
 
-记录 Simple Harness SDK 的架构生产事实。当前 source candidate 版本权威为 `0.7.0`。Human Memory S1
+记录 Simple Harness SDK 的架构生产事实。当前 source candidate 版本权威为 `0.7.1`。Human Memory S1
 已经把自动 pre-Provider recall 改为显式的同 Run route seam：每个新的 Provider turn 只能消费 Host 经
 `RunContextAuthorityPort` 返回并由 SDK 校验、冻结的 Context snapshot；同批 route-required effect 在
 route receipt 尚未可见时会在 ledger/handoff 前拒绝。fresh execution schema v7 持久绑定
 `TaskExecutionEnvelope`。`WorkspaceBindingAuthorityPort` 现定义独立的 Manual challenge/decision 与 Host
 Run-mode snapshot 验证链；只有 Host durable lookup 后返回的 grant 才能进入 append transaction，随后
 `WorkspaceBindingSetReceipt` 携带 sorted unique root identity hashes：genesis 固定 canonical empty-set
-parent，后续只能验证为 exact parent set 加 grant 的一个新 root，并固定 base→new revision。schema v2
+parent，后续只能验证为 exact parent set 加 grant 的一个新 root，并固定 base→new revision。schema v2/v3
 route receipt 和每个 project effect envelope 都交叉绑定该 binding-set receipt id/hash；v1 decoder 只
 兼容无 authority standalone，project v1 fail-closed。generic Tool authorization receipt 或
-`RunContextSnapshot.metadata` 不具备此 authority。ReAct checkpoint schema v5 跨轮保留 snapshot revision 与 ID→payload hash，
+`RunContextSnapshot.metadata` 不具备此 authority。0.7.1 的 route receipt v3 区分 context-tool 与 Host-initial
+provenance；ordinary start snapshot v7 将完整 Host initial route/hash 纳入 durable start identity，ReAct
+checkpoint schema v6 只在 checkpoint 不存在时原子初始化，并在恢复时拒绝 route/TaskScope/binding 冲突。
+它继续跨轮保留 snapshot revision 与 ID→payload hash，
 Provider durable response 只接受 public allowlist，隐藏推理和私有 metadata 不进入 ledger、checkpoint 或
 Context。旧 `AgentMemoryPort.record_committed_turn` terminal outbox 仍保留；生产 kernel 不再自动调用
 `recall_for_turn`/`release_recall`。Memory SDK 的新 evidence/认知状态和 Host TaskScope 产品实现不属于本仓

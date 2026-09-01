@@ -20,6 +20,11 @@ from simple_harness.contracts import (
     freeze_json,
     thaw_json,
 )
+from simple_harness.execution.context_authority import (
+    ContextRouteOrigin,
+    ContextRouteReceipt,
+    ContextRouteState,
+)
 from simple_harness.workflow.execution_ports import (
     StartAdmissionRequest,
     start_admission_request_from_json,
@@ -162,6 +167,8 @@ class RunStart:
     start_mode: str = "ordinary"
     host_control_authority: HostControlAuthorityV1 | None = None
     host_control_user_id: str | None = None
+    initial_route_receipt: ContextRouteReceipt | None = None
+    initial_route_receipt_hash: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.execution_session_id, ExecutionSessionId):
@@ -231,8 +238,19 @@ class RunStart:
                 raise ValueError("Host control start requires user identity")
             if any(value is not None for value in (self.conversation, *stage_values)):
                 raise ValueError("Host control start rejects conversation/context fields")
-        elif self.host_control_authority is not None or self.host_control_user_id is not None:
-            raise ValueError("ordinary start rejects Host control authority")
+            if (
+                self.initial_route_receipt is not None
+                or self.initial_route_receipt_hash is not None
+            ):
+                raise ValueError("Host control start rejects initial Context route")
+        else:
+            if self.host_control_authority is not None or self.host_control_user_id is not None:
+                raise ValueError("ordinary start rejects Host control authority")
+            _validate_initial_route(
+                self.initial_route_receipt,
+                self.initial_route_receipt_hash,
+                run_id=self.run_id.value,
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +272,8 @@ class StartSnapshot:
     start_mode: str = "ordinary"
     host_control_authority: HostControlAuthorityV1 | None = None
     host_control_user_id: str | None = None
+    initial_route_receipt: ContextRouteReceipt | None = None
+    initial_route_receipt_hash: str | None = None
 
     def __post_init__(self) -> None:
         if self.driver_kind == "workflow":
@@ -310,15 +330,25 @@ class StartSnapshot:
                 raise ValueError("Host control snapshot requires user identity")
             if any(value is not None for value in (self.conversation, *stage_values)):
                 raise ValueError("Host control snapshot rejects conversation/context fields")
-        elif self.host_control_authority is not None or self.host_control_user_id is not None:
-            raise ValueError("ordinary snapshot rejects Host control authority")
+            if (
+                self.initial_route_receipt is not None
+                or self.initial_route_receipt_hash is not None
+            ):
+                raise ValueError("Host control snapshot rejects initial Context route")
+        else:
+            if self.host_control_authority is not None or self.host_control_user_id is not None:
+                raise ValueError("ordinary snapshot rejects Host control authority")
+            _validate_initial_route(
+                self.initial_route_receipt,
+                self.initial_route_receipt_hash,
+            )
 
     def to_json(self) -> dict[str, JsonValue]:
         value = thaw_json(self.input)
         if not isinstance(value, dict):
             raise TypeError("start input must remain a JSON object")
         result: dict[str, JsonValue] = {
-            "schema_version": 6 if self.start_mode == "host_control" else 5,
+            "schema_version": 6 if self.start_mode == "host_control" else 7,
             "profile_key": self.profile_key,
             "driver_kind": self.driver_kind,
             "turn_id": self.turn_id,
@@ -353,6 +383,17 @@ class StartSnapshot:
                     "host_control_user_id": self.host_control_user_id,
                 }
             )
+        else:
+            result.update(
+                {
+                    "initial_route_receipt": (
+                        None
+                        if self.initial_route_receipt is None
+                        else self.initial_route_receipt.to_json()
+                    ),
+                    "initial_route_receipt_hash": self.initial_route_receipt_hash,
+                }
+            )
         return result
 
     @classmethod
@@ -363,7 +404,7 @@ class StartSnapshot:
             and "start_input" in value
             and "workflow_name" in value
         )
-        if not legacy_workflow_snapshot and schema_version not in {1, 2, 3, 4, 5, 6}:
+        if not legacy_workflow_snapshot and schema_version not in {1, 2, 3, 4, 5, 6, 7}:
             raise ValueError("unsupported start snapshot schema")
         profile_key = value.get("profile_key")
         driver_kind = value.get("driver_kind")
@@ -390,13 +431,13 @@ class StartSnapshot:
             if workflow_admission_value is None
             else start_admission_request_from_json(workflow_admission_value)
         )
-        conversation_value = value.get("conversation") if schema_version in {5, 6} else None
+        conversation_value = value.get("conversation") if schema_version in {5, 6, 7} else None
         if conversation_value is not None and not isinstance(conversation_value, dict):
             raise TypeError("conversation must be an object or null")
-        mode_value = value.get("context_preparation_mode") if schema_version in {5, 6} else None
+        mode_value = value.get("context_preparation_mode") if schema_version in {5, 6, 7} else None
         if mode_value is not None and not isinstance(mode_value, str):
             raise TypeError("context_preparation_mode must be a string or null")
-        prepared_value = value.get("prepared_context") if schema_version in {5, 6} else None
+        prepared_value = value.get("prepared_context") if schema_version in {5, 6, 7} else None
         if prepared_value is not None and not isinstance(prepared_value, dict):
             raise TypeError("prepared_context must be an object or null")
         authority_value = value.get("host_control_authority")
@@ -405,6 +446,23 @@ class StartSnapshot:
                 raise ValueError("v6 snapshot requires Host control mode")
             if not isinstance(authority_value, dict):
                 raise TypeError("v6 snapshot requires Host control authority object")
+        if schema_version == 7 and any(
+            name in value
+            for name in ("start_mode", "host_control_authority", "host_control_user_id")
+        ):
+            raise ValueError("v7 snapshot is ordinary and rejects Host control fields")
+        initial_route_value = value.get("initial_route_receipt") if schema_version == 7 else None
+        initial_route_hash = (
+            value.get("initial_route_receipt_hash") if schema_version == 7 else None
+        )
+        if schema_version == 7 and (
+            "initial_route_receipt" not in value or "initial_route_receipt_hash" not in value
+        ):
+            raise ValueError("v7 snapshot requires initial route fields")
+        if initial_route_value is not None and not isinstance(initial_route_value, dict):
+            raise TypeError("initial_route_receipt must be an object or null")
+        if initial_route_hash is not None and not isinstance(initial_route_hash, str):
+            raise TypeError("initial_route_receipt_hash must be a string or null")
         return cls(
             profile_key=profile_key,
             driver_kind=driver_kind,
@@ -414,7 +472,7 @@ class StartSnapshot:
             workflow_admission=admission,
             policy_fingerprint=(
                 _optional_string(value.get("policy_fingerprint"), "policy_fingerprint")
-                if schema_version in {3, 4, 5, 6}
+                if schema_version in {3, 4, 5, 6, 7}
                 else None
             ),
             tool_catalog_fingerprint=(
@@ -422,7 +480,7 @@ class StartSnapshot:
                     value.get("tool_catalog_fingerprint"),
                     "tool_catalog_fingerprint",
                 )
-                if schema_version in {4, 5, 6}
+                if schema_version in {4, 5, 6, 7}
                 else None
             ),
             provider_budget_fingerprint=(
@@ -430,7 +488,7 @@ class StartSnapshot:
                     value.get("provider_budget_fingerprint"),
                     "provider_budget_fingerprint",
                 )
-                if schema_version in {4, 5, 6}
+                if schema_version in {4, 5, 6, 7}
                 else None
             ),
             conversation=(
@@ -443,12 +501,12 @@ class StartSnapshot:
             ),
             context_stage_id=(
                 _optional_string(value.get("context_stage_id"), "context_stage_id")
-                if schema_version in {5, 6}
+                if schema_version in {5, 6, 7}
                 else None
             ),
             context_stage_hash=(
                 _optional_string(value.get("context_stage_hash"), "context_stage_hash")
-                if schema_version in {5, 6}
+                if schema_version in {5, 6, 7}
                 else None
             ),
             prepared_context=(
@@ -465,6 +523,12 @@ class StartSnapshot:
                 if schema_version == 6
                 else None
             ),
+            initial_route_receipt=(
+                ContextRouteReceipt.from_json(initial_route_value)
+                if isinstance(initial_route_value, dict)
+                else None
+            ),
+            initial_route_receipt_hash=initial_route_hash,
         )
 
 
@@ -501,7 +565,35 @@ def bind_start_snapshot(
         start_mode=start.start_mode,
         host_control_authority=start.host_control_authority,
         host_control_user_id=start.host_control_user_id,
+        initial_route_receipt=start.initial_route_receipt,
+        initial_route_receipt_hash=start.initial_route_receipt_hash,
     )
+
+
+def _validate_initial_route(
+    receipt: ContextRouteReceipt | None,
+    receipt_hash: str | None,
+    *,
+    run_id: str | None = None,
+) -> None:
+    if (receipt is None) != (receipt_hash is None):
+        raise ValueError("initial Context route receipt/hash must be paired")
+    if receipt is None:
+        return
+    if not isinstance(receipt_hash, str):
+        raise TypeError("initial_route_receipt_hash must be a string or null")
+    if not isinstance(receipt, ContextRouteReceipt):
+        raise TypeError("initial_route_receipt must use ContextRouteReceipt")
+    if (
+        receipt.schema_version != 3
+        or receipt.origin is not ContextRouteOrigin.HOST_INITIAL
+        or receipt.route_state is not ContextRouteState.ROUTED_TASK
+    ):
+        raise ValueError("initial Context route requires v3 host_initial TaskScope authority")
+    if run_id is not None and receipt.run_id != run_id:
+        raise ValueError("initial Context route belongs to another Run")
+    if receipt.receipt_hash != receipt_hash:
+        raise ValueError("initial Context route hash differs")
 
 
 def _optional_string(value: JsonValue | None, name: str) -> str | None:

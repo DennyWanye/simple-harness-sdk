@@ -30,6 +30,7 @@ from simple_harness.contracts import (
 )
 from simple_harness.execution.command_ingress import CommandClaim
 from simple_harness.execution.context_authority import (
+    ContextRouteReceipt,
     RunContextAuthorityPort,
     RuntimeDecisionSinkPort,
     TaskExecutionAuthorityPort,
@@ -809,6 +810,8 @@ class RunClient:
         tool_catalog_fingerprint: str | None = None,
         provider_budget_fingerprint: str | None = None,
         input: Mapping[str, JsonValue] | None = None,
+        initial_route_receipt: ContextRouteReceipt | None = None,
+        initial_route_receipt_hash: str | None = None,
     ) -> RunRecord:
         """Prepare one durable Context stage and start a trusted conversation Turn."""
 
@@ -832,6 +835,8 @@ class RunClient:
             tool_catalog_fingerprint,
             provider_budget_fingerprint,
             conversation=value,
+            initial_route_receipt=initial_route_receipt,
+            initial_route_receipt_hash=initial_route_receipt_hash,
         )
         reserve = getattr(self._runtime._uow, "reserve_legacy_run_mode", None)
         if callable(reserve):
@@ -846,6 +851,12 @@ class RunClient:
                             "conversation": value.to_json(),
                             "input": dict(start_input),
                             "tool_catalog_generation": tool_catalog_generation,
+                            "initial_route_receipt": (
+                                None
+                                if initial_route_receipt is None
+                                else initial_route_receipt.to_json()
+                            ),
+                            "initial_route_receipt_hash": initial_route_receipt_hash,
                         }
                     ).encode()
                 ).hexdigest(),
@@ -861,6 +872,8 @@ class RunClient:
                 snapshot.conversation != value
                 or snapshot.turn_id != resolved_turn
                 or existing.request_id != resolved_request.value
+                or snapshot.initial_route_receipt != initial_route_receipt
+                or snapshot.initial_route_receipt_hash != initial_route_receipt_hash
             ):
                 raise UnitOfWorkConflict("conversation start identity was reused differently")
             return existing
@@ -885,6 +898,8 @@ class RunClient:
                     and snapshot.turn_id == resolved_turn
                     and concurrent.request_id == resolved_request.value
                     and snapshot.context_stage_id == staged.stage_id
+                    and snapshot.initial_route_receipt == initial_route_receipt
+                    and snapshot.initial_route_receipt_hash == initial_route_receipt_hash
                 ):
                     return concurrent
             raise UnitOfWorkConflict("prepared context bytes are unavailable")
@@ -903,6 +918,8 @@ class RunClient:
                 context_stage_id=staged.stage_id,
                 context_stage_hash=staged.private_snapshot_hash,
                 prepared_context=staged.private_snapshot,
+                initial_route_receipt=initial_route_receipt,
+                initial_route_receipt_hash=initial_route_receipt_hash,
             )
         )
 
@@ -1470,6 +1487,12 @@ class Runtime:
                         "conversation": (
                             None if start.conversation is None else start.conversation.to_json()
                         ),
+                        "initial_route_receipt": (
+                            None
+                            if start.initial_route_receipt is None
+                            else start.initial_route_receipt.to_json()
+                        ),
+                        "initial_route_receipt_hash": start.initial_route_receipt_hash,
                     }
                 ).encode()
             ).hexdigest(),

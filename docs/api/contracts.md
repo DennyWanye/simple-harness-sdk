@@ -65,7 +65,7 @@ accept a validated lowercase snake-case extension code for later modules.
 change requires an intentional snapshot change, documentation update, and
 SemVer review; consumers must not import private implementation helpers.
 
-## Human Memory cognitive protocol (0.7.0 candidate)
+## Human Memory cognitive protocol (0.7.1 candidate)
 
 `PrivacyClass` and `InformationAttribute` are defined once in the dependency-free
 `information_classification_protocol`; `memory_protocol` re-exports those exact enum objects for

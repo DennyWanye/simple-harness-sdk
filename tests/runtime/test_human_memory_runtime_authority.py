@@ -14,6 +14,7 @@ from simple_harness.contracts import (
     thaw_json,
 )
 from simple_harness.execution.context_authority import (
+    ContextRouteOrigin,
     ContextRouteReceipt,
     ContextRouteState,
     RunContextAuthorityRequest,
@@ -220,3 +221,53 @@ def test_context_route_receipt_v1_only_decodes_legacy_standalone_wire() -> None:
     v1_with_authority_fields["binding_set_receipt_hash"] = None
     with pytest.raises(ValueError, match="v1 fields differ"):
         ContextRouteReceipt.from_json(v1_with_authority_fields)
+
+
+def test_context_route_receipt_v3_host_initial_has_distinct_provenance() -> None:
+    receipt = ContextRouteReceipt(
+        "route-initial-1",
+        "run-1",
+        None,
+        None,
+        TaskScopeRoute.RESUME_EXISTING,
+        "task-1",
+        3,
+        schema_version=3,
+        binding_set_receipt_id="binding-set-3",
+        binding_set_receipt_hash="d" * 64,
+        origin=ContextRouteOrigin.HOST_INITIAL,
+        host_authority_ref="host-execution:claim-1",
+        host_authority_hash="e" * 64,
+    )
+    assert receipt.route_state is ContextRouteState.ROUTED_TASK
+    assert ContextRouteReceipt.from_json(receipt.to_json()) == receipt
+    assert receipt.to_json()["raw_call_id"] is None
+    assert receipt.to_json()["effect_id"] is None
+
+    for field, invalid in (
+        ("origin", "context_tool"),
+        ("raw_call_id", "fake-call"),
+        ("effect_id", "fake-effect"),
+        ("host_authority_ref", None),
+        ("host_authority_hash", "bad"),
+    ):
+        payload = receipt.to_json()
+        payload[field] = invalid
+        with pytest.raises((TypeError, ValueError)):
+            ContextRouteReceipt.from_json(payload)
+
+
+def test_context_tool_v3_rejects_host_initial_provenance() -> None:
+    with pytest.raises(ValueError, match="forbids Host authority"):
+        ContextRouteReceipt(
+            "route-tool-1",
+            "run-1",
+            "raw-1",
+            "effect-1",
+            TaskScopeRoute.DIRECT_STANDALONE,
+            None,
+            None,
+            schema_version=3,
+            host_authority_ref="host-execution:claim-1",
+            host_authority_hash="e" * 64,
+        )

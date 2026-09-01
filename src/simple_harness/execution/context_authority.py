@@ -51,12 +51,17 @@ class ContextRouteState(StrEnum):
     ROUTED_TASK = "routed_task"
 
 
+class ContextRouteOrigin(StrEnum):
+    CONTEXT_TOOL = "context_tool"
+    HOST_INITIAL = "host_initial"
+
+
 @dataclass(frozen=True, slots=True)
 class ContextRouteReceipt:
     receipt_id: str
     run_id: str
-    raw_call_id: str
-    effect_id: str
+    raw_call_id: str | None
+    effect_id: str | None
     route: TaskScopeRoute
     task_scope_id: str | None
     binding_set_revision: int | None
@@ -64,17 +69,33 @@ class ContextRouteReceipt:
     schema_version: int = 2
     binding_set_receipt_id: str | None = None
     binding_set_receipt_hash: str | None = None
+    origin: ContextRouteOrigin = ContextRouteOrigin.CONTEXT_TOOL
+    host_authority_ref: str | None = None
+    host_authority_hash: str | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {1, 2}:
+        if self.schema_version not in {1, 2, 3}:
             raise ValueError("unsupported ContextRouteReceipt schema")
-        for value, name in (
-            (self.receipt_id, "receipt_id"),
-            (self.run_id, "run_id"),
-            (self.raw_call_id, "raw_call_id"),
-            (self.effect_id, "effect_id"),
-        ):
+        for value, name in ((self.receipt_id, "receipt_id"), (self.run_id, "run_id")):
             _required(value, name)
+        origin = ContextRouteOrigin(self.origin)
+        object.__setattr__(self, "origin", origin)
+        if self.schema_version < 3 and origin is not ContextRouteOrigin.CONTEXT_TOOL:
+            raise ValueError("legacy ContextRouteReceipt requires context_tool origin")
+        if origin is ContextRouteOrigin.CONTEXT_TOOL:
+            _required(self.raw_call_id, "raw_call_id")
+            _required(self.effect_id, "effect_id")
+            if self.host_authority_ref is not None or self.host_authority_hash is not None:
+                raise ValueError("context_tool route forbids Host authority provenance")
+        else:
+            if self.schema_version != 3:
+                raise ValueError("host_initial route requires ContextRouteReceipt v3")
+            if self.raw_call_id is not None or self.effect_id is not None:
+                raise ValueError("host_initial route forbids raw-call/effect provenance")
+            if self.host_authority_ref is None or self.host_authority_hash is None:
+                raise ValueError("host_initial route requires Host authority provenance")
+            _required(self.host_authority_ref, "host_authority_ref")
+            _digest(self.host_authority_hash, "host_authority_hash")
         object.__setattr__(self, "route", TaskScopeRoute(self.route))
         if self.schema_version == 1 and (
             self.route
@@ -109,6 +130,11 @@ class ContextRouteReceipt:
             )
         ):
             raise ValueError("standalone route forbids TaskScope binding")
+        if (
+            origin is ContextRouteOrigin.HOST_INITIAL
+            and self.route_state is not ContextRouteState.ROUTED_TASK
+        ):
+            raise ValueError("host_initial route requires TaskScope authority")
         if self.binding_set_revision is not None:
             if isinstance(self.binding_set_revision, bool) or not isinstance(
                 self.binding_set_revision, int
@@ -149,9 +175,13 @@ class ContextRouteReceipt:
             "binding_set_revision": self.binding_set_revision,
             "recall_refs": list(self.recall_refs),
         }
-        if self.schema_version == 2:
+        if self.schema_version in {2, 3}:
             payload["binding_set_receipt_id"] = self.binding_set_receipt_id
             payload["binding_set_receipt_hash"] = self.binding_set_receipt_hash
+        if self.schema_version == 3:
+            payload["origin"] = self.origin.value
+            payload["host_authority_ref"] = self.host_authority_ref
+            payload["host_authority_hash"] = self.host_authority_hash
         return payload
 
     @classmethod
@@ -171,11 +201,15 @@ class ContextRouteReceipt:
             "recall_refs",
         }
         expected = legacy_expected | {"binding_set_receipt_id", "binding_set_receipt_hash"}
+        v3_expected = expected | {"origin", "host_authority_ref", "host_authority_hash"}
         if schema_version == 1:
             if set(value) != legacy_expected:
                 raise ValueError("ContextRouteReceipt v1 fields differ")
         elif schema_version == 2:
             if set(value) != expected:
+                raise ValueError("ContextRouteReceipt fields differ")
+        elif schema_version == 3:
+            if set(value) != v3_expected:
                 raise ValueError("ContextRouteReceipt fields differ")
         else:
             raise ValueError("unsupported ContextRouteReceipt schema")
@@ -198,21 +232,37 @@ class ContextRouteReceipt:
                 raise TypeError(f"{name} must be a string or null")
             return item
 
+        raw_call_id = value["raw_call_id"]
+        effect_id = value["effect_id"]
+        if raw_call_id is not None and not isinstance(raw_call_id, str):
+            raise TypeError("raw_call_id must be a string or null")
+        if effect_id is not None and not isinstance(effect_id, str):
+            raise TypeError("effect_id must be a string or null")
+        origin_value = value.get("origin", ContextRouteOrigin.CONTEXT_TOOL.value)
+        if not isinstance(origin_value, str):
+            raise TypeError("origin must be a string")
         return cls(
             receipt_id=_required(value["receipt_id"], "receipt_id"),
             run_id=_required(value["run_id"], "run_id"),
-            raw_call_id=_required(value["raw_call_id"], "raw_call_id"),
-            effect_id=_required(value["effect_id"], "effect_id"),
+            raw_call_id=raw_call_id,
+            effect_id=effect_id,
             route=TaskScopeRoute(route),
             task_scope_id=task_scope_id,
             binding_set_revision=revision,
             recall_refs=tuple(refs),
             schema_version=schema_version,
             binding_set_receipt_id=(
-                optional_text("binding_set_receipt_id") if schema_version == 2 else None
+                optional_text("binding_set_receipt_id") if schema_version in {2, 3} else None
             ),
             binding_set_receipt_hash=(
-                optional_text("binding_set_receipt_hash") if schema_version == 2 else None
+                optional_text("binding_set_receipt_hash") if schema_version in {2, 3} else None
+            ),
+            origin=ContextRouteOrigin(origin_value),
+            host_authority_ref=(
+                optional_text("host_authority_ref") if schema_version == 3 else None
+            ),
+            host_authority_hash=(
+                optional_text("host_authority_hash") if schema_version == 3 else None
             ),
         )
 
@@ -546,6 +596,7 @@ class DurableToolCatalogResolver:
 
 __all__ = (
     "CatalogHandlerBinding",
+    "ContextRouteOrigin",
     "ContextRouteReceipt",
     "ContextRouteState",
     "DurableToolCatalogResolver",
