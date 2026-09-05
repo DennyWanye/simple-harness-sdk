@@ -117,6 +117,7 @@ def test_stage_cursor_domain_cleanup_prefix_and_new_calls(tmp_path):
 
 def test_late_old_call_cannot_change_recreated_stage_origin(tmp_path):
     import json
+
     from simple_harness.execution.sqlite.stage_audit import begin_prepare, finish
 
     with Database.open(tmp_path / "generation.db") as db:
@@ -149,7 +150,8 @@ def test_late_old_call_cannot_change_recreated_stage_origin(tmp_path):
         assert repo.cleanup(now=4, older_than=1, limit=10) == 1
         current = claim("current", 5)
         current_origin = db.connection.execute(
-            "SELECT incarnation FROM sdk_stage_audit_events WHERE operation='stage.created' ORDER BY event_seq DESC LIMIT 1"
+            "SELECT incarnation FROM sdk_stage_audit_events WHERE operation='stage.created' "
+            "ORDER BY event_seq DESC LIMIT 1"
         ).fetchone()[0]
         with db.transaction() as connection:
             finish(connection, old_call, state="returned", result_hash="c" * 64, now=6)
@@ -160,7 +162,8 @@ def test_late_old_call_cannot_change_recreated_stage_origin(tmp_path):
             next_call = begin_prepare(connection, takeover.record, request_hash="e" * 64, now=8)
             assert next_call.incarnation == current_origin
         values = db.connection.execute(
-            "SELECT incarnation,payload_json FROM sdk_stage_audit_events WHERE operation='stage.claimed'"
+            "SELECT incarnation,payload_json FROM sdk_stage_audit_events "
+            "WHERE operation='stage.claimed'"
         ).fetchall()
         assert len(values) == 1 and values[0][0] == current_origin
         assert json.loads(values[0][1])["state"] == "preparing"
