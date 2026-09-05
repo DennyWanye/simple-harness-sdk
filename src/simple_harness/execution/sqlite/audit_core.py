@@ -4,6 +4,9 @@ from simple_harness.execution.audit import RunOperationAuditV1, audit_hash, audi
 
 # Table, immutable/composite identity, actual owning Run columns, public domain.
 CORE_SOURCES = (
+    ("terminal_projection_prepares", ("operation_id",), ("run_id",), "workflow"),
+    ("provider_projection_outbox", ("sequence",), ("run_id",), "context"),
+    ("run_wait_blockers", ("blocker_id",), ("run_id",), "control"),
     ("continuation_progress_receipts", ("receipt_id",), ("run_id",), "control"),
     ("wait_activation_receipts", ("receipt_id",), ("run_id",), "control"),
     ("runtime_start_receipts", ("run_id",), ("run_id",), "control"),
@@ -97,6 +100,15 @@ def core_rows(connection, run_id, *, limit):
         )
         for row in rows:
             yield table, keys, kind, dict(row)
+    # Continuation preparation belongs to its real continuation's Run. The staging
+    # XOR consumption constraint prevents duplication with consumed_run_id above.
+    for row in connection.execute(
+        "SELECT s.* FROM context_preparation_staging s JOIN continuations c "
+        "ON c.continuation_id=s.consumed_continuation_id WHERE c.run_id=? "
+        "ORDER BY s.stage_id LIMIT ?",
+        (run_id, limit),
+    ):
+        yield "context_preparation_staging", ("stage_id",), "context", dict(row)
     # No Run column here: association is the canonical spawn operation, not time/ID guessing.
     for row in connection.execute(
         "SELECT r.* FROM workflow_spawn_continuation_ready r "

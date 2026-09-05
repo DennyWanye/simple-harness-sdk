@@ -124,3 +124,24 @@ P2: descriptor checksum-column rename previously raised raw OperationalError.
 Actual DDL validation now precedes descriptor SELECT, producing typed
 AuditSchemaIncompatible without writes. Descriptor oracle red then schema8 PASS
 0.25s (descriptor-column-red.log / descriptor-column-green.log). No236 rerun.
+
+## C7 canonical source associations — 2026-09-05
+
+Existing terminal_projection_prepares, provider_projection_outbox and run_wait_blockers
+are now normalized from exact owning Run rows. Context staging consumed by a
+continuation joins its canonical continuation.run_id; the consumption XOR excludes
+duplicate root association. No new ledger or guessed successful state is introduced.
+Provider projection is a context receipt, not another physical Provider call/charge.
+Normalizer7 invalidates stale source enumerations. Five actual public production
+cases red before the reader change, green after (projection prepare/reopen, Provider
+settlement/outbox, resolved blocker, two real command continuation preparation cases).
+Directly related nine-module combination136 PASS5.97s, exit0:
+canonical-sources-red.log / canonical-sources-green.log / canonical-sources-adjacent.log.
+
+Remaining freeze inventory: SDK-owned MemoryDispatcher.record_committed_turn and
+kernel.release_recall have mutable SDK-side queue/attempt heads not yet represented
+as full call history; applied outbox/staging cleanup can remove those heads. These
+are SDK port calls, not Memory SDK internals. Their exact boundary/Run or command
+association is being challenged before calling the source set all-operations.
+No historical facts will be manufactured. Complete fixed-source independent review
+and one successor artifact/installed consumer still remain.

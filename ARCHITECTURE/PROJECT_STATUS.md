@@ -123,3 +123,12 @@ writer remains a history gap; fixedeea3c19 independently scoped ACCEPT.
 Delivery-only public parent-ref normalization now joins captured heads (11 PASS). Whole producer
 source and successor artifact are not complete. See
 [Delivery contract](../plans/2026-09-05-run-operation-audit/DELIVERY.md).
+
+## Canonical audit source associations — 2026-09-05
+
+Terminal projection preparation, Provider projection receipt, wait blocker and
+continuation-consumed context staging are included via canonical Run relations.
+Five decisive source omissions red→green;136 adjacent PASS. Existing bytes/receipts
+are reused, with no extra Provider accounting. SDK-owned committed-turn/release
+port-call history and complete producer review still prevent all-operation/artifact
+completion; Memory SDK internals remain outside this leaf. See core progress.

@@ -1294,6 +1294,9 @@ def test_continue_command_provider_crash_replays_stable_preparation_intent(
             (continuation.command_id,),
         ).fetchone()
         assert stored_hash is not None and str(stored_hash[0]) == continuation.intent_hash
+        audit = await recovered_runtime.client.read_run_operation_audit(start.run_id)
+        staged = [o for o in audit.operations if o.operation_name == "context_preparation_staging"]
+        assert len(staged) == 1 and staged[0].state == "consumed"
         await recovered_runtime.close()
         recovered_database.close()
 

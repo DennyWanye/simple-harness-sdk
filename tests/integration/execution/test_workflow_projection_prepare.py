@@ -224,6 +224,8 @@ def test_prepare_reopen_exact_replay_and_payload_conflict(tmp_path: Path) -> Non
     with Database.open(path) as reopened:
         _uow, store = _authorities(reopened)
         assert _prepare(store, config) == receipt
+        audit = _uow.read_run_operation_audit(RunId("run"))
+        assert any(o.operation_name == "terminal_projection_prepares" for o in audit.operations)
         with pytest.raises(WorkflowOperationConflict, match="changed"):
             _prepare(store, config, output={"intents": [{"changed": True}]})
 

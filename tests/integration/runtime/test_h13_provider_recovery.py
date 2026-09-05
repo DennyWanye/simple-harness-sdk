@@ -173,6 +173,9 @@ def test_resolution_before_wait_is_not_lost_and_receipt_rejects_foreign_owner(
         now=6.0,
     )
     assert waiting.state is RunState.WAITING and blocker.resolution_id is not None
+    audit = uow.read_run_operation_audit(RunId("run-1"))
+    observed = [o for o in audit.operations if o.operation_name == "run_wait_blockers"]
+    assert len(observed) == 1 and observed[0].state == "recorded"
     assert uow.list_resolved_wait_blockers(
         owner_id="owner-a", namespace="runtime.kernel", now=7.0
     ) == (blocker,)

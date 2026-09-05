@@ -84,6 +84,11 @@ def test_settlement_and_projection_receipt_commit_atomically_and_cursor_is_stabl
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
         assert uow.list_provider_projection_receipts() == receipts
+        audit = uow.read_run_operation_audit(RunId("run-1"))
+        projected = [
+            o for o in audit.operations if o.operation_name == "provider_projection_outbox"
+        ]
+        assert len(projected) == 1 and projected[0].kind == "context"
         assert uow.list_provider_projection_receipts(after_sequence=receipt.sequence) == ()
 
 
