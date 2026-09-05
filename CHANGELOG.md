@@ -5,6 +5,28 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.7.3 — local successor candidate
+
+### Added
+- SDK-owned operation-audit producers and metadata-only public Run, command and pre-Run
+  stage snapshots with stable page continuation. Actual Provider/tool/effect, pre-effect
+  rejection, core runtime, command, delivery and Memory-port boundaries retain unknown
+  outcomes and exact canonical associations. Existing child/workflow receipts are reused.
+- Explicit observational audit schema2, separate from execution7; exact audit1 is extended
+  atomically on write-open and read-only never migrates. Legacy writer gaps remain visible.
+- Exact ordinary/root terminal evidence exposes separate payload and row hashes; pages
+  revalidate actual terminal state/unique source through indexed reads. Host must retain
+  exact Run/event/state/payload comparison, including SDK-owned terminal outbox metadata.
+
+### Limits
+- Current-source completeness is not all-operations recording or consumer audit completion.
+  Legacy absent witnesses and unleased calls without state changes are unreconstructable;
+  mutable canonical heads are not invented immutable all-transition histories. Host,
+  Memory and Service operation producers/optimization findings are separate domains.
+- Frozen0.7.2 and original failed candidates are unchanged. No public release/push/tag is
+  implied. Independent installed public consumer and actual Host terminal composition are
+  distinct gates; see plans/2026-09-05-run-operation-audit/ for evidence and scope.
+
 ## 0.7.2 — candidate
 
 ### Fixed
