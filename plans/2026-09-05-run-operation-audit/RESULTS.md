@@ -88,3 +88,32 @@ ownership integration, wheel/version bump, or native production completion.
 
 Independent Dirac contract challenge accepted bounded V1 as a first slice; fixed-source
 review pending. Coordinator owns promotion/combination and later artifact preparation.
+
+
+## Metadata P1 correction — independent review requested
+
+0eb1d15 is independently BLOCKED: real ToolResult.failed with arbitrary error_code
+`tok_demoAuditCanary_4931` exported that string in both head and transition. The regex
+was not an export authority. `metadata-red.log`: 1 failed, 15 deselected, 0.14s,
+exit1 reproduces it through the actual SQLite runtime with one physical tool call.
+
+Correction: closed SDK codes; external code hash only; actual registry name provenance;
+unknown candidate name hash only; opaque join references and Run/turn/ordinal-bound
+raw call hash. Original exact source hashes and original rows remain intact. One new
+historical V1 append fixture verifies reader filtering without rewriting source bytes,
+including caller-like reference canaries; kernel unknown-name/raw-call and arbitrary
+error-code tests verify live export. Existing registered-name, SDK error-code and exact
+Provider/effect join positive oracles remain. See CONTRACT metadata section.
+
+**74 passed in 1.57s, exit0** using the same six-file command above: 17 dedicated plus
+57 adjacent. Selected changed-file Ruff passed. No paid Provider/native/full suite,
+no frozen main/version/wheel changes. Fixed correction review remains pending.
+
+| File | SHA256 |
+|---|---|
+| metadata-red.log | 7e0ad5b11b891f3b3e46dae926c66562a0eb70a71683d0a949644bf816da7228 |
+| metadata-final2.log | 389e303ba0c1e77857746e3b42e04a6982d59b59e3f5d14f94c60e441873c450 |
+
+The previous Service five-case source overlay used 0eb1; it is not proof of the new
+reference semantics or an installed artifact. Service was notified, no Service code
+or frozen artifact was edited here. Pagination/full coverage MUSTs are unchanged.

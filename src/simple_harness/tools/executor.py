@@ -253,6 +253,12 @@ class EffectExecutor:
         # Keep the original full intent validation below, without requiring a
         # fresh write lease or restamping legacy effects with new audit facts.
         terminal_replay = existing is not None and existing.terminal
+        from .errors import UnknownToolError
+
+        try:
+            registered_tool_name = self._registry.get(call.name).spec.name
+        except UnknownToolError:
+            registered_tool_name = None
 
         def record(state, error_code=None):
             if audit is not None and not terminal_replay:
@@ -267,6 +273,7 @@ class EffectExecutor:
                     turn_ordinal=turn_ordinal,
                     call_ordinal=call_ordinal,
                     error_code=error_code,
+                    registered_tool_name=registered_tool_name,
                 )
 
         record("requested")

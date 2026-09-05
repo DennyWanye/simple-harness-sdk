@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from simple_harness.execution.audit import (
     RunAuditUnavailable,
     RunAuditUsageV1,
     RunOperationAuditSnapshotV1,
     RunOperationAuditV1,
+    audit_error_code,
     audit_hash,
-    safe_audit_label,
+    audit_label_syntax,
+    audit_reference,
 )
 
 
@@ -71,17 +74,36 @@ def read_snapshot(connection, run_id, limit):
                     row["event_id"],
                     record_type="boundary",
                     created_at=row["created_at"],
-                    operation_name=value.get("operation_name"),
+                    operation_name=value.get("registered_tool_name"),
+                    operation_name_hash=value.get("operation_name_hash")
+                    or (
+                        audit_hash(value["operation_name"]) if value.get("operation_name") else None
+                    ),
                     call_id=value.get("call_id"),
-                    error_code=value.get("error_code"),
+                    error_code=audit_error_code(value.get("error_code")),
                     error_code_hash=value.get("error_code_hash"),
-                    raw_call_id=value.get("raw_call_id"),
+                    raw_call_id_hash=value.get("raw_call_id_hash")
+                    or (audit_hash(value["raw_call_id"]) if value.get("raw_call_id") else None),
                     effect_id=value.get("effect_id"),
                     turn_ordinal=value.get("turn_ordinal"),
                     call_ordinal=value.get("call_ordinal"),
                 )
             )
         else:
+            details = dict(value.get("details", {}))
+            name = details.get("operation_name")
+            details["operation_name_hash"] = details.get("operation_name_hash") or (
+                audit_hash(name) if name else None
+            )
+            details["operation_name"] = (
+                _registered_name(connection, run_id, details.get("effect_id"))
+                if value["kind"] == "effect"
+                else "provider.invoke"
+            )
+            details["error_code"] = audit_error_code(details.get("error_code"))
+            raw = details.pop("raw_call_id", None)
+            if raw is not None:
+                details["raw_call_id_hash"] = audit_hash(raw)
             operations.append(
                 RunOperationAuditV1(
                     value["operation_id"],
@@ -93,7 +115,7 @@ def read_snapshot(connection, run_id, limit):
                     value["handoff_attempt"],
                     value["rehandoff_count"],
                     record_type="transition",
-                    **value.get("details", {}),
+                    **details,
                 )
             )
     operations.append(
@@ -118,7 +140,8 @@ def read_snapshot(connection, run_id, limit):
                 audit_hash(dict(row)),
                 row["event_id"],
                 record_type="receipt",
-                operation_name=safe_audit_label(row["kind"]),
+                operation_name="run.event",
+                operation_name_hash=audit_hash(row["kind"]),
                 created_at=row["created_at"],
             )
         )
@@ -170,6 +193,7 @@ def read_snapshot(connection, run_id, limit):
                     else None,
                 )
             )
+    operations = [_opaque_operation(o, run_id) for o in operations]
     operations.sort(
         key=lambda o: (o.kind, o.operation_id, o.source_version, o.record_type, o.source_id)
     )
@@ -181,8 +205,8 @@ def read_snapshot(connection, run_id, limit):
         tuple(operations[:limit]),
         truncated,
         ("legacy_transition_coverage_unverified", "pre_runtime_validation_not_covered"),
-        root_run_id=run["root_run_id"],
-        parent_run_id=run["parent_run_id"],
+        root_run_id=audit_reference("run", run["root_run_id"]),
+        parent_run_id=audit_reference("run", run["parent_run_id"]),
     )
 
 
@@ -230,21 +254,26 @@ def _details(row, kind, connection=None):
     name = (
         row.get("tool_name")
         if kind == "effect"
-        else ("provider.invoke" if kind == "provider" else row.get("kind", kind))
+        else ("provider.invoke" if kind == "provider" else kind)
     )
     invocation_id, request_id = row.get("invocation_id"), row.get("request_id")
     if kind == "effect" and connection is not None:
         invocation_id, request_id = _effect_provider_link(connection, row)
     return dict(
-        operation_name=safe_audit_label(name),
-        error_code=safe_audit_label(error),
+        operation_name=(
+            _registered_name(connection, row["run_id"], row["effect_id"])
+            if kind == "effect" and connection is not None
+            else audit_label_syntax(name)
+        ),
+        operation_name_hash=audit_hash(name) if name else None,
+        error_code=audit_error_code(error),
         error_code_hash=None if error is None else audit_hash(error),
         created_at=row.get("claimed_at", row.get("prepared_at", row.get("created_at"))),
         handed_off_at=row.get("handed_off_at"),
         settled_at=row.get("settled_at", row.get("resolved_at")),
         request_id=request_id,
         call_id=row.get("call_id"),
-        raw_call_id=row.get("raw_call_id"),
+        raw_call_id_hash=audit_hash(row["raw_call_id"]) if row.get("raw_call_id") else None,
         turn_ordinal=row.get("turn_ordinal"),
         call_ordinal=row.get("call_ordinal"),
         effect_id=row.get("effect_id"),
@@ -307,3 +336,48 @@ def _effect_provider_link(connection, effect):
     ):
         raise RunAuditUnavailable("effect_provider_binding_mismatch")
     return provider["invocation_id"], request_id
+
+
+def _registered_name(connection, run_id, effect_id):
+    if effect_id is None:
+        return None
+    rows = connection.execute(
+        "SELECT event_id,payload_json FROM run_events WHERE run_id=? "
+        "AND kind='audit.tool.v1' AND json_extract(payload_json,'$.effect_id')=? "
+        "AND json_extract(payload_json,'$.state')='requested'",
+        (run_id, effect_id),
+    ).fetchall()
+    for row in rows:
+        value = json.loads(row["payload_json"])
+        if row["event_id"].rsplit(":", 1)[-1] != audit_hash(value):
+            raise RunAuditUnavailable("audit_fact_hash_mismatch")
+        # Only the new executor's successful registry lookup supplies this marker.
+        # Old persisted operation_name is not evidence of registration.
+        name = value.get("registered_tool_name")
+        if name is not None:
+            return audit_label_syntax(name)
+    return None
+
+
+def _opaque_operation(operation, run_id):
+    """Exact source hashes survive; external identifiers become opaque join refs."""
+    kind = operation.kind
+    entity_kind = "effect" if kind == "tool" else kind
+    identity = operation.effect_id if kind == "tool" else operation.operation_id.split(":", 1)[-1]
+    source_kind = kind if operation.record_type == "head" else "event"
+    if kind in {"context", "reconciliation"}:
+        source_kind = kind
+    raw_hash = operation.raw_call_id_hash
+    return replace(
+        operation,
+        operation_id=audit_reference(entity_kind, identity),
+        source_id=audit_reference(source_kind, operation.source_id),
+        request_id=audit_reference("request", operation.request_id),
+        call_id=audit_reference("call", operation.call_id),
+        raw_call_id=None,
+        raw_call_id_hash=None
+        if raw_hash is None
+        else audit_hash([run_id, operation.turn_ordinal, operation.call_ordinal, raw_hash]),
+        effect_id=audit_reference("effect", operation.effect_id),
+        provider_invocation_id=audit_reference("provider", operation.provider_invocation_id),
+    )

@@ -200,8 +200,8 @@ def test_pre_effect_rejection_is_durable_without_an_effect(tmp_path, mode):
             if len(self.requests) == 1:
                 calls = (
                     ProviderToolCall(
-                        CallId("raw-fault"),
-                        "missing_tool" if mode == "unknown_tool" else "write_note",
+                        CallId("opaqueCallCanary4931"),
+                        "opaqueCandidateCanary4931" if mode == "unknown_tool" else "write_note",
                         {"extra": "credential-shaped-value-not-for-export"}
                         if mode == "bad_arguments"
                         else {},
@@ -250,10 +250,14 @@ def test_pre_effect_rejection_is_durable_without_an_effect(tmp_path, mode):
         )
         assert any(
             o.kind == "tool"
-            and o.operation_name == ("missing_tool" if mode == "unknown_tool" else "write_note")
+            and o.operation_name == (None if mode == "unknown_tool" else "write_note")
             for o in snapshot.operations
         )
+        if mode == "unknown_tool":
+            assert any(o.error_code == "unknown_tool" for o in snapshot.operations)
         assert physical.calls == 0
+        assert "opaqueCandidateCanary4931" not in str(snapshot.to_json())
+        assert "opaqueCallCanary4931" not in str(snapshot.to_json())
         assert "credential-shaped-value-not-for-export" not in str(snapshot.to_json())
         tiny = await runtime.client.read_run_operation_audit(RunId("run-fault"), limit=1)
         assert tiny.truncated and not tiny.current_source_complete
@@ -399,7 +403,8 @@ def test_same_raw_call_across_runs_preserves_distinct_effect_links(tmp_path):
             (head,) = [
                 o for o in snapshot.operations if o.kind == "effect" and o.record_type == "head"
             ]
-            assert head.operation_name == "write_note" and head.raw_call_id == "raw-fault"
+            assert head.operation_name == "write_note" and head.raw_call_id is None
+            assert head.raw_call_id_hash is not None
             assert head.request_hash is not None and head.result_hash is not None
             assert head.provider_invocation_id is not None
             assert any(
@@ -409,6 +414,7 @@ def test_same_raw_call_across_runs_preserves_distinct_effect_links(tmp_path):
             assert head.call_id != head.raw_call_id
             heads.append(head)
         assert heads[0].operation_id != heads[1].operation_id
+        assert heads[0].raw_call_id_hash != heads[1].raw_call_id_hash
         assert heads[0].call_id != heads[1].call_id
         assert physical.calls == 2 and len(provider.requests) == 4
         await runtime.close()
@@ -479,7 +485,7 @@ def test_real_tool_settlement_preserves_outcome_and_redacts_payload(tmp_path, ou
     def result():
         if outcome == "failed":
             return ToolResult.failed(
-                CallId("raw-fault"), "fixture_failed", "Bearer AUDIT_SECRET_CANARY"
+                CallId("raw-fault"), "tok_demoAuditCanary_4931", "Bearer AUDIT_SECRET_CANARY"
             )
         if outcome == "partial":
             return ToolResult.partial(CallId("raw-fault"), {"private": "AUDIT_SECRET_CANARY"})
@@ -517,7 +523,11 @@ def test_real_tool_settlement_preserves_outcome_and_redacts_payload(tmp_path, ou
         assert head.state == outcome
         assert head.handoff_attempt == 1 and physical.calls == 1
         if outcome == "failed":
-            assert head.error_code == "fixture_failed"
+            assert head.error_code is None
+            from simple_harness.execution.audit import audit_hash
+
+            assert head.error_code_hash == audit_hash("tok_demoAuditCanary_4931")
+            assert "tok_demoAuditCanary_4931" not in str(snapshot.to_json())
         assert "AUDIT_SECRET_CANARY" not in str(snapshot.to_json())
         assert snapshot.run_state == ("waiting" if outcome == "unknown" else "completed")
         await runtime.close()
@@ -631,3 +641,63 @@ def test_terminal_effect_replay_with_expired_lease_does_not_restamp_audit(tmp_pa
         )
     assert uow.read_run_operation_audit(RunId("run-1")).snapshot_hash == before
     database.close()
+
+
+def test_old_audit_facts_are_filtered_without_rewriting_original_ledger(tmp_path):
+    from simple_harness.contracts import canonical_json
+    from simple_harness.execution.audit import audit_hash
+
+    from .test_h13_tool_recovery import _unknown
+
+    database, uow, _, _, _, unknown = _unknown(tmp_path)
+    canary = "opaqueLegacyCanary4931"
+    old = dict(
+        operation_id="effect:" + canary,
+        kind="effect",
+        state="unknown",
+        source_version=1,
+        source_hash=audit_hash({"original": canary}),
+        handoff_attempt=1,
+        rehandoff_count=0,
+        details=dict(
+            operation_name=canary,
+            error_code=canary,
+            error_code_hash=audit_hash(canary),
+            raw_call_id=canary,
+            call_id=canary,
+            request_id=canary,
+            effect_id=canary,
+            provider_invocation_id=canary,
+        ),
+    )
+    event_id = canary + ":" + audit_hash(old)
+    with database.transaction() as connection:
+        # Append an exact V1 historical format, without restamping/deleting sources.
+        uow._insert_event(
+            connection,
+            event_id=event_id,
+            run_id="run-1",
+            kind="audit.transition.v1",
+            payload=old,
+            now=7.0,
+        )
+    before = uow.read_effect(unknown.effect_id)
+    snapshot = uow.read_run_operation_audit(RunId("run-1"))
+    assert canary not in canonical_json(snapshot.to_json())
+    (projected,) = [o for o in snapshot.operations if o.source_hash == old["source_hash"]]
+    assert projected.error_code is None and projected.operation_name is None
+    assert projected.error_code_hash == audit_hash(canary)
+    assert projected.operation_id == projected.effect_id
+    assert projected.raw_call_id is None and projected.raw_call_id_hash is not None
+    with database.transaction(read_only=True) as connection:
+        assert connection.execute(
+            "SELECT payload_json FROM run_events WHERE event_id=?", (event_id,)
+        ).fetchone()[0] == canonical_json(old)
+    assert uow.read_effect(unknown.effect_id) == before
+    database.close()
+    reopened = Database.open(tmp_path / "tool-recovery.db")
+    assert (
+        SqliteExecutionUnitOfWork(reopened).read_run_operation_audit(RunId("run-1")).snapshot_hash
+        == snapshot.snapshot_hash
+    )
+    reopened.close()

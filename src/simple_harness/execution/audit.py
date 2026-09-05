@@ -19,12 +19,46 @@ class RunAuditUnavailable(RuntimeError):
     code = "run_audit_unavailable"
 
 
-def safe_audit_label(value):
+def audit_label_syntax(value):
+    """Syntax only; callers must establish registration or a closed SDK vocabulary."""
     if not isinstance(value, str) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}", value) is None:
         return None
-    if re.search(r"(?:^sk-|^AKIA|bearer|api.?key|password|cookie|private.?key)", value, re.I):
-        return None
     return value
+
+
+# Closed SDK vocabulary, not a pattern-based promise about external strings.
+SDK_AUDIT_ERROR_CODES = frozenset(
+    {
+        "provider_error",
+        "provider_error_after_handoff",
+        "provider_cancelled_after_handoff",
+        "provider_response_not_durable",
+        "provider_authentication_failed",
+        "provider_payment_required",
+        "provider_rate_limited",
+        "provider_server_error",
+        "provider_timeout",
+        "provider_cancelled",
+        "provider_transport_error",
+        "provider_request_rejected",
+        "provider_protocol_error",
+        "tool_registry_error",
+        "duplicate_tool",
+        "unknown_tool",
+        "malformed_tool_arguments",
+        "duplicate_tool_call",
+        "late_tool_result",
+        "tool_dispatch_interrupted",
+    }
+)
+
+
+def audit_error_code(value):
+    return value if isinstance(value, str) and value in SDK_AUDIT_ERROR_CODES else None
+
+
+def audit_reference(kind, value):
+    return None if value is None else kind + ":" + audit_hash([kind, value])
 
 
 def _identifier(value):
@@ -79,6 +113,8 @@ class RunOperationAuditV1:
     operation_name: str | None = None
     error_code: str | None = None
     error_code_hash: str | None = None
+    operation_name_hash: str | None = None
+    raw_call_id_hash: str | None = None
     created_at: float | None = None
     handed_off_at: float | None = None
     settled_at: float | None = None
@@ -106,8 +142,10 @@ class RunOperationAuditV1:
 
     def __post_init__(self):
         for label in (self.operation_name, self.error_code):
-            if label is not None and safe_audit_label(label) != label:
+            if label is not None and audit_label_syntax(label) != label:
                 raise ValueError("unsafe audit label")
+        if self.error_code is not None and audit_error_code(self.error_code) is None:
+            raise ValueError("unmapped audit error code")
         for timestamp in (self.created_at, self.handed_off_at, self.settled_at):
             if timestamp is not None and (
                 isinstance(timestamp, bool)

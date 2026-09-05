@@ -894,8 +894,9 @@ class SqliteExecutionUnitOfWork:
         turn_ordinal=0,
         call_ordinal=0,
         error_code=None,
+        registered_tool_name=None,
     ):
-        from simple_harness.execution.audit import audit_hash, safe_audit_label
+        from simple_harness.execution.audit import audit_error_code, audit_hash, audit_label_syntax
         from simple_harness.execution.effects import effect_request_hash
 
         if state not in {
@@ -915,12 +916,14 @@ class SqliteExecutionUnitOfWork:
                 tool_name=call.name, arguments=thaw_json(call.arguments)
             ),
             state=state,
-            operation_name=safe_audit_label(call.name),
+            operation_name=audit_label_syntax(registered_tool_name),
+            registered_tool_name=audit_label_syntax(registered_tool_name),
+            operation_name_hash=audit_hash(call.name),
             effect_id=effect_id.value,
-            raw_call_id=raw_call_id,
+            raw_call_id_hash=None if raw_call_id is None else audit_hash(raw_call_id),
             turn_ordinal=turn_ordinal,
             call_ordinal=call_ordinal,
-            error_code=safe_audit_label(error_code),
+            error_code=audit_error_code(error_code),
             error_code_hash=None if error_code is None else audit_hash(str(error_code)),
         )
         identity = "audit-tool:" + audit_hash(

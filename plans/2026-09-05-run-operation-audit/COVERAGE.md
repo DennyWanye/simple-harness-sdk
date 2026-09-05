@@ -35,3 +35,9 @@ one new event. `fully_audited` is not a field or implied result.
   consumer. A snapshot is evidence input, not an optimization finding or full audit.
 
 No original acceptance is reduced. No frozen main, package version or wheel changed.
+
+
+Metadata correction: arbitrary source codes and unknown candidate labels are not
+public labels. Fixed SDK vocabulary/actual registry provenance govern readable labels;
+opaque refs preserve joins. Original 0eb1 metadata candidate BLOCKED; see CONTRACT and
+RESULTS for corrected 74-case source verification and pending independent re-review.

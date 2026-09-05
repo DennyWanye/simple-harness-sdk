@@ -103,7 +103,7 @@ No paid Provider/native/full suite; independent Dirac challenge requested.
   handoff_attempt/rehandoff_count, operation_name, error_code/error_code_hash,
   created_at/handed_off_at/settled_at, request_id/call_id/raw_call_id/turn_ordinal/
   call_ordinal/effect_id/provider_invocation_id, request_hash/result_hash/evidence_ref_hash/
-  authorization_ref_hash, optional typed usage. Names/codes are bounded safe labels;
+  authorization_ref_hash, optional typed usage. Names require actual registry provenance or a fixed SDK label; codes use a closed SDK vocabulary;
   arbitrary messages/payloads are not exposed. Unavailable values are None.
 - `handoff_to_settlement_seconds` is computed only from recorded timestamps in order.
   For unknown it measures time until unknown was recorded, not proof of physical
@@ -127,3 +127,35 @@ Exact limitations and MUST successors are enumerated in COVERAGE.md.
 Terminal effect result replay retains the original executor full intent validation and
 does not create a new requested fact or demand a fresh write lease. Existing durable
 terminal source remains the audit authority; legacy facts are not restamped.
+
+
+## Fixed-source metadata P1 correction (supersedes earlier label wording)
+
+The first 0eb1d15 candidate incorrectly treated a regex and credential keyword blacklist
+as a metadata whitelist. Dirac demonstrated arbitrary ToolResult.error_code leakage;
+that candidate is BLOCKED, not accepted. The correction has no blacklist expansion:
+
+- Only the explicit SDK error code vocabulary is exported in error_code; all other
+  Host/tool/provider strings have error_code=None and retain error_code_hash.
+- Tool names require the executor's successful real registry.get and its registered
+  ToolSpec.name. The append-only requested fact records that provenance. Unknown
+  model candidates have operation_name=None and operation_name_hash; old facts with
+  only operation_name are not retrospectively certified as registered. Registration
+  is the Host's explicit public catalog boundary, not a claim that every arbitrary
+  name-looking string is harmless. Generic events use fixed run.event plus kind hash.
+- operation_id/source_id/request_id/call_id/effect_id/provider_invocation_id are opaque
+  domain-separated hash references. Same entity uses the same domain: provider head
+  source_id and effect provider_invocation_id join; tool/effect operation_id and
+  effect_id join. These references cannot be passed to execution/mutation APIs as
+  canonical IDs. raw_call_id=None; raw_call_id_hash also binds Run/turn/call ordinal,
+  so a Provider's reused raw ID cannot associate unrelated operations.
+- run_id alone remains the exact caller query identity for Service ownership checks.
+  root_run_id/parent_run_id are opaque run-domain references derived from the ledger,
+  not claimed to have been explicitly provided by that caller. No new authorization
+  is inferred from audit refs or hashes.
+- Readers filter historical V1 audit facts too. Original durable rows/event hashes
+  remain byte-for-byte intact. source_hash still verifies the complete original
+  source, never the scrubbed metadata. snapshot_hash covers the final safe DTO.
+
+This is a correction to the unshipped source candidate, not a changed frozen wheel.
+Service was notified of reference semantics; installed consumer acceptance is separate.

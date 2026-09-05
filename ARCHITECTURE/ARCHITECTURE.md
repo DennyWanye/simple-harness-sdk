@@ -15,8 +15,11 @@ last-updated: 2026-09-05
 From2b842, an isolated follow-up adds public `read_run_operation_audit` (UoW/RunClient)
 with safe names, source/call/attempt hashes and links, recorded timestamps/duration and
 usage provenance. Pre-effect denial/wait/failure facts and source CAS transitions reuse
-SDK-owned run_events; no schema or package-version change. **73 focused tests passed
-(1.48s)** plus selected lint. This is a bounded atomic first slice: current-source
+SDK-owned run_events; no schema or package-version change. **74 focused tests passed
+(1.57s)** plus selected lint. The original 0eb1 metadata projection was independently
+BLOCKED for arbitrary error-code leakage; the correction uses closed SDK codes,
+registered-tool provenance and opaque join refs, with fixed-source re-review pending.
+This is a bounded atomic first slice: current-source
 completeness is separate from partial history coverage. Stable pagination and complete
 producer enumeration are pending MUSTs; no full-Run/all-SDK audit or native completion.
 Frozen main/wheel unchanged; independent fixed-source review and consumer integration
