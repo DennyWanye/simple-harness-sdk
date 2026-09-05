@@ -854,6 +854,16 @@ class SqliteExecutionUnitOfWork:
         except (KeyError, TypeError, ValueError):
             raise RunAuditUnavailable("audit_source_invalid") from None
 
+    def open_run_operation_audit(self, run_id: RunId, *, page_size: int = 256):
+        from .audit_pages import open_pages
+
+        return open_pages(self.database, run_id, page_size=page_size)
+
+    def read_run_operation_audit_page(self, run_id: RunId, *, cursor: str):
+        from .audit_pages import read_page
+
+        return read_page(self.database, run_id, cursor=cursor)
+
     def _audit_operation_head(self, connection, kind, identity, now):
         from simple_harness.execution.audit import audit_hash
 

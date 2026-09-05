@@ -10,6 +10,17 @@ last-updated: 2026-09-05
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
 
+## Stable Run audit page source successor — 2026-09-05
+
+Metadata correction 6a8b0e4 independently scoped ACCEPT after the original canary
+counterexample. Public open/page seams now materialize safe immutable audit snapshots
+from one source read transaction, with bounded page reads, original source hashes,
+opaque cursor/refs, version checks and restart continuity. 80 focused/adjacent tests
+pass; fixed pagination review pending. The real kernel >256-record and waiting→terminal
+prefix oracles pass. Disk/time limits yield unavailable, not partial completeness.
+Source only: no frozen version/schema/wheel or installed consumer changes. Full producer
+coverage/history gaps remain. See ../plans/2026-09-05-run-operation-audit/PAGINATION.md.
+
 ## 2026-09-05 isolated Run operation audit V1 source candidate
 
 From2b842, an isolated follow-up adds public `read_run_operation_audit` (UoW/RunClient)

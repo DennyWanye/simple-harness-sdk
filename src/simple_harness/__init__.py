@@ -348,6 +348,7 @@ def __getattr__(name: str) -> Any:
     if name in {
         "RunOperationAuditPort",
         "RunOperationAuditSnapshotV1",
+        "RunOperationAuditPageV1",
         "RunOperationAuditV1",
         "RunAuditUsageV1",
         "RunAuditUnavailable",
@@ -677,6 +678,7 @@ __all__ = (
 __all__ += (
     "RunOperationAuditPort",
     "RunOperationAuditSnapshotV1",
+    "RunOperationAuditPageV1",
     "RunOperationAuditV1",
     "RunAuditUsageV1",
     "RunAuditUnavailable",

@@ -3,7 +3,8 @@
 2026-09-05; base2b8428465cbd41032ba024a0b7199183161f5ecd.
 Isolated feat/run-operation-audit; no changes to frozen main/package version/wheel.
 Scope follows Host primary-candidate/plans/2026-09-05-agent-operation-audit/PLAN.md.
-Implementation authorized; API not yet implemented. Harness scope only.
+Implementation authorized; bounded V1 implemented and metadata P1 independently accepted.
+Stable page successor is implemented in source; see PAGINATION.md. Harness scope only.
 
 ## Public surface
 
@@ -159,3 +160,14 @@ that candidate is BLOCKED, not accepted. The correction has no blacklist expansi
 
 This is a correction to the unshipped source candidate, not a changed frozen wheel.
 Service was notified of reference semantics; installed consumer acceptance is separate.
+
+
+## Stable pagination successor status
+
+The pagination MUST above now has a source implementation, six decisive tests and an
+immutable derived-snapshot contract in PAGINATION.md. Independent fixed-source review
+is pending; installed Service/Host consumer and full producer enumeration remain open.
+The bounded read API itself remains a single-snapshot compatibility surface. New
+open_run_operation_audit / read_run_operation_audit_page remove its 256 truncation
+barrier for complete traversal of the declared source set, subject to explicit capacity
+unavailable. They do not certify missing historical operation producers.

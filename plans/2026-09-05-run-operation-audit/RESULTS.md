@@ -117,3 +117,32 @@ no frozen main/version/wheel changes. Fixed correction review remains pending.
 The previous Service five-case source overlay used 0eb1; it is not proof of the new
 reference semantics or an installed artifact. Service was notified, no Service code
 or frozen artifact was edited here. Pagination/full coverage MUSTs are unchanged.
+
+## Stable page source successor
+
+Metadata base6a8b0e4 has Dirac's scoped ACCEPT (same real kernel canary probe no
+longer exports the code, one physical tool/Run completed; reviewer did not rerun74).
+
+Stable open/page API implemented; exact contract/resources/derived retention and
+six new oracles are in PAGINATION.md. **80 passed in2.02s, exit0**, selected changed
+Ruff passes, diff whitespace check passes. 6 page +17 audit +57 adjacent tests.
+The new wait-snapshot oracle fails against an exact git-archive of6a8b0e4 source
+with AttributeError for missing public open_run_operation_audit after real kernel
+authorization wait (1failed3deselected0.25s, exit1). It passes on the new source.
+The >256 case uses60 distinct valid tool arguments; the initial identical-argument
+fixture correctly hit the existing repeated-tool limit and was corrected without
+loosening production termination or authorization checks.
+
+```text
+PYTHONPATH=src /Users/denny/projects/simple-harness-sdk/.venv/bin/python -m pytest tests/integration/runtime/test_run_operation_audit_pages.py tests/integration/runtime/test_run_operation_audit.py tests/integration/runtime/test_react_sqlite_runtime.py tests/integration/runtime/test_h13_provider_recovery.py tests/integration/runtime/test_h13_tool_recovery.py tests/unit/observability/test_observability_v1.py tests/integration/execution/test_effect_reconcile.py -q -p no:cacheprovider
+```
+
+| File | SHA256 |
+|---|---|
+| pagination-red.log | 4dc7a1892c4e1ccbff2bd33c54953c29614ff9e4f664114cb0c64f01307a0d3b |
+| pagination-final2.log | 41c9c95fed12c0af0cae5d7dd4670e78ea04e4d064d3a8d7b5b18d806031591f |
+
+Fixed pagination source review pending. Original bounded API and its truncation
+semantics remain; consumers must explicitly adopt page APIs to traverse a full current
+source snapshot. No installed consumer/artifact/native acceptance, no full-suite run,
+no full producer/history coverage or automatic optimization audit claim.

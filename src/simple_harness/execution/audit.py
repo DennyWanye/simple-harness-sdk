@@ -262,6 +262,51 @@ class RunOperationAuditSnapshotV1:
 
 
 class RunOperationAuditPort(Protocol):
+    def open_run_operation_audit(
+        self, run_id: RunId, *, page_size: int = 256
+    ) -> RunOperationAuditPageV1: ...
+
+    def read_run_operation_audit_page(
+        self, run_id: RunId, *, cursor: str
+    ) -> RunOperationAuditPageV1: ...
+
     def read_run_operation_audit(
         self, run_id: RunId, *, limit: int = 256
     ) -> RunOperationAuditSnapshotV1: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RunOperationAuditPageV1:
+    run_id: str
+    snapshot_hash: str
+    page_index: int
+    page_size: int
+    total_operations: int
+    total_pages: int
+    page_hash: str
+    operations: tuple[RunOperationAuditV1, ...]
+    next_cursor: str | None
+    metadata: object
+
+    def __post_init__(self):
+        from simple_harness.contracts import freeze_json
+
+        object.__setattr__(self, "metadata", freeze_json(self.metadata))
+
+    def to_json(self):
+        from simple_harness.contracts import thaw_json
+
+        return dict(
+            schema_version=1,
+            run_id=self.run_id,
+            snapshot_hash=self.snapshot_hash,
+            page_index=self.page_index,
+            page_size=self.page_size,
+            total_operations=self.total_operations,
+            total_pages=self.total_pages,
+            page_hash=self.page_hash,
+            operations=[o.to_json() for o in self.operations],
+            next_cursor=self.next_cursor,
+            metadata=thaw_json(self.metadata),
+            snapshot_source_complete=True,
+        )

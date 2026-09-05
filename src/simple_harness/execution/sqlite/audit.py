@@ -17,14 +17,24 @@ from simple_harness.execution.audit import (
 )
 
 
-def read_snapshot(connection, run_id, limit):
+def read_snapshot(connection, run_id, limit, *, operation_sink=None):
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 4096:
         raise ValueError("audit limit must be 1..4096")
     run = connection.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
     if run is None:
         raise RunAuditUnavailable("run_not_found")
-    operations = []
+    operations = [] if operation_sink is None else operation_sink
     truncated = False
+    query_limit = limit + 1 if operation_sink is None else -1
+
+    def bounded_rows(cursor):
+        nonlocal truncated
+        for index, row in enumerate(cursor):
+            if operation_sink is None and index == limit:
+                truncated = True
+                break
+            yield row
+
     for table, identity, kind in (
         ("provider_invocations", "invocation_id", "provider"),
         ("execution_effects", "effect_id", "effect"),
@@ -34,10 +44,10 @@ def read_snapshot(connection, run_id, limit):
         ("conversation_commands", "command_id", "control"),
     ):
         rows = connection.execute(
-            f"SELECT * FROM {table} WHERE run_id=? ORDER BY {identity} LIMIT ?", (run_id, limit + 1)
-        ).fetchall()
-        truncated |= len(rows) > limit
-        for row in rows[:limit]:
+            f"SELECT * FROM {table} WHERE run_id=? ORDER BY {identity} LIMIT ?",
+            (run_id, query_limit),
+        )
+        for row in bounded_rows(rows):
             body = dict(row)
             operations.append(
                 RunOperationAuditV1(
@@ -56,10 +66,9 @@ def read_snapshot(connection, run_id, limit):
     rows = connection.execute(
         "SELECT * FROM run_events WHERE run_id=? "
         "AND kind IN ('audit.tool.v1','audit.transition.v1') ORDER BY durable_seq LIMIT ?",
-        (run_id, limit + 1),
-    ).fetchall()
-    truncated |= len(rows) > limit
-    for row in rows[:limit]:
+        (run_id, query_limit),
+    )
+    for row in bounded_rows(rows):
         value = json.loads(row["payload_json"])
         if row["event_id"].rsplit(":", 1)[-1] != audit_hash(value):
             raise RunAuditUnavailable("audit_fact_hash_mismatch")
@@ -126,10 +135,9 @@ def read_snapshot(connection, run_id, limit):
     events = connection.execute(
         "SELECT * FROM run_events WHERE run_id=? "
         "AND kind NOT IN ('audit.tool.v1','audit.transition.v1') ORDER BY durable_seq LIMIT ?",
-        (run_id, limit + 1),
-    ).fetchall()
-    truncated |= len(events) > limit
-    for row in events[:limit]:
+        (run_id, query_limit),
+    )
+    for row in bounded_rows(events):
         # Kind and payload are source data, not arbitrary exported error strings.
         operations.append(
             RunOperationAuditV1(
@@ -147,10 +155,9 @@ def read_snapshot(connection, run_id, limit):
         )
     checkpoints = connection.execute(
         "SELECT * FROM workflow_checkpoints WHERE run_id=? ORDER BY namespace,version LIMIT ?",
-        (run_id, limit + 1),
-    ).fetchall()
-    truncated |= len(checkpoints) > limit
-    for row in checkpoints[:limit]:
+        (run_id, query_limit),
+    )
+    for row in bounded_rows(checkpoints):
         operations.append(
             RunOperationAuditV1(
                 "context:" + row["checkpoint_id"],
@@ -170,10 +177,9 @@ def read_snapshot(connection, run_id, limit):
             f"SELECT r.* FROM reconciliation_resolutions r JOIN {table} h "
             f"ON h.{key}=r.ledger_identity WHERE h.run_id=? AND r.kind=? "
             "ORDER BY r.resolution_id LIMIT ?",
-            (run_id, source_kind, limit + 1),
-        ).fetchall()
-        truncated |= len(receipts) > limit
-        for row in receipts[:limit]:
+            (run_id, source_kind, query_limit),
+        )
+        for row in bounded_rows(receipts):
             operations.append(
                 RunOperationAuditV1(
                     "reconciliation:" + row["resolution_id"],
@@ -193,6 +199,17 @@ def read_snapshot(connection, run_id, limit):
                     else None,
                 )
             )
+    if operation_sink is not None:
+        return RunOperationAuditSnapshotV1(
+            run_id,
+            run["state"],
+            run["version"],
+            (),
+            False,
+            ("legacy_transition_coverage_unverified", "pre_runtime_validation_not_covered"),
+            root_run_id=audit_reference("run", run["root_run_id"]),
+            parent_run_id=audit_reference("run", run["parent_run_id"]),
+        )
     operations = [_opaque_operation(o, run_id) for o in operations]
     operations.sort(
         key=lambda o: (o.kind, o.operation_id, o.source_version, o.record_type, o.source_id)

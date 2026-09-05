@@ -41,3 +41,10 @@ Metadata correction: arbitrary source codes and unknown candidate labels are not
 public labels. Fixed SDK vocabulary/actual registry provenance govern readable labels;
 opaque refs preserve joins. Original 0eb1 metadata candidate BLOCKED; see CONTRACT and
 RESULTS for corrected 74-case source verification and pending independent re-review.
+
+Stable pagination MUST now implemented in source (PAGINATION.md), 6 decisive cases
+plus prior74 pass; fixed review pending. Captures every row in the declared source
+set in one snapshot subject to explicit resource-unavailable, then exhausts immutable
+pages with original prefix across terminal mutation/reopen. This removes the bounded
+reader's truncation limit for consumers adopting open/page. It does not close the
+remaining producer enumeration or historical recording gaps above.

@@ -1,0 +1,281 @@
+"""Immutable safe audit projection. Never an execution database or authority."""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import sqlite3
+import tempfile
+import time
+from contextlib import closing
+from pathlib import Path
+
+from simple_harness.contracts import RunId, canonical_json
+from simple_harness.execution.audit import (
+    RunAuditUnavailable,
+    RunAuditUsageV1,
+    RunOperationAuditPageV1,
+    RunOperationAuditV1,
+    audit_hash,
+)
+
+from .audit import _opaque_operation, read_snapshot
+
+FORMAT = 1
+NORMALIZER = "registered-labels-opaque-refs-v1"
+MAX_BYTES = 64 * 1024 * 1024
+MAX_FILE_BYTES = 192 * 1024 * 1024
+MAX_SECONDS = 30.0
+
+
+def _namespace(database):
+    stat = database.path.stat()
+    return audit_hash(
+        [
+            str(database.path),
+            stat.st_dev,
+            stat.st_ino,
+            getattr(stat, "st_birthtime", None),
+        ]
+    )
+
+
+def _root(database):
+    return database.path.parent / ".audit-snapshots" / _namespace(database)
+
+
+def _check_run(run_id):
+    if not isinstance(run_id, RunId):
+        raise TypeError("run_id must use RunId")
+
+
+def _hex(value):
+    return (
+        isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+    )
+
+
+def _cursor(snapshot_hash, token):
+    return snapshot_hash + "." + token
+
+
+def _decode(cursor):
+    if not isinstance(cursor, str) or len(cursor) != 129:
+        raise RunAuditUnavailable("audit_cursor_invalid")
+    parts = cursor.split(".")
+    if len(parts) != 2 or not all(_hex(v) for v in parts):
+        raise RunAuditUnavailable("audit_cursor_invalid")
+    return parts
+
+
+class _Spool:
+    def __init__(self, connection, run_id, path):
+        self.connection, self.run_id, self.path = connection, run_id, path
+        self.count = self.bytes = 0
+        self.started = time.monotonic()
+
+    def check(self):
+        if time.monotonic() - self.started > MAX_SECONDS:
+            raise RunAuditUnavailable("audit_snapshot_timeout")
+        if self.path.stat().st_size > MAX_FILE_BYTES:
+            raise RunAuditUnavailable("audit_snapshot_capacity")
+
+    def append(self, operation):
+        self.check()
+        operation = _opaque_operation(operation, self.run_id)
+        payload = canonical_json(operation.to_json())
+        self.bytes += len(payload.encode())
+        if self.bytes > MAX_BYTES:
+            raise RunAuditUnavailable("audit_snapshot_capacity")
+        self.connection.execute(
+            "INSERT INTO operations VALUES (?,?,?,?,?,?)",
+            (
+                operation.kind,
+                operation.operation_id,
+                operation.source_version,
+                operation.record_type,
+                operation.source_id,
+                payload,
+            ),
+        )
+        self.count += 1
+
+
+def open_pages(database, run_id, *, page_size=256):
+    _check_run(run_id)
+    if not database.is_open:
+        raise RunAuditUnavailable("audit_store_unavailable")
+    if type(page_size) is not int or not 1 <= page_size <= 4096:
+        raise ValueError("audit page_size must be 1..4096")
+    path = None
+    output = None
+    try:
+        namespace = _namespace(database)
+        root = _root(database)
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, name = tempfile.mkstemp(prefix="pending-", suffix=".sqlite", dir=root)
+        os.close(fd)
+        path = Path(name)
+        output = sqlite3.connect(path)
+        output.execute("PRAGMA synchronous=FULL")
+        output.execute("PRAGMA temp_store=FILE")
+        output.execute("CREATE TABLE operations(kind,operation,version,record_type,source,payload)")
+        output.execute("CREATE TABLE pages(page_index INTEGER PRIMARY KEY,payload TEXT NOT NULL)")
+        output.execute("CREATE TABLE manifest(payload TEXT NOT NULL)")
+        spool = _Spool(output, run_id.value, path)
+        with database.transaction(read_only=True) as source:
+            source.set_progress_handler(
+                lambda: int(time.monotonic() - spool.started > MAX_SECONDS), 1000
+            )
+            try:
+                header = read_snapshot(source, run_id.value, 256, operation_sink=spool)
+            finally:
+                source.set_progress_handler(None, 0)
+        if namespace != _namespace(database):
+            raise RunAuditUnavailable("audit_dataset_changed")
+        # The canonical read transaction ends before disk sorting and publication.
+        output.set_progress_handler(
+            lambda: int(time.monotonic() - spool.started > MAX_SECONDS), 1000
+        )
+        ordered = output.execute(
+            "SELECT payload FROM operations ORDER BY kind,operation,version,record_type,source"
+        )
+        hashes, tokens = [], []
+        while True:
+            spool.check()
+            rows = ordered.fetchmany(page_size)
+            if not rows:
+                break
+            values = [json.loads(row[0]) for row in rows]
+            hashes.append(audit_hash(values))
+            tokens.append(secrets.token_hex(32))
+            output.execute(
+                "INSERT INTO pages VALUES (?,?)", (len(hashes) - 1, canonical_json(values))
+            )
+        metadata = header.to_json()
+        for key in ("operations", "snapshot_hash", "truncated", "current_source_complete"):
+            metadata.pop(key)
+        manifest = dict(
+            format=FORMAT,
+            normalizer=NORMALIZER,
+            source_schema=database.schema_version,
+            namespace=namespace,
+            header=metadata,
+            page_size=page_size,
+            total_operations=spool.count,
+            page_hashes=hashes,
+            tokens=tokens,
+        )
+        snapshot_hash = audit_hash(manifest)
+        output.execute("INSERT INTO manifest VALUES (?)", (canonical_json(manifest),))
+        output.execute("DROP TABLE operations")
+        output.commit()
+        spool.check()
+        output.set_progress_handler(None, 0)
+        output.close()
+        output = None
+        with path.open("rb") as stream:
+            os.fsync(stream.fileno())
+        target = root / (snapshot_hash + ".sqlite")
+        os.replace(path, target)
+        path = None
+        dirfd = os.open(root, os.O_RDONLY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+        return read_page(database, run_id, cursor=_cursor(snapshot_hash, tokens[0]))
+    except RunAuditUnavailable:
+        raise
+    except (OSError, sqlite3.DatabaseError, ValueError, TypeError, KeyError):
+        raise RunAuditUnavailable("audit_snapshot_unavailable") from None
+    finally:
+        if output is not None:
+            output.close()
+        if path is not None:
+            path.unlink(missing_ok=True)
+            Path(str(path) + "-journal").unlink(missing_ok=True)
+
+
+def read_page(database, run_id, *, cursor):
+    _check_run(run_id)
+    if not database.is_open:
+        raise RunAuditUnavailable("audit_store_unavailable")
+    snapshot_hash, token = _decode(cursor)
+    try:
+        path = _root(database) / (snapshot_hash + ".sqlite")
+        if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
+            raise RunAuditUnavailable("audit_snapshot_unavailable")
+        # mode=ro cannot accidentally create missing snapshots.
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+            row = connection.execute("SELECT payload FROM manifest").fetchone()
+            if row is None or len(row[0].encode()) > MAX_BYTES:
+                raise RunAuditUnavailable("audit_manifest_invalid")
+            manifest = json.loads(row[0])
+            if audit_hash(manifest) != snapshot_hash:
+                raise RunAuditUnavailable("audit_manifest_hash_mismatch")
+            if (
+                manifest["format"] != FORMAT
+                or manifest["normalizer"] != NORMALIZER
+                or manifest["source_schema"] != database.schema_version
+                or manifest["namespace"] != _namespace(database)
+            ):
+                raise RunAuditUnavailable("audit_snapshot_version_unavailable")
+            header = manifest["header"]
+            if header["run_id"] != run_id.value:
+                raise RunAuditUnavailable("audit_cursor_run_mismatch")
+            tokens, hashes = manifest["tokens"], manifest["page_hashes"]
+            if token not in tokens:
+                raise RunAuditUnavailable("audit_cursor_invalid")
+            index = tokens.index(token)
+            total, size = manifest["total_operations"], manifest["page_size"]
+            if (
+                type(size) is not int
+                or not 1 <= size <= 4096
+                or type(total) is not int
+                or total <= 0
+                or len(hashes) != (total + size - 1) // size
+                or len(tokens) != len(hashes)
+                or len(set(tokens)) != len(tokens)
+            ):
+                raise RunAuditUnavailable("audit_manifest_invalid")
+            row = connection.execute(
+                "SELECT payload FROM pages WHERE page_index=?", (index,)
+            ).fetchone()
+            if row is None or len(row[0].encode()) > MAX_BYTES:
+                raise RunAuditUnavailable("audit_page_unavailable")
+            values = json.loads(row[0])
+            if audit_hash(values) != hashes[index]:
+                raise RunAuditUnavailable("audit_page_hash_mismatch")
+            if len(values) != min(size, total - index * size):
+                raise RunAuditUnavailable("audit_page_count_mismatch")
+            return RunOperationAuditPageV1(
+                run_id=run_id.value,
+                snapshot_hash=snapshot_hash,
+                page_index=index,
+                page_size=size,
+                total_operations=total,
+                total_pages=len(hashes),
+                page_hash=hashes[index],
+                operations=tuple(_operation(v) for v in values),
+                next_cursor=_cursor(snapshot_hash, tokens[index + 1])
+                if index + 1 < len(tokens)
+                else None,
+                metadata=header,
+            )
+    except RunAuditUnavailable:
+        raise
+    except (OSError, sqlite3.DatabaseError, ValueError, TypeError, KeyError, IndexError):
+        raise RunAuditUnavailable("audit_snapshot_unavailable") from None
+
+
+def _operation(value):
+    fields = dict(value)
+    duration = fields.pop("handoff_to_settlement_seconds")
+    if fields.get("usage") is not None:
+        fields["usage"] = RunAuditUsageV1(**fields["usage"])
+    result = RunOperationAuditV1(**fields)
+    if result.handoff_to_settlement_seconds != duration:
+        raise RunAuditUnavailable("audit_page_duration_mismatch")
+    return result
