@@ -192,3 +192,8 @@ new ledger. Artifact remains pending this last direct consumer primitive review.
 2026-09-06 terminal source continuation correction:36 adjacent PASS; saved exact
 terminal row is point-validated even when later events exist. Original red retained.
 Fixed-source review pending before one successor candidate build.
+
+2026-09-06 terminal projection originalfd/c313 not accepted: final same-TX state,
+unique event and saved metadata closure implemented with explicit audit2 read index.
+Direct25 PASS plus overlapping1, actual072 index-write positive with legacy gaps.
+No new wheel yet; waiting this necessary Host-consumption source fixed review.

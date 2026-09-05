@@ -339,7 +339,7 @@ def terminal_evidence(connection, run):
 
     rows = connection.execute(
         "SELECT * FROM run_events WHERE run_id=? "
-        "AND kind IN ('run.completed','run.failed','run.cancelled') ORDER BY durable_seq LIMIT 2",
+        "AND kind IN ('run.completed','run.failed','run.cancelled') LIMIT 2",
         (run["run_id"],),
     ).fetchall()
     if not rows:

@@ -23,7 +23,7 @@ from simple_harness.execution.audit import (
     audit_reference,
 )
 
-from .audit import _opaque_operation, read_snapshot
+from .audit import _opaque_operation, read_snapshot, terminal_evidence
 
 FORMAT = 2
 NORMALIZER = "core-terminal-stage-intervals-registered-labels-opaque-refs-v11"
@@ -325,6 +325,17 @@ def read_page(database, run_id=None, *, cursor, command_id=None, stage_id=None):
                         "source_hash": terminal["event_record_hash"],
                     }:
                         raise RunAuditUnavailable("audit_terminal_cut_mismatch")
+                    if terminal is not None:
+                        current_run = source.execute(
+                            "SELECT * FROM runs WHERE run_id=?", (run_id.value,)
+                        ).fetchone()
+                        actual_terminal = (
+                            terminal_evidence(source, current_run)
+                            if current_run is not None
+                            else None
+                        )
+                        if actual_terminal is None or actual_terminal.to_json() != terminal:
+                            raise RunAuditUnavailable("audit_terminal_evidence_mismatch")
                     command_bound = manifest["command_cut"]
                     if (
                         command_cut(source, run_id=run_id.value, sequence=command_bound["sequence"])

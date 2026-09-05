@@ -74,7 +74,19 @@ def test_actual_terminal_exact_identity_public_page_and_reopen(tmp_path):
             assert after.terminal_evidence == evidence
             continued = reader.read_run_operation_audit_page(run_id, cursor=page.next_cursor)
             assert continued.to_json()["metadata"]["terminal_evidence"] == evidence.to_json()
+            plan = reopened.connection.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM run_events WHERE run_id=? "
+                "AND kind IN ('run.completed','run.failed','run.cancelled') LIMIT 2",
+                (run_id.value,),
+            ).fetchall()
+            assert len(plan) == 1 and "sdk_audit_terminal_events_idx" in plan[0][3]
+            assert "SEARCH " in plan[0][3] and "SCAN " not in plan[0][3]
             with reopened.transaction() as c:
+                c.execute("UPDATE runs SET state='failed' WHERE run_id=?", (run_id.value,))
+            with pytest.raises(RunAuditUnavailable):
+                reader.read_run_operation_audit_page(run_id, cursor=page.next_cursor)
+            with reopened.transaction() as c:
+                c.execute("UPDATE runs SET state='completed' WHERE run_id=?", (run_id.value,))
                 c.execute(
                     "UPDATE run_events SET payload_json='{}' WHERE event_id=?", (event["event_id"],)
                 )
@@ -91,5 +103,7 @@ def test_actual_terminal_exact_identity_public_page_and_reopen(tmp_path):
                 )
             with pytest.raises(RunAuditUnavailable):
                 reader.read_run_operation_audit(run_id)
+            with pytest.raises(RunAuditUnavailable):
+                reader.read_run_operation_audit_page(run_id, cursor=page.next_cursor)
 
     asyncio.run(case())

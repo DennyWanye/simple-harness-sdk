@@ -10,6 +10,8 @@ BASE_DDL = (
         created_at REAL NOT NULL
     ) STRICT""",
     "CREATE INDEX sdk_stage_audit_idx ON sdk_stage_audit_events(stage_id,event_seq)",
+    "CREATE INDEX sdk_audit_terminal_events_idx ON run_events(run_id,kind,durable_seq) "
+    "WHERE kind IN ('run.completed','run.failed','run.cancelled')",
     """CREATE TRIGGER sdk_stage_audit_no_update BEFORE UPDATE ON sdk_stage_audit_events
         BEGIN SELECT RAISE(ABORT,'stage audit is append only'); END""",
     """CREATE TRIGGER sdk_stage_audit_no_delete BEFORE DELETE ON sdk_stage_audit_events
@@ -78,6 +80,7 @@ STAGE_DDL = BASE_DDL + (
 
 STAGE_OBJECTS = {
     "sdk_stage_audit_events",
+    "sdk_audit_terminal_events_idx",
     "sdk_stage_audit_idx",
     "sdk_stage_audit_no_update",
     "sdk_stage_audit_no_delete",

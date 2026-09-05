@@ -57,3 +57,27 @@ later cut. public-terminal-cut-red.log demonstrates that stale cached evidence b
 this check; public-terminal-cut-green.log36 PASS2.32s includes actual later public
 MemoryOutbox claim, unchanged max cut and altered older terminal negative. No Host
 or Provider was used to substitute this SDK source oracle.
+
+## Closed terminal proof on continuation — 2026-09-06
+
+fd86 public terminal projection was independently BLOCKED on stale saved evidence.
+Original independent payload/duplicate probes retained under sibling
+simple_harness-primary-api/.local-test-evidence/2026-09-06/terminal-fd86bc1-review/.
+c313 fixed payload binding but duplicate-terminal probe still failed; do not mark
+those candidates accepted. The final continuation path additionally checks actual
+Run state (PK) and closed root terminal uniqueness (LIMIT2) under the same source TX,
+and compares every typed field with the saved evidence. A page captured without
+terminal evidence stays that original prefix; it is not upgraded with a later terminal.
+
+Explicit unreleased audit2 DDL includes partial sdk_audit_terminal_events_idx on
+run_events(run_id,kind,durable_seq) WHERE kind is one of the three closed root terminal
+kinds. This is a nonunique read index, not a new ledger or business insertion restriction.
+DDL/checksum validation and exact audit1→2 apply; earlier WIP2 checksum rejects.
+EXPLAIN proves SEARCH by run_id/kind, bounded LIMIT2, not a per-page whole-Run scan.
+
+public-terminal-closed-page-green.log25 PASS2.01s (direct schema/pages/terminal),
+public-terminal-state-index.log1 PASS0.24s overlaps and adds actual Run-state negative
+and indexed plan. old072-terminal-index.log runs exact installed072 real public runtime
+on current schema2, commits an actual root terminal and returns an indexed current
+projection while retaining five legacy gaps. No Provider network call. Frozen wheel
+unchanged; all source failures retained. Independent fixed review still gates build.

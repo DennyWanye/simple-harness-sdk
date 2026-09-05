@@ -558,3 +558,9 @@ in the operation-audit plan for actual paths, negative oracle and namespace rule
 sequence and row hash on every page, independently of a later global event cut.
 Normalizer v11 rejects prior spools. Real later Memory claim + old terminal mutation
 counterexample red→green;36 directly adjacent PASS, installed Host gate unchanged.
+
+2026-09-06 terminal saved proof closure adds same-TX actual Run state and LIMIT2 root
+terminal uniqueness, equal to captured typed metadata. Explicit unreleased audit2
+partial index supports bounded lookups; exact072 real runtime terminal insertion
+maintains it while legacy gaps stay. Original fd/c313 failures preserved. Direct25
+PASS, overlapping state/index1 PASS; fixed independent review gates candidate build.
