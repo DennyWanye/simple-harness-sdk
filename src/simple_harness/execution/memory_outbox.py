@@ -238,6 +238,9 @@ class MemoryOutboxRepository:
         _positive_time(now, "now", allow_zero=True)
         _positive_time(backoff_seconds, "backoff_seconds", allow_zero=True)
         with self.database.transaction() as connection:
+            from .sqlite.memory_port_audit import require_actual_claim
+
+            require_actual_claim(connection, claim)
             changed = connection.execute(
                 "UPDATE memory_outbox SET state='retry_wait',claim_owner=NULL,"
                 "claim_expires_at=NULL,retry_at=?,error_code=? WHERE intent_id=? "
@@ -300,10 +303,13 @@ class MemoryOutboxRepository:
     ) -> MemoryOutboxRecord:
         if state not in {MemoryOutboxState.APPLIED, MemoryOutboxState.DEAD_LETTER}:
             raise ValueError("memory outbox settlement state is invalid")
-        if receipt is not None:
-            MemoryDispatcher._validate_receipt(claim, receipt)
         _positive_time(now, "now", allow_zero=True)
         with self.database.transaction() as connection:
+            from .sqlite.memory_port_audit import require_actual_claim
+
+            actual = _record(require_actual_claim(connection, claim))
+            if receipt is not None:
+                MemoryDispatcher._validate_receipt(actual, receipt)
             changed = connection.execute(
                 "UPDATE memory_outbox SET state=?,claim_owner=NULL,claim_expires_at=NULL,"
                 "error_code=?,settled_at=? WHERE intent_id=? AND state='claimed' "

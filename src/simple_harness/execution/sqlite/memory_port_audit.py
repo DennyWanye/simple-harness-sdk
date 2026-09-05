@@ -80,10 +80,31 @@ def record(connection, identity, *, operation, now, claim=None, receipt=None):
     _append(connection, row, value, now)
 
 
-def begin(connection, claim, now):
+def require_actual_claim(connection, claim):
     from simple_harness.execution.uow import UnitOfWorkConflict
 
     row = _row(connection, claim.intent_id)
+    immutable = (
+        "intent_id",
+        "run_id",
+        "turn_id",
+        "deployment_id",
+        "household_id",
+        "actor_id",
+        "session_id",
+        "payload_json",
+        "payload_hash",
+        "created_at",
+    )
+    if any(row[key] != getattr(claim, key) for key in immutable):
+        raise UnitOfWorkConflict("memory outbox immutable claim differs from actual row")
+    return row
+
+
+def begin(connection, claim, now):
+    from simple_harness.execution.uow import UnitOfWorkConflict
+
+    row = require_actual_claim(connection, claim)
     if (
         row["state"] != "claimed"
         or row["claim_epoch"] != claim.claim_epoch
@@ -179,6 +200,37 @@ def coverage(connection, run_id):
         for row in connection.execute("SELECT * FROM memory_outbox WHERE run_id=?", (run_id,))
     }
     gaps = set()
+    expected = set()
+    declared = False
+    for event in connection.execute(
+        "SELECT payload_json FROM run_events WHERE run_id=? AND kind='run.completed'", (run_id,)
+    ):
+        payload = json.loads(event[0])
+        anchor = payload.get("sdk_memory_outbox")
+        if isinstance(anchor, dict) and anchor.get("schema_version") == 1:
+            declared = True
+            if anchor.get("committed_turn_hash") is not None:
+                expected.add(anchor["committed_turn_hash"])
+    cursor = connection.execute(
+        "SELECT committed_turn_hash FROM legacy_turn_cursors WHERE run_id=? AND state='consumed'",
+        (run_id,),
+    ).fetchone()
+    if cursor is not None and cursor[0] is not None:
+        expected.add(cursor[0])
+    actual = {v["request_hash"] for _, v in entries}
+    if expected - actual:
+        gaps.add("memory_outbox_terminal_intent_unverified")
+    if (
+        not declared
+        and not expected
+        and connection.execute(
+            "SELECT 1 FROM runs r JOIN agent_identity_bindings b ON b.session_id=r.execution_session_id "
+            "WHERE r.run_id=? AND r.state='completed'",
+            (run_id,),
+        ).fetchone()
+        is not None
+    ):
+        gaps.add("memory_outbox_terminal_intent_unverified")
     for identity in set(groups) | set(heads):
         values = groups.get(identity, [])
         head = heads.get(identity)

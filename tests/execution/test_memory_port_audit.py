@@ -157,3 +157,73 @@ def test_lost_whole_memory_handoff_is_a_gap_even_without_settlement(tmp_path):
         assert "memory_outbox_physical_interval_unverified" in audit.coverage_gaps
     finally:
         database.close()
+
+
+@pytest.mark.parametrize("boundary", ["begin", "settle"])
+def test_foreign_real_payload_receipt_cannot_replace_actual_claim(tmp_path, boundary):
+    from dataclasses import replace
+    from simple_harness.execution.uow import UnitOfWorkConflict
+
+    database, uow, lease, fence = _setup(tmp_path / "foreign.db")
+    try:
+        original = _spec()
+        foreign = _spec("different-real-answer")
+        _terminal(uow, lease, fence, original)
+        repository = MemoryOutboxRepository(database)
+        claim = repository.claim(owner_id="worker", now=3, lease_seconds=10)
+        fake = replace(claim, payload_json=foreign.payload_json, payload_hash=foreign.payload_hash)
+        real_receipt = asyncio.run(IdempotentMemory().record_committed_turn(foreign.turn))
+        before = uow.read_run_operation_audit(RunId("run-1"))
+        with pytest.raises(UnitOfWorkConflict):
+            if boundary == "begin":
+                from simple_harness.execution.sqlite.memory_port_audit import begin
+
+                with database.transaction() as connection:
+                    begin(connection, fake, 3)
+            else:
+                repository.applied(fake, now=3, receipt=real_receipt)
+        assert repository.read(claim.intent_id) == replace(claim, claimed_from_state=None)
+        assert uow.read_run_operation_audit(RunId("run-1")) == before
+    finally:
+        database.close()
+
+
+def test_cleanup_whole_memory_audit_family_loss_is_detected_by_terminal(tmp_path):
+    database, uow, lease, fence = _setup(tmp_path / "family.db")
+    try:
+        _terminal(uow, lease, fence, _spec())
+        repository = MemoryOutboxRepository(database)
+        dispatcher = MemoryDispatcher(
+            repository, IdempotentMemory(), owner_id="worker", clock=lambda: 3
+        )
+        assert asyncio.run(dispatcher.run_once())
+        assert repository.cleanup_applied(settled_before=3, limit=1) == 1
+        before = uow.read_run_operation_audit(RunId("run-1"))
+        assert not [g for g in before.coverage_gaps if g.startswith("memory_outbox")]
+        database.connection.execute("DELETE FROM run_events WHERE kind='audit.memory_outbox.v1'")
+        after = uow.read_run_operation_audit(RunId("run-1"))
+        assert "memory_outbox_terminal_intent_unverified" in after.coverage_gaps
+    finally:
+        database.close()
+
+
+def test_exact_terminal_replay_after_cleanup_uses_retained_intent_hash(tmp_path):
+    database, uow, lease, fence = _setup(tmp_path / "terminal-replay.db")
+    try:
+        spec = _spec()
+        _terminal(uow, lease, fence, spec)
+        repository = MemoryOutboxRepository(database)
+        dispatcher = MemoryDispatcher(
+            repository, IdempotentMemory(), owner_id="worker", clock=lambda: 3
+        )
+        assert asyncio.run(dispatcher.run_once())
+        assert repository.cleanup_applied(settled_before=3, limit=1) == 1
+        before = uow.read_run_operation_audit(RunId("run-1"))
+        _terminal(uow, lease, fence, spec)
+        from simple_harness.execution.uow import UnitOfWorkConflict
+
+        with pytest.raises(UnitOfWorkConflict, match="committed-turn replay differs"):
+            _terminal(uow, lease, fence, _spec("different"))
+        assert uow.read_run_operation_audit(RunId("run-1")) == before
+    finally:
+        database.close()

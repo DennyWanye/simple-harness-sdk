@@ -588,6 +588,16 @@ def _verify_committed_turn_replay(
         "SELECT intent_id,payload_json,payload_hash FROM memory_outbox WHERE run_id=?",
         (run_id,),
     ).fetchall()
+    if not rows:
+        for event in connection.execute(
+            "SELECT payload_json FROM run_events WHERE run_id=? AND kind='run.completed'", (run_id,)
+        ):
+            anchor = json.loads(event[0]).get("sdk_memory_outbox")
+            if isinstance(anchor, dict) and anchor.get("schema_version") == 1:
+                expected_hash = None if intent is None else intent.payload_hash
+                if anchor.get("committed_turn_hash") == expected_hash:
+                    return
+                raise UnitOfWorkConflict("committed-turn replay differs")
     if intent is None:
         if rows:
             raise UnitOfWorkConflict("committed-turn replay differs")
@@ -2715,6 +2725,10 @@ class SqliteExecutionUnitOfWork:
             raise UnitOfWorkConflict("terminal fence belongs to another run")
         now = _time(now)
         payload = dict(terminal_payload)
+        payload["sdk_memory_outbox"] = {
+            "schema_version": 1,
+            "committed_turn_hash": None if committed_turn is None else committed_turn.payload_hash,
+        }
         payload["terminal_fence_receipt_ref"] = terminal_fence_receipt_ref
         payload["fence_epoch"] = fence.epoch
         payload_json = _object_json(payload, "terminal_payload")
@@ -2737,6 +2751,16 @@ class SqliteExecutionUnitOfWork:
                 "SELECT kind, payload_json FROM run_events WHERE event_id = ? AND run_id = ?",
                 (event_id, run_id),
             ).fetchone()
+            if existing_event is not None:
+                existing_payload = json.loads(existing_event["payload_json"])
+                if "sdk_memory_outbox" in existing_payload:
+                    if existing_payload["sdk_memory_outbox"] != payload["sdk_memory_outbox"]:
+                        raise UnitOfWorkConflict("committed-turn replay differs")
+                else:
+                    # Exact legacy receipt comparison; never restamp its original bytes.
+                    legacy_expected = dict(payload)
+                    legacy_expected.pop("sdk_memory_outbox")
+                    payload_json = _object_json(legacy_expected, "terminal_payload")
             stored = tuple(
                 _delivery_record(row)
                 for row in self.database.connection.execute(
@@ -3911,8 +3935,17 @@ class SqliteExecutionUnitOfWork:
         event_id = _required(event_id, "event_id")
         now = _time(now)
         payload = dict(terminal_payload)
+        payload["sdk_memory_outbox"] = {
+            "schema_version": 1,
+            "committed_turn_hash": None if committed_turn is None else committed_turn.payload_hash,
+        }
         payload["terminal_fence_receipt_ref"] = terminal_fence_receipt_ref
         payload["fence_epoch"] = run_fence.epoch
+        old_terminal = self.database.connection.execute(
+            "SELECT payload_json FROM run_events WHERE event_id=? AND run_id=?", (event_id, run_id)
+        ).fetchone()
+        if old_terminal is not None and "sdk_memory_outbox" not in json.loads(old_terminal[0]):
+            payload.pop("sdk_memory_outbox")
         payload_json = _object_json(payload, "terminal_payload")
         items = tuple(deliveries)
         identities = [item.idempotency_key for item in items]

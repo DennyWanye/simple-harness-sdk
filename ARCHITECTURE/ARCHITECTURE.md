@@ -506,3 +506,13 @@ review pending. No-Run Context prepare/release staging still requires the explic
 schema/association contract in
 [Memory port contract](../plans/2026-09-05-run-operation-audit/MEMORY-PORT.md);
 whole operation coverage and successor artifact are not yet complete.
+
+## Committed-turn independent P1 correction — 2026-09-05
+
+ba1d6ec was BLOCKED for caller-payload substitution and whole-family loss after
+cleanup. New correction checks the actual immutable outbox row in begin/settlement
+and derives a committed-turn hash in the canonical terminal receipt, independent
+of audit-family retention. Consumed legacy cursor proof is reused; absence stays
+unverified. Original terminal receipts are not restamped.35 direct/67 terminal
+adjacent/1 cleanup replay PASS; fixed-source independent re-review required.
+No schema2 WIP or artifact completion claim is included. See MEMORY-PORT contract.

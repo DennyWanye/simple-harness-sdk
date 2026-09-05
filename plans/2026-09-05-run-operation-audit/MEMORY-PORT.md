@@ -65,3 +65,30 @@ stages. Unassociated stages never make a nonexistent Run query succeed.
 The final coverage DTO must enumerate this introduction/history boundary separately
 from current-source completeness. Pending schema/call coverage is a MUST and cannot
 be hidden behind all_operations_recorded or arbitrary large snapshot limits.
+
+## Fixed-source ba1 independent P1 corrections
+
+ba1d6ec was independently BLOCKED: a caller-constructed claim could replace payload
+while keeping real owner/epoch, and legal cleanup followed by loss of the whole
+memory audit family erased the reader's expectation. Raw independent probes retained.
+
+Begin/release/settle now compare immutable intent/Run/turn/principal/canonical payload
+and hash against the actual transaction row. Receipt validation uses that actual
+row, not caller fields. Same-owner/epoch does not authorize another payload.
+
+Root/continuation terminal authority now records SDK-owned sdk_memory_outbox v1
+with the actual committed-turn hash (or explicit None). The field is derived and
+overrides caller terminal metadata; it is committed/hashed with the real terminal
+receipt, independently of the removable outbox and its audit family. Reader also
+uses the existing consumed legacy cursor's committed_turn_hash when available.
+Missing expected memory facts after cleanup remain an explicit terminal-intent gap.
+Legacy completed memory-enabled Runs without either retained proof are unverified.
+Old receipt bytes are not rewritten: replay uses original payload when the additive
+field is absent; new exact replay after cleanup validates the retained original hash
+and performs no new dispatch/outbox creation. Changed intent still rejects.
+
+Three decisive negatives red before correction. Direct Memory/barrier35 PASS;
+root-terminal/continuation/failure-terminalization67 PASS; exact cleanup replay1 PASS.
+Logs memory-port-p1-red.log, memory-port-p1-green.log,
+memory-terminal-anchor-adjacent.log, memory-terminal-cleanup-replay.log. The stage
+schema2 WIP is separate; this correction must be reviewed on its fixed source.
