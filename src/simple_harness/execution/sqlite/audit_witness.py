@@ -2,6 +2,7 @@
 
 from simple_harness.contracts import canonical_json
 from simple_harness.execution.audit import audit_hash
+from simple_harness.execution.runtime_audit import current_operation_binding
 
 
 def record_event_witness(connection, event_id):
@@ -19,6 +20,7 @@ def record_event_witness(connection, event_id):
         source_sequence=source["durable_seq"],
         contract="sdk.core.v2",
         birth=source["kind"] in {"run.created", "child.created"},
+        runtime_operation=current_operation_binding(source["run_id"]),
     )
     connection.execute(
         "INSERT INTO run_events(event_id,run_id,durable_seq,kind,payload_json,created_at) "

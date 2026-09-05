@@ -35,6 +35,13 @@ class OperationReceipt(dict):
         self.child_operation_ids = []
 
 
+def current_operation_binding(run_id):
+    active = _CURRENT_OPERATION.get()
+    if active is None or active[0] != run_id:
+        return None
+    return dict(operation_id=active[3], runtime_epoch=active[2], owner_hash=audit_hash(active[1]))
+
+
 @contextmanager
 def runtime_operation(
     store, name, *, lease, clock, identity, contract="sdk.core.v2", parent_operation_id=None

@@ -83,3 +83,13 @@ Provider preparation and proposal/preflight. Core19 PASS and direct-impact67 PAS
 (`parent-children-green.log`, `parent-impact.log`). Normalizer v3 invalidates old
 spools rather than returning a cached false-completeness claim. No wheel/schema
 version change. Fixed-source independent re-review remains required.
+
+Dirac's later-preflight counterexample additionally found that a later rejected
+activation need not enter a driver. Two decisive negatives now exercise actual
+catalog generation change and exact public authorization, with and without reopen;
+only the later preflight audit pair is corrupted. Both were red with38e4183 and are
+green after checking each activation owner/epoch and binding canonical event
+witnesses to the actual current runtime operation. The latter also detects a second
+rejected preflight in the same epoch. Core21 PASS (`later-preflight-green.log`);
+normalizer v4 invalidates stale coverage snapshots. C5 work is separate and not part
+of this correction's completion claim.

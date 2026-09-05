@@ -15,6 +15,8 @@ last-updated: 2026-09-05
 Kernel preflight/driver, Provider preparation, Context, proposal/batch/envelope/route
 boundaries now record actual lease-bound intervals; canonical workflow/child/control
 receipts are public audit sources. Event witnesses share the authority transaction,
+bind actual runtime operation ownership, and activation/preflight plus parent/child
+interval checks detect loss of entire intervals, including rejection without driver.
 and mutable continuation/signal claims retain each claim epoch. New runtime restart
 can prove its covered intervals; exact old0.7.2 execution after new WAITING remains
 unverified despite the birth marker. No diagnostic or hidden Provider metadata is

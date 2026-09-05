@@ -13,6 +13,8 @@ SPDX-License-Identifier: Apache-2.0
 
 Real lease-bound core intervals, canonical child/workflow/control sources and
 continuous recording verification are implemented in the isolated source tree.
+Independent missing-whole-preflight findings now have first/later/same-epoch
+corruption regressions; causal parent/child and canonical event bindings are checked.
 196 directly affected tests plus two workflow relation tests pass; exact installed
 old0.7.2 resume executes once and is correctly unverified by the new reader.
 **Source leaf remains incomplete**: pre-Run command retry history storage and

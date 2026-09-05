@@ -338,3 +338,68 @@ def test_missing_whole_preflight_interval_is_not_certified(tmp_path, boundary):
         database.close()
 
     asyncio.run(case())
+
+
+@pytest.mark.parametrize("reopen", [True, False])
+def test_later_rejected_preflight_requires_its_own_interval(tmp_path, reopen):
+    from simple_harness.tools import AuthorizationDecision
+
+    from .test_react_sqlite_runtime import start_authorization_wait, wait_for_scenario
+
+    class Catalog:
+        generation = 1
+
+        def current_generation(self):
+            return self.generation
+
+    async def case():
+        catalog, physical = Catalog(), PhysicalToolCounter()
+
+        def make(owner):
+            return authorization_runtime(
+                tmp_path / "later.db",
+                authorization=AuthorizationScenario(),
+                physical=physical,
+                owner_id=owner,
+                clock=lambda: 10.0,
+                tool_catalog=catalog,
+            )
+
+        runtime, uow, database = make("first")
+        decision = await start_authorization_wait(runtime, uow)
+        if reopen:
+            await runtime.close()
+            database.close()
+            runtime, uow, database = make("second")
+            await runtime.start()
+        catalog.generation = 2
+        await runtime.client.decide_authorization(
+            RunId("run-fault"),
+            decision_id=decision.decision_id,
+            nonce=str(decision.request["nonce"]),
+            expected_version=decision.version,
+            decision=AuthorizationDecision.ALLOW,
+        )
+        await wait_for_scenario(runtime, lambda: uow.read_run("run-fault").state.value == "failed")
+        assert uow.read_run("run-fault").state.value == "failed"
+        assert physical.calls == 0
+        await runtime.close()
+        assert uow.read_run_operation_audit(RunId("run-fault"), limit=4096).coverage_gaps == ()
+        with database.transaction() as connection:
+            # Corruption only: retain the first complete preflight/driver and all
+            # real later activation/decision/terminal evidence.
+            assert (
+                connection.execute(
+                    "DELETE FROM run_events WHERE kind='audit.runtime.v2' AND "
+                    "json_extract(payload_json,'$.operation_id')=(SELECT json_extract(payload_json,'$.operation_id') "
+                    "FROM run_events WHERE kind='audit.runtime.v2' AND json_extract(payload_json,'$.name')='runtime.preflight' "
+                    "ORDER BY durable_seq DESC LIMIT 1)",
+                ).rowcount
+                == 2
+            )
+        after = uow.read_run_operation_audit(RunId("run-fault"), limit=4096)
+        assert after.coverage_gaps
+        assert after.to_json()["recording_coverage"] == "unverified"
+        database.close()
+
+    asyncio.run(case())

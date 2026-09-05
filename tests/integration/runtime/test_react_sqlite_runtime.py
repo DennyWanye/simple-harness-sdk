@@ -564,6 +564,7 @@ def authorization_runtime(
     provider_estimator=None,
     provider_budget_policy=None,
     driver=None,
+    tool_catalog=None,
 ):
     class ScenarioProvider(Provider):
         async def invoke(self, request, *, cancel):
@@ -638,7 +639,7 @@ def authorization_runtime(
             reconciliation=Noop(),
             provider_reconciliation=Noop(),
             react_checkpoint=uow,
-            tool_catalog=Catalog(),
+            tool_catalog=tool_catalog or Catalog(),
             owner_id=owner_id,
             clock=clock,
         ),

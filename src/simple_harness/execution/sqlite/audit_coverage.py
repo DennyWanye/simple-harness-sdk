@@ -12,6 +12,8 @@ def recording_coverage(connection, run_id):
     births, birth_proofs = set(), set()
     inputs = set()
     activation_events = {}
+    activation_owners = {}
+    event_bindings = []
     claims = {}
     intervals = {}
     for row in connection.execute(
@@ -24,6 +26,8 @@ def recording_coverage(connection, run_id):
             if value.get("contract") != "sdk.core.v2":
                 gaps.add("event_recording_contract_unverified")
             proofs.add((value["source_id"], value["source_hash"]))
+            if value.get("runtime_operation") is not None:
+                event_bindings.append((value["source_sequence"], value["runtime_operation"]))
             if value.get("birth") is True:
                 birth_proofs.add((value["source_id"], value["source_hash"]))
         elif row["kind"] == "audit.runtime.v2":
@@ -80,6 +84,7 @@ def recording_coverage(connection, run_id):
                 epoch = value.get("lease_epoch", value.get("runtime_lease_epoch"))
                 if type(epoch) is int:
                     activation_events[epoch] = original
+                    activation_owners[epoch] = audit_hash(value.get("owner_id"))
     birth = bool(births) and births <= birth_proofs
     if not birth:
         gaps.add("legacy_birth_unverified")
@@ -87,6 +92,23 @@ def recording_coverage(connection, run_id):
         gaps.add("canonical_event_interval_unverified")
     if started != settled:
         gaps.add("runtime_operation_interval_unclosed")
+    for epoch, owner in activation_owners.items():
+        if not any(
+            value["name"] == "runtime.preflight"
+            and value["runtime_epoch"] == epoch
+            and value["owner_hash"] == owner
+            and "end_sequence" in value
+            for value in intervals.values()
+        ):
+            gaps.add("activation_preflight_interval_unverified")
+    for sequence, binding in event_bindings:
+        value = intervals.get(binding["operation_id"])
+        if (
+            value is None
+            or any(value[key] != binding[key] for key in ("runtime_epoch", "owner_hash"))
+            or not (value["start_sequence"] < sequence < value.get("end_sequence", -1))
+        ):
+            gaps.add("event_runtime_interval_unverified")
     for value in intervals.values():
         children = value.get("child_operation_ids")
         if not isinstance(children, list) or len(set(children)) != len(children):
