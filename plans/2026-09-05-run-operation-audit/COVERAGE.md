@@ -48,3 +48,12 @@ set in one snapshot subject to explicit resource-unavailable, then exhausts immu
 pages with original prefix across terminal mutation/reopen. This removes the bounded
 reader's truncation limit for consumers adopting open/page. It does not close the
 remaining producer enumeration or historical recording gaps above.
+
+## User scope clarification and next execution
+
+CORE-BOUNDARIES.md is the actual-call-chain worklist C1–C8 for the remaining required
+production boundaries. New supported core Runs must get explicit recording-contract
+coverage after all producers close; legacy-unverified is not permanent new-Run policy.
+The current blanket historical gaps remain truthful only for this first slice and will
+be replaced by validated per-Run/per-domain coverage. Successor artifact freeze waits
+for source-leaf closure; do not build a new version for every small fix.
