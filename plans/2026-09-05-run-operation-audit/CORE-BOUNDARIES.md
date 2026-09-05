@@ -21,7 +21,7 @@ transaction. No diagnostics-derived pseudo-complete state.
 | C5 Commands/admission/control | SQLite command ingress + uow.apply_start_command/apply_continue_command/apply_cancel_command, start/resolve_admission, enqueue/claim continuation, commit_runtime_state_and_ack_continuation. Normalize conversation_commands, continuation_progress_receipts and existing run_events/control receipts first; enumerate any mutable-only transition lost before adding same-tx outcome events. | Exact command duplicate/out-of-order/deny/cancel/reopen and continuation ack-loss; each durable command outcome once, zero replay dispatch, pending never success. Pre-Run rejected command has owning command namespace identity and unavailable Run association, never a fake Run. |
 | C6 Child lifecycle | uow.claim_profile_launch_and_commit_child, _commit_child_terminal, finalize_child_and_enqueue_parent_signal, claim_next_child_signal, ack_child_signal_and_commit_parent_progress. Normalize child_commands/run_links/child_terminal_receipts/child_signals/child_signal_ack_receipts; parent and child Run association from canonical links, no bare ID guessing. | Actual child launch→terminal→parent signal/ack, duplicate delivery and parent cancellation/late child quarantine; exact relations preserved and no child/provider resend. If an existing receipt already proves the boundary, no new writer. |
 | C7 Workflow operations/control | runtime/drivers/workflow.py start/cancel + SQLite workflow operation/native/checkpoint-effect/decision-consumption/start/resume/cancel/recovery/fork/spawn/terminal receipts. Add explicit safe normalizers with owning-Run joins for the listed canonical tables, retaining attempt/state/version/source hash. Only uncovered mutable-only CAS transitions warrant new audit events. | Existing real workflow operation replay, fork, cancel convergence, decision consumption, spawn completion and recovery receipt tests gain public audit assertions. Unknown effects retain unknown; workflow receipt is not another billed Provider operation. |
-| C8 Coverage introduction + integration | Add immutable SDK core recording-contract marker in the original root AND child creation transaction (_create_start_on_connection and child commit), only after C1–C7 instrumentation is complete. Reader validates marker version and exact supported driver/capability set. | New real ReAct/workflow Runs report explicit supported core producer coverage; old no-marker Runs remain legacy-unverified. Marker cannot manufacture old facts or certify unknown/custom drivers. Fault between Run birth and marker rolls back both. Same-run restart preserves marker, coverage and replay identity. |
+| C8 Coverage introduction + integration | Add immutable SDK core recording-contract marker in the original root AND child creation transaction (_create_start_on_connection and child commit), only after C1–C7 instrumentation is complete. Reader validates marker version and exact supported driver/capability set plus continuous activation/operation coverage; birth marker alone cannot certify the Run lifetime. | New real ReAct/workflow Runs report explicit supported core producer coverage; old no-marker Runs remain legacy-unverified. Marker cannot manufacture old facts or certify unknown/custom drivers. Fault between Run birth and marker rolls back both. Cross-runtime new WAITING Run→exact old0.7.2 resume→new reader must detect the unproved recording interval. Same-run restart preserves identity, not an unconditional completeness claim. |
 
 ## Coverage contract required by C8
 
@@ -53,3 +53,39 @@ build manifest, and independent installed public consumer: one Run with physical
 success/failure + pre-effect deny, raw-metadata canaries absent, complete page traversal
 and cursor restart with zero additional Provider/tool dispatch. No wheel/version churn
 per small fix, no push/tag. Host installed composition remains separately owned.
+
+
+## C8 independent challenge: recording continuity across runtime replacement
+
+Dirac identified a concrete false-completeness risk: a new Run's birth marker remains
+in schema7 while an old0.7.2 runtime can reopen/resume it, ignoring new producers. A
+new reader must not infer lifetime completeness from the unchanged birth marker.
+This is a required negative oracle, not waived by a successful new-runtime restart.
+
+Implementation must prove coverage for each actual activation/operation interval,
+with exact supported driver/recording version and canonical authority associations.
+A marker or activation-start declaration alone is not proof that later operations
+were actually covered: accepted outcomes/terminal or interrupted activation coverage
+must be validated against actual canonical operations and their recording receipts.
+Root birth and child birth markers establish introduction only. Unmatched activation,
+lease epoch, canonical operation, driver/UoW compatibility, or interval leaves that
+interval unverified. Do not summarize an unproved interval as whole-Run complete.
+
+An alternative compatibility gate is valid only if the old writer actually enforces
+it. New code rejecting old versions does not stop old0.7.2 code from writing schema7;
+an ignored marker or new optional field is not a write fence. If a real persisted
+compatibility/migration gate becomes necessary, declare that seam explicitly before
+implementation; do not silently claim a gate the frozen writer cannot understand.
+
+Decisive addition: create and reach WAITING through new real SQLite kernel; close;
+resume through exact frozen0.7.2 public runtime with deterministic Provider/tool and
+observe actual execution; close and read with new source. If old execution is allowed,
+coverage must identify the unverified interval despite the valid birth marker. If a
+proven compatibility gate rejects it, assert zero new physical dispatch and unchanged
+canonical authority. Companion positive: supported new-runtime restart/rehandoff has
+all required recording receipts, while custom driver or replaced UoW is not certified
+solely by Run birth. Preserve all old evidence; no backfilled fabricated receipts.
+
+Final C8 choice is continuous canonical-proof verification unless an actual enforcing
+write-compatibility seam is demonstrated. Before that verification closes, new Run
+coverage remains explicitly unverified where appropriate, never falsely complete.
