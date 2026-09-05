@@ -830,6 +830,22 @@ class RunClient:
             raise ValueError("command_id is required")
         return self._runtime._uow.get_command_snapshot(command_id)
 
+    async def open_context_stage_operation_audit(self, stage_id: str, *, page_size: int = 256):
+        from simple_harness.execution.audit import RunAuditUnavailable
+
+        reader = getattr(self._runtime._uow, "open_context_stage_operation_audit", None)
+        if reader is None:
+            raise RunAuditUnavailable("audit_reader_unsupported")
+        return await asyncio.to_thread(reader, stage_id, page_size=page_size)
+
+    async def read_context_stage_operation_audit_page(self, stage_id: str, *, cursor: str):
+        from simple_harness.execution.audit import RunAuditUnavailable
+
+        reader = getattr(self._runtime._uow, "read_context_stage_operation_audit_page", None)
+        if reader is None:
+            raise RunAuditUnavailable("audit_reader_unsupported")
+        return await asyncio.to_thread(reader, stage_id, cursor=cursor)
+
     async def open_command_operation_audit(self, command_id: str, *, page_size: int = 256):
         from simple_harness.execution.audit import RunAuditUnavailable
 
@@ -1080,10 +1096,39 @@ class RunClient:
             current_message=value.message,
             bounds=ConversationContextBounds(),
         )
-        product = await asyncio.wait_for(
-            provider.prepare_once(context_request),
-            timeout=context_request.bounds.deadline_seconds,
-        )
+        from simple_harness.execution.audit import audit_hash
+        from simple_harness.execution.sqlite.stage_audit import begin_prepare, finish
+
+        with repository.database.transaction() as connection:
+            stage_call = begin_prepare(
+                connection,
+                claim.record,
+                request_hash=audit_hash(context_request.canonical_payload()),
+                now=self._runtime._now(),
+            )
+        try:
+            product = await asyncio.wait_for(
+                provider.prepare_once(context_request),
+                timeout=context_request.bounds.deadline_seconds,
+            )
+        except BaseException:
+            with repository.database.transaction() as connection:
+                finish(
+                    connection,
+                    stage_call,
+                    state="unknown",
+                    now=self._runtime._now(),
+                    error_code="context_prepare_interrupted",
+                )
+            raise
+        with repository.database.transaction() as connection:
+            finish(
+                connection,
+                stage_call,
+                state="returned",
+                now=self._runtime._now(),
+                result_hash=getattr(product, "result_hash", None),
+            )
         if (
             product.preparation_id != stage_id
             or product.source_snapshot_ref != ref
@@ -2316,31 +2361,22 @@ class Runtime:
             "ORDER BY retry_at,release_id LIMIT ?",
             (now, limit),
         ).fetchall()
+        from simple_harness.execution.sqlite.stage_audit import begin_release, settle_release
+
         for row in rows:
-            request = MemoryReleaseRequest(
-                str(row[1]),
-                str(row[2]),
-                str(row[3]),
-                str(row[4]),
-                None if row[5] is None else str(row[5]),
-            )
+            with staging.database.transaction() as connection:
+                pending = begin_release(connection, str(row[0]), now=self._now())
+            if pending is None:
+                continue
+            call, request = pending
             try:
                 await asyncio.wait_for(memory.release_recall(request), timeout=1.0)
             except Exception:
-                attempts = int(row[6]) + 1
                 with staging.database.transaction() as connection:
-                    connection.execute(
-                        "UPDATE memory_recall_releases SET attempt_count=?,retry_at=? "
-                        "WHERE release_id=? AND state='pending'",
-                        (attempts, now + min(60.0, 2.0 ** min(attempts, 6)), str(row[0])),
-                    )
+                    settle_release(connection, str(row[0]), call, now=self._now(), returned=False)
             else:
                 with staging.database.transaction() as connection:
-                    connection.execute(
-                        "UPDATE memory_recall_releases SET state='released',attempt_count=?,"
-                        "released_at=? WHERE release_id=? AND state='pending'",
-                        (int(row[6]) + 1, self._now(), str(row[0])),
-                    )
+                    settle_release(connection, str(row[0]), call, now=self._now(), returned=True)
 
     async def _drain_memory_bounded(self, limit: int) -> bool:
         dispatcher = self._ports.memory_dispatcher

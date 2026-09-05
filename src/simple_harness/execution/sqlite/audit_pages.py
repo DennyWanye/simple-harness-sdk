@@ -14,6 +14,7 @@ from pathlib import Path
 from simple_harness.contracts import RunId, canonical_json
 from simple_harness.execution.audit import (
     CommandOperationAuditPageV1,
+    ContextStageOperationAuditPageV1,
     RunAuditUnavailable,
     RunAuditUsageV1,
     RunOperationAuditPageV1,
@@ -25,7 +26,7 @@ from simple_harness.execution.audit import (
 from .audit import _opaque_operation, read_snapshot
 
 FORMAT = 2
-NORMALIZER = "core-memory-port-intervals-registered-labels-opaque-refs-v8"
+NORMALIZER = "core-stage-intervals-registered-labels-opaque-refs-v9"
 MAX_BYTES = 64 * 1024 * 1024
 MAX_FILE_BYTES = 192 * 1024 * 1024
 MAX_SECONDS = 30.0
@@ -104,7 +105,12 @@ class _Spool:
         self.count += 1
 
 
-def open_pages(database, run_id=None, *, page_size=256, command_id=None):
+def open_pages(database, run_id=None, *, page_size=256, command_id=None, stage_id=None):
+    query_kind = "stage" if stage_id is not None else ("command" if command_id is not None else "run")
+    if stage_id is not None:
+        if command_id is not None or run_id is not None or not isinstance(stage_id, str) or not stage_id:
+            raise ValueError("invalid stage audit identity")
+        command_id = stage_id  # Shared secondary-domain transport, never a fabricated command row.
     if command_id is None:
         _check_run(run_id)
     elif run_id is not None or not isinstance(command_id, str) or not command_id:
@@ -135,17 +141,25 @@ def open_pages(database, run_id=None, *, page_size=256, command_id=None):
             )
             try:
                 from .command_audit import command_cut, command_incarnation, read_command_snapshot
+                from .stage_audit import run_stage_cut
+                if query_kind == "stage":
+                    from .stage_audit import (
+                        stage_cut as command_cut, stage_incarnation as command_incarnation,
+                        read_stage_snapshot as read_command_snapshot,
+                    )
 
                 if command_id is None:
                     header = read_snapshot(source, run_id.value, 256, operation_sink=spool)
                     incarnation = _incarnation(source, run_id.value)
                     cut = _event_cut(source, run_id.value)
                     command_source_cut = command_cut(source, run_id=run_id.value)
+                    stage_source_cut = run_stage_cut(source, run_id.value)
                 else:
                     header = read_command_snapshot(source, command_id, spool)
                     incarnation = command_incarnation(source, command_id)
                     cut = command_cut(source, command_id)
                     command_source_cut = cut
+                    stage_source_cut = []
             finally:
                 source.set_progress_handler(None, 0)
         if namespace != _namespace(database):
@@ -174,10 +188,11 @@ def open_pages(database, run_id=None, *, page_size=256, command_id=None):
             metadata.pop(key)
         manifest = dict(
             format=FORMAT,
-            query_kind="run" if command_id is None else "command",
+            query_kind=query_kind,
             incarnation=incarnation,
             event_cut=cut,
             command_cut=command_source_cut,
+            stage_cut=stage_source_cut,
             normalizer=NORMALIZER,
             source_schema=database.schema_version,
             namespace=namespace,
@@ -206,7 +221,7 @@ def open_pages(database, run_id=None, *, page_size=256, command_id=None):
         finally:
             os.close(dirfd)
         return read_page(
-            database, run_id, command_id=command_id, cursor=_cursor(snapshot_hash, tokens[0])
+            database, run_id, command_id=None if query_kind == "stage" else command_id, stage_id=stage_id, cursor=_cursor(snapshot_hash, tokens[0])
         )
     except RunAuditUnavailable:
         raise
@@ -220,7 +235,12 @@ def open_pages(database, run_id=None, *, page_size=256, command_id=None):
             Path(str(path) + "-journal").unlink(missing_ok=True)
 
 
-def read_page(database, run_id=None, *, cursor, command_id=None):
+def read_page(database, run_id=None, *, cursor, command_id=None, stage_id=None):
+    query_kind = "stage" if stage_id is not None else ("command" if command_id is not None else "run")
+    if stage_id is not None:
+        if command_id is not None or run_id is not None or not isinstance(stage_id, str) or not stage_id:
+            raise ValueError("invalid stage audit identity")
+        command_id = stage_id  # Shared secondary-domain transport, never a fabricated command row.
     if command_id is None:
         _check_run(run_id)
     elif run_id is not None or not isinstance(command_id, str) or not command_id:
@@ -248,11 +268,11 @@ def read_page(database, run_id=None, *, cursor, command_id=None):
             ):
                 raise RunAuditUnavailable("audit_snapshot_version_unavailable")
             header = manifest["header"]
-            if manifest["query_kind"] != ("run" if command_id is None else "command"):
+            if manifest["query_kind"] != query_kind:
                 raise RunAuditUnavailable("audit_cursor_domain_mismatch")
-            if command_id is not None and header["command_ref"] != audit_reference(
-                "control", command_id
-            ):
+            if command_id is not None and header[
+                "stage_ref" if query_kind == "stage" else "command_ref"
+            ] != audit_reference("stage" if query_kind == "stage" else "control", command_id):
                 raise RunAuditUnavailable("audit_cursor_command_mismatch")
             if command_id is None and header["run_id"] != run_id.value:
                 raise RunAuditUnavailable("audit_cursor_run_mismatch")
@@ -260,6 +280,9 @@ def read_page(database, run_id=None, *, cursor, command_id=None):
             # cut. Filesystem identity is only a location, never an incarnation.
             with database.transaction(read_only=True) as source:
                 from .command_audit import command_cut, command_incarnation
+                from .stage_audit import run_stage_cut
+                if query_kind == "stage":
+                    from .stage_audit import stage_cut as command_cut, stage_incarnation as command_incarnation
 
                 cut = manifest["event_cut"]
                 if command_id is None:
@@ -304,12 +327,14 @@ def read_page(database, run_id=None, *, cursor, command_id=None):
             if len(values) != min(size, total - index * size):
                 raise RunAuditUnavailable("audit_page_count_mismatch")
             page_type = (
-                RunOperationAuditPageV1 if command_id is None else CommandOperationAuditPageV1
+                RunOperationAuditPageV1 if command_id is None else
+                (ContextStageOperationAuditPageV1 if query_kind == "stage" else CommandOperationAuditPageV1)
             )
             owner = (
                 dict(run_id=run_id.value)
                 if command_id is None
-                else dict(command_ref=header["command_ref"])
+                else (dict(stage_ref=header["stage_ref"]) if query_kind == "stage"
+                      else dict(command_ref=header["command_ref"]))
             )
             return page_type(
                 **owner,

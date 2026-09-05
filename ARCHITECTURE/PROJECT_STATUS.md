@@ -154,3 +154,14 @@ of audit-family retention. Consumed legacy cursor proof is reused; absence stays
 unverified. Original terminal receipts are not restamped.35 direct/67 terminal
 adjacent/1 cleanup replay PASS; fixed-source independent re-review required.
 No schema2 WIP or artifact completion claim is included. See MEMORY-PORT contract.
+
+## noRun audit schema2 source candidate — 2026-09-05
+
+Implemented default stage-domain Context/release recording, explicit audit1→2,
+actual consumed Run association and stable pagination. Direct schema/kernel/start/
+page tests79 PASS4.90s; overlapping stage positive5 PASS0.28s. Real exact072 structural
+claim/complete/cleanup remains recorded with missing-call/result gaps. No paid Provider,
+native, full suite or wheel build. Independent fixed review pending; new terminal
+payload's real Host installed exact comparison remains mandatory. This is not whole
+Agent-operation completion or Memory-internal coverage. See MEMORY-PORT.md/RESULTS.md
+under plans/2026-09-05-run-operation-audit; original counterexamples retained locally.

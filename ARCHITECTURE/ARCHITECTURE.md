@@ -516,3 +516,17 @@ of audit-family retention. Consumed legacy cursor proof is reused; absence stays
 unverified. Original terminal receipts are not restamped.35 direct/67 terminal
 adjacent/1 cleanup replay PASS; fixed-source independent re-review required.
 No schema2 WIP or artifact completion claim is included. See MEMORY-PORT contract.
+
+### 2026-09-05 noRun operation-audit source candidate (independent review pending)
+
+Audit schema2 extends exact audit1 atomically without changing execution7. Before a
+Run exists, Context preparation and legacy recall-release calls have durable stage
+identity and unique actual call starts/settlements; safe SQL structural observations
+remain compatible with exact072 writers. Stage-domain stable pages do not create a
+Run/command. Actual consumption joins stages to Run pages; retained start/continuation
+references identify missing source groups. Current-source completeness and history
+coverage remain separate. Old unleased calls without any witness are unreconstructable,
+not zero. No Memory-internal/all-operations or installed Host claim follows from this
+source leaf. Directly adjacent79 PASS, overlapping stage5 PASS; fixed review and the
+successor installed Host exact terminal evidence comparison remain gates. Details and
+local raw indexes: plans/2026-09-05-run-operation-audit/MEMORY-PORT.md and RESULTS.md.

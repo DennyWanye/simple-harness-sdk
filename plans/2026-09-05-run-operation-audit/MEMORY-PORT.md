@@ -92,3 +92,44 @@ root-terminal/continuation/failure-terminalization67 PASS; exact cleanup replay1
 Logs memory-port-p1-red.log, memory-port-p1-green.log,
 memory-terminal-anchor-adjacent.log, memory-terminal-cleanup-replay.log. The stage
 schema2 WIP is separate; this correction must be reviewed on its fixed source.
+
+## noRun schema2 source implementation — pending independent fixed review
+
+Production write-open now atomically extends exact audit1 to audit2; execution7
+and frozen072 stay unchanged. Exact DDL/checksum and descriptor shape are checked;
+readonly never migrates. SQL stage/release observations need no Python UDF, so an
+actual072 takeover/complete/cleanup remains observable. Actual calls are separate
+from these structural receipts. Context completion/abandon returns the immutable
+transaction result, even if another worker cleans/recreates the stage after commit.
+
+The public facade and UoW expose:
+- open_context_stage_operation_audit(stage_id, *, page_size=256)
+- read_context_stage_operation_audit_page(stage_id, *, cursor)
+
+ContextStageOperationAuditPageV1 has stage_ref, immutable snapshot/page hashes,
+page index/size/count, metadata, safe operations and next_cursor. It uses the same
+bounded disk snapshot mechanism and async readonly worker as Run/command pages;
+normalizer v9 invalidates older projection spools. Cross-stage/domain fails closed.
+Run associations come from actual consumption; retained start snapshot and continuation
+stage references prevent whole-stage-family omission from becoming empty coverage.
+Calls are identified independently of request names, with exact source/start hashes.
+Release settlement checks actual request identity against its frozen call before any
+queue mutation; neither a constructed call nor a foreign release ID supplies authority.
+
+Current source completeness is distinct from history coverage. New Context/release
+calls default to durable starts; no observed return is unknown, never not-sent.
+Legacy release has no physical claim: an old call with no recorded boundary AND no
+state transition cannot be reconstructed. This limit is explicit in stage metadata;
+observed old attempt/state changes without call proof produce release_call_unverified.
+Stage preparation without actual call/result binding likewise stays unverified.
+These facts cover Harness-owned invocation, not Memory internals or materialization.
+
+Evidence (all ignored, no paid Provider/native): stage-final-adjacent.log:79 PASS4.90s
+for schema, stage, kernel-start, Run/command pages; stage-current-positive.log:5 PASS
+0.28s overlaps. Original red/green indices: stage-release-binding-red/green.log,
+stage-family-red/green.log, stage-release-gap-red/green.log,
+stage-completion-cas-red-actual/green.log. First completion probe had fixture patch
+error, retained separately; the actual red shows PREPARING/new owner borrowed after
+commit. stage-old072-final.log uses installed exact072 and records missing old-call
+and product-proof gaps after real cleanup. stage-a6-counterfactual-red.log is a
+later counterfactual against fixed a6, not a claimed chronological first red.

@@ -130,6 +130,9 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
                     **details,
                 )
             )
+    from .stage_audit import run_operations as stage_operations
+    for operation in bounded_rows(stage_operations(connection, run_id)):
+        operations.append(operation)
     from .memory_port_audit import operations as memory_operations
 
     for operation in bounded_rows(memory_operations(connection, run_id)):

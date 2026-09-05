@@ -347,6 +347,8 @@ _RUNTIME_EXPORTS = frozenset(
 def __getattr__(name: str) -> Any:
     if name in {
         "CommandOperationAuditPageV1",
+        "ContextStageOperationAuditPageV1",
+        "ContextStageOperationAuditPort",
         "CommandOperationAuditPort",
         "RunOperationAuditPort",
         "RunOperationAuditSnapshotV1",
@@ -679,6 +681,8 @@ __all__ = (
 
 __all__ += (
     "CommandOperationAuditPageV1",
+        "ContextStageOperationAuditPageV1",
+        "ContextStageOperationAuditPort",
     "CommandOperationAuditPort",
     "RunOperationAuditPort",
     "RunOperationAuditSnapshotV1",

@@ -182,3 +182,24 @@ used as an audit connection. Independent fixed-source review still pending.
 |---|---|
 | async-red.log | 721dbaf74e16a30e9705d8f3c4928a025238f38d3f64a8f921c7e28d9b9cf56d |
 | async-final.log | b9c67ed1a7c47a9ea93f6a30b9e043b97f56147653ef08896b8c021499b2d835 |
+
+## Required successor installed consumer gate (2026-09-05)
+
+The a6b0a7e committed-turn authority correction adds SDK-owned sdk_memory_outbox
+metadata to newly committed root/continuation terminal payloads. The successor
+installed composition must exercise the real Host exact terminal evidence comparison
+with this field present. Do not weaken Host compare or cite old0.7.2 native/combined
+PASS as evidence for this new terminal shape. Host consumer ownership remains with
+main/Popper; this SDK source leaf does not certify Host readiness.
+
+Independent ba1 raw counterexamples (both preserved):
+../simple_harness-primary-api/.local-test-evidence/2026-09-05/
+memory-port-ba1d6ec-review/probe.log SHA256
+ a83f4b68145a0710f104a47785b3c53bd34f8cf84d3e205e9385bd38f080b37f
+(foreign real payload receipt; cleaned whole audit-family loss).
+Fixed a6 archive, unchanged probe:
+.../memory-port-ba1d6ec-review/fixed-a6b0a7e/probe-fixed.log SHA256
+ cab497e5a35cfa3cf75d1eba485cf73646ff52e1a0cf6f60c10703ed5566db33.
+Dirac fixed a6 independently scoped ACCEPT. Fixed-source36 PASS0.71s is a separate
+measurement overlapping the earlier35/67/1 sets; do not add these counts together.
+No successor wheel/installed/native gate has run yet.

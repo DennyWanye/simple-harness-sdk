@@ -6,7 +6,9 @@ import sqlite3
 import pytest
 
 from simple_harness.execution.sqlite import Database
-from simple_harness.execution.sqlite.audit_schema import CHECKSUM, OBJECTS, AuditSchemaIncompatible
+from simple_harness.execution.sqlite.audit_schema import (
+    AUDIT_SCHEMA_VERSION, CHECKSUM, OBJECTS, AuditSchemaIncompatible,
+)
 from simple_harness.execution.sqlite.schema import fresh_descriptor
 
 
@@ -39,7 +41,7 @@ def test_old_empty_execution7_gets_explicit_audit_schema_and_reopens(tmp_path):
                 database.connection.execute(
                     "SELECT version,checksum FROM sdk_audit_schema"
                 ).fetchone()
-            ) == (1, CHECKSUM)
+            ) == (AUDIT_SCHEMA_VERSION, CHECKSUM)
             assert (
                 database.connection.execute(
                     "SELECT COUNT(*) FROM sdk_command_audit_events"
@@ -56,7 +58,7 @@ def test_invalid_audit_schema_rejected_without_file_change(tmp_path, corruption)
     with Database.open(path) as database:
         connection = database.connection
         if corruption == "future":
-            connection.execute("UPDATE sdk_audit_schema SET version=2")
+            connection.execute("UPDATE sdk_audit_schema SET version=?", (AUDIT_SCHEMA_VERSION + 1,))
         elif corruption == "noop_trigger":
             connection.execute("DROP TRIGGER sdk_command_audit_no_update")
             connection.execute(

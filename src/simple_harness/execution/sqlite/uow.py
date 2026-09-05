@@ -889,6 +889,18 @@ class SqliteExecutionUnitOfWork:
         with self.database.audit_reader() as reader:
             return read_page(reader, run_id, cursor=cursor)
 
+    def open_context_stage_operation_audit(self, stage_id: str, *, page_size: int = 256):
+        from .audit_pages import open_pages
+
+        with self.database.audit_reader() as reader:
+            return open_pages(reader, stage_id=stage_id, page_size=page_size)
+
+    def read_context_stage_operation_audit_page(self, stage_id: str, *, cursor: str):
+        from .audit_pages import read_page
+
+        with self.database.audit_reader() as reader:
+            return read_page(reader, stage_id=stage_id, cursor=cursor)
+
     def open_command_operation_audit(self, command_id: str, *, page_size: int = 256):
         from .audit_pages import open_pages
 

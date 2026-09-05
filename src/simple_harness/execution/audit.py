@@ -29,6 +29,8 @@ def audit_label_syntax(value):
 # Closed SDK vocabulary, not a pattern-based promise about external strings.
 SDK_AUDIT_ERROR_CODES = frozenset(
     {
+        "context_prepare_interrupted",
+        "memory_release_interrupted",
         "memory_transient",
         "memory_timeout",
         "memory_corrupt_result",
@@ -276,6 +278,8 @@ class RunOperationAuditSnapshotV1:
             history_coverage=self.history_coverage,
             recording_contract_version=self.recording_contract_version,
             recording_boundaries=sorted(RUNTIME_BOUNDARIES),
+            auxiliary_recording_domains=["command", "delivery", "memory_port", "context_stage"],
+            history_limitations=["legacy_unwitnessed_calls_not_reconstructable"],
             recording_coverage="verified_current_intervals"
             if not self.coverage_gaps
             else "unverified",
@@ -298,6 +302,7 @@ class RunOperationAuditSnapshotV1:
                 "workflow_checkpoints",
                 "reconciliation_resolutions",
                 "sdk_command_audit_events",
+                "sdk_stage_audit_events",
             )
             + tuple(item[0] for item in CORE_SOURCES)
             + ("workflow_spawn_continuation_ready", "delivery_outbox", "memory_outbox")
@@ -414,3 +419,49 @@ class CommandOperationAuditPort(Protocol):
     def read_command_operation_audit_page(
         self, command_id: str, *, cursor: str
     ) -> CommandOperationAuditPageV1: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ContextStageOperationAuditPageV1:
+    stage_ref: str
+    snapshot_hash: str
+    page_index: int
+    page_size: int
+    total_operations: int
+    total_pages: int
+    page_hash: str
+    operations: tuple[RunOperationAuditV1, ...]
+    next_cursor: str | None
+    metadata: object
+
+    def __post_init__(self):
+        from simple_harness.contracts import freeze_json
+
+        object.__setattr__(self, "metadata", freeze_json(self.metadata))
+
+    def to_json(self):
+        from simple_harness.contracts import thaw_json
+
+        return dict(
+            schema_version=1,
+            stage_ref=self.stage_ref,
+            snapshot_hash=self.snapshot_hash,
+            page_index=self.page_index,
+            page_size=self.page_size,
+            total_operations=self.total_operations,
+            total_pages=self.total_pages,
+            page_hash=self.page_hash,
+            operations=[o.to_json() for o in self.operations],
+            next_cursor=self.next_cursor,
+            metadata=thaw_json(self.metadata),
+            snapshot_source_complete=True,
+        )
+
+
+class ContextStageOperationAuditPort(Protocol):
+    def open_context_stage_operation_audit(
+        self, stage_id: str, *, page_size: int = 256
+    ) -> ContextStageOperationAuditPageV1: ...
+    def read_context_stage_operation_audit_page(
+        self, stage_id: str, *, cursor: str
+    ) -> ContextStageOperationAuditPageV1: ...

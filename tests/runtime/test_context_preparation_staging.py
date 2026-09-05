@@ -152,3 +152,59 @@ def test_context_authority_events_follow_committed_state_without_content(
         assert len({item.correlation.root_id for item in events}) == 1
         assert "MEMORY正文-CANARY" not in str([item.to_dict() for item in events])
         observability.close()
+
+
+def test_completion_returns_its_transaction_result_after_other_worker_cleanup(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+
+    with Database.open(tmp_path / "completion-cas.db") as database:
+        repository = ContextStagingRepository(database)
+        claim = repository.claim(
+            stage_id="same-stage",
+            kind=ContextStageKind.ROOT,
+            identity_key="same-identity",
+            user_id="user",
+            session_id="session",
+            input_hash="a" * 64,
+            mode="consumer_prepared",
+            owner_id="first",
+            now=1,
+            lease_seconds=5,
+        )
+        actual_transaction = database.transaction
+        armed = True
+
+        @contextmanager
+        def interleaved(self):
+            nonlocal armed
+            with actual_transaction() as connection:
+                yield connection
+            if armed:
+                armed = False
+                repository.cleanup(now=20, older_than=1, limit=10)
+                repository.claim(
+                    stage_id="same-stage",
+                    kind=ContextStageKind.ROOT,
+                    identity_key="same-identity",
+                    user_id="user",
+                    session_id="session",
+                    input_hash="a" * 64,
+                    mode="consumer_prepared",
+                    owner_id="second",
+                    now=21,
+                    lease_seconds=5,
+                )
+
+        monkeypatch.setattr(Database, "transaction", interleaved)
+        completed = repository.complete(
+            claim.record,
+            private_snapshot={"provider_messages": []},
+            memory_result_id=None,
+            memory_result_hash=None,
+            now=2,
+        )
+        assert completed.state is ContextStageState.STAGED
+        assert completed.lease_owner is None
+        assert repository.get("same-stage").lease_owner == "second"

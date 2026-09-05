@@ -382,8 +382,11 @@ class ContextStagingRepository:
                         now,
                     ),
                 )
-        result = self.get(claim.stage_id)
-        assert result is not None
+            row = connection.execute(
+                "SELECT * FROM context_preparation_staging WHERE stage_id=?", (claim.stage_id,)
+            ).fetchone()
+            assert row is not None
+            result = _stage(row)
         degraded = result.outcome == "degraded_empty"
         self._emit(
             result,
@@ -415,8 +418,11 @@ class ContextStagingRepository:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("context stage cannot be abandoned")
-        result = self.get(stage_id)
-        assert result is not None
+            row = connection.execute(
+                "SELECT * FROM context_preparation_staging WHERE stage_id=?", (stage_id,)
+            ).fetchone()
+            assert row is not None
+            result = _stage(row)
         self._emit(
             result,
             event_name="context.abandoned",
