@@ -13,17 +13,19 @@ from pathlib import Path
 
 from simple_harness.contracts import RunId, canonical_json
 from simple_harness.execution.audit import (
+    CommandOperationAuditPageV1,
     RunAuditUnavailable,
     RunAuditUsageV1,
     RunOperationAuditPageV1,
     RunOperationAuditV1,
     audit_hash,
+    audit_reference,
 )
 
 from .audit import _opaque_operation, read_snapshot
 
 FORMAT = 2
-NORMALIZER = "core-activation-intervals-registered-labels-opaque-refs-v4"
+NORMALIZER = "core-command-intervals-registered-labels-opaque-refs-v5"
 MAX_BYTES = 64 * 1024 * 1024
 MAX_FILE_BYTES = 192 * 1024 * 1024
 MAX_SECONDS = 30.0
@@ -102,8 +104,11 @@ class _Spool:
         self.count += 1
 
 
-def open_pages(database, run_id, *, page_size=256):
-    _check_run(run_id)
+def open_pages(database, run_id=None, *, page_size=256, command_id=None):
+    if command_id is None:
+        _check_run(run_id)
+    elif run_id is not None or not isinstance(command_id, str) or not command_id:
+        raise ValueError("invalid command audit identity")
     if not database.is_open:
         raise RunAuditUnavailable("audit_store_unavailable")
     if type(page_size) is not int or not 1 <= page_size <= 4096:
@@ -123,15 +128,24 @@ def open_pages(database, run_id, *, page_size=256):
         output.execute("CREATE TABLE operations(kind,operation,version,record_type,source,payload)")
         output.execute("CREATE TABLE pages(page_index INTEGER PRIMARY KEY,payload TEXT NOT NULL)")
         output.execute("CREATE TABLE manifest(payload TEXT NOT NULL)")
-        spool = _Spool(output, run_id.value, path)
+        spool = _Spool(output, run_id.value if command_id is None else command_id, path)
         with database.transaction(read_only=True) as source:
             source.set_progress_handler(
                 lambda: int(time.monotonic() - spool.started > MAX_SECONDS), 1000
             )
             try:
-                header = read_snapshot(source, run_id.value, 256, operation_sink=spool)
-                incarnation = _incarnation(source, run_id.value)
-                cut = _event_cut(source, run_id.value)
+                from .command_audit import command_cut, command_incarnation, read_command_snapshot
+
+                if command_id is None:
+                    header = read_snapshot(source, run_id.value, 256, operation_sink=spool)
+                    incarnation = _incarnation(source, run_id.value)
+                    cut = _event_cut(source, run_id.value)
+                    command_source_cut = command_cut(source, run_id=run_id.value)
+                else:
+                    header = read_command_snapshot(source, command_id, spool)
+                    incarnation = command_incarnation(source, command_id)
+                    cut = command_cut(source, command_id)
+                    command_source_cut = cut
             finally:
                 source.set_progress_handler(None, 0)
         if namespace != _namespace(database):
@@ -160,8 +174,10 @@ def open_pages(database, run_id, *, page_size=256):
             metadata.pop(key)
         manifest = dict(
             format=FORMAT,
+            query_kind="run" if command_id is None else "command",
             incarnation=incarnation,
             event_cut=cut,
+            command_cut=command_source_cut,
             normalizer=NORMALIZER,
             source_schema=database.schema_version,
             namespace=namespace,
@@ -189,7 +205,9 @@ def open_pages(database, run_id, *, page_size=256):
             os.fsync(dirfd)
         finally:
             os.close(dirfd)
-        return read_page(database, run_id, cursor=_cursor(snapshot_hash, tokens[0]))
+        return read_page(
+            database, run_id, command_id=command_id, cursor=_cursor(snapshot_hash, tokens[0])
+        )
     except RunAuditUnavailable:
         raise
     except (OSError, sqlite3.DatabaseError, ValueError, TypeError, KeyError):
@@ -202,8 +220,11 @@ def open_pages(database, run_id, *, page_size=256):
             Path(str(path) + "-journal").unlink(missing_ok=True)
 
 
-def read_page(database, run_id, *, cursor):
-    _check_run(run_id)
+def read_page(database, run_id=None, *, cursor, command_id=None):
+    if command_id is None:
+        _check_run(run_id)
+    elif run_id is not None or not isinstance(command_id, str) or not command_id:
+        raise ValueError("invalid command audit identity")
     if not database.is_open:
         raise RunAuditUnavailable("audit_store_unavailable")
     snapshot_hash, token = _decode(cursor)
@@ -227,16 +248,36 @@ def read_page(database, run_id, *, cursor):
             ):
                 raise RunAuditUnavailable("audit_snapshot_version_unavailable")
             header = manifest["header"]
-            if header["run_id"] != run_id.value:
+            if manifest["query_kind"] != ("run" if command_id is None else "command"):
+                raise RunAuditUnavailable("audit_cursor_domain_mismatch")
+            if command_id is not None and header["command_ref"] != audit_reference(
+                "control", command_id
+            ):
+                raise RunAuditUnavailable("audit_cursor_command_mismatch")
+            if command_id is None and header["run_id"] != run_id.value:
                 raise RunAuditUnavailable("audit_cursor_run_mismatch")
             # Prove current canonical Run ownership/start and the captured immutable
             # cut. Filesystem identity is only a location, never an incarnation.
             with database.transaction(read_only=True) as source:
-                if _incarnation(source, run_id.value) != manifest["incarnation"]:
-                    raise RunAuditUnavailable("audit_run_incarnation_mismatch")
+                from .command_audit import command_cut, command_incarnation
+
                 cut = manifest["event_cut"]
-                if _event_cut(source, run_id.value, sequence=cut["sequence"]) != cut:
-                    raise RunAuditUnavailable("audit_run_cut_mismatch")
+                if command_id is None:
+                    if _incarnation(source, run_id.value) != manifest["incarnation"]:
+                        raise RunAuditUnavailable("audit_run_incarnation_mismatch")
+                    if _event_cut(source, run_id.value, sequence=cut["sequence"]) != cut:
+                        raise RunAuditUnavailable("audit_run_cut_mismatch")
+                    command_bound = manifest["command_cut"]
+                    if (
+                        command_cut(source, run_id=run_id.value, sequence=command_bound["sequence"])
+                        != command_bound
+                    ):
+                        raise RunAuditUnavailable("audit_command_cut_mismatch")
+                else:
+                    if command_incarnation(source, command_id) != manifest["incarnation"]:
+                        raise RunAuditUnavailable("audit_command_incarnation_mismatch")
+                    if command_cut(source, command_id, sequence=cut["sequence"]) != cut:
+                        raise RunAuditUnavailable("audit_command_cut_mismatch")
             tokens, hashes = manifest["tokens"], manifest["page_hashes"]
             if token not in tokens:
                 raise RunAuditUnavailable("audit_cursor_invalid")
@@ -262,8 +303,16 @@ def read_page(database, run_id, *, cursor):
                 raise RunAuditUnavailable("audit_page_hash_mismatch")
             if len(values) != min(size, total - index * size):
                 raise RunAuditUnavailable("audit_page_count_mismatch")
-            return RunOperationAuditPageV1(
-                run_id=run_id.value,
+            page_type = (
+                RunOperationAuditPageV1 if command_id is None else CommandOperationAuditPageV1
+            )
+            owner = (
+                dict(run_id=run_id.value)
+                if command_id is None
+                else dict(command_ref=header["command_ref"])
+            )
+            return page_type(
+                **owner,
                 snapshot_hash=snapshot_hash,
                 page_index=index,
                 page_size=size,

@@ -873,6 +873,18 @@ class SqliteExecutionUnitOfWork:
         with self.database.audit_reader() as reader:
             return read_page(reader, run_id, cursor=cursor)
 
+    def open_command_operation_audit(self, command_id: str, *, page_size: int = 256):
+        from .audit_pages import open_pages
+
+        with self.database.audit_reader() as reader:
+            return open_pages(reader, command_id=command_id, page_size=page_size)
+
+    def read_command_operation_audit_page(self, command_id: str, *, cursor: str):
+        from .audit_pages import read_page
+
+        with self.database.audit_reader() as reader:
+            return read_page(reader, command_id=command_id, cursor=cursor)
+
     def _audit_operation_head(self, connection, kind, identity, now):
         from simple_harness.execution.audit import audit_hash
 
@@ -1241,6 +1253,9 @@ class SqliteExecutionUnitOfWork:
         ).rowcount
         if changed != 1:
             raise UnitOfWorkConflict("command apply stale-result fence failed")
+        from .command_audit import record_command_event
+
+        record_command_event(connection, claim.receipt.command_id, "applied", now=now, claim=claim)
 
     @staticmethod
     def _insert_conversation_output(

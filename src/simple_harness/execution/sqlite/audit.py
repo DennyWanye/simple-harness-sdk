@@ -196,6 +196,7 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
                     operation_name=value["table"] + ".claim",
                     created_at=row["created_at"],
                     runtime_epoch=value["runtime_epoch"],
+                    claim_epoch=value["claim_epoch"],
                 )
             )
             continue
@@ -261,6 +262,15 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
                 )
             )
     from .audit_core import core_operation, core_rows
+    from .command_audit import command_event_operation
+
+    for row in bounded_rows(
+        connection.execute(
+            "SELECT * FROM sdk_command_audit_events WHERE run_id=? ORDER BY event_seq LIMIT ?",
+            (run_id, query_limit),
+        )
+    ):
+        operations.append(command_event_operation(row))
 
     for table, keys, kind, body in bounded_rows(core_rows(connection, run_id, limit=query_limit)):
         operations.append(core_operation(table, keys, kind, body))

@@ -219,6 +219,7 @@ class CommandIngress:
                 (row["command_id"],),
             ).fetchone()
             assert claimed is not None and claimed["raw_payload_json"] is not None
+            _record_audit(connection, row["command_id"], "claimed", now)
             return CommandClaim(
                 _receipt(claimed),
                 str(claimed["raw_payload_json"]),
@@ -269,6 +270,7 @@ class CommandIngress:
                 (claim.receipt.command_id,),
             ).fetchone()
             assert row is not None
+            _record_audit(connection, claim.receipt.command_id, "transition", now, claim=claim)
             return _receipt(row)
 
     def retry(
@@ -306,6 +308,7 @@ class CommandIngress:
                 (claim.receipt.command_id,),
             ).fetchone()
             assert row is not None
+            _record_audit(connection, claim.receipt.command_id, "retry", now, claim=claim)
             return _receipt(row)
 
     def reject(
@@ -340,6 +343,7 @@ class CommandIngress:
                 (claim.receipt.command_id,),
             ).fetchone()
             assert row is not None
+            _record_audit(connection, claim.receipt.command_id, "rejected", now, claim=claim)
             return _receipt(row)
 
     def heartbeat(self, claim: CommandClaim, *, now: float, lease_seconds: float) -> CommandClaim:
@@ -361,6 +365,7 @@ class CommandIngress:
                 (claim.receipt.command_id,),
             ).fetchone()
             assert row is not None
+            _record_audit(connection, claim.receipt.command_id, "heartbeat", now, claim=claim)
             return CommandClaim(
                 _receipt(row),
                 claim.raw_payload_json,
@@ -452,11 +457,21 @@ class CommandIngress:
                     now,
                 ),
             )
+            _record_audit(connection, intent.command_id, "accepted", now)
             if intent.kind is CommandKind.CANCEL:
                 connection.execute(
                     "UPDATE conversation_command_streams SET cancel_fence_seq=? WHERE run_id=?",
                     (accept_seq, intent.run_id.value),
                 )
+                cancelled_ids = [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT command_id FROM conversation_commands "
+                        "WHERE run_id=? AND accept_seq<? "
+                        "AND kind IN ('start','continue') AND state='accepted'",
+                        (intent.run_id.value, accept_seq),
+                    )
+                ]
                 connection.execute(
                     """
                     UPDATE conversation_commands
@@ -467,6 +482,14 @@ class CommandIngress:
                     """,
                     (now, intent.run_id.value, accept_seq),
                 )
+                for cancelled_id in cancelled_ids:
+                    _record_audit(
+                        connection,
+                        cancelled_id,
+                        "cancelled",
+                        now,
+                        cause_command_id=intent.command_id,
+                    )
                 run_exists = connection.execute(
                     "SELECT 1 FROM runs WHERE run_id=?", (intent.run_id.value,)
                 ).fetchone()
@@ -481,6 +504,7 @@ class CommandIngress:
                         "version=version+1,updated_at=? WHERE command_id=? AND state='accepted'",
                         (now, intent.command_id),
                     )
+                    _record_audit(connection, intent.command_id, "applied", now)
             row = connection.execute(
                 "SELECT * FROM conversation_commands WHERE command_id=?", (intent.command_id,)
             ).fetchone()
@@ -530,3 +554,9 @@ def _time(value: float) -> float:
 
 
 __all__ = ("CommandClaim", "CommandIngress")
+
+
+def _record_audit(connection, command_id, operation, now, **kwargs):
+    from .sqlite.command_audit import record_command_event
+
+    record_command_event(connection, command_id, operation, now=now, **kwargs)

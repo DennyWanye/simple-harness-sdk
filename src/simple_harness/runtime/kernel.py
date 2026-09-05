@@ -830,6 +830,22 @@ class RunClient:
             raise ValueError("command_id is required")
         return self._runtime._uow.get_command_snapshot(command_id)
 
+    async def open_command_operation_audit(self, command_id: str, *, page_size: int = 256):
+        from simple_harness.execution.audit import RunAuditUnavailable
+
+        reader = getattr(self._runtime._uow, "open_command_operation_audit", None)
+        if reader is None:
+            raise RunAuditUnavailable("audit_reader_unsupported")
+        return await asyncio.to_thread(reader, command_id, page_size=page_size)
+
+    async def read_command_operation_audit_page(self, command_id: str, *, cursor: str):
+        from simple_harness.execution.audit import RunAuditUnavailable
+
+        reader = getattr(self._runtime._uow, "read_command_operation_audit_page", None)
+        if reader is None:
+            raise RunAuditUnavailable("audit_reader_unsupported")
+        return await asyncio.to_thread(reader, command_id, cursor=cursor)
+
     async def start_conversation(
         self,
         value: ConversationTurnInput,

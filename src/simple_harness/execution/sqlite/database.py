@@ -58,10 +58,16 @@ class Database:
                 # Validate before any persistent PRAGMA.  In particular, opening a v4
                 # file as v5 must be a byte-for-byte, side-effect-free rejection.
                 database._initialize_or_validate()
+                from .audit_schema import ensure_audit_schema
+
+                ensure_audit_schema(database)
             connection.execute(f"PRAGMA journal_mode = {'WAL' if wal else 'DELETE'}")
             connection.execute("PRAGMA synchronous = FULL")
             if not existing:
                 database._initialize_or_validate()
+                from .audit_schema import ensure_audit_schema
+
+                ensure_audit_schema(database)
         except BaseException:
             connection.close()
             database._connection = None
@@ -90,6 +96,13 @@ class Database:
     @property
     def foreign_keys_enabled(self) -> bool:
         return bool(self.connection.execute("PRAGMA foreign_keys").fetchone()[0])
+
+    @property
+    def audit_schema_version(self) -> int:
+        from .audit_schema import validate_audit_schema
+
+        validate_audit_schema(self.connection)
+        return int(self.connection.execute("SELECT version FROM sdk_audit_schema").fetchone()[0])
 
     @property
     def journal_mode(self) -> str:
@@ -131,6 +144,9 @@ class Database:
         try:
             if reader.schema_version != SCHEMA_VERSION:
                 raise RunAuditUnavailable("audit_source_schema_unavailable")
+            from .audit_schema import validate_audit_schema
+
+            validate_audit_schema(connection)
             yield reader
         except sqlite3.DatabaseError:
             raise RunAuditUnavailable("audit_store_unavailable") from None

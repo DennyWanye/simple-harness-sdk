@@ -48,7 +48,7 @@ new-runtime restart positive, exact old-runtime negative and interval-pair negat
 It now asserts no gaps, introduction v2 and verified current intervals together.
 This does not certify command or unsupported driver histories.
 
-## C5 remaining production storage gap — not waived
+## C5 original production storage gap — addressed by following source checkpoint
 
 `CommandIngress.claim_next/transition/retry/reject` currently overwrite
 `conversation_commands` (claim/attempt count and last error). A start command can
@@ -93,3 +93,28 @@ witnesses to the actual current runtime operation. The latter also detects a sec
 rejected preflight in the same epoch. Core21 PASS (`later-preflight-green.log`);
 normalizer v4 invalidates stale coverage snapshots. C5 work is separate and not part
 of this correction's completion claim.
+
+## C5 command source checkpoint — 2026-09-05
+
+Explicit independent audit schema1 now records every real CommandIngress/UoW CAS
+version in the original authority transaction, including cancel-before-Run batch
+and self application. Exact schema descriptor and actual DDL validation reject
+future/partial/altered schemas without repairing or writing them. Read-only opens
+do not initialize. Legacy observed heads never manufacture prior acceptance.
+
+Public command open/page works without a materialized Run. Stable prefix includes
+original command/namespace incarnation and event cut; later Run creation, restart,
+retry or restore cannot substitute another prefix. Safe owner/cause refs, actual
+claim epoch/attempt and closed errors do not expose raw command contents.
+
+Validation: command-adjacent.log = 236 passed in5.77s, exit0 (19 directly related
+modules, not full suite). command-final-middle.log and command-final-legacy.log
+execute exact installed0.7.2 via run_command_audit_old_runtime.py: versions
+[1,2,3,6,7] retain middle-writer gap; observed legacy [3,4,5] retain both
+introduction and history gaps. Both exit0, no Run/Provider created. Raw logs remain
+.local-test-evidence/2026-09-05/run-operation-audit/.
+
+C5 fixed-source independent review is required. Delivery belongs to original scope
+and is the next separate leaf: claim is not physical send, expiry/release cannot
+prove not-sent, crash after sink success before settlement remains unknown. No
+package version, frozen wheel, execution7 descriptor or Host consumer changed.

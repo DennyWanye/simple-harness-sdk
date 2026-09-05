@@ -54,6 +54,15 @@ SDK_AUDIT_ERROR_CODES = frozenset(
         "runtime_boundary_failed",
         "runtime_boundary_interrupted",
         "runtime_boundary_rejected",
+        "command_not_found",
+        "command_intent_conflict",
+        "run_api_mode_conflict",
+        "command_namespace_key_conflict",
+        "command_cancel_fence",
+        "command_payload_too_large",
+        "command_retry_exhausted",
+        "command_transient_failure",
+        "command_permanent_failure",
     }
 )
 
@@ -121,6 +130,10 @@ class RunOperationAuditV1:
     operation_name_hash: str | None = None
     raw_call_id_hash: str | None = None
     runtime_epoch: int | None = None
+    claim_epoch: int | None = None
+    attempt_count: int | None = None
+    owner_ref_hash: str | None = None
+    causal_command_ref: str | None = None
     parent_operation_id: str | None = None
     related_run_refs: tuple[str, ...] = ()
     created_at: float | None = None
@@ -184,7 +197,13 @@ class RunOperationAuditV1:
         if self.record_type not in {"head", "transition", "boundary", "receipt", "proposal"}:
             raise ValueError("invalid audit record type")
         _integer(self.source_version)
-        for value in (self.handoff_attempt, self.rehandoff_count, self.runtime_epoch):
+        for value in (
+            self.handoff_attempt,
+            self.rehandoff_count,
+            self.runtime_epoch,
+            self.claim_epoch,
+            self.attempt_count,
+        ):
             if value is not None:
                 _integer(value)
         if len(self.source_hash) != 64 or any(
@@ -270,6 +289,7 @@ class RunOperationAuditSnapshotV1:
                 "run_events",
                 "workflow_checkpoints",
                 "reconciliation_resolutions",
+                "sdk_command_audit_events",
             )
             + tuple(item[0] for item in CORE_SOURCES)
             + ("workflow_spawn_continuation_ready",)
@@ -340,3 +360,49 @@ class RunOperationAuditPageV1:
             metadata=thaw_json(self.metadata),
             snapshot_source_complete=True,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CommandOperationAuditPageV1:
+    command_ref: str
+    snapshot_hash: str
+    page_index: int
+    page_size: int
+    total_operations: int
+    total_pages: int
+    page_hash: str
+    operations: tuple[RunOperationAuditV1, ...]
+    next_cursor: str | None
+    metadata: object
+
+    def __post_init__(self):
+        from simple_harness.contracts import freeze_json
+
+        object.__setattr__(self, "metadata", freeze_json(self.metadata))
+
+    def to_json(self):
+        from simple_harness.contracts import thaw_json
+
+        return dict(
+            schema_version=1,
+            command_ref=self.command_ref,
+            snapshot_hash=self.snapshot_hash,
+            page_index=self.page_index,
+            page_size=self.page_size,
+            total_operations=self.total_operations,
+            total_pages=self.total_pages,
+            page_hash=self.page_hash,
+            operations=[o.to_json() for o in self.operations],
+            next_cursor=self.next_cursor,
+            metadata=thaw_json(self.metadata),
+            snapshot_source_complete=True,
+        )
+
+
+class CommandOperationAuditPort(Protocol):
+    def open_command_operation_audit(
+        self, command_id: str, *, page_size: int = 256
+    ) -> CommandOperationAuditPageV1: ...
+    def read_command_operation_audit_page(
+        self, command_id: str, *, cursor: str
+    ) -> CommandOperationAuditPageV1: ...

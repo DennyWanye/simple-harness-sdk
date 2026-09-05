@@ -16,14 +16,17 @@ Kernel preflight/driver, Provider preparation, Context, proposal/batch/envelope/
 boundaries now record actual lease-bound intervals; canonical workflow/child/control
 receipts are public audit sources. Event witnesses share the authority transaction,
 bind actual runtime operation ownership, and activation/preflight plus parent/child
-interval checks detect loss of entire intervals, including rejection without driver.
-and mutable continuation/signal claims retain each claim epoch. New runtime restart
+interval checks detect loss of entire intervals, including rejection without driver;
+mutable continuation/signal claims retain each claim epoch. New runtime restart
 can prove its covered intervals; exact old0.7.2 execution after new WAITING remains
 unverified despite the birth marker. No diagnostic or hidden Provider metadata is
 used. Directly affected196 tests and two workflow relation tests passed.
 
-This is not full source-leaf completion: pre-Run command retry history needs a real
-storage seam, and fixed-source independent review remains pending. Frozen version,
+C5 now records pre-Run command CAS versions in explicit audit schema1, in the same
+authority transaction, with public stable command pages and observed legacy gaps.
+236 adjacent tests pass; exact installed072 middle-writer and legacy-only command
+oracles retain missing history after later new writes. This is not full source-leaf
+completion: Delivery physical intervals and complete independent review remain open. Frozen version,
 schema descriptor, wheels and Host production are unchanged. See
 [core progress](../plans/2026-09-05-run-operation-audit/CORE-PROGRESS.md).
 

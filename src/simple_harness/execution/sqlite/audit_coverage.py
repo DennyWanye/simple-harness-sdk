@@ -150,16 +150,12 @@ def recording_coverage(connection, run_id):
         gaps.add("runtime_activation_interval_unverified")
     if activation_events and not supported_epochs:
         gaps.add("driver_or_uow_recording_unverified")
-    if (
-        connection.execute(
-            "SELECT 1 FROM conversation_commands WHERE run_id=? LIMIT 1",
-            (run_id,),
-        ).fetchone()
-        is not None
+    from .command_audit import command_coverage
+
+    for command in connection.execute(
+        "SELECT * FROM conversation_commands WHERE run_id=?", (run_id,)
     ):
-        # The command head is readable, but does not retain each pre-Run retry.
-        # Do not silently certify it while the command producer seam is pending.
-        gaps.add("command_transition_history_unverified")
+        gaps.update(command_coverage(connection, command))
     from .audit_witness import CLAIM_SOURCES
 
     for table, (key, owner, _) in CLAIM_SOURCES.items():

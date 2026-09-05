@@ -123,6 +123,8 @@ def core_operation(table, keys, kind, row):
         operation_name=table,
         created_at=row.get("created_at", row.get("issued_at")),
         runtime_epoch=row.get("runtime_lease_epoch"),
+        claim_epoch=row.get("claim_epoch"),
+        attempt_count=row.get("attempt_count"),
         effect_id=row.get("effect_id"),
         request_hash=row.get("request_fingerprint", row.get("input_hash")),
         result_hash=row.get("outcome_hash", row.get("output_hash")),

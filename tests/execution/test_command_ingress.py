@@ -290,6 +290,8 @@ def test_start_apply_and_command_settlement_share_one_transaction(tmp_path: Path
             now=3,
         )
         uow = SqliteExecutionUnitOfWork(database)
+        audit_prefix = uow.open_command_operation_audit("start-1", page_size=1)
+        assert audit_prefix.metadata["run_materialized"] is False
 
         def cut(point: str) -> None:
             if point == "root_start.session.after_write":
@@ -324,3 +326,15 @@ def test_start_apply_and_command_settlement_share_one_transaction(tmp_path: Path
         assert applied.run_id == "run-1"
         assert ingress.get("start-1").state is CommandState.APPLIED
         assert ingress.raw_payload("start-1") is None
+        page = uow.read_command_operation_audit_page("start-1", cursor=audit_prefix.next_cursor)
+        assert page.snapshot_hash == audit_prefix.snapshot_hash
+        assert page.metadata["run_materialized"] is False
+        settled_audit = uow.open_command_operation_audit("start-1")
+        assert settled_audit.metadata["run_materialized"] is True
+        assert settled_audit.metadata["coverage_gaps"] == ()
+        assert settled_audit.operations[-1].operation_name == "command.applied"
+        run_audit = uow.read_run_operation_audit(RunId("run-1"), limit=4096)
+        assert any(
+            item.source_hash == settled_audit.operations[-1].source_hash
+            for item in run_audit.operations
+        )

@@ -17,7 +17,10 @@ Independent missing-whole-preflight findings now have first/later/same-epoch
 corruption regressions; causal parent/child and canonical event bindings are checked.
 196 directly affected tests plus two workflow relation tests pass; exact installed
 old0.7.2 resume executes once and is correctly unverified by the new reader.
-**Source leaf remains incomplete**: pre-Run command retry history storage and
+**C5 command source is implemented, independent review pending**: explicit audit
+schema1, same-transaction version facts and stable pre-Run command pages. Adjacent
+236 PASS; exact installed072 legacy/middle-writer gaps remain unverified.
+**Whole source leaf remains incomplete**: Delivery physical intervals and
 independent complete producer review are still required. No version/schema/wheel
 freeze or native claim. See [core progress](../plans/2026-09-05-run-operation-audit/CORE-PROGRESS.md).
 
