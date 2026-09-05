@@ -122,7 +122,9 @@ async def main(folder):
                 "Exercise a recorded action.",
                 {
                     "type": "object",
-                    "properties": {"mode": {"enum": ["success", "failure", "deny"]}},
+                    "properties": {
+                        "mode": {"type": "string", "enum": ["success", "failure", "deny"]}
+                    },
                     "required": ["mode"],
                     "additionalProperties": False,
                 },
