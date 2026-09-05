@@ -67,5 +67,15 @@ preserved. Test sets overlap and are not added;90 operations are not90 tests.
 Frozen072 wheel SHA53bded3fea87168e5d2ad9e49fea5f99e1c1edb1d6077b2a52dd62716692f9ed
 and main2b8428465cbd41032ba024a0b7199183161f5ecd rechecked unchanged.
 
-Status: SDK installed public consumer PASS; artifact independent review requested;
+Status: SDK installed public consumer PASS; artifact independently scoped ACCEPT (Dirac);
 Host installed exact terminal gate pending main. No promotion/native completion claim.
+
+
+Independent artifact review checked fixed source/archive, both build hashes,
+wheel RECORD hashes/sizes, all164 source/wheel/installed package files, isolated
+installed public import, exact f90 consumer and its fixed log. No duplicate consumer
+or suite rerun. Reviewed immutable local manifest SHA256:
+ba7625655fd088e6d5a39396f82dba00ce0754a4badd2c53ae4e7eb23171d550.
+The original sdist fixture failure remains disclosed; wheel is the delivery artifact.
+Non-null committed-turn Host fixture wiring and public read-only oracle are now in
+HOST-TERMINAL-CONSUMER.md; actual Host installed gate remains pending main.

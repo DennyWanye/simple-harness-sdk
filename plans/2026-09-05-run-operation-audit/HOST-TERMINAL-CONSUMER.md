@@ -81,3 +81,75 @@ and indexed plan. old072-terminal-index.log runs exact installed072 real public 
 on current schema2, commits an actual root terminal and returns an indexed current
 projection while retaining five legacy gaps. No Provider network call. Frozen wheel
 unchanged; all source failures retained. Independent fixed review still gates build.
+
+
+## Non-null committed-turn Host oracle (2026-09-06)
+
+The existing Host `tests.operation_audit.test_terminal_audit.setup` calls the real
+foreground `build` without `memory`, so its RuntimePorts.agent_memory is None.
+Do not fabricate a terminal payload to cover the non-null case. The existing
+`tests.execution.test_primary_foreground_runtime.test_primary_real_runtime_with_agent_memory_and_validated_identity`
+is the production-adapter fixture precedent: create public
+`MemoryManager.build_development(tmp_path / "agent-memory.db")`, pass it to
+`build(..., memory=memory)`, and close it after runtime/stack. Development embeddings
+and deterministic Provider are fixture evidence, not paid/native production evidence.
+The helper already wires ForegroundConversationEntrypoint with validated identity,
+ProductConversationContextProvider and ContextStagingRepository. Real main wires
+its actual memory backend through ProductionRuntimeConfig.memory; this is not a
+missing production MemoryPort claim.
+
+For the first ordinary root completion (no continuation/legacy input replacement),
+observe only public SDK APIs against the same SDK execution database/UoW:
+
+```python
+from simple_harness import RunId
+from simple_harness.runtime.start_snapshot import StartSnapshot
+from simple_harness.execution.memory_outbox import MemoryOutboxRepository
+
+start = StartSnapshot.from_json(uow.read_start_snapshot(sdk_run_id))
+assert start.conversation is not None
+assert start.conversation.memory_text is not None
+record = MemoryOutboxRepository(database).read(
+    f"agent-memory-turn/v1/{start.turn_id}"
+)
+assert record is not None
+assert record.run_id == sdk_run_id
+assert record.turn_id == start.turn_id
+actual_turn = record.committed_turn()  # validates canonical payload and hash
+assert record.payload_hash == actual_turn.payload_hash
+snapshot = uow.read_run_operation_audit(RunId(sdk_run_id))
+created = [op for op in snapshot.operations
+           if op.kind == "memory_port"
+           and op.operation_name == "memory.outbox.created"
+           and op.request_hash == actual_turn.payload_hash]
+assert len(created) == 1
+assert snapshot.terminal_evidence is not None
+```
+
+The intent prefix is the public CommittedTurnSpec identity convention; its turn ID
+comes from the actual durable start, not a caller-made turn. Do not generalize that
+root ID derivation to continuations or replaced legacy input: use their actual
+accepted turn identity. Run this before legitimate outbox cleanup. No read above
+claims work or invokes Memory/Provider. A pending outbox is already a committed-turn
+positive; it does not mean the Memory mutation was physically applied.
+
+The SDK terminal transaction atomically inserts this exact committed turn and
+writes its payload_hash into sdk_memory_outbox.committed_turn_hash. Non-null requires
+agent_memory + accepted conversation + completed typed assistant output with
+non-null memory_text + non-null USER memory_text + actual consumed Context staging.
+ReActDriver supplies typed output for a text final; a generic test Driver may not.
+Failed/cancelled or opted-out text may legitimately have no committed turn.
+
+The public terminal DTO intentionally exposes the exact whole terminal payload hash,
+not the nested sdk_memory_outbox object. The public head plus created receipt above
+is an independent committed-turn observation under the SDK atomic producer contract;
+it is not a public raw terminal JSON getter. Host must still compare every page with
+its verified raw SDK event ID/state/full payload hash using matches(). Never substitute
+CommittedTurn.payload_hash or a Host envelope hash. Preserve the non-null positive,
+wrong raw terminal hash/event/state negatives, DB reopen and zero extra Provider/tool
+calls. This note is source-verified wiring guidance; the new installed Host combination
+remains owned by main and is not reported passed here.
+
+For a larger Run, enumerate stable public pages to find the created receipt; absence
+in a truncated bounded snapshot is not an absence proof. The example targets one
+short ordinary first-turn fixture.

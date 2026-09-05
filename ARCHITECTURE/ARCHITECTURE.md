@@ -14,8 +14,8 @@ last-updated: 2026-09-06
 
 Source0.7.3 on the isolated audit branch: declared producer/reader leaves through
 fb39d91 independently scoped accepted. Exact buildsource0282fa9 and installed public
-consumer are documented in ARTIFACT-HANDOFF.md; artifact review and real Host terminal
-comparison remain separate gates. Legacy unknown/mutable-head limits are explicit,
+consumer are documented in ARTIFACT-HANDOFF.md; artifact review is independently
+scoped ACCEPT. Real Host terminal comparison remains an open separate gate. Legacy unknown/mutable-head limits are explicit,
 not all_operations_recorded. The dated checkpoints below preserve earlier states;
 current status is this section and the handoff, not an old pending sentence.
 
