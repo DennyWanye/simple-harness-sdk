@@ -10,6 +10,7 @@ from simple_harness.execution.audit import (
     RunAuditUsageV1,
     RunOperationAuditSnapshotV1,
     RunOperationAuditV1,
+    RunTerminalAuditEvidenceV1,
     audit_error_code,
     audit_hash,
     audit_label_syntax,
@@ -131,6 +132,7 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
                 )
             )
     from .stage_audit import run_operations as stage_operations
+
     for operation in bounded_rows(stage_operations(connection, run_id)):
         operations.append(operation)
     from .memory_port_audit import operations as memory_operations
@@ -288,6 +290,13 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
     from .audit_coverage import recording_coverage
 
     gaps, recording_version = recording_coverage(connection, run_id)
+    terminal = terminal_evidence(connection, run)
+    if (
+        terminal is None
+        and run["parent_run_id"] is None
+        and run["state"] in {"completed", "failed", "cancelled"}
+    ):
+        gaps = tuple(sorted(set(gaps) | {"terminal_event_unavailable"}))
     if operation_sink is not None:
         return RunOperationAuditSnapshotV1(
             run_id,
@@ -299,6 +308,7 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
             root_run_id=audit_reference("run", run["root_run_id"]),
             parent_run_id=audit_reference("run", run["parent_run_id"]),
             recording_contract_version=recording_version,
+            terminal_evidence=terminal,
         )
     operations = [_opaque_operation(o, run_id) for o in operations]
     operations.sort(
@@ -315,6 +325,34 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
         root_run_id=audit_reference("run", run["root_run_id"]),
         parent_run_id=audit_reference("run", run["parent_run_id"]),
         recording_contract_version=recording_version,
+        terminal_evidence=terminal,
+    )
+
+
+def terminal_evidence(connection, run):
+    import hashlib
+
+    # Child terminal receipts remain their own canonical audit domain; this field
+    # is the exact root run.* terminal used by ordinary Host terminal comparisons.
+    if run["parent_run_id"] is not None:
+        return None
+
+    rows = connection.execute(
+        "SELECT * FROM run_events WHERE run_id=? "
+        "AND kind IN ('run.completed','run.failed','run.cancelled') ORDER BY durable_seq LIMIT 2",
+        (run["run_id"],),
+    ).fetchall()
+    if not rows:
+        return None
+    if len(rows) != 1 or rows[0]["kind"] != "run." + run["state"]:
+        raise RunAuditUnavailable("terminal_event_ambiguous")
+    row = rows[0]
+    return RunTerminalAuditEvidenceV1(
+        run["state"],
+        audit_reference("terminal_event", row["event_id"]),
+        hashlib.sha256(row["payload_json"].encode("utf-8")).hexdigest(),
+        audit_hash(dict(row)),
+        row["created_at"],
     )
 
 

@@ -183,3 +183,8 @@ case. Fixed independent review pending; no new ledger/wheel or weakened Host com
 SQLtrace/EXPLAIN and wrong-Run/cut negatives, no repeated suites or additive count.
 Source leaf may be frozen; successor wheel/installed publicconsumer/real Host terminal
 exact compare and broader producer scope are not certified by this review.
+
+2026-09-06 public exact terminal field implemented for root/ordinary Host audit
+consumption; source29 PASS (typed final1 overlaps), independent source review pending.
+It separates stored payload SHA from whole-row SHA; no weakening Host compare, no
+new ledger. Artifact remains pending this last direct consumer primitive review.

@@ -233,6 +233,87 @@ class RunOperationAuditV1:
 
 
 @dataclass(frozen=True, slots=True)
+class RunTerminalAuditEvidenceV1:
+    """Exact terminal payload identity, distinct from the canonical whole-row hash."""
+
+    state: str
+    event_ref: str
+    event_payload_hash: str
+    event_record_hash: str
+    created_at: float
+
+    def __post_init__(self):
+        import math
+
+        if self.state not in {"completed", "failed", "cancelled"}:
+            raise ValueError("invalid terminal state")
+        if not isinstance(self.event_ref, str) or not self.event_ref.startswith("terminal_event:"):
+            raise ValueError("invalid terminal reference")
+        for value in (
+            self.event_ref.removeprefix("terminal_event:"),
+            self.event_payload_hash,
+            self.event_record_hash,
+        ):
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(c not in "0123456789abcdef" for c in value)
+            ):
+                raise ValueError("invalid terminal digest")
+        if (
+            isinstance(self.created_at, bool)
+            or not isinstance(self.created_at, (int, float))
+            or not math.isfinite(self.created_at)
+        ):
+            raise ValueError("invalid terminal timestamp")
+
+    def matches(self, *, event_id: str, payload_hash: str, state: str) -> bool:
+        return (
+            isinstance(event_id, str)
+            and self.state == state
+            and self.event_ref == audit_reference("terminal_event", event_id)
+            and self.event_payload_hash == payload_hash
+        )
+
+    def to_json(self):
+        return dict(
+            schema_version=1,
+            state=self.state,
+            event_kind="run." + self.state,
+            event_ref=self.event_ref,
+            event_payload_hash=self.event_payload_hash,
+            event_record_hash=self.event_record_hash,
+            created_at=self.created_at,
+        )
+
+    @classmethod
+    def from_json(cls, value):
+        if set(value) != {
+            "schema_version",
+            "state",
+            "event_kind",
+            "event_ref",
+            "event_payload_hash",
+            "event_record_hash",
+            "created_at",
+        }:
+            raise ValueError("invalid terminal evidence shape")
+        if (
+            type(value["schema_version"]) is not int
+            or value["schema_version"] != 1
+            or value["event_kind"] != "run." + value["state"]
+        ):
+            raise ValueError("invalid terminal evidence schema")
+        return cls(
+            value["state"],
+            value["event_ref"],
+            value["event_payload_hash"],
+            value["event_record_hash"],
+            value["created_at"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RunOperationAuditSnapshotV1:
     run_id: str
     run_state: str
@@ -244,6 +325,7 @@ class RunOperationAuditSnapshotV1:
     root_run_id: str | None = None
     parent_run_id: str | None = None
     recording_contract_version: int | None = None
+    terminal_evidence: RunTerminalAuditEvidenceV1 | None = None
 
     def __post_init__(self):
         _identifier(self.run_id)
@@ -277,6 +359,9 @@ class RunOperationAuditSnapshotV1:
             current_source_complete=self.current_source_complete,
             history_coverage=self.history_coverage,
             recording_contract_version=self.recording_contract_version,
+            terminal_evidence=None
+            if self.terminal_evidence is None
+            else self.terminal_evidence.to_json(),
             recording_boundaries=sorted(RUNTIME_BOUNDARIES),
             auxiliary_recording_domains=["command", "delivery", "memory_port", "context_stage"],
             history_limitations=["legacy_unwitnessed_calls_not_reconstructable"],

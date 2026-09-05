@@ -545,3 +545,11 @@ the continuation path uses indexed source lookups, with old binding loss rejecte
 no remaining blocking P0/P1 in this leaf. Exact schema2, generation/authority,
 consumption and indexed saved-page boundaries were reviewed;9756 failures remain.
 Legacy unknown and successor installed Host terminal exact-compare gates are unchanged.
+
+2026-09-06 successor Host-consumption prerequisite: public audit now projects exact
+ordinary/root terminal evidence under the same source transaction, with distinct raw
+payload hash and whole-event-row hash and an opaque event reference. Bounded snapshot
+and stable-page metadata agree; closed typed parser/matcher supports existing Host
+exact comparison without private SQL. Child canonical receipts retain their own domain.
+Source29 adjacent PASS; installed Host gate remains pending. See HOST-TERMINAL-CONSUMER.md
+in the operation-audit plan for actual paths, negative oracle and namespace rules.
