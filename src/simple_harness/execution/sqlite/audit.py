@@ -513,5 +513,9 @@ def _opaque_operation(operation, run_id):
         else audit_hash([run_id, operation.turn_ordinal, operation.call_ordinal, raw_hash]),
         effect_id=audit_reference("effect", operation.effect_id),
         provider_invocation_id=audit_reference("provider", operation.provider_invocation_id),
-        parent_operation_id=audit_reference("runtime", operation.parent_operation_id),
+        parent_operation_id=(
+            audit_reference("delivery", operation.parent_operation_id.split(":", 1)[-1])
+            if kind == "delivery" and operation.parent_operation_id is not None
+            else audit_reference("runtime", operation.parent_operation_id)
+        ),
     )

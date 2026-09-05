@@ -83,6 +83,15 @@ def test_sink_exception_unknown_then_success_and_prefix_reopen(tmp_path):
             part = uow.read_run_operation_audit_page(RunId("run-1"), cursor=cursor)
             expected.append(part)
             cursor = part.next_cursor
+        captured = [*page.operations, *(o for part in expected for o in part.operations)]
+        captured_heads = {
+            o.operation_id for o in captured if o.kind == "delivery" and o.record_type == "head"
+        }
+        assert all(
+            o.parent_operation_id in captured_heads
+            for o in captured
+            if o.kind == "delivery" and o.record_type != "head"
+        )
         assert await dispatcher.run_once()
         assert sink.calls == 2
         after = sorted(
@@ -91,6 +100,11 @@ def test_sink_exception_unknown_then_success_and_prefix_reopen(tmp_path):
         )
         assert [o.state for o in after] == ["unknown", "completed"]
         assert after[1].handoff_to_settlement_seconds == 0
+        public_delivery = delivery_ops(uow)
+        head_ids = {o.operation_id for o in public_delivery if o.record_type == "head"}
+        assert all(
+            o.parent_operation_id in head_ids for o in public_delivery if o.record_type != "head"
+        )
         # Exact complete replay cannot add another attempt or version.
         head = uow.read_delivery("delivery-1")
         snapshot = uow.read_run_operation_audit(RunId("run-1"))

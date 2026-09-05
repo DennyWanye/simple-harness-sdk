@@ -46,3 +46,10 @@ Evidence (ignored .local-test-evidence/2026-09-05/run-operation-audit/):
 
 Fixed-source independent review is required. Remaining canonical source inventory
 and complete producer review still block whole source closure and successor wheel.
+
+Fixedeea3c19 independently scoped ACCEPT; original cross-worker P1 closed by
+Dirac's fixed-source probe and independent two-connection after-commit oracle.
+Follow-up P2: delivery parent refs use the exact delivery-head namespace/identity;
+existing runtime parent normalization is unchanged. Public snapshot and all pages
+join parent refs to captured heads across restart. Counterexample red, delivery11
+PASS (delivery-parent-red.log / delivery-parent-green.log).
