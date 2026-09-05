@@ -252,3 +252,43 @@ def test_failed_atomic_publish_and_other_dataset_do_not_fall_back(tmp_path, monk
         other_uow.read_run_operation_audit_page(RunId("run-1"), cursor=first.next_cursor)
     other_database.close()
     database.close()
+
+
+@pytest.mark.parametrize(
+    "replacement", ["empty", "different_start", "different_owner", "before_cut"]
+)
+def test_in_place_database_restore_cannot_reuse_old_run_cursor(tmp_path, replacement):
+    import shutil
+
+    from .test_h13_tool_recovery import _unknown
+
+    database, uow, *_ = _unknown(tmp_path)
+    first = uow.open_run_operation_audit(RunId("run-1"), page_size=2)
+    path = database.path
+    database.close()
+    other = Database.open(tmp_path / "replacement.db")
+    if replacement != "empty":
+        SqliteExecutionUnitOfWork(other).create_with_start_snapshot(
+            execution_session_id="s",
+            run_id="run-1",
+            request_id="q",
+            profile_key="agent.general",
+            driver_kind="react",
+            snapshot={"schema_version": 1, "different": True}
+            if replacement == "different_start"
+            else {"schema_version": 1},
+            event_id="created",
+            now=1.0,
+            user_id="other-owner" if replacement == "different_owner" else "harness-system",
+        )
+    other.close()
+    inode = path.stat().st_ino
+    shutil.copyfile(tmp_path / "replacement.db", path)
+    assert path.stat().st_ino == inode
+    reopened = Database.open(path)
+    with pytest.raises(RunAuditUnavailable, match="incarnation|cut"):
+        SqliteExecutionUnitOfWork(reopened).read_run_operation_audit_page(
+            RunId("run-1"),
+            cursor=first.next_cursor,
+        )
+    reopened.close()

@@ -15,8 +15,10 @@ last-updated: 2026-09-05
 Metadata correction 6a8b0e4 independently scoped ACCEPT after the original canary
 counterexample. Public open/page seams now materialize safe immutable audit snapshots
 from one source read transaction, with bounded page reads, original source hashes,
-opaque cursor/refs, version checks and restart continuity. 80 focused/adjacent tests
-pass; fixed pagination review pending. The real kernel >256-record and waiting→terminal
+opaque cursor/refs, version checks and restart continuity. 84 focused/adjacent tests
+pass; fixed pagination correction review pending. The6b5d inode-only dataset boundary
+was independently BLOCKED; format2 verifies actual immutable Run/start/owner identity
+and the captured append-only event cut on every page. The real kernel >256-record and waiting→terminal
 prefix oracles pass. Disk/time limits yield unavailable, not partial completeness.
 Source only: no frozen version/schema/wheel or installed consumer changes. Full producer
 coverage/history gaps remain. See ../plans/2026-09-05-run-operation-audit/PAGINATION.md.

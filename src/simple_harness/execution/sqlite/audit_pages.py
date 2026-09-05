@@ -22,7 +22,7 @@ from simple_harness.execution.audit import (
 
 from .audit import _opaque_operation, read_snapshot
 
-FORMAT = 1
+FORMAT = 2
 NORMALIZER = "registered-labels-opaque-refs-v1"
 MAX_BYTES = 64 * 1024 * 1024
 MAX_FILE_BYTES = 192 * 1024 * 1024
@@ -130,6 +130,8 @@ def open_pages(database, run_id, *, page_size=256):
             )
             try:
                 header = read_snapshot(source, run_id.value, 256, operation_sink=spool)
+                incarnation = _incarnation(source, run_id.value)
+                cut = _event_cut(source, run_id.value)
             finally:
                 source.set_progress_handler(None, 0)
         if namespace != _namespace(database):
@@ -158,6 +160,8 @@ def open_pages(database, run_id, *, page_size=256):
             metadata.pop(key)
         manifest = dict(
             format=FORMAT,
+            incarnation=incarnation,
+            event_cut=cut,
             normalizer=NORMALIZER,
             source_schema=database.schema_version,
             namespace=namespace,
@@ -225,6 +229,14 @@ def read_page(database, run_id, *, cursor):
             header = manifest["header"]
             if header["run_id"] != run_id.value:
                 raise RunAuditUnavailable("audit_cursor_run_mismatch")
+            # Prove current canonical Run ownership/start and the captured immutable
+            # cut. Filesystem identity is only a location, never an incarnation.
+            with database.transaction(read_only=True) as source:
+                if _incarnation(source, run_id.value) != manifest["incarnation"]:
+                    raise RunAuditUnavailable("audit_run_incarnation_mismatch")
+                cut = manifest["event_cut"]
+                if _event_cut(source, run_id.value, sequence=cut["sequence"]) != cut:
+                    raise RunAuditUnavailable("audit_run_cut_mismatch")
             tokens, hashes = manifest["tokens"], manifest["page_hashes"]
             if token not in tokens:
                 raise RunAuditUnavailable("audit_cursor_invalid")
@@ -279,3 +291,36 @@ def _operation(value):
     if result.handoff_to_settlement_seconds != duration:
         raise RunAuditUnavailable("audit_page_duration_mismatch")
     return result
+
+
+def _incarnation(connection, run_id):
+    row = connection.execute(
+        "SELECT r.run_id,r.execution_session_id,r.request_id,r.root_run_id,r.parent_run_id,"
+        "r.profile_key,r.driver_kind,r.created_at,s.user_id,s.created_at AS session_created_at,"
+        "a.snapshot_json,a.snapshot_hash,a.created_at AS snapshot_created_at "
+        "FROM runs r JOIN execution_sessions s ON s.session_id=r.execution_session_id "
+        "JOIN run_start_snapshots a ON a.run_id=r.run_id WHERE r.run_id=?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        raise RunAuditUnavailable("audit_run_incarnation_unavailable")
+    values = dict(row)
+    if audit_hash(json.loads(values["snapshot_json"])) != values["snapshot_hash"]:
+        raise RunAuditUnavailable("audit_run_incarnation_corrupt")
+    return audit_hash(values)
+
+
+def _event_cut(connection, run_id, *, sequence=None):
+    if sequence is None:
+        row = connection.execute(
+            "SELECT * FROM run_events WHERE run_id=? ORDER BY durable_seq DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            "SELECT * FROM run_events WHERE run_id=? AND durable_seq=?",
+            (run_id, sequence),
+        ).fetchone()
+    if row is None:
+        raise RunAuditUnavailable("audit_run_cut_unavailable")
+    return dict(sequence=row["durable_seq"], source_hash=audit_hash(dict(row)))

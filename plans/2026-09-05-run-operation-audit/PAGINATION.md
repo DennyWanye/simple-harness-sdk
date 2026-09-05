@@ -46,7 +46,7 @@ Page DTO keeps operations as immutable RunOperationAuditV1 entries and freezes h
 metadata. Page.to_json exposes snapshot_source_complete, not fully_audited; the header
 retains partial history and source gaps. Old bounded API remains compatible.
 
-Manifest pins format1, normalizer registered-labels-opaque-refs-v1, source schema,
+Manifest pins format2, normalizer registered-labels-opaque-refs-v1, source schema,
 source-set/header, Run version, dataset namespace, total counts, ordered page hashes,
 and per-page random opaque tokens. snapshot_hash hashes that entire manifest; each
 page_hash hashes its safe DTO array. The next cursor is snapshotHash.randomPageToken;
@@ -55,8 +55,9 @@ routing refs, not authorization. Different opens can get distinct snapshot hashe
 for identical facts because publication tokens differ; a published cursor never drifts.
 
 Dataset namespace hashes resolved execution DB path + device/inode/birth time. It is
-stable across normal close/reopen and WAL writes; copying/replacing the DB or moving
-it creates another namespace. Old snapshot artifacts are not portable credentials.
+stable across normal close/reopen and WAL writes. Moving to another path creates a
+new location namespace, but in-place overwrite can preserve it; it is NOT database
+incarnation proof. Original6b5d was independently BLOCKED on that exact counterexample.
 Paths use this SDK-computed hash and strict hex snapshot IDs only, never raw Run/cursor
 path components. Page reader opens SQLite mode=ro and validates manifest before page.
 Normalizer/schema mismatch rejects old cached projections explicitly.
@@ -82,3 +83,26 @@ physical effect/terminal, new snapshot sees completed; altered/crossRun/missing 
 page/manifest corruption, old normalizer, capacity/timeout and atomic publish failure;
 same Run ID in a second independent dataset cannot resume the cursor. Original ledger
 hash unchanged by build failures. 80 adjacent/focused tests pass; review still required.
+
+
+## Incarnation P1 correction
+
+Manifest format2 additionally binds actual immutable canonical Run fields (Run/session/
+request/root/parent/profile/driver/created_at), execution-session owner/created_at and
+run_start_snapshots full JSON/hash/created_at, read in the same source snapshot. The
+stored snapshot hash is independently verified against canonical JSON before binding.
+A fixed append-only Run event cut stores its durable_seq and complete original row
+hash. Every page checks current canonical incarnation and that exact event cut in
+one read transaction. Mutable heads/new events are not compared, preserving legitimate
+normal progress. Missing anchors fail unavailable rather than inventing an incarnation.
+
+Original6b5d's in-place overwrite probe returned old facts from an empty new database.
+Four decisive tests now reject empty replacement, sameRunID different canonical start,
+sameRunID different owner, and restore to an earlier identical start without the captured
+cut. They use real databases and copyfile preserving inode; no product SQL corruption
+or fake namespace mock. Existing legitimate terminal/reopen prefix tests still pass.
+Byte-identical restoration of the same immutable owner/start/cut facts remains the same
+bound audit facts; no undocumented independent dataset epoch is invented. This proves
+the recorded Run incarnation/cut, not detection of an indistinguishable bit-for-bit DB
+clone. The old format1 cache rejects rather than falling back to live or exporting it.
+84 focused/adjacent cases passed; fixed P1 correction re-review pending.

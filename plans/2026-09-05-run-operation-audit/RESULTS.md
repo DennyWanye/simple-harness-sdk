@@ -146,3 +146,23 @@ Fixed pagination source review pending. Original bounded API and its truncation
 semantics remain; consumers must explicitly adopt page APIs to traverse a full current
 source snapshot. No installed consumer/artifact/native acceptance, no full-suite run,
 no full producer/history coverage or automatic optimization audit claim.
+
+
+## Pagination incarnation P1 correction
+
+6b5d was independently BLOCKED: filesystem namespace survived same-path copyfile
+replacement and old cursor leaked a previous Run snapshot. New format2 pins the actual
+immutable Run/start/session-owner anchor and captured append-only event cut, checking
+both on each page. No schema/epoch invention; old manifest version rejects.
+Four real replacement tests red: **4failed6deselected0.23s exit1**. Fixed seven-module
+command above: **84passed2.00s exit0** (10 pages +17 audit +57 adjacent). Source only;
+fixed independent re-review pending before successor wheel preparation.
+
+| File | SHA256 |
+|---|---|
+| incarnation-red.log | 7ca3fefb5629a9a540457a945bf09a92d62d57488199137c8ad89f212be40efc |
+| incarnation-final.log | 565be27be4075c65f492497b0dab0db10d17a44878173113680a1037fd51580a |
+
+Read-only version survey: local branches/tags show highest0.7.2; remote ls-remote was
+saved locally. Next proposed successor0.7.3 is not allocated/built until pagination
+review passes. Frozen0.7.2, main and tags remain unchanged.
