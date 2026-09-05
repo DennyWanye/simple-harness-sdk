@@ -417,9 +417,23 @@ def run_stage_cut(connection, run_id, saved=None):
             if (
                 row is None
                 or audit_hash(dict(row)) != item["binding_hash"]
-                or (item["stage_id"], item["incarnation"]) not in run_stages(connection, run_id)
+                or row["operation"] != "stage.consumed"
+                or row["stage_id"] != item["stage_id"]
+                or row["incarnation"] != item["incarnation"]
             ):
                 raise RunAuditUnavailable("stage_run_binding_unavailable")
+            payload = json.loads(row["payload_json"])
+            root = payload.get("consumed_run_id")
+            continuation = payload.get("consumed_continuation_id")
+            if root is not None:
+                if root != run_id or continuation is not None:
+                    raise RunAuditUnavailable("stage_run_binding_unavailable")
+            else:
+                owner = connection.execute(
+                    "SELECT run_id FROM continuations WHERE continuation_id=?", (continuation,)
+                ).fetchone()
+                if owner is None or owner[0] != run_id:
+                    raise RunAuditUnavailable("stage_run_binding_unavailable")
         return saved
     values = []
     for stage_id, incarnation in run_stages(connection, run_id):

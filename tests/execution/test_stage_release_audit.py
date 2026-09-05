@@ -190,3 +190,64 @@ def test_late_release_return_does_not_settle_identical_recreated_queue(tmp_path)
             if o.record_type == "boundary"
         ]
         assert len(calls) == 1 and calls[0].state == "returned"
+
+
+def test_saved_continuation_binding_uses_exact_indexed_owner(tmp_path):
+    from simple_harness.execution.audit import RunAuditUnavailable
+    from simple_harness.execution.sqlite import SqliteExecutionUnitOfWork
+    from simple_harness.execution.sqlite.stage_audit import run_stage_cut
+
+    with Database.open(tmp_path / "continuation-binding.db") as db:
+        uow = SqliteExecutionUnitOfWork(db)
+        uow.create_with_start_snapshot(
+            execution_session_id="session",
+            run_id="run",
+            request_id="request",
+            profile_key="agent.general",
+            driver_kind="react",
+            snapshot={},
+            event_id="created",
+            user_id="user",
+            now=1,
+        )
+        repo = ContextStagingRepository(db)
+        claim = repo.claim(
+            stage_id="continuation-stage",
+            kind=ContextStageKind.CONTINUATION,
+            identity_key="continuation",
+            user_id="user",
+            session_id="session",
+            input_hash="a" * 64,
+            mode="consumer_prepared",
+            owner_id="owner",
+            now=2,
+            lease_seconds=5,
+        )
+        staged = repo.complete(
+            claim.record,
+            private_snapshot={"provider_messages": []},
+            memory_result_id=None,
+            memory_result_hash=None,
+            now=3,
+        )
+        uow.enqueue_continuation(
+            continuation_id="continuation",
+            run_id="run",
+            payload={"prepared_context": {"provider_messages": []}},
+            now=4,
+            context_stage_id=staged.stage_id,
+            context_stage_hash=staged.private_snapshot_hash,
+        )
+        saved = run_stage_cut(db.connection, "run")
+        assert len(saved) == 1
+        queries = []
+        db.connection.set_trace_callback(queries.append)
+        assert run_stage_cut(db.connection, "run", saved=saved) == saved
+        db.connection.set_trace_callback(None)
+        assert len(queries) == 3
+        assert all("LEFT JOIN" not in q for q in queries)
+        for query in queries:
+            plan = db.connection.execute("EXPLAIN QUERY PLAN " + query).fetchall()
+            assert len(plan) == 1 and "SEARCH " in plan[0][3] and "SCAN " not in plan[0][3]
+        with pytest.raises(RunAuditUnavailable, match="stage_run_binding_unavailable"):
+            run_stage_cut(db.connection, "other-run", saved=saved)

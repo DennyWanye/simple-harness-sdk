@@ -152,3 +152,27 @@ stage-release-generation-red.log. Narrow schema/pages/stage positive45 PASS2.12s
 (stage-p1-origin-cut-green.log); last exact-generation check11 PASS0.54s overlaps.
 No wheel; successor fixed independent revalidation required. Earlier schema2 WIP DBs
 with another exact DDL checksum are rejected, not silently migrated or restamped.
+
+## Saved-page point validation — 2026-09-06
+
+Dirac unchanged probes confirm the two018e corrections: independent raw
+simple_harness-primary-api/.local-test-evidence/2026-09-06/stage-9756ff1-review/
+probe-9756.log SHA f365fbc175a0113546838afe2d263d536df3de77a9cf023a0c6e6fb8b4f802af;
+fixed-018e135/probe-fixed.log SHA
+df995d0ac64bdd343e397d7fa672ee5fa760ac1f62b585b7c998abc1fd7cd102.
+His remaining cost challenge found run_stages re-enumeration in saved validation.
+
+Saved Run pages now read the saved event cut and binding by INTEGER PRIMARY KEY,
+check exact source hash/operation/stage/incarnation, then verify root Run directly
+or continuation Run through its actual continuation PRIMARY KEY. No run_stages,
+JSON join enumeration, new ledger or index framework on this continuation path.
+Initial snapshot still has its declared bounded source enumeration.
+
+stage-page-point-read-red.log confirms old per-page enumeration; green adjacent23
+PASS1.58s. stage-page-indexed-binding.log:2 PASS0.20s uses actual public pages, SQL
+trace and EXPLAIN QUERY PLAN: exactly two indexed stage lookups for one bound root,
+plus old page rejects after actual stage-cut loss. stage-continuation-indexed-binding.log:
+1 PASS0.14s uses actual UoW-enqueued/consumed stage; exactly three indexed queries,
+wrong Run binding rejects. Counts overlap; no whole suite rerun. Fixed diff review
+is still required before stage/artifact freeze; Host exact installed terminal compare
+and legacy unknown limits remain unchanged.

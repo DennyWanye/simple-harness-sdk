@@ -171,3 +171,9 @@ Run stage-cut revalidation and structural generation anchors. Late old release k
 its real outcome without settling a recreated queue. Narrow45 PASS; overlapping11
 PASS after exact generation-result proof. Independent revalidation still pending,
 artifact freeze prohibited until closed. See MEMORY-PORT.md original red indexes.
+
+2026-09-06 stage pagination cost correction: saved cut/binding validation now uses
+only exact stage-event PK lookups and, for continuations, one actual continuation PK
+owner lookup. Public SQL trace/query-plan oracle and old-binding rejection pass;
+23 directly adjacent PASS overlaps the 2 indexed root/cut cases, plus 1 continuation
+case. Fixed independent review pending; no new ledger/wheel or weakened Host compare.

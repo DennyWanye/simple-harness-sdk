@@ -217,3 +217,51 @@ def test_run_cursor_revalidates_captured_stage_source_cut(tmp_path):
             db.close()
 
     asyncio.run(case())
+
+
+def test_run_page_validates_stage_by_primary_keys_without_enumeration(tmp_path, monkeypatch):
+    async def case():
+        from contextlib import contextmanager
+
+        app, _, db = runtime(
+            tmp_path, agent_memory=StableMemory(), context_provider=StableContextProvider()
+        )
+        await app.start()
+        try:
+            value = ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session"),
+                Message(MessageRole.USER, "hello"),
+                "hello",
+            )
+            run_id = RunId("point-read-run")
+            await app.client.start_conversation(value, run_id=run_id)
+            await app.wait_idle(run_id)
+            page = await app.client.open_run_operation_audit(run_id, page_size=1)
+            queries = []
+            transaction = Database.transaction
+
+            @contextmanager
+            def traced(self, *args, **kwargs):
+                with transaction(self, *args, **kwargs) as connection:
+                    connection.set_trace_callback(queries.append)
+                    try:
+                        yield connection
+                    finally:
+                        connection.set_trace_callback(None)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(Database, "transaction", traced)
+                await app.client.read_run_operation_audit_page(run_id, cursor=page.next_cursor)
+            stage_selects = [
+                q for q in queries if q.startswith("SELECT") and "sdk_stage_audit_events" in q
+            ]
+            assert len(stage_selects) == 2  # one saved cut + one exact consumption binding
+            assert all("event_seq=" in q and "LEFT JOIN" not in q for q in stage_selects)
+            for query in stage_selects:
+                plan = db.connection.execute("EXPLAIN QUERY PLAN " + query).fetchall()
+                assert len(plan) == 1 and "USING INTEGER PRIMARY KEY" in plan[0][3]
+        finally:
+            await app.close()
+            db.close()
+
+    asyncio.run(case())

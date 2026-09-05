@@ -535,3 +535,8 @@ local raw indexes: plans/2026-09-05-run-operation-audit/MEMORY-PORT.md and RESUL
 stage source/binding. Stage incarnation comes from structural creation, unaffected by
 old invocation returns; stale release returns cannot settle a new queue incarnation.
 9756's two P1s are not waived; successor fixed-source independent review remains a gate.
+
+2026-09-06 saved stage page validation no longer enumerates run_stages: exact saved
+PK/hash/operation/incarnation and root/continuation PK ownership suffice. Initial
+snapshot enumeration stays separately bounded. SQL trace and query-plan tests prove
+the continuation path uses indexed source lookups, with old binding loss rejected.
