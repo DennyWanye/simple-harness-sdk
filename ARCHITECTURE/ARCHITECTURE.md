@@ -474,3 +474,13 @@ SQLite 无迁移，StartSnapshot v7/checkpoint v6 wire 不变；旧无 initial �
 - 旧 `ConversationMemoryQueryPort` / `ConversationMemorySinkPort`、`MemoryQueryPort` /
   `MemoryWritePort` 已退出 public export；旧逐消息 DTO 与 v3 DDL 仅作不可加载的历史兼容事实，
   production dispatcher 已只接受 committed turn。
+
+## Delivery audit source leaf — 2026-09-05
+
+SDK-owned delivery now records original outbox versions and actual dispatcher
+handoff/settlement facts in the authority transaction. Missing settlement remains
+unknown; claim/expiry do not prove send or non-send. Immutable CAS receipts prevent
+post-commit competing-owner substitution.95 adjacent PASS, real old072 middle
+writer remains a history gap; fixed independent review pending. Whole producer
+source and successor artifact are not complete. See
+[Delivery contract](../plans/2026-09-05-run-operation-audit/DELIVERY.md).

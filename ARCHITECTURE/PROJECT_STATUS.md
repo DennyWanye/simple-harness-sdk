@@ -112,3 +112,13 @@ pending. See [contract](../plans/2026-09-05-run-operation-audit/CONTRACT.md),
   验证仍是下一跨仓验收门禁。
 
 <!-- last-updated: 2026-09-05 -->
+
+## Delivery audit source leaf — 2026-09-05
+
+SDK-owned delivery now records original outbox versions and actual dispatcher
+handoff/settlement facts in the authority transaction. Missing settlement remains
+unknown; claim/expiry do not prove send or non-send. Immutable CAS receipts prevent
+post-commit competing-owner substitution.95 adjacent PASS, real old072 middle
+writer remains a history gap; fixed independent review pending. Whole producer
+source and successor artifact are not complete. See
+[Delivery contract](../plans/2026-09-05-run-operation-audit/DELIVERY.md).

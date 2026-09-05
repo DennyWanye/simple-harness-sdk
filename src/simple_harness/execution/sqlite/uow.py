@@ -104,6 +104,8 @@ from simple_harness.runtime.commands import (
     StartCommandIntent,
 )
 
+from .delivery_audit import record_version as _delivery_audit_version
+
 if TYPE_CHECKING:
     from simple_harness.execution.memory_outbox import CommittedTurnSpec
 from simple_harness.tools.contracts import ToolOutcome, ToolResult
@@ -2839,6 +2841,7 @@ class SqliteExecutionUnitOfWork:
                         now,
                     ),
                 )
+                _delivery_audit_version(connection, item.delivery_id, now=now, operation="created")
                 _fault(fault, f"root_terminal.delivery.{index}.after_write")
             _consume_legacy_cursor(
                 connection,
@@ -2920,8 +2923,13 @@ class SqliteExecutionUnitOfWork:
             return None
         placeholders = ",".join("?" for _ in normalized)
         claimed_id: str | None = None
+        result = None
         with self.database.transaction() as connection:
             _fault(fault, "delivery_claim.expired.before_write")
+            expired = connection.execute(
+                "SELECT delivery_id FROM delivery_outbox WHERE state='claimed' AND claimed_at<=?",
+                (now - claim_ttl_seconds,),
+            ).fetchall()
             connection.execute(
                 """
                 UPDATE delivery_outbox SET state = 'pending', version = version + 1,
@@ -2930,6 +2938,10 @@ class SqliteExecutionUnitOfWork:
                 """,
                 (now - claim_ttl_seconds,),
             )
+            for expired_row in expired:
+                _delivery_audit_version(
+                    connection, expired_row["delivery_id"], now=now, operation="expired"
+                )
             _fault(fault, "delivery_claim.expired.after_write")
             row = connection.execute(
                 f"""
@@ -2952,9 +2964,28 @@ class SqliteExecutionUnitOfWork:
                 ).rowcount
                 if changed != 1:
                     raise DeliveryConflictError("delivery claim CAS failed")
+                _delivery_audit_version(connection, claimed_id, now=now, operation="claimed")
                 _fault(fault, "delivery_claim.delivery.after_write")
+                result = _delivery_record(
+                    connection.execute(
+                        "SELECT * FROM delivery_outbox WHERE delivery_id=?", (claimed_id,)
+                    ).fetchone()
+                )
         _fault(fault, "delivery_claim.after_commit")
-        return None if claimed_id is None else self.read_delivery(claimed_id)
+        return result
+
+    def record_delivery_handoff(self, delivery_id, *, expected_version, now, fault=None):
+        from .delivery_audit import handoff
+
+        with self.database.transaction() as connection:
+            handoff(connection, delivery_id, expected_version=expected_version, now=_time(now))
+            result = _delivery_record(
+                connection.execute(
+                    "SELECT * FROM delivery_outbox WHERE delivery_id=?", (delivery_id,)
+                ).fetchone()
+            )
+        _fault(fault, "delivery_handoff.after_commit")
+        return result
 
     def complete_delivery(
         self,
@@ -2980,6 +3011,7 @@ class SqliteExecutionUnitOfWork:
         expected_version: int,
         now: float,
         fault: FaultHook | None = None,
+        error_code: str | None = None,
     ) -> DeliveryRecord:
         return self._settle_delivery(
             delivery_id,
@@ -2988,6 +3020,7 @@ class SqliteExecutionUnitOfWork:
             now=now,
             fault=fault,
             command="delivery_release",
+            error_code=error_code,
         )
 
     def read_delivery(self, delivery_id: str) -> DeliveryRecord | None:
@@ -3005,6 +3038,7 @@ class SqliteExecutionUnitOfWork:
         now: float,
         fault: FaultHook | None,
         command: str,
+        error_code: str | None = None,
     ) -> DeliveryRecord:
         delivery_id = _required(delivery_id, "delivery_id")
         now = _time(now)
@@ -3033,10 +3067,29 @@ class SqliteExecutionUnitOfWork:
             ).rowcount
             if changed != 1:
                 raise DeliveryConflictError("delivery settlement CAS failed")
+            from .delivery_audit import settle_attempt
+
+            settle_attempt(
+                connection,
+                delivery_id,
+                expected_version=expected_version,
+                now=now,
+                state="completed" if target_state is DeliveryState.DELIVERED else "unknown",
+                error_code=error_code,
+            )
+            _delivery_audit_version(
+                connection,
+                delivery_id,
+                now=now,
+                operation="completed" if target_state is DeliveryState.DELIVERED else "released",
+            )
             _fault(fault, f"{command}.delivery.after_write")
+            result = _delivery_record(
+                connection.execute(
+                    "SELECT * FROM delivery_outbox WHERE delivery_id=?", (delivery_id,)
+                ).fetchone()
+            )
         _fault(fault, f"{command}.after_commit")
-        result = self.read_delivery(delivery_id)
-        assert result is not None
         return result
 
     def _create_start_on_connection(
@@ -4019,6 +4072,7 @@ class SqliteExecutionUnitOfWork:
                         now,
                     ),
                 )
+                _delivery_audit_version(connection, item.delivery_id, now=now, operation="created")
                 _fault(fault, f"continuation_terminal.delivery.{index}.after_write")
             _consume_legacy_cursor(
                 connection,
@@ -9423,6 +9477,7 @@ class SqliteExecutionUnitOfWork:
                     now,
                 ),
             )
+            _delivery_audit_version(tx.connection, delivery_id, now=now, operation="created")
         _fault(
             fault,
             "workflow:settle_cancel_convergence:after_delivery_outbox_write",

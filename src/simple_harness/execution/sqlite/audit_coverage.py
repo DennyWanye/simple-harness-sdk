@@ -217,6 +217,9 @@ def recording_coverage(connection, run_id):
                 )
             if any(item not in inputs for item in expected):
                 gaps.add("operation_boundary_receipt_unverified")
+    from .delivery_audit import coverage as delivery_coverage
+
+    gaps.update(delivery_coverage(connection, run_id))
     return tuple(sorted(gaps)), (2 if birth else None)
 
 

@@ -29,6 +29,7 @@ def audit_label_syntax(value):
 # Closed SDK vocabulary, not a pattern-based promise about external strings.
 SDK_AUDIT_ERROR_CODES = frozenset(
     {
+        "delivery_sink_exception",
         "provider_error",
         "provider_error_after_handoff",
         "provider_cancelled_after_handoff",
@@ -179,6 +180,7 @@ class RunOperationAuditV1:
         for value in (self.operation_id, self.source_id, self.state):
             _identifier(value)
         if self.kind not in {
+            "delivery",
             "child",
             "workflow",
             "runtime",
@@ -292,7 +294,7 @@ class RunOperationAuditSnapshotV1:
                 "sdk_command_audit_events",
             )
             + tuple(item[0] for item in CORE_SOURCES)
-            + ("workflow_spawn_continuation_ready",)
+            + ("workflow_spawn_continuation_ready", "delivery_outbox")
         )
 
     @property

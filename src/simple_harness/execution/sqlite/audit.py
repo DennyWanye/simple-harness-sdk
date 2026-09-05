@@ -130,6 +130,10 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
                     **details,
                 )
             )
+    from .delivery_audit import operations as delivery_operations
+
+    for operation in bounded_rows(delivery_operations(connection, run_id)):
+        operations.append(operation)
     from simple_harness.execution.runtime_audit import RUNTIME_BOUNDARIES
 
     runtime_rows = connection.execute(

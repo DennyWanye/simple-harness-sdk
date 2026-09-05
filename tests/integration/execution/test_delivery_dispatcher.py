@@ -165,6 +165,9 @@ def test_sink_success_before_settle_crash_retries_same_key_after_reopen(
             await crashing.run_once()
         claimed = uow.read_delivery("delivery-1")
         assert claimed is not None and claimed.state is DeliveryState.CLAIMED
+        first_page = uow.open_run_operation_audit(RunId("run-1"), page_size=256)
+        first_attempts = [op for op in first_page.operations if op.kind == "delivery"]
+        assert [op.state for op in first_attempts if op.record_type == "boundary"] == ["unknown"]
         database.close()
 
         reopened_database = Database.open(path)
@@ -184,6 +187,16 @@ def test_sink_success_before_settle_crash_retries_same_key_after_reopen(
         ]
         assert list(sink.visible) == ["terminal:run-1"]
         assert sink.visible["terminal:run-1"]["answer"] == 42
+        audit = reopened_uow.read_run_operation_audit(RunId("run-1"))
+        operations = [op for op in audit.operations if op.kind == "delivery"]
+        assert sorted(
+            op.source_version for op in operations if op.record_type == "transition"
+        ) == list(range(7))
+        attempts = [op for op in operations if op.record_type == "boundary"]
+        assert [op.state for op in attempts] == ["unknown", "completed"]
+        assert attempts[0].operation_id != attempts[1].operation_id
+        assert attempts[0].handoff_to_settlement_seconds is None
+        assert "terminal:run-1" not in str(audit.to_json())
         reopened_database.close()
 
     asyncio.run(case())

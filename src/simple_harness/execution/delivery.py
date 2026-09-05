@@ -142,6 +142,9 @@ class DeliveryDispatcher:
             )
             return True
         payload = _mapping(record.payload)
+        recorder = getattr(self._uow, "record_delivery_handoff", None)
+        if callable(recorder):
+            record = recorder(record.delivery_id, expected_version=record.version, now=self._now())
         try:
             await sink.deliver(payload, idempotency_key=record.idempotency_key)
         except Exception:  # noqa: BLE001 - sink failures are retryable delivery facts
@@ -149,6 +152,7 @@ class DeliveryDispatcher:
                 record.delivery_id,
                 expected_version=record.version,
                 now=self._now(),
+                **({"error_code": "delivery_sink_exception"} if callable(recorder) else {}),
             )
         else:
             if self._fault is not None:
