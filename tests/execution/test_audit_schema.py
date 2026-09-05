@@ -50,7 +50,7 @@ def test_old_empty_execution7_gets_explicit_audit_schema_and_reopens(tmp_path):
                 assert reader.schema_version == 7
 
 
-@pytest.mark.parametrize("corruption", ["future", "noop_trigger", "extra_column", "partial"])
+@pytest.mark.parametrize("corruption", ["future", "noop_trigger", "extra_column", "partial", "descriptor_column"])
 def test_invalid_audit_schema_rejected_without_file_change(tmp_path, corruption):
     path = tmp_path / "invalid.db"
     with Database.open(path) as database:
@@ -63,6 +63,8 @@ def test_invalid_audit_schema_rejected_without_file_change(tmp_path, corruption)
                 "CREATE TRIGGER sdk_command_audit_no_update BEFORE UPDATE "
                 "ON sdk_command_audit_events BEGIN SELECT 1; END"
             )
+        elif corruption == "descriptor_column":
+            connection.execute("ALTER TABLE sdk_audit_schema RENAME COLUMN checksum TO wrong")
         elif corruption == "extra_column":
             connection.execute("ALTER TABLE sdk_command_audit_events ADD COLUMN wrong TEXT")
         else:

@@ -118,3 +118,9 @@ C5 fixed-source independent review is required. Delivery belongs to original sco
 and is the next separate leaf: claim is not physical send, expiry/release cannot
 prove not-sent, crash after sink success before settlement remains unknown. No
 package version, frozen wheel, execution7 descriptor or Host consumer changed.
+
+C5 fixed93ce163 independently scoped ACCEPT (Dirac, no blocking P0/P1). Follow-up
+P2: descriptor checksum-column rename previously raised raw OperationalError.
+Actual DDL validation now precedes descriptor SELECT, producing typed
+AuditSchemaIncompatible without writes. Descriptor oracle red then schema8 PASS
+0.25s (descriptor-column-red.log / descriptor-column-green.log). No236 rerun.

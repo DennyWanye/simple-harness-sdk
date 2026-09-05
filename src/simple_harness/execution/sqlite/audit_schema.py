@@ -51,13 +51,13 @@ def validate_audit_schema(connection):
     found = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
     if not OBJECTS <= found:
         raise AuditSchemaIncompatible("audit_schema_partial_or_unavailable")
+    if _objects(connection) != _expected_objects():
+        raise AuditSchemaIncompatible("audit_schema_structure_unavailable")
     rows = [
         tuple(row) for row in connection.execute("SELECT version,checksum FROM sdk_audit_schema")
     ]
     if rows != [(AUDIT_SCHEMA_VERSION, CHECKSUM)]:
         raise AuditSchemaIncompatible("audit_schema_version_or_checksum_unavailable")
-    if _objects(connection) != _expected_objects():
-        raise AuditSchemaIncompatible("audit_schema_structure_unavailable")
 
 
 def _objects(connection):

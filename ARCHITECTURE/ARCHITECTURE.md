@@ -24,7 +24,8 @@ used. Directly affected196 tests and two workflow relation tests passed.
 
 C5 now records pre-Run command CAS versions in explicit audit schema1, in the same
 authority transaction, with public stable command pages and observed legacy gaps.
-236 adjacent tests pass; exact installed072 middle-writer and legacy-only command
+C5 fixed93ce163 independently scoped ACCEPT; descriptor-column incompatibility is
+checked before SELECT (schema8 PASS). 236 adjacent tests pass; exact installed072 middle-writer and legacy-only command
 oracles retain missing history after later new writes. This is not full source-leaf
 completion: Delivery physical intervals and complete independent review remain open. Frozen version,
 schema descriptor, wheels and Host production are unchanged. See

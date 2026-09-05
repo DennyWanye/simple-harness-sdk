@@ -17,8 +17,9 @@ Independent missing-whole-preflight findings now have first/later/same-epoch
 corruption regressions; causal parent/child and canonical event bindings are checked.
 196 directly affected tests plus two workflow relation tests pass; exact installed
 old0.7.2 resume executes once and is correctly unverified by the new reader.
-**C5 command source is implemented, independent review pending**: explicit audit
-schema1, same-transaction version facts and stable pre-Run command pages. Adjacent
+**C5 command source93ce163 independently scoped ACCEPT**: explicit audit
+schema1, same-transaction version facts and stable pre-Run command pages.
+Descriptor-column P2 now returns typed incompatibility before SELECT; schema8 PASS. Adjacent
 236 PASS; exact installed072 legacy/middle-writer gaps remain unverified.
 **Whole source leaf remains incomplete**: Delivery physical intervals and
 independent complete producer review are still required. No version/schema/wheel
