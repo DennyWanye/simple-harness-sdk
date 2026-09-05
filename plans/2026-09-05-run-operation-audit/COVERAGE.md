@@ -57,3 +57,27 @@ coverage after all producers close; legacy-unverified is not permanent new-Run p
 The current blanket historical gaps remain truthful only for this first slice and will
 be replaced by validated per-Run/per-domain coverage. Successor artifact freeze waits
 for source-leaf closure; do not build a new version for every small fix.
+
+## Current source checkpoint — 2026-09-06 (supersedes pending statuses above)
+
+| Source requirement | Fixed source / review | Boundary retained |
+|---|---|---|
+| Safe metadata + stable all-page prefix | 6a8b0e4, 698e13e/fd4a785, independently scoped accepted | Bounded capture can return typed unavailable; complete pages do not mean consumer findings complete |
+| C1–C4 actual runtime producer + C8 continuity | 8a4b824 independently scoped accepted | Exact old072 middle activation remains unverified; custom/replaced producer capabilities are not inferred |
+| C5 command transitions/pre-Run domain | 93ce163 + b24c135 independently scoped accepted | Command namespace is separate; no fake Run for rejected/noRun commands |
+| Delivery physical boundary/CAS/parent | eea3c19 + bd710e9 independently scoped accepted | Claim/expiry is not physical send/not-sent; missing response remains unknown |
+| C6/C7 canonical child/workflow/control sources | 996e4ba independently scoped accepted for four added joins, earlier canonical readers retained | Current mutable heads are not an invented immutable all-transition archive; missing historical facts stay gaps |
+| Committed-turn Memory port + terminal anchor | a6b0a7e independently scoped accepted | Memory receipt is not internal materialization proof; actual SDK terminal field changes installed Host comparison |
+| noRun Context/release + actual Run consumption | 9756ff1 fixed, independent review pending | Explicit audit2; old unleased release call with neither witness nor state change cannot be reconstructed |
+
+Remaining freeze gates: noRun fixed-source review and any resulting decisive fixes;
+final declared producer/coverage inventory challenge; verify next unused successor
+version and build one exact combined source artifact; independent installed public
+consumer plus **real Host exact terminal evidence** comparison of new sdk_memory_outbox.
+No weakened Host comparison and no old072 PASS substitution. Raw ba1/a6 probe indexes
+are in RESULTS.md. Counts from successive subsets overlap and must not be summed.
+
+Harness source visibility does not close Host/Memory/Service operation producers,
+consumer audit findings/idempotency, native product adoption or historical erasure.
+No all_operations_recorded field is introduced. The source DTO enumerates runtime
+boundaries, auxiliary recording domains and explicit history limitations.
