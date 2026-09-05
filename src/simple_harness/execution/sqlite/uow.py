@@ -847,8 +847,9 @@ class SqliteExecutionUnitOfWork:
             raise ValueError("audit limit must be 1..4096")
         # One transaction owns every source read; no transaction spans API calls.
         try:
-            with self.database.transaction(read_only=True) as connection:
-                return read_snapshot(connection, run_id.value, limit)
+            with self.database.audit_reader() as reader:
+                with reader.transaction(read_only=True) as connection:
+                    return read_snapshot(connection, run_id.value, limit)
         except sqlite3.DatabaseError:
             raise RunAuditUnavailable("audit_store_unavailable") from None
         except (KeyError, TypeError, ValueError):
@@ -857,12 +858,14 @@ class SqliteExecutionUnitOfWork:
     def open_run_operation_audit(self, run_id: RunId, *, page_size: int = 256):
         from .audit_pages import open_pages
 
-        return open_pages(self.database, run_id, page_size=page_size)
+        with self.database.audit_reader() as reader:
+            return open_pages(reader, run_id, page_size=page_size)
 
     def read_run_operation_audit_page(self, run_id: RunId, *, cursor: str):
         from .audit_pages import read_page
 
-        return read_page(self.database, run_id, cursor=cursor)
+        with self.database.audit_reader() as reader:
+            return read_page(reader, run_id, cursor=cursor)
 
     def _audit_operation_head(self, connection, kind, identity, now):
         from simple_harness.execution.audit import audit_hash

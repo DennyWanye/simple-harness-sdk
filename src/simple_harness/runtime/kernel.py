@@ -805,7 +805,7 @@ class RunClient:
         reader = getattr(self._runtime._uow, "read_run_operation_audit", None)
         if reader is None:
             raise RunAuditUnavailable("audit_reader_unsupported")
-        return reader(run_id, limit=limit)
+        return await asyncio.to_thread(reader, run_id, limit=limit)
 
     async def open_run_operation_audit(self, run_id: RunId, *, page_size: int = 256):
         from simple_harness.execution.audit import RunAuditUnavailable
@@ -813,7 +813,7 @@ class RunClient:
         reader = getattr(self._runtime._uow, "open_run_operation_audit", None)
         if reader is None:
             raise RunAuditUnavailable("audit_reader_unsupported")
-        return reader(run_id, page_size=page_size)
+        return await asyncio.to_thread(reader, run_id, page_size=page_size)
 
     async def read_run_operation_audit_page(self, run_id: RunId, *, cursor: str):
         from simple_harness.execution.audit import RunAuditUnavailable
@@ -821,7 +821,7 @@ class RunClient:
         reader = getattr(self._runtime._uow, "read_run_operation_audit_page", None)
         if reader is None:
             raise RunAuditUnavailable("audit_reader_unsupported")
-        return reader(run_id, cursor=cursor)
+        return await asyncio.to_thread(reader, run_id, cursor=cursor)
 
     async def get_command(self, command_id: str) -> CommandSnapshot:
         if not isinstance(command_id, str) or not command_id.strip():

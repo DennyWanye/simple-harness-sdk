@@ -106,3 +106,28 @@ bound audit facts; no undocumented independent dataset epoch is invented. This p
 the recorded Run incarnation/cut, not detection of an indistinguishable bit-for-bit DB
 clone. The old format1 cache rejects rather than falling back to live or exporting it.
 84 focused/adjacent cases passed; fixed P1 correction re-review pending.
+
+## Async production facade and connection ownership
+
+The three public async RunClient audit methods offload their synchronous readers via
+asyncio.to_thread. SqliteExecutionUnitOfWork audit methods open a fresh mode=ro SQLite
+connection in that worker and own its transaction/close there. They do not reuse the
+runtime writer connection or its _transaction_active flag. No schema initializer,
+journal-mode mutation, WAL checkpoint, or runtime-loop primitive runs in the worker.
+The synchronous public SQLite reader uses the same isolated connection when called
+directly. Other custom UoW implementations exposing these sync methods to RunClient
+must support worker invocation; unsupported audit stores must report unavailable.
+
+Host must directly await the public facade, not move the shared runtime to another
+asyncio loop. Cancelling an await does not kill an already running read worker; the
+source-only build may finish/publish, within build resource limits. A cancelled/failed
+open has no acknowledged first page; Host may track it as unknown/unreceived and start
+its separately authorized new audit generation. Once a cursor has been acknowledged,
+its fixed snapshot contract remains; no live fallback. No Provider/tool is dispatched.
+
+Decisive real kernel regression gates the actual safe spool while the runtime processes
+cancel on the original SQLite writer in WAL mode. Before fix the event loop cannot
+release the gate (red); after fix cancellation commits while the captured audit page
+still reports the earlier waiting state, physical tools0. Existing concurrent-settlement
+oracle traces the real dedicated reader connection and still proves one read snapshot.
+85 focused/adjacent tests pass. This is not an installed-consumer claim.

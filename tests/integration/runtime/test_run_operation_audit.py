@@ -545,7 +545,7 @@ def test_real_tool_settlement_preserves_outcome_and_redacts_payload(tmp_path, ou
     asyncio.run(case())
 
 
-def test_snapshot_is_atomic_when_another_connection_settles_same_run(tmp_path):
+def test_snapshot_is_atomic_when_another_connection_settles_same_run(tmp_path, monkeypatch):
     from simple_harness.execution.provider_invocations import provider_response_json
     from simple_harness.execution.recovery import ResolutionOutcome
 
@@ -570,9 +570,19 @@ def test_snapshot_is_atomic_when_another_connection_settles_same_run(tmp_path):
                 now=5.0,
             )
 
-    database.connection.set_trace_callback(concurrent_settle)
-    during = uow.read_run_operation_audit(RunId("run-1"))
-    database.connection.set_trace_callback(None)
+    from contextlib import contextmanager
+
+    original_reader = Database.audit_reader
+
+    @contextmanager
+    def traced_reader(self):
+        with original_reader(self) as reader:
+            reader.connection.set_trace_callback(concurrent_settle)
+            yield reader
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Database, "audit_reader", traced_reader)
+        during = uow.read_run_operation_audit(RunId("run-1"))
     after = uow.read_run_operation_audit(RunId("run-1"))
     assert writes == [True]
     assert during.snapshot_hash == before.snapshot_hash

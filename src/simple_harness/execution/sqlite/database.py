@@ -114,6 +114,32 @@ class Database:
         }
 
     @contextmanager
+    def audit_reader(self):
+        """Own a thread-local read-only connection, without initialization or PRAGMAs."""
+        from simple_harness.execution.audit import RunAuditUnavailable
+
+        if not self.is_open:
+            raise RunAuditUnavailable("audit_store_unavailable")
+        try:
+            connection = sqlite3.connect(
+                self.path.as_uri() + "?mode=ro", uri=True, isolation_level=None, timeout=5.0
+            )
+        except sqlite3.DatabaseError:
+            raise RunAuditUnavailable("audit_store_unavailable") from None
+        connection.row_factory = sqlite3.Row
+        reader = Database(self.path, connection)
+        try:
+            if reader.schema_version != SCHEMA_VERSION:
+                raise RunAuditUnavailable("audit_source_schema_unavailable")
+            yield reader
+        except sqlite3.DatabaseError:
+            raise RunAuditUnavailable("audit_store_unavailable") from None
+        finally:
+            # Database.close checkpoints WAL; a read-only worker must not do that.
+            connection.close()
+            reader._connection = None
+
+    @contextmanager
     def transaction(self, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
         if self._transaction_active:
             raise RuntimeError("nested transaction is forbidden")

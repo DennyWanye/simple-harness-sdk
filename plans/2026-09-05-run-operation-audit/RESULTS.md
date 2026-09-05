@@ -166,3 +166,19 @@ fixed independent re-review pending before successor wheel preparation.
 Read-only version survey: local branches/tags show highest0.7.2; remote ls-remote was
 saved locally. Next proposed successor0.7.3 is not allocated/built until pagination
 review passes. Frozen0.7.2, main and tags remain unchanged.
+
+## Async audit production seam
+
+Host consumer identified the old async facade's synchronous build blocking its event
+loop. Dedicated mode=ro audit connections plus worker offload fix it without sharing
+runtime transactions or asking Host to call private storage. Actual kernel cancellation
+can commit while a gated audit source transaction is active; returned page stays at
+waiting. Red **1failed10deselected0.67s exit1**; green same seven-module command
+**85passed2.09s exit0**. Existing WAL concurrent-writer oracle now traces the real
+independent reader connection. No test assertions removed; the original writer is not
+used as an audit connection. Independent fixed-source review still pending.
+
+| File | SHA256 |
+|---|---|
+| async-red.log | 721dbaf74e16a30e9705d8f3c4928a025238f38d3f64a8f921c7e28d9b9cf56d |
+| async-final.log | b9c67ed1a7c47a9ea93f6a30b9e043b97f56147653ef08896b8c021499b2d835 |

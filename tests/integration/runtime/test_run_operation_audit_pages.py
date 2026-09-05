@@ -292,3 +292,52 @@ def test_in_place_database_restore_cannot_reuse_old_run_cursor(tmp_path, replace
             cursor=first.next_cursor,
         )
     reopened.close()
+
+
+def test_async_audit_does_not_block_runtime_or_share_writer_transaction(tmp_path, monkeypatch):
+    import threading
+
+    from simple_harness.execution.sqlite import audit_pages
+
+    entered, release = threading.Event(), threading.Event()
+    waited = []
+    original = audit_pages._Spool.append
+
+    def gated_append(self, operation):
+        if not entered.is_set():
+            entered.set()
+            waited.append(release.wait(0.5))
+        return original(self, operation)
+
+    monkeypatch.setattr(audit_pages._Spool, "append", gated_append)
+
+    async def case():
+        physical = PhysicalToolCounter()
+        runtime, uow, database = authorization_runtime(
+            tmp_path / "async.db",
+            authorization=AuthorizationScenario(),
+            physical=physical,
+            owner_id="async-pages",
+            clock=lambda: 10.0,
+        )
+        await start_authorization_wait(runtime, uow)
+        database.connection.execute("PRAGMA journal_mode=WAL").fetchone()
+        task = asyncio.create_task(
+            runtime.client.open_run_operation_audit(RunId("run-fault"), page_size=2)
+        )
+        while not entered.is_set():
+            await asyncio.sleep(0.001)
+        try:
+            await runtime.client.cancel(RunId("run-fault"))
+        finally:
+            release.set()
+        first = await task
+        assert waited == [True], "audit blocked event loop instead of allowing cancellation"
+        await runtime.wait_idle(RunId("run-fault"))
+        assert uow.read_run("run-fault").state.value == "cancelled"
+        assert first.metadata["run_state"] == "waiting"
+        assert physical.calls == 0
+        await runtime.close()
+        database.close()
+
+    asyncio.run(case())

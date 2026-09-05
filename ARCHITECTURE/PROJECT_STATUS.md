@@ -14,7 +14,8 @@ SPDX-License-Identifier: Apache-2.0
 Metadata correction 6a8b0e4 independently scoped ACCEPT after the original canary
 counterexample. Public open/page seams now materialize safe immutable audit snapshots
 from one source read transaction, with bounded page reads, original source hashes,
-opaque cursor/refs, version checks and restart continuity. 84 focused/adjacent tests
+opaque cursor/refs, version checks and restart continuity. Public async audit facades
+offload to dedicated mode=ro connections; the runtime writer transaction remains separate. 85 focused/adjacent tests
 pass; fixed pagination correction review pending. The6b5d inode-only dataset boundary
 was independently BLOCKED; format2 verifies actual immutable Run/start/owner identity
 and the captured append-only event cut on every page. The real kernel >256-record and waiting→terminal
