@@ -530,3 +530,8 @@ not zero. No Memory-internal/all-operations or installed Host claim follows from
 source leaf. Directly adjacent79 PASS, overlapping stage5 PASS; fixed review and the
 successor installed Host exact terminal evidence comparison remain gates. Details and
 local raw indexes: plans/2026-09-05-run-operation-audit/MEMORY-PORT.md and RESULTS.md.
+
+2026-09-06 noRun source correction: Run page continuation revalidates its captured
+stage source/binding. Stage incarnation comes from structural creation, unaffected by
+old invocation returns; stale release returns cannot settle a new queue incarnation.
+9756's two P1s are not waived; successor fixed-source independent review remains a gate.

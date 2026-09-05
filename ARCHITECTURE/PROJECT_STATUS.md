@@ -165,3 +165,9 @@ native, full suite or wheel build. Independent fixed review pending; new termina
 payload's real Host installed exact comparison remains mandatory. This is not whole
 Agent-operation completion or Memory-internal coverage. See MEMORY-PORT.md/RESULTS.md
 under plans/2026-09-05-run-operation-audit; original counterexamples retained locally.
+
+2026-09-06 fixed review follow-up: noRun9756 has two P1s; current successor adds actual
+Run stage-cut revalidation and structural generation anchors. Late old release keeps
+its real outcome without settling a recreated queue. Narrow45 PASS; overlapping11
+PASS after exact generation-result proof. Independent revalidation still pending,
+artifact freeze prohibited until closed. See MEMORY-PORT.md original red indexes.

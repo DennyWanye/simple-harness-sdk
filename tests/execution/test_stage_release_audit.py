@@ -113,3 +113,77 @@ def test_stage_cursor_domain_cleanup_prefix_and_new_calls(tmp_path):
             for o in current.operations
         )
         assert any(o.operation_name == "stage.deleted" for o in current.operations)
+
+
+def test_late_old_call_cannot_change_recreated_stage_origin(tmp_path):
+    import json
+    from simple_harness.execution.sqlite.stage_audit import begin_prepare, finish
+
+    with Database.open(tmp_path / "generation.db") as db:
+        repo = ContextStagingRepository(db)
+
+        def claim(owner, now):
+            return repo.claim(
+                stage_id="same",
+                kind=ContextStageKind.ROOT,
+                identity_key="same",
+                user_id="user",
+                session_id="session",
+                input_hash="a" * 64,
+                mode="sdk_prepared",
+                owner_id=owner,
+                now=now,
+                lease_seconds=2,
+            )
+
+        old = claim("old", 1)
+        with db.transaction() as connection:
+            old_call = begin_prepare(connection, old.record, request_hash="b" * 64, now=1)
+        repo.complete(
+            old.record,
+            private_snapshot={"provider_messages": []},
+            memory_result_id=None,
+            memory_result_hash=None,
+            now=2,
+        )
+        assert repo.cleanup(now=4, older_than=1, limit=10) == 1
+        current = claim("current", 5)
+        current_origin = db.connection.execute(
+            "SELECT incarnation FROM sdk_stage_audit_events WHERE operation='stage.created' ORDER BY event_seq DESC LIMIT 1"
+        ).fetchone()[0]
+        with db.transaction() as connection:
+            finish(connection, old_call, state="returned", result_hash="c" * 64, now=6)
+            current_call = begin_prepare(connection, current.record, request_hash="d" * 64, now=6)
+            assert current_call.incarnation == current_origin
+        takeover = claim("takeover", 8)
+        with db.transaction() as connection:
+            next_call = begin_prepare(connection, takeover.record, request_hash="e" * 64, now=8)
+            assert next_call.incarnation == current_origin
+        values = db.connection.execute(
+            "SELECT incarnation,payload_json FROM sdk_stage_audit_events WHERE operation='stage.claimed'"
+        ).fetchall()
+        assert len(values) == 1 and values[0][0] == current_origin
+        assert json.loads(values[0][1])["state"] == "preparing"
+
+
+def test_late_release_return_does_not_settle_identical_recreated_queue(tmp_path):
+    from simple_harness.execution.sqlite.stage_audit import _rows, stage_operations
+
+    with Database.open(tmp_path / "release-generation.db") as db:
+        queued(db, "one")
+        with db.transaction() as connection:
+            old_call, _ = begin_release(connection, "release-one", now=3)
+        assert ContextStagingRepository(db).cleanup(now=20, older_than=1, limit=10) == 1
+        queued(db, "one")
+        with db.transaction() as connection:
+            settle_release(connection, "release-one", old_call, now=21, returned=True)
+        row = db.connection.execute(
+            "SELECT state,attempt_count FROM memory_recall_releases WHERE release_id='release-one'"
+        ).fetchone()
+        assert tuple(row) == ("pending", 0)
+        calls = [
+            o
+            for o in stage_operations(_rows(db.connection, "one", old_call.incarnation))
+            if o.record_type == "boundary"
+        ]
+        assert len(calls) == 1 and calls[0].state == "returned"

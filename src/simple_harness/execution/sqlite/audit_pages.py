@@ -106,9 +106,16 @@ class _Spool:
 
 
 def open_pages(database, run_id=None, *, page_size=256, command_id=None, stage_id=None):
-    query_kind = "stage" if stage_id is not None else ("command" if command_id is not None else "run")
+    query_kind = (
+        "stage" if stage_id is not None else ("command" if command_id is not None else "run")
+    )
     if stage_id is not None:
-        if command_id is not None or run_id is not None or not isinstance(stage_id, str) or not stage_id:
+        if (
+            command_id is not None
+            or run_id is not None
+            or not isinstance(stage_id, str)
+            or not stage_id
+        ):
             raise ValueError("invalid stage audit identity")
         command_id = stage_id  # Shared secondary-domain transport, never a fabricated command row.
     if command_id is None:
@@ -142,10 +149,16 @@ def open_pages(database, run_id=None, *, page_size=256, command_id=None, stage_i
             try:
                 from .command_audit import command_cut, command_incarnation, read_command_snapshot
                 from .stage_audit import run_stage_cut
+
                 if query_kind == "stage":
                     from .stage_audit import (
-                        stage_cut as command_cut, stage_incarnation as command_incarnation,
                         read_stage_snapshot as read_command_snapshot,
+                    )
+                    from .stage_audit import (
+                        stage_cut as command_cut,
+                    )
+                    from .stage_audit import (
+                        stage_incarnation as command_incarnation,
                     )
 
                 if command_id is None:
@@ -221,7 +234,11 @@ def open_pages(database, run_id=None, *, page_size=256, command_id=None, stage_i
         finally:
             os.close(dirfd)
         return read_page(
-            database, run_id, command_id=None if query_kind == "stage" else command_id, stage_id=stage_id, cursor=_cursor(snapshot_hash, tokens[0])
+            database,
+            run_id,
+            command_id=None if query_kind == "stage" else command_id,
+            stage_id=stage_id,
+            cursor=_cursor(snapshot_hash, tokens[0]),
         )
     except RunAuditUnavailable:
         raise
@@ -236,9 +253,16 @@ def open_pages(database, run_id=None, *, page_size=256, command_id=None, stage_i
 
 
 def read_page(database, run_id=None, *, cursor, command_id=None, stage_id=None):
-    query_kind = "stage" if stage_id is not None else ("command" if command_id is not None else "run")
+    query_kind = (
+        "stage" if stage_id is not None else ("command" if command_id is not None else "run")
+    )
     if stage_id is not None:
-        if command_id is not None or run_id is not None or not isinstance(stage_id, str) or not stage_id:
+        if (
+            command_id is not None
+            or run_id is not None
+            or not isinstance(stage_id, str)
+            or not stage_id
+        ):
             raise ValueError("invalid stage audit identity")
         command_id = stage_id  # Shared secondary-domain transport, never a fabricated command row.
     if command_id is None:
@@ -281,8 +305,10 @@ def read_page(database, run_id=None, *, cursor, command_id=None, stage_id=None):
             with database.transaction(read_only=True) as source:
                 from .command_audit import command_cut, command_incarnation
                 from .stage_audit import run_stage_cut
+
                 if query_kind == "stage":
-                    from .stage_audit import stage_cut as command_cut, stage_incarnation as command_incarnation
+                    from .stage_audit import stage_cut as command_cut
+                    from .stage_audit import stage_incarnation as command_incarnation
 
                 cut = manifest["event_cut"]
                 if command_id is None:
@@ -290,6 +316,7 @@ def read_page(database, run_id=None, *, cursor, command_id=None, stage_id=None):
                         raise RunAuditUnavailable("audit_run_incarnation_mismatch")
                     if _event_cut(source, run_id.value, sequence=cut["sequence"]) != cut:
                         raise RunAuditUnavailable("audit_run_cut_mismatch")
+                    run_stage_cut(source, run_id.value, saved=manifest["stage_cut"])
                     command_bound = manifest["command_cut"]
                     if (
                         command_cut(source, run_id=run_id.value, sequence=command_bound["sequence"])
@@ -327,14 +354,22 @@ def read_page(database, run_id=None, *, cursor, command_id=None, stage_id=None):
             if len(values) != min(size, total - index * size):
                 raise RunAuditUnavailable("audit_page_count_mismatch")
             page_type = (
-                RunOperationAuditPageV1 if command_id is None else
-                (ContextStageOperationAuditPageV1 if query_kind == "stage" else CommandOperationAuditPageV1)
+                RunOperationAuditPageV1
+                if command_id is None
+                else (
+                    ContextStageOperationAuditPageV1
+                    if query_kind == "stage"
+                    else CommandOperationAuditPageV1
+                )
             )
             owner = (
                 dict(run_id=run_id.value)
                 if command_id is None
-                else (dict(stage_ref=header["stage_ref"]) if query_kind == "stage"
-                      else dict(command_ref=header["command_ref"]))
+                else (
+                    dict(stage_ref=header["stage_ref"])
+                    if query_kind == "stage"
+                    else dict(command_ref=header["command_ref"])
+                )
             )
             return page_type(
                 **owner,

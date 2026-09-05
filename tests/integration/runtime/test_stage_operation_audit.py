@@ -180,3 +180,40 @@ def test_actual_release_return_or_lost_ack_is_durable_without_run(tmp_path, fail
             db.close()
 
     asyncio.run(case())
+
+
+def test_run_cursor_revalidates_captured_stage_source_cut(tmp_path):
+    async def case():
+        from simple_harness.execution.audit import RunAuditUnavailable
+        from simple_harness.execution.sqlite.stage_audit_schema import BASE_DDL
+
+        app, _, db = runtime(
+            tmp_path, agent_memory=StableMemory(), context_provider=StableContextProvider()
+        )
+        await app.start()
+        try:
+            value = ConversationTurnInput(
+                AgentIdentity("deployment", "household", "actor", "session"),
+                Message(MessageRole.USER, "hello"),
+                "hello",
+            )
+            run_id = RunId("cut-run")
+            await app.client.start_conversation(value, run_id=run_id)
+            await app.wait_idle(run_id)
+            page = await app.client.open_run_operation_audit(run_id, page_size=1)
+            assert page.next_cursor
+            with db.transaction() as connection:
+                connection.execute("DROP TRIGGER sdk_stage_audit_no_delete")
+                connection.execute("DELETE FROM sdk_stage_audit_events")
+                connection.execute(
+                    next(
+                        sql for sql in BASE_DDL if "CREATE TRIGGER sdk_stage_audit_no_delete" in sql
+                    )
+                )
+            with pytest.raises(RunAuditUnavailable):
+                await app.client.read_run_operation_audit_page(run_id, cursor=page.next_cursor)
+        finally:
+            await app.close()
+            db.close()
+
+    asyncio.run(case())

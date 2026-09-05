@@ -47,6 +47,18 @@ def _last(connection, stage_id):
     return dict(row)
 
 
+def _origin(connection, stage_id):
+    row = connection.execute(
+        "SELECT * FROM sdk_stage_audit_events WHERE stage_id=? "
+        "AND operation IN ('stage.created','stage.legacy_baseline') "
+        "ORDER BY event_seq DESC LIMIT 1",
+        (stage_id,),
+    ).fetchone()
+    if row is None:
+        raise RunAuditUnavailable("stage_incarnation_unavailable")
+    return dict(row)
+
+
 def begin_prepare(connection, claim, *, request_hash, now):
     row = connection.execute(
         "SELECT * FROM context_preparation_staging WHERE stage_id=?", (claim.stage_id,)
@@ -71,7 +83,7 @@ def begin_prepare(connection, claim, *, request_hash, now):
         or row["lease_expires_at"] <= now
     ):
         raise UnitOfWorkConflict("stage prepare claim differs from actual authority")
-    origin = _last(connection, claim.stage_id)
+    origin = _origin(connection, claim.stage_id)
     observed = connection.execute(
         "SELECT * FROM sdk_stage_audit_events WHERE stage_id=? AND incarnation=? "
         "AND operation IN ('stage.created','stage.claimed','stage.legacy_baseline') "
@@ -222,6 +234,15 @@ def stage_coverage(rows):
             and value.get("mode") == "sdk_prepared"
         ):
             matching = []
+            actual_claims = [
+                source
+                for source in rows
+                if source["incarnation"] == row["incarnation"]
+                and source["event_seq"] < row["event_seq"]
+                and source["operation"]
+                in {"stage.created", "stage.claimed", "stage.legacy_baseline"}
+            ]
+            claim_sequence = actual_claims[-1]["event_seq"] if actual_claims else None
             for end in rows:
                 if (
                     end["operation"] != "context.prepare.settled"
@@ -233,6 +254,8 @@ def stage_coverage(rows):
                 if (
                     start is not None
                     and audit_hash(start) == outcome["start_hash"]
+                    and end["incarnation"] == row["incarnation"]
+                    and outcome["claim_sequence"] == claim_sequence
                     and outcome["state"] == "returned"
                     and outcome.get("result_hash") is not None
                     and outcome["result_hash"] == value.get("product_result_hash")
@@ -431,11 +454,12 @@ def begin_release(connection, release_id, *, now):
     request = MemoryReleaseRequest(
         row["query_id"], row["query_hash"], row["result_id"], row["result_hash"], row["write_fence"]
     )
-    origin = _last(connection, row["stage_id"])
+    origin = _origin(connection, row["stage_id"])
     source = connection.execute(
         "SELECT * FROM sdk_stage_audit_events WHERE stage_id=? AND operation LIKE 'release.%' "
-        "AND json_extract(payload_json,'$.release_id')=? ORDER BY event_seq DESC LIMIT 1",
-        (row["stage_id"], release_id),
+        "AND incarnation=? AND json_extract(payload_json,'$.release_id')=? "
+        "ORDER BY event_seq DESC LIMIT 1",
+        (row["stage_id"], origin["incarnation"], release_id),
     ).fetchone()
     if source is None:
         raise RunAuditUnavailable("release_observation_unavailable")
@@ -500,6 +524,10 @@ def settle_release(connection, release_id, call, *, now, returned):
         )
         if row["stage_id"] != call.stage_id or audit_hash(asdict(request)) != proof["request_hash"]:
             raise UnitOfWorkConflict("release request differs from actual call")
+    # The old invocation may really return after its queue was cleaned/recreated.
+    # Preserve that outcome under its original call, without settling the new row.
+    if row is not None and _origin(connection, call.stage_id)["incarnation"] != call.incarnation:
+        row = None
     transition = None
     if row is not None and row["state"] == "pending":
         attempts = row["attempt_count"] + 1

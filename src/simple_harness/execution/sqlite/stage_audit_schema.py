@@ -49,7 +49,8 @@ def _incarnation(alias):
     return (
         "COALESCE((SELECT incarnation FROM sdk_stage_audit_events WHERE stage_id="
         + alias
-        + ".stage_id ORDER BY event_seq DESC LIMIT 1),lower(hex(randomblob(16))))"
+        + ".stage_id AND operation IN ('stage.created','stage.legacy_baseline') "
+        "ORDER BY event_seq DESC LIMIT 1),lower(hex(randomblob(16))))"
     )
 
 

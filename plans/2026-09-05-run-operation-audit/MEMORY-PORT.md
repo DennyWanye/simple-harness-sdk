@@ -133,3 +133,22 @@ error, retained separately; the actual red shows PREPARING/new owner borrowed af
 commit. stage-old072-final.log uses installed exact072 and records missing old-call
 and product-proof gaps after real cleanup. stage-a6-counterfactual-red.log is a
 later counterfactual against fixed a6, not a claimed chronological first red.
+
+## noRun fixed review corrections — 2026-09-06
+
+9756ff1 has two P1s (not an accepted freeze candidate): Run cursor captured but did
+not revalidate its stage cut, and late old-call settlements could select the old
+incarnation for subsequent current-stage observations. The first was independently
+identified in self-check and Dirac review; both original negatives remain locally.
+Run cursor now checks actual saved stage cut/binding under its source read transaction.
+SQL/Python generation anchors use the latest structural creation/baseline, never the
+last arbitrary call result. Late old results remain in their original incarnation.
+An identical queue recreated after cleanup cannot be settled by an old call: preserve
+the old returned outcome but leave the new queue pending. Prepared-result coverage
+also binds the exact incarnation and current claim, not an older same-hash result.
+
+Red logs: stage-run-cut-red.log, stage-generation-red-actual.log,
+stage-release-generation-red.log. Narrow schema/pages/stage positive45 PASS2.12s
+(stage-p1-origin-cut-green.log); last exact-generation check11 PASS0.54s overlaps.
+No wheel; successor fixed independent revalidation required. Earlier schema2 WIP DBs
+with another exact DDL checksum are rejected, not silently migrated or restamped.
