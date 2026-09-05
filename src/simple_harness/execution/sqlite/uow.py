@@ -24,6 +24,7 @@ from simple_harness.contracts import (
     freeze_json,
     thaw_json,
 )
+from simple_harness.execution.audit import RunAuditUnavailable, RunOperationAuditSnapshotV1
 from simple_harness.execution.budget import BudgetCharge, BudgetPolicy, BudgetSnapshot
 from simple_harness.execution.context_authority import (
     ProviderProjectionReceipt,
@@ -834,6 +835,118 @@ class SqliteExecutionUnitOfWork:
     def __init__(self, database: Database, *, workflow_fault: FaultHook | None = None) -> None:
         self.database = database
         self.workflow_fault = workflow_fault
+
+    def read_run_operation_audit(
+        self, run_id: RunId, *, limit: int = 256
+    ) -> RunOperationAuditSnapshotV1:
+        from .audit import read_snapshot
+
+        if not isinstance(run_id, RunId):
+            raise TypeError("run_id must use RunId")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 4096:
+            raise ValueError("audit limit must be 1..4096")
+        # One transaction owns every source read; no transaction spans API calls.
+        try:
+            with self.database.transaction(read_only=True) as connection:
+                return read_snapshot(connection, run_id.value, limit)
+        except sqlite3.DatabaseError:
+            raise RunAuditUnavailable("audit_store_unavailable") from None
+        except (KeyError, TypeError, ValueError):
+            raise RunAuditUnavailable("audit_source_invalid") from None
+
+    def _audit_operation_head(self, connection, kind, identity, now):
+        from simple_harness.execution.audit import audit_hash
+
+        from .audit import head_fact
+
+        run_id, payload = head_fact(connection, kind, identity)
+        event_id = "audit-head:" + audit_hash(
+            dict(kind=kind, identity=identity, version=payload["source_version"])
+        )
+        prefix = event_id + ":"
+        old = connection.execute(
+            "SELECT payload_json FROM run_events WHERE event_id LIKE ?", (prefix + "%",)
+        ).fetchone()
+        if old is not None:
+            if old[0] != canonical_json(payload):
+                raise UnitOfWorkConflict("audit source version changed")
+            return
+        self._insert_event(
+            connection,
+            event_id=prefix + audit_hash(payload),
+            run_id=run_id,
+            kind="audit.transition.v1",
+            payload=payload,
+            now=now,
+        )
+        _fault(self.workflow_fault, f"operation_audit.{kind}.{payload['state']}.after_write")
+
+    def record_tool_audit(
+        self,
+        *,
+        effect_id,
+        call,
+        state,
+        execution_lease,
+        run_fence,
+        now,
+        raw_call_id=None,
+        turn_ordinal=0,
+        call_ordinal=0,
+        error_code=None,
+    ):
+        from simple_harness.execution.audit import audit_hash, safe_audit_label
+        from simple_harness.execution.effects import effect_request_hash
+
+        if state not in {
+            "requested",
+            "waiting",
+            "rejected",
+            "failed",
+            "succeeded",
+            "partial",
+            "unknown",
+        }:
+            raise ValueError("invalid tool audit state")
+        payload = dict(
+            operation_id="tool:" + effect_id.value,
+            call_id=call.call_id.value,
+            request_hash=effect_request_hash(
+                tool_name=call.name, arguments=thaw_json(call.arguments)
+            ),
+            state=state,
+            operation_name=safe_audit_label(call.name),
+            effect_id=effect_id.value,
+            raw_call_id=raw_call_id,
+            turn_ordinal=turn_ordinal,
+            call_ordinal=call_ordinal,
+            error_code=safe_audit_label(error_code),
+            error_code_hash=None if error_code is None else audit_hash(str(error_code)),
+        )
+        identity = "audit-tool:" + audit_hash(
+            dict(run_id=execution_lease.run_id, operation_id=payload["operation_id"], state=state)
+        )
+        if state != "requested":
+            identity += ":" + audit_hash(payload)
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            self._require_run_fence(connection, run_fence, execution_lease=execution_lease)
+            prefix = identity + ":"
+            existing = connection.execute(
+                "SELECT payload_json FROM run_events WHERE event_id LIKE ?", (prefix + "%",)
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != canonical_json(payload):
+                    raise UnitOfWorkConflict("tool audit intent conflict")
+                return
+            self._insert_event(
+                connection,
+                event_id=prefix + audit_hash(payload),
+                run_id=execution_lease.run_id,
+                kind="audit.tool.v1",
+                payload=payload,
+                now=now,
+            )
 
     def close(self) -> None:
         """Close the owned database (idempotent)."""
@@ -5299,9 +5412,7 @@ class SqliteExecutionUnitOfWork:
             raise ValueError("effect ordinals must be non-negative integers")
         if task_execution_envelope is not None:
             if not isinstance(task_execution_envelope, TaskExecutionEnvelope):
-                raise TypeError(
-                    "task_execution_envelope must use TaskExecutionEnvelope"
-                )
+                raise TypeError("task_execution_envelope must use TaskExecutionEnvelope")
             if (
                 task_execution_envelope.run_id != run_id
                 or task_execution_envelope.call_id != call_id
@@ -5320,9 +5431,7 @@ class SqliteExecutionUnitOfWork:
             else canonical_json(task_execution_envelope.to_json())
         )
         envelope_hash = (
-            None
-            if task_execution_envelope is None
-            else task_execution_envelope.envelope_hash
+            None if task_execution_envelope is None else task_execution_envelope.envelope_hash
         )
         existing = self.read_effect(effect_id)
         if existing is not None:
@@ -5388,6 +5497,7 @@ class SqliteExecutionUnitOfWork:
                 ),
             )
             _fault(fault, "effect_prepare.after_write")
+            self._audit_operation_head(connection, "effect", effect_id.value, now)
         _fault(fault, "effect_prepare.after_commit")
         record = self.read_effect(effect_id)
         assert record is not None
@@ -5460,6 +5570,7 @@ class SqliteExecutionUnitOfWork:
             if changed != 1:
                 raise UnitOfWorkConflict("effect handoff CAS failed")
             _fault(fault, "effect_handoff.after_write")
+            self._audit_operation_head(connection, "effect", effect_id.value, now)
         _fault(fault, "effect_handoff.after_commit")
         record = self.read_effect(effect_id)
         assert record is not None
@@ -5508,6 +5619,7 @@ class SqliteExecutionUnitOfWork:
             if changed != 1:
                 raise UnitOfWorkConflict("effect settlement CAS failed")
             _fault(fault, "effect_settle.after_write")
+            self._audit_operation_head(connection, "effect", effect_id.value, now)
         _fault(fault, "effect_settle.after_commit")
         record = self.read_effect(effect_id)
         assert record is not None
@@ -5546,6 +5658,7 @@ class SqliteExecutionUnitOfWork:
             if changed != 1:
                 raise UnitOfWorkConflict("effect unknown CAS failed")
             _fault(fault, "effect_unknown.after_write")
+            self._audit_operation_head(connection, "effect", effect_id.value, now)
         _fault(fault, "effect_unknown.after_commit")
         record = self.read_effect(effect_id)
         assert record is not None
@@ -5674,6 +5787,7 @@ class SqliteExecutionUnitOfWork:
                 if changed != 1:
                     raise UnitOfWorkConflict("Tool completed recovery CAS failed")
                 _fault(fault, "tool_reconciliation.ledger.after_write")
+                self._audit_operation_head(connection, "effect", record.effect_id.value, now)
             connection.execute(
                 """
                 UPDATE run_wait_blockers SET resolution_id=?, resolved_at=?,
@@ -5749,6 +5863,7 @@ class SqliteExecutionUnitOfWork:
             if changed != 1:
                 raise UnitOfWorkConflict("Tool reauthorization CAS failed")
             _fault(fault, "effect_reauthorize.after_write")
+            self._audit_operation_head(connection, "effect", record.effect_id.value, now)
         _fault(fault, "effect_reauthorize.after_commit")
         refreshed = self.read_effect(record.effect_id)
         assert refreshed is not None
@@ -5813,6 +5928,7 @@ class SqliteExecutionUnitOfWork:
             if changed != 1:
                 raise UnitOfWorkConflict("Tool authority refresh CAS failed")
             _fault(fault, "effect_refresh.after_write")
+            self._audit_operation_head(connection, "effect", record.effect_id.value, now)
         _fault(fault, "effect_refresh.after_commit")
         refreshed = self.read_effect(record.effect_id)
         assert refreshed is not None
@@ -6062,6 +6178,9 @@ class SqliteExecutionUnitOfWork:
                     record.version,
                 ),
             )
+            self._audit_operation_head(
+                connection, "provider", record.invocation_id, record.claimed_at
+            )
         stored = self.read_provider_invocation(record.invocation_id)
         assert stored is not None
         return stored
@@ -6109,6 +6228,7 @@ class SqliteExecutionUnitOfWork:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("provider invocation handoff CAS failed")
+            self._audit_operation_head(connection, "provider", invocation_id, handed_off_at)
         result = self.read_provider_invocation(invocation_id)
         assert result is not None
         return result
@@ -6162,6 +6282,9 @@ class SqliteExecutionUnitOfWork:
             _fault(fault, "provider_settlement.ledger.after_write")
             _insert_provider_projection_receipt(connection, record)
             _fault(fault, "provider_settlement.outbox.after_write")
+            self._audit_operation_head(
+                connection, "provider", record.invocation_id, record.settled_at
+            )
         result = self.read_provider_invocation(record.invocation_id)
         assert result is not None
         return result
@@ -6296,6 +6419,7 @@ class SqliteExecutionUnitOfWork:
                     connection, _provider_invocation_record(projected_row)
                 )
                 _fault(fault, "provider_reconciliation.ledger.after_write")
+                self._audit_operation_head(connection, "provider", record.invocation_id, now)
             connection.execute(
                 """
                 UPDATE run_wait_blockers SET resolution_id=?, resolved_at=?,
@@ -6361,6 +6485,7 @@ class SqliteExecutionUnitOfWork:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("Provider reauthorization CAS failed")
+            self._audit_operation_head(connection, "provider", record.invocation_id, now)
         refreshed = self.read_provider_invocation(record.invocation_id)
         assert refreshed is not None
         return refreshed

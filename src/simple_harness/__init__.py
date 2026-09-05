@@ -345,6 +345,16 @@ _RUNTIME_EXPORTS = frozenset(
 
 
 def __getattr__(name: str) -> Any:
+    if name in {
+        "RunOperationAuditPort",
+        "RunOperationAuditSnapshotV1",
+        "RunOperationAuditV1",
+        "RunAuditUsageV1",
+        "RunAuditUnavailable",
+    }:
+        from .execution import audit
+
+        return getattr(audit, name)
     if name not in _RUNTIME_EXPORTS:
         raise AttributeError(name)
     from . import runtime
@@ -662,4 +672,12 @@ __all__ = (
     "verify_prospective_signal_authority",
     "verify_memory_mutation_apply_receipt",
     "parse_memory_mutation_plan",
+)
+
+__all__ += (
+    "RunOperationAuditPort",
+    "RunOperationAuditSnapshotV1",
+    "RunOperationAuditV1",
+    "RunAuditUsageV1",
+    "RunAuditUnavailable",
 )

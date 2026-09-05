@@ -557,6 +557,8 @@ def authorization_runtime(
     provider=None,
     registry=None,
     tool_exposure=None,
+    observability=None,
+    tool_result_factory=None,
 ):
     class ScenarioProvider(Provider):
         async def invoke(self, request, *, cancel):
@@ -584,6 +586,8 @@ def authorization_runtime(
     async def write_note(arguments, context):
         del arguments, context
         physical.calls += 1
+        if tool_result_factory is not None:
+            return tool_result_factory()
         return ToolResult.succeeded(CallId("raw-fault"))
 
     registry.register(
@@ -608,6 +612,7 @@ def authorization_runtime(
         {"agent.general": RuntimeProfile("agent.general", "react")},
         {"react": ReActDriver(clock=clock, tool_exposure_resolver=lambda run_id: tool_exposure)},
         RuntimePorts(
+            observability=observability,
             provider=ProviderInvocationCoordinator(
                 uow=uow,
                 provider=provider,

@@ -8,6 +8,22 @@ SPDX-License-Identifier: Apache-2.0
 本页只记录当前 SDK source candidate 的生产事实和仍开放的跨仓门禁。完整协议边界见
 [ARCHITECTURE.md](./ARCHITECTURE.md)，目录入口见 [index.md](./index.md)。
 
+
+## 2026-09-05 isolated Run operation audit V1 source candidate
+
+From2b842, an isolated follow-up adds public `read_run_operation_audit` (UoW/RunClient)
+with safe names, source/call/attempt hashes and links, recorded timestamps/duration and
+usage provenance. Pre-effect denial/wait/failure facts and source CAS transitions reuse
+SDK-owned run_events; no schema or package-version change. **73 focused tests passed
+(1.48s)** plus selected lint. This is a bounded atomic first slice: current-source
+completeness is separate from partial history coverage. Stable pagination and complete
+producer enumeration are pending MUSTs; no full-Run/all-SDK audit or native completion.
+Frozen main/wheel unchanged; independent fixed-source review and consumer integration
+pending. See [contract](../plans/2026-09-05-run-operation-audit/CONTRACT.md),
+[coverage](../plans/2026-09-05-run-operation-audit/COVERAGE.md) and
+[results](../plans/2026-09-05-run-operation-audit/RESULTS.md).
+
+
 ## 2026-09-05 route 恢复限定修复
 
 - 用户已批准 S5b 的必要 Harness 解冻例外；candidate 0.7.2 修复合法路由演进后授权恢复误拒绝。

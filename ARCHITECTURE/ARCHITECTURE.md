@@ -9,6 +9,22 @@ last-updated: 2026-09-05
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
+
+## 2026-09-05 isolated Run operation audit V1 source candidate
+
+From2b842, an isolated follow-up adds public `read_run_operation_audit` (UoW/RunClient)
+with safe names, source/call/attempt hashes and links, recorded timestamps/duration and
+usage provenance. Pre-effect denial/wait/failure facts and source CAS transitions reuse
+SDK-owned run_events; no schema or package-version change. **73 focused tests passed
+(1.48s)** plus selected lint. This is a bounded atomic first slice: current-source
+completeness is separate from partial history coverage. Stable pagination and complete
+producer enumeration are pending MUSTs; no full-Run/all-SDK audit or native completion.
+Frozen main/wheel unchanged; independent fixed-source review and consumer integration
+pending. See [contract](../plans/2026-09-05-run-operation-audit/CONTRACT.md),
+[coverage](../plans/2026-09-05-run-operation-audit/COVERAGE.md) and
+[results](../plans/2026-09-05-run-operation-audit/RESULTS.md).
+
+
 ## 2026-09-05 route 恢复 P1：source candidate 0.7.2
 
 Host initial route 固定在 StartSnapshot 与 checkpoint version zero；成功的 Context-control

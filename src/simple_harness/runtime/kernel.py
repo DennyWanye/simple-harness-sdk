@@ -28,6 +28,7 @@ from simple_harness.contracts import (
     canonical_json,
     thaw_json,
 )
+from simple_harness.execution.audit import RunOperationAuditSnapshotV1
 from simple_harness.execution.command_ingress import CommandClaim
 from simple_harness.execution.context_authority import (
     ContextRouteReceipt,
@@ -796,6 +797,16 @@ class RunClient:
         self._runtime._command_wake.set()
         return receipt
 
+    async def read_run_operation_audit(
+        self, run_id: RunId, *, limit: int = 256
+    ) -> RunOperationAuditSnapshotV1:
+        from simple_harness.execution.audit import RunAuditUnavailable
+
+        reader = getattr(self._runtime._uow, "read_run_operation_audit", None)
+        if reader is None:
+            raise RunAuditUnavailable("audit_reader_unsupported")
+        return reader(run_id, limit=limit)
+
     async def get_command(self, command_id: str) -> CommandSnapshot:
         if not isinstance(command_id, str) or not command_id.strip():
             raise ValueError("command_id is required")
@@ -961,9 +972,7 @@ class RunClient:
             context_bounds = ConversationContextBounds()
             loop = asyncio.get_running_loop()
             wait_deadline = loop.time() + (
-                self._runtime._ports.lease_ttl_seconds
-                + context_bounds.deadline_seconds
-                + 1.0
+                self._runtime._ports.lease_ttl_seconds + context_bounds.deadline_seconds + 1.0
             )
             while loop.time() < wait_deadline:
                 winner = repository.get(stage_id)

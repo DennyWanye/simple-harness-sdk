@@ -245,6 +245,71 @@ class EffectExecutor:
         turn_ordinal: int = 0,
         call_ordinal: int = 0,
     ) -> EffectExecution:
+        if context.run_id.value != execution_lease.run_id or run_fence.run_id != context.run_id:
+            raise ValueError("Tool audit Run authority mismatch")
+        audit = getattr(self._uow, "record_tool_audit", None)
+        existing = self._uow.read_effect(effect_id)
+        # Returning an immutable terminal result is not a new tool request.
+        # Keep the original full intent validation below, without requiring a
+        # fresh write lease or restamping legacy effects with new audit facts.
+        terminal_replay = existing is not None and existing.terminal
+
+        def record(state, error_code=None):
+            if audit is not None and not terminal_replay:
+                audit(
+                    effect_id=effect_id,
+                    call=call,
+                    state=state,
+                    execution_lease=execution_lease,
+                    run_fence=run_fence,
+                    now=self._clock(),
+                    raw_call_id=raw_call_id,
+                    turn_ordinal=turn_ordinal,
+                    call_ordinal=call_ordinal,
+                    error_code=error_code,
+                )
+
+        record("requested")
+        try:
+            result = await self._execute_audited(
+                effect_id=effect_id,
+                call=call,
+                context=context,
+                execution_lease=execution_lease,
+                run_fence=run_fence,
+                workflow_lease=workflow_lease,
+                raw_call_id=raw_call_id,
+                turn_ordinal=turn_ordinal,
+                call_ordinal=call_ordinal,
+            )
+        except ToolAuthorizationPending:
+            record("waiting")
+            raise
+        except Exception as exc:
+            # No durable effect means this failure happened before physical handoff.
+            # Never overwrite a handed-off/unknown effect because audit failed.
+            if self._uow.read_effect(effect_id) is None:
+                record("failed", getattr(exc, "code", getattr(exc, "error_code", None)))
+            raise
+        # Only pre-effect outcomes need this extra fact. Effect settlements have
+        # their own canonical transaction and must not be relabelled on replay.
+        if result.effect is None:
+            record(result.result.outcome.value, result.result.error_code)
+        return result
+
+    async def _execute_audited(
+        self,
+        *,
+        effect_id: EffectId,
+        call: ToolCall,
+        context: ToolContext,
+        execution_lease: ExecutionLease,
+        run_fence: RunFenceLease,
+        workflow_lease: WorkflowLease | None = None,
+        raw_call_id: str | None = None,
+        turn_ordinal: int = 0,
+        call_ordinal: int = 0,
+    ) -> EffectExecution:
         if context.call_id is not None and context.call_id != call.call_id:
             raise ValueError("Tool context call_id differs from call")
         if context.effect_id is not None and context.effect_id != effect_id:
@@ -369,9 +434,7 @@ class EffectExecutor:
                 expires_at=authorization.request.expires_at,
                 metadata=cast(
                     dict[str, JsonValue],
-                    thaw_json(
-                        cast(FrozenJsonValue, authorization.request.metadata)
-                    ),
+                    thaw_json(cast(FrozenJsonValue, authorization.request.metadata)),
                 ),
             )
             raise ToolAuthorizationPending(prepared, request)
@@ -508,9 +571,7 @@ class EffectExecutor:
             extra={"tool": call.name, "effect_id": effect_id.value},
         )
         tool_outcome = (
-            Outcome.SUCCEEDED
-            if settled.state is EffectState.SUCCEEDED
-            else Outcome.FAILED
+            Outcome.SUCCEEDED if settled.state is EffectState.SUCCEEDED else Outcome.FAILED
         )
         self._emit_attempt(settled, outcome=tool_outcome, error_code=result.error_code)
         return EffectExecution(settled, result)

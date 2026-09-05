@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
 from simple_harness.contracts import FrozenJsonValue, JsonValue
+from simple_harness.execution.audit import RunOperationAuditPort
 from simple_harness.execution.contracts.children import (
     AttachmentPolicy,
     ChildCommandRecord,
@@ -208,7 +209,9 @@ class ContinuationTerminalResult:
     receipt: ContinuationProgressReceipt
 
 
-class ExecutionUnitOfWork(EffectUnitOfWork, ProviderInvocationUnitOfWork, Protocol):
+class ExecutionUnitOfWork(
+    EffectUnitOfWork, ProviderInvocationUnitOfWork, RunOperationAuditPort, Protocol
+):
     def read_continuation(self, continuation_id: str) -> ContinuationRecord | None: ...
 
     def commit_runtime_wait_with_blocker(

@@ -114,11 +114,11 @@ class Database:
         }
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
+    def transaction(self, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
         if self._transaction_active:
             raise RuntimeError("nested transaction is forbidden")
         connection = self.connection
-        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("BEGIN" if read_only else "BEGIN IMMEDIATE")
         self._transaction_active = True
         try:
             yield connection
