@@ -156,6 +156,7 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
                 operation_name=value["name"],
                 error_code=audit_error_code(value.get("error_code")),
                 runtime_epoch=value["runtime_epoch"],
+                parent_operation_id=value.get("parent_operation_id"),
                 created_at=value["started_at"],
                 settled_at=None if value["state"] == "started" else row["created_at"],
                 request_hash=value["identity_hash"],
@@ -498,4 +499,5 @@ def _opaque_operation(operation, run_id):
         else audit_hash([run_id, operation.turn_ordinal, operation.call_ordinal, raw_hash]),
         effect_id=audit_reference("effect", operation.effect_id),
         provider_invocation_id=audit_reference("provider", operation.provider_invocation_id),
+        parent_operation_id=audit_reference("runtime", operation.parent_operation_id),
     )

@@ -121,6 +121,7 @@ class RunOperationAuditV1:
     operation_name_hash: str | None = None
     raw_call_id_hash: str | None = None
     runtime_epoch: int | None = None
+    parent_operation_id: str | None = None
     related_run_refs: tuple[str, ...] = ()
     created_at: float | None = None
     handed_off_at: float | None = None
@@ -183,7 +184,7 @@ class RunOperationAuditV1:
         if self.record_type not in {"head", "transition", "boundary", "receipt", "proposal"}:
             raise ValueError("invalid audit record type")
         _integer(self.source_version)
-        for value in (self.handoff_attempt, self.rehandoff_count):
+        for value in (self.handoff_attempt, self.rehandoff_count, self.runtime_epoch):
             if value is not None:
                 _integer(value)
         if len(self.source_hash) != 64 or any(

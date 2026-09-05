@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from uuid import uuid4
 
 from .audit import audit_error_code, audit_hash
@@ -24,17 +25,32 @@ RUNTIME_BOUNDARIES = frozenset(
     }
 )
 
+_CURRENT_OPERATION = ContextVar("sdk_runtime_audit_operation", default=None)
+
+
+class OperationReceipt(dict):
+    def __init__(self, operation_id=None):
+        super().__init__()
+        self.operation_id = operation_id
+        self.child_operation_ids = []
+
 
 @contextmanager
-def runtime_operation(store, name, *, lease, clock, identity, contract="sdk.core.v2"):
+def runtime_operation(
+    store, name, *, lease, clock, identity, contract="sdk.core.v2", parent_operation_id=None
+):
     """An actual call interval, not a declaration that later execution is covered."""
     writer = getattr(store, "record_runtime_operation", None)
     if writer is None:
-        yield {}
+        yield OperationReceipt()
         return
     operation_id = uuid4().hex
     started_at = clock()
-    receipt = {}
+    receipt = OperationReceipt(operation_id)
+    owner = (lease.run_id, lease.owner_id, lease.epoch)
+    active = _CURRENT_OPERATION.get()
+    if parent_operation_id is None and active is not None and active[:3] == owner:
+        parent_operation_id = active[3]
 
     def record(state, error_code=None):
         writer(
@@ -48,9 +64,14 @@ def runtime_operation(store, name, *, lease, clock, identity, contract="sdk.core
             started_at=started_at,
             now=clock(),
             error_code=error_code,
+            parent_operation_id=parent_operation_id,
+            child_operation_ids=list(receipt.child_operation_ids),
         )
 
     record("started")
+    if active is not None and active[:3] == owner:
+        active[4].child_operation_ids.append(operation_id)
+    token = _CURRENT_OPERATION.set((*owner, operation_id, receipt))
     try:
         yield receipt
     except BaseException as original:
@@ -68,3 +89,5 @@ def runtime_operation(store, name, *, lease, clock, identity, contract="sdk.core
     else:
         state = receipt.get("audit_outcome", "completed")
         record(state, "runtime_boundary_rejected" if state == "rejected" else None)
+    finally:
+        _CURRENT_OPERATION.reset(token)

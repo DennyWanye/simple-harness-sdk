@@ -290,3 +290,51 @@ def test_foreign_settlement_cannot_close_actual_interval(tmp_path, changed):
         database.close()
 
     asyncio.run(case())
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "runtime.preflight",
+        "context.prepare",
+        "context.verify",
+        "provider.prepare",
+        "tool.proposal",
+        "tool.preflight",
+    ],
+)
+def test_missing_whole_preflight_interval_is_not_certified(tmp_path, boundary):
+    async def case():
+        runtime, uow, database = authorization_runtime(
+            tmp_path / "missing-preflight.db",
+            authorization=AuthorizationScenario(),
+            physical=PhysicalToolCounter(),
+            provider=Calls(()),
+            owner_id="preflight",
+            clock=lambda: 10.0,
+        )
+        await start(runtime)
+        await runtime.close()
+        before = uow.read_run_operation_audit(RunId("run-fault"), limit=4096)
+        assert before.coverage_gaps == ()
+        # Explicit corruption negative: retain all independent canonical Run,
+        # activation, Provider and terminal evidence. Never a legacy fixture.
+        with database.transaction() as connection:
+            assert (
+                connection.execute(
+                    "DELETE FROM run_events WHERE kind='audit.runtime.v2' "
+                    "AND json_extract(payload_json,'$.name')=?",
+                    (boundary,),
+                ).rowcount
+                == 2
+            )
+        after = uow.read_run_operation_audit(RunId("run-fault"), limit=4096)
+        assert (
+            "runtime_parent_interval_unverified"
+            if boundary == "runtime.preflight"
+            else "runtime_child_interval_unverified"
+        ) in after.coverage_gaps
+        assert after.to_json()["recording_coverage"] == "unverified"
+        database.close()
+
+    asyncio.run(case())

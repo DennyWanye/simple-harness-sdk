@@ -2744,6 +2744,7 @@ class Runtime:
                 self._uow,
                 "runtime.driver",
                 contract=driver_contract,
+                parent_operation_id=preflight_receipt.operation_id,
                 lease=self._leases[run_id],
                 clock=self._now,
                 identity={"driver": run.driver_kind, "run": run_id},

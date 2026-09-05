@@ -13,6 +13,7 @@ def recording_coverage(connection, run_id):
     inputs = set()
     activation_events = {}
     claims = {}
+    intervals = {}
     for row in connection.execute(
         "SELECT * FROM run_events WHERE run_id=? ORDER BY durable_seq", (run_id,)
     ):
@@ -38,18 +39,22 @@ def recording_coverage(connection, run_id):
                     "owner_hash",
                     "contract",
                     "started_at",
+                    "parent_operation_id",
                 )
             )
             if value["state"] == "started":
                 if identity in started:
                     raise RunAuditUnavailable("audit_runtime_interval_duplicate")
                 started[identity] = interval
+                intervals[identity] = dict(value, start_sequence=row["durable_seq"])
             else:
                 if identity in settled or started.get(identity) != interval:
                     raise RunAuditUnavailable("audit_runtime_interval_mismatch")
                 if value["state"] not in {"completed", "failed", "interrupted", "rejected"}:
                     raise RunAuditUnavailable("audit_runtime_fact_invalid")
                 settled[identity] = interval
+                intervals[identity]["end_sequence"] = row["durable_seq"]
+                intervals[identity]["child_operation_ids"] = value.get("child_operation_ids")
                 inputs.add((value["name"], value["identity_hash"], value["state"]))
             if value["name"] == "runtime.driver":
                 if value.get("contract") in {"sdk.react.v2", "sdk.workflow.v2"}:
@@ -82,6 +87,39 @@ def recording_coverage(connection, run_id):
         gaps.add("canonical_event_interval_unverified")
     if started != settled:
         gaps.add("runtime_operation_interval_unclosed")
+    for value in intervals.values():
+        children = value.get("child_operation_ids")
+        if not isinstance(children, list) or len(set(children)) != len(children):
+            gaps.add("runtime_child_interval_unverified")
+        elif any(
+            child not in intervals
+            or intervals[child].get("parent_operation_id") != value["operation_id"]
+            for child in children
+        ):
+            gaps.add("runtime_child_interval_unverified")
+        if value["name"] == "runtime.preflight":
+            continue
+        parent = intervals.get(value.get("parent_operation_id"))
+        if parent is None or any(
+            value[key] != parent[key] for key in ("runtime_epoch", "owner_hash")
+        ):
+            gaps.add("runtime_parent_interval_unverified")
+            continue
+        if value["name"] == "runtime.driver":
+            if (
+                parent["name"] != "runtime.preflight"
+                or parent.get("end_sequence", float("inf")) >= value["start_sequence"]
+            ):
+                gaps.add("runtime_parent_interval_unverified")
+        elif (
+            value["operation_id"] not in (parent.get("child_operation_ids") or [])
+            or parent["name"] == "runtime.preflight"
+            or not (
+                parent["start_sequence"] < value["start_sequence"]
+                and value.get("end_sequence", float("inf")) < parent.get("end_sequence", -1)
+            )
+        ):
+            gaps.add("runtime_parent_interval_unverified")
     lease = connection.execute(
         "SELECT epoch FROM workflow_leases WHERE run_id=? AND namespace='runtime.kernel'",
         (run_id,),

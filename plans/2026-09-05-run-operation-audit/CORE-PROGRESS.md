@@ -66,3 +66,20 @@ the fixed-source review of actual execution intervals, not merely table enumerat
 After source closure: independent review, verify unused successor version once,
 one reproducible dual build, then independent installed public consumer. No paid
 Provider, native, full suite or successor artifact was run for this checkpoint.
+
+## Independent a416 P1 correction
+
+Dirac deleted a complete preflight audit pair in an isolated corruption probe while
+retaining actual activation/driver/Provider/terminal facts. The a416 checker falsely
+reported verified because it only paired surviving intervals. The regression is
+now in the core module: `a416-preflight-pair-red.log` records the decisive failure.
+
+Each driver now binds its exact completed preflight operation; nested real calls
+record parent identity and the parent records actual child IDs at completion.
+The reader verifies same owner/epoch, sequence nesting, completed parent linkage and
+the child manifest. Missing whole pairs cannot disappear from the coverage test.
+Six missing-pair negatives cover preflight, context preparation/verification,
+Provider preparation and proposal/preflight. Core19 PASS and direct-impact67 PASS
+(`parent-children-green.log`, `parent-impact.log`). Normalizer v3 invalidates old
+spools rather than returning a cached false-completeness claim. No wheel/schema
+version change. Fixed-source independent re-review remains required.

@@ -913,6 +913,8 @@ class SqliteExecutionUnitOfWork:
         now,
         contract,
         error_code=None,
+        parent_operation_id=None,
+        child_operation_ids=None,
     ):
         from simple_harness.execution.audit import audit_hash
         from simple_harness.execution.runtime_audit import RUNTIME_BOUNDARIES
@@ -936,6 +938,8 @@ class SqliteExecutionUnitOfWork:
             receipt_hash=receipt_hash,
             started_at=started_at,
             error_code=error_code,
+            parent_operation_id=parent_operation_id,
+            child_operation_ids=child_operation_ids,
         )
         with self.database.transaction() as connection:
             self._require_runtime_lease(connection, lease, now=now)
