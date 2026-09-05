@@ -564,3 +564,11 @@ terminal uniqueness, equal to captured typed metadata. Explicit unreleased audit
 partial index supports bounded lookups; exact072 real runtime terminal insertion
 maintains it while legacy gaps stay. Original fd/c313 failures preserved. Direct25
 PASS, overlapping state/index1 PASS; fixed independent review gates candidate build.
+
+2026-09-06 local073 artifact: exact source0282fa9 built twice offline from separate
+archives; wheel1a9ed5c9…cb4cd7 identical and164 package files match. Independent isolated
+installed public consumer completed real SQLite/ReAct with physical success/failure/
+pre-effect deny and all90 metadata operations across reopen, no read-induced dispatch.
+Consumer fixture enum correction lives separately atf90cab4, original failure retained;
+wheel/runtime unchanged. Artifact independent review and Host exact installed terminal
+comparison remain separate gates. ARTIFACT-HANDOFF.md records exact paths/hashes/limits.

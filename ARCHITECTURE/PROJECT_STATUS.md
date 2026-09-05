@@ -197,3 +197,9 @@ Fixed-source review pending before one successor candidate build.
 unique event and saved metadata closure implemented with explicit audit2 read index.
 Direct25 PASS plus overlapping1, actual072 index-write positive with legacy gaps.
 No new wheel yet; waiting this necessary Host-consumption source fixed review.
+
+2026-09-06 successor073 local wheel built twice offline, identical SHA1a9ed5c9…cb4cd7;
+fixed source0282fa9. SDK standalone installed consumer PASS,90operations (not tests),
+physical1/1/0, Provider2, reread delta0. Runtime/frozen072/main untouched by consumer-only
+fixture correction. Artifact review requested; actual Host installed terminal gate pending.
+See operation-audit ARTIFACT-HANDOFF.md; original reds and legacy limits retained.
