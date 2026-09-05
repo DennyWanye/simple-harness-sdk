@@ -81,3 +81,8 @@ Harness source visibility does not close Host/Memory/Service operation producers
 consumer audit findings/idempotency, native product adoption or historical erasure.
 No all_operations_recorded field is introduced. The source DTO enumerates runtime
 boundaries, auxiliary recording domains and explicit history limitations.
+
+2026-09-06 update: noRun source9756 was blocked and corrected by018e135/d6c1951.
+Dirac independently scoped ACCEPT d6c1951 with no remaining leaf P0/P1; its review
+closes the noRun fixed-review gate above. All artifact/installed/Host exact terminal
+comparison and declared legacy scope limits remain in force. See MEMORY-PORT.md.

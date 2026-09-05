@@ -176,3 +176,23 @@ plus old page rejects after actual stage-cut loss. stage-continuation-indexed-bi
 wrong Run binding rejects. Counts overlap; no whole suite rerun. Fixed diff review
 is still required before stage/artifact freeze; Host exact installed terminal compare
 and legacy unknown limits remain unchanged.
+
+## Independent stage/noRun source closure — 2026-09-06
+
+Dirac independently scoped ACCEPT d6c1951e82288e0254cc965e519062582fa2db5a,
+including018e135 and test-format0c3ee09. No remaining blocking P0/P1 in this leaf.
+9756's original failures remain historical failures. Original two probes were rerun
+unchanged on archived018e source (fixed hash above); d6 indexed saved validation and
+actual SQLtrace/EXPLAIN positives/negative were reviewed without repeating suites.
+
+Read-only evidence hashes (not additive counts):
+- stage-page-point-read-green.log (23): 5adae38c247e1faf649c70128b7de4cc94c0cc5dc631d73a2cb2d75765670a76
+- stage-page-indexed-binding.log (2): ac84d31254b1f0be729bbe2e90dcf691256875726c8d4a6bf0802d69e59cc6ed
+- stage-continuation-indexed-binding.log (1): 09229b326b028651d725fa47cd1bae9fd8e0145ff8779bdb84ae2762c00ab737
+
+The accepted source includes explicit schema2, real authority-origin checks, late
+invocation isolation, actual root/continuation consumption, cleanup/pagination and
+safe metadata. Legacy unleased release without call or transition witness remains
+explicitly unreconstructable. This is not an all-operations claim or certification of
+every SDK producer. Successor artifact, installed public consumer and real Host exact
+terminal comparison (including the SDK-owned field) remain separate required gates.

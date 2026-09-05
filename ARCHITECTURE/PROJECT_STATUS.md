@@ -177,3 +177,9 @@ only exact stage-event PK lookups and, for continuations, one actual continuatio
 owner lookup. Public SQL trace/query-plan oracle and old-binding rejection pass;
 23 directly adjacent PASS overlaps the 2 indexed root/cut cases, plus 1 continuation
 case. Fixed independent review pending; no new ledger/wheel or weakened Host compare.
+
+2026-09-06 noRun stage source fixed d6c1951 independently scoped ACCEPT; original
+9756 P1s preserved, no remaining leaf-blocking P0/P1. 23/2/1 evidence reviewed with
+SQLtrace/EXPLAIN and wrong-Run/cut negatives, no repeated suites or additive count.
+Source leaf may be frozen; successor wheel/installed publicconsumer/real Host terminal
+exact compare and broader producer scope are not certified by this review.

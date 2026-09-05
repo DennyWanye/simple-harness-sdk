@@ -540,3 +540,8 @@ old invocation returns; stale release returns cannot settle a new queue incarnat
 PK/hash/operation/incarnation and root/continuation PK ownership suffice. Initial
 snapshot enumeration stays separately bounded. SQL trace and query-plan tests prove
 the continuation path uses indexed source lookups, with old binding loss rejected.
+
+2026-09-06 independent source closure: Dirac scoped ACCEPT d6c1951 stage/noRun;
+no remaining blocking P0/P1 in this leaf. Exact schema2, generation/authority,
+consumption and indexed saved-page boundaries were reviewed;9756 failures remain.
+Legacy unknown and successor installed Host terminal exact-compare gates are unchanged.
