@@ -130,6 +130,10 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
                     **details,
                 )
             )
+    from .memory_port_audit import operations as memory_operations
+
+    for operation in bounded_rows(memory_operations(connection, run_id)):
+        operations.append(operation)
     from .delivery_audit import operations as delivery_operations
 
     for operation in bounded_rows(delivery_operations(connection, run_id)):
@@ -514,8 +518,8 @@ def _opaque_operation(operation, run_id):
         effect_id=audit_reference("effect", operation.effect_id),
         provider_invocation_id=audit_reference("provider", operation.provider_invocation_id),
         parent_operation_id=(
-            audit_reference("delivery", operation.parent_operation_id.split(":", 1)[-1])
-            if kind == "delivery" and operation.parent_operation_id is not None
+            audit_reference(kind, operation.parent_operation_id.split(":", 1)[-1])
+            if kind in {"delivery", "memory_port"} and operation.parent_operation_id is not None
             else audit_reference("runtime", operation.parent_operation_id)
         ),
     )

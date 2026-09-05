@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -25,6 +26,7 @@ from simple_harness.runtime.agent_memory import (
 )
 
 from .sqlite.database import Database
+from .sqlite.memory_port_audit import record as record_memory_audit
 from .uow import UnitOfWorkConflict
 
 logger = logging.getLogger(__name__)
@@ -185,8 +187,12 @@ class MemoryOutboxRepository:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("memory outbox claim CAS failed")
-        result = self.read(intent_id)
-        assert result is not None
+            record_memory_audit(connection, intent_id, operation="claimed", now=now)
+            result = _record(
+                connection.execute(
+                    "SELECT * FROM memory_outbox WHERE intent_id=?", (intent_id,)
+                ).fetchone()
+            )
         return replace(result, claimed_from_state=claimed_from_state)
 
     def applied(
@@ -195,12 +201,14 @@ class MemoryOutboxRepository:
         *,
         now: float,
         error_code: str | None = None,
+        receipt: CommittedTurnReceipt | None = None,
     ) -> MemoryOutboxRecord:
         return self._settle(
             claim,
             state=MemoryOutboxState.APPLIED,
             now=now,
             error_code=error_code,
+            receipt=receipt,
         )
 
     def dead_letter(
@@ -209,12 +217,14 @@ class MemoryOutboxRepository:
         *,
         error_code: str,
         now: float,
+        receipt: CommittedTurnReceipt | None = None,
     ) -> MemoryOutboxRecord:
         return self._settle(
             claim,
             state=MemoryOutboxState.DEAD_LETTER,
             now=now,
             error_code=error_code,
+            receipt=receipt,
         )
 
     def release(
@@ -242,8 +252,14 @@ class MemoryOutboxRepository:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("memory outbox release CAS failed")
-        result = self.read(claim.intent_id)
-        assert result is not None
+            record_memory_audit(
+                connection, claim.intent_id, operation="released", now=now, claim=claim
+            )
+            result = _record(
+                connection.execute(
+                    "SELECT * FROM memory_outbox WHERE intent_id=?", (claim.intent_id,)
+                ).fetchone()
+            )
         self._emit(result, claim.state.value)
         return result
 
@@ -266,6 +282,7 @@ class MemoryOutboxRepository:
                 (settled_before, limit),
             ).fetchall()
             for row in rows:
+                record_memory_audit(connection, str(row[0]), operation="cleaned", now=time.time())
                 connection.execute(
                     "DELETE FROM memory_outbox WHERE intent_id=? AND state='applied'",
                     (str(row[0]),),
@@ -279,9 +296,12 @@ class MemoryOutboxRepository:
         state: MemoryOutboxState,
         now: float,
         error_code: str | None,
+        receipt: CommittedTurnReceipt | None = None,
     ) -> MemoryOutboxRecord:
         if state not in {MemoryOutboxState.APPLIED, MemoryOutboxState.DEAD_LETTER}:
             raise ValueError("memory outbox settlement state is invalid")
+        if receipt is not None:
+            MemoryDispatcher._validate_receipt(claim, receipt)
         _positive_time(now, "now", allow_zero=True)
         with self.database.transaction() as connection:
             changed = connection.execute(
@@ -299,8 +319,19 @@ class MemoryOutboxRepository:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("memory outbox settlement CAS failed")
-        result = self.read(claim.intent_id)
-        assert result is not None
+            record_memory_audit(
+                connection,
+                claim.intent_id,
+                operation="settled",
+                now=now,
+                claim=claim,
+                receipt=receipt,
+            )
+            result = _record(
+                connection.execute(
+                    "SELECT * FROM memory_outbox WHERE intent_id=?", (claim.intent_id,)
+                ).fetchone()
+            )
         self._emit(result, claim.state.value)
         return result
 
@@ -342,6 +373,10 @@ class MemoryDispatcher:
         if claim is None:
             return False
         self.repository._emit(claim, claim.claimed_from_state or "unknown")
+        from .sqlite.memory_port_audit import begin
+
+        with self.repository.database.transaction() as connection:
+            begin(connection, claim, self.clock())
         try:
             receipt = await self.memory.record_committed_turn(claim.committed_turn())
             if fault is not None:
@@ -374,6 +409,7 @@ class MemoryDispatcher:
                 claim,
                 error_code=AgentMemoryErrorCode.CONFLICT.value,
                 now=self.clock(),
+                receipt=receipt,
             )
         elif receipt.status is CommittedTurnStatus.REJECTED_ERASED:
             logger.info(
@@ -389,9 +425,10 @@ class MemoryDispatcher:
                 claim,
                 now=self.clock(),
                 error_code=CommittedTurnStatus.REJECTED_ERASED.value,
+                receipt=receipt,
             )
         else:
-            self.repository.applied(claim, now=self.clock())
+            self.repository.applied(claim, now=self.clock(), receipt=receipt)
         return True
 
     async def drain(self, *, limit: int) -> bool:
@@ -406,9 +443,7 @@ class MemoryDispatcher:
         self._closed = True
 
     @staticmethod
-    def _validate_receipt(
-        claim: MemoryOutboxRecord, receipt: CommittedTurnReceipt
-    ) -> None:
+    def _validate_receipt(claim: MemoryOutboxRecord, receipt: CommittedTurnReceipt) -> None:
         if not isinstance(receipt, CommittedTurnReceipt):
             raise AgentMemoryError(AgentMemoryErrorCode.CONFLICT)
         if receipt.turn_id != claim.turn_id or receipt.payload_hash != claim.payload_hash:

@@ -545,6 +545,10 @@ def _insert_committed_turn(
         ),
     )
 
+    from .memory_port_audit import record as record_memory_audit
+
+    record_memory_audit(connection, intent.intent_id, operation="created", now=now)
+
 
 def _validate_committed_turn(
     connection: sqlite3.Connection,

@@ -132,3 +132,15 @@ Five decisive source omissions red→green;136 adjacent PASS. Existing bytes/rec
 are reused, with no extra Provider accounting. SDK-owned committed-turn/release
 port-call history and complete producer review still prevent all-operation/artifact
 completion; Memory SDK internals remain outside this leaf. See core progress.
+
+## Harness committed-turn port audit — 2026-09-05
+
+SDK MemoryDispatcher records actual handoff/receipt with original owner/claim epoch;
+logical APPLIED and receipt REJECTED_ERASED remain distinct. Same-transaction facts
+survive legitimate outbox cleanup via final-hash tombstone. Transaction-local CAS
+results prevent competing-owner substitution.31 directly related PASS plus6 leaf
+PASS; exact072 middle call remains missing-epoch gap. This is source-only, fixed
+review pending. No-Run Context prepare/release staging still requires the explicit
+schema/association contract in
+[Memory port contract](../plans/2026-09-05-run-operation-audit/MEMORY-PORT.md);
+whole operation coverage and successor artifact are not yet complete.

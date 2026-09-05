@@ -220,6 +220,9 @@ def recording_coverage(connection, run_id):
     from .delivery_audit import coverage as delivery_coverage
 
     gaps.update(delivery_coverage(connection, run_id))
+    from .memory_port_audit import coverage as memory_coverage
+
+    gaps.update(memory_coverage(connection, run_id))
     return tuple(sorted(gaps)), (2 if birth else None)
 
 
