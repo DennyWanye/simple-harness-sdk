@@ -9,7 +9,17 @@ SPDX-License-Identifier: Apache-2.0
 [ARCHITECTURE.md](./ARCHITECTURE.md)，目录入口见 [index.md](./index.md)。
 
 
-## Core audit producer source checkpoint — 2026-09-05
+## Current candidate — 2026-09-06
+
+Declared Harness operation producer/reader leaves through fb39d91 are independently
+scoped accepted. Version073 source0282fa9 is dual-offline-built; exact wheel installed
+publicconsumer passed physical1/1/0 + Provider2,90 operations/reopen/no extra dispatch.
+Artifact review and main-owned Host exact terminal installation remain open. Frozen
+main072 unchanged. Legacy limits remain explicit, no all-operations claim. Current
+handoff: plans/2026-09-05-run-operation-audit/ARTIFACT-HANDOFF.md. Dated checkpoints
+below retain historical pending states; they do not supersede this current section.
+
+## Historical core audit checkpoint — 2026-09-05
 
 Real lease-bound core intervals, canonical child/workflow/control sources and
 continuous recording verification are implemented in the isolated source tree.

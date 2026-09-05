@@ -1,7 +1,7 @@
 <!--
 SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
-last-updated: 2026-09-05
+last-updated: 2026-09-06
 -->
 <!-- last-calibrated: 716fb8513095c4ad1dc005cb0fefe991e584c156 -->
 
@@ -10,7 +10,16 @@ last-updated: 2026-09-05
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
 
-## Core audit producers in isolated source — 2026-09-05
+## Current operation-audit candidate — 2026-09-06
+
+Source0.7.3 on the isolated audit branch: declared producer/reader leaves through
+fb39d91 independently scoped accepted. Exact buildsource0282fa9 and installed public
+consumer are documented in ARTIFACT-HANDOFF.md; artifact review and real Host terminal
+comparison remain separate gates. Legacy unknown/mutable-head limits are explicit,
+not all_operations_recorded. The dated checkpoints below preserve earlier states;
+current status is this section and the handoff, not an old pending sentence.
+
+## Historical core audit checkpoint — 2026-09-05
 
 Kernel preflight/driver, Provider preparation, Context, proposal/batch/envelope/route
 boundaries now record actual lease-bound intervals; canonical workflow/child/control

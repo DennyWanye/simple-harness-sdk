@@ -5,7 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # ARCHITECTURE 目录
 
-记录 Simple Harness SDK 的架构生产事实。当前 source candidate 版本权威为 `0.7.2`。Human Memory S1
+记录 Simple Harness SDK 的架构生产事实。当前隔离 operation-audit source candidate 版本为 `0.7.3`；冻结 main/原 wheel 仍为 `0.7.2`。
+双 offline build 与独立 installed consumer 事实见 [候选交接](../plans/2026-09-05-run-operation-audit/ARTIFACT-HANDOFF.md)，
+制品独审与 Host exact terminal installed 门分别记录，不代表全域审计或生产切换。Human Memory S1
 已经把自动 pre-Provider recall 改为显式的同 Run route seam：每个新的 Provider turn 只能消费 Host 经
 `RunContextAuthorityPort` 返回并由 SDK 校验、冻结的 Context snapshot；同批 route-required effect 在
 route receipt 尚未可见时会在 ledger/handoff 前拒绝。fresh execution schema v7 持久绑定
