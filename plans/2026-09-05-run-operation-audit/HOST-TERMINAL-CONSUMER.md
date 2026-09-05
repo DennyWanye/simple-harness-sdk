@@ -27,7 +27,7 @@ This field covers ordinary/root run.completed/failed/cancelled. Child terminal r
 remain their existing separate canonical audit domain. Missing root terminal source
 returns None and explicit terminal_event_unavailable gap, not fabricated success;
 duplicate or wrong-kind root event is unavailable. Old canonical terminal payloads
-are hashed exactly as stored, without adding fields or restamping. Normalizer v10
+are hashed exactly as stored, without adding fields or restamping. Normalizer v11
 invalidates older source spools rather than claiming they already have this field.
 
 New root/continuation terminal commit paths derive `sdk_memory_outbox` v1 with actual
@@ -49,3 +49,11 @@ driver are test adapters, not paid Provider/native evidence. First setup attempt
 conversation output (retained log); actual red public-terminal-red-actual.log is the
 missing public field. public-terminal-adjacent.log29 PASS2.01s; final typed-root1 PASS0.20s
 is overlapping. Installed Host composition remains main-owned and pending.
+
+The page evidence also carries actual event_sequence. Each continuation validates
+that exact Run/sequence PK row and event_record_hash, even if a later Memory claim
+is now the max run-event cut. A changed/deleted terminal cannot hide behind a valid
+later cut. public-terminal-cut-red.log demonstrates that stale cached evidence before
+this check; public-terminal-cut-green.log36 PASS2.32s includes actual later public
+MemoryOutbox claim, unchanged max cut and altered older terminal negative. No Host
+or Provider was used to substitute this SDK source oracle.

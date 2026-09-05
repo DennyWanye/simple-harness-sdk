@@ -188,3 +188,7 @@ exact compare and broader producer scope are not certified by this review.
 consumption; source29 PASS (typed final1 overlaps), independent source review pending.
 It separates stored payload SHA from whole-row SHA; no weakening Host compare, no
 new ledger. Artifact remains pending this last direct consumer primitive review.
+
+2026-09-06 terminal source continuation correction:36 adjacent PASS; saved exact
+terminal row is point-validated even when later events exist. Original red retained.
+Fixed-source review pending before one successor candidate build.

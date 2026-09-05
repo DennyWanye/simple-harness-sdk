@@ -58,6 +58,12 @@ def test_actual_terminal_exact_identity_public_page_and_reopen(tmp_path):
             event_id=event["event_id"], payload_hash=expected_hash, state="failed"
         )
         assert event["event_id"] not in str(evidence.to_json())
+        from simple_harness.execution.memory_outbox import MemoryOutboxRepository
+
+        assert (
+            MemoryOutboxRepository(db).claim(owner_id="later-worker", now=11, lease_seconds=5)
+            is not None
+        )
         page = await app.client.open_run_operation_audit(run_id, page_size=1)
         assert page.to_json()["metadata"]["terminal_evidence"] == evidence.to_json()
         await app.close()
@@ -69,6 +75,16 @@ def test_actual_terminal_exact_identity_public_page_and_reopen(tmp_path):
             continued = reader.read_run_operation_audit_page(run_id, cursor=page.next_cursor)
             assert continued.to_json()["metadata"]["terminal_evidence"] == evidence.to_json()
             with reopened.transaction() as c:
+                c.execute(
+                    "UPDATE run_events SET payload_json='{}' WHERE event_id=?", (event["event_id"],)
+                )
+            with pytest.raises(RunAuditUnavailable):
+                reader.read_run_operation_audit_page(run_id, cursor=page.next_cursor)
+            with reopened.transaction() as c:
+                c.execute(
+                    "UPDATE run_events SET payload_json=? WHERE event_id=?",
+                    (event["payload_json"], event["event_id"]),
+                )
                 c.execute(
                     "INSERT INTO run_events(event_id,run_id,kind,payload_json,created_at,durable_seq) SELECT ?,?,'run.failed','{}',10,MAX(durable_seq)+1 FROM run_events",
                     ("conflicting-terminal", run_id.value),

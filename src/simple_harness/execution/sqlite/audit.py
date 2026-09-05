@@ -353,6 +353,7 @@ def terminal_evidence(connection, run):
         hashlib.sha256(row["payload_json"].encode("utf-8")).hexdigest(),
         audit_hash(dict(row)),
         row["created_at"],
+        row["durable_seq"],
     )
 
 

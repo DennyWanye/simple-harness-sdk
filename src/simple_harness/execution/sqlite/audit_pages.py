@@ -26,7 +26,7 @@ from simple_harness.execution.audit import (
 from .audit import _opaque_operation, read_snapshot
 
 FORMAT = 2
-NORMALIZER = "core-terminal-stage-intervals-registered-labels-opaque-refs-v10"
+NORMALIZER = "core-terminal-stage-intervals-registered-labels-opaque-refs-v11"
 MAX_BYTES = 64 * 1024 * 1024
 MAX_FILE_BYTES = 192 * 1024 * 1024
 MAX_SECONDS = 30.0
@@ -317,6 +317,14 @@ def read_page(database, run_id=None, *, cursor, command_id=None, stage_id=None):
                     if _event_cut(source, run_id.value, sequence=cut["sequence"]) != cut:
                         raise RunAuditUnavailable("audit_run_cut_mismatch")
                     run_stage_cut(source, run_id.value, saved=manifest["stage_cut"])
+                    terminal = header.get("terminal_evidence")
+                    if terminal is not None and _event_cut(
+                        source, run_id.value, sequence=terminal["event_sequence"]
+                    ) != {
+                        "sequence": terminal["event_sequence"],
+                        "source_hash": terminal["event_record_hash"],
+                    }:
+                        raise RunAuditUnavailable("audit_terminal_cut_mismatch")
                     command_bound = manifest["command_cut"]
                     if (
                         command_cut(source, run_id=run_id.value, sequence=command_bound["sequence"])

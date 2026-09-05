@@ -241,10 +241,14 @@ class RunTerminalAuditEvidenceV1:
     event_payload_hash: str
     event_record_hash: str
     created_at: float
+    event_sequence: int
 
     def __post_init__(self):
         import math
 
+        _integer(self.event_sequence)
+        if self.event_sequence < 1:
+            raise ValueError("invalid terminal sequence")
         if self.state not in {"completed", "failed", "cancelled"}:
             raise ValueError("invalid terminal state")
         if not isinstance(self.event_ref, str) or not self.event_ref.startswith("terminal_event:"):
@@ -284,6 +288,7 @@ class RunTerminalAuditEvidenceV1:
             event_payload_hash=self.event_payload_hash,
             event_record_hash=self.event_record_hash,
             created_at=self.created_at,
+            event_sequence=self.event_sequence,
         )
 
     @classmethod
@@ -296,6 +301,7 @@ class RunTerminalAuditEvidenceV1:
             "event_payload_hash",
             "event_record_hash",
             "created_at",
+            "event_sequence",
         }:
             raise ValueError("invalid terminal evidence shape")
         if (
@@ -310,6 +316,7 @@ class RunTerminalAuditEvidenceV1:
             value["event_payload_hash"],
             value["event_record_hash"],
             value["created_at"],
+            value["event_sequence"],
         )
 
 

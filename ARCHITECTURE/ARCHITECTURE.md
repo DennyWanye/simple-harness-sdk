@@ -553,3 +553,8 @@ and stable-page metadata agree; closed typed parser/matcher supports existing Ho
 exact comparison without private SQL. Child canonical receipts retain their own domain.
 Source29 adjacent PASS; installed Host gate remains pending. See HOST-TERMINAL-CONSUMER.md
 in the operation-audit plan for actual paths, negative oracle and namespace rules.
+
+2026-09-06 exact terminal continuation proof now revalidates its own saved Run/event
+sequence and row hash on every page, independently of a later global event cut.
+Normalizer v11 rejects prior spools. Real later Memory claim + old terminal mutation
+counterexample red→green;36 directly adjacent PASS, installed Host gate unchanged.
