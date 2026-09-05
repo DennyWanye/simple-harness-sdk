@@ -33,6 +33,7 @@ from simple_harness.providers import (
     ProviderResponse,
     ProviderTarget,
     ProviderToolCall,
+    ProviderToolSpec,
 )
 from simple_harness.providers.base import (
     ProviderContinuationCapability,
@@ -71,6 +72,12 @@ from simple_harness.tools.authorization import (
 from simple_harness.tools.reconciliation import (
     ReconciliationObservation,
     ReconciliationState,
+)
+from simple_harness.tools.runtime_catalog import (
+    ToolEffectClass,
+    ToolExecutionPolicy,
+    ToolRouteRequirement,
+    ToolTaskScopeRequirement,
 )
 
 
@@ -547,6 +554,9 @@ def authorization_runtime(
     owner_id: str,
     clock,
     emit_tool_call: bool = True,
+    provider=None,
+    registry=None,
+    tool_exposure=None,
 ):
     class ScenarioProvider(Provider):
         async def invoke(self, request, *, cancel):
@@ -567,9 +577,9 @@ def authorization_runtime(
 
     database = Database.open(database_path)
     uow = SqliteExecutionUnitOfWork(database)
-    provider = ScenarioProvider()
+    provider = ScenarioProvider() if provider is None else provider
     reconciliation = Reconciliation()
-    registry = ToolRegistry()
+    registry = ToolRegistry() if registry is None else registry
 
     async def write_note(arguments, context):
         del arguments, context
@@ -596,7 +606,7 @@ def authorization_runtime(
     runtime = build_runtime(
         uow,
         {"agent.general": RuntimeProfile("agent.general", "react")},
-        {"react": ReActDriver(clock=clock)},
+        {"react": ReActDriver(clock=clock, tool_exposure_resolver=lambda run_id: tool_exposure)},
         RuntimePorts(
             provider=ProviderInvocationCoordinator(
                 uow=uow,
@@ -621,7 +631,7 @@ def authorization_runtime(
     return runtime, uow, database
 
 
-async def start_authorization_wait(runtime, uow):
+async def start_authorization_wait(runtime, uow, *, initial_route=None):
     await runtime.start()
     await runtime.client.start(
         RunStart(
@@ -635,6 +645,10 @@ async def start_authorization_wait(runtime, uow):
                 "max_output_tokens": 100,
             },
             1,
+            initial_route_receipt=initial_route,
+            initial_route_receipt_hash=(
+                None if initial_route is None else initial_route.receipt_hash
+            ),
         )
     )
     await runtime.wait_idle(RunId("run-fault"))
@@ -1067,5 +1081,199 @@ def test_host_handoff_binding_failure_stops_before_physical_tool(tmp_path) -> No
         assert physical.calls == 0
         await runtime.close()
         database.close()
+
+    asyncio.run(case())
+
+
+@pytest.mark.parametrize("reopen_database", (False, True))
+def test_host_initial_route_advance_resumes_authorized_tool_without_replay(
+    tmp_path, reopen_database: bool
+) -> None:
+    """Real SQLite/runtime; deterministic Provider and Host tool/authorization adapters."""
+
+    class RouteAuthorization(AuthorizationScenario):
+        async def prepare(self, prepared):
+            if prepared.call.name == "context_route":
+                return AuthorizationResult(
+                    AuthorizationDecision.ALLOW,
+                    receipt_ref=f"route-auth:{prepared.effect_id.value}",
+                )
+            return await super().prepare(prepared)
+
+    class RouteProvider(Provider):
+        async def invoke(self, request, *, cancel):
+            assert not cancel.is_cancelled
+            self.requests.append(request)
+            ordinal = len(self.requests)
+            assert ordinal <= 3, "completed Provider turns must not be resent"
+            calls = ()
+            if ordinal == 1:
+                calls = (ProviderToolCall(CallId("raw-route"), "context_route", {}),)
+            elif ordinal == 2:
+                calls = (ProviderToolCall(CallId("raw-fault"), "write_note", {}),)
+            return ProviderResponse(
+                request.request_id,
+                Message(MessageRole.ASSISTANT, "done" if ordinal == 3 else "use tool"),
+                tool_calls=calls,
+                model="model",
+            )
+
+    class Exposure:
+        def restore(self, run_id, checkpoint):
+            pass
+
+        def provider_specs(self, run_id):
+            return tuple(
+                ProviderToolSpec(name, name, {"type": "object", "properties": {}})
+                for name in ("context_route", "write_note")
+            )
+
+        def execution_policy(self, run_id, provider_name):
+            return ToolExecutionPolicy(
+                f"host:{provider_name}",
+                "a" * 64,
+                (
+                    ToolEffectClass.CONTEXT_CONTROL
+                    if provider_name == "context_route"
+                    else ToolEffectClass.NON_PROJECT_EFFECT
+                ),
+                ToolRouteRequirement.OPTIONAL,
+                ToolTaskScopeRequirement.OPTIONAL,
+            )
+
+        def observe_tool_result(self, run_id, tool_name, result):
+            pass
+
+        def checkpoint(self, run_id):
+            return {"catalog_fingerprint": "c" * 64}
+
+    async def case() -> None:
+        initial = ContextRouteReceipt(
+            "route-A",
+            "run-fault",
+            None,
+            None,
+            TaskScopeRoute.RESUME_EXISTING,
+            "task-1",
+            3,
+            schema_version=3,
+            binding_set_receipt_id="binding-set-3",
+            binding_set_receipt_hash="d" * 64,
+            origin=ContextRouteOrigin.HOST_INITIAL,
+            host_authority_ref="host-execution:claim-1",
+            host_authority_hash="e" * 64,
+        )
+        routes = []
+        provider = RouteProvider()
+        authorization = RouteAuthorization()
+        physical = PhysicalToolCounter()
+        path = tmp_path / "route-authorization-resume.db"
+
+        def make_runtime(owner):
+            registry = ToolRegistry()
+
+            async def context_route(arguments, context):
+                assert context.effect_id is not None
+                assert context.call_id is not None
+                receipt = ContextRouteReceipt(
+                    "route-B",
+                    context.run_id.value,
+                    "raw-route",
+                    context.effect_id.value,
+                    TaskScopeRoute.CONTINUE_ACTIVE,
+                    initial.task_scope_id,
+                    initial.binding_set_revision,
+                    schema_version=3,
+                    binding_set_receipt_id=initial.binding_set_receipt_id,
+                    binding_set_receipt_hash=initial.binding_set_receipt_hash,
+                )
+                routes.append(receipt)
+                return ToolResult.succeeded(context.call_id, receipt.to_json())
+
+            registry.register(
+                FunctionTool(
+                    ToolSpec(
+                        "context_route",
+                        "Continue active task.",
+                        {"type": "object", "properties": {}},
+                    ),
+                    context_route,
+                )
+            )
+            return authorization_runtime(
+                path,
+                authorization=authorization,
+                physical=physical,
+                owner_id=owner,
+                clock=lambda: 10.0,
+                provider=provider,
+                registry=registry,
+                tool_exposure=Exposure(),
+            )
+
+        runtime, uow, database = make_runtime("route-before-restart")
+        try:
+            decision = await start_authorization_wait(runtime, uow, initial_route=initial)
+            assert uow.read_run("run-fault").state is RunState.WAITING
+            assert physical.calls == 0
+            assert len(routes) == 1 and len(provider.requests) == 2
+            current = uow.read_react_checkpoint("run-fault")
+            assert current is not None
+            assert thaw_json(current.checkpoint["route_receipt"]) == routes[0].to_json()
+            assert current.checkpoint["route_receipt_hash"] == routes[0].receipt_hash
+            assert routes[0].receipt_hash != initial.receipt_hash
+            reserved_ids = tuple(request.request_id for request in provider.requests)
+            if reopen_database:
+                await runtime.close()
+                database.close()
+                runtime, uow, database = make_runtime("route-after-restart")
+                await runtime.start()
+                reopened = uow.read_decision(decision.decision_id)
+                assert reopened == decision
+                assert uow.read_run("run-fault").state is RunState.WAITING
+
+            with pytest.raises(Exception) as caught:
+                await runtime.client.decide_authorization(
+                    RunId("run-fault"),
+                    decision_id=decision.decision_id,
+                    nonce="wrong-nonce",
+                    expected_version=decision.version,
+                    decision=AuthorizationDecision.ALLOW,
+                )
+            assert getattr(caught.value, "code", None) == "authorization_decision_nonce_mismatch"
+            assert physical.calls == 0 and authorization.decision_bind_calls == 0
+            kwargs = dict(
+                decision_id=decision.decision_id,
+                nonce=str(decision.request["nonce"]),
+                expected_version=decision.version,
+                decision=AuthorizationDecision.ALLOW,
+            )
+            allowed = await runtime.client.decide_authorization(RunId("run-fault"), **kwargs)
+            duplicate = await runtime.client.decide_authorization(RunId("run-fault"), **kwargs)
+            assert duplicate == allowed
+            await wait_for_scenario(
+                runtime,
+                lambda: uow.read_run("run-fault").state in {RunState.COMPLETED, RunState.FAILED},
+            )
+            run = uow.read_run("run-fault")
+            assert run is not None and run.state is RunState.COMPLETED
+            assert physical.calls == 1
+            assert authorization.decision_bind_calls == 1
+            assert len(routes) == 1
+            assert len(provider.requests) == 3
+            assert tuple(request.request_id for request in provider.requests[:2]) == reserved_ids
+            assert len({request.request_id for request in provider.requests}) == 3
+            rows = database.connection.execute(
+                "SELECT state FROM provider_invocations WHERE run_id='run-fault'"
+            ).fetchall()
+            assert [row[0] for row in rows] == ["succeeded"] * 3
+            final = uow.read_react_checkpoint("run-fault")
+            assert final is not None
+            assert thaw_json(final.checkpoint["route_receipt"]) == routes[0].to_json()
+            assert final.checkpoint["route_receipt_hash"] == routes[0].receipt_hash
+            assert final.checkpoint["provider_turns_reserved_total"] == 3
+        finally:
+            await runtime.close()
+            database.close()
 
     asyncio.run(case())

@@ -1,13 +1,29 @@
 <!--
 SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
-last-updated: 2026-09-01
+last-updated: 2026-09-05
 -->
 <!-- last-calibrated: 716fb8513095c4ad1dc005cb0fefe991e584c156 -->
 
 # Simple Harness SDK — 架构基线（Human Memory S1 candidate）
 
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
+
+## 2026-09-05 route 恢复 P1：source candidate 0.7.2
+
+Host initial route 固定在 StartSnapshot 与 checkpoint version zero；成功的 Context-control
+调用可以推进当前 checkpoint route。恢复不能将可变 current 与 initial 全等比较。
+`ReactCheckpointPort.read_initial_react_checkpoint` 读取已有 append-only version-zero 锚，
+初始化竞争的失败重读与普通恢复共用该校验；初始/current 的 payload hash、Run、namespace、
+receipt/hash/state 均检查。返回最新状态和版本，保留 Provider reservation 与工具进度，不回滚路由。
+SQLite 无迁移，StartSnapshot v7/checkpoint v6 wire 不变；旧无 initial 的 v5 checkpoint 可读。
+自定义 checkpoint port 必须实现初始锚读取；缺失或冲突锚不降级放行。
+
+决定性 checkpoint 回归旧版出现同一 RuntimeError，修复后 13 条通过（含 CAS 交错、旧格式、
+缺失/损坏锚、跨 Run、遗漏 initial）；现有 runtime 148 条、execution/contracts/conformance
+991 条通过，2 条 Host conformance fixture 未配置而跳过。完整授权恢复（包括重开、nonce、幂等）新增 2 条通过，文件共 14 条；
+独立 review 接受，无 P0/P1；此处不宣称 installed-wheel 或 Host S5b 生产验收完成。日志保存在本仓 ignored
+`.local-test-evidence/route-resume-*.log`，原 Host 失败 root 保留，不自动复活。
 
 ## Human Memory Program S1 当前边界（2026-09-01）
 
@@ -36,7 +52,7 @@ last-updated: 2026-09-01
   `ROUTED_TASK`、exact run/TaskScope/binding receipt 及 Host authority ref/hash，并拒绝 raw-call/effect
   伪 provenance。ordinary `StartSnapshot` schema v7 冻结完整 route JSON/hash；schema 1–6 解码为无
   initial route，Host-control v6 不变。ReAct checkpoint schema v6 仅在首次 CAS 初始化 route，恢复时
-  exact mismatch fail closed。
+  initial anchor exact mismatch fail closed，current route 允许经合法 Context-control 演进。
 - Episode、Semantic、Procedure、Prospective 各自使用 exact-key typed payload 与专属 lifecycle；operation 独立
   携带 epistemic/conflict/verification/valid-time/privacy attributes。existing target 固定 expected revision，
   普通 mutation target 的 created-by ref 只能引用同类型 CREATE。Mutation schema v5 为 Semantic payload 增加

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # ARCHITECTURE 目录
 
-记录 Simple Harness SDK 的架构生产事实。当前 source candidate 版本权威为 `0.7.1`。Human Memory S1
+记录 Simple Harness SDK 的架构生产事实。当前 source candidate 版本权威为 `0.7.2`。Human Memory S1
 已经把自动 pre-Provider recall 改为显式的同 Run route seam：每个新的 Provider turn 只能消费 Host 经
 `RunContextAuthorityPort` 返回并由 SDK 校验、冻结的 Context snapshot；同批 route-required effect 在
 route receipt 尚未可见时会在 ledger/handoff 前拒绝。fresh execution schema v7 持久绑定
@@ -17,7 +17,7 @@ route receipt 和每个 project effect envelope 都交叉绑定该 binding-set r
 兼容无 authority standalone，project v1 fail-closed。generic Tool authorization receipt 或
 `RunContextSnapshot.metadata` 不具备此 authority。0.7.1 的 route receipt v3 区分 context-tool 与 Host-initial
 provenance；ordinary start snapshot v7 将完整 Host initial route/hash 纳入 durable start identity，ReAct
-checkpoint schema v6 只在 checkpoint 不存在时原子初始化，并在恢复时拒绝 route/TaskScope/binding 冲突。
+checkpoint schema v6 只在 checkpoint 不存在时原子初始化，并在恢复时以 version-zero 初始锚拒绝启动 route/TaskScope/binding 冲突，保留合法演进的当前 route。
 它继续跨轮保留 snapshot revision 与 ID→payload hash，
 Provider durable response 只接受 public allowlist，隐藏推理和私有 metadata 不进入 ledger、checkpoint 或
 Context。旧 `AgentMemoryPort.record_committed_turn` terminal outbox 仍保留；生产 kernel 不再自动调用
@@ -105,4 +105,4 @@ tag、release 上传、download-back 与 consumer promotion 继续分别验收�
 Human Memory Program 当前只完成 Harness SDK 的 S1 source candidate 边界；不得把后续 Memory SDK、Host
 TaskScope、动态 Context、单主对话 UI 或数字孪生体目标误当成已有产品能力。
 
-<!-- last-updated: 2026-09-01 -->
+<!-- last-updated: 2026-09-05 -->

@@ -8,6 +8,14 @@ SPDX-License-Identifier: Apache-2.0
 本页只记录当前 SDK source candidate 的生产事实和仍开放的跨仓门禁。完整协议边界见
 [ARCHITECTURE.md](./ARCHITECTURE.md)，目录入口见 [index.md](./index.md)。
 
+## 2026-09-05 route 恢复限定修复
+
+- 用户已批准 S5b 的必要 Harness 解冻例外；candidate 0.7.2 修复合法路由演进后授权恢复误拒绝。
+- version-zero immutable anchor 与 current route 分别验证，既有 wire/导出不变；新内部 port 要求见架构。
+- 针对性 checkpoint 13 passed，现有 runtime 148 passed，执行层/契约 991 passed / 2 fixture skips。
+- 完整授权恢复新增 2 passed（文件 14 passed），独立审查无 P0/P1；
+  exact wheel、Host 两 root 真实生产验收仍未完成，S5b 仍 BLOCKED。
+
 ## Human Memory Program
 
 | 能力 | 当前状态 | 证据与边界 |
@@ -54,4 +62,4 @@ SPDX-License-Identifier: Apache-2.0
   不获得覆盖或删除权；Memory consumer 的原子 replay fence 与 CONTEST target-state exact-unchanged
   验证仍是下一跨仓验收门禁。
 
-<!-- last-updated: 2026-09-01 -->
+<!-- last-updated: 2026-09-05 -->

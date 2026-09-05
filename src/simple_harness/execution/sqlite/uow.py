@@ -1980,6 +1980,18 @@ class SqliteExecutionUnitOfWork:
         ).fetchone()
         return None if row is None else _workflow_checkpoint(row)
 
+    def read_initial_react_checkpoint(self, run_id: str) -> WorkflowCheckpoint | None:
+        # Checkpoints are append-only. Version zero is the immutable start anchor,
+        # even when later Context-control effects update the current route.
+        row = self.database.connection.execute(
+            """
+            SELECT * FROM workflow_checkpoints
+            WHERE run_id = ? AND namespace = 'react.termination.v1' AND version = 0
+            """,
+            (run_id,),
+        ).fetchone()
+        return None if row is None else _workflow_checkpoint(row)
+
     def read_legacy_turn_cursor(self, run_id: str) -> LegacyTurnCursorRecord | None:
         row = self.database.connection.execute(
             "SELECT * FROM legacy_turn_cursors WHERE run_id=?", (run_id,)

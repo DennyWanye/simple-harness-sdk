@@ -309,6 +309,8 @@ class WorkflowSpawnRuntimeCoordinator(Protocol):
 class ReactCheckpointPort(Protocol):
     def read_react_checkpoint(self, run_id: str) -> WorkflowCheckpoint | None: ...
 
+    def read_initial_react_checkpoint(self, run_id: str) -> WorkflowCheckpoint | None: ...
+
     def cas_react_checkpoint(
         self,
         *,

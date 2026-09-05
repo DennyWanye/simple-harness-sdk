@@ -5,6 +5,22 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.7.2 — candidate
+
+### Fixed
+- Resume after a successful Context route change now checks the immutable initial checkpoint
+  against the start route, while preserving the current route and reserved work. Previously a
+  later authorization resume could fail because the current route differed from the initial one.
+- Recovery validates checkpoint payload hashes and Run identity for both initial and current
+  records. Missing or conflicting initial anchors remain rejected.
+
+### Compatibility
+- StartSnapshot v7 and checkpoint v6 wire formats are unchanged; legacy no-initial checkpoints
+  remain readable. `ReactCheckpointPort` implementations must provide
+  `read_initial_react_checkpoint(run_id)` returning the immutable version-zero checkpoint.
+  The SQLite implementation reads existing append-only records without migration.
+- This is a local candidate under the approved S5b route-recovery exception, not a release.
+
 ## 0.7.1 — candidate
 
 ### Added

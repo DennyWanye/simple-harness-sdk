@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from simple_harness.contracts import RunId, canonical_json, thaw_json
 from simple_harness.execution.context_authority import ContextRouteReceipt, ContextRouteState
@@ -32,8 +32,7 @@ class DurableReactCheckpoint:
         _validate_initial_route(run_id, initial_route_receipt, initial_route_receipt_hash)
         stored = self._port.read_react_checkpoint(run_id.value)
         if stored is not None:
-            state = _state(stored)
-            _require_route_match(state, initial_route_receipt, initial_route_receipt_hash)
+            state = self._recover(run_id, stored, initial_route_receipt, initial_route_receipt_hash)
             return state, stored.version
         state = TerminationState(
             self._clock(),
@@ -54,9 +53,23 @@ class DurableReactCheckpoint:
             stored = self._port.read_react_checkpoint(run_id.value)
             if stored is None:
                 raise
-            state = _state(stored)
-            _require_route_match(state, initial_route_receipt, initial_route_receipt_hash)
+            state = self._recover(run_id, stored, initial_route_receipt, initial_route_receipt_hash)
         return state, stored.version
+
+    def _recover(
+        self,
+        run_id: RunId,
+        stored: WorkflowCheckpoint,
+        receipt: ContextRouteReceipt | None,
+        receipt_hash: str | None,
+    ) -> TerminationState:
+        state = _state_for_run(stored, run_id)
+        anchor = self._port.read_initial_react_checkpoint(run_id.value)
+        if anchor is None or anchor.version != 0:
+            raise RuntimeError("ReAct checkpoint initial anchor is unavailable")
+        initial = _state_for_run(anchor, run_id)
+        _require_route_match(initial, receipt, receipt_hash)
+        return state
 
     def cas(
         self,
@@ -91,7 +104,23 @@ def _state(value: WorkflowCheckpoint) -> TerminationState:
     payload = thaw_json(value.checkpoint)
     if not isinstance(payload, dict):
         raise TypeError("ReAct checkpoint payload must be an object")
+    digest = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+    if value.checkpoint_hash != digest:
+        raise RuntimeError("ReAct checkpoint payload hash differs")
     return TerminationState.from_json(payload)
+
+
+def _state_for_run(value: WorkflowCheckpoint, run_id: RunId) -> TerminationState:
+    if value.run_id != run_id.value or value.namespace != "react.termination.v1":
+        raise RuntimeError("ReAct checkpoint belongs to another Run or namespace")
+    state = _state(value)
+    if state.route_receipt is not None:
+        if not isinstance(state.route_receipt, Mapping):
+            raise TypeError("ReAct checkpoint route must be an object")
+        receipt = ContextRouteReceipt.from_json(state.route_receipt)
+        if receipt.run_id != run_id.value:
+            raise RuntimeError("ReAct checkpoint route belongs to another Run")
+    return state
 
 
 def _validate_initial_route(
@@ -121,6 +150,8 @@ def _require_route_match(
     receipt_hash: str | None,
 ) -> None:
     if receipt is None:
+        if state.route_receipt is not None:
+            raise RuntimeError("ReAct checkpoint initial Context route differs from start snapshot")
         return
     if (
         state.route_state != receipt.route_state.value

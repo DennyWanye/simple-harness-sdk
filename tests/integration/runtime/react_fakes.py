@@ -86,6 +86,11 @@ class RecordingEffectExecutor:
 class Checkpoint:
     def __init__(self) -> None:
         self.value = None
+        self.initial = None
+
+    def read_initial_react_checkpoint(self, run_id):
+        del run_id
+        return self.initial
 
     def read_react_checkpoint(self, run_id):
         del run_id
@@ -105,7 +110,7 @@ class Checkpoint:
         del fault, now
         current = None if self.value is None else self.value.version
         assert expected_version == current
-        version = 1 if current is None else current + 1
+        version = 0 if current is None else current + 1
         self.value = WorkflowCheckpoint(
             run_id,
             "react.termination.v1",
@@ -114,6 +119,8 @@ class Checkpoint:
             lease.epoch,
             version,
         )
+        if self.initial is None:
+            self.initial = self.value
         return self.value
 
 

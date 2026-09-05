@@ -7,7 +7,7 @@ is [`docs/build-and-release.md`](docs/build-and-release.md).
 
 An embeddable, durable agent runtime extracted from Simple Harness.
 
-Version 0.7.1 is the current Human Memory protocol source candidate. A Host supplies the exact
+Version 0.7.2 is the current Human Memory protocol source candidate. A Host supplies the exact
 Context snapshot for every new Provider turn through `RunContextAuthorityPort`; the SDK validates
 and durably freezes that snapshot before Provider reservation. Recall is explicit and same-Run:
 the main model proposes a strict route/recall operation, while deterministic SDK and Host code
@@ -116,7 +116,7 @@ cutover, automated regression, and real macOS UI validation with a configured De
 AIPhone, K6/AgentOS, and NovelTagSystem remain interface-ready future consumers; their repositories
 and production paths were not modified, integrated, or tested in this program.
 
-Version 0.7.1 is the Human Memory protocol candidate: it replaces unconditional pre-Provider
+Version 0.7.2 is the Human Memory protocol candidate: it replaces unconditional pre-Provider
 recall with an explicit same-Run Context route barrier and Host-issued Context authority. It also
 adds typed, domain-separated Manual/Auto workspace-binding proposals, challenges, receipts,
 Host-verified grants and append-only binding-set lineage; the SDK defines these contracts but does
