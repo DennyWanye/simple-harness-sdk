@@ -63,6 +63,9 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
                     **_details(body, kind, connection),
                 )
             )
+            if kind == "provider" and body.get("response_json"):
+                for proposal in bounded_rows(_proposals(body)):
+                    operations.append(proposal)
     rows = connection.execute(
         "SELECT * FROM run_events WHERE run_id=? "
         "AND kind IN ('audit.tool.v1','audit.transition.v1') ORDER BY durable_seq LIMIT ?",
@@ -127,6 +130,38 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
                     **details,
                 )
             )
+    from simple_harness.execution.runtime_audit import RUNTIME_BOUNDARIES
+
+    runtime_rows = connection.execute(
+        "SELECT * FROM run_events WHERE run_id=? AND kind='audit.runtime.v2' "
+        "ORDER BY durable_seq LIMIT ?",
+        (run_id, query_limit),
+    )
+    for row in bounded_rows(runtime_rows):
+        value = json.loads(row["payload_json"])
+        if (
+            row["event_id"].rsplit(":", 1)[-1] != audit_hash(value)
+            or value["name"] not in RUNTIME_BOUNDARIES
+        ):
+            raise RunAuditUnavailable("audit_runtime_fact_invalid")
+        operations.append(
+            RunOperationAuditV1(
+                "runtime:" + value["operation_id"],
+                "runtime",
+                value["state"],
+                row["durable_seq"],
+                audit_hash(value),
+                row["event_id"],
+                record_type="boundary",
+                operation_name=value["name"],
+                error_code=audit_error_code(value.get("error_code")),
+                runtime_epoch=value["runtime_epoch"],
+                created_at=value["started_at"],
+                settled_at=None if value["state"] == "started" else row["created_at"],
+                request_hash=value["identity_hash"],
+                result_hash=value["receipt_hash"],
+            )
+        )
     operations.append(
         RunOperationAuditV1(
             "run:" + run_id, "run", run["state"], run["version"], audit_hash(dict(run)), run_id
@@ -134,10 +169,35 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
     )
     events = connection.execute(
         "SELECT * FROM run_events WHERE run_id=? "
-        "AND kind NOT IN ('audit.tool.v1','audit.transition.v1') ORDER BY durable_seq LIMIT ?",
+        "AND kind NOT IN ('audit.tool.v1','audit.transition.v1','audit.runtime.v2') "
+        "ORDER BY durable_seq LIMIT ?",
         (run_id, query_limit),
     )
     for row in bounded_rows(events):
+        if row["kind"] == "audit.claim.v2":
+            from .audit_witness import CLAIM_SOURCES
+
+            value = json.loads(row["payload_json"])
+            if (
+                row["event_id"] != "audit-claim:" + audit_hash(value)
+                or value["table"] not in CLAIM_SOURCES
+            ):
+                raise RunAuditUnavailable("audit_claim_fact_invalid")
+            operations.append(
+                RunOperationAuditV1(
+                    "claim:" + value["identity_hash"],
+                    CLAIM_SOURCES[value["table"]][2],
+                    "claimed",
+                    value["source_version"],
+                    value["source_hash"],
+                    row["event_id"],
+                    record_type="transition",
+                    operation_name=value["table"] + ".claim",
+                    created_at=row["created_at"],
+                    runtime_epoch=value["runtime_epoch"],
+                )
+            )
+            continue
         # Kind and payload are source data, not arbitrary exported error strings.
         operations.append(
             RunOperationAuditV1(
@@ -199,6 +259,13 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
                     else None,
                 )
             )
+    from .audit_core import core_operation, core_rows
+
+    for table, keys, kind, body in bounded_rows(core_rows(connection, run_id, limit=query_limit)):
+        operations.append(core_operation(table, keys, kind, body))
+    from .audit_coverage import recording_coverage
+
+    gaps, recording_version = recording_coverage(connection, run_id)
     if operation_sink is not None:
         return RunOperationAuditSnapshotV1(
             run_id,
@@ -206,9 +273,10 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
             run["version"],
             (),
             False,
-            ("legacy_transition_coverage_unverified", "pre_runtime_validation_not_covered"),
+            gaps,
             root_run_id=audit_reference("run", run["root_run_id"]),
             parent_run_id=audit_reference("run", run["parent_run_id"]),
+            recording_contract_version=recording_version,
         )
     operations = [_opaque_operation(o, run_id) for o in operations]
     operations.sort(
@@ -221,9 +289,10 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
         run["version"],
         tuple(operations[:limit]),
         truncated,
-        ("legacy_transition_coverage_unverified", "pre_runtime_validation_not_covered"),
+        gaps,
         root_run_id=audit_reference("run", run["root_run_id"]),
         parent_run_id=audit_reference("run", run["parent_run_id"]),
+        recording_contract_version=recording_version,
     )
 
 
@@ -308,6 +377,36 @@ def _details(row, kind, connection=None):
     )
 
 
+def _proposals(row):
+    """Actual public response calls, including rejected batches with no effect."""
+    from simple_harness.execution.provider_invocations import provider_response_from_json
+
+    raw = json.loads(row["response_json"])
+    response = provider_response_from_json(raw)
+    prefix = row["run_id"] + ":provider-turn:"
+    suffix = row["request_id"][len(prefix) :] if row["request_id"].startswith(prefix) else ""
+    turn = int(suffix) if suffix.isdigit() else None
+    for ordinal, call in enumerate(response.tool_calls):
+        identity = "proposal:" + row["invocation_id"] + ":" + str(ordinal)
+        yield RunOperationAuditV1(
+            identity,
+            "tool",
+            "proposed",
+            row["version"],
+            audit_hash(raw),
+            identity,
+            record_type="proposal",
+            operation_name="tool.proposal",
+            operation_name_hash=audit_hash(call.name),
+            raw_call_id_hash=audit_hash(call.call_id.value),
+            turn_ordinal=turn,
+            call_ordinal=ordinal,
+            created_at=row["settled_at"],
+            request_id=row["request_id"],
+            provider_invocation_id=row["invocation_id"],
+        )
+
+
 def _effect_provider_link(connection, effect):
     """Verify the existing ReAct v1 identity, actual response and call bytes."""
     from simple_harness.contracts import RunId, thaw_json
@@ -381,6 +480,8 @@ def _opaque_operation(operation, run_id):
     kind = operation.kind
     entity_kind = "effect" if kind == "tool" else kind
     identity = operation.effect_id if kind == "tool" else operation.operation_id.split(":", 1)[-1]
+    if operation.record_type == "proposal":
+        entity_kind, identity = "proposal", operation.operation_id
     source_kind = kind if operation.record_type == "head" else "event"
     if kind in {"context", "reconciliation"}:
         source_kind = kind

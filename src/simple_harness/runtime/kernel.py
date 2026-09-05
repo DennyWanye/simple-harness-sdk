@@ -363,6 +363,8 @@ class RuntimeServices:
     run_context_authority: RunContextAuthorityPort | None = None
     runtime_decision_sink: RuntimeDecisionSinkPort | None = None
     task_execution_authority: TaskExecutionAuthorityPort | None = None
+    operation_audit: object | None = None
+    operation_audit_clock: Callable[[], float] = time.time
 
 
 class _CanonicalWorkflowSpawnRuntimeCoordinator:
@@ -1457,6 +1459,8 @@ class Runtime:
         self._root_profile_key = root_profile_key
         self._terminal = TerminalCoordinator(uow)
         self._services = RuntimeServices(
+            operation_audit=self._uow,
+            operation_audit_clock=self._now,
             provider=ports.provider,
             tools=ports.tools,
             authorization=ports.authorization,
@@ -2650,83 +2654,118 @@ class Runtime:
     async def _drive(self, run_id: str) -> None:
         continuation_claim: ContinuationRecord | None = None
         try:
-            run = self._uow.read_run(run_id)
-            raw_snapshot = self._uow.read_start_snapshot(run_id)
-            if run is None or raw_snapshot is None:
-                raise RuntimeError("durable Run start state is incomplete")
-            snapshot = StartSnapshot.from_json(raw_snapshot)
-            driver = self._drivers[snapshot.driver_kind]
-            if snapshot.policy_fingerprint is not None and (
-                getattr(driver, "policy_fingerprint", None) != snapshot.policy_fingerprint
-            ):
-                error = HarnessError(
-                    "runtime_policy_mismatch",
-                    "The frozen Runtime policy is unavailable.",
-                )
-                self._terminalize(
-                    run,
-                    state=RunState.FAILED,
-                    payload=error.to_dict(),
-                    deliveries=(),
-                )
-                return
-            catalog_matches = False
-            if snapshot.tool_catalog_fingerprint is not None:
-                resolver = getattr(self._ports.tool_catalog, "resolve", None)
-                resolved_catalog = (
-                    None
-                    if resolver is None
-                    else resolver(
-                        snapshot.tool_catalog_generation,
-                        snapshot.tool_catalog_fingerprint,
+            from simple_harness.execution.runtime_audit import runtime_operation
+
+            with runtime_operation(
+                self._uow,
+                "runtime.preflight",
+                lease=self._leases[run_id],
+                clock=self._now,
+                identity={"run": run_id},
+            ) as preflight_receipt:
+                run = self._uow.read_run(run_id)
+                raw_snapshot = self._uow.read_start_snapshot(run_id)
+                if run is None or raw_snapshot is None:
+                    raise RuntimeError("durable Run start state is incomplete")
+                snapshot = StartSnapshot.from_json(raw_snapshot)
+                driver = self._drivers[snapshot.driver_kind]
+                if snapshot.policy_fingerprint is not None and (
+                    getattr(driver, "policy_fingerprint", None) != snapshot.policy_fingerprint
+                ):
+                    error = HarnessError(
+                        "runtime_policy_mismatch",
+                        "The frozen Runtime policy is unavailable.",
                     )
-                )
-                catalog_matches = (
-                    resolved_catalog is not None
-                    and resolved_catalog.generation == snapshot.tool_catalog_generation
-                    and resolved_catalog.content_fingerprint == snapshot.tool_catalog_fingerprint
-                )
-            else:
-                catalog_matches = (
-                    snapshot.tool_catalog_generation
-                    == self._ports.tool_catalog.current_generation()
-                )
-            if not catalog_matches:
-                error = ToolCatalogStale()
-                self._terminalize(
-                    run,
-                    state=RunState.FAILED,
-                    payload=error.to_dict(),
-                    deliveries=(),
-                )
-                return
-            if run.state is RunState.CANCEL_REQUESTED:
-                await self._terminalize_cancelled(run, snapshot=snapshot, reason="pre_drive_cancel")
-                return
-            continuation_claim = self._uow.claim_continuation(
-                run_id=run_id,
-                execution_lease=self._leases[run_id],
-                now=self._now(),
-            )
-            if run.state is RunState.WAITING and continuation_claim is None:
-                return
-            result = await driver.start(
-                DriverInvocation(
-                    run=run,
-                    start=snapshot,
+                    preflight_receipt["audit_outcome"] = "rejected"
+                    self._terminalize(
+                        run,
+                        state=RunState.FAILED,
+                        payload=error.to_dict(),
+                        deliveries=(),
+                    )
+                    return
+                catalog_matches = False
+                if snapshot.tool_catalog_fingerprint is not None:
+                    resolver = getattr(self._ports.tool_catalog, "resolve", None)
+                    resolved_catalog = (
+                        None
+                        if resolver is None
+                        else resolver(
+                            snapshot.tool_catalog_generation,
+                            snapshot.tool_catalog_fingerprint,
+                        )
+                    )
+                    catalog_matches = (
+                        resolved_catalog is not None
+                        and resolved_catalog.generation == snapshot.tool_catalog_generation
+                        and resolved_catalog.content_fingerprint
+                        == snapshot.tool_catalog_fingerprint
+                    )
+                else:
+                    catalog_matches = (
+                        snapshot.tool_catalog_generation
+                        == self._ports.tool_catalog.current_generation()
+                    )
+                if not catalog_matches:
+                    error = ToolCatalogStale()
+                    preflight_receipt["audit_outcome"] = "rejected"
+                    self._terminalize(
+                        run,
+                        state=RunState.FAILED,
+                        payload=error.to_dict(),
+                        deliveries=(),
+                    )
+                    return
+                if run.state is RunState.CANCEL_REQUESTED:
+                    preflight_receipt["audit_outcome"] = "rejected"
+                    await self._terminalize_cancelled(
+                        run, snapshot=snapshot, reason="pre_drive_cancel"
+                    )
+                    return
+                continuation_claim = self._uow.claim_continuation(
+                    run_id=run_id,
                     execution_lease=self._leases[run_id],
-                    run_fence=self._fences[run_id],
-                    services=self._services,
-                    continuations=(() if continuation_claim is None else (continuation_claim,)),
-                    workflow_spawn_ready_activation=(
-                        self._workflow_spawn_ready_activations.get(run_id)
+                    now=self._now(),
+                )
+                if run.state is RunState.WAITING and continuation_claim is None:
+                    return
+            from simple_harness.execution.runtime_audit import runtime_operation
+            from simple_harness.execution.sqlite import SqliteExecutionUnitOfWork
+            from simple_harness.runtime.drivers.react import ReActDriver
+            from simple_harness.runtime.drivers.workflow import WorkflowRuntimeDriver
+
+            driver_contract = None
+            if type(self._uow) is SqliteExecutionUnitOfWork:
+                if type(driver) is ReActDriver:
+                    driver_contract = "sdk.react.v2"
+                elif type(driver) is WorkflowRuntimeDriver:
+                    driver_contract = "sdk.workflow.v2"
+            with runtime_operation(
+                self._uow,
+                "runtime.driver",
+                contract=driver_contract,
+                lease=self._leases[run_id],
+                clock=self._now,
+                identity={"driver": run.driver_kind, "run": run_id},
+            ) as audit_receipt:
+                result = await driver.start(
+                    DriverInvocation(
+                        run=run,
+                        start=snapshot,
+                        execution_lease=self._leases[run_id],
+                        run_fence=self._fences[run_id],
+                        services=self._services,
+                        continuations=(() if continuation_claim is None else (continuation_claim,)),
+                        workflow_spawn_ready_activation=(
+                            self._workflow_spawn_ready_activations.get(run_id)
+                        ),
+                        workflow_start_dispatch=self._workflow_start_dispatches.get(run_id),
+                        workflow_recovery_work=self._workflow_recovery_work.get(run_id),
                     ),
-                    workflow_start_dispatch=self._workflow_start_dispatches.get(run_id),
-                    workflow_recovery_work=self._workflow_recovery_work.get(run_id),
-                ),
-                context=self._ports.context,
-                cancel=self._cancels[run_id],
-            )
+                    context=self._ports.context,
+                    cancel=self._cancels[run_id],
+                )
+                audit_receipt["state"] = result.state.value
             if continuation_claim is not None:
                 durable_continuation = self._uow.read_continuation(
                     continuation_claim.continuation_id

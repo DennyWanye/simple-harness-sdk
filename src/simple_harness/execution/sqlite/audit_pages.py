@@ -23,7 +23,7 @@ from simple_harness.execution.audit import (
 from .audit import _opaque_operation, read_snapshot
 
 FORMAT = 2
-NORMALIZER = "registered-labels-opaque-refs-v1"
+NORMALIZER = "core-intervals-registered-labels-opaque-refs-v2"
 MAX_BYTES = 64 * 1024 * 1024
 MAX_FILE_BYTES = 192 * 1024 * 1024
 MAX_SECONDS = 30.0

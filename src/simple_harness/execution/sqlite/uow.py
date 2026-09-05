@@ -361,6 +361,9 @@ class _SqliteWorkflowTransaction:
                     now,
                 ),
             )
+            from .audit_witness import record_event_witness
+
+            record_event_witness(self.connection, event_id)
             outcome = cast(
                 JsonValue,
                 {"decision_id": interrupt_id, "state": "open", "event_id": event_id},
@@ -391,6 +394,9 @@ class _SqliteWorkflowTransaction:
                     now,
                 ),
             )
+            from .audit_witness import record_event_witness
+
+            record_event_witness(self.connection, event_id)
             outcome = {"event_id": event_id, "durable_seq": sequence}
             _fault(self._fault, f"workflow_adapter.{adapter_method}.after_ledger")
             return outcome
@@ -893,6 +899,54 @@ class SqliteExecutionUnitOfWork:
             now=now,
         )
         _fault(self.workflow_fault, f"operation_audit.{kind}.{payload['state']}.after_write")
+
+    def record_runtime_operation(
+        self,
+        *,
+        name,
+        operation_id,
+        state,
+        lease,
+        identity_hash,
+        receipt_hash,
+        started_at,
+        now,
+        contract,
+        error_code=None,
+    ):
+        from simple_harness.execution.audit import audit_hash
+        from simple_harness.execution.runtime_audit import RUNTIME_BOUNDARIES
+
+        if name not in RUNTIME_BOUNDARIES or state not in {
+            "started",
+            "completed",
+            "failed",
+            "interrupted",
+            "rejected",
+        }:
+            raise ValueError("invalid runtime audit boundary")
+        payload = dict(
+            name=name,
+            contract=contract,
+            operation_id=operation_id,
+            state=state,
+            runtime_epoch=lease.epoch,
+            owner_hash=audit_hash(lease.owner_id),
+            identity_hash=identity_hash,
+            receipt_hash=receipt_hash,
+            started_at=started_at,
+            error_code=error_code,
+        )
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, lease, now=now)
+            self._insert_event(
+                connection,
+                event_id="audit-runtime:" + operation_id + ":" + state + ":" + audit_hash(payload),
+                run_id=lease.run_id,
+                kind="audit.runtime.v2",
+                payload=payload,
+                now=now,
+            )
 
     def record_tool_audit(
         self,
@@ -3587,6 +3641,9 @@ class SqliteExecutionUnitOfWork:
                 ).rowcount
                 if changed != 1:
                     raise UnitOfWorkConflict("continuation claim CAS failed")
+                from .audit_witness import record_claim_witness
+
+                record_claim_witness(connection, "continuations", claimed_id, now=now)
                 _fault(fault, "continuation_claim.continuation.after_write")
                 spawn_wait = connection.execute(
                     "SELECT * FROM workflow_spawn_child_wait_receipts "
@@ -4870,6 +4927,9 @@ class SqliteExecutionUnitOfWork:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("child signal claim CAS failed")
+            from .audit_witness import record_claim_witness
+
+            record_claim_witness(connection, "child_signals", str(row["signal_id"]), now=now)
             _fault(fault, "child_signal_claim.signal.after_write")
             expected_epoch = claim_epoch + 1
         _fault(fault, "child_signal_claim.after_commit")
@@ -6861,6 +6921,9 @@ class SqliteExecutionUnitOfWork:
             """,
             (event_id, run_id, sequence, kind, canonical_json(payload), now),
         )
+        from .audit_witness import record_event_witness
+
+        record_event_witness(connection, event_id)
 
     @staticmethod
     def _workflow_request_payload(

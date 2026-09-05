@@ -9,6 +9,16 @@ SPDX-License-Identifier: Apache-2.0
 [ARCHITECTURE.md](./ARCHITECTURE.md)，目录入口见 [index.md](./index.md)。
 
 
+## Core audit producer source checkpoint — 2026-09-05
+
+Real lease-bound core intervals, canonical child/workflow/control sources and
+continuous recording verification are implemented in the isolated source tree.
+196 directly affected tests plus two workflow relation tests pass; exact installed
+old0.7.2 resume executes once and is correctly unverified by the new reader.
+**Source leaf remains incomplete**: pre-Run command retry history storage and
+independent complete producer review are still required. No version/schema/wheel
+freeze or native claim. See [core progress](../plans/2026-09-05-run-operation-audit/CORE-PROGRESS.md).
+
 ## Stable Run audit page source successor — 2026-09-05
 
 Metadata correction 6a8b0e4 independently scoped ACCEPT after the original canary

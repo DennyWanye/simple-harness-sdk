@@ -10,6 +10,21 @@ last-updated: 2026-09-05
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
 
+## Core audit producers in isolated source — 2026-09-05
+
+Kernel preflight/driver, Provider preparation, Context, proposal/batch/envelope/route
+boundaries now record actual lease-bound intervals; canonical workflow/child/control
+receipts are public audit sources. Event witnesses share the authority transaction,
+and mutable continuation/signal claims retain each claim epoch. New runtime restart
+can prove its covered intervals; exact old0.7.2 execution after new WAITING remains
+unverified despite the birth marker. No diagnostic or hidden Provider metadata is
+used. Directly affected196 tests and two workflow relation tests passed.
+
+This is not full source-leaf completion: pre-Run command retry history needs a real
+storage seam, and fixed-source independent review remains pending. Frozen version,
+schema descriptor, wheels and Host production are unchanged. See
+[core progress](../plans/2026-09-05-run-operation-audit/CORE-PROGRESS.md).
+
 ## Stable Run audit page source successor — 2026-09-05
 
 Metadata correction 6a8b0e4 independently scoped ACCEPT after the original canary

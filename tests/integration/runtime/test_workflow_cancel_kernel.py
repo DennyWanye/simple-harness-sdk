@@ -536,6 +536,11 @@ def test_kernel_workflow_cancel_is_receipt_owned_and_reopens_exactly(
         assert SqliteExecutionUnitOfWork(reopened).verify_workflow_cancel_terminal(
             run_id=run_id, cancel_id=row["cancel_id"], generation=row["generation"]
         )
+        audit = SqliteExecutionUnitOfWork(reopened).read_run_operation_audit(
+            RunId(run_id), limit=4096
+        )
+        assert any(item.operation_name == "workflow_cancel_receipts" for item in audit.operations)
+        assert any(item.kind == "run" and item.state == "cancelled" for item in audit.operations)
         assert (
             reopened.connection.execute(
                 "SELECT COUNT(*) FROM delivery_outbox WHERE run_id=?", (run_id,)

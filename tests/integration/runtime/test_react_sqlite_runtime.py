@@ -559,6 +559,11 @@ def authorization_runtime(
     tool_exposure=None,
     observability=None,
     tool_result_factory=None,
+    run_context_authority=None,
+    task_execution_authority=None,
+    provider_estimator=None,
+    provider_budget_policy=None,
+    driver=None,
 ):
     class ScenarioProvider(Provider):
         async def invoke(self, request, *, cancel):
@@ -610,14 +615,19 @@ def authorization_runtime(
     runtime = build_runtime(
         uow,
         {"agent.general": RuntimeProfile("agent.general", "react")},
-        {"react": ReActDriver(clock=clock, tool_exposure_resolver=lambda run_id: tool_exposure)},
+        {
+            "react": driver
+            or ReActDriver(clock=clock, tool_exposure_resolver=lambda run_id: tool_exposure)
+        },
         RuntimePorts(
             observability=observability,
+            run_context_authority=run_context_authority,
+            task_execution_authority=task_execution_authority,
             provider=ProviderInvocationCoordinator(
                 uow=uow,
                 provider=provider,
-                budget_policy=BudgetPolicy(),
-                estimator=FrozenPriceEstimator("price-v1", "model", 0, 0),
+                budget_policy=provider_budget_policy or BudgetPolicy(),
+                estimator=provider_estimator or FrozenPriceEstimator("price-v1", "model", 0, 0),
                 clock=clock,
             ),
             tools=effects,

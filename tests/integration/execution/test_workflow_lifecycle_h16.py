@@ -525,6 +525,10 @@ def test_resume_receipt_claim_and_settle_share_checkpoint_authority(
 
         settled = asyncio.run(scenario())
         assert settled.phase.value == "settled"
+        from simple_harness.contracts import RunId
+
+        audit = uow.read_run_operation_audit(RunId(receipt.run_id), limit=4096)
+        assert any(item.operation_name == "workflow_resume_admissions" for item in audit.operations)
 
 
 def test_resume_claim_enforces_mode_and_retry_due_time(tmp_path: Path) -> None:
@@ -1361,6 +1365,23 @@ def test_fork_checkpoint_and_commit_response_loss_replay_exactly(
             )
         )
         assert exact == committed
+        from simple_harness.contracts import RunId
+
+        source_audit = uow.read_run_operation_audit(RunId(request.source_run_id), limit=4096)
+        target_audit = uow.read_run_operation_audit(RunId(committed.target_run_id), limit=4096)
+        source_fork = [
+            item
+            for item in source_audit.operations
+            if item.operation_name == "workflow_fork_receipts"
+        ]
+        target_fork = [
+            item
+            for item in target_audit.operations
+            if item.operation_name == "workflow_fork_receipts"
+        ]
+        assert len(source_fork) == len(target_fork) == 1
+        assert source_fork[0].source_hash == target_fork[0].source_hash
+        assert len(source_fork[0].related_run_refs) == 2
         assert (
             reopened.connection.execute(
                 "SELECT COUNT(*) FROM runs WHERE parent_run_id=?",

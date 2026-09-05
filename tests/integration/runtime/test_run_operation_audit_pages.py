@@ -116,7 +116,10 @@ def test_kernel_more_than_256_operations_are_exhausted_without_truncation(tmp_pa
         first = await runtime.client.open_run_operation_audit(RunId("run-fault"), page_size=37)
         assert first.total_operations > 256 and len(first.operations) == 37
         assert collect(uow, first) == [o.to_json() for o in bounded.operations]
-        assert first.metadata["history_coverage"] == "partial"
+        assert first.metadata["history_coverage"] == "recorded"
+        assert first.metadata["recording_contract_version"] == 2
+        assert first.metadata["recording_coverage"] == "verified_current_intervals"
+        assert first.metadata["coverage_gaps"] == ()
         await runtime.close()
         database.close()
         reopened = Database.open(tmp_path / "large.db")

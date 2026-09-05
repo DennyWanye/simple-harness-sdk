@@ -155,6 +155,11 @@ def test_child_terminal_after_commit_reopens_all_after(tmp_path: Path) -> None:
         assert result.signal is not None
         assert result.signal.state is ChildSignalState.PENDING
         assert uow.read_run("child-1").state is RunState.COMPLETED  # type: ignore[union-attr]
+        audit = uow.read_run_operation_audit(RunId("child-1"), limit=4096)
+        names = {item.operation_name for item in audit.operations if item.kind == "child"}
+        assert {"child_commands", "run_links", "child_terminal_receipts", "child_signals"} <= names
+        assert any(item.related_run_refs for item in audit.operations if item.kind == "child")
+        assert "driver_or_uow_recording_unverified" in audit.coverage_gaps
 
 
 @pytest.mark.parametrize("fault_point", ACK_POINTS)
@@ -201,6 +206,15 @@ def test_signal_ack_after_commit_reopens_all_after_and_is_idempotent(
         continuation = uow.read_continuation("continuation-child-1")
         assert continuation is not None and continuation.state is ContinuationState.PENDING
         assert uow.read_run("root-1").state is RunState.QUEUED  # type: ignore[union-attr]
+        audit = uow.read_run_operation_audit(RunId("root-1"), limit=4096)
+        receipts = [
+            item for item in audit.operations if item.operation_name == "child_signal_ack_receipts"
+        ]
+        assert len(receipts) == 1
+        ack(uow)
+        assert (
+            uow.read_run_operation_audit(RunId("root-1"), limit=4096).to_json() == audit.to_json()
+        )
         with pytest.raises(UnitOfWorkConflict, match="differently"):
             uow.ack_child_signal_and_commit_parent_progress(
                 signal_id="signal-1",
@@ -217,3 +231,33 @@ def test_signal_ack_after_commit_reopens_all_after_and_is_idempotent(
 
 def test_old_ack_entrypoint_is_not_public() -> None:
     assert not hasattr(SqliteExecutionUnitOfWork, "ack_child_signal")
+
+
+def test_expired_signal_claims_remain_distinct_after_ack_and_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "claim-history.db"
+    database, uow, lease, fence = setup_child(path)
+    finalize(uow, lease, fence)
+    first = claim(uow)
+    assert first is not None and first.claim_epoch == 1
+    second = uow.claim_next_child_signal(
+        parent_run_id="root-1",
+        owner_id="runtime-b",
+        now=16.0,
+        lease_seconds=10.0,
+    )
+    assert second is not None and second.claim_epoch == 2
+    ack(uow, owner_id="runtime-b", claim_epoch=2, now=17.0)
+    database.close()
+    with Database.open(path) as reopened:
+        reader = SqliteExecutionUnitOfWork(reopened)
+        audit = reader.read_run_operation_audit(RunId("root-1"), limit=4096)
+        claims = [item for item in audit.operations if item.operation_name == "child_signals.claim"]
+        assert len(claims) == 2
+        assert {item.created_at for item in claims} == {5.0, 16.0}
+        assert len({item.source_hash for item in claims}) == 2
+        assert "claim_interval_unverified" not in audit.coverage_gaps
+        ack(reader, owner_id="runtime-b", claim_epoch=2, now=18.0)
+        assert (
+            reader.read_run_operation_audit(RunId("root-1"), limit=4096).to_json()
+            == audit.to_json()
+        )

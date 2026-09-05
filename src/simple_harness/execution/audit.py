@@ -49,6 +49,11 @@ SDK_AUDIT_ERROR_CODES = frozenset(
         "duplicate_tool_call",
         "late_tool_result",
         "tool_dispatch_interrupted",
+        "provider_budget_exceeded",
+        "provider_budget_unknown",
+        "runtime_boundary_failed",
+        "runtime_boundary_interrupted",
+        "runtime_boundary_rejected",
     }
 )
 
@@ -115,6 +120,8 @@ class RunOperationAuditV1:
     error_code_hash: str | None = None
     operation_name_hash: str | None = None
     raw_call_id_hash: str | None = None
+    runtime_epoch: int | None = None
+    related_run_refs: tuple[str, ...] = ()
     created_at: float | None = None
     handed_off_at: float | None = None
     settled_at: float | None = None
@@ -141,6 +148,7 @@ class RunOperationAuditV1:
         return self.settled_at - self.handed_off_at
 
     def __post_init__(self):
+        object.__setattr__(self, "related_run_refs", tuple(self.related_run_refs))
         for label in (self.operation_name, self.error_code):
             if label is not None and audit_label_syntax(label) != label:
                 raise ValueError("unsafe audit label")
@@ -157,6 +165,9 @@ class RunOperationAuditV1:
         for value in (self.operation_id, self.source_id, self.state):
             _identifier(value)
         if self.kind not in {
+            "child",
+            "workflow",
+            "runtime",
             "provider",
             "effect",
             "tool",
@@ -169,7 +180,7 @@ class RunOperationAuditV1:
             "continuation",
         }:
             raise ValueError("invalid audit kind")
-        if self.record_type not in {"head", "transition", "boundary", "receipt"}:
+        if self.record_type not in {"head", "transition", "boundary", "receipt", "proposal"}:
             raise ValueError("invalid audit record type")
         _integer(self.source_version)
         for value in (self.handoff_attempt, self.rehandoff_count):
@@ -184,7 +195,11 @@ class RunOperationAuditV1:
 
     def to_json(self):
 
-        return {**asdict(self), "handoff_to_settlement_seconds": self.handoff_to_settlement_seconds}
+        return {
+            **asdict(self),
+            "related_run_refs": list(self.related_run_refs),
+            "handoff_to_settlement_seconds": self.handoff_to_settlement_seconds,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +213,7 @@ class RunOperationAuditSnapshotV1:
     schema_version: int = 1
     root_run_id: str | None = None
     parent_run_id: str | None = None
+    recording_contract_version: int | None = None
 
     def __post_init__(self):
         _identifier(self.run_id)
@@ -216,6 +232,8 @@ class RunOperationAuditSnapshotV1:
             raise TypeError("invalid coverage gaps")
 
     def _payload(self):
+        from .runtime_audit import RUNTIME_BOUNDARIES
+
         return dict(
             schema_version=self.schema_version,
             run_id=self.run_id,
@@ -228,21 +246,32 @@ class RunOperationAuditSnapshotV1:
             coverage_gaps=list(self.coverage_gaps),
             current_source_complete=self.current_source_complete,
             history_coverage=self.history_coverage,
+            recording_contract_version=self.recording_contract_version,
+            recording_boundaries=sorted(RUNTIME_BOUNDARIES),
+            recording_coverage="verified_current_intervals"
+            if not self.coverage_gaps
+            else "unverified",
             source_set=list(self.source_set),
         )
 
     @property
     def source_set(self):
+        from .sqlite.audit_core import CORE_SOURCES
+
         return (
-            "provider_invocations",
-            "execution_effects",
-            "decisions",
-            "run_admissions",
-            "continuations",
-            "conversation_commands",
-            "run_events",
-            "workflow_checkpoints",
-            "reconciliation_resolutions",
+            (
+                "provider_invocations",
+                "execution_effects",
+                "decisions",
+                "run_admissions",
+                "continuations",
+                "conversation_commands",
+                "run_events",
+                "workflow_checkpoints",
+                "reconciliation_resolutions",
+            )
+            + tuple(item[0] for item in CORE_SOURCES)
+            + ("workflow_spawn_continuation_ready",)
         )
 
     @property

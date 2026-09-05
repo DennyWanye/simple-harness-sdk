@@ -37,6 +37,7 @@ from simple_harness.execution.provider_invocations import (
     provider_response_from_json,
     provider_response_json,
 )
+from simple_harness.execution.runtime_audit import runtime_operation
 from simple_harness.execution.uow import ExecutionLease
 from simple_harness.providers import (
     CancelToken,
@@ -116,66 +117,95 @@ class EffectBatchExecutor:
         route_receipt: ContextRouteReceipt | None = None,
     ) -> list[EffectExecution]:
         calls = tuple(calls)
-        if len(calls) > self.max_batch_size:
-            raise ValueError("provider Tool batch exceeds the hard batch limit")
+        with runtime_operation(
+            services.operation_audit,
+            "tool.batch",
+            lease=execution_lease,
+            clock=services.operation_audit_clock,
+            identity={
+                "run": run_id.value,
+                "turn": turn_ordinal,
+                "offset": call_offset,
+                "count": len(calls),
+            },
+        ):
+            if len(calls) > self.max_batch_size:
+                raise ValueError("provider Tool batch exceeds the hard batch limit")
 
         async def one(call: ProviderToolCall, call_ordinal: int) -> EffectExecution:
-            arguments = thaw_json(cast(FrozenJsonValue, call.arguments))
-            if not isinstance(arguments, dict):
-                raise TypeError("provider tool arguments must be an object")
-            internal_call_id, effect_id = _internal_effect_identity(
-                run_id, turn_ordinal, call.call_id.value, call_ordinal
-            )
-            policy = (
-                None if tool_exposure is None else tool_exposure.execution_policy(run_id, call.name)
-            )
-            envelope = None
-            if policy is not None and services.task_execution_authority is not None:
-                envelope = await services.task_execution_authority.issue_envelope(
-                    TaskExecutionEnvelopeRequest(
-                        run_id,
-                        internal_call_id.value,
-                        effect_id.value,
-                        call.call_id.value,
-                        turn_ordinal,
-                        call_ordinal,
-                        call.name,
-                        policy,
-                        route_receipt,
-                    )
+            with runtime_operation(
+                services.operation_audit,
+                "tool.envelope",
+                lease=execution_lease,
+                clock=services.operation_audit_clock,
+                identity={
+                    "run": run_id.value,
+                    "turn": turn_ordinal,
+                    "ordinal": call_ordinal,
+                    "name": call.name,
+                    "call": call.call_id.value,
+                    "arguments": thaw_json(cast(FrozenJsonValue, call.arguments)),
+                },
+            ):
+                arguments = thaw_json(cast(FrozenJsonValue, call.arguments))
+                if not isinstance(arguments, dict):
+                    raise TypeError("provider tool arguments must be an object")
+                internal_call_id, effect_id = _internal_effect_identity(
+                    run_id, turn_ordinal, call.call_id.value, call_ordinal
                 )
-                if (
-                    envelope.run_id != run_id
-                    or envelope.call_id != internal_call_id
-                    or envelope.effect_id != effect_id
-                    or envelope.raw_call_id != call.call_id.value
-                    or envelope.turn_ordinal != turn_ordinal
-                    or envelope.call_ordinal != call_ordinal
-                    or envelope.tool_name != call.name
-                    or envelope.capability_id != policy.capability_id
-                    or envelope.capability_fingerprint != policy.capability_fingerprint
-                ):
-                    raise RuntimeError("Host TaskExecutionEnvelope differs from exact effect")
-                if route_receipt is not None and (
-                    envelope.route_receipt_id != route_receipt.receipt_id
-                    or envelope.route_receipt_hash != route_receipt.receipt_hash
-                ):
-                    raise RuntimeError("Host TaskExecutionEnvelope route receipt differs")
-                if policy.effect_class is ToolEffectClass.PROJECT_EFFECT and (
-                    route_receipt is None
-                    or route_receipt.route_state is not ContextRouteState.ROUTED_TASK
-                    or envelope.task_scope_id != route_receipt.task_scope_id
-                    or envelope.binding_set_revision != route_receipt.binding_set_revision
-                    or envelope.binding_set_receipt_id
-                    != route_receipt.binding_set_receipt_id
-                    or envelope.binding_set_receipt_hash
-                    != route_receipt.binding_set_receipt_hash
-                ):
-                    raise RuntimeError(
-                        "project TaskExecutionEnvelope has stale TaskScope binding authority"
+                policy = (
+                    None
+                    if tool_exposure is None
+                    else tool_exposure.execution_policy(run_id, call.name)
+                )
+                envelope = None
+                if policy is not None and services.task_execution_authority is not None:
+                    envelope = await services.task_execution_authority.issue_envelope(
+                        TaskExecutionEnvelopeRequest(
+                            run_id,
+                            internal_call_id.value,
+                            effect_id.value,
+                            call.call_id.value,
+                            turn_ordinal,
+                            call_ordinal,
+                            call.name,
+                            policy,
+                            route_receipt,
+                        )
                     )
-            elif policy is not None and policy.effect_class is ToolEffectClass.PROJECT_EFFECT:
-                raise RuntimeError("project effect requires Host TaskExecutionEnvelope authority")
+                    if (
+                        envelope.run_id != run_id
+                        or envelope.call_id != internal_call_id
+                        or envelope.effect_id != effect_id
+                        or envelope.raw_call_id != call.call_id.value
+                        or envelope.turn_ordinal != turn_ordinal
+                        or envelope.call_ordinal != call_ordinal
+                        or envelope.tool_name != call.name
+                        or envelope.capability_id != policy.capability_id
+                        or envelope.capability_fingerprint != policy.capability_fingerprint
+                    ):
+                        raise RuntimeError("Host TaskExecutionEnvelope differs from exact effect")
+                    if route_receipt is not None and (
+                        envelope.route_receipt_id != route_receipt.receipt_id
+                        or envelope.route_receipt_hash != route_receipt.receipt_hash
+                    ):
+                        raise RuntimeError("Host TaskExecutionEnvelope route receipt differs")
+                    if policy.effect_class is ToolEffectClass.PROJECT_EFFECT and (
+                        route_receipt is None
+                        or route_receipt.route_state is not ContextRouteState.ROUTED_TASK
+                        or envelope.task_scope_id != route_receipt.task_scope_id
+                        or envelope.binding_set_revision != route_receipt.binding_set_revision
+                        or envelope.binding_set_receipt_id != route_receipt.binding_set_receipt_id
+                        or envelope.binding_set_receipt_hash
+                        != route_receipt.binding_set_receipt_hash
+                    ):
+                        raise RuntimeError(
+                            "project TaskExecutionEnvelope has stale TaskScope binding authority"
+                        )
+                elif policy is not None and policy.effect_class is ToolEffectClass.PROJECT_EFFECT:
+                    raise RuntimeError(
+                        "project effect requires Host TaskExecutionEnvelope authority"
+                    )
             return await services.tools.execute(
                 effect_id=effect_id,
                 call=ToolCall(internal_call_id, call.name, cast(JsonObject, arguments)),
@@ -275,87 +305,95 @@ class ReActLoop:
                 provider_request_id = (
                     f"{value.run_id.value}:provider-turn:{state.provider_turns_reserved_total}"
                 )
-                context = services.context.load(value.run_id)
-                provider_tools = (
-                    value.tools
-                    if value.tool_exposure is None
-                    else value.tool_exposure.provider_specs(value.run_id)
-                )
-                context_snapshot_revision = state.context_snapshot_revision
-                context_snapshot_bindings = state.context_snapshot_bindings
-                if services.run_context_authority is None:
-                    request = ProviderRequest(
-                        RequestId(provider_request_id),
-                        context.messages,
-                        tools=provider_tools,
-                        temperature=value.temperature,
-                        max_output_tokens=value.max_output_tokens,
+                with runtime_operation(
+                    services.operation_audit,
+                    "context.prepare",
+                    lease=execution_lease,
+                    clock=self._clock,
+                    identity={"run": value.run_id.value, "request": provider_request_id},
+                ) as audit_receipt:
+                    context = services.context.load(value.run_id)
+                    provider_tools = (
+                        value.tools
+                        if value.tool_exposure is None
+                        else value.tool_exposure.provider_specs(value.run_id)
                     )
-                    context_authority_receipt = None
-                    context_authority_receipt_hash = None
-                else:
-                    route_receipt = _checkpoint_route_receipt(state, value.run_id)
-                    snapshot = await services.run_context_authority.prepare_snapshot(
-                        RunContextAuthorityRequest(
-                            value.run_id,
-                            state.provider_turns_reserved_total,
-                            context.revision,
-                            ContextRouteState(state.route_state),
-                            route_receipt,
-                            _tool_catalog_fingerprint(
-                                value.run_id, value.tool_exposure, provider_tools
-                            ),
+                    context_snapshot_revision = state.context_snapshot_revision
+                    context_snapshot_bindings = state.context_snapshot_bindings
+                    if services.run_context_authority is None:
+                        request = ProviderRequest(
+                            RequestId(provider_request_id),
+                            context.messages,
+                            tools=provider_tools,
+                            temperature=value.temperature,
+                            max_output_tokens=value.max_output_tokens,
                         )
+                        context_authority_receipt = None
+                        context_authority_receipt_hash = None
+                    else:
+                        route_receipt = _checkpoint_route_receipt(state, value.run_id)
+                        snapshot = await services.run_context_authority.prepare_snapshot(
+                            RunContextAuthorityRequest(
+                                value.run_id,
+                                state.provider_turns_reserved_total,
+                                context.revision,
+                                ContextRouteState(state.route_state),
+                                route_receipt,
+                                _tool_catalog_fingerprint(
+                                    value.run_id, value.tool_exposure, provider_tools
+                                ),
+                            )
+                        )
+                        if (
+                            snapshot.run_id != value.run_id.value
+                            or snapshot.provider_turn_ordinal != state.provider_turns_reserved_total
+                            or snapshot.prior_context_revision != context.revision
+                        ):
+                            raise RuntimeError("Host Context snapshot lineage differs")
+                        if snapshot.snapshot_revision <= state.context_snapshot_revision:
+                            raise RuntimeError("Host Context snapshot revision is stale")
+                        snapshot_bindings = dict(state.context_snapshot_bindings)
+                        prior_payload_hash = snapshot_bindings.get(snapshot.snapshot_id)
+                        if (
+                            prior_payload_hash is not None
+                            and prior_payload_hash != snapshot.payload_hash
+                        ):
+                            raise RuntimeError("Host Context snapshot identity changed payload")
+                        snapshot_bindings[snapshot.snapshot_id] = snapshot.payload_hash
+                        context_snapshot_revision = snapshot.snapshot_revision
+                        context_snapshot_bindings = tuple(sorted(snapshot_bindings.items()))
+                        request = ProviderRequest(
+                            RequestId(provider_request_id),
+                            snapshot.messages,
+                            tools=snapshot.tools,
+                            temperature=snapshot.temperature,
+                            max_output_tokens=snapshot.max_output_tokens,
+                            metadata=snapshot.metadata,
+                        )
+                        if provider_request_fingerprint(request) != (
+                            snapshot.expected_request_fingerprint
+                        ):
+                            raise RuntimeError("Host Context snapshot request fingerprint differs")
+                        context_authority_receipt = snapshot.receipt_json()
+                        context_authority_receipt_hash = hashlib.sha256(
+                            canonical_json(context_authority_receipt).encode()
+                        ).hexdigest()
+                    request_snapshot = provider_request_json(request)
+                    state = replace(
+                        state,
+                        provider_request_id=provider_request_id,
+                        context_revision=context.revision,
+                        provider_request_snapshot=request_snapshot,
+                        provider_request_fingerprint=provider_request_fingerprint(request),
+                        context_authority_receipt=context_authority_receipt,
+                        context_authority_receipt_hash=context_authority_receipt_hash,
+                        context_snapshot_revision=context_snapshot_revision,
+                        context_snapshot_bindings=context_snapshot_bindings,
                     )
-                    if (
-                        snapshot.run_id != value.run_id.value
-                        or snapshot.provider_turn_ordinal != state.provider_turns_reserved_total
-                        or snapshot.prior_context_revision != context.revision
-                    ):
-                        raise RuntimeError("Host Context snapshot lineage differs")
-                    if snapshot.snapshot_revision <= state.context_snapshot_revision:
-                        raise RuntimeError("Host Context snapshot revision is stale")
-                    snapshot_bindings = dict(state.context_snapshot_bindings)
-                    prior_payload_hash = snapshot_bindings.get(snapshot.snapshot_id)
-                    if (
-                        prior_payload_hash is not None
-                        and prior_payload_hash != snapshot.payload_hash
-                    ):
-                        raise RuntimeError("Host Context snapshot identity changed payload")
-                    snapshot_bindings[snapshot.snapshot_id] = snapshot.payload_hash
-                    context_snapshot_revision = snapshot.snapshot_revision
-                    context_snapshot_bindings = tuple(sorted(snapshot_bindings.items()))
-                    request = ProviderRequest(
-                        RequestId(provider_request_id),
-                        snapshot.messages,
-                        tools=snapshot.tools,
-                        temperature=snapshot.temperature,
-                        max_output_tokens=snapshot.max_output_tokens,
-                        metadata=snapshot.metadata,
+                    state, checkpoint_version = checkpoint.cas(
+                        value.run_id, execution_lease, checkpoint_version, state
                     )
-                    if provider_request_fingerprint(request) != (
-                        snapshot.expected_request_fingerprint
-                    ):
-                        raise RuntimeError("Host Context snapshot request fingerprint differs")
-                    context_authority_receipt = snapshot.receipt_json()
-                    context_authority_receipt_hash = hashlib.sha256(
-                        canonical_json(context_authority_receipt).encode()
-                    ).hexdigest()
-                request_snapshot = provider_request_json(request)
-                state = replace(
-                    state,
-                    provider_request_id=provider_request_id,
-                    context_revision=context.revision,
-                    provider_request_snapshot=request_snapshot,
-                    provider_request_fingerprint=provider_request_fingerprint(request),
-                    context_authority_receipt=context_authority_receipt,
-                    context_authority_receipt_hash=context_authority_receipt_hash,
-                    context_snapshot_revision=context_snapshot_revision,
-                    context_snapshot_bindings=context_snapshot_bindings,
-                )
-                state, checkpoint_version = checkpoint.cas(
-                    value.run_id, execution_lease, checkpoint_version, state
-                )
+                    audit_receipt["request_fingerprint"] = provider_request_fingerprint(request)
             if state.phase not in {
                 "provider_reserved",
                 "response_reserved",
@@ -372,7 +410,14 @@ class ReActLoop:
                 )
                 if provider_request_fingerprint(request) != state.provider_request_fingerprint:
                     raise RuntimeError("frozen Provider request fingerprint mismatch")
-                _verify_context_authority_receipt(state, value.run_id, request)
+                with runtime_operation(
+                    services.operation_audit,
+                    "context.verify",
+                    lease=execution_lease,
+                    clock=self._clock,
+                    identity={"request": provider_request_fingerprint(request)},
+                ):
+                    _verify_context_authority_receipt(state, value.run_id, request)
                 response = await services.provider.invoke(
                     value.run_id,
                     request,
@@ -381,21 +426,38 @@ class ReActLoop:
                 )
                 if response.request_id != request.request_id:
                     raise RuntimeError("Provider response request identity mismatch")
-                raw_ids = tuple(call.call_id.value for call in response.tool_calls)
-                if len(set(raw_ids)) != len(raw_ids):
-                    raise RuntimeError("duplicate raw Provider call ID in one turn")
-                if response.tool_calls:
-                    keys = tuple(
-                        _repeat_key(call.name, call.arguments) for call in response.tool_calls
-                    )
-                    state = state.before_tool_batch(
-                        keys,
-                        self._collaborator.limits,
-                        now=self._clock(),
-                        budget=services.provider.read_provider_budget(value.run_id),
-                    )
-                else:
-                    state = replace(state, phase="response_reserved")
+                with runtime_operation(
+                    services.operation_audit,
+                    "tool.proposal",
+                    lease=execution_lease,
+                    clock=self._clock,
+                    identity={
+                        "request": request.request_id.value,
+                        "calls": [
+                            {
+                                "call": c.call_id.value,
+                                "name": c.name,
+                                "arguments": thaw_json(cast(FrozenJsonValue, c.arguments)),
+                            }
+                            for c in response.tool_calls
+                        ],
+                    },
+                ):
+                    raw_ids = tuple(call.call_id.value for call in response.tool_calls)
+                    if len(set(raw_ids)) != len(raw_ids):
+                        raise RuntimeError("duplicate raw Provider call ID in one turn")
+                    if response.tool_calls:
+                        keys = tuple(
+                            _repeat_key(call.name, call.arguments) for call in response.tool_calls
+                        )
+                        state = state.before_tool_batch(
+                            keys,
+                            self._collaborator.limits,
+                            now=self._clock(),
+                            budget=services.provider.read_provider_budget(value.run_id),
+                        )
+                    else:
+                        state = replace(state, phase="response_reserved")
                 continuation_capability = _provider_continuation_capability(services, value.run_id)
                 response_snapshot = provider_response_json(
                     response, capability=continuation_capability
@@ -448,13 +510,23 @@ class ReActLoop:
                 state.provider_response_snapshot,
                 expected_capability=continuation_capability,
             )
-            batch_policies, barrier_rejections = _preflight_tool_batch(
-                response.tool_calls,
-                run_id=value.run_id,
-                tool_exposure=value.tool_exposure,
-                route_state=ContextRouteState(state.route_state),
-                authority_required=services.run_context_authority is not None,
-            )
+            with runtime_operation(
+                services.operation_audit,
+                "tool.preflight",
+                lease=execution_lease,
+                clock=services.operation_audit_clock,
+                identity={
+                    "request": state.provider_request_id,
+                    "response": state.provider_response_digest,
+                },
+            ):
+                batch_policies, barrier_rejections = _preflight_tool_batch(
+                    response.tool_calls,
+                    run_id=value.run_id,
+                    tool_exposure=value.tool_exposure,
+                    route_state=ContextRouteState(state.route_state),
+                    authority_required=services.run_context_authority is not None,
+                )
             context = services.context.load(value.run_id)
             context = services.context.append(
                 value.run_id,
@@ -474,23 +546,30 @@ class ReActLoop:
                 if state.route_state == ContextRouteState.UNROUTED.value and (
                     services.runtime_decision_sink is not None
                 ):
-                    receipt = await services.runtime_decision_sink.record_no_recall(
-                        run_id=value.run_id,
-                        provider_turn_ordinal=state.provider_turns_reserved_total,
-                        request_fingerprint=cast(str, state.provider_request_fingerprint),
-                    )
-                    if (
-                        receipt.run_id != value.run_id.value
-                        or receipt.route is not TaskScopeRoute.DIRECT_STANDALONE
-                        or receipt.recall_refs
+                    with runtime_operation(
+                        services.operation_audit,
+                        "context.no_recall",
+                        lease=execution_lease,
+                        clock=self._clock,
+                        identity={"request": state.provider_request_fingerprint},
                     ):
-                        raise RuntimeError("Host no-recall receipt differs from terminal Run")
-                    state = replace(
-                        state,
-                        route_state=receipt.route_state.value,
-                        route_receipt=receipt.to_json(),
-                        route_receipt_hash=receipt.receipt_hash,
-                    )
+                        receipt = await services.runtime_decision_sink.record_no_recall(
+                            run_id=value.run_id,
+                            provider_turn_ordinal=state.provider_turns_reserved_total,
+                            request_fingerprint=cast(str, state.provider_request_fingerprint),
+                        )
+                        if (
+                            receipt.run_id != value.run_id.value
+                            or receipt.route is not TaskScopeRoute.DIRECT_STANDALONE
+                            or receipt.recall_refs
+                        ):
+                            raise RuntimeError("Host no-recall receipt differs from terminal Run")
+                        state = replace(
+                            state,
+                            route_state=receipt.route_state.value,
+                            route_receipt=receipt.to_json(),
+                            route_receipt_hash=receipt.receipt_hash,
+                        )
                 state = replace(
                     state,
                     phase="ready",
@@ -515,7 +594,16 @@ class ReActLoop:
                     call.call_id.value,
                     call_ordinal,
                 )
-                rejection = barrier_rejections.get(call_ordinal)
+                with runtime_operation(
+                    services.operation_audit,
+                    "tool.route_gate",
+                    lease=execution_lease,
+                    clock=self._clock,
+                    identity={"effect": effect_id.value, "call": internal_call_id.value},
+                ) as gate_receipt:
+                    rejection = barrier_rejections.get(call_ordinal)
+                    if rejection is not None:
+                        gate_receipt["audit_outcome"] = "rejected"
                 if rejection is None:
                     executions = await self._effects.execute(
                         (call,),
@@ -552,19 +640,26 @@ class ReActLoop:
                     and policy.effect_class is ToolEffectClass.CONTEXT_CONTROL
                     and result.outcome is ToolOutcome.SUCCEEDED
                 ):
-                    receipt = _route_receipt_from_tool_result(result_value)
-                    if (
-                        receipt.run_id != value.run_id.value
-                        or receipt.raw_call_id != call.call_id.value
-                        or receipt.effect_id != effect_id.value
+                    with runtime_operation(
+                        services.operation_audit,
+                        "context.apply",
+                        lease=execution_lease,
+                        clock=self._clock,
+                        identity={"effect": effect_id.value, "result": result_value},
                     ):
-                        raise RuntimeError("Context route receipt differs from control effect")
-                    state = replace(
-                        state,
-                        route_state=receipt.route_state.value,
-                        route_receipt=receipt.to_json(),
-                        route_receipt_hash=receipt.receipt_hash,
-                    )
+                        receipt = _route_receipt_from_tool_result(result_value)
+                        if (
+                            receipt.run_id != value.run_id.value
+                            or receipt.raw_call_id != call.call_id.value
+                            or receipt.effect_id != effect_id.value
+                        ):
+                            raise RuntimeError("Context route receipt differs from control effect")
+                        state = replace(
+                            state,
+                            route_state=receipt.route_state.value,
+                            route_receipt=receipt.to_json(),
+                            route_receipt_hash=receipt.receipt_hash,
+                        )
                 payload: dict[str, JsonValue] = {
                     "outcome": result.outcome.value,
                     "value": result_value,

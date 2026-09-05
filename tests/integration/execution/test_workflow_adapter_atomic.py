@@ -148,6 +148,21 @@ def test_each_adapter_exact_replay_and_changed_payload_conflict(
             return await _invoke(method, replay_adapter, transaction)
 
         assert asyncio.run(replay_uow.run_atomic(replay, fault_label="adapter")) == outcome
+        from simple_harness.contracts import RunId
+
+        audit = replay_uow.read_run_operation_audit(RunId("run"), limit=4096)
+        assert any(
+            item.operation_name == "workflow_operation_receipts" for item in audit.operations
+        )
+        assert "canonical_event_interval_unverified" not in audit.coverage_gaps
+        # This fixture seeds an effect head directly. It is not a full-runtime
+        # introduction proof and must never be upgraded to complete by receipts.
+        assert "canonical_operation_interval_unverified" in audit.coverage_gaps
+        assert asyncio.run(replay_uow.run_atomic(replay, fault_label="adapter")) == outcome
+        assert (
+            replay_uow.read_run_operation_audit(RunId("run"), limit=4096).to_json()
+            == audit.to_json()
+        )
 
         async def conflict(transaction):  # type: ignore[no-untyped-def]
             return await _invoke(method, replay_adapter, transaction, changed=True)

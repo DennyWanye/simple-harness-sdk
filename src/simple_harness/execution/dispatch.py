@@ -141,12 +141,8 @@ def provider_binding_fingerprint(
         canonical_json(
             {
                 "schema_version": 2,
-                "budget_policy_fingerprint": budget_policy_fingerprint(
-                    budget_policy, estimator
-                ),
-                "continuation_capability_fingerprint": (
-                    continuation_capability.fingerprint
-                ),
+                "budget_policy_fingerprint": budget_policy_fingerprint(budget_policy, estimator),
+                "continuation_capability_fingerprint": (continuation_capability.fingerprint),
             }
         ).encode()
     ).hexdigest()
@@ -299,12 +295,21 @@ class ProviderInvocationCoordinator:
         *,
         execution_lease: ExecutionLease,
     ) -> ProviderInvocationRecord:
-        return await self._prepare_claim_with_binding(
-            run_id,
-            request,
-            execution_lease=execution_lease,
-            binding=self.resolve(run_id),
-        )
+        from .runtime_audit import runtime_operation
+
+        with runtime_operation(
+            self._uow,
+            "provider.prepare",
+            lease=execution_lease,
+            clock=self._clock,
+            identity={"run": run_id.value, "request": provider_request_fingerprint(request)},
+        ):
+            return await self._prepare_claim_with_binding(
+                run_id,
+                request,
+                execution_lease=execution_lease,
+                binding=self.resolve(run_id),
+            )
 
     async def _prepare_claim_with_binding(
         self,
@@ -362,9 +367,7 @@ class ProviderInvocationCoordinator:
 
         return self._uow.read_provider_budget(run_id)
 
-    def continuation_capability_for(
-        self, run_id: RunId
-    ) -> ProviderContinuationCapability:
+    def continuation_capability_for(self, run_id: RunId) -> ProviderContinuationCapability:
         return self.resolve(run_id).continuation_capability
 
     async def invoke(
@@ -380,13 +383,24 @@ class ProviderInvocationCoordinator:
             raise ProviderInvocationConflictError(
                 "Provider invocation requires the canonical Run lease."
             )
-        binding = self.resolve(run_id)
-        record = await self._prepare_claim_with_binding(
-            run_id,
-            request,
-            execution_lease=execution_lease,
-            binding=binding,
-        )
+        from .runtime_audit import runtime_operation
+
+        with runtime_operation(
+            self._uow,
+            "provider.prepare",
+            lease=execution_lease,
+            clock=self._clock,
+            identity={"run": run_id.value, "request": provider_request_fingerprint(request)},
+        ) as receipt:
+            binding = self.resolve(run_id)
+            record = await self._prepare_claim_with_binding(
+                run_id,
+                request,
+                execution_lease=execution_lease,
+                binding=binding,
+            )
+            receipt["invocation"] = record.invocation_id
+            receipt["version"] = record.version
         if record.state is ProviderInvocationState.SUCCEEDED:
             if record.response_json is None:
                 raise ProviderInvocationUnknownError(record)
