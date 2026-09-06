@@ -29,6 +29,8 @@ def audit_label_syntax(value):
 # Closed SDK vocabulary, not a pattern-based promise about external strings.
 SDK_AUDIT_ERROR_CODES = frozenset(
     {
+        "mandatory_context_action_required",
+        "mandatory_context_action_repair_exhausted",
         "authorization_expired",
         "authorization_denied",
         "authorization_cancelled",
