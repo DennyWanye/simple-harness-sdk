@@ -1,3 +1,16 @@
+## H079 local candidate and installed Host composition — 2026-09-06
+
+Source f841098b11c40192f1ad6b5676148533567ba706, version0.7.9, one offline build.
+Wheel SHA256 ba1c13cd711635c9f59555d087422766d597fb7e213f954af26bcf18b9cdb02d;
+manifest ffa5fb115bba2fb2c124275c97c3d48beef15f5c8abb6f2d8bb38ff8533c63f8.
+H079/M618/S0313 installed Host composition: 3PASS4.37s, actual main factory,
+zero-tool repair to public ACK, and exact candidate identity. 174/84/116 members
+match vendor and 202 SDK modules load from the new small target. Build PG21785,
+install21828 and test21846 exited with no remaining group members. Source14
+controls were not rerun. Native r17 is in progress, not yet accepted; H078 and
+old r16 failure evidence remain. No release/push/tag.
+[Host artifact and scoped results](/Users/denny/projects/simple_harness-primary-candidate/plans/2026-09-06-typed-use-primary/COMBINED-079618.md).
+
 ## Mandatory context repair source — 2026-09-06
 
 Last updated 2026-09-06. Separate successor source from H078: typed pending-action
