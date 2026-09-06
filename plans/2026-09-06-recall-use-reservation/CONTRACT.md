@@ -70,11 +70,17 @@ Root exports: `RecallContextUseIntentV1`, `ProviderContextUseAttemptV1`,
 
 `ConsumerRuntimePorts(run_context_authority=..., recall_context_use_authority=...)`
 uses the same coordinator as direct `ProviderInvocationCoordinator(...,
-context_use_authority=...)`. The authority scope is configured by the trusted Host,
-never taken from model metadata, and pinned before the first external call in the
-Run's schema7 ReAct checkpoint. A changed/missing scope on resume refuses. The
-base RunStart schema/hash remains untouched; this is an activation checkpoint pin,
-not a new field supplied by the caller in RunStart.
+context_use_authority=...)`. The authority scope is configured by the trusted Host, never taken from model
+metadata. `run_context_use_requirements` atomically pins generic/required scope
+with SDK legacy/Host-control admission, public start-command acceptance and
+root/child materialization. It links the existing source admission/command/start
+hash without changing old RunStart canonical bytes. Replay verifies that same
+source and scope. Startup validates active Run/pending-command requirements before
+reconciliation or driving; missing/changed authority refuses without terminalizing
+the accepted Run, including before any ReAct checkpoint exists. A checkpoint's
+scope remains an additional exact binding, not the first authority pin. Old
+unproven active Runs are explicit legacy: no typed adoption or synthetic empty
+attestation. Generic no-Memory recovery remains compatible.
 
 `RunContextSnapshot(schema_version=2, recall_subject=..., recall_intents=tuple)`
 retains its existing Provider payload hash and adds the sidecar hash to its receipt.
@@ -135,3 +141,30 @@ must not be mistaken for exact H073. Candidate version/artifact/API snapshot wil
 be assigned once source review and these controls converge. Host default wiring,
 physical guard exact typed-occurrence exemption, 401 rerun and production promotion
 remain separate; this source checkpoint closes no formal 401 cells by itself.
+
+
+## First challenge corrections (fb0feaf retained as the original counterexample)
+
+Dirac's read-only review identified two P1s before any tests ran:
+
+1. M0613 authorization is unique per principal + provider_attempt_id, not per
+   result. A physical attempt now derives a stable **per-result** Memory child ID:
+   `E("simple-harness/provider-memory-result-attempt/v1", {provider_attempt_id:
+   physical_id, decision_id, decision_hash, result_id, result_hash})`. It excludes
+   time/receipt; full item/fragment/message intent remains immutable in the same
+   checkpoint and prepared row, so changing it under that result still conflicts.
+   All child grants link to one physical claim/handoff; no retained result is dropped.
+   Public control uses two independent actual results, each with two real items,
+   and checks both child IDs independently plus one send/reopen no second send.
+2. Activation-only pin allowed a configured accepted Run to lose required mode
+   on crash before its first checkpoint. The admission binding above now closes
+   that window. Source crash controls use real public start or public command
+   acceptance; pre-checkpoint/schema6/schema7 recovery without ports or with a
+   different scope must refuse, same-scope recovery must proceed. The schema6/7
+   controls explicitly release the abandoned owned lease before process exit;
+   this is not evidence of arbitrary-expiry recovery or independent dual owners.
+
+Migration tests verify the exact frozen H073 wheel SHA, installed package bytes,
+directURL archive hash and prefix-owned import origin under `python -I`, not just
+its version string. Same-owner concurrent coroutines prove only one handoff for
+that owner; independent dual-owner fencing remains a separately labelled control.

@@ -256,6 +256,11 @@ class ProviderInvocationCoordinator:
             _text(context_use_authority.authority_scope_ref)
             if not callable(getattr(context_use_authority, "authorize_recall_context_use", None)):
                 raise TypeError("context_use_authority_invalid")
+        configure = getattr(uow, "configure_context_use_authority", None)
+        if configure is not None:
+            configure(self.context_use_authority_scope)
+        elif context_use_authority is not None:
+            raise TypeError("context_use_durable_admission_port_required")
         self._observability: ObservabilityRuntime | None = None
 
     def _emit_attempt(

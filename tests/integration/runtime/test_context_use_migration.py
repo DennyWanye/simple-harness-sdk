@@ -16,6 +16,22 @@ import pytest
 from simple_harness import migrate_execution_v7_to_v8
 from simple_harness.execution.sqlite import Database
 
+VERIFY_OLD = r"""
+import hashlib, importlib.metadata, json, os, pathlib, sys, zipfile
+import simple_harness
+assert pathlib.Path(simple_harness.__file__).resolve().is_relative_to(pathlib.Path(sys.prefix).resolve())
+wheel=pathlib.Path(os.environ['H073_WHEEL'])
+expected='1a9ed5c95e6cddd4e0ccd85124320a6001008740a53213712fc89f3467cb4cd7'
+assert hashlib.sha256(wheel.read_bytes()).hexdigest()==expected
+owner=importlib.metadata.distribution('simple-harness-sdk')
+origin=json.loads(owner.read_text('direct_url.json'))
+assert origin['archive_info']['hashes']['sha256']==expected
+with zipfile.ZipFile(wheel) as archive:
+    for member in archive.namelist():
+        if member.startswith('simple_harness/') and not member.endswith('/'):
+            assert owner.locate_file(member).read_bytes()==archive.read(member),member
+"""
+
 OLD_SEED = r"""
 import asyncio, os, sys
 import simple_harness as h
@@ -60,7 +76,7 @@ def old_python():
 
 def run_old(source, *args):
     return subprocess.run(
-        [old_python(), "-I", "-c", source, *map(str, args)],
+        [old_python(), "-I", "-c", VERIFY_OLD + source, *map(str, args)],
         capture_output=True,
         text=True,
         timeout=30,

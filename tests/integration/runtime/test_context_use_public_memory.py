@@ -30,13 +30,15 @@ def digest(value):
 class SnapshotAuthority:
     def __init__(self, fixture, fragments, mode="normal"):
         self.fixture, self.fragments, self.mode = fixture, fragments, mode
+        self.groups = fragments if isinstance(fragments[0], tuple) else (fragments,)
         self.requests = []
 
     async def prepare_snapshot(self, request):
         self.requests.append(request)
         messages = (h.Message(h.MessageRole.USER, "Use my two known preferences."),) + tuple(
             h.Message(h.MessageRole.SYSTEM, canonical(h.thaw_json(f.public_payload)).decode())
-            for f in self.fragments
+            for group in self.groups
+            for f in group
         )
         # Independent serialization of the real Provider request, with no receipt fields.
         raw_messages = [
@@ -46,10 +48,16 @@ class SnapshotAuthority:
         payload = dict(
             messages=raw_messages, tools=[], temperature=None, max_output_tokens=128, metadata={}
         )
-        bindings = tuple((i + 2, digest(raw_messages[i + 1])) for i in range(2))
-        if self.mode == "wrong_message":
-            bindings = ((2, "0" * 64), bindings[1])
-        intent = h.RecallContextUseIntentV1(self.fragments, bindings)
+        intents = []
+        ordinal = 2
+        for group in self.groups:
+            bindings = tuple(
+                (ordinal + i, digest(raw_messages[ordinal + i - 1])) for i in range(len(group))
+            )
+            if self.mode == "wrong_message":
+                bindings = ((ordinal, "0" * 64), *bindings[1:])
+            intents.append(h.RecallContextUseIntentV1(group, bindings))
+            ordinal += len(group)
         return h.RunContextSnapshot(
             "snapshot-1",
             request.run_id.value,
@@ -65,7 +73,7 @@ class SnapshotAuthority:
             digest(payload),
             schema_version=1 if self.mode == "legacy" else 2,
             recall_subject=None if self.mode == "legacy" else self.fixture.principal.actor_id,
-            recall_intents=None if self.mode == "legacy" else (intent,),
+            recall_intents=None if self.mode == "legacy" else tuple(intents),
         )
 
 
@@ -89,8 +97,22 @@ class Provider:
         )
         assert view.invocation_state == "handed_off"
         assert view.handoff_attempt == 1
-        assert len(view.receipts) == 1
-        assert view.receipts[0] == self.fixture.receipts[-1]
+        assert view.receipts == tuple(self.fixture.receipts)
+        assert len(view.receipts) in (1, 2)
+        for request_binding in view.requests:
+            expected = digest(
+                {
+                    "domain": "simple-harness/provider-memory-result-attempt/v1",
+                    "payload": {
+                        "provider_attempt_id": view.provider_attempt_id,
+                        "decision_id": request_binding.decision_id,
+                        "decision_hash": request_binding.decision_hash,
+                        "result_id": request_binding.result_id,
+                        "result_hash": request_binding.result_hash,
+                    },
+                }
+            )
+            assert request_binding.provider_attempt_id == expected
         assert len(view.requests[0].snapshot_fragment_bindings) == 2
         assert view.requested_at == self.fixture.requests[-1].requested_at
         assert view.turn_id == self.fixture.turn_id
@@ -106,7 +128,9 @@ class Provider:
         )
 
 
-@pytest.mark.parametrize("mode", ["receipt_first", "suppression_first", "legacy", "wrong_message"])
+@pytest.mark.parametrize(
+    "mode", ["receipt_first", "suppression_first", "legacy", "wrong_message", "two_results"]
+)
 def test_actual_two_item_public_consumer_and_reopen(tmp_path, mode):
     async def run():
         fixture = await PublicMemoryFixture(tmp_path / "memory.sqlite").open()
@@ -114,6 +138,17 @@ def test_actual_two_item_public_consumer_and_reopen(tmp_path, mode):
             await fixture.seed()
             fragments = await fixture.recall()
             assert {f.recall_binding.item_id for f in fragments} == set(fixture.created)
+            if mode == "two_results":
+                second = await fixture.recall(key_suffix="second")
+                assert second[0].recall_binding.result_id != fragments[0].recall_binding.result_id
+                assert {f.recall_binding.item_id for f in second} == set(fixture.created)
+                fragments = (fragments, second)
+
+                async def suppress_after_complete_bundle():
+                    if len(fixture.receipts) == 2:
+                        await fixture.forget()
+
+                fixture.after_authorize = suppress_after_complete_bundle
             snapshot = SnapshotAuthority(fixture, fragments, mode)
             if mode == "receipt_first":
                 fixture.after_authorize = fixture.forget
@@ -147,7 +182,7 @@ def test_actual_two_item_public_consumer_and_reopen(tmp_path, mode):
                 await provider.client.start(start)
                 await runtime.wait_idle(start.run_id)
                 result = provider.client.query(start.run_id)
-                if mode != "receipt_first":
+                if mode not in {"receipt_first", "two_results"}:
                     assert len(provider.calls) == 0
                     assert result.state.value != "completed"
                     assert not fixture.receipts
@@ -158,7 +193,9 @@ def test_actual_two_item_public_consumer_and_reopen(tmp_path, mode):
                     start.run_id, h.RequestId(fixture.run_id + ":provider-turn:1")
                 )
                 assert before.invocation_state == "succeeded"
-                assert before.receipts[0] == fixture.receipts[0]
+                assert before.receipts == tuple(fixture.receipts)
+                assert len(before.receipts) == (2 if mode == "two_results" else 1)
+                assert len({r.provider_attempt_id for r in before.requests}) == len(before.requests)
                 await provider.client.start(
                     start
                 )  # Replay durable completed root, not a counter-only wrapper.

@@ -263,7 +263,7 @@ class PublicMemoryFixture:
             self.created.append(materialized.operations[0].memory_id)
         assert len(set(self.created)) == 2
 
-    async def recall(self, run_id=None, turn_id=None):
+    async def recall(self, run_id=None, turn_id=None, key_suffix="first"):
         run_id, turn_id = run_id or self.run_id, turn_id or self.turn_id
         now = time.time()
         disclosure = dc.replace(_disclosure(self.principal.actor_id), run_id=run_id)
@@ -298,7 +298,7 @@ class PublicMemoryFixture:
             evidence_refs=refs,
             budget=budget,
         )
-        key = f"{run_id}-{turn_id}-recall"
+        key = f"{run_id}-{turn_id}-{key_suffix}-recall"
         plan = harness.RecallPlan(
             plan_id=key,
             run_id=run_id,
@@ -364,7 +364,7 @@ class PublicMemoryFixture:
             )
             fragments.append(
                 harness.ContextFragmentV2(
-                    f"fragment-{i + 1}",
+                    f"fragment-{key_suffix}-{i + 1}",
                     run_id,
                     self.principal.actor_id,
                     harness.ContextFragmentType.RECALLED_MEMORY,

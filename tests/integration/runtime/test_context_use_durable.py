@@ -65,6 +65,7 @@ async def setup(tmp_path):
     fragments = await fixture.recall()
     database = Database.open(tmp_path / "execution.sqlite")
     uow = SqliteExecutionUnitOfWork(database)
+    uow.configure_context_use_authority(fixture.authority_scope_ref)
     now = time.time()
     root = StartSnapshot(
         "agent.general",
@@ -161,14 +162,14 @@ def test_original_time_and_atomic_claim_after_real_authorization(tmp_path, monke
         fixture, db, uow, lease, request, attempt, provider = await setup(tmp_path)
         try:
             if failure == "claim_transaction":
-                original = uow._audit_operation_head
+                original = SqliteExecutionUnitOfWork._audit_operation_head
 
                 def fail(*args, **kwargs):
-                    if args[1] == "provider":
+                    if args[2] == "provider":
                         raise RuntimeError("claim transaction crash")
                     return original(*args, **kwargs)
 
-                monkeypatch.setattr(uow, "_audit_operation_head", fail)
+                monkeypatch.setattr(SqliteExecutionUnitOfWork, "_audit_operation_head", fail)
             else:
 
                 async def after():
@@ -199,7 +200,7 @@ def test_original_time_and_atomic_claim_after_real_authorization(tmp_path, monke
                 return
             fixture.after_authorize = None
             if failure == "claim_transaction":
-                monkeypatch.setattr(uow, "_audit_operation_head", original)
+                monkeypatch.setattr(SqliteExecutionUnitOfWork, "_audit_operation_head", original)
             with pytest.raises(Exception, match="conflict"):
                 await invoke(
                     uow,

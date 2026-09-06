@@ -1833,6 +1833,9 @@ class Runtime:
 
     async def _start_once(self) -> None:
         try:
+            validate_context_use = getattr(self._uow, "validate_context_use_recovery", None)
+            if validate_context_use is not None:
+                validate_context_use()
             await self._ports.reconciliation.reconcile()
             await self._drain_commands_bounded(100)
             await self.recover(_startup=True)

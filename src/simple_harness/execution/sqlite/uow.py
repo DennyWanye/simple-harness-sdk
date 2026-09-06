@@ -852,11 +852,25 @@ def _verify_stage_replay(
 
 
 class SqliteExecutionUnitOfWork:
-    __slots__ = ("database", "workflow_fault")
+    __slots__ = ("database", "workflow_fault", "_context_use_scope", "_context_use_configured")
 
     def __init__(self, database: Database, *, workflow_fault: FaultHook | None = None) -> None:
         self.database = database
         self.workflow_fault = workflow_fault
+        self._context_use_scope = None
+        self._context_use_configured = False
+
+    def configure_context_use_authority(self, scope):
+        if self._context_use_configured and self._context_use_scope != scope:
+            raise ValueError("context_use_uow_configuration_changed")
+        self._context_use_scope = scope
+        self._context_use_configured = True
+
+    def validate_context_use_recovery(self):
+        from .context_use_requirements import validate_recovery
+
+        with self.database.transaction(read_only=True) as connection:
+            validate_recovery(connection, self._context_use_scope)
 
     def read_run_operation_audit(
         self, run_id: RunId, *, limit: int = 256
@@ -1067,24 +1081,34 @@ class SqliteExecutionUnitOfWork:
         self.database.close()
 
     def submit_start_command(self, intent: StartCommandIntent, *, now: float) -> CommandReceipt:
-        return CommandIngress(self.database).submit_start(intent, now=now)
+        return CommandIngress(
+            self.database, context_use_scope=self._context_use_scope
+        ).submit_start(intent, now=now)
 
     def submit_continue_command(
         self, intent: ContinueCommandIntent, *, now: float
     ) -> CommandReceipt:
-        return CommandIngress(self.database).submit_continue(intent, now=now)
+        return CommandIngress(
+            self.database, context_use_scope=self._context_use_scope
+        ).submit_continue(intent, now=now)
 
     def submit_cancel_command(self, intent: CancelCommandIntent, *, now: float) -> CommandReceipt:
-        return CommandIngress(self.database).submit_cancel(intent, now=now)
+        return CommandIngress(
+            self.database, context_use_scope=self._context_use_scope
+        ).submit_cancel(intent, now=now)
 
     def get_command_receipt(self, command_id: str) -> CommandReceipt:
-        return CommandIngress(self.database).get(command_id)
+        return CommandIngress(self.database, context_use_scope=self._context_use_scope).get(
+            command_id
+        )
 
     def get_command_snapshot(self, command_id: str) -> CommandSnapshot:
-        return CommandIngress(self.database).snapshot(command_id)
+        return CommandIngress(self.database, context_use_scope=self._context_use_scope).snapshot(
+            command_id
+        )
 
     def reserve_legacy_run_mode(self, *, run_id: str, intent_hash: str, now: float) -> None:
-        CommandIngress(self.database).reserve_legacy_run(
+        CommandIngress(self.database, context_use_scope=self._context_use_scope).reserve_legacy_run(
             namespace="legacy/runtime",
             projection_key_id="legacy-v1",
             run_id=run_id,
@@ -1093,17 +1117,19 @@ class SqliteExecutionUnitOfWork:
         )
 
     def reserve_host_control_run_mode(self, *, run_id: str, intent_hash: str, now: float) -> None:
-        CommandIngress(self.database).reserve_host_control_run(
-            run_id=run_id, intent_hash=intent_hash, now=now
-        )
+        CommandIngress(
+            self.database, context_use_scope=self._context_use_scope
+        ).reserve_host_control_run(run_id=run_id, intent_hash=intent_hash, now=now)
 
     def require_legacy_or_unmanaged_run(self, run_id: str) -> None:
-        CommandIngress(self.database).require_legacy_or_unmanaged(run_id)
+        CommandIngress(
+            self.database, context_use_scope=self._context_use_scope
+        ).require_legacy_or_unmanaged(run_id)
 
     def claim_next_command(
         self, *, owner_id: str, now: float, lease_seconds: float
     ) -> CommandClaim | None:
-        return CommandIngress(self.database).claim_next(
+        return CommandIngress(self.database, context_use_scope=self._context_use_scope).claim_next(
             owner_id=owner_id, now=now, lease_seconds=lease_seconds
         )
 
@@ -1115,7 +1141,7 @@ class SqliteExecutionUnitOfWork:
         target: CommandState,
         now: float,
     ) -> CommandReceipt:
-        return CommandIngress(self.database).transition(
+        return CommandIngress(self.database, context_use_scope=self._context_use_scope).transition(
             claim, expected=expected, target=target, now=now
         )
 
@@ -1127,14 +1153,16 @@ class SqliteExecutionUnitOfWork:
         retry_at: float,
         now: float,
     ) -> CommandReceipt:
-        return CommandIngress(self.database).retry(
+        return CommandIngress(self.database, context_use_scope=self._context_use_scope).retry(
             claim, error_code=error_code, retry_at=retry_at, now=now
         )
 
     def heartbeat_command(
         self, claim: CommandClaim, *, now: float, lease_seconds: float
     ) -> CommandClaim:
-        return CommandIngress(self.database).heartbeat(claim, now=now, lease_seconds=lease_seconds)
+        return CommandIngress(self.database, context_use_scope=self._context_use_scope).heartbeat(
+            claim, now=now, lease_seconds=lease_seconds
+        )
 
     def reject_command(
         self,
@@ -1143,7 +1171,9 @@ class SqliteExecutionUnitOfWork:
         error_code: CommandErrorCode,
         now: float,
     ) -> CommandReceipt:
-        return CommandIngress(self.database).reject(claim, error_code=error_code, now=now)
+        return CommandIngress(self.database, context_use_scope=self._context_use_scope).reject(
+            claim, error_code=error_code, now=now
+        )
 
     def apply_start_command(
         self,
@@ -3193,6 +3223,9 @@ class SqliteExecutionUnitOfWork:
             "VALUES (?,?,?,?)",
             (run_id, snapshot_json, snapshot_hash, now),
         )
+        from .context_use_requirements import bind
+
+        bind(connection, run_id, self._context_use_scope, "run_start", run_id, snapshot_hash)
         _fault(fault, "root_start.snapshot.after_write")
         if context_stage_id is not None and context_stage_hash is not None:
             _consume_context_stage(
@@ -3245,6 +3278,9 @@ class SqliteExecutionUnitOfWork:
         snapshot_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
         existing = self._run_by_request(execution_session_id, request_id)
         if existing is not None:
+            from .context_use_requirements import require
+
+            require(self.database.connection, existing.run_id, self._context_use_scope)
             self._verify_existing_start(
                 existing,
                 run_id=run_id,
@@ -4609,6 +4645,16 @@ class SqliteExecutionUnitOfWork:
                 VALUES (?, ?, ?, ?)
                 """,
                 (child_run_id, snapshot_json, snapshot_hash, now),
+            )
+            from .context_use_requirements import bind
+
+            bind(
+                connection,
+                child_run_id,
+                self._context_use_scope,
+                "run_start",
+                child_run_id,
+                snapshot_hash,
             )
             _fault(fault, "child_launch.snapshot.after_write")
             _fault(fault, "child_launch.ticket.before_write")
@@ -6336,6 +6382,11 @@ class SqliteExecutionUnitOfWork:
                 existing = _provider_invocation_record(existing_row)
                 self._verify_existing_context_use(existing, context_use_grant)
                 return existing
+            from .context_use_requirements import require
+
+            require(connection, record.run_id.value, self._context_use_scope)
+            if context_use_grant is None and self._context_use_scope is not None:
+                raise UnitOfWorkConflict("context_use_grant_missing")
             if context_use_grant is not None:
                 if (
                     context_use_grant.attempt.handoff_ordinal != 1

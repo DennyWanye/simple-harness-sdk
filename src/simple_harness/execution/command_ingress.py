@@ -47,8 +47,9 @@ class CommandClaim:
 class CommandIngress:
     """Connection-sharing repository; it never owns a second database or worker."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, *, context_use_scope=None) -> None:
         self._database = database
+        self._context_use_scope = context_use_scope
 
     def submit_start(self, intent: StartCommandIntent, *, now: float) -> CommandReceipt:
         return self._submit(intent, now=_time(now))
@@ -150,12 +151,35 @@ class CommandIngress:
                 (run_id,),
             ).fetchone()
             if row is None:
+                if (
+                    self._context_use_scope is not None
+                    and connection.execute(
+                        "SELECT 1 FROM runs WHERE run_id=?", (run_id,)
+                    ).fetchone()
+                    is not None
+                ):
+                    from .sqlite.context_use_requirements import require
+
+                    require(connection, run_id, self._context_use_scope)
                 connection.execute(
                     "INSERT INTO conversation_run_modes"
                     "(run_id,namespace,api_mode,intent_hash,created_at) VALUES (?,?,?,?,?)",
                     (run_id, namespace, RunApiMode.LEGACY.value, intent_hash, now),
                 )
+                from .sqlite.context_use_requirements import bind
+
+                bind(
+                    connection,
+                    run_id,
+                    self._context_use_scope,
+                    "legacy_admission",
+                    run_id,
+                    intent_hash,
+                )
                 return
+            from .sqlite.context_use_requirements import require
+
+            require(connection, run_id, self._context_use_scope)
             if tuple(row) != (namespace, RunApiMode.LEGACY.value, intent_hash):
                 raise CommandError(CommandErrorCode.RUN_MODE_CONFLICT)
 
@@ -389,6 +413,10 @@ class CommandIngress:
                     or replay["run_id"] != intent.run_id.value
                 ):
                     raise CommandError(CommandErrorCode.INTENT_CONFLICT)
+                if intent.kind is not CommandKind.CANCEL:
+                    from .sqlite.context_use_requirements import require
+
+                    require(connection, intent.run_id.value, self._context_use_scope)
                 return _receipt(replay)
             _bind_namespace(connection, intent.namespace, intent.projection_key_id, now)
             mode = connection.execute(
@@ -457,6 +485,21 @@ class CommandIngress:
                     now,
                 ),
             )
+            if intent.kind is CommandKind.START:
+                from .sqlite.context_use_requirements import bind
+
+                bind(
+                    connection,
+                    intent.run_id.value,
+                    self._context_use_scope,
+                    "start_command",
+                    intent.command_id,
+                    intent.intent_hash,
+                )
+            elif intent.kind is CommandKind.CONTINUE:
+                from .sqlite.context_use_requirements import require
+
+                require(connection, intent.run_id.value, self._context_use_scope)
             _record_audit(connection, intent.command_id, "accepted", now)
             if intent.kind is CommandKind.CANCEL:
                 connection.execute(

@@ -11,7 +11,11 @@ from simple_harness.execution.context_use import (
 )
 from simple_harness.execution.provider_invocations import provider_invocation_id
 
-DDL = """
+from .context_use_requirements import DDL as REQUIREMENT_DDL
+
+DDL = (
+    REQUIREMENT_DDL
+    + """
 CREATE TABLE provider_context_use_attempts (
  invocation_id TEXT NOT NULL,
  run_id TEXT NOT NULL REFERENCES runs(run_id),
@@ -49,6 +53,7 @@ CREATE TRIGGER context_use_upgrade_no_update BEFORE UPDATE ON context_use_upgrad
 CREATE TRIGGER context_use_upgrade_no_delete BEFORE DELETE ON context_use_upgrade_receipt
  BEGIN SELECT RAISE(ABORT,'context_use_upgrade_immutable'); END;
 """
+)
 
 
 def _identity(attempt):
@@ -74,6 +79,9 @@ def read_attempt(connection, invocation_id, ordinal):
 
 
 def require_live(uow, connection, attempt, lease, now, *, retry=False):
+    from .context_use_requirements import require
+
+    require(connection, attempt.run_id, attempt.authority_scope_ref)
     uow._require_runtime_lease(connection, lease, now=now)
     if lease.run_id != attempt.run_id:
         raise ValueError("context_use_lease_run_differs")

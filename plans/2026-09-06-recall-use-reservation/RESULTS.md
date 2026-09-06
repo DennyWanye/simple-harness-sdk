@@ -20,3 +20,8 @@ Raw evidence will stay ignored under `.local-test-evidence/2026-09-06/recall-use
 
 Public payload-free view and Host call contract: [CONTRACT.md](CONTRACT.md).
 Host default wiring, original401 cell closure and candidate packaging are pending.
+
+First fixed fb0feaf received two read-only P1s (multi-result key collision and
+pre-checkpoint mode downgrade). They are corrected in the successor source and
+covered by new public multi-result and accepted-Run crash controls. Still NOT_RUN;
+no assertion that the original source was accepted. Frozen old failure remains.

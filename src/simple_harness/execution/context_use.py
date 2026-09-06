@@ -122,6 +122,19 @@ class RecallContextUseIntentV1:
             value["schema_version"],
         )
 
+    def memory_attempt_id(self, attempt):
+        binding = self.fragments[0].recall_binding
+        return use_hash(
+            "simple-harness/provider-memory-result-attempt/v1",
+            {
+                "provider_attempt_id": attempt.provider_attempt_id,
+                "decision_id": binding.decision_id,
+                "decision_hash": binding.decision_hash,
+                "result_id": binding.result_id,
+                "result_hash": binding.result_hash,
+            },
+        )
+
     def request(self, attempt):
         binding = self.fragments[0].recall_binding
         fragments = tuple(
@@ -131,7 +144,7 @@ class RecallContextUseIntentV1:
             attempt.subject,
             attempt.run_id,
             attempt.turn_id,
-            attempt.provider_attempt_id,
+            self.memory_attempt_id(attempt),
             binding.decision_id,
             binding.decision_hash,
             binding.result_id,
@@ -199,6 +212,7 @@ class ProviderContextUseAttemptV1:
             _positive(getattr(self, name))
         _sha(self.request_fingerprint)
         _time(self.requested_at)
+        object.__setattr__(self, "requested_at", float(self.requested_at))
         if type(self.intents) is not tuple or len(self.intents) > 32:
             raise ValueError("context_use_attestation_missing_or_over_limit")
         seen = set()
