@@ -52,6 +52,7 @@ async def _case(tmp_path, *, boundary=None, error=None, tamper=None):
     armed = [boundary]
     sends = []
     tampered = []
+    tamper_power_loss = [False]
     class Physical(Provider):
         async def invoke(self, request, *, cancel):
             sends.append(request.request_id.value)
@@ -93,6 +94,9 @@ async def _case(tmp_path, *, boundary=None, error=None, tamper=None):
                 values.update(checkpoint=payload,
                     checkpoint_hash=hashlib.sha256(canonical_json(payload).encode()).hexdigest())
             result = super().cas_react_checkpoint(**values)
+            if tampered and not tamper_power_loss[0]:
+                tamper_power_loss[0] = True
+                raise PowerLoss()
             if armed[0] == values["checkpoint"]["phase"]:
                 armed[0] = None
                 raise PowerLoss()
@@ -190,6 +194,11 @@ async def _case(tmp_path, *, boundary=None, error=None, tamper=None):
             database.close()
             database, store = open_services()
         if tamper:
+            with pytest.raises(PowerLoss):
+                await drive()
+            assert len(sends) == 1
+            database.close()
+            database, store = open_services()
             with pytest.raises(ValueError, match="context_use_snapshot_attestation_(missing|differs)"):
                 await drive()
             assert tampered == [tamper] and len(sends) == 1
