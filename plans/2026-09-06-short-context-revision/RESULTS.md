@@ -1,7 +1,7 @@
 # H075 source evidence — 2026-09-06
 
 Product0735fb5; later commits add independently challenged test controls. Dirac
-b13f2c2 scoped read accepted proceeding to focused tests; final review pending.
+b13f2c2 accepted focused testing and87e4b64/Host f1cdeb9f received final scoped source ACCEPT.
 
 - source-r1: wire8PASS; subsequent migration control FAIL because test-only forensic
   sqlite connection was not closed before journal-mode reopen. Preserved. No product
@@ -9,8 +9,8 @@ b13f2c2 scoped read accepted proceeding to focused tests; final review pending.
 - source-r2:7PASS3.57s, PID46052 exit0, peak224816KiB, no children. Real H073/H074 public
   producers, WAL-only nonempty state, explicit7->9/8->9/7->8->9, all old table rows
   (excluding descriptor and new9 receipt table) preserved; old real long2item grant
-  parsed/preserved; exact H074 long wire/hash unchanged. Known fake short+1 and
-  malformed checkpoint/attempt carrier fail before backup. Retained backup crash
+  parsed/preserved; exact H074 long wire/hash unchanged. Known fake short+1 in
+  checkpoint/attempt carriers fail before backup. Retained backup crash
   retry and repeated postcommit call return identical receipt. Fresh9 no-op.
 - Host f1cdeb9f short-h075-r1:2PASS9.58s, PGID46115 exit0, peak211568KiB, no children.
   Real11groups -> actual shortNone -> public page/fragment -> actual Memory grant ->
@@ -31,3 +31,13 @@ No fake source revision, schema/receipt rewrite, candidate overwrite or main edi
 Raw roots: SDK `.local-test-evidence/2026-09-06/short-context/`; Host
 `../simple_harness-typed-recall-context-use-full/.local-test-evidence/2026-09-06/typed-use-primary/`.
 Version/snapshot/build/installed checks remain NOT_RUN until reviewed source freezes.
+
+
+Necessary protocol/legacy7->8 adjacent batch:8PASS1.17s, PGID46587 exit0,
+peak155280KiB, no children. This specifically preserves the old migration API
+boundary after fresh schema9, not another full recall run. Existing green batches
+will not be rerun. Local ref inventory highest074; successor075 was unused.
+
+Current freeze changes only version and additive root/runtime API snapshot. The
+prior074 snapshot is retained exactly. Dirac source ACCEPT does not claim whole
+Host typed/no-recall crash boundaries or installed artifacts/native.

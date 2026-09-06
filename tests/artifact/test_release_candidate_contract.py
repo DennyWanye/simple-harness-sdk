@@ -86,7 +86,7 @@ def test_version_has_one_runtime_authority() -> None:
     assert 'dynamic = ["version"]' in pyproject
     assert 'path = "src/simple_harness/version.py"' in pyproject
     assert "from .version import __version__" in package
-    assert '__version__ = "0.7.1"' in version
+    assert '__version__ = "0.7.5"' in version
     build_script = (ROOT / "scripts/build/reproducibility.py").read_text(encoding="utf-8")
     assert 'VERSION = "0.1.1"' not in build_script
     assert "src/simple_harness/version.py" in build_script
