@@ -93,6 +93,7 @@ def ports(path, provider, scope):
 CRASH = r"""
 import asyncio,os,sys
 import simple_harness as h
+from simple_harness.runtime import RunStart
 from tests.integration.runtime.test_context_use_admission import ports,Provider
 from simple_harness.execution.sqlite.uow import SqliteExecutionUnitOfWork
 from simple_harness.runtime.react_checkpoint import DurableReactCheckpoint
@@ -132,7 +133,7 @@ async def main():
             input={'messages':[{'role':'user','content':'public no-recall input'}],
                 'capability_snapshot':{'tools':[]},'max_output_tokens':128}))
     else:
-        await client.start(h.RunStart(h.ExecutionSessionId('session'),h.RunId('admission-run'),h.RequestId('root-request'),
+        await client.start(RunStart(h.ExecutionSessionId('session'),h.RunId('admission-run'),h.RequestId('root-request'),
             turn_id='root-turn',tool_catalog_generation=1,input={'messages':[{'role':'user','content':'public no-recall input'}],
                 'capability_snapshot':{'tools':[]},'max_output_tokens':128}))
         await runtime.wait_idle(h.RunId('admission-run'))
@@ -181,7 +182,7 @@ def test_required_mode_survives_pre_driver_crash_and_rejects_port_downgrade(tmp_
                 ):
                     break
                 await asyncio.sleep(0.01)
-            assert result.state.value == "completed"
+            assert result.state.value == "completed", result
             assert len(provider.calls) == 1
             view = runtime.client.read_provider_context_use(
                 h.RunId("admission-run"), h.RequestId("admission-run:provider-turn:1")

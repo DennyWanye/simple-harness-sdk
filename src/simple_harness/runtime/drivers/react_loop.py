@@ -602,6 +602,13 @@ class ReActLoop:
                     route_state=ContextRouteState(state.route_state),
                     authority_required=services.run_context_authority is not None,
                 )
+            if protected and not response.tool_calls:
+                services.provider.verify_context_use_terminal(
+                    value.run_id,
+                    RequestId(state.provider_request_id),
+                    checkpoint=state.to_json(),
+                    execution_lease=execution_lease,
+                )
             context = services.context.load(value.run_id)
             context = services.context.append(
                 value.run_id,
@@ -611,15 +618,17 @@ class ReActLoop:
                 (response.message,),
             )
             if not response.tool_calls:
-                if state.route_state == ContextRouteState.UNROUTED.value:
+                if not protected and state.route_state == ContextRouteState.UNROUTED.value:
                     if services.run_context_authority is not None and (
                         services.runtime_decision_sink is None
                     ):
                         raise RuntimeError(
                             "Host Context authority requires a no-recall decision sink"
                         )
-                if state.route_state == ContextRouteState.UNROUTED.value and (
-                    services.runtime_decision_sink is not None
+                if (
+                    not protected
+                    and state.route_state == ContextRouteState.UNROUTED.value
+                    and (services.runtime_decision_sink is not None)
                 ):
                     with runtime_operation(
                         services.operation_audit,

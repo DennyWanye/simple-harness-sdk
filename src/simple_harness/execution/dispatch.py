@@ -86,6 +86,7 @@ class ProviderInvocationUnitOfWork(Protocol):
     def prepare_provider_context_use(self, attempt, *, execution_lease, now, retry=False): ...
     def read_provider_context_use_grant(self, invocation_id, handoff_ordinal): ...
     def read_provider_context_use(self, run_id, request_id): ...
+    def verify_provider_context_use_terminal(self, run_id, request_id, checkpoint, lease, now): ...
 
     def hand_off_provider_invocation(
         self,
@@ -446,6 +447,13 @@ class ProviderInvocationCoordinator:
 
     def read_provider_context_use(self, run_id, request_id):
         return self._uow.read_provider_context_use(run_id, request_id)
+
+    def verify_context_use_terminal(self, run_id, request_id, *, checkpoint, execution_lease):
+        if not self.context_use_required:
+            raise ValueError("context_use_terminal_authority_required")
+        return self._uow.verify_provider_context_use_terminal(
+            run_id, request_id, checkpoint, execution_lease, self._clock()
+        )
 
     def read_provider_budget(self, run_id: RunId) -> BudgetSnapshot:
         """Expose the durable budget authority without leaking the UoW."""

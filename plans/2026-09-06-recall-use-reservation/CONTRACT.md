@@ -170,3 +170,21 @@ its version string. This existing uv install has empty archive_info; the actual
 wheel SHA and every installed package file are compared, not an invented metadata
 archive hash. Same-owner concurrent coroutines prove only one handoff for
 that owner; independent dual-owner fencing remains a separately labelled control.
+
+## Terminal consumption witness (first execution correction)
+
+The original UNROUTED/no-tool terminal branch requires a Host no-recall sink.
+The first real consumer run exposed that a nonempty typed use must not emit that
+no-recall assertion. The successor now verifies, in one SDK read transaction,
+the exact durable response_reserved checkpoint and SUCCEEDED consumed handoff,
+actual grant/receipt links, full prepared request/intents/scope/Run/turn/continuation,
+and stored response bytes/digest. Confirmed-not-started retry may use ordinal2.
+Expiry is checked at the recorded handoff, not the later response/reopen time.
+Only after this verification does the typed branch omit the old sink. It retains
+UNROUTED and no route receipt; empty typed intents attest only this request's lack
+of typed fragments, not a task route or universal no-recall decision. Generic
+schema1 no-recall sink and actual tool preflight/route-required barriers are unchanged.
+New source controls cover response_reserved reopen, response after grant expiry,
+foreign request/scope, missing durable grant and a different response with a valid
+local checkpoint hash. These controls are source-owned storage tests, not fake
+public Memory evidence. Public Memory receipts still come from actual Memory calls.

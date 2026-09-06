@@ -40,6 +40,7 @@ with zipfile.ZipFile(wheel) as archive:
 OLD_SEED = r"""
 import asyncio, os, sys
 import simple_harness as h
+from simple_harness.runtime import RunStart
 from simple_harness.providers import ProviderResponse,ProviderUsage
 assert h.__version__ == '0.7.3'
 class Provider:
@@ -59,7 +60,7 @@ async def main():
     runtime._uow.database.connection.execute('PRAGMA journal_mode=WAL')
     runtime._uow.database.connection.execute('PRAGMA wal_autocheckpoint=0')
     client=h.RunClient(runtime)
-    value=h.RunStart(h.ExecutionSessionId('legacy-session'),h.RunId('legacy-run'),h.RequestId('legacy-request'),
+    value=RunStart(h.ExecutionSessionId('legacy-session'),h.RunId('legacy-run'),h.RequestId('legacy-request'),
         turn_id='legacy-turn',tool_catalog_generation=1,
         input={'messages':[{'role':'user','content':'legacy fixture'}],
                'capability_snapshot':{'tools':[]},'max_output_tokens':128})

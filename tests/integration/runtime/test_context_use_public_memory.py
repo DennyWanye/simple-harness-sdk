@@ -11,8 +11,10 @@ import hashlib
 import json
 
 import pytest
+from simple_harness_memory import MemoryValidationError
 
 import simple_harness as h
+from simple_harness.runtime import RunStart
 
 from .context_use_public_fixture import PublicMemoryFixture
 
@@ -137,11 +139,11 @@ def test_actual_two_item_public_consumer_and_reopen(tmp_path, mode):
         try:
             await fixture.seed()
             fragments = await fixture.recall()
-            assert {f.recall_binding.item_id for f in fragments} == set(fixture.created)
+            assert {f.source_ref for f in fragments} == set(fixture.created)
             if mode == "two_results":
                 second = await fixture.recall(key_suffix="second")
                 assert second[0].recall_binding.result_id != fragments[0].recall_binding.result_id
-                assert {f.recall_binding.item_id for f in second} == set(fixture.created)
+                assert {f.source_ref for f in second} == set(fixture.created)
                 fragments = (fragments, second)
 
                 async def suppress_after_complete_bundle():
@@ -163,7 +165,7 @@ def test_actual_two_item_public_consumer_and_reopen(tmp_path, mode):
                 run_context_authority=snapshot,
                 recall_context_use_authority=fixture,
             )
-            start = h.RunStart(
+            start = RunStart(
                 h.ExecutionSessionId("session-1"),
                 h.RunId(fixture.run_id),
                 h.RequestId("root-request"),
@@ -187,7 +189,7 @@ def test_actual_two_item_public_consumer_and_reopen(tmp_path, mode):
                     assert result.state.value != "completed"
                     assert not fixture.receipts
                     return
-                assert result.state.value == "completed"
+                assert result.state.value == "completed", result
                 assert len(provider.calls) == 1
                 before = provider.client.read_provider_context_use(
                     start.run_id, h.RequestId(fixture.run_id + ":provider-turn:1")
@@ -218,7 +220,7 @@ def test_actual_two_item_public_consumer_and_reopen(tmp_path, mode):
                 assert len(provider.calls) == 1
                 # New attempt cannot borrow the old receipt after suppression.
                 original = fixture.requests[0]
-                with pytest.raises(Exception):
+                with pytest.raises(MemoryValidationError, match="^RECALL_AUTHORITY_STALE$"):
                     await fixture.manager.authorize_recall_context_use(
                         principal=fixture.principal,
                         request=dc.replace(
@@ -308,7 +310,7 @@ def test_real_public_continue_command_uses_accepted_turn_not_continuation_label(
                     await asyncio.sleep(0.01)
                 await runtime.wait_idle(run_id)
                 assert current.receipt.state.value == "applied"
-                assert client.query(run_id).state.value == "completed"
+                assert client.query(run_id).state.value == "completed", client.query(run_id)
                 assert len(provider.calls) == 1
                 view = provider.calls[0][1]
                 assert view.turn_id == fixture.turn_id

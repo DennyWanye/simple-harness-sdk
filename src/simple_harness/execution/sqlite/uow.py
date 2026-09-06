@@ -6494,6 +6494,11 @@ class SqliteExecutionUnitOfWork:
 
         return view(self, run_id, request_id)
 
+    def verify_provider_context_use_terminal(self, run_id, request_id, checkpoint, lease, now):
+        from .context_use import verify_terminal
+
+        return verify_terminal(self, run_id, request_id, checkpoint, lease, now)
+
     def read_provider_invocation(self, invocation_id: str) -> ProviderInvocationRecord | None:
         row = self.database.connection.execute(
             "SELECT * FROM provider_invocations WHERE invocation_id = ?",

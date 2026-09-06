@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from simple_harness.contracts import canonical_json
-from simple_harness.runtime.recall_protocol_v4 import (
+from simple_harness.runtime.memory_protocol import (
     ContextFragmentBindingV2,
     ContextFragmentV2,
     RecallContextUseAuthorizationRequestV1,

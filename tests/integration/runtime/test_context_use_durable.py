@@ -136,13 +136,14 @@ async def setup(tmp_path):
     return fixture, database, uow, lease, request, attempt, provider
 
 
-def coordinator(uow, fixture, provider):
+def coordinator(uow, fixture, provider, *, clock=time.time):
     return ProviderInvocationCoordinator(
         uow=uow,
         provider=provider,
         budget_policy=BudgetPolicy(),
         estimator=FrozenPriceEstimator("fixture-price", "model", 0, 0),
         context_use_authority=fixture,
+        clock=clock,
     )
 
 
@@ -201,7 +202,7 @@ def test_original_time_and_atomic_claim_after_real_authorization(tmp_path, monke
             fixture.after_authorize = None
             if failure == "claim_transaction":
                 monkeypatch.setattr(SqliteExecutionUnitOfWork, "_audit_operation_head", original)
-            with pytest.raises(Exception, match="conflict"):
+            with pytest.raises(ValueError, match="^context_use_checkpoint_identity_differs$"):
                 await invoke(
                     uow,
                     fixture,
@@ -385,6 +386,86 @@ def test_actual_claimed_continuation_cannot_borrow_root_receipt(tmp_path):
             assert view.continuation_id == "continuation-2"
             assert view.receipts[0].receipt_id != root.receipt_id
             assert len(provider.calls) == 2
+        finally:
+            db.close()
+            await fixture.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "change", ["reopen", "late", "request", "scope", "response", "missing_grant"]
+)
+def test_terminal_requires_actual_consumed_bundle_and_response(tmp_path, change):
+    async def run():
+        fixture, db, uow, lease, request, attempt, provider = await setup(tmp_path)
+        try:
+            await invoke(uow, fixture, provider, lease, request, attempt)
+            # Actual persisted Provider response, never an expected-output grant.
+            view = coordinator(uow, fixture, provider).read_provider_context_use(
+                h.RunId(fixture.run_id), request.request_id
+            )
+            record = uow.read_provider_invocation(view.invocation_id)
+            checkpoint = DurableReactCheckpoint(uow, clock=time.time)
+            state, version = checkpoint.load_or_create(h.RunId(fixture.run_id), lease)
+            response = h.thaw_json(record.response_json)
+            if change == "response":
+                response["message"]["content"] = "foreign response"
+            state = dc.replace(
+                state,
+                phase="response_reserved",
+                provider_response_snapshot=response,
+                provider_response_digest=digest(response),
+            )
+            checkpoint.cas(h.RunId(fixture.run_id), lease, version, state)
+            if change == "missing_grant":
+                # Source-owned corruption control; public consumer never reads/writes SQL.
+                db.connection.execute("DROP TRIGGER provider_context_use_attempt_no_delete")
+                db.connection.execute("DROP TRIGGER provider_context_use_receipt_no_delete")
+                db.connection.execute("DELETE FROM provider_context_use_receipt_bindings")
+                db.connection.execute("DELETE FROM provider_context_use_attempts")
+            db.close()
+            db = Database.open(tmp_path / "execution.sqlite")
+            uow = SqliteExecutionUnitOfWork(db)
+            authority = fixture
+            if change == "scope":
+
+                class WrongScope:
+                    authority_scope_ref = "different-scope"
+
+                    async def authorize_recall_context_use(self, request):
+                        raise AssertionError("terminal must not request a new grant")
+
+                authority = WrongScope()
+            now = time.time()
+            if change == "late":
+                lease = uow.renew_runtime_lease(lease, now=now, lease_ttl_seconds=1000)
+                now = view.receipts[0].expires_at + 1
+            dispatch = coordinator(uow, authority, provider, clock=lambda: now)
+            target = h.RequestId("foreign-request") if change == "request" else request.request_id
+            if change in {"reopen", "late"}:
+                result = dispatch.verify_context_use_terminal(
+                    h.RunId(fixture.run_id),
+                    target,
+                    checkpoint=state.to_json(),
+                    execution_lease=lease,
+                )
+                assert result == view and len(provider.calls) == 1
+            else:
+                reason = {
+                    "request": "context_use_terminal_invocation_unconsumed",
+                    "scope": "context_use_terminal_grant_missing_or_foreign",
+                    "response": "context_use_terminal_response_differs",
+                    "missing_grant": "context_use_terminal_grant_missing_or_foreign",
+                }[change]
+                with pytest.raises(ValueError, match="^" + reason + "$"):
+                    dispatch.verify_context_use_terminal(
+                        h.RunId(fixture.run_id),
+                        target,
+                        checkpoint=state.to_json(),
+                        execution_lease=lease,
+                    )
+                assert len(provider.calls) == 1
         finally:
             db.close()
             await fixture.close()

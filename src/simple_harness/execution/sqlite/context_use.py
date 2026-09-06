@@ -78,7 +78,7 @@ def read_attempt(connection, invocation_id, ordinal):
     return attempt
 
 
-def require_live(uow, connection, attempt, lease, now, *, retry=False):
+def require_live(uow, connection, attempt, lease, now, *, retry=False, phase="provider_reserved"):
     from .context_use_requirements import require
 
     require(connection, attempt.run_id, attempt.authority_scope_ref)
@@ -109,7 +109,7 @@ def require_live(uow, connection, attempt, lease, now, *, retry=False):
         actual.update(handoff_ordinal=original.handoff_ordinal, requested_at=original.requested_at)
     if (
         actual != expected
-        or payload.get("phase") != "provider_reserved"
+        or payload.get("phase") != phase
         or payload.get("active_turn_id") != attempt.turn_id
         or payload.get("active_continuation_id") != attempt.continuation_id
         or payload.get("context_use_authority_scope") != attempt.authority_scope_ref
@@ -255,4 +255,45 @@ def view(uow, run_id, request_id):
             if read_attempt(connection, invocation_id, 1) is not None:
                 raise ValueError("context_use_grant_missing")
             return None
+        return ProviderContextUseViewV1.from_grant(record, grant)
+
+
+def verify_terminal(uow, run_id, request_id, checkpoint, lease, now):
+    """Verify the consumed invocation, not a caller attestation or a new use grant."""
+    invocation_id = provider_invocation_id(run_id, request_id)
+    with uow.database.transaction(read_only=True) as connection:
+        stored = uow.read_react_checkpoint(run_id.value)
+        if stored is None or thaw_json(stored.checkpoint) != checkpoint:
+            raise ValueError("context_use_terminal_checkpoint_differs")
+        record = uow.read_provider_invocation(invocation_id)
+        if (
+            record is None
+            or record.state.value != "succeeded"
+            or record.handoff_attempt < 1
+            or record.handed_off_at is None
+            or record.response_json is None
+        ):
+            raise ValueError("context_use_terminal_invocation_unconsumed")
+        grant = read_grant(connection, invocation_id, record.handoff_attempt)
+        if grant is None or grant.attempt.authority_scope_ref != uow._context_use_scope:
+            raise ValueError("context_use_terminal_grant_missing_or_foreign")
+        require_live(
+            uow,
+            connection,
+            grant.attempt,
+            lease,
+            now,
+            retry=grant.attempt.handoff_ordinal > 1,
+            phase="response_reserved",
+        )
+        response = thaw_json(record.response_json)
+        if (
+            record.request_fingerprint != grant.attempt.request_fingerprint
+            or response != checkpoint.get("provider_response_snapshot")
+            or hashlib.sha256(canonical_json(response).encode()).hexdigest()
+            != checkpoint.get("provider_response_digest")
+        ):
+            raise ValueError("context_use_terminal_response_differs")
+        # Expiry applies at the actual consumed handoff, never at a late response/reopen.
+        grant.validate_handoff(record.handed_off_at)
         return ProviderContextUseViewV1.from_grant(record, grant)
