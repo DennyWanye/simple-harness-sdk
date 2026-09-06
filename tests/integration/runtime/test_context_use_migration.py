@@ -130,8 +130,9 @@ def test_nonempty_wal_migrate_reopen_exact_backup_and_old_binary_reject(tmp_path
     assert rows(backup) == original == rows(path)
     before = hash_bytes(backup)
     assert migrate_execution_v7_to_v8(path, backup_path=backup) == receipt
-    with Database.open(path) as current:
-        assert current.schema_version == 8
+    # This public entry point still creates exact8, not the current9 runtime.
+    with pytest.raises(Exception, match="requires schema v9"):
+        Database.open(path)
     assert rows(path) == original and hash_bytes(backup) == before
     old = run_old(
         """import sys
@@ -149,8 +150,8 @@ else: raise AssertionError('old binary accepted execution8')
 
 def test_fresh_current_noop_and_unknown_catalog_readonly_refusal(tmp_path):
     fresh = tmp_path / "fresh.sqlite"
-    with Database.open(fresh):
-        pass
+    from .test_short_context_migration import old
+    old("0.7.4", "from simple_harness.execution.sqlite import Database\nwith Database.open(sys.argv[1]) as db: assert db.schema_version == 8", fresh)
     assert migrate_execution_v7_to_v8(fresh, backup_path=tmp_path / "unused.backup") is None
     assert not (tmp_path / "unused.backup").exists()
     path = legacy(tmp_path)

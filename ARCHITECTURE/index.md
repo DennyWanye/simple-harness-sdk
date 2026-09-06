@@ -1,3 +1,17 @@
+<!-- Updated 2026-09-06 -->
+
+## Exact short Context identity successor (source scope)
+
+H074 requires a positive ContextFragmentV2 source_revision even though the public
+short selected item correctly hasNone. Isolated H075 successor now requires only
+None for SHORT_HORIZON, preserves strict positive nonshort and existing hash domain.
+Explicit execution9 descriptor/backup migration isolates old binaries before durable
+business reads. Wire8PASS and separate migration7PASS; actual Host11groups short
+normal physical-guard allow and independent-source deny2PASS in source overlay.
+Old artifacts/user data unchanged. Not yet a frozen/installed H075 or full Host
+acceptance. [Contract and remaining bounds](../plans/2026-09-06-short-context-revision/CONTRACT.md),
+[source evidence](../plans/2026-09-06-short-context-revision/RESULTS.md).
+
 <!--
 SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0
