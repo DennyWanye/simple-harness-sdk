@@ -3,18 +3,20 @@
 SQL below is SDK-owned forensic oracle, never an API required from Host.
 """
 import asyncio
+import hashlib
 from dataclasses import replace
 
 import pytest
 
 from simple_harness import MandatoryContextActionRequired, MandatoryContextRejectionV1
-from simple_harness.contracts import CallId, RequestId, RunId, thaw_json
+from simple_harness.contracts import CallId, RequestId, RunId, thaw_json, canonical_json
 from simple_harness.contracts.messages import Message, MessageRole
-from simple_harness.execution.context_authority import ContextRouteReceipt
+from simple_harness.execution.context_authority import ContextRouteReceipt, RunContextSnapshot
+from simple_harness.execution.provider_invocations import provider_request_fingerprint
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.budget import FrozenPriceEstimator
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
-from simple_harness.providers import CancelToken, ProviderResponse, ProviderToolCall, ProviderToolSpec, ProviderUsage
+from simple_harness.providers import CancelToken, ProviderRequest, ProviderResponse, ProviderToolCall, ProviderToolSpec, ProviderUsage
 from simple_harness.runtime import EffectBatchExecutor, RuntimeServices, SqliteContextPort
 from simple_harness.runtime.drivers.react_loop import ReActLoop, ReActRunInput, AgentLoopCollaborator
 from simple_harness.runtime.task_scope_protocol import TaskScopeRoute
@@ -40,10 +42,16 @@ def test_precise_rejection_and_bounded_failure(tmp_path, error):
     asyncio.run(_case(tmp_path, error=error))
 
 
-async def _case(tmp_path, *, boundary=None, error=None):
+@pytest.mark.parametrize("tamper", ["missing", "subject", "intents"])
+def test_protected_repair_corrupt_attestation_prevents_second_send(tmp_path, tamper):
+    asyncio.run(_case(tmp_path, tamper=tamper))
+
+
+async def _case(tmp_path, *, boundary=None, error=None, tamper=None):
     path = tmp_path / "execution.db"
     armed = [boundary]
     sends = []
+    tampered = []
     class Physical(Provider):
         async def invoke(self, request, *, cancel):
             sends.append(request.request_id.value)
@@ -65,12 +73,37 @@ async def _case(tmp_path, *, boundary=None, error=None):
             return replace(super().resolve(run_id), estimator=FrozenPriceEstimator("fixture-price", "model", 1, 1))
     class Store(SqliteExecutionUnitOfWork):
         def cas_react_checkpoint(self, **values):
+            payload = values["checkpoint"]
+            if (tamper and not tampered and payload["schema_version"] == 8
+                    and payload["phase"] == "provider_reserved"
+                    and payload["provider_turns_reserved_total"] == 2
+                    and payload["context_authority_receipt"] is not None):
+                # Deliberate SDK-owned durable corruption AFTER one real repair.
+                # Rebind storage hashes so this tests attestation, not checksum.
+                tampered.append(tamper)
+                payload = dict(payload)
+                if tamper == "missing":
+                    payload.update(context_authority_receipt=None, context_authority_receipt_hash=None)
+                else:
+                    receipt = dict(payload["context_authority_receipt"])
+                    receipt["recall_subject" if tamper == "subject" else "recall_intents_hash"] = (
+                        "foreign-subject" if tamper == "subject" else "f" * 64)
+                    payload.update(context_authority_receipt=receipt,
+                        context_authority_receipt_hash=hashlib.sha256(canonical_json(receipt).encode()).hexdigest())
+                values.update(checkpoint=payload,
+                    checkpoint_hash=hashlib.sha256(canonical_json(payload).encode()).hexdigest())
             result = super().cas_react_checkpoint(**values)
             if armed[0] == values["checkpoint"]["phase"]:
                 armed[0] = None
                 raise PowerLoss()
             return result
     class Coordinator(ProviderInvocationCoordinator):
+        async def prepare_context_use_terminal(self, run_id, request, *, checkpoint, execution_lease):
+            await super().prepare_context_use_terminal(run_id, request,
+                checkpoint=checkpoint, execution_lease=execution_lease)
+            await Decision().record_no_recall(run_id=run_id,
+                provider_turn_ordinal=checkpoint["provider_turns_reserved_total"],
+                request_fingerprint=provider_request_fingerprint(request))
         async def invoke(self, *args, **kwargs):
             result = await super().invoke(*args, **kwargs)
             if armed[0] == "physical_success":
@@ -113,24 +146,38 @@ async def _case(tmp_path, *, boundary=None, error=None):
     database, store = open_services()
     store.create_with_start_snapshot(execution_session_id="session", run_id="run-1",
         request_id="root", profile_key="agent.general", driver_kind="react",
-        snapshot={"catalog_generation": 1}, event_id="created", now=1.)
+        snapshot={"catalog_generation": 1, "turn_id": "actual-turn"}, event_id="created", now=1.)
     _, lease = store.claim_runtime_activation(run_id="run-1", owner_id="owner",
         namespace="runtime.kernel", now=2., lease_ttl_seconds=100.)
     fence = await store.acquire(RunId("run-1"), lease, now=2.)
     async def drive():
-        coordinator = Coordinator(uow=store, resolver=PricedResolver(physical), clock=lambda: 3.)
+        class UseAuthority:
+            authority_scope_ref = "fixture-typed-store"
+            async def authorize_recall_context_use(self, request):
+                raise AssertionError("explicit empty no-recall attestation has no Memory requests")
+        coordinator = Coordinator(uow=store, resolver=PricedResolver(physical), clock=lambda: 3.,
+            context_use_authority=UseAuthority() if tamper else None)
         context = Context(database, clock=lambda: 3.)
+        class SnapshotAuthority:
+            async def prepare_snapshot(self, value):
+                messages = context.load(value.run_id).messages
+                request = ProviderRequest(RequestId(value.provider_request_id), messages,
+                    tools=(ProviderToolSpec("prospective_ack", "ACK", {"type": "object"}),))
+                return RunContextSnapshot(f"actual-snapshot-{value.provider_turn_ordinal}", value.run_id.value,
+                    value.provider_turn_ordinal, value.prior_context_revision, value.provider_turn_ordinal,
+                    {}, request.messages, request.tools, None, None, {}, provider_request_fingerprint(request),
+                    schema_version=2, recall_subject="actual-owner", recall_intents=())
         auth, reconcile = AckAuthority(), Reconciliation()
         effects = EffectExecutor(uow=store, registry=registry, authorization=auth,
             reconciliation=reconcile, clock=lambda: 3.)
         services = RuntimeServices(provider=coordinator, tools=effects, authorization=auth,
             context=context, delivery=Noop(), tool_reconciliation=reconcile,
             reconciliation=Noop(), provider_reconciliation=Noop(), react_checkpoint=store,
-            runtime_decision_sink=Decision())
+            runtime_decision_sink=Decision(), run_context_authority=SnapshotAuthority() if tamper else None)
         return await ReActLoop(collaborator=AgentLoopCollaborator(limits=TerminationLimits(max_turns=6)),
             effects=EffectBatchExecutor(), clock=lambda: 3.).run(
                 ReActRunInput(RunId("run-1"), RequestId("root"),
-                    tools=(ProviderToolSpec("prospective_ack", "ACK", {"type": "object"}),)),
+                    tools=(ProviderToolSpec("prospective_ack", "ACK", {"type": "object"}),), turn_id="actual-turn"),
                 services=services, execution_lease=lease, run_fence=fence, cancel=CancelToken(),
                 initial_messages=(Message(MessageRole.USER, "28+15"),))
     try:
@@ -140,6 +187,13 @@ async def _case(tmp_path, *, boundary=None, error=None):
             assert len(sends) == 1
             database.close()
             database, store = open_services()
+        if tamper:
+            with pytest.raises(ValueError, match="context_use_snapshot_attestation_(missing|differs)"):
+                await drive()
+            assert tampered == [tamper] and len(sends) == 1
+            payload = thaw_json(store.read_react_checkpoint("run-1").checkpoint)
+            assert payload["schema_version"] == 8 and len(payload["mandatory_context_repairs"]) == 1
+            return
         if error:
             expected = {"exhausted": "mandatory_context_action_repair_exhausted",
                         "foreign": "mandatory_context_rejection_checkpoint_differs",
