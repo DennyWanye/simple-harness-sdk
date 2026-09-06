@@ -8,6 +8,10 @@ import sys
 
 sys.path.insert(0, sys.argv[1])
 sys.path.insert(0, str(Path(__file__).parent))
+import simple_harness
+from importlib.metadata import version
+assert simple_harness.__version__ == version('simple-harness-sdk') == '0.7.5'
+assert Path(simple_harness.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve())
 from test_react_sqlite_runtime import (
     AuthorizationScenario, PhysicalToolCounter, authorization_runtime, start_authorization_wait,
 )
