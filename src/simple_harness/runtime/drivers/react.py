@@ -154,9 +154,10 @@ class ReActDriver:
                 ):
                     continue
                 if getattr(invocation.services.provider, "context_use_required", False):
-                    active_turn_id = continuation_payload.get("context_use_turn_id")
-                    if type(active_turn_id) is not str or not active_turn_id:
+                    origin_turn = continuation_payload.get("context_use_turn_id")
+                    if type(origin_turn) is not str or not origin_turn:
                         raise ValueError("context_use_legacy_continuation_turn_unverified")
+                    active_turn_id = cast(str, origin_turn)
                     active_continuation_id = continuation.continuation_id
                 conversation_value = continuation_payload.get("conversation")
                 if not isinstance(conversation_value, dict):
@@ -167,7 +168,7 @@ class ReActDriver:
                 ):
                     # New typed snapshot authority prepares the final complete request.
                     # This is only the SDK-admitted current USER, never a recall carrier.
-                    continuation_messages = (conversation.message,)
+                    continuation_messages: tuple[Message, ...] = (conversation.message,)
                 else:
                     continuation_messages = _continuation_prepared_messages(
                         continuation_payload.get("prepared_context"),

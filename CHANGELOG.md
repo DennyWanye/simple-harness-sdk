@@ -5,6 +5,15 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.7.4 — 2026-09-06 (isolated candidate)
+
+- Bind real Memory use receipts to immutable Provider request/time, atomic claim
+  and consumed handoff; exact replay and confirmed-not-started fresh grants.
+- Add typed Context sidecars, payload-free use views, admission scope pins and
+  terminal/recovery checks without synthesizing task/no-recall route receipts.
+- Explicit backup-first execution schema7→8 migration; old binaries refuse8.
+  Host migration/wiring is separate; no user data is implicitly upgraded.
+
 ## 0.7.3 — local successor candidate
 
 ### Added

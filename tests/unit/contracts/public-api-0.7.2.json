@@ -1,5 +1,5 @@
 {
-  "version": "0.7.4",
+  "version": "0.7.2",
   "simple_harness": [
     "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
@@ -303,25 +303,7 @@
     "verify_procedure_observation_authority",
     "verify_prospective_signal_authority",
     "verify_memory_mutation_apply_receipt",
-    "parse_memory_mutation_plan",
-    "CommandOperationAuditPageV1",
-    "ContextStageOperationAuditPageV1",
-    "ContextStageOperationAuditPort",
-    "CommandOperationAuditPort",
-    "RunOperationAuditPort",
-    "RunOperationAuditSnapshotV1",
-    "RunTerminalAuditEvidenceV1",
-    "RunOperationAuditPageV1",
-    "RunOperationAuditV1",
-    "RunAuditUsageV1",
-    "RunAuditUnavailable",
-    "RecallContextUseIntentV1",
-    "ProviderContextUseAttemptV1",
-    "ProviderContextUseGrantV1",
-    "ProviderContextUseViewV1",
-    "RecallContextUseAuthorityPort",
-    "migrate_execution_v7_to_v8",
-    "ExecutionContextUseUpgradeReceiptV1"
+    "parse_memory_mutation_plan"
   ],
   "simple_harness.contracts": [
     "JsonPrimitive",
@@ -668,14 +650,7 @@
     "verify_procedure_observation_authority",
     "verify_prospective_signal_authority",
     "verify_memory_mutation_apply_receipt",
-    "parse_memory_mutation_plan",
-    "RecallContextUseIntentV1",
-    "ProviderContextUseAttemptV1",
-    "ProviderContextUseGrantV1",
-    "ProviderContextUseViewV1",
-    "RecallContextUseAuthorityPort",
-    "migrate_execution_v7_to_v8",
-    "ExecutionContextUseUpgradeReceiptV1"
+    "parse_memory_mutation_plan"
   ],
   "simple_harness.testing.arm64_candidate": [
     "Arm64CandidateGateError",

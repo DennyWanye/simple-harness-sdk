@@ -6401,7 +6401,7 @@ class SqliteExecutionUnitOfWork:
                 stored_context = self.read_react_checkpoint(record.run_id.value)
                 protected_checkpoint = (
                     stored_context is not None
-                    and _thaw_json(stored_context.checkpoint).get("schema_version") == 7
+                    and cast(dict, _thaw_json(stored_context.checkpoint)).get("schema_version") == 7
                 )
                 if (
                     protected_checkpoint

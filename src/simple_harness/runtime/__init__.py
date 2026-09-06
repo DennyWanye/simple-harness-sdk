@@ -395,7 +395,7 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_EXPORT_TO_MODULE))
 
 
-__all__ = (
+__all__: tuple[str, ...] = (
     "CONTEXT_ASSEMBLY_SCHEMA_VERSION",
     "CONTEXT_FRAGMENT_SCHEMA_VERSION",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",

@@ -405,7 +405,7 @@ class RunContextSnapshot:
         return _sha256(self.request_payload())
 
     def receipt_json(self) -> dict[str, JsonValue]:
-        result = {
+        result: dict[str, JsonValue] = {
             "schema_version": self.schema_version,
             "snapshot_id": self.snapshot_id,
             "run_id": self.run_id,
@@ -422,7 +422,7 @@ class RunContextSnapshot:
             result["recall_subject"] = self.recall_subject
             result["recall_intents_hash"] = use_hash(
                 "simple-harness/context-recall-intents/v1",
-                [i.to_json() for i in self.recall_intents],
+                [i.to_json() for i in cast(tuple, self.recall_intents)],
             )
         return result
 

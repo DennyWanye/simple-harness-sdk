@@ -380,7 +380,7 @@ class TerminationState:
         return self.before_tool_batch((tool_name,), limits, now=now, budget=budget)
 
     def to_json(self) -> dict[str, JsonValue]:
-        result = {
+        result: dict[str, JsonValue] = {
             "schema_version": 6,
             "started_at": self.started_at,
             "last_observed_at": self.last_observed_at,
@@ -530,8 +530,8 @@ class TerminationState:
             ),
             context_snapshot_bindings=tuple(sorted(snapshot_bindings)),
             source_schema_version=source_schema_version,
-            context_use_authority_scope=value.get("context_use_authority_scope"),
-            context_use_attempt=value.get("context_use_attempt"),
+            context_use_authority_scope=_optional_string(value.get("context_use_authority_scope")),
+            context_use_attempt=cast(JsonValue, value.get("context_use_attempt")),
             active_turn_id=_optional_string(value.get("active_turn_id")),
             active_continuation_id=_optional_string(value.get("active_continuation_id")),
         )

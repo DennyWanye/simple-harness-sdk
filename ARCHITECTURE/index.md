@@ -11,14 +11,16 @@ Isolated successor from frozen H073 `0282fa98`: schema2 typed Context intents,
 original request/time checkpoint, actual Memory authority port and atomic
 receipt/Provider claim association, existing handoff CAS and new-grant retry,
 payload-free public view, explicit execution7→8 WAL-aware migration are implemented
-for first source review. Tests are NOT_RUN; no candidate artifact, native/Host
-default wiring or formal401 PASS is claimed. Generic no-Memory behavior is retained;
+with Dirac scoped source ACCEPT at69db778. New bounded source batch32PASS,
+separate migration3PASS and adjacent33PASS; retained initial failures are documented.
+Isolated0.7.4 candidate packaging follows; no Host default/native/formal401 PASS.
+Generic no-Memory behavior is retained;
 missing/legacy typed carrier is not an empty attestation. See
 [contract](../plans/2026-09-06-recall-use-reservation/CONTRACT.md) and
 [results](../plans/2026-09-06-recall-use-reservation/RESULTS.md).
 
 
-记录 Simple Harness SDK 的架构生产事实。当前 source candidate 版本权威为 `0.7.2`。Human Memory S1
+记录 Simple Harness SDK 的架构生产事实。本叶后继 source candidate 为 `0.7.4`（冻结0.7.3不变）。Human Memory S1
 已经把自动 pre-Provider recall 改为显式的同 Run route seam：每个新的 Provider turn 只能消费 Host 经
 `RunContextAuthorityPort` 返回并由 SDK 校验、冻结的 Context snapshot；同批 route-required effect 在
 route receipt 尚未可见时会在 ledger/handoff 前拒绝。fresh execution schema v7 持久绑定

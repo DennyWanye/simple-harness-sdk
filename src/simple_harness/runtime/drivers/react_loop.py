@@ -428,10 +428,10 @@ class ReActLoop:
                         if snapshot.schema_version != 2 or snapshot.recall_intents is None:
                             raise ValueError("context_use_snapshot_attestation_missing")
                         attempt = ProviderContextUseAttemptV1(
-                            scope,
-                            snapshot.recall_subject,
+                            cast(str, scope),
+                            cast(str, snapshot.recall_subject),
                             value.run_id.value,
-                            state.active_turn_id,
+                            cast(str, state.active_turn_id),
                             state.active_continuation_id,
                             provider_request_id,
                             state.provider_turns_reserved_total,
@@ -472,7 +472,7 @@ class ReActLoop:
                 if state.provider_request_snapshot is None:
                     raise RuntimeError("provider_reserved checkpoint lacks frozen request")
                 request = provider_request_from_json(
-                    RequestId(state.provider_request_id),
+                    RequestId(cast(str, state.provider_request_id)),
                     state.provider_request_snapshot,
                 )
                 if provider_request_fingerprint(request) != state.provider_request_fingerprint:
@@ -607,12 +607,13 @@ class ReActLoop:
                     state,
                     value.run_id,
                     provider_request_from_json(
-                        RequestId(state.provider_request_id), state.provider_request_snapshot
+                        RequestId(cast(str, state.provider_request_id)),
+                        state.provider_request_snapshot,
                     ),
                 )
                 services.provider.verify_context_use_terminal(
                     value.run_id,
-                    RequestId(state.provider_request_id),
+                    RequestId(cast(str, state.provider_request_id)),
                     checkpoint=state.to_json(),
                     execution_lease=execution_lease,
                 )

@@ -381,7 +381,7 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | _RUNTIME_EXPORTS)
 
 
-__all__ = (
+__all__: tuple[str, ...] = (
     "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
     "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
