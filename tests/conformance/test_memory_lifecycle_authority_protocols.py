@@ -472,3 +472,35 @@ def test_lifecycle_authority_contracts_are_public() -> None:
         assert getattr(simple_harness, name) is getattr(runtime, name)
         assert name in simple_harness.__all__
         assert name in runtime.__all__
+
+
+def test_rescheduled_time_authority_persisted_roundtrip_and_exact_rejections(tmp_path) -> None:
+    import json
+    intent = _prospective_intent(transition_from=ProspectiveLifecycleState.RESCHEDULED)
+    authority = issue_prospective_signal_authority(intent, authority_id="rescheduled-time-1",
+        issued_at=100.0, expires_at=120.0, nonce="rescheduled-time-nonce", issuer_ref="host:prospective-time/v1")
+    reference = ProspectiveSignalAuthorityRef.from_authority(authority)
+    path = tmp_path / "authority.json"
+    path.write_text(json.dumps({"authority": authority.to_json(), "reference": reference.to_json()}))
+    saved = json.loads(path.read_text())
+    restored = ProspectiveSignalAuthority.from_json(saved["authority"])
+    restored_ref = ProspectiveSignalAuthorityRef.from_json(saved["reference"])
+    assert restored == authority
+    assert restored_ref == reference
+    assert restored.intent.transition_from is ProspectiveLifecycleState.RESCHEDULED
+    assert asyncio.run(verify_prospective_signal_authority(restored_ref,
+        _ProspectiveAuthorityPort(restored), current_time=101.0)) == authority
+    for state in (ProspectiveLifecycleState.TRIGGERED, ProspectiveLifecycleState.COMPLETED,
+                  ProspectiveLifecycleState.CANCELLED, ProspectiveLifecycleState.EXPIRED):
+        with pytest.raises(ValueError, match="time_due must bind"):
+            replace(intent, transition_from=state)
+    with pytest.raises(ValueError, match="time_due must bind"):
+        replace(intent, transition_to=ProspectiveLifecycleState.COMPLETED)
+    with pytest.raises(ValueError, match="observed_at precedes"):
+        replace(intent, observed_at=99.0)
+    with pytest.raises(ValueError, match="cannot carry acknowledgement outbox"):
+        replace(intent, outbox_id="not-a-timer", outbox_payload_hash="0"*64)
+    changed = authority.to_json()
+    changed["intent"]["transition_from"] = "pending"
+    with pytest.raises(ValueError):
+        ProspectiveSignalAuthority.from_json(changed)

@@ -149,10 +149,10 @@ class ProspectiveSignalIntent:
         if signal_kind is ProspectiveSignalKind.TIME_DUE:
             if not isinstance(self.trigger, ProspectiveTimeTrigger):
                 raise ValueError("time_due requires ProspectiveTimeTrigger")
-            if transition_from is not ProspectiveLifecycleState.PENDING or (
-                transition_to is not ProspectiveLifecycleState.TRIGGERED
-            ):
-                raise ValueError("time_due must bind pending to triggered")
+            if transition_from not in {
+                ProspectiveLifecycleState.PENDING, ProspectiveLifecycleState.RESCHEDULED
+            } or transition_to is not ProspectiveLifecycleState.TRIGGERED:
+                raise ValueError("time_due must bind pending or rescheduled to triggered")
             if observed_at < self.trigger.trigger_at:
                 raise ValueError("time_due observed_at precedes trigger_at")
         elif signal_kind is ProspectiveSignalKind.EVENT_OCCURRED:
