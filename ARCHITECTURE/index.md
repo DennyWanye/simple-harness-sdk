@@ -3,7 +3,7 @@
 SDK-owned immutable start-mode selection exposes the actual driver to kernel
 recording. Four new actual SQLite Runtime controls passed; opaque/subclass and
 custom Host-control drivers remain unverified. Source13abfe8, no schema change;
-new artifact/Host/native verification remain pending. [Evidence and scope](../plans/2026-09-06-native-driver-audit/RESULTS.md).
+H078 one offline artifact and installed3 checks plus Host4 checks passed and received scoped independent ACCEPT; native remains pending. [Evidence and scope](../plans/2026-09-06-native-driver-audit/RESULTS.md).
 
 <!-- Updated 2026-09-06 -->
 
