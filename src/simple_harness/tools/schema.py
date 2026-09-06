@@ -175,23 +175,41 @@ def _matches_type(value: Any, expected: str) -> bool:
     return False
 
 
+def _declared_type(raw: Any, path: str) -> tuple[str, bool]:
+    """Only a single type or one supported non-null type plus null.
+
+    Frozen JSON represents arrays as tuples; neither representation is rewritten.
+    General unions and combinator schemas remain unsupported.
+    """
+    if isinstance(raw, str) and raw in _SUPPORTED_TYPES:
+        return raw, False
+    if isinstance(raw, (list, tuple)) and len(raw) == 2:
+        if all(isinstance(item, str) for item in raw) and raw.count("null") == 1:
+            base = raw[1] if raw[0] == "null" else raw[0]
+            if base in _SUPPORTED_TYPES and base != "null":
+                return base, True
+    raise SchemaDefinitionError(
+        f"{path}.type: one supported type or one non-null type plus null is required"
+    )
+
+
 def _validate_schema_node(schema: Any, path: str) -> None:
     if not isinstance(schema, Mapping):
         raise SchemaDefinitionError(f"{path}: schema must be an object")
     unknown = set(schema) - _SUPPORTED_KEYWORDS
     if unknown:
         raise SchemaDefinitionError(f"{path}: unsupported keyword(s): {', '.join(sorted(unknown))}")
-    expected_type = schema.get("type")
-    if expected_type not in _SUPPORTED_TYPES:
-        raise SchemaDefinitionError(f"{path}.type: one supported type is required")
+    expected_type, nullable = _declared_type(schema.get("type"), path)
     if "enum" in schema:
         enum = schema["enum"]
         if not isinstance(enum, list) or not enum:
             raise SchemaDefinitionError(f"{path}.enum: non-empty array required")
         for item in enum:
-            if not _matches_type(item, expected_type):
+            if not ((nullable and item is None) or _matches_type(item, expected_type)):
                 raise SchemaDefinitionError(f"{path}.enum: item has wrong type")
-    if "const" in schema and not _matches_type(schema["const"], expected_type):
+    if "const" in schema and not (
+        (nullable and schema["const"] is None) or _matches_type(schema["const"], expected_type)
+    ):
         raise SchemaDefinitionError(f"{path}.const: value has wrong type")
 
     if expected_type == "object":
@@ -309,13 +327,15 @@ def normalize_public_progress_arguments(
 
 
 def _validate_value(value: Any, schema: Mapping[str, Any], path: str) -> None:
-    expected_type = schema["type"]
-    if not _matches_type(value, expected_type):
-        raise ArgumentsValidationError(path, f"expected {expected_type}")
+    expected_type, nullable = _declared_type(schema["type"], path)
+    if not ((nullable and value is None) or _matches_type(value, expected_type)):
+        raise ArgumentsValidationError(path, f"expected {schema['type']}")
     if "enum" in schema and not any(_json_equal(value, item) for item in schema["enum"]):
         raise ArgumentsValidationError(path, "value is not in enum")
     if "const" in schema and not _json_equal(value, schema["const"]):
         raise ArgumentsValidationError(path, "value does not equal const")
+    if nullable and value is None:
+        return
 
     if expected_type == "object":
         properties = schema.get("properties", {})

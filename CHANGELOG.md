@@ -1,3 +1,12 @@
+## 0.7.10 — bounded nullable Tool schemas (source candidate)
+
+Tool schema validation accepts exactly one existing non-null type paired with
+null, in either order. Required, enum/const, resource bounds and non-null branch
+constraints are preserved; the root remains a single object. No general unions,
+combinators, input normalization or execution schema changes. Host owns the
+unused-value interpretation. H079 artifacts remain unchanged; main owns the
+single successor build and installed validation.
+
 ## 0.7.8 — concrete start-mode driver selection (candidate)
 
 Add SDK-owned StartModeDriverRouter: select the actual ordinary or Host-control
