@@ -2,7 +2,9 @@
 
 Source06f19ec scoped review ACCEPT; one new persisted authority/ref conformance
 control passed0.09s. H076 accepts real RESCHEDULED→TRIGGERED for TIME_DUE only.
-Memory actual apply/reopen and installed candidate validation remain pending;
+Single H076 candidate a252109 built; installed H076/M616 actual pending/rescheduled
+apply/lostACK/expired reopen controls passed2 in1.71s at Hostd3f9720a.
+Final artifact/combination review pending; complete scheduler/native still open;
 H075 artifacts unchanged. No full suite/native claim.
 
 <!-- Updated 2026-09-06 -->
