@@ -25,7 +25,12 @@ expected='1a9ed5c95e6cddd4e0ccd85124320a6001008740a53213712fc89f3467cb4cd7'
 assert hashlib.sha256(wheel.read_bytes()).hexdigest()==expected
 owner=importlib.metadata.distribution('simple-harness-sdk')
 origin=json.loads(owner.read_text('direct_url.json'))
-assert origin['archive_info']['hashes']['sha256']==expected
+from urllib.parse import urlparse,unquote
+parsed=urlparse(origin['url'])
+assert parsed.scheme=='file' and pathlib.Path(unquote(parsed.path)).resolve()==wheel.resolve()
+# This frozen uv install has an empty archive_info; compare the actual wheel and all installed bytes.
+if origin.get('archive_info',{}).get('hashes'):
+    assert origin['archive_info']['hashes']['sha256']==expected
 with zipfile.ZipFile(wheel) as archive:
     for member in archive.namelist():
         if member.startswith('simple_harness/') and not member.endswith('/'):

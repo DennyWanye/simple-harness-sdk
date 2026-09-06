@@ -165,6 +165,8 @@ Dirac's read-only review identified two P1s before any tests ran:
    this is not evidence of arbitrary-expiry recovery or independent dual owners.
 
 Migration tests verify the exact frozen H073 wheel SHA, installed package bytes,
-directURL archive hash and prefix-owned import origin under `python -I`, not just
-its version string. Same-owner concurrent coroutines prove only one handoff for
+directURL exact file path and prefix-owned import origin under `python -I`, not just
+its version string. This existing uv install has empty archive_info; the actual
+wheel SHA and every installed package file are compared, not an invented metadata
+archive hash. Same-owner concurrent coroutines prove only one handoff for
 that owner; independent dual-owner fencing remains a separately labelled control.
