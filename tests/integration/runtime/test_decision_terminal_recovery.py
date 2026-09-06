@@ -18,7 +18,7 @@ from simple_harness import RunId
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import DecisionState, UnitOfWorkConflict
 from simple_harness.tools.authorization import AuthorizationDecision
-from test_react_sqlite_runtime import (
+from .test_react_sqlite_runtime import (
     AuthorizationScenario, PhysicalToolCounter, authorization_runtime, start_authorization_wait,
 )
 
