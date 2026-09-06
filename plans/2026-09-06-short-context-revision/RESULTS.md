@@ -41,3 +41,49 @@ will not be rerun. Local ref inventory highest074; successor075 was unused.
 Current freeze changes only version and additive root/runtime API snapshot. The
 prior074 snapshot is retained exactly. Dirac source ACCEPT does not claim whole
 Host typed/no-recall crash boundaries or installed artifacts/native.
+
+
+## Fixed 0.7.5 artifact and installed short consumer
+
+Source **abbb0fd707f2ceadb271471da2ef906c27748420**. Two offline builds from separate
+extracts of the same clean Git archive are byte-identical. Wheel:
+
+`/Users/denny/projects/simple-harness-sdk-short-context-revision/.local-test-evidence/2026-09-06/short-context/artifact-075/build1/simple_harness_sdk-0.7.5-py3-none-any.whl`
+
+SHA256 **7969a2e5028f2c5d0b348973a5b330bca797f10c1bdfa2532ae033d352d2ee66**.
+Only the new170 package files were compared to source; old wheels were not rescanned.
+Freeze API4PASS; sparse-checkout missing CI file caused version-check failure,
+then only that failed check reran1PASS after restoring the tracked sparse path.
+Build setup failures (system Python3.9 tarfile filter and wrong interpreter path)
+produced no wheel; retained ignored. Actual double build PGID46784 exit0/nochildren.
+
+Host source **ac4dab5c** includes official migrate_execution_to_v9 before handles,
+actual source revision transport, coherent clock and original final guards; no
+main/user data changed. H075 new --target installed from Host's own vendor path,
+no change to venv074614 or M614/S0313. Consumer runs Python -I/no PYTHONPATH with
+explicit Host source and installed H075 target (not SDK source overlay).
+175 new wheel members except RECORD match target;119 loaded Harness origins belong
+to target. **3PASS11.40s**: installed short allow/reopen and independent group-source
+forget refusal (same two source oracles), plus correction of the previous Host
+factory missing-ledger refusal. PGID46888 exit0,401552KiB peak, no residualchildren.
+This does not sum with source passes as independent goals. No long/clock rerun.
+
+Repeat only changed or failed checks, through main default shared resource wrapper:
+`uv build --offline --wheel --out-dir <buildN>` with SOURCE_DATE_EPOCH=0;
+`uv pip install --offline --no-deps --target <new-target> --python <existing074614python> <Hostvendor075wheel>`;
+installed consumer script: artifact-075/installed_short.py, invoked with same Python
+`-I -B`, PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 and no PYTHONPATH. Candidate/installed
+manifests and raw reports remain ignored. Independent artifact review pending;
+source review ACCEPT does not substitute that read. No tag/push/release/native.
+
+Public migration source7/8/9 semantics and retained backup are in CONTRACT.md.
+Host exact-consumption pin/path check is necessary; no repeated old full-member
+comparison is requested. Remaining entire Host typed-use sink/pending/crash coverage,
+M615/M616 composition and main promotion are independent of this short delta.
+
+- `source-r1/command.log` SHA256 `186a36c96bcdb751cb7a4f236b4250bafbf80bfe21410e44b096bf20048e826b`
+- `source-r2/command.log` SHA256 `d688214c7a6f029c6e2350a7e34cb9f64196905c5a276eb1858e92da9318b3c0`
+- `adjacent-r1/command.log` SHA256 `1852d276d3a1f2ba6dcb6e44a5cb5af281b22ce28c327ca8b2266b5c9ba8da07`
+- `build-r3/resource.json` SHA256 `9207bfae7716ecbb25ca11dc1c690903668d81d1964c4c4d029760247eae2140`
+- `artifact-075/candidate-manifest.json` SHA256 `8fe91bf2c02fa04d11d03a8b3add51dfa92f59ac8980c4ca896ed4dfb66754a2`
+- `artifact-075/installed-manifest.json` SHA256 `44b9e466627977c955960e56b2ad86afabfb44f3cf12ceb6f986b6825cd00327`
