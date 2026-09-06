@@ -54,6 +54,7 @@ class MandatoryContextRejectionV1:
 
 class MandatoryContextActionRequired(RuntimeError):
     """Only this exact public exception is a recoverable terminal decision."""
+    code = "mandatory_context_action_required"
     def __init__(self, rejection: MandatoryContextRejectionV1) -> None:
         if type(rejection) is not MandatoryContextRejectionV1:
             raise TypeError("mandatory_context_rejection_required")
@@ -105,4 +106,3 @@ class MandatoryContextFeedbackV1:
             "an action ran or was acknowledged without its real tool result. Obey current permissions; if handling "
             "is unavailable this Run will fail after bounded attempts.",
         }), metadata={"source": "sdk_mandatory_context_control", "schema_version": 1})
-    code = "mandatory_context_action_required"

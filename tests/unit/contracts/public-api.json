@@ -1,6 +1,10 @@
 {
   "version": "0.7.8",
   "simple_harness": [
+    "MandatoryContextActionRequired",
+    "MandatoryContextRejectionV1",
+    "MandatoryContextFeedbackV1",
+    "MandatoryContextActionExhausted",
     "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
     "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
@@ -354,6 +358,10 @@
     "ContractValidationError"
   ],
   "simple_harness.runtime": [
+    "MandatoryContextActionRequired",
+    "MandatoryContextRejectionV1",
+    "MandatoryContextFeedbackV1",
+    "MandatoryContextActionExhausted",
     "CONTEXT_ASSEMBLY_SCHEMA_VERSION",
     "CONTEXT_FRAGMENT_SCHEMA_VERSION",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
