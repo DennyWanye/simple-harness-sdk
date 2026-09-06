@@ -11,7 +11,7 @@ normal physical-guard allow and independent-source deny2PASS in source overlay.
 Old artifacts/user data unchanged. Frozen075 sourceabbb0fd has identical double
 offline wheel7969a2e5; small target installed actualshort two controls plus previous
 Host factory refusal failure3PASS11.40s, no remaining process. Dirac scoped source
-ACCEPT; artifact review pending. Full Host typed-use/native acceptance remains open. [Contract and remaining bounds](../plans/2026-09-06-short-context-revision/CONTRACT.md),
+ACCEPT; new-artifact/installed review ACCEPT. Full Host typed-use/native acceptance remains open. [Contract and remaining bounds](../plans/2026-09-06-short-context-revision/CONTRACT.md),
 [source evidence](../plans/2026-09-06-short-context-revision/RESULTS.md).
 
 <!--

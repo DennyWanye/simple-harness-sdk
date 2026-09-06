@@ -73,8 +73,7 @@ Repeat only changed or failed checks, through main default shared resource wrapp
 `uv pip install --offline --no-deps --target <new-target> --python <existing074614python> <Hostvendor075wheel>`;
 installed consumer script: artifact-075/installed_short.py, invoked with same Python
 `-I -B`, PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 and no PYTHONPATH. Candidate/installed
-manifests and raw reports remain ignored. Independent artifact review pending;
-source review ACCEPT does not substitute that read. No tag/push/release/native.
+manifests and raw reports remain ignored. Dirac new-artifact/installed scoped review ACCEPT; no old packages were rescanned. No tag/push/release/native.
 
 Public migration source7/8/9 semantics and retained backup are in CONTRACT.md.
 Host exact-consumption pin/path check is necessary; no repeated old full-member
