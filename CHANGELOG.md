@@ -1,3 +1,11 @@
+## 0.7.8 — concrete start-mode driver selection (candidate)
+
+Add SDK-owned StartModeDriverRouter: select the actual ordinary or Host-control
+driver from the validated durable start mode before invocation and recording.
+Only the exact selected SDK implementation receives its existing recording
+contract; custom routers/subclasses remain unverified. Host-control authority
+validation is unchanged. Execution schema9 and all H077 artifacts are unchanged.
+
 ## 0.7.7 — authorization terminal proof and bounded expiry recovery
 
 Root React tool-authorization expiry/denial now commits exact terminal evidence.

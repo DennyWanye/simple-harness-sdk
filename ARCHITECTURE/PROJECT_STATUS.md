@@ -1,3 +1,10 @@
+## Native driver audit successor — 2026-09-06
+
+SDK-owned immutable start-mode selection exposes the actual driver to kernel
+recording. Four new actual SQLite Runtime controls passed; opaque/subclass and
+custom Host-control drivers remain unverified. Source13abfe8, no schema change;
+new artifact/Host/native verification remain pending. [Evidence and scope](../plans/2026-09-06-native-driver-audit/RESULTS.md).
+
 <!-- Updated 2026-09-06 -->
 
 ## Authorization expiry terminal proof successor — 2026-09-06
