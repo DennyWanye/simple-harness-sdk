@@ -8,6 +8,7 @@ from simple_harness.execution.context_use import (
     ProviderContextUseAttemptV1,
     ProviderContextUseGrantV1,
     ProviderContextUseViewV1,
+    use_hash,
 )
 from simple_harness.execution.provider_invocations import provider_invocation_id
 
@@ -92,6 +93,36 @@ def require_live(uow, connection, attempt, lease, now, *, retry=False, phase="pr
     if hashlib.sha256(canonical_json(payload).encode()).hexdigest() != stored.checkpoint_hash:
         raise ValueError("context_use_checkpoint_corrupt")
     original = ProviderContextUseAttemptV1.from_json(payload.get("context_use_attempt"))
+    receipt = payload.get("context_authority_receipt")
+    if (
+        not isinstance(receipt, dict)
+        or any(
+            receipt.get(key) != expected
+            for key, expected in {
+                "schema_version": 2,
+                "snapshot_id": original.context_snapshot_id,
+                "snapshot_revision": original.context_snapshot_revision,
+                "run_id": original.run_id,
+                "provider_turn_ordinal": original.provider_turn_ordinal,
+                "prior_context_revision": payload.get("context_revision"),
+                "payload_hash": original.request_fingerprint,
+                "expected_request_fingerprint": original.request_fingerprint,
+                "recall_subject": original.subject,
+                "recall_intents_hash": use_hash(
+                    "simple-harness/context-recall-intents/v1",
+                    [i.to_json() for i in original.intents],
+                ),
+            }.items()
+        )
+        or (
+            hashlib.sha256(canonical_json(receipt).encode()).hexdigest()
+            != payload.get("context_authority_receipt_hash")
+            or payload.get("context_snapshot_revision") != original.context_snapshot_revision
+            or dict(payload.get("context_snapshot_bindings", [])).get(original.context_snapshot_id)
+            != original.request_fingerprint
+        )
+    ):
+        raise ValueError("context_use_checkpoint_snapshot_differs")
     if (
         original.handoff_ordinal != 1
         or payload.get("provider_request_id") != attempt.provider_request_id

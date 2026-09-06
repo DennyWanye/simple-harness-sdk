@@ -59,6 +59,35 @@ class LocalProvider:
         )
 
 
+def snapshot_fields(attempt, request):
+    # Test Host authority uses the actual public snapshot DTO and actual request bytes.
+    snapshot = h.RunContextSnapshot(
+        attempt.context_snapshot_id,
+        attempt.run_id,
+        attempt.provider_turn_ordinal,
+        0,
+        attempt.context_snapshot_revision,
+        {},
+        request.messages,
+        request.tools,
+        request.temperature,
+        request.max_output_tokens,
+        request.metadata,
+        attempt.request_fingerprint,
+        schema_version=2,
+        recall_subject=attempt.subject,
+        recall_intents=attempt.intents,
+    )
+    receipt = snapshot.receipt_json()
+    return dict(
+        context_revision=0,
+        context_snapshot_revision=attempt.context_snapshot_revision,
+        context_snapshot_bindings=((attempt.context_snapshot_id, attempt.request_fingerprint),),
+        context_authority_receipt=receipt,
+        context_authority_receipt_hash=digest(receipt),
+    )
+
+
 async def setup(tmp_path):
     fixture = await PublicMemoryFixture(tmp_path / "memory.sqlite").open()
     await fixture.seed()
@@ -130,6 +159,7 @@ async def setup(tmp_path):
         provider_request_id=request.request_id.value,
         provider_request_snapshot=wire,
         provider_request_fingerprint=attempt.request_fingerprint,
+        **snapshot_fields(attempt, request),
     )
     checkpoint.cas(h.RunId(fixture.run_id), lease, version, state)
     provider = LocalProvider()
@@ -376,6 +406,7 @@ def test_actual_claimed_continuation_cannot_borrow_root_receipt(tmp_path):
                 provider_request_id=new_request.request_id.value,
                 provider_request_snapshot=wire,
                 provider_request_fingerprint=new_attempt.request_fingerprint,
+                **snapshot_fields(new_attempt, new_request),
             )
             cp.cas(h.RunId(fixture.run_id), lease, version, state)
             await invoke(uow, fixture, provider, lease, new_request, new_attempt)
@@ -394,7 +425,7 @@ def test_actual_claimed_continuation_cannot_borrow_root_receipt(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "change", ["reopen", "late", "request", "scope", "response", "missing_grant"]
+    "change", ["reopen", "late", "request", "scope", "response", "snapshot", "missing_grant"]
 )
 def test_terminal_requires_actual_consumed_bundle_and_response(tmp_path, change):
     async def run():
@@ -417,6 +448,14 @@ def test_terminal_requires_actual_consumed_bundle_and_response(tmp_path, change)
                 provider_response_snapshot=response,
                 provider_response_digest=digest(response),
             )
+            if change == "snapshot":
+                receipt = dict(state.context_authority_receipt)
+                receipt["snapshot_id"] = "different-snapshot"
+                state = dc.replace(
+                    state,
+                    context_authority_receipt=receipt,
+                    context_authority_receipt_hash=digest(receipt),
+                )
             checkpoint.cas(h.RunId(fixture.run_id), lease, version, state)
             if change == "missing_grant":
                 # Source-owned corruption control; public consumer never reads/writes SQL.
@@ -456,6 +495,7 @@ def test_terminal_requires_actual_consumed_bundle_and_response(tmp_path, change)
                     "request": "context_use_terminal_invocation_unconsumed",
                     "scope": "context_use_terminal_grant_missing_or_foreign",
                     "response": "context_use_terminal_response_differs",
+                    "snapshot": "context_use_checkpoint_snapshot_differs",
                     "missing_grant": "context_use_terminal_grant_missing_or_foreign",
                 }[change]
                 with pytest.raises(ValueError, match="^" + reason + "$"):

@@ -603,6 +603,13 @@ class ReActLoop:
                     authority_required=services.run_context_authority is not None,
                 )
             if protected and not response.tool_calls:
+                _verify_context_authority_receipt(
+                    state,
+                    value.run_id,
+                    provider_request_from_json(
+                        RequestId(state.provider_request_id), state.provider_request_snapshot
+                    ),
+                )
                 services.provider.verify_context_use_terminal(
                     value.run_id,
                     RequestId(state.provider_request_id),
