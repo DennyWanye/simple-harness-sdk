@@ -329,6 +329,26 @@ def read_snapshot(connection, run_id, limit, *, operation_sink=None):
     )
 
 
+def read_terminal_record(connection, run_id):
+    from simple_harness.execution.audit import RunTerminalRecordV1
+
+    run = connection.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    if run is None or run['state'] not in {'completed', 'failed', 'cancelled'}:
+        return None
+    if run['parent_run_id'] is not None:
+        raise RunAuditUnavailable('terminal_domain_unsupported')
+    proof = terminal_evidence(connection, run)
+    if proof is None:
+        raise RunAuditUnavailable('terminal_event_unavailable')
+    # Unique identity already verified above; same transaction retains its bytes.
+    row = connection.execute("SELECT event_id,payload_json FROM run_events WHERE run_id=? "
+        "AND kind IN ('run.completed','run.failed','run.cancelled')", (run_id,)).fetchone()
+    payload = json.loads(row['payload_json'])
+    error_code = (audit_error_code(payload.get('code'))
+                  if run['state'] == 'failed' and isinstance(payload, dict) else None)
+    return RunTerminalRecordV1(run_id, row['event_id'], error_code, proof)
+
+
 def terminal_evidence(connection, run):
     import hashlib
 

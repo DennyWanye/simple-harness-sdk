@@ -91,3 +91,14 @@ repair service, new authorization authority, or bulk scan/migration is introduce
 No old lease10/analysis14 repeat. Source fixed -> Dirac challenge -> focused tests
 under the default Host shared resource runner. New candidate version reserved077,
 packaging only after review; no new wheel in this source step.
+
+## Public Host terminal consumption
+
+`uow.read_run_terminal_record(RunId(...)) -> RunTerminalRecordV1 | None` performs a
+single read snapshot, strictly validates unique terminal kind/state, and returns
+actual `run_id`, `event_id`, safe `error_code`, and the unchanged
+`RunTerminalAuditEvidenceV1` as `terminal_evidence`. No terminal payload is exported.
+Missing proof for a terminal Run or conflicting identities refuses; missing/nonterminal
+Run returns None. Host can replace its existing SDK-private SELECT with this exact
+metadata and original public proof comparison. Recovery and normal future expiry use
+this same reader. This introduces no new authority or alternate terminal selection.

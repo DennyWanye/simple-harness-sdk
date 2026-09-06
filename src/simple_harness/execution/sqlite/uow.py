@@ -872,6 +872,16 @@ class SqliteExecutionUnitOfWork:
         with self.database.transaction(read_only=True) as connection:
             validate_recovery(connection, self._context_use_scope)
 
+    def read_run_terminal_record(self, run_id: RunId):
+        """Exact public metadata for ordinary root terminal consumers."""
+        from .audit import read_terminal_record
+
+        if not isinstance(run_id, RunId):
+            raise TypeError("run_id must use RunId")
+        with self.database.audit_reader() as reader:
+            with reader.transaction(read_only=True) as connection:
+                return read_terminal_record(connection, run_id.value)
+
     def read_expired_authorization_terminal_recovery(self, run_id: RunId):
         """Read exact eligibility from public Run identity; no Host SQL required."""
         from .decision_terminal import eligible

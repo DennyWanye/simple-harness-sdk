@@ -71,6 +71,9 @@ def test_real_runtime_resolution_has_exact_terminal_and_replay(tmp_path, expired
         await runtime.client.decide_authorization(RunId('run-fault'), **args)
         proof = uow.read_run_operation_audit(RunId('run-fault')).terminal_evidence
         assert proof is not None and proof.state == 'failed' and proof.created_at == 12.0
+        metadata = uow.read_run_terminal_record(RunId('run-fault'))
+        assert metadata.terminal_evidence == proof
+        assert proof.matches(event_id=metadata.event_id, payload_hash=proof.event_payload_hash, state='failed')
         assert physical.calls == 0
         # Expiry committed DENY. Repeated late ALLOW preserves existing late rejection.
         args['decision'] = AuthorizationDecision.DENY
@@ -87,12 +90,18 @@ def test_real_runtime_resolution_has_exact_terminal_and_replay(tmp_path, expired
 def test_old_public_read_recovery_reopen_exact_and_rows_preserved(old_uow):
     uow = old_uow
     assert uow.read_run_operation_audit(RunId('run-fault')).terminal_evidence is None
+    from simple_harness.execution.audit import RunAuditUnavailable
+    with pytest.raises(RunAuditUnavailable, match='terminal_event_unavailable'):
+        uow.read_run_terminal_record(RunId('run-fault'))
     witness = _read(uow)
     assert witness is not None and witness.original_resolved_at == 12.0
     before = _old_rows(uow.database)
     events = list(uow.database.connection.execute('SELECT * FROM run_events ORDER BY durable_seq'))
     proof = uow.recover_expired_authorization_terminal(witness, now=100.0)
     assert proof.created_at == 100.0 and proof.state == 'failed'
+    metadata = uow.read_run_terminal_record(RunId('run-fault'))
+    assert metadata.terminal_evidence == proof and metadata.error_code == 'authorization_expired'
+    assert proof.matches(event_id=metadata.event_id, payload_hash=proof.event_payload_hash, state=proof.state)
     assert uow.read_run_operation_audit(RunId('run-fault')).terminal_evidence == proof
     assert _old_rows(uow.database) == before
     after = list(uow.database.connection.execute('SELECT * FROM run_events ORDER BY durable_seq'))

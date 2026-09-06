@@ -321,6 +321,24 @@ class RunTerminalAuditEvidenceV1:
 
 
 @dataclass(frozen=True, slots=True)
+class RunTerminalRecordV1:
+    """Public exact root terminal metadata; no raw terminal payload."""
+
+    run_id: str
+    event_id: str
+    error_code: str | None
+    terminal_evidence: RunTerminalAuditEvidenceV1
+
+    def __post_init__(self):
+        if any(not isinstance(v, str) or not v.strip() for v in (self.run_id, self.event_id)):
+            raise ValueError("terminal identity required")
+        if not isinstance(self.terminal_evidence, RunTerminalAuditEvidenceV1):
+            raise TypeError("terminal evidence required")
+        if self.terminal_evidence.event_ref != audit_reference("terminal_event", self.event_id):
+            raise ValueError("terminal event identity differs from public proof")
+
+
+@dataclass(frozen=True, slots=True)
 class RunOperationAuditSnapshotV1:
     run_id: str
     run_state: str

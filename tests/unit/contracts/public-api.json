@@ -312,6 +312,7 @@
     "RunOperationAuditSnapshotV1",
     "ExpiredAuthorizationTerminalRecoveryV1",
     "RunTerminalAuditEvidenceV1",
+    "RunTerminalRecordV1",
     "RunOperationAuditPageV1",
     "RunOperationAuditV1",
     "RunAuditUsageV1",
