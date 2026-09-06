@@ -130,6 +130,8 @@ class ReActDriver:
                 },
                 workflow_spawn_control=outcome,
             )
+        active_turn_id = invocation.start.turn_id
+        active_continuation_id = None
         if invocation.continuations:
             stored = invocation.services.react_checkpoint.read_react_checkpoint(
                 invocation.run.run_id
@@ -151,14 +153,26 @@ class ReActDriver:
                     continuation_payload.get("kind") != "conversation_user"
                 ):
                     continue
+                if getattr(invocation.services.provider, "context_use_required", False):
+                    active_turn_id = continuation_payload.get("context_use_turn_id")
+                    if type(active_turn_id) is not str or not active_turn_id:
+                        raise ValueError("context_use_legacy_continuation_turn_unverified")
+                    active_continuation_id = continuation.continuation_id
                 conversation_value = continuation_payload.get("conversation")
                 if not isinstance(conversation_value, dict):
                     raise TypeError("conversation continuation envelope is required")
                 conversation = ConversationContinuationInput.from_json(conversation_value)
-                continuation_messages = _continuation_prepared_messages(
-                    continuation_payload.get("prepared_context"),
-                    current_message=conversation.message,
-                )
+                if continuation_payload.get("prepared_context") is None and getattr(
+                    invocation.services.provider, "context_use_required", False
+                ):
+                    # New typed snapshot authority prepares the final complete request.
+                    # This is only the SDK-admitted current USER, never a recall carrier.
+                    continuation_messages = (conversation.message,)
+                else:
+                    continuation_messages = _continuation_prepared_messages(
+                        continuation_payload.get("prepared_context"),
+                        current_message=conversation.message,
+                    )
                 current_context = invocation.services.context.load(RunId(invocation.run.run_id))
                 invocation.services.context.append(
                     RunId(invocation.run.run_id),
@@ -199,6 +213,8 @@ class ReActDriver:
                 ReActRunInput(
                     RunId(invocation.run.run_id),
                     RequestId(invocation.run.request_id),
+                    turn_id=active_turn_id,
+                    continuation_id=active_continuation_id,
                     tools=tools,
                     tool_exposure=tool_exposure,
                     temperature=_optional_float(input_value.get("temperature"), "temperature"),

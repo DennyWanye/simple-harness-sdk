@@ -98,8 +98,7 @@ class ContextRouteReceipt:
             _digest(self.host_authority_hash, "host_authority_hash")
         object.__setattr__(self, "route", TaskScopeRoute(self.route))
         if self.schema_version == 1 and (
-            self.route
-            not in {TaskScopeRoute.DIRECT_STANDALONE, TaskScopeRoute.MEMORY_STANDALONE}
+            self.route not in {TaskScopeRoute.DIRECT_STANDALONE, TaskScopeRoute.MEMORY_STANDALONE}
             or self.task_scope_id is not None
             or self.binding_set_revision is not None
             or self.binding_set_receipt_id is not None
@@ -275,6 +274,9 @@ class RunContextAuthorityRequest:
     route_state: ContextRouteState
     route_receipt: ContextRouteReceipt | None
     tool_catalog_fingerprint: str
+    turn_id: str | None = None
+    continuation_id: str | None = None
+    provider_request_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, RunId):
@@ -293,6 +295,12 @@ class RunContextAuthorityRequest:
         if self.route_receipt is not None and self.route_receipt.run_id != self.run_id.value:
             raise ValueError("route receipt belongs to another Run")
         _digest(self.tool_catalog_fingerprint, "tool_catalog_fingerprint")
+        for name in ("turn_id", "continuation_id", "provider_request_id"):
+            value = getattr(self, name)
+            if value is not None:
+                _required(value, name)
+        if self.continuation_id is not None and self.turn_id is None:
+            raise ValueError("continuation requires true turn identity")
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,12 +318,27 @@ class RunContextSnapshot:
     metadata: Mapping[str, JsonValue]
     expected_request_fingerprint: str
     schema_version: int = 1
+    recall_subject: str | None = None
+    recall_intents: tuple | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int):
             raise TypeError("RunContextSnapshot schema_version must be an integer")
-        if self.schema_version != 1:
+        if self.schema_version not in (1, 2):
             raise ValueError("unsupported RunContextSnapshot schema")
+        if self.schema_version == 1:
+            if self.recall_subject is not None or self.recall_intents is not None:
+                raise ValueError("legacy_snapshot_cannot_attest_recall")
+        else:
+            from .context_use import RecallContextUseIntentV1
+
+            _required(self.recall_subject, "recall_subject")
+            if (
+                type(self.recall_intents) is not tuple
+                or len(self.recall_intents) > 32
+                or any(type(i) is not RecallContextUseIntentV1 for i in self.recall_intents)
+            ):
+                raise ValueError("snapshot_recall_attestation_required")
         _required(self.snapshot_id, "snapshot_id")
         _required(self.run_id, "run_id")
         for value, name, minimum in (
@@ -382,7 +405,7 @@ class RunContextSnapshot:
         return _sha256(self.request_payload())
 
     def receipt_json(self) -> dict[str, JsonValue]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "snapshot_id": self.snapshot_id,
             "run_id": self.run_id,
@@ -393,6 +416,15 @@ class RunContextSnapshot:
             "payload_hash": self.payload_hash,
             "expected_request_fingerprint": self.expected_request_fingerprint,
         }
+        if self.schema_version == 2:
+            from .context_use import use_hash
+
+            result["recall_subject"] = self.recall_subject
+            result["recall_intents_hash"] = use_hash(
+                "simple-harness/context-recall-intents/v1",
+                [i.to_json() for i in self.recall_intents],
+            )
+        return result
 
 
 class RunContextAuthorityPort(Protocol):

@@ -10,12 +10,13 @@ import hashlib
 import logging
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol, cast
 
 from simple_harness.contracts import (
     FrozenJsonValue,
     HarnessError,
+    RequestId,
     RunId,
     canonical_json,
     thaw_json,
@@ -77,9 +78,14 @@ class ProviderInvocationUnitOfWork(Protocol):
         *,
         budget_policy: BudgetPolicy,
         execution_lease: ExecutionLease,
+        context_use_grant=None,
     ) -> ProviderInvocationRecord: ...
 
     def read_provider_invocation(self, invocation_id: str) -> ProviderInvocationRecord | None: ...
+
+    def prepare_provider_context_use(self, attempt, *, execution_lease, now, retry=False): ...
+    def read_provider_context_use_grant(self, invocation_id, handoff_ordinal): ...
+    def read_provider_context_use(self, run_id, request_id): ...
 
     def hand_off_provider_invocation(
         self,
@@ -129,6 +135,7 @@ class ProviderInvocationUnitOfWork(Protocol):
         resolution,
         execution_lease: ExecutionLease,
         now: float,
+        context_use_grant=None,
     ) -> ProviderInvocationRecord: ...
 
 
@@ -226,6 +233,7 @@ class ProviderInvocationCoordinator:
         budget_policy: BudgetPolicy | None = None,
         estimator: FrozenPriceEstimator | None = None,
         resolver: ProviderBindingResolver | None = None,
+        context_use_authority=None,
         clock=time.time,
     ) -> None:
         self._uow = uow
@@ -241,6 +249,13 @@ class ProviderInvocationCoordinator:
             self._legacy_binding = None
         self._resolver = resolver
         self._clock = clock
+        self._context_use_authority = context_use_authority
+        if context_use_authority is not None:
+            from .context_use import _text
+
+            _text(context_use_authority.authority_scope_ref)
+            if not callable(getattr(context_use_authority, "authorize_recall_context_use", None)):
+                raise TypeError("context_use_authority_invalid")
         self._observability: ObservabilityRuntime | None = None
 
     def _emit_attempt(
@@ -294,6 +309,7 @@ class ProviderInvocationCoordinator:
         request: ProviderRequest,
         *,
         execution_lease: ExecutionLease,
+        context_use=None,
     ) -> ProviderInvocationRecord:
         from .runtime_audit import runtime_operation
 
@@ -309,6 +325,7 @@ class ProviderInvocationCoordinator:
                 request,
                 execution_lease=execution_lease,
                 binding=self.resolve(run_id),
+                context_use=context_use,
             )
 
     async def _prepare_claim_with_binding(
@@ -318,6 +335,7 @@ class ProviderInvocationCoordinator:
         *,
         execution_lease: ExecutionLease,
         binding: ProviderBinding,
+        context_use=None,
     ) -> ProviderInvocationRecord:
         if execution_lease.run_id != run_id.value or execution_lease.namespace != "runtime.kernel":
             raise ProviderInvocationConflictError(
@@ -346,10 +364,29 @@ class ProviderInvocationCoordinator:
             claimed_at=self._clock(),
             request_json=provider_request_json(request),
         )
+        extra = {}
+        if self._context_use_authority is not None or context_use is not None:
+            from .context_use import ProviderContextUseAttemptV1
+
+            if (
+                self._context_use_authority is None
+                or type(context_use) is not ProviderContextUseAttemptV1
+            ):
+                raise ProviderInvocationConflictError("context_use_required")
+            context_use.validate_provider_request(run_id, request)
+            existing = self._uow.read_provider_invocation(invocation_id)
+            grant = self._uow.read_provider_context_use_grant(invocation_id, 1)
+            if existing is not None and grant is None:
+                raise ProviderInvocationConflictError("context_use_legacy_claim_missing_carrier")
+            extra["context_use_grant"] = await self._authorize_context_use(
+                context_use, execution_lease
+            )
+            record = replace(record, claimed_at=self._clock())
         claimed = self._uow.claim_provider_invocation(
             record,
             budget_policy=binding.budget_policy,
             execution_lease=execution_lease,
+            **extra,
         )
         if (
             claimed.run_id != run_id
@@ -361,6 +398,49 @@ class ProviderInvocationCoordinator:
         ):
             raise ProviderInvocationConflictError("Provider invocation identity conflict.")
         return claimed
+
+    @property
+    def context_use_required(self):
+        return self._context_use_authority is not None
+
+    @property
+    def context_use_authority_scope(self):
+        return (
+            None
+            if self._context_use_authority is None
+            else self._context_use_authority.authority_scope_ref
+        )
+
+    async def _authorize_context_use(self, attempt, lease, *, retry=False):
+        from .context_use import ProviderContextUseGrantV1
+
+        if attempt.authority_scope_ref != self.context_use_authority_scope:
+            raise ProviderInvocationConflictError("context_use_authority_scope_differs")
+        invocation_id = provider_invocation_id(
+            RunId(attempt.run_id), RequestId(attempt.provider_request_id)
+        )
+        existing = self._uow.read_provider_context_use_grant(invocation_id, attempt.handoff_ordinal)
+        if existing is not None:
+            comparison = attempt.to_json()
+            if retry:
+                comparison["requested_at"] = existing.attempt.requested_at
+            if comparison != existing.attempt.to_json():
+                raise ProviderInvocationConflictError("context_use_attempt_conflict")
+            return existing
+        prepared = self._uow.prepare_provider_context_use(
+            attempt, execution_lease=lease, now=self._clock(), retry=retry
+        )
+        receipts = []
+        for intent in prepared.intents:
+            receipts.append(
+                await self._context_use_authority.authorize_recall_context_use(
+                    intent.request(prepared)
+                )
+            )
+        return ProviderContextUseGrantV1(prepared, tuple(receipts))
+
+    def read_provider_context_use(self, run_id, request_id):
+        return self._uow.read_provider_context_use(run_id, request_id)
 
     def read_provider_budget(self, run_id: RunId) -> BudgetSnapshot:
         """Expose the durable budget authority without leaking the UoW."""
@@ -378,6 +458,7 @@ class ProviderInvocationCoordinator:
         cancel: CancelToken,
         execution_lease: ExecutionLease,
         workflow_lease: WorkflowLease | None = None,
+        context_use=None,
     ) -> ProviderResponse:
         if execution_lease.run_id != run_id.value or execution_lease.namespace != "runtime.kernel":
             raise ProviderInvocationConflictError(
@@ -398,6 +479,7 @@ class ProviderInvocationCoordinator:
                 request,
                 execution_lease=execution_lease,
                 binding=binding,
+                context_use=context_use,
             )
             receipt["invocation"] = record.invocation_id
             receipt["version"] = record.version
@@ -421,11 +503,20 @@ class ProviderInvocationCoordinator:
                 or resolution.outcome is not ResolutionOutcome.CONFIRMED_NOT_STARTED
             ):
                 raise ProviderInvocationUnknownError(record)
+            extra = {}
+            if self.context_use_required:
+                retry = context_use.next_handoff(self._clock())
+                if retry.handoff_ordinal != record.handoff_attempt + 1:
+                    raise ProviderInvocationConflictError("context_use_retry_ordinal_differs")
+                extra["context_use_grant"] = await self._authorize_context_use(
+                    retry, execution_lease, retry=True
+                )
             record = self._uow.reauthorize_provider_not_started(
                 record,
                 resolution=resolution,
                 execution_lease=execution_lease,
                 now=self._clock(),
+                **extra,
             )
         if record.state is ProviderInvocationState.HANDED_OFF:
             raise ProviderInvocationConflictError()

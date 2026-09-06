@@ -79,6 +79,8 @@ class ReActRunInput:
     max_output_tokens: int | None = None
     initial_route_receipt: ContextRouteReceipt | None = None
     initial_route_receipt_hash: str | None = None
+    turn_id: str | None = None
+    continuation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +273,42 @@ class ReActLoop:
             initial_route_receipt=value.initial_route_receipt,
             initial_route_receipt_hash=value.initial_route_receipt_hash,
         )
+        protected = getattr(services.provider, "context_use_required", False)
+        scope = getattr(services.provider, "context_use_authority_scope", None)
+        if state.source_schema_version == 7 and (
+            not protected or state.context_use_authority_scope != scope
+        ):
+            raise ValueError("context_use_authority_downgrade_or_scope_change")
+        if protected:
+            if services.run_context_authority is None:
+                raise ValueError("context_use_snapshot_authority_required")
+            if state.source_schema_version != 7:
+                if state.provider_turns_reserved_total:
+                    raise ValueError("context_use_legacy_active_run_unverified")
+                state = replace(
+                    state,
+                    source_schema_version=7,
+                    context_use_authority_scope=scope,
+                    active_turn_id=value.turn_id,
+                )
+                state, checkpoint_version = checkpoint.cas(
+                    value.run_id, execution_lease, checkpoint_version, state
+                )
+            if (
+                value.continuation_id is not None
+                and value.continuation_id != state.active_continuation_id
+            ):
+                if state.phase not in {"ready", "response_reserved", "tool_batch_reserved"}:
+                    raise ValueError("context_use_continuation_before_previous_attempt_settled")
+                state = replace(
+                    state,
+                    active_turn_id=value.turn_id,
+                    active_continuation_id=value.continuation_id,
+                    context_use_attempt=None,
+                )
+                state, checkpoint_version = checkpoint.cas(
+                    value.run_id, execution_lease, checkpoint_version, state
+                )
         context = services.context.load(value.run_id)
         if context.revision == 0:
             if not initial_messages:
@@ -342,6 +380,9 @@ class ReActLoop:
                                 _tool_catalog_fingerprint(
                                     value.run_id, value.tool_exposure, provider_tools
                                 ),
+                                turn_id=state.active_turn_id or value.turn_id,
+                                continuation_id=state.active_continuation_id,
+                                provider_request_id=provider_request_id,
                             )
                         )
                         if (
@@ -374,15 +415,41 @@ class ReActLoop:
                             snapshot.expected_request_fingerprint
                         ):
                             raise RuntimeError("Host Context snapshot request fingerprint differs")
+                        if snapshot.schema_version == 2 and not protected:
+                            raise ValueError("context_use_authority_required_for_typed_snapshot")
                         context_authority_receipt = snapshot.receipt_json()
                         context_authority_receipt_hash = hashlib.sha256(
                             canonical_json(context_authority_receipt).encode()
                         ).hexdigest()
+                    context_use_attempt = None
+                    if protected:
+                        from simple_harness.execution.context_use import ProviderContextUseAttemptV1
+
+                        if snapshot.schema_version != 2 or snapshot.recall_intents is None:
+                            raise ValueError("context_use_snapshot_attestation_missing")
+                        attempt = ProviderContextUseAttemptV1(
+                            scope,
+                            snapshot.recall_subject,
+                            value.run_id.value,
+                            state.active_turn_id,
+                            state.active_continuation_id,
+                            provider_request_id,
+                            state.provider_turns_reserved_total,
+                            1,
+                            snapshot.snapshot_id,
+                            snapshot.snapshot_revision,
+                            provider_request_fingerprint(request),
+                            self._clock(),
+                            snapshot.recall_intents,
+                        )
+                        attempt.validate_provider_request(value.run_id, request)
+                        context_use_attempt = attempt.to_json()
                     request_snapshot = provider_request_json(request)
                     state = replace(
                         state,
                         provider_request_id=provider_request_id,
                         context_revision=context.revision,
+                        context_use_attempt=context_use_attempt,
                         provider_request_snapshot=request_snapshot,
                         provider_request_fingerprint=provider_request_fingerprint(request),
                         context_authority_receipt=context_authority_receipt,
@@ -418,11 +485,19 @@ class ReActLoop:
                     identity={"request": provider_request_fingerprint(request)},
                 ):
                     _verify_context_authority_receipt(state, value.run_id, request)
+                context_use_kwargs = {}
+                if protected:
+                    from simple_harness.execution.context_use import ProviderContextUseAttemptV1
+
+                    context_use_kwargs["context_use"] = ProviderContextUseAttemptV1.from_json(
+                        state.context_use_attempt
+                    )
                 response = await services.provider.invoke(
                     value.run_id,
                     request,
                     cancel=cancel,
                     execution_lease=execution_lease,
+                    **context_use_kwargs,
                 )
                 if response.request_id != request.request_id:
                     raise RuntimeError("Provider response request identity mismatch")
@@ -838,6 +913,8 @@ def _verify_context_authority_receipt(
     state: TerminationState, run_id: RunId, request: ProviderRequest
 ) -> None:
     if state.context_authority_receipt is None:
+        if state.source_schema_version == 7:
+            raise ValueError("context_use_snapshot_attestation_missing")
         return
     if not isinstance(state.context_authority_receipt, Mapping):
         raise TypeError("Context authority receipt must be an object")
@@ -858,6 +935,23 @@ def _verify_context_authority_receipt(
         or receipt.get("expected_request_fingerprint") != provider_request_fingerprint(request)
     ):
         raise RuntimeError("frozen Host Context authority receipt differs")
+    if state.source_schema_version == 7:
+        from simple_harness.execution.context_use import ProviderContextUseAttemptV1, use_hash
+
+        attempt = ProviderContextUseAttemptV1.from_json(state.context_use_attempt)
+        attempt.validate_provider_request(run_id, request)
+        if (
+            receipt.get("schema_version") != 2
+            or receipt.get("recall_subject") != attempt.subject
+            or receipt.get("recall_intents_hash")
+            != use_hash(
+                "simple-harness/context-recall-intents/v1", [i.to_json() for i in attempt.intents]
+            )
+            or attempt.context_snapshot_id != snapshot_id
+            or attempt.context_snapshot_revision != snapshot_revision
+            or attempt.provider_turn_ordinal != state.provider_turns_reserved_total
+        ):
+            raise ValueError("context_use_snapshot_attestation_differs")
 
 
 def _provider_continuation_capability(

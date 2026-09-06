@@ -7,6 +7,19 @@ last-updated: 2026-09-05
 
 # Simple Harness SDK — 架构基线（Human Memory S1 candidate）
 
+## Receipt-bound Provider reservation source — 2026-09-06
+
+Isolated successor from frozen H073 `0282fa98`: schema2 typed Context intents,
+original request/time checkpoint, actual Memory authority port and atomic
+receipt/Provider claim association, existing handoff CAS and new-grant retry,
+payload-free public view, explicit execution7→8 WAL-aware migration are implemented
+for first source review. Tests are NOT_RUN; no candidate artifact, native/Host
+default wiring or formal401 PASS is claimed. Generic no-Memory behavior is retained;
+missing/legacy typed carrier is not an empty attestation. See
+[contract](../plans/2026-09-06-recall-use-reservation/CONTRACT.md) and
+[results](../plans/2026-09-06-recall-use-reservation/RESULTS.md).
+
+
 > 本文件记录当前生产边界；0.1.4 的缺陷段落仅保留为历史对照，不代表当前实现。
 
 

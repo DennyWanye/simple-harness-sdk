@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Owned fresh schema v7 descriptor for SDK execution persistence."""
+"""Owned fresh schema v8 descriptor for SDK execution persistence."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import hashlib
 from dataclasses import dataclass
 from importlib.resources import files
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _V6_CATALOG_COLUMNS = """
 ALTER TABLE tool_catalog_snapshots ADD COLUMN provider_specs_fingerprint TEXT
@@ -37,7 +37,7 @@ class Migration:
     checksum: str
 
 
-def fresh_descriptor() -> Migration:
+def legacy_v7_descriptor() -> Migration:
     resources = files("simple_harness.execution.sqlite.migrations")
     sql = (
         resources.joinpath("0005_fresh.sql").read_text(encoding="utf-8")
@@ -45,11 +45,18 @@ def fresh_descriptor() -> Migration:
         + _V7_MEMORY_AUTHORITY_COLUMNS
     )
     return Migration(
-        SCHEMA_VERSION,
+        7,
         "0007_fresh",
         sql,
         hashlib.sha256(sql.encode()).hexdigest(),
     )
+
+
+def fresh_descriptor() -> Migration:
+    from .context_use import DDL
+
+    sql = legacy_v7_descriptor().sql + DDL
+    return Migration(SCHEMA_VERSION, "0008_fresh", sql, hashlib.sha256(sql.encode()).hexdigest())
 
 
 def migrations() -> tuple[Migration, ...]:

@@ -95,6 +95,12 @@ _TERMINATION_V1_REQUIRED_FIELDS = frozenset(
         "context_revision",
     }
 )
+_TERMINATION_FIELDS_BY_SCHEMA[7] = _TERMINATION_FIELDS_BY_SCHEMA[6] | {
+    "context_use_attempt",
+    "active_turn_id",
+    "active_continuation_id",
+    "context_use_authority_scope",
+}
 
 
 class TerminationReason(StrEnum):
@@ -176,6 +182,10 @@ class TerminationState:
     context_snapshot_revision: int = 0
     context_snapshot_bindings: tuple[tuple[str, str], ...] = ()
     source_schema_version: int = 6
+    context_use_authority_scope: str | None = None
+    context_use_attempt: JsonValue | None = None
+    active_turn_id: str | None = None
+    active_continuation_id: str | None = None
 
     @property
     def turns(self) -> int:
@@ -242,8 +252,22 @@ class TerminationState:
             raise ValueError("termination policy fingerprint must be lowercase SHA-256")
         if self.route_state not in {"unrouted", "routed_standalone", "routed_task"}:
             raise ValueError("invalid durable route state")
-        if self.source_schema_version not in {1, 2, 3, 4, 5, 6}:
+        if self.source_schema_version not in {1, 2, 3, 4, 5, 6, 7}:
             raise ValueError("invalid source ReAct checkpoint schema")
+        if self.source_schema_version == 7:
+            for item in (self.active_turn_id, self.context_use_authority_scope):
+                if type(item) is not str or not item.strip() or "\0" in item:
+                    raise ValueError("context_use_checkpoint_identity_missing")
+        if self.context_use_attempt is not None:
+            from simple_harness.execution.context_use import ProviderContextUseAttemptV1
+
+            attempt = ProviderContextUseAttemptV1.from_json(self.context_use_attempt)
+            if (
+                attempt.turn_id != self.active_turn_id
+                or attempt.continuation_id != self.active_continuation_id
+                or attempt.authority_scope_ref != self.context_use_authority_scope
+            ):
+                raise ValueError("context_use_checkpoint_identity_differs")
         snapshot_ids: set[str] = set()
         for snapshot_id, payload_hash in self.context_snapshot_bindings:
             if not isinstance(snapshot_id, str) or not snapshot_id.strip() or "\x00" in snapshot_id:
@@ -307,6 +331,7 @@ class TerminationState:
             provider_request_id=f"provider-turn:{ordinal}",
             tool_batch_id=None,
             context_revision=None,
+            context_use_attempt=None,
             provider_request_snapshot=None,
             provider_request_fingerprint=None,
             provider_response_snapshot=None,
@@ -355,7 +380,7 @@ class TerminationState:
         return self.before_tool_batch((tool_name,), limits, now=now, budget=budget)
 
     def to_json(self) -> dict[str, JsonValue]:
-        return {
+        result = {
             "schema_version": 6,
             "started_at": self.started_at,
             "last_observed_at": self.last_observed_at,
@@ -392,6 +417,15 @@ class TerminationState:
                 for snapshot_id, payload_hash in self.context_snapshot_bindings
             },
         }
+        if self.active_turn_id is not None or self.source_schema_version == 7:
+            result.update(
+                schema_version=7,
+                context_use_attempt=self.context_use_attempt,
+                active_turn_id=self.active_turn_id,
+                active_continuation_id=self.active_continuation_id,
+                context_use_authority_scope=self.context_use_authority_scope,
+            )
+        return result
 
     @classmethod
     def from_json(cls, value: Mapping[str, object]) -> TerminationState:
@@ -399,7 +433,7 @@ class TerminationState:
         if (
             isinstance(source_schema_version, bool)
             or not isinstance(source_schema_version, int)
-            or source_schema_version not in {1, 2, 3, 4, 5, 6}
+            or source_schema_version not in {1, 2, 3, 4, 5, 6, 7}
         ):
             raise ValueError("unsupported ReAct checkpoint schema")
         expected_fields = _TERMINATION_FIELDS_BY_SCHEMA[source_schema_version]
@@ -412,7 +446,7 @@ class TerminationState:
         elif actual_fields != expected_fields:
             raise ValueError("ReAct checkpoint fields differ")
         raw_snapshot_bindings = (
-            value["context_snapshot_bindings"] if source_schema_version in {5, 6} else {}
+            value["context_snapshot_bindings"] if source_schema_version in {5, 6, 7} else {}
         )
         if not isinstance(raw_snapshot_bindings, Mapping):
             raise TypeError("Context snapshot bindings must be an object")
@@ -491,11 +525,15 @@ class TerminationState:
             ),
             context_snapshot_revision=(
                 _int(value["context_snapshot_revision"])
-                if source_schema_version in {5, 6}
+                if source_schema_version in {5, 6, 7}
                 else 0
             ),
             context_snapshot_bindings=tuple(sorted(snapshot_bindings)),
             source_schema_version=source_schema_version,
+            context_use_authority_scope=value.get("context_use_authority_scope"),
+            context_use_attempt=value.get("context_use_attempt"),
+            active_turn_id=_optional_string(value.get("active_turn_id")),
+            active_continuation_id=_optional_string(value.get("active_continuation_id")),
         )
 
 

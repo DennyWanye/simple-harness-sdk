@@ -41,6 +41,13 @@ from .version import __version__
 
 _RUNTIME_EXPORTS = frozenset(
     {
+        "RecallContextUseIntentV1",
+        "ProviderContextUseAttemptV1",
+        "ProviderContextUseGrantV1",
+        "ProviderContextUseViewV1",
+        "RecallContextUseAuthorityPort",
+        "migrate_execution_v7_to_v8",
+        "ExecutionContextUseUpgradeReceiptV1",
         "COGNITIVE_MEMORY_SCHEMA_VERSION",
         "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
         "MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION",
@@ -682,8 +689,8 @@ __all__ = (
 
 __all__ += (
     "CommandOperationAuditPageV1",
-        "ContextStageOperationAuditPageV1",
-        "ContextStageOperationAuditPort",
+    "ContextStageOperationAuditPageV1",
+    "ContextStageOperationAuditPort",
     "CommandOperationAuditPort",
     "RunOperationAuditPort",
     "RunOperationAuditSnapshotV1",
@@ -692,4 +699,14 @@ __all__ += (
     "RunOperationAuditV1",
     "RunAuditUsageV1",
     "RunAuditUnavailable",
+)
+
+__all__ += (
+    "RecallContextUseIntentV1",
+    "ProviderContextUseAttemptV1",
+    "ProviderContextUseGrantV1",
+    "ProviderContextUseViewV1",
+    "RecallContextUseAuthorityPort",
+    "migrate_execution_v7_to_v8",
+    "ExecutionContextUseUpgradeReceiptV1",
 )

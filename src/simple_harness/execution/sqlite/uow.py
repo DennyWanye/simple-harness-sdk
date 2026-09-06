@@ -6316,9 +6316,13 @@ class SqliteExecutionUnitOfWork:
         *,
         budget_policy: BudgetPolicy,
         execution_lease: ExecutionLease,
+        context_use_grant=None,
     ) -> ProviderInvocationRecord:
+        from . import context_use
+
         existing = self._provider_invocation_by_logical_call(record.run_id, record.request_id.value)
         if existing is not None:
+            self._verify_existing_context_use(existing, context_use_grant)
             return existing
         with self.database.transaction() as connection:
             self._require_runtime_lease(connection, execution_lease, now=record.claimed_at)
@@ -6329,7 +6333,30 @@ class SqliteExecutionUnitOfWork:
                 (record.run_id.value, record.request_id.value),
             ).fetchone()
             if existing_row is not None:
-                return _provider_invocation_record(existing_row)
+                existing = _provider_invocation_record(existing_row)
+                self._verify_existing_context_use(existing, context_use_grant)
+                return existing
+            if context_use_grant is not None:
+                if (
+                    context_use_grant.attempt.handoff_ordinal != 1
+                    or context_use_grant.attempt.request_fingerprint != record.request_fingerprint
+                ):
+                    raise UnitOfWorkConflict("context_use_initial_claim_identity_differs")
+                context_use.require_live(
+                    self, connection, context_use_grant.attempt, execution_lease, record.claimed_at
+                )
+                context_use_grant.validate_handoff(record.claimed_at)
+            else:
+                stored_context = self.read_react_checkpoint(record.run_id.value)
+                protected_checkpoint = (
+                    stored_context is not None
+                    and _thaw_json(stored_context.checkpoint).get("schema_version") == 7
+                )
+                if (
+                    protected_checkpoint
+                    or context_use.read_attempt(connection, record.invocation_id, 1) is not None
+                ):
+                    raise UnitOfWorkConflict("context_use_grant_missing")
             budget_policy.authorize(
                 self._provider_budget(connection, record.run_id),
                 reservation_micros=record.budget_charge.amount_micros,
@@ -6376,12 +6403,45 @@ class SqliteExecutionUnitOfWork:
                     record.version,
                 ),
             )
+            if context_use_grant is not None:
+                context_use.bind(connection, record.invocation_id, context_use_grant)
             self._audit_operation_head(
                 connection, "provider", record.invocation_id, record.claimed_at
             )
         stored = self.read_provider_invocation(record.invocation_id)
         assert stored is not None
         return stored
+
+    def _verify_existing_context_use(self, record, grant):
+        from . import context_use
+
+        original = context_use.read_attempt(self.database.connection, record.invocation_id, 1)
+        if original is None:
+            if grant is not None:
+                raise UnitOfWorkConflict("context_use_legacy_claim_missing_carrier")
+        elif (
+            grant is None
+            or context_use.read_grant(
+                self.database.connection, record.invocation_id, grant.attempt.handoff_ordinal
+            )
+            != grant
+        ):
+            raise UnitOfWorkConflict("context_use_claim_binding_differs")
+
+    def prepare_provider_context_use(self, attempt, *, execution_lease, now, retry=False):
+        from .context_use import prepare
+
+        return prepare(self, attempt, execution_lease, now, retry=retry)
+
+    def read_provider_context_use_grant(self, invocation_id, handoff_ordinal):
+        from .context_use import read_grant
+
+        return read_grant(self.database.connection, invocation_id, handoff_ordinal)
+
+    def read_provider_context_use(self, run_id, request_id):
+        from .context_use import view
+
+        return view(self, run_id, request_id)
 
     def read_provider_invocation(self, invocation_id: str) -> ProviderInvocationRecord | None:
         row = self.database.connection.execute(
@@ -6415,6 +6475,10 @@ class SqliteExecutionUnitOfWork:
             ).fetchone()
             if invocation_run is None or str(invocation_run["run_id"]) != execution_lease.run_id:
                 raise UnitOfWorkConflict("provider handoff lease belongs to another Run")
+            from .context_use import require_handoff
+
+            current = self.read_provider_invocation(invocation_id)
+            require_handoff(self, connection, current, execution_lease, handed_off_at)
             changed = connection.execute(
                 """
                 UPDATE provider_invocations
@@ -6640,6 +6704,7 @@ class SqliteExecutionUnitOfWork:
         resolution: ReconciliationResolution,
         execution_lease: ExecutionLease,
         now: float,
+        context_use_grant=None,
     ) -> ProviderInvocationRecord:
         now = _time(now)
         if (
@@ -6653,6 +6718,21 @@ class SqliteExecutionUnitOfWork:
             self._require_runtime_lease(connection, execution_lease, now=now)
             if execution_lease.run_id != record.run_id.value:
                 raise UnitOfWorkConflict("Provider retry lease belongs to another Run")
+            from . import context_use
+
+            protected = context_use.read_attempt(connection, record.invocation_id, 1)
+            if protected is not None:
+                if (
+                    context_use_grant is None
+                    or context_use_grant.attempt.handoff_ordinal != record.handoff_attempt + 1
+                ):
+                    raise UnitOfWorkConflict("context_use_retry_requires_new_grant")
+                context_use.require_live(
+                    self, connection, context_use_grant.attempt, execution_lease, now, retry=True
+                )
+                context_use_grant.validate_handoff(now)
+            elif context_use_grant is not None:
+                raise UnitOfWorkConflict("context_use_legacy_retry_missing_carrier")
             row = connection.execute(
                 "SELECT outcome_hash,evidence_ref FROM reconciliation_resolutions WHERE"
                 " resolution_id=?",
@@ -6683,6 +6763,8 @@ class SqliteExecutionUnitOfWork:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("Provider reauthorization CAS failed")
+            if context_use_grant is not None:
+                context_use.bind(connection, record.invocation_id, context_use_grant)
             self._audit_operation_head(connection, "provider", record.invocation_id, now)
         refreshed = self.read_provider_invocation(record.invocation_id)
         assert refreshed is not None

@@ -9,6 +9,17 @@ from importlib import import_module
 from typing import Any
 
 _MODULE_EXPORTS = {
+    "simple_harness.execution.context_use": (
+        "RecallContextUseIntentV1",
+        "ProviderContextUseAttemptV1",
+        "ProviderContextUseGrantV1",
+        "ProviderContextUseViewV1",
+        "RecallContextUseAuthorityPort",
+    ),
+    "simple_harness.execution.sqlite.context_use_migration": (
+        "migrate_execution_v7_to_v8",
+        "ExecutionContextUseUpgradeReceiptV1",
+    ),
     "simple_harness.execution.context_authority": (
         "ContextRouteOrigin",
         "ContextRouteReceipt",
@@ -704,4 +715,14 @@ __all__ = (
     "verify_prospective_signal_authority",
     "verify_memory_mutation_apply_receipt",
     "parse_memory_mutation_plan",
+)
+
+__all__ += (
+    "RecallContextUseIntentV1",
+    "ProviderContextUseAttemptV1",
+    "ProviderContextUseGrantV1",
+    "ProviderContextUseViewV1",
+    "RecallContextUseAuthorityPort",
+    "migrate_execution_v7_to_v8",
+    "ExecutionContextUseUpgradeReceiptV1",
 )

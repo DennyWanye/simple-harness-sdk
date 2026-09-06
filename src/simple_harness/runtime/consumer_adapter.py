@@ -11,8 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
-from simple_harness.execution.context_authority import ToolCatalogSnapshot
+from simple_harness.execution.context_authority import RunContextAuthorityPort, ToolCatalogSnapshot
 from simple_harness.execution.context_staging import ContextStagingRepository
+from simple_harness.execution.context_use import RecallContextUseAuthorityPort
 from simple_harness.execution.delivery import DeliveryDispatcher, DeliverySink
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.memory_outbox import MemoryDispatcher, MemoryOutboxRepository
@@ -141,7 +142,12 @@ class ConsumerRuntimePorts:
     )
     policies: ConsumerRuntimePolicies = field(default_factory=ConsumerRuntimePolicies.local_default)
 
+    run_context_authority: RunContextAuthorityPort | None = None
+    recall_context_use_authority: RecallContextUseAuthorityPort | None = None
+
     def __post_init__(self) -> None:
+        if self.recall_context_use_authority is not None and self.run_context_authority is None:
+            raise ValueError("context_use_snapshot_authority_required")
         object.__setattr__(self, "memory_ownership", ResourceOwnership(self.memory_ownership))
         object.__setattr__(
             self, "memory_failure_policy", MemoryFailurePolicy(self.memory_failure_policy)
@@ -407,6 +413,7 @@ async def _build_consumer_runtime(
         provider=provider_adapter,
         budget_policy=budget_policy,
         estimator=estimator,
+        context_use_authority=ports.recall_context_use_authority,
     )
 
     # Build context port
@@ -418,11 +425,10 @@ async def _build_consumer_runtime(
         tools=effects,
         authorization=auth_adapter,
         context=context,
+        run_context_authority=ports.run_context_authority,
         delivery=DeliveryDispatcher(uow, dict(delivery_sinks or {})),
         tool_reconciliation=tool_reconciliation,
-        reconciliation=(
-            ports.policies.runtime_reconciliation or _DefaultRuntimeReconciliation()
-        ),
+        reconciliation=(ports.policies.runtime_reconciliation or _DefaultRuntimeReconciliation()),
         provider_reconciliation=(
             ports.policies.provider_reconciliation or _DefaultProviderReconciliation()
         ),

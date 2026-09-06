@@ -723,6 +723,13 @@ class RunClient:
     def __init__(self, runtime: Runtime) -> None:
         self._runtime = runtime
 
+    def read_provider_context_use(self, run_id: RunId, request_id: RequestId):
+        """Read a receipt-bound invocation snapshot; no payload parsing or SQL by Host."""
+        self._runtime._require_started()
+        if not isinstance(run_id, RunId) or not isinstance(request_id, RequestId):
+            raise TypeError("typed RunId and RequestId are required")
+        return self._runtime._ports.provider.read_provider_context_use(run_id, request_id)
+
     async def start(self, value: RunStart) -> RunRecord:
         self._runtime._require_started()
         if not isinstance(value, RunStart):
@@ -1289,6 +1296,7 @@ class RunClient:
             run_id=_run_id(run_id),
             payload={
                 "kind": "conversation_user",
+                "context_use_turn_id": continuation_id,
                 "conversation": value.to_json(),
                 "prepared_context": dict(prepared_context),
             },
@@ -2307,6 +2315,7 @@ class Runtime:
             continuation_id=intent.continuation_id,
             payload={
                 "kind": "conversation_user",
+                "context_use_turn_id": intent.turn_id,
                 "conversation": intent.conversation.to_json(),
                 **(
                     {}
