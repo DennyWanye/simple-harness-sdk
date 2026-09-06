@@ -1,3 +1,10 @@
+## RESCHEDULED time signal successor — 2026-09-06
+
+Source06f19ec scoped review ACCEPT; one new persisted authority/ref conformance
+control passed0.09s. H076 accepts real RESCHEDULED→TRIGGERED for TIME_DUE only.
+Memory actual apply/reopen and installed candidate validation remain pending;
+H075 artifacts unchanged. No full suite/native claim.
+
 <!-- Updated 2026-09-06 -->
 
 ## Exact short Context identity successor (source scope)

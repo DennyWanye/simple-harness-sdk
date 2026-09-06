@@ -5,6 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # Changelog
 
+## 0.7.6 — 2026-09-06 (isolated candidate)
+
+- Permit TIME_DUE from actual RESCHEDULED to TRIGGERED; retain exact authority/ref and time checks. No event/recurring or wire/schema changes.
+
 ## 0.7.4 — 2026-09-06 (isolated candidate)
 
 - Bind real Memory use receipts to immutable Provider request/time, atomic claim
