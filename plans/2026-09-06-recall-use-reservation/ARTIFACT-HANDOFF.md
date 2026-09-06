@@ -96,4 +96,8 @@ old active Runs without durable admission proof cannot silently become protected
 Migration scans the finite catalog/full old data; no overall bounded-work/P99 claim.
 Same-owner concurrency is not dual-owner process verification. Host default wiring,
 actual outbound/native, final original401 two cells and program completion remain
-separate. Final artifact independent review is pending at this document checkpoint.
+separate. Dirac final artifact read-only scoped ACCEPT: source/archive/dualwheel/target168
+files, copied consumer sources,119 origins,26 evidence hashes and4 API snapshots
+were independently recomputed; exact borrowed M61372/H073164 member bytes also
+matched. No test or installation was repeated by the reviewer. This is only the
+SDK H074+M0613 target-installed boundary, not the pending Host/M614/Service stack.

@@ -14,8 +14,8 @@ payload-free public view, explicit execution7→8 WAL-aware migration are implem
 with Dirac scoped source ACCEPT at69db778. New bounded source batch32PASS,
 separate migration3PASS and adjacent33PASS; retained initial failures are documented.
 Fixed0.7.4 source9229269 has identical double offline wheels (168 source files)
-and6 target-installed public consumer tests passing; independent artifact review
-is pending. No Host default/native/formal401 PASS. See the
+and6 target-installed public consumer tests passing; Dirac independent artifact read-only review
+is scoped ACCEPT (exact168 package bytes/119 origins/manifest chain). No Host default/native/formal401 PASS. See the
 [artifact handoff](../plans/2026-09-06-recall-use-reservation/ARTIFACT-HANDOFF.md).
 Generic no-Memory behavior is retained;
 missing/legacy typed carrier is not an empty attestation. See
