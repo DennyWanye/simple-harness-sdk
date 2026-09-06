@@ -22,6 +22,7 @@ from simple_harness.runtime.termination import TerminationLimits, TerminationSta
 from simple_harness.tools import EffectExecutor, FunctionTool, ToolRegistry, ToolSpec, ToolResult
 
 from .test_react_sqlite_runtime import Provider, OpaqueResolver, Authorization, Reconciliation, Noop
+from simple_harness.tools.authorization import AuthorizationReceipt
 
 
 class PowerLoss(BaseException):
@@ -55,6 +56,10 @@ async def _case(tmp_path, *, boundary=None, error=None):
             return ProviderResponse(request.request_id, Message(MessageRole.ASSISTANT, "43"),
                 calls, usage=ProviderUsage(10, 10, 20), model="model", finish_reason="tool_calls" if calls else "stop")
     physical = Physical()
+    class AckAuthority(Authorization):
+        async def bind_effect_handoff(self, prepared, authorization_receipt_ref, sdk_receipt):
+            return AuthorizationReceipt("fixture:actual-ack-handoff", sdk_receipt.receipt_hash,
+                                        sdk_receipt.receipt_hash)
     class PricedResolver(OpaqueResolver):
         def resolve(self, run_id):
             return replace(super().resolve(run_id), estimator=FrozenPriceEstimator("fixture-price", "model", 1, 1))
@@ -115,7 +120,7 @@ async def _case(tmp_path, *, boundary=None, error=None):
     async def drive():
         coordinator = Coordinator(uow=store, resolver=PricedResolver(physical), clock=lambda: 3.)
         context = Context(database, clock=lambda: 3.)
-        auth, reconcile = Authorization(), Reconciliation()
+        auth, reconcile = AckAuthority(), Reconciliation()
         effects = EffectExecutor(uow=store, registry=registry, authorization=auth,
             reconciliation=reconcile, clock=lambda: 3.)
         services = RuntimeServices(provider=coordinator, tools=effects, authorization=auth,
