@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from .schema import SCHEMA_VERSION, fresh_descriptor, legacy_v7_descriptor
+from .schema import SCHEMA_VERSION, fresh_descriptor, accepted_descriptor_rows
 from .storage import prepare_execution_database
 
 
@@ -231,13 +231,10 @@ class Database:
             int(row[0]): (str(row[1]), str(row[2]))
             for row in connection.execute("SELECT version,name,checksum FROM sdk_schema_migrations")
         }
-        descriptor = fresh_descriptor()
-        fresh = {SCHEMA_VERSION: (descriptor.name, descriptor.checksum)}
-        legacy = legacy_v7_descriptor()
-        upgraded = fresh | {7: (legacy.name, legacy.checksum)}
-        if applied not in (fresh, upgraded):
+        actual = tuple((version, *entry) for version, entry in sorted(applied.items()))
+        if actual not in accepted_descriptor_rows():
             raise ExecutionSchemaIncompatible(
-                "execution database requires schema v8; use explicit v7 migration"
+                "execution database requires schema v9; use explicit migrate_execution_to_v9"
             )
         if self.integrity_check() != ("ok",) or self.foreign_key_violations():
             raise RuntimeError("SDK execution database failed integrity validation")

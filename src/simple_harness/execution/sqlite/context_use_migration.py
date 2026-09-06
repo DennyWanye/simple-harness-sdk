@@ -19,7 +19,7 @@ from simple_harness.execution.context_use import use_hash
 from . import audit_schema
 from .context_use import DDL
 from .database import ExecutionSchemaIncompatible
-from .schema import fresh_descriptor, legacy_v7_descriptor
+from .schema import legacy_v8_descriptor as fresh_descriptor, legacy_v7_descriptor
 
 _DESCRIPTOR_SQL = (
     "CREATE TABLE sdk_schema_migrations ("

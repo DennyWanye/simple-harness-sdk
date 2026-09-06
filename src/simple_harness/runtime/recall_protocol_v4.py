@@ -1758,7 +1758,7 @@ class ContextFragmentV2:
     subject: str
     fragment_type: ContextFragmentType
     source_ref: str
-    source_revision: int
+    source_revision: int | None
     public_payload: FrozenJsonValue
     public_payload_hash: str
     token_estimate: int
@@ -1779,7 +1779,11 @@ class ContextFragmentV2:
             _identifier(identifier_value, name)
         fragment_type = ContextFragmentType(self.fragment_type)
         _identifier(self.source_ref, "source_ref", max_length=1024)
-        _positive_int(self.source_revision, "source_revision")
+        if fragment_type is ContextFragmentType.SHORT_HORIZON:
+            if self.source_revision is not None:
+                raise ValueError("short-horizon fragment forbids source_revision")
+        else:
+            _positive_int(self.source_revision, "source_revision")
         payload = _payload(self.public_payload, "public_payload")
         _digest(self.public_payload_hash, "public_payload_hash")
         if _payload_hash(payload) != self.public_payload_hash:
@@ -1874,7 +1878,7 @@ class ContextFragmentV2:
             _identifier(value["subject"], "subject"),
             ContextFragmentType(value["fragment_type"]),  # type: ignore[arg-type]
             _identifier(value["source_ref"], "source_ref", max_length=1024),
-            _positive_int(value["source_revision"], "source_revision"),
+            None if value["source_revision"] is None else _positive_int(value["source_revision"], "source_revision"),
             _payload(value["public_payload"], "public_payload"),
             _digest(value["public_payload_hash"], "public_payload_hash"),
             _non_negative_int(value["token_estimate"], "token_estimate"),

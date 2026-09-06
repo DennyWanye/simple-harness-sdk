@@ -16,6 +16,10 @@ _MODULE_EXPORTS = {
         "ProviderContextUseViewV1",
         "RecallContextUseAuthorityPort",
     ),
+    "simple_harness.execution.sqlite.short_context_migration": (
+        "migrate_execution_to_v9",
+        "ExecutionShortContextUpgradeReceiptV1",
+    ),
     "simple_harness.execution.sqlite.context_use_migration": (
         "migrate_execution_v7_to_v8",
         "ExecutionContextUseUpgradeReceiptV1",
@@ -723,6 +727,8 @@ __all__ += (
     "ProviderContextUseGrantV1",
     "ProviderContextUseViewV1",
     "RecallContextUseAuthorityPort",
+    "migrate_execution_to_v9",
+    "ExecutionShortContextUpgradeReceiptV1",
     "migrate_execution_v7_to_v8",
     "ExecutionContextUseUpgradeReceiptV1",
 )
