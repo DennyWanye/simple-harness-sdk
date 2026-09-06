@@ -1,5 +1,20 @@
 <!-- Updated 2026-09-06 -->
 
+## Authorization expiry terminal proof successor — 2026-09-06
+
+H076 authorization expiry wrote a failed Run without a run.failed event. This
+successor atomically binds root React tool-authorization terminal decisions and
+provides explicit public eligibility/recovery plus exact public terminal metadata.
+21 unique new source controls passed in bounded batches (not24). Actual r6
+SQLite/WAL-consistent COPY passed public eligibility -> recovery -> terminal ->
+reopen exact replay;33 original events retained and original DB/WAL bytes unchanged
+at this gate. Original userdata has NOT been recovered; installed/Host/native
+remain separate gates. Unknown/multicycle/child recovery shapes refuse. H075/H076
+artifacts unchanged. [Contract](../plans/2026-09-06-decision-terminal-recovery/CONTRACT.md),
+[results](../plans/2026-09-06-decision-terminal-recovery/RESULTS.md).
+
+<!-- Updated 2026-09-06 -->
+
 ## Exact short Context identity successor (source scope)
 
 H074 requires a positive ContextFragmentV2 source_revision even though the public
