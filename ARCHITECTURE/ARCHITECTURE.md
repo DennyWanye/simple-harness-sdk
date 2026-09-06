@@ -8,10 +8,12 @@ provides explicit public eligibility/recovery plus exact public terminal metadat
 21 unique new source controls passed in bounded batches (not24). Actual r6
 SQLite/WAL-consistent COPY passed public eligibility -> recovery -> terminal ->
 reopen exact replay;33 original events retained and original DB/WAL bytes unchanged
-at this gate. Original userdata has NOT been recovered; installed/Host/native
-remain separate gates. Unknown/multicycle/child recovery shapes refuse. H075/H076
+at this gate. Original userdata has NOT been recovered. Fixed077 sourcec29af669/wheel60f7fb16
+has one offline build, small-target public consumer PASS and Dirac scoped artifact
+ACCEPT; Host/native remain separate gates. Unknown/multicycle/child recovery shapes refuse. H075/H076
 artifacts unchanged. [Contract](../plans/2026-09-06-decision-terminal-recovery/CONTRACT.md),
-[results](../plans/2026-09-06-decision-terminal-recovery/RESULTS.md).
+[results](../plans/2026-09-06-decision-terminal-recovery/RESULTS.md),
+[artifact](../plans/2026-09-06-decision-terminal-recovery/ARTIFACT.md).
 
 ## RESCHEDULED time signal successor — 2026-09-06
 
