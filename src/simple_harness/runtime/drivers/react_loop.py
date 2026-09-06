@@ -983,7 +983,7 @@ def _verify_context_authority_receipt(
     state: TerminationState, run_id: RunId, request: ProviderRequest
 ) -> None:
     if state.context_authority_receipt is None:
-        if state.source_schema_version == 7:
+        if state.source_schema_version == 7 or state.context_use_authority_scope is not None:
             raise ValueError("context_use_snapshot_attestation_missing")
         return
     if not isinstance(state.context_authority_receipt, Mapping):
@@ -1005,7 +1005,7 @@ def _verify_context_authority_receipt(
         or receipt.get("expected_request_fingerprint") != provider_request_fingerprint(request)
     ):
         raise RuntimeError("frozen Host Context authority receipt differs")
-    if state.source_schema_version == 7:
+    if state.source_schema_version == 7 or state.context_use_authority_scope is not None:
         from simple_harness.execution.context_use import ProviderContextUseAttemptV1, use_hash
 
         attempt = ProviderContextUseAttemptV1.from_json(state.context_use_attempt)
