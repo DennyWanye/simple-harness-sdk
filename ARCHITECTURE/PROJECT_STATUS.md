@@ -1,3 +1,15 @@
+## Mandatory context repair source — 2026-09-06
+
+Last updated 2026-09-06. Separate successor source from H078: typed pending-action
+refusal is handled after actual response checkpoint, with at most two durable
+same-Run repairs and original budgets. Every repair-bearing terminal (including
+routed) still checks real ACK/current pending; fresh typed grants/physical guard
+remain. Existing context.no_recall/context.apply audits bind repair identity.
+SDK11 + Host3 new controls passed in separate batches; Dirac fixed-source/results
+limited ACCEPT. Main owns H079 packaging/installed/r17 with M618; no source tests
+repeated, no old Run or frozen wheel changes. LastPG21416 exit0/remaining[].
+[Results and exact boundaries](../plans/2026-09-06-mandatory-context-action/RESULTS.md).
+
 ## Native Host ordinary Run verified — 2026-09-06
 
 H078/Hostb3680732 real native r13 completed a fresh ordinary turn and the default
