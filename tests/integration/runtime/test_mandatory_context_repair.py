@@ -3,6 +3,7 @@
 SQL below is SDK-owned forensic oracle, never an API required from Host.
 """
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -11,8 +12,9 @@ from simple_harness.contracts import CallId, RequestId, RunId, thaw_json
 from simple_harness.contracts.messages import Message, MessageRole
 from simple_harness.execution.context_authority import ContextRouteReceipt
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
+from simple_harness.execution.budget import FrozenPriceEstimator
 from simple_harness.execution.sqlite import Database, SqliteExecutionUnitOfWork
-from simple_harness.providers import CancelToken, ProviderResponse, ProviderToolCall, ProviderToolSpec
+from simple_harness.providers import CancelToken, ProviderResponse, ProviderToolCall, ProviderToolSpec, ProviderUsage
 from simple_harness.runtime import EffectBatchExecutor, RuntimeServices, SqliteContextPort
 from simple_harness.runtime.drivers.react_loop import ReActLoop, ReActRunInput, AgentLoopCollaborator
 from simple_harness.runtime.task_scope_protocol import TaskScopeRoute
@@ -51,8 +53,11 @@ async def _case(tmp_path, *, boundary=None, error=None):
             if ordinal == 2 and error is None:
                 calls = (ProviderToolCall(CallId("actual-ack"), "prospective_ack", {}),)
             return ProviderResponse(request.request_id, Message(MessageRole.ASSISTANT, "43"),
-                calls, model="model", finish_reason="tool_calls" if calls else "stop")
+                calls, usage=ProviderUsage(10, 10, 20), model="model", finish_reason="tool_calls" if calls else "stop")
     physical = Physical()
+    class PricedResolver(OpaqueResolver):
+        def resolve(self, run_id):
+            return replace(super().resolve(run_id), estimator=FrozenPriceEstimator("fixture-price", "model", 1, 1))
     class Store(SqliteExecutionUnitOfWork):
         def cas_react_checkpoint(self, **values):
             result = super().cas_react_checkpoint(**values)
@@ -108,7 +113,7 @@ async def _case(tmp_path, *, boundary=None, error=None):
         namespace="runtime.kernel", now=2., lease_ttl_seconds=100.)
     fence = await store.acquire(RunId("run-1"), lease, now=2.)
     async def drive():
-        coordinator = Coordinator(uow=store, resolver=OpaqueResolver(physical), clock=lambda: 3.)
+        coordinator = Coordinator(uow=store, resolver=PricedResolver(physical), clock=lambda: 3.)
         context = Context(database, clock=lambda: 3.)
         auth, reconcile = Authorization(), Reconciliation()
         effects = EffectExecutor(uow=store, registry=registry, authorization=auth,
