@@ -13,6 +13,7 @@ from typing import cast
 
 from simple_harness.contracts import HarnessError, JsonValue
 from simple_harness.execution.budget import BudgetSnapshot
+from simple_harness.execution.context_action import MandatoryContextFeedbackV1
 
 _TERMINATION_V1_FIELDS = frozenset(
     {
@@ -102,6 +103,8 @@ _TERMINATION_FIELDS_BY_SCHEMA[7] = _TERMINATION_FIELDS_BY_SCHEMA[6] | {
     "context_use_authority_scope",
 }
 
+_TERMINATION_FIELDS_BY_SCHEMA[8] = _TERMINATION_FIELDS_BY_SCHEMA[7] | {"mandatory_context_repairs"}
+
 
 class TerminationReason(StrEnum):
     MAX_TURNS = "max_turns"
@@ -186,6 +189,7 @@ class TerminationState:
     context_use_attempt: JsonValue | None = None
     active_turn_id: str | None = None
     active_continuation_id: str | None = None
+    mandatory_context_repairs: tuple[MandatoryContextFeedbackV1, ...] = ()
 
     @property
     def turns(self) -> int:
@@ -252,12 +256,35 @@ class TerminationState:
             raise ValueError("termination policy fingerprint must be lowercase SHA-256")
         if self.route_state not in {"unrouted", "routed_standalone", "routed_task"}:
             raise ValueError("invalid durable route state")
-        if self.source_schema_version not in {1, 2, 3, 4, 5, 6, 7}:
+        if self.source_schema_version not in {1, 2, 3, 4, 5, 6, 7, 8}:
             raise ValueError("invalid source ReAct checkpoint schema")
-        if self.source_schema_version == 7:
+        if self.source_schema_version == 7 or self.context_use_authority_scope is not None:
             for item in (self.active_turn_id, self.context_use_authority_scope):
                 if type(item) is not str or not item.strip() or "\0" in item:
                     raise ValueError("context_use_checkpoint_identity_missing")
+        if self.mandatory_context_repairs:
+            if self.source_schema_version != 8 or len(self.mandatory_context_repairs) > 2:
+                raise ValueError("mandatory_context_repair_schema_or_bound_differs")
+            previous_turn = 0
+            previous_run = None
+            for ordinal, feedback in enumerate(self.mandatory_context_repairs, 1):
+                if type(feedback) is not MandatoryContextFeedbackV1 or feedback.repair_ordinal != ordinal:
+                    raise ValueError("mandatory_context_repair_sequence_differs")
+                if (feedback.rejection.provider_turn_ordinal <= previous_turn
+                        or feedback.rejection.provider_turn_ordinal > self.provider_turns_reserved_total
+                        or (previous_run is not None and feedback.rejection.run_id != previous_run)):
+                    raise ValueError("mandatory_context_repair_lineage_differs")
+                previous_turn = feedback.rejection.provider_turn_ordinal
+                previous_run = feedback.rejection.run_id
+        if self.phase == "context_action_reserved":
+            if not self.mandatory_context_repairs:
+                raise ValueError("mandatory_context_repair_phase_lacks_feedback")
+            last = self.mandatory_context_repairs[-1]
+            if (last.provider_request_id != self.provider_request_id
+                    or last.response_digest != self.provider_response_digest
+                    or last.rejection.request_fingerprint != self.provider_request_fingerprint
+                    or last.rejection.provider_turn_ordinal != self.provider_turns_reserved_total):
+                raise ValueError("mandatory_context_repair_checkpoint_differs")
         if self.context_use_attempt is not None:
             from simple_harness.execution.context_use import ProviderContextUseAttemptV1
 
@@ -417,7 +444,7 @@ class TerminationState:
                 for snapshot_id, payload_hash in self.context_snapshot_bindings
             },
         }
-        if self.active_turn_id is not None or self.source_schema_version == 7:
+        if self.active_turn_id is not None or self.source_schema_version in {7, 8}:
             result.update(
                 schema_version=7,
                 context_use_attempt=self.context_use_attempt,
@@ -425,6 +452,8 @@ class TerminationState:
                 active_continuation_id=self.active_continuation_id,
                 context_use_authority_scope=self.context_use_authority_scope,
             )
+        if self.source_schema_version == 8:
+            result.update(schema_version=8, mandatory_context_repairs=[f.to_json() for f in self.mandatory_context_repairs])
         return result
 
     @classmethod
@@ -433,7 +462,7 @@ class TerminationState:
         if (
             isinstance(source_schema_version, bool)
             or not isinstance(source_schema_version, int)
-            or source_schema_version not in {1, 2, 3, 4, 5, 6, 7}
+            or source_schema_version not in {1, 2, 3, 4, 5, 6, 7, 8}
         ):
             raise ValueError("unsupported ReAct checkpoint schema")
         expected_fields = _TERMINATION_FIELDS_BY_SCHEMA[source_schema_version]
@@ -446,7 +475,7 @@ class TerminationState:
         elif actual_fields != expected_fields:
             raise ValueError("ReAct checkpoint fields differ")
         raw_snapshot_bindings = (
-            value["context_snapshot_bindings"] if source_schema_version in {5, 6, 7} else {}
+            value["context_snapshot_bindings"] if source_schema_version in {5, 6, 7, 8} else {}
         )
         if not isinstance(raw_snapshot_bindings, Mapping):
             raise TypeError("Context snapshot bindings must be an object")
@@ -455,7 +484,11 @@ class TerminationState:
             if not isinstance(snapshot_id, str) or not isinstance(payload_hash, str):
                 raise TypeError("Context snapshot bindings must map strings to strings")
             snapshot_bindings.append((snapshot_id, payload_hash))
+        raw_repairs = value.get("mandatory_context_repairs", [])
+        if not isinstance(raw_repairs, list):
+            raise ValueError("mandatory_context_repairs_must_be_array")
         return cls(
+            mandatory_context_repairs=tuple(MandatoryContextFeedbackV1.from_json(f) for f in raw_repairs),
             started_at=_float(value["started_at"]),
             last_observed_at=_float(value["last_observed_at"]),
             provider_turns_reserved_total=_int(value["provider_turns_reserved_total"]),
@@ -525,7 +558,7 @@ class TerminationState:
             ),
             context_snapshot_revision=(
                 _int(value["context_snapshot_revision"])
-                if source_schema_version in {5, 6, 7}
+                if source_schema_version in {5, 6, 7, 8}
                 else 0
             ),
             context_snapshot_bindings=tuple(sorted(snapshot_bindings)),

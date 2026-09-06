@@ -448,6 +448,17 @@ class ProviderInvocationCoordinator:
     def read_provider_context_use(self, run_id, request_id):
         return self._uow.read_provider_context_use(run_id, request_id)
 
+    async def prepare_context_use_terminal(self, run_id, request, *, checkpoint, execution_lease):
+        """Host terminal decision, called only after durable response checkpoint.
+
+        Overrides may raise the exact MandatoryContextActionRequired rejection.
+        They must not replace this invocation's physical success or its usage.
+        The normal terminal verification still runs after this hook succeeds.
+        """
+        self._uow.verify_provider_context_use_terminal(
+            run_id, request.request_id, checkpoint, execution_lease, self._clock()
+        )
+
     def verify_context_use_terminal(self, run_id, request_id, *, checkpoint, execution_lease):
         if not self.context_use_required:
             raise ValueError("context_use_terminal_authority_required")

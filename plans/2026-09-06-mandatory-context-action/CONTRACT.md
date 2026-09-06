@@ -30,7 +30,12 @@ route receipt, user message or ACK is permitted.
 2. The unprotected no-recall sink uses the same typed rejection contract. SDK
    catches it only at these precise terminal decision boundaries. All other
    rejection paths remain terminal. A routed request follows existing route/ACK
-   enforcement; route itself does not fabricate an ACK.
+   enforcement; route itself does not fabricate an ACK. Repair-bearing Runs retain
+   this obligation across all tool/route checkpoints. Before every proposed final
+   answer they call `RuntimeDecisionSinkPort.check_mandatory_context_actions` using
+   the current request identity, even when routed. This read reuses the same Host
+   pending/ACK authority but never writes a DIRECT no-recall receipt for a routed
+   Run. Ordinary routed Runs without repair retain their existing contract.
 3. Persist each rejection in ReAct checkpoint with ordinal, request ID/hash,
    response hash, stable reason and repair ordinal. At most TWO repairs per Run;
    the third rejection produces an explicit bounded failure with pending intact.

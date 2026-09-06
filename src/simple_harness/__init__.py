@@ -41,6 +41,10 @@ from .version import __version__
 
 _RUNTIME_EXPORTS = frozenset(
     {
+        'MandatoryContextActionRequired',
+        'MandatoryContextRejectionV1',
+        'MandatoryContextFeedbackV1',
+        'MandatoryContextActionExhausted',
         "RecallContextUseIntentV1",
         "ProviderContextUseAttemptV1",
         "ProviderContextUseGrantV1",
@@ -389,6 +393,10 @@ def __dir__() -> list[str]:
 
 
 __all__: tuple[str, ...] = (
+    'MandatoryContextActionRequired',
+    'MandatoryContextRejectionV1',
+    'MandatoryContextFeedbackV1',
+    'MandatoryContextActionExhausted',
     "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
     "CONVERSATION_EVIDENCE_SCHEMA_VERSION",

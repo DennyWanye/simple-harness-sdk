@@ -24,6 +24,7 @@ _MODULE_EXPORTS = {
         "migrate_execution_v7_to_v8",
         "ExecutionContextUseUpgradeReceiptV1",
     ),
+    "simple_harness.execution.context_action": ('MandatoryContextActionRequired','MandatoryContextRejectionV1','MandatoryContextFeedbackV1','MandatoryContextActionExhausted'),
     "simple_harness.execution.context_authority": (
         "ContextRouteOrigin",
         "ContextRouteReceipt",
@@ -401,6 +402,10 @@ def __dir__() -> list[str]:
 
 
 __all__: tuple[str, ...] = (
+    'MandatoryContextActionRequired',
+    'MandatoryContextRejectionV1',
+    'MandatoryContextFeedbackV1',
+    'MandatoryContextActionExhausted',
     "CONTEXT_ASSEMBLY_SCHEMA_VERSION",
     "CONTEXT_FRAGMENT_SCHEMA_VERSION",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
