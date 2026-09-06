@@ -15,7 +15,10 @@ receipt/Provider claim association, existing handoff CAS and new-grant retry,
 payload-free public view, explicit execution7→8 WAL-aware migration are implemented
 with Dirac scoped source ACCEPT at69db778. New bounded source batch32PASS,
 separate migration3PASS and adjacent33PASS; retained initial failures are documented.
-Isolated0.7.4 candidate packaging follows; no Host default/native/formal401 PASS.
+Fixed0.7.4 source9229269 has identical double offline wheels (168 source files)
+and6 target-installed public consumer tests passing; independent artifact review
+is pending. No Host default/native/formal401 PASS. See the
+[artifact handoff](../plans/2026-09-06-recall-use-reservation/ARTIFACT-HANDOFF.md).
 Generic no-Memory behavior is retained;
 missing/legacy typed carrier is not an empty attestation. See
 [contract](../plans/2026-09-06-recall-use-reservation/CONTRACT.md) and
