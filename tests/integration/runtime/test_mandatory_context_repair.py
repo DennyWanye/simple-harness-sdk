@@ -144,6 +144,8 @@ async def _case(tmp_path, *, boundary=None, error=None, tamper=None):
         uow = Store(db)
         return db, uow
     database, store = open_services()
+    if tamper:
+        store.configure_context_use_authority("fixture-typed-store")
     store.create_with_start_snapshot(execution_session_id="session", run_id="run-1",
         request_id="root", profile_key="agent.general", driver_kind="react",
         snapshot={"catalog_generation": 1, "turn_id": "actual-turn"}, event_id="created", now=1.)
