@@ -225,7 +225,8 @@ def test_active_owner_or_any_effect_refuses_recovery(old_uow, gate):
     c = old_uow.database.connection
     if gate == 'active_owner':
         c.execute("INSERT INTO workflow_leases(run_id,namespace,owner_id,epoch,expires_at) "
-                  "VALUES ('run-fault','runtime.kernel','negative-owner',9,1000)")
+                  "VALUES ('run-fault','runtime.kernel','negative-owner',9,1000) "
+                  "ON CONFLICT(run_id,namespace) DO UPDATE SET expires_at=1000,owner_id='negative-owner',epoch=9")
     else:
         # Deliberately invalid legacy shape, never asserted to be a real handoff.
         c.execute("INSERT INTO execution_effects(effect_id,run_id,call_id,tool_name,arguments_json,"
