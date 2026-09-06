@@ -5173,11 +5173,32 @@ class SqliteExecutionUnitOfWork:
         expected_version: int,
         handed_off_at: float,
         execution_lease: ExecutionLease,
+        run_fence: RunFenceLease | None = None,
         workflow_lease: WorkflowLease | None = None,
     ) -> ProviderInvocationRecord:
         handed_off_at = _time(handed_off_at, "handed_off_at")
         with self.database.transaction() as connection:
             self._require_runtime_lease(connection, execution_lease, now=handed_off_at)
+            run = connection.execute(
+                "SELECT driver_kind FROM runs WHERE run_id=?",
+                (execution_lease.run_id,),
+            ).fetchone()
+            if run is None:
+                raise UnitOfWorkConflict("provider handoff Run does not exist")
+            if str(run["driver_kind"]) == "workflow":
+                if run_fence is None:
+                    raise UnitOfWorkConflict(
+                        "workflow provider handoff requires Run fence"
+                    )
+                self._require_run_fence(
+                    connection,
+                    run_fence,
+                    execution_lease=execution_lease,
+                )
+            elif run_fence is not None:
+                raise UnitOfWorkConflict(
+                    "non-workflow provider handoff rejects Workflow Run fence"
+                )
             self._require_workflow_handoff_authority(
                 connection,
                 run_id=execution_lease.run_id,

@@ -45,6 +45,7 @@ from .provider_invocations import (
 from .recovery import ResolutionOutcome
 
 if TYPE_CHECKING:
+    from simple_harness.execution.fences import RunFenceLease
     from simple_harness.workflow.lease import WorkflowLease
 
     from .recovery import ReconciliationResolution
@@ -73,6 +74,7 @@ class ProviderInvocationUnitOfWork(Protocol):
         expected_version: int,
         handed_off_at: float,
         execution_lease: ExecutionLease,
+        run_fence: RunFenceLease | None = None,
         workflow_lease: WorkflowLease | None = None,
     ) -> ProviderInvocationRecord: ...
 
@@ -241,6 +243,7 @@ class ProviderInvocationCoordinator:
         *,
         cancel: CancelToken,
         execution_lease: ExecutionLease,
+        run_fence: RunFenceLease | None = None,
         workflow_lease: WorkflowLease | None = None,
     ) -> ProviderResponse:
         if (
@@ -286,6 +289,7 @@ class ProviderInvocationCoordinator:
                 expected_version=record.version,
                 handed_off_at=self._clock(),
                 execution_lease=execution_lease,
+                run_fence=run_fence,
                 workflow_lease=workflow_lease,
             )
         except ValueError as exc:
