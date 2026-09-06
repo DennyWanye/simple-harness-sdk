@@ -4,6 +4,7 @@
 """Runtime Driver implementations."""
 
 from .react import ReActDriver, build_react_driver
+from .start_mode import StartModeDriverRouter
 from .react_loop import (
     AgentLoopCollaborator,
     EffectBatchExecutor,
@@ -24,6 +25,7 @@ __all__ = (
     "AgentLoopCollaborator",
     "EffectBatchExecutor",
     "ReActDriver",
+    "StartModeDriverRouter",
     "build_react_driver",
     "ReActLoop",
     "ReActResult",

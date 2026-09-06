@@ -2796,8 +2796,14 @@ class Runtime:
             from simple_harness.execution.runtime_audit import runtime_operation
             from simple_harness.execution.sqlite import SqliteExecutionUnitOfWork
             from simple_harness.runtime.drivers.react import ReActDriver
+            from simple_harness.runtime.drivers.start_mode import StartModeDriverRouter
             from simple_harness.runtime.drivers.workflow import WorkflowRuntimeDriver
 
+            # Only this concrete SDK selector is transparent to recording.
+            # Resolve after validating the persisted snapshot and before both
+            # contract selection and invocation; never trust a Host contract tag.
+            if type(driver) is StartModeDriverRouter:
+                driver = driver.select(snapshot.start_mode)
             driver_contract = None
             if type(self._uow) is SqliteExecutionUnitOfWork:
                 if type(driver) is ReActDriver:

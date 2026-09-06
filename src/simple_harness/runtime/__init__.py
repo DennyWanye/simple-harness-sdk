@@ -330,6 +330,7 @@ _MODULE_EXPORTS = {
         "StartCommandIntent",
     ),
     ".drivers.react": ("ReActDriver", "build_react_driver"),
+    ".drivers.start_mode": ("StartModeDriverRouter",),
     ".drivers.react_loop": ("AgentLoopCollaborator", "EffectBatchExecutor"),
     ".drivers.workflow": (
         "WORKFLOW_DRIVER_IMPLEMENTATION_FINGERPRINT",
@@ -623,6 +624,7 @@ __all__: tuple[str, ...] = (
     "RECALL_RESULT_SCHEMA_VERSION",
     "ReconciliationPhase",
     "ReActDriver",
+    "StartModeDriverRouter",
     "ResourceOwnership",
     "RunApiMode",
     "RunContextAuthorityPort",
