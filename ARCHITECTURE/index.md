@@ -1,3 +1,12 @@
+## Native Host ordinary Run verified — 2026-09-06
+
+H078/Hostb3680732 real native r13 completed a fresh ordinary turn and the default
+audit consumer enumerated45 public DTO rows. Public SDK metadata reports
+verified_current_intervals, coverage_gaps=[], history_coverage=recorded; no tool
+or effect path was exercised. Old r12 unverified history is not recertified.
+Host Run f4370cbe-1a87-537c-8d3b-8e0abbf8bd16; native PG99878 exited normally,
+remaining[]. [Host evidence and exact scope](/Users/denny/projects/simple_harness-primary-candidate/plans/2026-09-06-typed-use-primary/NATIVE-R13.md).
+
 ## Native driver audit successor — 2026-09-06
 
 SDK-owned immutable start-mode selection exposes the actual driver to kernel
