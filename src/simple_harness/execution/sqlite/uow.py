@@ -872,6 +872,26 @@ class SqliteExecutionUnitOfWork:
         with self.database.transaction(read_only=True) as connection:
             validate_recovery(connection, self._context_use_scope)
 
+    def read_expired_authorization_terminal_recovery(self, run_id: RunId):
+        """Read exact eligibility from public Run identity; no Host SQL required."""
+        from .decision_terminal import eligible
+
+        if not isinstance(run_id, RunId):
+            raise TypeError("run_id must use RunId")
+        with self.database.audit_reader() as reader:
+            with reader.transaction(read_only=True) as connection:
+                found = eligible(connection, run_id.value)
+                return None if found is None else found[0]
+
+    def recover_expired_authorization_terminal(self, witness, *, now: float, fault=None):
+        """Explicit bounded repair, with all witness facts rechecked in one TX."""
+        from .decision_terminal import recover
+
+        with self.database.transaction() as connection:
+            proof = recover(self, connection, witness, now=now, fault=fault)
+        _fault(fault, "authorization_terminal_recovery.after_commit")
+        return proof
+
     def read_run_operation_audit(
         self, run_id: RunId, *, limit: int = 256
     ) -> RunOperationAuditSnapshotV1:
@@ -3551,6 +3571,11 @@ class SqliteExecutionUnitOfWork:
                         now=now,
                     )
                     _fault(fault, "decision_resolve.event.after_write")
+                    from .decision_terminal import append_decision_terminal
+
+                    append_decision_terminal(self, connection, run_id=run_id,
+                                             decision_id=decision_id, event_id=event_id, now=now)
+                    _fault(fault, "decision_terminal.after_write")
                 _fault(fault, "decision_resolve.after_commit")
                 result = self.read_decision(decision_id)
                 assert result is not None
@@ -3602,6 +3627,11 @@ class SqliteExecutionUnitOfWork:
                 now=now,
             )
             _fault(fault, "decision.event.after_write")
+            from .decision_terminal import append_decision_terminal
+
+            append_decision_terminal(self, connection, run_id=run_id,
+                                     decision_id=decision_id, event_id=event_id, now=now)
+            _fault(fault, "decision_terminal.after_write")
         _fault(fault, "decision.after_commit")
         result = self.read_decision(decision_id)
         assert result is not None

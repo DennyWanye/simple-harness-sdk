@@ -354,6 +354,10 @@ _RUNTIME_EXPORTS = frozenset(
 
 
 def __getattr__(name: str) -> Any:
+    if name == "ExpiredAuthorizationTerminalRecoveryV1":
+        from .execution.decision_recovery import ExpiredAuthorizationTerminalRecoveryV1
+
+        return ExpiredAuthorizationTerminalRecoveryV1
     if name in {
         "CommandOperationAuditPageV1",
         "ContextStageOperationAuditPageV1",
@@ -696,6 +700,7 @@ __all__ += (
     "CommandOperationAuditPort",
     "RunOperationAuditPort",
     "RunOperationAuditSnapshotV1",
+    "ExpiredAuthorizationTerminalRecoveryV1",
     "RunTerminalAuditEvidenceV1",
     "RunOperationAuditPageV1",
     "RunOperationAuditV1",

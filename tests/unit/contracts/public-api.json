@@ -310,6 +310,7 @@
     "CommandOperationAuditPort",
     "RunOperationAuditPort",
     "RunOperationAuditSnapshotV1",
+    "ExpiredAuthorizationTerminalRecoveryV1",
     "RunTerminalAuditEvidenceV1",
     "RunOperationAuditPageV1",
     "RunOperationAuditV1",
