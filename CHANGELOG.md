@@ -1,3 +1,11 @@
+## 0.7.7 — authorization terminal proof and bounded expiry recovery
+
+Root React tool-authorization expiry/denial now commits exact terminal evidence.
+Explicit public eligibility/recovery supports proved legacy first-expiry roots;
+exact public terminal metadata replaces Host SQL. Original decisions and receipt
+bytes are preserved; unknown legacy states are rejected. Execution schema9 is
+unchanged. H075/H076 artifacts remain frozen.
+
 <!--
 SPDX-FileCopyrightText: 2026 DennyWanye
 SPDX-License-Identifier: Apache-2.0

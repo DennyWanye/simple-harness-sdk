@@ -14,7 +14,7 @@ from simple_harness.testing import arm64_candidate
 
 def test_public_api_matches_frozen_snapshot() -> None:
     snapshot = json.loads((Path(__file__).with_name("public-api.json")).read_text(encoding="utf-8"))
-    assert simple_harness.__version__ == snapshot["version"] == "0.7.5"
+    assert simple_harness.__version__ == snapshot["version"] == "0.7.7"
     assert list(simple_harness.__all__) == snapshot["simple_harness"]
     assert list(contracts.__all__) == snapshot["simple_harness.contracts"]
     assert list(runtime.__all__) == snapshot["simple_harness.runtime"]
@@ -39,7 +39,7 @@ def test_receipt_reservation_successor_preserves_h073_exports() -> None:
     root = Path(__file__).parent
     previous = json.loads((root / "public-api-0.7.3.json").read_text())
     current = json.loads((root / "public-api.json").read_text())
-    assert previous["version"] == "0.7.3" and current["version"] == "0.7.5"
+    assert previous["version"] == "0.7.3" and current["version"] == "0.7.7"
     for module in previous:
         if module != "version":
             assert set(previous[module]) <= set(current[module])
@@ -49,7 +49,7 @@ def test_short_successor_preserves_h074_exports():
     root = Path(__file__).parent
     old = json.loads((root / "public-api-0.7.4.json").read_text())
     current = json.loads((root / "public-api.json").read_text())
-    assert old["version"] == "0.7.4" and current["version"] == "0.7.5"
+    assert old["version"] == "0.7.4" and current["version"] == "0.7.7"
     for module in old:
         if module != "version":
             assert set(old[module]) <= set(current[module])

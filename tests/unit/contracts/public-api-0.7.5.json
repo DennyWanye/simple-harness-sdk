@@ -1,5 +1,5 @@
 {
-  "version": "0.7.7",
+  "version": "0.7.5",
   "simple_harness": [
     "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
@@ -310,9 +310,7 @@
     "CommandOperationAuditPort",
     "RunOperationAuditPort",
     "RunOperationAuditSnapshotV1",
-    "ExpiredAuthorizationTerminalRecoveryV1",
     "RunTerminalAuditEvidenceV1",
-    "RunTerminalRecordV1",
     "RunOperationAuditPageV1",
     "RunOperationAuditV1",
     "RunAuditUsageV1",
