@@ -9,7 +9,15 @@ import subprocess
 import pytest
 import simple_harness as h
 from simple_harness.execution.sqlite import Database
-from .test_context_use_migration import OLD_SEED, rows
+from .test_context_use_migration import OLD_SEED
+
+
+def rows(path):
+    with sqlite3.connect(path) as db:
+        names = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                 if r[0] not in {"sdk_schema_migrations", "short_context_upgrade_receipt"}]
+        return {name: sorted((tuple(r) for r in db.execute('SELECT * FROM "' + name.replace('"', '""') + '"')), key=repr) for name in names}
+
 
 
 def old(version, code, *args):
@@ -33,6 +41,7 @@ with zipfile.ZipFile(WHEEL) as z:
     code = f'VERSION={version!r}\nWHEEL={wheel!r}\nSHA={sha!r}\n' + verify + code
     result = subprocess.run([python, '-I', '-c', code, *map(str, args)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+    return result.stdout
 
 
 def seed(tmp_path, version):
@@ -69,7 +78,7 @@ def test_nonempty_wal_and_upgrade_replay_preserve_all_old_rows(tmp_path, prior):
     receipt = h.migrate_execution_to_v9(path, backup_path=backup)
     assert receipt.from_version == (7 if prior == '0.7.3' else 8)
     assert receipt.to_version == 9 and receipt.backup_sha256 == sha(backup)
-    assert original == rows(path) == rows(backup)
+    assert original == {key: rows(path)[key] for key in original} == rows(backup)
     if old_receipt:
         with sqlite3.connect(path) as db:
             stored = db.execute('SELECT receipt_json,receipt_hash FROM context_use_upgrade_receipt').fetchone()
@@ -141,3 +150,22 @@ def test_legacy_fake_short_revision_refuses_before_backup(tmp_path, location):
     with pytest.raises(Exception, match='carrier_incompatible'):
         h.migrate_execution_to_v9(path, backup_path=tmp_path/'refused.backup')
     assert sha(path)==before and not (tmp_path/'refused.backup').exists()
+
+
+def test_real_h074_long_grants_and_wire_bytes_preserved(tmp_path):
+    old('0.7.4', """
+sys.path.insert(0, '/Users/denny/projects/simple-harness-sdk-recall-use-reservation')
+from tests.integration.runtime.test_context_use_public_memory import test_actual_two_item_public_consumer_and_reopen
+test_actual_two_item_public_consumer_and_reopen(pathlib.Path(sys.argv[1]), 'receipt_first')
+""", tmp_path)
+    path = tmp_path/'execution.sqlite'
+    original = rows(path)
+    assert original['provider_context_use_attempts'] and original['provider_context_use_receipt_bindings']
+    receipt = h.migrate_execution_to_v9(path, backup_path=tmp_path/'long.pre9.backup')
+    assert original == rows(path) == rows(tmp_path/'long.pre9.backup')
+    assert h.migrate_execution_to_v9(path, backup_path=tmp_path/'long.pre9.backup') == receipt
+    from tests.unit.execution.test_short_context_revision import fragment
+    value = fragment(h.ContextFragmentType.RECALLED_MEMORY, 1)
+    raw = value.to_json()
+    output = old('0.7.4', 'f=h.ContextFragmentV2.from_json(' + repr(raw) + ')\nprint(h.canonical_json(f.to_json()))\nprint(f.fragment_hash)')
+    assert output.splitlines() == [h.canonical_json(raw), value.fragment_hash]
