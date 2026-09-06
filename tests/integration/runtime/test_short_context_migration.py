@@ -1,4 +1,5 @@
 """Real old binaries produce nonempty WAL stores; source-only SQL is forensic."""
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -13,7 +14,7 @@ from .test_context_use_migration import OLD_SEED
 
 
 def rows(path):
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path, isolation_level=None)) as db:
         names = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
                  if r[0] not in {"sdk_schema_migrations", "short_context_upgrade_receipt"}]
         return {name: sorted((tuple(r) for r in db.execute('SELECT * FROM "' + name.replace('"', '""') + '"')), key=repr) for name in names}
@@ -80,7 +81,7 @@ def test_nonempty_wal_and_upgrade_replay_preserve_all_old_rows(tmp_path, prior):
     assert receipt.to_version == 9 and receipt.backup_sha256 == sha(backup)
     assert original == {key: rows(path)[key] for key in original} == rows(backup)
     if old_receipt:
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path, isolation_level=None)) as db:
             stored = db.execute('SELECT receipt_json,receipt_hash FROM context_use_upgrade_receipt').fetchone()
         assert json.loads(stored[0]) == old_receipt.to_json() and stored[1] == old_receipt.receipt_hash
     with Database.open(path) as db:
@@ -115,7 +116,7 @@ def test_fresh9_and_unknown_catalog_and_retained_backup_crash(tmp_path, monkeypa
     assert receipt.backup_sha256 == backup_hash == sha(backup)
     # Caller losing the acknowledgement after commit repeats the same public call.
     assert h.migrate_execution_to_v9(path, backup_path=backup) == receipt
-    with sqlite3.connect(fresh) as db:
+    with closing(sqlite3.connect(fresh, isolation_level=None)) as db:
         db.execute('CREATE TABLE unexpected(value TEXT)')
     before = sha(fresh)
     with pytest.raises(Exception, match='unknown_catalog'):
@@ -134,7 +135,7 @@ def test_legacy_fake_short_revision_refuses_before_backup(tmp_path, location):
     old('0.7.4', 'h.ContextFragmentV2.from_json(' + repr(raw_fragment) + ')')
     raw = attempt().to_json() | {'intents': [{'schema_version':1, 'fragments':[raw_fragment],
         'message_bindings':[{'ordinal':1,'message_hash':'c'*64}]}]}
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path, isolation_level=None)) as db:
         if location == 'attempt':
             raw.update(run_id='legacy-run')
             from simple_harness.execution.context_use import use_hash
