@@ -15,7 +15,7 @@ import asyncio
 import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Self, cast
+from typing import Any, Self, cast
 
 from simple_harness.contracts import (
     ExecutionSessionId,
@@ -24,6 +24,7 @@ from simple_harness.contracts import (
     RequestId,
     RunId,
     canonical_json,
+    thaw_json,
 )
 from simple_harness.execution.base_agent import BASE_AGENT_API_MODE, AgentBindingRecord
 from simple_harness.execution.budget import FrozenPriceEstimator
@@ -35,6 +36,7 @@ from simple_harness.execution.sqlite.base_agent.turns import (
 )
 from simple_harness.execution.sqlite.uow import SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import UnitOfWorkConflict
+from simple_harness.providers import ProviderToolSpec
 from simple_harness.runtime.consumer_adapter import (
     _ConsumerAuthorizationAdapter,
     _ConsumerProviderAdapter,
@@ -44,7 +46,6 @@ from simple_harness.runtime.consumer_adapter import (
     _DefaultToolCatalog,
     _DefaultToolReconciliation,
 )
-from simple_harness.runtime.context import SqliteContextPort
 from simple_harness.runtime.kernel import Runtime, RuntimePorts, RuntimeProfile, build_runtime
 from simple_harness.runtime.start_snapshot import RunStart
 from simple_harness.tools import EffectExecutor, FunctionTool, Tool
@@ -52,6 +53,8 @@ from simple_harness.tools.contracts import CancellationToken
 
 from .base import BaseAgent
 from .config import AgentConfig, config_hash
+from .context.port import JournalContextPort, RequestGuard
+from .context.tokenizer import UpperBoundTokenizer
 from .contracts import (
     AgentBatchIdentityConflict,
     AgentBatchRejected,
@@ -102,6 +105,7 @@ class AssembledRuntime:
     driver: object = None
     wire: object = None
     tool_names: tuple[str, ...] = ()
+    context: object = None
 
 
 def assemble_runtime(
@@ -135,7 +139,7 @@ def assemble_runtime(
     )
     # An SDK-native authorization port (prepare/bind_decision, able to require a
     # durable user decision) is used as-is; the consumer port is adapted.
-    auth_adapter = (
+    auth_adapter: Any = (
         ports.authorization
         if callable(getattr(ports.authorization, "bind_decision", None))
         and callable(getattr(ports.authorization, "prepare", None))
@@ -151,7 +155,9 @@ def assemble_runtime(
         reconciliation=tool_reconciliation,
         clock=ports.clock,
     )
-    wire = AgentProviderWire(ports.provider, database)
+    tokenizer = ports.tokenizer or UpperBoundTokenizer()
+    guard = RequestGuard(uow, tokenizer=tokenizer, policy=ports.context_policy, clock=ports.clock)
+    wire = AgentProviderWire(ports.provider, database, request_guard=guard)
     provider_adapter = _ConsumerProviderAdapter(wire, ports.model)
     # The consumer provider adapter reports pricing_key "consumer"; the estimator must match.
     estimator = ports.policies.estimator or FrozenPriceEstimator("consumer-v1", "consumer", 0, 0)
@@ -164,7 +170,22 @@ def assemble_runtime(
         context_use_authority=None,
         clock=ports.clock,
     )
-    context = SqliteContextPort(database, clock=ports.clock)
+
+    # BaseAgent Runs use the Journal-backed bounded Context (Slice 3); legacy Runs
+    # never reach this runtime, so ``SqliteContextPort`` stays untouched for them.
+    def _tool_specs_for_run(run_id: str) -> tuple[ProviderToolSpec, ...]:
+        exposed = registry.exposed_tools(run_id)
+        names = tuple(sorted(exposed)) if exposed is not None else ()
+        return effects.provider_tool_specs(names) if names else ()
+
+    context = JournalContextPort(
+        uow,
+        tokenizer=tokenizer,
+        policy=ports.context_policy,
+        model=ports.model,
+        tool_specs_for_run=_tool_specs_for_run,
+        clock=ports.clock,
+    )
     provider_reconciliation = (
         ports.policies.provider_reconciliation or _DefaultProviderReconciliation()
     )
@@ -215,14 +236,14 @@ def assemble_runtime(
         close_hook=uow.close,
     )
     return AssembledRuntime(
-        runtime, uow, database, driver, wire, tuple(spec.name for spec in registry.specs)
+        runtime, uow, database, driver, wire, tuple(spec.name for spec in registry.specs), context
     )
 
 
 def batch_fingerprint(owner_scope: str, batch_key: str, configs: Sequence[AgentConfig]) -> str:
     """Identity of one ``create_many`` call: owner, key, count and ordered config hashes."""
 
-    payload = {
+    payload: dict[str, JsonValue] = {
         "owner_scope": owner_scope,
         "batch_key": batch_key,
         "count": len(configs),
@@ -577,9 +598,14 @@ class AgentRuntime:
             assert turn is not None
             if turn.phase in ("committed", "failed"):
                 stored = self.uow.read_agent_turn_result(turn_id)
-                error = None if stored is None else dict(stored.result_json).get("error")
+                result_error = (
+                    None
+                    if stored is None
+                    else cast(Mapping[str, object], thaw_json(stored.result_json)).get("error")
+                )
                 cancelled = (
-                    isinstance(error, Mapping) and error.get("error_code") == AGENT_TURN_CANCELLED
+                    isinstance(result_error, Mapping)
+                    and result_error.get("error_code") == AGENT_TURN_CANCELLED
                 )
                 state = "cancelled" if cancelled else "already_settled"
                 break

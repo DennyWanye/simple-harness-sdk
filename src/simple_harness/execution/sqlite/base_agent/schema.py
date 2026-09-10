@@ -92,6 +92,72 @@ CREATE TABLE base_agent_control_commands_v1 (
 ) STRICT;
 CREATE INDEX base_agent_control_commands_v1_agent_idx
  ON base_agent_control_commands_v1(agent_id, kind);
+CREATE TABLE base_agent_session_journal_v1 (
+ record_id TEXT PRIMARY KEY,
+ agent_id TEXT NOT NULL REFERENCES base_agent_bindings_v1(agent_id),
+ seq INTEGER NOT NULL CHECK(seq >= 1),
+ append_id TEXT NOT NULL,
+ kind TEXT NOT NULL
+  CHECK(kind IN ('instructions','user_input','assistant','tool_result','feedback')),
+ turn_id TEXT,
+ protocol_group_id TEXT NOT NULL,
+ message_json TEXT NOT NULL,
+ content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+ provenance TEXT NOT NULL CHECK(provenance IN ('input','model','ledger','derived')),
+ visibility TEXT NOT NULL CHECK(visibility IN ('context','journal_only')),
+ full_record_seq INTEGER,
+ lease_epoch INTEGER NOT NULL,
+ created_at REAL NOT NULL,
+ UNIQUE(agent_id, seq)
+) STRICT;
+CREATE INDEX base_agent_session_journal_v1_group_idx
+ ON base_agent_session_journal_v1(agent_id, protocol_group_id);
+CREATE TABLE base_agent_journal_appends_v1 (
+ agent_id TEXT NOT NULL REFERENCES base_agent_bindings_v1(agent_id),
+ append_id TEXT NOT NULL,
+ append_hash TEXT NOT NULL CHECK(length(append_hash) = 64),
+ seq_from INTEGER NOT NULL,
+ seq_to INTEGER NOT NULL,
+ created_at REAL NOT NULL,
+ PRIMARY KEY(agent_id, append_id)
+) STRICT;
+CREATE TABLE base_agent_context_selections_v1 (
+ selection_id TEXT PRIMARY KEY,
+ agent_id TEXT NOT NULL REFERENCES base_agent_bindings_v1(agent_id),
+ turn_id TEXT,
+ revision INTEGER NOT NULL,
+ source_highwater INTEGER NOT NULL,
+ selected_seqs_json TEXT NOT NULL,
+ dropped_ranges_json TEXT NOT NULL,
+ required_over_budget INTEGER NOT NULL CHECK(required_over_budget IN (0,1)),
+ message_tokens INTEGER NOT NULL,
+ tool_tokens INTEGER NOT NULL,
+ budget_tokens INTEGER NOT NULL,
+ policy_hash TEXT NOT NULL CHECK(length(policy_hash) = 64),
+ tokenizer_fingerprint TEXT NOT NULL,
+ query_hash TEXT,
+ index_generation INTEGER,
+ provider_request_id TEXT UNIQUE,
+ request_hash TEXT CHECK(request_hash IS NULL OR length(request_hash) = 64),
+ request_tokens INTEGER,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL
+) STRICT;
+CREATE INDEX base_agent_context_selections_v1_agent_idx
+ ON base_agent_context_selections_v1(agent_id, revision);
+CREATE TABLE base_agent_session_summaries_v1 (
+ summary_id TEXT PRIMARY KEY,
+ agent_id TEXT NOT NULL REFERENCES base_agent_bindings_v1(agent_id),
+ scope TEXT NOT NULL CHECK(scope IN ('dropped_history')),
+ from_seq INTEGER NOT NULL,
+ to_seq INTEGER NOT NULL,
+ source_hash TEXT NOT NULL CHECK(length(source_hash) = 64),
+ summary_json TEXT NOT NULL,
+ generated_by TEXT NOT NULL,
+ validity TEXT NOT NULL CHECK(validity IN ('valid','superseded')),
+ created_at REAL NOT NULL,
+ UNIQUE(agent_id, from_seq, to_seq, source_hash)
+) STRICT;
 """
 
 __all__ = ("DDL",)

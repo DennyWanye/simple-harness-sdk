@@ -15,7 +15,6 @@ from simple_harness.agents import AgentConfig, AgentLimits, AgentTurnState, buil
 from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
 from simple_harness.contracts import RunId
 from simple_harness.execution.uow import ContinuationState, RunState
-from simple_harness.runtime.context import SqliteContextPort
 
 TOOL = ("echo", {})
 
@@ -246,7 +245,7 @@ def test_turn_failure_keeps_session_and_cost(tmp_path):
             agent = await runtime.create(_config(max_model_calls_per_turn=2), creation_key="c7")
             first = await agent.ask("第一轮", input_id="i1", timeout=5)
             assert first.state is AgentTurnState.COMMITTED
-            context = SqliteContextPort(runtime.uow.database)
+            context = runtime.kernel._ports.context
             revision_after_first = context.load(RunId(agent.run_id)).revision
             budget_after_first = runtime.kernel._ports.provider.read_provider_budget(
                 RunId(agent.run_id)

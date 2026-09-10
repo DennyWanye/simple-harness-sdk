@@ -42,6 +42,7 @@ from simple_harness.execution.dispatch import (
 )
 from simple_harness.execution.uow import RunState
 from simple_harness.providers.base import ProviderContinuationCapability
+from simple_harness.runtime.context import ContextSnapshot
 from simple_harness.runtime.drivers.react import (
     _messages,
     _optional_float,
@@ -295,7 +296,13 @@ class AgentExecutionDriver:
 
         # Both branches append the user message under the turn-scoped id so a rerun of the
         # first turn is idempotent (review F4); instructions get their own id.
-        current_context = invocation.services.context.load(run_id)
+        revision_reader = getattr(invocation.services.context, "revision", None)
+        if callable(revision_reader):
+            # Journal port: only the CAS anchor is needed here, not an assembled
+            # request (that happens once per provider turn inside the loop).
+            current_context = ContextSnapshot(int(revision_reader(run_id)), ())
+        else:
+            current_context = invocation.services.context.load(run_id)
         initial = _messages(input_value.get("messages"))
         if current_context.revision == 0 and initial:
             current_context = invocation.services.context.append(

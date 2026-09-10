@@ -27,9 +27,12 @@ from simple_harness.contracts import (
 from simple_harness.execution.audit import RunAuditUnavailable, RunOperationAuditSnapshotV1
 from simple_harness.execution.base_agent import (
     AgentBindingRecord,
+    AgentContextSelectionRecord,
     AgentControlCommandRecord,
     AgentCreationBatchRecord,
     AgentDelegationRecord,
+    AgentJournalRecord,
+    AgentSummaryRecord,
     AgentTurnRecord,
     AgentTurnResultRecord,
 )
@@ -1519,6 +1522,102 @@ class SqliteExecutionUnitOfWork:
         return batches.count_bindings(
             self.database.connection, _required(owner_scope, "owner_scope")
         )
+
+    # ---- Slice 3: session Journal, context selections, summaries -----------------
+
+    def append_agent_journal(
+        self,
+        *,
+        agent_id: str,
+        append_id: str,
+        append_hash: str,
+        expected_highwater: int,
+        entries: Sequence[Mapping[str, JsonValue]],
+        execution_lease: ExecutionLease,
+        now: float,
+    ) -> tuple[tuple[AgentJournalRecord, ...], bool, int]:
+        from .base_agent import history
+
+        now = _time(now)
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            return history.append_records(
+                connection,
+                agent_id=_required(agent_id, "agent_id"),
+                append_id=_required(append_id, "append_id"),
+                append_hash=append_hash,
+                expected_highwater=expected_highwater,
+                entries=entries,
+                lease_epoch=execution_lease.epoch,
+                now=now,
+            )
+
+    def read_agent_journal(
+        self, agent_id: str, *, from_seq: int = 1, to_seq: int | None = None
+    ) -> tuple[AgentJournalRecord, ...]:
+        from .base_agent import history
+
+        return history.read_records(
+            self.database.connection, _required(agent_id, "agent_id"), from_seq=from_seq,
+            to_seq=to_seq,
+        )
+
+    def agent_journal_highwater(self, agent_id: str) -> int:
+        from .base_agent import history
+
+        return history.highwater(self.database.connection, _required(agent_id, "agent_id"))
+
+    def record_agent_context_selection(self, **kwargs: object) -> AgentContextSelectionRecord:
+        from .base_agent import history
+
+        with self.database.transaction() as connection:
+            return history.record_selection(connection, **kwargs)  # type: ignore[arg-type]
+
+    def bind_agent_context_selection_request(
+        self,
+        *,
+        selection_id: str,
+        provider_request_id: str,
+        request_hash: str,
+        request_tokens: int,
+        now: float,
+    ) -> AgentContextSelectionRecord:
+        from .base_agent import history
+
+        with self.database.transaction() as connection:
+            return history.bind_selection_request(
+                connection,
+                selection_id=_required(selection_id, "selection_id"),
+                provider_request_id=_required(provider_request_id, "provider_request_id"),
+                request_hash=request_hash,
+                request_tokens=request_tokens,
+                now=_time(now),
+            )
+
+    def latest_agent_context_selection(self, agent_id: str) -> AgentContextSelectionRecord | None:
+        from .base_agent import history
+
+        return history.latest_selection(self.database.connection, _required(agent_id, "agent_id"))
+
+    def read_agent_context_selection_by_request(
+        self, provider_request_id: str
+    ) -> AgentContextSelectionRecord | None:
+        from .base_agent import history
+
+        return history.read_selection_by_request(
+            self.database.connection, _required(provider_request_id, "provider_request_id")
+        )
+
+    def upsert_agent_summary(self, **kwargs: object) -> AgentSummaryRecord:
+        from .base_agent import history
+
+        with self.database.transaction() as connection:
+            return history.upsert_summary(connection, **kwargs)  # type: ignore[arg-type]
+
+    def list_agent_summaries(self, agent_id: str) -> tuple[AgentSummaryRecord, ...]:
+        from .base_agent import history
+
+        return history.list_summaries(self.database.connection, _required(agent_id, "agent_id"))
 
     def read_agent_delegation(self, delegation_id: str) -> AgentDelegationRecord | None:
         from .base_agent import delegations

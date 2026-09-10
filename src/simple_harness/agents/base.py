@@ -19,7 +19,7 @@ from simple_harness.contracts import (
     canonical_json,
     thaw_json,
 )
-from simple_harness.execution.base_agent import AgentBindingRecord
+from simple_harness.execution.base_agent import AgentBindingRecord, AgentJournalRecord
 from simple_harness.execution.sqlite.base_agent.turns import (
     AgentClosedError,
     PendingInputsExhausted,
@@ -276,6 +276,17 @@ class BaseAgent:
             lifecycle_state=binding.lifecycle,
             control_generation=binding.control_generation,
         )
+
+    def journal(
+        self, *, from_seq: int = 1, to_seq: int | None = None
+    ) -> tuple[AgentJournalRecord, ...]:
+        """Exact read-back of this Agent's session Journal (BA18); originals, not views."""
+
+        return self._runtime.uow.read_agent_journal(self.agent_id, from_seq=from_seq, to_seq=to_seq)
+
+    def read_journal_record(self, seq: int) -> AgentJournalRecord | None:
+        records = self._runtime.uow.read_agent_journal(self.agent_id, from_seq=seq, to_seq=seq)
+        return records[0] if records else None
 
     def history(self) -> tuple[Mapping[str, JsonValue], ...]:
         """Committed turn results of this Agent only, oldest first (Slice 1 read model)."""

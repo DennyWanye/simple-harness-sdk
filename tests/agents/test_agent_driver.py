@@ -333,7 +333,6 @@ def test_finalize_exception_keeps_agent_alive_and_recovers(tmp_path):
 def test_first_turn_rerun_does_not_duplicate_the_user_message(tmp_path):
     """Review F4: re-driving the first turn appends the user message exactly once."""
     from simple_harness.contracts import RunId as _RunId
-    from simple_harness.runtime.context import SqliteContextPort
 
     async def case():
         provider = ScriptedProvider(["回答一", "回答二"])
@@ -359,7 +358,7 @@ def test_first_turn_rerun_does_not_duplicate_the_user_message(tmp_path):
             second = await submit(runtime, uow, agent_id="agent-dup", input_id="i2", text="再问")
             await _settle(runtime, "agent-dup")
             assert uow.read_agent_turn_result(second.turn_id) is not None
-            stored = SqliteContextPort(uow.database).load(_RunId("agent-dup")).messages
+            stored = runtime._ports.context.load(_RunId("agent-dup")).messages
             user_texts = [m.content for m in stored if m.role.value == "user"]
             assert user_texts == ["你好", "再问"]
             # kernel_fixture agents carry no instructions: the first entry is the user turn.

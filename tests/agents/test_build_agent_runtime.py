@@ -22,7 +22,6 @@ from simple_harness.agents import (
 )
 from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
 from simple_harness.contracts import RunId
-from simple_harness.runtime.context import SqliteContextPort
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "simple_harness"
 
@@ -77,7 +76,7 @@ def test_create_returns_independent_agents(tmp_path):
             assert provider.calls == 0
             assert all(agent.status().lifecycle == "IDLE" for agent in agents)
             await agents[0].ask("问", input_id="i1", timeout=5)
-            context = SqliteContextPort(runtime.uow.database)
+            context = runtime.kernel._ports.context
             assert context.load(RunId(agents[0].run_id)).revision >= 1
             for other in agents[1:]:
                 assert context.load(RunId(other.run_id)).revision == 0

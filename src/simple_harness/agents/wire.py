@@ -123,9 +123,10 @@ def _is_empty_final(response: ProviderResponse) -> bool:
 class AgentProviderWire:
     """Consumer ``ProviderPort`` decorator used by ``assemble_runtime``."""
 
-    def __init__(self, inner, database) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, inner, database, *, request_guard=None) -> None:  # type: ignore[no-untyped-def]
         self._inner = inner
         self._database = database
+        self._guard = request_guard
         self.fallback_total = 0
         self.last_request: ProviderRequest | None = None
 
@@ -138,6 +139,10 @@ class AgentProviderWire:
             self.fallback_total += fallbacks
             wire_request = replace(request, messages=messages)
         self.last_request = wire_request
+        if self._guard is not None and run_id is not None:
+            # Final re-count of the rendered request (BA13); over budget is refused
+            # before the call as a definite failure (BA16).
+            self._guard.check(wire_request, run_id=run_id)
         response = await self._inner.invoke(wire_request, cancel=cancel)
         if _is_empty_final(response):
             finish = getattr(response, "finish_reason", None)

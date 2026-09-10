@@ -47,6 +47,85 @@ class AgentBindingRecord:
             raise ValueError("unknown agent lifecycle")
 
 
+AGENT_JOURNAL_KINDS = ("instructions", "user_input", "assistant", "tool_result", "feedback")
+AGENT_JOURNAL_PROVENANCES = ("input", "model", "ledger", "derived")
+AGENT_JOURNAL_VISIBILITIES = ("context", "journal_only")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentJournalRecord:
+    """One incremental, immutable session record (BA-v1.0 §6.2 Journal)."""
+
+    record_id: str
+    agent_id: str
+    seq: int
+    append_id: str
+    kind: str
+    turn_id: str | None
+    protocol_group_id: str
+    message_json: FrozenJsonValue
+    content_hash: str
+    provenance: str
+    visibility: str
+    full_record_seq: int | None
+    lease_epoch: int
+    created_at: float
+
+    def __post_init__(self) -> None:
+        if self.kind not in AGENT_JOURNAL_KINDS:
+            raise ValueError("unknown journal record kind")
+        if self.provenance not in AGENT_JOURNAL_PROVENANCES:
+            raise ValueError("unknown journal provenance")
+        if self.visibility not in AGENT_JOURNAL_VISIBILITIES:
+            raise ValueError("unknown journal visibility")
+        object.__setattr__(self, "message_json", _frozen_object(self.message_json, "message_json"))
+
+
+@dataclass(frozen=True, slots=True)
+class AgentContextSelectionRecord:
+    """What one assembled request contained (BA-v1.0 §7.4 step 9)."""
+
+    selection_id: str
+    agent_id: str
+    turn_id: str | None
+    revision: int
+    source_highwater: int
+    selected_seqs: tuple[int, ...]
+    dropped_ranges: tuple[tuple[int, int], ...]
+    required_over_budget: bool
+    message_tokens: int
+    tool_tokens: int
+    budget_tokens: int
+    policy_hash: str
+    tokenizer_fingerprint: str
+    query_hash: str | None
+    index_generation: int | None
+    provider_request_id: str | None
+    request_hash: str | None
+    request_tokens: int | None
+    created_at: float
+    updated_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSummaryRecord:
+    """A derived summary with its sources; never an authority (BA21)."""
+
+    summary_id: str
+    agent_id: str
+    scope: str
+    from_seq: int
+    to_seq: int
+    source_hash: str
+    summary_json: FrozenJsonValue
+    generated_by: str
+    validity: str
+    created_at: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "summary_json", _frozen_object(self.summary_json, "summary_json"))
+
+
 @dataclass(frozen=True, slots=True)
 class AgentCreationBatchRecord:
     batch_id: str
@@ -153,14 +232,20 @@ class AgentDelegationRecord:
 
 __all__ = (
     "AGENT_DELEGATION_STATES",
+    "AGENT_JOURNAL_KINDS",
+    "AGENT_JOURNAL_PROVENANCES",
+    "AGENT_JOURNAL_VISIBILITIES",
     "AGENT_LIFECYCLES",
     "AGENT_TURN_PHASES",
     "BASE_AGENT_API_MODE",
     "BASE_AGENT_INPUT_KIND",
     "AgentBindingRecord",
+    "AgentContextSelectionRecord",
     "AgentControlCommandRecord",
     "AgentCreationBatchRecord",
     "AgentDelegationRecord",
+    "AgentJournalRecord",
+    "AgentSummaryRecord",
     "AgentTurnRecord",
     "AgentTurnResultRecord",
 )

@@ -20,6 +20,9 @@ from simple_harness.runtime.ports import (
 )
 from simple_harness.runtime.termination import TerminationLimits
 
+from .context.budget import ContextPolicy
+from .context.tokenizer import TokenizerPort
+
 DEFAULT_CHILD_INSTRUCTIONS = "你是被委派的工作 Agent。只处理交给你的目标，给出简洁、可核对的结论。"
 
 
@@ -60,6 +63,10 @@ class AgentRuntimePorts:
     # Batch creation caps (BA02/BA04): checked before any write.
     max_agents: int = 1000
     max_batch_size: int = 200
+    # Bounded working Context (Slice 3).  Inject the model's real tokenizer; the
+    # default is an explicit upper bound whose fingerprint marks its counts.
+    context_policy: ContextPolicy = field(default_factory=ContextPolicy)
+    tokenizer: TokenizerPort | None = None
     clock: Callable[[], float] = time.time
 
     def __post_init__(self) -> None:
@@ -92,6 +99,10 @@ class AgentRuntimePorts:
             or self.default_max_output_tokens < 1
         ):
             raise ValueError("default_max_output_tokens must be a positive integer")
+        if not isinstance(self.context_policy, ContextPolicy):
+            raise TypeError("context_policy must use ContextPolicy")
+        if self.tokenizer is not None and not callable(getattr(self.tokenizer, "count_text", None)):
+            raise TypeError("tokenizer must implement count_text and fingerprint")
         for name in ("max_agents", "max_batch_size"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:

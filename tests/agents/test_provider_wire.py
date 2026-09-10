@@ -109,9 +109,8 @@ def test_second_request_after_delegation_carries_exact_tool_calls(tmp_path):
             assert runtime._assembled.wire.fallback_total == 0
             # Durable Context stays metadata-free.
             from simple_harness.contracts import RunId
-            from simple_harness.runtime.context import SqliteContextPort
 
-            stored = SqliteContextPort(runtime.uow.database).load(RunId(main.run_id))
+            stored = runtime.kernel._ports.context.load(RunId(main.run_id))
             assert all(PROVIDER_TOOL_CALLS_KEY not in m.metadata for m in stored.messages)
 
     asyncio.run(case())

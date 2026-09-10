@@ -21,7 +21,6 @@ from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
 from simple_harness.agents.runtime import AgentRuntime, agent_id_for
 from simple_harness.contracts import RunId
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
-from simple_harness.runtime.context import SqliteContextPort
 
 TABLES = (
     "base_agent_bindings_v1",
@@ -84,7 +83,7 @@ def test_hundred_idle_agents_make_no_provider_request(tmp_path):
                 assert counts["base_agent_bindings_v1"] == 100
                 assert len({a.agent_id for a in agents}) == 100
                 assert len({a.run_id for a in agents}) == 100
-                context = SqliteContextPort(runtime.uow.database)
+                context = runtime.kernel._ports.context
                 assert context.load(RunId(agents[0].run_id)).revision == 0
                 assert context.load(RunId(agents[99].run_id)).revision == 0
                 assert runtime.kernel._ports.provider is runtime.kernel._ports.provider

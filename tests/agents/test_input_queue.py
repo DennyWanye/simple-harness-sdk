@@ -21,7 +21,6 @@ from simple_harness.agents import (
 from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
 from simple_harness.contracts import RunId
 from simple_harness.execution.uow import UnitOfWorkConflict
-from simple_harness.runtime.context import SqliteContextPort
 
 
 def _ports(tmp_path, provider, **overrides):
@@ -136,7 +135,7 @@ def test_context_is_never_written_concurrently(tmp_path):
             assert len(append_ids) == len(set(append_ids))
             assert run_revisions == sorted(run_revisions)
             assert len(set(run_revisions)) == len(run_revisions)
-            snapshot = SqliteContextPort(runtime.uow.database).load(RunId(agent.run_id))
+            snapshot = runtime.kernel._ports.context.load(RunId(agent.run_id))
             assert snapshot.revision > run_revisions[-1]
 
     asyncio.run(case())

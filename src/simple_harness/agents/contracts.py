@@ -8,11 +8,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from simple_harness.contracts import (
     CallId,
     ContentBlock,
+    FrozenJsonValue,
     JsonValue,
     Message,
     MessageContent,
@@ -215,7 +216,9 @@ class AgentTurnResult:
             "usage_refs": list(self.usage_refs),
             "delegation_count": self.delegation_count,
             "error": (
-                None if self.error is None else thaw_json(freeze_json(thaw_json(self.error)))
+                None
+                if self.error is None
+                else thaw_json(freeze_json(thaw_json(cast(FrozenJsonValue, self.error))))
             ),
         }
 
