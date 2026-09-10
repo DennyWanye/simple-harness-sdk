@@ -1,0 +1,8 @@
+# 真实模型运行 1（deepseek-v4-pro，2026-09-11；密钥已脱敏）
+
+REAL_SINGLE_TASK_REPORT {"model": "deepseek-v4-pro", "status": "FAILED", "stop_reason": "mission_criteria_unmet", "progress": ["dispatched plan mission-7f8af0e5f0c107c0:planner:1 → agent agent-ba94bdae5b33f403aefdf61c37fdb2ab", "task committed mission-7f8af0e5f0c107c0:task-1", "attempt mission-7f8af0e5f0c107c0:task-1:attempt-1 created (retry_of=None)", "dispatched attempt mission-7f8af0e5f0c107c0:task-1:attempt-1 → agent agent-7dca1ee87981974f97b8e8a47f3bf7e4", "attempt mission-7f8af0e5f0c107c0:task-1:attempt-1: result result-1bec9727cf7f82e7 submitted", "result result-1bec9727cf7f82e7 PASS → task mission-7f8af0e5f0c107c0:task-1 COMPLETED", "mission mission-7f8af0e5f0c107c0 judged: FAILED (mission_criteria_unmet)"]}
+REAL_SINGLE_TASK_REPORT " + json.dumps(report, ensure_ascii=False))
+
+=========================== short test summary info ============================
+FAILED tests/orchestrator/step02/test_real_provider_single_task.py::test_real_single_task_closure
+1 failed in 21.98s
