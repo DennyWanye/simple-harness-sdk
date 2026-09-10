@@ -29,6 +29,7 @@ from simple_harness.execution.uow import RunState, UnitOfWorkConflict
 from .config import AgentConfig
 from .contracts import (
     AgentClosed,
+    AgentClosingReceipt,
     AgentInputConflict,
     AgentPendingInputsExhausted,
     AgentTurnNotFound,
@@ -56,15 +57,26 @@ class AgentStatus:
     open_turn_id: str | None
     open_turn_phase: str | None
     committed_turns: int
+    lifecycle_state: str = "open"
+    control_generation: int = 0
 
     @property
     def lifecycle(self) -> str:
-        """IDLE / RUNNING / FAILED projection (BA-v1.0 §1.3); no separate truth table."""
+        """IDLE / RUNNING / CLOSING / CLOSED / FAILED projection (BA-v1.0 §1.3).
+
+        Execution state wins over the persisted control intent: a FAILED Run is
+        FAILED whatever the binding says; an open turn is RUNNING even while
+        closing; otherwise the binding's ``closing`` / ``closed`` intent shows.
+        """
 
         if self.run_state in {RunState.FAILED, RunState.CANCELLED}:
             return "FAILED"
         if self.open_turn_id is not None:
             return "RUNNING"
+        if self.lifecycle_state == "closed":
+            return "CLOSED"
+        if self.lifecycle_state == "closing":
+            return "CLOSING"
         return "IDLE"
 
 
@@ -170,11 +182,23 @@ class BaseAgent:
         receipt = await self.submit(value, input_id=input_id)
         return await self.wait_turn(receipt.turn_id, timeout=timeout)
 
+    async def close(self, *, command_id: str, drain_timeout: float = 30.0) -> AgentClosingReceipt:
+        """Refuse new inputs durably (BA12); the Run stays alive and history readable."""
+
+        receipt = await self._runtime.close_agent(
+            self.agent_id, command_id=command_id, drain_timeout=drain_timeout
+        )
+        refreshed = self._runtime.uow.read_agent_binding(self.agent_id)
+        if refreshed is not None:
+            self._binding = refreshed
+        return receipt
+
     def status(self) -> AgentStatus:
         uow = self._runtime.uow
         run = uow.read_run(self.run_id)
         if run is None:
             raise AgentTurnNotFound(self.run_id)
+        binding = uow.read_agent_binding(self.agent_id) or self._binding
         open_turn = uow.read_open_agent_turn(self.run_id)
         committed = sum(
             1
@@ -188,6 +212,8 @@ class BaseAgent:
             open_turn_id=None if open_turn is None else open_turn.turn_id,
             open_turn_phase=None if open_turn is None else open_turn.phase,
             committed_turns=committed,
+            lifecycle_state=binding.lifecycle,
+            control_generation=binding.control_generation,
         )
 
     def history(self) -> tuple[Mapping[str, JsonValue], ...]:

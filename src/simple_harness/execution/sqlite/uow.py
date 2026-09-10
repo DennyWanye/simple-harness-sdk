@@ -27,6 +27,7 @@ from simple_harness.contracts import (
 from simple_harness.execution.audit import RunAuditUnavailable, RunOperationAuditSnapshotV1
 from simple_harness.execution.base_agent import (
     AgentBindingRecord,
+    AgentControlCommandRecord,
     AgentDelegationRecord,
     AgentTurnRecord,
     AgentTurnResultRecord,
@@ -1347,6 +1348,83 @@ class SqliteExecutionUnitOfWork:
                 now=_time(now),
                 max_per_turn=max_per_turn,
             )
+
+    def close_agent(
+        self, *, agent_id: str, command_id: str, request_hash: str, now: float
+    ) -> AgentControlCommandRecord:
+        """One transaction: lifecycle ``open -> closing``, generation +1, command receipt.
+
+        A same-hash replay returns the stored command without touching the binding;
+        an already closing/closed Agent gets a receipt that reports the current state
+        and does not bump the generation again.
+        """
+
+        from .base_agent import control
+
+        with self.database.transaction() as connection:
+            existing = control.read_control_command(
+                connection, _required(command_id, "command_id")
+            )
+            if existing is not None:
+                stored, _ = control.record_control_command(
+                    connection,
+                    command_id=command_id,
+                    agent_id=_required(agent_id, "agent_id"),
+                    kind="close",
+                    target_turn_id=None,
+                    control_generation=existing.control_generation,
+                    request_hash=request_hash,
+                    receipt=cast(Mapping[str, JsonValue], _thaw_json(existing.receipt)),
+                    now=_time(now),
+                )
+                return stored
+            lifecycle = control.read_binding_lifecycle(connection, _required(agent_id, "agent_id"))
+            if lifecycle is None:
+                raise UnitOfWorkConflict("agent binding is missing")
+            if lifecycle == "open":
+                binding = control.set_lifecycle(
+                    connection, agent_id=agent_id, lifecycle="closing", now=_time(now)
+                )
+                generation = control.bump_control_generation(connection, agent_id)
+                lifecycle = binding.lifecycle
+            else:
+                generation = int(
+                    connection.execute(
+                        "SELECT control_generation FROM base_agent_bindings_v1 WHERE agent_id=?",
+                        (agent_id,),
+                    ).fetchone()[0]
+                )
+            stored, _ = control.record_control_command(
+                connection,
+                command_id=command_id,
+                agent_id=agent_id,
+                kind="close",
+                target_turn_id=None,
+                control_generation=generation,
+                request_hash=request_hash,
+                receipt={"lifecycle": lifecycle, "control_generation": generation},
+                now=_time(now),
+            )
+            return stored
+
+    def mark_agent_closed(self, *, agent_id: str, now: float) -> AgentBindingRecord:
+        """``closing -> closed`` only when no turn is still open; returns the binding."""
+
+        from .base_agent import control, turns
+
+        with self.database.transaction() as connection:
+            if turns.read_open_turn(connection, _required(agent_id, "agent_id")) is not None:
+                raise UnitOfWorkConflict("agent still has an open turn")
+            return control.set_lifecycle(
+                connection, agent_id=agent_id, lifecycle="closed", now=_time(now)
+            )
+
+    def read_agent_control_command(self, command_id: str) -> AgentControlCommandRecord | None:
+        from .base_agent import control
+
+        return control.read_control_command(
+            self.database.connection, _required(command_id, "command_id")
+        )
 
     def read_agent_delegation(self, delegation_id: str) -> AgentDelegationRecord | None:
         from .base_agent import delegations

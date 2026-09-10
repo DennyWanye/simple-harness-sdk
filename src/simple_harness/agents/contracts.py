@@ -260,8 +260,25 @@ class AgentDelegationResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class AgentClosingReceipt:
+    """Durable answer to ``close``: what the Agent's lifecycle is after this command."""
+
+    agent_id: str
+    command_id: str
+    state: str
+    open_turn_id: str | None
+    control_generation: int
+    created_at: float
+
+    def __post_init__(self) -> None:
+        if self.state not in ("closing", "closed"):
+            raise ValueError("closing receipt state must be closing or closed")
+
+
 __all__ = (
     "AgentClosed",
+    "AgentClosingReceipt",
     "AgentDelegationResult",
     "AgentError",
     "AgentId",

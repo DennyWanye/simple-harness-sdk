@@ -11,18 +11,27 @@ Memory outbox consumer, no context staging.  Nothing here may import
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Self, cast
 
-from simple_harness.contracts import ExecutionSessionId, JsonValue, MessageRole, RequestId, RunId
+from simple_harness.contracts import (
+    ExecutionSessionId,
+    JsonValue,
+    MessageRole,
+    RequestId,
+    RunId,
+    canonical_json,
+)
 from simple_harness.execution.base_agent import BASE_AGENT_API_MODE, AgentBindingRecord
 from simple_harness.execution.budget import FrozenPriceEstimator
 from simple_harness.execution.delivery import DeliveryDispatcher
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.sqlite import Database
 from simple_harness.execution.sqlite.uow import SqliteExecutionUnitOfWork
+from simple_harness.execution.uow import UnitOfWorkConflict
 from simple_harness.runtime.consumer_adapter import (
     _ConsumerAuthorizationAdapter,
     _ConsumerProviderAdapter,
@@ -39,7 +48,7 @@ from simple_harness.tools import EffectExecutor, FunctionTool, Tool
 
 from .base import BaseAgent
 from .config import AgentConfig, config_hash
-from .contracts import AgentId, AgentNotFound
+from .contracts import AgentClosingReceipt, AgentId, AgentInputConflict, AgentNotFound
 from .execution import build_agent_execution_driver
 from .ports import AgentRuntimePorts
 from .tool_registry import BaseAgentToolRegistry
@@ -323,6 +332,70 @@ class AgentRuntime:
         for index, config in enumerate(configs):
             agents.append(await self.create(config, creation_key=f"{batch_key}:{index}"))
         return tuple(agents)
+
+    async def close_agent(
+        self, agent_id: str, *, command_id: str, drain_timeout: float = 30.0
+    ) -> AgentClosingReceipt:
+        """Persist "no new inputs" for one Agent, drain its open turn, never kill the Run.
+
+        Transaction 1 moves ``open -> closing`` and records the command; the drain
+        waits (bounded by ``drain_timeout``) for the open turn to finish; transaction
+        2 moves ``closing -> closed`` only when nothing is open.  The Run stays
+        ``WAITING`` throughout: this is a control-plane intent, not a kernel cancel.
+        """
+
+        if not isinstance(command_id, str) or not command_id.strip():
+            raise ValueError("command_id is required")
+        if not isinstance(drain_timeout, (int, float)) or isinstance(drain_timeout, bool):
+            raise TypeError("drain_timeout must be a number")
+        if drain_timeout < 0 or drain_timeout != drain_timeout:
+            raise ValueError("drain_timeout must be finite and non-negative")
+        binding = self.uow.read_agent_binding(agent_id)
+        if binding is None or binding.owner_scope != self._owner_scope:
+            raise AgentNotFound(agent_id)
+        request_hash = hashlib.sha256(
+            canonical_json({"kind": "close", "agent_id": agent_id}).encode("utf-8")
+        ).hexdigest()
+        clock = self._ports.clock
+        try:
+            command = self.uow.close_agent(
+                agent_id=agent_id,
+                command_id=command_id,
+                request_hash=request_hash,
+                now=clock(),
+            )
+        except UnitOfWorkConflict as error:
+            raise AgentInputConflict(str(error)) from error
+        deadline = clock() + float(drain_timeout)
+        interval = 0.01
+        while True:
+            open_turn = self.uow.read_open_agent_turn(binding.run_id)
+            if open_turn is None:
+                try:
+                    latest = self.uow.mark_agent_closed(agent_id=agent_id, now=clock())
+                except UnitOfWorkConflict:
+                    continue  # a turn opened between the read and the write; loop again
+                return AgentClosingReceipt(
+                    agent_id=agent_id,
+                    command_id=command.command_id,
+                    state=latest.lifecycle,
+                    open_turn_id=None,
+                    control_generation=latest.control_generation,
+                    created_at=command.created_at,
+                )
+            if clock() >= deadline:
+                current = self.uow.read_agent_binding(agent_id)
+                assert current is not None
+                return AgentClosingReceipt(
+                    agent_id=agent_id,
+                    command_id=command.command_id,
+                    state=current.lifecycle,
+                    open_turn_id=open_turn.turn_id,
+                    control_generation=current.control_generation,
+                    created_at=command.created_at,
+                )
+            await asyncio.sleep(interval)
+            interval = min(interval * 2, 0.2)
 
     async def open(self, agent_id: str | AgentId) -> BaseAgent:
         value = agent_id.value if isinstance(agent_id, AgentId) else agent_id

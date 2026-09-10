@@ -15,6 +15,7 @@ from .codec import agent_id_for_run, run_id_for_agent
 from .config import AGENT_CONFIG_FIELDS, AgentConfig, AgentLimits, config_hash
 from .contracts import (
     AgentClosed,
+    AgentClosingReceipt,
     AgentDelegationResult,
     AgentError,
     AgentId,
@@ -49,6 +50,7 @@ def __getattr__(name: str) -> Any:
 __all__ = (
     "AGENT_CONFIG_FIELDS",
     "AgentClosed",
+    "AgentClosingReceipt",
     "AgentConfig",
     "AgentDelegationResult",
     "AgentError",
