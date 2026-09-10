@@ -71,6 +71,7 @@ def assemble_runtime(
         registry=registry,
         authorization=auth_adapter,
         reconciliation=tool_reconciliation,
+        clock=ports.clock,
     )
     provider_adapter = _ConsumerProviderAdapter(ports.provider, ports.model)
     # The consumer provider adapter reports pricing_key "consumer"; the estimator must match.
@@ -82,6 +83,7 @@ def assemble_runtime(
         budget_policy=budget_policy,
         estimator=estimator,
         context_use_authority=None,
+        clock=ports.clock,
     )
     context = SqliteContextPort(database, clock=ports.clock)
     runtime_ports = RuntimePorts(

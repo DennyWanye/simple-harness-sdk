@@ -30,12 +30,30 @@
 
 | 任务 | commit | 验证命令 | 结果 | 备注 |
 |---|---|---|---|---|
+| T2 schema v10 + 冻结 v9 | `1ba3bba` | `pytest tests/execution/test_base_agent_schema_v10.py tests/execution/test_short_context_migration_still_targets_v9.py`；固定回归命令 | 8 passed；回归 60 failed / 15 errors 与基线逐条相同 | v9 库仍可打开；v7/v8→v9 升级器仍以 v9 为目标 |
+| T3 契约骨架 | `d838a22` | `pytest tests/agents/test_config_contracts.py` | 21 passed | ast 扫描：kernel/agent_turn 不 import agents |
+| T5 结果载体 + finalize | `308a67e` | `pytest tests/agents/test_turn_finalize.py`；固定回归命令 | 5 passed；回归红集与基线相同 | 同事务 ack 全有或全无（fault 钩子实测）；任何唤醒路径先 finalize 再 drive |
+| T6 AgentExecutionDriver | `f1e149b` | `pytest tests/agents/test_agent_driver.py` + legacy ReAct 回归 3 文件 | 5 passed；legacy 28 passed | 预算超限 = 失败的 Turn，Agent 不死；意外 continuation 被 ack 不终态 |
+| **T6.5 价值验证里程碑** | 本次 | `.venv/bin/python -m pytest -q tests/agents/test_base_agent_kernel_spike.py` | **3 passed** | 主要矛盾"不死的执行身份"一面已被真实 driver 证明 |
 
 ## 3. 触碰既有红的说明
 
 （T2 schema v10 / T10 快照更新所牵动的既有红夹具，逐条对照 `../baseline-known-failures.txt`）
 
 ## 4. 核心价值 smoke
+
+### 4.1 里程碑 T6.5（内核级 spike，2026-09-10）
+
+命令：`.venv/bin/python -m pytest -q tests/agents/test_base_agent_kernel_spike.py` → `3 passed`。
+- `test_two_results_on_one_run_never_terminal`：同一 Run 两条输入 → 两条结果行（seq 1、2），run_events 全量回放无 completed/failed/cancelled，第二次 provider 请求含第一轮 assistant 回答，provider 恰好调用 2 次。
+- `test_input_continuation_is_acked_and_rescheduled`：两条 continuation 均 ACKED 且回执 id 为 `{run}:progress:{cid}:{epoch}`；第二条输入无需外部唤醒即被消费；`_reschedule` 被调用。
+- `test_stage_then_kill_then_recover_commits_once`：在 stage 之后 finalize 之前注入崩溃，旧租约过期后新 Runtime 恢复：结果行恰好 1、hash 与 staged 相同、provider 仍只调用 1 次、Run 保持 WAITING。
+
+**矛盾转化再分析**：主要矛盾的第一面（执行身份能反复交结果而不死）已解决；现在决定成败的问题转为第二面——**父 Agent 能否在不依赖终态的前提下可靠取回子 Agent 的结果并做幂等结算**（T8 的结果直读 + 续做语义），其次是公开入口与围栏（T4）让这条链能被应用代码而不是测试内部路径调用（T7）。剩余任务顺序不变：T4 → T7 → T8 → T9 → T10。
+
+### 4.2 完整价值链（T9）
+
+（待 T9）
 
 ## 5. 兑现表
 
