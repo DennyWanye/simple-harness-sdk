@@ -1560,13 +1560,13 @@ class SqliteExecutionUnitOfWork:
         from .base_agent import history
 
         return history.read_records(
-            self.database.connection, _required(agent_id, "agent_id"), from_seq=from_seq,
+            self.database.connection,
+            _required(agent_id, "agent_id"),
+            from_seq=from_seq,
             to_seq=to_seq,
         )
 
-    def latest_agent_journal_record(
-        self, agent_id: str, *, kind: str
-    ) -> AgentJournalRecord | None:
+    def latest_agent_journal_record(self, agent_id: str, *, kind: str) -> AgentJournalRecord | None:
         from .base_agent import history
 
         return history.latest_record(
@@ -1719,7 +1719,7 @@ class SqliteExecutionUnitOfWork:
 
         rows = self.database.connection.execute(
             "SELECT j.agent_id, j.seq, j.content_hash FROM base_agent_session_journal_v1 j "
-            "WHERE j.visibility='context' AND j.kind IN ('user_input','assistant','tool_result') "
+            "WHERE j.kind IN ('user_input','assistant','tool_result') "
             "AND NOT EXISTS (SELECT 1 FROM base_agent_session_vectors_v1 v "
             "WHERE v.agent_id=j.agent_id AND v.record_seq=j.seq AND v.embedding_fingerprint=?) "
             "AND NOT EXISTS (SELECT 1 FROM base_agent_index_jobs_v1 b "
@@ -1728,6 +1728,20 @@ class SqliteExecutionUnitOfWork:
             (embedding_fingerprint, embedding_fingerprint, int(limit)),
         ).fetchall()
         return tuple((str(r[0]), int(r[1]), str(r[2])) for r in rows)
+
+    def agent_journal_rows_missing_fts(self, *, limit: int) -> tuple[tuple[str, int, str], ...]:
+        from .base_agent import indexes
+
+        return indexes.journal_rows_missing_fts(self.database.connection, limit=limit)
+
+    def agent_index_errors(self, *, agent_id: str, embedding_fingerprint: str) -> tuple[str, ...]:
+        from .base_agent import indexes
+
+        return indexes.index_errors(
+            self.database.connection,
+            agent_id=_required(agent_id, "agent_id"),
+            embedding_fingerprint=embedding_fingerprint,
+        )
 
     def agent_index_status(self, *, agent_id: str, embedding_fingerprint: str) -> dict[str, int]:
         from .base_agent import indexes

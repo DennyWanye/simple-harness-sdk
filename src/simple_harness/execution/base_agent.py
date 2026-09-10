@@ -99,7 +99,7 @@ class AgentContextSelectionRecord:
     policy_hash: str
     tokenizer_fingerprint: str
     query_hash: str | None
-    index_generation: int | None
+    index_generation: str | None
     provider_request_id: str | None
     request_hash: str | None
     request_tokens: int | None

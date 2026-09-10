@@ -193,7 +193,7 @@ def _selection(row: sqlite3.Row) -> AgentContextSelectionRecord:
         tokenizer_fingerprint=str(row["tokenizer_fingerprint"]),
         query_hash=None if row["query_hash"] is None else str(row["query_hash"]),
         index_generation=(
-            None if row["index_generation"] is None else int(row["index_generation"])
+            None if row["index_generation"] is None else str(row["index_generation"])
         ),
         provider_request_id=(
             None if row["provider_request_id"] is None else str(row["provider_request_id"])
@@ -223,7 +223,7 @@ def record_selection(
     tokenizer_fingerprint: str,
     now: float,
     query_hash: str | None = None,
-    index_generation: int | None = None,
+    index_generation: str | None = None,
 ) -> AgentContextSelectionRecord:
     """Idempotent by ``selection_id``: a replay returns the stored row unchanged."""
 

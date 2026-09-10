@@ -334,6 +334,10 @@ class AgentExecutionDriver:
         tool_exposure = (
             None if self._tool_exposure_resolver is None else self._tool_exposure_resolver(run_id)
         )
+        prepare = getattr(invocation.services.context, "prepare", None)
+        if callable(prepare):
+            # Slice 4: pre-embed the recall query off the loop thread (review S4-04).
+            await prepare(run_id)
         output_cap = _optional_int(input_value.get("max_output_tokens"), "max_output_tokens")
         attempt = 0
         escalations: list[dict[str, JsonValue]] = []

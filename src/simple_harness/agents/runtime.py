@@ -35,6 +35,7 @@ from simple_harness.execution.sqlite import Database
 from simple_harness.execution.sqlite.base_agent.turns import (
     AgentInstanceCapExceeded as InstanceCapConflict,
 )
+from simple_harness.execution.sqlite.database import ExecutionSchemaIncompatible
 from simple_harness.execution.sqlite.uow import SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import UnitOfWorkConflict
 from simple_harness.providers import ProviderToolSpec
@@ -123,6 +124,12 @@ def assemble_runtime(
     """Compose the kernel for BaseAgents; root and child profiles both drive ``base_agent``."""
 
     database = Database.open(ports.database_path)
+    if database.schema_version < 10:
+        database.close()
+        raise ExecutionSchemaIncompatible(
+            "execution database requires schema v10 for BaseAgents; "
+            "use migrate_execution_to_v10 (after migrate_execution_to_v9)"
+        )
     uow = SqliteExecutionUnitOfWork(database)
     tools: tuple[Tool, ...] = ()
     if ports.tool_executor is not None:
@@ -341,6 +348,13 @@ class _RecallAdapter:
         self._limit = limit
         self.last_result: SearchResult | None = None
 
+    async def prewarm(self, query: str) -> None:
+        await self._retriever.prewarm(query)
+
+    @property
+    def index_generation(self) -> str | None:
+        return self._retriever.embedding_fingerprint
+
     def __call__(
         self, agent_id: str, query: str, token_budget: int, exclude: tuple[int, ...]
     ) -> tuple[Message, ...]:
@@ -510,8 +524,9 @@ class AgentRuntime:
         return cast(SessionIndexer, self._assembled.indexer)
 
     async def index_pending(self) -> int:
-        """Drain pending vector jobs now (the runtime also does this in the background)."""
+        """Drain pending index work now (the background pump shares the same lock)."""
 
+        self.indexer.request_backfill()
         return await self.indexer.drain()
 
     @property

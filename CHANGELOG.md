@@ -1,3 +1,20 @@
+## 0.8.0 — BaseAgent: durable Agents, bounded Context, session recall (source candidate)
+
+New public surface under `simple_harness.agents` (`build_agent_runtime`, `AgentRuntime`,
+`BaseAgent`, `AgentConfig`, contracts) built on the existing Run kernel: a BaseAgent
+Run never reaches a terminal state; every input is one durable AgentTurn with a
+staged-then-committed result; `agent_delegate` creates one child Agent per turn;
+`close` / `cancel_turn` are control-plane intents, never kernel cancels; idempotent
+`create_many` batches; per-turn limits from durable baselines; a Journal-backed bounded
+working Context (`ContextPolicy`, `TokenizerPort`) with structural summaries and
+exact read-back; Agent-scoped hybrid recall (FTS5 trigram + words, injected
+`EmbeddingPort`, RRF) with explicit degradations; `session_history_search/read`.
+Execution schema v10 (fresh descriptor; v7/v8/v9 descriptors frozen) with the explicit
+backup-first `migrate_execution_to_v10` (after `migrate_execution_to_v9`). Root
+`__all__` adds only `migrate_execution_to_v10` and `ExecutionBaseAgentUpgradeReceiptV1`;
+legacy Runs, `react_loop.py` policy semantics and the H079/H0710 artifacts are unchanged
+(the ReAct loop gained an optional companion write in its final checkpoint CAS).
+
 ## 0.7.10 — bounded nullable Tool schemas (source candidate)
 
 Tool schema validation accepts exactly one existing non-null type paired with

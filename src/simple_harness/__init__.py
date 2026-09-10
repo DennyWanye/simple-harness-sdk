@@ -51,7 +51,9 @@ _RUNTIME_EXPORTS = frozenset(
         "ProviderContextUseViewV1",
         "RecallContextUseAuthorityPort",
         "migrate_execution_to_v9",
+        "migrate_execution_to_v10",
         "ExecutionShortContextUpgradeReceiptV1",
+        "ExecutionBaseAgentUpgradeReceiptV1",
         "migrate_execution_v7_to_v8",
         "ExecutionContextUseUpgradeReceiptV1",
         "COGNITIVE_MEMORY_SCHEMA_VERSION",
@@ -751,5 +753,7 @@ __all__ += (
     "ExecutionShortContextUpgradeReceiptV1",
     "migrate_execution_v7_to_v8",
     "ExecutionContextUseUpgradeReceiptV1",
+    "migrate_execution_to_v10",
+    "ExecutionBaseAgentUpgradeReceiptV1",
 )
 __all__ += tuple(sorted(_AGENT_EXPORTS))

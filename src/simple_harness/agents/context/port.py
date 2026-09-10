@@ -163,9 +163,25 @@ class JournalContextPort:
         return self._uow.agent_journal_highwater(run_id.value)
 
     def load(self, run_id: RunId) -> ContextSnapshot:
+        bound = self._uow.latest_agent_context_selection(run_id.value)
+        highwater = self._uow.agent_journal_highwater(run_id.value)
+        if bound is not None and bound.revision == highwater and bound.provider_request_id:
+            # BA28: the request at this revision is already frozen and bound; a resume
+            # re-runs neither recall nor selection recording.
+            return self._assemble(run_id, record=False, recall=False)
         return self._assemble(run_id, record=True)
 
-    def _assemble(self, run_id: RunId, *, record: bool) -> ContextSnapshot:
+    async def prepare(self, run_id: RunId) -> None:
+        """Pre-embed the current input off the loop thread (review S4-04)."""
+
+        prewarm = getattr(self._recall, "prewarm", None)
+        if prewarm is None:
+            return
+        current = self._uow.latest_agent_journal_record(run_id.value, kind="user_input")
+        if current is not None:
+            await prewarm(_text_of(current))
+
+    def _assemble(self, run_id: RunId, *, record: bool, recall: bool = True) -> ContextSnapshot:
         agent_id = run_id.value
         self.loads += 1
         highwater = self._uow.agent_journal_highwater(agent_id)
@@ -185,8 +201,9 @@ class JournalContextPort:
         )
         messages = assembly.messages
         query_hash_value: str | None = None
+        recalled_hash: str | None = None
         recall_cap = 0
-        if self._recall is not None and not assembly.required_over_budget:
+        if recall and self._recall is not None and not assembly.required_over_budget:
             recall_cap = min(
                 int(available * self._recall_share), max(0, available - assembly.required_tokens)
             )
@@ -210,10 +227,21 @@ class JournalContextPort:
                     )
                     query_hash_value = _qh(query.strip())
                     self.last_recall_query_hash = query_hash_value
-                    # Recall goes after instructions/summary and before the recent units.
-                    head = [m for m in assembly.messages if m.role is MessageRole.SYSTEM]
-                    tail = [m for m in assembly.messages if m.role is not MessageRole.SYSTEM]
-                    messages = tuple([*head, *recalled, *tail])
+                    # Recall goes right after the leading run of SYSTEM messages
+                    # (instructions + folded-history summary), never re-ordering
+                    # anything that follows (review S4-09).
+                    lead = 0
+                    while (
+                        lead < len(assembly.messages)
+                        and assembly.messages[lead].role is MessageRole.SYSTEM
+                    ):
+                        lead += 1
+                    messages = tuple(
+                        [*assembly.messages[:lead], *recalled, *assembly.messages[lead:]]
+                    )
+                    recalled_hash = hashlib.sha256(
+                        canonical_json([m.to_dict() for m in recalled]).encode("utf-8")
+                    ).hexdigest()
         if not record:
             return ContextSnapshot(highwater, messages)
         assembly_hash = hashlib.sha256(
@@ -223,6 +251,7 @@ class JournalContextPort:
                     "dropped": [list(r) for r in assembly.dropped_ranges],
                     "tools": tool_tokens,
                     "recall": query_hash_value,
+                    "recall_payload": recalled_hash,
                 }
             ).encode("utf-8")
         ).hexdigest()
@@ -245,6 +274,11 @@ class JournalContextPort:
             tokenizer_fingerprint=self._tokenizer.fingerprint,
             now=self._clock(),
             query_hash=query_hash_value,
+            index_generation=(
+                getattr(self._recall, "index_generation", None)
+                if query_hash_value is not None
+                else None
+            ),
         )
         if assembly.summary is not None and assembly.summary_source_hash is not None:
             self._uow.upsert_agent_summary(

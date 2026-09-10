@@ -94,14 +94,14 @@ def restore_tool_calls(
             group = by_ordinal.get(stamped, {})
         else:
             group = positional[group_index] if group_index < len(positional) else {}
-        group_index += 1
+            group_index += 1
         calls: list[JsonValue] = []
         for follower in followers:
             raw_id = follower.call_id.value if follower.call_id is not None else ""
             fact = group.get(raw_id)
             if fact is None:
                 fallbacks += 1
-                calls.append({"id": raw_id, "name": follower.name or "", "arguments": {}})
+                calls.append({"id": raw_id, "name": follower.name or "unknown", "arguments": {}})
             else:
                 calls.append({"id": raw_id, "name": fact["name"], "arguments": fact["arguments"]})
         metadata: dict[str, JsonValue] = {

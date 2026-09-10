@@ -136,7 +136,7 @@ CREATE TABLE base_agent_context_selections_v1 (
  policy_hash TEXT NOT NULL CHECK(length(policy_hash) = 64),
  tokenizer_fingerprint TEXT NOT NULL,
  query_hash TEXT,
- index_generation INTEGER,
+ index_generation TEXT,
  provider_request_id TEXT UNIQUE,
  request_hash TEXT CHECK(request_hash IS NULL OR length(request_hash) = 64),
  request_tokens INTEGER,
@@ -188,6 +188,11 @@ CREATE TABLE base_agent_index_jobs_v1 (
 ) STRICT;
 CREATE INDEX base_agent_index_jobs_v1_state_idx
  ON base_agent_index_jobs_v1(state, lease_expires_at);
+CREATE TABLE base_agent_upgrade_receipt_v1 (
+ id INTEGER PRIMARY KEY CHECK(id = 1),
+ receipt_json TEXT NOT NULL,
+ receipt_hash TEXT NOT NULL CHECK(length(receipt_hash) = 64)
+) STRICT;
 """
 
 __all__ = ("DDL",)

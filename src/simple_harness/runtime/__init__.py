@@ -20,6 +20,10 @@ _MODULE_EXPORTS = {
         "migrate_execution_to_v9",
         "ExecutionShortContextUpgradeReceiptV1",
     ),
+    "simple_harness.execution.sqlite.base_agent.migration": (
+        "migrate_execution_to_v10",
+        "ExecutionBaseAgentUpgradeReceiptV1",
+    ),
     "simple_harness.execution.sqlite.context_use_migration": (
         "migrate_execution_v7_to_v8",
         "ExecutionContextUseUpgradeReceiptV1",
@@ -736,6 +740,8 @@ __all__ += (
     "RecallContextUseAuthorityPort",
     "migrate_execution_to_v9",
     "ExecutionShortContextUpgradeReceiptV1",
+    "migrate_execution_to_v10",
+    "ExecutionBaseAgentUpgradeReceiptV1",
     "migrate_execution_v7_to_v8",
     "ExecutionContextUseUpgradeReceiptV1",
 )

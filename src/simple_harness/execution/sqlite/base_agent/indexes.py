@@ -93,6 +93,8 @@ def fts_search(
 ) -> tuple[tuple[int, float], ...]:
     """``(seq, bm25)`` for one Agent only; the agent filter is part of the MATCH."""
 
+    if table not in (FTS_TRIGRAM, FTS_WORDS):
+        raise ValueError("unknown FTS table")
     rows = connection.execute(
         f"SELECT seq, bm25({table}) AS score FROM {table} "
         f"WHERE {table} MATCH ? AND agent_id=? ORDER BY score LIMIT ?",
@@ -231,12 +233,16 @@ def claim_index_jobs(
     now: float,
     lease_seconds: float,
     limit: int,
+    max_attempts: int = 5,
 ) -> tuple[AgentIndexJobRecord, ...]:
+    """Pending jobs, expired claims, and errored jobs below the attempt cap (retry)."""
+
     rows = connection.execute(
         "SELECT job_id FROM base_agent_index_jobs_v1 WHERE embedding_fingerprint=? AND "
         "(state='pending' OR (state='claimed' AND lease_expires_at IS NOT NULL "
-        "AND lease_expires_at <= ?)) ORDER BY created_at LIMIT ?",
-        (embedding_fingerprint, float(now), int(limit)),
+        "AND lease_expires_at <= ?) OR (state='error' AND attempts < ?)) "
+        "ORDER BY attempts, created_at LIMIT ?",
+        (embedding_fingerprint, float(now), int(max_attempts), int(limit)),
     ).fetchall()
     claimed: list[AgentIndexJobRecord] = []
     for row in rows:
@@ -277,6 +283,32 @@ def settle_index_job(
     return _job(row)
 
 
+def journal_rows_missing_fts(
+    connection: sqlite3.Connection, *, limit: int
+) -> tuple[tuple[str, int, str], ...]:
+    """``(agent_id, seq, message_json)`` of indexable rows with no trigram FTS row."""
+
+    rows = connection.execute(
+        "SELECT j.agent_id, j.seq, j.message_json FROM base_agent_session_journal_v1 j "
+        "WHERE j.kind IN ('user_input','assistant','tool_result') AND NOT EXISTS ("
+        f"SELECT 1 FROM {FTS_TRIGRAM} f WHERE f.agent_id=j.agent_id AND f.seq=j.seq) "
+        "ORDER BY j.agent_id, j.seq LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    return tuple((str(r[0]), int(r[1]), str(r[2])) for r in rows)
+
+
+def index_errors(
+    connection: sqlite3.Connection, *, agent_id: str, embedding_fingerprint: str
+) -> tuple[str, ...]:
+    rows = connection.execute(
+        "SELECT DISTINCT error_code FROM base_agent_index_jobs_v1 WHERE agent_id=? AND "
+        "embedding_fingerprint=? AND state='error' AND error_code IS NOT NULL",
+        (agent_id, embedding_fingerprint),
+    ).fetchall()
+    return tuple(str(r[0]) for r in rows)
+
+
 def index_status(
     connection: sqlite3.Connection, *, agent_id: str, embedding_fingerprint: str
 ) -> dict[str, int]:
@@ -298,7 +330,9 @@ __all__ = (
     "fts_highwater",
     "fts_index_record",
     "fts_search",
+    "index_errors",
     "index_status",
+    "journal_rows_missing_fts",
     "list_vectors",
     "settle_index_job",
     "store_vector",

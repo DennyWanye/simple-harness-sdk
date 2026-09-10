@@ -17,6 +17,7 @@ dropped instead of padding to ``limit``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -35,6 +36,7 @@ RRF_K = 60
 WEIGHTS = {"exact": 1.0, "words": 0.6, "trigram": 0.5, "vector": 0.7}
 VECTOR_FLOOR = 0.35
 SCORE_FLOOR = 0.006
+HIT_TEXT_LIMIT = 4000
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,15 +102,49 @@ class SessionRetriever:
         embedding: EmbeddingPort | None,
         fts_available: bool,
         clock: Callable[[], float],
+        search_window: int = 2000,
     ) -> None:
         self._uow = uow
         self._embedding = embedding
         self._fts_available = fts_available
         self._clock = clock
+        self._search_window = max(64, int(search_window))
+        self._query_cache: dict[str, list[float]] = {}
 
     @property
     def embedding_fingerprint(self) -> str | None:
         return None if self._embedding is None else self._embedding.fingerprint
+
+    def _query_vector(self, query: str) -> list[float]:
+        key = query_hash(query)
+        cached = self._query_cache.get(key)
+        if cached is not None:
+            return cached
+        assert self._embedding is not None
+        [vector] = self._embedding.embed([query])
+        self._remember_query(key, vector)
+        return vector
+
+    def _remember_query(self, key: str, vector: list[float]) -> None:
+        if len(self._query_cache) >= 256:
+            self._query_cache.pop(next(iter(self._query_cache)))
+        self._query_cache[key] = vector
+
+    async def prewarm(self, query: str) -> None:
+        """Embed a query off the event loop so the sync recall never blocks on the
+        model (review S4-04); a no-op without an embedding port."""
+
+        query = query.strip()
+        if self._embedding is None or not query:
+            return
+        key = query_hash(query)
+        if key in self._query_cache:
+            return
+        try:
+            [vector] = await asyncio.to_thread(self._embedding.embed, [query])
+        except Exception:  # noqa: BLE001 - the sync path will report the degradation
+            return
+        self._remember_query(key, vector)
 
     async def search(
         self,
@@ -136,7 +172,19 @@ class SessionRetriever:
     ) -> SearchResult:
         query = query.strip()
         degradations: list[str] = []
-        records = {r.seq: r for r in self._uow.read_agent_journal(agent_id) if r.kind in kinds}
+        highwater = self._uow.agent_journal_highwater(agent_id)
+        # Bounded read (review S4-04): the newest ``search_window`` rows are candidates;
+        # older history stays reachable through ``read()`` pagination.
+        records = {
+            r.seq: r
+            for r in self._uow.read_agent_journal(
+                agent_id, from_seq=max(1, highwater - self._search_window + 1)
+            )
+            if r.kind in kinds
+        }
+        if self._fts_available and records:
+            if self._uow.agent_fts_highwater(agent_id) < max(records):
+                degradations.append("fts_partial")
         ranked: dict[str, list[int]] = {}
         # 1. exact seq references ("seq 12", "#12")
         exact = [int(m) for m in re.findall(r"(?:seq\s*|#)(\d+)", query) if int(m) in records]
@@ -183,13 +231,16 @@ class SessionRetriever:
             vectors = self._uow.list_agent_vectors(
                 agent_id=agent_id, embedding_fingerprint=self._embedding.fingerprint
             )
-            highwater = max(records) if records else 0
             indexed = {v.record_seq for v in vectors}
             if any(seq not in indexed for seq in records):
                 index_partial = True
                 degradations.append("index_partial")
+            errors = self._uow.agent_index_errors(
+                agent_id=agent_id, embedding_fingerprint=self._embedding.fingerprint
+            )
+            degradations.extend(f"index_error:{code}" for code in errors)
             try:
-                [qvec] = self._embedding.embed([query]) if query else [[]]
+                qvec = self._query_vector(query) if query else []
             except EmbeddingUnavailable as error:
                 embedding_available = False
                 degradations.append(error.code)
@@ -199,17 +250,19 @@ class SessionRetriever:
                 degradations.append("embedding_unavailable")
                 qvec = []
             if qvec:
+                usable = [
+                    v
+                    for v in vectors
+                    if v.record_seq in records
+                    and v.source_hash == records[v.record_seq].content_hash
+                ]
+                if any(len(v.vector) != len(qvec) for v in usable):
+                    degradations.append("embedding_dim_mismatch")
+                    usable = [v for v in usable if len(v.vector) == len(qvec)]
                 scored = sorted(
-                    (
-                        (cosine(qvec, v.vector), v.record_seq)
-                        for v in vectors
-                        if v.record_seq in records
-                        and v.source_hash == records[v.record_seq].content_hash
-                    ),
-                    reverse=True,
+                    ((cosine(qvec, v.vector), v.record_seq) for v in usable), reverse=True
                 )
                 ranked["vector"] = [seq for sim, seq in scored[: limit * 4] if sim >= VECTOR_FLOOR]
-            del highwater
         else:
             degradations.append("embedding_unavailable")
         # 4. fusion
@@ -232,7 +285,7 @@ class SessionRetriever:
                     kind=record.kind,
                     score=score,
                     sources=tuple(sources[seq]),
-                    text=record_text(record),
+                    text=record_text(record)[:HIT_TEXT_LIMIT],
                     content_hash=record.content_hash,
                 )
             )

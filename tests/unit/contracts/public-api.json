@@ -1,5 +1,5 @@
 {
-  "version": "0.7.10",
+  "version": "0.8.0",
   "simple_harness": [
     "__version__",
     "MandatoryContextActionRequired",
@@ -330,6 +330,8 @@
     "ExecutionShortContextUpgradeReceiptV1",
     "migrate_execution_v7_to_v8",
     "ExecutionContextUseUpgradeReceiptV1",
+    "migrate_execution_to_v10",
+    "ExecutionBaseAgentUpgradeReceiptV1",
     "AgentConfig",
     "AgentLimits",
     "AgentRuntime",
@@ -699,6 +701,8 @@
     "RecallContextUseAuthorityPort",
     "migrate_execution_to_v9",
     "ExecutionShortContextUpgradeReceiptV1",
+    "migrate_execution_to_v10",
+    "ExecutionBaseAgentUpgradeReceiptV1",
     "migrate_execution_v7_to_v8",
     "ExecutionContextUseUpgradeReceiptV1"
   ],
