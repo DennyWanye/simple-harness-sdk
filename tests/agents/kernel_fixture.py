@@ -141,7 +141,7 @@ async def create_agent(runtime, uow, *, agent_id: str, owner_scope: str = "owner
         },
         1,
     )
-    await runtime._start_run(start)
+    await runtime.start_base_agent_run(start)
     uow.create_agent_binding(
         agent_id=agent_id,
         run_id=agent_id,
@@ -157,47 +157,18 @@ async def create_agent(runtime, uow, *, agent_id: str, owner_scope: str = "owner
 
 
 async def submit(runtime, uow, *, agent_id: str, input_id: str, text: str, now: float = 2.0):
+    del uow, now
     turn_id = f"{agent_id}:input:{input_id}"
     message = Message(MessageRole.USER, text).to_dict()
-    record = uow.submit_agent_input(
+    return await runtime.signal_base_agent_input(
+        RunId(agent_id),
         agent_id=agent_id,
-        run_id=agent_id,
         turn_id=turn_id,
         input_id=input_id,
         input_hash=input_hash_for(text),
         input_json={"message": message},
-        continuation_payload={
-            "kind": BASE_AGENT_INPUT_KIND,
-            "agent_id": agent_id,
-            "turn_id": turn_id,
-            "input_id": input_id,
-            "input_hash": input_hash_for(text),
-            "seq": 0,
-            "message": message,
-        },
-        now=now,
+        message=message,
     )
-    # seq is assigned durably by the turn row; mirror it into the payload the driver reads.
-    if record.seq != 0:
-        uow.database.connection.execute(
-            "UPDATE continuations SET payload_json=? WHERE continuation_id=?",
-            (
-                canonical_json(
-                    {
-                        "kind": BASE_AGENT_INPUT_KIND,
-                        "agent_id": agent_id,
-                        "turn_id": turn_id,
-                        "input_id": input_id,
-                        "input_hash": input_hash_for(text),
-                        "seq": record.seq,
-                        "message": message,
-                    }
-                ),
-                turn_id,
-            ),
-        )
-    asyncio.create_task(runtime._wake_continuation(agent_id))
-    return record
 
 
 async def run_states(uow, run_id: str) -> list[str]:

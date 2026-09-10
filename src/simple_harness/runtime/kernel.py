@@ -582,6 +582,25 @@ class RuntimeUnitOfWork(ExecutionUnitOfWork, RunFencePort, WorkflowLaunchTicketP
     def require_legacy_or_unmanaged_run(self, run_id: str) -> None: ...
 
     # BaseAgent (execution schema v10)
+    def reserve_base_agent_run_mode(
+        self, *, run_id: str, intent_hash: str, now: float
+    ) -> None: ...
+
+    def require_base_agent_run_mode(self, run_id: str) -> None: ...
+
+    def submit_agent_input(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        turn_id: str,
+        input_id: str,
+        input_hash: str,
+        input_json: Mapping[str, JsonValue],
+        continuation_payload: Mapping[str, JsonValue],
+        now: float,
+    ) -> AgentTurnRecord: ...
+
     def read_agent_binding_for_run(self, run_id: str) -> AgentBindingRecord | None: ...
 
     def read_agent_turn(self, turn_id: str) -> AgentTurnRecord | None: ...
@@ -1278,6 +1297,8 @@ class RunClient:
         self._runtime._require_legacy_mode(_run_id(run_id))
         if payload.get("kind") == "conversation_user":
             raise ValueError("conversation_user continuations require signal_conversation")
+        if payload.get("kind") == "base_agent_input":
+            raise ValueError("base_agent_input continuations require signal_base_agent_input")
         continuation = self._runtime._uow.enqueue_continuation(
             continuation_id=signal_id,
             run_id=_run_id(run_id),
@@ -1659,6 +1680,87 @@ class Runtime:
             ).hexdigest(),
             now=self._now(),
         )
+
+    def _reserve_base_agent_start(self, start: RunStart) -> None:
+        self._uow.reserve_base_agent_run_mode(
+            run_id=start.run_id.value,
+            intent_hash=hashlib.sha256(
+                canonical_json(
+                    {
+                        "api_mode": "base_agent_v1",
+                        "execution_session_id": start.execution_session_id.value,
+                        "run_id": start.run_id.value,
+                        "request_id": start.request_id.value,
+                        "turn_id": start.turn_id,
+                        "input": thaw_json(cast(FrozenJsonValue, start.input)),
+                        "tool_catalog_generation": start.tool_catalog_generation,
+                    }
+                ).encode()
+            ).hexdigest(),
+            now=self._now(),
+        )
+
+    async def start_base_agent_run(self, start: RunStart) -> RunRecord:
+        """Public BaseAgent creation entry: fence the identity first, then start the Run.
+
+        Same shape as ``RunClient.start_conversation`` (reserve mode → ``_start_run``),
+        but under the ``base-agent/v1`` namespace so every legacy public Run API
+        rejects this identity and vice versa.
+        """
+
+        self._require_started()
+        if not isinstance(start, RunStart):
+            raise TypeError("start must use RunStart")
+        if start.start_mode != "ordinary" or start.conversation is not None:
+            raise ValueError("BaseAgent Runs use the ordinary start mode without envelopes")
+        self._reserve_base_agent_start(start)
+        return await self._start_run(start)
+
+    async def signal_base_agent_input(
+        self,
+        run_id: RunId,
+        *,
+        agent_id: str,
+        turn_id: str,
+        input_id: str,
+        input_hash: str,
+        input_json: Mapping[str, JsonValue],
+        message: Mapping[str, JsonValue],
+    ) -> AgentTurnRecord:
+        """Public BaseAgent input entry (mirror of ``signal_conversation`` for base-agent Runs).
+
+        One short transaction persists the queued turn row and its
+        ``base_agent_input`` continuation; the Run is then woken.  Legacy and
+        unmanaged Runs are rejected with ``RUN_MODE_CONFLICT``.
+        """
+
+        self._require_started()
+        value = _run_id(run_id)
+        self._uow.require_base_agent_run_mode(value)
+        run = self._uow.read_run(value)
+        if run is None:
+            raise KeyError(run_id.value)
+        if run.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+            raise UnitOfWorkConflict("terminal Run rejects new continuations")
+        record = self._uow.submit_agent_input(
+            agent_id=agent_id,
+            run_id=value,
+            turn_id=turn_id,
+            input_id=input_id,
+            input_hash=input_hash,
+            input_json=input_json,
+            continuation_payload={
+                "kind": "base_agent_input",
+                "agent_id": agent_id,
+                "turn_id": turn_id,
+                "input_id": input_id,
+                "input_hash": input_hash,
+                "message": dict(message),
+            },
+            now=self._now(),
+        )
+        asyncio.create_task(self._wake_continuation(value))
+        return record
 
     def _require_legacy_mode(self, run_id: str) -> None:
         require = getattr(self._uow, "require_legacy_or_unmanaged_run", None)
@@ -2908,6 +3010,13 @@ class Runtime:
                     driver_contract = "sdk.react.v2"
                 elif type(driver) is WorkflowRuntimeDriver:
                     driver_contract = "sdk.workflow.v2"
+                elif (
+                    type(driver).__module__ == "simple_harness.agents.execution"
+                    and type(driver).__name__ == "AgentExecutionDriver"
+                ):
+                    # SDK-owned BaseAgent driver; matched by its exact SDK module so the
+                    # kernel never imports simple_harness.agents (layering rule).
+                    driver_contract = "sdk.base_agent.v1"
             with runtime_operation(
                 self._uow,
                 "runtime.driver",

@@ -1161,6 +1161,16 @@ class SqliteExecutionUnitOfWork:
             self.database, context_use_scope=self._context_use_scope
         ).require_legacy_or_unmanaged(run_id)
 
+    def reserve_base_agent_run_mode(self, *, run_id: str, intent_hash: str, now: float) -> None:
+        CommandIngress(
+            self.database, context_use_scope=self._context_use_scope
+        ).reserve_base_agent_run(run_id=run_id, intent_hash=intent_hash, now=now)
+
+    def require_base_agent_run_mode(self, run_id: str) -> None:
+        CommandIngress(
+            self.database, context_use_scope=self._context_use_scope
+        ).require_base_agent_run(run_id)
+
     # --- BaseAgent (execution schema v10) --------------------------------------
     # Thin facades; the connection-level logic lives in ``sqlite/base_agent/turns.py``
     # so this module does not keep growing.  Each facade owns exactly one transaction.
@@ -1220,7 +1230,6 @@ class SqliteExecutionUnitOfWork:
         from .base_agent import turns
 
         now = _time(now)
-        payload_json = _object_json(continuation_payload, "continuation_payload")
         with self.database.transaction() as connection:
             record, created = turns.open_turn(
                 connection,
@@ -1232,6 +1241,10 @@ class SqliteExecutionUnitOfWork:
                 continuation_id=turn_id,
                 now=now,
             )
+            # The durable seq is assigned by the turn row; the driver reads it from the
+            # continuation payload, so it is injected here (replays reproduce it).
+            continuation_payload = {**dict(continuation_payload), "seq": record.seq}
+            payload_json = _object_json(continuation_payload, "continuation_payload")
             existing = connection.execute(
                 "SELECT run_id, payload_json FROM continuations WHERE continuation_id=?",
                 (turn_id,),

@@ -44,6 +44,10 @@ class CommandClaim:
     attempt_count: int
 
 
+BASE_AGENT_NAMESPACE = "base-agent/v1"
+BASE_AGENT_PROJECTION_KEY_ID = "base-agent-v1"
+
+
 class CommandIngress:
     """Connection-sharing repository; it never owns a second database or worker."""
 
@@ -193,6 +197,26 @@ class CommandIngress:
             intent_hash=intent_hash,
             now=now,
         )
+
+    def reserve_base_agent_run(self, *, run_id: str, intent_hash: str, now: float) -> None:
+        """Fence one BaseAgent execution identity from every legacy public Run API."""
+
+        self.reserve_legacy_run(
+            namespace=BASE_AGENT_NAMESPACE,
+            projection_key_id=BASE_AGENT_PROJECTION_KEY_ID,
+            run_id=run_id,
+            intent_hash=intent_hash,
+            now=now,
+        )
+
+    def require_base_agent_run(self, run_id: str) -> None:
+        """Mirror of ``require_legacy_or_unmanaged``: only base-agent Runs pass."""
+
+        row = self._database.connection.execute(
+            "SELECT namespace,api_mode FROM conversation_run_modes WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is None or tuple(row) != (BASE_AGENT_NAMESPACE, RunApiMode.LEGACY.value):
+            raise CommandError(CommandErrorCode.RUN_MODE_CONFLICT)
 
     def require_legacy_or_unmanaged(self, run_id: str) -> None:
         row = self._database.connection.execute(

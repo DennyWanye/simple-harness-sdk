@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import asyncio
 
+from kernel_fixture import create_agent, submit
+from provider_fixture import MODEL, ScriptedProvider, message_texts
+
 from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
 from simple_harness.agents.runtime import assemble_runtime
 from simple_harness.contracts import RunId
 from simple_harness.execution.uow import ContinuationState, RunState
-
-from kernel_fixture import create_agent, submit
-from provider_fixture import MODEL, ScriptedProvider, message_texts
 
 TERMINAL_EVENTS = {"run.completed", "run.failed", "run.cancelled"}
 
