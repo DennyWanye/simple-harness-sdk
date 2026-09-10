@@ -32,8 +32,8 @@ def run_id_from_request(request_id: str) -> str | None:
     return request_id.split(REQUEST_ID_MARKER, 1)[0]
 
 
-def _ledger_groups(connection: sqlite3.Connection, run_id: str) -> list[dict[str, dict]]:
-    """Executed calls grouped by provider turn, in issue order."""
+def _ledger_groups(connection: sqlite3.Connection, run_id: str) -> dict[int, dict[str, dict]]:
+    """Executed calls grouped by provider turn ordinal, keyed by raw provider call id."""
 
     groups: dict[int, dict[str, dict]] = {}
     for row in connection.execute(
@@ -50,31 +50,49 @@ def _ledger_groups(connection: sqlite3.Connection, run_id: str) -> list[dict[str
             "name": str(row[3]),
             "arguments": arguments if isinstance(arguments, dict) else {},
         }
-    return [groups[key] for key in sorted(groups)]
+    return groups
 
 
 def restore_tool_calls(
-    messages: tuple[Message, ...], groups: list[dict[str, dict]]
+    messages: tuple[Message, ...],
+    groups: list[dict[str, dict]] | dict[int, dict[str, dict]],
 ) -> tuple[tuple[Message, ...], int]:
-    """Return a wire copy of ``messages`` plus the number of calls that fell back to ``{}``."""
+    """Return a wire copy of ``messages`` plus the number of calls that fell back to ``{}``.
 
+    An assistant message carrying ``provider_turn_ordinal`` metadata (stamped by the
+    Journal Context port) is matched to that turn's ledger group, so history that
+    rotated out never shifts the mapping (review S3-03).  Messages without the stamp
+    are matched positionally, in issue order, as before.
+    """
+
+    by_ordinal: dict[int, dict[str, dict]] = (
+        dict(groups) if isinstance(groups, dict) else dict(enumerate(groups, start=1))
+    )
+    positional = [by_ordinal[key] for key in sorted(by_ordinal)]
     restored: list[Message] = []
     fallbacks = 0
     group_index = 0
     index = 0
     while index < len(messages):
         message = messages[index]
-        followers: list[Message] = []
-        if message.role is MessageRole.ASSISTANT:
-            cursor = index + 1
-            while cursor < len(messages) and messages[cursor].role is MessageRole.TOOL:
-                followers.append(messages[cursor])
-                cursor += 1
-        if not followers or PROVIDER_TOOL_CALLS_KEY in message.metadata:
+        if message.role is not MessageRole.ASSISTANT:
             restored.append(message)
             index += 1
             continue
-        group = groups[group_index] if group_index < len(groups) else {}
+        followers: list[Message] = []
+        cursor = index + 1
+        while cursor < len(messages) and messages[cursor].role is MessageRole.TOOL:
+            followers.append(messages[cursor])
+            cursor += 1
+        if not followers:
+            restored.append(message)
+            index += 1
+            continue
+        stamped = message.metadata.get("provider_turn_ordinal") if message.metadata else None
+        if isinstance(stamped, int) and not isinstance(stamped, bool):
+            group = by_ordinal.get(stamped, {})
+        else:
+            group = positional[group_index] if group_index < len(positional) else {}
         group_index += 1
         calls: list[JsonValue] = []
         for follower in followers:
@@ -82,9 +100,13 @@ def restore_tool_calls(
             fact = group.get(raw_id)
             if fact is None:
                 fallbacks += 1
-                fact = {"name": follower.name or "unknown", "arguments": {}}
-            calls.append({"id": raw_id, "name": fact["name"], "arguments": fact["arguments"]})
-        metadata: dict[str, JsonValue] = {**dict(message.metadata), PROVIDER_TOOL_CALLS_KEY: calls}
+                calls.append({"id": raw_id, "name": follower.name or "", "arguments": {}})
+            else:
+                calls.append({"id": raw_id, "name": fact["name"], "arguments": fact["arguments"]})
+        metadata: dict[str, JsonValue] = {
+            key: value for key, value in message.metadata.items() if key != "provider_turn_ordinal"
+        }
+        metadata[PROVIDER_TOOL_CALLS_KEY] = calls
         restored.append(
             Message(message.role, message.content, name=message.name, metadata=metadata)
         )

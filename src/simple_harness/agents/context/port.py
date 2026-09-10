@@ -84,6 +84,9 @@ class JournalContextPort:
         tool_specs_for_run: ToolSpecsResolver,
         clock: Callable[[], float] = time.time,
         page_size: int = 64,
+        recall: Callable[[str, str, int, tuple[int, ...]], Sequence[Message]] | None = None,
+        recall_token_share: float = 0.0,
+        on_records: Callable[[tuple[AgentJournalRecord, ...]], None] | None = None,
     ) -> None:
         self._uow = uow
         self._tokenizer = tokenizer
@@ -92,6 +95,13 @@ class JournalContextPort:
         self._tool_specs_for_run = tool_specs_for_run
         self._clock = clock
         self._page_size = max(8, int(page_size))
+        # Slice 4: ``recall(agent_id, query, token_budget, exclude_seqs)`` returns
+        # derived recall messages (never Journal rows, BA20); ``on_records`` feeds the
+        # derived indexes after each committed append.
+        self._recall = recall
+        self._recall_share = recall_token_share
+        self._on_records = on_records
+        self.last_recall_query_hash: str | None = None
         self.policy_hash = policy_hash(
             policy, tokenizer_fingerprint=tokenizer.fingerprint, model=model
         )
@@ -117,6 +127,10 @@ class JournalContextPort:
         return cached
 
     def _tool_calls_overhead(self, record: AgentJournalRecord) -> int:
+        key = (self.policy_hash, f"group:{record.protocol_group_id}")
+        cached = self._counts.get(key)
+        if cached is not None:
+            return cached
         prefix, _, ordinal = record.protocol_group_id.rpartition(":provider-turn:")
         if not ordinal.isdigit():
             return 0
@@ -132,7 +146,11 @@ class JournalContextPort:
             {"id": str(row[0]), "name": str(row[1]), "arguments": json.loads(str(row[2]) or "{}")}
             for row in rows
         ]
-        return self._tokenizer.count_text(canonical_json(cast(JsonValue, calls)))
+        overhead = self._tokenizer.count_text(canonical_json(cast(JsonValue, calls)))
+        # Effects of a settled provider turn are immutable; an empty answer is not
+        # cached because the group may still be in flight.
+        self._counts[key] = overhead
+        return overhead
 
     def tool_tokens(self, run_id: str) -> int:
         return count_tools(self._tokenizer, tuple(self._tool_specs_for_run(run_id)))
@@ -159,13 +177,58 @@ class JournalContextPort:
         # Bounded read: instructions plus the newest pages until the budget is spent.
         records = self._read_bounded(agent_id, highwater, available)
         units = build_units(records)
+        # First pass with the whole budget; recall (S4) only takes room that the
+        # required parts leave free, capped by its share, and only when it has hits.
         assembly = assemble(units, budget_tokens=available, count=self._count)
         current_turn = next(
             (unit.turn_id for unit in reversed(units) if unit.kind == "user_input"), None
         )
+        messages = assembly.messages
+        query_hash_value: str | None = None
+        recall_cap = 0
+        if self._recall is not None and not assembly.required_over_budget:
+            recall_cap = min(
+                int(available * self._recall_share), max(0, available - assembly.required_tokens)
+            )
+        if recall_cap > 0 and self._recall is not None:
+            current_input = next(
+                (unit for unit in reversed(units) if unit.kind == "user_input"), None
+            )
+            query = (
+                ""
+                if current_input is None
+                else "\n".join(_text_of(r) for r in current_input.records)
+            )
+            if query.strip():
+                recalled = tuple(self._recall(agent_id, query, recall_cap, assembly.selected_seqs))
+                if recalled:
+                    from ..memory.retrieval import query_hash as _qh
+
+                    recall_tokens = sum(count_message(self._tokenizer, m) for m in recalled)
+                    assembly = assemble(
+                        units, budget_tokens=available - recall_tokens, count=self._count
+                    )
+                    query_hash_value = _qh(query.strip())
+                    self.last_recall_query_hash = query_hash_value
+                    # Recall goes after instructions/summary and before the recent units.
+                    head = [m for m in assembly.messages if m.role is MessageRole.SYSTEM]
+                    tail = [m for m in assembly.messages if m.role is not MessageRole.SYSTEM]
+                    messages = tuple([*head, *recalled, *tail])
         if not record:
-            return ContextSnapshot(highwater, assembly.messages)
-        selection_id = f"{agent_id}:selection:{highwater}:{self.policy_hash[:12]}"
+            return ContextSnapshot(highwater, messages)
+        assembly_hash = hashlib.sha256(
+            canonical_json(
+                {
+                    "seqs": list(assembly.selected_seqs),
+                    "dropped": [list(r) for r in assembly.dropped_ranges],
+                    "tools": tool_tokens,
+                    "recall": query_hash_value,
+                }
+            ).encode("utf-8")
+        ).hexdigest()
+        selection_id = (
+            f"{agent_id}:selection:{highwater}:{self.policy_hash[:12]}:{assembly_hash[:12]}"
+        )
         self._uow.record_agent_context_selection(
             selection_id=selection_id,
             agent_id=agent_id,
@@ -181,6 +244,7 @@ class JournalContextPort:
             policy_hash=self.policy_hash,
             tokenizer_fingerprint=self._tokenizer.fingerprint,
             now=self._clock(),
+            query_hash=query_hash_value,
         )
         if assembly.summary is not None and assembly.summary_source_hash is not None:
             self._uow.upsert_agent_summary(
@@ -197,7 +261,7 @@ class JournalContextPort:
                 generated_by="structural:v1",
                 now=self._clock(),
             )
-        return ContextSnapshot(highwater, assembly.messages)
+        return ContextSnapshot(highwater, messages)
 
     def _read_bounded(
         self, agent_id: str, highwater: int, available: int
@@ -211,6 +275,9 @@ class JournalContextPort:
             )
             if record.kind == "instructions"
         )
+        # The current input is fetched by identity, never inferred from whatever the
+        # pages happened to return (review S3-02): the newest user_input row.
+        current_input = self._uow.latest_agent_journal_record(agent_id, kind="user_input")
         collected: list[AgentJournalRecord] = []
         used = sum(self._count(record) for record in instructions)
         to_seq = highwater
@@ -227,9 +294,20 @@ class JournalContextPort:
             to_seq = from_seq - 1
             if used > available and pages >= 2:
                 break
-        # Drop instructions rows that the paging already covered.
+        # Group-aware boundary (review S3-07): extend backwards to the start of the
+        # oldest collected protocol group so no unit is cut in half.
+        if collected and to_seq >= 1:
+            oldest = collected[0]
+            if oldest.kind in ("assistant", "tool_result", "feedback"):
+                head = self._uow.read_agent_journal_group_head(
+                    agent_id, protocol_group_id=oldest.protocol_group_id, before_seq=oldest.seq
+                )
+                if head:
+                    collected[:0] = list(head)
         covered = {record.seq for record in collected}
         merged = [record for record in instructions if record.seq not in covered] + collected
+        if current_input is not None and current_input.seq not in covered:
+            merged.append(current_input)
         return tuple(sorted(merged, key=lambda record: record.seq))
 
     def append(
@@ -298,7 +376,7 @@ class JournalContextPort:
                     "full_record_offset": None,
                 }
             )
-        _, _, highwater = self._uow.append_agent_journal(
+        stored, created, highwater = self._uow.append_agent_journal(
             agent_id=agent_id,
             append_id=append_id,
             append_hash=append_hash,
@@ -307,9 +385,11 @@ class JournalContextPort:
             execution_lease=execution_lease,
             now=self._clock(),
         )
-        # A snapshot for the caller's CAS chain; selections are recorded only by
-        # ``load`` (one per assembled request), never by appends.
-        return ContextSnapshot(highwater, self._assemble(run_id, record=False).messages)
+        if created and self._on_records is not None:
+            self._on_records(stored)
+        # A snapshot for the caller's CAS chain (every ReAct append site reads only
+        # ``revision``); selections are recorded only by ``load``, never by appends.
+        return ContextSnapshot(highwater, ())
 
     # ---- large tool results --------------------------------------------------
 
@@ -400,8 +480,10 @@ class RequestGuard:
             )
 
 
-def _system(text: str) -> Message:
-    return Message(MessageRole.SYSTEM, text)
+def _text_of(record: AgentJournalRecord) -> str:
+    message = thaw_json(record.message_json)
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, str) else canonical_json(content)
 
 
 __all__ = (

@@ -66,6 +66,11 @@ def build_units(records: tuple[AgentJournalRecord, ...]) -> tuple[ContextUnit, .
             current_key = key
         current.append(record)
     flush()
+    # A page boundary may have cut the oldest group in half (review S3-07): a group
+    # unit that does not start with its assistant record is incomplete and is never
+    # offered to the assembler.
+    while units and units[0].kind == "group" and units[0].records[0].kind != "assistant":
+        units.pop(0)
     return tuple(units)
 
 

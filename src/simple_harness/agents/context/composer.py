@@ -37,6 +37,7 @@ class Assembly:
     required_over_budget: bool
     summary: Message | None
     summary_source_hash: str | None
+    required_tokens: int = 0
 
 
 def _dropped_ranges(units: tuple[ContextUnit, ...]) -> tuple[tuple[int, int], ...]:
@@ -49,7 +50,9 @@ def _dropped_ranges(units: tuple[ContextUnit, ...]) -> tuple[tuple[int, int], ..
     return tuple(ranges)
 
 
-def structural_summary(dropped: tuple[ContextUnit, ...]) -> tuple[Message, str]:
+def structural_summary(
+    dropped: tuple[ContextUnit, ...], *, compact: bool = False
+) -> tuple[Message, str]:
     """Deterministic, source-bound summary of the units that left the window."""
 
     turns = sum(1 for unit in dropped if unit.kind == "user_input")
@@ -61,11 +64,15 @@ def structural_summary(dropped: tuple[ContextUnit, ...]) -> tuple[Message, str]:
             "utf-8"
         )
     ).hexdigest()
-    text = (
-        f"[历史已折叠] 本会话更早的 {turns} 条用户输入与 {groups} 个工具协议组"
-        f"（记录 seq {seq_from}–{seq_to}）已退出工作窗口；原文完整保存在会话 Journal，"
-        f"可用 session_history.read(seq) 精确回读。此摘要为结构性派生内容，不是执行状态或授权依据。"
-    )
+    if compact:
+        text = f"[历史已折叠] seq {seq_from}–{seq_to} 已退出窗口，可用 session_history.read 回读。"
+    else:
+        text = (
+            f"[历史已折叠] 本会话更早的 {turns} 条用户输入与 {groups} 个工具协议组"
+            f"（记录 seq {seq_from}–{seq_to}）已退出工作窗口；原文完整保存在会话 Journal，"
+            f"可用 session_history.read(seq) 精确回读。"
+            "此摘要为结构性派生内容，不是执行状态或授权依据。"
+        )
     return (
         Message(
             MessageRole.SYSTEM,
@@ -85,7 +92,20 @@ def _message_of(record: AgentJournalRecord) -> Message:
     from simple_harness.contracts import thaw_json
     from simple_harness.runtime.context import _message
 
-    return _message(thaw_json(record.message_json))
+    message = _message(thaw_json(record.message_json))
+    if record.kind == "assistant":
+        # The wire restores this assistant's tool calls from the effect ledger; the
+        # provider turn ordinal lets it pick the right turn even after rotation.
+        _, _, ordinal = record.protocol_group_id.rpartition(":provider-turn:")
+        if ordinal.isdigit():
+            return Message(
+                message.role,
+                message.content,
+                name=message.name,
+                call_id=message.call_id,
+                metadata={**dict(message.metadata), "provider_turn_ordinal": int(ordinal)},
+            )
+    return message
 
 
 def assemble(
@@ -95,7 +115,7 @@ def assemble(
     count: Callable[[AgentJournalRecord], int],
 ) -> Assembly:
     if not units:
-        return Assembly((), (), (), (), 0, False, None, None)
+        return Assembly((), (), (), (), 0, False, None, None, 0)
     instructions = tuple(unit for unit in units if unit.kind == "instructions")
     body = tuple(unit for unit in units if unit.kind != "instructions")
     if not body:
@@ -118,28 +138,55 @@ def assemble(
     def unit_tokens(unit: ContextUnit) -> int:
         return sum(count(record) for record in unit.records)
 
-    used = sum(unit_tokens(unit) for unit in required)
-    required_over_budget = used > budget_tokens
-    selected = list(required)
-    dropped: list[ContextUnit] = []
-    # Newest-first admission of closed units; a unit that does not fit is dropped
-    # and everything older with it (no gaps inside the window, BA17).
-    admitting = not required_over_budget
-    for unit in reversed(optional):
-        cost = unit_tokens(unit)
-        if admitting and used + cost <= budget_tokens:
-            used += cost
-            selected.append(unit)
-        else:
-            admitting = False
-            dropped.append(unit)
+    required_used = sum(unit_tokens(unit) for unit in required)
+    required_over_budget = required_used > budget_tokens
     summary: Message | None = None
     summary_hash: str | None = None
-    if dropped:
+    selected: list[ContextUnit] = list(required)
+    dropped: list[ContextUnit] = []
+    used = required_used
+    # Newest-first admission of closed units; a unit that does not fit is dropped
+    # and everything older with it (no gaps inside the window, BA17).  The folded-
+    # history summary is charged *before* admission (review S3-01): admit with the
+    # summary's cost reserved, then re-run once the exact dropped range is known,
+    # until the assembly is stable (the summary text only varies by a few digits).
+    summary_reserve = 0
+    for _ in range(4):
+        selected = list(required)
+        dropped = []
+        used = required_used
+        admitting = not required_over_budget
+        for unit in reversed(optional):
+            cost = unit_tokens(unit)
+            if admitting and used + cost <= budget_tokens - summary_reserve:
+                used += cost
+                selected.append(unit)
+            else:
+                admitting = False
+                dropped.append(unit)
+        if not dropped:
+            summary, summary_hash = None, None
+            break
         summary, summary_hash = structural_summary(tuple(dropped))
-        # A summary that itself does not fit is still sent: it is tiny and it is
-        # the only pointer the model has to the dropped originals.
-        used += count_message_tokens(count, summary)
+        needed = count_message_tokens(count, summary)
+        if needed <= summary_reserve:
+            break
+        summary_reserve = needed
+    if summary is not None:
+        needed = count_message_tokens(count, summary)
+        if used + needed > budget_tokens and not required_over_budget:
+            # Required parts fit but not with the full pointer: send the compact form,
+            # and if even that does not fit, keep the pointer in the selection only.
+            compact, summary_hash = structural_summary(tuple(dropped), compact=True)
+            needed = count_message_tokens(count, compact)
+            summary = compact if used + needed <= budget_tokens else None
+            if summary is None:
+                needed = 0
+        used += needed
+    if not required_over_budget and used > budget_tokens:
+        # Invariant: an assembly that is not "required too large" never exceeds the
+        # budget; the wire guard must only ever see genuine BA16 cases.
+        raise AssertionError("context assembly exceeded its budget")
     ordered = sorted(selected, key=lambda u: u.seq_from)
     messages: list[Message] = []
     inserted_summary = False
@@ -159,6 +206,7 @@ def assemble(
         required_over_budget=required_over_budget,
         summary=summary,
         summary_source_hash=summary_hash,
+        required_tokens=required_used,
     )
 
 

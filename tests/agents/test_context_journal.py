@@ -12,7 +12,7 @@ import pytest
 from provider_fixture import MODEL, ScriptedProvider, message_texts
 from tool_fixture import ECHO_SCHEMA, EchoToolExecutor
 
-from simple_harness.agents import AgentConfig, AgentTurnState, build_agent_runtime
+from simple_harness.agents import AgentConfig, AgentLimits, AgentTurnState, build_agent_runtime
 from simple_harness.agents.context import (
     ContextPolicy,
     TiktokenTokenizer,
@@ -174,6 +174,13 @@ def test_protocol_groups_are_never_split_and_rotate_within_a_long_turn(tmp_path)
             tool_ids = [m.call_id.value for m in last if m.role is MessageRole.TOOL]
             assert "call-1" not in tool_ids and "call-6" in tool_ids
             assert any("[历史已折叠]" in t for t in message_texts(provider.requests[-1]))
+            assert runtime._assembled.wire.fallback_total == 0  # review S3-03
+            restored = [
+                m for m in provider.requests[-1].messages if m.metadata.get("provider_tool_calls")
+            ]
+            assert restored and all(
+                c["id"] for m in restored for c in m.metadata["provider_tool_calls"]
+            )
 
     asyncio.run(case())
 
@@ -455,5 +462,61 @@ def test_unknown_resume_reuses_the_frozen_request_without_a_new_selection(tmp_pa
             )
             assert after == before  # no re-selection for the same frozen request (§7.4)
             assert provider.calls == 1
+
+    asyncio.run(case())
+
+
+def test_summary_is_reserved_before_admission_and_never_overfills(tmp_path):
+    """Review S3-01: with the budget nearly full, rotation must never wedge the Agent."""
+
+    async def case():
+        provider = ScriptedProvider([f"答{n}" for n in range(8)])
+        policy = ContextPolicy(max_input_tokens=860, output_reserve=64, safety_margin=0)
+        async with build_agent_runtime(_ports(tmp_path, provider, policy=policy)) as runtime:
+            agent = await runtime.create(_config(), creation_key="reserve")
+            for n in range(8):
+                result = await agent.ask(LONG + f"#{n}", input_id=f"i{n}", timeout=5)
+                assert result.state is AgentTurnState.COMMITTED, result.error
+            assert provider.calls == 8
+            rows = _rows(
+                runtime.uow,
+                "SELECT message_tokens, tool_tokens, budget_tokens, required_over_budget "
+                "FROM base_agent_context_selections_v1 WHERE agent_id=?",
+                agent.agent_id,
+            )
+            assert rows
+            for message_tokens, tool_tokens, budget, over in rows:
+                assert over == 0 and message_tokens + tool_tokens <= budget
+
+    asyncio.run(case())
+
+
+def test_current_input_is_present_even_when_a_turn_outgrows_the_read_window(tmp_path):
+    """Review S3-02: >128 journal rows in one turn; every request still carries the input."""
+
+    async def case():
+        calls = 70
+        provider = ScriptedProvider([TOOL] * calls + ["完成"])
+        policy = ContextPolicy(max_input_tokens=900, output_reserve=64, safety_margin=0)
+        executor = EchoToolExecutor()
+        ports = _ports(tmp_path, provider, executor=executor, policy=policy)
+        async with build_agent_runtime(ports) as runtime:
+            config = AgentConfig(
+                name="w",
+                instructions="你是助手。",
+                model_profile_ref="p",
+                tool_names=("echo",),
+                limits=AgentLimits(max_model_calls_per_turn=200, max_tool_calls_per_turn=200),
+            )
+            agent = await runtime.create(config, creation_key="wide")
+            marker = "唯一标记 QX-4471"
+            result = await agent.ask(marker, input_id="i1", timeout=30)
+            assert result.state is AgentTurnState.COMMITTED, result.error
+            assert provider.calls == calls + 1
+            assert len(agent.journal()) > 128
+            for request in provider.requests:
+                assert any(marker in t for t in message_texts(request))
+                _groups_are_whole(request.messages)
+            assert runtime._assembled.wire.fallback_total == 0
 
     asyncio.run(case())

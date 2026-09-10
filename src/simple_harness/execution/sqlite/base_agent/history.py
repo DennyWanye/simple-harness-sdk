@@ -74,6 +74,28 @@ def read_records(
     return tuple(_record(row) for row in rows)
 
 
+def latest_record(
+    connection: sqlite3.Connection, agent_id: str, *, kind: str
+) -> AgentJournalRecord | None:
+    row = connection.execute(
+        "SELECT * FROM base_agent_session_journal_v1 WHERE agent_id=? AND kind=? "
+        "ORDER BY seq DESC LIMIT 1",
+        (agent_id, kind),
+    ).fetchone()
+    return None if row is None else _record(row)
+
+
+def read_group_head(
+    connection: sqlite3.Connection, agent_id: str, *, protocol_group_id: str, before_seq: int
+) -> tuple[AgentJournalRecord, ...]:
+    rows = connection.execute(
+        "SELECT * FROM base_agent_session_journal_v1 WHERE agent_id=? AND protocol_group_id=? "
+        "AND seq<? ORDER BY seq",
+        (agent_id, protocol_group_id, int(before_seq)),
+    ).fetchall()
+    return tuple(_record(row) for row in rows)
+
+
 def read_append(
     connection: sqlite3.Connection, agent_id: str, append_id: str
 ) -> tuple[str, int, int] | None:
@@ -200,6 +222,8 @@ def record_selection(
     policy_hash: str,
     tokenizer_fingerprint: str,
     now: float,
+    query_hash: str | None = None,
+    index_generation: int | None = None,
 ) -> AgentContextSelectionRecord:
     """Idempotent by ``selection_id``: a replay returns the stored row unchanged."""
 
@@ -213,7 +237,7 @@ def record_selection(
         "source_highwater,selected_seqs_json,dropped_ranges_json,required_over_budget,"
         "message_tokens,tool_tokens,budget_tokens,policy_hash,tokenizer_fingerprint,"
         "query_hash,index_generation,provider_request_id,request_hash,request_tokens,"
-        "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,?,?)",
+        "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)",
         (
             selection_id,
             agent_id,
@@ -228,6 +252,8 @@ def record_selection(
             int(budget_tokens),
             policy_hash,
             tokenizer_fingerprint,
+            query_hash,
+            index_generation,
             float(now),
             float(now),
         ),
@@ -276,11 +302,13 @@ def bind_selection_request(
         if existing.request_hash != request_hash:
             raise UnitOfWorkConflict("provider request re-bound with a different request")
         return existing
-    connection.execute(
+    changed = connection.execute(
         "UPDATE base_agent_context_selections_v1 SET provider_request_id=?, request_hash=?, "
         "request_tokens=?, updated_at=? WHERE selection_id=? AND provider_request_id IS NULL",
         (provider_request_id, request_hash, int(request_tokens), float(now), selection_id),
-    )
+    ).rowcount
+    if changed != 1:
+        raise UnitOfWorkConflict("context selection is missing or already bound")
     row = connection.execute(
         "SELECT * FROM base_agent_context_selections_v1 WHERE selection_id=?", (selection_id,)
     ).fetchone()
@@ -357,9 +385,11 @@ __all__ = (
     "append_records",
     "bind_selection_request",
     "highwater",
+    "latest_record",
     "latest_selection",
     "list_summaries",
     "read_append",
+    "read_group_head",
     "read_records",
     "read_selection_by_request",
     "record_selection",

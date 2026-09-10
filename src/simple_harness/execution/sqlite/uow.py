@@ -31,10 +31,12 @@ from simple_harness.execution.base_agent import (
     AgentControlCommandRecord,
     AgentCreationBatchRecord,
     AgentDelegationRecord,
+    AgentIndexJobRecord,
     AgentJournalRecord,
     AgentSummaryRecord,
     AgentTurnRecord,
     AgentTurnResultRecord,
+    AgentVectorRecord,
 )
 from simple_harness.execution.budget import BudgetCharge, BudgetPolicy, BudgetSnapshot
 from simple_harness.execution.context_authority import (
@@ -1562,6 +1564,27 @@ class SqliteExecutionUnitOfWork:
             to_seq=to_seq,
         )
 
+    def latest_agent_journal_record(
+        self, agent_id: str, *, kind: str
+    ) -> AgentJournalRecord | None:
+        from .base_agent import history
+
+        return history.latest_record(
+            self.database.connection, _required(agent_id, "agent_id"), kind=kind
+        )
+
+    def read_agent_journal_group_head(
+        self, agent_id: str, *, protocol_group_id: str, before_seq: int
+    ) -> tuple[AgentJournalRecord, ...]:
+        from .base_agent import history
+
+        return history.read_group_head(
+            self.database.connection,
+            _required(agent_id, "agent_id"),
+            protocol_group_id=protocol_group_id,
+            before_seq=before_seq,
+        )
+
     def agent_journal_highwater(self, agent_id: str) -> int:
         from .base_agent import history
 
@@ -1618,6 +1641,102 @@ class SqliteExecutionUnitOfWork:
         from .base_agent import history
 
         return history.list_summaries(self.database.connection, _required(agent_id, "agent_id"))
+
+    # ---- Slice 4: derived indexes (FTS, vectors, index jobs) ----------------------
+
+    def ensure_agent_fts(self) -> bool:
+        from .base_agent import indexes
+
+        with self.database.transaction() as connection:
+            return indexes.ensure_fts(connection)
+
+    def index_agent_journal_fts(self, *, agent_id: str, seq: int, text: str) -> None:
+        from .base_agent import indexes
+
+        with self.database.transaction() as connection:
+            indexes.fts_index_record(
+                connection, agent_id=_required(agent_id, "agent_id"), seq=seq, text=text
+            )
+
+    def agent_fts_highwater(self, agent_id: str) -> int:
+        from .base_agent import indexes
+
+        return indexes.fts_highwater(self.database.connection, _required(agent_id, "agent_id"))
+
+    def search_agent_fts(
+        self, *, agent_id: str, table: str, match: str, limit: int
+    ) -> tuple[tuple[int, float], ...]:
+        from .base_agent import indexes
+
+        return indexes.fts_search(
+            self.database.connection,
+            agent_id=_required(agent_id, "agent_id"),
+            table=table,
+            match=match,
+            limit=limit,
+        )
+
+    def store_agent_vector(self, **kwargs: object) -> AgentVectorRecord:
+        from .base_agent import indexes
+
+        with self.database.transaction() as connection:
+            return indexes.store_vector(connection, **kwargs)  # type: ignore[arg-type]
+
+    def list_agent_vectors(
+        self, *, agent_id: str, embedding_fingerprint: str
+    ) -> tuple[AgentVectorRecord, ...]:
+        from .base_agent import indexes
+
+        return indexes.list_vectors(
+            self.database.connection,
+            agent_id=_required(agent_id, "agent_id"),
+            embedding_fingerprint=embedding_fingerprint,
+        )
+
+    def enqueue_agent_index_job(self, **kwargs: object) -> AgentIndexJobRecord:
+        from .base_agent import indexes
+
+        with self.database.transaction() as connection:
+            return indexes.enqueue_index_job(connection, **kwargs)  # type: ignore[arg-type]
+
+    def claim_agent_index_jobs(self, **kwargs: object) -> tuple[AgentIndexJobRecord, ...]:
+        from .base_agent import indexes
+
+        with self.database.transaction() as connection:
+            return indexes.claim_index_jobs(connection, **kwargs)  # type: ignore[arg-type]
+
+    def settle_agent_index_job(self, **kwargs: object) -> AgentIndexJobRecord:
+        from .base_agent import indexes
+
+        with self.database.transaction() as connection:
+            return indexes.settle_index_job(connection, **kwargs)  # type: ignore[arg-type]
+
+    def agent_journal_seqs_without_vectors(
+        self, *, embedding_fingerprint: str, limit: int
+    ) -> tuple[tuple[str, int, str], ...]:
+        """``(agent_id, seq, content_hash)`` of context-visible records lacking a vector
+        of this fingerprint and not yet queued (backfill after a model change, BA26)."""
+
+        rows = self.database.connection.execute(
+            "SELECT j.agent_id, j.seq, j.content_hash FROM base_agent_session_journal_v1 j "
+            "WHERE j.visibility='context' AND j.kind IN ('user_input','assistant','tool_result') "
+            "AND NOT EXISTS (SELECT 1 FROM base_agent_session_vectors_v1 v "
+            "WHERE v.agent_id=j.agent_id AND v.record_seq=j.seq AND v.embedding_fingerprint=?) "
+            "AND NOT EXISTS (SELECT 1 FROM base_agent_index_jobs_v1 b "
+            "WHERE b.agent_id=j.agent_id AND b.record_seq=j.seq AND b.embedding_fingerprint=?) "
+            "ORDER BY j.agent_id, j.seq LIMIT ?",
+            (embedding_fingerprint, embedding_fingerprint, int(limit)),
+        ).fetchall()
+        return tuple((str(r[0]), int(r[1]), str(r[2])) for r in rows)
+
+    def agent_index_status(self, *, agent_id: str, embedding_fingerprint: str) -> dict[str, int]:
+        from .base_agent import indexes
+
+        return indexes.index_status(
+            self.database.connection,
+            agent_id=_required(agent_id, "agent_id"),
+            embedding_fingerprint=embedding_fingerprint,
+        )
 
     def read_agent_delegation(self, delegation_id: str) -> AgentDelegationRecord | None:
         from .base_agent import delegations

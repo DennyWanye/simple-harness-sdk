@@ -87,6 +87,7 @@ markers = [
   "anyio: async tests using anyio",
   "simple_harness_conformance: mark test as requiring conformance host fixture",
   "real_provider: end-to-end test that calls a real LLM provider (opt in with --run-real-provider)",
+  "real_embedding: test that needs a real embedding model (opt in with --run-real-embedding)",
 ]
 
 [tool.ruff]

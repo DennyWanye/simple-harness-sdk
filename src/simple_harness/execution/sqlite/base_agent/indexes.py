@@ -17,6 +17,7 @@ All functions run in the caller's transaction.
 from __future__ import annotations
 
 import array
+import re
 import sqlite3
 from collections.abc import Sequence
 
@@ -52,11 +53,26 @@ def ensure_fts(connection: sqlite3.Connection) -> bool:
     return True
 
 
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:[./-][A-Za-z0-9_]+)+")
+
+
+def words_text(text: str) -> str:
+    """Text for the words index: identifiers plus their path / dotted components."""
+
+    extras: list[str] = []
+    for match in _IDENT.finditer(text):
+        token = match.group(0)
+        parts = token.split("/")
+        extras.extend(parts)
+        extras.extend(piece for part in parts for piece in part.split(".") if piece)
+    return text if not extras else text + "\n" + " ".join(dict.fromkeys(extras))
+
+
 def fts_index_record(connection: sqlite3.Connection, *, agent_id: str, seq: int, text: str) -> None:
-    for table in (FTS_TRIGRAM, FTS_WORDS):
+    for table, body in ((FTS_TRIGRAM, text), (FTS_WORDS, words_text(text))):
         connection.execute(f"DELETE FROM {table} WHERE agent_id=? AND seq=?", (agent_id, int(seq)))
         connection.execute(
-            f"INSERT INTO {table}(agent_id, seq, text) VALUES (?,?,?)", (agent_id, int(seq), text)
+            f"INSERT INTO {table}(agent_id, seq, text) VALUES (?,?,?)", (agent_id, int(seq), body)
         )
 
 

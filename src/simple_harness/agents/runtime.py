@@ -20,6 +20,7 @@ from typing import Any, Self, cast
 from simple_harness.contracts import (
     ExecutionSessionId,
     JsonValue,
+    Message,
     MessageRole,
     RequestId,
     RunId,
@@ -67,6 +68,8 @@ from .contracts import (
     AgentTurnNotFound,
 )
 from .execution import AGENT_TURN_CANCELLED, build_agent_execution_driver
+from .memory.index_jobs import SessionIndexer
+from .memory.retrieval import SearchResult, SessionRetriever
 from .ports import AgentRuntimePorts
 from .tool_registry import BaseAgentToolRegistry
 from .wire import AgentProviderWire
@@ -106,6 +109,8 @@ class AssembledRuntime:
     wire: object = None
     tool_names: tuple[str, ...] = ()
     context: object = None
+    retriever: object = None
+    indexer: object = None
 
 
 def assemble_runtime(
@@ -178,6 +183,18 @@ def assemble_runtime(
         names = tuple(sorted(exposed)) if exposed is not None else ()
         return effects.provider_tool_specs(names) if names else ()
 
+    fts_available = uow.ensure_agent_fts()
+    retriever = SessionRetriever(
+        uow, embedding=ports.embedding, fts_available=fts_available, clock=ports.clock
+    )
+    indexer = SessionIndexer(
+        uow,
+        embedding=ports.embedding,
+        fts_available=fts_available,
+        owner=ports.owner_id,
+        clock=ports.clock,
+    )
+    recall_messages = _RecallAdapter(retriever, tokenizer, ports.recall_limit)
     context = JournalContextPort(
         uow,
         tokenizer=tokenizer,
@@ -185,6 +202,9 @@ def assemble_runtime(
         model=ports.model,
         tool_specs_for_run=_tool_specs_for_run,
         clock=ports.clock,
+        recall=recall_messages,
+        recall_token_share=ports.recall_token_share,
+        on_records=indexer.on_records,
     )
     provider_reconciliation = (
         ports.policies.provider_reconciliation or _DefaultProviderReconciliation()
@@ -236,7 +256,15 @@ def assemble_runtime(
         close_hook=uow.close,
     )
     return AssembledRuntime(
-        runtime, uow, database, driver, wire, tuple(spec.name for spec in registry.specs), context
+        runtime,
+        uow,
+        database,
+        driver,
+        wire,
+        tuple(spec.name for spec in registry.specs),
+        context,
+        retriever,
+        indexer,
     )
 
 
@@ -295,6 +323,55 @@ def start_input_for(
     }
 
 
+class _RecallAdapter:
+    """Turns retriever hits into bounded, derived recall messages (never Journal rows)."""
+
+    def __init__(self, retriever: SessionRetriever, tokenizer: object, limit: int) -> None:
+        self._retriever = retriever
+        self._tokenizer = tokenizer
+        self._limit = limit
+        self.last_result: SearchResult | None = None
+
+    def __call__(
+        self, agent_id: str, query: str, token_budget: int, exclude: tuple[int, ...]
+    ) -> tuple[Message, ...]:
+        if self._limit <= 0 or token_budget <= 0:
+            return ()
+        # Synchronous on purpose: the ContextPort is called inside the driver and the
+        # SQLite connection is single-threaded; only the one query embedding blocks.
+        result = self._retriever.search_sync(
+            agent_id, query, limit=self._limit, exclude_seqs=exclude
+        )
+        self.last_result = result
+        if not result.hits:
+            return ()
+        from .context.tokenizer import count_message
+
+        messages: list[Message] = []
+        used = 0
+        for hit in result.hits:
+            text = (
+                f"[会话召回 seq {hit.seq} · {hit.kind} · 来源 {','.join(hit.sources)}]\n{hit.text}"
+            )
+            message = Message(
+                MessageRole.SYSTEM,
+                text,
+                metadata={
+                    "derived": True,
+                    "recall": True,
+                    "source_seq": hit.seq,
+                    "source_hash": hit.content_hash,
+                    "query_hash": result.query_hash,
+                },
+            )
+            cost = count_message(self._tokenizer, message)  # type: ignore[arg-type]
+            if used + cost > token_budget:
+                break
+            used += cost
+            messages.append(message)
+        return tuple(messages)
+
+
 class AgentRuntime:
     """Factory + execution service for BaseAgents (BA-v1.0 §3): shared kernel, isolated Agents."""
 
@@ -308,6 +385,7 @@ class AgentRuntime:
         self._assembled = assembled
         self._ports = ports
         self._owner_scope = owner_scope
+        self._index_task: asyncio.Task[None] | None = None
 
     @property
     def kernel(self) -> Runtime:
@@ -331,14 +409,34 @@ class AgentRuntime:
 
     async def __aenter__(self) -> Self:
         await self._assembled.runtime.__aenter__()
+        self._index_task = asyncio.create_task(self._index_pump(), name="base-agent-index-pump")
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self.shutdown()
 
+    async def _index_pump(self) -> None:
+        try:
+            while True:
+                try:
+                    settled = await self.indexer.run_once()
+                except Exception:  # noqa: BLE001 - the pump must survive a bad batch
+                    settled = 0
+                await asyncio.sleep(0.05 if settled else 0.25)
+        except asyncio.CancelledError:
+            return
+
     async def shutdown(self) -> None:
         """Stop this process' execution and release control; logical Agents stay durable."""
 
+        task = getattr(self, "_index_task", None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            self._index_task = None
         await self._assembled.runtime.close()
 
     async def recover_pending_turns(self) -> None:
@@ -393,6 +491,19 @@ class AgentRuntime:
         except InstanceCapConflict as error:
             raise AgentInstanceCapExceeded(str(error)) from error
         return BaseAgent(self, binding)
+
+    @property
+    def retriever(self) -> SessionRetriever:
+        return cast(SessionRetriever, self._assembled.retriever)
+
+    @property
+    def indexer(self) -> SessionIndexer:
+        return cast(SessionIndexer, self._assembled.indexer)
+
+    async def index_pending(self) -> int:
+        """Drain pending vector jobs now (the runtime also does this in the background)."""
+
+        return await self.indexer.drain()
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -651,16 +762,20 @@ def build_agent_runtime(ports: AgentRuntimePorts, *, owner_scope: str = "default
     """
 
     from .tools.delegate import AgentDelegateTool, AgentDelegationReconciliation
+    from .tools.session_history import SessionHistoryTools
 
     delegate = AgentDelegateTool(clock=ports.clock)
+    session_tools = SessionHistoryTools()
     assembled = assemble_runtime(
         ports,
-        extra_tools=(delegate.function_tool(),),
+        extra_tools=(delegate.function_tool(), *session_tools.function_tools()),
         delegation_counter=lambda turn_id: delegate.runtime.uow.count_agent_delegations(turn_id),
         delegation_reconciliation=AgentDelegationReconciliation,
     )
     runtime = AgentRuntime(assembled, ports, owner_scope=owner_scope)
     delegate.bind(runtime)
+    session_tools.bind(runtime)
+    runtime._session_tools = session_tools  # type: ignore[attr-defined]
     runtime._delegate = delegate  # type: ignore[attr-defined]
     return runtime
 
