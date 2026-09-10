@@ -528,7 +528,7 @@ def demo_static_dag_provider(
     )
 
 
-DEMO_DAG_SPEC = {
+DEMO_DAG_SPEC: dict[str, Any] = {
     "goal": "交付 textkit 小包：slugify 与 word_count 两个函数、集成测试与交付说明",
     "success_criteria": ["pytest:tests", "file:DELIVERY.md"],
     "allowed_tools": [

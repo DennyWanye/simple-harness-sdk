@@ -172,12 +172,13 @@ class Orchestrator:
     def owner(self) -> str:
         return self._owner
 
-    def arm_fault(self, point: str, *, kind: str | None = None) -> None:
-        """Arm a crash at ``point``; ``kind`` restricts it to plan / attempt / critic intents."""
+    def arm_fault(self, point: str, *, kind: str | None = None, skip: int = 0) -> None:
+        """Arm a crash at ``point``; ``kind`` restricts it to plan / attempt / critic intents;
+        ``skip`` lets that many hits pass first (crash on the n+1-th)."""
 
         if point not in FAULT_POINTS:
             raise ValueError(f"unknown fault point {point}")
-        self.store.arm(point if kind is None else f"{point}:{kind}")
+        self.store.arm(point if kind is None else f"{point}:{kind}", skip=skip)
 
     def _fault(self, point: str, kind: str | None = None) -> None:
         self.store.fault(point, kind)
@@ -382,9 +383,20 @@ class Orchestrator:
                 self._bind_critic(claimed.agent_id, config)
             elif claimed.kind == "attempt":
                 self._bind_agent(claimed.agent_id, config)
-            receipt = await self.bridge.submit(
-                agent_id=claimed.agent_id, input_id=claimed.input_id, message_json=config["message"]
-            )
+            try:
+                receipt = await self.bridge.submit(
+                    agent_id=claimed.agent_id,
+                    input_id=claimed.input_id,
+                    message_json=config["message"],
+                )
+            except Exception as error:  # noqa: BLE001 - the created Agent is gone (P0-3)
+                if claimed.kind != "attempt":
+                    raise
+                self._note(f"{claimed.subject_id}: created executor unreachable ({error})")
+                self.commit.mark_attempt_lost(claimed.subject_id, reason="executor_agent_missing")
+                self.commit.settle_intent(claimed.intent_id, "FAILED")
+                await self._release_attempt(claimed.subject_id, cancel=False)
+                return True
             self._fault("after_submit", claimed.kind)
             self.commit.record_submitted(claimed.intent_id, receipt=receipt)
             self._note(f"dispatched {claimed.kind} {claimed.subject_id} → agent {claimed.agent_id}")
@@ -808,14 +820,14 @@ class Orchestrator:
         }
         for item in self._upstream_inputs(attempt):
             initial[item.path] = item.content_hash
-        protected = set(self._protected_files(mission, task, attempt))
+        guarded = set(self._protected_files(mission, task, attempt))
         listed = set(envelope.artifacts)
         referenced = [
             artifact
             for artifact in artifacts
             if artifact.path in listed
             or (
-                artifact.path not in protected
+                artifact.path not in guarded
                 and initial.get(artifact.path) != artifact.content_hash
             )
         ]
@@ -1175,7 +1187,7 @@ class Orchestrator:
             feedback=tuple(feedback),
         )
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
-        previous_files = sorted(set(seed) | {item.path for item in inputs})
+        previous_files = sorted({*seed, *(item.path for item in inputs)})
         if previous is not None:
             try:
                 previous_files = self.assembled.workspaces.get(previous.id).list_files()
@@ -1318,10 +1330,10 @@ class Orchestrator:
             try:
                 if target is not None:
                     copy.resolve(target)
-                run = await run_pytest(
+                test_run = await run_pytest(
                     str(copy.root), path=target, timeout=self._config.test_timeout_seconds
                 )
-                test_runs[criterion] = {**run.to_json(), "passed": run.passed}
+                test_runs[criterion] = {**test_run.to_json(), "passed": test_run.passed}
             except Exception as error:  # noqa: BLE001
                 test_runs[criterion] = {"passed": False, "error": str(error), "stdout": ""}
         needs_critic = any(not c.startswith(("pytest:", "file:")) for c in mission.success_criteria)
@@ -1346,13 +1358,13 @@ class Orchestrator:
         judgments = []
         for criterion in mission.success_criteria:
             if criterion.startswith("pytest:"):
-                run = test_runs.get(criterion, {})
+                outcome = test_runs.get(criterion, {})
                 judgments.append(
                     {
                         "criterion": criterion,
-                        "met": bool(run.get("passed")),
+                        "met": bool(outcome.get("passed")),
                         "judge": "code_test",
-                        "reason": (run.get("stdout") or run.get("error") or "")[-300:],
+                        "reason": (outcome.get("stdout") or outcome.get("error") or "")[-300:],
                     }
                 )
             elif criterion.startswith("file:"):
@@ -1370,20 +1382,20 @@ class Orchestrator:
                     }
                 )
             else:
-                item = None
+                found: Mapping[str, Any] | None = None
                 if critic is not None:
-                    item = next(
+                    found = next(
                         (c for c in critic.mission_criteria if c.get("criterion") == criterion),
                         None,
                     )
                 judgments.append(
                     {
                         "criterion": criterion,
-                        "met": bool(item and item.get("met")),
+                        "met": bool(found and found.get("met")),
                         "judge": "critic_review",
                         "reason": "no independent judge ran"
-                        if item is None
-                        else item.get("reason"),
+                        if found is None
+                        else found.get("reason"),
                     }
                 )
         judged = self.commit.judge_mission(mission.id, judgments=judgments, summary=summary)

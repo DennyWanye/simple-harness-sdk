@@ -153,6 +153,7 @@ class Store:
         self._lock = threading.RLock()
         self._depth = 0
         self._armed: set[str] = set()
+        self._skips: dict[str, int] = {}
         self.fired: list[str] = []
 
     # ---------------------------------------------------------------- lifecycle
@@ -242,8 +243,12 @@ class Store:
         return self._connection
 
     # ---------------------------------------------------------- fault injection
-    def arm(self, *points: str) -> None:
+    def arm(self, *points: str, skip: int = 0) -> None:
+        """Arm crash points; ``skip`` lets the first ``skip`` hits pass (crash on the next)."""
+
         self._armed.update(points)
+        for point in points:
+            self._skips[point] = skip
 
     def disarm(self, *points: str) -> None:
         if points:
@@ -256,6 +261,9 @@ class Store:
 
         for candidate in (point, f"{point}:{kind}") if kind else (point,):
             if candidate in self._armed:
+                if self._skips.get(candidate, 0) > 0:
+                    self._skips[candidate] -= 1
+                    continue
                 self._armed.discard(candidate)
                 self.fired.append(candidate)
                 raise InjectedCrash(candidate)

@@ -231,11 +231,11 @@ def cmd_demo(args: argparse.Namespace) -> int:
         )
     else:
         spec = MissionSpec(
-            goal=DEMO_DAG_SPEC["goal"],
-            success_criteria=tuple(DEMO_DAG_SPEC["success_criteria"]),
+            goal=str(DEMO_DAG_SPEC["goal"]),
+            success_criteria=tuple(str(c) for c in DEMO_DAG_SPEC["success_criteria"]),
             tenant_id=args.tenant,
             idempotency_key=args.idempotency_key,
-            allowed_tools=tuple(DEMO_DAG_SPEC["allowed_tools"]),
+            allowed_tools=tuple(str(t) for t in DEMO_DAG_SPEC["allowed_tools"]),
             budget=Budget(max_tokens=400_000, max_attempts=12),
             workspace_seed=TEXTKIT_SEED,
         )
