@@ -26,6 +26,7 @@ from ..artifacts.workspace import WorkspaceManager
 from .tool_gateway import TOOL_NAMES, TOOL_SCHEMAS, WorkspaceToolGateway
 
 CONSUMER_PRICING_KEY = "consumer"
+OWNER_SCOPE = "agent-orchestrator"  # D3-10': one scope shared by every orchestrator instance
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +53,12 @@ class OrchestratorConfig:
     owner_id: str = "agent-orchestrator"
     max_concurrency: int = 2
     max_concurrent_model_calls: int = 2
+    candidates_per_task: int = (
+        1  # D3-5': explorative candidates per Task (each counts as an attempt)
+    )
+    max_planning_attempts: int = 2  # D3-2': Planner proposals before planning_failed
     lease_seconds: float = 60.0
+    sdk_lease_ttl_seconds: float | None = None  # D3-10': SDK Run lease; default lease_seconds / 2
     stall_seconds: float = 180.0
     test_timeout_seconds: float = 120.0
     default_max_output_tokens: int = 4096
@@ -65,6 +71,24 @@ class OrchestratorConfig:
     max_model_calls_per_turn: int = 24
     max_tool_calls_per_turn: int = 48
     extra: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.candidates_per_task < 1 or self.max_concurrency < 1:
+            raise ValueError("candidates_per_task and max_concurrency must be >= 1")
+        if self.max_planning_attempts < 1:
+            raise ValueError("max_planning_attempts must be >= 1")
+        if self.sdk_lease_ttl_seconds is None:
+            object.__setattr__(self, "sdk_lease_ttl_seconds", self.lease_seconds / 2)
+        elif self.lease_seconds < 2 * self.sdk_lease_ttl_seconds:
+            raise ValueError(
+                "lease_seconds must be at least twice sdk_lease_ttl_seconds (D3-10': an "
+                "orchestration lease may only be taken over after the SDK Run lease lapsed)"
+            )
+        # D3-4': the model-call semaphore must admit every open candidate or the
+        # waiting turns look stalled
+        needed = self.max_concurrency * self.candidates_per_task
+        if self.max_concurrent_model_calls < needed:
+            object.__setattr__(self, "max_concurrent_model_calls", needed)
 
     @property
     def unpriced(self) -> bool:
@@ -105,7 +129,10 @@ class OrchestratorConfig:
             "owner_id": self.owner_id,
             "max_concurrency": self.max_concurrency,
             "max_concurrent_model_calls": self.max_concurrent_model_calls,
+            "candidates_per_task": self.candidates_per_task,
+            "max_planning_attempts": self.max_planning_attempts,
             "lease_seconds": self.lease_seconds,
+            "sdk_lease_ttl_seconds": self.sdk_lease_ttl_seconds,
             "stall_seconds": self.stall_seconds,
             "test_timeout_seconds": self.test_timeout_seconds,
             "pricing": "unpriced_local"
@@ -147,12 +174,13 @@ def assemble_orchestrator_runtime(
         tool_schemas=dict(TOOL_SCHEMAS),
         model=config.model,
         owner_id=config.owner_id,
+        lease_ttl_seconds=float(config.sdk_lease_ttl_seconds or 30.0),
         policies=config.policies(),
         default_max_output_tokens=config.default_max_output_tokens,
         max_concurrent_model_calls=config.max_concurrent_model_calls,
         max_concurrent_tool_calls=config.max_concurrency,
     )
-    runtime = build_agent_runtime(ports, owner_scope="agent-orchestrator")
+    runtime = build_agent_runtime(ports, owner_scope=OWNER_SCOPE)
     return AssembledOrchestratorRuntime(
         runtime=runtime, gateway=gateway, workspaces=workspaces, config=config
     )
@@ -160,6 +188,7 @@ def assemble_orchestrator_runtime(
 
 __all__ = (
     "CONSUMER_PRICING_KEY",
+    "OWNER_SCOPE",
     "AssembledOrchestratorRuntime",
     "OrchestratorConfig",
     "PriceTable",

@@ -15,7 +15,7 @@ nothing is written.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from typing import Any
 
 from ..contracts import Budget, ContractError, Mission
@@ -44,6 +44,7 @@ class TaskNode:
     allowed_tools: tuple[str, ...]
     budget: Budget
     priority: float = 1.0
+    outputs: tuple[str, ...] = ()  # D3-7': declared output paths (static sibling check)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -56,6 +57,7 @@ class TaskNode:
             "allowed_tools": list(self.allowed_tools),
             "budget": self.budget.to_json(),
             "priority": self.priority,
+            "outputs": list(self.outputs),
         }
 
     @classmethod
@@ -74,7 +76,13 @@ class TaskNode:
         key = str(value["key"]).strip()
         if not key:
             raise ContractError("task node key must not be blank")
-        for name in ("dependencies", "success_criteria", "verification_policy", "allowed_tools"):
+        for name in (
+            "dependencies",
+            "success_criteria",
+            "verification_policy",
+            "allowed_tools",
+            "outputs",
+        ):
             raw = value.get(name, ())
             if isinstance(raw, str) or not isinstance(raw, Sequence):
                 raise ContractError(f"task node {key!r}: {name} must be a list")
@@ -91,6 +99,7 @@ class TaskNode:
             allowed_tools=tuple(str(t) for t in value.get("allowed_tools", ())),
             budget=Budget.from_json(value.get("budget", {})),
             priority=float(priority),
+            outputs=tuple(str(o) for o in value.get("outputs", ())),
         )
 
 
@@ -123,6 +132,7 @@ class ValidatedGraph:
     order: tuple[str, ...]  # topological, deterministic
     roots: tuple[str, ...]
     leaves: tuple[str, ...]
+    warnings: tuple[str, ...] = ()  # suspected duplicates etc. (D3-16)
 
     @property
     def terminal_key(self) -> str:
@@ -146,18 +156,90 @@ def _sum_dimension(nodes: Sequence[TaskNode], name: str) -> int | None:
     return total
 
 
+def normalise_budgets(mission: Mission, proposal: TaskGraphProposal) -> TaskGraphProposal:
+    """D3-2': deterministic budget completion before validation.
+
+    A task that leaves ``max_tokens`` / ``max_cost_micros`` unset while the Mission
+    bounds it receives an even share of the Mission pool (integer division; the
+    remainder stays with the Mission); ``max_attempts`` / ``max_concurrency`` /
+    ``max_runtime_seconds`` are inherited from the Mission when unset.  Explicit
+    values are never changed, so the hard checks below still apply to them.
+    """
+
+    count = max(1, len(proposal.tasks))
+    nodes = []
+    for node in proposal.tasks:
+        changes: dict[str, Any] = {}
+        for name in ("max_tokens", "max_cost_micros"):
+            parent = getattr(mission.budget, name)
+            if getattr(node.budget, name) is None and parent is not None:
+                changes[name] = parent // count
+        for name in ("max_attempts", "max_concurrency", "max_runtime_seconds"):
+            parent = getattr(mission.budget, name)
+            if getattr(node.budget, name) is None and parent is not None:
+                changes[name] = parent
+        if changes:
+            node = replace(node, budget=replace(node.budget, **changes))
+        nodes.append(node)
+    return TaskGraphProposal(tasks=tuple(nodes))
+
+
+def ancestors_of(edges: Mapping[str, Sequence[str]]) -> dict[str, frozenset[str]]:
+    """Transitive dependency closure per key (edges must already be acyclic)."""
+
+    memo: dict[str, frozenset[str]] = {}
+
+    def visit(key: str) -> frozenset[str]:
+        if key in memo:
+            return memo[key]
+        found: set[str] = set()
+        for dep in edges.get(key, ()):
+            found.add(dep)
+            found |= visit(dep)
+        memo[key] = frozenset(found)
+        return memo[key]
+
+    for key in edges:
+        visit(key)
+    return memo
+
+
+def _sibling_output_conflicts(proposal: TaskGraphProposal) -> list[str]:
+    """D3-7': two tasks neither of which depends on the other may not both declare
+    the same output path (their results could never be merged deterministically)."""
+
+    edges = proposal.edges()
+    ancestors = ancestors_of(edges)
+    conflicts = []
+    nodes = list(proposal.tasks)
+    for index, left in enumerate(nodes):
+        for right in nodes[index + 1 :]:
+            if left.key in ancestors[right.key] or right.key in ancestors[left.key]:
+                continue
+            shared = sorted(set(left.outputs) & set(right.outputs))
+            if shared:
+                conflicts.append(f"{left.key} and {right.key} both declare outputs {shared}")
+    return conflicts
+
+
 def validate_graph(mission: Mission, proposal: TaskGraphProposal) -> ValidatedGraph:
     if not proposal.tasks:
         raise GraphRejected("empty", "a task graph needs at least one task")
     if len(proposal.tasks) > MAX_TASKS:
         raise GraphRejected("too_large", f"{len(proposal.tasks)} tasks > {MAX_TASKS}")
-    duplicates = find_duplicates([(node.key, node.goal) for node in proposal.tasks])
-    if duplicates:
-        raise GraphRejected("duplicate", "; ".join(duplicates))
+    proposal = normalise_budgets(mission, proposal)
+    report = find_duplicates(
+        [(node.key, node.goal, node.dependencies, node.success_criteria) for node in proposal.tasks]
+    )
+    if report.problems:
+        raise GraphRejected("duplicate", "; ".join(report.problems))
     try:
         order = check_dependencies(proposal.edges())
     except DependencyError as error:
         raise GraphRejected(error.reason, error.detail) from error
+    conflicts = _sibling_output_conflicts(proposal)
+    if conflicts:
+        raise GraphRejected("artifact_conflict", "; ".join(conflicts))
     for node in proposal.tasks:
         if not node.goal.strip():
             raise GraphRejected("contract", f"{node.key}: goal is blank")
@@ -179,26 +261,36 @@ def validate_graph(mission: Mission, proposal: TaskGraphProposal) -> ValidatedGr
                 "tools", f"{node.key}: tools outside the Mission {sorted(extra_tools)}"
             )
         if not node.budget.fits_within(mission.budget):
-            raise GraphRejected("budget", f"{node.key}: budget exceeds the Mission budget (§18.2)")
+            raise GraphRejected(
+                "budget",
+                f"{node.key}: budget exceeds the Mission budget (§18.2); "
+                f"mission={mission.budget.to_json()}",
+            )
     # §18.2: the children's budgets come from the parent — in sum, per limited dimension
     for name in ("max_tokens", "max_cost_micros"):
         parent = getattr(mission.budget, name)
         if parent is None:
             continue
         total = _sum_dimension(proposal.tasks, name)
-        if total is None:
+        if total is None:  # cannot happen after normalisation; kept as a guard
             raise GraphRejected(
                 "budget", f"every task must bound {name} when the Mission bounds it"
             )
         if total > parent:
             raise GraphRejected(
-                "budget", f"sum of task {name} ({total}) exceeds the Mission ({parent})"
+                "budget",
+                f"sum of task {name} ({total}) exceeds the Mission ({parent}); "
+                f"dimension={name} remaining={parent}",
             )
     roots, leaves = roots_and_leaves(proposal.edges())
     if not roots or not leaves:
         raise GraphRejected("shape", "graph needs a root and a terminal task")
     return ValidatedGraph(
-        proposal=proposal, order=tuple(order), roots=tuple(roots), leaves=tuple(leaves)
+        proposal=proposal,
+        order=tuple(order),
+        roots=tuple(roots),
+        leaves=tuple(leaves),
+        warnings=report.suspected,
     )
 
 
@@ -208,5 +300,7 @@ __all__ = (
     "TaskGraphProposal",
     "TaskNode",
     "ValidatedGraph",
+    "ancestors_of",
+    "normalise_budgets",
     "validate_graph",
 )

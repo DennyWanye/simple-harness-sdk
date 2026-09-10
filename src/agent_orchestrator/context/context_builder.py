@@ -26,7 +26,7 @@ from .. import __version__ as PACKAGE_VERSION
 from ..contracts import Attempt, Mission, Task
 from ..contracts.models import sha256_hex
 
-CONTEXT_BUILDER_VERSION = "context-builder-v1"
+CONTEXT_BUILDER_VERSION = "context-builder-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +114,11 @@ def build_worker_package(
 
 
 def build_planner_package(
-    mission: Mission, *, workspace_files: Sequence[str], attempt_ordinal: int
+    mission: Mission,
+    *,
+    workspace_files: Sequence[str],
+    attempt_ordinal: int,
+    rejected: Sequence[Mapping[str, Any]] = (),
 ) -> TaskPackage:
     package: dict[str, Any] = {
         "role": "planner",
@@ -128,8 +132,12 @@ def build_planner_package(
         },
         "planning_attempt": attempt_ordinal,
         "workspace_files": list(workspace_files),
-        "constraint": "exactly one Task; success_criteria must be machine-checkable",
-        "output_contract": "<task_proposal>{json}</task_proposal>",
+        "constraint": (
+            "a static DAG of one or more Tasks (no cycles, dependencies by key); "
+            "success_criteria must be machine-checkable; task budgets sum within the Mission"
+        ),
+        "planning_rejected": [dict(item) for item in rejected],  # D3-2': why the last one failed
+        "output_contract": "<task_graph_proposal>{json}</task_graph_proposal>",
         "package_version": PACKAGE_VERSION,
     }
     return _seal(package)
@@ -137,23 +145,36 @@ def build_planner_package(
 
 def build_critic_package(
     mission: Mission,
-    task: Task,
+    task: Task | None,
     *,
     attempt_id: str,
     artifacts: Sequence[Mapping[str, Any]],
     test_output: str | None,
     workspace_files: Sequence[str],
 ) -> TaskPackage:
-    package: dict[str, Any] = {
-        "role": "critic",
-        "mission_root_goal": mission.goal,
-        "mission_success_criteria": list(mission.success_criteria),
-        "task_contract": {
+    """``task=None`` is the Mission-level judgment (D3-9'): the Critic reviews the
+    integrated tree of every Task against the Mission's own criteria."""
+
+    contract = (
+        {
+            "task_id": None,
+            "scope": "mission",
+            "goal": mission.goal,
+            "success_criteria": list(mission.success_criteria),
+        }
+        if task is None
+        else {
             "task_id": task.id,
             "task_version": task.version,
             "goal": task.goal,
             "success_criteria": list(task.success_criteria),
-        },
+        }
+    )
+    package: dict[str, Any] = {
+        "role": "critic",
+        "mission_root_goal": mission.goal,
+        "mission_success_criteria": list(mission.success_criteria),
+        "task_contract": contract,
         "attempt_id": attempt_id,
         "submitted_artifacts": [dict(item) for item in artifacts],
         "test_output": test_output,

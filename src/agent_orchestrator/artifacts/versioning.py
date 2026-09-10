@@ -1,14 +1,18 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Artifact propagation and versioning across the DAG (§20.3, plan D3-7/D3-8).
+"""Artifact propagation and versioning across the DAG (§20.3, plan D3-7'/D3-8').
 
-A downstream Attempt starts from the *accepted* artifacts of its direct
-dependencies: the files are materialised into its workspace and their
-``(task_id, path, content_hash)`` are frozen into the dispatch intent as the
+A downstream Attempt starts from the *accepted* artifacts of **all** its ancestors,
+applied in topological order: a later producer overrides an earlier one only when
+it depends (transitively) on that producer — it saw the earlier file and changed
+it on purpose.  Two producers that are independent of each other (parallel
+branches) giving the same path *different* content is an ``ArtifactConflict``
+(never silently pick one); the same content is not a conflict.  The resulting
+``(task_id, path, content_hash)`` set is frozen into the dispatch intent as the
 Attempt's inputs, so a later inspection can tell exactly which upstream version a
-result was built on.  Two dependencies producing the same path with different
-content is an ``ArtifactConflict`` (never silently pick one).
+result was built on — and the verifier re-materialises those inputs as protected
+files (a downstream Worker may not rewrite what it was given).
 """
 
 from __future__ import annotations
@@ -40,28 +44,81 @@ class UpstreamInput:
             "artifact_id": self.artifact_id,
         }
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> UpstreamInput:
+        return cls(
+            str(value["task_id"]),
+            str(value["path"]),
+            str(value["content_hash"]),
+            str(value["artifact_id"]),
+        )
 
-def collect_upstream_inputs(
-    dependencies: Sequence[Task], artifacts_by_task: Mapping[str, Sequence[Artifact]]
+
+def ancestors(task_id: str, tasks_by_id: Mapping[str, Task]) -> list[Task]:
+    """All transitive dependencies of ``task_id`` in topological (ordinal) order."""
+
+    seen: set[str] = set()
+
+    def visit(current: str) -> None:
+        task = tasks_by_id.get(current)
+        if task is None:
+            return
+        for dep in task.dependency_ids:
+            if dep not in seen:
+                seen.add(dep)
+                visit(dep)
+
+    visit(task_id)
+    return sorted((tasks_by_id[t] for t in seen), key=lambda task: _ordinal(task.id))
+
+
+def _ordinal(task_id: str) -> int:
+    try:
+        return int(task_id.rsplit("-", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def merge_accepted(
+    producers: Sequence[Task],
+    artifacts_by_task: Mapping[str, Sequence[Artifact]],
+    *,
+    tasks_by_id: Mapping[str, Task],
 ) -> list[UpstreamInput]:
-    """Accepted artifacts of the direct dependencies, conflict-checked by path."""
+    """Accepted artifacts of ``producers`` (topological order) merged by path.
 
+    Override is legal only along a dependency chain; independent producers with
+    different content for one path raise ``ArtifactConflict``.
+    """
+
+    closure = {task.id: {t.id for t in ancestors(task.id, tasks_by_id)} for task in producers}
     inputs: dict[str, UpstreamInput] = {}
-    for task in dependencies:
+    for task in sorted(producers, key=lambda task: _ordinal(task.id)):
         accepted = set(task.accepted_artifacts)
         for artifact in artifacts_by_task.get(task.id, ()):
             if artifact.id not in accepted:
                 continue
             existing = inputs.get(artifact.path)
             if existing is not None and existing.content_hash != artifact.content_hash:
-                raise ArtifactConflict(
-                    f"{artifact.path} is produced by both {existing.task_id} and {task.id}"
-                    " with different content"
-                )
+                if existing.task_id not in closure.get(task.id, set()):
+                    raise ArtifactConflict(
+                        f"{artifact.path} is produced by both {existing.task_id} and {task.id}"
+                        " (independent branches) with different content"
+                    )
             inputs[artifact.path] = UpstreamInput(
                 task.id, artifact.path, artifact.content_hash, artifact.id
             )
     return [inputs[path] for path in sorted(inputs)]
+
+
+def collect_upstream_inputs(
+    task: Task, tasks_by_id: Mapping[str, Task], artifacts_by_task: Mapping[str, Sequence[Artifact]]
+) -> list[UpstreamInput]:
+    """What a new Attempt of ``task`` starts from: every ancestor's accepted artifacts."""
+
+    return merge_accepted(
+        ancestors(task.id, tasks_by_id), artifacts_by_task, tasks_by_id=tasks_by_id
+    )
 
 
 def materialise_inputs(
@@ -87,7 +144,7 @@ def materialise_inputs(
 
 
 def next_versions(existing: Sequence[Artifact]) -> dict[str, int]:
-    """Highest recorded version per path for one Attempt (input to ``Workspace.snapshot``)."""
+    """Highest recorded version per path (Mission-wide lineage, D3-8')."""
 
     versions: dict[str, int] = {}
     for artifact in existing:
@@ -98,7 +155,9 @@ def next_versions(existing: Sequence[Artifact]) -> dict[str, int]:
 __all__ = (
     "ArtifactConflict",
     "UpstreamInput",
+    "ancestors",
     "collect_upstream_inputs",
     "materialise_inputs",
+    "merge_accepted",
     "next_versions",
 )

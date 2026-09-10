@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..contracts import (
+    TERMINAL_ATTEMPT,
+    TERMINAL_TASK,
     Artifact,
     Attempt,
     AttemptStatus,
@@ -37,8 +39,11 @@ from ..contracts import (
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, sha256_hex
 from ..governance.budgets import BudgetExhausted, BudgetLedger, UsageFact
 from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
+from ..scheduling.allocator import OPEN_ATTEMPT_STATES
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
 from .state_machine import next_attempt, next_claim, next_mission, next_task
+
+SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
 
 ACTOR_SYSTEM = "system"
 ORCHESTRATOR_ID = "orchestrator"
@@ -540,7 +545,11 @@ class CommitService:
                         "source": dict(source),
                     },
                 )
-            activated = next_mission(mission, MissionStatus.ACTIVE)
+            activated = next_mission(
+                mission,
+                MissionStatus.ACTIVE,
+                final_report={**dict(mission.final_report or {}), "graph_version": 1},
+            )
             self._store.update_mission(activated, expected_version=mission.version)
             receipt = {
                 "commit_id": commit,
@@ -550,6 +559,7 @@ class CommitService:
                 "mission_version": activated.version,
                 "proposal_hash": sha256_hex(proposal_json),
                 "source": dict(source),
+                "warnings": list(graph.warnings),
             }
             self._store.insert_receipt(
                 commit_id=commit,
@@ -568,6 +578,7 @@ class CommitService:
                     "task_ids": receipt["task_ids"],
                     "terminal_task_id": receipt["terminal_task_id"],
                     "edges": {task.id: list(task.dependency_ids) for task in tasks},
+                    "warnings": list(graph.warnings),
                 },
             )
             self._emit(
@@ -584,26 +595,105 @@ class CommitService:
 
         with self._store.transaction():
             completed = self._require_task(task_id)
-            unblocked: list[Task] = []
-            tasks = {task.id: task for task in self._store.list_tasks(completed.mission_id)}
-            for task in tasks.values():
-                if task.status is not TaskStatus.BLOCKED or task_id not in task.dependency_ids:
+            return self._unblock(completed.mission_id, unblocked_by=task_id)
+
+    def _unblock(self, mission_id: str, *, unblocked_by: str | None) -> list[Task]:
+        unblocked: list[Task] = []
+        tasks = {task.id: task for task in self._store.list_tasks(mission_id)}
+        for task in tasks.values():
+            if task.status is not TaskStatus.BLOCKED:
+                continue
+            if unblocked_by is not None and unblocked_by not in task.dependency_ids:
+                continue
+            if all(tasks[dep].status is TaskStatus.COMPLETED for dep in task.dependency_ids):
+                ready = next_task(task, TaskStatus.READY)
+                self._store.update_task(ready, expected_version=task.version)
+                unblocked.append(ready)
+                self._emit(
+                    "TaskUnblocked",
+                    task.mission_id,
+                    key=task.id,
+                    task_id=task.id,
+                    payload={
+                        "dependencies": list(task.dependency_ids),
+                        "unblocked_by": unblocked_by or "recover",
+                    },
+                )
+        return unblocked
+
+    def heal_mission(self, mission_id: str) -> dict[str, Any]:
+        """§16.4 idempotent self-healing on restart (D3-6'): recompute the frontier,
+        close every non-terminal Attempt left under a terminal Task (SUPERSEDED for a
+        COMPLETED Task, CANCELLED otherwise) and reject their pending results.  A
+        healthy library is left untouched; the report says what changed."""
+
+        with self._store.transaction():
+            mission = self._require_mission(mission_id)
+            report: dict[str, Any] = {"unblocked": [], "closed_attempts": []}
+            if mission.status is not MissionStatus.ACTIVE:
+                return report
+            report["unblocked"] = [task.id for task in self._unblock(mission_id, unblocked_by=None)]
+            for task in self._store.list_tasks(mission_id):
+                if task.status not in TERMINAL_TASK:
                     continue
-                if all(tasks[dep].status is TaskStatus.COMPLETED for dep in task.dependency_ids):
-                    ready = next_task(task, TaskStatus.READY)
-                    self._store.update_task(ready, expected_version=task.version)
-                    unblocked.append(ready)
-                    self._emit(
-                        "TaskUnblocked",
-                        task.mission_id,
-                        key=task.id,
-                        task_id=task.id,
-                        payload={
-                            "dependencies": list(task.dependency_ids),
-                            "unblocked_by": task_id,
-                        },
+                target = (
+                    AttemptStatus.SUPERSEDED
+                    if task.status is TaskStatus.COMPLETED
+                    else AttemptStatus.CANCELLED
+                )
+                for attempt in self._store.list_attempts(task.id):
+                    if attempt.status in TERMINAL_ATTEMPT:
+                        continue
+                    self._close_attempt(attempt, target, reason="task_terminal_on_recover")
+                    report["closed_attempts"].append(attempt.id)
+            return report
+
+    def _close_attempt(self, attempt: Attempt, target: AttemptStatus, *, reason: str) -> Attempt:
+        """Attempt → SUPERSEDED / CANCELLED with its result (if any) rejected as history,
+        its intent closed and its reservation settled unless an UNKNOWN charge holds it."""
+
+        updated = next_attempt(attempt, target, failure={"reason": reason})
+        self._store.update_attempt(updated, expected_version=attempt.version)
+        stored = self._store.find_result_for_attempt(attempt.id)
+        if stored is not None and stored.verification_state in {"PENDING", "RUNNING"}:
+            self._store.set_result_verification(
+                stored.envelope.id, state="REJECTED", verdict="superseded"
+            )
+            for claim in self._store.list_claims(stored.envelope.id):
+                if claim.status in {ClaimStatus.PROPOSED, ClaimStatus.UNDER_REVIEW}:
+                    target_claim = (
+                        ClaimStatus.UNDER_REVIEW
+                        if claim.status is ClaimStatus.PROPOSED
+                        else claim.status
                     )
-            return unblocked
+                    moved = (
+                        claim if target_claim is claim.status else next_claim(claim, target_claim)
+                    )
+                    self._store.upsert_claim(next_claim(moved, ClaimStatus.REJECTED))
+        intent = self._store.get_intent_for_subject(attempt.id)
+        if intent is not None and intent.state in {
+            "PENDING",
+            "CLAIMED",
+            "AGENT_CREATED",
+            "SUBMITTED",
+        }:
+            self._settle_intent(intent, "FAILED")
+        reservation = self._ledger.reservation(attempt.id)
+        if (
+            reservation is not None
+            and reservation["state"] != "SETTLED"
+            and not self._ledger.has_unknown_usage(attempt.id)
+        ):
+            self._settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
+        self._emit(
+            "AttemptSuperseded" if target is AttemptStatus.SUPERSEDED else "AttemptCancelled",
+            attempt.mission_id,
+            key=attempt.id,
+            task_id=attempt.task_id,
+            attempt_id=attempt.id,
+            payload={"reason": reason, "from": str(attempt.status)},
+        )
+        return updated
 
     def fail_planning(
         self,
@@ -648,70 +738,86 @@ class CommitService:
                 mission, MissionStatus.CANCELLED, stop_reason=str(MissionStopReason.CANCELLED)
             )
             self._store.update_mission(updated, expected_version=mission.version)
-            for task in self._store.list_tasks(mission_id):
-                if task.status is TaskStatus.VERIFYING:
-                    active = next_task(task, TaskStatus.ACTIVE)
-                    self._store.update_task(active, expected_version=task.version)
-                    self._emit(
-                        "TaskVerificationAbandoned",
-                        mission_id,
-                        key=task.id,
-                        task_id=task.id,
-                        payload={},
-                    )
-                    task = active
-                if task.status in {TaskStatus.READY, TaskStatus.ACTIVE}:
-                    self._store.update_task(
-                        next_task(task, TaskStatus.CANCELLED), expected_version=task.version
-                    )
-                    self._emit(
-                        "TaskCancelled", mission_id, key=task.id, task_id=task.id, payload={}
-                    )
-                    for attempt in self._store.list_attempts(task.id):
-                        if attempt.status in {
-                            AttemptStatus.PENDING,
-                            AttemptStatus.CLAIMED,
-                            AttemptStatus.RUNNING,
-                            AttemptStatus.SUBMITTED,
-                            AttemptStatus.VERIFYING,
-                        }:
-                            self._store.update_attempt(
-                                next_attempt(attempt, AttemptStatus.CANCELLED),
-                                expected_version=attempt.version,
-                            )
-                            self._emit(
-                                "AttemptCancelled",
-                                mission_id,
-                                key=attempt.id,
-                                task_id=task.id,
-                                attempt_id=attempt.id,
-                                payload={},
-                            )
-                        stored = self._store.find_result_for_attempt(attempt.id)
-                        if stored is not None and stored.verification_state in {
-                            "PENDING",
-                            "RUNNING",
-                        }:
-                            self._store.set_result_verification(
-                                stored.envelope.id, state="REJECTED", verdict=None
-                            )
-            # every open dispatch intent of this Mission is closed; reservations are released
-            for intent in self._store.list_intents(
-                "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
-            ):
-                if intent.mission_id != mission_id:
-                    continue
-                self._settle_intent(intent, "FAILED")
-                reservation = self._ledger.reservation(intent.subject_id)
-                if reservation is not None and reservation["state"] != "SETTLED":
-                    task_id = (
-                        intent.subject_id.split(":attempt-")[0]
-                        if ":attempt-" in intent.subject_id
-                        else None
-                    )
-                    self._settle_subject(intent.subject_id, mission_id, task_id=task_id)
+            self._cascade_stop(mission_id, skip_task=None)
             self._emit("MissionCancelled", mission_id, key=mission_id, payload={})
             return updated
+
+    def fail_mission(
+        self, mission_id: str, *, stop_reason: MissionStopReason, detail: Mapping[str, Any]
+    ) -> Mission:
+        """Mission-level stop that blames no Task (D3-12': the Mission pool itself ran
+        out, or an operator condition): Mission → FAILED, open work cancelled."""
+
+        with self._store.transaction():
+            mission = self._require_mission(mission_id)
+            if mission.status is MissionStatus.FAILED:
+                return mission
+            report = {
+                **dict(mission.final_report or {}),
+                "stop_reason": str(stop_reason),
+                "detail": dict(detail),
+                "tasks": self._task_reports(mission_id),
+            }
+            failed = next_mission(
+                mission, MissionStatus.FAILED, stop_reason=str(stop_reason), final_report=report
+            )
+            self._store.update_mission(failed, expected_version=mission.version)
+            self._cascade_stop(mission_id, skip_task=None)
+            self._emit(
+                "MissionFailed",
+                mission_id,
+                key=mission_id,
+                payload={"stop_reason": str(stop_reason), "final_report": report},
+            )
+            return failed
+
+    def _cascade_stop(self, mission_id: str, *, skip_task: str | None) -> list[str]:
+        """D3-13': every READY / ACTIVE / VERIFYING Task (except ``skip_task``) is
+        cancelled with its open Attempts; BLOCKED Tasks are left as they are (§25.1
+        has no BLOCKED→CANCELLED edge — they end with the Mission); every open
+        dispatch intent of the Mission is closed and its reservation released."""
+
+        cancelled: list[str] = []
+        for task in self._store.list_tasks(mission_id):
+            if task.id == skip_task:
+                continue
+            if task.status is TaskStatus.VERIFYING:
+                active = next_task(task, TaskStatus.ACTIVE)
+                self._store.update_task(active, expected_version=task.version)
+                self._emit(
+                    "TaskVerificationAbandoned",
+                    mission_id,
+                    key=task.id,
+                    task_id=task.id,
+                    payload={},
+                )
+                task = active
+            if task.status in {TaskStatus.READY, TaskStatus.ACTIVE}:
+                self._store.update_task(
+                    next_task(task, TaskStatus.CANCELLED), expected_version=task.version
+                )
+                self._emit("TaskCancelled", mission_id, key=task.id, task_id=task.id, payload={})
+                for attempt in self._store.list_attempts(task.id):
+                    if attempt.status in OPEN_ATTEMPT_STATES:
+                        self._close_attempt(
+                            attempt, AttemptStatus.CANCELLED, reason="mission_stopped"
+                        )
+                        cancelled.append(attempt.id)
+        # every open dispatch intent of this Mission is closed; reservations are released
+        for intent in self._store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"):
+            if intent.mission_id != mission_id:
+                continue
+            self._settle_intent(intent, "FAILED")
+            reservation = self._ledger.reservation(intent.subject_id)
+            if reservation is not None and reservation["state"] != "SETTLED":
+                task_id = (
+                    intent.subject_id.split(":attempt-")[0]
+                    if ":attempt-" in intent.subject_id
+                    else None
+                )
+                if not self._ledger.has_unknown_usage(intent.subject_id):
+                    self._settle_subject(intent.subject_id, mission_id, task_id=task_id)
+        return cancelled
 
     def settle_intent(self, intent_id: str, state: str) -> DispatchIntent:
         """Close a dispatch intent (SETTLED / FAILED) through the single writer (D2)."""
@@ -750,33 +856,28 @@ class CommitService:
         input_hash: str,
         retry_of: str | None = None,
         feedback: Sequence[str] = (),
+        candidates_per_task: int = 1,
+        inputs: Sequence[Mapping[str, Any]] = (),
     ) -> tuple[Attempt, DispatchIntent]:
         """Atomic Reserve + Attempt(PENDING) + dispatch intent (ORCH-BUILD §4.3 step 1).
 
-        Refuses (nothing written) when the Task is not READY/ACTIVE or the budget
-        does not fit; the caller turns ``BudgetExhausted`` into a Mission stop.
+        Refuses (nothing written) when the Task is not READY/ACTIVE/VERIFYING, when it
+        already has ``candidates_per_task`` open Attempts (D3-5': the Task status is a
+        function of its Attempt set, so a second candidate may join while the first is
+        being verified) or when the budget does not fit; the caller turns
+        ``BudgetExhausted`` into a stop.  Every candidate counts against ``max_attempts``.
         """
 
         with self._store.transaction():
             task = self._require_task(task_id)
-            if task.status not in {TaskStatus.READY, TaskStatus.ACTIVE}:
+            if task.status not in {TaskStatus.READY, TaskStatus.ACTIVE, TaskStatus.VERIFYING}:
                 raise CommitRejected(f"task {task_id} is {task.status}; no new Attempt")
             existing = self._store.list_attempts(task_id)
-            open_attempts = [
-                a
-                for a in existing
-                if a.status
-                in {
-                    AttemptStatus.PENDING,
-                    AttemptStatus.CLAIMED,
-                    AttemptStatus.RUNNING,
-                    AttemptStatus.SUBMITTED,
-                    AttemptStatus.VERIFYING,
-                }
-            ]
-            if open_attempts:
+            open_attempts = [a for a in existing if a.status in OPEN_ATTEMPT_STATES]
+            if len(open_attempts) >= max(1, candidates_per_task):
                 raise CommitRejected(
-                    f"task {task_id} already has an open Attempt {open_attempts[0].id}"
+                    f"task {task_id} already has {len(open_attempts)} open Attempt(s) "
+                    f"(candidates_per_task={candidates_per_task}): {open_attempts[0].id}"
                 )
             ordinal = len(existing) + 1
             attempt_id = ids.attempt_id(task_id, ordinal)
@@ -825,7 +926,7 @@ class CommitService:
                 creation_key=attempt.creation_key,
                 input_id=attempt.input_id,
                 input_hash=input_hash,
-                config=dict(intent_config),
+                config={**dict(intent_config), "inputs": [dict(item) for item in inputs]},
                 expected_turn_id=None,
                 agent_id=None,
                 receipt=None,
@@ -857,6 +958,7 @@ class CommitService:
                     "retry_of": retry_of,
                     "ordinal": ordinal,
                     "feedback": list(feedback),
+                    "inputs": [dict(item) for item in inputs],
                 },
             )
             self._emit(
@@ -1188,9 +1290,12 @@ class CommitService:
                 expected_version=attempt.version,
             )
             task = self._require_task(attempt.task_id)
-            self._store.update_task(
-                next_task(task, TaskStatus.VERIFYING), expected_version=task.version
-            )
+            if (
+                task.status is TaskStatus.ACTIVE
+            ):  # D3-5': another candidate may already be VERIFYING
+                self._store.update_task(
+                    next_task(task, TaskStatus.VERIFYING), expected_version=task.version
+                )
             self._emit(
                 "ResultSubmitted",
                 attempt.mission_id,
@@ -1207,6 +1312,30 @@ class CommitService:
                 actor_id=attempt.agent_id or attempt_id,
             )
             return stored
+
+    def record_late_result(
+        self, attempt_id: str, *, turn_id: str, summary: str, artifacts: Sequence[str]
+    ) -> Attempt:
+        """A result that arrived after its Attempt was superseded / cancelled (D3-6'):
+        history only — ``ResultRejected(reason=superseded)``, no state transition."""
+
+        with self._store.transaction():
+            attempt = self._require_attempt(attempt_id)
+            if attempt.status not in {AttemptStatus.SUPERSEDED, AttemptStatus.CANCELLED}:
+                raise CommitRejected(f"attempt {attempt_id} is {attempt.status}; not a late result")
+            self._emit(
+                "ResultRejected",
+                attempt.mission_id,
+                key=f"{attempt_id}:{turn_id}",
+                task_id=attempt.task_id,
+                attempt_id=attempt_id,
+                payload={
+                    "reason": "superseded",
+                    "detail": {"summary": summary, "artifacts": list(artifacts)},
+                    "turn_id": turn_id,
+                },
+            )
+            return attempt
 
     def reject_result(
         self, attempt_id: str, *, turn_id: str, reason: str, detail: Mapping[str, Any]
@@ -1278,7 +1407,10 @@ class CommitService:
     def accept_result(
         self, result_id: str, *, verifier_results: Sequence[Mapping[str, Any]]
     ) -> Task:
-        """PASS (§24 step 11): claims → VERIFIED, Task → COMPLETED, Mission → COMPLETED."""
+        """PASS (§24 step 11) in one transaction (D3-6'): claims → VERIFIED, Attempt →
+        COMPLETED, Task → COMPLETED (via VERIFYING when a sibling candidate had not
+        moved it yet), the losing candidates → SUPERSEDED with their results kept as
+        history, and every dependent whose dependencies are now all COMPLETED → READY."""
 
         with self._store.transaction():
             stored = self._require_result(result_id)
@@ -1287,6 +1419,10 @@ class CommitService:
             attempt = self._require_attempt(stored.envelope.attempt_id)
             task = self._require_task(stored.envelope.task_id)
             mission = self._require_mission(stored.envelope.mission_id)
+            if task.status is TaskStatus.ACTIVE:
+                verifying = next_task(task, TaskStatus.VERIFYING)
+                self._store.update_task(verifying, expected_version=task.version)
+                task = verifying
             self._store.set_result_verification(result_id, state="DONE", verdict="PASS")
             for claim in self._store.list_claims(result_id):
                 self._store.upsert_claim(
@@ -1318,12 +1454,24 @@ class CommitService:
                     "layers": [dict(item) for item in verifier_results],
                 },
             )
+            self._store.fault("after_accept_before_supersede", "attempt")
+            superseded = []
+            for other in self._store.list_attempts(task.id):
+                if other.id != attempt.id and other.status in OPEN_ATTEMPT_STATES:
+                    self._close_attempt(other, AttemptStatus.SUPERSEDED, reason="sibling_accepted")
+                    superseded.append(other.id)
+            unblocked = self._unblock(mission.id, unblocked_by=task.id)
             self._emit(
                 "TaskCompleted",
                 mission.id,
                 key=task.id,
                 task_id=task.id,
-                payload={"result_id": result_id, "artifacts": list(stored.artifacts)},
+                payload={
+                    "result_id": result_id,
+                    "artifacts": list(stored.artifacts),
+                    "superseded": superseded,
+                    "unblocked": [t.id for t in unblocked],
+                },
             )
             return completed
 
@@ -1348,13 +1496,14 @@ class CommitService:
             if [item.get("criterion") for item in judgments] != criteria:
                 raise CommitRejected("judgments must cover the Mission success criteria in order")
             met = all(bool(item.get("met")) for item in judgments)
-            task = tasks[0]
+            terminal = tasks[-1]  # last in topological order (D3-9': the report covers all)
             report = {
                 **dict(mission.final_report or {}),
-                "accepted_result_id": task.accepted_result_id,
-                "accepted_artifacts": list(task.accepted_artifacts),
+                "accepted_result_id": terminal.accepted_result_id,
+                "accepted_artifacts": list(terminal.accepted_artifacts),
                 "summary": summary,
-                "attempts": task.attempt_count,
+                "attempts": sum(task.attempt_count for task in tasks),
+                "tasks": self._task_reports(mission_id),
                 "success_criteria": [dict(item) for item in judgments],
             }
             self._emit(
@@ -1422,8 +1571,14 @@ class CommitService:
                 ),
                 expected_version=attempt.version,
             )
-            active = next_task(task, TaskStatus.ACTIVE)
-            self._store.update_task(active, expected_version=task.version)
+            others_submitted = any(
+                other.id != attempt.id and other.status in SUBMITTED_STATES
+                for other in self._store.list_attempts(task.id)
+            )
+            active = task
+            if task.status is TaskStatus.VERIFYING and not others_submitted:
+                active = next_task(task, TaskStatus.ACTIVE)
+                self._store.update_task(active, expected_version=task.version)
             self._settle_subject(attempt.id, attempt.mission_id, task_id=task.id)
             self._emit(
                 "VerificationFailed",
@@ -1445,19 +1600,28 @@ class CommitService:
             if task.status is TaskStatus.FAILED:
                 return task
             mission = self._require_mission(task.mission_id)
+            if task.status is TaskStatus.VERIFYING:  # §25.1: FAILED is reached from ACTIVE
+                task = next_task(task, TaskStatus.ACTIVE)
+                self._store.update_task(task, expected_version=task.version - 1)
             failed = next_task(task, TaskStatus.FAILED, failure_reason=str(stop_reason))
             self._store.update_task(failed, expected_version=task.version)
+            for attempt in self._store.list_attempts(task_id):
+                if attempt.status in OPEN_ATTEMPT_STATES:
+                    self._close_attempt(attempt, AttemptStatus.CANCELLED, reason="task_stopped")
             report = {
                 **dict(mission.final_report or {}),
                 "stop_reason": str(stop_reason),
+                "failed_task_id": task_id,
                 "detail": dict(detail),
                 "attempts": task.attempt_count,
                 "completed_parts": self._completed_parts(task_id),
+                "tasks": self._task_reports(mission.id),
             }
             done = next_mission(
                 mission, MissionStatus.FAILED, stop_reason=str(stop_reason), final_report=report
             )
             self._store.update_mission(done, expected_version=mission.version)
+            self._cascade_stop(mission.id, skip_task=task_id)
             self._emit(
                 "TaskFailed",
                 mission.id,
@@ -1472,6 +1636,20 @@ class CommitService:
                 payload={"stop_reason": str(stop_reason), "final_report": report},
             )
             return failed
+
+    def _task_reports(self, mission_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "task_id": task.id,
+                "status": str(task.status),
+                "dependencies": list(task.dependency_ids),
+                "accepted_result_id": task.accepted_result_id,
+                "accepted_artifacts": list(task.accepted_artifacts),
+                "attempts": task.attempt_count,
+                "failure_reason": task.failure_reason,
+            }
+            for task in self._store.list_tasks(mission_id)
+        ]
 
     def _completed_parts(self, task_id: str) -> list[dict[str, Any]]:
         parts = []

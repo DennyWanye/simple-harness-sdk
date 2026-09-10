@@ -92,10 +92,28 @@ def test_cycle_missing_and_self_dependencies_are_rejected():
 
 
 def test_duplicates_budget_sum_tools_and_shape():
-    dup = {"tasks": [node("A"), node("A2", goal="任务 A")]}
+    dup = {  # same goal, dependencies and criteria → identical work
+        "tasks": [node("A"), node("A2", goal="任务 A", success_criteria=["file:A.py"])]
+    }
     with pytest.raises(GraphRejected) as exc:
         validate_graph(mission(), TaskGraphProposal.from_json(dup))
     assert exc.value.reason == "duplicate"
+    # D3-16: same goal text but different criteria is only *suspected* (warned, not rejected)
+    near = {"tasks": [node("A"), node("A2", goal="任务 A")]}  # criteria differ (file:A2.py)
+    assert validate_graph(mission(), TaskGraphProposal.from_json(near)).warnings
+    # D3-7': independent siblings declaring the same output path are rejected statically
+    clash = {
+        "tasks": [
+            node("A"),
+            node("B", ["A"], outputs=["pkg/x.py"]),
+            node("C", ["A"], outputs=["pkg/x.py"]),
+        ]
+    }
+    with pytest.raises(GraphRejected) as exc:
+        validate_graph(mission(), TaskGraphProposal.from_json(clash))
+    assert exc.value.reason == "artifact_conflict"
+    chain = {"tasks": [node("A", outputs=["pkg/x.py"]), node("B", ["A"], outputs=["pkg/x.py"])]}
+    assert validate_graph(mission(), TaskGraphProposal.from_json(chain)).order == ("A", "B")
     over = {"tasks": [node("A", tokens=60_000), node("B", ["A"], tokens=60_000)]}
     with pytest.raises(GraphRejected) as exc:
         validate_graph(mission(), TaskGraphProposal.from_json(over))
@@ -104,10 +122,11 @@ def test_duplicates_budget_sum_tools_and_shape():
     with pytest.raises(GraphRejected) as exc:
         validate_graph(mission(), TaskGraphProposal.from_json(single_over))
     assert exc.value.reason == "budget"
-    unbounded = {"tasks": [node("A", budget={"max_attempts": 1})]}
-    with pytest.raises(GraphRejected) as exc:
-        validate_graph(mission(), TaskGraphProposal.from_json(unbounded))
-    assert exc.value.reason == "budget"  # unlimited child under a bounded parent (§18.2)
+    # D3-2': an unbounded child under a bounded parent is normalised (even share), not rejected
+    unbounded = {"tasks": [node("A", budget={"max_attempts": 1}), node("B", ["A"], budget={})]}
+    graph = validate_graph(mission(), TaskGraphProposal.from_json(unbounded))
+    assert [n.budget.max_tokens for n in graph.proposal.tasks] == [50_000, 50_000]
+    assert graph.proposal.tasks[1].budget.max_attempts == mission().budget.max_attempts
     tools = {"tasks": [node("A", allowed_tools=["shell"])]}
     with pytest.raises(GraphRejected) as exc:
         validate_graph(mission(), TaskGraphProposal.from_json(tools))

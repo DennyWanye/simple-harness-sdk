@@ -51,6 +51,10 @@ class StoreConflict(StoreError):
     """A CAS write found a different version than expected (§17.3)."""
 
 
+class StoreBusy(StoreError):
+    """Another instance holds the SQLite write lock (D3-10'); skip this cycle and retry."""
+
+
 class SchemaIncompatible(StoreError):
     pass
 
@@ -216,7 +220,12 @@ class Store:
                 finally:
                     self._depth -= 1
                 return
-            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as error:
+                if "locked" in str(error).lower() or "busy" in str(error).lower():
+                    raise StoreBusy(str(error)) from error
+                raise
             self._depth = 1
             try:
                 yield self._connection
@@ -684,6 +693,15 @@ class Store:
         ).fetchall()
         return [Artifact.from_json(_loads(row[0])) for row in rows]
 
+    def list_mission_artifacts(self, mission_id: str) -> list[Artifact]:
+        """Every artifact of the Mission (version lineage is per (mission, path), D3-8')."""
+
+        rows = self._connection.execute(
+            "SELECT json FROM artifacts WHERE mission_id = ? ORDER BY path, version, artifact_id",
+            (mission_id,),
+        ).fetchall()
+        return [Artifact.from_json(_loads(row[0])) for row in rows]
+
     # --------------------------------------------------------------- receipts
     def get_receipt(self, commit_id: str) -> Mapping[str, Any] | None:
         row = self._connection.execute(
@@ -834,6 +852,7 @@ __all__ = (
     "InjectedCrash",
     "SchemaIncompatible",
     "Store",
+    "StoreBusy",
     "StoreConflict",
     "StoreError",
     "StoredResult",

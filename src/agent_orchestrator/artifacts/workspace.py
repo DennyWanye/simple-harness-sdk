@@ -139,10 +139,16 @@ class WorkspaceManager:
         return self._root
 
     def create(
-        self, attempt_id: str, *, seed: Mapping[str, str], previous: Path | None = None
+        self,
+        attempt_id: str,
+        *,
+        seed: Mapping[str, str],
+        previous: Path | None = None,
+        inputs: Mapping[str, Path] | None = None,
     ) -> Workspace:
-        """Fresh writable workspace; seeded from the Mission files (and the previous
-        Attempt's tree when this is a repair, so feedback refers to real files)."""
+        """Fresh writable workspace; seeded from the Mission files, the upstream
+        inputs (path → accepted artifact file, D3-7') and the previous Attempt's tree
+        when this is a repair, so feedback refers to real files."""
 
         root = self._root / attempt_id
         if root.exists():
@@ -156,7 +162,31 @@ class WorkspaceManager:
         for relative, content in seed.items():
             if not (workspace.root / relative).exists():
                 workspace.write_text(relative, content)
+        for relative, source in (inputs or {}).items():
+            target = workspace.resolve(relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(Path(source).read_bytes())
         return workspace
+
+    def integrated_copy(
+        self, view_id: str, *, seed: Mapping[str, str], files: Mapping[str, Path]
+    ) -> Workspace:
+        """The Mission-level judgment tree (D3-9'): the seed plus every accepted
+        artifact of every Task applied in topological order; rebuilt each time and
+        exposed under ``<view_id>-verify`` so a Critic can be bound to it read-only."""
+
+        target = self._root / f"{view_id}-verify"
+        if target.exists():
+            shutil.rmtree(target)
+        target.mkdir(parents=True)
+        copy = Workspace(target, view_id, True)
+        for relative, content in seed.items():
+            copy.write_text(relative, content)
+        for relative, source in files.items():
+            resolved = copy.resolve(relative)
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_bytes(Path(source).read_bytes())
+        return copy
 
     def get(self, attempt_id: str, *, writable: bool = True) -> Workspace:
         root = self._root / attempt_id
