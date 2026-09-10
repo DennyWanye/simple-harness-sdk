@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Slice 2 · T3 (AC1 / BA12): ``close`` refuses new inputs, never kills the Run, survives restart."""
+"""Slice 2 · T3 (AC1 / BA12): close refuses new inputs, never kills the Run, survives restart."""
 
 from __future__ import annotations
 

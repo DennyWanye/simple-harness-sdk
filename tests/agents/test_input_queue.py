@@ -239,7 +239,8 @@ def test_idle_agent_holds_no_lease_fence_or_heartbeat(tmp_path):
             marks = ",".join("?" * len(agents))
             live = _rows(
                 runtime.uow,
-                f"SELECT COUNT(*) FROM workflow_leases WHERE expires_at > ? AND run_id IN ({marks})",
+                "SELECT COUNT(*) FROM workflow_leases WHERE expires_at > ? "
+                f"AND run_id IN ({marks})",
                 runtime.ports.clock(),
                 *[a.run_id for a in agents],
             )[0][0]
