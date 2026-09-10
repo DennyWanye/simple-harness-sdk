@@ -12,7 +12,7 @@ Memory outbox consumer, no context staging.  Nothing here may import
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Self, cast
 
@@ -50,6 +50,27 @@ CHILD_PROFILE_KEY = "agent.base"
 BASE_AGENT_DRIVER_KIND = "base_agent"
 
 
+class AgentRuntimeReconciliation:
+    """Runtime reconciliation for BaseAgents: settle uncertain Provider handoffs first.
+
+    The consumer default port is a no-op, so an UNKNOWN provider outcome would block a
+    turn forever (review F2).  On every ``Runtime.reconcile()`` (and at startup) ask the
+    provider coordinator to observe incomplete invocations through the injected
+    ``provider_reconciliation`` port; resolved blockers are then drained by the kernel.
+    """
+
+    def __init__(self, coordinator, provider_reconciliation, *, inner) -> None:  # type: ignore[no-untyped-def]
+        self._coordinator = coordinator
+        self._provider_reconciliation = provider_reconciliation
+        self._inner = inner
+
+    async def reconcile(self) -> None:
+        await self._coordinator.reconcile_incomplete(
+            provider_reconciliation=self._provider_reconciliation
+        )
+        await self._inner.reconcile()
+
+
 @dataclass(frozen=True, slots=True)
 class AssembledRuntime:
     runtime: Runtime
@@ -76,7 +97,18 @@ def assemble_runtime(
             ports.tool_executor, ports.tool_names, ports.tool_schemas
         ).build_registry()
         tools = tuple(registry_source.get(spec.name) for spec in registry_source.specs)
-    registry = BaseAgentToolRegistry((*tools, *cast(tuple[Tool, ...], extra_tools)))
+
+    def _exposure(run_id: str):  # type: ignore[no-untyped-def]
+        snapshot = uow.read_start_snapshot(run_id)
+        if snapshot is None:
+            return ()
+        capability = snapshot.get("input", {}).get("capability_snapshot", {})  # type: ignore[union-attr]
+        names = capability.get("tools", ()) if isinstance(capability, Mapping) else ()
+        return tuple(names) if isinstance(names, (list, tuple)) else ()
+
+    registry = BaseAgentToolRegistry(
+        (*tools, *cast(tuple[Tool, ...], extra_tools)), exposure_reader=_exposure
+    )
     auth_adapter = _ConsumerAuthorizationAdapter(ports.authorization)
     tool_reconciliation = ports.policies.tool_reconciliation or _DefaultToolReconciliation()
     if delegation_reconciliation is not None:
@@ -102,6 +134,14 @@ def assemble_runtime(
         clock=ports.clock,
     )
     context = SqliteContextPort(database, clock=ports.clock)
+    provider_reconciliation = (
+        ports.policies.provider_reconciliation or _DefaultProviderReconciliation()
+    )
+    runtime_reconciliation = AgentRuntimeReconciliation(
+        provider_coordinator,
+        provider_reconciliation,
+        inner=ports.policies.runtime_reconciliation or _DefaultRuntimeReconciliation(),
+    )
     runtime_ports = RuntimePorts(
         provider=provider_coordinator,
         tools=effects,
@@ -109,10 +149,8 @@ def assemble_runtime(
         context=context,
         delivery=DeliveryDispatcher(uow, {}),
         tool_reconciliation=tool_reconciliation,
-        reconciliation=(ports.policies.runtime_reconciliation or _DefaultRuntimeReconciliation()),
-        provider_reconciliation=(
-            ports.policies.provider_reconciliation or _DefaultProviderReconciliation()
-        ),
+        reconciliation=runtime_reconciliation,
+        provider_reconciliation=provider_reconciliation,
         react_checkpoint=uow,
         tool_catalog=_DefaultToolCatalog(),
         owner_id=ports.owner_id,

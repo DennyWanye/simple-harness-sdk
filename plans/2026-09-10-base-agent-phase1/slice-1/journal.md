@@ -104,6 +104,7 @@
 | L7 | 工具标识 `agent_delegate`（端点函数名不允许 `.`）；plan/acceptance 文本仍写 agent.delegate 能力名 | 文档口径，无需改代码 |
 | L8 | `ToolContext.agent_delegate_context`（plan T8 提议的新字段）未加：委派工具改由 run_id 反查绑定，不需要新字段 | 已在 journal 说明，无 |
 | L9 | assistant `tool_calls` 恢复依赖 `request_id` 前缀解析 run_id 与 effect 账本按 turn 分组；raw call id 跨轮重复时按轮次对位，找不到则 `{}`（计数 `wire.fallback_total`）；上游"first-class transcript field"仍是 SDK 后续工作 | S3/S5 |
+| L11 | assistant `tool_calls` 恢复找不到账本行时降级 `{}`（`wire.fallback_total` 计数，未上报为事件）；REJECTED/未落 effect 的调用会命中 | S3 |
 | L10 | 既有红 75 → 73：本片顺手修了 import purity 与 public-api 快照两条（均记为触碰既有红）；其余 73 条既有红原样 | 基线口径不变 |
 
 > 以下三条在 v2 修订时已确定为"本片不做、如实记账"，执行期只需确认没有被无意扩大。
@@ -115,7 +116,25 @@
 
 ## 7. 代码 review（phase-3 A4）
 
-（独立 Opus 评审者对 `git diff fd12e7dd..HEAD -- src/` 的正确性 review；结论回填于此）
+独立 Opus 评审者对 `git diff fd12e7dd..b014a71 -- src/` 做正确性 review：**P0 1 / P1 3 / P2 9**。处置（每条修复配决定性测试，全部落进 `tests/agents/` 回归套件）：
+
+| id | 级别 | 结论 | 处置 | 决定性测试 |
+|---|---|---|---|---|
+| F1 子 Agent 可递归繁殖（capability_snapshot 只影响请求不做执行闸门） | P0 | 属实（评审者已实证孙 Agent） | `BaseAgentToolRegistry` 按 Run 的 start snapshot `capability_snapshot.tools` 做执行期闸门（`ExposureGuardedTool`，未暴露 → REJECTED `tool_not_exposed_for_agent`）；`agent_delegate` 另加 `parent.role != root` → REJECTED `agent_delegation_not_permitted` | `test_delegate_tool.py::test_child_cannot_delegate_and_unexposed_tool_is_rejected`（子调 delegate 不产生孙；未配该工具的 Agent 调用被拒） |
+| F2 轮内 UNKNOWN/授权等待必死锁 | P1 | 属实 | `_drive` 新增 BaseAgent 分支：有 claim 时对 `wait_blocker`/`authorization_wait` 不 ack、提交阻塞器/决策后释放本执行者租约；`AgentRuntimeReconciliation` 在 `reconcile()` 时调 provider coordinator 的 `reconcile_incomplete`（consumer 默认端口原是 no-op） | `test_agent_driver.py::test_unknown_provider_outcome_suspends_the_turn_and_resumes_after_reconcile`（transport 失败 → 阻塞器 → reconcile CONFIRMED_NOT_STARTED → 同一 Turn 续跑并 ack，无重复输入） |
+| F3 stage 后 finalize 非冲突异常会终态化 Agent | P1 | 属实 | `_drive` 把 `_commit_agent_turn` 单独 try：非冲突异常记日志、放弃 authority、Run 保持 WAITING，交 finalize-first 恢复 | `test_agent_driver.py::test_finalize_exception_keeps_agent_alive_and_recovers` |
+| F4 首轮重跑重复写用户消息 | P1 | 属实 | driver 两个分支统一用 `{turn_id}:context:user` 追加用户消息；instructions 用 `{run_id}:context:instructions` | `test_agent_driver.py::test_first_turn_rerun_does_not_duplicate_the_user_message` |
+| F5 claim 为 None 时静默跳过 ack | P2 | 属实、后果严重 | finalize-first 与 `_finalize_pending_agent_turn`：输入未 ACKED 又拿不到 claim → 抛冲突，不静默 finalize | 由 F3 用例覆盖（恢复后 continuation 必须 ACKED） |
+| F6 V1「未知 delegation_id 不创建子」口径 | P2 | 口径问题 | 修正验收口径：本片 `delegation_id` 是调用方幂等键，"未知 id"指归属别的 Agent/轮的 id；全新 id 就是新委派 | 已有 `test_unknown_delegation_id_is_rejected_not_created` |
+| F7 配额判定与写入之间无原子性 | P2 | 属实（当前无 await 故安全） | 配额判定并进 `reserve_delegation` 事务（`DelegationQuotaExceeded`） | 既有配额用例 |
+| F8 `reserved→reserved` 重放被拒 | P2 | 属实 | 允许同态重放 | 续做用例 |
+| F9 `_settle_failed_provider_turn` 无覆盖 | P2 | 属实 | 已有 `test_provider_rejection_is_a_failed_turn_and_next_turn_recovers` 覆盖"拒绝后下一轮能开新请求"（该路径即由它修复） | 同左 |
+| F10 子 Agent 失败原文透给父模型 | P2 | 属实 | 失败结果只带 `error_code` + 异常类名，不带原文 | — |
+| F11 可能写空 `tool_calls` 数组 | P2 | 属实 | 过滤后为空则不写 | `test_provider_wire.py` |
+| F12 wire 回填失配降级 `{}` | P2 | 设计取舍 | 保留降级 + `fallback_total` 计数；删死代码 `_mapping` | — |
+| F13 per-turn 限制只记录不执行 | P2 | 属实 | 记遗留 L3（S2 BA11） | — |
+
+复验：便宜层全量（ruff / mypy 0 issues / `tests/agents` 83 passed）+ 固定回归命令红集 ⊆ 基线（新红 0）+ 核心价值 smoke（mock 端到端 + 真实 DeepSeek 端到端 10.2 s `committed`、NONCE 回传）。
 
 ## 8. 完成度审计（phase-3 B）
 

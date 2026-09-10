@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
 from dataclasses import replace
 
 from simple_harness.contracts import JsonValue, Message, MessageRole
@@ -111,10 +110,6 @@ class AgentProviderWire:
             wire_request = replace(request, messages=messages)
         self.last_request = wire_request
         return await self._inner.invoke(wire_request, cancel=cancel)
-
-
-def _mapping(value: object) -> Mapping[str, JsonValue]:
-    return value if isinstance(value, Mapping) else {}
 
 
 __all__ = (

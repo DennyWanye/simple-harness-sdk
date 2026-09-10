@@ -21,6 +21,10 @@ BASE_AGENT_NAMESPACE = "base-agent/v1"
 BASE_AGENT_PROJECTION_KEY_ID = "base-agent-v1"
 
 
+class DelegationQuotaExceeded(UnitOfWorkConflict):
+    """Raised inside the reservation transaction when the per-turn quota is full."""
+
+
 def _record(row: sqlite3.Row) -> AgentDelegationRecord:
     return AgentDelegationRecord(
         delegation_id=str(row["delegation_id"]),
@@ -66,8 +70,13 @@ def reserve_delegation(
     intent_hash: str,
     context_use_scope: str | None,
     now: float,
+    max_per_turn: int | None = None,
 ) -> AgentDelegationRecord:
-    """Fence the future child Run and record the delegation as ``reserved`` (one tx)."""
+    """Fence the future child Run and record the delegation as ``reserved`` (one tx).
+
+    The per-turn quota is decided inside this transaction (closure review F7), so two
+    concurrent calls of one batch cannot both pass the check.
+    """
 
     from simple_harness.execution.command_ingress import RunApiMode, _bind_namespace
 
@@ -83,6 +92,8 @@ def reserve_delegation(
             raise UnitOfWorkConflict("delegation_id reused for a different delegation")
         return existing
     ordinal = count_for_turn(connection, parent_turn_id) + 1
+    if max_per_turn is not None and ordinal > max_per_turn:
+        raise DelegationQuotaExceeded("delegation quota for this turn is exhausted")
     _bind_namespace(connection, BASE_AGENT_NAMESPACE, BASE_AGENT_PROJECTION_KEY_ID, now)
     mode = connection.execute(
         "SELECT namespace,api_mode,intent_hash FROM conversation_run_modes WHERE run_id=?",
@@ -129,7 +140,7 @@ def set_state(
     connection: sqlite3.Connection, *, delegation_id: str, state: str, now: float
 ) -> AgentDelegationRecord:
     allowed = {
-        "reserved": {"launched", "failed"},
+        "reserved": {"reserved", "launched", "failed"},
         "launched": {"settled", "failed", "launched"},
         "settled": {"settled"},
         "failed": {"failed"},
@@ -149,4 +160,10 @@ def set_state(
     return updated
 
 
-__all__ = ("count_for_turn", "read_delegation", "reserve_delegation", "set_state")
+__all__ = (
+    "DelegationQuotaExceeded",
+    "count_for_turn",
+    "read_delegation",
+    "reserve_delegation",
+    "set_state",
+)

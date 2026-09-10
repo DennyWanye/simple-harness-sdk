@@ -100,7 +100,8 @@ class AgentLimits:
             max_tool_calls=self.lifetime_tool_calls,
             max_wall_seconds=self.lifetime_wall_seconds,
             max_cost_micros=(
-                10_000_000_000 if self.lifetime_cost_limit_micros is None
+                10_000_000_000
+                if self.lifetime_cost_limit_micros is None
                 else self.lifetime_cost_limit_micros
             ),
         )

@@ -1325,6 +1325,7 @@ class SqliteExecutionUnitOfWork:
         ticket_id: str,
         intent_hash: str,
         now: float,
+        max_per_turn: int | None = None,
     ) -> AgentDelegationRecord:
         """Pre-fence the child identity and record the delegation (closure E1/E2)."""
 
@@ -1342,6 +1343,7 @@ class SqliteExecutionUnitOfWork:
                 intent_hash=intent_hash,
                 context_use_scope=self._context_use_scope,
                 now=_time(now),
+                max_per_turn=max_per_turn,
             )
 
     def read_agent_delegation(self, delegation_id: str) -> AgentDelegationRecord | None:

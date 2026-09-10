@@ -24,9 +24,37 @@ UNKNOWN_TOOL_CODE = "tool_not_exposed"
 
 
 class BaseAgentToolRegistry(ToolRegistry):
+    """Registry shared by every Agent in one runtime; exposure is enforced per Run.
+
+    ``capability_snapshot.tools`` in a Run's start snapshot is the execution boundary
+    (closure review F1): a call from a Run whose snapshot does not list the tool is
+    rejected before the handler runs, so a child cannot reach ``agent_delegate`` and
+    Agent A cannot call a tool configured only for Agent B.
+    """
+
+    def __init__(self, tools=(), *, exposure_reader=None) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(tools)
+        self._exposure_reader = exposure_reader
+        self._exposure_cache: dict[str, frozenset[str]] = {}
+
+    def exposed_tools(self, run_id: str) -> frozenset[str] | None:
+        if self._exposure_reader is None:
+            return None
+        cached = self._exposure_cache.get(run_id)
+        if cached is None:
+            names = self._exposure_reader(run_id)
+            if names is None:
+                return None
+            cached = frozenset(str(name) for name in names)
+            self._exposure_cache[run_id] = cached
+        return cached
+
+    def get(self, name: str) -> Tool:
+        return super().get(name)
+
     def validate(self, call: ToolCall) -> Tool:
         try:
-            return super().validate(call)
+            return cast(Tool, ExposureGuardedTool(super().validate(call), self))
         except UnknownToolError:
             # A hallucinated tool name is a visible rejection too (never a dead Agent).
             spec = ToolSpec(
@@ -65,4 +93,33 @@ def _reject_with(code: str, reason: str):  # type: ignore[no-untyped-def]
     return reject
 
 
-__all__ = ("INVALID_ARGUMENTS_CODE", "UNKNOWN_TOOL_CODE", "BaseAgentToolRegistry")
+NOT_EXPOSED_CODE = "tool_not_exposed_for_agent"
+
+
+class ExposureGuardedTool:
+    """Wrap a registry tool so the handler runs only for Runs that expose it."""
+
+    def __init__(self, inner: Tool, registry: BaseAgentToolRegistry) -> None:
+        self._inner = inner
+        self._registry = registry
+
+    @property
+    def spec(self) -> ToolSpec:
+        return self._inner.spec
+
+    def invoke(self, arguments, context: ToolContext):  # type: ignore[no-untyped-def]
+        exposed = self._registry.exposed_tools(context.run_id.value)
+        if exposed is not None and self.spec.name not in exposed:
+            return _reject_with(NOT_EXPOSED_CODE, f"{self.spec.name} is not exposed to this Agent")(
+                {}, context
+            )
+        return self._inner.invoke(arguments, context)
+
+
+__all__ = (
+    "INVALID_ARGUMENTS_CODE",
+    "NOT_EXPOSED_CODE",
+    "UNKNOWN_TOOL_CODE",
+    "BaseAgentToolRegistry",
+    "ExposureGuardedTool",
+)

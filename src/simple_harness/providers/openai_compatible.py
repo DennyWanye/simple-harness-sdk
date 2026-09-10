@@ -205,7 +205,7 @@ class OpenAICompatibleProvider:
         # endpoints reject a following ``tool`` message without them.
         restored = message.metadata.get("provider_tool_calls") if role == "assistant" else None
         if isinstance(restored, (list, tuple)) and restored:
-            payload["tool_calls"] = [
+            tool_calls = [
                 {
                     "id": str(call["id"]),
                     "type": "function",
@@ -219,6 +219,8 @@ class OpenAICompatibleProvider:
                 for call in restored
                 if isinstance(call, Mapping) and "id" in call and "name" in call
             ]
+            if tool_calls:  # never emit an empty array (some endpoints reject it)
+                payload["tool_calls"] = tool_calls
         return payload
 
     @staticmethod

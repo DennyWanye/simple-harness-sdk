@@ -76,7 +76,6 @@ from .agent_memory import (
     AgentMemoryPort,
     CommittedTurn,
     MemoryFailurePolicy,
-    MemoryReleaseRequest,
     MemoryScopeRef,
 )
 from .agent_turn import AgentTurnOutcome
@@ -2983,6 +2982,13 @@ class Runtime:
                             raise UnitOfWorkConflict(
                                 "pending agent turn is not at the continuation head"
                             )
+                        if continuation_claim is None and pending_turn.continuation_id is not None:
+                            durable = self._uow.read_continuation(pending_turn.continuation_id)
+                            if durable is not None and durable.state is not ContinuationState.ACKED:
+                                # Never finalize silently past an unacked input (review F5).
+                                raise UnitOfWorkConflict(
+                                    "pending agent turn input is claimed elsewhere"
+                                )
                         await self._finalize_agent_turn(
                             run_id,
                             pending_turn.turn_id,
@@ -3061,45 +3067,52 @@ class Runtime:
                 raise RuntimeError("Run disappeared during execution")
             if result.agent_turn_outcome is not None:
                 # BaseAgent: stage + finalize the turn result; the Run stays WAITING
-                # and never reaches the terminal branch below.
-                await self._commit_agent_turn(
-                    current, result.agent_turn_outcome, result.payload, continuation_claim
-                )
+                # and never reaches the terminal branch below.  A failure here must
+                # not terminalize the Agent (review F3): the stage is durable, so drop
+                # this executor's authority and let finalize-first recover the turn.
+                try:
+                    await self._commit_agent_turn(
+                        current, result.agent_turn_outcome, result.payload, continuation_claim
+                    )
+                except UnitOfWorkConflict:
+                    raise
+                except Exception:  # noqa: BLE001 - staged result survives; never FAILED
+                    logger.exception(
+                        "sdk_agent_turn_finalize_failed", extra={"run_id": str(run_id)}
+                    )
+                    await self._abandon_run_authority(run_id)
+                return
+            if (
+                run.driver_kind == BASE_AGENT_DRIVER_KIND
+                and continuation_claim is not None
+                and result.state is RunState.WAITING
+                and (result.wait_blocker is not None or result.authorization_wait is not None)
+            ):
+                # BaseAgent turn suspended mid-way (UNKNOWN outbound work / authorization):
+                # keep the input continuation claimed (not acked) so the same turn resumes
+                # under the fresh lease epoch once the blocker resolves (review F2).
+                if result.authorization_wait is not None:
+                    self._commit_authorization_wait(run_id, result.authorization_wait)
+                else:
+                    assert result.wait_blocker is not None
+                    self._uow.commit_runtime_wait_with_blocker(
+                        run_id=run_id,
+                        expected_version=current.version,
+                        event_id=f"{run_id}:waiting:{current.version + 1}",
+                        payload=result.payload,
+                        blocker=result.wait_blocker,
+                        lease=self._leases[run_id],
+                        now=self._now(),
+                    )
+                # Release this executor's lease: the resolved-wait drain re-activates the
+                # Run under a new epoch, which is what lets the claimed input be re-claimed.
+                await self._abandon_run_authority(run_id)
                 return
             if result.state is RunState.WAITING:
                 if result.authorization_wait is not None:
                     if continuation_claim is not None:
                         raise UnitOfWorkConflict("authorization wait cannot ack a continuation")
-                    pending = result.authorization_wait
-                    prepared = pending.prepared
-                    arguments = thaw_json(prepared.call.arguments)
-                    metadata = thaw_json(pending.request.metadata)
-                    if not isinstance(arguments, dict) or not isinstance(metadata, dict):
-                        raise TypeError("authorization request payload must be objects")
-                    self._uow.commit_decision(
-                        decision_id=pending.decision_id,
-                        run_id=run_id,
-                        kind="tool_authorization",
-                        state=DecisionState.OPEN,
-                        request={
-                            "arguments": arguments,
-                            "call_id": prepared.call.call_id.value,
-                            "effect_id": prepared.effect_id.value,
-                            "expires_at": pending.request.expires_at,
-                            "metadata": metadata,
-                            "nonce": pending.request.nonce,
-                            "prompt": pending.request.prompt,
-                            "resources": [resource.to_json() for resource in prepared.resources],
-                            "resources_digest": resource_digest(prepared.resources),
-                            "sidecar_digest": (
-                                None if prepared.sidecar is None else prepared.sidecar.digest
-                            ),
-                            "tool_name": prepared.call.name,
-                        },
-                        response=None,
-                        event_id=f"{pending.decision_id}:open",
-                        now=self._now(),
-                    )
+                    self._commit_authorization_wait(run_id, result.authorization_wait)
                     return
                 if continuation_claim is None:
                     if result.wait_blocker is None:
@@ -3249,6 +3262,39 @@ class Runtime:
         assert result is not None
         return result
 
+    def _commit_authorization_wait(
+        self, run_id: str, pending: ToolAuthorizationPending
+    ) -> None:
+        prepared = pending.prepared
+        arguments = thaw_json(prepared.call.arguments)
+        metadata = thaw_json(pending.request.metadata)
+        if not isinstance(arguments, dict) or not isinstance(metadata, dict):
+            raise TypeError("authorization request payload must be objects")
+        self._uow.commit_decision(
+            decision_id=pending.decision_id,
+            run_id=run_id,
+            kind="tool_authorization",
+            state=DecisionState.OPEN,
+            request={
+                "arguments": arguments,
+                "call_id": prepared.call.call_id.value,
+                "effect_id": prepared.effect_id.value,
+                "expires_at": pending.request.expires_at,
+                "metadata": metadata,
+                "nonce": pending.request.nonce,
+                "prompt": pending.request.prompt,
+                "resources": [resource.to_json() for resource in prepared.resources],
+                "resources_digest": resource_digest(prepared.resources),
+                "sidecar_digest": (
+                    None if prepared.sidecar is None else prepared.sidecar.digest
+                ),
+                "tool_name": prepared.call.name,
+            },
+            response=None,
+            event_id=f"{pending.decision_id}:open",
+            now=self._now(),
+        )
+
     async def _commit_agent_turn(
         self,
         current: RunRecord,
@@ -3348,7 +3394,9 @@ class Runtime:
                     execution_lease=self._leases[run_id],
                     now=self._now(),
                 )
-                if claim is not None and claim.continuation_id != pending.continuation_id:
+                if claim is None:
+                    raise UnitOfWorkConflict("pending agent turn input is claimed elsewhere")
+                if claim.continuation_id != pending.continuation_id:
                     raise UnitOfWorkConflict("pending agent turn is not at the continuation head")
         await self._finalize_agent_turn(
             run_id, pending.turn_id, claim, {"recovered": True}, reschedule=False

@@ -47,9 +47,12 @@ def test_create_without_input_returns_waiting_without_provider(tmp_path):
             assert run is not None and run.state is RunState.WAITING
             assert provider.calls == 0
             assert uow.list_agent_turns("agent-idle") == ()
-            assert uow.database.connection.execute(
-                "SELECT COUNT(*) FROM base_agent_turn_results_v1"
-            ).fetchone()[0] == 0
+            assert (
+                uow.database.connection.execute(
+                    "SELECT COUNT(*) FROM base_agent_turn_results_v1"
+                ).fetchone()[0]
+                == 0
+            )
 
     asyncio.run(case())
 
@@ -75,11 +78,15 @@ def test_unexpected_continuation_kind_keeps_run_waiting_and_acks(tmp_path):
             assert continuation is not None and continuation.state is ContinuationState.ACKED
             assert provider.calls == 0
             assert uow.list_agent_turns("agent-odd") == ()
-            assert uow.database.connection.execute(
-                "SELECT COUNT(*) FROM child_terminal_receipts"
-            ).fetchone()[0] == 0
+            assert (
+                uow.database.connection.execute(
+                    "SELECT COUNT(*) FROM child_terminal_receipts"
+                ).fetchone()[0]
+                == 0
+            )
             kinds = [
-                str(r[0]) for r in uow.database.connection.execute(
+                str(r[0])
+                for r in uow.database.connection.execute(
                     "SELECT kind FROM run_events WHERE run_id='agent-odd'"
                 )
             ]
@@ -106,7 +113,8 @@ def test_two_turns_same_agent_reuse_one_execution_identity(tmp_path):
             second_texts = message_texts(provider.requests[1])
             assert "第一轮回答" in second_texts and "问题二" in second_texts
             kinds = [
-                str(r[0]) for r in uow.database.connection.execute(
+                str(r[0])
+                for r in uow.database.connection.execute(
                     "SELECT kind FROM run_events WHERE run_id='agent-two'"
                 )
             ]
@@ -204,5 +212,157 @@ def test_unknown_tool_name_is_a_visible_rejection_not_a_dead_agent(tmp_path):
             assert result is not None and dict(result.result_json)["state"] == "committed"
             assert "tool_not_exposed" in "\n".join(message_texts(provider.requests[1]))
             assert uow.read_run("agent-halluc").state is RunState.WAITING
+
+    asyncio.run(case())
+
+
+def test_unknown_provider_outcome_suspends_the_turn_and_resumes_after_reconcile(tmp_path):
+    """Review F2: UNKNOWN outbound work inside a BaseAgent turn must not deadlock."""
+    from simple_harness.providers.errors import ProviderTransportError
+    from simple_harness.providers.reconciliation import (
+        ProviderReconciliationObservation,
+        ProviderReconciliationState,
+    )
+    from simple_harness.runtime.consumer_adapter import (
+        ConsumerRuntimePolicies,
+        _DefaultRuntimeReconciliation,
+        _DefaultToolReconciliation,
+    )
+
+    class NotStarted:
+        def __init__(self):
+            self.observed = 0
+
+        async def observe(self, invocation):
+            self.observed += 1
+            return ProviderReconciliationObservation(
+                ProviderReconciliationState.CONFIRMED_NOT_STARTED,
+                f"test-evidence:{invocation.invocation_id}",
+            )
+
+    async def case():
+        provider = ScriptedProvider(["恢复后的回答"])
+        original = provider.invoke
+        state = {"failed": False}
+
+        async def transport_failure_once(request, *, cancel):
+            if not state["failed"]:
+                state["failed"] = True
+                raise ProviderTransportError()
+            return await original(request, cancel=cancel)
+
+        provider.invoke = transport_failure_once  # type: ignore[method-assign]
+        reconciliation = NotStarted()
+        policies = ConsumerRuntimePolicies(
+            "unpriced_local",
+            False,
+            "consumer_reconciles",
+            tool_reconciliation=_DefaultToolReconciliation(),
+            provider_reconciliation=reconciliation,
+            runtime_reconciliation=_DefaultRuntimeReconciliation(),
+        )
+        assembled = assemble_runtime(_ports(tmp_path, provider, policies=policies))
+        runtime, uow = assembled.runtime, assembled.uow
+        async with runtime:
+            await create_agent(runtime, uow, agent_id="agent-unknown")
+            turn = await submit(runtime, uow, agent_id="agent-unknown", input_id="i1", text="问")
+            await _settle(runtime, "agent-unknown")
+            run = uow.read_run("agent-unknown")
+            assert run is not None and run.state is RunState.WAITING
+            assert uow.read_agent_turn(turn.turn_id).phase in {"queued", "running"}
+            continuation = uow.read_continuation(turn.turn_id)
+            assert continuation is not None and continuation.state is ContinuationState.CLAIMED
+            blockers = uow.database.connection.execute(
+                "SELECT COUNT(*) FROM run_wait_blockers WHERE run_id='agent-unknown'"
+            ).fetchone()[0]
+            assert blockers == 1
+            # The Host-side reconciliation confirms the request never started; the kernel
+            # resumes the same turn under a fresh lease and the input is not re-queued.
+            await runtime.reconcile()
+            for _ in range(50):
+                if uow.read_agent_turn_result(turn.turn_id) is not None:
+                    break
+                await asyncio.sleep(0.05)
+            result = uow.read_agent_turn_result(turn.turn_id)
+            assert result is not None and dict(result.result_json)["state"] == "committed"
+            assert uow.read_continuation(turn.turn_id).state is ContinuationState.ACKED
+            # The failed transport attempt never reached the scripted provider's ledger.
+            assert state["failed"] and provider.calls == 1 and reconciliation.observed >= 1
+            assert uow.list_agent_turns("agent-unknown")[0].seq == 1
+            assert len(uow.list_agent_turns("agent-unknown")) == 1
+
+    asyncio.run(case())
+
+
+def test_finalize_exception_keeps_agent_alive_and_recovers(tmp_path):
+    """Review F3: a non-conflict failure after stage must not terminalize the Run."""
+
+    async def case():
+        provider = ScriptedProvider(["一次回答"])
+        assembled = assemble_runtime(_ports(tmp_path, provider))
+        runtime, uow = assembled.runtime, assembled.uow
+        original = runtime._finalize_agent_turn
+        blows = {"count": 0}
+
+        async def blow_up_once(*args, **kwargs):
+            if blows["count"] == 0:
+                blows["count"] += 1
+                raise RuntimeError("injected finalize failure")
+            return await original(*args, **kwargs)
+
+        runtime._finalize_agent_turn = blow_up_once  # type: ignore[method-assign]
+        async with runtime:
+            await create_agent(runtime, uow, agent_id="agent-blow")
+            turn = await submit(runtime, uow, agent_id="agent-blow", input_id="i1", text="问")
+            await _settle(runtime, "agent-blow")
+            assert blows["count"] == 1
+            run = uow.read_run("agent-blow")
+            assert run is not None and run.state is RunState.WAITING  # never FAILED
+            assert uow.read_agent_turn(turn.turn_id).phase == "result_pending"
+            # Waking the Run finalizes first (no second model call) and acks the input.
+            await runtime._wake_continuation("agent-blow")
+            await _settle(runtime, "agent-blow")
+            result = uow.read_agent_turn_result(turn.turn_id)
+            assert result is not None and provider.calls == 1
+            assert uow.read_continuation(turn.turn_id).state is ContinuationState.ACKED
+            assert uow.read_run("agent-blow").state is RunState.WAITING
+
+    asyncio.run(case())
+
+
+def test_first_turn_rerun_does_not_duplicate_the_user_message(tmp_path):
+    """Review F4: re-driving the first turn appends the user message exactly once."""
+    from simple_harness.contracts import RunId as _RunId
+    from simple_harness.runtime.context import SqliteContextPort
+
+    async def case():
+        provider = ScriptedProvider(["回答一", "回答二"])
+        assembled = assemble_runtime(_ports(tmp_path, provider))
+        runtime, uow = assembled.runtime, assembled.uow
+        original = runtime._finalize_agent_turn
+        blows = {"count": 0}
+
+        async def blow_up_once(*args, **kwargs):
+            if blows["count"] == 0:
+                blows["count"] += 1
+                raise RuntimeError("crash before finalize")
+            return await original(*args, **kwargs)
+
+        runtime._finalize_agent_turn = blow_up_once  # type: ignore[method-assign]
+        async with runtime:
+            await create_agent(runtime, uow, agent_id="agent-dup")
+            turn = await submit(runtime, uow, agent_id="agent-dup", input_id="i1", text="你好")
+            await _settle(runtime, "agent-dup")
+            await runtime._wake_continuation("agent-dup")
+            await _settle(runtime, "agent-dup")
+            assert uow.read_agent_turn_result(turn.turn_id) is not None
+            second = await submit(runtime, uow, agent_id="agent-dup", input_id="i2", text="再问")
+            await _settle(runtime, "agent-dup")
+            assert uow.read_agent_turn_result(second.turn_id) is not None
+            stored = SqliteContextPort(uow.database).load(_RunId("agent-dup")).messages
+            user_texts = [m.content for m in stored if m.role.value == "user"]
+            assert user_texts == ["你好", "再问"]
+            # kernel_fixture agents carry no instructions: the first entry is the user turn.
+            assert [m.role.value for m in stored][:2] == ["user", "assistant"]
 
     asyncio.run(case())

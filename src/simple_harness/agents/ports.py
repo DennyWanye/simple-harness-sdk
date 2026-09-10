@@ -20,9 +20,7 @@ from simple_harness.runtime.ports import (
 )
 from simple_harness.runtime.termination import TerminationLimits
 
-DEFAULT_CHILD_INSTRUCTIONS = (
-    "你是被委派的工作 Agent。只处理交给你的目标，给出简洁、可核对的结论。"
-)
+DEFAULT_CHILD_INSTRUCTIONS = "你是被委派的工作 Agent。只处理交给你的目标，给出简洁、可核对的结论。"
 
 
 class AllowAllAuthorization:

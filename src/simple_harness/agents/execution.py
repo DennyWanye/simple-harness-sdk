@@ -193,19 +193,26 @@ class AgentExecutionDriver:
                 now=self._clock(),
             )
 
+        # Both branches append the user message under the turn-scoped id so a rerun of the
+        # first turn is idempotent (review F4); instructions get their own id.
         current_context = invocation.services.context.load(run_id)
         initial = _messages(input_value.get("messages"))
-        if current_context.revision == 0:
-            initial_messages: tuple[Message, ...] = (*initial, user_message)
-        else:
-            invocation.services.context.append(
+        if current_context.revision == 0 and initial:
+            current_context = invocation.services.context.append(
                 run_id,
                 invocation.execution_lease,
-                current_context.revision,
-                f"{turn_id}:context:user",
-                (user_message,),
+                0,
+                f"{invocation.run.run_id}:context:instructions",
+                initial,
             )
-            initial_messages = (user_message,)
+        current_context = invocation.services.context.append(
+            run_id,
+            invocation.execution_lease,
+            current_context.revision,
+            f"{turn_id}:context:user",
+            (user_message,),
+        )
+        initial_messages: tuple[Message, ...] = (user_message,)
         tools = _tools(
             input_value.get("capability_snapshot"),
             invocation.services.tools,
@@ -285,7 +292,7 @@ class AgentExecutionDriver:
                     error={
                         "error_code": code,
                         "source_kind": "tool_parse",
-                        "message": str(error)[:500],
+                        "error_type": type(error).__name__,
                     },
                     delegation_count=self._delegations(turn_id),
                     provider_turn_ordinal_from=ordinal_from,

@@ -464,3 +464,50 @@ def test_delegate_unknown_reconciles_from_child_result_row(tmp_path):
             assert runtime._delegate.launches == 1  # observing never launches
 
     asyncio.run(case())
+
+
+def test_child_cannot_delegate_and_unexposed_tool_is_rejected(tmp_path):
+    """Review F1: capability_snapshot is an execution boundary, not just a request hint."""
+
+    async def case():
+        provider = ScriptedProvider(
+            [
+                _delegate_call("d-1"),  # main -> child
+                _delegate_call("d-2"),  # the CHILD tries to delegate a grandchild
+                "子结论（被拒后自己回答）",
+                "主结论",
+            ]
+        )
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            main = await runtime.create(_main_config(), creation_key="main")
+            result = await main.ask("任务", input_id="r1", timeout=10)
+            uow = runtime.uow
+            assert result.delegation_count == 1
+            assert _count(uow, "base_agent_bindings_v1") == 2  # root + child, no grandchild
+            assert _count(uow, "base_agent_delegations_v1") == 1
+            assert runtime._delegate.launches == 1
+            child_reply_request = "\n".join(message_texts(provider.requests[2]))
+            assert "tool_not_exposed_for_agent" in child_reply_request
+            roles = [
+                r[0]
+                for r in uow.database.connection.execute(
+                    "SELECT role FROM base_agent_bindings_v1 ORDER BY role"
+                )
+            ]
+            assert roles == ["child", "root"]
+
+        # An Agent whose tool_names do not list agent_delegate cannot call it either.
+        provider2 = ScriptedProvider([_delegate_call("d-9"), "自己回答"])
+        async with build_agent_runtime(
+            _ports(tmp_path, provider2, database_path=str(tmp_path / "plain.db"))
+        ) as runtime2:
+            plain = await runtime2.create(
+                AgentConfig(name="plain", instructions="x", model_profile_ref="p"),
+                creation_key="plain",
+            )
+            outcome = await plain.ask("任务", input_id="r1", timeout=10)
+            assert outcome.delegation_count == 0
+            assert _count(runtime2.uow, "base_agent_delegations_v1") == 0
+            assert "tool_not_exposed_for_agent" in "\n".join(message_texts(provider2.requests[1]))
+
+    asyncio.run(case())

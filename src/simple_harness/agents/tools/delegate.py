@@ -42,6 +42,7 @@ from simple_harness.execution.contracts.children import (
     child_launch_fingerprint,
 )
 from simple_harness.execution.effects import EffectRecord
+from simple_harness.execution.sqlite.base_agent.delegations import DelegationQuotaExceeded
 from simple_harness.execution.uow import UnitOfWorkConflict
 from simple_harness.runtime.child_runs import ChildLaunchRequest, ProfileLaunchTicketRef
 from simple_harness.runtime.start_snapshot import RunStart, bind_start_snapshot
@@ -203,6 +204,11 @@ class AgentDelegateTool:
             return _rejected(
                 context, "agent_delegation_parent_unbound", "the calling Run is not a BaseAgent"
             )
+        if parent.role != "root":
+            # Structural single level (closure review F1): a delegated worker never delegates.
+            return _rejected(
+                context, "agent_delegation_not_permitted", "a delegated Agent cannot delegate"
+            )
         parent_turn = uow.read_open_agent_turn(parent_run_id)
         if parent_turn is None:
             return _rejected(
@@ -270,16 +276,25 @@ class AgentDelegateTool:
         now = self._clock()
 
         # 1. Pre-fence + reserved delegation row (idempotent by delegation_id).
-        delegation = uow.reserve_child_base_agent_delegation(
-            delegation_id=delegation_id,
-            parent_agent_id=parent.agent_id,
-            parent_turn_id=parent_turn.turn_id,
-            child_agent_id=child_agent_id,
-            child_run_id=child_run_id,
-            ticket_id=ticket_id,
-            intent_hash=intent_hash,
-            now=now,
-        )
+        try:
+            delegation = uow.reserve_child_base_agent_delegation(
+                delegation_id=delegation_id,
+                parent_agent_id=parent.agent_id,
+                parent_turn_id=parent_turn.turn_id,
+                child_agent_id=child_agent_id,
+                child_run_id=child_run_id,
+                ticket_id=ticket_id,
+                intent_hash=intent_hash,
+                now=now,
+                max_per_turn=limits.max_delegations_per_turn,
+            )
+        except DelegationQuotaExceeded:
+            return _rejected(
+                context,
+                "agent_delegation_quota_exceeded",
+                f"at most {limits.max_delegations_per_turn} delegation(s) per turn; "
+                "reuse the existing result",
+            )
         self._fault("delegate.after_reserve")
         # 2. Resume from wherever the previous attempt stopped (closure E4).
         if delegation.state == "settled":
