@@ -52,6 +52,7 @@ from .react_loop import (
     AgentLoopCollaborator,
     EffectBatchExecutor,
     ReActLoop,
+    ReActResult,
     ReActRunInput,
     ToolEffectUnknownError,
 )
@@ -231,78 +232,98 @@ class ReActDriver:
                 cancel=cancel,
                 initial_messages=initial,
             )
-        except UnknownToolError:
-            return DriverResult(
-                RunState.WAITING,
-                {
-                    "raw_failures": [
-                        {
-                            "error_code": "tool_not_exposed",
-                            "source_kind": "tool_parse",
-                            "retriable": True,
-                            "replan": True,
-                            "message": "Tool is not exposed; use capability_search.",
-                        }
-                    ]
-                },
-            )
-        except ProviderInvocationUnknownError as error:
-            invocation_record = error.invocation
-            return DriverResult(
-                RunState.WAITING,
-                {"raw_failures": [{"error_code": "provider_outcome_unknown"}]},
-                wait_blocker=(
-                    None
-                    if invocation_record is None
-                    else WaitBlockerSpec(
-                        RecoveryKind.PROVIDER,
-                        invocation_record.invocation_id,
-                        invocation_record.handoff_attempt,
-                        invocation_record.version,
-                    )
-                ),
-            )
-        except TerminationBudgetExceeded as error:
-            return DriverResult(
-                RunState.FAILED,
-                {"raw_failures": [{"error_code": str(error.code)}]},
-            )
-        except ToolAuthorizationPending as pending:
-            return DriverResult(
-                RunState.WAITING,
-                {
-                    "authorization_decision_id": pending.decision_id,
-                    "authorization_prompt": pending.request.prompt,
-                },
-                authorization_wait=pending,
-            )
-        except ToolEffectUnknownError as error:
-            return DriverResult(
-                RunState.WAITING,
-                {"raw_failures": [{"error_code": "tool_outcome_unknown"}]},
-                wait_blocker=WaitBlockerSpec(
-                    RecoveryKind.TOOL,
-                    error.effect.effect_id.value,
-                    error.effect.handoff_attempt,
-                    error.effect.version,
-                ),
-            )
-        response_message = result.response.message
+        except (
+            UnknownToolError,
+            ProviderInvocationUnknownError,
+            TerminationBudgetExceeded,
+            ToolAuthorizationPending,
+            ToolEffectUnknownError,
+        ) as error:
+            return _react_failure_result(error)
+        return _legacy_conversation_result(result)
+
+
+def _react_failure_result(error: BaseException) -> DriverResult:
+    """Map the five ReAct loop interruptions to their DriverResult (shared by drivers)."""
+
+    if isinstance(error, UnknownToolError):
         return DriverResult(
-            RunState.COMPLETED,
+            RunState.WAITING,
             {
-                "response_present": True,
-                "finish_reason": getattr(result.response, "finish_reason", None),
+                "raw_failures": [
+                    {
+                        "error_code": "tool_not_exposed",
+                        "source_kind": "tool_parse",
+                        "retriable": True,
+                        "replan": True,
+                        "message": "Tool is not exposed; use capability_search.",
+                    }
+                ]
             },
-            conversation_output=(
-                ConversationTurnOutput(
-                    response_message,
-                    _assistant_memory_text(response_message),
+        )
+    if isinstance(error, ProviderInvocationUnknownError):
+        invocation_record = error.invocation
+        return DriverResult(
+            RunState.WAITING,
+            {"raw_failures": [{"error_code": "provider_outcome_unknown"}]},
+            wait_blocker=(
+                None
+                if invocation_record is None
+                else WaitBlockerSpec(
+                    RecoveryKind.PROVIDER,
+                    invocation_record.invocation_id,
+                    invocation_record.handoff_attempt,
+                    invocation_record.version,
                 )
-                if isinstance(response_message, Message)
-                else None
             ),
         )
+    if isinstance(error, TerminationBudgetExceeded):
+        return DriverResult(
+            RunState.FAILED,
+            {"raw_failures": [{"error_code": str(error.code)}]},
+        )
+    if isinstance(error, ToolAuthorizationPending):
+        return DriverResult(
+            RunState.WAITING,
+            {
+                "authorization_decision_id": error.decision_id,
+                "authorization_prompt": error.request.prompt,
+            },
+            authorization_wait=error,
+        )
+    if isinstance(error, ToolEffectUnknownError):
+        return DriverResult(
+            RunState.WAITING,
+            {"raw_failures": [{"error_code": "tool_outcome_unknown"}]},
+            wait_blocker=WaitBlockerSpec(
+                RecoveryKind.TOOL,
+                error.effect.effect_id.value,
+                error.effect.handoff_attempt,
+                error.effect.version,
+            ),
+        )
+    raise error
+
+
+def _legacy_conversation_result(result: ReActResult) -> DriverResult:
+    """Legacy ReAct: the final response ends the Run (COMPLETED + ConversationTurnOutput)."""
+
+    response_message = result.response.message
+    return DriverResult(
+        RunState.COMPLETED,
+        {
+            "response_present": True,
+            "finish_reason": getattr(result.response, "finish_reason", None),
+        },
+        conversation_output=(
+            ConversationTurnOutput(
+                response_message,
+                _assistant_memory_text(response_message),
+            )
+            if isinstance(response_message, Message)
+            else None
+        ),
+    )
 
 
 def _assistant_memory_text(message: Message) -> str | None:

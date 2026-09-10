@@ -83,6 +83,10 @@ class AgentTurnReceipt:
             raise ValueError("seq must be a positive integer")
 
 
+def _is_frozen(value: object) -> bool:
+    return not isinstance(value, dict)
+
+
 def _message_to_json(message: Message) -> dict[str, JsonValue]:
     return message.to_dict()
 
@@ -176,6 +180,8 @@ class AgentTurnResult:
     def from_json(cls, value: object) -> AgentTurnResult:
         if not isinstance(value, Mapping):
             raise TypeError("AgentTurnResult JSON must be an object")
+        value = thaw_json(freeze_json(dict(value)) if not _is_frozen(value) else value)
+        assert isinstance(value, dict)
         if value.get("schema_version") != 1:
             raise ValueError("unsupported AgentTurnResult schema_version")
         output = value.get("public_output")

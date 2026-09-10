@@ -135,6 +135,9 @@ async def create_agent(runtime, uow, *, agent_id: str, owner_scope: str = "owner
                 "owner_scope": owner_scope,
             },
             "messages": [],
+            # An upper-bound reservation needs max_output_tokens; otherwise the
+            # charge stays UNKNOWN and the fail-closed budget refuses the next turn.
+            "max_output_tokens": 1024,
         },
         1,
     )
