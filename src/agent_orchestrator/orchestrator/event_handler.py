@@ -243,8 +243,11 @@ class Orchestrator:
         return [m for m in self.store.list_missions() if m.status not in TERMINAL_MISSION]
 
     def _has_inflight(self) -> bool:
-        active = {mission.id for mission in self._active_missions()}
-        return any(intent.mission_id in active for intent in self.store.list_intents("SUBMITTED"))
+        """A submitted turn counts as in flight until it is collected — also for a
+        terminal Mission (a superseded / cancelled Attempt's cost and late result are
+        still collected); critic turns are collected inline by their runner."""
+
+        return any(intent.kind != "critic" for intent in self.store.list_intents("SUBMITTED"))
 
     async def _cycle(self) -> bool:
         try:
@@ -268,8 +271,12 @@ class Orchestrator:
             if await self._dispatch(intent):
                 progressed = True
         for intent in self.store.list_intents("SUBMITTED"):
-            if intent.kind == "critic" or intent.mission_id not in active:
+            if intent.kind == "critic":
                 continue  # critics are collected inline by the critic runner
+            if intent.mission_id not in active:
+                if await self._collect_after_stop(intent):
+                    progressed = True
+                continue
             if await self._collect(intent):
                 progressed = True
         for stored in self.store.list_results_by_verification("PENDING", "RUNNING"):
@@ -471,6 +478,63 @@ class Orchestrator:
             await self._collect_attempt(intent, result)
         return True
 
+    async def _collect_after_stop(self, intent: DispatchIntent) -> bool:
+        """A turn still running for a terminal Mission (D3-6'): import its usage when
+        it settles, keep a committed late result as history, settle the reservation
+        and the intent; never plan, verify or accept anything for it."""
+
+        assert intent.agent_id is not None and intent.expected_turn_id is not None
+        try:
+            result = await self.bridge.result(
+                agent_id=intent.agent_id, turn_id=intent.expected_turn_id
+            )
+        except Exception:  # noqa: BLE001 - executor gone: nothing more to collect
+            result = None
+            liveness = Liveness(False, None, False, None, None, False)
+        else:
+            liveness = (
+                Liveness(True, None, False, None, None, True)
+                if result is not None
+                else await self.bridge.liveness(
+                    agent_id=intent.agent_id, turn_id=intent.expected_turn_id
+                )
+            )
+        if result is None and liveness.alive:
+            await self._release_attempt(intent.subject_id, cancel=True)
+            return False
+        self._import_usage(intent)
+        if intent.kind == "attempt":
+            attempt = self.store.get_attempt(intent.subject_id)
+            assert attempt is not None
+            if result is not None and attempt.status in {
+                AttemptStatus.SUPERSEDED,
+                AttemptStatus.CANCELLED,
+            }:
+                self._record_late_result(attempt, result)
+            self._settle_if_known(attempt)
+            self._settle_intent(intent, "SETTLED" if result is not None else "FAILED")
+            await self._release_attempt(attempt.id, cancel=False)
+        else:
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, intent.mission_id)
+            self.assembled.gateway.unbind(intent.agent_id)
+        self._note(f"{intent.subject_id}: collected after the Mission stopped")
+        return True
+
+    def _record_late_result(self, attempt: Attempt, result) -> None:  # type: ignore[no-untyped-def]
+        text = "" if result.public_output is None else str(result.public_output.content)
+        summary, late_paths = "", []
+        try:
+            raw = extract_block(text, RESULT_ENVELOPE_TAG)
+            summary = str(raw.get("summary", ""))[:400]
+            late_paths = [str(p) for p in raw.get("artifacts", [])]
+        except BlockError:
+            summary = text[:200] or f"turn {result.state}: {dict(result.error or {})}"[:200]
+        self.commit.record_late_result(
+            attempt.id, turn_id=result.turn_id, summary=summary, artifacts=late_paths
+        )
+        self._note(f"attempt {attempt.id}: late result recorded as history")
+
     async def _observe_liveness(self, intent: DispatchIntent) -> bool:
         assert intent.agent_id and intent.expected_turn_id
         liveness: Liveness = await self.bridge.liveness(
@@ -491,8 +555,13 @@ class Orchestrator:
         attempt = self.store.get_attempt(intent.subject_id)
         assert attempt is not None
         if attempt.status in TERMINAL_ATTEMPT:  # closed by a cascade while its turn ran
+            if liveness.alive:
+                await self._release_attempt(attempt.id, cancel=True)
+                return False  # collected (cost, late result) once the turn settles
+            self._import_usage(intent)
+            self._settle_if_known(attempt)
             self._settle_intent(intent, "FAILED")
-            await self._release_attempt(attempt.id, cancel=True)
+            await self._release_attempt(attempt.id, cancel=False)
             return True
         now = self.store.now
         if liveness.alive:
@@ -721,19 +790,8 @@ class Orchestrator:
         if attempt.status is not AttemptStatus.RUNNING:
             if attempt.status in {AttemptStatus.SUPERSEDED, AttemptStatus.CANCELLED}:
                 # D3-6': a late result on a closed Attempt is history, never a transition
-                text = "" if result.public_output is None else str(result.public_output.content)
-                summary, late_paths = "", []
-                try:
-                    raw = extract_block(text, RESULT_ENVELOPE_TAG)
-                    summary = str(raw.get("summary", ""))[:400]
-                    late_paths = [str(p) for p in raw.get("artifacts", [])]
-                except BlockError:
-                    summary = text[:200]
-                self.commit.record_late_result(
-                    attempt.id, turn_id=result.turn_id, summary=summary, artifacts=late_paths
-                )
+                self._record_late_result(attempt, result)
                 self._settle_if_known(attempt)
-                self._note(f"attempt {attempt.id}: late result recorded as history")
             self._settle_intent(intent, "SETTLED")
             await self._release_attempt(attempt.id, cancel=False)
             return
@@ -827,8 +885,7 @@ class Orchestrator:
             for artifact in artifacts
             if artifact.path in listed
             or (
-                artifact.path not in guarded
-                and initial.get(artifact.path) != artifact.content_hash
+                artifact.path not in guarded and initial.get(artifact.path) != artifact.content_hash
             )
         ]
         self.commit.record_result(

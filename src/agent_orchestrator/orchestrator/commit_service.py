@@ -672,16 +672,16 @@ class CommitService:
                     )
                     self._store.upsert_claim(next_claim(moved, ClaimStatus.REJECTED))
         intent = self._store.get_intent_for_subject(attempt.id)
-        if intent is not None and intent.state in {
-            "PENDING",
-            "CLAIMED",
-            "AGENT_CREATED",
-            "SUBMITTED",
-        }:
+        turn_in_flight = intent is not None and intent.state == "SUBMITTED"
+        if intent is not None and intent.state in {"PENDING", "CLAIMED", "AGENT_CREATED"}:
             self._settle_intent(intent, "FAILED")
+        # A SUBMITTED intent stays open: its SDK turn is still running and the loop
+        # collects it later (usage imported, late result kept as history, D3-6'); the
+        # reservation is settled at that point, never before the turn's cost is known.
         reservation = self._ledger.reservation(attempt.id)
         if (
-            reservation is not None
+            not turn_in_flight
+            and reservation is not None
             and reservation["state"] != "SETTLED"
             and not self._ledger.has_unknown_usage(attempt.id)
         ):
@@ -817,8 +817,10 @@ class CommitService:
                             attempt, AttemptStatus.CANCELLED, reason="mission_stopped"
                         )
                         cancelled.append(attempt.id)
-        # every open dispatch intent of this Mission is closed; reservations are released
-        for intent in self._store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"):
+        # every not-yet-submitted dispatch intent of this Mission is closed and its
+        # reservation released; SUBMITTED ones (a turn is running) stay open for the
+        # loop to collect — their cost is imported when the turn settles (D3-6')
+        for intent in self._store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED"):
             if intent.mission_id != mission_id:
                 continue
             self._settle_intent(intent, "FAILED")

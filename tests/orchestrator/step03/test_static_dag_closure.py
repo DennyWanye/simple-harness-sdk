@@ -278,12 +278,10 @@ def test_s3_05_two_candidates_first_pass_accepted_second_superseded(tmp_path):
                 for e in store.list_events(mission.id)
                 if e.type == "ResultRejected" and e.attempt_id == loser.id
             ]
-            assert (
-                store.find_result_for_attempt(loser.id) is None
-                or store.find_result_for_attempt(loser.id).verdict != "PASS"
-            )
+            assert store.find_result_for_attempt(loser.id) is None  # never a StoredResult
             assert store.count_events(mission.id, "TaskCompleted") == 1
-            assert late == [] or late[0].payload["reason"] == "superseded"
+            assert len(late) == 1 and late[0].payload["reason"] == "superseded"
+            assert store.get_intent_for_subject(loser.id).state in {"SETTLED", "FAILED"}
 
     asyncio.run(case())
 
