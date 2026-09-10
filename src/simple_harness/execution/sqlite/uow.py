@@ -1233,48 +1233,30 @@ class SqliteExecutionUnitOfWork:
 
         from .base_agent import turns
 
-        now = _time(now)
+        def enqueue(connection: sqlite3.Connection, **kwargs: object) -> None:
+            self._enqueue_continuation_on_connection(
+                connection,
+                context_stage_id=None,
+                context_stage_hash=None,
+                fault=fault,
+                **kwargs,  # type: ignore[arg-type]
+            )
+
         with self.database.transaction() as connection:
-            record, created = turns.open_turn(
+            return turns.submit_input(
                 connection,
                 agent_id=_required(agent_id, "agent_id"),
+                run_id=_required(run_id, "run_id"),
                 turn_id=_required(turn_id, "turn_id"),
                 input_id=_required(input_id, "input_id"),
                 input_hash=input_hash,
                 input_json=input_json,
-                continuation_id=turn_id,
-                now=now,
+                continuation_payload=continuation_payload,
+                now=_time(now),
                 max_pending_inputs=max_pending_inputs,
+                enqueue_continuation=enqueue,
+                object_json=_object_json,
             )
-            # The durable seq is assigned by the turn row; the driver reads it from the
-            # continuation payload, so it is injected here (replays reproduce it).
-            continuation_payload = {**dict(continuation_payload), "seq": record.seq}
-            payload_json = _object_json(continuation_payload, "continuation_payload")
-            existing = connection.execute(
-                "SELECT run_id, payload_json FROM continuations WHERE continuation_id=?",
-                (turn_id,),
-            ).fetchone()
-            if existing is not None:
-                if (
-                    str(existing["run_id"]) != run_id
-                    or canonical_json(json.loads(str(existing["payload_json"]))) != payload_json
-                ):
-                    raise UnitOfWorkConflict("agent input continuation differs from turn")
-            else:
-                if not created:
-                    raise UnitOfWorkConflict("agent turn exists without its continuation")
-                self._enqueue_continuation_on_connection(
-                    connection,
-                    continuation_id=turn_id,
-                    run_id=_required(run_id, "run_id"),
-                    payload=continuation_payload,
-                    payload_json=payload_json,
-                    now=now,
-                    context_stage_id=None,
-                    context_stage_hash=None,
-                    fault=fault,
-                )
-            return record
 
     def read_agent_turn(self, turn_id: str) -> AgentTurnRecord | None:
         from .base_agent import turns
@@ -1420,9 +1402,7 @@ class SqliteExecutionUnitOfWork:
         from .base_agent import control, turns
 
         with self.database.transaction() as connection:
-            existing = control.read_control_command(
-                connection, _required(command_id, "command_id")
-            )
+            existing = control.read_control_command(connection, _required(command_id, "command_id"))
             if existing is not None:
                 stored, _ = control.record_control_command(
                     connection,
@@ -1642,115 +1622,43 @@ class SqliteExecutionUnitOfWork:
         now: float,
         fault: FaultHook | None = None,
     ) -> AgentTurnResultRecord:
-        """Finalize one AgentTurn in a single transaction.
+        """Finalize one AgentTurn in a single transaction (body in ``base_agent.turns``).
 
         Writes the immutable result row, closes the turn, acks the input
         continuation (progress receipt + ``acked``) when a claim is supplied, and
         commits the Run as WAITING (never terminal).  Replays return the stored row.
         """
 
-        from .base_agent import control, turns
+        from .base_agent import turns
 
-        run_id = _required(run_id, "run_id")
-        turn_id = _required(turn_id, "turn_id")
-        event_id = _required(event_id, "event_id")
-        now = _time(now)
-        payload_json = _object_json(payload, "payload")
         if continuation_claim is not None and receipt_id is None:
             raise ValueError("acking a continuation requires receipt_id")
-        commit_receipt_id = f"{turn_id}:commit"
-        existing = turns.read_result(self.database.connection, turn_id)
+        existing = turns.read_result(self.database.connection, _required(turn_id, "turn_id"))
         if existing is not None:
-            if continuation_claim is not None:
-                assert receipt_id is not None
-                receipt = self._read_continuation_progress_receipt(receipt_id)
-                if receipt is None:
-                    raise UnitOfWorkConflict("agent turn result committed without its ack receipt")
+            if (
+                continuation_claim is not None
+                and self._read_continuation_progress_receipt(cast(str, receipt_id)) is None
+            ):
+                raise UnitOfWorkConflict("agent turn result committed without its ack receipt")
             return existing
         with self.database.transaction() as connection:
-            self._require_runtime_lease(connection, execution_lease, now=now)
-            _fault(fault, "agent_turn_finalize.result.before_write")
-            record = turns.commit_staged_result(
+            self._require_runtime_lease(connection, execution_lease, now=_time(now))
+            record = turns.finalize_turn(
                 connection,
+                run_id=_required(run_id, "run_id"),
+                expected_version=expected_version,
                 turn_id=turn_id,
-                commit_receipt_id=commit_receipt_id,
+                event_id=_required(event_id, "event_id"),
+                payload_json=_object_json(payload, "payload"),
+                continuation_claim=continuation_claim,
+                execution_lease=execution_lease,
+                receipt_id=receipt_id,
                 usage_refs=usage_refs,
-                now=now,
+                now=_time(now),
+                fault=lambda point: _fault(fault, point),
+                require_claim=self._require_continuation_claim,
+                insert_event=self._insert_event,
             )
-            _fault(fault, "agent_turn_finalize.result.after_write")
-            if continuation_claim is not None:
-                assert receipt_id is not None
-                self._require_continuation_claim(connection, continuation_claim, execution_lease)
-                outcome_hash = hashlib.sha256(
-                    canonical_json(
-                        {
-                            "run_id": run_id,
-                            "expected_version": expected_version,
-                            "state": RunState.WAITING.value,
-                            "event_id": event_id,
-                            "payload": json.loads(payload_json),
-                        }
-                    ).encode()
-                ).hexdigest()
-                connection.execute(
-                    "INSERT INTO continuation_progress_receipts("
-                    "receipt_id,continuation_id,run_id,owner_id,runtime_lease_epoch,"
-                    "claim_epoch,outcome_hash,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                    (
-                        receipt_id,
-                        continuation_claim.continuation_id,
-                        run_id,
-                        execution_lease.owner_id,
-                        execution_lease.epoch,
-                        continuation_claim.claim_epoch,
-                        outcome_hash,
-                        now,
-                    ),
-                )
-                _fault(fault, "agent_turn_finalize.continuation.before_write")
-                changed = connection.execute(
-                    "UPDATE continuations SET state='acked',acked_at=?,ack_receipt_id=?,"
-                    "version=version+1 WHERE continuation_id=? AND state='claimed' "
-                    "AND claimed_by=? AND runtime_lease_epoch=? AND claim_epoch=? AND version=?",
-                    (
-                        now,
-                        receipt_id,
-                        continuation_claim.continuation_id,
-                        execution_lease.owner_id,
-                        execution_lease.epoch,
-                        continuation_claim.claim_epoch,
-                        continuation_claim.version,
-                    ),
-                ).rowcount
-                if changed != 1:
-                    raise UnitOfWorkConflict("agent turn continuation ack CAS failed")
-                _fault(fault, "agent_turn_finalize.continuation.after_write")
-            _fault(fault, "agent_turn_finalize.run.before_write")
-            changed = connection.execute(
-                "UPDATE runs SET state='waiting',version=version+1,updated_at=? "
-                "WHERE run_id=? AND version=? AND state NOT IN ('completed','failed','cancelled')",
-                (now, run_id, expected_version),
-            ).rowcount
-            if changed != 1:
-                raise UnitOfWorkConflict("agent turn finalize Run CAS failed")
-            self._insert_event(
-                connection,
-                event_id=event_id,
-                run_id=run_id,
-                kind="run.waiting",
-                payload=json.loads(payload_json),
-                now=now,
-            )
-            _fault(fault, "agent_turn_finalize.run.after_write")
-            # A ``closing`` Agent converges to ``closed`` here, in the execution layer,
-            # the moment its last open turn is finalized: no caller has to come back.
-            if (
-                control.read_binding_lifecycle(connection, record.agent_id) == "closing"
-                and turns.read_open_turn(connection, record.agent_id) is None
-            ):
-                control.set_lifecycle(
-                    connection, agent_id=record.agent_id, lifecycle="closed", now=now
-                )
         _fault(fault, "agent_turn_finalize.after_commit")
         return record
 
