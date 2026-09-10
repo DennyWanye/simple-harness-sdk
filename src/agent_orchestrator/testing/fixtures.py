@@ -103,8 +103,10 @@ class RoleScriptedProvider:
                 finish_reason="stop",
                 usage=usage,
             )
-        name, arguments = step  # type: ignore[misc]
-        call = ProviderToolCall(CallId(f"call-{len(self.requests)}"), name, dict(arguments))
+        if not isinstance(step, tuple) or len(step) != 2:
+            raise AssertionError(f"bad script step for role {role!r}: {step!r}")
+        name, arguments = step
+        call = ProviderToolCall(CallId(f"call-{len(self.requests)}"), str(name), dict(arguments))
         return ProviderResponse(
             request.request_id,
             Message(MessageRole.ASSISTANT, ""),

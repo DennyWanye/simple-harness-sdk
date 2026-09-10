@@ -126,7 +126,7 @@ async def code_test(
                 targets.append(target)
     if not targets:
         targets.append(None)
-    runs = []
+    runs: list[dict[str, Any]] = []
     failed = False
     for target in targets:
         if target is not None:

@@ -1,3 +1,27 @@
+## 0.9.0 — agent_orchestrator step 2: the reliable single-Task Mission closure (source candidate)
+
+New package `agent_orchestrator` shipped in the same wheel (modular monolith after the
+design's §27; `simple_harness` root `__all__` unchanged).  Step 2 of ORCH-BUILD-v1.0:
+Mission → Planner (one BaseAgent proposing exactly one Task Contract) → Commit →
+Reserve → Attempt → Worker BaseAgent in an isolated workspace with four confined tools
+(`workspace_read_file/write_file/list`, `run_tests` as a killable child pytest) →
+Result Envelope (§13/§26.4, strictly parsed, identity-checked, system-derived id) →
+Verifier Router (§14.1 order: format → rule → independent Critic BaseAgent → real code
+test; NOT_REQUIRED never counts as PASS) → repair Attempts with feedback or a visible
+stop (`max_attempts_reached` / `budget_exhausted`) → Task COMPLETED → independent
+Mission-level judgment of `success_criteria` (runs its own Critic when a criterion
+needs one) → MissionCompleted / MissionFailed.  Orchestration state lives in its own
+`orchestrator.db` written only by the Commit Service (§15/§17.5): idempotent Mission
+creation, receipts for proposals, CAS on every entity version, idempotent Events
+(§16.2 names), dispatch intents freezing the full AgentConfig + input Message so a
+crash at any of six cross-database instants replays the very same Agent/Turn
+(S2-04/05), leases/heartbeats from real executor liveness (an UNKNOWN provider outcome
+keeps the Attempt blocked and its reservation held, S2-08), two-layer budgets
+(allocation Reserve/Settle vs. SDK invocation facts imported once each; `unpriced` is
+never written as zero).  CLI `python -m agent_orchestrator` (mission / attempt /
+artifact / demo with an evidence directory).  SDK: one read-only facade
+`SqliteExecutionUnitOfWork.list_provider_invocations(run_id)`.
+
 ## 0.8.0 — BaseAgent: durable Agents, bounded Context, session recall (source candidate)
 
 New public surface under `simple_harness.agents` (`build_agent_runtime`, `AgentRuntime`,

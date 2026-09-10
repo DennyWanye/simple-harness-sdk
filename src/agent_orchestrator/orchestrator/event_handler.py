@@ -805,18 +805,43 @@ class Orchestrator:
         return True
 
     async def _judge(self, mission: Mission, task: Task) -> None:
+        """D21 / ORCH §12.4: judge the Mission's own success criteria independently of
+        the Task PASS.  Free-text criteria need an independent Critic; if the Task's
+        verification policy did not run one, the judgment runs one now (budgeted,
+        replayable) instead of failing the Mission for lack of a judge."""
+
         stored = self.store.get_result(task.accepted_result_id or "")
-        layers = (
-            {}
-            if stored is None
-            else {item["layer"]: item for item in self.store.list_verifications(stored.envelope.id)}
-        )
-        critic = None if stored is None else self._critic_verdicts.get(stored.envelope.id)
+        if stored is None:
+            raise CommitRejected(f"task {task.id} has no accepted result to judge")
+        layers = {item["layer"]: item for item in self.store.list_verifications(stored.envelope.id)}
+        critic = self._critic_verdicts.get(stored.envelope.id)
+        attempt = self.store.get_attempt(stored.envelope.attempt_id)
+        assert attempt is not None
+        needs_critic = any(not c.startswith(("pytest:", "file:")) for c in mission.success_criteria)
+        if needs_critic and critic is None:
+            try:
+                self.assembled.workspaces.verification_view(attempt.id)
+            except Exception:  # noqa: BLE001 - rebuilt from the accepted tree after a restart
+                self.assembled.workspaces.verification_copy(attempt.id)
+            artifacts = [
+                a for a in self.store.list_artifacts(attempt.id) if a.id in set(stored.artifacts)
+            ]
+            test_output = None
+            code = layers.get("code_test")
+            if code is not None:
+                test_output = "\n".join(
+                    str(r.get("stdout", ""))
+                    for r in code["detail"].get("runs", [])
+                    if isinstance(r, Mapping)
+                )
+            try:
+                critic = await self._run_critic(mission, task, attempt, artifacts, test_output)
+                self._critic_verdicts[stored.envelope.id] = critic
+            except ContractError as error:
+                self._note(f"mission {mission.id}: independent judge unavailable ({error})")
         copy = None
         try:
-            copy = self.assembled.workspaces.verification_view(
-                task.accepted_result_id and stored.envelope.attempt_id or ""
-            )
+            copy = self.assembled.workspaces.verification_view(attempt.id)
         except Exception:  # noqa: BLE001
             copy = None
         judgments = []
@@ -855,15 +880,15 @@ class Orchestrator:
                         "criterion": criterion,
                         "met": bool(item and item.get("met")),
                         "judge": "critic_review",
-                        "reason": None
+                        "reason": "no independent judge ran"
                         if item is None
-                        else item.get("reason", "no independent judge ran"),
+                        else item.get("reason"),
                     }
                 )
         judged = self.commit.judge_mission(
             mission.id,
             judgments=judgments,
-            summary="" if stored is None else stored.envelope.summary,
+            summary=stored.envelope.summary,
         )
         self._note(f"mission {mission.id} judged: {judged.status} ({judged.stop_reason})")
 

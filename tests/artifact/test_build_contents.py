@@ -43,7 +43,13 @@ def test_wheel_contains_only_package_and_distribution_metadata(
     assert "simple_harness/tools/runtime_catalog.py" in names
     assert any(name.endswith(".dist-info/licenses/LICENSES/Apache-2.0.txt") for name in names)
     assert any(name.endswith(".dist-info/licenses/NOTICE") for name in names)
-    assert all(name.startswith("simple_harness/") or ".dist-info/" in name for name in names)
+    # 0.9.0: the wheel also ships the ``agent_orchestrator`` package (ORCH-BUILD §1.2).
+    assert "agent_orchestrator/__init__.py" in names
+    assert "agent_orchestrator/py.typed" in names
+    assert all(
+        name.startswith(("simple_harness/", "agent_orchestrator/")) or ".dist-info/" in name
+        for name in names
+    )
 
 
 def test_sdist_has_explicit_clean_source_surface(

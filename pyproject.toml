@@ -102,6 +102,7 @@ python_version = "3.11"
 # Scoped to the public consumer surface and release-owned modules.
 # Legacy full-project typing debt remains outside the release-owned surface.
 files = [
+  "src/agent_orchestrator",
   "src/simple_harness/runtime/commands.py",
   "src/simple_harness/runtime/kernel.py",
   "src/simple_harness/runtime/agent_memory.py",

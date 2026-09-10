@@ -263,3 +263,46 @@ def test_s2_03_replayed_mission_is_the_same_mission(tmp_path):
             json.dumps(snapshot)  # serialisable for final_state.json
 
     asyncio.run(case())
+
+
+def test_d21_mission_judgment_runs_its_own_critic_when_the_task_policy_had_none(tmp_path):
+    """A real Planner may choose a policy without critic_review; a free-text Mission
+    criterion still gets an independent judge at judgment time (D21)."""
+
+    from fixtures_provider import critic_step as _critic
+
+    proposal = {**PROPOSAL, "verification_policy": ["format_check", "rule_check", "code_test"]}
+    provider = RoleScriptedProvider(
+        {
+            "planner": [proposal_step(proposal)],
+            "worker": worker_script(GOOD),
+            "critic": [_critic(verdict="PASS", criteria_met=True)],
+        }
+    )
+
+    async def case():
+        async with Orchestrator(config(tmp_path), provider) as orchestrator:
+            mission = await orchestrator.submit_mission(spec("m-d21"))
+            await orchestrator.run()
+            store = orchestrator.store
+            final = store.get_mission(mission.id)
+            assert final.status is MissionStatus.COMPLETED, orchestrator.progress_log
+            judged = final.final_report["success_criteria"]
+            assert [j["judge"] for j in judged] == ["code_test", "critic_review"]
+            assert all(j["met"] for j in judged)
+            assert provider.by_role["critic"] == 1  # the judge ran exactly once
+            layers = {
+                v["layer"]: v["status"]
+                for v in store.list_verifications(
+                    store.list_tasks(mission.id)[0].accepted_result_id
+                )
+            }
+            assert layers["critic_review"] == "NOT_REQUIRED"  # not part of the Task policy
+            with store.transaction():
+                report = orchestrator.commit.ledger.costs_report(mission.id)
+            assert any(
+                r["subject_id"].endswith(":critic:1") and r["state"] == "SETTLED"
+                for r in report["reservations"]
+            )
+
+    asyncio.run(case())
