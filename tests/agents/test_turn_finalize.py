@@ -22,7 +22,10 @@ TERMINAL = {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
 
 def _outcome(turn_id="a:input:i1", agent_id="a"):
     result = AgentTurnResult(
-        turn_id=turn_id, agent_id=agent_id, seq=1, state=AgentTurnState.COMMITTED,
+        turn_id=turn_id,
+        agent_id=agent_id,
+        seq=1,
+        state=AgentTurnState.COMMITTED,
         public_output=Message(MessageRole.ASSISTANT, "ok"),
     )
     return result.to_outcome(input_id="i1", input_hash="0" * 64)
@@ -64,7 +67,8 @@ def test_committed_turn_leaves_run_non_terminal(tmp_path):
             ).fetchone()[0]
             assert rows == 1
             kinds = [
-                str(r[0]) for r in uow.database.connection.execute(
+                str(r[0])
+                for r in uow.database.connection.execute(
                     "SELECT kind FROM run_events WHERE run_id='agent-a'"
                 )
             ]
@@ -104,8 +108,12 @@ def test_finalize_acks_the_input_continuation_in_the_same_transaction(tmp_path):
             await runtime2.wait_idle(RunId("agent-c"))
             # Stage a fresh turn by hand, then fault the finalize after the result write.
             third = uow2.submit_agent_input(
-                agent_id="agent-c", run_id="agent-c", turn_id="agent-c:input:i9", input_id="i9",
-                input_hash="1" * 64, input_json={"message": {}},
+                agent_id="agent-c",
+                run_id="agent-c",
+                turn_id="agent-c:input:i9",
+                input_id="i9",
+                input_hash="1" * 64,
+                input_json={"message": {}},
                 continuation_payload={"kind": "base_agent_input", "turn_id": "agent-c:input:i9"},
                 now=5.0,
             )
@@ -115,14 +123,20 @@ def test_finalize_acks_the_input_continuation_in_the_same_transaction(tmp_path):
             claim = uow2.claim_continuation(run_id="agent-c", execution_lease=lease, now=6.0)
             assert claim is not None and claim.continuation_id == third.turn_id
             outcome = AgentTurnResult(
-                turn_id=third.turn_id, agent_id="agent-c", seq=third.seq,
+                turn_id=third.turn_id,
+                agent_id="agent-c",
+                seq=third.seq,
                 state=AgentTurnState.COMMITTED,
                 public_output=Message(MessageRole.ASSISTANT, "staged"),
             ).to_outcome(input_id="i9", input_hash="1" * 64)
             uow2.stage_agent_turn_result(
-                turn_id=third.turn_id, result_hash=outcome.result_hash,
-                result_json=outcome.result_object(), provider_turn_ordinal_from=None,
-                provider_turn_ordinal_to=None, execution_lease=lease, now=6.0,
+                turn_id=third.turn_id,
+                result_hash=outcome.result_hash,
+                result_json=outcome.result_object(),
+                provider_turn_ordinal_from=None,
+                provider_turn_ordinal_to=None,
+                execution_lease=lease,
+                now=6.0,
             )
             run = uow2.read_run("agent-c")
 
@@ -132,11 +146,16 @@ def test_finalize_acks_the_input_continuation_in_the_same_transaction(tmp_path):
 
             with pytest.raises(RuntimeError):
                 uow2.commit_agent_turn_result_and_idle(
-                    run_id="agent-c", expected_version=run.version, turn_id=third.turn_id,
-                    event_id="agent-c:agent_turn:i9:committed", payload={},
-                    continuation_claim=claim, execution_lease=lease,
+                    run_id="agent-c",
+                    expected_version=run.version,
+                    turn_id=third.turn_id,
+                    event_id="agent-c:agent_turn:i9:committed",
+                    payload={},
+                    continuation_claim=claim,
+                    execution_lease=lease,
                     receipt_id=f"agent-c:progress:{claim.continuation_id}:{claim.claim_epoch}",
-                    now=7.0, fault=fault,
+                    now=7.0,
+                    fault=fault,
                 )
             assert uow2.read_agent_turn_result(third.turn_id) is None
             after = uow2.read_continuation(third.turn_id)
@@ -145,9 +164,13 @@ def test_finalize_acks_the_input_continuation_in_the_same_transaction(tmp_path):
             assert turn is not None and turn.phase == "result_pending"
             # Without the fault the same call commits everything at once.
             committed = uow2.commit_agent_turn_result_and_idle(
-                run_id="agent-c", expected_version=run.version, turn_id=third.turn_id,
-                event_id="agent-c:agent_turn:i9:committed", payload={},
-                continuation_claim=claim, execution_lease=lease,
+                run_id="agent-c",
+                expected_version=run.version,
+                turn_id=third.turn_id,
+                event_id="agent-c:agent_turn:i9:committed",
+                payload={},
+                continuation_claim=claim,
+                execution_lease=lease,
                 receipt_id=f"agent-c:progress:{claim.continuation_id}:{claim.claim_epoch}",
                 now=8.0,
             )
@@ -231,9 +254,15 @@ def test_finalize_is_idempotent_by_receipt_id(tmp_path):
             lease = runtime._leases["agent-e"]
             run = uow.read_run("agent-e")
             replay = uow.commit_agent_turn_result_and_idle(
-                run_id="agent-e", expected_version=run.version, turn_id=record.turn_id,
-                event_id=f"agent-e:agent_turn:{record.turn_id}:committed", payload={},
-                continuation_claim=None, execution_lease=lease, receipt_id=None, now=9.0,
+                run_id="agent-e",
+                expected_version=run.version,
+                turn_id=record.turn_id,
+                event_id=f"agent-e:agent_turn:{record.turn_id}:committed",
+                payload={},
+                continuation_claim=None,
+                execution_lease=lease,
+                receipt_id=None,
+                now=9.0,
             )
             assert replay == first
             assert uow.read_run("agent-e").version == run.version
@@ -243,9 +272,13 @@ def test_finalize_is_idempotent_by_receipt_id(tmp_path):
             assert rows == 1
             with pytest.raises(UnitOfWorkConflict):
                 uow.stage_agent_turn_result(
-                    turn_id=record.turn_id, result_hash="f" * 64, result_json={"state": "x"},
-                    provider_turn_ordinal_from=None, provider_turn_ordinal_to=None,
-                    execution_lease=lease, now=9.0,
+                    turn_id=record.turn_id,
+                    result_hash="f" * 64,
+                    result_json={"state": "x"},
+                    provider_turn_ordinal_from=None,
+                    provider_turn_ordinal_to=None,
+                    execution_lease=lease,
+                    now=9.0,
                 )
 
     asyncio.run(case())

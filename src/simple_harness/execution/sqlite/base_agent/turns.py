@@ -105,14 +105,28 @@ def insert_binding(
     config_json: Mapping[str, JsonValue],
     config_hash: str,
     now: float,
+    max_agents: int | None = None,
 ) -> AgentBindingRecord:
-    """Insert one binding; replays return the identical row, differing replays conflict."""
+    """Insert one binding; replays return the identical row, differing replays conflict.
+
+    ``max_agents`` is the per-owner instance cap, decided in the same transaction as
+    the insert (delegate-created children count: they share the parent's owner).
+    """
 
     existing = read_binding_by_creation_key(connection, owner_scope, creation_key)
     if existing is not None:
         if existing.config_hash != config_hash or existing.agent_id != agent_id:
             raise UnitOfWorkConflict("creation_key reused with a different BaseAgent")
         return existing
+    if max_agents is not None:
+        count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM base_agent_bindings_v1 WHERE owner_scope=?",
+                (owner_scope,),
+            ).fetchone()[0]
+        )
+        if count >= max_agents:
+            raise AgentInstanceCapExceeded(f"owner {owner_scope!r} already has {count} agents")
     connection.execute(
         "INSERT INTO base_agent_bindings_v1(agent_id,run_id,owner_scope,api_mode,role,"
         "creation_key,config_json,config_hash,control_generation,created_at,lifecycle)"
@@ -165,6 +179,10 @@ def read_binding_by_creation_key(
 
 class PendingInputsExhausted(UnitOfWorkConflict):
     """The Agent's queue of open turns is full (``AgentLimits.max_pending_inputs``)."""
+
+
+class AgentInstanceCapExceeded(UnitOfWorkConflict):
+    """The owner's ``max_agents`` cap is reached (decided at insert time)."""
 
 
 class AgentClosedError(UnitOfWorkConflict):
@@ -588,6 +606,7 @@ def finalize_turn(
 
 __all__ = (
     "AgentClosedError",
+    "AgentInstanceCapExceeded",
     "PendingInputsExhausted",
     "commit_staged_result",
     "count_open_turns",

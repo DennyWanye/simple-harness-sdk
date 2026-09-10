@@ -100,9 +100,15 @@ class ProviderEmptyResponseError(ProviderProtocolError):
     definite failure: the invocation is settled, the turn fails, the Agent lives on.
     """
 
-    __slots__ = ()
+    __slots__ = ("detail",)
     error_code = "provider_empty_response"
     default_message = "Provider returned an empty response without tool calls."
+
+    def __init__(self, *, detail: dict[str, JsonValue], public_message: str | None = None):
+        super().__init__(public_message=public_message)
+        # finish_reason + observed usage: the request really completed, so what it
+        # cost is kept in the turn result even though the invocation settles failed.
+        self.detail = detail
 
 
 def _is_empty_final(response: ProviderResponse) -> bool:
@@ -135,11 +141,21 @@ class AgentProviderWire:
         response = await self._inner.invoke(wire_request, cancel=cancel)
         if _is_empty_final(response):
             finish = getattr(response, "finish_reason", None)
+            usage = getattr(response, "usage", None)
+            detail: dict[str, JsonValue] = {"finish_reason": finish}
+            if usage is not None:
+                detail["usage"] = {
+                    "input_tokens": getattr(usage, "input_tokens", None),
+                    "output_tokens": getattr(usage, "output_tokens", None),
+                    "total_tokens": getattr(usage, "total_tokens", None),
+                    "reasoning_tokens": getattr(usage, "reasoning_tokens", None),
+                }
             raise ProviderEmptyResponseError(
+                detail=detail,
                 public_message=(
                     "Provider returned an empty response without tool calls"
                     + (f" (finish_reason={finish})." if finish else ".")
-                )
+                ),
             )
         return response
 

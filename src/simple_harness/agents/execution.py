@@ -30,6 +30,7 @@ from simple_harness.contracts import (
     RequestId,
     RunId,
     canonical_json,
+    freeze_json,
     thaw_json,
 )
 from simple_harness.execution.base_agent import BASE_AGENT_API_MODE, BASE_AGENT_INPUT_KIND
@@ -240,6 +241,12 @@ class AgentExecutionDriver:
         # without a single provider call; an in-process intent arrives via the token.
         read_cancel = getattr(checkpoint_port, "read_agent_turn_cancel", None)
         if callable(read_cancel) and read_cancel(turn_id) is not None:
+            unknown = _unknown_effects(checkpoint_port, run_id)
+            if unknown:
+                # The turn still owns an UNKNOWN effect: keep waiting for its
+                # reconciliation (the loop identities depend on the in-flight
+                # checkpoint).  The intent is durable and applies once it settles.
+                return _react_failure_result(ToolEffectUnknownError(unknown[0]))
             self._settle_failed_turn(invocation, run_id)
             return self._cancelled_turn(
                 agent_id=agent_id,
@@ -377,6 +384,16 @@ class AgentExecutionDriver:
             # Whatever the cause, the turn is definitely over: release the loop
             # checkpoint so the next AgentTurn starts a fresh provider request.
             self._settle_failed_turn(invocation, run_id)
+            error_payload: dict[str, JsonValue] = {
+                "error_code": code,
+                "source_kind": "tool_parse",
+                "error_type": type(error).__name__,
+            }
+            detail = getattr(error, "detail", None)
+            if isinstance(detail, Mapping):
+                # e.g. finish_reason / observed usage of an empty provider response,
+                # kept in the durable turn result (review F6).
+                error_payload["detail"] = cast(JsonValue, thaw_json(freeze_json(dict(detail))))
             return DriverResult(
                 RunState.WAITING,
                 {"response_present": False, "raw_failures": [{"error_code": code}]},
@@ -386,11 +403,7 @@ class AgentExecutionDriver:
                     seq=seq,
                     input_id=input_id,
                     input_hash=input_hash,
-                    error={
-                        "error_code": code,
-                        "source_kind": "tool_parse",
-                        "error_type": type(error).__name__,
-                    },
+                    error=error_payload,
                     delegation_count=self._delegations(turn_id),
                     provider_turn_ordinal_from=ordinal_from,
                     provider_turn_ordinal_to=_checkpoint_totals(
@@ -473,6 +486,13 @@ class AgentExecutionDriver:
             # Only a cooperative per-turn cancel is a *turn* failure; a real task /
             # kernel cancel keeps propagating untouched.
             if token.cancelled and not getattr(cancel, "is_cancelled", False):
+                # A tool that honoured the token mid-execution left its effect
+                # UNKNOWN (executor marks it before re-raising).  That effect must be
+                # reconciled, never orphaned: take the legacy UNKNOWN wait path; the
+                # durable cancel intent fails the turn on resume (review F1).
+                unknown = _unknown_effects(invocation.services.react_checkpoint, run_id)
+                if unknown:
+                    raise ToolEffectUnknownError(unknown[0]) from None
                 raise _TurnCancelled() from None
             raise
 
@@ -591,6 +611,10 @@ class AgentExecutionDriver:
         )
         if state.phase == "ready":
             return
+        if _unknown_effects(invocation.services.react_checkpoint, run_id):
+            # Never drop a checkpoint that still owns an UNKNOWN effect: the tool
+            # loop's identities are derived from it (review F1).
+            return
         checkpoint.cas(
             run_id,
             invocation.execution_lease,
@@ -606,6 +630,11 @@ class AgentExecutionDriver:
                 provider_response_snapshot=None,
                 provider_response_digest=None,
                 tool_result_progress=0,
+                workflow_spawn_wait_receipt_id=None,
+                pending_child_completion=None,
+                pending_child_completion_hash=None,
+                pending_child_completion_append_id=None,
+                mandatory_context_repairs=(),
                 last_observed_at=self._clock(),
             ),
         )
@@ -651,6 +680,13 @@ def _checkpoint_totals(checkpoint_port, run_id: str) -> _CheckpointTotals:  # ty
         if isinstance(started, (int, float)) and not isinstance(started, bool)
         else None,
     )
+
+
+def _unknown_effects(checkpoint_port, run_id: RunId):  # type: ignore[no-untyped-def]
+    reader = getattr(checkpoint_port, "list_unknown_effects_for_run", None)
+    if not callable(reader):
+        return ()
+    return tuple(reader(run_id.value))
 
 
 def _reserved_provider_turns(checkpoint_port, run_id: str) -> int | None:  # type: ignore[no-untyped-def]

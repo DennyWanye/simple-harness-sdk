@@ -274,3 +274,35 @@ def test_inputs_are_never_lost_under_a_burst(tmp_path):
             assert provider.calls == 30
 
     asyncio.run(case())
+
+
+def test_wake_activation_conflict_is_retried_by_the_drain_loop(tmp_path):
+    """Review F5: an input whose wake hits a lease conflict is not stranded until recover()."""
+
+    async def case():
+        provider = ScriptedProvider(["迟到但到"])
+        async with build_agent_runtime(
+            _ports(tmp_path, provider, lease_ttl_seconds=0.3)
+        ) as runtime:
+            kernel = runtime.kernel
+            agent = await runtime.create(_config(), creation_key="wake")
+            for _ in range(100):
+                if agent.run_id not in kernel._leases:
+                    break
+                await asyncio.sleep(0.01)
+            original = kernel._activate
+            failures = {"n": 0}
+
+            async def conflict_twice(run_id):
+                if failures["n"] < 2:
+                    failures["n"] += 1
+                    raise UnitOfWorkConflict("Run already has an active runtime owner")
+                return await original(run_id)
+
+            kernel._activate = conflict_twice  # type: ignore[method-assign]
+            receipt = await agent.submit("问", input_id="i1")
+            result = await agent.wait_turn(receipt.turn_id, timeout=5)
+            assert result.public_output.content == "迟到但到"
+            assert failures["n"] == 2
+
+    asyncio.run(case())

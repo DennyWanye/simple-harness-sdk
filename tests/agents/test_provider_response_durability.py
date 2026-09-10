@@ -93,3 +93,35 @@ def test_empty_response_with_tool_calls_is_not_treated_as_empty(tmp_path):
             assert result.error is None or result.error["error_code"] != "provider_empty_response"
 
     asyncio.run(case())
+
+
+def test_empty_response_detail_keeps_finish_reason_and_usage(tmp_path):
+    """Review F6: the request really completed; what it cost stays in the turn result."""
+
+    from simple_harness.providers import ProviderUsage
+
+    class EmptyWithUsage(EmptyOnceProvider):
+        async def invoke(self, request, *, cancel):
+            if not self.empty_sent:
+                self.empty_sent = True
+                self.requests.append(request)
+                return ProviderResponse(
+                    request.request_id,
+                    Message(MessageRole.ASSISTANT, ""),
+                    model=MODEL,
+                    finish_reason="length",
+                    usage=ProviderUsage(input_tokens=120, output_tokens=4096, total_tokens=4216),
+                )
+            return await ScriptedProvider.invoke(self, request, cancel=cancel)
+
+    async def case():
+        provider = EmptyWithUsage(["好"])
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            agent = await runtime.create(_config(), creation_key="e3")
+            failed = await agent.ask("综合", input_id="i1", timeout=5)
+            assert failed.state is AgentTurnState.FAILED
+            detail = failed.error["detail"]
+            assert detail["finish_reason"] == "length"
+            assert detail["usage"]["output_tokens"] == 4096
+
+    asyncio.run(case())

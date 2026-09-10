@@ -30,6 +30,9 @@ from simple_harness.execution.budget import FrozenPriceEstimator
 from simple_harness.execution.delivery import DeliveryDispatcher
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.execution.sqlite import Database
+from simple_harness.execution.sqlite.base_agent.turns import (
+    AgentInstanceCapExceeded as InstanceCapConflict,
+)
 from simple_harness.execution.sqlite.uow import SqliteExecutionUnitOfWork
 from simple_harness.execution.uow import UnitOfWorkConflict
 from simple_harness.runtime.consumer_adapter import (
@@ -56,6 +59,7 @@ from .contracts import (
     AgentClosingReceipt,
     AgentId,
     AgentInputConflict,
+    AgentInstanceCapExceeded,
     AgentNotFound,
     AgentTurnNotFound,
 )
@@ -353,16 +357,20 @@ class AgentRuntime:
                 1,
             )
         )
-        binding = self.uow.create_agent_binding(
-            agent_id=agent_id,
-            run_id=agent_id,
-            owner_scope=self._owner_scope,
-            role="root",
-            creation_key=creation_key,
-            config_json=config.to_json(),
-            config_hash=config_hash(config),
-            now=self._ports.clock(),
-        )
+        try:
+            binding = self.uow.create_agent_binding(
+                agent_id=agent_id,
+                run_id=agent_id,
+                owner_scope=self._owner_scope,
+                role="root",
+                creation_key=creation_key,
+                config_json=config.to_json(),
+                config_hash=config_hash(config),
+                now=self._ports.clock(),
+                max_agents=self._ports.max_agents,
+            )
+        except InstanceCapConflict as error:
+            raise AgentInstanceCapExceeded(str(error)) from error
         return BaseAgent(self, binding)
 
     @property
@@ -500,15 +508,19 @@ class AgentRuntime:
                 try:
                     latest = self.uow.mark_agent_closed(agent_id=agent_id, now=clock())
                 except UnitOfWorkConflict:
-                    continue  # a turn opened between the read and the write; loop again
-                return AgentClosingReceipt(
-                    agent_id=agent_id,
-                    command_id=command.command_id,
-                    state=latest.lifecycle,
-                    open_turn_id=None,
-                    control_generation=latest.control_generation,
-                    created_at=command.created_at,
-                )
+                    # A turn was admitted between the read and the write (another
+                    # owner): treat it like an open turn and fall through to the
+                    # bounded wait below, never spin.
+                    open_turn = self.uow.read_open_agent_turn(binding.run_id)
+                else:
+                    return AgentClosingReceipt(
+                        agent_id=agent_id,
+                        command_id=command.command_id,
+                        state=latest.lifecycle,
+                        open_turn_id=None,
+                        control_generation=latest.control_generation,
+                        created_at=command.created_at,
+                    )
             if clock() >= deadline:
                 current = self.uow.read_agent_binding(agent_id)
                 assert current is not None
@@ -516,7 +528,7 @@ class AgentRuntime:
                     agent_id=agent_id,
                     command_id=command.command_id,
                     state=current.lifecycle,
-                    open_turn_id=open_turn.turn_id,
+                    open_turn_id=None if open_turn is None else open_turn.turn_id,
                     control_generation=current.control_generation,
                     created_at=command.created_at,
                 )

@@ -1189,6 +1189,7 @@ class SqliteExecutionUnitOfWork:
         config_json: Mapping[str, JsonValue],
         config_hash: str,
         now: float,
+        max_agents: int | None = None,
     ) -> AgentBindingRecord:
         from .base_agent import turns
 
@@ -1203,6 +1204,7 @@ class SqliteExecutionUnitOfWork:
                 config_json=config_json,
                 config_hash=config_hash,
                 now=_time(now),
+                max_agents=max_agents,
             )
 
     def read_agent_binding(self, agent_id: str) -> AgentBindingRecord | None:
@@ -6299,6 +6301,16 @@ class SqliteExecutionUnitOfWork:
         record = self.read_effect(effect_id)
         assert record is not None
         return record
+
+    def list_unknown_effects_for_run(self, run_id: str) -> tuple[EffectRecord, ...]:
+        """Effects of one Run whose outcome is still UNKNOWN (oldest first)."""
+
+        rows = self.database.connection.execute(
+            "SELECT * FROM execution_effects WHERE run_id = ? AND state = 'unknown' "
+            "ORDER BY turn_ordinal, call_ordinal",
+            (_required(run_id, "run_id"),),
+        ).fetchall()
+        return tuple(_effect_record(row) for row in rows)
 
     def read_effect(self, effect_id: EffectId) -> EffectRecord | None:
         row = self.database.connection.execute(

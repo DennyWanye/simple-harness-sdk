@@ -349,16 +349,25 @@ class AgentDelegateTool:
             )
         self._fault("delegate.after_launch")
         if uow.read_agent_binding(child_agent_id) is None:
-            uow.create_agent_binding(
-                agent_id=child_agent_id,
-                run_id=child_run_id,
-                owner_scope=parent.owner_scope,
-                role="child",
-                creation_key=f"delegation:{parent.agent_id}:{delegation_id}",
-                config_json=child_config.to_json(),
-                config_hash=config_hash(child_config),
-                now=now,
-            )
+            try:
+                uow.create_agent_binding(
+                    agent_id=child_agent_id,
+                    run_id=child_run_id,
+                    owner_scope=parent.owner_scope,
+                    role="child",
+                    creation_key=f"delegation:{parent.agent_id}:{delegation_id}",
+                    config_json=child_config.to_json(),
+                    config_hash=config_hash(child_config),
+                    now=now,
+                    max_agents=runtime.ports.max_agents,
+                )
+            except UnitOfWorkConflict as error:
+                uow.set_agent_delegation_state(delegation_id=delegation_id, state="failed", now=now)
+                return _failed(
+                    context,
+                    "agent_instance_cap_exceeded",
+                    f"child Agent could not be bound: {error}",
+                )
         if delegation.state == "reserved":
             uow.set_agent_delegation_state(delegation_id=delegation_id, state="launched", now=now)
         # 3. The child's single input (idempotent by input_id).

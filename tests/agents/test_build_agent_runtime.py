@@ -100,9 +100,12 @@ def test_create_does_not_call_provider(tmp_path):
             for agent in agents:
                 await runtime.kernel.wait_idle(RunId(agent.run_id))
             assert provider.calls == 0
-            assert runtime.uow.database.connection.execute(
-                "SELECT COUNT(*) FROM base_agent_turns_v1"
-            ).fetchone()[0] == 0
+            assert (
+                runtime.uow.database.connection.execute(
+                    "SELECT COUNT(*) FROM base_agent_turns_v1"
+                ).fetchone()[0]
+                == 0
+            )
 
     asyncio.run(case())
 
@@ -219,6 +222,7 @@ def test_import_purity_still_holds():
         "simple_harness.BaseAgent\n"
         "print('ok')\n"
     )
-    result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True,
-                            cwd=str(SRC.parent))
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code], capture_output=True, text=True, cwd=str(SRC.parent)
+    )
     assert result.returncode == 0, result.stderr

@@ -1632,6 +1632,7 @@ class Runtime:
         self._fences: dict[str, RunFenceLease] = {}
         self._cancels: dict[str, CancelToken] = {}
         self._heartbeats: dict[str, asyncio.Task[None]] = {}
+        self._pending_wakes: set[str] = set()
         self._workflow_spawn_ready_activations: dict[str, WorkflowSpawnReadyActivation] = {}
         self._workflow_start_dispatches: dict[str, RuntimeStartDispatchClaim] = {}
         self._workflow_recovery_work: dict[str, WorkflowRecoveryWork] = {}
@@ -2243,6 +2244,11 @@ class Runtime:
         try:
             while self._state is RuntimeLifecycleState.READY:
                 await self._drain_resolved_waits_once()
+                for run_id in tuple(self._pending_wakes):
+                    if run_id in self._leases or run_id in self._live.active_run_ids():
+                        self._pending_wakes.discard(run_id)
+                        continue
+                    await self._wake_continuation(run_id)
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             return
@@ -2831,7 +2837,12 @@ class Runtime:
             try:
                 await self._activate(run_id)
             except UnitOfWorkConflict:
+                # Another owner holds the Run (or its lease has not expired yet).
+                # Remember the wake so the drain loop retries it instead of leaving
+                # a queued input behind until the next recover().
+                self._pending_wakes.add(run_id)
                 return
+        self._pending_wakes.discard(run_id)
         if run_id in self._live.active_run_ids():
             # A drive is already running and may have passed its claim point before
             # this input was enqueued (and, for idle BaseAgent Runs, may be about to
@@ -2839,6 +2850,11 @@ class Runtime:
             # input is claimed by a fresh drive instead of waiting for recover().
             await self._live.wait(run_id)
             if self._closing:
+                return
+            blockers = getattr(self._uow, "list_open_wait_blockers_for_run", None)
+            if callable(blockers) and blockers(run_id):
+                # The drive ended in an UNKNOWN wait: the resolved-wait drain wakes
+                # it once reconciliation settles the blocker; do not re-drive now.
                 return
             await self._wake_continuation(run_id)
             return

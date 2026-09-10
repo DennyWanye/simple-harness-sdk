@@ -51,17 +51,28 @@ def test_limits_reject_bool_negative_nan(kwargs):
 
 def test_config_hash_is_stable_and_order_insensitive():
     a = AgentConfig(
-        name="worker", instructions="do", model_profile_ref="p", tool_names=("x", "y"),
+        name="worker",
+        instructions="do",
+        model_profile_ref="p",
+        tool_names=("x", "y"),
         limits=AgentLimits(max_tool_calls_per_turn=5),
     )
     b = AgentConfig(
-        limits=AgentLimits(max_tool_calls_per_turn=5), tool_names=("x", "y"),
-        model_profile_ref="p", instructions="do", name="worker",
+        limits=AgentLimits(max_tool_calls_per_turn=5),
+        tool_names=("x", "y"),
+        model_profile_ref="p",
+        instructions="do",
+        name="worker",
     )
     assert config_hash(a) == config_hash(b)
     assert len(config_hash(a)) == 64
-    c = AgentConfig(name="worker", instructions="do!", model_profile_ref="p", tool_names=("x", "y"),
-                    limits=AgentLimits(max_tool_calls_per_turn=5))
+    c = AgentConfig(
+        name="worker",
+        instructions="do!",
+        model_profile_ref="p",
+        tool_names=("x", "y"),
+        limits=AgentLimits(max_tool_calls_per_turn=5),
+    )
     assert config_hash(c) != config_hash(a)
     assert AgentConfig.from_json(a.to_json()) == a
 
@@ -122,8 +133,12 @@ def test_agent_turn_outcome_has_no_agents_dependency():
 
 def test_result_hash_roundtrip():
     result = AgentTurnResult(
-        turn_id="t-1", agent_id="a-1", seq=1, state=AgentTurnState.COMMITTED,
-        public_output=Message(MessageRole.ASSISTANT, "结论：Y"), usage_refs=("u-1",),
+        turn_id="t-1",
+        agent_id="a-1",
+        seq=1,
+        state=AgentTurnState.COMMITTED,
+        public_output=Message(MessageRole.ASSISTANT, "结论：Y"),
+        usage_refs=("u-1",),
         delegation_count=1,
     )
     outcome = result.to_outcome(input_id="i-1", input_hash="0" * 64)

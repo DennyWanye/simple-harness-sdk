@@ -84,6 +84,12 @@ class AgentBatchIdentityConflict(AgentError):
     code = "batch_identity_conflict"
 
 
+class AgentInstanceCapExceeded(AgentError):
+    """``AgentRuntimePorts.max_agents`` reached for this owner (decided at insert time)."""
+
+    code = "agent_instance_cap_exceeded"
+
+
 class AgentPendingInputsExhausted(AgentError):
     """``AgentLimits.max_pending_inputs`` open turns already queued for this Agent."""
 
@@ -208,7 +214,9 @@ class AgentTurnResult:
             "artifact_refs": list(self.artifact_refs),
             "usage_refs": list(self.usage_refs),
             "delegation_count": self.delegation_count,
-            "error": None if self.error is None else thaw_json(freeze_json(dict(self.error))),
+            "error": (
+                None if self.error is None else thaw_json(freeze_json(thaw_json(self.error)))
+            ),
         }
 
     @classmethod
@@ -343,6 +351,7 @@ __all__ = (
     "AgentError",
     "AgentId",
     "AgentInputConflict",
+    "AgentInstanceCapExceeded",
     "AgentNotFound",
     "AgentPendingInputsExhausted",
     "AgentTurnId",

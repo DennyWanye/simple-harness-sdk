@@ -184,11 +184,19 @@ def _ordinary_runtime(tmp_path):
         {"agent.general": RuntimeProfile("agent.general", "react")},
         {"react": driver},
         RuntimePorts(
-            provider=noop, tools=noop, authorization=noop,
-            context=SqliteContextPort(database, clock=lambda: 10.0), delivery=noop,
-            tool_reconciliation=noop, reconciliation=noop, provider_reconciliation=noop,
-            react_checkpoint=uow, tool_catalog=Catalog(), owner_id="ordinary-owner",
-            clock=lambda: 10.0, admission=AllowAllAdmission(),
+            provider=noop,
+            tools=noop,
+            authorization=noop,
+            context=SqliteContextPort(database, clock=lambda: 10.0),
+            delivery=noop,
+            tool_reconciliation=noop,
+            reconciliation=noop,
+            provider_reconciliation=noop,
+            react_checkpoint=uow,
+            tool_catalog=Catalog(),
+            owner_id="ordinary-owner",
+            clock=lambda: 10.0,
+            admission=AllowAllAdmission(),
         ),
         close_hook=database.close,
     )
@@ -221,11 +229,19 @@ def test_build_runtime_rejects_unregistered_base_agent_driver(tmp_path):
     uow = SqliteExecutionUnitOfWork(database)
     noop = NoopPort()
     ports = RuntimePorts(
-        provider=noop, tools=noop, authorization=noop,
-        context=SqliteContextPort(database, clock=lambda: 10.0), delivery=noop,
-        tool_reconciliation=noop, reconciliation=noop, provider_reconciliation=noop,
-        react_checkpoint=uow, tool_catalog=Catalog(), owner_id="reject-owner",
-        clock=lambda: 10.0, admission=AllowAllAdmission(),
+        provider=noop,
+        tools=noop,
+        authorization=noop,
+        context=SqliteContextPort(database, clock=lambda: 10.0),
+        delivery=noop,
+        tool_reconciliation=noop,
+        reconciliation=noop,
+        provider_reconciliation=noop,
+        react_checkpoint=uow,
+        tool_catalog=Catalog(),
+        owner_id="reject-owner",
+        clock=lambda: 10.0,
+        admission=AllowAllAdmission(),
     )
     with pytest.raises(ValueError, match="agent.general driver is not registered"):
         build_runtime(

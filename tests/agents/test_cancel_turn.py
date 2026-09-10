@@ -280,3 +280,102 @@ def test_turn_failure_keeps_session_and_cost(tmp_path):
             assert seqs == [1, 2, 3]
 
     asyncio.run(case())
+
+
+def test_cancel_inside_a_tool_leaves_the_effect_reconcilable_not_orphaned(tmp_path):
+    """Review F1: a tool that raises CancelledError itself marks its effect UNKNOWN; the
+    checkpoint must stay in flight (UNKNOWN wait path) until the Host's reconciliation
+    settles the effect, and only then does the durable cancel intent fail the turn."""
+
+    from simple_harness.contracts import thaw_json
+    from simple_harness.execution.recovery import ResolutionOutcome
+    from simple_harness.contracts import EffectId
+    from simple_harness.tools import ToolResult
+
+    class Tool:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def execute(self, call, context):  # type: ignore[no-untyped-def]
+            return ToolResult.succeeded(call.call_id, {"echo": call.name})
+
+    async def case():
+        provider = ScriptedProvider([TOOL, "下一轮"])
+        tool = Tool()
+        ports = AgentRuntimePorts(
+            provider=provider,
+            authorization=AllowAllAuthorization(),
+            database_path=str(tmp_path / "runtime.db"),
+            model=MODEL,
+            owner_id="cancel-owner",
+            tool_executor=tool,
+            tool_names=("echo",),
+            tool_schemas={"echo": ECHO_SCHEMA},
+        )
+        async with build_agent_runtime(ports) as runtime:
+            # Bypass the registry's own cancellation race (a clean REJECTED result) and
+            # reproduce the executor path review F1 names: the handler raises
+            # CancelledError itself, the executor marks the effect UNKNOWN.
+            registry = runtime.kernel._ports.tools._registry
+            real_invoke = registry.invoke
+
+            async def invoke_raising_cancel(call, context, **kwargs):
+                if call.name == "echo" and not tool.started.is_set():
+                    tool.started.set()
+                    await tool.release.wait()
+                    raise asyncio.CancelledError()
+                return await real_invoke(call, context, **kwargs)
+
+            registry.invoke = invoke_raising_cancel  # type: ignore[method-assign]
+            agent = await runtime.create(_config(), creation_key="c8")
+            turn = await agent.submit("用工具", input_id="i1")
+            await asyncio.wait_for(tool.started.wait(), 5)
+            task = asyncio.create_task(
+                agent.cancel_turn(turn.turn_id, command_id="x1", wait_timeout=0.3)
+            )
+            await asyncio.sleep(0.02)
+            tool.release.set()
+            receipt = await task
+            # 1. Blocked, not cancelled: the effect is UNKNOWN and the checkpoint intact.
+            assert receipt.state == "pending"
+            snapshot = agent.turn_snapshot(turn.turn_id)
+            assert snapshot.state is AgentTurnState.RUNNING and snapshot.blocked
+            assert snapshot.blocker is not None and snapshot.blocker["kind"] == "tool"
+            effects = _rows(
+                runtime.uow,
+                "SELECT effect_id, state FROM execution_effects WHERE run_id=?",
+                agent.run_id,
+            )
+            assert [row[1] for row in effects] == ["unknown"]
+            checkpoint = thaw_json(runtime.uow.read_react_checkpoint(agent.run_id).checkpoint)
+            assert checkpoint["phase"] == "tool_batch_reserved"
+            assert agent.get_result(turn.turn_id) is None
+            # 2. The Host reconciles the interrupted call (legacy H13 path); the resolved
+            #    wait wakes the Run and the durable intent fails the turn cleanly.
+            record = runtime.uow.read_effect(EffectId(str(effects[0][0])))
+            assert record is not None
+            runtime.uow.record_tool_reconciliation(
+                record,
+                outcome=ResolutionOutcome.COMPLETED,
+                result=ToolResult.succeeded(record.call_id, {"echo": "late"}),
+                evidence_ref="host-evidence:late-echo",
+                now=runtime.ports.clock(),
+            )
+            result = await agent.wait_turn(turn.turn_id, timeout=5)
+            assert result.state is AgentTurnState.FAILED
+            assert result.error["error_code"] == "agent_turn_cancelled"
+            effects = _rows(
+                runtime.uow, "SELECT state FROM execution_effects WHERE run_id=?", agent.run_id
+            )
+            assert [row[0] for row in effects] == ["succeeded"]
+            checkpoint = thaw_json(runtime.uow.read_react_checkpoint(agent.run_id).checkpoint)
+            assert checkpoint["phase"] == "ready"
+            assert runtime.uow.list_open_wait_blockers_for_run(agent.run_id) == ()
+            # 3. The Agent lives on with a clean checkpoint: no identity conflict.
+            ok = await agent.ask("再来", input_id="i2", timeout=5)
+            assert ok.state is AgentTurnState.COMMITTED and ok.public_output.content == "下一轮"
+            run = runtime.uow.read_run(agent.run_id)
+            assert run is not None and run.state is RunState.WAITING
+
+    asyncio.run(case())

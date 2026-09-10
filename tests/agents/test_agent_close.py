@@ -225,3 +225,35 @@ def test_closing_converges_to_closed_when_the_open_turn_finalizes(tmp_path):
             assert agent.status().lifecycle == "CLOSED"
 
     asyncio.run(case())
+
+
+def test_close_drain_conflict_is_bounded_not_a_spin(tmp_path):
+    """Review F3: a conflicting mark_agent_closed must fall through to the bounded wait."""
+
+    async def case():
+        provider = ScriptedProvider([])
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            agent = await runtime.create(_config(), creation_key="c-7")
+            klass = type(runtime.uow)
+            original = klass.mark_agent_closed
+            calls = {"n": 0}
+
+            def always_conflict(self, **kwargs):
+                calls["n"] += 1
+                from simple_harness.execution.uow import UnitOfWorkConflict
+
+                raise UnitOfWorkConflict("agent still has an open turn")
+
+            klass.mark_agent_closed = always_conflict  # type: ignore[method-assign]
+            try:
+                receipt = await asyncio.wait_for(
+                    agent.close(command_id="cmd-1", drain_timeout=0.2), timeout=5
+                )
+            finally:
+                klass.mark_agent_closed = original  # type: ignore[method-assign]
+            assert receipt.state == "closing"
+            assert calls["n"] >= 1
+            again = await agent.close(command_id="cmd-2")
+            assert again.state == "closed"
+
+    asyncio.run(case())

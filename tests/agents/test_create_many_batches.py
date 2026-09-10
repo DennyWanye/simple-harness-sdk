@@ -14,10 +14,11 @@ from simple_harness.agents import (
     AgentBatchIdentityConflict,
     AgentBatchRejected,
     AgentConfig,
+    AgentInstanceCapExceeded,
     build_agent_runtime,
 )
 from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
-from simple_harness.agents.runtime import AgentRuntime
+from simple_harness.agents.runtime import AgentRuntime, agent_id_for
 from simple_harness.contracts import RunId
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
 from simple_harness.runtime.context import SqliteContextPort
@@ -260,5 +261,27 @@ def test_reserved_batch_is_resumed_not_duplicated(tmp_path):
             committed = restarted.uow.read_agent_batch("default", "crash")
             assert committed is not None and committed.state == "committed"
             assert provider.calls == 0
+
+    asyncio.run(case())
+
+
+def test_instance_cap_is_enforced_at_insert_for_single_create(tmp_path):
+    """Review F4: the cap is decided where the binding is written, not only in batches."""
+
+    async def case():
+        ports = _ports(tmp_path, ScriptedProvider([]), max_agents=2)
+        async with build_agent_runtime(ports) as runtime:
+            await runtime.create(_config("a"), creation_key="a")
+            await runtime.create(_config("b"), creation_key="b")
+            before = _counts(runtime.uow)
+            with pytest.raises(AgentInstanceCapExceeded) as info:
+                await runtime.create(_config("c"), creation_key="c")
+            assert info.value.code == "agent_instance_cap_exceeded"
+            assert (
+                _counts(runtime.uow)["base_agent_bindings_v1"] == before["base_agent_bindings_v1"]
+            )
+            # Replaying an existing key is never blocked by the cap.
+            same = await runtime.create(_config("a"), creation_key="a")
+            assert same.agent_id == agent_id_for("default", "a")
 
     asyncio.run(case())
