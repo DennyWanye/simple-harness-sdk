@@ -110,8 +110,12 @@ class AgentExecutionDriver:
         tool_exposure_resolver: Callable[[RunId], RunToolExposurePort | None] | None = None,
         delegation_counter: Callable[[str], int] | None = None,
         turn_cancellations: MutableMapping[str, CancellationToken] | None = None,
+        empty_response_retries: int = 2,
+        max_output_tokens_ceiling: int = 8192,
     ) -> None:
         self._clock = clock
+        self._empty_response_retries = max(0, int(empty_response_retries))
+        self._max_output_tokens_ceiling = max(1, int(max_output_tokens_ceiling))
         # In-process cooperative cancel tokens keyed by turn_id (T8); the durable
         # intent lives in base_agent_control_commands_v1 for cross-process resumes.
         self.turn_cancellations: MutableMapping[str, CancellationToken] = (
@@ -330,102 +334,128 @@ class AgentExecutionDriver:
         tool_exposure = (
             None if self._tool_exposure_resolver is None else self._tool_exposure_resolver(run_id)
         )
-        token = self.turn_cancellations.get(turn_id)
-        if token is None:
-            token = CancellationToken()
-            self.turn_cancellations[turn_id] = token
-        try:
-            result = await self._run_turn(
-                loop,
-                invocation,
-                run_id,
-                turn_id,
-                tools,
-                tool_exposure,
-                input_value,
-                initial_messages,
-                cancel,
-                token,
-            )
-        except _TurnCancelled:
-            self._settle_failed_turn(invocation, run_id)
-            return self._cancelled_turn(
-                agent_id=agent_id,
-                turn_id=turn_id,
-                seq=seq,
-                input_id=input_id,
-                input_hash=input_hash,
-                ordinal_from=ordinal_from,
-                checkpoint_port=checkpoint_port,
-                run_id_value=invocation.run.run_id,
-            )
-        except TerminationBudgetExceeded as error:
-            # The turn failed; the Agent lives on (BA-v1.0 §1.3).  The run-level
-            # checkpoint may be mid-flight (a limit breached after the provider
-            # answered): release it so the next turn starts a fresh request.
-            self._settle_failed_turn(invocation, run_id)
-            return self._budget_failure(
-                error,
-                agent_id=agent_id,
-                turn_id=turn_id,
-                seq=seq,
-                input_id=input_id,
-                input_hash=input_hash,
-                ordinal_from=ordinal_from,
-                checkpoint_port=checkpoint_port,
-                run_id_value=invocation.run.run_id,
-            )
-        except (
-            UnknownToolError,
-            MalformedToolArgumentsError,
-            *_DEFINITE_PROVIDER_FAILURES,
-        ) as error:
-            # Model protocol violations and definite Provider refusals end this turn as
-            # FAILED; the Agent stays alive (UNKNOWN outcomes keep the legacy wait path).
-            if isinstance(error, UnknownToolError):
-                code = "tool_not_exposed"
-            elif isinstance(error, MalformedToolArgumentsError):
-                code = "invalid_tool_arguments"
-            else:
-                code = str(getattr(error, "code", "provider_rejected"))
-            # Whatever the cause, the turn is definitely over: release the loop
-            # checkpoint so the next AgentTurn starts a fresh provider request.
-            self._settle_failed_turn(invocation, run_id)
-            error_payload: dict[str, JsonValue] = {
-                "error_code": code,
-                "source_kind": "tool_parse",
-                "error_type": type(error).__name__,
-            }
-            detail = getattr(error, "detail", None)
-            if isinstance(detail, Mapping):
-                # e.g. finish_reason / observed usage of an empty provider response,
-                # kept in the durable turn result (review F6).
-                error_payload["detail"] = cast(JsonValue, thaw_json(freeze_json(dict(detail))))
-            return DriverResult(
-                RunState.WAITING,
-                {"response_present": False, "raw_failures": [{"error_code": code}]},
-                agent_turn_outcome=failed_outcome(
+        output_cap = _optional_int(input_value.get("max_output_tokens"), "max_output_tokens")
+        attempt = 0
+        escalations: list[dict[str, JsonValue]] = []
+        while True:
+            token = self.turn_cancellations.get(turn_id)
+            if token is None:
+                token = CancellationToken()
+                self.turn_cancellations[turn_id] = token
+            try:
+                result = await self._run_turn(
+                    loop,
+                    invocation,
+                    run_id,
+                    turn_id,
+                    tools,
+                    tool_exposure,
+                    input_value,
+                    initial_messages,
+                    cancel,
+                    token,
+                    output_cap,
+                )
+            except _TurnCancelled:
+                self._settle_failed_turn(invocation, run_id)
+                return self._cancelled_turn(
                     agent_id=agent_id,
                     turn_id=turn_id,
                     seq=seq,
                     input_id=input_id,
                     input_hash=input_hash,
-                    error=error_payload,
-                    delegation_count=self._delegations(turn_id),
-                    provider_turn_ordinal_from=ordinal_from,
-                    provider_turn_ordinal_to=_checkpoint_totals(
-                        checkpoint_port, invocation.run.run_id
-                    ).provider_turns,
-                ),
-            )
-        except (
-            ProviderInvocationUnknownError,
-            ToolAuthorizationPending,
-            ToolEffectUnknownError,
-        ) as error:
-            return _react_failure_result(error)
-        finally:
-            self.turn_cancellations.pop(turn_id, None)
+                    ordinal_from=ordinal_from,
+                    checkpoint_port=checkpoint_port,
+                    run_id_value=invocation.run.run_id,
+                )
+            except TerminationBudgetExceeded as error:
+                # The turn failed; the Agent lives on (BA-v1.0 §1.3).  The run-level
+                # checkpoint may be mid-flight (a limit breached after the provider
+                # answered): release it so the next turn starts a fresh request.
+                self._settle_failed_turn(invocation, run_id)
+                return self._budget_failure(
+                    error,
+                    agent_id=agent_id,
+                    turn_id=turn_id,
+                    seq=seq,
+                    input_id=input_id,
+                    input_hash=input_hash,
+                    ordinal_from=ordinal_from,
+                    checkpoint_port=checkpoint_port,
+                    run_id_value=invocation.run.run_id,
+                )
+            except (
+                UnknownToolError,
+                MalformedToolArgumentsError,
+                *_DEFINITE_PROVIDER_FAILURES,
+            ) as error:
+                # Model protocol violations and definite Provider refusals end this turn as
+                # FAILED; the Agent stays alive (UNKNOWN outcomes keep the legacy wait path).
+                if isinstance(error, UnknownToolError):
+                    code = "tool_not_exposed"
+                elif isinstance(error, MalformedToolArgumentsError):
+                    code = "invalid_tool_arguments"
+                else:
+                    code = str(getattr(error, "code", "provider_rejected"))
+                detail = getattr(error, "detail", None)
+                if (
+                    code == "provider_empty_response"
+                    and isinstance(detail, Mapping)
+                    and detail.get("finish_reason") == "length"
+                    and attempt < self._empty_response_retries
+                    and output_cap is not None
+                    and output_cap < self._max_output_tokens_ceiling
+                ):
+                    # F-BA-1: the model spent its whole output cap on reasoning and returned
+                    # no text.  Escalate the cap and issue a fresh provider turn within the
+                    # same AgentTurn; the failed invocation stays settled in the ledger.
+                    self._settle_failed_turn(invocation, run_id)
+                    attempt += 1
+                    output_cap = min(output_cap * 2, self._max_output_tokens_ceiling)
+                    escalations.append({"attempt": attempt, "max_output_tokens": output_cap})
+                    continue
+                # Whatever the cause, the turn is definitely over: release the loop
+                # checkpoint so the next AgentTurn starts a fresh provider request.
+                self._settle_failed_turn(invocation, run_id)
+                error_payload: dict[str, JsonValue] = {
+                    "error_code": code,
+                    "source_kind": "tool_parse",
+                    "error_type": type(error).__name__,
+                }
+                if isinstance(detail, Mapping):
+                    # e.g. finish_reason / observed usage of an empty provider response,
+                    # kept in the durable turn result (review F6).
+                    error_payload["detail"] = cast(JsonValue, thaw_json(freeze_json(dict(detail))))
+                if escalations:
+                    error_payload["output_cap_escalations"] = cast(
+                        JsonValue, thaw_json(freeze_json(list(escalations)))
+                    )
+                return DriverResult(
+                    RunState.WAITING,
+                    {"response_present": False, "raw_failures": [{"error_code": code}]},
+                    agent_turn_outcome=failed_outcome(
+                        agent_id=agent_id,
+                        turn_id=turn_id,
+                        seq=seq,
+                        input_id=input_id,
+                        input_hash=input_hash,
+                        error=error_payload,
+                        delegation_count=self._delegations(turn_id),
+                        provider_turn_ordinal_from=ordinal_from,
+                        provider_turn_ordinal_to=_checkpoint_totals(
+                            checkpoint_port, invocation.run.run_id
+                        ).provider_turns,
+                    ),
+                )
+            except (
+                ProviderInvocationUnknownError,
+                ToolAuthorizationPending,
+                ToolEffectUnknownError,
+            ) as error:
+                return _react_failure_result(error)
+            finally:
+                self.turn_cancellations.pop(turn_id, None)
+            break
         response = result.response
         outcome = committed_outcome(
             agent_id=agent_id,
@@ -465,6 +495,7 @@ class AgentExecutionDriver:
         initial_messages: tuple[Message, ...],
         cancel,
         token: CancellationToken,
+        max_output_tokens: int | None = None,
     ):
         try:
             return await loop.run(
@@ -476,9 +507,7 @@ class AgentExecutionDriver:
                     tools=tools,
                     tool_exposure=tool_exposure,
                     temperature=_optional_float(input_value.get("temperature"), "temperature"),
-                    max_output_tokens=_optional_int(
-                        input_value.get("max_output_tokens"), "max_output_tokens"
-                    ),
+                    max_output_tokens=max_output_tokens,
                     initial_route_receipt=invocation.start.initial_route_receipt,
                     initial_route_receipt_hash=invocation.start.initial_route_receipt_hash,
                 ),
@@ -767,6 +796,8 @@ def build_agent_execution_driver(
     delegation_counter: Callable[[str], int] | None = None,
     clock: Callable[[], float] = time.time,
     turn_cancellations: MutableMapping[str, CancellationToken] | None = None,
+    empty_response_retries: int = 2,
+    max_output_tokens_ceiling: int = 8192,
 ) -> AgentExecutionDriver:
     """Hard-policy builder; the fingerprint protocol differs from legacy ReAct on purpose."""
 
@@ -800,6 +831,8 @@ def build_agent_execution_driver(
         tool_exposure_resolver=tool_exposure_resolver,
         delegation_counter=delegation_counter,
         turn_cancellations=turn_cancellations,
+        empty_response_retries=empty_response_retries,
+        max_output_tokens_ceiling=max_output_tokens_ceiling,
     )
 
 

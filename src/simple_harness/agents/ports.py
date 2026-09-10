@@ -61,6 +61,10 @@ class AgentRuntimePorts:
     # Every BaseAgent request carries max_output_tokens so the budget reservation is
     # an estimated upper bound instead of UNKNOWN (which would refuse the next turn).
     default_max_output_tokens: int = 4096
+    # F-BA-1: an empty answer with finish_reason=length (reasoning ate the cap) is
+    # retried with a doubled cap, up to this many times and this ceiling.
+    empty_response_retries: int = 2
+    max_output_tokens_ceiling: int = 8192
     # Batch creation caps (BA02/BA04): checked before any write.
     max_agents: int = 1000
     max_batch_size: int = 200
@@ -122,6 +126,16 @@ class AgentRuntimePorts:
             or not 0.0 <= self.recall_token_share <= 0.9
         ):
             raise ValueError("recall_token_share must be a float in [0, 0.9]")
+        for name in ("max_output_tokens_ceiling",):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if (
+            isinstance(self.empty_response_retries, bool)
+            or not isinstance(self.empty_response_retries, int)
+            or self.empty_response_retries < 0
+        ):
+            raise ValueError("empty_response_retries must be a non-negative integer")
         for name in ("max_agents", "max_batch_size"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:

@@ -244,6 +244,8 @@ def assemble_runtime(
         delegation_counter=delegation_counter,
         clock=ports.clock,
         turn_cancellations=turn_cancellations,
+        empty_response_retries=ports.empty_response_retries,
+        max_output_tokens_ceiling=ports.max_output_tokens_ceiling,
     )
     runtime = build_runtime(
         uow=uow,  # type: ignore[arg-type]
