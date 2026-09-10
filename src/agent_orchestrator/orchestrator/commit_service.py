@@ -36,6 +36,7 @@ from ..contracts import (
 )
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, sha256_hex
 from ..governance.budgets import BudgetExhausted, BudgetLedger, UsageFact
+from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
 from .state_machine import next_attempt, next_claim, next_mission, next_task
 
@@ -425,6 +426,184 @@ class CommitService:
             raise CommitRejected(
                 f"verification layers not deployed in this build: {sorted(unsupported)}"
             )
+
+    def commit_task_graph(
+        self,
+        mission_id: str,
+        proposal: TaskGraphProposal,
+        *,
+        base_version: int,
+        source: Mapping[str, Any],
+    ) -> tuple[list[Task], Mapping[str, Any]]:
+        """Apply the Planner's whole Task DAG proposal atomically (step 3, D3-2/D3-3).
+
+        The Graph Manager checks (``validate_graph``) run first; a rejection writes
+        only a ``TaskGraphRejected`` event and leaves the formal graph untouched.
+        Roots start READY, everything else BLOCKED (§25.1); ids follow the
+        deterministic topological order so a replay yields the same receipt.
+        """
+
+        proposal_json = proposal.to_json()
+        commit = ids.commit_id(
+            {"kind": "task_graph", "mission_id": mission_id, **proposal_json}, base_version
+        )
+        try:
+            return self._commit_task_graph(
+                mission_id,
+                proposal,
+                commit,
+                proposal_json,
+                base_version=base_version,
+                source=source,
+            )
+        except GraphRejected as error:
+            # the write transaction rolled back; the rejection itself is a durable fact
+            self._emit(
+                "TaskGraphRejected",
+                mission_id,
+                key=f"{mission_id}:{base_version}:{sha256_hex(proposal_json)[:12]}",
+                payload={"reason": error.reason, "detail": error.detail, "source": dict(source)},
+            )
+            raise CommitRejected(f"task graph rejected ({error.reason}): {error.detail}") from error
+
+    def _commit_task_graph(
+        self,
+        mission_id: str,
+        proposal: TaskGraphProposal,
+        commit: str,
+        proposal_json: Mapping[str, Any],
+        *,
+        base_version: int,
+        source: Mapping[str, Any],
+    ) -> tuple[list[Task], Mapping[str, Any]]:
+        with self._store.transaction():
+            receipt = self._store.get_receipt(commit)
+            if receipt is not None:
+                tasks = [self._require_task(task_id) for task_id in receipt["task_ids"]]
+                return tasks, receipt
+            mission = self._require_mission(mission_id)
+            if mission.version != base_version:
+                raise CommitRejected(
+                    f"proposal is based on mission version {base_version}, current is {mission.version}"
+                )
+            if mission.status is not MissionStatus.PLANNING:
+                raise CommitRejected(f"mission {mission_id} is {mission.status}, not PLANNING")
+            if self._store.list_tasks(mission_id):
+                raise CommitRejected(
+                    "the Mission already has a committed graph (static DAG, step 3)"
+                )
+            graph = validate_graph(mission, proposal)  # GraphRejected handled by the caller
+            key_to_id = {
+                key: ids.task_id(mission_id, ordinal)
+                for ordinal, key in enumerate(graph.order, start=1)
+            }
+            tasks: list[Task] = []
+            for ordinal, key in enumerate(graph.order, start=1):
+                node = graph.node(key)
+                dependencies = tuple(key_to_id[dependency] for dependency in node.dependencies)
+                task = Task(
+                    id=key_to_id[key],
+                    mission_id=mission_id,
+                    parent_task_ids=(),
+                    dependency_ids=dependencies,
+                    goal=node.goal,
+                    rationale=node.rationale,
+                    success_criteria=node.success_criteria,
+                    verification_policy=node.verification_policy,
+                    allowed_tools=node.allowed_tools,
+                    budget=node.budget,
+                    priority=node.priority,
+                    status=TaskStatus.READY if not dependencies else TaskStatus.BLOCKED,
+                    version=1,
+                    root_goal=mission.goal,
+                    created_at=self._store.now,
+                )
+                self._store.insert_task(task, ordinal=ordinal)
+                self._ledger.open_account(
+                    account_id=task_account(task.id),
+                    scope="task",
+                    parent_id=mission_account(mission_id),
+                    mission_id=mission_id,
+                    limits=node.budget,
+                )
+                tasks.append(task)
+                self._emit(
+                    "TaskCommitted",
+                    mission_id,
+                    key=task.id,
+                    task_id=task.id,
+                    payload={
+                        "commit_id": commit,
+                        "key": key,
+                        "dependencies": list(dependencies),
+                        "proposal": node.to_json(),
+                        "source": dict(source),
+                    },
+                )
+            activated = next_mission(mission, MissionStatus.ACTIVE)
+            self._store.update_mission(activated, expected_version=mission.version)
+            receipt = {
+                "commit_id": commit,
+                "graph_version": 1,
+                "task_ids": [task.id for task in tasks],
+                "terminal_task_id": key_to_id[graph.terminal_key],
+                "mission_version": activated.version,
+                "proposal_hash": sha256_hex(proposal_json),
+                "source": dict(source),
+            }
+            self._store.insert_receipt(
+                commit_id=commit,
+                kind="task_graph",
+                subject_id=mission_id,
+                base_version=base_version,
+                proposal_hash=receipt["proposal_hash"],
+                receipt=receipt,
+            )
+            self._emit(
+                "TaskGraphCommitted",
+                mission_id,
+                key=f"{mission_id}:graph-1",
+                payload={
+                    "commit_id": commit,
+                    "task_ids": receipt["task_ids"],
+                    "terminal_task_id": receipt["terminal_task_id"],
+                    "edges": {task.id: list(task.dependency_ids) for task in tasks},
+                },
+            )
+            self._emit(
+                "MissionActivated",
+                mission_id,
+                key=mission_id,
+                payload={"task_ids": receipt["task_ids"]},
+            )
+            return tasks, receipt
+
+    def unblock_dependents(self, task_id: str) -> list[Task]:
+        """After a Task COMPLETED: every BLOCKED dependent whose dependencies are all
+        COMPLETED becomes READY (§25.1 "dependencies satisfied")."""
+
+        with self._store.transaction():
+            completed = self._require_task(task_id)
+            unblocked: list[Task] = []
+            tasks = {task.id: task for task in self._store.list_tasks(completed.mission_id)}
+            for task in tasks.values():
+                if task.status is not TaskStatus.BLOCKED or task_id not in task.dependency_ids:
+                    continue
+                if all(tasks[dep].status is TaskStatus.COMPLETED for dep in task.dependency_ids):
+                    ready = next_task(task, TaskStatus.READY)
+                    self._store.update_task(ready, expected_version=task.version)
+                    unblocked.append(ready)
+                    self._emit(
+                        "TaskUnblocked",
+                        task.mission_id,
+                        key=task.id,
+                        task_id=task.id,
+                        payload={
+                            "dependencies": list(task.dependency_ids),
+                            "unblocked_by": task_id,
+                        },
+                    )
+            return unblocked
 
     def fail_planning(
         self,
