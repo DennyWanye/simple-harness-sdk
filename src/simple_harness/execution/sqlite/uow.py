@@ -7659,6 +7659,20 @@ class SqliteExecutionUnitOfWork:
     def read_provider_budget(self, run_id: RunId) -> BudgetSnapshot:
         return self._provider_budget(self.database.connection, run_id)
 
+    def list_provider_invocations(self, run_id: RunId) -> tuple[ProviderInvocationRecord, ...]:
+        """Every provider invocation of one Run, oldest first (read-only cost facts).
+
+        Added for the orchestration layer (ORCH-BUILD §12.2: the SDK invocation
+        ledger is the fact layer for actual model cost); it exposes nothing that
+        ``read_provider_invocation`` does not already return per row.
+        """
+
+        rows = self.database.connection.execute(
+            "SELECT * FROM provider_invocations WHERE run_id = ? ORDER BY claimed_at, invocation_id",
+            (run_id.value,),
+        ).fetchall()
+        return tuple(_provider_invocation_record(row) for row in rows)
+
     def _provider_budget(self, connection: sqlite3.Connection, run_id: RunId) -> BudgetSnapshot:
         committed = 0
         reserved = 0

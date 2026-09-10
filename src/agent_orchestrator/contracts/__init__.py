@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
+"""Serialisation contracts (§26) and state machines (§25)."""
+
+from . import ids
+from .models import (
+    CONTRACT_SCHEMA_VERSION,
+    STEP2_IMPLEMENTED_LAYERS,
+    VERIFICATION_LAYERS,
+    Artifact,
+    Attempt,
+    Budget,
+    Claim,
+    ClaimProposal,
+    ContractError,
+    Event,
+    Mission,
+    ResultEnvelope,
+    Task,
+    sha256_hex,
+)
+from .state_machines import (
+    TERMINAL_ATTEMPT,
+    TERMINAL_MISSION,
+    TERMINAL_TASK,
+    AttemptStatus,
+    ClaimStatus,
+    IllegalTransition,
+    MissionStatus,
+    MissionStopReason,
+    ResultOutcome,
+    TaskStatus,
+    assert_attempt_transition,
+    assert_claim_transition,
+    assert_mission_transition,
+    assert_task_transition,
+)
+
+__all__ = (
+    "CONTRACT_SCHEMA_VERSION",
+    "STEP2_IMPLEMENTED_LAYERS",
+    "TERMINAL_ATTEMPT",
+    "TERMINAL_MISSION",
+    "TERMINAL_TASK",
+    "VERIFICATION_LAYERS",
+    "Artifact",
+    "Attempt",
+    "AttemptStatus",
+    "Budget",
+    "Claim",
+    "ClaimProposal",
+    "ClaimStatus",
+    "ContractError",
+    "Event",
+    "IllegalTransition",
+    "Mission",
+    "MissionStatus",
+    "MissionStopReason",
+    "ResultEnvelope",
+    "ResultOutcome",
+    "Task",
+    "TaskStatus",
+    "assert_attempt_transition",
+    "assert_claim_transition",
+    "assert_mission_transition",
+    "assert_task_transition",
+    "ids",
+    "sha256_hex",
+)

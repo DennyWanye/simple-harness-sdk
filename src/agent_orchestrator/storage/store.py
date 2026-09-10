@@ -1,0 +1,840 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: E501  (SQL statement literals)
+
+"""``Store``: the orchestrator's SQLite library (Event Store + Current State Store).
+
+Every mutation happens inside ``Store.transaction()`` (BEGIN IMMEDIATE, single
+in-process writer lock) and is issued by the Commit Service only.  Entity writes
+are compare-and-swap on ``version`` (§17.3): a stale writer gets ``StoreConflict``
+instead of a lost update.  Event appends are idempotent on ``idempotency_key``
+(§17.4): replaying the same command yields the same event, not a second one.
+
+``fault(point)`` is the failure-injection hook used by the recovery matrix
+(ORCH-BUILD §14.2 layer 1): when a point is armed, the orchestrator raises
+``InjectedCrash`` there, exactly as a process kill would at that instruction.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import time
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from simple_harness.contracts import canonical_json
+
+from ..contracts import (
+    Artifact,
+    Attempt,
+    Claim,
+    ContractError,
+    Event,
+    Mission,
+    ResultEnvelope,
+    Task,
+)
+from ..contracts.models import sha256_hex
+from . import schema
+
+
+class StoreError(RuntimeError):
+    pass
+
+
+class StoreConflict(StoreError):
+    """A CAS write found a different version than expected (§17.3)."""
+
+
+class SchemaIncompatible(StoreError):
+    pass
+
+
+class InjectedCrash(RuntimeError):
+    """Raised at an armed fault point; simulates the process dying right there."""
+
+    def __init__(self, point: str) -> None:
+        super().__init__(f"injected crash at {point}")
+        self.point = point
+
+
+@dataclass(frozen=True, slots=True)
+class StoredResult:
+    """A received Result Envelope plus its verification bookkeeping."""
+
+    envelope: ResultEnvelope
+    turn_id: str
+    verification_state: str
+    verdict: str | None
+    received_at: float
+    artifacts: tuple[str, ...]
+    usage_refs: tuple[str, ...]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "envelope": self.envelope.to_json(),
+            "turn_id": self.turn_id,
+            "verification_state": self.verification_state,
+            "verdict": self.verdict,
+            "received_at": self.received_at,
+            "artifacts": list(self.artifacts),
+            "usage_refs": list(self.usage_refs),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchIntent:
+    """Durable intent to call the SDK with a fixed identity (plan D5)."""
+
+    intent_id: str
+    kind: str
+    subject_id: str
+    mission_id: str
+    state: str
+    version: int
+    creation_key: str
+    input_id: str
+    input_hash: str
+    config: Mapping[str, Any]
+    expected_turn_id: str | None
+    agent_id: str | None
+    receipt: Mapping[str, Any] | None
+    lease_owner: str | None
+    lease_expires_at: float | None
+    replays: int
+    created_at: float
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "intent_id": self.intent_id,
+            "kind": self.kind,
+            "subject_id": self.subject_id,
+            "mission_id": self.mission_id,
+            "state": self.state,
+            "version": self.version,
+            "creation_key": self.creation_key,
+            "input_id": self.input_id,
+            "input_hash": self.input_hash,
+            "config": dict(self.config),
+            "expected_turn_id": self.expected_turn_id,
+            "agent_id": self.agent_id,
+            "receipt": None if self.receipt is None else dict(self.receipt),
+            "lease_owner": self.lease_owner,
+            "lease_expires_at": self.lease_expires_at,
+            "replays": self.replays,
+            "created_at": self.created_at,
+        }
+
+
+INTENT_STATES = ("PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED", "SETTLED", "FAILED")
+VERIFICATION_STATES = ("PENDING", "RUNNING", "DONE", "REJECTED")
+
+
+def _loads(text: str) -> Any:
+    return json.loads(text)
+
+
+class Store:
+    """Single-writer access to ``orchestrator.db``."""
+
+    def __init__(self, connection: sqlite3.Connection, path: Path, clock: Callable[[], float]):
+        self._connection = connection
+        self._path = path
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._depth = 0
+        self._armed: set[str] = set()
+        self.fired: list[str] = []
+
+    # ---------------------------------------------------------------- lifecycle
+    @classmethod
+    def open(cls, path: str | Path, *, clock: Callable[[], float] = time.time) -> Store:
+        resolved = Path(path).expanduser()
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(
+            resolved, isolation_level=None, timeout=5.0, check_same_thread=False
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = FULL")
+        store = cls(connection, resolved, clock)
+        store._initialize_or_validate()
+        return store
+
+    def close(self) -> None:
+        self._connection.close()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def now(self) -> float:
+        return float(self._clock())
+
+    def _initialize_or_validate(self) -> None:
+        tables = {
+            row[0]
+            for row in self._connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        expected = schema.checksum()
+        if "orch_schema_migrations" not in tables:
+            if tables:
+                raise SchemaIncompatible("file is not an orchestrator library")
+            with self.transaction() as connection:
+                for statement in schema.DDL.split(";"):
+                    if statement.strip():
+                        connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO orch_schema_migrations VALUES (?,?,?,?)",
+                    (schema.SCHEMA_VERSION, schema.SCHEMA_NAME, expected, self.now),
+                )
+            return
+        rows = [
+            tuple(row)
+            for row in self._connection.execute(
+                "SELECT version,name,checksum FROM orch_schema_migrations ORDER BY version"
+            )
+        ]
+        if rows != [(schema.SCHEMA_VERSION, schema.SCHEMA_NAME, expected)]:
+            raise SchemaIncompatible(f"orchestrator schema mismatch: {rows}")
+
+    # ------------------------------------------------------------- transactions
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            if self._depth:
+                self._depth += 1
+                try:
+                    yield self._connection
+                finally:
+                    self._depth -= 1
+                return
+            self._connection.execute("BEGIN IMMEDIATE")
+            self._depth = 1
+            try:
+                yield self._connection
+            except BaseException:
+                self._connection.execute("ROLLBACK")
+                raise
+            else:
+                self._connection.execute("COMMIT")
+            finally:
+                self._depth = 0
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        return self._connection
+
+    # ---------------------------------------------------------- fault injection
+    def arm(self, *points: str) -> None:
+        self._armed.update(points)
+
+    def disarm(self, *points: str) -> None:
+        if points:
+            self._armed.difference_update(points)
+        else:
+            self._armed.clear()
+
+    def fault(self, point: str) -> None:
+        """Crash here if ``point`` is armed (one shot: the point disarms itself)."""
+
+        if point in self._armed:
+            self._armed.discard(point)
+            self.fired.append(point)
+            raise InjectedCrash(point)
+
+    # ----------------------------------------------------------------- events
+    def append_event(self, event: Event) -> Event:
+        """Idempotent append: an existing ``idempotency_key`` returns the stored event."""
+
+        with self.transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM events WHERE idempotency_key = ?", (event.idempotency_key,)
+            ).fetchone()
+            if existing is not None:
+                return _event_from_row(existing)
+            cursor = connection.execute(
+                "INSERT INTO events(event_id,idempotency_key,type,trace_id,mission_id,task_id,"
+                "attempt_id,actor_type,actor_id,payload_json,created_at,schema_version)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    event.id,
+                    event.idempotency_key,
+                    event.type,
+                    event.trace_id,
+                    event.mission_id,
+                    event.task_id,
+                    event.attempt_id,
+                    event.actor_type,
+                    event.actor_id,
+                    canonical_json(dict(event.payload)),
+                    event.created_at,
+                    event.schema_version,
+                ),
+            )
+            return Event(**{**event.to_json(), "seq": cursor.lastrowid})
+
+    def list_events(
+        self, mission_id: str, *, after_seq: int = 0, limit: int = 10_000
+    ) -> list[Event]:
+        rows = self._connection.execute(
+            "SELECT * FROM events WHERE mission_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+            (mission_id, after_seq, limit),
+        ).fetchall()
+        return [_event_from_row(row) for row in rows]
+
+    def count_events(self, mission_id: str, event_type: str | None = None) -> int:
+        if event_type is None:
+            row = self._connection.execute(
+                "SELECT COUNT(*) FROM events WHERE mission_id = ?", (mission_id,)
+            ).fetchone()
+        else:
+            row = self._connection.execute(
+                "SELECT COUNT(*) FROM events WHERE mission_id = ? AND type = ?",
+                (mission_id, event_type),
+            ).fetchone()
+        return int(row[0])
+
+    # --------------------------------------------------------------- missions
+    def insert_mission(self, mission: Mission, *, spec_hash: str) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO missions(mission_id,tenant_id,idempotency_key,status,version,"
+                "spec_hash,json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    mission.id,
+                    mission.tenant_id,
+                    mission.idempotency_key,
+                    str(mission.status),
+                    mission.version,
+                    spec_hash,
+                    canonical_json(mission.to_json()),
+                    mission.created_at,
+                    self.now,
+                ),
+            )
+
+    def update_mission(self, mission: Mission, *, expected_version: int) -> None:
+        self._cas(
+            "missions",
+            "mission_id",
+            mission.id,
+            expected_version,
+            {
+                "status": str(mission.status),
+                "version": mission.version,
+                "json": canonical_json(mission.to_json()),
+            },
+        )
+
+    def get_mission(self, mission_id: str) -> Mission | None:
+        row = self._connection.execute(
+            "SELECT json FROM missions WHERE mission_id = ?", (mission_id,)
+        ).fetchone()
+        return None if row is None else Mission.from_json(_loads(row[0]))
+
+    def find_mission(self, tenant_id: str, idempotency_key: str) -> tuple[Mission, str] | None:
+        row = self._connection.execute(
+            "SELECT json, spec_hash FROM missions WHERE tenant_id = ? AND idempotency_key = ?",
+            (tenant_id, idempotency_key),
+        ).fetchone()
+        return None if row is None else (Mission.from_json(_loads(row[0])), str(row[1]))
+
+    def list_missions(self, *, statuses: tuple[str, ...] | None = None) -> list[Mission]:
+        if statuses:
+            marks = ",".join("?" for _ in statuses)
+            rows = self._connection.execute(
+                f"SELECT json FROM missions WHERE status IN ({marks}) ORDER BY created_at",
+                tuple(statuses),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT json FROM missions ORDER BY created_at"
+            ).fetchall()
+        return [Mission.from_json(_loads(row[0])) for row in rows]
+
+    # ------------------------------------------------------------------ tasks
+    def insert_task(self, task: Task, *, ordinal: int) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO tasks(task_id,mission_id,ordinal,status,version,json,updated_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (
+                    task.id,
+                    task.mission_id,
+                    ordinal,
+                    str(task.status),
+                    task.version,
+                    canonical_json(task.to_json()),
+                    self.now,
+                ),
+            )
+
+    def update_task(self, task: Task, *, expected_version: int) -> None:
+        self._cas(
+            "tasks",
+            "task_id",
+            task.id,
+            expected_version,
+            {
+                "status": str(task.status),
+                "version": task.version,
+                "json": canonical_json(task.to_json()),
+            },
+        )
+
+    def get_task(self, task_id: str) -> Task | None:
+        row = self._connection.execute(
+            "SELECT json FROM tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        return None if row is None else Task.from_json(_loads(row[0]))
+
+    def list_tasks(self, mission_id: str) -> list[Task]:
+        rows = self._connection.execute(
+            "SELECT json FROM tasks WHERE mission_id = ? ORDER BY ordinal", (mission_id,)
+        ).fetchall()
+        return [Task.from_json(_loads(row[0])) for row in rows]
+
+    # --------------------------------------------------------------- attempts
+    def insert_attempt(self, attempt: Attempt) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO attempts(attempt_id,task_id,mission_id,ordinal,status,version,"
+                "lease_owner,lease_expires_at,agent_id,turn_id,json,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    attempt.id,
+                    attempt.task_id,
+                    attempt.mission_id,
+                    attempt.ordinal,
+                    str(attempt.status),
+                    attempt.version,
+                    attempt.lease_owner,
+                    attempt.lease_expires_at,
+                    attempt.agent_id,
+                    attempt.turn_id,
+                    canonical_json(attempt.to_json()),
+                    self.now,
+                ),
+            )
+
+    def update_attempt(self, attempt: Attempt, *, expected_version: int) -> None:
+        self._cas(
+            "attempts",
+            "attempt_id",
+            attempt.id,
+            expected_version,
+            {
+                "status": str(attempt.status),
+                "version": attempt.version,
+                "lease_owner": attempt.lease_owner,
+                "lease_expires_at": attempt.lease_expires_at,
+                "agent_id": attempt.agent_id,
+                "turn_id": attempt.turn_id,
+                "json": canonical_json(attempt.to_json()),
+            },
+        )
+
+    def get_attempt(self, attempt_id: str) -> Attempt | None:
+        row = self._connection.execute(
+            "SELECT json FROM attempts WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()
+        return None if row is None else Attempt.from_json(_loads(row[0]))
+
+    def list_attempts(self, task_id: str) -> list[Attempt]:
+        rows = self._connection.execute(
+            "SELECT json FROM attempts WHERE task_id = ? ORDER BY ordinal", (task_id,)
+        ).fetchall()
+        return [Attempt.from_json(_loads(row[0])) for row in rows]
+
+    def list_attempts_by_status(self, *statuses: str) -> list[Attempt]:
+        marks = ",".join("?" for _ in statuses)
+        rows = self._connection.execute(
+            f"SELECT json FROM attempts WHERE status IN ({marks}) ORDER BY updated_at",
+            tuple(statuses),
+        ).fetchall()
+        return [Attempt.from_json(_loads(row[0])) for row in rows]
+
+    # -------------------------------------------------------- dispatch intents
+    def insert_intent(self, intent: DispatchIntent) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO dispatch_intents(intent_id,kind,subject_id,mission_id,state,version,"
+                "creation_key,input_id,input_hash,config_json,expected_turn_id,agent_id,receipt_json,"
+                "lease_owner,lease_expires_at,replays,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    intent.intent_id,
+                    intent.kind,
+                    intent.subject_id,
+                    intent.mission_id,
+                    intent.state,
+                    intent.version,
+                    intent.creation_key,
+                    intent.input_id,
+                    intent.input_hash,
+                    canonical_json(dict(intent.config)),
+                    intent.expected_turn_id,
+                    intent.agent_id,
+                    None if intent.receipt is None else canonical_json(dict(intent.receipt)),
+                    intent.lease_owner,
+                    intent.lease_expires_at,
+                    intent.replays,
+                    intent.created_at,
+                    self.now,
+                ),
+            )
+
+    def update_intent(self, intent: DispatchIntent, *, expected_version: int) -> None:
+        self._cas(
+            "dispatch_intents",
+            "intent_id",
+            intent.intent_id,
+            expected_version,
+            {
+                "state": intent.state,
+                "version": intent.version,
+                "expected_turn_id": intent.expected_turn_id,
+                "agent_id": intent.agent_id,
+                "receipt_json": None
+                if intent.receipt is None
+                else canonical_json(dict(intent.receipt)),
+                "lease_owner": intent.lease_owner,
+                "lease_expires_at": intent.lease_expires_at,
+                "replays": intent.replays,
+            },
+        )
+
+    def get_intent(self, intent_id: str) -> DispatchIntent | None:
+        row = self._connection.execute(
+            "SELECT * FROM dispatch_intents WHERE intent_id = ?", (intent_id,)
+        ).fetchone()
+        return None if row is None else _intent_from_row(row)
+
+    def get_intent_for_subject(self, subject_id: str) -> DispatchIntent | None:
+        row = self._connection.execute(
+            "SELECT * FROM dispatch_intents WHERE subject_id = ?", (subject_id,)
+        ).fetchone()
+        return None if row is None else _intent_from_row(row)
+
+    def list_intents(self, *states: str) -> list[DispatchIntent]:
+        marks = ",".join("?" for _ in states)
+        rows = self._connection.execute(
+            f"SELECT * FROM dispatch_intents WHERE state IN ({marks}) ORDER BY created_at",
+            tuple(states),
+        ).fetchall()
+        return [_intent_from_row(row) for row in rows]
+
+    # ----------------------------------------------------------------- results
+    def insert_result(self, stored: StoredResult) -> None:
+        envelope = stored.envelope
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO results(result_id,attempt_id,task_id,mission_id,turn_id,result_hash,"
+                "verification_state,verdict,json,received_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    envelope.id,
+                    envelope.attempt_id,
+                    envelope.task_id,
+                    envelope.mission_id,
+                    stored.turn_id,
+                    envelope.result_hash,
+                    stored.verification_state,
+                    stored.verdict,
+                    canonical_json(stored.to_json()),
+                    stored.received_at,
+                    self.now,
+                ),
+            )
+
+    def set_result_verification(self, result_id: str, *, state: str, verdict: str | None) -> None:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT json FROM results WHERE result_id = ?", (result_id,)
+            ).fetchone()
+            if row is None:
+                raise StoreError(f"unknown result {result_id}")
+            data = _loads(row[0])
+            data["verification_state"] = state
+            data["verdict"] = verdict
+            connection.execute(
+                "UPDATE results SET verification_state = ?, verdict = ?, json = ?, updated_at = ?"
+                " WHERE result_id = ?",
+                (state, verdict, canonical_json(data), self.now, result_id),
+            )
+
+    def get_result(self, result_id: str) -> StoredResult | None:
+        row = self._connection.execute(
+            "SELECT json FROM results WHERE result_id = ?", (result_id,)
+        ).fetchone()
+        return None if row is None else _stored_result(_loads(row[0]))
+
+    def find_result_for_attempt(self, attempt_id: str) -> StoredResult | None:
+        row = self._connection.execute(
+            "SELECT json FROM results WHERE attempt_id = ? ORDER BY received_at DESC LIMIT 1",
+            (attempt_id,),
+        ).fetchone()
+        return None if row is None else _stored_result(_loads(row[0]))
+
+    def list_results_by_verification(self, *states: str) -> list[StoredResult]:
+        marks = ",".join("?" for _ in states)
+        rows = self._connection.execute(
+            f"SELECT json FROM results WHERE verification_state IN ({marks}) ORDER BY received_at",
+            tuple(states),
+        ).fetchall()
+        return [_stored_result(_loads(row[0])) for row in rows]
+
+    # ----------------------------------------------------------- verifications
+    def upsert_verification(
+        self, *, result_id: str, attempt_id: str, layer: str, status: str, detail: Mapping[str, Any]
+    ) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO verifications(verification_id,result_id,attempt_id,layer,status,detail_json,created_at)"
+                " VALUES (?,?,?,?,?,?,?) ON CONFLICT(result_id, layer) DO UPDATE SET"
+                " status = excluded.status, detail_json = excluded.detail_json",
+                (
+                    f"{result_id}:{layer}",
+                    result_id,
+                    attempt_id,
+                    layer,
+                    status,
+                    canonical_json(dict(detail)),
+                    self.now,
+                ),
+            )
+
+    def list_verifications(self, result_id: str) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT layer, status, detail_json, created_at FROM verifications WHERE result_id = ?"
+            " ORDER BY created_at, layer",
+            (result_id,),
+        ).fetchall()
+        return [
+            {"layer": row[0], "status": row[1], "detail": _loads(row[2]), "created_at": row[3]}
+            for row in rows
+        ]
+
+    # ------------------------------------------------------------------ claims
+    def upsert_claim(self, claim: Claim) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO claims(claim_id,mission_id,result_id,status,version,json,updated_at)"
+                " VALUES (?,?,?,?,?,?,?) ON CONFLICT(claim_id) DO UPDATE SET status = excluded.status,"
+                " version = excluded.version, json = excluded.json, updated_at = excluded.updated_at",
+                (
+                    claim.id,
+                    claim.mission_id,
+                    claim.result_id,
+                    str(claim.status),
+                    claim.version,
+                    canonical_json(claim.to_json()),
+                    self.now,
+                ),
+            )
+
+    def list_claims(self, result_id: str) -> list[Claim]:
+        rows = self._connection.execute(
+            "SELECT json FROM claims WHERE result_id = ? ORDER BY claim_id", (result_id,)
+        ).fetchall()
+        return [Claim.from_json(_loads(row[0])) for row in rows]
+
+    def list_mission_claims(self, mission_id: str) -> list[Claim]:
+        rows = self._connection.execute(
+            "SELECT json FROM claims WHERE mission_id = ? ORDER BY claim_id", (mission_id,)
+        ).fetchall()
+        return [Claim.from_json(_loads(row[0])) for row in rows]
+
+    # --------------------------------------------------------------- artifacts
+    def upsert_artifact(self, artifact: Artifact) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO artifacts(artifact_id,mission_id,task_id,attempt_id,path,content_hash,version,"
+                "json,created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(artifact_id) DO NOTHING",
+                (
+                    artifact.id,
+                    artifact.mission_id,
+                    artifact.task_id,
+                    artifact.attempt_id,
+                    artifact.path,
+                    artifact.content_hash,
+                    artifact.version,
+                    canonical_json(artifact.to_json()),
+                    artifact.created_at or self.now,
+                ),
+            )
+
+    def get_artifact(self, artifact_id: str) -> Artifact | None:
+        row = self._connection.execute(
+            "SELECT json FROM artifacts WHERE artifact_id = ?", (artifact_id,)
+        ).fetchone()
+        return None if row is None else Artifact.from_json(_loads(row[0]))
+
+    def list_artifacts(self, attempt_id: str) -> list[Artifact]:
+        rows = self._connection.execute(
+            "SELECT json FROM artifacts WHERE attempt_id = ? ORDER BY path, version", (attempt_id,)
+        ).fetchall()
+        return [Artifact.from_json(_loads(row[0])) for row in rows]
+
+    # --------------------------------------------------------------- receipts
+    def get_receipt(self, commit_id: str) -> Mapping[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT receipt_json FROM commit_receipts WHERE commit_id = ?", (commit_id,)
+        ).fetchone()
+        return None if row is None else _loads(row[0])
+
+    def insert_receipt(
+        self,
+        *,
+        commit_id: str,
+        kind: str,
+        subject_id: str,
+        base_version: int | None,
+        proposal_hash: str,
+        receipt: Mapping[str, Any],
+    ) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO commit_receipts(commit_id,kind,subject_id,base_version,proposal_hash,"
+                "receipt_json,applied_at) VALUES (?,?,?,?,?,?,?)",
+                (
+                    commit_id,
+                    kind,
+                    subject_id,
+                    base_version,
+                    proposal_hash,
+                    canonical_json(dict(receipt)),
+                    self.now,
+                ),
+            )
+
+    # ------------------------------------------------------------------ util
+    def _cas(
+        self,
+        table: str,
+        key_column: str,
+        key: str,
+        expected_version: int,
+        values: Mapping[str, Any],
+    ) -> None:
+        assignments = ", ".join(f"{column} = ?" for column in values)
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                f"UPDATE {table} SET {assignments}, updated_at = ? WHERE {key_column} = ? AND version = ?",
+                (*values.values(), self.now, key, expected_version),
+            )
+            if cursor.rowcount != 1:
+                raise StoreConflict(f"{table}:{key} is not at version {expected_version}")
+
+    def snapshot(self, mission_id: str) -> dict[str, Any]:
+        """Everything about one Mission, for ``final_state.json`` and CLI ``get``."""
+
+        mission = self.get_mission(mission_id)
+        if mission is None:
+            raise StoreError(f"unknown mission {mission_id}")
+        tasks = self.list_tasks(mission_id)
+        attempts = [attempt for task in tasks for attempt in self.list_attempts(task.id)]
+        results = [self.find_result_for_attempt(attempt.id) for attempt in attempts]
+        return {
+            "mission": mission.to_json(),
+            "tasks": [task.to_json() for task in tasks],
+            "attempts": [attempt.to_json() for attempt in attempts],
+            "results": [
+                {**stored.to_json(), "verifications": self.list_verifications(stored.envelope.id)}
+                for stored in results
+                if stored is not None
+            ],
+            "claims": [claim.to_json() for claim in self.list_mission_claims(mission_id)],
+            "artifacts": [
+                artifact.to_json()
+                for attempt in attempts
+                for artifact in self.list_artifacts(attempt.id)
+            ],
+            "intents": [
+                intent.to_json()
+                for attempt in attempts
+                for intent in [self.get_intent_for_subject(attempt.id)]
+                if intent is not None
+            ],
+            "event_count": self.count_events(mission_id),
+        }
+
+
+def _event_from_row(row: sqlite3.Row) -> Event:
+    return Event(
+        id=row["event_id"],
+        type=row["type"],
+        trace_id=row["trace_id"],
+        mission_id=row["mission_id"],
+        task_id=row["task_id"],
+        attempt_id=row["attempt_id"],
+        actor_type=row["actor_type"],
+        actor_id=row["actor_id"],
+        payload=_loads(row["payload_json"]),
+        idempotency_key=row["idempotency_key"],
+        created_at=row["created_at"],
+        schema_version=row["schema_version"],
+        seq=row["seq"],
+    )
+
+
+def _intent_from_row(row: sqlite3.Row) -> DispatchIntent:
+    return DispatchIntent(
+        intent_id=row["intent_id"],
+        kind=row["kind"],
+        subject_id=row["subject_id"],
+        mission_id=row["mission_id"],
+        state=row["state"],
+        version=row["version"],
+        creation_key=row["creation_key"],
+        input_id=row["input_id"],
+        input_hash=row["input_hash"],
+        config=_loads(row["config_json"]),
+        expected_turn_id=row["expected_turn_id"],
+        agent_id=row["agent_id"],
+        receipt=None if row["receipt_json"] is None else _loads(row["receipt_json"]),
+        lease_owner=row["lease_owner"],
+        lease_expires_at=row["lease_expires_at"],
+        replays=row["replays"],
+        created_at=row["created_at"],
+    )
+
+
+def _stored_result(data: Mapping[str, Any]) -> StoredResult:
+    try:
+        return StoredResult(
+            envelope=ResultEnvelope.from_json(data["envelope"], strict=False),
+            turn_id=data["turn_id"],
+            verification_state=data["verification_state"],
+            verdict=data.get("verdict"),
+            received_at=data["received_at"],
+            artifacts=tuple(data.get("artifacts", ())),
+            usage_refs=tuple(data.get("usage_refs", ())),
+        )
+    except (KeyError, ContractError) as error:
+        raise StoreError(f"corrupt stored result: {error}") from error
+
+
+def proposal_hash(proposal: object) -> str:
+    return sha256_hex(proposal)
+
+
+__all__ = (
+    "INTENT_STATES",
+    "VERIFICATION_STATES",
+    "DispatchIntent",
+    "InjectedCrash",
+    "SchemaIncompatible",
+    "Store",
+    "StoreConflict",
+    "StoreError",
+    "StoredResult",
+    "proposal_hash",
+)

@@ -44,7 +44,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/simple_harness"]
+packages = ["src/simple_harness", "src/agent_orchestrator"]
 core-metadata-version = "2.4"
 
 [tool.hatch.version]
