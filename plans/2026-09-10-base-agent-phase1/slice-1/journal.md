@@ -113,3 +113,29 @@
 3. **`execution/sqlite/migrations/execution_v5_to_v6.py:156` 用 `fresh_descriptor()` 盖戳**：v5→v6 迁移完成后把 `sdk_schema_migrations` 单行改写成"当前 fresh 版本"，v10 之后会盖成 `(10,"0010_fresh",…)`，而库里并无 v10 的表。这是**先于本片就存在**的错位（今天已经会盖成 9），本片不改也不扩大；`tests/execution/test_execution_v5_to_v6_catalog_migration.py` 只走 `accepted_descriptor_rows()` 校验，不会因此变红。归 S5 的 BA37。
 4. **UNKNOWN 期间的 AgentTurn 停滞**：`agent_turn_outcome` 与 `wait_blocker` 被排他校验挡死（刻意：不确定的动作不得被冻结成已完成结果），因此 provider/工具 UNKNOWN 期间该 Turn 停在 `running` 直到 blocker 解除。完整语义归 S2 的 BA11。
 
+## 7. 代码 review（phase-3 A4）
+
+（独立 Opus 评审者对 `git diff fd12e7dd..HEAD -- src/` 的正确性 review；结论回填于此）
+
+## 8. 完成度审计（phase-3 B）
+
+（`AUDITOR_ENGINE` 子代理 `MODE: code-audit`；结论回填于此）
+
+## 9. DoD 清单（phase-final）
+
+| 项 | 证据 | 状态 |
+|---|---|---|
+| 主要矛盾对应的决定性 AC 实测达成 | §4.1 里程碑 3 passed；§4.2 mock 端到端 1 passed；§4.3 真实模型 committed + nonce 回传 | ✅ |
+| 整体可用性实测通过（原始需求核心路径） | 用户目标"主 Agent 收到复杂任务→创建子 Agent 完成"：`examples/base_agent_delegation.py` 真实模型 exit 0 | ✅ |
+| 全部"必须" AC 有测试证据 | §5 兑现表 AC1–AC8 全 ✅，无降级 | ✅ |
+| plan 层回炉闭环 | 无 A2 事件（`a2-events.md` 不存在）；两轮挑战裁决均在 plan v2.1 落实 | ✅ |
+| 工作树干净且已提交 | 收尾提交后 `git status --porcelain` 空（见末行） | 待收尾 |
+| 干净态复验 | 收尾提交后重跑 `pytest tests/agents tests/execution/test_base_agent_schema_v10.py` + 固定回归命令 | 待收尾 |
+| 分级冒烟 | 库类被测对象：核心价值 smoke = §4.1/§4.2；真实端点 smoke = §4.3 | ✅ |
+| 无回归 | 固定回归命令红集 ⊆ 基线（73 ⊂ 75），新红 0；mypy 0 issues | ✅ |
+| 幂等性审查 | submit/create/finalize/delegation 的幂等分支各有测试（`test_finalize_is_idempotent_by_receipt_id`、`test_same_delegation_id_is_idempotent`、`test_reserved_delegation_is_resumed_not_poisoned`、`test_submit_reschedules_the_run` 的 input_id 回放）；"遍历 + 写副作用"点：`recover` 的 open-turn 唤醒（幂等：唤醒只调度）、`AgentProviderWire`（只改请求副本） | ✅ |
+| 可追溯矩阵无断点 | acceptance AC → plan 任务（附 A）→ 代码（commit 列）→ testcase（`testcase/base-agent-slice-1/README.md`）→ 证据（§2/§4/§5） | 待审计确认 |
+| testcase 存盘、index 同步、脚本纳入回归套件 | `testcase/base-agent-slice-1/README.md`、`testcase/index.md`；脚本全部在 `tests/` 下随 pytest 运行 | ✅ |
+| journal 终态行 | 见末行 | 待收尾 |
+| code review 执行且 P0/P1 闭环 | §7 | 待回填 |
+| retro.md | `slice-1/retro.md` | ✅ |

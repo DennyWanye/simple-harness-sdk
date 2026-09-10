@@ -418,7 +418,9 @@ def test_no_delegation_still_commits_a_valid_turn(tmp_path):
 
 
 def test_delegate_unknown_reconciles_from_child_result_row(tmp_path):
-    """AC9/DG04: an UNKNOWN delegate effect settles from the child's result row, never relaunches."""
+    """AC9/DG04: an UNKNOWN delegate effect settles from the child'
+    s result row, never relaunches.
+    """
     from simple_harness.agents.tools.delegate import AgentDelegationReconciliation
     from simple_harness.tools.reconciliation import ReconciliationState
 
