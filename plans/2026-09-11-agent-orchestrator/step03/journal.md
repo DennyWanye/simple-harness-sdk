@@ -48,13 +48,46 @@
 - **判定 Critic 复用**：单 Task Mission 的整合副本与该 Task 的验收副本相同，复用其 critic_review 判定；多 Task 一律新跑判定 Critic（主体 `<mission>:judge:<n>`，记 Mission 账户）。
 
 ## 3. 独立 review（代码）
-（回填）
+
+独立子代理（claude-opus-5，只读）审 `e7be878..9ddb3dd`，原文 `reports/code-review-round1.md`：P0 ×2、P1 ×9、P2 ×10，结论 SHIP-AFTER-P0-P1。处置（提交 `b02b113`、`d919ba5`；决定性测试 `test_static_dag_closure.py::test_r1_*` 与更新后的 S3-03/S3-04/S3-05）：
+
+| # | 级别 | 发现 | 处置 |
+|---|---|---|---|
+| 1 | P0 | `stop_task` 对 READY Task 抛 `IllegalTransition`（运行期 `artifact_conflict`、首个 Attempt 预留失败两条路径），循环崩溃、Mission 悬空 | `stop_task` 对 READY/VERIFYING 先走合法边到 ACTIVE 再 FAILED；测试 `test_r1_runtime_artifact_conflict_stops_the_task_cleanly`（B/C 未声明 outputs 却写同一路径不同内容 → D 分配时 Task FAILED、Mission `artifact_conflict`、E 仍 BLOCKED） |
+| 2 | P0 | 整合副本目录 `<mission>-verify` 被另一实例 `rmtree`，S3-04 下可能得出错误的 `mission_criteria_unmet` | 判定树按实例命名 `<mission>-judge-<owner>-verify`；`_decide` 判定前重读 Mission（不用本轮快照）；`judge_mission` 本身幂等 |
+| 3 | P1 | 验证期只续租一次，`lease_seconds` 内验证未完就可能被接管，过期 owner 仍能 accept/fail | `accept_result`/`fail_result` 增加 `owner` 参数，事务内校验当前活租约；验证每记录一层、Critic 轮询每拍都 `_hold_lease`；测试 `test_r1_stale_owner_cannot_commit_a_verdict` |
+| 4 | P1 | `_verify` 的终态判断是 TOCTOU；`IllegalTransition`/`CommitRejected` 会打死 `run()` | accept/fail 周围捕获两类异常丢弃裁决；`_cycle` 把 `CommitRejected`/`IllegalTransition` 当作"库被别人改了、本轮跳过" |
+| 5 | P1 | D3-6'' 未实现：`_close_attempt` 把 SUBMITTED intent 直接关掉，迟到结果分支不可达 | `b02b113`：SUBMITTED intent 保持打开直到 turn 结束；终态 Mission 也采集（`_collect_after_stop`）；费用导入后才结算预留；S3-05 断言收紧 |
+| 6 | P1 | 信封"列出"受保护路径即可绕过保护并顺着依赖链传播 | 列出的受保护路径若 hash 与保护内容不同 → `reject_result(protected_path_rewritten)`，与验证策略无关；受保护路径永不登记为产物；测试 `test_r1_protected_upstream_path_listed_as_artifact_is_rejected` |
+| 7 | P1 | intent 里的 `attempt_id` 是调用方预测值 | `create_attempt` 用权威 id 覆写 intent config；测试断言 |
+| 8 | P1 | `_run_critic` 派发被别人持有时热旋 | 无进展则 `sleep(poll)`，以 `critic_wait_seconds` 为界 |
+| 9 | P1 | 三处空断言（S3-03 `x==x`、S3-05 `late == [] or …`、S3-04 "both dispatched"） | S3-03 比对 A 的已接受产物 hash；S3-05 断言迟到事件恰一条 + intent SETTLED + turn 已提交或已取消；S3-04 断言每个 Attempt 恰一条 `AttemptClaimed`/`AttemptStarted` |
+| 10 | P1 | 两个新崩溃点无测试 | `test_r1_fault_points_accept_transaction_and_after_task_completed`：事务内崩溃全部回滚（Task 仍 VERIFYING、B/C BLOCKED、结果 RUNNING）后重放接受同一结果；提交后崩溃 B/C 已 READY、A 不重跑 |
+| 11 | P1 | `max_concurrency` 跨实例未强制 | `create_attempt(max_open_attempts=)` 事务内统计 Mission 全部 open Attempt；测试 `test_r1_mission_wide_concurrency_is_enforced_in_the_commit` |
+| 12 | P2 | `accept_result` 无条件结算 | 有 unknown usage 不结算 |
+| 13 | P2 | unbind/cancel 不在转换处；`cancel_mission` 无释放对应 | 已由 #5 覆盖：终态 Attempt 的在途 turn 由循环发现后立即 unbind+cancel，直至 turn 结束再采集 |
+| 14 | P2 | `break` 应为 `continue` | 已改 |
+| 15 | P2 | 受保护上游文件缺失时静默不保护 | 改为 fail closed（`ArtifactConflict`） |
+| 16 | P2 | `_bind_workspace` 的 `ArtifactConflict` 未捕获 | `_dispatch` 捕获 → Attempt LOST(`upstream_artifact_missing`) + `stop_task(artifact_conflict)` |
+| 17 | P2 | 空 try/except | 删 |
+| 18 | P2 | `recover()` 无 `StoreBusy` 守卫 | 加守卫 |
+| 19 | P2 | Mission 池 attempts 维度的停止原因与 D3-12' 文本不一致 | 按 plan：Mission 账户任何维度 → `budget_exhausted`（detail 带维度）；S3-08c 更新 |
+| 20 | P2 | 同 Task 两个候选同一路径版本号可能相同 | 未做，登记 §5 |
+| 21 | P2 | S3-07 的 0.6 s 租约在慢机器上可能在验证中过期 | 已由 #3 的持续续租缓解；登记 §5 |
 
 ## 4. 证据
 （回填）
 
 ## 5. 遗留
-（回填）
+
+| # | 事项 | 归属 |
+|---|---|---|
+| L3-1 | 真实 Planner（DeepSeek）对 textkit Mission 三次都拆成两节点链（实现→交付），未自发拆出并行分支；并行路径由 fixtures 与 CLI 演示覆盖 | 第 5 步（动态拆解）再评估 Planner 提示 |
+| L3-2 | 同一 Task 两个候选改同一路径时 `artifact.version` 可能同号（`upsert_artifact` 无 (mission,path,version) 唯一约束） | 第 4 步（综合/合并）一并做 |
+| L3-3 | 在途 provider 调用中途丢失执行者 = SDK UNKNOWN 出站调用，按 S2-08 保持阻塞；接管只对"已提交未开跑/两次调用之间"的 turn 成立 | 既定语义；第 6 步做对账通道 |
+| L3-4 | §19.4 老化、§18.5 背压上限未做（D3-18） | 第 6 步 |
+| L3-5 | 双实例同库仅在同一事件循环内验证（S3-04/S3-07）；跨进程锁竞争只有 `StoreBusy` 包装，未做压力测试 | 第 6 步 |
+| L3-6 | 第 2 步遗留 L2-1/L2-2/L2-4/L2-6/L2-7 未变（Critic 层序、format_check 恒 PASS、无网络隔离、unpriced 记账、预留非硬上限） | 各自归属不变 |
 
 ## 6. 终态
 （回填）
