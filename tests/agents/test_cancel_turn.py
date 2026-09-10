@@ -287,9 +287,8 @@ def test_cancel_inside_a_tool_leaves_the_effect_reconcilable_not_orphaned(tmp_pa
     checkpoint must stay in flight (UNKNOWN wait path) until the Host's reconciliation
     settles the effect, and only then does the durable cancel intent fail the turn."""
 
-    from simple_harness.contracts import thaw_json
+    from simple_harness.contracts import EffectId, thaw_json
     from simple_harness.execution.recovery import ResolutionOutcome
-    from simple_harness.contracts import EffectId
     from simple_harness.tools import ToolResult
 
     class Tool:
