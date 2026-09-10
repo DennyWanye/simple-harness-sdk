@@ -44,8 +44,10 @@ review 由独立子代理（claude-opus-5）对 Slice 5 累计 diff 做正确性
 ## 4. 发布证据（BA40）
 
 - 版本 `0.8.0`（`src/simple_harness/version.py`）；`tests/unit/contracts/public-api.json` 只新增根导出 `migrate_execution_to_v10`、`ExecutionBaseAgentUpgradeReceiptV1`（旧快照存 `public-api-0.7.10.json`）。
-- wheel：`git archive HEAD` + `SOURCE_DATE_EPOCH=<commit ct> uv build --wheel` → `simple_harness_sdk-0.8.0-py3-none-any.whl`，sha256 `d2321b60fc6844fa49c406b4bce26447496445585c7f5ae81506718f2de69c77`（基于 `5fb33cb`）；干净 venv（uv, py3.12）安装后跑 `tests/agents + schema + contracts`：**217 passed, 3 skipped**。最终发布 wheel 以推送前 HEAD 重建并记入 Host 钉版清单。
+- wheel（预览，review 前）：基于 `5fb33cb`，sha256 `d2321b6…69cf77`，干净 venv 217 passed / 3 skipped。
+- **最终 wheel（review 处置后，钉入 Host 的版本）**：`git archive d1f5166` + `SOURCE_DATE_EPOCH=1789049537 uv build --wheel` → `simple_harness_sdk-0.8.0-py3-none-any.whl`，sha256 **`8affc2c3fb7b82f506b92d4d9395145867c264e232d28191f919ababfc417d4e`**（源提交 `d1f51660d2a9144958e0ee0321a3c19f6ed50887`）；干净 venv（uv, py3.12，仅装 wheel + pytest + tiktoken）从归档源根跑 `tests/agents + schema v10 + v9→v10 迁移 + contracts`：**238 passed, 3 skipped**（探针确认 import 自 site-packages）。
 - 真实端点全链路（S1 委派链，DeepSeek）在 S5 HEAD 上：run 7 通过；run 8 见 §5 说明。
+- review 处置后（`d1f5166`）真实端点复跑：`reports/real-delegation-run9.txt` **1 passed（11.6 s）**，委派链 + 工具许可释放路径在 DeepSeek 上跑通。
 
 ## 5. 遗留
 
@@ -56,3 +58,14 @@ review 由独立子代理（claude-opus-5）对 Slice 5 累计 diff 做正确性
 | L5-3 | 语义摘要调用的成本账本（BA36 的摘要部分）未做（无语义摘要） | 后续 |
 
 ## 6. 终态（回填）
+
+**VERDICT: SHIPPED**（2026-09-10，SDK main `d1f5166` + 本文档提交）
+
+| 项 | 结果 |
+|---|---|
+| 决定性测试 | `test_slice5_recovery.py` 7 条 + `test_slice5_review.py` 6 条 + 迁移 5 条 + 响应耐久 4 条：全绿 |
+| 独立 review | P0 ×1、P1 ×2、P2 ×3、推测 ×1 全部处置（§3） |
+| 回归 | 全量 73 红 ⊆ 基线（0 新红）；agents/execution/contracts 360 passed / 6 基线红 |
+| 真实端点 | DeepSeek 委派链 run 7、run 9 通过（run 8 为模型改写 nonce） |
+| 发布 | 0.8.0 wheel sha256 `8affc2c3…417d4e`，干净 venv 238 passed |
+| 遗留 | L5-2、L5-3（§5）；Host 集成与原生 App 手工测试在 Host 仓库记录 |
