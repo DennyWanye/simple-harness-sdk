@@ -16,7 +16,6 @@ from simple_harness.agents import AgentConfig, build_agent_runtime
 from simple_harness.agents.context import ContextPolicy, TiktokenTokenizer
 from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
 from simple_harness.contracts import canonical_json
-from simple_harness.providers.openai_compatible import OpenAICompatibleProvider
 
 pytestmark = pytest.mark.real_provider
 
