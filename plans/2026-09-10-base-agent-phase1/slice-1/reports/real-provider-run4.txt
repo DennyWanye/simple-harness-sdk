@@ -1,0 +1,2 @@
+REAL_PROVIDER_REPORT {"child_run_state":"waiting","delegation_count":1,"delegation_state":"settled","final_answer":"SQLite 零配置、单文件、占用低，更适合单机桌面应用的本地会话记录；PostgreSQL 功能强、并发好，但需要独立服务，分发与运维成本更高。因此单机桌面应用明确推荐使用 SQLite。\n\n576090b65c15","main_state":"committed","model":"deepseek-v4-pro","nonce_in_child_result":true,"nonce_in_final_answer":true,"provider_calls":3}
+1 passed in 12.79s

@@ -204,7 +204,7 @@ def test_result_pending_then_kill_then_recover_commits_once(tmp_path):
                 "SELECT COUNT(*) FROM base_agent_turn_results_v1"
             ).fetchone()[0]
             assert rows == 1
-            assert driver.calls == calls_before or driver.inputs == driver.inputs[:1]
+            assert driver.calls == calls_before  # the driver was never re-entered
             assert len(driver.inputs) == 1  # the same input was never handed to the driver again
             run = uow2.read_run("agent-d")
             assert run.state is RunState.WAITING and run.version > version_before

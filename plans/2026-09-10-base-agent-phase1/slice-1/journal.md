@@ -68,10 +68,9 @@
 
 - 端点：Host `.env` 的 svtun `gpt-5.6-luna` 今日直连探针 **90 s 超时**（`ProviderTimeoutError`），改用记录在 `.local-test-evidence/2026-09-07/credentials/deepseek.env` 的 DeepSeek 端点（`deepseek-v4-pro`，直连探针 1.3 s）。密钥只经环境变量注入，日志/报告中已核对不出现。
 - 第 1 次（修 wire 前）：主 Agent 第二次请求被端点拒绝（`provider_request_rejected`）——根因是持久 Context 里的 assistant 消息不带 `tool_calls`，紧随的 `tool` 消息让 OpenAI 兼容端点 400（Host 侧同一问题曾用进程内 memo 绕过，其 docstring 明说"上游应修"）。本片在 SDK 侧修：`agents/wire.py` 从 effect 账本（`raw_call_id/tool_name/arguments_json`）在**请求副本**上恢复 `metadata.provider_tool_calls`，`OpenAICompatibleProvider._message_payload` 序列化为 `tool_calls`；持久 Context 不变；决定性测试 `tests/agents/test_provider_wire.py` 3 例。另：DeepSeek 拒绝带 `.` 的函数名，工具标识改为 `agent_delegate`（文档里仍称 agent.delegate 能力）。
-- 第 2 次：`provider_protocol_error` / 账本 `provider_response_not_durable`——`dispatch.py:596` 的 `provider_response_json(...)` 对该次响应抛 ValueError（既有 SDK 逻辑，非本片代码），Turn 记失败、Agent 存活（符合设计）；子 Agent 已 settled、NONCE 在子结果里。属间歇（1/4），记遗留。
-- 第 3 次（pytest）：**通过**，12.8 s，`{"main_state":"committed","delegation_count":1,"delegation_state":"settled","child_run_state":"waiting","nonce_in_child_result":true,"nonce_in_final_answer":true,"provider_calls":3}`。
+- 修 wire 后 4 次 pytest：**2 次失败、2 次通过**（审计核对后如实修正）。失败的 run2/run3：`provider_protocol_error` / 账本 `provider_response_not_durable`——`dispatch.py:596` 的 `provider_response_json(...)` 对主 Agent 最后一次综合调用的响应抛 ValueError（既有 SDK 逻辑，非本片代码），Turn 记失败、Agent 存活（符合设计）；子 Agent 已 settled、NONCE 在子结果里。通过的 run4（12.79 s）与 run5（10.21 s，review 修复后）：`{"main_state":"committed","delegation_count":1,"delegation_state":"settled","child_run_state":"waiting","nonce_in_child_result":true,"nonce_in_final_answer":true,"provider_calls":3}`。失败率 2/4 → F-BA-1 提为**下一片优先**。
 - 演示脚本 `examples/base_agent_delegation.py "请比较三种排序算法并推荐一种。"`：exit 0，`state=committed delegations=1 nonce_relayed=True`，最终回答含子 Agent 的验证码，输出中无 key。
-- 报告文件：scratchpad `real-provider-run{,2,3,4}.txt`、`demo-run2.txt`（key 已脱敏），与 mock 报告分开，不互相冒充（BA40）。
+- 报告文件已落仓：`reports/real-provider-run{,2,3,4,5}.txt`、`reports/demo-run2.txt`（key 已脱敏，见 `reports/README.md`），与 mock 报告分开，不互相冒充（BA40）。
 
 ## 5. 兑现表（phase-4 ③3；被测对象是 SDK 库，测试方式一律为可复跑 pytest 脚本，无 UI）
 
@@ -86,7 +85,7 @@
 | AC7 旧 API 拒新模式（root+child） | 次要 | 否 | 脚本 | AI | `test_api_mode_fence.py` 9 例 + `test_child_run_is_mode_fenced_before_it_exists` | ✅ |
 | AC8 不依赖用户记忆 SDK | 次要 | 否 | 脚本 | AI | `test_build_agent_runtime.py::test_no_memory_entrypoint_is_called`；端到端 `sys.modules` 断言；`grep -r simple_harness_memory src/simple_harness/agents` 无 import | ✅ |
 | AC9 委派 UNKNOWN 结算 | 次要（可选） | 否 | 脚本 | AI | `test_delegate_tool.py::test_delegate_unknown_reconciles_from_child_result_row`（COMPLETED 带子结果回执 / STILL_UNKNOWN 带 pending evidence_ref；observe 不 launch） | ✅ |
-| AC10 真实模型复现 | 次要（可选） | 否 | 脚本（opt-in，真实端点） | AI | §4.3：pytest 第 3 次通过 + 演示脚本通过；1 次既有 `provider_response_not_durable` 记遗留 | ✅（证据，非 MUST） |
+| AC10 真实模型复现 | 次要（可选） | 否 | 脚本（opt-in，真实端点） | AI | §4.3 与 `reports/`：run4/run5 通过 + 演示脚本通过；run2/run3 既有 `provider_response_not_durable`（F-BA-1） | ✅（证据，非 MUST） |
 | V1–V5 LLM 变异 | — | 否 | 脚本 | AI | `test_delegate_tool.py` 五条 + `test_agent_driver.py` 未知工具名/provider 拒绝 | ✅ |
 
 无降级、无未批准的等价替代；全 AI 驾驶（库类被测对象，无真人点击面）。
@@ -99,12 +98,13 @@
 | L2 | 预围栏后、launch 前崩溃留下的 `run_context_use_requirements` 孤儿行不可删（续做复用同一 child_run_id，正常重试不新增） | S5 · BA37 一并处置 |
 | L3 | lifetime `TerminationLimits` 是 runtime 级（driver 单一 policy fingerprint），`AgentConfig.limits` 的 per-turn 上限本片只记录、只由委派配额/等待生效；per-agent/per-turn 精确执法 | S2 · BA11 |
 | L4 | UNKNOWN provider/tool 期间 AgentTurn 停在 running（`agent_turn_outcome` 与 `wait_blocker` 互斥是刻意的），恢复语义 | S2 · BA11 |
-| L5 | 真实端点间歇 `provider_response_not_durable`（`dispatch.py:596` 对某些响应抛 ValueError，1/4 次），Turn 失败但 Agent 存活；需要抓一份原始响应定位 | 记 F-BA-1，S5 或独立修 |
+| L5 | 真实端点 `provider_response_not_durable`（`dispatch.py:596` 对某些响应抛 ValueError，修 wire 后 **2/4 次**），Turn 失败但 Agent 存活；需要抓一份原始响应定位 | **F-BA-1，下一片优先** |
 | L6 | svtun `gpt-5.6-luna` 直连 90 s 超时（本片改用 DeepSeek 留证）；Host 说"Host-shaped 请求 200"，SDK 直连的差异未查 | 独立环境项 |
 | L7 | 工具标识 `agent_delegate`（端点函数名不允许 `.`）；plan/acceptance 文本仍写 agent.delegate 能力名 | 文档口径，无需改代码 |
 | L8 | `ToolContext.agent_delegate_context`（plan T8 提议的新字段）未加：委派工具改由 run_id 反查绑定，不需要新字段 | 已在 journal 说明，无 |
 | L9 | assistant `tool_calls` 恢复依赖 `request_id` 前缀解析 run_id 与 effect 账本按 turn 分组；raw call id 跨轮重复时按轮次对位，找不到则 `{}`（计数 `wire.fallback_total`）；上游"first-class transcript field"仍是 SDK 后续工作 | S3/S5 |
 | L11 | assistant `tool_calls` 恢复找不到账本行时降级 `{}`（`wire.fallback_total` 计数，未上报为事件）；REJECTED/未落 effect 的调用会命中 | S3 |
+| L12 | uow 新 facade 6 个超 10 行（最大 `commit_agent_turn_result_and_idle` 约 100 行，因复用 uow 私有 helper）；下沉到 `sqlite/base_agent/turns.py` | S2 |
 | L10 | 既有红 75 → 73：本片顺手修了 import purity 与 public-api 快照两条（均记为触碰既有红）；其余 73 条既有红原样 | 基线口径不变 |
 
 > 以下三条在 v2 修订时已确定为"本片不做、如实记账"，执行期只需确认没有被无意扩大。
@@ -138,7 +138,7 @@
 
 ## 8. 完成度审计（phase-3 B）
 
-（`AUDITOR_ENGINE` 子代理 `MODE: code-audit`；结论回填于此）
+独立 Opus 审计者（`MODE: code-audit`，在 12bb60b 上自行复跑）：**VERDICT: PASS**，必须 AC 8/8，可选 AC9/AC10 有证据，综合完成度约 96%，无 P0/P1 开放项，无未闭环的 plan 层缺陷。7 条 P2 缺口全部在收尾提交处置：V1 口径与「结构+执行期闸门」改写进 acceptance；uow facade 行数放宽并记 L12；真实 provider 报告落仓 `reports/`；§4.3 失败率修正为 2/4；`test_turn_finalize.py` 永真 `or` 断言改为精确断言；DoD 10 措辞与 AC2 测试名对齐；testcase README AC9 行更新；无关工作树改动还原。
 
 ## 9. DoD 清单（phase-final）
 
@@ -148,13 +148,13 @@
 | 整体可用性实测通过（原始需求核心路径） | 用户目标"主 Agent 收到复杂任务→创建子 Agent 完成"：`examples/base_agent_delegation.py` 真实模型 exit 0 | ✅ |
 | 全部"必须" AC 有测试证据 | §5 兑现表 AC1–AC8 全 ✅，无降级 | ✅ |
 | plan 层回炉闭环 | 无 A2 事件（`a2-events.md` 不存在）；两轮挑战裁决均在 plan v2.1 落实 | ✅ |
-| 工作树干净且已提交 | 收尾提交后 `git status --porcelain` 空（见末行） | 待收尾 |
-| 干净态复验 | 收尾提交后重跑 `pytest tests/agents tests/execution/test_base_agent_schema_v10.py` + 固定回归命令 | 待收尾 |
+| 工作树干净且已提交 | 终态行所记被测 HEAD 之后仅含文档的收尾提交；`git status --porcelain` 空 | ✅ |
+| 干净态复验 | 审计者在 12bb60b 上独立复跑：tests/agents 77 passed、schema+快照 14 passed、固定回归 58 failed/15 errors/1931 passed（新红 0）；被测 HEAD 上主编排者再跑 tests/agents 与固定回归（见终态行前一行） | ✅ |
 | 分级冒烟 | 库类被测对象：核心价值 smoke = §4.1/§4.2；真实端点 smoke = §4.3 | ✅ |
 | 无回归 | 固定回归命令红集 ⊆ 基线（73 ⊂ 75），新红 0；mypy 0 issues | ✅ |
 | 幂等性审查 | submit/create/finalize/delegation 的幂等分支各有测试（`test_finalize_is_idempotent_by_receipt_id`、`test_same_delegation_id_is_idempotent`、`test_reserved_delegation_is_resumed_not_poisoned`、`test_submit_reschedules_the_run` 的 input_id 回放）；"遍历 + 写副作用"点：`recover` 的 open-turn 唤醒（幂等：唤醒只调度）、`AgentProviderWire`（只改请求副本） | ✅ |
-| 可追溯矩阵无断点 | acceptance AC → plan 任务（附 A）→ 代码（commit 列）→ testcase（`testcase/base-agent-slice-1/README.md`）→ 证据（§2/§4/§5） | 待审计确认 |
+| 可追溯矩阵无断点 | 审计 VERDICT PASS（§8） | ✅ |
 | testcase 存盘、index 同步、脚本纳入回归套件 | `testcase/base-agent-slice-1/README.md`、`testcase/index.md`；脚本全部在 `tests/` 下随 pytest 运行 | ✅ |
 | journal 终态行 | 见末行 | 待收尾 |
-| code review 执行且 P0/P1 闭环 | §7 | 待回填 |
+| code review 执行且 P0/P1 闭环 | §7：P0 1 / P1 3 全部修复并各配决定性测试 | ✅ |
 | retro.md | `slice-1/retro.md` | ✅ |

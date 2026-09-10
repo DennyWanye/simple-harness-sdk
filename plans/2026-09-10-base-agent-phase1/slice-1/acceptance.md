@@ -32,7 +32,7 @@ plan-status: finalized-v2 (第 1 轮挑战 21 条已裁决落实，2026-09-10)
 - 父子结果通道**不用**任何终态设施：子 Agent 也是永不终态的 BaseAgent，`agent.delegate` 直接条件等待子 Agent 的 `base_agent_turn_results_v1` 行（带超时，超时返回模型可见的失败结果、不抛、不重发）。
 - 委派**不新造父子协议**：仍复用现成的 `ChildCoordinator.launch`（`runtime/child_coordinator.py:17-41`）+ `claim_profile_launch_and_commit_child`（`execution/sqlite/uow.py:4585`）建子执行身份，只是不再消费它的终态回执；`AttachmentPolicy.DETACHED` 降级为纵深防御。
 - **不新增 start mode**：用 `driver_kind="base_agent"`，`kernel.py:2735` 取到的就是真实 driver，指纹预检（`:2736-2738`）语义自然成立；`start_snapshot.py` 与 `StartModeDriverRouter` 零改动，Agent 绑定放 `start.input`。
-- 单层不递归靠**结构**保证：子 Agent 的 `capability_snapshot.tools` 不含 `agent.delegate`（`react.py:377-401` 决定每 Run 的工具集）。
+- 单层不递归靠**结构 + 执行期闸门双保险**：子 Agent 的 `capability_snapshot.tools` 不含委派工具，且 `BaseAgentToolRegistry` 按 Run 快照在执行前拦截未暴露的工具，委派工具再拒绝非 root 调用（review F1 修订）。
 
 **最小验证动作**
 
@@ -87,7 +87,7 @@ plan-status: finalized-v2 (第 1 轮挑战 21 条已裁决落实，2026-09-10)
 | ID | 功能点 | 验收条件（可验证） | 矛盾地位 | 优先级 | 对应 BA/DG | 最小决定性测试 |
 |---|---|---|---|---|---|---|
 | **AC1** | 委派创建子 BaseAgent | 主 Agent 调用 `agent.delegate` 后：`base_agent_bindings_v1` 新增一行 `role='child'` 的 `child_agent_id`；对应子 `run_id` 的 `parent_run_id == 父 run_id`；`base_agent_delegations_v1` 恰好 1 行且 `state='settled'`；全过程只发生一次 `claim_profile_launch_and_commit_child`；`child_terminal_receipts` 表 0 行 | 决定性 | 必须 | DG01 | `tests/agents/test_delegate_tool.py::test_delegate_creates_child_agent_and_returns_child_result_row` |
-| **AC2** | 子 Agent 结果回到主 Agent（**nonce 口径**） | 测试随机生成 `NONCE` 并**只**写进子 Agent 的 `instructions`（来自委派配置模板，主 Agent 不可见、不可改）；前置断言 `NONCE` 不出现在主 Agent 的 `instructions`、主 Agent 收到的任何输入、主 Agent 的工具描述/schema 中；然后断言 (a) 工具返回值 `value["result_hash"]` == 子 Agent `base_agent_turn_results_v1` 行的 `result_hash`，(b) 主 Agent 本轮 Context 存在对应 tool 消息，(c) **主 Agent 最终 `AgentTurnResult.public_output` 含该 `NONCE`**。mock 与 real_provider 共用同一口径 | 决定性 | 必须 | DG02 | `tests/agents/test_delegation_e2e_mock.py::test_main_agent_answer_carries_child_only_nonce` |
+| **AC2** | 子 Agent 结果回到主 Agent（**nonce 口径**） | 测试随机生成 `NONCE` 并**只**写进子 Agent 的 `instructions`（来自委派配置模板，主 Agent 不可见、不可改）；前置断言 `NONCE` 不出现在主 Agent 的 `instructions`、主 Agent 收到的任何输入、主 Agent 的工具描述/schema 中；然后断言 (a) 工具返回值 `value["result_hash"]` == 子 Agent `base_agent_turn_results_v1` 行的 `result_hash`，(b) 主 Agent 本轮 Context 存在对应 tool 消息，(c) **主 Agent 最终 `AgentTurnResult.public_output` 含该 `NONCE`**。mock 与 real_provider 共用同一口径 | 决定性 | 必须 | DG02 | `tests/agents/test_delegation_e2e_mock.py::test_delegation_end_to_end_with_restart` |
 | **AC3** | 单层 · 不递归 · 有配额 · 幂等 | (a) 子 start snapshot 的 `input["capability_snapshot"]["tools"]` 不含 `"agent.delegate"`；(b) `max_delegations_per_turn=1` 时第二次调用返回 `ToolOutcome.REJECTED` + `error_code="agent_delegation_quota_exceeded"` 且不新增行；(c) 同 `delegation_id` 二次调用返回同一 `child_agent_id`、不新增行、不第二次 launch；(d) **一次委派恰好对应子 Agent 的一个 AgentTurn**（`base_agent_turns_v1 WHERE agent_id=child` 只有 `seq==1`） | 决定性 | 必须 | DG03 | `tests/agents/test_delegate_tool.py::{test_child_catalog_excludes_delegate,test_quota_rejects_second_delegation_in_same_turn,test_same_delegation_id_is_idempotent,test_one_delegation_is_exactly_one_child_turn}` |
 | **AC4** | **主 Agent** 同身份多轮 | 同一个**主** `agent_id` 连续两次 `ask` 均返回 `AgentTurnResult`；`base_agent_turns_v1` 中该 agent 的 `seq` 为 1、2；对 run_events 全量回放，主 `run_id` 全程**从未**进入 `COMPLETED/FAILED/CANCELLED`；第二轮的 provider 请求 messages 含第一轮 assistant 回答；每轮的输入 continuation 均为 `ACKED`。**子 Agent 不要求两轮**（一次委派 = 子一个 Turn） | 决定性 | 必须 | BA07 | `tests/agents/test_base_agent_kernel_spike.py::test_two_results_on_one_run_never_terminal` |
 | **AC5** | **stage 之后**任意点崩溃不重生成 | 失败域 = **结果已 stage（Turn `phase='result_pending'`、`staged_result_hash` 已落库）之后的任意点**。在该域内中断进程；新 Runtime `recover()` 后：provider 调用计数未增加；driver `start` **未被再次调用**；`base_agent_turn_results_v1` 恰好 1 行且 `result_hash` 与 stage 时相同；`get_result` 返回同一结果；Run 版本单调递增。**stage 之前（react_loop 最终 CAS 与 stage 之间）的残留窗口不在本片保证内**，见非功能表 | 决定性 | 必须 | BA30 | `tests/agents/test_turn_finalize.py::test_result_pending_then_kill_then_recover_commits_once` |
@@ -112,7 +112,7 @@ plan-status: finalized-v2 (第 1 轮挑战 21 条已裁决落实，2026-09-10)
 | import 纯度 | 根包 `import simple_harness` 不开数据库、不建网络连接、不起线程；新增导出走 `__getattr__` 惰性解析；`__all__[0] == "__version__"` | `tests/artifact/test_import_purity.py` 不由本片变红 |
 | 协议版本 | `PROTOCOL_VERSION` 保持 `"1.0.0"` | `tests/conformance/test_protocol_version.py` |
 | schema 唯一性 | 全阶段只分配一个 v10；`accepted_descriptor_rows()` 同时接受纯 v9 组合与 v10 组合；历史 checksum 不变；`migrate_execution_to_v9` 仍升到 9 | `tests/execution/test_base_agent_schema_v10.py::test_descriptor_checksums_are_stable`、`tests/execution/test_short_context_migration_still_targets_v9.py` |
-| 事务纪律 | 事务内不 `await` LLM / embedding / 网络；委派的条件等待在事务外做；base_agent helper 接受外层 connection、不自开事务；`uow.py` 每个新 facade ≤10 行 | 代码评审 + facade 行数检查 |
+| 事务纪律 | 事务内不 `await` LLM / embedding / 网络；base_agent helper 接受外层 connection，不自开事务；uow facade 以转发为主——**放宽**：`commit_agent_turn_result_and_idle` 因复用 uow 私有 `_require_*`/`_insert_event` 在 uow 内成体（约 100 行），其余 5 个超 10 行（12–44 行）；审计缺口 2 记账，下沉归 S2 | 代码评审 + journal §6 L12 |
 | 密钥 | API key 不出现在任何源码、测试、计划文档、日志、断言消息中；`--run-real-provider` 默认关闭 | `examples/base_agent_delegation.py` 自带 assert + 人工 grep |
 | 性能边界 | 本片**不承诺** Context 增长复杂度（仍是 `context.py:170-174` 的全量重写）；mock 端到端总时长 < 10s | 计时断言（宽松） |
 | 并发边界 | 本片**不承诺**多 Agent 并发公平；同一 Agent 的两条并发输入行为未定义（S2 的 BA08 才定义）；委派条件等待的超时是**上限**不是 SLA | 在文档中声明，不写测试假装通过 |
@@ -165,7 +165,7 @@ plan-status: finalized-v2 (第 1 轮挑战 21 条已裁决落实，2026-09-10)
 
 | # | 变异 | 端侧容错要求 | 断言（测试） |
 |---|---|---|---|
-| **V1 乱序** | 模型在同一批 tool_calls 里先给出依赖子 Agent 结果的后续调用，再给 `agent.delegate`；或跨轮次乱序引用尚未产生的 `delegation_id` | 引用不存在的 `delegation_id` → `REJECTED` + `error_code="agent_delegation_unknown_id"`，**不创建任何子 Agent、不写委派行、不写围栏行**；批内顺序由 `react_loop.py:734` 的 `call_ordinal` 决定，端侧不重排也不预测 | `tests/agents/test_delegate_tool.py::test_unknown_delegation_id_is_rejected_not_created`（断言 `base_agent_delegations_v1`、`base_agent_bindings_v1`、`conversation_run_modes`、`runs` 行数均不变） |
+| **V1 乱序 / 跨归属复用 id** | 模型引用归属**别的 Agent 或别的轮**的 `delegation_id`（本设计里 `delegation_id` 是调用方幂等键，不存在「预声明后引用」语义，全新 id 即新委派） | → `REJECTED` + `error_code="agent_delegation_unknown_id"`，不新建子 Agent；批内顺序由 `call_ordinal` 决定，端侧不重排 | `test_delegate_tool.py::test_unknown_delegation_id_is_rejected_not_created` |
 | **V2 重复** | 模型在同一轮重复发出相同 `delegation_id`；或重试整批 | 幂等：同 `delegation_id` 返回原 `child_agent_id`，`base_agent_delegations_v1` 仍 1 行，**不发生第二次 launch**（断言 `claim_profile_launch_and_commit_child` 调用计数 == 1）；不同 `delegation_id` 但超配额 → `agent_delegation_quota_exceeded` | `tests/agents/test_delegate_tool.py::test_same_delegation_id_is_idempotent`、`::test_quota_rejects_second_delegation_in_same_turn` |
 | **V3 schema 违约** | 缺 `objective`、多余字段、`role_hint` 取非枚举值、类型错误（数组/数字冒充字符串） | 闭合 schema（`additionalProperties:false`）在 `validate_arguments` 阶段拦下 → `MalformedToolArgumentsError` → ReAct 转成模型可见的失败观察；**绝不落库、绝不创建子 Agent、绝不写围栏行** | `tests/agents/test_delegate_tool.py::test_malformed_arguments_never_create_child`（断言 `base_agent_delegations_v1`、`conversation_run_modes`、`runs` 行数不变） |
 | **V4 超长** | `objective` 超过 8000 字符；或子 Agent 返回超长文本 | 入参 `maxLength` 拦下 → `REJECTED` + `error_code="agent_delegation_objective_too_large"`（不静默截断、不 launch）；子结果超长时工具返回值只带摘要 + `result_ref`，**原文完整留在子 Agent 的 `base_agent_turn_results_v1` 行可回读**（截断的是引用，不是事实；`result_hash` 仍对原文） | `tests/agents/test_delegate_tool.py::test_oversize_objective_is_rejected_before_launch`、`::test_oversize_child_result_returns_ref_not_truncated_fact`（断言 `value["result_hash"]` 仍等于子结果行的 `result_hash`） |
@@ -189,6 +189,6 @@ plan-status: finalized-v2 (第 1 轮挑战 21 条已裁决落实，2026-09-10)
 7. LLM 变异清单 V1–V5 各有一条端侧容错断言并通过。
 8. 真实 provider 演示跑过一次并留证；**mock 报告与 real_provider 报告分开记录**，不互相冒充（BA-v1.0 §14 / BA40 口径）。
 9. `plans/2026-09-10-base-agent-phase1/slice-1/` 下留有：`baseline-recheck.md`（T2 第 0 步）、执行 journal（含"触碰既有红"的说明与 §6 遗留清单）、两份分开的测试报告。
-10. `src/simple_harness/agents/` 与 `src/simple_harness/runtime/agent_turn.py` 下 `grep -r "simple_harness_memory"` 无匹配；`src/simple_harness/agents/tools/delegate.py` 下 `grep -r "child_terminal"` 无匹配。
+10. `src/simple_harness/agents/` 与 `src/simple_harness/runtime/agent_turn.py` 下无任何 `import simple_harness_memory` / `from simple_harness_memory`（docstring 叙述不计）；`src/simple_harness/agents/tools/delegate.py` 下 `grep -r "child_terminal"` 无匹配。
 11. 计划中标注为"不包含"的能力（尤其**残留冻结窗口**、完整批量语义、`cancel_turn`/`close`），**没有**任何一条被声称已完成。
 12. 21 条挑战裁决在 `plan.md` 附 B 的落点表里逐条可查，且每条的落点在代码/测试里确实存在（closure 复核）。

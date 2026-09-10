@@ -1,0 +1,7 @@
+REAL_PROVIDER_REPORT {"child_run_state":"waiting","delegation_count":1,"delegation_state":"settled","final_answer":null,"main_state":"failed","model":"deepseek-v4-pro","nonce_in_child_result":true,"nonce_in_final_answer":false,"provider_calls":3}
+E           AssertionError: assert 'failed' == 'committed'
+E             
+E             - committed
+E             + failed
+tests/agents/test_delegation_e2e_real_provider.py:115: AssertionError
+1 failed in 89.54s (0:01:29)

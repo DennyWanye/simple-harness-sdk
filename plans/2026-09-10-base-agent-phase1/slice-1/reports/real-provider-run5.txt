@@ -1,0 +1,2 @@
+REAL_PROVIDER_REPORT {"child_run_state":"waiting","delegation_count":1,"delegation_state":"settled","final_answer":"SQLite 零配置、单文件、事务可靠，非常适合单机桌面应用保存会话记录，只是并发写能力较弱；PostgreSQL 功能和并发更强，但需要独立服务、维护成本高，对单机桌面场景明显偏重。因此推荐使用 SQLite。\n\n验证码 2a7dad47652a","main_state":"committed","model":"deepseek-v4-pro","nonce_in_child_result":true,"nonce_in_final_answer":true,"provider_calls":3}
+1 passed in 10.21s
