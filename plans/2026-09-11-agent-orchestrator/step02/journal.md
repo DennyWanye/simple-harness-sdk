@@ -75,7 +75,15 @@ reviewer 要求显式化的 6 个决定：硬预算落地（D10'）、费用权�
 | 18 | P2 | 死代码/文档陈旧 | 符号链接守卫改为在解析前检查；删 `ALIVE_STATES`；plan D2 的 `leases` 表以列内联实现（记录） |
 
 ## 4. 证据
-（回填）
+
+| 项 | 结果 |
+|---|---|
+| fixtures 决定性测试 | `tests/orchestrator` 45 passed（合同 7、存储/预算 3、Commit Service 5、工作区/网关 3、闭环 5、恢复矩阵 9、CLI 3、review 回归 7）+ 1 skipped（真实模型 opt-in） |
+| SDK 全量回归 | 73 红 ⊆ 基线，0 新红（`baseline-known-failures.txt`；`test_public_api` 快照升 0.9.0，旧快照存 `public-api-0.8.0.json`；`test_build_contents` 接受第二个包） |
+| mypy | `src/agent_orchestrator` 41 文件 0 错（已加入 `[tool.mypy] files`） |
+| 真实模型（DeepSeek `deepseek-v4-pro`，unpriced 记账） | run1 FAILED `mission_criteria_unmet`（Planner 只选 `code_test`，自由文本准则无裁判 → 促成 D21 修订）；run2 COMPLETED `verification_passed`（判定时自跑 Critic）；run3（review 修复后）COMPLETED，1 个 Attempt，16 116 tokens，planner/attempt/critic 三笔预留全部 SETTLED。报告 `reports/real-single-task-run{1,2,3}.txt` |
+| 发布物 | `simple_harness_sdk-0.9.0-py3-none-any.whl`，源提交 `37a6717`，`SOURCE_DATE_EPOCH=1789059427`，sha256 **`e8c945e344f641a2b129014b07b3ed4850f0b4707fff9f930841f574ff3f2625`**；干净 venv（uv, py3.12，wheel + pytest + tiktoken）从归档源根跑 `tests/orchestrator + tests/agents + contracts + schema v10/迁移`：**283 passed, 4 skipped**；安装后 `python -m agent_orchestrator demo --scenario single-task --provider fixtures` → COMPLETED，证据目录 7 类文件齐全 |
+| 独立 review | plan review 27 条（§1）、代码 review 18 条（§3）全部处置或登记 |
 
 ## 5. 遗留
 
@@ -90,4 +98,17 @@ reviewer 要求显式化的 6 个决定：硬预算落地（D10'）、费用权�
 | L2-7 | 每 Attempt token 预留不是硬上限（硬上限靠 SDK per-turn limits 与 runtime hard_cap） | 第 6 步 |
 
 ## 6. 终态
-（回填）
+
+**VERDICT: SHIPPED**（2026-09-11，SDK main `37a6717` + 本文档提交；版本 0.9.0）
+
+| 验收 | 结果 |
+|---|---|
+| S2-01 正常闭环 | PASS（fixtures + CLI demo + 真实 DeepSeek run2/run3） |
+| S2-02 有错代码→修复 | PASS |
+| S2-03 八类重放不重复 | PASS |
+| S2-04 Agent 创建后崩溃（planner/worker 各一，含 submit 后） | PASS |
+| S2-05 结果提交后崩溃（含 turn 提交后、验证层通过后、事务中途） | PASS |
+| S2-06 预算/次数耗尽可解释停止 | PASS |
+| S2-07 无效/伪造/幽灵产物拒绝 | PASS |
+| S2-08 UNKNOWN 保持阻塞、预留不释放、不写零（含 priced 模式 unknown） | PASS |
+| 遗留 | §5 L2-1～L2-7 |

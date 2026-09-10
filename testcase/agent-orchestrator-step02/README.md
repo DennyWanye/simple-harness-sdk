@@ -16,3 +16,5 @@
 | S2-07 无效/伪造结果 | `test_single_task_closure.py::test_s2_07_invalid_and_forged_envelopes_are_rejected`；`test_commit_service.py::test_reject_result_and_cancel_from_verifying` |
 | S2-08 UNKNOWN 保持阻塞 | `test_recovery_matrix.py::test_s2_08_unknown_provider_outcome_stays_blocked_with_reservation_held` |
 | 合同/状态机/存储/预算/工具网关 | `test_contracts.py`、`test_store_and_budgets.py`、`test_workspace_and_gateway.py` |
+| review round 1 回归（受保护种子、活租约重启、停滞超时、cancel 清理、priced 结算、模型回显、mid_commit） | `test_review_round1.py` |
+| D21 判定时自跑 Critic | `test_single_task_closure.py::test_d21_mission_judgment_runs_its_own_critic_when_the_task_policy_had_none` |
