@@ -15,13 +15,14 @@ CREATE TABLE base_agent_bindings_v1 (
  owner_scope TEXT NOT NULL,
  api_mode TEXT NOT NULL CHECK(api_mode = 'base_agent_v1'),
  role TEXT NOT NULL CHECK(role IN ('root','child')),
- creation_key TEXT NOT NULL UNIQUE,
+ creation_key TEXT NOT NULL,
  config_json TEXT NOT NULL,
  config_hash TEXT NOT NULL CHECK(length(config_hash) = 64),
  control_generation INTEGER NOT NULL DEFAULT 0,
  created_at REAL NOT NULL,
  lifecycle TEXT NOT NULL DEFAULT 'open' CHECK(lifecycle IN ('open','closing','closed')),
- lifecycle_updated_at REAL
+ lifecycle_updated_at REAL,
+ UNIQUE(owner_scope, creation_key)
 ) STRICT;
 CREATE TABLE base_agent_turns_v1 (
  turn_id TEXT PRIMARY KEY,

@@ -290,6 +290,9 @@ class AgentRuntime:
         agent_id = agent_id_for(self._owner_scope, creation_key)
         existing = self.uow.read_agent_binding(agent_id)
         if existing is not None:
+            if existing.owner_scope != self._owner_scope:
+                # Never reveal that the id belongs to someone else (BA05).
+                raise AgentNotFound(agent_id)
             if existing.config_hash != config_hash(config):
                 raise ValueError("creation_key reused with a different configuration")
             return BaseAgent(self, existing)
@@ -398,14 +401,21 @@ class AgentRuntime:
             interval = min(interval * 2, 0.2)
 
     async def open(self, agent_id: str | AgentId) -> BaseAgent:
+        """Open an existing Agent of this owner; foreign or missing ids look identical."""
+
         value = agent_id.value if isinstance(agent_id, AgentId) else agent_id
-        binding = self.uow.read_agent_binding(value)
+        binding = self.binding(value)
         if binding is None:
             raise AgentNotFound(value)
         return BaseAgent(self, binding)
 
     def binding(self, agent_id: str) -> AgentBindingRecord | None:
-        return self.uow.read_agent_binding(agent_id)
+        """Owner-scoped read: another owner's Agent is reported as absent (BA05)."""
+
+        binding = self.uow.read_agent_binding(agent_id)
+        if binding is None or binding.owner_scope != self._owner_scope:
+            return None
+        return binding
 
 
 def build_agent_runtime(ports: AgentRuntimePorts, *, owner_scope: str = "default") -> AgentRuntime:

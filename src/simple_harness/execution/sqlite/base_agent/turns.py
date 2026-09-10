@@ -104,7 +104,7 @@ def insert_binding(
 ) -> AgentBindingRecord:
     """Insert one binding; replays return the identical row, differing replays conflict."""
 
-    existing = read_binding_by_creation_key(connection, creation_key)
+    existing = read_binding_by_creation_key(connection, owner_scope, creation_key)
     if existing is not None:
         if existing.config_hash != config_hash or existing.agent_id != agent_id:
             raise UnitOfWorkConflict("creation_key reused with a different BaseAgent")
@@ -145,10 +145,13 @@ def read_binding_by_run(connection: sqlite3.Connection, run_id: str) -> AgentBin
 
 
 def read_binding_by_creation_key(
-    connection: sqlite3.Connection, creation_key: str
+    connection: sqlite3.Connection, owner_scope: str, creation_key: str
 ) -> AgentBindingRecord | None:
+    """Creation keys are unique per owner scope (BA05): two owners may share a key."""
+
     row = connection.execute(
-        "SELECT * FROM base_agent_bindings_v1 WHERE creation_key=?", (creation_key,)
+        "SELECT * FROM base_agent_bindings_v1 WHERE owner_scope=? AND creation_key=?",
+        (owner_scope, creation_key),
     ).fetchone()
     return None if row is None else _binding(row)
 
