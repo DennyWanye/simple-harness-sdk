@@ -36,11 +36,15 @@
 | T6 AgentExecutionDriver | `f1e149b` | `pytest tests/agents/test_agent_driver.py` + legacy ReAct 回归 3 文件 | 5 passed；legacy 28 passed | 预算超限 = 失败的 Turn，Agent 不死；意外 continuation 被 ack 不终态 |
 | **T6.5 价值验证里程碑** | `66f875d` | `.venv/bin/python -m pytest -q tests/agents/test_base_agent_kernel_spike.py` | **3 passed** | 主要矛盾"不死的执行身份"一面已被真实 driver 证明 |
 | T4 围栏与公开入口 | `9fc1335` | `pytest tests/agents/test_api_mode_fence.py` | 9 passed；回归红集与基线相同 | start_snapshot.py / start_mode.py sha256 冻结闸 |
-| T7 build_agent_runtime / BaseAgent / AgentRuntime | 本次 | `pytest tests/agents/test_build_agent_runtime.py` | 8 passed；回归红集 ⊆ 基线（import purity 转绿） | queued Turn 跨重启由 kernel.recover 唤醒（E6） |
+| T7 build_agent_runtime / BaseAgent / AgentRuntime | `e149d52` | `pytest tests/agents/test_build_agent_runtime.py` | 8 passed；回归红集 ⊆ 基线（import purity 转绿） | queued Turn 跨重启由 kernel.recover 唤醒（E6） |
+| T8 agent_delegate | `7a0e43c` | `pytest tests/agents/test_delegate_tool.py` | 15 passed；回归红集 ⊆ 基线 | 预围栏→ticket→launch→binding→输入→条件等待；续做不毒化；V1–V5 |
+| T9 mock 端到端 | `b014a71` | `.venv/bin/python -m pytest -q tests/agents/test_delegation_e2e_mock.py` | 1 passed（provider 恰好 4 次） | 完整价值链验收 |
+| T10 真实 provider + 快照 | `b014a71` | `--run-real-provider tests/agents/test_delegation_e2e_real_provider.py`；`examples/base_agent_delegation.py` | 见 §4.3 | 工具名 `agent_delegate`；assistant tool_calls 从 effect 账本恢复 |
 
 ## 3. 触碰既有红的说明
 
 - T2 schema v10：实测 v10 后红集与基线逐条相同（既有 schema/迁移夹具本来就因缺旧环境或旧断言而红，失败方式未变），无需解释差异。
+- T10：`tests/unit/contracts/test_public_api.py::test_public_api_matches_frozen_snapshot` 由红转绿——快照与四处硬编码版本本来就停在 0.7.8；本片按计划更新到当前 `__version__` 并追加 BaseAgent 导出，另冻结 `public-api-0.7.10.json` 做「只增不减」断言。
 - T7：`tests/artifact/test_import_purity.py::test_import_has_no_host_or_runtime_side_effects` 由红转绿——根因是根包 `__all__[0]` 不是 `"__version__"`（四个 `MandatoryContext*` 条目被放在最前），本片把 `"__version__"` 移回首位并追加 BaseAgent 导出。这是**触碰既有红**，不是本片引入的行为变更；`baseline-known-failures.txt` 保持冻结，回归口径改为「红集 ⊆ 基线红集」。
 
 
@@ -55,13 +59,52 @@
 
 **矛盾转化再分析**：主要矛盾的第一面（执行身份能反复交结果而不死）已解决；现在决定成败的问题转为第二面——**父 Agent 能否在不依赖终态的前提下可靠取回子 Agent 的结果并做幂等结算**（T8 的结果直读 + 续做语义），其次是公开入口与围栏（T4）让这条链能被应用代码而不是测试内部路径调用（T7）。剩余任务顺序不变：T4 → T7 → T8 → T9 → T10。
 
-### 4.2 完整价值链（T9）
+### 4.2 完整价值链（T9，mock 确定性）
 
-（待 T9）
+命令：`.venv/bin/python -m pytest -q tests/agents/test_delegation_e2e_mock.py` → `1 passed`。
+主 Agent 收到复杂任务 → `agent_delegate` 创建子 BaseAgent（独立 run，`parent_run_id` = 主 run）→ 子 Agent 一个 AgentTurn 得出带 NONCE 的结论 → 主 Agent 最终回答含 NONCE（NONCE 只写在子 Agent 的委派模板里，主 Agent 的 instructions/输入/工具 schema 里都没有）→ 运行时关闭、租约过期后新运行时 `open` 同一主 Agent → `get_result` 读回同一 result_hash 且 provider 计数不变 → 第二轮 `ask` 在同一执行身份上完成（seq 2）→ run_events 全程无终态事件 → provider 恰好 4 次调用、脚本用尽 → `sys.modules` 无 `simple_harness_memory`。
 
-## 5. 兑现表
+### 4.3 真实 provider 复现（T10，证据，不作为 MUST 判定）
 
-## 6. 遗留清单
+- 端点：Host `.env` 的 svtun `gpt-5.6-luna` 今日直连探针 **90 s 超时**（`ProviderTimeoutError`），改用记录在 `.local-test-evidence/2026-09-07/credentials/deepseek.env` 的 DeepSeek 端点（`deepseek-v4-pro`，直连探针 1.3 s）。密钥只经环境变量注入，日志/报告中已核对不出现。
+- 第 1 次（修 wire 前）：主 Agent 第二次请求被端点拒绝（`provider_request_rejected`）——根因是持久 Context 里的 assistant 消息不带 `tool_calls`，紧随的 `tool` 消息让 OpenAI 兼容端点 400（Host 侧同一问题曾用进程内 memo 绕过，其 docstring 明说"上游应修"）。本片在 SDK 侧修：`agents/wire.py` 从 effect 账本（`raw_call_id/tool_name/arguments_json`）在**请求副本**上恢复 `metadata.provider_tool_calls`，`OpenAICompatibleProvider._message_payload` 序列化为 `tool_calls`；持久 Context 不变；决定性测试 `tests/agents/test_provider_wire.py` 3 例。另：DeepSeek 拒绝带 `.` 的函数名，工具标识改为 `agent_delegate`（文档里仍称 agent.delegate 能力）。
+- 第 2 次：`provider_protocol_error` / 账本 `provider_response_not_durable`——`dispatch.py:596` 的 `provider_response_json(...)` 对该次响应抛 ValueError（既有 SDK 逻辑，非本片代码），Turn 记失败、Agent 存活（符合设计）；子 Agent 已 settled、NONCE 在子结果里。属间歇（1/4），记遗留。
+- 第 3 次（pytest）：**通过**，12.8 s，`{"main_state":"committed","delegation_count":1,"delegation_state":"settled","child_run_state":"waiting","nonce_in_child_result":true,"nonce_in_final_answer":true,"provider_calls":3}`。
+- 演示脚本 `examples/base_agent_delegation.py "请比较三种排序算法并推荐一种。"`：exit 0，`state=committed delegations=1 nonce_relayed=True`，最终回答含子 Agent 的验证码，输出中无 key。
+- 报告文件：scratchpad `real-provider-run{,2,3,4}.txt`、`demo-run2.txt`（key 已脱敏），与 mock 报告分开，不互相冒充（BA40）。
+
+## 5. 兑现表（phase-4 ③3；被测对象是 SDK 库，测试方式一律为可复跑 pytest 脚本，无 UI）
+
+| AC | 矛盾地位 | 含 UI | 测试方式 | 驾驶者 | 证据 | 状态 |
+|---|---|---|---|---|---|---|
+| AC1 委派创建子 Agent | 决定性 | 否 | 脚本 | AI | `tests/agents/test_delegate_tool.py::test_delegate_creates_child_agent_and_returns_child_result_row`；journal §4.2/§4.3（真实模型 3 次调用、子 run waiting、委派 settled） | ✅ |
+| AC2 结果回到主 Agent | 决定性 | 否 | 脚本 + 真实模型 | AI | mock：最终回答含 NONCE（`test_delegation_e2e_mock.py`）；真实：`nonce_in_final_answer: true`（§4.3 第 3 次 + 演示脚本） | ✅ |
+| AC3 单层/配额/幂等 | 决定性 | 否 | 脚本 | AI | `test_child_catalog_excludes_delegate` / `test_quota_rejects_second_delegation_in_same_turn` / `test_same_delegation_id_is_idempotent` / `test_one_delegation_is_exactly_one_child_turn` | ✅ |
+| AC4 同 Agent 多轮 | 决定性 | 否 | 脚本 | AI | `test_base_agent_kernel_spike.py::test_two_results_on_one_run_never_terminal`（run_events 全量回放）+ 端到端第二轮 seq 2 | ✅ |
+| AC5 RESULT_PENDING 后重启只提交一次 | 决定性 | 否 | 脚本 | AI | `test_turn_finalize.py::test_result_pending_then_kill_then_recover_commits_once`、`test_base_agent_kernel_spike.py::test_stage_then_kill_then_recover_commits_once`（真实 driver；provider 不重调） | ✅ |
+| AC6 实例互相独立 | 次要 | 否 | 脚本 | AI | `test_build_agent_runtime.py::test_create_returns_independent_agents`、`::test_create_does_not_call_provider` | ✅ |
+| AC7 旧 API 拒新模式（root+child） | 次要 | 否 | 脚本 | AI | `test_api_mode_fence.py` 9 例 + `test_child_run_is_mode_fenced_before_it_exists` | ✅ |
+| AC8 不依赖用户记忆 SDK | 次要 | 否 | 脚本 | AI | `test_build_agent_runtime.py::test_no_memory_entrypoint_is_called`；端到端 `sys.modules` 断言；`grep -r simple_harness_memory src/simple_harness/agents` 无 import | ✅ |
+| AC9 委派 UNKNOWN 结算 | 次要（可选） | 否 | 脚本 | AI | `test_delegate_tool.py::test_delegate_unknown_reconciles_from_child_result_row`（COMPLETED 带子结果回执 / STILL_UNKNOWN 带 pending evidence_ref；observe 不 launch） | ✅ |
+| AC10 真实模型复现 | 次要（可选） | 否 | 脚本（opt-in，真实端点） | AI | §4.3：pytest 第 3 次通过 + 演示脚本通过；1 次既有 `provider_response_not_durable` 记遗留 | ✅（证据，非 MUST） |
+| V1–V5 LLM 变异 | — | 否 | 脚本 | AI | `test_delegate_tool.py` 五条 + `test_agent_driver.py` 未知工具名/provider 拒绝 | ✅ |
+
+无降级、无未批准的等价替代；全 AI 驾驶（库类被测对象，无真人点击面）。
+
+## 6. 遗留清单（不许悬空）
+
+| # | 事项 | 归属 |
+|---|---|---|
+| L1 | ReAct 最终 CAS 与 stage 之间的残留冻结窗口：崩在这一小段会重生成（acceptance 已把 AC5 收窄为"stage 之后"） | S5 · BA31（把 RESULT_PENDING 并进同一次 CAS） |
+| L2 | 预围栏后、launch 前崩溃留下的 `run_context_use_requirements` 孤儿行不可删（续做复用同一 child_run_id，正常重试不新增） | S5 · BA37 一并处置 |
+| L3 | lifetime `TerminationLimits` 是 runtime 级（driver 单一 policy fingerprint），`AgentConfig.limits` 的 per-turn 上限本片只记录、只由委派配额/等待生效；per-agent/per-turn 精确执法 | S2 · BA11 |
+| L4 | UNKNOWN provider/tool 期间 AgentTurn 停在 running（`agent_turn_outcome` 与 `wait_blocker` 互斥是刻意的），恢复语义 | S2 · BA11 |
+| L5 | 真实端点间歇 `provider_response_not_durable`（`dispatch.py:596` 对某些响应抛 ValueError，1/4 次），Turn 失败但 Agent 存活；需要抓一份原始响应定位 | 记 F-BA-1，S5 或独立修 |
+| L6 | svtun `gpt-5.6-luna` 直连 90 s 超时（本片改用 DeepSeek 留证）；Host 说"Host-shaped 请求 200"，SDK 直连的差异未查 | 独立环境项 |
+| L7 | 工具标识 `agent_delegate`（端点函数名不允许 `.`）；plan/acceptance 文本仍写 agent.delegate 能力名 | 文档口径，无需改代码 |
+| L8 | `ToolContext.agent_delegate_context`（plan T8 提议的新字段）未加：委派工具改由 run_id 反查绑定，不需要新字段 | 已在 journal 说明，无 |
+| L9 | assistant `tool_calls` 恢复依赖 `request_id` 前缀解析 run_id 与 effect 账本按 turn 分组；raw call id 跨轮重复时按轮次对位，找不到则 `{}`（计数 `wire.fallback_total`）；上游"first-class transcript field"仍是 SDK 后续工作 | S3/S5 |
+| L10 | 既有红 75 → 73：本片顺手修了 import purity 与 public-api 快照两条（均记为触碰既有红）；其余 73 条既有红原样 | 基线口径不变 |
 
 > 以下三条在 v2 修订时已确定为"本片不做、如实记账"，执行期只需确认没有被无意扩大。
 

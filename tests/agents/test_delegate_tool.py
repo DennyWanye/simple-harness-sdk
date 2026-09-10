@@ -415,3 +415,50 @@ def test_no_delegation_still_commits_a_valid_turn(tmp_path):
             assert _count(uow, "runs") == 1
 
     asyncio.run(case())
+
+
+def test_delegate_unknown_reconciles_from_child_result_row(tmp_path):
+    """AC9/DG04: an UNKNOWN delegate effect settles from the child's result row, never relaunches."""
+    from simple_harness.agents.tools.delegate import AgentDelegationReconciliation
+    from simple_harness.tools.reconciliation import ReconciliationState
+
+    class _Effect:
+        def __init__(self, arguments, call_id):
+            self.tool_name = DELEGATE_TOOL_NAME
+            self.arguments = arguments
+            self.call_id = call_id
+
+    class _Fallback:
+        def __init__(self):
+            self.seen = []
+
+        async def observe(self, effect):
+            self.seen.append(effect)
+            raise AssertionError("delegate effects must not reach the fallback")
+
+    async def case():
+        provider = ScriptedProvider([_delegate_call(), "子结论", "主结论"])
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            main = await runtime.create(_main_config(), creation_key="main")
+            await main.ask("任务", input_id="r1", timeout=10)
+            uow = runtime.uow
+            from simple_harness.contracts import CallId
+
+            reconciliation = AgentDelegationReconciliation(uow, _Fallback())
+            observed = await reconciliation.observe(
+                _Effect({"objective": "x", "delegation_id": "d-1"}, CallId("call-x"))
+            )
+            assert observed.state is ReconciliationState.COMPLETED
+            child_id = child_agent_id_for(main.agent_id, "d-1")
+            stored = uow.read_agent_turn_result(f"{child_id}:input:objective")
+            assert observed.evidence_ref == stored.commit_receipt_id
+            assert observed.result is not None
+            assert dict(observed.result.value)["result_hash"] == stored.result_hash
+            pending = await reconciliation.observe(
+                _Effect({"objective": "x", "delegation_id": "d-nope"}, CallId("call-y"))
+            )
+            assert pending.state is ReconciliationState.STILL_UNKNOWN
+            assert pending.evidence_ref == "base_agent_delegation:d-nope:pending"
+            assert runtime._delegate.launches == 1  # observing never launches
+
+    asyncio.run(case())
