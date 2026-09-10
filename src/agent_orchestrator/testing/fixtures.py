@@ -167,6 +167,11 @@ def proposal_step(proposal: dict[str, Any]) -> str:
     return "<task_proposal>" + json.dumps(proposal, ensure_ascii=False) + "</task_proposal>"
 
 
+def graph_proposal_step(tasks: Sequence[dict[str, Any]]) -> str:
+    body = json.dumps({"tasks": list(tasks)}, ensure_ascii=False)
+    return "<task_graph_proposal>" + body + "</task_graph_proposal>"
+
+
 def critic_step(
     *, verdict: str, criteria_met: bool, blocker: str | None = None
 ) -> Callable[[ProviderRequest], str]:
@@ -250,6 +255,7 @@ __all__ = (
     "demo_single_task_provider",
     "demo_worker_script",
     "envelope_step",
+    "graph_proposal_step",
     "package_of",
     "proposal_step",
     "role_of",

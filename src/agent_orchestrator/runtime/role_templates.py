@@ -20,11 +20,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-PLANNER_VERSION = "planner-v1"
+PLANNER_VERSION = "planner-v2"
 WORKER_VERSION = "worker-v1"
 CRITIC_VERSION = "critic-v1"
 
 TASK_PROPOSAL_TAG = "task_proposal"
+TASK_GRAPH_PROPOSAL_TAG = "task_graph_proposal"
 RESULT_ENVELOPE_TAG = "result_envelope"
 CRITIC_VERDICT_TAG = "critic_verdict"
 
@@ -43,15 +44,18 @@ PLANNER = RoleTemplate(
     tool_names=(),
     instructions=(
         "[role:planner]\n"
-        "你是编排系统的 Planner。你的职责是把 Mission 拆成可检查的 Task Contract；本版本只允许提出**一个** Task。\n"
-        "你不执行任务、不调用工具、不判断任务是否完成。\n"
-        "输出要求：只输出一个 <task_proposal>…</task_proposal> 块，块内是 JSON 对象，字段固定为：\n"
-        '  {"goal": str, "rationale": str（说明它如何满足 Mission 目标）, "success_criteria": [str,…],\n'
-        '   "verification_policy": [从 format_check / rule_check / critic_review / code_test 中选择],\n'
-        '   "allowed_tools": [只能是 Mission 允许的工具], "budget": {"max_tokens": int|null, "max_attempts": int|null},\n'
-        '   "priority": number, "root_goal": str}\n'
-        "success_criteria 必须可判定（例如 `pytest:tests/test_x.py` 表示该测试文件必须通过，`file:src/x.py` 表示文件必须存在）。\n"
-        "块外不要输出任何文字。"
+        "你是编排系统的 Planner。你的职责是把 Mission 拆成一张有依赖关系的 Task DAG（有向无环图），每个 Task 都是可检查的 Task Contract。\n"
+        "你不执行任务、不调用工具、不判断任务是否完成。图在执行期间不会改变，所以一次要把依赖写全。\n"
+        "拆分原则：能并行的独立工作拆成不同 Task；有共享前置（例如接口合同）的先做前置；最后一个 Task 负责整体集成/交付，它依赖所有需要集成的 Task。\n"
+        "每个 Task 的 success_criteria 必须可判定：`pytest:<测试文件或目录>` 表示必须通过，`file:<路径>` 表示文件必须存在。\n"
+        "每个 Task 的 budget.max_tokens 必须给出，且所有 Task 的 max_tokens 之和不能超过 Mission 的 max_tokens。\n"
+        "输出要求：只输出一个 <task_graph_proposal>…</task_graph_proposal> 块，块内是 JSON 对象：\n"
+        '  {"tasks": [{"key": str（图内唯一短标识，如 A/B/C）, "goal": str, "rationale": str（说明它如何服务 Mission 目标）,\n'
+        '             "dependencies": [其他 Task 的 key], "success_criteria": [str,…],\n'
+        '             "verification_policy": [从 format_check / rule_check / critic_review / code_test 中选择],\n'
+        '             "allowed_tools": [只能是 Mission 允许的工具],\n'
+        '             "budget": {"max_tokens": int, "max_attempts": int}, "priority": number}, …]}\n'
+        "不允许循环依赖、自依赖、引用不存在的 key、重复的 Task。块外不要输出任何文字。"
     ),
 )
 
@@ -95,6 +99,7 @@ CRITIC = RoleTemplate(
 ROLES = {template.name: template for template in (PLANNER, WORKER, CRITIC)}
 
 __all__ = (
+    "TASK_GRAPH_PROPOSAL_TAG",
     "CRITIC",
     "CRITIC_VERDICT_TAG",
     "CRITIC_VERSION",
