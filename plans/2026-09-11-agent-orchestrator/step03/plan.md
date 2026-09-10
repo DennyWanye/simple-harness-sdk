@@ -59,4 +59,6 @@ Planner 一次给出的静态 DAG 必须**作为一个整体**被检查与 Commi
 | D3-8' | `artifact.version` 按 **(mission, path) 血缘**递增 |
 | D3-16 | 去重：只在 `key` 重复、或（规范化 goal + 依赖集 + success_criteria）全同时拒绝 |
 | D3-17 | Attempt 进入 LOST/TIMED_OUT/SUPERSEDED/CANCELLED 或所在 Task COMPLETED 时立即 `gateway.unbind(agent_id)`（先于 cancel_turn） |
+| D3-7'' | 实现期补充（journal §2）：TaskNode/Task 增加 `outputs`；上游输入中被本 Task 声明为 `outputs` 的路径不受保护（桩→实现的合法改写），其余上游输入受保护；Graph Commit 对互不依赖的 Task 声明同一 `outputs` 路径静态拒绝 `artifact_conflict`；Task 级 `code_test` 只跑本 Task 的 `pytest:` 目标，Mission 级目标在整合副本上判定 |
+| D3-6'' | 实现期补充：SUPERSEDED/CANCELLED 的 Attempt 若 SDK turn 仍在运行，其 intent 保持 SUBMITTED 直到 turn 结束再采集（导入费用、迟到结果记历史、结算预留）；Mission 终态后循环仍采集这类 intent；未提交的 intent 立即关闭 |
 | D3-18 | `graph_version` 存 Mission `final_report.graph_version`（随 mission.version CAS）；§19.4 老化与 §18.5 背压上限本步不做，登记推迟第 6 步 |
