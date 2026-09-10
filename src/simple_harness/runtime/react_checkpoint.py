@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping
+from typing import Any
 
 from simple_harness.contracts import RunId, canonical_json, thaw_json
 from simple_harness.execution.context_authority import ContextRouteReceipt, ContextRouteState
@@ -77,8 +78,10 @@ class DurableReactCheckpoint:
         lease: ExecutionLease,
         expected_version: int,
         state: TerminationState,
+        *,
+        companion: Callable[[Any], None] | None = None,
     ) -> tuple[TerminationState, int]:
-        stored = self._write(run_id, lease, expected_version, state)
+        stored = self._write(run_id, lease, expected_version, state, companion=companion)
         return state, stored.version
 
     def _write(
@@ -87,9 +90,12 @@ class DurableReactCheckpoint:
         lease: ExecutionLease,
         expected_version: int | None,
         state: TerminationState,
+        *,
+        companion: Callable[[Any], None] | None = None,
     ) -> WorkflowCheckpoint:
         payload = state.to_json()
         digest = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+        extra: dict[str, Any] = {} if companion is None else {"companion": companion}
         return self._port.cas_react_checkpoint(
             run_id=run_id.value,
             lease=lease,
@@ -97,6 +103,7 @@ class DurableReactCheckpoint:
             checkpoint=payload,
             checkpoint_hash=digest,
             now=self._clock(),
+            **extra,
         )
 
 

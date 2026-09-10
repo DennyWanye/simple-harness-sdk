@@ -13,6 +13,7 @@ real tool runs; the effect ledger records the rejection; the model sees it.
 
 from __future__ import annotations
 
+import asyncio
 from typing import cast
 
 from simple_harness.tools import FunctionTool, ToolCall, ToolRegistry, ToolResult, ToolSpec
@@ -32,7 +33,10 @@ class BaseAgentToolRegistry(ToolRegistry):
     Agent A cannot call a tool configured only for Agent B.
     """
 
-    def __init__(self, tools=(), *, exposure_reader=None) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, tools=(), *, exposure_reader=None, max_concurrent=None) -> None:  # type: ignore[no-untyped-def]
+        self.tool_semaphore = None if max_concurrent is None else asyncio.Semaphore(max_concurrent)
+        self.tools_in_flight = 0
+        self.max_tools_in_flight = 0
         super().__init__(tools)
         self._exposure_reader = exposure_reader
         self._exposure_cache: dict[str, frozenset[str]] = {}
@@ -113,7 +117,22 @@ class ExposureGuardedTool:
             return _reject_with(NOT_EXPOSED_CODE, f"{self.spec.name} is not exposed to this Agent")(
                 {}, context
             )
-        return self._inner.invoke(arguments, context)
+        semaphore = self._registry.tool_semaphore
+        if semaphore is None:
+            return self._inner.invoke(arguments, context)
+
+        async def limited():  # type: ignore[no-untyped-def]
+            async with semaphore:  # BA35: FIFO across Agents
+                self._registry.tools_in_flight += 1
+                self._registry.max_tools_in_flight = max(
+                    self._registry.max_tools_in_flight, self._registry.tools_in_flight
+                )
+                try:
+                    return await self._inner.invoke(arguments, context)
+                finally:
+                    self._registry.tools_in_flight -= 1
+
+        return limited()
 
 
 __all__ = (

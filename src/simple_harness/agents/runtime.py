@@ -140,7 +140,9 @@ def assemble_runtime(
         return tuple(names) if isinstance(names, (list, tuple)) else ()
 
     registry = BaseAgentToolRegistry(
-        (*tools, *cast(tuple[Tool, ...], extra_tools)), exposure_reader=_exposure
+        (*tools, *cast(tuple[Tool, ...], extra_tools)),
+        exposure_reader=_exposure,
+        max_concurrent=ports.max_concurrent_tool_calls,
     )
     # An SDK-native authorization port (prepare/bind_decision, able to require a
     # durable user decision) is used as-is; the consumer port is adapted.
@@ -162,7 +164,12 @@ def assemble_runtime(
     )
     tokenizer = ports.tokenizer or UpperBoundTokenizer()
     guard = RequestGuard(uow, tokenizer=tokenizer, policy=ports.context_policy, clock=ports.clock)
-    wire = AgentProviderWire(ports.provider, database, request_guard=guard)
+    wire = AgentProviderWire(
+        ports.provider,
+        database,
+        request_guard=guard,
+        max_concurrent=ports.max_concurrent_model_calls,
+    )
     provider_adapter = _ConsumerProviderAdapter(wire, ports.model)
     # The consumer provider adapter reports pricing_key "consumer"; the estimator must match.
     estimator = ports.policies.estimator or FrozenPriceEstimator("consumer-v1", "consumer", 0, 0)

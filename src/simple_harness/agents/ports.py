@@ -77,6 +77,10 @@ class AgentRuntimePorts:
     embedding: EmbeddingPort | None = None
     recall_limit: int = 6
     recall_token_share: float = 0.25
+    # Runtime-wide concurrency caps across all Agents (BA35); None = unbounded.
+    # Waiters are served FIFO, so N Agents take turns instead of starving.
+    max_concurrent_model_calls: int | None = None
+    max_concurrent_tool_calls: int | None = None
     clock: Callable[[], float] = time.time
 
     def __post_init__(self) -> None:
@@ -136,6 +140,12 @@ class AgentRuntimePorts:
             or self.empty_response_retries < 0
         ):
             raise ValueError("empty_response_retries must be a non-negative integer")
+        for name in ("max_concurrent_model_calls", "max_concurrent_tool_calls"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
+                raise ValueError(f"{name} must be None or a positive integer")
         for name in ("max_agents", "max_batch_size"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:

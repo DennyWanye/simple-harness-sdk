@@ -483,6 +483,61 @@ class AgentExecutionDriver:
             agent_turn_outcome=outcome,
         )
 
+    def _stage_companion(self, invocation: DriverInvocation, turn_id: str):  # type: ignore[no-untyped-def]
+        """BA31: stage the committed turn result inside the loop's final checkpoint CAS.
+
+        The outcome built here is byte-identical to the one ``start`` returns after
+        the loop, so the kernel's own stage is an idempotent no-op and finalize-first
+        recovery commits it even if the process dies right after the CAS.
+        """
+
+        input_value = cast(Mapping[str, object], invocation.start.input)
+        binding = cast(Mapping[str, object], input_value.get("base_agent_binding") or {})
+        agent_id = str(binding.get("agent_id"))
+        turn_reader = getattr(invocation.services.react_checkpoint, "read_agent_turn", None)
+        turn = turn_reader(turn_id) if callable(turn_reader) else None
+        if turn is None:
+            return None
+        lease_epoch = invocation.execution_lease.epoch
+        clock = self._clock
+        delegations = self._delegations
+
+        def factory(response, state):  # type: ignore[no-untyped-def]
+            from simple_harness.execution.sqlite.base_agent import turns as turn_helpers
+
+            outcome = committed_outcome(
+                agent_id=agent_id,
+                turn_id=turn_id,
+                seq=turn.seq,
+                input_id=turn.input_id,
+                input_hash=turn.input_hash,
+                response_message=response.message,
+                usage_refs=(
+                    (f"provider-request:{response.request_id.value}",)
+                    if isinstance(response.request_id, RequestId)
+                    else ()
+                ),
+                delegation_count=delegations(turn_id),
+                provider_turn_ordinal_from=turn.provider_turn_ordinal_from,
+                provider_turn_ordinal_to=state.provider_turns_reserved_total,
+            )
+
+            def companion(connection) -> None:  # type: ignore[no-untyped-def]
+                turn_helpers.stage_result(
+                    connection,
+                    turn_id=turn_id,
+                    result_hash=outcome.result_hash,
+                    result_json=outcome.result_object(),
+                    provider_turn_ordinal_from=outcome.provider_turn_ordinal_from,
+                    provider_turn_ordinal_to=outcome.provider_turn_ordinal_to,
+                    lease_epoch=lease_epoch,
+                    now=clock(),
+                )
+
+            return companion
+
+        return factory
+
     async def _run_turn(  # type: ignore[no-untyped-def]
         self,
         loop: ReActLoop,
@@ -510,6 +565,7 @@ class AgentExecutionDriver:
                     max_output_tokens=max_output_tokens,
                     initial_route_receipt=invocation.start.initial_route_receipt,
                     initial_route_receipt_hash=invocation.start.initial_route_receipt_hash,
+                    final_companion=self._stage_companion(invocation, turn_id),
                 ),
                 services=invocation.services,
                 execution_lease=invocation.execution_lease,

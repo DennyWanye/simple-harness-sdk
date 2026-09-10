@@ -3048,6 +3048,7 @@ class SqliteExecutionUnitOfWork:
         checkpoint_hash: str,
         now: float,
         fault: FaultHook | None = None,
+        companion: Callable[[sqlite3.Connection], None] | None = None,
     ) -> WorkflowCheckpoint:
         run_id = _required(run_id, "run_id")
         if lease.run_id != run_id or lease.namespace != RUNTIME_LEASE_NAMESPACE:
@@ -3094,6 +3095,11 @@ class SqliteExecutionUnitOfWork:
                 ),
             )
             _fault(fault, "react_checkpoint.after_write")
+            if companion is not None:
+                # Same transaction as the checkpoint write (BA31): the caller's durable
+                # companion (e.g. an AgentTurn staged result) commits or rolls back with it.
+                companion(connection)
+                _fault(fault, "react_checkpoint.after_companion_write")
         _fault(fault, "react_checkpoint.after_commit")
         result = self.read_react_checkpoint(run_id)
         assert result is not None

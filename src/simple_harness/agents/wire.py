@@ -14,6 +14,7 @@ Context), which ``OpenAICompatibleProvider`` serializes as ``tool_calls``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from dataclasses import replace
@@ -145,12 +146,17 @@ def _is_empty_final(response: ProviderResponse) -> bool:
 class AgentProviderWire:
     """Consumer ``ProviderPort`` decorator used by ``assemble_runtime``."""
 
-    def __init__(self, inner, database, *, request_guard=None) -> None:  # type: ignore[no-untyped-def]
+    def __init__(  # type: ignore[no-untyped-def]
+        self, inner, database, *, request_guard=None, max_concurrent: int | None = None
+    ) -> None:
         self._inner = inner
         self._database = database
         self._guard = request_guard
+        self._semaphore = None if max_concurrent is None else asyncio.Semaphore(max_concurrent)
         self.fallback_total = 0
         self.last_request: ProviderRequest | None = None
+        self.in_flight = 0
+        self.max_in_flight = 0
 
     async def invoke(self, request: ProviderRequest, *, cancel) -> ProviderResponse:  # type: ignore[no-untyped-def]
         run_id = run_id_from_request(request.request_id.value)
@@ -165,7 +171,11 @@ class AgentProviderWire:
             # Final re-count of the rendered request (BA13); over budget is refused
             # before the call as a definite failure (BA16).
             self._guard.check(wire_request, run_id=run_id)
-        response = await self._inner.invoke(wire_request, cancel=cancel)
+        if self._semaphore is None:
+            response = await self._invoke_counted(wire_request, cancel=cancel)
+        else:
+            async with self._semaphore:  # FIFO across Agents (BA35)
+                response = await self._invoke_counted(wire_request, cancel=cancel)
         if _is_empty_final(response):
             finish = getattr(response, "finish_reason", None)
             usage = getattr(response, "usage", None)
@@ -185,6 +195,14 @@ class AgentProviderWire:
                 ),
             )
         return response
+
+    async def _invoke_counted(self, request: ProviderRequest, *, cancel):  # type: ignore[no-untyped-def]
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            return await self._inner.invoke(request, cancel=cancel)
+        finally:
+            self.in_flight -= 1
 
 
 __all__ = (

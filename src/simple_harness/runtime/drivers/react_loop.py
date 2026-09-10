@@ -9,7 +9,7 @@ import asyncio
 import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import cast
+from typing import Any, cast
 
 from simple_harness.contracts import (
     CallId,
@@ -23,8 +23,10 @@ from simple_harness.contracts import (
 )
 from simple_harness.contracts.messages import Message, MessageRole
 from simple_harness.execution.context_action import (
-    MandatoryContextActionRequired, MandatoryContextActionExhausted,
-    MandatoryContextFeedbackV1, MAX_MANDATORY_CONTEXT_REPAIRS,
+    MAX_MANDATORY_CONTEXT_REPAIRS,
+    MandatoryContextActionExhausted,
+    MandatoryContextActionRequired,
+    MandatoryContextFeedbackV1,
 )
 from simple_harness.execution.context_authority import (
     ContextRouteReceipt,
@@ -85,6 +87,9 @@ class ReActRunInput:
     initial_route_receipt_hash: str | None = None
     turn_id: str | None = None
     continuation_id: str | None = None
+    # Optional durable companion write executed inside the same transaction as the
+    # final (phase -> ready) checkpoint CAS, e.g. staging an AgentTurn result (BA31).
+    final_companion: Callable[[ProviderResponse, TerminationState], Callable[[Any], None]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -728,7 +733,13 @@ class ReActLoop:
                     tool_result_progress=0,
                     last_observed_at=self._clock(),
                 )
-                state, _ = checkpoint.cas(value.run_id, execution_lease, checkpoint_version, state)
+                companion = (
+                    None if value.final_companion is None
+                    else value.final_companion(response, state)
+                )
+                state, _ = checkpoint.cas(
+                    value.run_id, execution_lease, checkpoint_version, state, companion=companion
+                )
                 return ReActResult(response, state)
             _cancel(cancel, tool_cancel)
             for call_ordinal in range(state.tool_result_progress, len(response.tool_calls)):
