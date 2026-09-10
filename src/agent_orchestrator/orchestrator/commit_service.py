@@ -37,7 +37,7 @@ from ..contracts import (
     ids,
 )
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, sha256_hex
-from ..governance.budgets import BudgetExhausted, BudgetLedger, UsageFact
+from ..governance.budgets import BudgetLedger, UsageFact
 from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
@@ -874,6 +874,7 @@ class CommitService:
         feedback: Sequence[str] = (),
         candidates_per_task: int = 1,
         inputs: Sequence[Mapping[str, Any]] = (),
+        max_open_attempts: int | None = None,
     ) -> tuple[Attempt, DispatchIntent]:
         """Atomic Reserve + Attempt(PENDING) + dispatch intent (ORCH-BUILD §4.3 step 1).
 
@@ -895,18 +896,27 @@ class CommitService:
                     f"task {task_id} already has {len(open_attempts)} open Attempt(s) "
                     f"(candidates_per_task={candidates_per_task}): {open_attempts[0].id}"
                 )
+            if max_open_attempts is not None:  # D3-4: the Mission-wide bound, checked here
+                open_in_mission = sum(
+                    1
+                    for other in self._store.list_tasks(task.mission_id)
+                    for a in self._store.list_attempts(other.id)
+                    if a.status in OPEN_ATTEMPT_STATES
+                )
+                if open_in_mission >= max_open_attempts:
+                    raise CommitRejected(
+                        f"mission {task.mission_id} already has {open_in_mission} open Attempts "
+                        f"(max_concurrency={max_open_attempts})"
+                    )
             ordinal = len(existing) + 1
             attempt_id = ids.attempt_id(task_id, ordinal)
-            try:
-                self._ledger.reserve(
-                    account_id=task_account(task_id),
-                    subject_id=attempt_id,
-                    tokens=reservation.tokens,
-                    cost_micros=reservation.cost_micros,
-                    counts_attempt=True,
-                )
-            except BudgetExhausted as error:
-                raise error
+            self._ledger.reserve(  # BudgetExhausted propagates; nothing was written
+                account_id=task_account(task_id),
+                subject_id=attempt_id,
+                tokens=reservation.tokens,
+                cost_micros=reservation.cost_micros,
+                counts_attempt=True,
+            )
             attempt = Attempt(
                 id=attempt_id,
                 task_id=task_id,
@@ -942,7 +952,11 @@ class CommitService:
                 creation_key=attempt.creation_key,
                 input_id=attempt.input_id,
                 input_hash=input_hash,
-                config={**dict(intent_config), "inputs": [dict(item) for item in inputs]},
+                config={
+                    **dict(intent_config),
+                    "attempt_id": attempt_id,  # authoritative (P1-7): never the caller's guess
+                    "inputs": [dict(item) for item in inputs],
+                },
                 expected_turn_id=None,
                 agent_id=None,
                 receipt=None,
@@ -1421,7 +1435,11 @@ class CommitService:
             )
 
     def accept_result(
-        self, result_id: str, *, verifier_results: Sequence[Mapping[str, Any]]
+        self,
+        result_id: str,
+        *,
+        verifier_results: Sequence[Mapping[str, Any]],
+        owner: str | None = None,
     ) -> Task:
         """PASS (§24 step 11) in one transaction (D3-6'): claims → VERIFIED, Attempt →
         COMPLETED, Task → COMPLETED (via VERIFYING when a sibling candidate had not
@@ -1433,6 +1451,7 @@ class CommitService:
             if stored.verification_state == "DONE" and stored.verdict == "PASS":
                 return self._require_task(stored.envelope.task_id)
             attempt = self._require_attempt(stored.envelope.attempt_id)
+            self._require_lease(attempt, owner)
             task = self._require_task(stored.envelope.task_id)
             mission = self._require_mission(stored.envelope.mission_id)
             if task.status is TaskStatus.ACTIVE:
@@ -1458,7 +1477,8 @@ class CommitService:
                 accepted_artifacts=stored.artifacts,
             )
             self._store.update_task(completed, expected_version=task.version)
-            self._settle_subject(attempt.id, mission.id, task_id=task.id)
+            if not self._ledger.has_unknown_usage(attempt.id):  # ORCH §12.2 (P2-12)
+                self._settle_subject(attempt.id, mission.id, task_id=task.id)
             self._emit(
                 "VerificationPassed",
                 mission.id,
@@ -1558,7 +1578,13 @@ class CommitService:
             )
             return failed
 
-    def fail_result(self, result_id: str, *, failures: Sequence[Mapping[str, Any]]) -> Task:
+    def fail_result(
+        self,
+        result_id: str,
+        *,
+        failures: Sequence[Mapping[str, Any]],
+        owner: str | None = None,
+    ) -> Task:
         """FAIL: claims → REJECTED, Attempt → RETRY_WAIT, Task VERIFYING → ACTIVE (retry decision is separate)."""
 
         with self._store.transaction():
@@ -1566,6 +1592,7 @@ class CommitService:
             if stored.verification_state == "DONE" and stored.verdict == "FAIL":
                 return self._require_task(stored.envelope.task_id)
             attempt = self._require_attempt(stored.envelope.attempt_id)
+            self._require_lease(attempt, owner)
             task = self._require_task(stored.envelope.task_id)
             self._store.set_result_verification(result_id, state="DONE", verdict="FAIL")
             for claim in self._store.list_claims(result_id):
@@ -1616,9 +1643,14 @@ class CommitService:
             if task.status is TaskStatus.FAILED:
                 return task
             mission = self._require_mission(task.mission_id)
-            if task.status is TaskStatus.VERIFYING:  # §25.1: FAILED is reached from ACTIVE
+            if task.status in {TaskStatus.VERIFYING, TaskStatus.READY}:
+                # §25.1: FAILED is reached from ACTIVE only; a READY Task whose first
+                # Attempt could not even be created (budget, artifact conflict) is
+                # promoted first, a VERIFYING one is returned to ACTIVE (two legal edges)
                 task = next_task(task, TaskStatus.ACTIVE)
                 self._store.update_task(task, expected_version=task.version - 1)
+            if task.status is not TaskStatus.ACTIVE:
+                raise CommitRejected(f"task {task_id} is {task.status}; cannot stop it")
             failed = next_task(task, TaskStatus.FAILED, failure_reason=str(stop_reason))
             self._store.update_task(failed, expected_version=task.version)
             for attempt in self._store.list_attempts(task_id):
@@ -1683,6 +1715,19 @@ class CommitService:
         return parts
 
     # ------------------------------------------------------------ lookups
+    def _require_lease(self, attempt: Attempt, owner: str | None) -> None:
+        """A verdict is committed only by the Attempt's current live lease holder (P1-3):
+        a stale owner whose lease lapsed and was taken over is refused."""
+
+        if owner is None:
+            return
+        if attempt.lease_owner != owner:
+            raise CommitRejected(
+                f"attempt {attempt.id} is leased to {attempt.lease_owner}, not {owner}"
+            )
+        if attempt.lease_expires_at is not None and attempt.lease_expires_at <= self._store.now:
+            raise CommitRejected(f"lease of attempt {attempt.id} held by {owner} has lapsed")
+
     def _require_mission(self, mission_id: str) -> Mission:
         mission = self._store.get_mission(mission_id)
         if mission is None:

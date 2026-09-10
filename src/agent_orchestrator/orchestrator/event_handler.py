@@ -61,6 +61,7 @@ from ..contracts import (
     ids,
 )
 from ..contracts.models import sha256_hex
+from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetExhausted
 from ..planning.planner import parse_task_graph_proposal
 from ..runtime.agent_worker import AgentBridge, Liveness, user_message_json
@@ -209,7 +210,11 @@ class Orchestrator:
             elif intent.kind == "critic":
                 self._bind_critic(intent.agent_id, intent.config)
         for mission in self._active_missions():
-            report = self.commit.heal_mission(mission.id)
+            try:
+                report = self.commit.heal_mission(mission.id)
+            except StoreBusy as error:  # another instance is healing; the loop retries
+                self._note(f"recover {mission.id}: store busy ({error})")
+                continue
             if report["unblocked"] or report["closed_attempts"]:
                 self._note(f"recover {mission.id}: {report}")
             for attempt_id in report["closed_attempts"]:
@@ -255,6 +260,12 @@ class Orchestrator:
         except StoreBusy as error:
             # D3-10': another instance holds the write lock; nothing was applied, retry next cycle
             self._note(f"store busy, cycle skipped: {error}")
+            await asyncio.sleep(self._poll)
+            return False
+        except (CommitRejected, IllegalTransition) as error:
+            # a Commit refused because the library moved under us (another instance, a
+            # cascade): nothing was written; the next cycle re-observes (P1-4)
+            self._note(f"commit refused, cycle skipped: {error}")
             await asyncio.sleep(self._poll)
             return False
 
@@ -368,7 +379,19 @@ class Orchestrator:
             if attempt.status in TERMINAL_ATTEMPT:  # cancelled / superseded before it ran
                 self.commit.settle_intent(claimed.intent_id, "FAILED")
                 return True
-            self._bind_workspace(attempt)
+            try:
+                self._bind_workspace(attempt)
+            except ArtifactConflict as error:  # an upstream artifact file moved / changed
+                self.commit.settle_intent(claimed.intent_id, "FAILED")
+                self.commit.mark_attempt_lost(attempt.id, reason="upstream_artifact_missing")
+                self.commit.stop_task(
+                    attempt.task_id,
+                    stop_reason=MissionStopReason.ARTIFACT_CONFLICT,
+                    detail={"error": str(error)},
+                )
+                await self._release_mission(attempt.mission_id)
+                self._note(f"attempt {attempt.id}: upstream artifacts unusable → stopped")
+                return True
         if claimed.state == "CLAIMED":
             agent_id, _run_id, _ = await self.bridge.create(
                 creation_key=claimed.creation_key, config_json=config["agent_config"]
@@ -878,15 +901,37 @@ class Orchestrator:
         }
         for item in self._upstream_inputs(attempt):
             initial[item.path] = item.content_hash
-        guarded = set(self._protected_files(mission, task, attempt))
+        guarded = {
+            path: sha256_hex_text(content)
+            for path, content in self._protected_files(mission, task, attempt).items()
+        }
         listed = set(envelope.artifacts)
+        by_path = {artifact.path: artifact for artifact in artifacts}
+        rewritten = sorted(
+            path
+            for path in listed
+            if path in guarded and by_path[path].content_hash != guarded[path]
+        )
+        if rewritten:  # P1-6: a protected path is never registered as produced work
+            self.commit.reject_result(
+                attempt.id,
+                turn_id=result.turn_id,
+                reason="protected_path_rewritten",
+                detail={"paths": rewritten},
+            )
+            self._settle_intent(intent, "FAILED")
+            self._settle_if_known(attempt)
+            await self._release_attempt(attempt.id, cancel=False)
+            self._note(f"attempt {attempt.id}: rewrote protected {rewritten} → RETRY_WAIT")
+            return
         referenced = [
             artifact
             for artifact in artifacts
-            if artifact.path in listed
-            or (
-                artifact.path not in guarded and initial.get(artifact.path) != artifact.content_hash
+            if (
+                artifact.path not in guarded
+                and (artifact.path in listed or initial.get(artifact.path) != artifact.content_hash)
             )
+            or (artifact.path in guarded and artifact.path in listed)  # unchanged, merely cited
         ]
         self.commit.record_result(
             attempt.id,
@@ -958,6 +1003,7 @@ class Orchestrator:
         ]
 
         async def recorder(layer: LayerResult) -> None:
+            self._hold_lease(attempt.id)  # P1-3: a lost lease aborts the verification
             self.commit.record_verification_layer(
                 result_id,
                 layer=layer.layer,
@@ -992,26 +1038,44 @@ class Orchestrator:
         )
         if verdict.critic is not None:
             self._critic_verdicts[result_id] = verdict.critic
-        current = self.store.get_attempt(attempt.id)
-        if current is None or current.status in TERMINAL_ATTEMPT:
-            self._note(f"result {result_id}: attempt closed during verification; verdict dropped")
+        try:
+            if verdict.passed:
+                completed = self.commit.accept_result(
+                    result_id,
+                    verifier_results=[
+                        layer.to_json() for layer in verdict.layers if layer.status == "PASS"
+                    ],
+                    owner=self._owner,
+                )
+            else:
+                self.commit.fail_result(result_id, failures=verdict.failures, owner=self._owner)
+        except (CommitRejected, IllegalTransition) as error:
+            # the Attempt was closed / taken over while we verified (P1-4): the verdict is
+            # dropped; the library's state is whatever the other Commit made it
+            self._note(f"result {result_id}: verdict dropped ({error})")
             return True
         if verdict.passed:
-            completed = self.commit.accept_result(
-                result_id,
-                verifier_results=[
-                    layer.to_json() for layer in verdict.layers if layer.status == "PASS"
-                ],
-            )
             self._fault("after_task_completed", "attempt")
             self._note(f"result {result_id} PASS → task {completed.id} COMPLETED")
             for sibling in self.store.list_attempts(task.id):
                 if sibling.status is AttemptStatus.SUPERSEDED:
                     await self._release_attempt(sibling.id, cancel=True)
         else:
-            self.commit.fail_result(result_id, failures=verdict.failures)
             self._note(f"result {result_id} FAIL at {verdict.short_circuited_at}")
         return True
+
+    def _hold_lease(self, attempt_id: str) -> Attempt:
+        """Renew this owner's lease during a long verification; ``CommitRejected`` when
+        another owner took the Attempt over after a lapse (P1-3)."""
+
+        attempt = self.store.get_attempt(attempt_id)
+        assert attempt is not None
+        return self.commit.renew_lease(
+            attempt.id,
+            owner=self._owner,
+            lease_seconds=self._config.lease_seconds,
+            liveness={"progress": attempt.progress_marker, "phase": "verifying"},
+        )
 
     def _protected_seed(self, mission: Mission, task: Task) -> dict[str, str]:
         """Seed files the Worker may not rewrite: pytest targets and anything under tests/ (P0-1)."""
@@ -1042,14 +1106,15 @@ class Orchestrator:
             if item.path in declared:  # the Task declared it will rewrite this path
                 continue
             artifact = self.store.get_artifact(item.artifact_id)
-            if artifact is None:
-                continue
-            source = Path(artifact.storage_uri)
-            if source.is_file():
-                try:
-                    protected[item.path] = source.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    continue
+            source = None if artifact is None else Path(artifact.storage_uri)
+            if source is None or not source.is_file():
+                raise ArtifactConflict(
+                    f"upstream artifact {item.artifact_id} ({item.path}) is missing"
+                )
+            try:
+                protected[item.path] = source.read_text(encoding="utf-8")
+            except UnicodeDecodeError as error:
+                raise ArtifactConflict(f"upstream artifact {item.path} is not text") from error
         return protected
 
     async def _run_critic(
@@ -1111,13 +1176,16 @@ class Orchestrator:
                 task_id=task_id,
                 attempt_id=attempt_id,
             )
+            deadline = self.store.now + self._critic_wait
             while intent.state in {"PENDING", "CLAIMED", "AGENT_CREATED"}:
-                await self._dispatch(intent)
+                if not await self._dispatch(intent):  # another owner holds the claim (P1-8)
+                    if self.store.now >= deadline:
+                        raise ContractError("critic intent is claimed elsewhere; wait window over")
+                    await asyncio.sleep(self._poll)
                 refreshed = self.store.get_intent(intent.intent_id)
                 assert refreshed is not None
                 intent = refreshed
             assert intent.agent_id and intent.expected_turn_id
-            deadline = self.store.now + self._critic_wait
             result = None
             while self.store.now < deadline:
                 result = await self.bridge.result(
@@ -1125,6 +1193,8 @@ class Orchestrator:
                 )
                 if result is not None:
                     break
+                if attempt_id is not None:
+                    self._hold_lease(attempt_id)  # P1-3: keep the lease while the Critic thinks
                 await asyncio.sleep(self._poll)
             self._import_usage(intent)
             self.assembled.gateway.unbind(intent.agent_id)
@@ -1152,7 +1222,10 @@ class Orchestrator:
         if not tasks or mission.status is not MissionStatus.ACTIVE:
             return False
         if all(task.status is TaskStatus.COMPLETED for task in tasks):
-            await self._judge(mission, tasks)
+            current = self.store.get_mission(mission.id)  # not the cycle's stale snapshot
+            if current is None or current.status is not MissionStatus.ACTIVE:
+                return False
+            await self._judge(current, tasks)
             return True
         if any(task.status in {TaskStatus.FAILED, TaskStatus.CANCELLED} for task in tasks):
             return False  # the stop cascade already ended the Mission
@@ -1168,7 +1241,7 @@ class Orchestrator:
             task = self.store.get_task(granted.id)
             assert task is not None
             if task.status in TERMINAL_TASK:
-                break
+                continue
             if await self._next_attempt(mission, task, self.store.list_attempts(task.id)):
                 progressed = True
             current = self.store.get_mission(mission.id)
@@ -1312,6 +1385,7 @@ class Orchestrator:
                 feedback=feedback,
                 candidates_per_task=self._config.candidates_per_task,
                 inputs=[item.to_json() for item in inputs],
+                max_open_attempts=self._config.max_concurrency,
             )
         except CommitRejected as error:
             self._note(f"task {task.id}: no new attempt ({error})")
@@ -1329,7 +1403,9 @@ class Orchestrator:
                 else MissionStopReason.BUDGET_EXHAUSTED
             )
             if error.account_id == mission_account(mission.id):
-                # D3-12': the Mission pool itself is exhausted — no Task is to blame
+                # D3-12': the Mission pool itself is exhausted (any dimension) — no Task
+                # is to blame and the stop reason is the pool's: budget_exhausted
+                reason = MissionStopReason.BUDGET_EXHAUSTED
                 self.commit.fail_mission(mission.id, stop_reason=reason, detail=detail)
                 self._note(
                     f"mission {mission.id} stopped: {reason} ({error.dimension}, mission pool)"
@@ -1375,7 +1451,10 @@ class Orchestrator:
                 continue
             files[item.path] = Path(artifact.storage_uri)
             artifacts.append(artifact)
-        copy = self.assembled.workspaces.integrated_copy(mission.id, seed=seed, files=files)
+        # P0-2: one judgment tree per orchestrator instance — another instance may be
+        # running pytest in its own; the judgment Commit itself is idempotent
+        view_id = f"{mission.id}-judge-{self._owner}"
+        copy = self.assembled.workspaces.integrated_copy(view_id, seed=seed, files=files)
         terminal = tasks[-1]
         stored = self.store.get_result(terminal.accepted_result_id or "")
         summary = "" if stored is None else stored.envelope.summary
@@ -1404,7 +1483,7 @@ class Orchestrator:
                     critic = await self._run_critic(
                         mission,
                         None,
-                        view_id=mission.id,
+                        view_id=view_id,
                         subject_prefix=f"{mission.id}:judge",
                         account_id=mission_account(mission.id),
                         artifacts=artifacts,

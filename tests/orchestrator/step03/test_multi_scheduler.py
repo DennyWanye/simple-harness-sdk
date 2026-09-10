@@ -63,12 +63,12 @@ def test_s3_04_two_orchestrators_share_the_work_without_double_execution(tmp_pat
             sdk = _sdk(evidence)
             assert sdk["agents"] == 6  # planner + 5 workers (no critics in this policy)
             assert set(sdk["turns_by_agent"].values()) == {1}  # one turn per Agent
-            # the two instances really shared the loop (both dispatched something)
-            dispatched = {
-                owner: any(line.startswith("dispatched") for line in log)
-                for owner, log in (("orch-1", first.progress_log), ("orch-2", second.progress_log))
-            }
-            assert dispatched["orch-1"] or dispatched["orch-2"]
+            # every Attempt was claimed exactly once (one owner, never a double dispatch)
+            claimed = [e for e in store.list_events(mission.id) if e.type == "AttemptClaimed"]
+            assert sorted(e.attempt_id for e in claimed) == sorted(
+                a.id for t in by_key.values() for a in store.list_attempts(t.id)
+            )
+            assert store.count_events(mission.id, "AttemptStarted") == 5
             return owners
 
     asyncio.run(case())
