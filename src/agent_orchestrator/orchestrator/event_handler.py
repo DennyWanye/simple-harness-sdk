@@ -143,13 +143,15 @@ class Orchestrator:
     def config(self) -> OrchestratorConfig:
         return self._config
 
-    def arm_fault(self, point: str) -> None:
+    def arm_fault(self, point: str, *, kind: str | None = None) -> None:
+        """Arm a crash at ``point``; ``kind`` restricts it to plan / attempt / critic intents."""
+
         if point not in FAULT_POINTS:
             raise ValueError(f"unknown fault point {point}")
-        self.store.arm(point)
+        self.store.arm(point if kind is None else f"{point}:{kind}")
 
-    def _fault(self, point: str) -> None:
-        self.store.fault(point)
+    def _fault(self, point: str, kind: str | None = None) -> None:
+        self.store.fault(point, kind)
 
     def _note(self, text: str) -> None:
         self.progress_log.append(text)
@@ -287,7 +289,7 @@ class Orchestrator:
             expected = await self.bridge.expected_turn_id(
                 agent_id=agent_id, input_id=claimed.input_id
             )
-            self._fault("after_agent_created")
+            self._fault("after_agent_created", claimed.kind)
             claimed = self.commit.record_agent_created(
                 claimed.intent_id, agent_id=agent_id, expected_turn_id=expected
             )
@@ -304,7 +306,7 @@ class Orchestrator:
             receipt = await self.bridge.submit(
                 agent_id=claimed.agent_id, input_id=claimed.input_id, message_json=config["message"]
             )
-            self._fault("after_submit")
+            self._fault("after_submit", claimed.kind)
             self.commit.record_submitted(claimed.intent_id, receipt=receipt)
             self._note(f"dispatched {claimed.kind} {claimed.subject_id} → agent {claimed.agent_id}")
         return True
@@ -340,7 +342,7 @@ class Orchestrator:
         result = await self.bridge.result(agent_id=intent.agent_id, turn_id=intent.expected_turn_id)
         if result is None:
             return await self._observe_liveness(intent)
-        self._fault("after_turn_committed")
+        self._fault("after_turn_committed", intent.kind)
         if intent.kind == "plan":
             await self._collect_plan(intent, result)
         elif intent.kind == "attempt":
@@ -491,7 +493,7 @@ class Orchestrator:
             artifacts=referenced,
             usage_refs=tuple(result.usage_refs),
         )
-        self._fault("after_result_submitted")
+        self._fault("after_result_submitted", "attempt")
         self._settle_intent(intent, "SETTLED")
         self._client_ids[envelope.id] = client_result_id
         self._note(f"attempt {attempt.id}: result {envelope.id} submitted")
@@ -545,7 +547,7 @@ class Orchestrator:
                 detail={"summary": layer.summary, **dict(layer.detail)},
             )
             if layer.status == "PASS":
-                self._fault("after_layer_pass")
+                self._fault("after_layer_pass", "attempt")
 
         async def run_critic(test_output: str | None) -> CriticVerdict:
             return await self._run_critic(mission, task, attempt, artifacts, test_output)

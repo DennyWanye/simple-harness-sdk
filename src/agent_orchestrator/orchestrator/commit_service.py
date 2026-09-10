@@ -767,7 +767,12 @@ class CommitService:
         with self._store.transaction():
             attempt = self._require_attempt(attempt_id)
             if attempt.lease_owner not in (None, owner):
-                raise CommitRejected(f"attempt {attempt_id} is leased to {attempt.lease_owner}")
+                # §17.6: a lapsed lease may be taken over; a live one may not.
+                if (
+                    attempt.lease_expires_at is not None
+                    and attempt.lease_expires_at > self._store.now
+                ):
+                    raise CommitRejected(f"attempt {attempt_id} is leased to {attempt.lease_owner}")
             expires = self._store.now + lease_seconds
             updated = next_attempt(attempt, lease_owner=owner, lease_expires_at=expires)
             self._store.update_attempt(updated, expected_version=attempt.version)

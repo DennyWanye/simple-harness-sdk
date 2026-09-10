@@ -242,13 +242,14 @@ class Store:
         else:
             self._armed.clear()
 
-    def fault(self, point: str) -> None:
-        """Crash here if ``point`` is armed (one shot: the point disarms itself)."""
+    def fault(self, point: str, kind: str | None = None) -> None:
+        """Crash here if ``point`` (or ``point:kind``) is armed; one shot per arming."""
 
-        if point in self._armed:
-            self._armed.discard(point)
-            self.fired.append(point)
-            raise InjectedCrash(point)
+        for candidate in (point, f"{point}:{kind}") if kind else (point,):
+            if candidate in self._armed:
+                self._armed.discard(candidate)
+                self.fired.append(candidate)
+                raise InjectedCrash(candidate)
 
     # ----------------------------------------------------------------- events
     def append_event(self, event: Event) -> Event:

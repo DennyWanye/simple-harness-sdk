@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: E501
 
 """Assemble the one BaseAgent runtime the orchestrator drives (D10', D13').
 
