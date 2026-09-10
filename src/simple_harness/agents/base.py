@@ -166,7 +166,9 @@ class BaseAgent:
             raise AgentTurnNotFound(self.run_id)
         open_turn = uow.read_open_agent_turn(self.run_id)
         committed = sum(
-            1 for turn in uow.list_agent_turns(self.agent_id) if turn.phase in {"committed", "failed"}
+            1
+            for turn in uow.list_agent_turns(self.agent_id)
+            if turn.phase in {"committed", "failed"}
         )
         return AgentStatus(
             agent_id=self.agent_id,

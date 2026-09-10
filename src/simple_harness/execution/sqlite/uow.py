@@ -75,6 +75,7 @@ from simple_harness.execution.recovery import (
 )
 from simple_harness.execution.base_agent import (
     AgentBindingRecord,
+    AgentDelegationRecord,
     AgentTurnRecord,
     AgentTurnResultRecord,
 )
@@ -1312,6 +1313,58 @@ class SqliteExecutionUnitOfWork:
         from .base_agent import turns
 
         return turns.read_result(self.database.connection, _required(turn_id, "turn_id"))
+
+    def reserve_child_base_agent_delegation(
+        self,
+        *,
+        delegation_id: str,
+        parent_agent_id: str,
+        parent_turn_id: str,
+        child_agent_id: str,
+        child_run_id: str,
+        ticket_id: str,
+        intent_hash: str,
+        now: float,
+    ) -> AgentDelegationRecord:
+        """Pre-fence the child identity and record the delegation (closure E1/E2)."""
+
+        from .base_agent import delegations
+
+        with self.database.transaction() as connection:
+            return delegations.reserve_delegation(
+                connection,
+                delegation_id=_required(delegation_id, "delegation_id"),
+                parent_agent_id=_required(parent_agent_id, "parent_agent_id"),
+                parent_turn_id=_required(parent_turn_id, "parent_turn_id"),
+                child_agent_id=_required(child_agent_id, "child_agent_id"),
+                child_run_id=_required(child_run_id, "child_run_id"),
+                ticket_id=_required(ticket_id, "ticket_id"),
+                intent_hash=intent_hash,
+                context_use_scope=self._context_use_scope,
+                now=_time(now),
+            )
+
+    def read_agent_delegation(self, delegation_id: str) -> AgentDelegationRecord | None:
+        from .base_agent import delegations
+
+        return delegations.read_delegation(
+            self.database.connection, _required(delegation_id, "delegation_id")
+        )
+
+    def count_agent_delegations(self, parent_turn_id: str) -> int:
+        from .base_agent import delegations
+
+        return delegations.count_for_turn(self.database.connection, parent_turn_id)
+
+    def set_agent_delegation_state(
+        self, *, delegation_id: str, state: str, now: float
+    ) -> AgentDelegationRecord:
+        from .base_agent import delegations
+
+        with self.database.transaction() as connection:
+            return delegations.set_state(
+                connection, delegation_id=delegation_id, state=state, now=_time(now)
+            )
 
     def mark_agent_turn_running(
         self,

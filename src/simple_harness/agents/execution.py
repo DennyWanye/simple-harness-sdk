@@ -54,7 +54,7 @@ from simple_harness.runtime.drivers.react_loop import (
 )
 from simple_harness.runtime.kernel import DriverInvocation, DriverResult
 from simple_harness.runtime.termination import TerminationBudgetExceeded, TerminationLimits
-from simple_harness.tools.errors import UnknownToolError
+from simple_harness.tools.errors import MalformedToolArgumentsError, UnknownToolError
 from simple_harness.tools.executor import ToolAuthorizationPending
 from simple_harness.tools.runtime_catalog import RunToolExposurePort
 
@@ -69,8 +69,16 @@ def _binding_failure(code: str, message: str) -> DriverResult:
 
     return DriverResult(
         RunState.FAILED,
-        {"raw_failures": [{"error_code": code, "source_kind": "runtime", "retriable": False,
-                           "message": message}]},
+        {
+            "raw_failures": [
+                {
+                    "error_code": code,
+                    "source_kind": "runtime",
+                    "retriable": False,
+                    "message": message,
+                }
+            ]
+        },
     )
 
 
@@ -246,8 +254,35 @@ class AgentExecutionDriver:
                     ),
                 ),
             )
+        except (UnknownToolError, MalformedToolArgumentsError) as error:
+            # Model protocol violations end this turn as FAILED; the Agent stays alive.
+            code = (
+                "tool_not_exposed"
+                if isinstance(error, UnknownToolError)
+                else "invalid_tool_arguments"
+            )
+            return DriverResult(
+                RunState.WAITING,
+                {"response_present": False, "raw_failures": [{"error_code": code}]},
+                agent_turn_outcome=failed_outcome(
+                    agent_id=agent_id,
+                    turn_id=turn_id,
+                    seq=seq,
+                    input_id=input_id,
+                    input_hash=input_hash,
+                    error={
+                        "error_code": code,
+                        "source_kind": "tool_parse",
+                        "message": str(error)[:500],
+                    },
+                    delegation_count=self._delegations(turn_id),
+                    provider_turn_ordinal_from=ordinal_from,
+                    provider_turn_ordinal_to=_reserved_provider_turns(
+                        checkpoint_port, invocation.run.run_id
+                    ),
+                ),
+            )
         except (
-            UnknownToolError,
             ProviderInvocationUnknownError,
             ToolAuthorizationPending,
             ToolEffectUnknownError,
@@ -333,9 +368,7 @@ def build_agent_execution_driver(
         "protocol": BASE_AGENT_POLICY_PROTOCOL,
         "provider_budget_fingerprint": provider_fingerprint,
     }
-    policy_fingerprint = hashlib.sha256(
-        canonical_json(policy_payload).encode("utf-8")
-    ).hexdigest()
+    policy_fingerprint = hashlib.sha256(canonical_json(policy_payload).encode("utf-8")).hexdigest()
     return AgentExecutionDriver(
         collaborator=AgentLoopCollaborator(limits=limits),
         effects=effects,

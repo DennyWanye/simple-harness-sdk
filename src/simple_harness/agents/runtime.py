@@ -35,13 +35,14 @@ from simple_harness.runtime.consumer_adapter import (
 from simple_harness.runtime.context import SqliteContextPort
 from simple_harness.runtime.kernel import Runtime, RuntimePorts, RuntimeProfile, build_runtime
 from simple_harness.runtime.start_snapshot import RunStart
-from simple_harness.tools import EffectExecutor, FunctionTool, Tool, ToolRegistry
+from simple_harness.tools import EffectExecutor, FunctionTool, Tool
 
 from .base import BaseAgent
 from .config import AgentConfig, config_hash
 from .contracts import AgentId, AgentNotFound
 from .execution import build_agent_execution_driver
 from .ports import AgentRuntimePorts
+from .tool_registry import BaseAgentToolRegistry
 
 ROOT_PROFILE_KEY = "agent.general"
 CHILD_PROFILE_KEY = "agent.base"
@@ -53,6 +54,7 @@ class AssembledRuntime:
     runtime: Runtime
     uow: SqliteExecutionUnitOfWork
     database: Database
+    driver: object = None
 
 
 def assemble_runtime(
@@ -60,6 +62,7 @@ def assemble_runtime(
     *,
     extra_tools: tuple[FunctionTool, ...] = (),
     delegation_counter=None,  # type: ignore[no-untyped-def]
+    delegation_reconciliation=None,  # type: ignore[no-untyped-def]
 ) -> AssembledRuntime:
     """Compose the kernel for BaseAgents; root and child profiles both drive ``base_agent``."""
 
@@ -71,9 +74,11 @@ def assemble_runtime(
             ports.tool_executor, ports.tool_names, ports.tool_schemas
         ).build_registry()
         tools = tuple(registry_source.get(spec.name) for spec in registry_source.specs)
-    registry = ToolRegistry((*tools, *cast(tuple[Tool, ...], extra_tools)))
+    registry = BaseAgentToolRegistry((*tools, *cast(tuple[Tool, ...], extra_tools)))
     auth_adapter = _ConsumerAuthorizationAdapter(ports.authorization)
     tool_reconciliation = ports.policies.tool_reconciliation or _DefaultToolReconciliation()
+    if delegation_reconciliation is not None:
+        tool_reconciliation = delegation_reconciliation(uow, tool_reconciliation)
     effects = EffectExecutor(
         uow=uow,
         registry=registry,
@@ -135,13 +140,13 @@ def assemble_runtime(
         ports=runtime_ports,
         close_hook=uow.close,
     )
-    return AssembledRuntime(runtime, uow, database)
+    return AssembledRuntime(runtime, uow, database, driver)
 
 
 def agent_id_for(owner_scope: str, creation_key: str) -> str:
     """Stable opaque id derived from the creation key: retries reproduce the same Agent."""
 
-    digest = hashlib.sha256(f"{owner_scope}\x00{creation_key}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{owner_scope}\x00{creation_key}".encode()).hexdigest()
     return f"agent-{digest[:32]}"
 
 
@@ -191,6 +196,10 @@ class AgentRuntime:
     @property
     def kernel(self) -> Runtime:
         return self._assembled.runtime
+
+    @property
+    def driver(self) -> object:
+        return self._assembled.driver
 
     @property
     def uow(self) -> SqliteExecutionUnitOfWork:
@@ -285,13 +294,26 @@ class AgentRuntime:
         return self.uow.read_agent_binding(agent_id)
 
 
-def build_agent_runtime(
-    ports: AgentRuntimePorts, *, owner_scope: str = "default"
-) -> AgentRuntime:
-    """Assemble a BaseAgent runtime with no user Memory; use ``async with``."""
+def build_agent_runtime(ports: AgentRuntimePorts, *, owner_scope: str = "default") -> AgentRuntime:
+    """Assemble a BaseAgent runtime with no user Memory; use ``async with``.
 
-    assembled = assemble_runtime(ports)
-    return AgentRuntime(assembled, ports, owner_scope=owner_scope)
+    ``agent.delegate`` is registered before the tool registry seals and late-bound
+    to the ``AgentRuntime`` right after the kernel exists (fixed order, closure risk 3).
+    """
+
+    from .tools.delegate import AgentDelegateTool, AgentDelegationReconciliation
+
+    delegate = AgentDelegateTool(clock=ports.clock)
+    assembled = assemble_runtime(
+        ports,
+        extra_tools=(delegate.function_tool(),),
+        delegation_counter=lambda turn_id: delegate.runtime.uow.count_agent_delegations(turn_id),
+        delegation_reconciliation=AgentDelegationReconciliation,
+    )
+    runtime = AgentRuntime(assembled, ports, owner_scope=owner_scope)
+    delegate.bind(runtime)
+    runtime._delegate = delegate  # type: ignore[attr-defined]
+    return runtime
 
 
 __all__ = (
