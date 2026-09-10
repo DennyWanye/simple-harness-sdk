@@ -42,3 +42,21 @@ Planner 一次给出的静态 DAG 必须**作为一个整体**被检查与 Commi
 | B 调度与传递 | D3-4/5/7/8/10/11：`scheduling/allocator.py`、`_decide` 改为 Frontier 分配、多候选与 SUPERSEDED、`artifacts/versioning.py`、Context §10 第 3 项、版本递增 | `test_static_dag_closure.py`（S3-01/03/05/06/08）、`test_multi_scheduler.py`（S3-04/07） |
 | C 演示与真实模型 | D3-15、evidence、`test_real_provider_static_dag.py`（opt-in） | `test_cli_static_dag.py` |
 | D 收尾 | 独立 review、wheel、journal、0.9.x 版本（0.9.0 → 0.9.1，同 wheel 双包） | — |
+
+## 7. 独立 review 后的修订（2026-09-11；裁决表见 journal §1；本节覆盖上文对应决定）
+
+| # | 修订 |
+|---|---|
+| D3-5' | **Task.status 是其 Attempt 集合的派生函数**：存在 SUBMITTED/VERIFYING 候选 → VERIFYING；否则存在 PENDING/CLAIMED/RUNNING 候选 → ACTIVE；否则保持。Commit 只在派生值变化且为 §25.1 合法边时转换；`accept_result` 若 Task 仍 ACTIVE 先 ACTIVE→VERIFYING 再 →COMPLETED（同事务，两条合法边）。`create_attempt` 约束改为"open Attempt 数 < candidates_per_task"。候选**计入** `max_attempts`。已 SUBMITTED 的落选候选保留其 StoredResult（verification_state=REJECTED，verdict=superseded）与产物登记，只取消尚未提交的（理论 10-6：候选并存，本步只选择，合并留第 4 步） |
+| D3-13' | Mission 停止时只取消 READY/ACTIVE/VERIFYING 的 Task 及其在途 Attempt；**BLOCKED 任务不做转换**（§25.1 无 BLOCKED→CANCELLED 边；随 Mission 终态终止）；Mission 级 `budget_exhausted` 不归罪任何 Task |
+| D3-10' | `owner_scope="agent-orchestrator"` 常量、两实例共用；`Orchestrator(owner=…)` 同时作为编排租约 owner 与 SDK runtime `owner_id`（每实例唯一）；接管在途 SDK turn 须等 SDK Run 租约（默认 30 s）过期，编排 Attempt 租约默认 ≥ 2×；S3-04/S3-07 = 同一事件循环内两个实例（各自 Store 连接与 AgentRuntime）；`Store` 把 `database is locked` 包成 `StoreBusy`，循环遇到即跳过本轮 |
+| D3-7' | Attempt 的 Artifact 集合 = **相对其初始输入（Mission 种子 + 上游注入）的 diff**；下游工作区 = 按拓扑序应用全部祖先的 accepted_artifacts（并行分支对同一路径给出不同 hash → `artifact_conflict`，同 hash 不冲突）；TaskNode 可选 `outputs: [路径]`，Graph Commit 对共享依赖者的兄弟任务做输出路径重叠的静态拒绝；**注入下游的上游产物进入受保护集合**（验收副本按冻结 hash 重落盘，被改写者 `rule_check` FAIL；上游文件要改须新 Task，第 5 步） |
+| D3-6' | `accept_result` = 接受 + 解锁依赖者 + 替代其余候选 **同一事务**；新增崩溃点 `after_task_completed`；`recover()` 幂等自愈：前沿重算（前置全 COMPLETED 的 BLOCKED → READY）、终态 Task 下遗留非终态 Attempt 收口（SUPERSEDED）、LOST/TIMED_OUT/SUPERSEDED 的 usage 重导入与结算；终态 Task 的迟到结果只记历史（`ResultRejected(reason=superseded)`） |
+| D3-9' | Mission 级验收对象 = 从 Mission 种子按拓扑序应用**全部 Task** 的 accepted_artifacts 得到的整合副本（冲突 fail closed）；`judge_mission` 报告覆盖全部 Task |
+| D3-12' | `BudgetExhausted` 按 `account_id` 分流：task 账户 → Task FAILED（继而 Mission FAILED）；mission 账户 → Mission FAILED(`budget_exhausted`)；预留按 Frontier 优先级次序发起 |
+| D3-2' | 校验前先做确定性归一：Task 缺失的预算维度按 Mission 池均分补齐（`max_tokens`/`max_cost_micros` 平均，`max_attempts`/`max_concurrency` 继承）；硬拒绝只保留超额/环/缺失/形状；拒绝反馈带维度名与剩余量并喂回 Planner 下一次提案（`planning_rejected`）；`max_planning_attempts` 进 `OrchestratorConfig`（默认 2） |
+| D3-4' | `max_concurrent_model_calls` = max(config, `max_concurrency × candidates_per_task`)；停滞判定只对 `state=running` 的 turn 计时 |
+| D3-8' | `artifact.version` 按 **(mission, path) 血缘**递增 |
+| D3-16 | 去重：只在 `key` 重复、或（规范化 goal + 依赖集 + success_criteria）全同时拒绝 |
+| D3-17 | Attempt 进入 LOST/TIMED_OUT/SUPERSEDED/CANCELLED 或所在 Task COMPLETED 时立即 `gateway.unbind(agent_id)`（先于 cancel_turn） |
+| D3-18 | `graph_version` 存 Mission `final_report.graph_version`（随 mission.version CAS）；§19.4 老化与 §18.5 背压上限本步不做，登记推迟第 6 步 |
