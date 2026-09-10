@@ -200,6 +200,25 @@ class OpenAICompatibleProvider:
             payload["name"] = message.name
         if message.call_id is not None:
             payload["tool_call_id"] = message.call_id.value
+        # An assistant message may carry its issued tool calls in metadata
+        # (``provider_tool_calls``: [{id, name, arguments}]); OpenAI-compatible
+        # endpoints reject a following ``tool`` message without them.
+        restored = message.metadata.get("provider_tool_calls") if role == "assistant" else None
+        if isinstance(restored, (list, tuple)) and restored:
+            payload["tool_calls"] = [
+                {
+                    "id": str(call["id"]),
+                    "type": "function",
+                    "function": {
+                        "name": str(call["name"]),
+                        "arguments": json.dumps(
+                            _json_value(call.get("arguments", {})), ensure_ascii=False
+                        ),
+                    },
+                }
+                for call in restored
+                if isinstance(call, Mapping) and "id" in call and "name" in call
+            ]
         return payload
 
     @staticmethod

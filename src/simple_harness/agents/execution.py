@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import cast
 
 from simple_harness.contracts import (
@@ -33,6 +34,7 @@ from simple_harness.contracts import (
 from simple_harness.execution.base_agent import BASE_AGENT_API_MODE, BASE_AGENT_INPUT_KIND
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
 from simple_harness.execution.dispatch import (
+    _DEFINITE_PROVIDER_FAILURES,
     ProviderInvocationUnknownError,
     provider_binding_fingerprint,
 )
@@ -53,6 +55,7 @@ from simple_harness.runtime.drivers.react_loop import (
     ToolEffectUnknownError,
 )
 from simple_harness.runtime.kernel import DriverInvocation, DriverResult
+from simple_harness.runtime.react_checkpoint import DurableReactCheckpoint
 from simple_harness.runtime.termination import TerminationBudgetExceeded, TerminationLimits
 from simple_harness.tools.errors import MalformedToolArgumentsError, UnknownToolError
 from simple_harness.tools.executor import ToolAuthorizationPending
@@ -254,13 +257,22 @@ class AgentExecutionDriver:
                     ),
                 ),
             )
-        except (UnknownToolError, MalformedToolArgumentsError) as error:
-            # Model protocol violations end this turn as FAILED; the Agent stays alive.
-            code = (
-                "tool_not_exposed"
-                if isinstance(error, UnknownToolError)
-                else "invalid_tool_arguments"
-            )
+        except (
+            UnknownToolError,
+            MalformedToolArgumentsError,
+            *_DEFINITE_PROVIDER_FAILURES,
+        ) as error:
+            # Model protocol violations and definite Provider refusals end this turn as
+            # FAILED; the Agent stays alive (UNKNOWN outcomes keep the legacy wait path).
+            if isinstance(error, UnknownToolError):
+                code = "tool_not_exposed"
+            elif isinstance(error, MalformedToolArgumentsError):
+                code = "invalid_tool_arguments"
+            else:
+                code = str(getattr(error, "code", "provider_rejected"))
+                # The reserved provider turn is definitely settled; release the loop
+                # checkpoint so the next AgentTurn starts a fresh provider request.
+                self._settle_failed_provider_turn(invocation, run_id)
             return DriverResult(
                 RunState.WAITING,
                 {"response_present": False, "raw_failures": [{"error_code": code}]},
@@ -313,6 +325,35 @@ class AgentExecutionDriver:
                 "base_agent_stage": "result_pending",
             },
             agent_turn_outcome=outcome,
+        )
+
+    def _settle_failed_provider_turn(self, invocation: DriverInvocation, run_id: RunId) -> None:
+        checkpoint = DurableReactCheckpoint(invocation.services.react_checkpoint, clock=self._clock)
+        state, version = checkpoint.load_or_create(
+            run_id,
+            invocation.execution_lease,
+            initial_route_receipt=invocation.start.initial_route_receipt,
+            initial_route_receipt_hash=invocation.start.initial_route_receipt_hash,
+        )
+        if state.phase != "provider_reserved":
+            return
+        checkpoint.cas(
+            run_id,
+            invocation.execution_lease,
+            version,
+            replace(
+                state,
+                phase="ready",
+                provider_request_id=None,
+                tool_batch_id=None,
+                context_revision=None,
+                provider_request_snapshot=None,
+                provider_request_fingerprint=None,
+                provider_response_snapshot=None,
+                provider_response_digest=None,
+                tool_result_progress=0,
+                last_observed_at=self._clock(),
+            ),
         )
 
     def _delegations(self, turn_id: str) -> int:

@@ -1,11 +1,11 @@
 {
   "version": "0.7.10",
   "simple_harness": [
-    "__version__",
     "MandatoryContextActionRequired",
     "MandatoryContextRejectionV1",
     "MandatoryContextFeedbackV1",
     "MandatoryContextActionExhausted",
+    "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
     "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
     "MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION",
@@ -329,17 +329,7 @@
     "migrate_execution_to_v9",
     "ExecutionShortContextUpgradeReceiptV1",
     "migrate_execution_v7_to_v8",
-    "ExecutionContextUseUpgradeReceiptV1",
-    "AgentConfig",
-    "AgentLimits",
-    "AgentRuntime",
-    "AgentRuntimePorts",
-    "AgentTurnReceipt",
-    "AgentTurnResult",
-    "AgentTurnState",
-    "AgentTurnTimeout",
-    "BaseAgent",
-    "build_agent_runtime"
+    "ExecutionContextUseUpgradeReceiptV1"
   ],
   "simple_harness.contracts": [
     "JsonPrimitive",

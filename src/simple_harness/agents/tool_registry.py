@@ -15,31 +15,54 @@ from __future__ import annotations
 
 from typing import cast
 
-from simple_harness.tools import FunctionTool, ToolCall, ToolRegistry, ToolResult
+from simple_harness.tools import FunctionTool, ToolCall, ToolRegistry, ToolResult, ToolSpec
 from simple_harness.tools.contracts import Tool, ToolContext, ToolHandler, ToolOutcome
-from simple_harness.tools.errors import MalformedToolArgumentsError
+from simple_harness.tools.errors import MalformedToolArgumentsError, UnknownToolError
 
 INVALID_ARGUMENTS_CODE = "invalid_tool_arguments"
+UNKNOWN_TOOL_CODE = "tool_not_exposed"
 
 
 class BaseAgentToolRegistry(ToolRegistry):
     def validate(self, call: ToolCall) -> Tool:
         try:
             return super().validate(call)
+        except UnknownToolError:
+            # A hallucinated tool name is a visible rejection too (never a dead Agent).
+            spec = ToolSpec(
+                call.name,
+                "unknown tool",
+                {"type": "object", "additionalProperties": False, "properties": {}},
+            )
+            return cast(
+                Tool,
+                FunctionTool(
+                    spec, cast(ToolHandler, _reject_with(UNKNOWN_TOOL_CODE, "tool is not exposed"))
+                ),
+            )
         except MalformedToolArgumentsError as error:
             reason = str(error)
-            tool = self.get(call.name)  # unknown names still raise UnknownToolError
+            tool = self.get(call.name)
 
-            async def reject(arguments: dict, context: ToolContext) -> ToolResult:  # type: ignore[type-arg]
-                del arguments
-                return ToolResult(
-                    call_id=context.call_id,  # type: ignore[arg-type]
-                    outcome=ToolOutcome.REJECTED,
-                    error_code=INVALID_ARGUMENTS_CODE,
-                    public_message=reason[:500],
-                )
-
-            return cast(Tool, FunctionTool(tool.spec, cast(ToolHandler, reject)))
+            return cast(
+                Tool,
+                FunctionTool(
+                    tool.spec, cast(ToolHandler, _reject_with(INVALID_ARGUMENTS_CODE, reason))
+                ),
+            )
 
 
-__all__ = ("INVALID_ARGUMENTS_CODE", "BaseAgentToolRegistry")
+def _reject_with(code: str, reason: str):  # type: ignore[no-untyped-def]
+    async def reject(arguments: dict, context: ToolContext) -> ToolResult:  # type: ignore[type-arg]
+        del arguments
+        return ToolResult(
+            call_id=context.call_id,  # type: ignore[arg-type]
+            outcome=ToolOutcome.REJECTED,
+            error_code=code,
+            public_message=reason[:500],
+        )
+
+    return reject
+
+
+__all__ = ("INVALID_ARGUMENTS_CODE", "UNKNOWN_TOOL_CODE", "BaseAgentToolRegistry")

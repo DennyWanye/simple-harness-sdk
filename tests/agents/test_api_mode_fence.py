@@ -13,7 +13,13 @@ import pytest
 from kernel_fixture import Catalog, NoopPort, create_agent
 from provider_fixture import MODEL, ScriptedProvider
 
-from simple_harness import AgentIdentity, AllowAllAdmission, Message, MessageRole, canonical_json
+from simple_harness import (
+    AgentIdentity,
+    AllowAllAdmission,
+    Message,
+    MessageRole,
+    canonical_json,
+)
 from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
 from simple_harness.agents.runtime import assemble_runtime
 from simple_harness.contracts import ExecutionSessionId, RequestId, RunId
@@ -37,8 +43,12 @@ from simple_harness.runtime.start_snapshot import bind_start_snapshot
 SRC = Path(__file__).resolve().parents[2] / "src" / "simple_harness"
 # sha256 of the files at fd12e7dd: Slice 1 must not touch them (closure E2/#3).
 FROZEN_FILES = {
-    "runtime/start_snapshot.py": "a349f434744eeefea24fbfafdf420e71cc4eda9c21127d96a575450704b96bae",
-    "runtime/drivers/start_mode.py": "adcf81141ea4fc535739fa1db2a662a46b11c0b6274b2a3337238c09b88737ea",
+    "runtime/start_snapshot.py": (
+        "a349f434744eeefea24fbfafdf420e71cc4eda9c21127d96a575450704b96bae"
+    ),
+    "runtime/drivers/start_mode.py": (
+        "adcf81141ea4fc535739fa1db2a662a46b11c0b6274b2a3337238c09b88737ea"
+    ),
 }
 
 

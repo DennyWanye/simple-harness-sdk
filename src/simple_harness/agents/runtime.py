@@ -43,6 +43,7 @@ from .contracts import AgentId, AgentNotFound
 from .execution import build_agent_execution_driver
 from .ports import AgentRuntimePorts
 from .tool_registry import BaseAgentToolRegistry
+from .wire import AgentProviderWire
 
 ROOT_PROFILE_KEY = "agent.general"
 CHILD_PROFILE_KEY = "agent.base"
@@ -55,6 +56,7 @@ class AssembledRuntime:
     uow: SqliteExecutionUnitOfWork
     database: Database
     driver: object = None
+    wire: object = None
 
 
 def assemble_runtime(
@@ -86,7 +88,8 @@ def assemble_runtime(
         reconciliation=tool_reconciliation,
         clock=ports.clock,
     )
-    provider_adapter = _ConsumerProviderAdapter(ports.provider, ports.model)
+    wire = AgentProviderWire(ports.provider, database)
+    provider_adapter = _ConsumerProviderAdapter(wire, ports.model)
     # The consumer provider adapter reports pricing_key "consumer"; the estimator must match.
     estimator = ports.policies.estimator or FrozenPriceEstimator("consumer-v1", "consumer", 0, 0)
     budget_policy = ports.policies.budget_policy
@@ -140,7 +143,7 @@ def assemble_runtime(
         ports=runtime_ports,
         close_hook=uow.close,
     )
-    return AssembledRuntime(runtime, uow, database, driver)
+    return AssembledRuntime(runtime, uow, database, driver, wire)
 
 
 def agent_id_for(owner_scope: str, creation_key: str) -> str:

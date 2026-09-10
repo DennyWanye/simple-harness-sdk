@@ -61,7 +61,9 @@ from ..contracts import AgentTurnResult
 if TYPE_CHECKING:
     from ..runtime import AgentRuntime
 
-DELEGATE_TOOL_NAME = "agent.delegate"
+# OpenAI-compatible endpoints only accept ``^[A-Za-z0-9_-]+$`` function names, so the
+# durable identifier is ``agent_delegate``; documents call the capability "agent.delegate".
+DELEGATE_TOOL_NAME = "agent_delegate"
 CHILD_PROFILE_KEY = "agent.base"
 BASE_AGENT_DRIVER_KIND = "base_agent"
 CHILD_INPUT_ID = "objective"
@@ -226,7 +228,8 @@ class AgentDelegateTool:
             return _rejected(
                 context,
                 "agent_delegation_quota_exceeded",
-                f"at most {limits.max_delegations_per_turn} delegation(s) per turn; reuse the existing result",
+                f"at most {limits.max_delegations_per_turn} delegation(s) per turn; "
+                "reuse the existing result",
             )
 
         child_agent_id = child_agent_id_for(parent.agent_id, delegation_id)

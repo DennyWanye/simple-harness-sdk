@@ -86,6 +86,7 @@ markers = [
   "h7_workflow_terminal_gate: frozen H7 strict and legacy workflow terminal projection seams",
   "anyio: async tests using anyio",
   "simple_harness_conformance: mark test as requiring conformance host fixture",
+  "real_provider: end-to-end test that calls a real LLM provider (opt in with --run-real-provider)",
 ]
 
 [tool.ruff]

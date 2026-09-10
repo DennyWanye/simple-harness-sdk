@@ -44,7 +44,7 @@ def _ports(tmp_path, provider, **overrides):
 def _main_config(**limits):
     return AgentConfig(
         name="main",
-        instructions="你是主 Agent。复杂任务交给 agent.delegate。",
+        instructions="你是主 Agent。复杂任务交给 agent_delegate。",
         model_profile_ref="profile-1",
         tool_names=(DELEGATE_TOOL_NAME,),
         limits=AgentLimits(**limits) if limits else AgentLimits(),
@@ -61,11 +61,13 @@ def _count(uow, table):
 
 def test_delegate_creates_child_agent_and_returns_child_result_row(tmp_path):
     async def case():
-        provider = ScriptedProvider([
-            _delegate_call(),                       # main turn-1: delegate
-            f"结论：Y。验证码 {NONCE}",               # child turn-1
-            f"综合子 Agent 的结论：Y。验证码 {NONCE}",  # main turn-1 final
-        ])
+        provider = ScriptedProvider(
+            [
+                _delegate_call(),  # main turn-1: delegate
+                f"结论：Y。验证码 {NONCE}",  # child turn-1
+                f"综合子 Agent 的结论：Y。验证码 {NONCE}",  # main turn-1 final
+            ]
+        )
         async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
             main = await runtime.create(_main_config(), creation_key="main")
             assert NONCE not in main.config.instructions
@@ -107,7 +109,8 @@ def test_child_run_is_mode_fenced_before_it_exists(tmp_path):
             uow = runtime.uow
             child_id = child_agent_id_for(main.agent_id, "d-1")
             row = uow.database.connection.execute(
-                "SELECT namespace, created_at FROM conversation_run_modes WHERE run_id=?", (child_id,)
+                "SELECT namespace, created_at FROM conversation_run_modes WHERE run_id=?",
+                (child_id,),
             ).fetchone()
             assert row is not None and row[0] == "base-agent/v1"
             created = uow.database.connection.execute(
@@ -116,7 +119,8 @@ def test_child_run_is_mode_fenced_before_it_exists(tmp_path):
             assert float(row[1]) <= float(created)
             with pytest.raises(CommandError):
                 await RunClient(runtime.kernel).signal_conversation(
-                    RunId(child_id), continuation_id="x",
+                    RunId(child_id),
+                    continuation_id="x",
                     value=ConversationContinuationInput(Message(MessageRole.USER, "hi"), "hi"),
                 )
 
@@ -137,20 +141,27 @@ def test_child_catalog_excludes_delegate(tmp_path):
             assert DELEGATE_TOOL_NAME not in child.config.tool_names
             # The child's provider request advertised no delegate tool either.
             child_request = provider.requests[1]
-            assert all(getattr(t, "name", "") != DELEGATE_TOOL_NAME for t in (child_request.tools or ()))
+            assert all(
+                getattr(t, "name", "") != DELEGATE_TOOL_NAME for t in (child_request.tools or ())
+            )
 
     asyncio.run(case())
 
 
 def test_quota_rejects_second_delegation_in_same_turn(tmp_path):
     async def case():
-        provider = ScriptedProvider([
-            _delegate_call("d-1"), "子结论 1",
-            _delegate_call("d-2"),            # second delegation in the same parent turn
-            "主结论（第二次被拒后）",
-        ])
+        provider = ScriptedProvider(
+            [
+                _delegate_call("d-1"),
+                "子结论 1",
+                _delegate_call("d-2"),  # second delegation in the same parent turn
+                "主结论（第二次被拒后）",
+            ]
+        )
         async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
-            main = await runtime.create(_main_config(max_delegations_per_turn=1), creation_key="main")
+            main = await runtime.create(
+                _main_config(max_delegations_per_turn=1), creation_key="main"
+            )
             result = await main.ask("任务", input_id="r1", timeout=10)
             assert result.delegation_count == 1
             uow = runtime.uow
@@ -164,13 +175,23 @@ def test_quota_rejects_second_delegation_in_same_turn(tmp_path):
 
 def test_same_delegation_id_is_idempotent(tmp_path):
     async def case():
-        provider = ScriptedProvider([
-            _delegate_call("d-1"), "子结论",
-            _delegate_call("d-1"),   # same delegation_id again in the same turn
-            "主结论",
-        ])
-        async with build_agent_runtime(_ports(tmp_path, provider, ), ) as runtime:
-            main = await runtime.create(_main_config(max_delegations_per_turn=1), creation_key="main")
+        provider = ScriptedProvider(
+            [
+                _delegate_call("d-1"),
+                "子结论",
+                _delegate_call("d-1"),  # same delegation_id again in the same turn
+                "主结论",
+            ]
+        )
+        async with build_agent_runtime(
+            _ports(
+                tmp_path,
+                provider,
+            ),
+        ) as runtime:
+            main = await runtime.create(
+                _main_config(max_delegations_per_turn=1), creation_key="main"
+            )
             result = await main.ask("任务", input_id="r1", timeout=10)
             assert result.delegation_count == 1
             uow = runtime.uow
@@ -199,13 +220,18 @@ def test_one_delegation_is_exactly_one_child_turn(tmp_path):
 
 def test_reserved_delegation_is_resumed_not_poisoned(tmp_path):
     async def case():
-        provider = ScriptedProvider([
-            _delegate_call("d-1"),   # first attempt: crashes after the pre-fence, before launch
-            _delegate_call("d-1"),   # retry in the same turn (model resends the same call)
-            "子结论", "主结论",
-        ])
+        provider = ScriptedProvider(
+            [
+                _delegate_call("d-1"),  # first attempt: crashes after the pre-fence, before launch
+                _delegate_call("d-1"),  # retry in the same turn (model resends the same call)
+                "子结论",
+                "主结论",
+            ]
+        )
         async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
-            main = await runtime.create(_main_config(max_delegations_per_turn=1), creation_key="main")
+            main = await runtime.create(
+                _main_config(max_delegations_per_turn=1), creation_key="main"
+            )
             delegate = runtime._delegate
             crashed = {"count": 0}
 
@@ -235,7 +261,8 @@ def test_child_snapshot_passes_kernel_preflight(tmp_path):
             await main.ask("任务", input_id="r1", timeout=10)
             child_id = child_agent_id_for(main.agent_id, "d-1")
             kinds = [
-                str(r[0]) for r in runtime.uow.database.connection.execute(
+                str(r[0])
+                for r in runtime.uow.database.connection.execute(
                     "SELECT kind FROM run_events WHERE run_id=?", (child_id,)
                 )
             ]
@@ -291,10 +318,15 @@ def test_delegate_is_non_project_effect():
 
 def test_unknown_delegation_id_is_rejected_not_created(tmp_path):
     async def case():
-        provider = ScriptedProvider([
-            _delegate_call("d-1"), "子结论 1", "主结论 1",   # turn 1 owns d-1
-            _delegate_call("d-1"), "主结论 2",              # turn 2 reuses d-1 → rejected
-        ])
+        provider = ScriptedProvider(
+            [
+                _delegate_call("d-1"),
+                "子结论 1",
+                "主结论 1",  # turn 1 owns d-1
+                _delegate_call("d-1"),
+                "主结论 2",  # turn 2 reuses d-1 → rejected
+            ]
+        )
         async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
             main = await runtime.create(_main_config(), creation_key="main")
             await main.ask("任务一", input_id="r1", timeout=10)
@@ -309,15 +341,22 @@ def test_unknown_delegation_id_is_rejected_not_created(tmp_path):
 
 def test_malformed_arguments_never_create_child(tmp_path):
     async def case():
-        provider = ScriptedProvider([
-            (DELEGATE_TOOL_NAME, {"objective": "x", "delegation_id": "d-1", "extra": 1}),
-            (DELEGATE_TOOL_NAME, {"objective": 12, "delegation_id": "d-2"}),
-            (DELEGATE_TOOL_NAME, {"delegation_id": "d-3"}),
-            (DELEGATE_TOOL_NAME, {"objective": "x", "delegation_id": "d-4", "role_hint": "boss"}),
-            "主结论",
-        ])
+        provider = ScriptedProvider(
+            [
+                (DELEGATE_TOOL_NAME, {"objective": "x", "delegation_id": "d-1", "extra": 1}),
+                (DELEGATE_TOOL_NAME, {"objective": 12, "delegation_id": "d-2"}),
+                (DELEGATE_TOOL_NAME, {"delegation_id": "d-3"}),
+                (
+                    DELEGATE_TOOL_NAME,
+                    {"objective": "x", "delegation_id": "d-4", "role_hint": "boss"},
+                ),
+                "主结论",
+            ]
+        )
         async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
-            main = await runtime.create(_main_config(max_delegations_per_turn=5), creation_key="main")
+            main = await runtime.create(
+                _main_config(max_delegations_per_turn=5), creation_key="main"
+            )
             result = await main.ask("任务", input_id="r1", timeout=10)
             uow = runtime.uow
             assert result.delegation_count == 0
@@ -357,7 +396,8 @@ def test_oversize_child_result_returns_ref_not_truncated_fact(tmp_path):
 
             assert AgentTurnResult.from_json(stored.result_json).public_output.content == big
             final_request = "\n".join(message_texts(provider.requests[-1]))
-            assert "result_ref" in final_request and f"base_agent_turn_result:{child_id}" in final_request
+            assert "result_ref" in final_request
+            assert f"base_agent_turn_result:{child_id}" in final_request
             assert big not in final_request
 
     asyncio.run(case())

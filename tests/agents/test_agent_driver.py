@@ -156,3 +156,53 @@ def test_agent_policy_fingerprint_differs_from_react():
     react = build_react_driver(limits=limits, budget_policy=budget, estimator=estimator)
     assert agent.policy_fingerprint != react.policy_fingerprint
     assert agent.provider_budget_fingerprint == react.provider_budget_fingerprint
+
+
+def test_provider_rejection_is_a_failed_turn_and_next_turn_recovers(tmp_path):
+    from simple_harness.providers.errors import ProviderRequestRejectedError
+
+    async def case():
+        provider = ScriptedProvider(["第二轮正常"])
+        original = provider.invoke
+        state = {"rejected": False}
+
+        async def reject_once(request, *, cancel):
+            if not state["rejected"]:
+                state["rejected"] = True
+                raise ProviderRequestRejectedError()
+            return await original(request, cancel=cancel)
+
+        provider.invoke = reject_once  # type: ignore[method-assign]
+        assembled = assemble_runtime(_ports(tmp_path, provider))
+        runtime, uow = assembled.runtime, assembled.uow
+        async with runtime:
+            await create_agent(runtime, uow, agent_id="agent-reject")
+            first = await submit(runtime, uow, agent_id="agent-reject", input_id="i1", text="一")
+            await _settle(runtime, "agent-reject")
+            failed = uow.read_agent_turn_result(first.turn_id)
+            assert failed is not None and dict(failed.result_json)["state"] == "failed"
+            assert uow.read_run("agent-reject").state is RunState.WAITING
+            second = await submit(runtime, uow, agent_id="agent-reject", input_id="i2", text="二")
+            await _settle(runtime, "agent-reject")
+            ok = uow.read_agent_turn_result(second.turn_id)
+            assert ok is not None and dict(ok.result_json)["state"] == "committed"
+            assert uow.read_run("agent-reject").state is RunState.WAITING
+
+    asyncio.run(case())
+
+
+def test_unknown_tool_name_is_a_visible_rejection_not_a_dead_agent(tmp_path):
+    async def case():
+        provider = ScriptedProvider([("no_such_tool", {}), "改用自己回答"])
+        assembled = assemble_runtime(_ports(tmp_path, provider))
+        runtime, uow = assembled.runtime, assembled.uow
+        async with runtime:
+            await create_agent(runtime, uow, agent_id="agent-halluc")
+            turn = await submit(runtime, uow, agent_id="agent-halluc", input_id="i1", text="一")
+            await _settle(runtime, "agent-halluc")
+            result = uow.read_agent_turn_result(turn.turn_id)
+            assert result is not None and dict(result.result_json)["state"] == "committed"
+            assert "tool_not_exposed" in "\n".join(message_texts(provider.requests[1]))
+            assert uow.read_run("agent-halluc").state is RunState.WAITING
+
+    asyncio.run(case())
