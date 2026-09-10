@@ -129,6 +129,9 @@ from .terminal import TerminalCoordinator, ToolCatalogStale
 
 logger = logging.getLogger(__name__)
 
+#: Re-wakes granted to a BaseAgent Run whose driver raised (per process, per Run).
+BASE_AGENT_DRIVER_EXCEPTION_WAKES = 3
+
 if TYPE_CHECKING:
     from simple_harness.execution.base_agent import (
         AgentBindingRecord,
@@ -1633,6 +1636,9 @@ class Runtime:
         self._cancels: dict[str, CancelToken] = {}
         self._heartbeats: dict[str, asyncio.Task[None]] = {}
         self._pending_wakes: set[str] = set()
+        # BaseAgent driver exceptions re-wake the Run a bounded number of times per
+        # process (review K1); the counter resets when a drive returns normally.
+        self._driver_exception_wakes: dict[str, int] = {}
         self._workflow_spawn_ready_activations: dict[str, WorkflowSpawnReadyActivation] = {}
         self._workflow_start_dispatches: dict[str, RuntimeStartDispatchClaim] = {}
         self._workflow_recovery_work: dict[str, WorkflowRecoveryWork] = {}
@@ -2245,8 +2251,13 @@ class Runtime:
             while self._state is RuntimeLifecycleState.READY:
                 await self._drain_resolved_waits_once()
                 for run_id in tuple(self._pending_wakes):
-                    if run_id in self._leases or run_id in self._live.active_run_ids():
+                    if run_id in self._leases:
                         self._pending_wakes.discard(run_id)
+                        continue
+                    if run_id in self._live.active_run_ids():
+                        # The previous drive is still unwinding (e.g. a BaseAgent
+                        # driver exception dropping its authority): keep the wake for
+                        # the next tick instead of losing it.
                         continue
                     await self._wake_continuation(run_id)
                 await asyncio.sleep(interval)
@@ -3084,6 +3095,7 @@ class Runtime:
                     cancel=self._cancels[run_id],
                 )
                 audit_receipt["state"] = result.state.value
+                self._driver_exception_wakes.pop(run_id, None)
             if continuation_claim is not None:
                 durable_continuation = self._uow.read_continuation(
                     continuation_claim.continuation_id
@@ -3234,7 +3246,20 @@ class Runtime:
                 # authority; the next wake either finalizes a result the loop already
                 # staged (BA31) or re-drives the same turn.  Kernel-integrity
                 # failures reach here as explicit FAILED DriverResults, not exceptions.
+                # The driver itself turns exceptions inside a turn into a visible
+                # failed turn; what reaches here is re-woken through the drain loop a
+                # bounded number of times, after which only recover() re-drives it
+                # (review K1: a claimed input must never wait silently for recover()).
                 await self._abandon_run_authority(run_id)
+                attempts = self._driver_exception_wakes.get(run_id, 0) + 1
+                self._driver_exception_wakes[run_id] = attempts
+                if attempts <= BASE_AGENT_DRIVER_EXCEPTION_WAKES:
+                    self._pending_wakes.add(run_id)
+                else:
+                    logger.error(
+                        "sdk_base_agent_driver_exception_wakes_exhausted",
+                        extra={"run_id": str(run_id), "attempts": attempts},
+                    )
                 return
             if current is not None and current.state not in {
                 RunState.COMPLETED,

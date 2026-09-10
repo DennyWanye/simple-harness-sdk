@@ -26,6 +26,21 @@
 
 ## 3. 独立 review（回填）
 
+review 由独立子代理（claude-opus-5）对 Slice 5 累计 diff 做正确性 review，原文见 `reports/review-s5-independent.md`。处置如下（全部有决定性测试，`tests/agents/test_slice5_review.py` 6 条 + `tests/execution/test_execution_v9_to_v10_migration.py` 1 条）：
+
+| # | 级别 | 发现 | 处置 |
+|---|---|---|---|
+| K1 | P0 | `kernel._drive` 中 base_agent driver 异常只放弃权限，没人再唤醒（不进 `_pending_wakes`，只有 recover() 扫描）；且确定性异常无上限重试 | (1) driver `start()` 加边界：已入队 Turn 内的任意异常 → 可见失败 Turn `base_agent_driver_exception`（含 error_type/message），Agent 存活；UNKNOWN 效应或无 Turn 行时才抛给内核。(2) 内核分支：放弃权限后加入 `_pending_wakes`，同进程每 Run 最多 `BASE_AGENT_DRIVER_EXCEPTION_WAKES=3` 次再唤醒（driver 正常返回即清零），超限记 error 日志、留给 recover()。(3) 排水循环对"上一 drive 仍在收尾"的 Run 保留唤醒而不是丢弃。(4) `execution.py` 的 `raise ValueError/TypeError` 改为 `_binding_failure`（`base_agent_input_mismatch`/`base_agent_input_malformed`）。 |
+| M1 | P1 | 备份路径已存在的外来 v9 文件被接受 | 迁移前计算源库 `_root` 快照哈希写入回执 `source_root_hash`；已存在的备份文件必须 `_root` 相同才接受；回放时重新校验备份的版本与 `_root`。 |
+| C1 | P1 | `ExposureGuardedTool.invoke` 在 `agent_delegate` 等子 Agent 期间持有工具信号量，`max_concurrent_tool_calls=N` 下 N 个父等待即死锁 | 新增 `simple_harness/tools/permit.py`（ContextVar 携带 `ToolPermit`，放在 `tools` 包以免 agents 包重导入改变身份）；委派工具进入等待前 `release_tool_permit()`；finally 幂等释放。回归：`max_concurrent_tool_calls=1` 下父委派、子用 echo 工具，链路完成且 `max_tools_in_flight==1`。 |
+| M2 | P2 | `_validate` 不校验 catalog/audit 内容 | 文档化保证范围（描述符序列 + integrity/FK + 半应用探测），行级内容由 `source_root_hash` 绑定备份。 |
+| E1 | P2 | 输出上限升级循环每次尝试不再检查持久取消意图/截止；每次尝试弹出取消令牌 | 令牌改为每次入队一个（try/finally 包住整个循环）；每次升级前重查令牌、持久取消意图与 Turn 截止。 |
+| E2 | P2 | 成功时不记录 `output_cap_escalations` | 成功的 DriverResult payload 带 `output_cap_escalations`（outcome 本身与 companion 保持字节一致）。 |
+| A1 | 推测 | companion 内 `stage_result` 抛错会回滚最终 CAS | companion 内捕获 `ValueError/RuntimeError/sqlite3.Error`，记 warning 后由内核自身 stage 兜底。 |
+| 记录 | 备注 | 提交改写了 `public-api-0.7.10.json` | 该文件是从 0.7.10 时的 `public-api.json` 另存的旧快照，仅作记录，不参与契约测试。 |
+
+复验：`tests/agents + tests/execution + tests/unit/contracts` 360 passed / 6 failed（全部基线红）；全量回归 73 红 ⊆ 基线，0 新红。
+
 ## 4. 发布证据（BA40）
 
 - 版本 `0.8.0`（`src/simple_harness/version.py`）；`tests/unit/contracts/public-api.json` 只新增根导出 `migrate_execution_to_v10`、`ExecutionBaseAgentUpgradeReceiptV1`（旧快照存 `public-api-0.7.10.json`）。
@@ -36,7 +51,7 @@
 
 | # | 事项 | 归属 |
 |---|---|---|
-| L5-1 | driver 异常不终态化后，确定性 driver 异常会在每次唤醒重试（无退避/上限）；唤醒来源为 recover/输入/调和，不自旋 | 后续观测项 |
+| L5-1 | ~~driver 异常无上限重试~~ 已由 review K1 处置：Turn 内异常成为可见失败 Turn；逃逸内核的异常同进程最多 3 次再唤醒，之后只靠 recover() | 已关闭 |
 | L5-2 | 索引任务并发只有单泵；`max_concurrent_index_jobs` 未做 | 后续 |
 | L5-3 | 语义摘要调用的成本账本（BA36 的摘要部分）未做（无语义摘要） | 后续 |
 

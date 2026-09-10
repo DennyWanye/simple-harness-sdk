@@ -20,6 +20,7 @@ from pathlib import Path
 
 from simple_harness.contracts import canonical_json
 
+from ..context_use_migration import _root
 from ..database import ExecutionSchemaIncompatible
 from ..schema import accepted_descriptor_rows, fresh_descriptor, legacy_v9_descriptor
 from .schema import DDL
@@ -31,6 +32,7 @@ class ExecutionBaseAgentUpgradeReceiptV1:
     backup_sha256: str
     prior_descriptor_hash: str
     new_descriptor_hash: str
+    source_root_hash: str
     from_version: int = 9
     to_version: int = 10
     schema_version: int = 1
@@ -70,7 +72,13 @@ def _descriptor_rows(connection: sqlite3.Connection) -> tuple[tuple[int, str, st
 
 
 def _validate(connection: sqlite3.Connection) -> int:
-    """Return the library's current version (9 or 10); refuse anything else."""
+    """Return the library's current version (9 or 10); refuse anything else.
+
+    Guarantee (review M2): the descriptor rows are an accepted v9/v10 sequence, the
+    file passes SQLite's integrity and foreign-key checks, and the table set is not a
+    half-applied v10.  Row-level catalog/audit content is *not* re-validated here; the
+    backup is bound to the exact source image by ``source_root_hash`` instead.
+    """
 
     try:
         rows = _descriptor_rows(connection)
@@ -124,6 +132,15 @@ def _receipt(
             or _bytes_hash(backup) != receipt.backup_sha256
         ):
             raise ValueError("receipt binding")
+        saved = _readonly(backup, 5.0)
+        try:
+            saved.execute("BEGIN")
+            # The retained backup must still be the v9 image this library was
+            # upgraded from, not merely the bytes recorded at upgrade time (review M1).
+            if _validate(saved) != 9 or _root(saved) != receipt.source_root_hash:
+                raise ValueError("backup is not the upgraded source image")
+        finally:
+            saved.close()
         return receipt
     except (TypeError, ValueError, KeyError) as error:
         raise ExecutionSchemaIncompatible(
@@ -168,6 +185,7 @@ def migrate_execution_to_v10(
         writer.execute("BEGIN IMMEDIATE")
         if _validate(writer) == 10:
             return _receipt(writer, backup)
+        source_root_hash = _root(writer)
         if not backup.exists():
             fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             os.close(fd)
@@ -187,7 +205,9 @@ def migrate_execution_to_v10(
         saved = _readonly(backup, timeout)
         try:
             saved.execute("BEGIN")
-            if _validate(saved) != 9:
+            # A pre-existing file at the backup path is only accepted when it is
+            # byte-for-byte the same v9 content as the source (review M1).
+            if _validate(saved) != 9 or _root(saved) != source_root_hash:
                 raise ExecutionSchemaIncompatible(
                     "execution_base_agent_upgrade_retained_backup_differs"
                 )
@@ -198,6 +218,7 @@ def migrate_execution_to_v10(
             _bytes_hash(backup),
             legacy_v9_descriptor().checksum,
             fresh_descriptor().checksum,
+            source_root_hash,
         )
         _statements(writer, DDL)
         descriptor = fresh_descriptor()

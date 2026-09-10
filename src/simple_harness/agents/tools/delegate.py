@@ -48,6 +48,7 @@ from simple_harness.runtime.child_runs import ChildLaunchRequest, ProfileLaunchT
 from simple_harness.runtime.start_snapshot import RunStart, bind_start_snapshot
 from simple_harness.tools import FunctionTool, ToolContext, ToolResult, ToolSpec
 from simple_harness.tools.contracts import ToolHandler, ToolOutcome
+from simple_harness.tools.permit import release_tool_permit
 from simple_harness.tools.reconciliation import ReconciliationObservation, ReconciliationState
 from simple_harness.tools.runtime_catalog import (
     ToolEffectClass,
@@ -397,6 +398,9 @@ class AgentDelegateTool:
                 },
             )
         # 4. Condition-wait on the child's result row (never wait_idle, never in a transaction).
+        # The wait must not occupy a runtime-wide tool permit: the child may need one
+        # itself and a cap of N parents-in-wait would deadlock (BA35, review C1).
+        release_tool_permit()
         deadline = self._clock() + limits.delegation_wait_seconds
         interval = 0.01
         while True:

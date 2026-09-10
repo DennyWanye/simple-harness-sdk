@@ -19,6 +19,7 @@ from typing import cast
 from simple_harness.tools import FunctionTool, ToolCall, ToolRegistry, ToolResult, ToolSpec
 from simple_harness.tools.contracts import Tool, ToolContext, ToolHandler, ToolOutcome
 from simple_harness.tools.errors import MalformedToolArgumentsError, UnknownToolError
+from simple_harness.tools.permit import _ACTIVE_PERMIT, ToolPermit
 
 INVALID_ARGUMENTS_CODE = "invalid_tool_arguments"
 UNKNOWN_TOOL_CODE = "tool_not_exposed"
@@ -121,16 +122,27 @@ class ExposureGuardedTool:
         if semaphore is None:
             return self._inner.invoke(arguments, context)
 
+        registry = self._registry
+
+        def on_release() -> None:
+            registry.tools_in_flight -= 1
+
         async def limited():  # type: ignore[no-untyped-def]
-            async with semaphore:  # BA35: FIFO across Agents
-                self._registry.tools_in_flight += 1
-                self._registry.max_tools_in_flight = max(
-                    self._registry.max_tools_in_flight, self._registry.tools_in_flight
-                )
-                try:
-                    return await self._inner.invoke(arguments, context)
-                finally:
-                    self._registry.tools_in_flight -= 1
+            await semaphore.acquire()  # BA35: FIFO across Agents
+            registry.tools_in_flight += 1
+            registry.max_tools_in_flight = max(
+                registry.max_tools_in_flight, registry.tools_in_flight
+            )
+            # The handler sees its permit through the context variable so a tool that
+            # parks on another Agent (agent_delegate) can hand it back before waiting
+            # (review C1); the finally releases whatever is still held, exactly once.
+            permit = ToolPermit(semaphore, on_release)
+            token = _ACTIVE_PERMIT.set(permit)
+            try:
+                return await self._inner.invoke(arguments, context)
+            finally:
+                _ACTIVE_PERMIT.reset(token)
+                permit.release()
 
         return limited()
 

@@ -14,6 +14,10 @@ backup-first `migrate_execution_to_v10` (after `migrate_execution_to_v9`). Root
 `__all__` adds only `migrate_execution_to_v10` and `ExecutionBaseAgentUpgradeReceiptV1`;
 legacy Runs, `react_loop.py` policy semantics and the H079/H0710 artifacts are unchanged
 (the ReAct loop gained an optional companion write in its final checkpoint CAS).
+A driver exception inside an admitted AgentTurn is a visible failed turn
+(`base_agent_driver_exception`); the upgrade receipt binds the retained backup to the
+source image (`source_root_hash`); `agent_delegate` hands its tool permit back while it
+waits for the child so `max_concurrent_tool_calls` cannot deadlock a delegation.
 
 ## 0.7.10 — bounded nullable Tool schemas (source candidate)
 

@@ -1,7 +1,7 @@
 # BaseAgent Slice 5 · 并发、恢复、迁移与发布 · testcase 归档
 
 - 验收标准：`plans/2026-09-10-base-agent-phase1/slice-5/acceptance.md`（AC1–AC9）
-- 回归入口：`.venv/bin/python -m pytest -q tests/agents/test_slice5_recovery.py tests/execution/test_execution_v9_to_v10_migration.py`
+- 回归入口：`.venv/bin/python -m pytest -q tests/agents/test_slice5_recovery.py tests/agents/test_slice5_review.py tests/execution/test_execution_v9_to_v10_migration.py`
 
 | AC | 脚本 |
 |---|---|
@@ -14,3 +14,5 @@
 | AC7 BA37 | `tests/execution/test_execution_v9_to_v10_migration.py` |
 | AC8 BA39 | `test_lost_tool_response_is_never_blindly_retried` |
 | AC9 BA40 | wheel 构建与干净 venv 安装证据见 journal §4 |
+| review K1/C1/E1/E2 | `tests/agents/test_slice5_review.py`（driver 异常可见失败 Turn、逃逸异常有界再唤醒、工具上限=1 下委派完成、升级尝试间取消、成功记录升级历史） |
+| review M1 | `test_execution_v9_to_v10_migration.py::test_pre_existing_foreign_backup_is_refused_and_source_untouched` |

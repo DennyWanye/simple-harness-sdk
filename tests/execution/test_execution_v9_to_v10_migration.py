@@ -213,3 +213,32 @@ def test_tampered_backup_is_detected_on_replay(tmp_path):
         stream.write(b"\\x00")
     with pytest.raises(ExecutionSchemaIncompatible):
         h.migrate_execution_to_v10(path, backup_path=backup)
+
+
+def test_pre_existing_foreign_backup_is_refused_and_source_untouched(tmp_path):
+    """Review M1: a file already at the backup path must be *this* library's v9 image."""
+
+    path = build_legacy_library(tmp_path / "nine.db", schema.legacy_v9_descriptor())
+    foreign = build_legacy_library(tmp_path / "other.db", schema.legacy_v9_descriptor())
+    backup = tmp_path / "nine.backup"
+    # A valid but different v9 library (extra row) parked at the backup path.
+    connection = sqlite3.connect(foreign)
+    connection.execute("CREATE TABLE IF NOT EXISTS foreign_marker(id INTEGER PRIMARY KEY)")
+    connection.execute("INSERT INTO foreign_marker VALUES (1)")
+    connection.commit()
+    connection.close()
+    backup.write_bytes(foreign.read_bytes())
+    with pytest.raises(ExecutionSchemaIncompatible):
+        h.migrate_execution_to_v10(path, backup_path=backup)
+    versions = [
+        row[0]
+        for row in sqlite3.connect(path).execute(
+            "SELECT version FROM sdk_schema_migrations ORDER BY version"
+        )
+    ]
+    assert versions[-1] == 9
+    # The same v9 content parked at the backup path is accepted and bound by root hash.
+    backup.write_bytes(path.read_bytes())
+    receipt = h.migrate_execution_to_v10(path, backup_path=backup)
+    assert receipt is not None and len(receipt.source_root_hash) == 64
+    assert h.migrate_execution_to_v10(path, backup_path=backup) == receipt
