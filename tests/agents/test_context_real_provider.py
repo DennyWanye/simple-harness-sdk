@@ -15,11 +15,11 @@ from real_provider_config import build_real_provider, resolve_real_provider
 from simple_harness.agents import AgentConfig, build_agent_runtime
 from simple_harness.agents.context import ContextPolicy, TiktokenTokenizer
 from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
-from simple_harness.contracts import canonical_json
+from simple_harness.contracts import canonical_json, thaw_json
 
 pytestmark = pytest.mark.real_provider
 
-BUDGET = 1_500
+BUDGET = 2_400
 PROMPTS = [
     "请用两百字介绍一下长江的地理特征。",
     "接着上面的内容，再补充它对沿岸经济的影响，也写两百字。",
@@ -56,7 +56,8 @@ def test_real_model_input_tokens_stay_within_budget(tmp_path):
 
     async def case():
         recorder = UsageRecorder(build_real_provider(config))
-        policy = ContextPolicy(max_input_tokens=BUDGET, output_reserve=512, safety_margin=64)
+        # deepseek reasoning needs room to answer; the input budget is what is under test.
+        policy = ContextPolicy(max_input_tokens=BUDGET, output_reserve=1024, safety_margin=64)
         ports = AgentRuntimePorts(
             provider=recorder,
             authorization=AllowAllAuthorization(),
@@ -65,7 +66,7 @@ def test_real_model_input_tokens_stay_within_budget(tmp_path):
             owner_id="real-ctx",
             context_policy=policy,
             tokenizer=tokenizer,
-            default_max_output_tokens=512,
+            default_max_output_tokens=1024,
         )
         async with build_agent_runtime(ports) as runtime:
             agent = await runtime.create(
@@ -81,7 +82,7 @@ def test_real_model_input_tokens_stay_within_budget(tmp_path):
                 "budget_input_tokens": policy.input_budget(),
                 "usages": recorder.usages,
                 "states": [r.state.value for r in results],
-                "errors": [None if r.error is None else dict(r.error) for r in results],
+                "errors": [None if r.error is None else thaw_json(r.error) for r in results],
                 "journal_records": len(agent.journal()),
                 "selections": [
                     {
