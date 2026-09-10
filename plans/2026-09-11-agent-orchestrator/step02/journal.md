@@ -37,7 +37,17 @@
 reviewer 要求显式化的 6 个决定：硬预算落地（D10'）、费用权威口径（D10'）、intent 冻结内容（D5'）、Mission 级判定（D21）、版本模型（D19）、合规收尾与版本号（D24）；第 7 项 result id 规则（D7'）。
 
 ## 2. 执行记录
-（按切片回填）
+
+| 切片 | 提交 | 内容 | 测试 |
+|---|---|---|---|
+| A 合同与存储 | `370198a` | §26 六合同 + §25 状态机（Task/Attempt/Claim + Mission 状态集）、`Store`（STRICT/WAL、CAS、幂等事件、故障注入点）、预算账本（三级账户、Reserve/Settle、usage 逐条导入、unpriced 不写零）、Commit Service（幂等创建、带回执的 Task 提案、Attempt+intent 原子创建、派发进度、结果接收/拒绝、验证层记录、接受/失败、停止、取消、Mission 级判定） | `test_contracts.py` 7、`test_store_and_budgets.py` 3、`test_commit_service.py` 5 |
+| B+C 执行链与验证 | `650fc9e` | 隔离工作区 + 验收副本、工具网关（4 工具、run_id→(attempt,view,mode)、子进程 pytest 超时/进程组/env 白名单）、角色模板（planner/worker/critic，带 prompt_version）、Context Builder（§10 的 1/2/6/8/9/10/11）、BaseAgent 桥（冻结 config/message 重放、存活快照、费用事实）、验证四层 + 路由（§14.1 顺序、必需层短路、NOT_REQUIRED 不算 PASS）、编排循环（recover→派发→采集→验证→决策→判定）、fixture provider | `test_workspace_and_gateway.py` 3、`test_single_task_closure.py` 4 |
+| D 恢复与幂等 | `c70c4d6` | 6 个跨库崩溃点（按 intent kind 定向）、恢复矩阵、CLI（mission/attempt/artifact/demo）与证据目录、包内 fixtures、真实模型 opt-in 测试、SDK 唯一新增只读门面 `list_provider_invocations` | `test_recovery_matrix.py` 8、`test_cli_demo.py` 3 |
+
+实现中的裁决（补充 §1）：
+- Critic 在 §14.1 顺序里先于 code_test 运行，因此 Critic 看不到本次验证的测试输出，只能读验收副本代码；Critic 包里 `test_output` 为 null 并写明。保持原文层序。
+- Attempt 的 LOST 判定本步只实现"turn 不存在/agent 打不开"一条（D6' 三条件中的第 1、2 条）；"无 blocker 且 ordinal 长期无推进"的停滞判定留到第 3 步 S3-07（多执行者场景）一并做，见 §5 遗留。
+- 业务租约到期后允许新 owner 接管（`renew_lease`/`claim_intent`），未到期的活租约不可抢占。
 
 ## 3. 独立 review（代码）
 （回填）
