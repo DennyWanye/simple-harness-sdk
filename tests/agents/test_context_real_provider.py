@@ -55,11 +55,7 @@ def test_real_model_input_tokens_stay_within_budget(tmp_path):
     tokenizer = TiktokenTokenizer()
 
     async def case():
-        recorder = UsageRecorder(
-            OpenAICompatibleProvider(
-                base_url=config.base_url, api_key=config.api_key, model=config.model
-            )
-        )
+        recorder = UsageRecorder(build_real_provider(config))
         policy = ContextPolicy(max_input_tokens=BUDGET, output_reserve=512, safety_margin=64)
         ports = AgentRuntimePorts(
             provider=recorder,
