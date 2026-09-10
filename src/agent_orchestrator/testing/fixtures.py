@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: E501  (scripted demo content)
 
 """Deterministic, role-routed Provider for tests and the ``fixtures`` demo (D26).
 
@@ -251,8 +252,13 @@ __all__ = (
     "MODEL",
     "RoleScriptedProvider",
     "UnknownAfterHandoff",
+    "DEMO_DAG_TASKS",
+    "TEXTKIT_SEED",
+    "TaskRoutedProvider",
     "critic_step",
     "demo_single_task_provider",
+    "demo_static_dag_provider",
+    "demo_static_dag_scripts",
     "demo_worker_script",
     "envelope_step",
     "graph_proposal_step",
@@ -260,3 +266,214 @@ __all__ = (
     "proposal_step",
     "role_of",
 )
+
+
+# ------------------------------------------------------------ static-dag demo
+TEXTKIT_SEED = {
+    "README.md": "# textkit\n\n一个小工具包：slugify 与 word_count。\n",
+    "tests/test_slug.py": (
+        "from textkit.slug import slugify\n\n\n"
+        "def test_slugify_basic():\n    assert slugify('Hello, World!') == 'hello-world'\n\n\n"
+        "def test_slugify_collapses():\n    assert slugify('  a   b  ') == 'a-b'\n"
+    ),
+    "tests/test_count.py": (
+        "from textkit.count import word_count\n\n\n"
+        "def test_word_count_basic():\n    assert word_count('a b  c') == 3\n\n\n"
+        "def test_word_count_empty():\n    assert word_count('') == 0\n"
+    ),
+    "tests/test_integration.py": (
+        "from textkit import slugify, word_count\n\n\n"
+        "def test_exports():\n    text = 'Hello big World'\n"
+        "    assert slugify(text) == 'hello-big-world' and word_count(text) == 3\n"
+    ),
+}
+TEXTKIT_CONTRACT = (
+    '"""textkit 公共合同：两个纯函数。"""\n\n'
+    "from textkit.count import word_count\n"
+    "from textkit.slug import slugify\n\n"
+    '__all__ = ("slugify", "word_count")\n'
+)
+TEXTKIT_SLUG_STUB = "def slugify(text: str) -> str:\n    raise NotImplementedError\n"
+TEXTKIT_COUNT_STUB = "def word_count(text: str) -> int:\n    raise NotImplementedError\n"
+TEXTKIT_SLUG = (
+    "import re\n\n\n"
+    "def slugify(text: str) -> str:\n"
+    "    words = re.findall(r'[A-Za-z0-9]+', text.lower())\n"
+    "    return '-'.join(words)\n"
+)
+TEXTKIT_COUNT = "def word_count(text: str) -> int:\n    return len(text.split())\n"
+TEXTKIT_DELIVERY = (
+    "# 交付说明\n\n- `textkit.slugify(text)`：小写、非字母数字换成 `-`、折叠空白。\n"
+    "- `textkit.word_count(text)`：按空白分词计数，空串为 0。\n- 测试：`pytest tests`。\n"
+)
+
+
+def _task(key, goal, deps, criteria, tokens, priority=1.0, policy=None):
+    return {
+        "key": key,
+        "goal": goal,
+        "rationale": f"{key} 是 A→(B‖C)→D→E 计划的一部分，服务 Mission 目标",
+        "dependencies": list(deps),
+        "success_criteria": list(criteria),
+        "verification_policy": policy or ["format_check", "rule_check", "code_test"],
+        "allowed_tools": [
+            "workspace_read_file",
+            "workspace_write_file",
+            "workspace_list",
+            "run_tests",
+        ],
+        "budget": {"max_tokens": tokens, "max_attempts": 2},
+        "priority": priority,
+    }
+
+
+DEMO_DAG_TASKS = [
+    _task(
+        "A",
+        "写出 textkit 包的公共合同（textkit/__init__.py 导出 slugify 与 word_count）与两个函数的桩",
+        (),
+        ["file:textkit/__init__.py", "file:textkit/slug.py", "file:textkit/count.py"],
+        20_000,
+        3.0,
+    ),
+    _task(
+        "B",
+        "实现 textkit/slug.py 的 slugify 并通过 tests/test_slug.py",
+        ["A"],
+        ["pytest:tests/test_slug.py"],
+        30_000,
+        2.0,
+    ),
+    _task(
+        "C",
+        "实现 textkit/count.py 的 word_count 并通过 tests/test_count.py",
+        ["A"],
+        ["pytest:tests/test_count.py"],
+        30_000,
+        2.0,
+    ),
+    _task(
+        "D",
+        "集成测试：tests/test_integration.py 通过",
+        ["B", "C"],
+        ["pytest:tests/test_integration.py"],
+        20_000,
+        1.0,
+    ),
+    _task(
+        "E",
+        "写 DELIVERY.md 交付说明并确保全部测试通过",
+        ["D"],
+        ["file:DELIVERY.md", "pytest:tests"],
+        20_000,
+        1.0,
+    ),
+]
+
+
+def _write_then_envelope(
+    files: dict[str, str], *, test_path: str | None, summary: str, artifacts: list[str], claim: str
+) -> list[object]:
+    steps: list[object] = [("workspace_list", {})]
+    for path, content in files.items():
+        steps.append(("workspace_write_file", {"path": path, "content": content}))
+    if test_path is not None:
+        steps.append(("run_tests", {"path": test_path}))
+    steps.append(envelope_step(summary=summary, artifacts=artifacts, claims=[claim]))
+    return steps
+
+
+def demo_static_dag_scripts(*, c_first_wrong: bool = False) -> dict[str, list[object]]:
+    """Worker scripts for A→(B‖C)→D→E; workers are routed by role, so the scripts are
+    consumed in dispatch order (A, then B and C in parallel, D, E).  ``c_first_wrong``
+    makes C's first submission fail its tests (S3-03)."""
+
+    a = _write_then_envelope(
+        {
+            "textkit/__init__.py": TEXTKIT_CONTRACT,
+            "textkit/slug.py": TEXTKIT_SLUG_STUB,
+            "textkit/count.py": TEXTKIT_COUNT_STUB,
+        },
+        test_path=None,
+        summary="写出了合同与桩",
+        artifacts=["textkit/__init__.py", "textkit/slug.py", "textkit/count.py"],
+        claim="合同文件存在",
+    )
+    b = _write_then_envelope(
+        {"textkit/slug.py": TEXTKIT_SLUG},
+        test_path="tests/test_slug.py",
+        summary="实现 slugify",
+        artifacts=["textkit/slug.py"],
+        claim="tests/test_slug.py 通过",
+    )
+    c_ok = _write_then_envelope(
+        {"textkit/count.py": TEXTKIT_COUNT},
+        test_path="tests/test_count.py",
+        summary="实现 word_count",
+        artifacts=["textkit/count.py"],
+        claim="tests/test_count.py 通过",
+    )
+    c_bad = _write_then_envelope(
+        {
+            "textkit/count.py": "def word_count(text: str) -> int:\n    return len(text.split()) + 1\n"
+        },
+        test_path="tests/test_count.py",
+        summary="实现 word_count",
+        artifacts=["textkit/count.py"],
+        claim="tests/test_count.py 通过",
+    )
+    d = _write_then_envelope(
+        {},
+        test_path="tests/test_integration.py",
+        summary="集成测试通过",
+        artifacts=["textkit/__init__.py"],
+        claim="tests/test_integration.py 通过",
+    )
+    e = _write_then_envelope(
+        {"DELIVERY.md": TEXTKIT_DELIVERY},
+        test_path="tests",
+        summary="交付说明完成",
+        artifacts=["DELIVERY.md"],
+        claim="全部测试通过",
+    )
+    return {"A": a, "B": b, "C": (c_bad if c_first_wrong else []) + c_ok, "D": d, "E": e}
+
+
+class TaskRoutedProvider(RoleScriptedProvider):
+    """Worker requests are routed by the Task's graph key (read from the task package's
+    goal), so parallel Workers each consume their own script (S3-01)."""
+
+    def __init__(
+        self, planner_steps, worker_by_key: dict[str, list[object]], critic_steps=(), **kwargs
+    ) -> None:  # type: ignore[no-untyped-def]
+        super().__init__({"planner": list(planner_steps), "critic": list(critic_steps)}, **kwargs)
+        self.worker_by_key = {key: list(steps) for key, steps in worker_by_key.items()}
+        self.calls_by_key: dict[str, int] = {}
+
+    def _worker_key(self, request: ProviderRequest) -> str:
+        goal = str(package_of(request).get("task_contract", {}).get("goal", ""))
+        for key, task in DEMO_TASK_GOALS.items():
+            if goal == task:
+                return key
+        raise AssertionError(f"no worker script for goal {goal!r}")
+
+    async def invoke(self, request: ProviderRequest, *, cancel) -> ProviderResponse:  # type: ignore[no-untyped-def]
+        if role_of(request) == "worker":
+            key = self._worker_key(request)
+            self.calls_by_key[key] = self.calls_by_key.get(key, 0) + 1
+            queue = self.worker_by_key.get(key)
+            if not queue:
+                raise AssertionError(f"worker script exhausted for task {key!r}")
+            self.scripts["worker"] = queue  # borrow the role queue for this call
+        return await super().invoke(request, cancel=cancel)
+
+
+DEMO_TASK_GOALS = {task["key"]: task["goal"] for task in DEMO_DAG_TASKS}
+
+
+def demo_static_dag_provider(*, c_first_wrong: bool = False) -> TaskRoutedProvider:
+    return TaskRoutedProvider(
+        [graph_proposal_step(DEMO_DAG_TASKS)],
+        demo_static_dag_scripts(c_first_wrong=c_first_wrong),
+        critic_steps=[critic_step(verdict="PASS", criteria_met=True)] * 3,
+    )
