@@ -19,10 +19,11 @@ from simple_harness.contracts import canonical_json, thaw_json
 
 pytestmark = pytest.mark.real_provider
 
-BUDGET = 2_400
+BUDGET = 1_900
 PROMPTS = [
-    "请用两百字介绍一下长江的地理特征。",
-    "接着上面的内容，再补充它对沿岸经济的影响，也写两百字。",
+    "请用三百字介绍一下长江的地理特征。",
+    "接着上面的内容，再补充它对沿岸经济的影响，也写三百字。",
+    "再补充长江流域的主要城市和它们的产业，三百字。",
     "把我们刚才讨论过的所有要点列成一个清单。",
     "最后用一句话总结这次对话。",
 ]
