@@ -96,6 +96,11 @@ def _provider(args: argparse.Namespace):  # type: ignore[no-untyped-def]
                 input_micros_per_million_tokens=int(os.environ["SH_PRICE_INPUT_MICROS"]),
                 output_micros_per_million_tokens=int(os.environ["SH_PRICE_OUTPUT_MICROS"]),
             )
+        elif not getattr(args, "unpriced", False):
+            raise SystemExit(
+                "--provider env is a paid provider: set SH_PRICE_INPUT_MICROS/SH_PRICE_OUTPUT_MICROS"
+                " (micros per million tokens) or pass --unpriced to record costs as unpriced"
+            )
         return provider, model, price, "env"
     raise SystemExit(f"unknown provider {args.provider!r}")
 
@@ -273,6 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--hard-cap-micros", type=int, default=None, dest="hard_cap_micros")
             p.add_argument("--max-concurrency", type=int, default=1, dest="max_concurrency")
             p.add_argument("--test-timeout", type=float, default=120.0, dest="test_timeout")
+            p.add_argument(
+                "--unpriced",
+                action="store_true",
+                help="allow a paid provider without a price table (costs recorded as unpriced)",
+            )
 
     mission = sub.add_parser("mission")
     mission_sub = mission.add_subparsers(dest="action", required=True)

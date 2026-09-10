@@ -93,7 +93,7 @@ async def run_pytest(workspace_root: str, *, path: str | None, timeout: float) -
 
     command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--color=no"]
     if path:
-        command.append(path)
+        command.extend(["--", path])
     env = {key: value for key, value in os.environ.items() if key in ENV_WHITELIST}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONHASHSEED"] = "0"
@@ -180,7 +180,10 @@ class WorkspaceToolGateway:
             elif call.name == "run_tests":
                 path = arguments.get("path")
                 if path is not None:
-                    workspace.resolve(path)
+                    resolved = workspace.resolve(path)
+                    if not resolved.exists():
+                        raise WorkspaceError(f"no such test path: {path}")
+                    path = str(resolved.relative_to(workspace.root.resolve()))
                 run = await run_pytest(str(workspace.root), path=path, timeout=self._test_timeout)
                 value = {"passed": run.passed, **run.to_json()}
             else:  # pragma: no cover - registry never dispatches unknown names here

@@ -194,6 +194,7 @@ CREATE TABLE imported_usage (
  output_tokens INTEGER NOT NULL,
  cost_micros INTEGER,
  unpriced INTEGER NOT NULL,
+ unknown INTEGER NOT NULL DEFAULT 0,
  imported_at REAL NOT NULL
 ) STRICT;
 

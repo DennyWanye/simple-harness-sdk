@@ -24,8 +24,6 @@ from simple_harness.agents.runtime import AgentRuntime
 
 from ..governance.budgets import UsageFact
 
-ALIVE_STATES = {AgentTurnState.QUEUED, AgentTurnState.RUNNING, AgentTurnState.RESULT_PENDING}
-
 
 @dataclass(frozen=True, slots=True)
 class Liveness:
@@ -132,15 +130,27 @@ class AgentBridge:
             output_tokens = int((tokens or {}).get("output_tokens") or 0)
             charge = record.budget_charge
             amount = None if self._unpriced else charge.amount_micros
+            unknown = (not self._unpriced) and charge.amount_micros is None
             facts.append(
                 UsageFact(
                     f"provider-invocation:{record.invocation_id}",
                     input_tokens,
                     output_tokens,
                     amount,
+                    unknown=unknown,
                 )
             )
         return facts
+
+    def echoed_models(self, *, agent_id: str) -> set[str]:
+        """Model names the provider echoed for this Run (D10' model_echo_mismatch check)."""
+
+        models: set[str] = set()
+        for record in self._runtime.uow.list_provider_invocations(RunId(agent_id)):
+            response = record.response_json
+            if isinstance(response, Mapping) and isinstance(response.get("model"), str):
+                models.add(str(response["model"]))
+        return models
 
     def has_unknown_charge(self, *, agent_id: str) -> bool:
         return bool(self._runtime.uow.read_provider_budget(RunId(agent_id)).has_unknown_charge)
@@ -153,4 +163,4 @@ def user_message_json(text: str) -> dict[str, Any]:
     return Message(MessageRole.USER, text).to_dict()
 
 
-__all__ = ("ALIVE_STATES", "AgentBridge", "Liveness", "user_message_json")
+__all__ = ("AgentBridge", "Liveness", "user_message_json")

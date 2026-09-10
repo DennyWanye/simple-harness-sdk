@@ -57,12 +57,13 @@ class Workspace:
             part in {"..", ""} for part in candidate.parts if part != "."
         ):
             raise WorkspaceError(f"path escapes the workspace: {relative}")
-        target = (self.root / candidate).resolve()
+        unresolved = self.root / candidate
+        if unresolved.is_symlink():
+            raise WorkspaceError(f"symlinks are not allowed: {relative}")
+        target = unresolved.resolve()
         root = self.root.resolve()
         if target != root and root not in target.parents:
             raise WorkspaceError(f"path escapes the workspace: {relative}")
-        if target.exists() and target.is_symlink():
-            raise WorkspaceError(f"symlinks are not allowed: {relative}")
         return target
 
     def read_text(self, relative: str) -> str:
@@ -163,8 +164,15 @@ class WorkspaceManager:
             raise WorkspaceError(f"no workspace for {attempt_id}")
         return Workspace(root, attempt_id, writable)
 
-    def verification_copy(self, attempt_id: str) -> Workspace:
-        """An independent copy for the Verifier (D12'); rebuilt from the current tree."""
+    def verification_copy(
+        self, attempt_id: str, *, protected: Mapping[str, str] | None = None
+    ) -> Workspace:
+        """An independent copy for the Verifier (D12'); rebuilt from the current tree.
+
+        ``protected`` (path → seed content) is re-materialised from the Mission seed
+        so a Worker that rewrote its own acceptance tests is verified against the
+        real ones (review P0-1).
+        """
 
         source = self._root / attempt_id
         if not source.is_dir():
@@ -173,7 +181,25 @@ class WorkspaceManager:
         if target.exists():
             shutil.rmtree(target)
         shutil.copytree(source, target, ignore=shutil.ignore_patterns(*IGNORED_DIRS))
-        return Workspace(target, attempt_id, True)
+        copy = Workspace(target, attempt_id, True)
+        for relative, content in (protected or {}).items():
+            copy.write_text(relative, content)
+        return copy
+
+    def tampered_protected(self, attempt_id: str, protected: Mapping[str, str]) -> list[str]:
+        """Protected seed paths whose content in the Worker's tree differs from the seed."""
+
+        workspace = self.get(attempt_id, writable=False)
+        tampered = []
+        for relative, content in protected.items():
+            try:
+                current = workspace.read_text(relative)
+            except WorkspaceError:
+                tampered.append(relative)
+                continue
+            if current != content:
+                tampered.append(relative)
+        return tampered
 
     def verification_view(self, attempt_id: str) -> Workspace:
         """The Critic's read-only view of the verification copy."""

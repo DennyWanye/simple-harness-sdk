@@ -31,6 +31,8 @@ class MissionStopReason(StrEnum):
     MAX_ATTEMPTS_REACHED = "max_attempts_reached"
     PLANNING_FAILED = "planning_failed"
     CANCELLED = "cancelled"
+    MODEL_ECHO_MISMATCH = "model_echo_mismatch"
+    MISSION_CRITERIA_UNMET = "mission_criteria_unmet"
 
 
 class TaskStatus(StrEnum):

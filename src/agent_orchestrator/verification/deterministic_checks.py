@@ -65,8 +65,11 @@ def rule_check(
     *,
     artifacts: Sequence[Artifact],
     verification_copy: Workspace,
+    tampered: Sequence[str] = (),
 ) -> LayerResult:
-    problems: list[str] = []
+    problems: list[str] = [
+        f"protected seed file rewritten by the Worker: {path}" for path in tampered
+    ]
     by_path = {artifact.path: artifact for artifact in artifacts}
     if envelope.outcome.value != "candidate":
         problems.append(f"outcome is {envelope.outcome}, not a candidate")

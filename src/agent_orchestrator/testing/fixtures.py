@@ -15,6 +15,7 @@ clean install (ORCH §14.3).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Callable, Sequence
@@ -64,11 +65,20 @@ def package_of(request: ProviderRequest) -> dict[str, Any]:
 
 
 class RoleScriptedProvider:
-    def __init__(self, scripts: dict[str, Sequence[object]], *, usage_tokens: int = 100) -> None:
+    def __init__(
+        self,
+        scripts: dict[str, Sequence[object]],
+        *,
+        usage_tokens: int = 100,
+        model: str = MODEL,
+        gate: asyncio.Event | None = None,
+    ) -> None:
         self.scripts = {role: list(steps) for role, steps in scripts.items()}
         self.requests: list[ProviderRequest] = []
         self.by_role: dict[str, int] = {}
         self.usage_tokens = usage_tokens
+        self.model = model
+        self.gate = gate  # when set, every call waits here (a stalled executor)
 
     @property
     def calls(self) -> int:
@@ -82,6 +92,8 @@ class RoleScriptedProvider:
         self.requests.append(request)
         role = role_of(request)
         self.by_role[role] = self.by_role.get(role, 0) + 1
+        if self.gate is not None:
+            await self.gate.wait()
         queue = self.scripts.get(role)
         if not queue:
             raise AssertionError(f"scripted provider exhausted for role {role!r}")
@@ -99,7 +111,7 @@ class RoleScriptedProvider:
             return ProviderResponse(
                 request.request_id,
                 Message(MessageRole.ASSISTANT, step),
-                model=MODEL,
+                model=self.model,
                 finish_reason="stop",
                 usage=usage,
             )
@@ -111,7 +123,7 @@ class RoleScriptedProvider:
             request.request_id,
             Message(MessageRole.ASSISTANT, ""),
             tool_calls=(call,),
-            model=MODEL,
+            model=self.model,
             finish_reason="tool_calls",
             usage=usage,
         )

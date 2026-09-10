@@ -163,8 +163,19 @@ class Orchestrator:
         return mission
 
     async def recover(self) -> None:
-        """§16.4 recovery: wake SDK turns first, then let the loop re-drive intents."""
+        """§16.4 recovery: rebind the workspaces of in-flight turns, wake the SDK turns,
+        then let the loop re-drive the remaining intents (review P1-3)."""
 
+        for intent in self.store.list_intents("AGENT_CREATED", "SUBMITTED"):
+            if intent.agent_id is None:
+                continue
+            if intent.kind == "attempt":
+                attempt = self.store.get_attempt(intent.subject_id)
+                if attempt is not None:
+                    self._bind_workspace(attempt)
+                    self._bind_agent(intent.agent_id, intent.config)
+            elif intent.kind == "critic":
+                self._bind_critic(intent.agent_id, intent.config)
         await self.bridge.recover()
 
     async def run(self, *, max_cycles: int = 10_000, until_idle: bool = True) -> None:
@@ -193,7 +204,8 @@ class Orchestrator:
         return [m for m in self.store.list_missions() if m.status not in TERMINAL_MISSION]
 
     def _has_inflight(self) -> bool:
-        return bool(self.store.list_intents("SUBMITTED"))
+        active = {mission.id for mission in self._active_missions()}
+        return any(intent.mission_id in active for intent in self.store.list_intents("SUBMITTED"))
 
     async def _cycle(self) -> bool:
         progressed = False
@@ -201,15 +213,20 @@ class Orchestrator:
             if mission.status is MissionStatus.CREATED:
                 await self._start_planning(mission)
                 progressed = True
+        active = {mission.id for mission in self._active_missions()}
         for intent in self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED"):
+            if intent.mission_id not in active:
+                continue
             if await self._dispatch(intent):
                 progressed = True
         for intent in self.store.list_intents("SUBMITTED"):
-            if intent.kind == "critic":
-                continue  # collected inline by the critic runner
+            if intent.kind == "critic" or intent.mission_id not in active:
+                continue  # critics are collected inline by the critic runner
             if await self._collect(intent):
                 progressed = True
         for stored in self.store.list_results_by_verification("PENDING", "RUNNING"):
+            if stored.envelope.mission_id not in active:
+                continue
             await self._verify(stored.envelope.id)
             progressed = True
         for mission in self._active_missions():
@@ -318,7 +335,16 @@ class Orchestrator:
         previous = None
         if attempt.retry_of is not None:
             previous = self.assembled.workspaces.root / attempt.retry_of
-        self.assembled.workspaces.create(attempt.id, seed=seed, previous=previous)
+        workspace = self.assembled.workspaces.create(attempt.id, seed=seed, previous=previous)
+        task = self.store.get_task(attempt.task_id)
+        if task is not None:
+            for path, content in self._protected_seed(mission, task).items():
+                if (
+                    workspace.read_text(path) != content
+                    if (workspace.root / path).is_file()
+                    else True
+                ):
+                    workspace.write_text(path, content)
 
     def _bind_agent(self, agent_id: str, config: Mapping[str, Any]) -> None:
         self.assembled.gateway.bind(
@@ -359,37 +385,90 @@ class Orchestrator:
         )
         now = self.store.now
         if liveness.alive:
-            if (
-                liveness.blocked
-                or attempt.lease_expires_at is None
+            due = (
+                attempt.lease_expires_at is None
                 or now >= attempt.lease_expires_at - self._config.lease_seconds / 2
-            ):
-                self.commit.renew_lease(
-                    attempt.id,
-                    owner=self._owner,
-                    lease_seconds=self._config.lease_seconds,
-                    liveness=liveness.to_json(),
-                )
+            )
+            if due:
+                try:
+                    attempt = self.commit.renew_lease(
+                        attempt.id,
+                        owner=self._owner,
+                        lease_seconds=self._config.lease_seconds,
+                        liveness=liveness.to_json(),
+                    )
+                except CommitRejected:
+                    return False  # another live owner; not ours yet (review P1-2)
+            if not liveness.blocked and attempt.progress_at is not None:
+                stalled_for = now - attempt.progress_at
+                if stalled_for > self._config.stall_seconds:
+                    # D6': alive, no blocker, no provider progress within stall_seconds.
+                    self._import_usage(intent)
+                    self.commit.mark_attempt_timed_out(
+                        attempt.id,
+                        reason="executor_stalled",
+                        detail={
+                            "stalled_seconds": round(stalled_for, 3),
+                            "progress_marker": attempt.progress_marker,
+                        },
+                    )
+                    self.commit.settle_intent(intent.intent_id, "FAILED")
+                    await self._cancel_turn(intent)
+                    self._note(
+                        f"attempt {attempt.id} TIMED_OUT: no progress for {stalled_for:.1f}s"
+                    )
+                    return True
             return False
         if not liveness.exists:
+            self._import_usage(intent)
             self.commit.mark_attempt_lost(attempt.id, reason="executor_turn_missing")
-            self._settle_intent(intent, "FAILED")
+            self.commit.settle_intent(intent.intent_id, "FAILED")
             self._note(f"attempt {attempt.id} LOST: turn missing")
             return True
         return False
 
+    async def _cancel_turn(self, intent: DispatchIntent) -> None:
+        """Best-effort cooperative cancel of a superseded SDK turn (never a kernel cancel)."""
+
+        if intent.agent_id is None or intent.expected_turn_id is None:
+            return
+        try:
+            await self.bridge.runtime.cancel_turn(
+                intent.agent_id,
+                intent.expected_turn_id,
+                command_id=f"{intent.subject_id}:cancel",
+                wait_timeout=0.0,
+            )
+        except Exception as error:  # noqa: BLE001 - cancellation is advisory here
+            self._note(f"cancel_turn for {intent.subject_id} not applied: {error}")
+
     def _settle_intent(self, intent: DispatchIntent, state: str) -> None:
-        current = self.store.get_intent(intent.intent_id)
-        assert current is not None
-        updated = DispatchIntent(
-            **{**current.to_json(), "state": state, "version": current.version + 1}
-        )
-        self.store.update_intent(updated, expected_version=current.version)
+        self.commit.settle_intent(intent.intent_id, state)
 
     def _import_usage(self, intent: DispatchIntent) -> None:
         assert intent.agent_id is not None
         facts = self.bridge.usage_facts(agent_id=intent.agent_id)
         self.commit.import_usage(intent.subject_id, intent.mission_id, facts)
+
+    def _settle_service_if_known(
+        self, subject_id: str, mission_id: str, task_id: str | None = None
+    ) -> None:
+        with self.store.transaction():
+            unknown = self.commit.ledger.has_unknown_usage(subject_id)
+        if unknown:
+            self._note(f"{subject_id}: unknown provider charge, reservation held")
+            return
+        self.commit.settle_subject(subject_id, mission_id, task_id=task_id)
+
+    def _settle_if_known(self, attempt: Attempt) -> None:
+        """Settle the Attempt's reservation unless an UNKNOWN charge keeps it occupied (ORCH §12.2)."""
+
+        with self.store.transaction():
+            unknown = self.commit.ledger.has_unknown_usage(attempt.id)
+        if unknown:
+            self._note(f"attempt {attempt.id}: unknown provider charge, reservation held")
+            return
+        self.commit.settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
 
     async def _collect_plan(self, intent: DispatchIntent, result) -> None:  # type: ignore[no-untyped-def]
         mission = self.store.get_mission(intent.mission_id)
@@ -397,6 +476,18 @@ class Orchestrator:
         self._import_usage(intent)
         ordinal = int(intent.config.get("ordinal", 1))
         text = "" if result.public_output is None else str(result.public_output.content)
+        echoed = self.bridge.echoed_models(agent_id=intent.agent_id or "")
+        if echoed and echoed != {self._config.model}:
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            self.commit.fail_planning(
+                mission.id,
+                reason="model_echo_mismatch",
+                detail={"expected": self._config.model, "echoed": sorted(echoed)},
+                stop_reason=MissionStopReason.MODEL_ECHO_MISMATCH,
+            )
+            self._note(f"planner: model echo mismatch {sorted(echoed)} → mission stopped")
+            return
         try:
             if result.state is not AgentTurnState.COMMITTED:
                 raise ContractError(f"planner turn failed: {dict(result.error or {})}")
@@ -415,7 +506,7 @@ class Orchestrator:
         except (ContractError, CommitRejected) as error:
             self._note(f"planning attempt {ordinal} rejected: {error}")
             self._settle_intent(intent, "FAILED")
-            self.commit.settle_subject(intent.subject_id, mission.id)
+            self._settle_service_if_known(intent.subject_id, mission.id)
             if ordinal < MAX_PLANNING_ATTEMPTS:
                 await self._create_planner_intent(mission.id, ordinal=ordinal + 1)
             else:
@@ -424,7 +515,7 @@ class Orchestrator:
                 )
             return
         self._settle_intent(intent, "SETTLED")
-        self.commit.settle_subject(intent.subject_id, mission.id)
+        self._settle_service_if_known(intent.subject_id, mission.id)
 
     async def _collect_attempt(self, intent: DispatchIntent, result) -> None:  # type: ignore[no-untyped-def]
         attempt = self.store.get_attempt(intent.subject_id)
@@ -433,12 +524,25 @@ class Orchestrator:
         if attempt.status is not AttemptStatus.RUNNING:
             self._settle_intent(intent, "SETTLED")
             return
-        if (
-            result.state is not AgentTurnState.FAILED
-            and self.bridge.has_unknown_charge(agent_id=intent.agent_id or "")
-            and not self._config.unpriced
-        ):
-            self._note(f"attempt {attempt.id}: unknown provider charge, holding reservation")
+        echoed = self.bridge.echoed_models(agent_id=intent.agent_id or "")
+        if echoed and echoed != {self._config.model}:
+            # D10': the provider answered as a different model; charges are unknown and
+            # the deployment binding is wrong.  Fail fast and visibly, hold the reservation.
+            self.commit.reject_result(
+                attempt.id,
+                turn_id=result.turn_id,
+                reason="model_echo_mismatch",
+                detail={"expected": self._config.model, "echoed": sorted(echoed)},
+            )
+            self._settle_intent(intent, "FAILED")
+            self._settle_if_known(attempt)
+            self.commit.stop_task(
+                attempt.task_id,
+                stop_reason=MissionStopReason.MODEL_ECHO_MISMATCH,
+                detail={"expected": self._config.model, "echoed": sorted(echoed)},
+            )
+            self._note(f"attempt {attempt.id}: model echo mismatch {sorted(echoed)} → stopped")
+            return
         if result.state is AgentTurnState.FAILED:
             self.commit.reject_result(
                 attempt.id,
@@ -447,7 +551,7 @@ class Orchestrator:
                 detail={"error": dict(result.error or {})},
             )
             self._settle_intent(intent, "FAILED")
-            self.commit.settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
+            self._settle_if_known(attempt)
             self._note(f"attempt {attempt.id}: SDK turn failed → RETRY_WAIT")
             return
         text = "" if result.public_output is None else str(result.public_output.content)
@@ -461,7 +565,7 @@ class Orchestrator:
                 detail={"error": str(error), "output_head": text[:400]},
             )
             self._settle_intent(intent, "FAILED")
-            self.commit.settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
+            self._settle_if_known(attempt)
             self._note(f"attempt {attempt.id}: envelope invalid → RETRY_WAIT ({error})")
             return
         workspace = self.assembled.workspaces.get(attempt.id)
@@ -480,7 +584,7 @@ class Orchestrator:
                 detail={"error": f"artifacts not in the workspace: {missing}"},
             )
             self._settle_intent(intent, "FAILED")
-            self.commit.settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
+            self._settle_if_known(attempt)
             self._note(f"attempt {attempt.id}: artifacts missing → RETRY_WAIT")
             return
         referenced = [
@@ -534,7 +638,9 @@ class Orchestrator:
         task = self.store.get_task(stored.envelope.task_id)
         mission = self.store.get_mission(stored.envelope.mission_id)
         assert attempt is not None and task is not None and mission is not None
-        copy = self.assembled.workspaces.verification_copy(attempt.id)
+        protected = self._protected_seed(mission, task)
+        tampered = self.assembled.workspaces.tampered_protected(attempt.id, protected)
+        copy = self.assembled.workspaces.verification_copy(attempt.id, protected=protected)
         artifacts = [
             a for a in self.store.list_artifacts(attempt.id) if a.id in set(stored.artifacts)
         ]
@@ -561,6 +667,7 @@ class Orchestrator:
             client_result_id=self._client_ids.get(result_id),
             run_critic=run_critic,
             recorder=recorder,
+            tampered=tampered,
         )
         if verdict.critic is not None:
             self._critic_verdicts[result_id] = verdict.critic
@@ -575,6 +682,24 @@ class Orchestrator:
         else:
             self.commit.fail_result(result_id, failures=verdict.failures)
             self._note(f"result {result_id} FAIL at {verdict.short_circuited_at}")
+
+    def _protected_seed(self, mission: Mission, task: Task) -> dict[str, str]:
+        """Seed files the Worker may not rewrite: pytest targets and anything under tests/ (P0-1)."""
+
+        seed = dict((mission.final_report or {}).get("workspace_seed", {}))
+        targets = [
+            c.removeprefix("pytest:").strip()
+            for c in (*task.success_criteria, *mission.success_criteria)
+            if c.startswith("pytest:")
+        ]
+        protected = {}
+        for path, content in seed.items():
+            if path.startswith("tests/") or any(
+                path == target or (target and path.startswith(target.rstrip("/") + "/"))
+                for target in targets
+            ):
+                protected[path] = content
+        return protected
 
     async def _run_critic(
         self,
@@ -656,10 +781,10 @@ class Orchestrator:
             except ContractError as error:
                 last_error = error
                 self._settle_intent(intent, "FAILED")
-                self.commit.settle_subject(subject, mission.id, task_id=task.id)
+                self._settle_service_if_known(subject, mission.id, task.id)
                 continue
             self._settle_intent(intent, "SETTLED")
-            self.commit.settle_subject(subject, mission.id, task_id=task.id)
+            self._settle_service_if_known(subject, mission.id, task.id)
             return verdict
         assert last_error is not None
         raise last_error

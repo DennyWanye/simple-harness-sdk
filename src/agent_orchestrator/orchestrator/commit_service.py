@@ -426,7 +426,14 @@ class CommitService:
                 f"verification layers not deployed in this build: {sorted(unsupported)}"
             )
 
-    def fail_planning(self, mission_id: str, *, reason: str, detail: Mapping[str, Any]) -> Mission:
+    def fail_planning(
+        self,
+        mission_id: str,
+        *,
+        reason: str,
+        detail: Mapping[str, Any],
+        stop_reason: MissionStopReason = MissionStopReason.PLANNING_FAILED,
+    ) -> Mission:
         with self._store.transaction():
             mission = self._require_mission(mission_id)
             if mission.status is MissionStatus.FAILED:
@@ -434,7 +441,7 @@ class CommitService:
             updated = next_mission(
                 mission,
                 MissionStatus.FAILED,
-                stop_reason=str(MissionStopReason.PLANNING_FAILED),
+                stop_reason=str(stop_reason),
                 final_report={
                     **dict(mission.final_report or {}),
                     "planning_failure": {"reason": reason, **dict(detail)},
@@ -466,10 +473,20 @@ class CommitService:
                 if task.status is TaskStatus.VERIFYING:
                     active = next_task(task, TaskStatus.ACTIVE)
                     self._store.update_task(active, expected_version=task.version)
+                    self._emit(
+                        "TaskVerificationAbandoned",
+                        mission_id,
+                        key=task.id,
+                        task_id=task.id,
+                        payload={},
+                    )
                     task = active
                 if task.status in {TaskStatus.READY, TaskStatus.ACTIVE}:
                     self._store.update_task(
                         next_task(task, TaskStatus.CANCELLED), expected_version=task.version
+                    )
+                    self._emit(
+                        "TaskCancelled", mission_id, key=task.id, task_id=task.id, payload={}
                     )
                     for attempt in self._store.list_attempts(task.id):
                         if attempt.status in {
@@ -483,8 +500,62 @@ class CommitService:
                                 next_attempt(attempt, AttemptStatus.CANCELLED),
                                 expected_version=attempt.version,
                             )
+                            self._emit(
+                                "AttemptCancelled",
+                                mission_id,
+                                key=attempt.id,
+                                task_id=task.id,
+                                attempt_id=attempt.id,
+                                payload={},
+                            )
+                        stored = self._store.find_result_for_attempt(attempt.id)
+                        if stored is not None and stored.verification_state in {
+                            "PENDING",
+                            "RUNNING",
+                        }:
+                            self._store.set_result_verification(
+                                stored.envelope.id, state="REJECTED", verdict=None
+                            )
+            # every open dispatch intent of this Mission is closed; reservations are released
+            for intent in self._store.list_intents(
+                "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+            ):
+                if intent.mission_id != mission_id:
+                    continue
+                self._settle_intent(intent, "FAILED")
+                reservation = self._ledger.reservation(intent.subject_id)
+                if reservation is not None and reservation["state"] != "SETTLED":
+                    task_id = (
+                        intent.subject_id.split(":attempt-")[0]
+                        if ":attempt-" in intent.subject_id
+                        else None
+                    )
+                    self._settle_subject(intent.subject_id, mission_id, task_id=task_id)
             self._emit("MissionCancelled", mission_id, key=mission_id, payload={})
             return updated
+
+    def settle_intent(self, intent_id: str, state: str) -> DispatchIntent:
+        """Close a dispatch intent (SETTLED / FAILED) through the single writer (D2)."""
+
+        with self._store.transaction():
+            intent = self._require_intent(intent_id)
+            return self._settle_intent(intent, state)
+
+    def _settle_intent(self, intent: DispatchIntent, state: str) -> DispatchIntent:
+        if intent.state == state:
+            return intent
+        updated = DispatchIntent(
+            **{**intent.to_json(), "state": state, "version": intent.version + 1}
+        )
+        self._store.update_intent(updated, expected_version=intent.version)
+        self._emit(
+            "IntentSettled",
+            intent.mission_id,
+            key=f"{intent.subject_id}:{state}",
+            attempt_id=intent.subject_id if intent.kind == "attempt" else None,
+            payload={"intent_id": intent.intent_id, "kind": intent.kind, "state": state},
+        )
+        return updated
 
     # ------------------------------------------------------------- attempts
     def create_attempt(
@@ -634,7 +705,7 @@ class CommitService:
                 return None
             now = self._store.now
             if (
-                intent.state == "CLAIMED"
+                intent.state in {"CLAIMED", "AGENT_CREATED"}
                 and intent.lease_expires_at is not None
                 and intent.lease_expires_at > now
                 and intent.lease_owner != owner
@@ -774,7 +845,18 @@ class CommitService:
                 ):
                     raise CommitRejected(f"attempt {attempt_id} is leased to {attempt.lease_owner}")
             expires = self._store.now + lease_seconds
-            updated = next_attempt(attempt, lease_owner=owner, lease_expires_at=expires)
+            progress = liveness.get("progress")
+            marker = None if progress is None else int(progress)
+            progress_at = attempt.progress_at
+            if marker != attempt.progress_marker or progress_at is None:
+                progress_at = self._store.now
+            updated = next_attempt(
+                attempt,
+                lease_owner=owner,
+                lease_expires_at=expires,
+                progress_marker=marker,
+                progress_at=progress_at,
+            )
             self._store.update_attempt(updated, expected_version=attempt.version)
             self._emit(
                 "HeartbeatReceived",
@@ -793,7 +875,8 @@ class CommitService:
                 return attempt
             updated = next_attempt(attempt, AttemptStatus.LOST, failure={"reason": reason})
             self._store.update_attempt(updated, expected_version=attempt.version)
-            self._settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
+            if not self._ledger.has_unknown_usage(attempt.id):
+                self._settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
             self._emit(
                 "AttemptLost",
                 attempt.mission_id,
@@ -801,6 +884,31 @@ class CommitService:
                 task_id=attempt.task_id,
                 attempt_id=attempt.id,
                 payload={"reason": reason},
+            )
+            return updated
+
+    def mark_attempt_timed_out(
+        self, attempt_id: str, *, reason: str, detail: Mapping[str, Any]
+    ) -> Attempt:
+        """D6' stall: alive executor with no blocker and no progress within stall_seconds."""
+
+        with self._store.transaction():
+            attempt = self._require_attempt(attempt_id)
+            if attempt.status is AttemptStatus.TIMED_OUT:
+                return attempt
+            updated = next_attempt(
+                attempt, AttemptStatus.TIMED_OUT, failure={"reason": reason, **dict(detail)}
+            )
+            self._store.update_attempt(updated, expected_version=attempt.version)
+            if not self._ledger.has_unknown_usage(attempt.id):
+                self._settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
+            self._emit(
+                "AttemptTimedOut",
+                attempt.mission_id,
+                key=attempt.id,
+                task_id=attempt.task_id,
+                attempt_id=attempt.id,
+                payload={"reason": reason, **dict(detail)},
             )
             return updated
 
@@ -877,6 +985,7 @@ class CommitService:
             for artifact in artifacts:
                 self._store.upsert_artifact(artifact)
             self._store.insert_result(stored)
+            self._store.fault("mid_commit", "attempt")
             for index, proposal in enumerate(envelope.claims, start=1):
                 self._store.upsert_claim(
                     Claim(

@@ -74,6 +74,7 @@ class VerifierRouter:
         client_result_id: str | None,
         run_critic: CriticRunner,
         recorder: Callable[[LayerResult], Awaitable[None]] | None = None,
+        tampered: Sequence[str] = (),
     ) -> Verdict:
         required = set(task.verification_policy)
         layers: list[LayerResult] = []
@@ -106,7 +107,11 @@ class VerifierRouter:
                 result = format_check(envelope, client_result_id=client_result_id)
             elif layer == "rule_check":
                 result = rule_check(
-                    envelope, task, artifacts=artifacts, verification_copy=verification_copy
+                    envelope,
+                    task,
+                    artifacts=artifacts,
+                    verification_copy=verification_copy,
+                    tampered=tampered,
                 )
             elif layer == "critic_review":
                 try:

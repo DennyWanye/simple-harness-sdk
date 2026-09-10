@@ -390,6 +390,8 @@ class Attempt:
     feedback: tuple[str, ...] = ()
     failure: Mapping[str, Any] | None = None
     result_id: str | None = None
+    progress_marker: int | None = None
+    progress_at: float | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -444,6 +446,8 @@ class Attempt:
             "turn_id": self.turn_id,
             "input_hash": self.input_hash,
             "feedback": list(self.feedback),
+            "progress_marker": self.progress_marker,
+            "progress_at": self.progress_at,
             "failure": None if self.failure is None else dict(self.failure),
             "result_id": self.result_id,
         }
@@ -474,6 +478,8 @@ class Attempt:
             turn_id=data.get("turn_id"),
             input_hash=data.get("input_hash"),
             feedback=tuple(data.get("feedback", ())),
+            progress_marker=data.get("progress_marker"),
+            progress_at=data.get("progress_at"),
             failure=data.get("failure"),
             result_id=data.get("result_id"),
         )

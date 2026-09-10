@@ -56,7 +56,8 @@ class UsageFact:
     usage_ref: str
     input_tokens: int
     output_tokens: int
-    cost_micros: int | None  # None == unpriced
+    cost_micros: int | None  # None == unpriced (deployment has no price table)
+    unknown: bool = False  # priced deployment, but the SDK could not price this call
 
     @property
     def tokens(self) -> int:
@@ -257,7 +258,7 @@ class BudgetLedger:
         for fact in facts:
             cursor = self._store.connection.execute(
                 "INSERT INTO imported_usage(usage_ref,subject_id,mission_id,input_tokens,output_tokens,"
-                "cost_micros,unpriced,imported_at) VALUES (?,?,?,?,?,?,?,?)"
+                "cost_micros,unpriced,unknown,imported_at) VALUES (?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(usage_ref) DO NOTHING",
                 (
                     fact.usage_ref,
@@ -266,7 +267,8 @@ class BudgetLedger:
                     fact.input_tokens,
                     fact.output_tokens,
                     fact.cost_micros,
-                    0 if fact.cost_micros is not None else 1,
+                    0 if (fact.cost_micros is not None or fact.unknown) else 1,
+                    1 if fact.unknown else 0,
                     self._store.now,
                 ),
             )
@@ -286,6 +288,13 @@ class BudgetLedger:
         cost = None if unpriced or row[1] is None else int(row[1])
         return tokens, cost, unpriced
 
+    def has_unknown_usage(self, subject_id: str) -> bool:
+        row = self._store.connection.execute(
+            "SELECT COUNT(*) FROM imported_usage WHERE subject_id = ? AND unknown = 1",
+            (subject_id,),
+        ).fetchone()
+        return int(row[0]) > 0
+
     # ----------------------------------------------------------------- settle
     def settle(self, *, subject_id: str) -> dict[str, Any]:
         """Replace the reservation by the imported facts on the whole account chain."""
@@ -295,6 +304,9 @@ class BudgetLedger:
             raise BudgetError(f"no reservation for {subject_id}")
         if reservation["state"] == "SETTLED":
             return reservation
+        if self.has_unknown_usage(subject_id):
+            # ORCH §12.2: an UNKNOWN charge keeps the reservation occupied until reconciled.
+            raise BudgetError(f"{subject_id} has an unknown provider charge; reservation held")
         tokens, cost, unpriced = self.usage_for(subject_id)
         settled_cost = 0 if cost is None else cost
         for snapshot in self._chain(reservation["account_id"]):
@@ -320,7 +332,7 @@ class BudgetLedger:
             "SELECT * FROM budget_accounts WHERE mission_id = ? ORDER BY account_id", (mission_id,)
         ).fetchall()
         usage = self._store.connection.execute(
-            "SELECT subject_id, usage_ref, input_tokens, output_tokens, cost_micros, unpriced"
+            "SELECT subject_id, usage_ref, input_tokens, output_tokens, cost_micros, unpriced, unknown"
             " FROM imported_usage WHERE mission_id = ? ORDER BY imported_at, usage_ref",
             (mission_id,),
         ).fetchall()
