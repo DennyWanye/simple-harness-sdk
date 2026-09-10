@@ -301,7 +301,8 @@ def test_d21_mission_judgment_runs_its_own_critic_when_the_task_policy_had_none(
             with store.transaction():
                 report = orchestrator.commit.ledger.costs_report(mission.id)
             assert any(
-                r["subject_id"].endswith(":critic:1") and r["state"] == "SETTLED"
+                r["subject_id"].endswith(":judge:1")
+                and r["state"] == "SETTLED"  # step 3: judge subject
                 for r in report["reservations"]
             )
 

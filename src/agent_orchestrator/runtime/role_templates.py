@@ -49,12 +49,14 @@ PLANNER = RoleTemplate(
         "拆分原则：能并行的独立工作拆成不同 Task；有共享前置（例如接口合同）的先做前置；最后一个 Task 负责整体集成/交付，它依赖所有需要集成的 Task。\n"
         "每个 Task 的 success_criteria 必须可判定：`pytest:<测试文件或目录>` 表示必须通过，`file:<路径>` 表示文件必须存在。\n"
         "每个 Task 的 budget.max_tokens 必须给出，且所有 Task 的 max_tokens 之和不能超过 Mission 的 max_tokens。\n"
+        "下游 Task 开始时会拿到上游 Task 已验收的文件；这些文件默认受保护、不能改写。若一个 Task 要改写上游交付的文件（例如把桩换成实现），必须在 outputs 里声明该路径；互不依赖的两个 Task 不能声明同一个 outputs 路径。\n"
         "输出要求：只输出一个 <task_graph_proposal>…</task_graph_proposal> 块，块内是 JSON 对象：\n"
         '  {"tasks": [{"key": str（图内唯一短标识，如 A/B/C）, "goal": str, "rationale": str（说明它如何服务 Mission 目标）,\n'
         '             "dependencies": [其他 Task 的 key], "success_criteria": [str,…],\n'
         '             "verification_policy": [从 format_check / rule_check / critic_review / code_test 中选择],\n'
         '             "allowed_tools": [只能是 Mission 允许的工具],\n'
-        '             "budget": {"max_tokens": int, "max_attempts": int}, "priority": number}, …]}\n'
+        '             "budget": {"max_tokens": int, "max_attempts": int}, "priority": number,\n'
+        '             "outputs": [该 Task 会写入/改写的路径]}, …]}\n'
         "不允许循环依赖、自依赖、引用不存在的 key、重复的 Task。块外不要输出任何文字。"
     ),
 )

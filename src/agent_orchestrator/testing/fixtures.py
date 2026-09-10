@@ -252,6 +252,7 @@ __all__ = (
     "MODEL",
     "RoleScriptedProvider",
     "UnknownAfterHandoff",
+    "DEMO_DAG_SPEC",
     "DEMO_DAG_TASKS",
     "TEXTKIT_SEED",
     "TaskRoutedProvider",
@@ -308,7 +309,7 @@ TEXTKIT_DELIVERY = (
 )
 
 
-def _task(key, goal, deps, criteria, tokens, priority=1.0, policy=None):
+def _task(key, goal, deps, criteria, tokens, priority=1.0, policy=None, outputs=()):
     return {
         "key": key,
         "goal": goal,
@@ -316,6 +317,7 @@ def _task(key, goal, deps, criteria, tokens, priority=1.0, policy=None):
         "dependencies": list(deps),
         "success_criteria": list(criteria),
         "verification_policy": policy or ["format_check", "rule_check", "code_test"],
+        "outputs": list(outputs),
         "allowed_tools": [
             "workspace_read_file",
             "workspace_write_file",
@@ -335,6 +337,8 @@ DEMO_DAG_TASKS = [
         ["file:textkit/__init__.py", "file:textkit/slug.py", "file:textkit/count.py"],
         20_000,
         3.0,
+        policy=["format_check", "rule_check"],  # stubs only: nothing to test yet
+        outputs=["textkit/__init__.py", "textkit/slug.py", "textkit/count.py"],
     ),
     _task(
         "B",
@@ -343,6 +347,7 @@ DEMO_DAG_TASKS = [
         ["pytest:tests/test_slug.py"],
         30_000,
         2.0,
+        outputs=["textkit/slug.py"],
     ),
     _task(
         "C",
@@ -351,6 +356,7 @@ DEMO_DAG_TASKS = [
         ["pytest:tests/test_count.py"],
         30_000,
         2.0,
+        outputs=["textkit/count.py"],
     ),
     _task(
         "D",
@@ -367,6 +373,7 @@ DEMO_DAG_TASKS = [
         ["file:DELIVERY.md", "pytest:tests"],
         20_000,
         1.0,
+        outputs=["DELIVERY.md"],
     ),
 ]
 
@@ -441,39 +448,94 @@ def demo_static_dag_scripts(*, c_first_wrong: bool = False) -> dict[str, list[ob
 
 class TaskRoutedProvider(RoleScriptedProvider):
     """Worker requests are routed by the Task's graph key (read from the task package's
-    goal), so parallel Workers each consume their own script (S3-01)."""
+    goal), so parallel Workers each consume their own script (S3-01).
+
+    ``holds`` maps a key to the events its successive *Attempts* wait on before their
+    first model call (``None`` = no wait) — a held executor is how the tests observe parallelism, candidates and
+    lease takeover.  ``calls_by_key`` counts calls that *reached* the script (a call
+    cancelled while held is not a run).
+    """
 
     def __init__(
-        self, planner_steps, worker_by_key: dict[str, list[object]], critic_steps=(), **kwargs
+        self,
+        planner_steps,
+        worker_by_key: dict[str, list[object]],
+        critic_steps=(),
+        *,
+        goals: dict[str, str] | None = None,
+        holds: dict[str, list[asyncio.Event | None]] | None = None,
+        **kwargs,
     ) -> None:  # type: ignore[no-untyped-def]
         super().__init__({"planner": list(planner_steps), "critic": list(critic_steps)}, **kwargs)
         self.worker_by_key = {key: list(steps) for key, steps in worker_by_key.items()}
+        self.goals = dict(DEMO_TASK_GOALS if goals is None else goals)
+        self.holds = {key: list(events) for key, events in (holds or {}).items()}
         self.calls_by_key: dict[str, int] = {}
+        self.seen_attempts: set[str] = set()
+        self.inflight: set[str] = set()
+        self.max_inflight = 0
 
     def _worker_key(self, request: ProviderRequest) -> str:
         goal = str(package_of(request).get("task_contract", {}).get("goal", ""))
-        for key, task in DEMO_TASK_GOALS.items():
-            if goal == task:
+        for key, task_goal in self.goals.items():
+            if goal == task_goal:
                 return key
         raise AssertionError(f"no worker script for goal {goal!r}")
 
     async def invoke(self, request: ProviderRequest, *, cancel) -> ProviderResponse:  # type: ignore[no-untyped-def]
-        if role_of(request) == "worker":
-            key = self._worker_key(request)
+        if role_of(request) != "worker":
+            return await super().invoke(request, cancel=cancel)
+        key = self._worker_key(request)
+        attempt_id = str(package_of(request).get("attempt", {}).get("attempt_id", key))
+        hold = None
+        if attempt_id not in self.seen_attempts:  # one hold per Attempt, on its first call
+            self.seen_attempts.add(attempt_id)
+            pending = self.holds.get(key)
+            hold = pending.pop(0) if pending else None
+        self.inflight.add(attempt_id)
+        self.max_inflight = max(self.max_inflight, len(self.inflight))
+        try:
+            if hold is not None:
+                await hold.wait()
             self.calls_by_key[key] = self.calls_by_key.get(key, 0) + 1
             queue = self.worker_by_key.get(key)
             if not queue:
                 raise AssertionError(f"worker script exhausted for task {key!r}")
             self.scripts["worker"] = queue  # borrow the role queue for this call
-        return await super().invoke(request, cancel=cancel)
+            return await super().invoke(request, cancel=cancel)
+        finally:
+            self.inflight.discard(attempt_id)
 
 
 DEMO_TASK_GOALS = {task["key"]: task["goal"] for task in DEMO_DAG_TASKS}
 
 
-def demo_static_dag_provider(*, c_first_wrong: bool = False) -> TaskRoutedProvider:
+def demo_static_dag_provider(
+    *,
+    c_first_wrong: bool = False,
+    planner_steps: Sequence[object] | None = None,
+    holds: dict[str, list[asyncio.Event | None]] | None = None,
+    extra_scripts: dict[str, list[object]] | None = None,
+) -> TaskRoutedProvider:
+    scripts = demo_static_dag_scripts(c_first_wrong=c_first_wrong)
+    for key, steps in (extra_scripts or {}).items():
+        scripts[key] = scripts.get(key, []) + list(steps)
     return TaskRoutedProvider(
-        [graph_proposal_step(DEMO_DAG_TASKS)],
-        demo_static_dag_scripts(c_first_wrong=c_first_wrong),
+        list(planner_steps) if planner_steps is not None else [graph_proposal_step(DEMO_DAG_TASKS)],
+        scripts,
         critic_steps=[critic_step(verdict="PASS", criteria_met=True)] * 3,
+        holds=holds,
     )
+
+
+DEMO_DAG_SPEC = {
+    "goal": "交付 textkit 小包：slugify 与 word_count 两个函数、集成测试与交付说明",
+    "success_criteria": ["pytest:tests", "file:DELIVERY.md"],
+    "allowed_tools": [
+        "workspace_read_file",
+        "workspace_write_file",
+        "workspace_list",
+        "run_tests",
+    ],
+    "budget": {"max_tokens": 200_000, "max_attempts": 12},
+}

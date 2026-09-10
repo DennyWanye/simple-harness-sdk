@@ -33,6 +33,7 @@ class MissionStopReason(StrEnum):
     CANCELLED = "cancelled"
     MODEL_ECHO_MISMATCH = "model_echo_mismatch"
     MISSION_CRITERIA_UNMET = "mission_criteria_unmet"
+    ARTIFACT_CONFLICT = "artifact_conflict"  # step 3: independent branches disagree on a path
 
 
 class TaskStatus(StrEnum):

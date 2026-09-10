@@ -2,14 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 # ruff: noqa: E501
 
-"""The Orchestrator control loop (§4, §7.5, §24) for the single-Task Mission of step 2.
+"""The Orchestrator control loop (§4, §7.5, §24) for a static Task DAG (step 3).
 
 Observe → Plan → Allocate → Execute → Verify → Commit → Repeat, as a
 deterministic *workflow shell* around the model calls (theory 08-8): every
 action below is an idempotent Commit, so ``run()`` can be interrupted at any
 instruction and restarted (``recover()`` first) without a second execution, a
 second delivery or a second charge.  Fault points (``self._fault(...)``) mark the
-six cross-database crash instants of the recovery matrix (plan D14').
+cross-database crash instants of the recovery matrix (plan D14', D3-6').
+
+Step 3 adds: the Planner proposes a whole graph, the Frontier / Allocator decide
+which READY Tasks get an Attempt under the concurrency bound, a downstream
+Attempt starts from its ancestors' accepted artifacts (frozen as inputs and
+protected), accepting a result also supersedes the sibling candidates and
+unblocks the dependents in the same transaction, a stop cascades to every open
+Task, and the Mission is judged on the integrated tree of every Task.
 """
 
 from __future__ import annotations
@@ -18,17 +25,29 @@ import asyncio
 import logging
 import os
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from simple_harness.agents import AgentConfig, AgentLimits, AgentTurnState
 
+from ..artifacts.versioning import (
+    ArtifactConflict,
+    UpstreamInput,
+    ancestors,
+    merge_accepted,
+    next_versions,
+)
+from ..artifacts.workspace import sha256_file
 from ..context.context_builder import (
     build_critic_package,
     build_planner_package,
     build_worker_package,
 )
 from ..contracts import (
+    TERMINAL_ATTEMPT,
     TERMINAL_MISSION,
+    TERMINAL_TASK,
     Artifact,
     Attempt,
     AttemptStatus,
@@ -43,7 +62,7 @@ from ..contracts import (
 )
 from ..contracts.models import sha256_hex
 from ..governance.budgets import BudgetExhausted
-from ..planning.planner import parse_task_proposal
+from ..planning.planner import parse_task_graph_proposal
 from ..runtime.agent_worker import AgentBridge, Liveness, user_message_json
 from ..runtime.assembly import (
     AssembledOrchestratorRuntime,
@@ -52,8 +71,9 @@ from ..runtime.assembly import (
 )
 from ..runtime.output_blocks import BlockError, extract_block, outside_text
 from ..runtime.role_templates import CRITIC, PLANNER, RESULT_ENVELOPE_TAG, WORKER
-from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding
-from ..storage.store import DispatchIntent, InjectedCrash, Store
+from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding, run_pytest
+from ..scheduling.allocator import allocate
+from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy
 from ..verification.critics import CriticVerdict, parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
 from ..verification.verifier_router import VerifierRouter
@@ -75,8 +95,9 @@ FAULT_POINTS = (
     "after_result_submitted",
     "after_layer_pass",
     "mid_commit",
+    "after_accept_before_supersede",  # step 3 (inside the accept transaction → rolls back)
+    "after_task_completed",  # step 3 (accept committed, release / next cycle not yet run)
 )
-MAX_PLANNING_ATTEMPTS = 2
 MAX_CRITIC_ATTEMPTS = 2
 
 
@@ -90,9 +111,11 @@ class Orchestrator:
         poll_interval: float = 0.05,
         critic_wait_seconds: float = 120.0,
     ) -> None:
-        self._config = config
-        self._provider = provider
+        # D3-10': ``owner`` is this instance's identity for orchestration leases *and* for
+        # the SDK runtime (``owner_id``); the SDK ``owner_scope`` is one constant for all.
         self._owner = owner or f"orchestrator-{os.getpid()}"
+        self._config = replace(config, owner_id=self._owner)
+        self._provider = provider
         self._poll = poll_interval
         self._critic_wait = critic_wait_seconds
         self._store: Store | None = None
@@ -102,7 +125,9 @@ class Orchestrator:
         self._router = VerifierRouter(test_timeout=config.test_timeout_seconds)
         self._critic_verdicts: dict[str, CriticVerdict] = {}
         self._client_ids: dict[str, str | None] = {}
+        self._released: set[str] = set()
         self.progress_log: list[str] = []
+        self.cancel_receipts: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Orchestrator:
@@ -143,6 +168,10 @@ class Orchestrator:
     def config(self) -> OrchestratorConfig:
         return self._config
 
+    @property
+    def owner(self) -> str:
+        return self._owner
+
     def arm_fault(self, point: str, *, kind: str | None = None) -> None:
         """Arm a crash at ``point``; ``kind`` restricts it to plan / attempt / critic intents."""
 
@@ -163,8 +192,10 @@ class Orchestrator:
         return mission
 
     async def recover(self) -> None:
-        """§16.4 recovery: rebind the workspaces of in-flight turns, wake the SDK turns,
-        then let the loop re-drive the remaining intents (review P1-3)."""
+        """§16.4 recovery (D3-6'): rebind the workspaces of in-flight turns, let the
+        Commit Service heal each active Mission (frontier recompute, orphan candidates
+        closed), re-import the usage of settled-but-unpaid Attempts, wake the SDK
+        turns, then let the loop re-drive the remaining intents (review P1-3)."""
 
         for intent in self.store.list_intents("AGENT_CREATED", "SUBMITTED"):
             if intent.agent_id is None:
@@ -176,6 +207,13 @@ class Orchestrator:
                     self._bind_agent(intent.agent_id, intent.config)
             elif intent.kind == "critic":
                 self._bind_critic(intent.agent_id, intent.config)
+        for mission in self._active_missions():
+            report = self.commit.heal_mission(mission.id)
+            if report["unblocked"] or report["closed_attempts"]:
+                self._note(f"recover {mission.id}: {report}")
+            for attempt_id in report["closed_attempts"]:
+                await self._release_attempt(attempt_id, cancel=True)
+            self._reimport_unsettled(mission)
         await self.bridge.recover()
 
     async def run(self, *, max_cycles: int = 10_000, until_idle: bool = True) -> None:
@@ -208,6 +246,15 @@ class Orchestrator:
         return any(intent.mission_id in active for intent in self.store.list_intents("SUBMITTED"))
 
     async def _cycle(self) -> bool:
+        try:
+            return await self._cycle_inner()
+        except StoreBusy as error:
+            # D3-10': another instance holds the write lock; nothing was applied, retry next cycle
+            self._note(f"store busy, cycle skipped: {error}")
+            await asyncio.sleep(self._poll)
+            return False
+
+    async def _cycle_inner(self) -> bool:
         progressed = False
         for mission in self._active_missions():
             if mission.status is MissionStatus.CREATED:
@@ -227,8 +274,8 @@ class Orchestrator:
         for stored in self.store.list_results_by_verification("PENDING", "RUNNING"):
             if stored.envelope.mission_id not in active:
                 continue
-            await self._verify(stored.envelope.id)
-            progressed = True
+            if await self._verify(stored.envelope.id):
+                progressed = True
         for mission in self._active_missions():
             if await self._decide(mission):
                 progressed = True
@@ -239,12 +286,24 @@ class Orchestrator:
         self.commit.begin_planning(mission.id)
         await self._create_planner_intent(mission.id, ordinal=1)
 
+    def _planning_rejections(self, mission_id: str) -> list[dict[str, Any]]:
+        """Durable feedback for the next proposal (D3-2'): the recorded rejections."""
+
+        return [
+            {"reason": event.payload.get("reason"), "detail": event.payload.get("detail")}
+            for event in self.store.list_events(mission_id)
+            if event.type in {"TaskGraphRejected", "PlanningRejected"}
+        ]
+
     async def _create_planner_intent(self, mission_id: str, *, ordinal: int) -> DispatchIntent:
         mission = self.store.get_mission(mission_id)
         assert mission is not None
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
         package = build_planner_package(
-            mission, workspace_files=sorted(seed), attempt_ordinal=ordinal
+            mission,
+            workspace_files=sorted(seed),
+            attempt_ordinal=ordinal,
+            rejected=self._planning_rejections(mission_id) if ordinal > 1 else (),
         )
         config = AgentConfig(
             name=f"planner-{ordinal}",
@@ -298,6 +357,9 @@ class Orchestrator:
         if claimed.kind == "attempt":
             attempt = self.store.get_attempt(claimed.subject_id)
             assert attempt is not None
+            if attempt.status in TERMINAL_ATTEMPT:  # cancelled / superseded before it ran
+                self.commit.settle_intent(claimed.intent_id, "FAILED")
+                return True
             self._bind_workspace(attempt)
         if claimed.state == "CLAIMED":
             agent_id, _run_id, _ = await self.bridge.create(
@@ -328,6 +390,11 @@ class Orchestrator:
             self._note(f"dispatched {claimed.kind} {claimed.subject_id} → agent {claimed.agent_id}")
         return True
 
+    def _upstream_inputs(self, attempt: Attempt) -> list[UpstreamInput]:
+        intent = self.store.get_intent_for_subject(attempt.id)
+        raw = [] if intent is None else list(intent.config.get("inputs", []))
+        return [UpstreamInput.from_json(item) for item in raw]
+
     def _bind_workspace(self, attempt: Attempt) -> None:
         mission = self.store.get_mission(attempt.mission_id)
         assert mission is not None
@@ -335,10 +402,21 @@ class Orchestrator:
         previous = None
         if attempt.retry_of is not None:
             previous = self.assembled.workspaces.root / attempt.retry_of
-        workspace = self.assembled.workspaces.create(attempt.id, seed=seed, previous=previous)
+        inputs: dict[str, Path] = {}
+        for item in self._upstream_inputs(attempt):
+            artifact = self.store.get_artifact(item.artifact_id)
+            source = None if artifact is None else Path(artifact.storage_uri)
+            if source is None or not source.is_file() or sha256_file(source) != item.content_hash:
+                raise ArtifactConflict(
+                    f"upstream artifact {item.artifact_id} ({item.path}) is missing or changed"
+                )
+            inputs[item.path] = source
+        workspace = self.assembled.workspaces.create(
+            attempt.id, seed=seed, previous=previous, inputs=inputs
+        )
         task = self.store.get_task(attempt.task_id)
         if task is not None:
-            for path, content in self._protected_seed(mission, task).items():
+            for path, content in self._protected_files(mission, task, attempt).items():
                 if (
                     workspace.read_text(path) != content
                     if (workspace.root / path).is_file()
@@ -365,7 +443,13 @@ class Orchestrator:
     # --------------------------------------------------------------- collect
     async def _collect(self, intent: DispatchIntent) -> bool:
         assert intent.agent_id is not None and intent.expected_turn_id is not None
-        result = await self.bridge.result(agent_id=intent.agent_id, turn_id=intent.expected_turn_id)
+        try:
+            result = await self.bridge.result(
+                agent_id=intent.agent_id, turn_id=intent.expected_turn_id
+            )
+        except Exception as error:  # noqa: BLE001 - AgentNotFound & co.: not alive (P0-3)
+            self._note(f"{intent.subject_id}: executor unreachable ({error})")
+            result = None
         if result is None:
             return await self._observe_liveness(intent)
         self._fault("after_turn_committed", intent.kind)
@@ -376,13 +460,28 @@ class Orchestrator:
         return True
 
     async def _observe_liveness(self, intent: DispatchIntent) -> bool:
-        if intent.kind != "attempt":
-            return False
-        attempt = self.store.get_attempt(intent.subject_id)
-        assert attempt is not None and intent.agent_id and intent.expected_turn_id
+        assert intent.agent_id and intent.expected_turn_id
         liveness: Liveness = await self.bridge.liveness(
             agent_id=intent.agent_id, turn_id=intent.expected_turn_id
         )
+        if intent.kind == "plan":
+            if liveness.exists:
+                return False
+            self._import_usage(intent)
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, intent.mission_id)
+            await self._planning_rejected(
+                intent, reason="planner_turn_missing", detail={"agent_id": intent.agent_id}
+            )
+            return True
+        if intent.kind != "attempt":
+            return False
+        attempt = self.store.get_attempt(intent.subject_id)
+        assert attempt is not None
+        if attempt.status in TERMINAL_ATTEMPT:  # closed by a cascade while its turn ran
+            self._settle_intent(intent, "FAILED")
+            await self._release_attempt(attempt.id, cancel=True)
+            return True
         now = self.store.now
         if liveness.alive:
             due = (
@@ -399,7 +498,9 @@ class Orchestrator:
                     )
                 except CommitRejected:
                     return False  # another live owner; not ours yet (review P1-2)
-            if not liveness.blocked and attempt.progress_at is not None:
+            running = liveness.state == str(AgentTurnState.RUNNING)
+            if running and not liveness.blocked and attempt.progress_at is not None:
+                # D3-4': only a *running* turn is timed; queued / semaphore-waiting ones are not
                 stalled_for = now - attempt.progress_at
                 if stalled_for > self._config.stall_seconds:
                     # D6': alive, no blocker, no provider progress within stall_seconds.
@@ -413,7 +514,7 @@ class Orchestrator:
                         },
                     )
                     self.commit.settle_intent(intent.intent_id, "FAILED")
-                    await self._cancel_turn(intent)
+                    await self._release_attempt(attempt.id, cancel=True)
                     self._note(
                         f"attempt {attempt.id} TIMED_OUT: no progress for {stalled_for:.1f}s"
                     )
@@ -423,6 +524,7 @@ class Orchestrator:
             self._import_usage(intent)
             self.commit.mark_attempt_lost(attempt.id, reason="executor_turn_missing")
             self.commit.settle_intent(intent.intent_id, "FAILED")
+            await self._release_attempt(attempt.id, cancel=False)
             self._note(f"attempt {attempt.id} LOST: turn missing")
             return True
         return False
@@ -433,14 +535,53 @@ class Orchestrator:
         if intent.agent_id is None or intent.expected_turn_id is None:
             return
         try:
-            await self.bridge.runtime.cancel_turn(
+            receipt = await self.bridge.runtime.cancel_turn(
                 intent.agent_id,
                 intent.expected_turn_id,
                 command_id=f"{intent.subject_id}:cancel",
                 wait_timeout=0.0,
             )
+            self.cancel_receipts.append(
+                {
+                    "attempt_id": intent.subject_id,
+                    "agent_id": receipt.agent_id,
+                    "turn_id": receipt.turn_id,
+                    "command_id": receipt.command_id,
+                    "state": str(receipt.state),
+                }
+            )
         except Exception as error:  # noqa: BLE001 - cancellation is advisory here
             self._note(f"cancel_turn for {intent.subject_id} not applied: {error}")
+
+    async def _release_attempt(self, attempt_id: str, *, cancel: bool) -> None:
+        """D3-17: a terminal Attempt's executor loses its workspace binding at once (a
+        zombie turn can no longer write) and, when asked, its SDK turn is cancelled."""
+
+        intent = self.store.get_intent_for_subject(attempt_id)
+        if intent is None or intent.agent_id is None:
+            return
+        self.assembled.gateway.unbind(intent.agent_id)
+        key = f"{attempt_id}:{'cancel' if cancel else 'unbind'}"
+        if key in self._released:
+            return
+        self._released.add(key)
+        if cancel and intent.expected_turn_id is not None:
+            try:
+                liveness = await self.bridge.liveness(
+                    agent_id=intent.agent_id, turn_id=intent.expected_turn_id
+                )
+            except Exception:  # noqa: BLE001
+                liveness = Liveness(False, None, False, None, None, False)
+            if liveness.alive:
+                await self._cancel_turn(intent)
+
+    async def _release_mission(self, mission_id: str) -> None:
+        """After a stop cascade: unbind and cancel every Attempt the cascade closed."""
+
+        for task in self.store.list_tasks(mission_id):
+            for attempt in self.store.list_attempts(task.id):
+                if attempt.status in {AttemptStatus.CANCELLED, AttemptStatus.SUPERSEDED}:
+                    await self._release_attempt(attempt.id, cancel=True)
 
     def _settle_intent(self, intent: DispatchIntent, state: str) -> None:
         self.commit.settle_intent(intent.intent_id, state)
@@ -449,6 +590,27 @@ class Orchestrator:
         assert intent.agent_id is not None
         facts = self.bridge.usage_facts(agent_id=intent.agent_id)
         self.commit.import_usage(intent.subject_id, intent.mission_id, facts)
+
+    def _reimport_unsettled(self, mission: Mission) -> None:
+        """D3-6': LOST / TIMED_OUT / SUPERSEDED / CANCELLED Attempts whose reservation is
+        still open get their SDK usage imported again and settled when it is known."""
+
+        for task in self.store.list_tasks(mission.id):
+            for attempt in self.store.list_attempts(task.id):
+                if attempt.status not in TERMINAL_ATTEMPT:
+                    continue
+                with self.store.transaction():
+                    reservation = self.commit.ledger.reservation(attempt.id)
+                if reservation is None or reservation["state"] == "SETTLED":
+                    continue
+                intent = self.store.get_intent_for_subject(attempt.id)
+                if intent is not None and intent.agent_id is not None:
+                    try:
+                        self._import_usage(intent)
+                    except Exception as error:  # noqa: BLE001 - SDK ledger unreachable
+                        self._note(f"attempt {attempt.id}: usage re-import failed ({error})")
+                        continue
+                self._settle_if_known(attempt)
 
     def _settle_service_if_known(
         self, subject_id: str, mission_id: str, task_id: str | None = None
@@ -470,11 +632,28 @@ class Orchestrator:
             return
         self.commit.settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
 
+    async def _planning_rejected(
+        self, intent: DispatchIntent, *, reason: str, detail: Mapping[str, Any]
+    ) -> None:
+        mission = self.store.get_mission(intent.mission_id)
+        assert mission is not None
+        ordinal = int(intent.config.get("ordinal", 1))
+        self._note(f"planning attempt {ordinal} rejected: {reason}")
+        if reason != "task_graph_rejected":  # graph rejections are already durable events
+            self.commit.record_planning_rejected(
+                mission.id, ordinal=ordinal, reason=reason, detail=detail
+            )
+        if ordinal < self._config.max_planning_attempts:
+            await self._create_planner_intent(mission.id, ordinal=ordinal + 1)
+        else:
+            self.commit.fail_planning(
+                mission.id, reason=reason, detail={"attempts": ordinal, **dict(detail)}
+            )
+
     async def _collect_plan(self, intent: DispatchIntent, result) -> None:  # type: ignore[no-untyped-def]
         mission = self.store.get_mission(intent.mission_id)
         assert mission is not None
         self._import_usage(intent)
-        ordinal = int(intent.config.get("ordinal", 1))
         text = "" if result.public_output is None else str(result.public_output.content)
         echoed = self.bridge.echoed_models(agent_id=intent.agent_id or "")
         if echoed and echoed != {self._config.model}:
@@ -491,8 +670,16 @@ class Orchestrator:
         try:
             if result.state is not AgentTurnState.COMMITTED:
                 raise ContractError(f"planner turn failed: {dict(result.error or {})}")
-            proposal = parse_task_proposal(text)
-            task, _ = self.commit.commit_task_proposal(
+            proposal = parse_task_graph_proposal(text)
+        except ContractError as error:
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            await self._planning_rejected(
+                intent, reason="proposal_unreadable", detail={"error": str(error)}
+            )
+            return
+        try:
+            tasks, receipt = self.commit.commit_task_graph(
                 mission.id,
                 proposal,
                 base_version=int(intent.config["base_version"]),
@@ -502,18 +689,16 @@ class Orchestrator:
                     "turn_id": result.turn_id,
                 },
             )
-            self._note(f"task committed {task.id}")
-        except (ContractError, CommitRejected) as error:
-            self._note(f"planning attempt {ordinal} rejected: {error}")
+        except CommitRejected as error:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
-            if ordinal < MAX_PLANNING_ATTEMPTS:
-                await self._create_planner_intent(mission.id, ordinal=ordinal + 1)
-            else:
-                self.commit.fail_planning(
-                    mission.id, reason=str(error), detail={"attempts": ordinal}
-                )
+            await self._planning_rejected(
+                intent, reason="task_graph_rejected", detail={"error": str(error)}
+            )
             return
+        self._note(
+            f"task graph committed: {[task.id for task in tasks]} (warnings={receipt.get('warnings')})"
+        )
         self._settle_intent(intent, "SETTLED")
         self._settle_service_if_known(intent.subject_id, mission.id)
 
@@ -522,7 +707,23 @@ class Orchestrator:
         assert attempt is not None
         self._import_usage(intent)
         if attempt.status is not AttemptStatus.RUNNING:
+            if attempt.status in {AttemptStatus.SUPERSEDED, AttemptStatus.CANCELLED}:
+                # D3-6': a late result on a closed Attempt is history, never a transition
+                text = "" if result.public_output is None else str(result.public_output.content)
+                summary, listed = "", []
+                try:
+                    raw = extract_block(text, RESULT_ENVELOPE_TAG)
+                    summary = str(raw.get("summary", ""))[:400]
+                    listed = [str(p) for p in raw.get("artifacts", [])]
+                except BlockError:
+                    summary = text[:200]
+                self.commit.record_late_result(
+                    attempt.id, turn_id=result.turn_id, summary=summary, artifacts=listed
+                )
+                self._settle_if_known(attempt)
+                self._note(f"attempt {attempt.id}: late result recorded as history")
             self._settle_intent(intent, "SETTLED")
+            await self._release_attempt(attempt.id, cancel=False)
             return
         echoed = self.bridge.echoed_models(agent_id=intent.agent_id or "")
         if echoed and echoed != {self._config.model}:
@@ -536,11 +737,13 @@ class Orchestrator:
             )
             self._settle_intent(intent, "FAILED")
             self._settle_if_known(attempt)
+            await self._release_attempt(attempt.id, cancel=False)
             self.commit.stop_task(
                 attempt.task_id,
                 stop_reason=MissionStopReason.MODEL_ECHO_MISMATCH,
                 detail={"expected": self._config.model, "echoed": sorted(echoed)},
             )
+            await self._release_mission(attempt.mission_id)
             self._note(f"attempt {attempt.id}: model echo mismatch {sorted(echoed)} → stopped")
             return
         if result.state is AgentTurnState.FAILED:
@@ -552,6 +755,7 @@ class Orchestrator:
             )
             self._settle_intent(intent, "FAILED")
             self._settle_if_known(attempt)
+            await self._release_attempt(attempt.id, cancel=False)
             self._note(f"attempt {attempt.id}: SDK turn failed → RETRY_WAIT")
             return
         text = "" if result.public_output is None else str(result.public_output.content)
@@ -566,13 +770,18 @@ class Orchestrator:
             )
             self._settle_intent(intent, "FAILED")
             self._settle_if_known(attempt)
+            await self._release_attempt(attempt.id, cancel=False)
             self._note(f"attempt {attempt.id}: envelope invalid → RETRY_WAIT ({error})")
             return
         workspace = self.assembled.workspaces.get(attempt.id)
+        mission = self.store.get_mission(attempt.mission_id)
+        task = self.store.get_task(attempt.task_id)
+        assert mission is not None and task is not None
         artifacts = workspace.snapshot(
             mission_id=attempt.mission_id,
             task_id=attempt.task_id,
             produced_by=intent.agent_id or attempt.id,
+            versions=next_versions(self.store.list_mission_artifacts(attempt.mission_id)),
         )
         known = {artifact.path for artifact in artifacts}
         missing = [path for path in envelope.artifacts if path not in known]
@@ -585,10 +794,30 @@ class Orchestrator:
             )
             self._settle_intent(intent, "FAILED")
             self._settle_if_known(attempt)
+            await self._release_attempt(attempt.id, cancel=False)
             self._note(f"attempt {attempt.id}: artifacts missing → RETRY_WAIT")
             return
+        # D3-7': the Attempt's artifact set = what it listed ∪ what it changed relative to
+        # its initial inputs (seed + upstream); protected paths are never registered as
+        # produced work (a rewrite there is tampering, reported by rule_check instead).
+        initial = {
+            path: sha256_hex_text(content)
+            for path, content in dict(
+                (mission.final_report or {}).get("workspace_seed", {})
+            ).items()
+        }
+        for item in self._upstream_inputs(attempt):
+            initial[item.path] = item.content_hash
+        protected = set(self._protected_files(mission, task, attempt))
+        listed = set(envelope.artifacts)
         referenced = [
-            artifact for artifact in artifacts if artifact.path in set(envelope.artifacts)
+            artifact
+            for artifact in artifacts
+            if artifact.path in listed
+            or (
+                artifact.path not in protected
+                and initial.get(artifact.path) != artifact.content_hash
+            )
         ]
         self.commit.record_result(
             attempt.id,
@@ -599,6 +828,7 @@ class Orchestrator:
         )
         self._fault("after_result_submitted", "attempt")
         self._settle_intent(intent, "SETTLED")
+        await self._release_attempt(attempt.id, cancel=False)
         self._client_ids[envelope.id] = client_result_id
         self._note(f"attempt {attempt.id}: result {envelope.id} submitted")
 
@@ -632,13 +862,26 @@ class Orchestrator:
         return envelope, client_result_id
 
     # ---------------------------------------------------------------- verify
-    async def _verify(self, result_id: str) -> None:
-        stored = self.commit.start_verification(result_id)
+    async def _verify(self, result_id: str) -> bool:
+        stored = self.store.get_result(result_id)
+        assert stored is not None
         attempt = self.store.get_attempt(stored.envelope.attempt_id)
         task = self.store.get_task(stored.envelope.task_id)
         mission = self.store.get_mission(stored.envelope.mission_id)
         assert attempt is not None and task is not None and mission is not None
-        protected = self._protected_seed(mission, task)
+        if attempt.status in TERMINAL_ATTEMPT:
+            return False  # closed by a cascade; its result was rejected as history
+        try:  # D3-10': verification is done by the Attempt's lease holder only
+            attempt = self.commit.renew_lease(
+                attempt.id,
+                owner=self._owner,
+                lease_seconds=self._config.lease_seconds,
+                liveness={"progress": attempt.progress_marker, "phase": "verifying"},
+            )
+        except CommitRejected:
+            return False
+        stored = self.commit.start_verification(result_id)
+        protected = self._protected_files(mission, task, attempt)
         tampered = self.assembled.workspaces.tampered_protected(attempt.id, protected)
         copy = self.assembled.workspaces.verification_copy(attempt.id, protected=protected)
         artifacts = [
@@ -656,7 +899,16 @@ class Orchestrator:
                 self._fault("after_layer_pass", "attempt")
 
         async def run_critic(test_output: str | None) -> CriticVerdict:
-            return await self._run_critic(mission, task, attempt, artifacts, test_output)
+            return await self._run_critic(
+                mission,
+                task,
+                view_id=attempt.id,
+                subject_prefix=f"{attempt.id}:critic",
+                account_id=task_account(task.id),
+                artifacts=artifacts,
+                test_output=test_output,
+                attempt_id=attempt.id,
+            )
 
         verdict = await self._router.verify(
             mission=mission,
@@ -671,17 +923,26 @@ class Orchestrator:
         )
         if verdict.critic is not None:
             self._critic_verdicts[result_id] = verdict.critic
+        current = self.store.get_attempt(attempt.id)
+        if current is None or current.status in TERMINAL_ATTEMPT:
+            self._note(f"result {result_id}: attempt closed during verification; verdict dropped")
+            return True
         if verdict.passed:
-            self.commit.accept_result(
+            completed = self.commit.accept_result(
                 result_id,
                 verifier_results=[
                     layer.to_json() for layer in verdict.layers if layer.status == "PASS"
                 ],
             )
-            self._note(f"result {result_id} PASS → task {task.id} COMPLETED")
+            self._fault("after_task_completed", "attempt")
+            self._note(f"result {result_id} PASS → task {completed.id} COMPLETED")
+            for sibling in self.store.list_attempts(task.id):
+                if sibling.status is AttemptStatus.SUPERSEDED:
+                    await self._release_attempt(sibling.id, cancel=True)
         else:
             self.commit.fail_result(result_id, failures=verdict.failures)
             self._note(f"result {result_id} FAIL at {verdict.short_circuited_at}")
+        return True
 
     def _protected_seed(self, mission: Mission, task: Task) -> dict[str, str]:
         """Seed files the Worker may not rewrite: pytest targets and anything under tests/ (P0-1)."""
@@ -701,19 +962,44 @@ class Orchestrator:
                 protected[path] = content
         return protected
 
+    def _protected_files(self, mission: Mission, task: Task, attempt: Attempt) -> dict[str, str]:
+        """Protected seed files plus every upstream input the Task did not declare as
+        one of its ``outputs`` (D3-7': a downstream Worker may not silently rewrite what
+        its dependencies delivered; rewriting an undeclared path needs a new Task)."""
+
+        protected = self._protected_seed(mission, task)
+        declared = set(task.outputs)
+        for item in self._upstream_inputs(attempt):
+            if item.path in declared:  # the Task declared it will rewrite this path
+                continue
+            artifact = self.store.get_artifact(item.artifact_id)
+            if artifact is None:
+                continue
+            source = Path(artifact.storage_uri)
+            if source.is_file():
+                try:
+                    protected[item.path] = source.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+        return protected
+
     async def _run_critic(
         self,
         mission: Mission,
-        task: Task,
-        attempt: Attempt,
+        task: Task | None,
+        *,
+        view_id: str,
+        subject_prefix: str,
+        account_id: str,
         artifacts: Sequence[Artifact],
         test_output: str | None,
+        attempt_id: str | None = None,
     ) -> CriticVerdict:
-        copy = self.assembled.workspaces.verification_view(attempt.id)
+        copy = self.assembled.workspaces.verification_view(view_id)
         package = build_critic_package(
             mission,
             task,
-            attempt_id=attempt.id,
+            attempt_id=view_id,
             artifacts=[
                 {"path": a.path, "content_hash": a.content_hash, "size_bytes": a.size_bytes}
                 for a in artifacts
@@ -721,9 +1007,10 @@ class Orchestrator:
             test_output=test_output,
             workspace_files=copy.list_files(),
         )
+        task_id = None if task is None else task.id
         last_error: ContractError | None = None
         for ordinal in range(1, MAX_CRITIC_ATTEMPTS + 1):
-            subject = f"{attempt.id}:critic:{ordinal}"
+            subject = f"{subject_prefix}:{ordinal}"
             config = AgentConfig(
                 name=f"critic-{ordinal}",
                 instructions=CRITIC.instructions,
@@ -740,20 +1027,20 @@ class Orchestrator:
                 kind="critic",
                 subject_id=subject,
                 mission_id=mission.id,
-                account_id=task_account(task.id),
+                account_id=account_id,
                 creation_key=subject,
                 input_id="attempt-input",
                 input_hash=sha256_hex(message),
                 config={
                     "agent_config": config.to_json(),
                     "message": message,
-                    "attempt_id": attempt.id,
+                    "attempt_id": view_id,
                     "context_version": package.context_version,
                     "prompt_version": CRITIC.prompt_version,
                 },
                 reservation=self._reservation(self._config.critic_reserve_tokens),
-                task_id=task.id,
-                attempt_id=attempt.id,
+                task_id=task_id,
+                attempt_id=attempt_id,
             )
             while intent.state in {"PENDING", "CLAIMED", "AGENT_CREATED"}:
                 await self._dispatch(intent)
@@ -771,6 +1058,7 @@ class Orchestrator:
                     break
                 await asyncio.sleep(self._poll)
             self._import_usage(intent)
+            self.assembled.gateway.unbind(intent.agent_id)
             try:
                 if result is None:
                     raise ContractError("critic did not answer within the wait window")
@@ -781,45 +1069,62 @@ class Orchestrator:
             except ContractError as error:
                 last_error = error
                 self._settle_intent(intent, "FAILED")
-                self._settle_service_if_known(subject, mission.id, task.id)
+                self._settle_service_if_known(subject, mission.id, task_id)
                 continue
             self._settle_intent(intent, "SETTLED")
-            self._settle_service_if_known(subject, mission.id, task.id)
+            self._settle_service_if_known(subject, mission.id, task_id)
             return verdict
         assert last_error is not None
         raise last_error
 
     # --------------------------------------------------------------- decide
     async def _decide(self, mission: Mission) -> bool:
+        tasks = self.store.list_tasks(mission.id)
+        if not tasks or mission.status is not MissionStatus.ACTIVE:
+            return False
+        if all(task.status is TaskStatus.COMPLETED for task in tasks):
+            await self._judge(mission, tasks)
+            return True
+        if any(task.status in {TaskStatus.FAILED, TaskStatus.CANCELLED} for task in tasks):
+            return False  # the stop cascade already ended the Mission
+        attempts = [a for task in tasks for a in self.store.list_attempts(task.id)]
+        plan = allocate(
+            tasks,
+            attempts,
+            concurrency_limit=self._config.max_concurrency,
+            candidates_per_task=self._config.candidates_per_task,
+        )
         progressed = False
-        for task in self.store.list_tasks(mission.id):
-            if task.status is TaskStatus.COMPLETED and mission.status is MissionStatus.ACTIVE:
-                await self._judge(mission, task)
-                return True
-            if task.status not in {TaskStatus.READY, TaskStatus.ACTIVE}:
-                continue
-            attempts = self.store.list_attempts(task.id)
-            if any(
-                a.status
-                not in {
-                    AttemptStatus.RETRY_WAIT,
-                    AttemptStatus.LOST,
-                    AttemptStatus.TIMED_OUT,
-                    AttemptStatus.CANCELLED,
-                    AttemptStatus.SUPERSEDED,
-                    AttemptStatus.COMPLETED,
-                }
-                for a in attempts
-            ):
-                continue  # an Attempt is in flight
-            if await self._next_attempt(mission, task, attempts):
+        for granted, _candidate in plan.grants:
+            task = self.store.get_task(granted.id)
+            assert task is not None
+            if task.status in TERMINAL_TASK:
+                break
+            if await self._next_attempt(mission, task, self.store.list_attempts(task.id)):
                 progressed = True
+            current = self.store.get_mission(mission.id)
+            if current is None or current.status in TERMINAL_MISSION:
+                break
         return progressed
+
+    def _artifacts_by_task(self, tasks: Sequence[Task]) -> dict[str, list[Artifact]]:
+        by_task: dict[str, list[Artifact]] = {}
+        for task in tasks:
+            found = []
+            for artifact_id in task.accepted_artifacts:
+                artifact = self.store.get_artifact(artifact_id)
+                if artifact is not None:
+                    found.append(artifact)
+            by_task[task.id] = found
+        return by_task
 
     async def _next_attempt(
         self, mission: Mission, task: Task, attempts: Sequence[Attempt]
     ) -> bool:
-        previous = attempts[-1] if attempts else None
+        # a repair follows the last *failed* Attempt; a parallel candidate follows nobody
+        previous = next(
+            (a for a in reversed(attempts) if a.status in TERMINAL_ATTEMPT and a.failure), None
+        )
         feedback: list[str] = []
         verifier_feedback: list[Mapping[str, Any]] = []
         if previous is not None and previous.failure is not None:
@@ -832,6 +1137,22 @@ class Orchestrator:
                         verifier_feedback.append(dict(item))
             else:
                 feedback.append(f"{reason}: {failure.get('error', '')}")
+        # D3-7': the Attempt starts from every ancestor's accepted artifacts
+        all_tasks = {t.id: t for t in self.store.list_tasks(mission.id)}
+        upstream_tasks = ancestors(task.id, all_tasks)
+        try:
+            inputs = merge_accepted(
+                upstream_tasks, self._artifacts_by_task(upstream_tasks), tasks_by_id=all_tasks
+            )
+        except ArtifactConflict as error:
+            self.commit.stop_task(
+                task.id,
+                stop_reason=MissionStopReason.ARTIFACT_CONFLICT,
+                detail={"error": str(error)},
+            )
+            await self._release_mission(mission.id)
+            self._note(f"task {task.id} stopped: artifact conflict ({error})")
+            return True
         placeholder = Attempt(
             id=ids.attempt_id(task.id, len(attempts) + 1),
             task_id=task.id,
@@ -854,7 +1175,7 @@ class Orchestrator:
             feedback=tuple(feedback),
         )
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
-        previous_files = sorted(seed)
+        previous_files = sorted(set(seed) | {item.path for item in inputs})
         if previous is not None:
             try:
                 previous_files = self.assembled.workspaces.get(previous.id).list_files()
@@ -867,6 +1188,18 @@ class Orchestrator:
             previous_attempts=attempts,
             verifier_feedback=verifier_feedback,
             workspace_files=previous_files,
+            dependencies=[
+                {
+                    "task_id": dep.id,
+                    "goal": dep.goal,
+                    "status": str(dep.status),
+                    "accepted_artifacts": [
+                        item.to_json() for item in inputs if item.task_id == dep.id
+                    ],
+                }
+                for dep in upstream_tasks
+                if dep.id in set(task.dependency_ids)
+            ],
         )
         allowed = tuple(name for name in WORKER_TOOLS if name in set(task.allowed_tools))
         config = AgentConfig(
@@ -886,7 +1219,8 @@ class Orchestrator:
         message = user_message_json(package.text)
         tokens = self._config.attempt_reserve_tokens
         if task.budget.max_tokens is not None:
-            tokens = min(tokens, task.budget.max_tokens)
+            # D3-5': explorative candidates share the Task's token budget evenly
+            tokens = min(tokens, max(1, task.budget.max_tokens // self._config.candidates_per_task))
         try:
             attempt, _intent = self.commit.create_attempt(
                 task.id,
@@ -907,84 +1241,126 @@ class Orchestrator:
                 input_hash=sha256_hex(message),
                 retry_of=placeholder.retry_of,
                 feedback=feedback,
+                candidates_per_task=self._config.candidates_per_task,
+                inputs=[item.to_json() for item in inputs],
             )
+        except CommitRejected as error:
+            self._note(f"task {task.id}: no new attempt ({error})")
+            return False
         except BudgetExhausted as error:
+            detail = {
+                "dimension": error.dimension,
+                "requested": error.requested,
+                "remaining": error.remaining,
+                "account": error.account_id,
+            }
             reason = (
                 MissionStopReason.MAX_ATTEMPTS_REACHED
                 if error.dimension == "attempts"
                 else MissionStopReason.BUDGET_EXHAUSTED
             )
-            self.commit.stop_task(
-                task.id,
-                stop_reason=reason,
-                detail={
-                    "dimension": error.dimension,
-                    "requested": error.requested,
-                    "remaining": error.remaining,
-                    "account": error.account_id,
-                },
-            )
-            self._note(f"task {task.id} stopped: {reason} ({error.dimension})")
+            if error.account_id == mission_account(mission.id):
+                # D3-12': the Mission pool itself is exhausted — no Task is to blame
+                self.commit.fail_mission(mission.id, stop_reason=reason, detail=detail)
+                self._note(
+                    f"mission {mission.id} stopped: {reason} ({error.dimension}, mission pool)"
+                )
+            else:
+                self.commit.stop_task(task.id, stop_reason=reason, detail=detail)
+                self._note(f"task {task.id} stopped: {reason} ({error.dimension})")
+            await self._release_mission(mission.id)
             return True
-        self._note(f"attempt {attempt.id} created (retry_of={attempt.retry_of})")
+        self._note(
+            f"attempt {attempt.id} created (retry_of={attempt.retry_of}, inputs={len(inputs)})"
+        )
         return True
 
-    async def _judge(self, mission: Mission, task: Task) -> None:
-        """D21 / ORCH §12.4: judge the Mission's own success criteria independently of
-        the Task PASS.  Free-text criteria need an independent Critic; if the Task's
-        verification policy did not run one, the judgment runs one now (budgeted,
-        replayable) instead of failing the Mission for lack of a judge."""
+    async def _judge(self, mission: Mission, tasks: Sequence[Task]) -> None:
+        """D21 / ORCH §12.4 / D3-9': judge the Mission's own success criteria on the
+        *integrated* tree — the seed plus every Task's accepted artifacts applied in
+        topological order — independently of the Task PASSes.  ``pytest:`` criteria run
+        there, ``file:`` criteria are checked there and free-text criteria go to an
+        independent Critic bound to that tree (reused from the single Task's own
+        critic_review when the Mission has exactly one Task)."""
 
-        stored = self.store.get_result(task.accepted_result_id or "")
-        if stored is None:
-            raise CommitRejected(f"task {task.id} has no accepted result to judge")
-        layers = {item["layer"]: item for item in self.store.list_verifications(stored.envelope.id)}
-        critic = self._critic_verdicts.get(stored.envelope.id)
-        attempt = self.store.get_attempt(stored.envelope.attempt_id)
-        assert attempt is not None
-        needs_critic = any(not c.startswith(("pytest:", "file:")) for c in mission.success_criteria)
-        if needs_critic and critic is None:
-            try:
-                self.assembled.workspaces.verification_view(attempt.id)
-            except Exception:  # noqa: BLE001 - rebuilt from the accepted tree after a restart
-                self.assembled.workspaces.verification_copy(attempt.id)
-            artifacts = [
-                a for a in self.store.list_artifacts(attempt.id) if a.id in set(stored.artifacts)
-            ]
-            test_output = None
-            code = layers.get("code_test")
-            if code is not None:
-                test_output = "\n".join(
-                    str(r.get("stdout", ""))
-                    for r in code["detail"].get("runs", [])
-                    if isinstance(r, Mapping)
-                )
-            try:
-                critic = await self._run_critic(mission, task, attempt, artifacts, test_output)
-                self._critic_verdicts[stored.envelope.id] = critic
-            except ContractError as error:
-                self._note(f"mission {mission.id}: independent judge unavailable ({error})")
-        copy = None
+        self._reimport_unsettled(mission)
+        all_tasks = {t.id: t for t in tasks}
         try:
-            copy = self.assembled.workspaces.verification_view(attempt.id)
-        except Exception:  # noqa: BLE001
-            copy = None
+            merged = merge_accepted(
+                list(tasks), self._artifacts_by_task(tasks), tasks_by_id=all_tasks
+            )
+        except ArtifactConflict as error:
+            self.commit.fail_mission(
+                mission.id,
+                stop_reason=MissionStopReason.ARTIFACT_CONFLICT,
+                detail={"error": str(error)},
+            )
+            self._note(f"mission {mission.id} failed at judgment: {error}")
+            return
+        seed = dict((mission.final_report or {}).get("workspace_seed", {}))
+        files: dict[str, Path] = {}
+        artifacts: list[Artifact] = []
+        for item in merged:
+            artifact = self.store.get_artifact(item.artifact_id)
+            if artifact is None:
+                continue
+            files[item.path] = Path(artifact.storage_uri)
+            artifacts.append(artifact)
+        copy = self.assembled.workspaces.integrated_copy(mission.id, seed=seed, files=files)
+        terminal = tasks[-1]
+        stored = self.store.get_result(terminal.accepted_result_id or "")
+        summary = "" if stored is None else stored.envelope.summary
+        test_runs: dict[str, dict[str, Any]] = {}
+        for criterion in mission.success_criteria:
+            if not criterion.startswith("pytest:"):
+                continue
+            target = criterion.removeprefix("pytest:").strip() or None
+            try:
+                if target is not None:
+                    copy.resolve(target)
+                run = await run_pytest(
+                    str(copy.root), path=target, timeout=self._config.test_timeout_seconds
+                )
+                test_runs[criterion] = {**run.to_json(), "passed": run.passed}
+            except Exception as error:  # noqa: BLE001
+                test_runs[criterion] = {"passed": False, "error": str(error), "stdout": ""}
+        needs_critic = any(not c.startswith(("pytest:", "file:")) for c in mission.success_criteria)
+        critic: CriticVerdict | None = None
+        if needs_critic:
+            if len(tasks) == 1 and stored is not None:
+                critic = self._critic_verdicts.get(stored.envelope.id)
+            if critic is None:
+                test_output = "\n".join(str(r.get("stdout", "")) for r in test_runs.values())
+                try:
+                    critic = await self._run_critic(
+                        mission,
+                        None,
+                        view_id=mission.id,
+                        subject_prefix=f"{mission.id}:judge",
+                        account_id=mission_account(mission.id),
+                        artifacts=artifacts,
+                        test_output=test_output or None,
+                    )
+                except ContractError as error:
+                    self._note(f"mission {mission.id}: independent judge unavailable ({error})")
         judgments = []
         for criterion in mission.success_criteria:
             if criterion.startswith("pytest:"):
-                layer = layers.get("code_test")
-                met = bool(layer and layer["status"] == "PASS")
+                run = test_runs.get(criterion, {})
                 judgments.append(
                     {
                         "criterion": criterion,
-                        "met": met,
+                        "met": bool(run.get("passed")),
                         "judge": "code_test",
-                        "reason": None if layer is None else layer["detail"].get("summary"),
+                        "reason": (run.get("stdout") or run.get("error") or "")[-300:],
                     }
                 )
             elif criterion.startswith("file:"):
                 relative = criterion.removeprefix("file:")
-                met = bool(copy is not None and copy.resolve(relative).is_file())
+                try:
+                    met = copy.resolve(relative).is_file()
+                except Exception:  # noqa: BLE001
+                    met = False
                 judgments.append(
                     {
                         "criterion": criterion,
@@ -1010,12 +1386,14 @@ class Orchestrator:
                         else item.get("reason"),
                     }
                 )
-        judged = self.commit.judge_mission(
-            mission.id,
-            judgments=judgments,
-            summary=stored.envelope.summary,
-        )
+        judged = self.commit.judge_mission(mission.id, judgments=judgments, summary=summary)
         self._note(f"mission {mission.id} judged: {judged.status} ({judged.stop_reason})")
+
+
+def sha256_hex_text(content: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 __all__ = ("FAULT_POINTS", "InjectedCrash", "Orchestrator")

@@ -69,12 +69,14 @@ def _config(
     )
 
 
-def _provider(args: argparse.Namespace):  # type: ignore[no-untyped-def]
+def _provider(args: argparse.Namespace, *, scenario: str = "single-task"):  # type: ignore[no-untyped-def]
     """Return (provider, model, price_table, provider_kind)."""
 
     if args.provider == "fixtures":
-        from .testing.fixtures import demo_single_task_provider
+        from .testing.fixtures import demo_single_task_provider, demo_static_dag_provider
 
+        if scenario == "static-dag":
+            return demo_static_dag_provider(), "agent-model", None, "fixtures"
         return demo_single_task_provider(), "agent-model", None, "fixtures"
     if args.provider == "env":
         base_url = os.environ.get("SH_BASEURL")
@@ -204,28 +206,39 @@ def cmd_demo(args: argparse.Namespace) -> int:
     if step is None:
         _print({"error": f"unknown scenario {args.scenario}"})
         return EXIT_USAGE
-    if step != 2:
+    if step not in {2, 3}:
         _print({"scenario": args.scenario, "status": "not_implemented", "step": step})
         return EXIT_NOT_IMPLEMENTED
     from .observability.evidence import write_evidence
-    from .testing.fixtures import DEMO_SEED
+    from .testing.fixtures import DEMO_DAG_SPEC, DEMO_SEED, TEXTKIT_SEED
 
-    provider, model, price, kind = _provider(args)
+    provider, model, price, kind = _provider(args, scenario=args.scenario)
     started = time.time()
-    spec = MissionSpec(
-        goal="在隔离工作区实现字符串解析函数 parse_kv，并通过给定测试",
-        success_criteria=("pytest:tests/test_parse_kv.py", "实现应处理空字符串"),
-        tenant_id=args.tenant,
-        idempotency_key=args.idempotency_key,
-        allowed_tools=(
-            "workspace_read_file",
-            "workspace_write_file",
-            "workspace_list",
-            "run_tests",
-        ),
-        budget=Budget(max_tokens=400_000, max_attempts=3),
-        workspace_seed=DEMO_SEED,
-    )
+    if step == 2:
+        spec = MissionSpec(
+            goal="在隔离工作区实现字符串解析函数 parse_kv，并通过给定测试",
+            success_criteria=("pytest:tests/test_parse_kv.py", "实现应处理空字符串"),
+            tenant_id=args.tenant,
+            idempotency_key=args.idempotency_key,
+            allowed_tools=(
+                "workspace_read_file",
+                "workspace_write_file",
+                "workspace_list",
+                "run_tests",
+            ),
+            budget=Budget(max_tokens=400_000, max_attempts=3),
+            workspace_seed=DEMO_SEED,
+        )
+    else:
+        spec = MissionSpec(
+            goal=DEMO_DAG_SPEC["goal"],
+            success_criteria=tuple(DEMO_DAG_SPEC["success_criteria"]),
+            tenant_id=args.tenant,
+            idempotency_key=args.idempotency_key,
+            allowed_tools=tuple(DEMO_DAG_SPEC["allowed_tools"]),
+            budget=Budget(max_tokens=400_000, max_attempts=12),
+            workspace_seed=TEXTKIT_SEED,
+        )
 
     async def run() -> int:
         config = _config(args, model=model, price=price)
@@ -249,6 +262,15 @@ def cmd_demo(args: argparse.Namespace) -> int:
                 "elapsed_seconds": round(time.time() - started, 2),
                 "progress": orchestrator.progress_log,
                 "provider_calls": getattr(provider, "by_role", None),
+                "tasks": [
+                    {
+                        "task_id": task.id,
+                        "status": str(task.status),
+                        "dependencies": list(task.dependency_ids),
+                        "attempts": task.attempt_count,
+                    }
+                    for task in orchestrator.store.list_tasks(mission.id)
+                ],
             }
             evidence = write_evidence(
                 directory=Path(args.evidence_dir).resolve(),

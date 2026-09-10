@@ -466,7 +466,7 @@ class CommitService:
             self._emit(
                 "TaskGraphRejected",
                 mission_id,
-                key=f"{mission_id}:{base_version}:{sha256_hex(proposal_json)[:12]}",
+                key=f"{mission_id}:{base_version}:{sha256_hex(proposal_json)[:12]}:{source.get('intent_id', '')}",
                 payload={"reason": error.reason, "detail": error.detail, "source": dict(source)},
             )
             raise CommitRejected(f"task graph rejected ({error.reason}): {error.detail}") from error
@@ -522,6 +522,7 @@ class CommitService:
                     version=1,
                     root_goal=mission.goal,
                     created_at=self._store.now,
+                    outputs=node.outputs,
                 )
                 self._store.insert_task(task, ordinal=ordinal)
                 self._ledger.open_account(
@@ -694,6 +695,19 @@ class CommitService:
             payload={"reason": reason, "from": str(attempt.status)},
         )
         return updated
+
+    def record_planning_rejected(
+        self, mission_id: str, *, ordinal: int, reason: str, detail: Mapping[str, Any]
+    ) -> Event:
+        """A Planner turn that produced no usable graph (D3-2'): durable feedback for the
+        next proposal, no state transition."""
+
+        return self._emit(
+            "PlanningRejected",
+            mission_id,
+            key=f"{mission_id}:planner:{ordinal}",
+            payload={"ordinal": ordinal, "reason": reason, "detail": dict(detail)},
+        )
 
     def fail_planning(
         self,

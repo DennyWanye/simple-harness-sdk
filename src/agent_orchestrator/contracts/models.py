@@ -264,9 +264,11 @@ class Task:
     accepted_artifacts: tuple[str, ...] = ()
     attempt_count: int = 0
     failure_reason: str | None = None
+    outputs: tuple[str, ...] = ()  # step 3 (D3-7'): upstream paths this Task may rewrite
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _text(self.id, "task.id", limit=256))
+        object.__setattr__(self, "outputs", _texts(self.outputs, "task.outputs"))
         object.__setattr__(self, "mission_id", _text(self.mission_id, "task.mission_id", limit=256))
         object.__setattr__(
             self, "parent_task_ids", _texts(self.parent_task_ids, "task.parent_task_ids")
@@ -330,6 +332,7 @@ class Task:
             "accepted_artifacts": list(self.accepted_artifacts),
             "attempt_count": self.attempt_count,
             "failure_reason": self.failure_reason,
+            "outputs": list(self.outputs),
         }
 
     @classmethod
@@ -355,6 +358,7 @@ class Task:
             accepted_artifacts=tuple(data.get("accepted_artifacts", ())),
             attempt_count=data.get("attempt_count", 0),
             failure_reason=data.get("failure_reason"),
+            outputs=tuple(data.get("outputs", ())),
         )
 
 

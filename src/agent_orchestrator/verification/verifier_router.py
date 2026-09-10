@@ -132,11 +132,12 @@ class VerifierRouter:
                 except ContractError as error:
                     result = LayerResult(layer, ERROR, f"critic verdict unusable: {error}", {})
             elif layer == "code_test":
+                # step 3 (D3-9'): Mission-level pytest targets are judged on the
+                # integrated tree, not against one Task's partial workspace
                 result = await code_test(
                     task,
                     verification_copy=verification_copy,
                     timeout=self._test_timeout,
-                    mission_criteria=mission.success_criteria,
                 )
                 runs = result.detail.get("runs", [])
                 test_output = "\n".join(
