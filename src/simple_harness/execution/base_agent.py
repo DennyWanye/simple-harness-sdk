@@ -15,6 +15,7 @@ from simple_harness.contracts import FrozenJsonValue, freeze_json
 
 AGENT_TURN_PHASES = ("queued", "running", "result_pending", "committed", "failed")
 AGENT_DELEGATION_STATES = ("reserved", "launched", "settled", "failed")
+AGENT_LIFECYCLES = ("open", "closing", "closed")
 BASE_AGENT_API_MODE = "base_agent_v1"
 BASE_AGENT_INPUT_KIND = "base_agent_input"
 
@@ -37,9 +38,52 @@ class AgentBindingRecord:
     config_hash: str
     control_generation: int
     created_at: float
+    lifecycle: str = "open"
+    lifecycle_updated_at: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "config_json", _frozen_object(self.config_json, "config_json"))
+        if self.lifecycle not in AGENT_LIFECYCLES:
+            raise ValueError("unknown agent lifecycle")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentCreationBatchRecord:
+    batch_id: str
+    owner_scope: str
+    batch_key: str
+    batch_fingerprint: str
+    agent_ids: tuple[str, ...]
+    config_hashes: tuple[str, ...]
+    state: str
+    receipt: FrozenJsonValue | None
+    created_at: float
+    updated_at: float
+
+    def __post_init__(self) -> None:
+        if self.state not in ("reserved", "committed"):
+            raise ValueError("unknown batch state")
+        object.__setattr__(self, "agent_ids", tuple(self.agent_ids))
+        object.__setattr__(self, "config_hashes", tuple(self.config_hashes))
+        if self.receipt is not None:
+            object.__setattr__(self, "receipt", _frozen_object(self.receipt, "receipt"))
+
+
+@dataclass(frozen=True, slots=True)
+class AgentControlCommandRecord:
+    command_id: str
+    agent_id: str
+    kind: str
+    target_turn_id: str | None
+    control_generation: int
+    request_hash: str
+    receipt: FrozenJsonValue
+    created_at: float
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("close", "cancel_turn"):
+            raise ValueError("unknown control command kind")
+        object.__setattr__(self, "receipt", _frozen_object(self.receipt, "receipt"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,10 +151,13 @@ class AgentDelegationRecord:
 
 __all__ = (
     "AGENT_DELEGATION_STATES",
+    "AGENT_LIFECYCLES",
     "AGENT_TURN_PHASES",
     "BASE_AGENT_API_MODE",
     "BASE_AGENT_INPUT_KIND",
     "AgentBindingRecord",
+    "AgentControlCommandRecord",
+    "AgentCreationBatchRecord",
     "AgentDelegationRecord",
     "AgentTurnRecord",
     "AgentTurnResultRecord",

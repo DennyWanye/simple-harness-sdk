@@ -19,7 +19,9 @@ CREATE TABLE base_agent_bindings_v1 (
  config_json TEXT NOT NULL,
  config_hash TEXT NOT NULL CHECK(length(config_hash) = 64),
  control_generation INTEGER NOT NULL DEFAULT 0,
- created_at REAL NOT NULL
+ created_at REAL NOT NULL,
+ lifecycle TEXT NOT NULL DEFAULT 'open' CHECK(lifecycle IN ('open','closing','closed')),
+ lifecycle_updated_at REAL
 ) STRICT;
 CREATE TABLE base_agent_turns_v1 (
  turn_id TEXT PRIMARY KEY,
@@ -63,6 +65,31 @@ CREATE TABLE base_agent_delegations_v1 (
  updated_at REAL NOT NULL,
  UNIQUE(parent_turn_id, ordinal)
 ) STRICT;
+CREATE TABLE base_agent_creation_batches_v1 (
+ batch_id TEXT PRIMARY KEY,
+ owner_scope TEXT NOT NULL,
+ batch_key TEXT NOT NULL,
+ batch_fingerprint TEXT NOT NULL CHECK(length(batch_fingerprint) = 64),
+ agent_ids_json TEXT NOT NULL,
+ config_hashes_json TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('reserved','committed')),
+ receipt_json TEXT,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL,
+ UNIQUE(owner_scope, batch_key)
+) STRICT;
+CREATE TABLE base_agent_control_commands_v1 (
+ command_id TEXT PRIMARY KEY,
+ agent_id TEXT NOT NULL REFERENCES base_agent_bindings_v1(agent_id),
+ kind TEXT NOT NULL CHECK(kind IN ('close','cancel_turn')),
+ target_turn_id TEXT,
+ control_generation INTEGER NOT NULL,
+ request_hash TEXT NOT NULL CHECK(length(request_hash) = 64),
+ receipt_json TEXT NOT NULL,
+ created_at REAL NOT NULL
+) STRICT;
+CREATE INDEX base_agent_control_commands_v1_agent_idx
+ ON base_agent_control_commands_v1(agent_id, kind);
 """
 
 __all__ = ("DDL",)

@@ -1,6 +1,6 @@
 """Explicit, bounded recovery witness for a legacy authorization expiry."""
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)

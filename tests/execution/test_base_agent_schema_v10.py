@@ -158,7 +158,8 @@ def test_delegation_uniques(tmp_path):
 
 def _seed_binding_and_turn(connection):
     connection.execute(
-        "INSERT INTO base_agent_bindings_v1 VALUES "
+        "INSERT INTO base_agent_bindings_v1(agent_id,run_id,owner_scope,api_mode,role,"
+        "creation_key,config_json,config_hash,control_generation,created_at) VALUES "
         "('a1','r1','owner','base_agent_v1','root','ck-1','{}',?,0,0.0)",
         ("0" * 64,),
     )
@@ -167,3 +168,105 @@ def _seed_binding_and_turn(connection):
         "seq,phase,created_at,updated_at) VALUES ('t1','a1','i1',?,'{}',1,'queued',0.0,0.0)",
         ("0" * 64,),
     )
+
+
+# ---- Slice 2 · T1: lifecycle column, creation batches, control commands ----
+
+
+def test_binding_lifecycle_defaults_open_and_is_checked(tmp_path):
+    with Database.open(tmp_path / "a.db") as database:
+        connection = database.connection
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("BEGIN")
+        _seed_binding_and_turn(connection)
+        row = connection.execute(
+            "SELECT lifecycle, lifecycle_updated_at FROM base_agent_bindings_v1 WHERE agent_id='a1'"
+        ).fetchone()
+        assert tuple(row) == ("open", None)
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE base_agent_bindings_v1 SET lifecycle='dead' WHERE agent_id='a1'"
+            )
+        connection.execute(
+            "UPDATE base_agent_bindings_v1 SET lifecycle='closing', lifecycle_updated_at=1.0 "
+            "WHERE agent_id='a1'"
+        )
+        connection.execute("ROLLBACK")
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
+def test_creation_batches_unique_per_owner_and_key(tmp_path):
+    with Database.open(tmp_path / "a.db") as database:
+        connection = database.connection
+        connection.execute("BEGIN")
+        cols = (
+            "batch_id,owner_scope,batch_key,batch_fingerprint,agent_ids_json,"
+            "config_hashes_json,state,receipt_json,created_at,updated_at"
+        )
+        connection.execute(
+            f"INSERT INTO base_agent_creation_batches_v1({cols}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("b-1", "owner", "k1", "f" * 64, "[]", "[]", "reserved", None, 0.0, 0.0),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                f"INSERT INTO base_agent_creation_batches_v1({cols}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                ("b-2", "owner", "k1", "e" * 64, "[]", "[]", "reserved", None, 0.0, 0.0),
+            )
+        # A different owner may reuse the key.
+        connection.execute(
+            f"INSERT INTO base_agent_creation_batches_v1({cols}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("b-3", "other", "k1", "e" * 64, "[]", "[]", "committed", "{}", 0.0, 0.0),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                f"INSERT INTO base_agent_creation_batches_v1({cols}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                ("b-4", "owner", "k2", "short", "[]", "[]", "reserved", None, 0.0, 0.0),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                f"INSERT INTO base_agent_creation_batches_v1({cols}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                ("b-5", "owner", "k3", "a" * 64, "[]", "[]", "pending", None, 0.0, 0.0),
+            )
+        connection.execute("ROLLBACK")
+
+
+def test_control_commands_unique_id_and_kind_check(tmp_path):
+    with Database.open(tmp_path / "a.db") as database:
+        connection = database.connection
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("BEGIN")
+        _seed_binding_and_turn(connection)
+        cols = (
+            "command_id,agent_id,kind,target_turn_id,control_generation,request_hash,"
+            "receipt_json,created_at"
+        )
+        connection.execute(
+            f"INSERT INTO base_agent_control_commands_v1({cols}) VALUES (?,?,?,?,?,?,?,?)",
+            ("c-1", "a1", "close", None, 1, "a" * 64, "{}", 0.0),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                f"INSERT INTO base_agent_control_commands_v1({cols}) VALUES (?,?,?,?,?,?,?,?)",
+                ("c-1", "a1", "close", None, 2, "a" * 64, "{}", 0.0),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                f"INSERT INTO base_agent_control_commands_v1({cols}) VALUES (?,?,?,?,?,?,?,?)",
+                ("c-2", "a1", "pause", None, 2, "a" * 64, "{}", 0.0),
+            )
+        connection.execute(
+            f"INSERT INTO base_agent_control_commands_v1({cols}) VALUES (?,?,?,?,?,?,?,?)",
+            ("c-3", "a1", "cancel_turn", "t1", 2, "b" * 64, "{}", 0.0),
+        )
+        connection.execute("ROLLBACK")
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
+def test_only_one_v10_descriptor_and_v9_unchanged():
+    from simple_harness.execution.sqlite import schema
+
+    assert schema.legacy_v9_descriptor().checksum.startswith("d9cb3ed5")
+    assert [m.version for m in schema.migrations()] == [10]
+    assert "base_agent_creation_batches_v1" in schema.fresh_descriptor().sql
+    assert "base_agent_control_commands_v1" in schema.fresh_descriptor().sql
+    assert "base_agent_creation_batches_v1" not in schema.legacy_v9_descriptor().sql

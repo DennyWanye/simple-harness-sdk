@@ -36,6 +36,10 @@ def _binding(row: sqlite3.Row) -> AgentBindingRecord:
         config_hash=str(row["config_hash"]),
         control_generation=int(row["control_generation"]),
         created_at=float(row["created_at"]),
+        lifecycle=str(row["lifecycle"]),
+        lifecycle_updated_at=(
+            None if row["lifecycle_updated_at"] is None else float(row["lifecycle_updated_at"])
+        ),
     )
 
 
@@ -107,8 +111,8 @@ def insert_binding(
         return existing
     connection.execute(
         "INSERT INTO base_agent_bindings_v1(agent_id,run_id,owner_scope,api_mode,role,"
-        "creation_key,config_json,config_hash,control_generation,created_at)"
-        " VALUES (?,?,?,?,?,?,?,?,0,?)",
+        "creation_key,config_json,config_hash,control_generation,created_at,lifecycle)"
+        " VALUES (?,?,?,?,?,?,?,?,0,?,'open')",
         (
             agent_id,
             run_id,
@@ -152,6 +156,24 @@ def read_binding_by_creation_key(
 # --- turns --------------------------------------------------------------------
 
 
+class PendingInputsExhausted(UnitOfWorkConflict):
+    """The Agent's queue of open turns is full (``AgentLimits.max_pending_inputs``)."""
+
+
+class AgentClosedError(UnitOfWorkConflict):
+    """The Agent no longer accepts ordinary inputs (lifecycle closing/closed)."""
+
+
+def count_open_turns(connection: sqlite3.Connection, agent_id: str) -> int:
+    return int(
+        connection.execute(
+            "SELECT COUNT(*) FROM base_agent_turns_v1 WHERE agent_id=? AND phase IN "
+            "('queued','running','result_pending')",
+            (agent_id,),
+        ).fetchone()[0]
+    )
+
+
 def open_turn(
     connection: sqlite3.Connection,
     *,
@@ -162,11 +184,15 @@ def open_turn(
     input_json: Mapping[str, JsonValue],
     continuation_id: str | None,
     now: float,
+    max_pending_inputs: int | None = None,
 ) -> tuple[AgentTurnRecord, bool]:
     """Persist one queued turn per ``(agent_id, input_id)``.
 
     Returns ``(record, created)``; an identical replay returns the stored row with
-    ``created=False``; a different input under the same ``input_id`` conflicts.
+    ``created=False`` (before any lifecycle or quota check: accepted inputs stay
+    accepted); a different input under the same ``input_id`` conflicts; a closed
+    Agent rejects new inputs; a full queue rejects new inputs.  All decided in the
+    caller's transaction.
     """
 
     existing = read_turn_by_input(connection, agent_id, input_id)
@@ -174,6 +200,16 @@ def open_turn(
         if existing.input_hash != input_hash or existing.turn_id != turn_id:
             raise UnitOfWorkConflict("input_id reused with different input content")
         return existing, False
+    binding = read_binding(connection, agent_id)
+    if binding is None:
+        raise UnitOfWorkConflict("agent binding is missing")
+    if binding.lifecycle != "open":
+        raise AgentClosedError(f"agent is {binding.lifecycle}; new inputs are refused")
+    if (
+        max_pending_inputs is not None
+        and count_open_turns(connection, agent_id) >= max_pending_inputs
+    ):
+        raise PendingInputsExhausted("pending inputs quota for this agent is exhausted")
     seq = int(
         connection.execute(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM base_agent_turns_v1 WHERE agent_id=?",
@@ -372,7 +408,10 @@ def read_result(connection: sqlite3.Connection, turn_id: str) -> AgentTurnResult
 
 
 __all__ = (
+    "AgentClosedError",
+    "PendingInputsExhausted",
     "commit_staged_result",
+    "count_open_turns",
     "insert_binding",
     "list_runs_with_open_turns",
     "list_turns",

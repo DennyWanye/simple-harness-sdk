@@ -67,6 +67,12 @@ class AgentClosed(AgentError):
     code = "agent_closed"
 
 
+class AgentPendingInputsExhausted(AgentError):
+    """``AgentLimits.max_pending_inputs`` open turns already queued for this Agent."""
+
+    code = "agent_pending_inputs_exhausted"
+
+
 class AgentTurnTimeout(AgentError):
     """``wait_turn`` gave up waiting; the underlying turn keeps running."""
 
@@ -261,6 +267,7 @@ __all__ = (
     "AgentId",
     "AgentInputConflict",
     "AgentNotFound",
+    "AgentPendingInputsExhausted",
     "AgentTurnId",
     "AgentTurnNotFound",
     "AgentTurnReceipt",

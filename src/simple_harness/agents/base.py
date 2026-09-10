@@ -20,11 +20,17 @@ from simple_harness.contracts import (
     thaw_json,
 )
 from simple_harness.execution.base_agent import AgentBindingRecord
+from simple_harness.execution.sqlite.base_agent.turns import (
+    AgentClosedError,
+    PendingInputsExhausted,
+)
 from simple_harness.execution.uow import RunState, UnitOfWorkConflict
 
 from .config import AgentConfig
 from .contracts import (
+    AgentClosed,
     AgentInputConflict,
+    AgentPendingInputsExhausted,
     AgentTurnNotFound,
     AgentTurnReceipt,
     AgentTurnResult,
@@ -107,7 +113,12 @@ class BaseAgent:
                 input_hash=input_hash_for(message),
                 input_json={"message": payload},
                 message=payload,
+                max_pending_inputs=self._config.limits.max_pending_inputs,
             )
+        except AgentClosedError as error:
+            raise AgentClosed(str(error)) from error
+        except PendingInputsExhausted as error:
+            raise AgentPendingInputsExhausted(str(error)) from error
         except UnitOfWorkConflict as error:
             raise AgentInputConflict(str(error)) from error
         return AgentTurnReceipt(

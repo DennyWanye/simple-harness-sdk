@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from .schema import SCHEMA_VERSION, fresh_descriptor, accepted_descriptor_rows
+from .schema import SCHEMA_VERSION, accepted_descriptor_rows, fresh_descriptor
 from .storage import prepare_execution_database
 
 

@@ -25,6 +25,12 @@ from simple_harness.contracts import (
     thaw_json,
 )
 from simple_harness.execution.audit import RunAuditUnavailable, RunOperationAuditSnapshotV1
+from simple_harness.execution.base_agent import (
+    AgentBindingRecord,
+    AgentDelegationRecord,
+    AgentTurnRecord,
+    AgentTurnResultRecord,
+)
 from simple_harness.execution.budget import BudgetCharge, BudgetPolicy, BudgetSnapshot
 from simple_harness.execution.context_authority import (
     ProviderProjectionReceipt,
@@ -72,12 +78,6 @@ from simple_harness.execution.recovery import (
     WaitBlockerRecord,
     WaitBlockerSpec,
     recovery_identity,
-)
-from simple_harness.execution.base_agent import (
-    AgentBindingRecord,
-    AgentDelegationRecord,
-    AgentTurnRecord,
-    AgentTurnResultRecord,
 )
 from simple_harness.execution.uow import (
     RUNTIME_LEASE_NAMESPACE,
@@ -1225,6 +1225,7 @@ class SqliteExecutionUnitOfWork:
         continuation_payload: Mapping[str, JsonValue],
         now: float,
         fault: FaultHook | None = None,
+        max_pending_inputs: int | None = None,
     ) -> AgentTurnRecord:
         """One short transaction: queued turn row + its ``base_agent_input`` continuation."""
 
@@ -1241,6 +1242,7 @@ class SqliteExecutionUnitOfWork:
                 input_json=input_json,
                 continuation_id=turn_id,
                 now=now,
+                max_pending_inputs=max_pending_inputs,
             )
             # The durable seq is assigned by the turn row; the driver reads it from the
             # continuation payload, so it is injected here (replays reproduce it).

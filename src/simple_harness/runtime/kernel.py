@@ -598,6 +598,7 @@ class RuntimeUnitOfWork(ExecutionUnitOfWork, RunFencePort, WorkflowLaunchTicketP
         input_json: Mapping[str, JsonValue],
         continuation_payload: Mapping[str, JsonValue],
         now: float,
+        max_pending_inputs: int | None = None,
     ) -> AgentTurnRecord: ...
 
     def read_agent_binding_for_run(self, run_id: str) -> AgentBindingRecord | None: ...
@@ -1725,6 +1726,7 @@ class Runtime:
         input_hash: str,
         input_json: Mapping[str, JsonValue],
         message: Mapping[str, JsonValue],
+        max_pending_inputs: int | None = None,
     ) -> AgentTurnRecord:
         """Public BaseAgent input entry (mirror of ``signal_conversation`` for base-agent Runs).
 
@@ -1757,6 +1759,7 @@ class Runtime:
                 "message": dict(message),
             },
             now=self._now(),
+            max_pending_inputs=max_pending_inputs,
         )
         asyncio.create_task(self._wake_continuation(value))
         return record
