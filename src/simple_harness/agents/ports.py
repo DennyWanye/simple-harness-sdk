@@ -65,8 +65,14 @@ class AgentRuntimePorts:
     def __post_init__(self) -> None:
         if not callable(getattr(self.provider, "invoke", None)):
             raise TypeError("provider must implement invoke")
-        if not callable(getattr(self.authorization, "request_authorization", None)):
-            raise TypeError("authorization must implement request_authorization")
+        if not callable(getattr(self.authorization, "request_authorization", None)) and not (
+            callable(getattr(self.authorization, "prepare", None))
+            and callable(getattr(self.authorization, "bind_decision", None))
+        ):
+            raise TypeError(
+                "authorization must implement request_authorization (consumer port) "
+                "or prepare/bind_decision (SDK port)"
+            )
         if not isinstance(self.database_path, str) or not self.database_path.strip():
             raise TypeError("database_path must be a non-empty string")
         if self.tool_names and self.tool_executor is None:

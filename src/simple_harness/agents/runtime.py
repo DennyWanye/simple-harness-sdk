@@ -126,7 +126,14 @@ def assemble_runtime(
     registry = BaseAgentToolRegistry(
         (*tools, *cast(tuple[Tool, ...], extra_tools)), exposure_reader=_exposure
     )
-    auth_adapter = _ConsumerAuthorizationAdapter(ports.authorization)
+    # An SDK-native authorization port (prepare/bind_decision, able to require a
+    # durable user decision) is used as-is; the consumer port is adapted.
+    auth_adapter = (
+        ports.authorization
+        if callable(getattr(ports.authorization, "bind_decision", None))
+        and callable(getattr(ports.authorization, "prepare", None))
+        else _ConsumerAuthorizationAdapter(ports.authorization)
+    )
     tool_reconciliation = ports.policies.tool_reconciliation or _DefaultToolReconciliation()
     if delegation_reconciliation is not None:
         tool_reconciliation = delegation_reconciliation(uow, tool_reconciliation)
