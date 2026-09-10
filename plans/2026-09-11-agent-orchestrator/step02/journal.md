@@ -50,13 +50,44 @@ reviewer 要求显式化的 6 个决定：硬预算落地（D10'）、费用权�
 - 业务租约到期后允许新 owner 接管（`renew_lease`/`claim_intent`），未到期的活租约不可抢占。
 
 ## 3. 独立 review（代码）
-（回填）
+
+独立子代理（claude-opus-5，只读 + 4 个复现脚本）对 step 2 累计 diff 的 review，原文 `reports/code-review-round1.md`。处置（全部有决定性测试 `tests/orchestrator/step02/test_review_round1.py`，提交 `review round 1`）：
+
+| # | 级别 | 发现 | 处置 |
+|---|---|---|---|
+| 1 | P0 | Worker 可改写自己的验收测试（验收副本原样复制 Worker 树），得到假的 VERIFIED 交付 | 受保护种子文件：`pytest:` 目标与 `tests/` 下的种子文件在验收副本里从 Mission 种子重新落盘；`rule_check` 对被改写的受保护文件直接 FAIL；修复 Attempt 的工作区也强制恢复受保护文件。测试：作弊 Worker → rule_check FAIL、副本含真实测试、修复后通过 |
+| 2 | P1 | 重启时另一 owner 的活租约让 `renew_lease` 抛异常打死循环 | `_observe_liveness` 捕获 `CommitRejected` 视为"还不是我的"，租约到期后接管；`claim_intent` 对 AGENT_CREATED 也检查活租约 |
+| 3 | P1 | 重启后在途 turn 的工具网关绑定丢失 | `recover()` 先重绑 AGENT_CREATED/SUBMITTED 的 attempt/critic intent，再 `recover_pending_turns()` |
+| 4 | P1 | D6' 停滞判定未实现，`stall_seconds` 是死配置 | Attempt 记 `progress_marker/progress_at`（续租时按 `provider_turn_ordinal_to` 更新）；存活、无 blocker、`stall_seconds` 内无推进 → `TIMED_OUT`（事件 `AttemptTimedOut`）+ 协作式 `cancel_turn` + 新 Attempt |
+| 5 | P1 | `cancel_mission` 留下活 intent/预留/待验证结果；循环不按 Mission 过滤 | cancel 关闭全部未完成 intent（FAILED）、结算/释放预留、待验证结果标 REJECTED、发 `TaskCancelled/AttemptCancelled`；`_cycle` 与 `_has_inflight` 只看非终态 Mission |
+| 6 | P1 | priced 模式下 UNKNOWN 费用被当 unpriced 写零并释放预留；无 `model_echo_mismatch` | `UsageFact.unknown` 与 `imported_usage.unknown` 区分"部署无价格表"与"SDK 无法计价"；`settle()` 有 unknown 即拒绝（预留保持占用）；所有结算路径改走 `_settle_if_known`；provider 回显模型 ≠ 配置模型 → Attempt/Planner 以 `model_echo_mismatch` 停止。测试：priced 模式真实结算金额>0；回显不一致 → 预留 RESERVED、unknown=1、Mission FAILED |
+| 7 | P2 | LOST 前未导入 usage | LOST/TIMED_OUT 前导入 usage，有 unknown 不结算 |
+| 8 | P2 | `_settle_intent` 绕过 Commit Service；`mid_commit` 未接线 | `CommitService.settle_intent` + 事件 `IntentSettled`；`record_result` 事务中触发 `mid_commit`；恢复矩阵加一条 |
+| 9 | P2 | Critic 看不到测试输出 | 保持 §14.1 层序（Critic 先于测试）；Mission 级判定时的 Critic 能拿到已完成的 code_test 输出；记入 §5 |
+| 10 | P2 | `format_check` 恒 PASS | 保留（格式已由采集器严格校验，该层是审计记录）；记入 §5 |
+| 11 | P2 | `run_tests` 参数注入 | 路径解析后必须存在，以 `--` 分隔传入 |
+| 12 | P2 | 阻塞时每次轮询都发心跳 | 只在租约剩余不足一半时续租 |
+| 13 | P2 | `usage_refs` 未交叉核对 | 未做（费用权威已是 SDK 账本逐条导入）；记入 §5 |
+| 14 | P2 | `artifact.version` 恒 1 | 未做；记入 §5（第 3 步产物版本传递时一并做） |
+| 15 | P2 | `--provider env` 无价格表时静默 unpriced | CLI 拒绝，除非显式 `--unpriced`；真实测试仍显式 unpriced（记录） |
+| 16 | P2 | AGENT_CREATED 可被活 owner 抢占 | 已修（同 #2） |
+| 17 | P2 | cancel 不结算、事件粒度 | 已修（同 #5） |
+| 18 | P2 | 死代码/文档陈旧 | 符号链接守卫改为在解析前检查；删 `ALIVE_STATES`；plan D2 的 `leases` 表以列内联实现（记录） |
 
 ## 4. 证据
 （回填）
 
 ## 5. 遗留
-（回填）
+
+| # | 事项 | 归属 |
+|---|---|---|
+| L2-1 | Critic 在 §14.1 层序里先于 code_test，验证阶段看不到本次测试输出（Mission 判定阶段能看到） | 第 3/4 步评估是否给 Critic 加"可读取 Task 级测试输出"的独立通道 |
+| L2-2 | `format_check` 层恒 PASS（格式校验在采集器完成） | 第 3 步把采集器的解析结果作为该层记录内容 |
+| L2-3 | `usage_refs` 不做交叉核对；`artifact.version` 恒 1 | 第 3 步（产物版本传递）一并做 |
+| L2-4 | `run_tests` 子进程无网络隔离；只有 env 白名单 + cwd + 超时 | 第 6/7 步沙箱 |
+| L2-5 | LOST 只覆盖"turn 不存在/agent 打不开"；多执行者抢占场景在第 3 步 S3-07 | 第 3 步 |
+| L2-6 | 真实模型运行仍以 unpriced 记账（DeepSeek 价格表未注入）；priced 路径由 fixture 测试覆盖 | 第 6 步接价格表 |
+| L2-7 | 每 Attempt token 预留不是硬上限（硬上限靠 SDK per-turn limits 与 runtime hard_cap） | 第 6 步 |
 
 ## 6. 终态
 （回填）

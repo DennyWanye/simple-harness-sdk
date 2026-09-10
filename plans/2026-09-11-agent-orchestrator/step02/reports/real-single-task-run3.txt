@@ -1,0 +1,6 @@
+# 真实模型运行 3（deepseek-v4-pro，2026-09-11，review 修复后；密钥已脱敏）
+
+REAL_SINGLE_TASK_REPORT {"model": "deepseek-v4-pro", "status": "COMPLETED", "stop_reason": "verification_passed", "progress": ["dispatched plan mission-29155473c4493ebd:planner:1 → agent agent-48d75868f76bc20b07d79ba5bbedc364", "task committed mission-29155473c4493ebd:task-1", "attempt mission-29155473c4493ebd:task-1:attempt-1 created (retry_of=None)", "dispatched attempt mission-29155473c4493ebd:task-1:attempt-1 → agent agent-9cff31211bc48e16748889c3f6419b89", "attempt mission-29155473c4493ebd:task-1:attempt-1: result result-e7ba3578f1559a33 submitted", "result result-e7ba3578f1559a33 PASS → task mission-29155473c4493ebd:task-1 COMPLETED", "dispatched critic mission-29155473c4493ebd:task-1:attempt-1:critic:1 → agent agent-2dce62c55b755b4f84e813f5b2243817", "mission mission-29155473c4493ebd judged: COMPLETED (verification_passed)"]}
+
+.
+1 passed in 33.37s
