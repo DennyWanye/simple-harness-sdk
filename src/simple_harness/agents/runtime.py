@@ -48,7 +48,14 @@ from simple_harness.tools import EffectExecutor, FunctionTool, Tool
 
 from .base import BaseAgent
 from .config import AgentConfig, config_hash
-from .contracts import AgentClosingReceipt, AgentId, AgentInputConflict, AgentNotFound
+from .contracts import (
+    AgentBatchIdentityConflict,
+    AgentBatchRejected,
+    AgentClosingReceipt,
+    AgentId,
+    AgentInputConflict,
+    AgentNotFound,
+)
 from .execution import build_agent_execution_driver
 from .ports import AgentRuntimePorts
 from .tool_registry import BaseAgentToolRegistry
@@ -87,6 +94,7 @@ class AssembledRuntime:
     database: Database
     driver: object = None
     wire: object = None
+    tool_names: tuple[str, ...] = ()
 
 
 def assemble_runtime(
@@ -190,7 +198,21 @@ def assemble_runtime(
         ports=runtime_ports,
         close_hook=uow.close,
     )
-    return AssembledRuntime(runtime, uow, database, driver, wire)
+    return AssembledRuntime(
+        runtime, uow, database, driver, wire, tuple(spec.name for spec in registry.specs)
+    )
+
+
+def batch_fingerprint(owner_scope: str, batch_key: str, configs: Sequence[AgentConfig]) -> str:
+    """Identity of one ``create_many`` call: owner, key, count and ordered config hashes."""
+
+    payload = {
+        "owner_scope": owner_scope,
+        "batch_key": batch_key,
+        "count": len(configs),
+        "config_hashes": [config_hash(config) for config in configs],
+    }
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def agent_id_for(owner_scope: str, creation_key: str) -> str:
@@ -324,16 +346,98 @@ class AgentRuntime:
         )
         return BaseAgent(self, binding)
 
+    @property
+    def tool_names(self) -> tuple[str, ...]:
+        """Names the runtime's tool registry can serve (including ``agent_delegate``)."""
+
+        return self._assembled.tool_names
+
     async def create_many(
         self, configs: Sequence[AgentConfig], *, batch_key: str
     ) -> tuple[BaseAgent, ...]:
-        """Slice 1 minimal batch: sequential ``create`` with ``{batch_key}:{index}`` keys."""
+        """Idempotent batch creation (BA02/BA03/BA04): no model call, no partial batch.
+
+        1. Whole-batch admission before any write (types, size, instance cap, tool
+           names, and per-instance identity conflicts with existing bindings).
+        2. Reserve the batch row (same key + same content replays; different content
+           conflicts).  3. Create each instance (each ``create`` is idempotent).
+        4. Commit the batch receipt and return the handles in submission order.
+        """
 
         if not isinstance(batch_key, str) or not batch_key.strip():
             raise ValueError("batch_key is required")
+        configs = tuple(configs)
+        for index, config in enumerate(configs):
+            if not isinstance(config, AgentConfig):
+                raise AgentBatchRejected(
+                    "agent_batch_invalid_config", "every item must be an AgentConfig", index=index
+                )
+        if not configs:
+            raise AgentBatchRejected("agent_batch_empty", "batch has no configs")
+        if len(configs) > self._ports.max_batch_size:
+            raise AgentBatchRejected(
+                "agent_batch_too_large",
+                f"batch of {len(configs)} exceeds max_batch_size={self._ports.max_batch_size}",
+            )
+        hashes = tuple(config_hash(config) for config in configs)
+        fingerprint = batch_fingerprint(self._owner_scope, batch_key, configs)
+        existing = self.uow.read_agent_batch(self._owner_scope, batch_key)
+        if existing is not None and existing.batch_fingerprint != fingerprint:
+            raise AgentBatchIdentityConflict("batch_key reused with a different batch content")
+        agent_ids = tuple(
+            agent_id_for(self._owner_scope, f"{batch_key}:{index}") for index in range(len(configs))
+        )
+        if existing is not None and existing.state == "committed":
+            return tuple([await self.open(agent_id) for agent_id in existing.agent_ids])
+        known = set(self.tool_names)
+        new_instances = 0
+        for index, (config, agent_id, digest) in enumerate(zip(configs, agent_ids, hashes)):
+            missing = [name for name in config.tool_names if name not in known]
+            if missing:
+                raise AgentBatchRejected(
+                    "agent_batch_unknown_tool",
+                    f"config {index} names tools not in this runtime: {missing}",
+                    index=index,
+                )
+            binding = self.uow.read_agent_binding(agent_id)
+            if binding is None:
+                new_instances += 1
+                continue
+            if binding.owner_scope != self._owner_scope or binding.config_hash != digest:
+                raise AgentBatchIdentityConflict(
+                    f"config {index} collides with an existing Agent under this batch key"
+                )
+        if (
+            self.uow.count_agent_bindings(self._owner_scope) + new_instances
+            > self._ports.max_agents
+        ):
+            raise AgentBatchRejected(
+                "agent_batch_instance_cap",
+                f"batch would exceed max_agents={self._ports.max_agents}",
+            )
+        batch_id = f"{agent_id_for(self._owner_scope, batch_key)}:batch"
+        try:
+            record, _ = self.uow.reserve_agent_batch(
+                batch_id=batch_id,
+                owner_scope=self._owner_scope,
+                batch_key=batch_key,
+                batch_fingerprint=fingerprint,
+                agent_ids=agent_ids,
+                config_hashes=hashes,
+                now=self._ports.clock(),
+            )
+        except UnitOfWorkConflict as error:
+            raise AgentBatchIdentityConflict(str(error)) from error
+        if tuple(record.agent_ids) != agent_ids:
+            raise AgentBatchIdentityConflict("reserved batch names different agent ids")
         agents = []
         for index, config in enumerate(configs):
             agents.append(await self.create(config, creation_key=f"{batch_key}:{index}"))
+        self.uow.commit_agent_batch(
+            batch_id=record.batch_id,
+            receipt={"agent_ids": list(agent_ids), "batch_fingerprint": fingerprint},
+            now=self._ports.clock(),
+        )
         return tuple(agents)
 
     async def close_agent(
@@ -447,6 +551,7 @@ __all__ = (
     "CHILD_PROFILE_KEY",
     "agent_id_for",
     "assemble_runtime",
+    "batch_fingerprint",
     "build_agent_runtime",
     "start_input_for",
 )

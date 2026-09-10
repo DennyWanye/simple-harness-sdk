@@ -28,6 +28,7 @@ from simple_harness.execution.audit import RunAuditUnavailable, RunOperationAudi
 from simple_harness.execution.base_agent import (
     AgentBindingRecord,
     AgentControlCommandRecord,
+    AgentCreationBatchRecord,
     AgentDelegationRecord,
     AgentTurnRecord,
     AgentTurnResultRecord,
@@ -1424,6 +1425,62 @@ class SqliteExecutionUnitOfWork:
 
         return control.read_control_command(
             self.database.connection, _required(command_id, "command_id")
+        )
+
+    def reserve_agent_batch(
+        self,
+        *,
+        batch_id: str,
+        owner_scope: str,
+        batch_key: str,
+        batch_fingerprint: str,
+        agent_ids: Sequence[str],
+        config_hashes: Sequence[str],
+        now: float,
+    ) -> tuple[AgentCreationBatchRecord, bool]:
+        from .base_agent import batches
+
+        with self.database.transaction() as connection:
+            return batches.reserve_batch(
+                connection,
+                batch_id=_required(batch_id, "batch_id"),
+                owner_scope=_required(owner_scope, "owner_scope"),
+                batch_key=_required(batch_key, "batch_key"),
+                batch_fingerprint=batch_fingerprint,
+                agent_ids=agent_ids,
+                config_hashes=config_hashes,
+                now=_time(now),
+            )
+
+    def commit_agent_batch(
+        self, *, batch_id: str, receipt: Mapping[str, JsonValue], now: float
+    ) -> AgentCreationBatchRecord:
+        from .base_agent import batches
+
+        with self.database.transaction() as connection:
+            return batches.commit_batch(
+                connection,
+                batch_id=_required(batch_id, "batch_id"),
+                receipt=receipt,
+                now=_time(now),
+            )
+
+    def read_agent_batch(
+        self, owner_scope: str, batch_key: str
+    ) -> AgentCreationBatchRecord | None:
+        from .base_agent import batches
+
+        return batches.read_batch(
+            self.database.connection,
+            _required(owner_scope, "owner_scope"),
+            _required(batch_key, "batch_key"),
+        )
+
+    def count_agent_bindings(self, owner_scope: str) -> int:
+        from .base_agent import batches
+
+        return batches.count_bindings(
+            self.database.connection, _required(owner_scope, "owner_scope")
         )
 
     def read_agent_delegation(self, delegation_id: str) -> AgentDelegationRecord | None:

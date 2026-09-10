@@ -67,6 +67,23 @@ class AgentClosed(AgentError):
     code = "agent_closed"
 
 
+class AgentBatchRejected(AgentError):
+    """``create_many`` refused before any write; ``index`` names the offending config."""
+
+    code = "agent_batch_rejected"
+
+    def __init__(self, error_code: str, message: str, *, index: int | None = None) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.index = index
+
+
+class AgentBatchIdentityConflict(AgentError):
+    """Same ``batch_key`` reused with different batch content."""
+
+    code = "batch_identity_conflict"
+
+
 class AgentPendingInputsExhausted(AgentError):
     """``AgentLimits.max_pending_inputs`` open turns already queued for this Agent."""
 
@@ -277,6 +294,8 @@ class AgentClosingReceipt:
 
 
 __all__ = (
+    "AgentBatchIdentityConflict",
+    "AgentBatchRejected",
     "AgentClosed",
     "AgentClosingReceipt",
     "AgentDelegationResult",

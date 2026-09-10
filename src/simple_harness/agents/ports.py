@@ -57,6 +57,9 @@ class AgentRuntimePorts:
     # Every BaseAgent request carries max_output_tokens so the budget reservation is
     # an estimated upper bound instead of UNKNOWN (which would refuse the next turn).
     default_max_output_tokens: int = 4096
+    # Batch creation caps (BA02/BA04): checked before any write.
+    max_agents: int = 1000
+    max_batch_size: int = 200
     clock: Callable[[], float] = time.time
 
     def __post_init__(self) -> None:
@@ -83,6 +86,10 @@ class AgentRuntimePorts:
             or self.default_max_output_tokens < 1
         ):
             raise ValueError("default_max_output_tokens must be a positive integer")
+        for name in ("max_agents", "max_batch_size"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
 
 
 __all__ = ("DEFAULT_CHILD_INSTRUCTIONS", "AgentRuntimePorts", "AllowAllAuthorization")
