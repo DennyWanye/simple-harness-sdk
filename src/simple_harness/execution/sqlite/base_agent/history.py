@@ -15,6 +15,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
+from typing import cast
 
 from simple_harness.contracts import JsonValue, canonical_json
 from simple_harness.execution.base_agent import (
@@ -121,7 +122,7 @@ def append_records(
         seq += 1
         message_json = canonical_json(entry["message_json"])
         offset = entry.get("full_record_offset")
-        full_seq = None if offset is None else seq_from + int(offset)
+        full_seq = None if offset is None else seq_from + int(cast(int, offset))
         connection.execute(
             "INSERT INTO base_agent_session_journal_v1(record_id,agent_id,seq,append_id,kind,"
             "turn_id,protocol_group_id,message_json,content_hash,provenance,visibility,"

@@ -127,6 +127,41 @@ class AgentSummaryRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentVectorRecord:
+    vector_id: str
+    agent_id: str
+    record_seq: int
+    source_hash: str
+    embedding_fingerprint: str
+    dim: int
+    vector: tuple[float, ...]
+    created_at: float
+
+
+AGENT_INDEX_JOB_STATES = ("pending", "claimed", "done", "error")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentIndexJobRecord:
+    job_id: str
+    agent_id: str
+    record_seq: int
+    source_hash: str
+    embedding_fingerprint: str
+    state: str
+    attempts: int
+    lease_owner: str | None
+    lease_expires_at: float | None
+    error_code: str | None
+    created_at: float
+    updated_at: float
+
+    def __post_init__(self) -> None:
+        if self.state not in AGENT_INDEX_JOB_STATES:
+            raise ValueError("unknown index job state")
+
+
+@dataclass(frozen=True, slots=True)
 class AgentCreationBatchRecord:
     batch_id: str
     owner_scope: str
@@ -232,6 +267,7 @@ class AgentDelegationRecord:
 
 __all__ = (
     "AGENT_DELEGATION_STATES",
+    "AGENT_INDEX_JOB_STATES",
     "AGENT_JOURNAL_KINDS",
     "AGENT_JOURNAL_PROVENANCES",
     "AGENT_JOURNAL_VISIBILITIES",
@@ -244,8 +280,10 @@ __all__ = (
     "AgentControlCommandRecord",
     "AgentCreationBatchRecord",
     "AgentDelegationRecord",
+    "AgentIndexJobRecord",
     "AgentJournalRecord",
     "AgentSummaryRecord",
     "AgentTurnRecord",
     "AgentTurnResultRecord",
+    "AgentVectorRecord",
 )

@@ -158,6 +158,36 @@ CREATE TABLE base_agent_session_summaries_v1 (
  created_at REAL NOT NULL,
  UNIQUE(agent_id, from_seq, to_seq, source_hash)
 ) STRICT;
+CREATE TABLE base_agent_session_vectors_v1 (
+ vector_id TEXT PRIMARY KEY,
+ agent_id TEXT NOT NULL REFERENCES base_agent_bindings_v1(agent_id),
+ record_seq INTEGER NOT NULL,
+ source_hash TEXT NOT NULL CHECK(length(source_hash) = 64),
+ embedding_fingerprint TEXT NOT NULL,
+ dim INTEGER NOT NULL CHECK(dim >= 1),
+ vector BLOB NOT NULL,
+ created_at REAL NOT NULL,
+ UNIQUE(agent_id, record_seq, embedding_fingerprint)
+) STRICT;
+CREATE INDEX base_agent_session_vectors_v1_agent_idx
+ ON base_agent_session_vectors_v1(agent_id, embedding_fingerprint);
+CREATE TABLE base_agent_index_jobs_v1 (
+ job_id TEXT PRIMARY KEY,
+ agent_id TEXT NOT NULL REFERENCES base_agent_bindings_v1(agent_id),
+ record_seq INTEGER NOT NULL,
+ source_hash TEXT NOT NULL CHECK(length(source_hash) = 64),
+ embedding_fingerprint TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending','claimed','done','error')),
+ attempts INTEGER NOT NULL DEFAULT 0,
+ lease_owner TEXT,
+ lease_expires_at REAL,
+ error_code TEXT,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL,
+ UNIQUE(agent_id, record_seq, embedding_fingerprint)
+) STRICT;
+CREATE INDEX base_agent_index_jobs_v1_state_idx
+ ON base_agent_index_jobs_v1(state, lease_expires_at);
 """
 
 __all__ = ("DDL",)
