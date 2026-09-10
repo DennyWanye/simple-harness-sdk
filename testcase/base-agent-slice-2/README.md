@@ -31,4 +31,5 @@
 | facade 形状与 fault 注入点 | `tests/agents/test_uow_facade_shape.py` |
 | 纯重构护栏 | `tests/agents/test_turn_finalize.py`、`tests/agents/test_base_agent_kernel_spike.py` 未改全绿 |
 | 内核不 import agents、根包 API 不变 | `tests/agents/test_config_contracts.py`、`tests/unit/contracts` |
-| 真实端点 | `tests/agents/test_delegation_e2e_real_provider.py --run-real-provider`（journal §4.3：4/4） |
+| 真实端点 | `tests/agents/test_delegation_e2e_real_provider.py --run-real-provider`（journal §4.3：6/6，报告在 `plans/.../slice-2/reports/`） |
+| review 修复回归 | `test_cancel_turn.py::test_cancel_inside_a_tool_leaves_the_effect_reconcilable_not_orphaned`、`test_agent_close.py::test_close_drain_conflict_is_bounded_not_a_spin`、`test_create_many_batches.py::test_instance_cap_is_enforced_at_insert_for_single_create`、`test_input_queue.py::test_wake_activation_conflict_is_retried_by_the_drain_loop`、`test_provider_response_durability.py::test_empty_response_detail_keeps_finish_reason_and_usage` |
