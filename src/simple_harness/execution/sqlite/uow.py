@@ -1407,6 +1407,64 @@ class SqliteExecutionUnitOfWork:
             )
             return stored
 
+    def request_agent_turn_cancel(
+        self, *, agent_id: str, turn_id: str, command_id: str, request_hash: str, now: float
+    ) -> AgentControlCommandRecord:
+        """Durable cancel intent for one turn (idempotent by ``command_id``).
+
+        Nothing here touches the turn row: the executor that holds the Run lease
+        observes the intent cooperatively and fails the turn through the ordinary
+        outcome path.  A turn that already settled gets an ``already_settled`` receipt.
+        """
+
+        from .base_agent import control, turns
+
+        with self.database.transaction() as connection:
+            existing = control.read_control_command(
+                connection, _required(command_id, "command_id")
+            )
+            if existing is not None:
+                stored, _ = control.record_control_command(
+                    connection,
+                    command_id=command_id,
+                    agent_id=_required(agent_id, "agent_id"),
+                    kind="cancel_turn",
+                    target_turn_id=turn_id,
+                    control_generation=existing.control_generation,
+                    request_hash=request_hash,
+                    receipt=cast(Mapping[str, JsonValue], _thaw_json(existing.receipt)),
+                    now=_time(now),
+                )
+                return stored
+            turn = turns.read_turn(connection, _required(turn_id, "turn_id"))
+            if turn is None or turn.agent_id != agent_id:
+                raise UnitOfWorkConflict("agent turn is missing")
+            generation = control.bump_control_generation(connection, agent_id)
+            state = "requested" if turn.phase in ("queued", "running") else "already_settled"
+            stored, _ = control.record_control_command(
+                connection,
+                command_id=command_id,
+                agent_id=agent_id,
+                kind="cancel_turn",
+                target_turn_id=turn_id,
+                control_generation=generation,
+                request_hash=request_hash,
+                receipt={
+                    "state": state,
+                    "turn_phase": turn.phase,
+                    "control_generation": generation,
+                },
+                now=_time(now),
+            )
+            return stored
+
+    def read_agent_turn_cancel(self, turn_id: str) -> AgentControlCommandRecord | None:
+        from .base_agent import control
+
+        return control.read_pending_cancel_for_turn(
+            self.database.connection, _required(turn_id, "turn_id")
+        )
+
     def mark_agent_closed(self, *, agent_id: str, now: float) -> AgentBindingRecord:
         """``closing -> closed`` only when no turn is still open; returns the binding."""
 

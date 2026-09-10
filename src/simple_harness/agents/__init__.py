@@ -16,6 +16,7 @@ from .config import AGENT_CONFIG_FIELDS, AgentConfig, AgentLimits, config_hash
 from .contracts import (
     AgentBatchIdentityConflict,
     AgentBatchRejected,
+    AgentCancelReceipt,
     AgentClosed,
     AgentClosingReceipt,
     AgentDelegationResult,
@@ -54,6 +55,7 @@ __all__ = (
     "AGENT_CONFIG_FIELDS",
     "AgentBatchIdentityConflict",
     "AgentBatchRejected",
+    "AgentCancelReceipt",
     "AgentClosed",
     "AgentClosingReceipt",
     "AgentConfig",

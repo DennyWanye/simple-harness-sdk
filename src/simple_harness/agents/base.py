@@ -28,6 +28,7 @@ from simple_harness.execution.uow import RunState, UnitOfWorkConflict
 
 from .config import AgentConfig
 from .contracts import (
+    AgentCancelReceipt,
     AgentClosed,
     AgentClosingReceipt,
     AgentInputConflict,
@@ -231,6 +232,22 @@ class BaseAgent:
 
         receipt = await self._runtime.close_agent(
             self.agent_id, command_id=command_id, drain_timeout=drain_timeout
+        )
+        refreshed = self._runtime.uow.read_agent_binding(self.agent_id)
+        if refreshed is not None:
+            self._binding = refreshed
+        return receipt
+
+    async def cancel_turn(
+        self, turn_id: str, *, command_id: str, wait_timeout: float = 30.0
+    ) -> AgentCancelReceipt:
+        """Cooperatively cancel one open turn; committed facts are never rewritten."""
+
+        turn = self._runtime.uow.read_agent_turn(turn_id)
+        if turn is None or turn.agent_id != self.agent_id:
+            raise AgentTurnNotFound(turn_id)
+        receipt = await self._runtime.cancel_turn(
+            self.agent_id, turn_id, command_id=command_id, wait_timeout=wait_timeout
         )
         refreshed = self._runtime.uow.read_agent_binding(self.agent_id)
         if refreshed is not None:

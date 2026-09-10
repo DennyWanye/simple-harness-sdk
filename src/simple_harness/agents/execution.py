@@ -17,9 +17,10 @@ checks are exactly the legacy ones.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -61,6 +62,7 @@ from simple_harness.runtime.termination import (
     TerminationLimits,
     TerminationReason,
 )
+from simple_harness.tools.contracts import CancellationToken
 from simple_harness.tools.errors import MalformedToolArgumentsError, UnknownToolError
 from simple_harness.tools.executor import ToolAuthorizationPending
 from simple_harness.tools.runtime_catalog import RunToolExposurePort
@@ -69,6 +71,11 @@ from .completion import committed_outcome, failed_outcome
 from .contracts import _message_from_json
 
 BASE_AGENT_POLICY_PROTOCOL = "base-agent-hard-policy-v1"
+AGENT_TURN_CANCELLED = "agent_turn_cancelled"
+
+
+class _TurnCancelled(Exception):
+    """Internal: the per-turn cooperative cancel token fired inside the loop."""
 
 
 def _binding_failure(code: str, message: str) -> DriverResult:
@@ -100,8 +107,14 @@ class AgentExecutionDriver:
         provider_budget_fingerprint: str | None = None,
         tool_exposure_resolver: Callable[[RunId], RunToolExposurePort | None] | None = None,
         delegation_counter: Callable[[str], int] | None = None,
+        turn_cancellations: MutableMapping[str, CancellationToken] | None = None,
     ) -> None:
         self._clock = clock
+        # In-process cooperative cancel tokens keyed by turn_id (T8); the durable
+        # intent lives in base_agent_control_commands_v1 for cross-process resumes.
+        self.turn_cancellations: MutableMapping[str, CancellationToken] = (
+            {} if turn_cancellations is None else turn_cancellations
+        )
         self._lifetime_limits = collaborator.limits
         self._effects = effects or EffectBatchExecutor()
         # Kept for callers that inspect the lifetime loop; every turn runs its own
@@ -223,6 +236,21 @@ class AgentExecutionDriver:
             # loop's ``started_at`` so the deadline offset is anchored correctly.
             totals = _checkpoint_totals(checkpoint_port, invocation.run.run_id)
 
+        # T8: a durable cancel intent recorded before this (re)admission fails the turn
+        # without a single provider call; an in-process intent arrives via the token.
+        read_cancel = getattr(checkpoint_port, "read_agent_turn_cancel", None)
+        if callable(read_cancel) and read_cancel(turn_id) is not None:
+            self._settle_failed_turn(invocation, run_id)
+            return self._cancelled_turn(
+                agent_id=agent_id,
+                turn_id=turn_id,
+                seq=seq,
+                input_id=input_id,
+                input_hash=input_hash,
+                ordinal_from=ordinal_from,
+                checkpoint_port=checkpoint_port,
+                run_id_value=invocation.run.run_id,
+            )
         deadline = _turn_deadline(binding.get("limits"))
         if (
             deadline is not None
@@ -288,27 +316,34 @@ class AgentExecutionDriver:
         tool_exposure = (
             None if self._tool_exposure_resolver is None else self._tool_exposure_resolver(run_id)
         )
+        token = self.turn_cancellations.get(turn_id)
+        if token is None:
+            token = CancellationToken()
+            self.turn_cancellations[turn_id] = token
         try:
-            result = await loop.run(
-                ReActRunInput(
-                    run_id,
-                    RequestId(invocation.run.request_id),
-                    turn_id=turn_id,
-                    continuation_id=None,
-                    tools=tools,
-                    tool_exposure=tool_exposure,
-                    temperature=_optional_float(input_value.get("temperature"), "temperature"),
-                    max_output_tokens=_optional_int(
-                        input_value.get("max_output_tokens"), "max_output_tokens"
-                    ),
-                    initial_route_receipt=invocation.start.initial_route_receipt,
-                    initial_route_receipt_hash=invocation.start.initial_route_receipt_hash,
-                ),
-                services=invocation.services,
-                execution_lease=invocation.execution_lease,
-                run_fence=invocation.run_fence,
-                cancel=cancel,
-                initial_messages=initial_messages,
+            result = await self._run_turn(
+                loop,
+                invocation,
+                run_id,
+                turn_id,
+                tools,
+                tool_exposure,
+                input_value,
+                initial_messages,
+                cancel,
+                token,
+            )
+        except _TurnCancelled:
+            self._settle_failed_turn(invocation, run_id)
+            return self._cancelled_turn(
+                agent_id=agent_id,
+                turn_id=turn_id,
+                seq=seq,
+                input_id=input_id,
+                input_hash=input_hash,
+                ordinal_from=ordinal_from,
+                checkpoint_port=checkpoint_port,
+                run_id_value=invocation.run.run_id,
             )
         except TerminationBudgetExceeded as error:
             # The turn failed; the Agent lives on (BA-v1.0 §1.3).  The run-level
@@ -369,6 +404,8 @@ class AgentExecutionDriver:
             ToolEffectUnknownError,
         ) as error:
             return _react_failure_result(error)
+        finally:
+            self.turn_cancellations.pop(turn_id, None)
         response = result.response
         outcome = committed_outcome(
             agent_id=agent_id,
@@ -394,6 +431,83 @@ class AgentExecutionDriver:
                 "base_agent_stage": "result_pending",
             },
             agent_turn_outcome=outcome,
+        )
+
+    async def _run_turn(  # type: ignore[no-untyped-def]
+        self,
+        loop: ReActLoop,
+        invocation: DriverInvocation,
+        run_id: RunId,
+        turn_id: str,
+        tools,
+        tool_exposure,
+        input_value: Mapping[str, object],
+        initial_messages: tuple[Message, ...],
+        cancel,
+        token: CancellationToken,
+    ):
+        try:
+            return await loop.run(
+                ReActRunInput(
+                    run_id,
+                    RequestId(invocation.run.request_id),
+                    turn_id=turn_id,
+                    continuation_id=None,
+                    tools=tools,
+                    tool_exposure=tool_exposure,
+                    temperature=_optional_float(input_value.get("temperature"), "temperature"),
+                    max_output_tokens=_optional_int(
+                        input_value.get("max_output_tokens"), "max_output_tokens"
+                    ),
+                    initial_route_receipt=invocation.start.initial_route_receipt,
+                    initial_route_receipt_hash=invocation.start.initial_route_receipt_hash,
+                ),
+                services=invocation.services,
+                execution_lease=invocation.execution_lease,
+                run_fence=invocation.run_fence,
+                cancel=cancel,
+                initial_messages=initial_messages,
+                tool_cancel=token,
+            )
+        except asyncio.CancelledError:
+            # Only a cooperative per-turn cancel is a *turn* failure; a real task /
+            # kernel cancel keeps propagating untouched.
+            if token.cancelled and not getattr(cancel, "is_cancelled", False):
+                raise _TurnCancelled() from None
+            raise
+
+    def _cancelled_turn(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        agent_id: str,
+        turn_id: str,
+        seq: int,
+        input_id: str,
+        input_hash: str,
+        ordinal_from: int | None,
+        checkpoint_port,
+        run_id_value: str,
+    ) -> DriverResult:
+        return DriverResult(
+            RunState.WAITING,
+            {
+                "response_present": False,
+                "base_agent_stage": "cancelled",
+                "raw_failures": [{"error_code": AGENT_TURN_CANCELLED}],
+            },
+            agent_turn_outcome=failed_outcome(
+                agent_id=agent_id,
+                turn_id=turn_id,
+                seq=seq,
+                input_id=input_id,
+                input_hash=input_hash,
+                error={"error_code": AGENT_TURN_CANCELLED, "source_kind": "control"},
+                delegation_count=self._delegations(turn_id),
+                provider_turn_ordinal_from=ordinal_from,
+                provider_turn_ordinal_to=_checkpoint_totals(
+                    checkpoint_port, run_id_value
+                ).provider_turns,
+            ),
         )
 
     def _budget_failure(  # type: ignore[no-untyped-def]
@@ -609,6 +723,7 @@ def build_agent_execution_driver(
     continuation_capability: ProviderContinuationCapability = ProviderContinuationCapability(),
     delegation_counter: Callable[[str], int] | None = None,
     clock: Callable[[], float] = time.time,
+    turn_cancellations: MutableMapping[str, CancellationToken] | None = None,
 ) -> AgentExecutionDriver:
     """Hard-policy builder; the fingerprint protocol differs from legacy ReAct on purpose."""
 
@@ -641,7 +756,13 @@ def build_agent_execution_driver(
         provider_budget_fingerprint=provider_fingerprint,
         tool_exposure_resolver=tool_exposure_resolver,
         delegation_counter=delegation_counter,
+        turn_cancellations=turn_cancellations,
     )
 
 
-__all__ = ("AgentExecutionDriver", "BASE_AGENT_POLICY_PROTOCOL", "build_agent_execution_driver")
+__all__ = (
+    "AGENT_TURN_CANCELLED",
+    "AgentExecutionDriver",
+    "BASE_AGENT_POLICY_PROTOCOL",
+    "build_agent_execution_driver",
+)

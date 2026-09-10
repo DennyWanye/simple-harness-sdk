@@ -124,6 +124,19 @@ def set_lifecycle(
     return binding
 
 
+def read_pending_cancel_for_turn(
+    connection: sqlite3.Connection, turn_id: str
+) -> AgentControlCommandRecord | None:
+    """The durable cancel intent for one turn, if any (oldest command wins)."""
+
+    row = connection.execute(
+        "SELECT * FROM base_agent_control_commands_v1 WHERE kind='cancel_turn' "
+        "AND target_turn_id=? ORDER BY created_at, command_id LIMIT 1",
+        (turn_id,),
+    ).fetchone()
+    return None if row is None else _command(row)
+
+
 def bump_control_generation(connection: sqlite3.Connection, agent_id: str) -> int:
     connection.execute(
         "UPDATE base_agent_bindings_v1 SET control_generation=control_generation+1 "
@@ -142,6 +155,7 @@ __all__ = (
     "bump_control_generation",
     "read_binding_lifecycle",
     "read_control_command",
+    "read_pending_cancel_for_turn",
     "record_control_command",
     "set_lifecycle",
 )

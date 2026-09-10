@@ -45,18 +45,21 @@ from simple_harness.runtime.context import SqliteContextPort
 from simple_harness.runtime.kernel import Runtime, RuntimePorts, RuntimeProfile, build_runtime
 from simple_harness.runtime.start_snapshot import RunStart
 from simple_harness.tools import EffectExecutor, FunctionTool, Tool
+from simple_harness.tools.contracts import CancellationToken
 
 from .base import BaseAgent
 from .config import AgentConfig, config_hash
 from .contracts import (
     AgentBatchIdentityConflict,
     AgentBatchRejected,
+    AgentCancelReceipt,
     AgentClosingReceipt,
     AgentId,
     AgentInputConflict,
     AgentNotFound,
+    AgentTurnNotFound,
 )
-from .execution import build_agent_execution_driver
+from .execution import AGENT_TURN_CANCELLED, build_agent_execution_driver
 from .ports import AgentRuntimePorts
 from .tool_registry import BaseAgentToolRegistry
 from .wire import AgentProviderWire
@@ -188,12 +191,14 @@ def assemble_runtime(
         agent_memory=None,
         context_provider=None,
     )
+    turn_cancellations: dict[str, CancellationToken] = {}
     driver = build_agent_execution_driver(
         limits=ports.termination_limits,
         budget_policy=budget_policy,
         estimator=estimator,
         delegation_counter=delegation_counter,
         clock=ports.clock,
+        turn_cancellations=turn_cancellations,
     )
     runtime = build_runtime(
         uow=uow,  # type: ignore[arg-type]
@@ -517,6 +522,70 @@ class AgentRuntime:
                 )
             await asyncio.sleep(interval)
             interval = min(interval * 2, 0.2)
+
+    async def cancel_turn(
+        self, agent_id: str, turn_id: str, *, command_id: str, wait_timeout: float = 30.0
+    ) -> AgentCancelReceipt:
+        """Cooperative per-turn cancel (BA10 / T8); never the kernel's Run cancel.
+
+        The intent is made durable first (control command + generation bump), then the
+        in-process token fires so the executor's ReAct loop stops at its next cancel
+        point and returns a failed ``agent_turn_cancelled`` result through the normal,
+        lease-fenced outcome path.  A turn that already settled keeps its result.
+        """
+
+        if not isinstance(command_id, str) or not command_id.strip():
+            raise ValueError("command_id is required")
+        binding = self.binding(agent_id)
+        if binding is None:
+            raise AgentNotFound(agent_id)
+        request_hash = hashlib.sha256(
+            canonical_json(
+                {"kind": "cancel_turn", "agent_id": agent_id, "turn_id": turn_id}
+            ).encode("utf-8")
+        ).hexdigest()
+        clock = self._ports.clock
+        try:
+            command = self.uow.request_agent_turn_cancel(
+                agent_id=agent_id,
+                turn_id=turn_id,
+                command_id=command_id,
+                request_hash=request_hash,
+                now=clock(),
+            )
+        except UnitOfWorkConflict as error:
+            raise AgentTurnNotFound(str(error)) from error
+        token = getattr(self.driver, "turn_cancellations", {}).get(turn_id)
+        if token is not None:
+            token.cancel()
+        deadline = clock() + float(wait_timeout)
+        interval = 0.01
+        while True:
+            turn = self.uow.read_agent_turn(turn_id)
+            assert turn is not None
+            if turn.phase in ("committed", "failed"):
+                stored = self.uow.read_agent_turn_result(turn_id)
+                error = None if stored is None else dict(stored.result_json).get("error")
+                cancelled = (
+                    isinstance(error, Mapping) and error.get("error_code") == AGENT_TURN_CANCELLED
+                )
+                state = "cancelled" if cancelled else "already_settled"
+                break
+            if clock() >= deadline:
+                state = "pending"
+                break
+            await asyncio.sleep(interval)
+            interval = min(interval * 2, 0.2)
+        current = self.uow.read_agent_binding(agent_id)
+        assert current is not None
+        return AgentCancelReceipt(
+            agent_id=agent_id,
+            turn_id=turn_id,
+            command_id=command.command_id,
+            state=state,
+            control_generation=current.control_generation,
+            created_at=command.created_at,
+        )
 
     async def open(self, agent_id: str | AgentId) -> BaseAgent:
         """Open an existing Agent of this owner; foreign or missing ids look identical."""

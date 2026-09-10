@@ -260,6 +260,28 @@ class AgentTurnResult:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentCancelReceipt:
+    """Answer to ``cancel_turn``: what happened to the turn after the intent was durable.
+
+    ``state`` is ``cancelled`` (the turn ended as a failed ``agent_turn_cancelled``
+    result), ``already_settled`` (a result existed before the intent; it is kept) or
+    ``pending`` (the executor has not yet observed the intent, e.g. it is blocked on an
+    uncertain outbound call; the intent stays durable and is honoured on resume).
+    """
+
+    agent_id: str
+    turn_id: str
+    command_id: str
+    state: str
+    control_generation: int
+    created_at: float
+
+    def __post_init__(self) -> None:
+        if self.state not in ("cancelled", "already_settled", "pending"):
+            raise ValueError("cancel receipt state is unknown")
+
+
+@dataclass(frozen=True, slots=True)
 class AgentTurnSnapshot:
     """Read model of one turn while it is open or after it settled (BA11 / T7)."""
 
@@ -314,6 +336,7 @@ class AgentClosingReceipt:
 __all__ = (
     "AgentBatchIdentityConflict",
     "AgentBatchRejected",
+    "AgentCancelReceipt",
     "AgentClosed",
     "AgentClosingReceipt",
     "AgentDelegationResult",
