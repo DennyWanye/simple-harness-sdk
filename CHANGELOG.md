@@ -1,3 +1,27 @@
+## 0.9.1 — agent_orchestrator step 3: Planner-decomposed static DAG executed in parallel (source candidate)
+
+`agent_orchestrator` 0.3.0 (same wheel).  Step 3 of ORCH-BUILD-v1.0: the Planner proposes a
+whole Task graph (`<task_graph_proposal>`, budgets normalised then checked as a whole —
+cycles, missing/self dependencies, duplicates, sum of task budgets within the Mission,
+tools, shape, independent siblings declaring the same output path) and the Commit Service
+applies it atomically with a replayable receipt (roots READY, the rest BLOCKED; a rejected
+graph writes only `TaskGraphRejected` and is fed back to the next Planner proposal).  The
+control loop runs the Frontier through a bounded Allocator (`max_concurrency`,
+`candidates_per_task`): parallel Attempts on independent Tasks, a downstream Attempt seeded
+with every ancestor's accepted artifacts (frozen as inputs in the dispatch intent, protected
+against rewrite unless the Task declared the path in `outputs`; independent branches that
+disagree on a path are an `artifact_conflict`, never a silent pick), artifact versions per
+(mission, path) lineage.  Accepting a result, superseding the losing candidates (their
+results kept as history) and unblocking the dependents happen in one transaction; a stop
+cascades to READY/ACTIVE/VERIFYING Tasks while BLOCKED Tasks end with the Mission (§25.1 has
+no BLOCKED→CANCELLED edge); Mission-pool exhaustion blames no Task.  Two orchestrator
+instances share the libraries (one `owner_scope`, one `owner_id` per instance, orchestration
+lease ≥ 2× the SDK Run lease): a lapsed lease is taken over on the same Attempt and the
+same SDK turn, a vanished executor is LOST and retried, `recover()` heals the frontier and
+orphan candidates.  The Mission is judged on the integrated tree of every Task's accepted
+artifacts (pytest / file / independent Critic).  CLI `demo --scenario static-dag`.  No SDK
+(`simple_harness`) API change.
+
 ## 0.9.0 — agent_orchestrator step 2: the reliable single-Task Mission closure (source candidate)
 
 New package `agent_orchestrator` shipped in the same wheel (modular monolith after the
