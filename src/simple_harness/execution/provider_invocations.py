@@ -242,9 +242,7 @@ def _durable_public_message_json(
     allow_empty_text: bool = False,
 ) -> dict[str, JsonValue]:
     if isinstance(message.content, str):
-        content: JsonValue = _public_text(
-            message.content, "content", allow_empty=allow_empty_text
-        )
+        content: JsonValue = _public_text(message.content, "content", allow_empty=allow_empty_text)
     else:
         public: list[JsonValue] = []
         hidden_present = False

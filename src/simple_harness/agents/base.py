@@ -35,6 +35,7 @@ from .contracts import (
     AgentTurnNotFound,
     AgentTurnReceipt,
     AgentTurnResult,
+    AgentTurnSnapshot,
     AgentTurnState,
     AgentTurnTimeout,
 )
@@ -161,6 +162,49 @@ class BaseAgent:
             raise AgentTurnNotFound(turn_id)
         return AgentTurnState(turn.phase)
 
+    def turn_snapshot(self, turn_id: str) -> AgentTurnSnapshot:
+        """Durable view of one turn: phase, ordinals and whether the Run is blocked on it."""
+
+        uow = self._runtime.uow
+        turn = uow.read_agent_turn(turn_id)
+        if turn is None or turn.agent_id != self.agent_id:
+            raise AgentTurnNotFound(turn_id)
+        blocker: dict[str, JsonValue] | None = None
+        if turn.phase in {"queued", "running", "result_pending"}:
+            open_blockers = uow.list_open_wait_blockers_for_run(self.run_id)
+            if open_blockers:
+                first = open_blockers[0]
+                blocker = {
+                    "kind": first.kind.value,
+                    "blocker_id": first.blocker_id,
+                    "ledger_identity": first.ledger_identity,
+                    "handoff_attempt": first.handoff_attempt,
+                }
+        return AgentTurnSnapshot(
+            turn_id=turn.turn_id,
+            agent_id=turn.agent_id,
+            input_id=turn.input_id,
+            seq=turn.seq,
+            state=AgentTurnState(turn.phase),
+            blocked=blocker is not None,
+            blocker=blocker,
+            provider_turn_ordinal_from=turn.provider_turn_ordinal_from,
+            provider_turn_ordinal_to=turn.provider_turn_ordinal_to,
+            created_at=turn.created_at,
+        )
+
+    def receipt_for(self, turn_id: str) -> AgentTurnReceipt:
+        turn = self._runtime.uow.read_agent_turn(turn_id)
+        if turn is None or turn.agent_id != self.agent_id:
+            raise AgentTurnNotFound(turn_id)
+        return AgentTurnReceipt(
+            turn_id=turn.turn_id,
+            agent_id=turn.agent_id,
+            input_id=turn.input_id,
+            seq=turn.seq,
+            state=AgentTurnState(turn.phase),
+        )
+
     async def wait_turn(self, turn_id: str, *, timeout: float | None = None) -> AgentTurnResult:
         """Wait for the durable result; a timeout never cancels the underlying turn."""
 
@@ -172,7 +216,7 @@ class BaseAgent:
             if result is not None:
                 return result
             if deadline is not None and clock() >= deadline:
-                raise AgentTurnTimeout(turn_id)
+                raise AgentTurnTimeout(turn_id, self.receipt_for(turn_id))
             await asyncio.sleep(interval)
             interval = min(interval * 2, 0.2)
 

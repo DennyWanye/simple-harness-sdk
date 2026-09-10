@@ -68,6 +68,9 @@ def _turn(row: sqlite3.Row) -> AgentTurnRecord:
             if row["provider_turn_ordinal_to"] is None
             else int(row["provider_turn_ordinal_to"])
         ),
+        tool_call_ordinal_from=(
+            None if row["tool_call_ordinal_from"] is None else int(row["tool_call_ordinal_from"])
+        ),
         lease_epoch=None if row["lease_epoch"] is None else int(row["lease_epoch"]),
         created_at=float(row["created_at"]),
         updated_at=float(row["updated_at"]),
@@ -307,12 +310,16 @@ def mark_turn_running(
     lease_epoch: int,
     provider_turn_ordinal_from: int | None,
     now: float,
+    tool_call_ordinal_from: int | None = None,
 ) -> AgentTurnRecord:
+    """Mark RUNNING; the ``*_ordinal_from`` baselines are written once (first admission)."""
+
     changed = connection.execute(
         "UPDATE base_agent_turns_v1 SET phase='running', lease_epoch=?, "
-        "provider_turn_ordinal_from=COALESCE(provider_turn_ordinal_from, ?), updated_at=?"
+        "provider_turn_ordinal_from=COALESCE(provider_turn_ordinal_from, ?), "
+        "tool_call_ordinal_from=COALESCE(tool_call_ordinal_from, ?), updated_at=?"
         " WHERE turn_id=? AND phase IN ('queued','running')",
-        (lease_epoch, provider_turn_ordinal_from, now, turn_id),
+        (lease_epoch, provider_turn_ordinal_from, tool_call_ordinal_from, now, turn_id),
     ).rowcount
     if changed != 1:
         raise UnitOfWorkConflict("agent turn is not runnable")

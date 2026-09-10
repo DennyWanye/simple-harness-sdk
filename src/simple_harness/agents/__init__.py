@@ -28,6 +28,7 @@ from .contracts import (
     AgentTurnNotFound,
     AgentTurnReceipt,
     AgentTurnResult,
+    AgentTurnSnapshot,
     AgentTurnState,
     AgentTurnTimeout,
 )
@@ -69,6 +70,7 @@ __all__ = (
     "AgentTurnNotFound",
     "AgentTurnReceipt",
     "AgentTurnResult",
+    "AgentTurnSnapshot",
     "AgentTurnState",
     "AgentTurnTimeout",
     "BaseAgent",

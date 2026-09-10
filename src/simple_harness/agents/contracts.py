@@ -95,9 +95,11 @@ class AgentTurnTimeout(AgentError):
 
     code = "agent_turn_timeout"
 
-    def __init__(self, turn_id: str) -> None:
+    def __init__(self, turn_id: str, receipt: AgentTurnReceipt | None = None) -> None:
         super().__init__(f"turn {turn_id} has no committed result yet")
         self.turn_id = turn_id
+        # BA-v1.0 §4.2: a timeout carries the original receipt; the turn keeps running.
+        self.receipt = receipt
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +260,22 @@ class AgentTurnResult:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentTurnSnapshot:
+    """Read model of one turn while it is open or after it settled (BA11 / T7)."""
+
+    turn_id: str
+    agent_id: str
+    input_id: str
+    seq: int
+    state: AgentTurnState
+    blocked: bool
+    blocker: Mapping[str, JsonValue] | None
+    provider_turn_ordinal_from: int | None
+    provider_turn_ordinal_to: int | None
+    created_at: float
+
+
+@dataclass(frozen=True, slots=True)
 class AgentDelegationResult:
     """What the parent receives back from one ``agent.delegate`` call."""
 
@@ -308,6 +326,7 @@ __all__ = (
     "AgentTurnNotFound",
     "AgentTurnReceipt",
     "AgentTurnResult",
+    "AgentTurnSnapshot",
     "AgentTurnState",
     "AgentTurnTimeout",
 )

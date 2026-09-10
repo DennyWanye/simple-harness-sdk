@@ -78,9 +78,15 @@ def fresh_descriptor() -> Migration:
 def accepted_descriptor_rows():
     def row(d):
         return (d.version, d.name, d.checksum)
+
     seven, eight, nine, ten = map(
         row,
-        (legacy_v7_descriptor(), legacy_v8_descriptor(), legacy_v9_descriptor(), fresh_descriptor()),
+        (
+            legacy_v7_descriptor(),
+            legacy_v8_descriptor(),
+            legacy_v9_descriptor(),
+            fresh_descriptor(),
+        ),
     )
     return (
         # Existing v9 libraries stay openable; the in-place v9 -> v10 upgrader

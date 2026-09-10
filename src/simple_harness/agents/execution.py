@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import cast
 
 from simple_harness.contracts import (
@@ -56,7 +56,11 @@ from simple_harness.runtime.drivers.react_loop import (
 )
 from simple_harness.runtime.kernel import DriverInvocation, DriverResult
 from simple_harness.runtime.react_checkpoint import DurableReactCheckpoint
-from simple_harness.runtime.termination import TerminationBudgetExceeded, TerminationLimits
+from simple_harness.runtime.termination import (
+    TerminationBudgetExceeded,
+    TerminationLimits,
+    TerminationReason,
+)
 from simple_harness.tools.errors import MalformedToolArgumentsError, UnknownToolError
 from simple_harness.tools.executor import ToolAuthorizationPending
 from simple_harness.tools.runtime_catalog import RunToolExposurePort
@@ -98,9 +102,13 @@ class AgentExecutionDriver:
         delegation_counter: Callable[[str], int] | None = None,
     ) -> None:
         self._clock = clock
+        self._lifetime_limits = collaborator.limits
+        self._effects = effects or EffectBatchExecutor()
+        # Kept for callers that inspect the lifetime loop; every turn runs its own
+        # ``ReActLoop`` with limits derived from the turn's durable baselines (T6).
         self._loop = ReActLoop(
             collaborator=collaborator,
-            effects=effects or EffectBatchExecutor(),
+            effects=self._effects,
             clock=clock,
             policy_fingerprint=policy_fingerprint,
         )
@@ -183,15 +191,72 @@ class AgentExecutionDriver:
             raise ValueError("Provider budget policy differs from BaseAgent composition")
 
         checkpoint_port = invocation.services.react_checkpoint
-        ordinal_from = _reserved_provider_turns(checkpoint_port, invocation.run.run_id)
+        totals = _checkpoint_totals(checkpoint_port, invocation.run.run_id)
+        ordinal_from = totals.provider_turns
+        turn_created_at: float | None = None
+        tool_calls_from: int | None = totals.tool_calls
         mark_running = getattr(checkpoint_port, "mark_agent_turn_running", None)
         if callable(mark_running):
-            mark_running(
+            # The baselines are written once: a resume of the same turn (UNKNOWN or
+            # authorization wait) reads the first admission back instead of the
+            # current cumulative totals, so "per turn" never means "per attempt".
+            turn_row = mark_running(
                 turn_id=turn_id,
                 execution_lease=invocation.execution_lease,
                 provider_turn_ordinal_from=ordinal_from,
+                tool_call_ordinal_from=totals.tool_calls,
                 now=self._clock(),
             )
+            if turn_row is not None:
+                ordinal_from = getattr(turn_row, "provider_turn_ordinal_from", ordinal_from)
+                tool_calls_from = getattr(turn_row, "tool_call_ordinal_from", tool_calls_from)
+                turn_created_at = getattr(turn_row, "created_at", None)
+
+        # T7: the run-level ReAct checkpoint may only be resumed by the turn that left
+        # it in flight; any other turn on an in-flight checkpoint is a kernel-integrity
+        # failure (never silently reused).
+        identity_failure = self._check_turn_identity(invocation, run_id, ordinal_from)
+        if identity_failure is not None:
+            return identity_failure
+        if totals.started_at is None:
+            # The identity check created the checkpoint for a first turn: re-read the
+            # loop's ``started_at`` so the deadline offset is anchored correctly.
+            totals = _checkpoint_totals(checkpoint_port, invocation.run.run_id)
+
+        deadline = _turn_deadline(binding.get("limits"))
+        if (
+            deadline is not None
+            and turn_created_at is not None
+            and self._clock() - float(turn_created_at) >= deadline
+        ):
+            # Anchored on the turn's first durable admission: a restart that arrives
+            # after the deadline fails the turn without a single provider call.
+            self._settle_failed_turn(invocation, run_id)
+            return self._budget_failure(
+                TerminationBudgetExceeded(TerminationReason.WALL_CLOCK),
+                agent_id=agent_id,
+                turn_id=turn_id,
+                seq=seq,
+                input_id=input_id,
+                input_hash=input_hash,
+                ordinal_from=ordinal_from,
+                checkpoint_port=checkpoint_port,
+                run_id_value=invocation.run.run_id,
+            )
+        turn_limits = _turn_limits(
+            self._lifetime_limits,
+            binding.get("limits"),
+            provider_turns_from=ordinal_from,
+            tool_calls_from=tool_calls_from,
+            turn_created_at=turn_created_at,
+            loop_started_at=totals.started_at,
+        )
+        loop = ReActLoop(
+            collaborator=AgentLoopCollaborator(limits=turn_limits),
+            effects=self._effects,
+            clock=self._clock,
+            policy_fingerprint=self.policy_fingerprint,
+        )
 
         # Both branches append the user message under the turn-scoped id so a rerun of the
         # first turn is idempotent (review F4); instructions get their own id.
@@ -224,7 +289,7 @@ class AgentExecutionDriver:
             None if self._tool_exposure_resolver is None else self._tool_exposure_resolver(run_id)
         )
         try:
-            result = await self._loop.run(
+            result = await loop.run(
                 ReActRunInput(
                     run_id,
                     RequestId(invocation.run.request_id),
@@ -246,23 +311,20 @@ class AgentExecutionDriver:
                 initial_messages=initial_messages,
             )
         except TerminationBudgetExceeded as error:
-            # The turn failed; the Agent lives on (BA-v1.0 §1.3).
-            return DriverResult(
-                RunState.WAITING,
-                {"response_present": False, "raw_failures": [{"error_code": str(error.code)}]},
-                agent_turn_outcome=failed_outcome(
-                    agent_id=agent_id,
-                    turn_id=turn_id,
-                    seq=seq,
-                    input_id=input_id,
-                    input_hash=input_hash,
-                    error={"error_code": str(error.code), "source_kind": "termination"},
-                    delegation_count=self._delegations(turn_id),
-                    provider_turn_ordinal_from=ordinal_from,
-                    provider_turn_ordinal_to=_reserved_provider_turns(
-                        checkpoint_port, invocation.run.run_id
-                    ),
-                ),
+            # The turn failed; the Agent lives on (BA-v1.0 §1.3).  The run-level
+            # checkpoint may be mid-flight (a limit breached after the provider
+            # answered): release it so the next turn starts a fresh request.
+            self._settle_failed_turn(invocation, run_id)
+            return self._budget_failure(
+                error,
+                agent_id=agent_id,
+                turn_id=turn_id,
+                seq=seq,
+                input_id=input_id,
+                input_hash=input_hash,
+                ordinal_from=ordinal_from,
+                checkpoint_port=checkpoint_port,
+                run_id_value=invocation.run.run_id,
             )
         except (
             UnknownToolError,
@@ -277,9 +339,9 @@ class AgentExecutionDriver:
                 code = "invalid_tool_arguments"
             else:
                 code = str(getattr(error, "code", "provider_rejected"))
-                # The reserved provider turn is definitely settled; release the loop
-                # checkpoint so the next AgentTurn starts a fresh provider request.
-                self._settle_failed_provider_turn(invocation, run_id)
+            # Whatever the cause, the turn is definitely over: release the loop
+            # checkpoint so the next AgentTurn starts a fresh provider request.
+            self._settle_failed_turn(invocation, run_id)
             return DriverResult(
                 RunState.WAITING,
                 {"response_present": False, "raw_failures": [{"error_code": code}]},
@@ -296,9 +358,9 @@ class AgentExecutionDriver:
                     },
                     delegation_count=self._delegations(turn_id),
                     provider_turn_ordinal_from=ordinal_from,
-                    provider_turn_ordinal_to=_reserved_provider_turns(
+                    provider_turn_ordinal_to=_checkpoint_totals(
                         checkpoint_port, invocation.run.run_id
-                    ),
+                    ).provider_turns,
                 ),
             )
         except (
@@ -334,7 +396,78 @@ class AgentExecutionDriver:
             agent_turn_outcome=outcome,
         )
 
+    def _budget_failure(  # type: ignore[no-untyped-def]
+        self,
+        error: TerminationBudgetExceeded,
+        *,
+        agent_id: str,
+        turn_id: str,
+        seq: int,
+        input_id: str,
+        input_hash: str,
+        ordinal_from: int | None,
+        checkpoint_port,
+        run_id_value: str,
+    ) -> DriverResult:
+        return DriverResult(
+            RunState.WAITING,
+            {"response_present": False, "raw_failures": [{"error_code": str(error.code)}]},
+            agent_turn_outcome=failed_outcome(
+                agent_id=agent_id,
+                turn_id=turn_id,
+                seq=seq,
+                input_id=input_id,
+                input_hash=input_hash,
+                error={"error_code": str(error.code), "source_kind": "termination"},
+                delegation_count=self._delegations(turn_id),
+                provider_turn_ordinal_from=ordinal_from,
+                provider_turn_ordinal_to=_checkpoint_totals(
+                    checkpoint_port, run_id_value
+                ).provider_turns,
+            ),
+        )
+
+    def _check_turn_identity(
+        self, invocation: DriverInvocation, run_id: RunId, ordinal_from: int | None
+    ) -> DriverResult | None:
+        """D7: one run-level checkpoint, identity by durable ordinals (no per-turn key).
+
+        A turn's ``provider_turn_ordinal_from`` is written once at first admission.
+        A checkpoint left in flight by *this* turn has ``provider_turns_reserved_total``
+        strictly above that baseline (the turn reserved it); a checkpoint in flight
+        with a total at or below the baseline was reserved by an earlier turn and must
+        never be resumed under a different input.
+        """
+
+        if ordinal_from is None:
+            return None
+        checkpoint = DurableReactCheckpoint(invocation.services.react_checkpoint, clock=self._clock)
+        state, _ = checkpoint.load_or_create(
+            run_id,
+            invocation.execution_lease,
+            initial_route_receipt=invocation.start.initial_route_receipt,
+            initial_route_receipt_hash=invocation.start.initial_route_receipt_hash,
+        )
+        if state.phase in _INFLIGHT_PHASES and state.provider_turns_reserved_total <= ordinal_from:
+            return _binding_failure(
+                "base_agent_turn_identity_conflict",
+                "The Run's ReAct checkpoint is in flight for another AgentTurn.",
+            )
+        return None
+
     def _settle_failed_provider_turn(self, invocation: DriverInvocation, run_id: RunId) -> None:
+        """Backward-compatible name: any definitely-failed turn releases the checkpoint."""
+
+        self._settle_failed_turn(invocation, run_id)
+
+    def _settle_failed_turn(self, invocation: DriverInvocation, run_id: RunId) -> None:
+        """Return the run-level ReAct checkpoint to ``ready`` after a failed turn.
+
+        Totals (``*_reserved_total``) are never reset; only the in-flight request /
+        response / tool progress is dropped, exactly like the loop's own end-of-turn
+        transition.  Never called on UNKNOWN outcomes (those keep the checkpoint).
+        """
+
         checkpoint = DurableReactCheckpoint(invocation.services.react_checkpoint, clock=self._clock)
         state, version = checkpoint.load_or_create(
             run_id,
@@ -342,7 +475,7 @@ class AgentExecutionDriver:
             initial_route_receipt=invocation.start.initial_route_receipt,
             initial_route_receipt_hash=invocation.start.initial_route_receipt_hash,
         )
-        if state.phase != "provider_reserved":
+        if state.phase == "ready":
             return
         checkpoint.cas(
             run_id,
@@ -369,18 +502,101 @@ class AgentExecutionDriver:
         return int(self._delegation_counter(turn_id))
 
 
-def _reserved_provider_turns(checkpoint_port, run_id: str) -> int | None:  # type: ignore[no-untyped-def]
+_INFLIGHT_PHASES = frozenset(
+    {"provider_reserved", "tool_batch_reserved", "response_reserved", "context_action_reserved"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckpointTotals:
+    provider_turns: int | None
+    tool_calls: int | None
+    started_at: float | None
+
+
+def _checkpoint_totals(checkpoint_port, run_id: str) -> _CheckpointTotals:  # type: ignore[no-untyped-def]
     reader = getattr(checkpoint_port, "read_react_checkpoint", None)
     if not callable(reader):
-        return None
+        return _CheckpointTotals(None, None, None)
     stored = reader(run_id)
     if stored is None:
-        return 0
+        return _CheckpointTotals(0, 0, None)
     payload = thaw_json(stored.checkpoint)
     if not isinstance(payload, dict):
+        return _CheckpointTotals(None, None, None)
+
+    def _int(name: str) -> int | None:
+        value = payload.get(name)
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+
+    started = payload.get("started_at")
+    return _CheckpointTotals(
+        _int("provider_turns_reserved_total"),
+        _int("tool_calls_reserved_total"),
+        float(started)
+        if isinstance(started, (int, float)) and not isinstance(started, bool)
+        else None,
+    )
+
+
+def _reserved_provider_turns(checkpoint_port, run_id: str) -> int | None:  # type: ignore[no-untyped-def]
+    return _checkpoint_totals(checkpoint_port, run_id).provider_turns
+
+
+def _turn_deadline(per_turn: object) -> float | None:
+    if not isinstance(per_turn, Mapping):
         return None
-    value = payload.get("provider_turns_reserved_total")
-    return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+    value = per_turn.get("turn_deadline_seconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _turn_limits(
+    lifetime: TerminationLimits,
+    per_turn: object,
+    *,
+    provider_turns_from: int | None,
+    tool_calls_from: int | None,
+    turn_created_at: float | None,
+    loop_started_at: float | None,
+) -> TerminationLimits:
+    """Derive this turn's ``TerminationLimits`` from durable baselines (T6).
+
+    ``TerminationState`` totals never reset, so a per-turn cap of N model calls is
+    expressed as ``baseline + N`` where the baseline is the turn's first admission.
+    Lifetime limits stay the ceiling; the policy fingerprint is untouched.
+    """
+
+    if not isinstance(per_turn, Mapping):
+        return lifetime
+    max_turns = lifetime.max_turns
+    max_tool_calls = lifetime.max_tool_calls
+    max_wall = lifetime.max_wall_seconds
+    calls = per_turn.get("max_model_calls_per_turn")
+    if provider_turns_from is not None and isinstance(calls, int) and not isinstance(calls, bool):
+        max_turns = min(max_turns, provider_turns_from + calls)
+    tools = per_turn.get("max_tool_calls_per_turn")
+    if tool_calls_from is not None and isinstance(tools, int) and not isinstance(tools, bool):
+        max_tool_calls = min(max_tool_calls, tool_calls_from + tools)
+    deadline = per_turn.get("turn_deadline_seconds")
+    if (
+        turn_created_at is not None
+        and loop_started_at is not None
+        and isinstance(deadline, (int, float))
+        and not isinstance(deadline, bool)
+    ):
+        # ``_check_common`` compares ``now - started_at``; anchor on the turn's first
+        # durable admission so a restart never extends the deadline.
+        offset = max(0.0, float(turn_created_at) - float(loop_started_at))
+        max_wall = min(max_wall, max(offset + float(deadline), 1e-6))
+    return TerminationLimits(
+        max_turns=max(1, max_turns),
+        max_tool_calls=max(1, max_tool_calls),
+        max_wall_seconds=max_wall,
+        max_cost_micros=lifetime.max_cost_micros,
+        max_consecutive_same_tool=lifetime.max_consecutive_same_tool,
+    )
 
 
 def build_agent_execution_driver(

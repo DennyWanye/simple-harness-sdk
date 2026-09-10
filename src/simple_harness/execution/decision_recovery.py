@@ -1,4 +1,5 @@
 """Explicit, bounded recovery witness for a legacy authorization expiry."""
+
 import math
 from dataclasses import dataclass
 
@@ -22,9 +23,15 @@ class ExpiredAuthorizationTerminalRecoveryV1:
             raise ValueError("recovery identity required")
         if type(self.run_version) is not int or self.run_version < 0:
             raise ValueError("recovery version invalid")
-        if (not isinstance(self.source_hash, str) or len(self.source_hash) != 64
-                or any(c not in '0123456789abcdef' for c in self.source_hash)):
+        if (
+            not isinstance(self.source_hash, str)
+            or len(self.source_hash) != 64
+            or any(c not in "0123456789abcdef" for c in self.source_hash)
+        ):
             raise ValueError("recovery source hash invalid")
-        if (type(self.original_resolved_at) not in (int, float)
-                or not math.isfinite(self.original_resolved_at) or self.original_resolved_at < 0):
+        if (
+            type(self.original_resolved_at) not in (int, float)
+            or not math.isfinite(self.original_resolved_at)
+            or self.original_resolved_at < 0
+        ):
             raise ValueError("recovery source time invalid")

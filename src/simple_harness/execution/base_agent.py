@@ -103,6 +103,8 @@ class AgentTurnRecord:
     lease_epoch: int | None
     created_at: float
     updated_at: float
+    # Durable per-turn baselines (write-once at first admission; resumes keep them).
+    tool_call_ordinal_from: int | None = None
 
     def __post_init__(self) -> None:
         if self.phase not in AGENT_TURN_PHASES:

@@ -1255,9 +1255,10 @@ class SqliteExecutionUnitOfWork:
                 (turn_id,),
             ).fetchone()
             if existing is not None:
-                if str(existing["run_id"]) != run_id or canonical_json(
-                    json.loads(str(existing["payload_json"]))
-                ) != payload_json:
+                if (
+                    str(existing["run_id"]) != run_id
+                    or canonical_json(json.loads(str(existing["payload_json"]))) != payload_json
+                ):
                     raise UnitOfWorkConflict("agent input continuation differs from turn")
             else:
                 if not created:
@@ -1363,9 +1364,7 @@ class SqliteExecutionUnitOfWork:
         from .base_agent import control
 
         with self.database.transaction() as connection:
-            existing = control.read_control_command(
-                connection, _required(command_id, "command_id")
-            )
+            existing = control.read_control_command(connection, _required(command_id, "command_id"))
             if existing is not None:
                 stored, _ = control.record_control_command(
                     connection,
@@ -1465,9 +1464,7 @@ class SqliteExecutionUnitOfWork:
                 now=_time(now),
             )
 
-    def read_agent_batch(
-        self, owner_scope: str, batch_key: str
-    ) -> AgentCreationBatchRecord | None:
+    def read_agent_batch(self, owner_scope: str, batch_key: str) -> AgentCreationBatchRecord | None:
         from .base_agent import batches
 
         return batches.read_batch(
@@ -1512,6 +1509,7 @@ class SqliteExecutionUnitOfWork:
         execution_lease: ExecutionLease,
         provider_turn_ordinal_from: int | None,
         now: float,
+        tool_call_ordinal_from: int | None = None,
     ) -> AgentTurnRecord:
         from .base_agent import turns
 
@@ -1524,7 +1522,18 @@ class SqliteExecutionUnitOfWork:
                 lease_epoch=execution_lease.epoch,
                 provider_turn_ordinal_from=provider_turn_ordinal_from,
                 now=now,
+                tool_call_ordinal_from=tool_call_ordinal_from,
             )
+
+    def list_open_wait_blockers_for_run(self, run_id: str) -> tuple[WaitBlockerRecord, ...]:
+        """Unresolved wait blockers of one Run (read model for ``turn_snapshot``)."""
+
+        rows = self.database.connection.execute(
+            "SELECT * FROM run_wait_blockers WHERE run_id=? AND resolution_id IS NULL "
+            "ORDER BY created_at, blocker_id",
+            (_required(run_id, "run_id"),),
+        ).fetchall()
+        return tuple(_wait_blocker_record(row) for row in rows)
 
     def stage_agent_turn_result(
         self,
@@ -4114,8 +4123,14 @@ class SqliteExecutionUnitOfWork:
                     _fault(fault, "decision_resolve.event.after_write")
                     from .decision_terminal import append_decision_terminal
 
-                    append_decision_terminal(self, connection, run_id=run_id,
-                                             decision_id=decision_id, event_id=event_id, now=now)
+                    append_decision_terminal(
+                        self,
+                        connection,
+                        run_id=run_id,
+                        decision_id=decision_id,
+                        event_id=event_id,
+                        now=now,
+                    )
                     _fault(fault, "decision_terminal.after_write")
                 _fault(fault, "decision_resolve.after_commit")
                 result = self.read_decision(decision_id)
@@ -4170,8 +4185,9 @@ class SqliteExecutionUnitOfWork:
             _fault(fault, "decision.event.after_write")
             from .decision_terminal import append_decision_terminal
 
-            append_decision_terminal(self, connection, run_id=run_id,
-                                     decision_id=decision_id, event_id=event_id, now=now)
+            append_decision_terminal(
+                self, connection, run_id=run_id, decision_id=decision_id, event_id=event_id, now=now
+            )
             _fault(fault, "decision_terminal.after_write")
         _fault(fault, "decision.after_commit")
         result = self.read_decision(decision_id)
@@ -6970,10 +6986,12 @@ class SqliteExecutionUnitOfWork:
                 context_use_grant.validate_handoff(record.claimed_at)
             else:
                 stored_context = self.read_react_checkpoint(record.run_id.value)
-                protected_checkpoint = (
-                    stored_context is not None
-                    and (cast(dict, _thaw_json(stored_context.checkpoint)).get("schema_version") == 7
-                         or cast(dict, _thaw_json(stored_context.checkpoint)).get("context_use_authority_scope") is not None)
+                protected_checkpoint = stored_context is not None and (
+                    cast(dict, _thaw_json(stored_context.checkpoint)).get("schema_version") == 7
+                    or cast(dict, _thaw_json(stored_context.checkpoint)).get(
+                        "context_use_authority_scope"
+                    )
+                    is not None
                 )
                 if (
                     protected_checkpoint

@@ -37,6 +37,7 @@ CREATE TABLE base_agent_turns_v1 (
  staged_result_json TEXT,
  provider_turn_ordinal_from INTEGER,
  provider_turn_ordinal_to INTEGER,
+ tool_call_ordinal_from INTEGER,
  lease_epoch INTEGER,
  created_at REAL NOT NULL,
  updated_at REAL NOT NULL,

@@ -1,4 +1,5 @@
 """Explicit backup-first execution7/8 -> 9; no receipt or source restamping."""
+
 from __future__ import annotations
 
 import json
@@ -60,7 +61,9 @@ def _carriers(connection, version):
     """
     try:
         if version >= 8:
-            for row in connection.execute("SELECT intent_json,intent_hash FROM provider_context_use_attempts"):
+            for row in connection.execute(
+                "SELECT intent_json,intent_hash FROM provider_context_use_attempts"
+            ):
                 attempt = ProviderContextUseAttemptV1.from_json(json.loads(row[0]))
                 if attempt.intent_hash != row[1]:
                     raise ValueError("intent hash")
@@ -70,7 +73,11 @@ def _carriers(connection, version):
         ):
             payload = json.loads(row[0])
             import hashlib
-            if not isinstance(payload, dict) or hashlib.sha256(canonical_json(payload).encode()).hexdigest() != row[1]:
+
+            if (
+                not isinstance(payload, dict)
+                or hashlib.sha256(canonical_json(payload).encode()).hexdigest() != row[1]
+            ):
                 raise ValueError("checkpoint hash")
             # Absence/None was a legal pre-reservation or generic checkpoint.
             if payload.get("context_use_attempt") is not None:
@@ -81,9 +88,12 @@ def _carriers(connection, version):
 
 def _validate(connection):
     try:
-        rows = tuple(tuple(r) for r in connection.execute(
-            "SELECT version,name,checksum FROM sdk_schema_migrations ORDER BY version"
-        ))
+        rows = tuple(
+            tuple(r)
+            for r in connection.execute(
+                "SELECT version,name,checksum FROM sdk_schema_migrations ORDER BY version"
+            )
+        )
         if rows not in accepted_descriptor_rows():
             version = _validate_legacy(connection)
             _carriers(connection, version)
@@ -99,7 +109,9 @@ def _validate(connection):
                 raise ExecutionSchemaIncompatible("execution_short_upgrade_unknown_catalog")
         finally:
             expected.close()
-        if [tuple(r) for r in connection.execute("PRAGMA integrity_check")] != [("ok",)] or list(connection.execute("PRAGMA foreign_key_check")):
+        if [tuple(r) for r in connection.execute("PRAGMA integrity_check")] != [("ok",)] or list(
+            connection.execute("PRAGMA foreign_key_check")
+        ):
             raise ExecutionSchemaIncompatible("execution_short_upgrade_integrity_failed")
         _carriers(connection, 9)
         return 9
@@ -108,8 +120,13 @@ def _validate(connection):
 
 
 def _receipt(connection, backup):
-    rows = list(connection.execute("SELECT receipt_json,receipt_hash FROM short_context_upgrade_receipt"))
-    descriptors = tuple(r[0] for r in connection.execute("SELECT version FROM sdk_schema_migrations ORDER BY version"))
+    rows = list(
+        connection.execute("SELECT receipt_json,receipt_hash FROM short_context_upgrade_receipt")
+    )
+    descriptors = tuple(
+        r[0]
+        for r in connection.execute("SELECT version FROM sdk_schema_migrations ORDER BY version")
+    )
     if not rows and descriptors == (9,):
         return None
     if len(rows) != 1 or descriptors == (9,):
@@ -119,13 +136,18 @@ def _receipt(connection, backup):
         receipt = ExecutionShortContextUpgradeReceiptV1(**raw)
         prior = legacy_v7_descriptor() if descriptors[-2] == 7 else legacy_v8_descriptor()
         if (
-            type(receipt.from_version) is not int or receipt.from_version != prior.version
-            or type(receipt.to_version) is not int or receipt.to_version != 9
-            or type(receipt.schema_version) is not int or receipt.schema_version != 1
+            type(receipt.from_version) is not int
+            or receipt.from_version != prior.version
+            or type(receipt.to_version) is not int
+            or receipt.to_version != 9
+            or type(receipt.schema_version) is not int
+            or receipt.schema_version != 1
             or receipt.prior_descriptor_hash != prior.checksum
             or receipt.new_descriptor_hash != legacy_v9_descriptor().checksum
-            or receipt.to_json() != raw or receipt.receipt_hash != rows[0][1]
-            or receipt.backup_path != str(backup) or not backup.is_file()
+            or receipt.to_json() != raw
+            or receipt.receipt_hash != rows[0][1]
+            or receipt.backup_path != str(backup)
+            or not backup.is_file()
             or _bytes_hash(backup) != receipt.backup_sha256
         ):
             raise ValueError("receipt binding")
@@ -138,7 +160,9 @@ def _receipt(connection, backup):
             saved.close()
         return receipt
     except (TypeError, ValueError, KeyError) as error:
-        raise ExecutionSchemaIncompatible("execution_short_upgrade_backup_or_receipt_differs") from error
+        raise ExecutionSchemaIncompatible(
+            "execution_short_upgrade_backup_or_receipt_differs"
+        ) from error
 
 
 def migrate_execution_to_v9(
@@ -199,15 +223,23 @@ def migrate_execution_to_v9(
             saved.close()
         prior = legacy_v7_descriptor() if version == 7 else legacy_v8_descriptor()
         receipt = ExecutionShortContextUpgradeReceiptV1(
-            str(backup), _bytes_hash(backup), root, prior.checksum,
-            legacy_v9_descriptor().checksum, version,
+            str(backup),
+            _bytes_hash(backup),
+            root,
+            prior.checksum,
+            legacy_v9_descriptor().checksum,
+            version,
         )
         _statements(writer, (V8_DDL if version == 7 else "") + DDL)
         descriptor = legacy_v9_descriptor()
-        writer.execute("INSERT INTO sdk_schema_migrations(version,name,checksum) VALUES (?,?,?)",
-                       (9, descriptor.name, descriptor.checksum))
-        writer.execute("INSERT INTO short_context_upgrade_receipt VALUES (1,?,?)",
-                       (canonical_json(receipt.to_json()), receipt.receipt_hash))
+        writer.execute(
+            "INSERT INTO sdk_schema_migrations(version,name,checksum) VALUES (?,?,?)",
+            (9, descriptor.name, descriptor.checksum),
+        )
+        writer.execute(
+            "INSERT INTO short_context_upgrade_receipt VALUES (1,?,?)",
+            (canonical_json(receipt.to_json()), receipt.receipt_hash),
+        )
         if _validate(writer) != 9:
             raise ExecutionSchemaIncompatible("execution_short_upgrade_postcondition_failed")
         writer.commit()

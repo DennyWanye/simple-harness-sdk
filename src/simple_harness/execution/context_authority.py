@@ -282,9 +282,13 @@ class RunContextAuthorityRequest:
     def __post_init__(self) -> None:
         if self.mandatory_context_feedback is not None:
             from .context_action import MandatoryContextFeedbackV1
-            if (type(self.mandatory_context_feedback) is not MandatoryContextFeedbackV1
-                    or self.mandatory_context_feedback.rejection.run_id != self.run_id.value
-                    or self.mandatory_context_feedback.rejection.provider_turn_ordinal >= self.provider_turn_ordinal):
+
+            if (
+                type(self.mandatory_context_feedback) is not MandatoryContextFeedbackV1
+                or self.mandatory_context_feedback.rejection.run_id != self.run_id.value
+                or self.mandatory_context_feedback.rejection.provider_turn_ordinal
+                >= self.provider_turn_ordinal
+            ):
                 raise ValueError("mandatory_context_feedback_lineage_differs")
         if not isinstance(self.run_id, RunId):
             raise TypeError("run_id must use RunId")
@@ -442,7 +446,11 @@ class RunContextAuthorityPort(Protocol):
 
 class RuntimeDecisionSinkPort(Protocol):
     def check_mandatory_context_actions(
-        self, *, run_id: RunId, provider_turn_ordinal: int, request_fingerprint: str,
+        self,
+        *,
+        run_id: RunId,
+        provider_turn_ordinal: int,
+        request_fingerprint: str,
     ) -> Awaitable[None]:
         """Recheck pending/ACK authority without manufacturing a no-recall route."""
         ...

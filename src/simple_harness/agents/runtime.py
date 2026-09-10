@@ -245,6 +245,13 @@ def start_input_for(
             "api_mode": BASE_AGENT_API_MODE,
             "role": role,
             "owner_scope": owner_scope,
+            # Per-turn guard-rails travel with the frozen start input so the driver
+            # never reads the agents' configuration tables (T6).
+            "limits": {
+                "max_model_calls_per_turn": config.limits.max_model_calls_per_turn,
+                "max_tool_calls_per_turn": config.limits.max_tool_calls_per_turn,
+                "turn_deadline_seconds": config.limits.turn_deadline_seconds,
+            },
         },
         "messages": messages,
         "max_output_tokens": max_output_tokens,
