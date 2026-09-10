@@ -158,3 +158,10 @@
 | journal 终态行 | 见末行 | 待收尾 |
 | code review 执行且 P0/P1 闭环 | §7：P0 1 / P1 3 全部修复并各配决定性测试 | ✅ |
 | retro.md | `slice-1/retro.md` | ✅ |
+
+## 10. 终态
+
+被测 HEAD `1d2a17c` 上主编排者复验：`tests/agents` + schema 测试 83 passed / 1 skipped；固定回归命令 `58 failed, 1931 passed, 3 skipped, 14 warnings, 15 errors in 46.37s`，红集 ⊆ 基线（新红 0，既有红 73/75）；mypy 0 issues；真实 DeepSeek 端到端 run5 passed（10.21 s）。完成判定依据本 journal 与 §9 DoD 清单（无机器 receipt）。
+
+VERDICT: SHIPPED — Slice 1 委派最短价值链（AC1–AC8 MUST 全部实测达成；AC9/AC10 有证据；known gaps 见 §6 L1–L12，F-BA-1 下一片优先）— 2026-09-10 — 1d2a17c
+
