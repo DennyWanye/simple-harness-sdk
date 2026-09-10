@@ -13,11 +13,23 @@ from simple_harness.execution.context_use import ProviderContextUseAttemptV1, us
 from . import audit_schema
 from .context_use import DDL as V8_DDL
 from .context_use_migration import (
-    _DESCRIPTOR_SQL, _bytes_hash, _catalog, _readonly, _root, _statements,
+    _DESCRIPTOR_SQL,
+    _bytes_hash,
+    _catalog,
+    _readonly,
+    _root,
+    _statements,
+)
+from .context_use_migration import (
     _validate as _validate_legacy,
 )
 from .database import ExecutionSchemaIncompatible
-from .schema import accepted_descriptor_rows, fresh_descriptor, legacy_v7_descriptor, legacy_v8_descriptor
+from .schema import (
+    accepted_descriptor_rows,
+    legacy_v7_descriptor,
+    legacy_v8_descriptor,
+    legacy_v9_descriptor,
+)
 from .short_context_schema import DDL
 
 
@@ -80,7 +92,7 @@ def _validate(connection):
         expected = sqlite3.connect(":memory:")
         try:
             expected.execute(_DESCRIPTOR_SQL)
-            expected.executescript(fresh_descriptor().sql)
+            expected.executescript(legacy_v9_descriptor().sql)
             for statement in audit_schema.V1_DDL if audit_version == 1 else audit_schema.DDL:
                 expected.execute(statement)
             if _catalog(connection) != _catalog(expected):
@@ -111,7 +123,7 @@ def _receipt(connection, backup):
             or type(receipt.to_version) is not int or receipt.to_version != 9
             or type(receipt.schema_version) is not int or receipt.schema_version != 1
             or receipt.prior_descriptor_hash != prior.checksum
-            or receipt.new_descriptor_hash != fresh_descriptor().checksum
+            or receipt.new_descriptor_hash != legacy_v9_descriptor().checksum
             or receipt.to_json() != raw or receipt.receipt_hash != rows[0][1]
             or receipt.backup_path != str(backup) or not backup.is_file()
             or _bytes_hash(backup) != receipt.backup_sha256
@@ -188,10 +200,10 @@ def migrate_execution_to_v9(
         prior = legacy_v7_descriptor() if version == 7 else legacy_v8_descriptor()
         receipt = ExecutionShortContextUpgradeReceiptV1(
             str(backup), _bytes_hash(backup), root, prior.checksum,
-            fresh_descriptor().checksum, version,
+            legacy_v9_descriptor().checksum, version,
         )
         _statements(writer, (V8_DDL if version == 7 else "") + DDL)
-        descriptor = fresh_descriptor()
+        descriptor = legacy_v9_descriptor()
         writer.execute("INSERT INTO sdk_schema_migrations(version,name,checksum) VALUES (?,?,?)",
                        (9, descriptor.name, descriptor.checksum))
         writer.execute("INSERT INTO short_context_upgrade_receipt VALUES (1,?,?)",
