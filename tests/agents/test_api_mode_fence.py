@@ -120,7 +120,7 @@ def test_signal_base_agent_input_rejects_legacy_run(tmp_path):
 def test_signal_base_agent_input_rejects_unmanaged_run(tmp_path):
     async def case():
         assembled = assemble_runtime(_ports(tmp_path, ScriptedProvider([])))
-        runtime, uow = assembled.runtime, assembled.uow
+        runtime = assembled.runtime
         async with runtime:
             with pytest.raises(CommandError) as info:
                 await runtime.signal_base_agent_input(

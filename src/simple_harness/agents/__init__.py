@@ -25,6 +25,7 @@ from .contracts import (
     AgentTurnReceipt,
     AgentTurnResult,
     AgentTurnState,
+    AgentTurnTimeout,
 )
 
 _LAZY_EXPORTS = {
@@ -61,6 +62,7 @@ __all__ = (
     "AgentTurnReceipt",
     "AgentTurnResult",
     "AgentTurnState",
+    "AgentTurnTimeout",
     "BaseAgent",
     "agent_id_for_run",
     "config_hash",

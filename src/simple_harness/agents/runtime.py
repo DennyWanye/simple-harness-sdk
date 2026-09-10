@@ -11,9 +11,13 @@ Memory outbox consumer, no context staging.  Nothing here may import
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import Self, cast
 
+from simple_harness.contracts import ExecutionSessionId, JsonValue, MessageRole, RequestId, RunId
+from simple_harness.execution.base_agent import BASE_AGENT_API_MODE, AgentBindingRecord
 from simple_harness.execution.budget import FrozenPriceEstimator
 from simple_harness.execution.delivery import DeliveryDispatcher
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
@@ -30,8 +34,12 @@ from simple_harness.runtime.consumer_adapter import (
 )
 from simple_harness.runtime.context import SqliteContextPort
 from simple_harness.runtime.kernel import Runtime, RuntimePorts, RuntimeProfile, build_runtime
+from simple_harness.runtime.start_snapshot import RunStart
 from simple_harness.tools import EffectExecutor, FunctionTool, Tool, ToolRegistry
 
+from .base import BaseAgent
+from .config import AgentConfig, config_hash
+from .contracts import AgentId, AgentNotFound
 from .execution import build_agent_execution_driver
 from .ports import AgentRuntimePorts
 
@@ -130,4 +138,169 @@ def assemble_runtime(
     return AssembledRuntime(runtime, uow, database)
 
 
-__all__ = ("AssembledRuntime", "BASE_AGENT_DRIVER_KIND", "CHILD_PROFILE_KEY", "assemble_runtime")
+def agent_id_for(owner_scope: str, creation_key: str) -> str:
+    """Stable opaque id derived from the creation key: retries reproduce the same Agent."""
+
+    digest = hashlib.sha256(f"{owner_scope}\x00{creation_key}".encode("utf-8")).hexdigest()
+    return f"agent-{digest[:32]}"
+
+
+def start_input_for(
+    config: AgentConfig,
+    *,
+    agent_id: str,
+    role: str,
+    owner_scope: str,
+    max_output_tokens: int,
+) -> dict[str, JsonValue]:
+    """``start.input`` carrying the Agent binding next to the capability snapshot."""
+
+    from simple_harness.contracts import Message
+
+    messages: list[JsonValue] = []
+    if config.instructions.strip():
+        messages.append(Message(MessageRole.SYSTEM, config.instructions).to_dict())
+    return {
+        "capability_snapshot": {"tools": list(config.tool_names)},
+        "base_agent_binding": {
+            "agent_id": agent_id,
+            "config_hash": config_hash(config),
+            "api_mode": BASE_AGENT_API_MODE,
+            "role": role,
+            "owner_scope": owner_scope,
+        },
+        "messages": messages,
+        "max_output_tokens": max_output_tokens,
+    }
+
+
+class AgentRuntime:
+    """Factory + execution service for BaseAgents (BA-v1.0 §3): shared kernel, isolated Agents."""
+
+    def __init__(
+        self,
+        assembled: AssembledRuntime,
+        ports: AgentRuntimePorts,
+        *,
+        owner_scope: str = "default",
+    ) -> None:
+        self._assembled = assembled
+        self._ports = ports
+        self._owner_scope = owner_scope
+
+    @property
+    def kernel(self) -> Runtime:
+        return self._assembled.runtime
+
+    @property
+    def uow(self) -> SqliteExecutionUnitOfWork:
+        return self._assembled.uow
+
+    @property
+    def ports(self) -> AgentRuntimePorts:
+        return self._ports
+
+    @property
+    def owner_scope(self) -> str:
+        return self._owner_scope
+
+    async def __aenter__(self) -> Self:
+        await self._assembled.runtime.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.shutdown()
+
+    async def shutdown(self) -> None:
+        """Stop this process' execution and release control; logical Agents stay durable."""
+
+        await self._assembled.runtime.close()
+
+    async def recover_pending_turns(self) -> None:
+        """Wake every Agent with queued/running/result_pending turns (closure E6)."""
+
+        await self._assembled.runtime.recover()
+
+    async def create(self, config: AgentConfig, *, creation_key: str) -> BaseAgent:
+        """Create one Agent (no model call).  Same key + same config replays the same Agent."""
+
+        if not isinstance(config, AgentConfig):
+            raise TypeError("config must use AgentConfig")
+        if not isinstance(creation_key, str) or not creation_key.strip():
+            raise ValueError("creation_key is required")
+        agent_id = agent_id_for(self._owner_scope, creation_key)
+        existing = self.uow.read_agent_binding(agent_id)
+        if existing is not None:
+            if existing.config_hash != config_hash(config):
+                raise ValueError("creation_key reused with a different configuration")
+            return BaseAgent(self, existing)
+        await self.kernel.start_base_agent_run(
+            RunStart(
+                ExecutionSessionId(f"base-agent:{agent_id}"),
+                RunId(agent_id),
+                RequestId(f"{agent_id}:create"),
+                f"{agent_id}:start",
+                start_input_for(
+                    config,
+                    agent_id=agent_id,
+                    role="root",
+                    owner_scope=self._owner_scope,
+                    max_output_tokens=self._ports.default_max_output_tokens,
+                ),
+                1,
+            )
+        )
+        binding = self.uow.create_agent_binding(
+            agent_id=agent_id,
+            run_id=agent_id,
+            owner_scope=self._owner_scope,
+            role="root",
+            creation_key=creation_key,
+            config_json=config.to_json(),
+            config_hash=config_hash(config),
+            now=self._ports.clock(),
+        )
+        return BaseAgent(self, binding)
+
+    async def create_many(
+        self, configs: Sequence[AgentConfig], *, batch_key: str
+    ) -> tuple[BaseAgent, ...]:
+        """Slice 1 minimal batch: sequential ``create`` with ``{batch_key}:{index}`` keys."""
+
+        if not isinstance(batch_key, str) or not batch_key.strip():
+            raise ValueError("batch_key is required")
+        agents = []
+        for index, config in enumerate(configs):
+            agents.append(await self.create(config, creation_key=f"{batch_key}:{index}"))
+        return tuple(agents)
+
+    async def open(self, agent_id: str | AgentId) -> BaseAgent:
+        value = agent_id.value if isinstance(agent_id, AgentId) else agent_id
+        binding = self.uow.read_agent_binding(value)
+        if binding is None:
+            raise AgentNotFound(value)
+        return BaseAgent(self, binding)
+
+    def binding(self, agent_id: str) -> AgentBindingRecord | None:
+        return self.uow.read_agent_binding(agent_id)
+
+
+def build_agent_runtime(
+    ports: AgentRuntimePorts, *, owner_scope: str = "default"
+) -> AgentRuntime:
+    """Assemble a BaseAgent runtime with no user Memory; use ``async with``."""
+
+    assembled = assemble_runtime(ports)
+    return AgentRuntime(assembled, ports, owner_scope=owner_scope)
+
+
+__all__ = (
+    "AgentRuntime",
+    "AssembledRuntime",
+    "BASE_AGENT_DRIVER_KIND",
+    "CHILD_PROFILE_KEY",
+    "agent_id_for",
+    "assemble_runtime",
+    "build_agent_runtime",
+    "start_input_for",
+)

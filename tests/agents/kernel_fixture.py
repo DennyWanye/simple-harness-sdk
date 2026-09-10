@@ -10,7 +10,6 @@ internal start path (the public entry points arrive in T4/T7).
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 
 from simple_harness import AllowAllAdmission, Message, MessageRole, canonical_json

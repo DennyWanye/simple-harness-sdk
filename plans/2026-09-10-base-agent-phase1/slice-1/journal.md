@@ -34,11 +34,15 @@
 | T3 契约骨架 | `d838a22` | `pytest tests/agents/test_config_contracts.py` | 21 passed | ast 扫描：kernel/agent_turn 不 import agents |
 | T5 结果载体 + finalize | `308a67e` | `pytest tests/agents/test_turn_finalize.py`；固定回归命令 | 5 passed；回归红集与基线相同 | 同事务 ack 全有或全无（fault 钩子实测）；任何唤醒路径先 finalize 再 drive |
 | T6 AgentExecutionDriver | `f1e149b` | `pytest tests/agents/test_agent_driver.py` + legacy ReAct 回归 3 文件 | 5 passed；legacy 28 passed | 预算超限 = 失败的 Turn，Agent 不死；意外 continuation 被 ack 不终态 |
-| **T6.5 价值验证里程碑** | 本次 | `.venv/bin/python -m pytest -q tests/agents/test_base_agent_kernel_spike.py` | **3 passed** | 主要矛盾"不死的执行身份"一面已被真实 driver 证明 |
+| **T6.5 价值验证里程碑** | `66f875d` | `.venv/bin/python -m pytest -q tests/agents/test_base_agent_kernel_spike.py` | **3 passed** | 主要矛盾"不死的执行身份"一面已被真实 driver 证明 |
+| T4 围栏与公开入口 | `9fc1335` | `pytest tests/agents/test_api_mode_fence.py` | 9 passed；回归红集与基线相同 | start_snapshot.py / start_mode.py sha256 冻结闸 |
+| T7 build_agent_runtime / BaseAgent / AgentRuntime | 本次 | `pytest tests/agents/test_build_agent_runtime.py` | 8 passed；回归红集 ⊆ 基线（import purity 转绿） | queued Turn 跨重启由 kernel.recover 唤醒（E6） |
 
 ## 3. 触碰既有红的说明
 
-（T2 schema v10 / T10 快照更新所牵动的既有红夹具，逐条对照 `../baseline-known-failures.txt`）
+- T2 schema v10：实测 v10 后红集与基线逐条相同（既有 schema/迁移夹具本来就因缺旧环境或旧断言而红，失败方式未变），无需解释差异。
+- T7：`tests/artifact/test_import_purity.py::test_import_has_no_host_or_runtime_side_effects` 由红转绿——根因是根包 `__all__[0]` 不是 `"__version__"`（四个 `MandatoryContext*` 条目被放在最前），本片把 `"__version__"` 移回首位并追加 BaseAgent 导出。这是**触碰既有红**，不是本片引入的行为变更；`baseline-known-failures.txt` 保持冻结，回归口径改为「红集 ⊆ 基线红集」。
+
 
 ## 4. 核心价值 smoke
 

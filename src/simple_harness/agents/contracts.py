@@ -67,6 +67,16 @@ class AgentClosed(AgentError):
     code = "agent_closed"
 
 
+class AgentTurnTimeout(AgentError):
+    """``wait_turn`` gave up waiting; the underlying turn keeps running."""
+
+    code = "agent_turn_timeout"
+
+    def __init__(self, turn_id: str) -> None:
+        super().__init__(f"turn {turn_id} has no committed result yet")
+        self.turn_id = turn_id
+
+
 @dataclass(frozen=True, slots=True)
 class AgentTurnReceipt:
     """Durable acceptance of one input; returned by ``submit`` before any model call."""
@@ -256,4 +266,5 @@ __all__ = (
     "AgentTurnReceipt",
     "AgentTurnResult",
     "AgentTurnState",
+    "AgentTurnTimeout",
 )

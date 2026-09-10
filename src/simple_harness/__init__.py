@@ -357,6 +357,23 @@ _RUNTIME_EXPORTS = frozenset(
 )
 
 
+# BaseAgent public surface (Slice 1); resolved lazily from simple_harness.agents.
+_AGENT_EXPORTS = frozenset(
+    {
+        "AgentConfig",
+        "AgentLimits",
+        "AgentRuntime",
+        "AgentRuntimePorts",
+        "AgentTurnReceipt",
+        "AgentTurnResult",
+        "AgentTurnState",
+        "AgentTurnTimeout",
+        "BaseAgent",
+        "build_agent_runtime",
+    }
+)
+
+
 def __getattr__(name: str) -> Any:
     if name == "ExpiredAuthorizationTerminalRecoveryV1":
         from .execution.decision_recovery import ExpiredAuthorizationTerminalRecoveryV1
@@ -379,6 +396,12 @@ def __getattr__(name: str) -> Any:
         from .execution import audit
 
         return getattr(audit, name)
+    if name in _AGENT_EXPORTS:
+        from . import agents
+
+        value = getattr(agents, name)
+        globals()[name] = value
+        return value
     if name not in _RUNTIME_EXPORTS:
         raise AttributeError(name)
     from . import runtime
@@ -389,15 +412,15 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | _RUNTIME_EXPORTS)
+    return sorted(set(globals()) | _RUNTIME_EXPORTS | _AGENT_EXPORTS)
 
 
 __all__: tuple[str, ...] = (
+    "__version__",
     'MandatoryContextActionRequired',
     'MandatoryContextRejectionV1',
     'MandatoryContextFeedbackV1',
     'MandatoryContextActionExhausted',
-    "__version__",
     "COGNITIVE_MEMORY_SCHEMA_VERSION",
     "CONVERSATION_EVIDENCE_SCHEMA_VERSION",
     "MEMORY_ACTION_AUTHORITY_SCHEMA_VERSION",
@@ -729,3 +752,4 @@ __all__ += (
     "migrate_execution_v7_to_v8",
     "ExecutionContextUseUpgradeReceiptV1",
 )
+__all__ += tuple(sorted(_AGENT_EXPORTS))
