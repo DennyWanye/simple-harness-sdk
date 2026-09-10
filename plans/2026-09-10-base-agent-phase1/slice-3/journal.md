@@ -60,4 +60,9 @@
 | L3-2 | `UpperBoundTokenizer` 对英文过估 ≤2×；真实模型请注入真实 tokenizer | 文档口径 |
 | L3-3 | 语义摘要（模型生成）未做，只有结构性摘要 | S5/后续 |
 
-## 7. 终态（回填）
+## 7. 终态
+
+- review 修复后真实端点复跑：**2/2**（预算 1400；两次都观察到轮换 dropped [2,7] / [2,3]；run 2 里两轮 `finish_reason=length` 被输出上限倍增重试透明吸收），报告 `reports/real-context-run{1,2}.txt`（review 前的 4 次在 `*-pre-review.txt`）。
+- **F-BA-1 根因闭环**（2026-09-10）：DeepSeek `deepseek-v4-pro` 把整个 `max_output_tokens` 花在 reasoning 上（`finish_reason=length`，`reasoning_tokens == output_tokens`），正文为空。处置：wire 抛 `provider_empty_response`（带 finish_reason/usage detail）；driver 在同一 AgentTurn 内把输出上限倍增重试（`empty_response_retries=2`，`max_output_tokens_ceiling=8192`），失败的 invocation 留在账本；重试耗尽才可见失败。测试 `test_length_exhausted_reasoning_escalates_the_output_cap_then_succeeds`、`test_output_cap_escalation_is_bounded_and_fails_visibly`。
+- **VERDICT: SHIPPED**。套件（agents + schema + contracts）全绿；回归 73 红 ⊆ 基线；mypy 0；冻结文件未改（`react_loop.py` 在 S5 加了可选 companion 参数，见 S5 journal）。
+
