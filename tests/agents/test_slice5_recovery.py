@@ -327,7 +327,8 @@ def test_history_queries_are_bounded_tool_calls(tmp_path):
             assert failed.error["error_code"] == "react_max_tool_calls_exceeded"
             effects = _rows(
                 runtime.uow,
-                "SELECT tool_name, state FROM execution_effects WHERE run_id=? ORDER BY turn_ordinal",
+                "SELECT tool_name, state FROM execution_effects WHERE run_id=? "
+                "ORDER BY turn_ordinal",
                 agent.run_id,
             )
             assert [row[0] for row in effects] == ["session_history_search"] * 2
