@@ -76,7 +76,15 @@
 | 21 | P2 | S3-07 的 0.6 s 租约在慢机器上可能在验证中过期 | 已由 #3 的持续续租缓解；登记 §5 |
 
 ## 4. 证据
-（回填）
+
+| 项 | 结果 |
+|---|---|
+| fixtures 决定性测试 | `tests/orchestrator` **64 passed, 2 skipped**（step02 45 + step03 19：图 3、图提交 3、闭环 8（S3-01/02/03/05/06/08a/b/c）、review 回归 5、双实例 3、CLI 1；2 个 opt-in 真实模型用例跳过） |
+| SDK 全量回归 | 73 红 ⊆ 基线，**0 新红**（2104 passed；`public-api.json` 版本 0.9.1，SDK 公共 API 无变化） |
+| mypy | `src/agent_orchestrator` 46 文件 0 错 |
+| 真实模型（DeepSeek `deepseek-v4-pro`，unpriced 记账） | run1 COMPLETED（138 s，2 Task 链，下游注入 4 个上游产物，43 967 tokens）；run2 COMPLETED（77 s，35 956 tokens）；run3（review 处置后）COMPLETED（210 s，第 1 次图提案被拒 → 带反馈第 2 次通过，40 324 tokens，4 笔预留全部 SETTLED）。报告 `reports/real-static-dag-run{1,2,3}.md`。三次 Planner 都拆成两节点链（L3-1） |
+| 发布物 | `simple_harness_sdk-0.9.1-py3-none-any.whl`，源提交 `d919ba5`，`SOURCE_DATE_EPOCH=1789063729`，sha256 **`7f7552404c91453244c071f0713f5fef90b38d7db0126ae7908071ddb8b79392`**；干净 venv（uv, py3.12，wheel + pytest + tiktoken）从归档源根跑 `tests/orchestrator + tests/agents + tests/unit/contracts + tests/execution 的 v10/迁移`：**327 passed, 5 skipped, 1 failed（基线已知红 `test_execution_v3_to_v4_migration.py::test_completed_null_continuation…`）**；安装后 `python -m agent_orchestrator demo --scenario static-dag --provider fixtures --max-concurrency 2` → COMPLETED，5 个 Task 全部 COMPLETED |
+| 独立 review | plan review 22 条（§1）、代码 review 21 条（§3）全部处置或登记 |
 
 ## 5. 遗留
 
@@ -90,4 +98,17 @@
 | L3-6 | 第 2 步遗留 L2-1/L2-2/L2-4/L2-6/L2-7 未变（Critic 层序、format_check 恒 PASS、无网络隔离、unpriced 记账、预留非硬上限） | 各自归属不变 |
 
 ## 6. 终态
-（回填）
+
+**VERDICT: SHIPPED**（2026-09-11，SDK main `d919ba5` 起 + 本文档提交；版本 simple_harness 0.9.1 / agent_orchestrator 0.3.0）
+
+| 验收 | 结果 |
+|---|---|
+| S3-01 A→(B‖C)→D→E 并行执行、下游含上游产物、整合判定 | PASS（fixtures + CLI demo + wheel 演示；真实 DeepSeek 三次 COMPLETED，但为两节点链） |
+| S3-02 环路整图拒绝、Planner 带反馈重提 | PASS（fixtures；真实 run3 第 1 次提案被拒后第 2 次通过） |
+| S3-03 B 不重做、C 修复、D 等待 | PASS |
+| S3-04 两个 Orchestrator 同时领取 | PASS（同一事件循环内两实例；每 Attempt 恰一次 AttemptClaimed/AttemptStarted、SDK 每 Agent 一个 turn、Mission 恰完成一次） |
+| S3-05 两个候选：先 PASS 者接受、另一个 SUPERSEDED（取消回执、费用结算、迟到结果只记历史） | PASS |
+| S3-06 局部全过、整体不达标 → `mission_criteria_unmet` | PASS |
+| S3-07 失去编排租约：接管同一 turn 不重跑；执行者不可见 → LOST + 新 Attempt；已完成 Task 不重跑 | PASS（07a/07b；在途 provider 调用中途丢失执行者按 S2-08 语义阻塞，见 L3-3） |
+| S3-08 预算不足：图拒绝说明维度；Task 预留失败 → Task FAILED、BLOCKED 不动；Mission 池耗尽不归罪 Task | PASS |
+| 遗留 | §5 L3-1～L3-6 |
