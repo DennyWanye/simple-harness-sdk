@@ -353,3 +353,144 @@ def test_frozen_request_fingerprint_is_stable_across_index_updates(tmp_path):
             assert len(seen) == 3 and seen[1] == seen[2]  # retry sends the identical request
 
     asyncio.run(case())
+
+
+def test_fts_backfill_and_fts_partial_are_visible(tmp_path):
+    """Review S4-02: rows without FTS rows are reported and backfilled by the pump."""
+
+    async def case():
+        provider = ScriptedProvider(["一", "二"])
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            agent = await runtime.create(_config(), creation_key="fts")
+            await agent.ask("缓存策略要写进文档", input_id="i1", timeout=5)
+            connection = runtime.uow.database.connection
+            connection.execute(
+                "DELETE FROM base_agent_journal_fts_trigram WHERE agent_id=?", (agent.agent_id,)
+            )
+            connection.execute(
+                "DELETE FROM base_agent_journal_fts_words WHERE agent_id=?", (agent.agent_id,)
+            )
+            connection.commit()
+            lagging = runtime.retriever.search_sync(agent.agent_id, "缓存策略", limit=5)
+            assert "fts_partial" in lagging.degradations
+            await runtime.index_pending()
+            healed = runtime.retriever.search_sync(agent.agent_id, "缓存策略", limit=5)
+            assert "fts_partial" not in healed.degradations
+            assert healed.hits and "缓存策略" in healed.hits[0].text
+
+    asyncio.run(case())
+
+
+def test_error_jobs_are_retried_and_dimension_mismatch_is_visible(tmp_path):
+    """Review S4-03 / S4-08."""
+
+    class Recovering(HashEmbedder):
+        def __init__(self):
+            super().__init__(dim=16, name="recovering")
+            self.broken = True  # the query pre-embedding and the first batch both fail
+            self.bad_width = False
+
+        def embed(self, texts):
+            if self.broken:
+                raise EmbeddingUnavailable("embedding_service_down")
+            vectors = super().embed(texts)
+            return [v[:8] for v in vectors] if self.bad_width else vectors
+
+    async def case():
+        provider = ScriptedProvider(["一", "二"])
+        embedder = Recovering()
+        async with build_agent_runtime(_ports(tmp_path, provider, embedding=embedder)) as runtime:
+            # Drive indexing by hand: the background pump would retry before we look.
+            pump = runtime._index_task
+            assert pump is not None
+            pump.cancel()
+            agent = await runtime.create(_config(), creation_key="retry")
+            await agent.ask("第一条记录关于重试", input_id="i1", timeout=5)
+            settled = await runtime.indexer.run_once()  # first batch fails → error jobs
+            assert settled >= 1
+            first = runtime.retriever.search_sync(agent.agent_id, "重试", limit=5)
+            assert "index_error:embedding_service_down" in first.degradations
+            embedder.broken = False
+            await runtime.index_pending()  # retried below the attempt cap
+            second = runtime.retriever.search_sync(agent.agent_id, "重试", limit=5)
+            assert not any(d.startswith("index_error:") for d in second.degradations)
+            assert second.index_partial is False
+            embedder.bad_width = True
+            await agent.ask("第二条记录关于维度", input_id="i2", timeout=5)
+            await runtime.index_pending()
+            third = runtime.retriever.search_sync(agent.agent_id, "维度", limit=5)
+            assert "index_error:embedding_dim_mismatch" in third.degradations
+
+    asyncio.run(case())
+
+
+def test_frozen_request_resume_does_not_re_run_recall(tmp_path):
+    """Review S4-05: a bound selection at the same revision short-circuits recall."""
+
+    from simple_harness.providers.errors import ProviderTransportError
+    from simple_harness.providers.reconciliation import (
+        ProviderReconciliationObservation,
+        ProviderReconciliationState,
+    )
+    from simple_harness.runtime.consumer_adapter import (
+        ConsumerRuntimePolicies,
+        _DefaultRuntimeReconciliation,
+        _DefaultToolReconciliation,
+    )
+
+    class NotStarted:
+        async def observe(self, invocation):
+            return ProviderReconciliationObservation(
+                ProviderReconciliationState.CONFIRMED_NOT_STARTED, f"e:{invocation.invocation_id}"
+            )
+
+    async def case():
+        provider = ScriptedProvider(["记下", "恢复后的回答"])
+        state = {"failed": False}
+        original = provider.invoke
+
+        async def once(request, *, cancel):
+            if provider.calls == 1 and not state["failed"]:
+                state["failed"] = True
+                raise ProviderTransportError()
+            return await original(request, cancel=cancel)
+
+        provider.invoke = once  # type: ignore[method-assign]
+        policies = ConsumerRuntimePolicies(
+            "unpriced_local",
+            False,
+            "consumer_reconciles",
+            tool_reconciliation=_DefaultToolReconciliation(),
+            provider_reconciliation=NotStarted(),
+            runtime_reconciliation=_DefaultRuntimeReconciliation(),
+        )
+        async with build_agent_runtime(
+            _ports(tmp_path, provider, embedding=HashEmbedder(), policies=policies, recall_limit=3)
+        ) as runtime:
+            agent = await runtime.create(_config(), creation_key="resume")
+            await agent.ask("发布日期十月十五", input_id="i1", timeout=5)
+            await runtime.index_pending()
+            receipt = await agent.submit("发布日期是哪天", input_id="i2")
+            for _ in range(100):
+                if runtime.uow.list_open_wait_blockers_for_run(agent.run_id):
+                    break
+                await asyncio.sleep(0.02)
+            adapter = runtime.kernel._ports.context._recall
+            before = adapter.last_result
+            selections_before = _rows(
+                runtime.uow,
+                "SELECT selection_id FROM base_agent_context_selections_v1 WHERE agent_id=?",
+                agent.agent_id,
+            )
+            await runtime.kernel.reconcile()
+            result = await agent.wait_turn(receipt.turn_id, timeout=5)
+            assert result.state is AgentTurnState.COMMITTED
+            assert adapter.last_result is before  # recall was not re-run for the frozen request
+            selections_after = _rows(
+                runtime.uow,
+                "SELECT selection_id FROM base_agent_context_selections_v1 WHERE agent_id=?",
+                agent.agent_id,
+            )
+            assert selections_after == selections_before
+
+    asyncio.run(case())

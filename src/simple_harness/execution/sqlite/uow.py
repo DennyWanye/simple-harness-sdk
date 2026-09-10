@@ -1298,8 +1298,20 @@ class SqliteExecutionUnitOfWork:
             return None
         return turns.read_open_turn(self.database.connection, binding.agent_id)
 
+    def _base_agent_tables_present(self) -> bool:
+        """A v9 library (opened before the explicit v10 upgrade) has no BaseAgent tables;
+        kernel-wide scans must treat it as "no BaseAgents" instead of failing."""
+
+        row = self.database.connection.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='base_agent_turns_v1'"
+        ).fetchone()
+        return row is not None
+
     def list_runs_with_open_agent_turns(self) -> tuple[str, ...]:
         from .base_agent import turns
+
+        if not self._base_agent_tables_present():
+            return ()
 
         return turns.list_runs_with_open_turns(self.database.connection)
 

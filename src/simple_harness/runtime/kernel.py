@@ -3228,6 +3228,14 @@ class Runtime:
                 extra={"run_id": str(run_id)},
             )
             current = self._uow.read_run(run_id)
+            if current is not None and current.driver_kind == BASE_AGENT_DRIVER_KIND:
+                # A BaseAgent never dies of a driver exception (BA-v1.0 §1.3): keep the
+                # input claimed under the lapsed lease and drop this executor's
+                # authority; the next wake either finalizes a result the loop already
+                # staged (BA31) or re-drives the same turn.  Kernel-integrity
+                # failures reach here as explicit FAILED DriverResults, not exceptions.
+                await self._abandon_run_authority(run_id)
+                return
             if current is not None and current.state not in {
                 RunState.COMPLETED,
                 RunState.FAILED,
