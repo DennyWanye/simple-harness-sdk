@@ -98,7 +98,7 @@
 | L2 | 预围栏后、launch 前崩溃留下的 `run_context_use_requirements` 孤儿行不可删（续做复用同一 child_run_id，正常重试不新增） | S5 · BA37 一并处置 |
 | L3 | lifetime `TerminationLimits` 是 runtime 级（driver 单一 policy fingerprint），`AgentConfig.limits` 的 per-turn 上限本片只记录、只由委派配额/等待生效；per-agent/per-turn 精确执法 | S2 · BA11 |
 | L4 | UNKNOWN provider/tool 期间 AgentTurn 停在 running（`agent_turn_outcome` 与 `wait_blocker` 互斥是刻意的），恢复语义 | S2 · BA11 |
-| L5 | 真实端点 `provider_response_not_durable`（`dispatch.py:596` 对某些响应抛 ValueError，修 wire 后 **2/4 次**），Turn 失败但 Agent 存活；需要抓一份原始响应定位 | **F-BA-1，下一片优先** |
+| L5 | 真实端点 `provider_response_not_durable`（`dispatch.py:596` 对某些响应抛 ValueError，修 wire 后 **2/4 次**），Turn 失败但 Agent 存活。2026-09-10 追查：又跑 6 次未复现（全部 committed）；静态排除了 credential 启发式（12 位 hex 验证码 2000 次采样 0 命中）；剩余候选是 `provider_invocations.py:177` 的「公开正文必须非空」——推理型模型偶尔把内容全放进 `reasoning_content`、`content` 为空且无 tool_calls 时会被判不可持久化。真实测试报告已加 `main_error` 字段以便下次抓到原文 | **F-BA-1，S2 内处置**（若确认为空正文：driver 把空回复转成可见的失败 Turn 并带 finish_reason；或在 provider 层保留公开摘要） |
 | L6 | svtun `gpt-5.6-luna` 直连 90 s 超时（本片改用 DeepSeek 留证）；Host 说"Host-shaped 请求 200"，SDK 直连的差异未查 | 独立环境项 |
 | L7 | 工具标识 `agent_delegate`（端点函数名不允许 `.`）；plan/acceptance 文本仍写 agent.delegate 能力名 | 文档口径，无需改代码 |
 | L8 | `ToolContext.agent_delegate_context`（plan T8 提议的新字段）未加：委派工具改由 run_id 反查绑定，不需要新字段 | 已在 journal 说明，无 |

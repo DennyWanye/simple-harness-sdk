@@ -102,6 +102,14 @@ def test_main_agent_delegates_to_a_child_with_a_real_model(tmp_path):
                 "final_answer": (
                     result.public_output.content if result.public_output is not None else None
                 ),
+                "main_error": None if result.error is None else dict(result.error),
+                "finish_reasons": [
+                    getattr(response, "finish_reason", None) for response in provider.responses
+                ],
+                "empty_contents": [
+                    isinstance(response.message.content, str) and not response.message.content
+                    for response in provider.responses
+                ],
             }
             (tmp_path / "real-provider-report.json").write_text(
                 canonical_json(report), encoding="utf-8"
