@@ -285,7 +285,7 @@ max_cost_micros / max_consecutive_same_tool 保持 lifetime 值
 3. **改动面是新 port 方法 + 新 namespace**，不是加参数（`../investigation.md` D7 已经这样判断）；`ReactCheckpointPort` 是公开 runtime 面（`kernel.py:315-326`），改它会牵动 `public-api.json`。
 4. **收益已被更便宜的手段拿到**：per-turn 归属由 `provider_turn_ordinal_from/to` 表达（已存在）；per-turn 限额由 §7 的派生 limits 表达（不需要分键）；同 Turn 身份由 `active_turn_id` 表达（字段已存在，只差写入）。
 
-**S2 交付的替代物**：把 `active_turn_id` 真正写进 checkpoint（§6.3），并在 `../slice-2/journal.md` 与本文里把"不分键"记成显式决定，撤销 `../investigation.md` D7 里"推迟到 Slice 2 分键"的说法。若将来真要分键，须与 BA34 的 request_id 方案一并立项（S5 或独立项）。
+**S2 交付的替代物**（执行期修订）：~~把 `active_turn_id` 真正写进 checkpoint（§6.3）~~ → `TerminationState.to_json` 写入 `active_turn_id` 即强制 schema 7 并要求 `context_use_authority_scope`（`termination.py:261-264、447-453`），BaseAgent 不能借用；改用**持久序号规则**（在途 checkpoint 的 `provider_turns_reserved_total <= 本 Turn 的 provider_turn_ordinal_from` 即属他人，`agents/execution.py::_check_turn_identity`），并在 `../slice-2/journal.md` 与本文里把"不分键"记成显式决定，撤销 `../investigation.md` D7 里"推迟到 Slice 2 分键"的说法。若将来真要分键，须与 BA34 的 request_id 方案一并立项（S5 或独立项）。
 
 ---
 
