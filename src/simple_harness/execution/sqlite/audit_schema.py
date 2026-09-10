@@ -111,31 +111,40 @@ def _expected_objects(version):
 
 def ensure_audit_schema(database):
     with database.transaction() as connection:
-        found = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
-        if OBJECTS & found:
-            version = validate_audit_schema(connection, allow_v1=True)
-            if version == 1:
-                for statement in STAGE_DDL:
-                    connection.execute(statement)
-                connection.execute(
-                    "UPDATE sdk_audit_schema SET version=?,checksum=?",
-                    (AUDIT_SCHEMA_VERSION, CHECKSUM),
-                )
-        else:
-            for statement in DDL:
+        ensure_audit_schema_on(connection)
+
+
+def ensure_audit_schema_on(connection):
+    """Bootstrap or upgrade the explicit audit schema on an open write transaction.
+
+    Also used by the explicit v7/v8 -> v9 upgrader for libraries written before the
+    audit schema existed (they can no longer be opened directly).
+    """
+    found = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+    if OBJECTS & found:
+        version = validate_audit_schema(connection, allow_v1=True)
+        if version == 1:
+            for statement in STAGE_DDL:
                 connection.execute(statement)
             connection.execute(
-                "INSERT INTO sdk_audit_schema VALUES (?,?)", (AUDIT_SCHEMA_VERSION, CHECKSUM)
+                "UPDATE sdk_audit_schema SET version=?,checksum=?",
+                (AUDIT_SCHEMA_VERSION, CHECKSUM),
             )
-        from .stage_audit_schema import seed_observed_legacy
+    else:
+        for statement in DDL:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO sdk_audit_schema VALUES (?,?)", (AUDIT_SCHEMA_VERSION, CHECKSUM)
+        )
+    from .stage_audit_schema import seed_observed_legacy
 
-        seed_observed_legacy(connection)
-        from .command_audit import record_command_event
+    seed_observed_legacy(connection)
+    from .command_audit import record_command_event
 
-        for row in connection.execute(
-            "SELECT command_id FROM conversation_commands c WHERE NOT EXISTS "
-            "(SELECT 1 FROM sdk_command_audit_events a WHERE a.command_id=c.command_id)",
-        ):
-            # A present head is an observed legacy baseline, never reconstructed
-            # admission or retries. It also supplies an immutable snapshot cut.
-            record_command_event(connection, row[0], "legacy_baseline", now=time.time())
+    for row in connection.execute(
+        "SELECT command_id FROM conversation_commands c WHERE NOT EXISTS "
+        "(SELECT 1 FROM sdk_command_audit_events a WHERE a.command_id=c.command_id)",
+    ):
+        # A present head is an observed legacy baseline, never reconstructed
+        # admission or retries. It also supplies an immutable snapshot cut.
+        record_command_event(connection, row[0], "legacy_baseline", now=time.time())

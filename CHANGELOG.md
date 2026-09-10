@@ -18,6 +18,10 @@ A driver exception inside an admitted AgentTurn is a visible failed turn
 (`base_agent_driver_exception`); the upgrade receipt binds the retained backup to the
 source image (`source_root_hash`); `agent_delegate` hands its tool permit back while it
 waits for the child so `max_concurrent_tool_calls` cannot deadlock a delegation.
+`migrate_execution_to_v9` now upgrades a v7/v8 library written before the explicit
+audit schema existed (it bootstraps the audit objects under the write lock, after the
+backup is retained) and is a no-op on a library already at v10, so a Host may call the
+v9 and v10 upgraders unconditionally at startup.
 
 ## 0.7.10 — bounded nullable Tool schemas (source candidate)
 

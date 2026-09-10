@@ -79,14 +79,26 @@ def _expected_catalog(version, audit_version):
         connection.executescript(
             (legacy_v7_descriptor() if version == 7 else fresh_descriptor()).sql
         )
-        for statement in audit_schema.V1_DDL if audit_version == 1 else audit_schema.DDL:
-            connection.execute(statement)
+        if audit_version is not None:
+            for statement in audit_schema.V1_DDL if audit_version == 1 else audit_schema.DDL:
+                connection.execute(statement)
         return _catalog(connection)
     finally:
         connection.close()
 
 
-def _validate(connection):
+def audit_objects_present(connection):
+    found = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+    return bool(audit_schema.OBJECTS & found)
+
+
+def _validate(connection, *, allow_missing_audit=False):
+    """Return 7 or 8 for an accepted legacy library.
+
+    ``allow_missing_audit`` accepts a library written before the explicit audit
+    schema existed (no audit object at all); the caller bootstraps it under the
+    write lock.  A *partial* audit schema is still refused.
+    """
     try:
         applied = [
             tuple(r)
@@ -104,7 +116,10 @@ def _validate(connection):
             version = 8
         else:
             raise ExecutionSchemaIncompatible("execution_upgrade_unknown_descriptor")
-        audit_version = audit_schema.validate_audit_schema(connection, allow_v1=True)
+        if allow_missing_audit and not audit_objects_present(connection):
+            audit_version = None
+        else:
+            audit_version = audit_schema.validate_audit_schema(connection, allow_v1=True)
         if _catalog(connection) != _expected_catalog(version, audit_version):
             raise ExecutionSchemaIncompatible("execution_upgrade_unknown_catalog")
         if [tuple(r) for r in connection.execute("PRAGMA integrity_check")] != [("ok",)] or list(

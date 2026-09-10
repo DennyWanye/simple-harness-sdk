@@ -20,6 +20,7 @@ from .context_use_migration import (
     _readonly,
     _root,
     _statements,
+    audit_objects_present,
 )
 from .context_use_migration import (
     _validate as _validate_legacy,
@@ -86,7 +87,7 @@ def _carriers(connection, version):
         raise ExecutionSchemaIncompatible("execution_short_upgrade_carrier_incompatible") from error
 
 
-def _validate(connection):
+def _validate(connection, *, allow_missing_audit=False):
     try:
         rows = tuple(
             tuple(r)
@@ -95,9 +96,18 @@ def _validate(connection):
             )
         )
         if rows not in accepted_descriptor_rows():
-            version = _validate_legacy(connection)
+            version = _validate_legacy(connection, allow_missing_audit=allow_missing_audit)
             _carriers(connection, version)
             return version
+        if rows[-1][0] > 9:
+            # Already beyond 9 (the later explicit upgrader validated its own catalog):
+            # only the accepted descriptor sequence and file integrity are re-checked,
+            # so a Host may keep calling the v9 upgrader unconditionally at startup.
+            if [tuple(r) for r in connection.execute("PRAGMA integrity_check")] != [
+                ("ok",)
+            ] or list(connection.execute("PRAGMA foreign_key_check")):
+                raise ExecutionSchemaIncompatible("execution_short_upgrade_integrity_failed")
+            return int(rows[-1][0])
         audit_version = audit_schema.validate_audit_schema(connection, allow_v1=True)
         expected = sqlite3.connect(":memory:")
         try:
@@ -127,14 +137,22 @@ def _receipt(connection, backup):
         r[0]
         for r in connection.execute("SELECT version FROM sdk_schema_migrations ORDER BY version")
     )
-    if not rows and descriptors == (9,):
+    if 9 not in descriptors:
+        if descriptors and descriptors[0] > 9 and not rows:
+            return None  # fresh beyond 9: nothing was ever upgraded to 9
+        raise ExecutionSchemaIncompatible("execution_short_upgrade_receipt_missing_or_invalid")
+    index = descriptors.index(9)
+    if index == 0:
+        # Fresh 9 (possibly upgraded further since): nothing was ever upgraded to 9.
+        if rows:
+            raise ExecutionSchemaIncompatible("execution_short_upgrade_receipt_missing_or_invalid")
         return None
-    if len(rows) != 1 or descriptors == (9,):
+    if len(rows) != 1:
         raise ExecutionSchemaIncompatible("execution_short_upgrade_receipt_missing_or_invalid")
     try:
         raw = json.loads(rows[0][0])
         receipt = ExecutionShortContextUpgradeReceiptV1(**raw)
-        prior = legacy_v7_descriptor() if descriptors[-2] == 7 else legacy_v8_descriptor()
+        prior = legacy_v7_descriptor() if descriptors[index - 1] == 7 else legacy_v8_descriptor()
         if (
             type(receipt.from_version) is not int
             or receipt.from_version != prior.version
@@ -154,7 +172,10 @@ def _receipt(connection, backup):
         saved = _readonly(backup, 5.0)
         try:
             saved.execute("BEGIN")
-            if _validate(saved) != receipt.from_version or _root(saved) != receipt.source_root_hash:
+            if (
+                _validate(saved, allow_missing_audit=True) != receipt.from_version
+                or _root(saved) != receipt.source_root_hash
+            ):
                 raise ValueError("backup root")
         finally:
             saved.close()
@@ -184,7 +205,7 @@ def migrate_execution_to_v9(
     reader = _readonly(source, timeout)
     try:
         reader.execute("BEGIN")
-        if _validate(reader) == 9:
+        if _validate(reader, allow_missing_audit=True) >= 9:
             return _receipt(reader, backup)
     finally:
         reader.close()
@@ -194,8 +215,8 @@ def migrate_execution_to_v9(
         writer.execute("PRAGMA foreign_keys=ON")
         writer.execute("PRAGMA synchronous=FULL")
         writer.execute("BEGIN IMMEDIATE")
-        version = _validate(writer)
-        if version == 9:
+        version = _validate(writer, allow_missing_audit=True)
+        if version >= 9:
             return _receipt(writer, backup)
         root = _root(writer)
         if not backup.exists():
@@ -217,10 +238,15 @@ def migrate_execution_to_v9(
         saved = _readonly(backup, timeout)
         try:
             saved.execute("BEGIN")
-            if _validate(saved) != version or _root(saved) != root:
+            if _validate(saved, allow_missing_audit=True) != version or _root(saved) != root:
                 raise ExecutionSchemaIncompatible("execution_short_upgrade_retained_backup_differs")
         finally:
             saved.close()
+        if not audit_objects_present(writer):
+            # A library written before the explicit audit schema existed (it can no
+            # longer be opened directly): bootstrap the audit objects inside this same
+            # transaction, after the backup is retained, exactly as Database.open does.
+            audit_schema.ensure_audit_schema_on(writer)
         prior = legacy_v7_descriptor() if version == 7 else legacy_v8_descriptor()
         receipt = ExecutionShortContextUpgradeReceiptV1(
             str(backup),
