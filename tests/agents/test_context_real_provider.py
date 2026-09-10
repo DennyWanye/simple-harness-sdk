@@ -10,7 +10,7 @@ import asyncio
 import json
 
 import pytest
-from real_provider_config import resolve_real_provider
+from real_provider_config import build_real_provider, resolve_real_provider
 
 from simple_harness.agents import AgentConfig, build_agent_runtime
 from simple_harness.agents.context import ContextPolicy, TiktokenTokenizer
