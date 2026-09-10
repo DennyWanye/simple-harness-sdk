@@ -20,6 +20,7 @@ from dataclasses import replace
 
 from simple_harness.contracts import JsonValue, Message, MessageRole
 from simple_harness.providers import ProviderRequest, ProviderResponse
+from simple_harness.providers.errors import ProviderProtocolError
 
 PROVIDER_TOOL_CALLS_KEY = "provider_tool_calls"
 REQUEST_ID_MARKER = ":provider-turn:"
@@ -91,6 +92,28 @@ def restore_tool_calls(
     return tuple(restored), fallbacks
 
 
+class ProviderEmptyResponseError(ProviderProtocolError):
+    """The model returned neither public text nor tool calls (F-BA-1 / T10).
+
+    Raised at the wire so the turn fails with a readable code instead of tripping the
+    durable-state gate (``provider_response_not_durable``) deep in dispatch.  It is a
+    definite failure: the invocation is settled, the turn fails, the Agent lives on.
+    """
+
+    __slots__ = ()
+    error_code = "provider_empty_response"
+    default_message = "Provider returned an empty response without tool calls."
+
+
+def _is_empty_final(response: ProviderResponse) -> bool:
+    if response.tool_calls:
+        return False
+    content = response.message.content
+    if isinstance(content, str):
+        return not content.strip()
+    return not content
+
+
 class AgentProviderWire:
     """Consumer ``ProviderPort`` decorator used by ``assemble_runtime``."""
 
@@ -109,12 +132,22 @@ class AgentProviderWire:
             self.fallback_total += fallbacks
             wire_request = replace(request, messages=messages)
         self.last_request = wire_request
-        return await self._inner.invoke(wire_request, cancel=cancel)
+        response = await self._inner.invoke(wire_request, cancel=cancel)
+        if _is_empty_final(response):
+            finish = getattr(response, "finish_reason", None)
+            raise ProviderEmptyResponseError(
+                public_message=(
+                    "Provider returned an empty response without tool calls"
+                    + (f" (finish_reason={finish})." if finish else ".")
+                )
+            )
+        return response
 
 
 __all__ = (
     "PROVIDER_TOOL_CALLS_KEY",
     "AgentProviderWire",
+    "ProviderEmptyResponseError",
     "restore_tool_calls",
     "run_id_from_request",
 )

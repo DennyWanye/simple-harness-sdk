@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
+"""Slice 2 · T10 (AC13 / F-BA-1): an empty final response is a visible failed turn."""
+
+from __future__ import annotations
+
+import asyncio
+
+from provider_fixture import MODEL, ScriptedProvider
+
+from simple_harness import Message, MessageRole
+from simple_harness.agents import AgentConfig, AgentTurnState, build_agent_runtime
+from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
+from simple_harness.execution.uow import RunState
+from simple_harness.providers import ProviderResponse
+
+
+def _ports(tmp_path, provider, **overrides):
+    base = dict(
+        provider=provider,
+        authorization=AllowAllAuthorization(),
+        database_path=str(tmp_path / "runtime.db"),
+        model=MODEL,
+        owner_id="durability-owner",
+    )
+    base.update(overrides)
+    return AgentRuntimePorts(**base)
+
+
+def _config():
+    return AgentConfig(name="w", instructions="你是助手。", model_profile_ref="p")
+
+
+class EmptyOnceProvider(ScriptedProvider):
+    """First call answers with empty content and no tool calls (reasoning-only model)."""
+
+    def __init__(self, script, *, finish_reason="stop"):
+        super().__init__(script)
+        self.finish_reason = finish_reason
+        self.empty_sent = False
+
+    async def invoke(self, request, *, cancel):
+        if not self.empty_sent:
+            self.empty_sent = True
+            self.requests.append(request)
+            return ProviderResponse(
+                request.request_id,
+                Message(MessageRole.ASSISTANT, ""),
+                model=MODEL,
+                finish_reason=self.finish_reason,
+            )
+        return await super().invoke(request, cancel=cancel)
+
+
+def test_empty_final_response_is_a_visible_failed_turn(tmp_path):
+    async def case():
+        provider = EmptyOnceProvider(["下一轮正常"], finish_reason="length")
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            agent = await runtime.create(_config(), creation_key="e1")
+            failed = await agent.ask("综合一下", input_id="i1", timeout=5)
+            assert failed.state is AgentTurnState.FAILED
+            assert failed.error["error_code"] == "provider_empty_response"
+            run = runtime.uow.read_run(agent.run_id)
+            assert run is not None and run.state is RunState.WAITING
+            invocations = runtime.uow.database.connection.execute(
+                "SELECT state FROM provider_invocations WHERE run_id=?", (agent.run_id,)
+            ).fetchall()
+            assert [row[0] for row in invocations] == ["failed"]
+            ok = await agent.ask("再来", input_id="i2", timeout=5)
+            assert ok.state is AgentTurnState.COMMITTED
+            assert ok.public_output.content == "下一轮正常"
+            assert provider.calls == 2
+
+    asyncio.run(case())
+
+
+def test_empty_response_with_tool_calls_is_not_treated_as_empty(tmp_path):
+    async def case():
+        provider = ScriptedProvider([("agent_delegate", {"objective": "x"}), "完成"])
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            agent = await runtime.create(
+                AgentConfig(
+                    name="w",
+                    instructions="你是助手。",
+                    model_profile_ref="p",
+                    tool_names=("agent_delegate",),
+                ),
+                creation_key="e2",
+            )
+            result = await agent.ask("委派", input_id="i1", timeout=10)
+            # A tool-call response has empty text by design; it must not fail the turn.
+            assert result.error is None or result.error["error_code"] != "provider_empty_response"
+
+    asyncio.run(case())
