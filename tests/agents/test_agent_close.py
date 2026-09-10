@@ -206,3 +206,22 @@ def test_close_unknown_agent_is_not_found(tmp_path):
                 await runtime.close_agent("agent-does-not-exist", command_id="cmd-1")
 
     asyncio.run(case())
+
+
+def test_closing_converges_to_closed_when_the_open_turn_finalizes(tmp_path):
+    """Challenge finding closing-to-closed-has-no-owner: no second close call is needed."""
+
+    async def case():
+        provider = ScriptedProvider(["慢答"], blocked=True)
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            agent = await runtime.create(_config(), creation_key="c-6")
+            turn = await agent.submit("慢一点", input_id="i1")
+            await asyncio.sleep(0.05)
+            receipt = await agent.close(command_id="cmd-1", drain_timeout=0.05)
+            assert receipt.state == "closing"
+            provider.allow.set()
+            await agent.wait_turn(turn.turn_id, timeout=5)
+            assert tuple(_binding_row(runtime.uow, agent.agent_id)) == ("closed", 1)
+            assert agent.status().lifecycle == "CLOSED"
+
+    asyncio.run(case())

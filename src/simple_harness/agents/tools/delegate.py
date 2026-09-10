@@ -374,6 +374,7 @@ class AgentDelegateTool:
                 input_hash=input_hash,
                 input_json={"message": message},
                 message=message,
+                max_pending_inputs=child_config.limits.max_pending_inputs,
             )
         except UnitOfWorkConflict as error:
             return _failed(

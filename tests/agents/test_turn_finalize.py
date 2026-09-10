@@ -109,6 +109,8 @@ def test_finalize_acks_the_input_continuation_in_the_same_transaction(tmp_path):
                 continuation_payload={"kind": "base_agent_input", "turn_id": "agent-c:input:i9"},
                 now=5.0,
             )
+            # Idle BaseAgents hold no lease (Slice 2): re-activate before borrowing one.
+            await runtime2._activate("agent-c")
             lease = runtime2._leases["agent-c"]
             claim = uow2.claim_continuation(run_id="agent-c", execution_lease=lease, now=6.0)
             assert claim is not None and claim.continuation_id == third.turn_id
@@ -225,6 +227,7 @@ def test_finalize_is_idempotent_by_receipt_id(tmp_path):
             await runtime.wait_idle(RunId("agent-e"))
             first = uow.read_agent_turn_result(record.turn_id)
             assert first is not None
+            await runtime._activate("agent-e")
             lease = runtime._leases["agent-e"]
             run = uow.read_run("agent-e")
             replay = uow.commit_agent_turn_result_and_idle(

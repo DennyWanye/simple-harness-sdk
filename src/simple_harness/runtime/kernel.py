@@ -2832,6 +2832,16 @@ class Runtime:
                 await self._activate(run_id)
             except UnitOfWorkConflict:
                 return
+        if run_id in self._live.active_run_ids():
+            # A drive is already running and may have passed its claim point before
+            # this input was enqueued (and, for idle BaseAgent Runs, may be about to
+            # release the Run's authority).  Let it finish, then wake again so the
+            # input is claimed by a fresh drive instead of waiting for recover().
+            await self._live.wait(run_id)
+            if self._closing:
+                return
+            await self._wake_continuation(run_id)
+            return
         self._schedule(run_id)
 
     async def _activate(self, run_id: str) -> RunRecord:
@@ -3001,6 +3011,11 @@ class Runtime:
                         )
                         return
                 if run.state is RunState.WAITING and continuation_claim is None:
+                    if run.driver_kind == BASE_AGENT_DRIVER_KIND and not self._closing:
+                        # An idle BaseAgent keeps no lease, fence or heartbeat: N idle
+                        # Agents must not cost N renewing tasks.  The next input
+                        # re-activates the Run through ``_wake_continuation``.
+                        await self._abandon_run_authority(run_id)
                     return
             from simple_harness.execution.runtime_audit import runtime_operation
             from simple_harness.execution.sqlite import SqliteExecutionUnitOfWork
@@ -3128,6 +3143,9 @@ class Runtime:
                             lease=self._leases[run_id],
                             now=self._now(),
                         )
+                        if run.driver_kind == BASE_AGENT_DRIVER_KIND and not self._closing:
+                            # Idle BaseAgent (fresh start, nothing queued): drop authority.
+                            await self._abandon_run_authority(run_id)
                     else:
                         self._uow.commit_runtime_wait_with_blocker(
                             run_id=run_id,

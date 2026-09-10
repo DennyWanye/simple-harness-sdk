@@ -1525,7 +1525,7 @@ class SqliteExecutionUnitOfWork:
         commits the Run as WAITING (never terminal).  Replays return the stored row.
         """
 
-        from .base_agent import turns
+        from .base_agent import control, turns
 
         run_id = _required(run_id, "run_id")
         turn_id = _required(turn_id, "turn_id")
@@ -1618,6 +1618,15 @@ class SqliteExecutionUnitOfWork:
                 now=now,
             )
             _fault(fault, "agent_turn_finalize.run.after_write")
+            # A ``closing`` Agent converges to ``closed`` here, in the execution layer,
+            # the moment its last open turn is finalized: no caller has to come back.
+            if (
+                control.read_binding_lifecycle(connection, record.agent_id) == "closing"
+                and turns.read_open_turn(connection, record.agent_id) is None
+            ):
+                control.set_lifecycle(
+                    connection, agent_id=record.agent_id, lifecycle="closed", now=now
+                )
         _fault(fault, "agent_turn_finalize.after_commit")
         return record
 

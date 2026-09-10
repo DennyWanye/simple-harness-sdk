@@ -219,3 +219,57 @@ def test_quota_does_not_block_idempotent_replay(tmp_path):
             await agent.wait_turn(r2.turn_id, timeout=5)
 
     asyncio.run(case())
+
+
+def test_idle_agent_holds_no_lease_fence_or_heartbeat(tmp_path):
+    """Challenge finding create-many-activates-and-leases-every-idle-agent."""
+
+    async def case():
+        provider = ScriptedProvider(["答一", "答二"])
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            kernel = runtime.kernel
+            agents = await runtime.create_many([_config()] * 5, batch_key="idle")
+            for _ in range(50):
+                if not kernel._live.active_run_ids():
+                    break
+                await asyncio.sleep(0.01)
+            assert kernel._live.active_run_ids() == ()
+            assert not (set(kernel._leases) & {a.run_id for a in agents})
+            assert not (set(kernel._heartbeats) & {a.run_id for a in agents})
+            marks = ",".join("?" * len(agents))
+            live = _rows(
+                runtime.uow,
+                f"SELECT COUNT(*) FROM workflow_leases WHERE expires_at > ? AND run_id IN ({marks})",
+                runtime.ports.clock(),
+                *[a.run_id for a in agents],
+            )[0][0]
+            assert live == 0
+            # Waking an idle Agent still works, twice in a row.
+            first = await agents[0].ask("问一", input_id="i1", timeout=5)
+            assert first.public_output.content == "答一"
+            for _ in range(50):
+                if agents[0].run_id not in kernel._leases:
+                    break
+                await asyncio.sleep(0.01)
+            assert agents[0].run_id not in kernel._leases
+            second = await agents[0].ask("问二", input_id="i2", timeout=5)
+            assert second.public_output.content == "答二"
+
+    asyncio.run(case())
+
+
+def test_inputs_are_never_lost_under_a_burst(tmp_path):
+    async def case():
+        provider = ScriptedProvider([f"答{n}" for n in range(30)])
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            agents = await runtime.create_many([_config()] * 3, batch_key="burst")
+            receipts = []
+            for n in range(10):
+                for agent in agents:
+                    receipts.append((agent, await agent.submit(f"问{n}", input_id=f"i{n}")))
+                    await asyncio.sleep(0.001 * (n % 3))
+            for agent, receipt in receipts:
+                await agent.wait_turn(receipt.turn_id, timeout=10)
+            assert provider.calls == 30
+
+    asyncio.run(case())
