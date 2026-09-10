@@ -722,15 +722,15 @@ class Orchestrator:
             if attempt.status in {AttemptStatus.SUPERSEDED, AttemptStatus.CANCELLED}:
                 # D3-6': a late result on a closed Attempt is history, never a transition
                 text = "" if result.public_output is None else str(result.public_output.content)
-                summary, listed = "", []
+                summary, late_paths = "", []
                 try:
                     raw = extract_block(text, RESULT_ENVELOPE_TAG)
                     summary = str(raw.get("summary", ""))[:400]
-                    listed = [str(p) for p in raw.get("artifacts", [])]
+                    late_paths = [str(p) for p in raw.get("artifacts", [])]
                 except BlockError:
                     summary = text[:200]
                 self.commit.record_late_result(
-                    attempt.id, turn_id=result.turn_id, summary=summary, artifacts=listed
+                    attempt.id, turn_id=result.turn_id, summary=summary, artifacts=late_paths
                 )
                 self._settle_if_known(attempt)
                 self._note(f"attempt {attempt.id}: late result recorded as history")

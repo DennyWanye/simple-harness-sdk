@@ -156,7 +156,10 @@ def test_s3_07b_vanished_executor_is_lost_and_retried_without_rerunning_finished
             b_attempts = store.list_attempts(by_key["B"].id)
             assert [a.status for a in b_attempts] == [AttemptStatus.LOST, AttemptStatus.COMPLETED]
             assert b_attempts[0].id == b_attempt.id
-            assert b_attempts[0].failure["reason"] in {"executor_turn_missing", "executor_agent_missing"}
+            assert b_attempts[0].failure["reason"] in {
+                "executor_turn_missing",
+                "executor_agent_missing",
+            }
             assert b_attempts[1].lease_owner == "orch-2" and b_attempts[1].retry_of == b_attempt.id
             assert (
                 provider.calls_by_key == CALLS
