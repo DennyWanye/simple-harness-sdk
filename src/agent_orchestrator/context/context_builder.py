@@ -62,6 +62,7 @@ def build_worker_package(
     previous_attempts: Sequence[Attempt],
     verifier_feedback: Sequence[Mapping[str, Any]],
     workspace_files: Sequence[str],
+    dependencies: Sequence[Mapping[str, Any]] = (),
 ) -> TaskPackage:
     failures = [
         {
@@ -89,6 +90,7 @@ def build_worker_package(
             "ordinal": attempt.ordinal,
             "retry_of": attempt.retry_of,
         },
+        "dependencies": [dict(item) for item in dependencies],  # §10 item 3 (step 3)
         "failure_history": failures,  # §10 item 6
         "verifier_feedback": [dict(item) for item in verifier_feedback],  # §10 item 8
         "feedback": list(attempt.feedback),
@@ -103,7 +105,6 @@ def build_worker_package(
         },
         "output_contract": "<result_envelope>{json}</result_envelope>",  # §10 item 11
         "absent_by_design": [
-            "dependencies",
             "branch_summary",
             "verified_knowledge",
             "disputed_claims",

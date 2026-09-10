@@ -479,8 +479,8 @@ class CommitService:
         with self._store.transaction():
             receipt = self._store.get_receipt(commit)
             if receipt is not None:
-                tasks = [self._require_task(task_id) for task_id in receipt["task_ids"]]
-                return tasks, receipt
+                replayed = [self._require_task(task_id) for task_id in receipt["task_ids"]]
+                return replayed, receipt
             mission = self._require_mission(mission_id)
             if mission.version != base_version:
                 raise CommitRejected(
