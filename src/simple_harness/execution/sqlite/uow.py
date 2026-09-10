@@ -73,6 +73,11 @@ from simple_harness.execution.recovery import (
     WaitBlockerSpec,
     recovery_identity,
 )
+from simple_harness.execution.base_agent import (
+    AgentBindingRecord,
+    AgentTurnRecord,
+    AgentTurnResultRecord,
+)
 from simple_harness.execution.uow import (
     RUNTIME_LEASE_NAMESPACE,
     AdmissionRecord,
@@ -1155,6 +1160,318 @@ class SqliteExecutionUnitOfWork:
         CommandIngress(
             self.database, context_use_scope=self._context_use_scope
         ).require_legacy_or_unmanaged(run_id)
+
+    # --- BaseAgent (execution schema v10) --------------------------------------
+    # Thin facades; the connection-level logic lives in ``sqlite/base_agent/turns.py``
+    # so this module does not keep growing.  Each facade owns exactly one transaction.
+
+    def create_agent_binding(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        owner_scope: str,
+        role: str,
+        creation_key: str,
+        config_json: Mapping[str, JsonValue],
+        config_hash: str,
+        now: float,
+    ) -> AgentBindingRecord:
+        from .base_agent import turns
+
+        with self.database.transaction() as connection:
+            return turns.insert_binding(
+                connection,
+                agent_id=_required(agent_id, "agent_id"),
+                run_id=_required(run_id, "run_id"),
+                owner_scope=_required(owner_scope, "owner_scope"),
+                role=role,
+                creation_key=_required(creation_key, "creation_key"),
+                config_json=config_json,
+                config_hash=config_hash,
+                now=_time(now),
+            )
+
+    def read_agent_binding(self, agent_id: str) -> AgentBindingRecord | None:
+        from .base_agent import turns
+
+        return turns.read_binding(self.database.connection, _required(agent_id, "agent_id"))
+
+    def read_agent_binding_for_run(self, run_id: str) -> AgentBindingRecord | None:
+        from .base_agent import turns
+
+        return turns.read_binding_by_run(self.database.connection, _required(run_id, "run_id"))
+
+    def submit_agent_input(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        turn_id: str,
+        input_id: str,
+        input_hash: str,
+        input_json: Mapping[str, JsonValue],
+        continuation_payload: Mapping[str, JsonValue],
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> AgentTurnRecord:
+        """One short transaction: queued turn row + its ``base_agent_input`` continuation."""
+
+        from .base_agent import turns
+
+        now = _time(now)
+        payload_json = _object_json(continuation_payload, "continuation_payload")
+        with self.database.transaction() as connection:
+            record, created = turns.open_turn(
+                connection,
+                agent_id=_required(agent_id, "agent_id"),
+                turn_id=_required(turn_id, "turn_id"),
+                input_id=_required(input_id, "input_id"),
+                input_hash=input_hash,
+                input_json=input_json,
+                continuation_id=turn_id,
+                now=now,
+            )
+            existing = connection.execute(
+                "SELECT run_id, payload_json FROM continuations WHERE continuation_id=?",
+                (turn_id,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["run_id"]) != run_id or canonical_json(
+                    json.loads(str(existing["payload_json"]))
+                ) != payload_json:
+                    raise UnitOfWorkConflict("agent input continuation differs from turn")
+            else:
+                if not created:
+                    raise UnitOfWorkConflict("agent turn exists without its continuation")
+                self._enqueue_continuation_on_connection(
+                    connection,
+                    continuation_id=turn_id,
+                    run_id=_required(run_id, "run_id"),
+                    payload=continuation_payload,
+                    payload_json=payload_json,
+                    now=now,
+                    context_stage_id=None,
+                    context_stage_hash=None,
+                    fault=fault,
+                )
+            return record
+
+    def read_agent_turn(self, turn_id: str) -> AgentTurnRecord | None:
+        from .base_agent import turns
+
+        return turns.read_turn(self.database.connection, _required(turn_id, "turn_id"))
+
+    def read_agent_turn_by_input(self, agent_id: str, input_id: str) -> AgentTurnRecord | None:
+        from .base_agent import turns
+
+        return turns.read_turn_by_input(self.database.connection, agent_id, input_id)
+
+    def list_agent_turns(self, agent_id: str) -> tuple[AgentTurnRecord, ...]:
+        from .base_agent import turns
+
+        return turns.list_turns(self.database.connection, _required(agent_id, "agent_id"))
+
+    def read_pending_agent_turn(self, run_id: str) -> AgentTurnRecord | None:
+        """The ``result_pending`` turn of the Agent bound to ``run_id``, if any."""
+
+        from .base_agent import turns
+
+        binding = turns.read_binding_by_run(self.database.connection, _required(run_id, "run_id"))
+        if binding is None:
+            return None
+        return turns.read_pending_turn(self.database.connection, binding.agent_id)
+
+    def read_open_agent_turn(self, run_id: str) -> AgentTurnRecord | None:
+        from .base_agent import turns
+
+        binding = turns.read_binding_by_run(self.database.connection, _required(run_id, "run_id"))
+        if binding is None:
+            return None
+        return turns.read_open_turn(self.database.connection, binding.agent_id)
+
+    def list_runs_with_open_agent_turns(self) -> tuple[str, ...]:
+        from .base_agent import turns
+
+        return turns.list_runs_with_open_turns(self.database.connection)
+
+    def read_agent_turn_result(self, turn_id: str) -> AgentTurnResultRecord | None:
+        from .base_agent import turns
+
+        return turns.read_result(self.database.connection, _required(turn_id, "turn_id"))
+
+    def mark_agent_turn_running(
+        self,
+        *,
+        turn_id: str,
+        execution_lease: ExecutionLease,
+        provider_turn_ordinal_from: int | None,
+        now: float,
+    ) -> AgentTurnRecord:
+        from .base_agent import turns
+
+        now = _time(now)
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            return turns.mark_turn_running(
+                connection,
+                turn_id=_required(turn_id, "turn_id"),
+                lease_epoch=execution_lease.epoch,
+                provider_turn_ordinal_from=provider_turn_ordinal_from,
+                now=now,
+            )
+
+    def stage_agent_turn_result(
+        self,
+        *,
+        turn_id: str,
+        result_hash: str,
+        result_json: Mapping[str, JsonValue],
+        provider_turn_ordinal_from: int | None,
+        provider_turn_ordinal_to: int | None,
+        execution_lease: ExecutionLease,
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> AgentTurnRecord:
+        """RESULT_PENDING: freeze the result under the Run lease in its own short transaction."""
+
+        from .base_agent import turns
+
+        now = _time(now)
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            _fault(fault, "agent_turn_stage.before_write")
+            record = turns.stage_result(
+                connection,
+                turn_id=_required(turn_id, "turn_id"),
+                result_hash=result_hash,
+                result_json=result_json,
+                provider_turn_ordinal_from=provider_turn_ordinal_from,
+                provider_turn_ordinal_to=provider_turn_ordinal_to,
+                lease_epoch=execution_lease.epoch,
+                now=now,
+            )
+            _fault(fault, "agent_turn_stage.after_write")
+        _fault(fault, "agent_turn_stage.after_commit")
+        return record
+
+    def commit_agent_turn_result_and_idle(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        turn_id: str,
+        event_id: str,
+        payload: Mapping[str, JsonValue],
+        continuation_claim: ContinuationRecord | None,
+        execution_lease: ExecutionLease,
+        receipt_id: str | None,
+        usage_refs: tuple[str, ...] = (),
+        now: float,
+        fault: FaultHook | None = None,
+    ) -> AgentTurnResultRecord:
+        """Finalize one AgentTurn in a single transaction.
+
+        Writes the immutable result row, closes the turn, acks the input
+        continuation (progress receipt + ``acked``) when a claim is supplied, and
+        commits the Run as WAITING (never terminal).  Replays return the stored row.
+        """
+
+        from .base_agent import turns
+
+        run_id = _required(run_id, "run_id")
+        turn_id = _required(turn_id, "turn_id")
+        event_id = _required(event_id, "event_id")
+        now = _time(now)
+        payload_json = _object_json(payload, "payload")
+        if continuation_claim is not None and receipt_id is None:
+            raise ValueError("acking a continuation requires receipt_id")
+        commit_receipt_id = f"{turn_id}:commit"
+        existing = turns.read_result(self.database.connection, turn_id)
+        if existing is not None:
+            if continuation_claim is not None:
+                assert receipt_id is not None
+                receipt = self._read_continuation_progress_receipt(receipt_id)
+                if receipt is None:
+                    raise UnitOfWorkConflict("agent turn result committed without its ack receipt")
+            return existing
+        with self.database.transaction() as connection:
+            self._require_runtime_lease(connection, execution_lease, now=now)
+            _fault(fault, "agent_turn_finalize.result.before_write")
+            record = turns.commit_staged_result(
+                connection,
+                turn_id=turn_id,
+                commit_receipt_id=commit_receipt_id,
+                usage_refs=usage_refs,
+                now=now,
+            )
+            _fault(fault, "agent_turn_finalize.result.after_write")
+            if continuation_claim is not None:
+                assert receipt_id is not None
+                self._require_continuation_claim(connection, continuation_claim, execution_lease)
+                outcome_hash = hashlib.sha256(
+                    canonical_json(
+                        {
+                            "run_id": run_id,
+                            "expected_version": expected_version,
+                            "state": RunState.WAITING.value,
+                            "event_id": event_id,
+                            "payload": json.loads(payload_json),
+                        }
+                    ).encode()
+                ).hexdigest()
+                connection.execute(
+                    "INSERT INTO continuation_progress_receipts("
+                    "receipt_id,continuation_id,run_id,owner_id,runtime_lease_epoch,"
+                    "claim_epoch,outcome_hash,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        receipt_id,
+                        continuation_claim.continuation_id,
+                        run_id,
+                        execution_lease.owner_id,
+                        execution_lease.epoch,
+                        continuation_claim.claim_epoch,
+                        outcome_hash,
+                        now,
+                    ),
+                )
+                _fault(fault, "agent_turn_finalize.continuation.before_write")
+                changed = connection.execute(
+                    "UPDATE continuations SET state='acked',acked_at=?,ack_receipt_id=?,"
+                    "version=version+1 WHERE continuation_id=? AND state='claimed' "
+                    "AND claimed_by=? AND runtime_lease_epoch=? AND claim_epoch=? AND version=?",
+                    (
+                        now,
+                        receipt_id,
+                        continuation_claim.continuation_id,
+                        execution_lease.owner_id,
+                        execution_lease.epoch,
+                        continuation_claim.claim_epoch,
+                        continuation_claim.version,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise UnitOfWorkConflict("agent turn continuation ack CAS failed")
+                _fault(fault, "agent_turn_finalize.continuation.after_write")
+            _fault(fault, "agent_turn_finalize.run.before_write")
+            changed = connection.execute(
+                "UPDATE runs SET state='waiting',version=version+1,updated_at=? "
+                "WHERE run_id=? AND version=? AND state NOT IN ('completed','failed','cancelled')",
+                (now, run_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise UnitOfWorkConflict("agent turn finalize Run CAS failed")
+            self._insert_event(
+                connection,
+                event_id=event_id,
+                run_id=run_id,
+                kind="run.waiting",
+                payload=json.loads(payload_json),
+                now=now,
+            )
+            _fault(fault, "agent_turn_finalize.run.after_write")
+        _fault(fault, "agent_turn_finalize.after_commit")
+        return record
 
     def claim_next_command(
         self, *, owner_id: str, now: float, lease_seconds: float

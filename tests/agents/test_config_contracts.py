@@ -140,6 +140,8 @@ def test_result_hash_roundtrip():
 
 
 def test_termination_limits_come_from_lifetime_totals():
-    limits = AgentLimits(lifetime_model_calls=50, lifetime_tool_calls=70, max_model_calls_per_turn=5)
+    limits = AgentLimits(
+        lifetime_model_calls=50, lifetime_tool_calls=70, max_model_calls_per_turn=5
+    )
     termination = limits.termination_limits()
     assert (termination.max_turns, termination.max_tool_calls) == (50, 70)

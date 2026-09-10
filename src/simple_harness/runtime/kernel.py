@@ -79,6 +79,7 @@ from .agent_memory import (
     MemoryReleaseRequest,
     MemoryScopeRef,
 )
+from .agent_turn import AgentTurnOutcome
 from .child_coordinator import ChildCoordinator
 from .child_signal_runtime import ChildSignalRuntime
 from .commands import (
@@ -130,6 +131,11 @@ from .terminal import TerminalCoordinator, ToolCatalogStale
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from simple_harness.execution.base_agent import (
+        AgentBindingRecord,
+        AgentTurnRecord,
+        AgentTurnResultRecord,
+    )
     from simple_harness.runtime.workflow_spawn import (
         WorkflowSpawnCoordinatorOutcome,
         WorkflowSpawnToolOutcome,
@@ -146,6 +152,7 @@ T = TypeVar("T")
 
 ROOT_PROFILE_KEY = "agent.general"
 WORKFLOW_DRIVER_KIND = "workflow"
+BASE_AGENT_DRIVER_KIND = "base_agent"
 
 
 class RuntimeLifecycleState(StrEnum):
@@ -207,6 +214,7 @@ class DriverResult:
     workflow_retry_wake: WorkflowRetryWake | None = None
     authorization_wait: ToolAuthorizationPending | None = None
     conversation_output: ConversationTurnOutput | None = None
+    agent_turn_outcome: AgentTurnOutcome | None = None
 
     def __post_init__(self) -> None:
         state = RunState(self.state)
@@ -215,6 +223,19 @@ class DriverResult:
         object.__setattr__(self, "state", state)
         object.__setattr__(self, "payload", dict(self.payload))
         object.__setattr__(self, "deliveries", tuple(self.deliveries))
+        if self.agent_turn_outcome is not None:
+            if not isinstance(self.agent_turn_outcome, AgentTurnOutcome):
+                raise TypeError("agent_turn_outcome must use AgentTurnOutcome")
+            if (
+                state is not RunState.WAITING
+                or self.conversation_output is not None
+                or self.wait_blocker is not None
+                or self.workflow_spawn_control is not None
+                or self.workflow_terminal is not None
+                or self.workflow_retry_wake is not None
+                or self.authorization_wait is not None
+            ):
+                raise ValueError("agent turn outcome requires an exclusive WAITING result")
         if self.conversation_output is not None:
             if not isinstance(self.conversation_output, ConversationTurnOutput):
                 raise TypeError("conversation_output must use ConversationTurnOutput")
@@ -559,6 +580,46 @@ class RuntimeUnitOfWork(ExecutionUnitOfWork, RunFencePort, WorkflowLaunchTicketP
     ) -> None: ...
 
     def require_legacy_or_unmanaged_run(self, run_id: str) -> None: ...
+
+    # BaseAgent (execution schema v10)
+    def read_agent_binding_for_run(self, run_id: str) -> AgentBindingRecord | None: ...
+
+    def read_agent_turn(self, turn_id: str) -> AgentTurnRecord | None: ...
+
+    def read_pending_agent_turn(self, run_id: str) -> AgentTurnRecord | None: ...
+
+    def read_open_agent_turn(self, run_id: str) -> AgentTurnRecord | None: ...
+
+    def read_agent_turn_result(self, turn_id: str) -> AgentTurnResultRecord | None: ...
+
+    def list_runs_with_open_agent_turns(self) -> tuple[str, ...]: ...
+
+    def stage_agent_turn_result(
+        self,
+        *,
+        turn_id: str,
+        result_hash: str,
+        result_json: Mapping[str, JsonValue],
+        provider_turn_ordinal_from: int | None,
+        provider_turn_ordinal_to: int | None,
+        execution_lease: ExecutionLease,
+        now: float,
+    ) -> AgentTurnRecord: ...
+
+    def commit_agent_turn_result_and_idle(
+        self,
+        *,
+        run_id: str,
+        expected_version: int,
+        turn_id: str,
+        event_id: str,
+        payload: Mapping[str, JsonValue],
+        continuation_claim: ContinuationRecord | None,
+        execution_lease: ExecutionLease,
+        receipt_id: str | None,
+        usage_refs: tuple[str, ...] = (),
+        now: float,
+    ) -> AgentTurnResultRecord: ...
 
     def claim_next_command(
         self, *, owner_id: str, now: float, lease_seconds: float
@@ -1879,6 +1940,13 @@ class Runtime:
             self._require_started()
         root_runs = self._uow.list_recoverable_root_runs()
         child_runs = self._uow.list_recoverable_child_runs()
+        # BaseAgent Runs rest in WAITING between turns, so queued / running /
+        # result_pending turns must be woken explicitly (finalize-first in _drive).
+        recovered_ids = {run.run_id for run in (*root_runs, *child_runs)}
+        for run_id in self._uow.list_runs_with_open_agent_turns():
+            if run_id in recovered_ids or run_id in self._live.active_run_ids():
+                continue
+            await self._wake_continuation(run_id)
         logger.info(
             "reconcile.recovered",
             extra={"roots": len(root_runs), "children": len(child_runs)},
@@ -1909,6 +1977,16 @@ class Runtime:
                 )
                 if prior_ready is None:
                     if (
+                        run.driver_kind == BASE_AGENT_DRIVER_KIND
+                        and self._uow.read_pending_agent_turn(run.run_id) is not None
+                    ):
+                        # BaseAgent RESULT_PENDING: finalize first, never re-drive.
+                        await self._activate(run.run_id)
+                        await self._finalize_pending_agent_turn(run.run_id)
+                        activated = self._uow.read_run(run.run_id)
+                        if activated is None:
+                            raise UnitOfWorkConflict("BaseAgent Run disappeared during recovery")
+                    elif (
                         run.parent_run_id is not None
                         and run.driver_kind == WORKFLOW_DRIVER_KIND
                         and self._uow.is_workflow_spawn_child(run.run_id)
@@ -2791,6 +2869,26 @@ class Runtime:
                     execution_lease=self._leases[run_id],
                     now=self._now(),
                 )
+                if run.driver_kind == BASE_AGENT_DRIVER_KIND:
+                    pending_turn = self._uow.read_pending_agent_turn(run_id)
+                    if pending_turn is not None:
+                        # RESULT_PENDING survives any wake path: commit the staged result
+                        # first and never hand the same input to the driver again.
+                        if (
+                            continuation_claim is not None
+                            and continuation_claim.continuation_id != pending_turn.continuation_id
+                        ):
+                            raise UnitOfWorkConflict(
+                                "pending agent turn is not at the continuation head"
+                            )
+                        await self._finalize_agent_turn(
+                            run_id,
+                            pending_turn.turn_id,
+                            continuation_claim,
+                            {"recovered": True},
+                            reschedule=True,
+                        )
+                        return
                 if run.state is RunState.WAITING and continuation_claim is None:
                     return
             from simple_harness.execution.runtime_audit import runtime_operation
@@ -2852,6 +2950,13 @@ class Runtime:
             current = self._uow.read_run(run_id)
             if current is None:
                 raise RuntimeError("Run disappeared during execution")
+            if result.agent_turn_outcome is not None:
+                # BaseAgent: stage + finalize the turn result; the Run stays WAITING
+                # and never reaches the terminal branch below.
+                await self._commit_agent_turn(
+                    current, result.agent_turn_outcome, result.payload, continuation_claim
+                )
+                return
             if result.state is RunState.WAITING:
                 if result.authorization_wait is not None:
                     if continuation_claim is not None:
@@ -3034,6 +3139,112 @@ class Runtime:
         result = self._uow.read_run(value)
         assert result is not None
         return result
+
+    async def _commit_agent_turn(
+        self,
+        current: RunRecord,
+        outcome: AgentTurnOutcome,
+        payload: Mapping[str, JsonValue],
+        continuation_claim: ContinuationRecord | None,
+    ) -> None:
+        """stage (RESULT_PENDING) then finalize one BaseAgent turn; Run stays WAITING."""
+
+        run_id = current.run_id
+        turn = self._uow.read_agent_turn(outcome.turn_id)
+        if turn is None or turn.agent_id != outcome.agent_id:
+            raise UnitOfWorkConflict("agent turn row does not match the driver outcome")
+        if turn.phase in {"queued", "running"}:
+            self._uow.stage_agent_turn_result(
+                turn_id=outcome.turn_id,
+                result_hash=outcome.result_hash,
+                result_json=outcome.result_object(),
+                provider_turn_ordinal_from=outcome.provider_turn_ordinal_from,
+                provider_turn_ordinal_to=outcome.provider_turn_ordinal_to,
+                execution_lease=self._leases[run_id],
+                now=self._now(),
+            )
+        elif turn.phase == "result_pending":
+            if turn.staged_result_hash != outcome.result_hash:
+                raise UnitOfWorkConflict("staged agent turn result differs from driver outcome")
+        elif self._uow.read_agent_turn_result(outcome.turn_id) is None:
+            raise UnitOfWorkConflict("agent turn is closed without a result row")
+        await self._finalize_agent_turn(
+            run_id,
+            outcome.turn_id,
+            continuation_claim,
+            dict(payload),
+            usage_refs=outcome.usage_refs,
+            reschedule=True,
+        )
+
+    async def _finalize_agent_turn(
+        self,
+        run_id: str,
+        turn_id: str,
+        continuation_claim: ContinuationRecord | None,
+        payload: dict[str, JsonValue],
+        *,
+        usage_refs: tuple[str, ...] = (),
+        reschedule: bool,
+    ) -> None:
+        current = self._uow.read_run(run_id)
+        if current is None:
+            raise RuntimeError("Run disappeared during agent turn finalize")
+        receipt_id = (
+            None
+            if continuation_claim is None
+            else (
+                f"{run_id}:progress:{continuation_claim.continuation_id}:"
+                f"{continuation_claim.claim_epoch}"
+            )
+        )
+        binding = self._uow.read_agent_binding_for_run(run_id)
+        finalize_payload: dict[str, JsonValue] = {
+            **payload,
+            "base_agent_stage": "idle",
+            "turn_id": turn_id,
+            "agent_id": None if binding is None else binding.agent_id,
+        }
+        self._uow.commit_agent_turn_result_and_idle(
+            run_id=run_id,
+            expected_version=current.version,
+            turn_id=turn_id,
+            event_id=f"{run_id}:agent_turn:{turn_id}:committed",
+            payload=finalize_payload,
+            continuation_claim=continuation_claim,
+            execution_lease=self._leases[run_id],
+            receipt_id=receipt_id,
+            usage_refs=usage_refs,
+            now=self._now(),
+        )
+        if reschedule:
+            asyncio.create_task(self._reschedule(run_id))
+
+    async def _finalize_pending_agent_turn(self, run_id: str) -> bool:
+        """Recovery: commit an already staged turn without re-entering the driver.
+
+        Claims the turn's own input continuation (if it is still unacked) so the
+        same input is never handed to the driver a second time.
+        """
+
+        pending = self._uow.read_pending_agent_turn(run_id)
+        if pending is None:
+            return False
+        claim: ContinuationRecord | None = None
+        if pending.continuation_id is not None:
+            durable = self._uow.read_continuation(pending.continuation_id)
+            if durable is not None and durable.state is not ContinuationState.ACKED:
+                claim = self._uow.claim_continuation(
+                    run_id=run_id,
+                    execution_lease=self._leases[run_id],
+                    now=self._now(),
+                )
+                if claim is not None and claim.continuation_id != pending.continuation_id:
+                    raise UnitOfWorkConflict("pending agent turn is not at the continuation head")
+        await self._finalize_agent_turn(
+            run_id, pending.turn_id, claim, {"recovered": True}, reschedule=False
+        )
+        return True
 
     async def _reschedule(self, run_id: str) -> None:
         while run_id in self._live.active_run_ids():

@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
+"""Durable BaseAgent records (execution schema v10) shared by kernel and storage.
+
+Pure dataclasses: no SQLite, no ``simple_harness.agents`` import.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from simple_harness.contracts import FrozenJsonValue, freeze_json
+
+AGENT_TURN_PHASES = ("queued", "running", "result_pending", "committed", "failed")
+AGENT_DELEGATION_STATES = ("reserved", "launched", "settled", "failed")
+BASE_AGENT_API_MODE = "base_agent_v1"
+BASE_AGENT_INPUT_KIND = "base_agent_input"
+
+
+def _frozen_object(value: object, name: str) -> FrozenJsonValue:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a JSON object")
+    return freeze_json(dict(value))
+
+
+@dataclass(frozen=True, slots=True)
+class AgentBindingRecord:
+    agent_id: str
+    run_id: str
+    owner_scope: str
+    api_mode: str
+    role: str
+    creation_key: str
+    config_json: FrozenJsonValue
+    config_hash: str
+    control_generation: int
+    created_at: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "config_json", _frozen_object(self.config_json, "config_json"))
+
+
+@dataclass(frozen=True, slots=True)
+class AgentTurnRecord:
+    turn_id: str
+    agent_id: str
+    input_id: str
+    input_hash: str
+    input_json: FrozenJsonValue
+    continuation_id: str | None
+    seq: int
+    phase: str
+    staged_result_hash: str | None
+    staged_result_json: FrozenJsonValue | None
+    provider_turn_ordinal_from: int | None
+    provider_turn_ordinal_to: int | None
+    lease_epoch: int | None
+    created_at: float
+    updated_at: float
+
+    def __post_init__(self) -> None:
+        if self.phase not in AGENT_TURN_PHASES:
+            raise ValueError("unknown agent turn phase")
+        object.__setattr__(self, "input_json", _frozen_object(self.input_json, "input_json"))
+        if self.staged_result_json is not None:
+            object.__setattr__(
+                self,
+                "staged_result_json",
+                _frozen_object(self.staged_result_json, "staged_result_json"),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class AgentTurnResultRecord:
+    turn_id: str
+    agent_id: str
+    result_hash: str
+    result_json: FrozenJsonValue
+    commit_receipt_id: str
+    usage_refs: tuple[str, ...]
+    committed_at: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "result_json", _frozen_object(self.result_json, "result_json"))
+        object.__setattr__(self, "usage_refs", tuple(self.usage_refs))
+
+
+@dataclass(frozen=True, slots=True)
+class AgentDelegationRecord:
+    delegation_id: str
+    parent_agent_id: str
+    parent_turn_id: str
+    ordinal: int
+    child_agent_id: str
+    child_run_id: str
+    ticket_id: str
+    state: str
+    created_at: float
+    updated_at: float
+
+    def __post_init__(self) -> None:
+        if self.state not in AGENT_DELEGATION_STATES:
+            raise ValueError("unknown agent delegation state")
+
+
+__all__ = (
+    "AGENT_DELEGATION_STATES",
+    "AGENT_TURN_PHASES",
+    "BASE_AGENT_API_MODE",
+    "BASE_AGENT_INPUT_KIND",
+    "AgentBindingRecord",
+    "AgentDelegationRecord",
+    "AgentTurnRecord",
+    "AgentTurnResultRecord",
+)
