@@ -21,8 +21,11 @@ from agent_orchestrator.contracts import Budget
 from agent_orchestrator.observability.evaluation import (
     EvaluationCase,
     EvaluationPlan,
+    EvaluationRefused,
     Oracle,
     Strategy,
+    _compare,
+    _summary,
     case_from_evidence,
     fisher_exact,
     library_digest,
@@ -30,7 +33,7 @@ from agent_orchestrator.observability.evaluation import (
     wilson,
 )
 from agent_orchestrator.orchestrator.commit_service import MissionSpec
-from agent_orchestrator.runtime.connectors import PaymentConnectorStub
+from agent_orchestrator.runtime.connectors import PaymentConnectorStub, TestConfigService
 from agent_orchestrator.testing.fixtures import (
     DEMO_BAD,
     DEMO_GOOD,
@@ -121,8 +124,13 @@ def test_s8_03_two_strategies_on_the_same_cases_new_missions_and_honest_comparis
     [comparison] = report["comparisons"]
     assert comparison["verdict"].startswith("不适用（fixture）")
     assert any(d["key"] == "config.ablations" for d in comparison["policy_differences"])
+    assert comparison["policy_differences_case"] == "parse-kv"
+    assert [row["case"] for row in comparison["per_case"]] == ["parse-kv"]
+    effects = {s["name"]: s["ablation_effects"] for s in report["strategies"]}
+    assert effects["baseline"] == [] and "needs_human" in effects["no-critic"][0]
     markdown = (root / "evaluation.md").read_text(encoding="utf-8")
     assert "机制验证（fixture）" in markdown and "消融政策下的 PASS" in markdown
+    assert "消融连带影响" in markdown
     assert json.loads((root / "evaluation.json").read_text(encoding="utf-8"))["plan"] == "ab"
     with pytest.raises(ValueError, match="not empty"):
         run_plan(plan, root)  # never over an earlier evaluation
@@ -162,6 +170,9 @@ def test_a_failure_and_a_broken_harness_are_told_apart(tmp_path):
     assert sample["failure"]["failing_layer"] == "code_test" and summary["failure_reasons"] == {
         "max_attempts_reached": 1
     }
+    broken_run = next(r for r in report["runs"] if r["category"] == "harness_error")
+    assert broken_run["idempotency_key"] == "eval:split:baseline:no-script:1"
+    assert broken_run["mission_id"].startswith("mission-")  # review P2-11: replayable by id
 
 
 @pytest.mark.parametrize(
@@ -268,7 +279,164 @@ def test_s8_06_an_old_task_under_a_new_model_is_a_new_evaluation(tmp_path, capsy
     assert library_digest(old / "orchestrator.db") == before  # the old facts are untouched
     assert json.loads((old / "test-report.json").read_text(encoding="utf-8")) == old_report
     baseline = json.loads((old / "baseline.json").read_text(encoding="utf-8"))
+    (old / "baseline.json").write_text(
+        json.dumps({**baseline, "agent_orchestrator": "0.0.1"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="own version"):  # review P2-10
+        case_from_evidence(old, name="stale", provider=new_model)
     baseline["spec"]["goal"] = "改过的目标"
     (old / "baseline.json").write_text(json.dumps(baseline, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(ValueError, match="does not hash"):
         case_from_evidence(old, name="tampered", provider=new_model)
+
+
+def test_time_and_token_differences_need_enough_samples_too():
+    """Self-review (real evaluation run 1): with 2 samples a non-overlapping range is no
+    evidence; with enough samples it is; fixtures are never a quality claim."""
+
+    def summary(n, low, high):
+        return {
+            "successes": n,
+            "samples": n,
+            "enough_samples": n >= 3,
+            "duration_seconds": {"min": low, "median": low, "max": high},
+            "tokens": {"min": low, "median": low, "max": high},
+        }
+
+    real = EvaluationPlan(
+        name="r",
+        cases=(EvaluationCase("c", _spec(), _provider(), kind="env"),),
+        strategies=(Strategy("a"), Strategy("b")),
+    )
+    few = _compare(real, "a", "b", summary(2, 50, 51), summary(2, 23, 27))
+    assert few["duration"] == few["tokens"] == "证据不足（样本不足）" and few["verdict"].startswith(
+        "证据不足"
+    )
+    many = _compare(real, "a", "b", summary(3, 50, 51), summary(3, 23, 27))
+    assert many["duration"] == "有差异（区间不重叠）"
+    fixture = EvaluationPlan(
+        name="f",
+        cases=(EvaluationCase("c", _spec(), _provider()),),
+        strategies=(Strategy("a"), Strategy("b")),
+    )
+    assert (
+        _compare(fixture, "a", "b", summary(3, 50, 51), summary(3, 23, 27))["duration"]
+        == "不适用（fixture）"
+    )
+
+
+# ------------------------------------------------------------------ code review round 1
+def test_review_p0_1_every_case_and_every_run_may_only_bring_the_test_service(tmp_path):
+    quiet = EvaluationCase(
+        "pay-quietly",
+        _spec(),  # no action: criterion, a payment connector all the same
+        _provider(),
+        connectors=lambda root: {"payment": PaymentConnectorStub()},
+    )
+    with pytest.raises(ValueError, match="test service"):
+        EvaluationPlan(name="x", cases=(quiet,), strategies=(Strategy("s"),)).validate()
+
+    handed: list[Path] = []
+
+    def switching(root):  # the test service for validate, a payment connector for the run
+        handed.append(Path(root))
+        services = {"test_config": TestConfigService(Path(root) / "config.json")}
+        return services if len(handed) == 1 else {**services, "payment": PaymentConnectorStub()}
+
+    sly = EvaluationCase("sly", _spec(), _provider(), connectors=switching)
+    root = Path(tmp_path) / "eval"
+    with pytest.raises(EvaluationRefused, match="test service"):
+        run_plan(
+            EvaluationPlan(
+                name="y",
+                cases=(sly,),
+                strategies=(Strategy("s"),),
+                config={"test_timeout_seconds": 60},
+            ),
+            root,
+        )
+    assert len(handed) == 2  # the run's own services were checked, not only the probe
+    assert not list(root.rglob("orchestrator.db"))  # refused before any Mission existed
+    assert not (root / "evaluation.json").exists()  # a refusal, not a harness_error row
+
+
+def _row(strategy, case, category):
+    return {
+        "strategy": strategy,
+        "case": case,
+        "trial": 1,
+        "category": category,
+        "mission_id": "m",
+        "run_dir": "d",
+        "failure": None,
+        "stop_reason": "x",
+        "duration_seconds": 1.0,
+        "tokens": 10,
+        "cost_micros": None,
+        "verification_pass_rate": None,
+        "repeat_rate": None,
+        "knowledge_reuse": 0,
+        "recoveries": 0,
+        "ablated_policy_pass": False,
+        "oracle": None,
+        "snapshot_hash": "h",
+    }
+
+
+def test_review_p1_5_the_comparison_is_paired_by_case_and_needs_even_harness_errors():
+    plan = EvaluationPlan(
+        name="r",
+        cases=(
+            EvaluationCase("x", _spec(), _provider(), kind="env"),
+            EvaluationCase("y", _spec(), _provider(), kind="env"),
+        ),
+        strategies=(Strategy("a"), Strategy("b")),
+    )
+    runs = (
+        [_row("a", "x", "success")] * 10
+        + [_row("b", "x", "failure")] * 10
+        + [_row("a", "y", "failure")] * 2
+        + [_row("b", "y", "success")] * 2
+    )
+
+    def summaries(rows):
+        return (
+            _summary([r for r in rows if r["strategy"] == "a"], 3),
+            _summary([r for r in rows if r["strategy"] == "b"], 3),
+        )
+
+    a, b = summaries(runs)
+    assert _compare(plan, "a", "b", a, b)["verdict"].startswith(
+        "成功率有差异"
+    )  # pooled 10/12 vs 2/12
+    paired = _compare(plan, "a", "b", a, b, runs)
+    assert paired["verdict"] == "证据不足：各 case 的成功率方向不一致（合并比较可能是假象）"
+    assert [(r["case"], r["higher"]) for r in paired["per_case"]] == [("x", "a"), ("y", "b")]
+    same_way = [r if r["case"] == "x" else {**r, "category": "success"} for r in runs]
+    a2, b2 = summaries(same_way)
+    assert _compare(plan, "a", "b", a2, b2, same_way)["verdict"].startswith("成功率有差异")
+    broken = [*runs, {"strategy": "b", "case": "x", "trial": 99, "category": "harness_error"}]
+    a3, b3 = summaries(broken)
+    uneven = _compare(plan, "a", "b", a3, b3, broken)
+    assert uneven["verdict"].startswith("证据不足：两策略的脚手架错误数不同")
+    assert uneven["duration"] == uneven["tokens"] == "证据不足（脚手架错误数不同）"
+
+
+def test_review_p2_1_a_plan_that_cannot_build_its_configuration_is_refused_up_front():
+    case = EvaluationCase("c", _spec(), _provider())
+    with pytest.raises(ValueError, match="not a string"):
+        EvaluationPlan(
+            name="x", cases=(case,), strategies=(Strategy("s", {"ablations": "critic"}),)
+        ).validate()
+    with pytest.raises(ValueError, match="valid configuration"):
+        EvaluationPlan(
+            name="x", cases=(case,), strategies=(Strategy("s", {"ablations": ("allocator",)}),)
+        ).validate()
+    with pytest.raises(ValueError, match="global_budget"):
+        EvaluationPlan(
+            name="x",
+            cases=(case,),
+            strategies=(Strategy("s"),),
+            config={"global_budget": {"max_tokens": 1}},
+        ).validate()

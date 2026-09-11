@@ -32,6 +32,30 @@
 | P2-7 | P2 | 切片顺序 | Replay 先行（§6 切片调整） |
 | P2-8 | P2 | 可砍范围 | 派生只支持本版本演示证据；归因并入 `replay --attribution`；库内去重不另测（D8-8'、D8-9'） |
 
+### 代码评审（第 1 轮）
+
+独立代码评审（claude-opus-5，只读，范围 `a24e18a..49106bf`；原文要点见 `reports/code-review-round1.md`）1 P0 / 5 P1 / 11 P2，结论"还不能收尾"。处置如下，每项配决定性测试（修复切片 F）：
+
+| # | 级别 | 发现 | 处置 | 测试 |
+|---|---|---|---|---|
+| P0-1 | P0 | "评测只许测试连接器"没有强制：无 action 准则的 case 可带支付连接器；运行时实际拿到的服务没查 | 修：`_refuse_services` 在 `validate`（每个带连接器的 case，不论有无 action 准则）与 `_run_once`（每次运行实际拿到的服务，建 Orchestrator 之前）各查一次，名字必须是 `test_config` 且为 `TestConfigService`；不合规抛 `EvaluationRefused`，整份评测拒绝，不记 harness_error | `test_evaluation.py::test_review_p0_1_*`（无 action 准则的支付连接器被拒；工厂第二次调用才塞支付连接器 → 运行被拒，库 0 个，无报告） |
+| P1-1 | P1 | 冲突落败方的已接受 Attempt 仍在成功路径内 | 修订 plan（D8-4''，依据理论 12 §16"不能只把功劳给最终提交者"）：Attempt 自己的已接受产物在集成树 / 依赖闭包内就留在路径内，标 `claim_refuted=true` 并列入 `knowledge_path.refuted_on_path`；只经被驳倒 Claim 挂上路径的算探索（原因 `claim_refuted`） | `test_attribution.py::test_review_p1_1_*` |
+| P1-2 | P1 | 删掉 `VerificationPassed` / `MissionCompleted` 等结果事件后无缺口，旧值被算作已决定 | 修：结构性不变量补齐——Mission 已判定却无终态事件；终态 Mission 仍有开放的 Task / Attempt / Result；已完成 Mission 的动作无结果、冲突仍 OPEN；已完成 Task 的已接受结果不是 DONE/PASS；有 `VerificationPassed` 无 `TaskCompleted`。违反即写缺口，并把对应字段置为未决定（`not_covered`，不再以旧值计入覆盖率）；`replay_mission` 对库中不存在的 Mission、文件中没有该 Mission 事件时报错 | `test_replay.py::test_review_p1_2_*`（参数化删除 `VerificationPassed` / `MissionCompleted` / `ActionSucceeded` / `ConflictResolved`，只用文件与带库两种方式；另测"通过而未完成"） |
+| P1-3 | P1 | Critic 消融可让有效政策为空，零层验证 PASS | 修：消融后有效集合为空时，被消融的层记 `ERROR`（`detail.no_layer_left=true`）并短路，结果不能 PASS | `test_ablation.py::test_review_p1_3_*`（Task 政策只有 `critic_review` + 消融 critic → ERROR、Task 无已接受结果、Mission 未完成、Critic 调用 0） |
+| P1-4 | P1 | `reconciled` 是恒等式 | 修：`reconciled` = 未归类 0 行 ∧ 路径内 + 探索 + 服务 = 总量 ∧ 预算账本（已结算预留的 `settled_tokens`）逐主体与用量一致；报告新增 `cost.ledger` | `test_attribution.py::test_review_p1_4_*`（插一行未知主体用量 → False；改一条结算量 → False 且列出该主体） |
+| P1-5 | P1 | 比较未按 case 成对；脚手架错误不对称被忽略；fixture 下耗时 / tokens 仍可能写差异 | 修：`per_case`（逐 case 成功数、Fisher p、哪一方更高），方向不一致写"证据不足：各 case 的成功率方向不一致"；两策略脚手架错误数不同时成功率、耗时、tokens 都写"证据不足"；fixture 三项都写"不适用"；样本不足时耗时 / tokens 也写"证据不足" | `test_evaluation.py::test_review_p1_5_*`（辛普森反例、方向一致、脚手架错误不对称）、`test_time_and_token_differences_need_enough_samples_too` |
+| P2-1 | P2 | ablations 字符串、计划配置类型错误到运行时才每次 harness_error | 修：`validate` 先为每个策略构造配置；ablations 为字符串、`global_budget` / `price_table` 类型错误直接拒绝；CLI 把计划里的 `global_budget` dict 转成 `Budget` | `test_review_p2_1_*` |
+| P2-2 | P2 | approval-action 开始快照在运行后才算；multi-mission 无开始快照 | 修：两个演示都在运行前取开始快照写进 baseline | `test_policy_snapshot.py`（演示证据无漂移） |
+| P2-3 | P2 | provider 身份对 `OpenAICompatibleProvider` 只记类名；fixtures 缺脚本摘要 | 登记（§5） | — |
+| P2-4 | P2 | 快照差异来源粒度粗；评测拿各策略最后一次运行的快照比较 | 部分修：评测比较同一 case 的两策略快照（`policy_differences_case`）；来源细化登记（§5） | S8-03 断言 `policy_differences_case` |
+| P2-5 | P2 | CLI 错误处理 | 修：`replay` 无库无文件、文件不存在、Mission 不存在、`--attribution` 无库 → 退出 2；有缺口或覆盖率 < 1 → 退出 1；`evaluate` 计划文件不存在、未知 case → 退出 2；有脚手架错误 → 退出 1 | `test_replay_evaluate_cli_errors.py` |
+| P2-6 | P2 | 断点使 Attempt 被归为"未被最终产物使用"；断点重复 | 修：断点去重；断点 Task 的 Attempt 探索原因为 `record_missing` | S8-05 断点测试 |
+| P2-7 | P2 | 回放 100% 覆盖的场景不够宽 | 部分修：新增四类删事件用例；更宽的场景登记（§5） | 同 P1-2 |
+| P2-8 | P2 | "不外调"测试的 monkeypatch 探针形同虚设 | 修：删掉该探针，由导入图测试 + 库 / 执行库 / 测试服务哈希证明 | `test_s8_02_replay_never_writes_*` |
+| P2-9 | P2 | 评测报告没写消融连带影响 | 修：`ABLATION_EFFECTS`；报告 `strategies[].ablation_effects`，中文报告"消融连带影响"一节 | S8-03 断言 |
+| P2-10 | P2 | 派生 case 未校验证据版本；未按场景指定 provider | 部分修：证据 `baseline.agent_orchestrator` 必须等于本版本；按场景名指定 provider 登记（§5） | S8-06 断言"own version" |
+| P2-11 | P2 | harness_error 记录不带 Mission id | 修：带 `idempotency_key` 与由它导出的 `mission_id` | `test_a_failure_and_a_broken_harness_are_told_apart` |
+
 ## 2. 执行记录
 
 | 切片 | 提交 | 内容 | 测试 |
@@ -40,13 +64,20 @@
 | B | `e52b9d4` | 贡献归因 `observability/traces.py`：最终产物 = 集成树（`merge_accepted`），产出者 Task / Attempt / Agent / 角色 / 模型 / profile / prompt 版本与通过的验证层；依赖闭包内的 Task 在路径内（被覆盖的上游产物标注）；知识路径来自 lineage，被驳倒的 Claim 所在 Attempt 列为探索；探索消耗逐条带原因；用量逐行归类（Attempt、其 Critic、planner / manager / judge、未归类桶必须为空、unknown 行单列），工具调用、动作预留、人工时间单列，未定价金额 null；记录缺失列为断点、不补边。策略快照 `governance/policies.py`：`SNAPSHOT_FIELDS` 逐字段归类（未归类即报错）、`VERSION_SOURCES` 版本常量带来源、全部角色模板版本、profiles / routing / 连接器 / provider 身份（不含密钥）、`snapshot_diff`；编排器 `policy_snapshot()`；证据 `attribution.json`、`policy_snapshot.json`（开始快照存 baseline，收尾比对漂移明细） | `test_attribution.py` 6（S8-01 静态 DAG / 知识与冲突 / 改图探索 / 动作与人 / 失败 Mission，S8-05 断点）、`test_policy_snapshot.py` 6（S8-07：全字段归类、同配置同哈希、差异带来源、版本常量改变、未归类字段拒绝、演示证据无漂移） |
 | C | `2df01fd` | 消融：`OrchestratorConfig.ablations` 封闭词表 `critic` / `blackboard` / `graph_changes`（去重排序；`blackboard` → `knowledge_sharing=False`，`graph_changes` → `dynamic_graph=False`）；安全边界（权限、网关、幂等、审批、部署政策、密钥检查、format / rule / code_test、human_review、预算）与词表外名字一律拒绝；Router 入口把消融的层从有效必需集合去掉，层记 `NOT_REQUIRED` 且 `detail.ablated=true`、`required_by_policy=true`；Critic 消融时 Mission judge 不运行，自由文本准则判定 `source=ablated`、理由"judge ablated in this run"（不会被当作 Verifier 冲突）；快照登记 `ablations` | `test_ablation.py` 17（安全边界与词表外拒绝 ×14、映射与快照差异、Critic 层显式移除且 Critic 调用 0、judge ablated、Blackboard 消融后检索 disabled 且 KnowledgeUsed=0） |
 | D | `408fb38` | Evaluation `observability/evaluation.py`：`EvaluationCase`（每次试验新 provider、可带隐藏 oracle 与测试连接器）、`Strategy`（覆盖只许白名单）、`EvaluationPlan`（计划级配置白名单、Critic 消融 × 自由文本准则拒绝、带动作的 case 只许测试服务）；每次运行幂等键 `eval:<plan>:<strategy>:<case>:<trial>`、独立新目录与库（目录非空拒绝）、墙钟超时与异常 → `harness_error`（不计入分母）、等待人工单列；逐次记录（耗时、tokens / 金额或未定价、验证通过率、知识复用、重复率、剪枝率、污染率、恢复、失败原因与失败层、消融政策下的 PASS、oracle）；按策略汇总（Wilson 区间）与比较（Fisher 精确检验、区间不重叠、fixture 写"不适用"）及快照差异；`evaluation.json` + 中文 `evaluation.md`；`case_from_evidence`（spec 哈希须与旧库 `MissionCreated.spec_hash` 一致，改写幂等键，记录 derived_from 与旧库摘要） | `test_evaluation.py` 11（S8-03 双策略 × 2 次、oracle 误判、failure 与 harness_error 分开、策略覆盖拒绝 ×5、自由文本 / 真实连接器 / 计划配置拒绝、统计口径、S8-06 派生重跑与篡改拒绝） |
-| E | （本次） | CLI `replay --evidence-dir DIR MISSION_ID [--events] [--failures] [--attribution] [--out]`（只读，与库不一致退出 1）、`evaluate --plan plan.json --evidence-dir NEW_DIR [--provider fixtures|env]`（内置 case 目录：parse-kv（带 oracle）、parse-kv-strict（严格 oracle）、parse-kv-bad、textkit；env 只有 parse-kv，统一注入 flash 模型名与真实运行参数）；`demo --scenario evaluate-policies`（完整政策 vs 去掉 Critic × 2 次试验，另写 `samples.json`：一次成功运行的归因、一次失败运行的回放）；计划级配置允许 `model`；step02 未实现检查改用 `policy-promotion`；真实 flash 评测 opt-in | `test_evaluate_policies_closure.py` 2（演示 16 次运行、oracle 误判 2/4、失败原因、归因与回放样例；CLI evaluate / replay / 拒绝坏计划）、`test_real_provider_evaluation.py`（opt-in） |
+| E | `49106bf` | CLI `replay --evidence-dir DIR MISSION_ID [--events] [--failures] [--attribution] [--out]`（只读，与库不一致退出 1）、`evaluate --plan plan.json --evidence-dir NEW_DIR [--provider fixtures|env]`（内置 case 目录：parse-kv（带 oracle）、parse-kv-strict（严格 oracle）、parse-kv-bad、textkit；env 只有 parse-kv，统一注入 flash 模型名与真实运行参数）；`demo --scenario evaluate-policies`（完整政策 vs 去掉 Critic × 2 次试验，另写 `samples.json`：一次成功运行的归因、一次失败运行的回放）；计划级配置允许 `model`；step02 未实现检查改用 `policy-promotion`；真实 flash 评测 opt-in | `test_evaluate_policies_closure.py` 2（演示 16 次运行、oracle 误判 2/4、失败原因、归因与回放样例；CLI evaluate / replay / 拒绝坏计划）、`test_real_provider_evaluation.py`（opt-in） |
 
 ## 3. 真实模型
 
+- 评测运行 1（`49106bf`，deepseek-flash，`reports/real-evaluation-run1.md`）：`parse-kv` × 完整政策 / 去掉 Critic × 2 次真实试验，4 次运行全部 success，隐藏 oracle 全部通过（误判 0/4）；完整政策约 51 s / 5.1 万 tokens，去掉 Critic 约 25 s / 3.8 万 tokens；成功率比较 Fisher p = 1.0，结论"证据不足：样本量 2 / 2 低于 3"；证据 135 个文件，真实密钥逐字节命中 0、`sk-` 模式命中 0。
+- 自查发现：耗时 / tokens 的比较在样本不足时仍写"有差异"。已改为与成功率同一口径（fixture → 不适用；样本不足 → 证据不足；够样本且区间不重叠才写有差异），配测试 `test_time_and_token_differences_need_enough_samples_too`。
+
 ## 4. 回归与 wheel
+
+- SDK 全量回归（`49106bf`，`regress-s8/run.sh`）：58 failed / 2343 passed / 12 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
+- 版本：simple_harness 0.9.6 / agent_orchestrator 0.8.0（`tests/unit/contracts/public-api.json` 同步）。
 
 ## 5. 遗留
 
 - 第 6 步移交：DeepSeek 价目注入（L2-6、L6-2）；合并重复候选、角色配比调度、多样性配额（L6-3）；新思路数、剪枝率、重复率、误报率、污染率等指标（L6-8）——本步在评测指标里实现可由记录导出的部分，其余给 null 与原因。
 - 运行时切换 Prompt / Allocator / Retrieval 版本（P1-9）、Allocator 消融（P1-11）、新 Verifier 重判旧产物（P2-1）：第 9 步。
+- 代码评审登记：provider 身份补 `OpenAICompatibleProvider` 的端点主机与目标模型、fixtures 脚本摘要（CR P2-3）；`snapshot_diff` 对 profiles / routing / connectors / provider 给到字段级来源（CR P2-4）；回放覆盖场景扩到候选被取代、`KnowledgeSuperseded`、冲突 DEFERRED / UNRESOLVED、仲裁 / 接管、审批撤销 / 过期、动作 FAILED / UNKNOWN / Reconciled（CR P2-7）；派生 case 按场景名指定 provider 工厂（CR P2-10）。第 9 步"候选版本注册"时一并处理。

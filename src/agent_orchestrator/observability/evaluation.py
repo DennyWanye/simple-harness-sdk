@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts import Budget
+from ..contracts.ids import mission_id as mission_id_of
 from ..contracts.models import sha256_hex
 from ..governance.policies import DeploymentPolicy, snapshot_diff
 from ..orchestrator.action_commits import parse_action_criterion
@@ -43,6 +44,7 @@ from ..orchestrator.commit_service import MissionSpec
 from ..runtime.assembly import OrchestratorConfig
 from ..runtime.connectors import TestConfigService
 from ..storage.store import Store
+from ..version import __version__
 from .evidence import write_evidence
 from .metrics import metrics
 from .replay import library_copy
@@ -85,6 +87,28 @@ PLAN_CONFIG = frozenset(
     }
 )
 FIXTURE_NOTE = "机制验证（fixture），不代表质量"
+TEST_SERVICE = "test_config"
+# what each ablation switches off, knock-on effects included (plan D8-7'; review P2-9)
+ABLATION_EFFECTS = {
+    "critic": "去掉 Critic 审查层与 Mission judge：自由文本准则判为未满足（source=ablated）；needs_human 升级与第 ② 类仲裁（Verifier 冲突）随之消失；Task 政策只剩 critic_review 时该结果判 ERROR，不会零层 PASS",
+    "blackboard": "关闭知识检索与共享：Worker 拿不到 Blackboard 知识，KnowledgeUsed 为 0",
+    "graph_changes": "关闭动态改图：运行中不能增删改 Task",
+}
+
+
+class EvaluationRefused(ValueError):
+    """What the evaluator will not run at all — a refusal, never a harness_error."""
+
+
+def _refuse_services(services: Mapping[str, Any]) -> None:
+    """Review P0-1 (plan D8-7'): an evaluation may only reach the local test service —
+    checked on every case, and again on what each run is really handed."""
+
+    wrong = sorted(
+        n for n, s in services.items() if n != TEST_SERVICE or not isinstance(s, TestConfigService)
+    )
+    if wrong:
+        raise EvaluationRefused(f"an evaluation may only reach the local test service, not {wrong}")
 
 
 # ------------------------------------------------------------------ the plan
@@ -124,7 +148,9 @@ class EvaluationPlan:
     timeout_seconds: float = 300.0
     min_samples: int = 3
 
-    def validate(self) -> None:
+    def validate(self) -> dict[str, OrchestratorConfig]:  # noqa: C901 - one list of refusals
+        """Refuse what may not run; return the configuration each strategy builds."""
+
         if self.trials < 1 or not self.cases or not self.strategies:
             raise ValueError("an evaluation needs cases, strategies and at least one trial")
         for group, names in (
@@ -143,32 +169,54 @@ class EvaluationPlan:
                     f"strategy {strategy.name!r} may not change {refused}: budgets, the "
                     "deployment policy and safety boundaries are the plan's (plan D8-7')"
                 )
-        probe = "probe"
-        for case in self.cases:
-            spec = case.spec(EVALUATION_TENANT, probe)
-            free_text = [
-                c
-                for c in spec.success_criteria
-                if not c.startswith(("pytest:", "file:", "action:"))
-            ]
-            for strategy in self.strategies:
-                if "critic" in tuple(strategy.overrides.get("ablations", ())) and free_text:
-                    raise ValueError(
-                        f"case {case.name!r} has free-text criteria {free_text}: without a "
-                        "judge their outcome is decided in advance (plan D8-7'); use pytest: / file:"
+            if isinstance(strategy.overrides.get("ablations", ()), str):
+                raise ValueError(
+                    f"strategy {strategy.name!r}: ablations is a list of names, not a string"
+                )
+        if self.config.get("global_budget") is not None and not isinstance(
+            self.config["global_budget"], Budget
+        ):
+            raise ValueError("the plan's global_budget must be a Budget (plan D8-7')")
+        if self.config.get("price_table") is not None and not hasattr(
+            self.config["price_table"], "estimator"
+        ):
+            raise ValueError("the plan's price_table must be a PriceTable (plan D8-7')")
+        configs: dict[str, OrchestratorConfig] = {}
+        with tempfile.TemporaryDirectory() as scratch:
+            for strategy in self.strategies:  # review P2-1: build it now, not in every run
+                try:
+                    configs[strategy.name] = OrchestratorConfig(
+                        evidence_root=Path(scratch),
+                        **{"max_concurrency": 1, **dict(self.config), **dict(strategy.overrides)},
                     )
-            if any(parse_action_criterion(c) for c in spec.success_criteria):
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"strategy {strategy.name!r} does not make a valid configuration: {error}"
+                    ) from error
+            probe = "probe"
+            for case in self.cases:
+                spec = case.spec(EVALUATION_TENANT, probe)
+                free_text = [
+                    c
+                    for c in spec.success_criteria
+                    if not c.startswith(("pytest:", "file:", "action:"))
+                ]
+                for strategy in self.strategies:
+                    if "critic" in configs[strategy.name].ablations and free_text:
+                        raise ValueError(
+                            f"case {case.name!r} has free-text criteria {free_text}: without a "
+                            "judge their outcome is decided in advance (plan D8-7'); use pytest: / file:"
+                        )
                 if case.connectors is None:
-                    raise ValueError(f"case {case.name!r} names actions but brings no test service")
-                with tempfile.TemporaryDirectory() as scratch:
-                    services = case.connectors(Path(scratch))
-                    wrong = sorted(
-                        n for n, s in services.items() if not isinstance(s, TestConfigService)
-                    )
-                if wrong:
-                    raise ValueError(
-                        f"an evaluation may only reach the local test service, not {wrong}"
-                    )
+                    if any(parse_action_criterion(c) for c in spec.success_criteria):
+                        raise ValueError(
+                            f"case {case.name!r} names actions but brings no test service"
+                        )
+                    continue
+                probe_dir = Path(scratch) / f"probe-{len(configs)}-{case.name}"
+                probe_dir.mkdir(parents=True, exist_ok=True)
+                _refuse_services(case.connectors(probe_dir))  # every case, action or not
+        return configs
 
 
 # ------------------------------------------------------------------ statistics (plan §6.1)
@@ -315,14 +363,41 @@ def _record(store: Store, mission_id: str) -> dict[str, Any]:
     }
 
 
+def _key(plan: EvaluationPlan, strategy: Strategy, case: EvaluationCase, trial: int) -> str:
+    return f"eval:{plan.name}:{strategy.name}:{case.name}:{trial}"
+
+
+def _harness_error(
+    plan: EvaluationPlan,
+    strategy: Strategy,
+    case: EvaluationCase,
+    trial: int,
+    run_dir: Path,
+    reason: str,
+) -> dict[str, Any]:
+    key = _key(plan, strategy, case, trial)
+    return {
+        "strategy": strategy.name,
+        "case": case.name,
+        "trial": trial,
+        "category": "harness_error",
+        "reason": reason,
+        "run_dir": str(run_dir),
+        "idempotency_key": key,
+        # review P2-11: the id the Mission has if it was submitted — replay it from run_dir
+        "mission_id": mission_id_of(EVALUATION_TENANT, key),
+    }
+
+
 async def _run_once(
     plan: EvaluationPlan, case: EvaluationCase, strategy: Strategy, trial: int, run_dir: Path
 ) -> dict[str, Any]:
     from ..orchestrator.event_handler import Orchestrator
 
-    key = f"eval:{plan.name}:{strategy.name}:{case.name}:{trial}"
+    key = _key(plan, strategy, case, trial)
     spec = case.spec(EVALUATION_TENANT, key)
     services = dict(case.connectors(run_dir)) if case.connectors is not None else {}
+    _refuse_services(services)  # review P0-1: what this run really gets, before any Mission
     config = OrchestratorConfig(
         evidence_root=run_dir,
         deployment_policy=DeploymentPolicy(enabled_connectors=tuple(sorted(services))),
@@ -438,19 +513,87 @@ def _summary(records: Sequence[Mapping[str, Any]], min_samples: int) -> dict[str
     }
 
 
+def _range_verdict(
+    a: Mapping[str, Any],
+    b: Mapping[str, Any],
+    *,
+    fixture: bool,
+    enough: bool,
+    uneven: bool = False,
+) -> str:
+    """Time / token comparison under the same rule as the success rate (plan §6.1): a
+    fixture says nothing about quality, uneven harness errors make the samples
+    incomparable, and too few samples decide nothing."""
+
+    if fixture:
+        return "不适用（fixture）"
+    if uneven:
+        return "证据不足（脚手架错误数不同）"
+    if not enough:
+        return "证据不足（样本不足）"
+    return "有差异（区间不重叠）" if not _overlap(a, b) else "证据不足（区间重叠）"
+
+
+def _per_case(
+    plan: EvaluationPlan, runs: Sequence[Mapping[str, Any]], left: str, right: str
+) -> list[dict[str, Any]]:
+    """Plan D8-6' (review P1-5): the comparison is paired by case — a pooled table can
+    reverse what every case says (Simpson)."""
+
+    rows = []
+    for case in plan.cases:
+        cells = []
+        for name in (left, right):
+            mine = [r for r in runs if r["strategy"] == name and r["case"] == case.name]
+            counted = [r for r in mine if r["category"] != "harness_error"]
+            wins = sum(1 for r in counted if r["category"] == "success")
+            cells.append((wins, len(counted), len(mine) - len(counted)))
+        (sa, na, ea), (sb, nb, eb) = cells
+        higher = None
+        if na and nb:
+            higher = "=" if sa / na == sb / nb else ("a" if sa / na > sb / nb else "b")
+        rows.append(
+            {
+                "case": case.name,
+                "a": [sa, na],
+                "b": [sb, nb],
+                "harness_errors": [ea, eb],
+                "fisher_p": round(fisher_exact(sa, na - sa, sb, nb - sb), 4),
+                "higher": higher,
+            }
+        )
+    return rows
+
+
 def _compare(
-    plan: EvaluationPlan, left: str, right: str, a: Mapping[str, Any], b: Mapping[str, Any]
+    plan: EvaluationPlan,
+    left: str,
+    right: str,
+    a: Mapping[str, Any],
+    b: Mapping[str, Any],
+    runs: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     fixture = all(case.kind == "fixtures" for case in plan.cases)
+    enough = bool(a["enough_samples"] and b["enough_samples"])
+    per_case = _per_case(plan, runs, left, right) if runs else []
+    errors = (int(a.get("harness_errors", 0)), int(b.get("harness_errors", 0)))
+    uneven = errors[0] != errors[1] or any(
+        row["harness_errors"][0] != row["harness_errors"][1] for row in per_case
+    )
+    directions = {row["higher"] for row in per_case if row["higher"] in {"a", "b"}}
     p = fisher_exact(
         a["successes"], a["samples"] - a["successes"], b["successes"], b["samples"] - b["successes"]
     )
     if fixture:
         verdict = f"不适用（fixture）：{FIXTURE_NOTE}"
-    elif not (a["enough_samples"] and b["enough_samples"]):
+    elif uneven:
+        verdict = f"证据不足：两策略的脚手架错误数不同（{errors[0]} / {errors[1]}），样本不可比"
+    elif not enough:
         verdict = f"证据不足：样本量 {a['samples']} / {b['samples']} 低于 {plan.min_samples}"
+    elif p < 0.05 and len(directions) > 1:
+        verdict = "证据不足：各 case 的成功率方向不一致（合并比较可能是假象）"
     elif p < 0.05:
-        verdict = "成功率有差异（Fisher 精确检验 p < 0.05）"
+        verdict = "成功率有差异（Fisher 精确检验 p < 0.05，各 case 方向一致）"
     else:
         verdict = "证据不足：成功率差异在样本波动内"
     return {
@@ -461,18 +604,23 @@ def _compare(
             "b": [b["successes"], b["samples"]],
             "fisher_p": round(p, 4),
         },
+        "per_case": per_case,
         "verdict": verdict,
-        "duration": "有差异（区间不重叠）"
-        if not _overlap(a["duration_seconds"], b["duration_seconds"])
-        else "证据不足（区间重叠）",
-        "tokens": "有差异（区间不重叠）"
-        if not _overlap(a["tokens"], b["tokens"])
-        else "证据不足（区间重叠）",
+        "duration": _range_verdict(
+            a["duration_seconds"],
+            b["duration_seconds"],
+            fixture=fixture,
+            enough=enough,
+            uneven=uneven,
+        ),
+        "tokens": _range_verdict(
+            a["tokens"], b["tokens"], fixture=fixture, enough=enough, uneven=uneven
+        ),
     }
 
 
 async def run_plan_async(plan: EvaluationPlan, directory: Path) -> dict[str, Any]:
-    plan.validate()
+    configs = plan.validate()
     directory = Path(directory)
     if directory.exists() and any(directory.iterdir()):
         raise ValueError(f"{directory} is not empty: an evaluation always runs in a new directory")
@@ -488,42 +636,54 @@ async def run_plan_async(plan: EvaluationPlan, directory: Path) -> dict[str, Any
                         _run_once(plan, case, strategy, trial, run_dir),
                         timeout=plan.timeout_seconds,
                     )
+                except EvaluationRefused:
+                    raise  # review P0-1: the plan is refused, never counted as a harness error
                 except TimeoutError:
-                    record = {
-                        "strategy": strategy.name,
-                        "case": case.name,
-                        "trial": trial,
-                        "category": "harness_error",
-                        "reason": f"timeout after {plan.timeout_seconds} s",
-                        "run_dir": str(run_dir),
-                    }
+                    record = _harness_error(
+                        plan,
+                        strategy,
+                        case,
+                        trial,
+                        run_dir,
+                        f"timeout after {plan.timeout_seconds} s",
+                    )
                 except Exception as error:  # noqa: BLE001 - a broken harness is reported, never counted
-                    record = {
-                        "strategy": strategy.name,
-                        "case": case.name,
-                        "trial": trial,
-                        "category": "harness_error",
-                        "reason": f"{type(error).__name__}: {error}",
-                        "run_dir": str(run_dir),
-                    }
+                    record = _harness_error(
+                        plan, strategy, case, trial, run_dir, f"{type(error).__name__}: {error}"
+                    )
                 records.append(record)
-    snapshots = {r["strategy"]: r["snapshot"] for r in records if r.get("snapshot")}
+    # review P2-4: compare the snapshots of the same case, never whatever ran last
+    snapshots: dict[str, dict[str, Any]] = {}
     for record in records:
-        record.pop("snapshot", None)
+        snapshot = record.pop("snapshot", None)
+        if snapshot:
+            snapshots.setdefault(record["strategy"], {}).setdefault(record["case"], snapshot)
     summaries = {
         s.name: _summary([r for r in records if r["strategy"] == s.name], plan.min_samples)
         for s in plan.strategies
     }
     names = [s.name for s in plan.strategies]
-    comparisons = [
-        {
-            **_compare(plan, names[0], other, summaries[names[0]], summaries[other]),
-            "policy_differences": snapshot_diff(snapshots[names[0]], snapshots[other])
-            if names[0] in snapshots and other in snapshots
-            else None,
-        }
-        for other in names[1:]
-    ]
+
+    def same_case(left: str, right: str) -> str | None:
+        both = [
+            c.name
+            for c in plan.cases
+            if c.name in snapshots.get(left, {}) and c.name in snapshots.get(right, {})
+        ]
+        return both[0] if both else None
+
+    comparisons = []
+    for other in names[1:]:
+        common = same_case(names[0], other)
+        comparisons.append(
+            {
+                **_compare(plan, names[0], other, summaries[names[0]], summaries[other], records),
+                "policy_differences": None
+                if common is None
+                else snapshot_diff(snapshots[names[0]][common], snapshots[other][common]),
+                "policy_differences_case": common,
+            }
+        )
     report = {
         "version": EVALUATION_VERSION,
         "plan": plan.name,
@@ -540,7 +700,14 @@ async def run_plan_async(plan: EvaluationPlan, directory: Path) -> dict[str, Any
             }
             for c in plan.cases
         ],
-        "strategies": [{"name": s.name, "overrides": dict(s.overrides)} for s in plan.strategies],
+        "strategies": [
+            {
+                "name": s.name,
+                "overrides": dict(s.overrides),
+                "ablation_effects": [ABLATION_EFFECTS[a] for a in configs[s.name].ablations],
+            }
+            for s in plan.strategies
+        ],
         "trials": plan.trials,
         "config": {
             k: (v.to_json() if hasattr(v, "to_json") else v) for k, v in plan.config.items()
@@ -586,10 +753,18 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines.append(
             f"- {c['a']} vs {c['b']}：{c['verdict']}；成功 {c['success']['a']} vs {c['success']['b']}（p = {c['success']['fisher_p']}）；耗时 {c['duration']}；tokens {c['tokens']}"
         )
+        for row in c.get("per_case") or []:
+            lines.append(
+                f"  - case {row['case']}：成功 {row['a']} vs {row['b']}（p = {row['fisher_p']}；脚手架错误 {row['harness_errors']}）"
+            )
         for diff in (c.get("policy_differences") or [])[:12]:
             lines.append(
                 f"  - 配置差异 `{diff['key']}`：{diff['a']} → {diff['b']}（来源 {diff['source']}）"
             )
+    effects = [(s["name"], s.get("ablation_effects") or []) for s in report["strategies"]]
+    if any(items for _name, items in effects):
+        lines += ["", "## 消融连带影响", ""]
+        lines += [f"- {name}：{item}" for name, items in effects for item in items]
     lines += ["", "## 失败原因与样例", ""]
     for name, s in report["summary"].items():
         lines.append(f"- {name}：{s['failure_reasons'] or '无'}")
@@ -650,6 +825,12 @@ def case_from_evidence(
 
     evidence = Path(evidence)
     baseline = json.loads((evidence / "baseline.json").read_text(encoding="utf-8"))
+    built = baseline.get("agent_orchestrator")
+    if built != __version__:  # plan D8-8' (review P2-10): only this version's demo evidence
+        raise ValueError(
+            f"the evidence was written by agent_orchestrator {built}; this build derives "
+            f"cases only from its own version {__version__}"
+        )
     original = _spec_from_json(baseline["spec"])
     with tempfile.TemporaryDirectory(prefix="orch-derive-") as scratch:
         store = Store.open_readonly(library_copy(evidence / "orchestrator.db", Path(scratch)))

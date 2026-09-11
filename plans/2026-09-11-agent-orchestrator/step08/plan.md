@@ -76,7 +76,7 @@
 
 **D8-4'　归因的主体分类与路径规则**（P1-4、P1-5、P2-3）
 - 逐行给 `imported_usage` 分类，主体解析复用 `metrics._service_role` 并补齐：`<mission>:task-k:attempt-n` → Attempt；`<attempt>:critic:<n>` → 该 Attempt 的验证费用（跟随该 Attempt 进入路径内或路径外）；`<mission>:judge:<n>` → Mission 判定（服务）；`:planner:` / `:manager:` → 服务；`unknown=1` 的行单列；另设"未归类"桶，要求为空。工具调用取 `budget_reservations.settled_tool_calls`；动作预留（`action:<key>`，没有模型用量）单列。人工等待时间（`human_wait_seconds`）单列为人工成本。
-- 成功路径规则（逐条，各配用例）：多 Task 以集成树（`merge_accepted`）的输出条目为最终产物，产出它们的已接受结果与其依赖闭包内的已接受结果在路径内；被后续 Task 覆盖的上游产物仍在依赖闭包内时算路径内并注明"被覆盖"；冲突中落败一方 Claim 的 Attempt 算"探索消耗（被驳倒）"，胜出一方与仲裁结果在路径内；同一 Task 被取代的候选 Attempt、失败重试的 Attempt 算探索消耗；动态改图中被取代 / 取消的 Task 算探索消耗；人工 override / 审批作为路径节点（token 为 0，另记人工时间）；失败的 Mission 没有成功路径，全部消耗列为未进入成功路径。
+- 成功路径规则（逐条，各配用例）：多 Task 以集成树（`merge_accepted`）的输出条目为最终产物，产出它们的已接受结果与其依赖闭包内的已接受结果在路径内；被后续 Task 覆盖的上游产物仍在依赖闭包内时算路径内并注明"被覆盖"；冲突中落败一方 Claim 的 Attempt 算"探索消耗（被驳倒）"，胜出一方与仲裁结果在路径内（**D8-4'' 修订，代码评审 P1-1**：落败一方的 Attempt 若它自己的已接受产物在集成树 / 依赖闭包内，就仍在路径内——产物确实由它产出，理论 12 §16"不能只把功劳给最终提交者"——并标 `claim_refuted=true`、列入 `knowledge_path.refuted_on_path`；只经被驳倒的 Claim 挂上路径的 Attempt 才算探索消耗，原因 `claim_refuted`）；同一 Task 被取代的候选 Attempt、失败重试的 Attempt 算探索消耗；动态改图中被取代 / 取消的 Task 算探索消耗；人工 override / 审批作为路径节点（token 为 0，另记人工时间）；失败的 Mission 没有成功路径，全部消耗列为未进入成功路径。
 
 **D8-5'　策略快照全字段枚举**（P1-8、P1-9、P2-6）
 - 用 `dataclasses.fields(OrchestratorConfig)` 枚举全部配置字段：每个字段要么进快照，要么进显式排除清单（`evidence_root`、`owner_id` 等随运行变化的项，理由写在代码里）；测试保证"新增配置字段必须被归类"。

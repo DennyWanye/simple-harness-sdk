@@ -220,3 +220,58 @@ def test_s8_05_a_missing_record_is_a_break_never_a_bridge(tmp_path, capsys):
     assert all(
         p["attempt_id"] is None and p["agent_id"] is None for p in broken
     )  # no invented producer
+
+
+# ------------------------------------------------------------------ code review round 1
+def test_review_p1_1_a_refuted_claim_on_the_path_is_flagged_and_kept(tmp_path, capsys):
+    evidence, mission_id = _demo(tmp_path, "knowledge-sharing")
+    capsys.readouterr()
+    report, _snapshot = _read(evidence, mission_id)
+    flagged = [a for a in report["attempts"] if a["claim_refuted"]]
+    assert flagged  # the refuted side's Attempt is named, not hidden
+    on_path = sorted(a["attempt_id"] for a in flagged if a["on_success_path"])
+    assert report["knowledge_path"]["refuted_on_path"] == on_path
+    path_tasks = {t["task_id"] for t in report["path_tasks"]}
+    for attempt in flagged:
+        if attempt["on_success_path"]:  # on the path only through its own accepted products
+            assert attempt["task_id"] in path_tasks
+        else:
+            assert attempt["exploration_reason"] == "claim_refuted"
+    assert all(not a["claim_refuted"] for a in report["attempts"] if a not in flagged)
+
+
+def test_review_p1_4_reconciliation_fails_on_a_stray_subject_or_a_ledger_mismatch(tmp_path, capsys):
+    evidence, mission_id = _demo(tmp_path, "static-dag")
+    capsys.readouterr()
+
+    def damaged(name, sql, params):
+        copy = library_copy(evidence / "orchestrator.db", Path(tmp_path) / name)
+        connection = sqlite3.connect(copy)
+        connection.execute(sql, params)
+        connection.commit()
+        connection.close()
+        store = Store.open_readonly(copy)
+        try:
+            return attribution(store, mission_id)["cost"]
+        finally:
+            store.close()
+
+    clean, _snapshot = _read(evidence, mission_id)
+    assert clean["cost"]["ledger"]["mismatched_subjects"] == []
+    assert clean["cost"]["ledger"]["settled_tokens"] == clean["cost"]["total"]["tokens"]
+    stray = damaged(
+        "stray",
+        "INSERT INTO imported_usage (usage_ref, subject_id, mission_id, input_tokens,"
+        " output_tokens, cost_micros, unpriced, unknown, imported_at)"
+        " VALUES (?, ?, ?, 7, 0, NULL, 1, 0, 0)",
+        ("stray-1", "somebody-else", mission_id),
+    )
+    assert stray["reconciled"] is False and stray["unclassified"]["subjects"] == ["somebody-else"]
+    skewed = damaged(
+        "skewed",
+        "UPDATE budget_reservations SET settled_tokens = settled_tokens + 1"
+        " WHERE reservation_id = (SELECT MIN(reservation_id) FROM budget_reservations"
+        " WHERE mission_id = ? AND subject_id NOT LIKE 'action:%')",
+        (mission_id,),
+    )
+    assert skewed["reconciled"] is False and len(skewed["ledger"]["mismatched_subjects"]) == 1

@@ -542,6 +542,7 @@ def _demo_multi_mission(args: argparse.Namespace) -> int:
 
     async def run() -> int:
         async with Orchestrator(config, profiles=profiles, routing=rules) as orchestrator:
+            start_snapshot = orchestrator.policy_snapshot()  # review P2-2: before anything runs
             missions = [await orchestrator.submit_mission(spec) for spec in specs]
             await orchestrator.run()
             store = orchestrator.store
@@ -599,6 +600,7 @@ def _demo_multi_mission(args: argparse.Namespace) -> int:
                         "provider_kind": kind,
                         "profiles": {k: p.to_json() for k, p in profiles.items()},
                         "routing": rules.to_json(),
+                        "policy_snapshot": start_snapshot,
                         "config": config.to_json(),
                         "spec": spec.to_json(),
                         "started_at": started,
@@ -734,6 +736,7 @@ def _demo_approval_action(args: argparse.Namespace) -> int:
         async with Orchestrator(
             config, provider, connectors={"test_config": service}
         ) as orchestrator:
+            start_snapshot = orchestrator.policy_snapshot()  # review P2-2: before anything runs
             mission = await orchestrator.submit_mission(spec)  # idempotent: a rerun continues it
             await orchestrator.run()
             store = orchestrator.store
@@ -774,7 +777,7 @@ def _demo_approval_action(args: argparse.Namespace) -> int:
                     "agent_orchestrator": __version__,
                     "provider_kind": kind,
                     "model": model,
-                    "policy_snapshot": orchestrator.policy_snapshot(),
+                    "policy_snapshot": start_snapshot,
                     "config": config.to_json(),
                     "spec": spec.to_json(),
                     "connectors": {
@@ -899,7 +902,7 @@ def _evaluation_cases(args: argparse.Namespace, names: list[str]) -> tuple[Any, 
         )
     unknown = [n for n in names if n not in catalog]
     if unknown:
-        raise SystemExit(
+        raise ValueError(  # review P2-5: a usage error, exit 2
             f"unknown evaluation cases for --provider {args.provider}: {unknown}; known: {sorted(catalog)}"
         )
     return tuple(catalog[n] for n in names)
@@ -925,8 +928,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 
     from .observability.evaluation import EvaluationPlan, Strategy, run_plan
 
-    data = json.loads(Path(args.plan).read_text(encoding="utf-8"))
-    try:
+    try:  # review P2-5: a bad plan is an answer (exit 2), never a traceback
+        data = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+        config = dict(data.get("config", {}))
+        if isinstance(config.get("global_budget"), dict):
+            config["global_budget"] = Budget.from_json(config["global_budget"])
         plan = EvaluationPlan(
             name=str(data["name"]),
             cases=_evaluation_cases(args, [str(n) for n in data["cases"]]),
@@ -934,18 +940,19 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                 Strategy(str(s["name"]), dict(s.get("overrides", {}))) for s in data["strategies"]
             ),
             trials=int(data.get("trials", 1)),
-            config=_evaluation_config(args, dict(data.get("config", {}))),
+            config=_evaluation_config(args, config),
             timeout_seconds=float(data.get("timeout_seconds", 300.0)),
             min_samples=int(data.get("min_samples", 3)),
         )
         report = run_plan(plan, Path(args.evidence_dir).resolve())
-    except (KeyError, ValueError) as error:
+    except (OSError, KeyError, TypeError, ValueError) as error:
         _print({"error": str(error)})
         return EXIT_USAGE
     _print(
         {"plan": report["plan"], "summary": report["summary"], "comparisons": report["comparisons"]}
     )
-    return EXIT_OK
+    errors = sum(v["harness_errors"] for v in report["summary"].values())
+    return EXIT_OK if errors == 0 else EXIT_FAILED  # a broken harness is not a clean evaluation
 
 
 def _demo_evaluate_policies(args: argparse.Namespace) -> int:
@@ -1022,22 +1029,39 @@ def _demo_evaluate_policies(args: argparse.Namespace) -> int:
 
 
 def cmd_replay(args: argparse.Namespace) -> int:
-    """``replay`` (plan D8-9'): read-only; a mismatch with the library exits 1."""
+    """``replay`` (plan D8-9'): read-only; a mismatch, a gap or coverage below 100 % exits
+    1; a missing library, events file or Mission exits 2."""
 
     import tempfile
 
     from .observability.replay import library_copy, replay_mission
     from .observability.secrets import redact_text
     from .observability.traces import attribution
+    from .storage.store import StoreError
 
     library = Path(args.evidence_dir).resolve() / "orchestrator.db"
-    report = replay_mission(
-        mission_id=args.mission_id,
-        library=library if library.is_file() else None,
-        events_file=Path(args.events).resolve() if args.events else None,
-        failures=args.failures,
-    )
-    if args.attribution and library.is_file():
+    events = Path(args.events).resolve() if args.events else None
+    problem = None
+    if events is not None and not events.is_file():
+        problem = f"no events file at {events}"
+    elif events is None and not library.is_file():
+        problem = f"no library at {library} and no --events file"
+    elif args.attribution and not library.is_file():
+        problem = f"--attribution reads the library and there is none at {library}"
+    if problem is not None:  # review P2-5: an answer, never a traceback or a silent gap
+        _print({"error": problem})
+        return EXIT_USAGE
+    try:
+        report = replay_mission(
+            mission_id=args.mission_id,
+            library=library if library.is_file() else None,
+            events_file=events,
+            failures=args.failures,
+        )
+    except (StoreError, ValueError) as error:
+        _print({"error": str(error)})
+        return EXIT_USAGE
+    if args.attribution:
         with tempfile.TemporaryDirectory() as scratch:
             store = Store.open_readonly(library_copy(library, Path(scratch)))
             try:
@@ -1051,7 +1075,12 @@ def cmd_replay(args: argparse.Namespace) -> int:
         Path(args.out).write_text(text, encoding="utf-8")
     sys.stdout.write(text)
     comparison = report.get("comparison") or {}
-    return EXIT_OK if comparison.get("consistent", True) else EXIT_FAILED
+    complete = (
+        comparison.get("consistent", True)
+        and comparison.get("coverage", 1.0) == 1.0
+        and not report["gaps"]
+    )
+    return EXIT_OK if complete else EXIT_FAILED
 
 
 def cmd_approval(args: argparse.Namespace) -> int:

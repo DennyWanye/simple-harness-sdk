@@ -176,6 +176,7 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
     unclassified_subjects: list[str] = []
     total = _bucket()
     unknown_rows = 0
+    usage_by_subject: dict[str, int] = defaultdict(int)
     rows = store.connection.execute(
         "SELECT subject_id, input_tokens + output_tokens, cost_micros, unpriced, unknown"
         " FROM imported_usage WHERE mission_id = ?",
@@ -185,6 +186,7 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
         subject = str(subject)
         tokens = int(tokens or 0)
         _add(total, tokens, cost, bool(unpriced))
+        usage_by_subject[subject] += tokens
         unknown_rows += int(bool(unknown))
         owner = subject.split(":critic:")[0] if ":critic:" in subject else None
         if subject in attempts:
@@ -215,6 +217,7 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
             tool_calls[str(subject)] = int(settled_calls or 0)
 
     path_bucket, exploration_bucket = _bucket(), _bucket()
+    broken_tasks = {b["task_id"] for b in breaks if b.get("missing") == "result"}
     attempt_view = []
     for attempt_id, attempt in attempts.items():
         owner_task = by_id.get(attempt.task_id)
@@ -230,6 +233,8 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
                 reason = "candidate_superseded"
             elif status in {"RETRY_WAIT", "LOST", "TIMED_OUT", "CANCELLED"}:
                 reason = f"attempt_{status.lower()}"
+            elif attempt.task_id in broken_tasks:  # review P2-6: the record is missing, say so
+                reason = "record_missing"
             elif not success:
                 reason = "mission_not_completed"
             else:
@@ -255,6 +260,9 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
                 "prompt_version": attempt.prompt_version,
                 "status": str(attempt.status),
                 "on_success_path": on_path,
+                # review P1-1 (plan D8-4'' revision): an Attempt whose own accepted products are
+                # on the path stays there, flagged when one of its claims was refuted
+                "claim_refuted": attempt_id in refuted,
                 "exploration_reason": reason,
                 "work": _money(work),
                 "verification": _money(check),
@@ -262,12 +270,28 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
             }
         )
     service_total = sum(b["tokens"] for b in services.values())
+    # review P1-4: reconciled = nothing unclassified, the buckets add up, and the budget
+    # ledger (an independent record: what each settled reservation was charged) agrees
+    settled = {
+        str(subject): int(tokens or 0)
+        for subject, tokens in store.connection.execute(
+            "SELECT subject_id, settled_tokens FROM budget_reservations"
+            " WHERE mission_id = ? AND state = 'SETTLED' AND subject_id NOT LIKE 'action:%'",
+            (mission_id,),
+        ).fetchall()
+    }
+    ledger = {
+        "settled_tokens": sum(settled.values()),
+        "usage_of_settled_subjects": sum(usage_by_subject.get(s, 0) for s in settled),
+        "unsettled_usage_tokens": sum(t for s, t in usage_by_subject.items() if s not in settled),
+        "mismatched_subjects": sorted(
+            s for s, t in settled.items() if usage_by_subject.get(s, 0) != t
+        ),
+    }
     reconciled = (
-        path_bucket["tokens"]
-        + exploration_bucket["tokens"]
-        + service_total
-        + unclassified["tokens"]
-        == total["tokens"]
+        unclassified["rows"] == 0
+        and path_bucket["tokens"] + exploration_bucket["tokens"] + service_total == total["tokens"]
+        and not ledger["mismatched_subjects"]
     )
 
     # -- actions and people on the way (step 7)
@@ -316,6 +340,7 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
         "knowledge_path": {
             "knowledge": [k.get("id") for k in knowledge.get("knowledge", [])],
             "refuted_claims": [c.get("id") for c in knowledge.get("claims", [])],
+            "refuted_on_path": sorted(refuted & path_attempts),
             "edges": knowledge.get("edges", []),
         },
         "attempts": attempt_view,
@@ -329,9 +354,10 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
             "unclassified": {**_money(unclassified), "subjects": unclassified_subjects},
             "total": _money(total),
             "unknown_usage_rows": unknown_rows,
+            "ledger": ledger,
             "reconciled": reconciled,
         },
-        "breaks": breaks,
+        "breaks": [b for n, b in enumerate(breaks) if b not in breaks[:n]],  # review P2-6
     }
 
 

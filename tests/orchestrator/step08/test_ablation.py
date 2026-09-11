@@ -13,7 +13,12 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from fixtures_provider import RoleScriptedProvider, graph_proposal_step, proposal_step
+from fixtures_provider import (
+    RoleScriptedProvider,
+    envelope_step,
+    graph_proposal_step,
+    proposal_step,
+)
 
 from agent_orchestrator.contracts import Budget, MissionStatus
 from agent_orchestrator.governance.policies import policy_snapshot, snapshot_diff
@@ -162,3 +167,53 @@ def test_s8_04_without_the_blackboard_no_knowledge_is_retrieved_or_used(tmp_path
     status = asyncio.run(case())
     assert status in {MissionStatus.COMPLETED, MissionStatus.FAILED}  # either way is an observation
     assert graph_proposal_step  # the graph proposal helper is the one the fixture uses
+
+
+def test_review_p1_3_an_ablation_that_leaves_no_layer_is_never_a_pass(tmp_path):
+    task = {
+        "key": "A",
+        "goal": "写报告（A）",
+        "rationale": "只让 Critic 看",
+        "dependencies": [],
+        "success_criteria": ["file:REPORT.md"],
+        "verification_policy": ["critic_review"],
+        "outputs": ["REPORT.md"],
+        "allowed_tools": list(TOOLS),
+        "budget": {"max_tokens": 30_000, "max_attempts": 1},
+        "priority": 1.0,
+    }
+    provider = RoleScriptedProvider(
+        {
+            "planner": [graph_proposal_step([task])],
+            "worker": [
+                ("workspace_list", {}),
+                ("workspace_write_file", {"path": "REPORT.md", "content": "# 报告\n"}),
+                envelope_step(summary="写好了", artifacts=["REPORT.md"], claims=["报告已写好"]),
+            ],
+        }
+    )
+
+    async def case():
+        async with Orchestrator(_config(tmp_path, ablations=("critic",)), provider) as orchestrator:
+            mission = await orchestrator.submit_mission(
+                _spec("emptied", criteria=("file:REPORT.md",))
+            )
+            await orchestrator.run()
+            store = orchestrator.store
+            [stored] = store.list_tasks(mission.id)
+            assert tuple(stored.verification_policy) == ("critic_review",)
+            [attempt] = store.list_attempts(stored.id)
+            result_id = next(
+                e.payload["result_id"]
+                for e in store.iter_events(mission.id)
+                if e.type == "ResultSubmitted"
+            )
+            layers = {v["layer"]: v for v in store.list_verifications(result_id)}
+            critic = layers["critic_review"]
+            assert critic["status"] == "ERROR" and critic["detail"]["no_layer_left"] is True
+            assert not any(v["status"] == "PASS" for v in layers.values())
+            assert stored.accepted_result_id is None
+            return store.get_mission(mission.id).status
+
+    assert asyncio.run(case()) is not MissionStatus.COMPLETED
+    assert provider.by_role.get("critic", 0) == 0

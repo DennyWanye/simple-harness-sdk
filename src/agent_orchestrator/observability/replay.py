@@ -64,7 +64,6 @@ NO_FORMAL_EFFECT = frozenset(
         "TaskResumed",
         "TaskRoleChanged",
         "PlanningRejected",
-        "MissionSuccessJudged",
         "MissionCriteriaJudged",
         "VerificationLayerRecorded",
         "ClaimDisputed",
@@ -86,6 +85,7 @@ NO_FORMAL_EFFECT = frozenset(
 TERMINAL_TASK = {"COMPLETED", "FAILED", "CANCELLED"}
 OPEN_RESULT = {"PENDING", "RUNNING", "SUSPENDED"}
 OPEN_ACTION = {"PROPOSED", "AWAITING_APPROVAL", "APPROVED"}
+OPEN_ATTEMPT = {"PENDING", "CLAIMED", "RUNNING", "SUBMITTED", "VERIFYING"}
 
 
 # ------------------------------------------------------------------ sources
@@ -131,6 +131,9 @@ class Projection:
         self._action_of_request: dict[str, str] = {}
         self._kind_of_request: dict[str, str] = {}
         self._conflict_of_task: dict[str, str] = {}
+        # task -> the result that passed while its TaskCompleted is not yet seen
+        self._passed_waiting: dict[str, str] = {}
+        self._judged = False
         self._seen: set[str] = set()
 
     # -- helpers
@@ -185,6 +188,8 @@ class Projection:
             self._set("mission", mission, status="PLANNING")
         elif kind == "MissionActivated":
             self._set("mission", mission, status="ACTIVE")
+        elif kind == "MissionSuccessJudged":  # commits together with the terminal event
+            self._judged = True
         elif kind == "MissionCompleted":
             self._set("mission", mission, status="COMPLETED", stop_reason=p.get("stop_reason"))
         elif kind == "MissionFailed":
@@ -203,13 +208,16 @@ class Projection:
             if p.get("result_id") and p.get("result_id") not in self.objects["result"]:
                 self._gap("result_submitted_missing", object="result", id=p.get("result_id"))
             self._set("task", task_id, status="COMPLETED", accepted_result_id=p.get("result_id"))
+            self._passed_waiting.pop(str(task_id), None)
         elif kind == "TaskFailed":
             self._set("task", task_id, status="FAILED")
+            self._passed_waiting.pop(str(task_id), None)
             conflict = self._conflict_of_task.get(str(task_id))
             if conflict and self.objects["conflict"].get(conflict, {}).get("state") == "OPEN":
                 self._set("conflict", conflict, state="UNRESOLVED")
         elif kind in {"TaskCancelled", "TaskSuperseded"}:
             self._set("task", task_id, status="CANCELLED")
+            self._passed_waiting.pop(str(task_id), None)
         elif kind == "TaskVerificationAbandoned":
             self._set("task", task_id, status="ACTIVE")
         # ---------------------------------------------------------- Attempt / Result
@@ -244,6 +252,9 @@ class Projection:
         elif kind == "VerificationPassed":
             self._set("result", p.get("result_id"), verification_state="DONE", verdict="PASS")
             self._set("attempt", attempt_id, status="COMPLETED")
+            task = self.objects["task"].get(str(task_id or ""))
+            if task is not None and task.get("status") != "COMPLETED":  # TaskCompleted follows
+                self._passed_waiting[str(task_id)] = str(p.get("result_id"))
         elif kind == "VerificationFailed":
             self._set("result", p.get("result_id"), verification_state="DONE", verdict="FAIL")
             self._set("attempt", attempt_id, status="RETRY_WAIT")
@@ -277,6 +288,7 @@ class Projection:
             self._set("conflict", p.get("conflict_id"), state="OPEN")
             if p.get("task_id"):
                 self._conflict_of_task[str(p["task_id"])] = str(p.get("conflict_id"))
+                self._passed_waiting.pop(str(p["task_id"]), None)
                 self._set("task", p.get("task_id"), status="READY", accepted_result_id=None)
         elif kind == "ConflictOpenDeferred":
             self._set("conflict", p.get("conflict_id"), state="DEFERRED")
@@ -368,20 +380,79 @@ class Projection:
             action["state"] = derived
 
     # -- structural invariants (plan D8-2': gaps are found by structure, not by seq)
-    def check_structure(self) -> None:
+    def check_structure(self) -> None:  # noqa: C901 - one list of invariants, read top-down
+        """Every outcome the record must hold; a violated invariant is a gap and the
+        field it leaves open becomes undecided (``None`` → ``not_covered``), so a
+        dropped outcome event can never pass for the state before it (review P1-2)."""
+
         mission = self.objects["mission"].get(str(self.mission_id or ""))
+        status = None if mission is None else mission.get("status")
+        terminal = status in {"COMPLETED", "FAILED", "CANCELLED"}
         if mission is None:
             self._gap("mission_created_missing", object="mission", id=self.mission_id)
-        elif mission.get("status") in {"COMPLETED", "FAILED", "CANCELLED"}:
+        elif self._judged and not terminal:  # MissionSuccessJudged without its terminal event
+            self._gap(
+                "mission_terminal_missing", object="mission", id=self.mission_id, status=status
+            )
+            mission.update(status=None, stop_reason=None)
+        if terminal:
             for task_id, task in self.objects["task"].items():
                 if task.get("status") in {"READY", "ACTIVE", "VERIFYING"}:
                     self._gap(
                         "task_terminal_missing", object="task", id=task_id, status=task["status"]
                     )
                     task["status"] = None  # undecided: the end of this Task is not on record
+            for attempt_id, attempt in self.objects["attempt"].items():
+                if attempt.get("status") in OPEN_ATTEMPT:
+                    self._gap(
+                        "attempt_terminal_missing",
+                        object="attempt",
+                        id=attempt_id,
+                        status=attempt["status"],
+                    )
+                    attempt["status"] = None
+            for result_id, result in self.objects["result"].items():
+                if result.get("verification_state") in OPEN_RESULT:
+                    self._gap(
+                        "result_terminal_missing",
+                        object="result",
+                        id=result_id,
+                        state=result["verification_state"],
+                    )
+                    result.update(verification_state=None, verdict=None)
+        if status == "COMPLETED":  # a completed Mission has every outcome on record
+            for key, action in self.objects["action"].items():
+                if action.get("state") in OPEN_ACTION | {"HANDED_OFF"}:
+                    self._gap(
+                        "action_outcome_missing", object="action", id=key, state=action["state"]
+                    )
+                    action.update(state=None, receipt_hash=None)
+            for key, conflict in self.objects["conflict"].items():
+                if conflict.get("state") == "OPEN":
+                    self._gap("conflict_outcome_missing", object="conflict", id=key)
+                    conflict["state"] = None
         for task_id, task in self.objects["task"].items():
-            if task.get("status") == "COMPLETED" and not task.get("accepted_result_id"):
+            if task.get("status") != "COMPLETED":
+                continue
+            result_id = str(task.get("accepted_result_id") or "")
+            if not result_id:
                 self._gap("task_completed_without_result", object="task", id=task_id)
+                continue
+            accepted = self.objects["result"].get(result_id)
+            if accepted is not None and (
+                accepted.get("verification_state"),
+                accepted.get("verdict"),
+            ) != ("DONE", "PASS"):
+                self._gap("verification_outcome_missing", object="result", id=result_id)
+                accepted.update(verification_state=None, verdict=None)
+                owner = self.objects["attempt"].get(self._attempt_of_result.get(result_id, ""))
+                if owner is not None and owner.get("status") != "COMPLETED":
+                    owner["status"] = None
+        for task_id, result_id in self._passed_waiting.items():  # D8-2': passed, never completed
+            self._gap("task_completed_missing", object="task", id=task_id, result_id=result_id)
+            waiting = self.objects["task"].get(task_id)
+            if waiting is not None:
+                waiting.update(status=None, accepted_result_id=None)
 
     def formal(self) -> dict[str, dict[str, dict[str, Any]]]:
         return {
@@ -587,12 +658,20 @@ def replay_mission(
         if library is not None:
             store = Store.open_readonly(library_copy(Path(library), Path(scratch)))
             try:
+                if store.get_mission(mission_id) is None:
+                    raise ValueError(f"mission {mission_id} is not in this library")
                 library_events = events_from_store(store, mission_id)
                 snapshot = store.snapshot(mission_id)
             finally:
                 store.close()
         if events_file is not None:
-            events = events_from_file(Path(events_file))
+            events = [
+                e
+                for e in events_from_file(Path(events_file))
+                if e.get("mission_id") in (None, mission_id)
+            ]
+            if not events:
+                raise ValueError(f"the events file holds no event of mission {mission_id}")
             source = "evidence_file (redacted: payloads may be replaced)"
         else:
             events = library_events

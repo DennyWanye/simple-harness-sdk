@@ -209,28 +209,13 @@ def test_s8_02_a_crash_record_replays_to_the_state_at_the_crash_and_then_to_the_
     assert final["formal_state"]["mission"][mission_id]["status"] == "COMPLETED"
 
 
-def test_s8_02_replay_never_writes_never_calls_out_and_imports_no_runtime(
-    tmp_path, capsys, monkeypatch
-):
+def test_s8_02_replay_never_writes_never_calls_out_and_imports_no_runtime(tmp_path, capsys):
+    """Review P2-8: "no call-out" is proven by the import graph below (replay cannot
+    reach a test runner, connector or provider it never imports), plus the unchanged
+    library, execution libraries and test-service state."""
+
     _code, evidence, mission_id = _demo(tmp_path, "approval-action")
     capsys.readouterr()
-    import agent_orchestrator.orchestrator.event_handler as handler
-    import agent_orchestrator.verification.deterministic_checks as checks
-    from agent_orchestrator.runtime.connectors import TestConfigService
-
-    calls: list[str] = []
-
-    async def no_pytest(*args, **kwargs):
-        calls.append("pytest")
-        raise AssertionError("replay ran a test")
-
-    def no_connector(self, *args, **kwargs):
-        calls.append("connector")
-        raise AssertionError("replay called a connector")
-
-    monkeypatch.setattr(handler, "run_pytest", no_pytest)
-    monkeypatch.setattr(checks, "run_pytest", no_pytest)
-    monkeypatch.setattr(TestConfigService, "execute", no_connector)
     service_state = (evidence / "test-services" / "config.json").read_bytes()
     before = _hashes(evidence)
     modes = {
@@ -243,7 +228,7 @@ def test_s8_02_replay_never_writes_never_calls_out_and_imports_no_runtime(
     finally:
         for path, mode in modes.items():
             path.chmod(mode)
-    assert report["comparison"]["consistent"] and calls == []
+    assert report["comparison"]["consistent"]
     assert (
         _hashes(evidence) == before
         and (evidence / "test-services" / "config.json").read_bytes() == service_state
@@ -445,3 +430,56 @@ def test_s8_02_a_review_that_waits_and_then_passes_replays_at_both_moments(tmp_p
     done = replay_mission(mission_id=mission_id, library=library)
     assert done["comparison"]["mismatches"] == [] and done["comparison"]["coverage"] == 1.0
     assert done["formal_state"]["mission"][mission_id]["status"] == "COMPLETED"
+
+
+# ------------------------------------------------------------------ code review round 1
+@pytest.mark.parametrize(
+    ("scenario", "dropped", "rule"),
+    [
+        ("static-dag", "VerificationPassed", "verification_outcome_missing"),
+        ("static-dag", "MissionCompleted", "mission_terminal_missing"),
+        ("approval-action", "ActionSucceeded", "action_outcome_missing"),
+        ("knowledge-sharing", "ConflictResolved", "conflict_outcome_missing"),
+    ],
+)
+def test_review_p1_2_a_dropped_outcome_is_a_gap_with_or_without_the_library(
+    tmp_path, capsys, scenario, dropped, rule
+):
+    _code, evidence, mission_id = _demo(tmp_path, scenario)
+    capsys.readouterr()
+    lines = (evidence / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    events = [json.loads(line) for line in lines]
+    target = next(e for e in events if e["type"] == dropped)
+    partial = Path(tmp_path) / "partial.jsonl"
+    partial.write_text(
+        "".join(
+            line + "\n" for line, e in zip(lines, events, strict=True) if e["id"] != target["id"]
+        ),
+        encoding="utf-8",
+    )
+    alone = replay_mission(mission_id=mission_id, events_file=partial)
+    assert rule in {gap["rule"] for gap in alone["gaps"]}, alone["gaps"]
+    both = replay_mission(
+        mission_id=mission_id, library=evidence / "orchestrator.db", events_file=partial
+    )
+    assert rule in {gap["rule"] for gap in both["gaps"]}
+    comparison = both["comparison"]
+    assert comparison["mismatches"] == [], comparison["mismatches"]  # undecided, never stale
+    assert comparison["coverage"] < 1.0
+    assert [e["id"] for e in both["missing_events"]] == [target["id"]]
+
+
+def test_review_p1_2_passed_without_completed_is_a_gap(tmp_path, capsys):
+    _code, evidence, mission_id = _demo(tmp_path, "static-dag")
+    capsys.readouterr()
+    events = [
+        json.loads(line)
+        for line in (evidence / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    completed = next(e for e in events if e["type"] == "TaskCompleted")
+    kept = [e for e in events if e["id"] != completed["id"]]
+    projection = Projection().feed(kept)
+    projection.check_structure()
+    gaps = {(g["rule"], g.get("id")) for g in projection.gaps}
+    assert ("task_completed_missing", completed["task_id"]) in gaps
+    assert projection.objects["task"][completed["task_id"]]["status"] is None

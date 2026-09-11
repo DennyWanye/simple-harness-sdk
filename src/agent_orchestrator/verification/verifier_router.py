@@ -95,6 +95,8 @@ class VerifierRouter:
         # is not required in this run and says so; it is never a silent PASS
         removed = {layer for layer in ablated if layer in required}
         required -= removed
+        # review P1-3 (§12.4): an ablation that leaves the Task no layer at all cannot pass
+        emptied = bool(removed) and not required
         layers: list[LayerResult] = []
         critic: CriticVerdict | None = None
         short_at: str | None = None
@@ -121,6 +123,17 @@ class VerifierRouter:
                 )
                 continue
             if layer not in required:
+                if layer in removed and emptied:
+                    await record(
+                        LayerResult(
+                            layer,
+                            ERROR,
+                            "ablation leaves no verification for this Task: zero layers is never a PASS",
+                            {"ablated": True, "required_by_policy": True, "no_layer_left": True},
+                        )
+                    )
+                    short_at = layer
+                    continue
                 if layer in removed:
                     await record(
                         LayerResult(

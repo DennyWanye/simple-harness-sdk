@@ -1,3 +1,44 @@
+## 0.9.6 — agent_orchestrator step 8: contribution attribution, replay and policy evaluation (source candidate)
+
+`agent_orchestrator` 0.8.0 (same wheel).  Step 8 of ORCH-BUILD-v1.0 — explaining one run
+and comparing strategies on evidence (original §23, §28 stage four).  **Replay**
+(`observability/replay.py`) rebuilds facts that already happened: a pure fold of a
+Mission's events (ordered by seq, deduplicated by event id) into the formal state —
+Mission, Tasks, Attempts, Results, knowledge, conflicts, actions, approvals, overrides —
+compared field by field with the library, which is only ever read through a copy opened
+read-only (`Store.open_readonly`); for this build's libraries the coverage is 100 %,
+missing or older events are reported as `not_covered` with structural gap rules and the
+missing event ids, never back-filled; a failure timeline tells what went wrong in order.
+New events `ActionSuperseded` / `ActionCancelled` put every action state change on
+record; events are read page by page.  **Attribution** (`observability/traces.py`)
+follows the final products (the integrated tree) to the Tasks, Attempts, Agents, roles,
+models and prompt versions that produced them and the layers that passed them, adds the
+knowledge path, actions and people, lists everything else as exploration with its
+reason, and splits the imported usage row by row (Attempt, its Critic, planner /
+manager / judge) with an unclassified bucket that must stay empty; unpriced money is
+null.  **Policy snapshot** (`governance/policies.py`): every configuration field
+classified, every version constant with its source, role templates, profiles, routing,
+connectors and provider identity without credentials; `snapshot_diff` names each
+difference's source; evidence adds `attribution.json` and `policy_snapshot.json`.
+**Ablation** is an explicit change of the effective policy (`OrchestratorConfig.ablations`:
+critic, blackboard, graph_changes; safety boundaries refused): an ablated layer is
+recorded `NOT_REQUIRED` with `ablated=true`, never a silent PASS.  **Evaluation**
+(`observability/evaluation.py`): cases × strategies × trials, every run a new Mission in
+its own new directory and library, whitelisted strategy overrides, test services only,
+harness errors kept out of the denominator, success rates with Wilson intervals,
+comparisons by Fisher's exact test and non-overlapping ranges, hidden oracles for
+verification misjudgment, fixture results marked as a mechanism check, cases derived
+from old evidence only when the charter hashes to the recorded spec.  CLI `replay` and
+`evaluate`, `demo --scenario evaluate-policies`.  Code review round 1: an evaluation
+refuses any service but the local test service on every case and again on what each run
+is handed (`EvaluationRefused`, never a harness error); an ablation that leaves a Task no
+verification layer is an `ERROR`, never a zero-layer PASS; a missing outcome event is a
+structural gap and its field becomes `not_covered`; attribution flags refuted claims on
+the path (`claim_refuted`) and `reconciled` also checks the budget ledger; comparisons
+are paired by case and say "insufficient evidence" on opposite directions or uneven
+harness errors; `replay` / `evaluate` answer bad calls with exit 2.  No SDK
+(`simple_harness`) API change.
+
 ## 0.9.5 — agent_orchestrator step 7: human-in-the-loop and controlled real actions (source candidate)
 
 `agent_orchestrator` 0.7.0 (same wheel).  Step 7 of ORCH-BUILD-v1.0 — the "scale and
