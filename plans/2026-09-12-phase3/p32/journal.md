@@ -249,6 +249,18 @@
      - 处置：把这条用例改成**确定性**的——用子类把 `_survivors` 固定成一个 pid、`kill` 换成记录器，直接验证契约（`tree_killed=False`、`status=error`、残留 pid 如实上报、每一轮都尝试过）。真实扫描能力由上面四种逃逸用例证明，不因此损失证明力。
      - 顺带如实登记：**一次回收的耗时受外部工具响应速度影响**，`ps` 与 `lsof` 各自有超时，但极端情况下仍可能偏慢。这一条写进 §2 的诚实边界。
 
+**第三轮 wheel 验证（交付用的这一版）**：HEAD `3eb43fb89a27c0bb9dd2e5e8d988354de4f64fda`，`SOURCE_DATE_EPOCH=1789168350`，sha256 `9c07fac4b3b919b2003a380d321f974824818475ca8b3cf9570ba0e00042d06c`。
+
+| 项 | 结果 |
+|---|---|
+| 干净环境安装后跑测试 | **844 passed / 11 skipped / 1 failed**，7 分 41 秒 |
+| 唯一的红 | `tests/execution/test_execution_v3_to_v4_migration.py::test_completed_null_continuation_…`——0.9.9 起的既有失败，与本轮无关 |
+| 残留 | 执行副本 **0**，沙箱临时目录 **0** |
+| demo / demo7 / demo8 / replay8 / demo9 / policy9 | 全部 exit 0 |
+| 导入版本 | `0.10.0 0.10.0` |
+
+P32-12 的 wheel 一项到此满足：三轮验证里前两轮暴露的问题都查到了根因并修掉（两条测试写脆、一条回收成本），没有一条是靠放宽断言掩盖过去的。Host 钉版以这一版的 sha256 为准。
+
 ## 4. 代码评审处置
 
 第 1 轮（`reports/code-review-round1.md`）结论 **SHIP_WITH_FIXES**：P0 0 条、P1 5 条、P2 13 条。全部接受。其中 P1-1 与 P1-2 是真缺陷，而且我的 117 条 p32 测试都没覆盖到——这两条各补了回归测试。
