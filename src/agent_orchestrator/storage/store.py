@@ -158,6 +158,7 @@ class Store:
         self._skips: dict[str, int] = {}
         self._times: dict[str, int] = {}
         self.fired: list[str] = []
+        self._readonly = False
 
     # ---------------------------------------------------------------- lifecycle
     @classmethod
@@ -174,6 +175,57 @@ class Store:
         store = cls(connection, resolved, clock)
         store._initialize_or_validate()
         return store
+
+    @classmethod
+    def open_readonly(cls, path: str | Path) -> Store:
+        """Step 8 (plan D8-1'): read an existing library without writing it — no
+        directory creation, no WAL switch, no migration or backup.  An older schema is
+        accepted as it is (``snapshot`` skips tables it does not have); a newer one is
+        refused."""
+
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_file():
+            raise StoreError(f"no library at {resolved}")
+        connection = sqlite3.connect(
+            f"file:{resolved}?mode=ro",
+            uri=True,
+            isolation_level=None,
+            timeout=5.0,
+            check_same_thread=False,
+        )
+        connection.row_factory = sqlite3.Row
+        store = cls(connection, resolved, time.time)
+        store._readonly = True
+        rows = [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT version,name,checksum FROM orch_schema_migrations ORDER BY version"
+            )
+        ]
+        expected = [(m.version, m.name, m.checksum) for m in schema.MIGRATIONS]
+        if len(rows) > len(expected) or rows != expected[: len(rows)]:
+            connection.close()
+            raise SchemaIncompatible(f"orchestrator schema mismatch: {rows}")
+        return store
+
+    def has_table(self, name: str) -> bool:
+        row = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)
+        ).fetchone()
+        return row is not None
+
+    def iter_events(self, mission_id: str, *, page: int = 5_000) -> list[Event]:
+        """Every event of a Mission, read page by page (plan D8-1': never silently cut
+        at a fixed limit)."""
+
+        events: list[Event] = []
+        after = 0
+        while True:
+            batch = self.list_events(mission_id, after_seq=after, limit=page)
+            events.extend(batch)
+            if len(batch) < page:
+                return events
+            after = int(batch[-1].seq or after)
 
     def close(self) -> None:
         self._connection.close()
@@ -1287,10 +1339,13 @@ class Store:
                 for intent in [self.get_intent_for_subject(attempt.id)]
                 if intent is not None
             ],
-            "actions": self.list_actions(mission_id),  # step 7 (D7-11)
-            "approvals": self.list_approvals(mission_id),
-            "human_overrides": self.list_overrides(mission_id),
-            "waiting_on": self.waiting_on(mission_id),
+            # step 7 (D7-11); an older library read by replay has no such tables (D8-1')
+            "actions": self.list_actions(mission_id) if self.has_table("actions") else [],
+            "approvals": self.list_approvals(mission_id) if self.has_table("approvals") else [],
+            "human_overrides": self.list_overrides(mission_id)
+            if self.has_table("human_overrides")
+            else [],
+            "waiting_on": self.waiting_on(mission_id) if self.has_table("approvals") else [],
             "event_count": self.count_events(mission_id),
         }
 

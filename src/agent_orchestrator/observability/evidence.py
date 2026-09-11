@@ -54,7 +54,7 @@ def write_evidence(
     dump(directory / "baseline.json", dict(baseline))
     lines = "".join(
         json.dumps(event.to_json(), ensure_ascii=False, sort_keys=True) + "\n"
-        for event in store.list_events(mission_id)
+        for event in store.iter_events(mission_id)
     )
     lines, found = redact_text(lines)
     if found:

@@ -36,6 +36,7 @@
 
 | 切片 | 提交 | 内容 | 测试 |
 |---|---|---|---|
+| A | （本次） | Replay：`observability/replay.py` 纯折叠（按 seq 排序、按事件 id 去重）、投影表与推导规则（含非候选结果、审批→动作、审核→结果回到 RUNNING、冲突任务失败→UNRESOLVED）、结构性缺口、与只读副本快照逐字段比较、失败时间线；`Store.open_readonly` / `iter_events` / `has_table`（快照按表是否存在）；证据与指标改为分页读事件；补事件 `ActionSuperseded`、`ActionCancelled` | `test_replay.py` 12：四个演示 + 失败 Mission + 审批被拒 + 取消开放动作 + 人工审核挂起 / 通过，覆盖率 100% 且 0 不一致；重复投递；崩溃前缀；只读目录、不写、不外调、不导入 runtime；S8-05 删事件 / 缺字段 |
 
 ## 3. 真实模型
 

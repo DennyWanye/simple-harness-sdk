@@ -75,7 +75,7 @@ def metrics(store: Store, mission_id: str, *, unpriced: bool) -> dict[str, Any]:
             cost_by_profile[profile] += int(cost)
     passed = store.count_events(mission_id, "VerificationPassed")
     failed = store.count_events(mission_id, "VerificationFailed")
-    events = store.list_events(mission_id)
+    events = store.iter_events(mission_id)
     created = next((e.created_at for e in events if e.type == "MissionCreated"), None)
     ended = next(
         (

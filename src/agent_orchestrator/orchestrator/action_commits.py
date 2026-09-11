@@ -381,6 +381,13 @@ class ActionCommitsMixin:
             {"state": "SUPERSEDED", "at": self._store.now, "by": by},
         ]
         self._store.put_action(old)
+        self._emit(  # step 8 (plan D8-2'): every action state change is on record
+            "ActionSuperseded",
+            old["mission_id"],
+            key=str(old["action_key"]),
+            task_id=old.get("task_id"),
+            payload={"action_key": old["action_key"], "superseded_by": by},
+        )
         request_id = old.get("approval_request_id")
         if request_id:
             request = self._store.get_approval(request_id)
@@ -1054,6 +1061,13 @@ class ActionCommitsMixin:
         for action in self._store.list_actions(mission_id, *sorted(OPEN_ACTION_STATES)):
             cancelled.append(
                 self._set_action_state(action["action_key"], "CANCELLED", reason=reason)
+            )
+            self._emit(  # step 8 (plan D8-2', review P0-1): the cancellation is on record
+                "ActionCancelled",
+                mission_id,
+                key=str(action["action_key"]),
+                task_id=action.get("task_id"),
+                payload={"action_key": action["action_key"], "reason": reason},
             )
         for request in self._store.list_approvals(mission_id, "PENDING", "GRANTED"):
             if request["kind"] != "action" and request["state"] != "PENDING":
