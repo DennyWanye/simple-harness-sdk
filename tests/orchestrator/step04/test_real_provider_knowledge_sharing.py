@@ -49,6 +49,9 @@ def test_real_knowledge_sharing_closure(tmp_path):
         stall_seconds=300,
         attempt_reserve_tokens=120_000,
         critic_reserve_tokens=30_000,
+        # P3.1 fix F-ORCH-1: with these knobs a critic_review Task must hold 38192 tokens;
+        # a real Planner may need a third try after reading the floor it was refused for
+        max_planning_attempts=3,
     )
     spec = MissionSpec(
         goal=(

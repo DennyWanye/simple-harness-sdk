@@ -49,7 +49,8 @@
   - Manager 输入包同样增加这两个字段；
   - 被拒后，Planner 从 `planning_rejected` 读到原因，Manager 从 rejections 读到原因。
 - 系统任务（合成、冲突）不受下限约束。
-- 预算池连一个 Task 的下限都容不下时，Planner 用完重试次数，Mission 以 `planning_failed` 结束，失败原因里带 `task_budget_below_floor`。
+- Planner 一直提议低于下限的预算时，会用完重试次数，Mission 以 `planning_failed` 结束，失败原因里带 `task_budget_below_floor`。如果提案达到了下限、却超出预算池，被拒的原因就是"超出 Mission 预算"，这是如实的。规划开始前预检"池容不下一个下限"这件事登记为后续项，出自代码评审 P2-3。
+- 措辞（代码评审 P2-2）：下限是**预留层面**的必要条件，前提是一轮结算的用量不超过它的预留。真实模型一轮会连输入一起结算，远超 base，所以预算正好等于下限的 Task，第一轮之后照样可能付不起 Critic。
 - 真实模型：在 `REAL_KNOBS` 的调参下，含 critic 的下限会升到几万 tokens，真实 Planner 可能要多试一两次。本仓库的真实 opt-in 测试把 `max_planning_attempts` 调到 3。
 
 ### 2.2 F-ORCH-3：产物验证状态

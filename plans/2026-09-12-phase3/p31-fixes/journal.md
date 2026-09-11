@@ -11,12 +11,13 @@
     - 计划评审 READY_WITH_CHANGES，已处置（§1）；
     - 实现完成，提交 `a84e2a4` 已推送；
     - 目前三件事在进行：全量回归（看门狗）、代码评审第 1 轮、P3.2 计划评审。
-  - 下一步：
-    1. 处置代码评审意见；
-    2. 回归红集 ⊆ 73；
-    3. 构建 wheel 0.9.11，脚本在新 scratchpad 的 `wheel-0.9.11/build-and-verify.sh`；
-    4. Host 用 `pin-0911/pin.py <wheel> <commit> <epoch> 0.9.10 0.9.11 0.9.4` 改钉；
-    5. 跑 Host `tests/orchestration`，更新 ARCHITECTURE。
+  - 已完成：
+    - 全量回归红集 = 73，没有新失败（§3）；
+    - wheel 0.9.11 在干净环境验证通过（§3）；
+    - Host 已改钉并推送（`64930ad3`）：`tests/orchestration` 107 passed，候选校验和控制通道等 5 个文件是 60 passed / 1 skipped；
+    - Host ARCHITECTURE（AGENT_ORCHESTRATION §8、AGENT_HARNESS）和 journal 遗留表都已同步。
+  - 代码评审第 1 轮已处置（§4），只补了测试、改了文档；终态 SHIPPED（§6）。
+  - 下一步：P3.2（`../p32/`），等计划评审出结论。
   - 起点：SDK main `29daa9c`（0.9.10 / 0.9.3），Host main `e1f9e6cb`。
 - 接手须知：
   - 真实模型只用 deepseek-flash；
@@ -77,13 +78,50 @@
 
 ## 3. 回归与 wheel
 
-（待填）
+| 项 | 结果 |
+|---|---|
+| 全量回归，HEAD `a84e2a4`（带看门狗 `regress-0911/watchdog.py 1200`） | 58 failed / **2482 passed** / 13 skipped / 15 errors，用时 319 s；红集 73 条，等于基线，**0 新红**；看门狗未触发，没有挂住的测试 |
+| wheel 0.9.11 | 从 `cfbd88d` 可复现构建（`SOURCE_DATE_EPOCH=1789151546`），sha256 `7a34e6df…e867`。在干净环境里安装后跑测试：705 passed / 11 skipped / 1 failed。那 1 条是 `tests/execution/test_execution_v3_to_v4_migration.py::test_completed_null_continuation_resolves_unique_pair_and_preserves_facts`，0.9.9、0.9.10 验证时就已存在，是同一条既有失败。demo、demo7、demo8、replay8、demo9、policy9 全部 exit 0；导入的版本为 `0.9.11 0.9.4` |
 
 ## 4. 代码评审处置
 
-（待填）
+第 1 轮（`reports/code-review-round1.md`）结论为 SHIP_WITH_FIXES：没有 P0，2 条 P1 都是验收里缺测试，不需要改源码。
+
+处置原则：wheel 0.9.11 已经从 `cfbd88d` 构建，Host 也已经钉住，所以这一轮**不改 `src/`**，只补测试、改文档。需要动源码的建议，并入下一个 SDK 版本（P3.2 切片 A 的发版）。
+
+| 编号 | 处置 | 证据 |
+|---|---|---|
+| P1-1 被取代的候选没有测试 | 接受。在一个 Task 上开两个候选（第二个用 `candidates_per_task=2` 建 Attempt），两个都交结果，接受第一个，第二个随之被取代；用新连接读回，前者是 VERIFIED，后者是 UNVERIFIED | `test_a_superseded_candidate_keeps_its_artifact_unverified` |
+| P1-2 Manager 的下限注入没有端到端测试 | 接受。第一次变更给 E 800 tokens，被拒；两次 Manager 包的 `budget_floor` 都是 4096 / 10096；第二次包的 rejections 带着拒绝原因；Mission 最终完成 | `test_a_manager_below_the_floor_is_refused_and_told_why` |
+| P2-1 接线没有测试 | 接受。只提交、不运行的白盒测试，覆盖 5 种配置和 2 种非法值 | `test_the_floor_is_wired_from_config_profiles_and_the_bound_policy`、`test_a_negative_or_boolean_min_task_tokens_is_refused` |
+| P2-2 措辞写得比实际更强 | 接受。plan 与 Host ARCHITECTURE 都改为"预留层面的必要条件"。源码 docstring 与 CHANGELOG 会被打进 wheel，放到下一个版本再改（见 §5） | plan §2.1；Host AGENT_ORCHESTRATION §8 |
+| P2-3 FX-4 的措辞与覆盖对不上 | 接受方案②：acceptance 的 FX-4 改为"提案一直低于下限"；新增 FX-4b"提案达到下限却超出预算池"，把实际的停止原因钉住。方案①（规划前预检）登记到 §5 | `test_a_proposal_that_meets_the_floor_but_not_the_pool_names_the_pool` |
+| P2-4 计划承诺的真实测试没有落实 | 接受。step04 与 step05 的真实 opt-in 测试加上 `max_planning_attempts=3`（只改测试）。`__main__` 真实模式的 demo 登记到 §5 | 两个 `test_real_provider_*.py` |
+| P2-5 找不到产物行时抛 StoreError | 接受"保持大声失败"；docstring 补一句"不存在即库损坏"，放到下个版本 | §5 |
+| P2-6 产物与结果都用 REJECTED，含义不同 | 接受。Host ARCHITECTURE 写明：产物 REJECTED 是"被判 FAIL"；被取代是"没判过"，所以保持 UNVERIFIED | Host AGENT_ORCHESTRATION §8 |
+| P2-7 评测计划不能设 `min_task_tokens` | 登记到下一个版本（PLAN_CONFIG 属于源码） | §5 |
+| P2-8 / P2-9 `context_version` 与快照哈希随版本变化 | 仅作记录；已核对，没有功能影响 | — |
+| P2-10 step05 挂住 | 已解决：带 faulthandler 的整批重跑中，这条测试正常通过；评审也按代码排除了下限的原因 | §2 |
+
+处置之后：`test_p31_fixes.py` 31 passed；ruff 检查与格式都干净。只改了测试和文档，`src/` 与 wheel 0.9.11 都没动，不需要重新构建，也不需要 Host 重新钉。
+
+## 6. 结论
+
+P3.1 遗留修复交付：
+- F-ORCH-1、F-ORCH-3 已在 SDK 0.9.11 / agent_orchestrator 0.9.4 修复（`a84e2a4`，wheel 源 `cfbd88d`）；Host 已钉 0.9.11（`64930ad3`）。
+- F-ORCH-2 判为设计如此，已写明。
+- 验收 FX-1..FX-7 全部通过；全量回归红集等于基线。
+
+终态：**SHIPPED**，2026-09-12。遗留见 §5。
 
 ## 5. 遗留
 
 - 预算超支没有单独发可观测事件，放到 P3.5 处理。
 - 角色模板没有写入下限说明，P3.4 考虑是否升提示词版本。
+- 并入下一个 SDK 版本（P3.2 切片 A 的发版），这些都要改源码：
+  - 代码评审 P2-2：`TaskBudgetFloor` 的 docstring 与 CHANGELOG 0.9.11 条目，措辞改为"预留层面的必要条件"；
+  - P2-5：`update_artifact_verification` 的 docstring 补一句"不存在即库损坏"；
+  - P2-7：评测计划 `PLAN_CONFIG` 允许设置 `min_task_tokens`；
+  - P2-3 方案①：规划开始前，预检"池容不下一个下限"；
+  - P2-4：`__main__` 真实模式的 demo（approval、multi-mission）同样把 `max_planning_attempts` 调到 3。
+- P3.5 考虑：Worker 的份额改为 `max_tokens//k - critic_share`，让 k 个候选对称（代码评审 P2-2 的可选建议）。

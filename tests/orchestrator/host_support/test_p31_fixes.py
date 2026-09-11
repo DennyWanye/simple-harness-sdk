@@ -25,7 +25,16 @@ from pathlib import Path
 import pytest
 
 from agent_orchestrator.context.context_builder import build_manager_package
-from agent_orchestrator.contracts import Budget, Mission, MissionStatus
+from agent_orchestrator.contracts import (
+    Artifact,
+    AttemptStatus,
+    Budget,
+    ClaimProposal,
+    Mission,
+    MissionStatus,
+    ResultEnvelope,
+    ids,
+)
 from agent_orchestrator.governance.policies import DeploymentPolicy
 from agent_orchestrator.graph.changes import ChangeLimits, GraphChangeRejected, validate_change
 from agent_orchestrator.graph.task_graph import (
@@ -34,20 +43,27 @@ from agent_orchestrator.graph.task_graph import (
     TaskGraphProposal,
     validate_graph,
 )
-from agent_orchestrator.orchestrator.commit_service import MissionSpec
+from agent_orchestrator.orchestrator.commit_service import MissionSpec, Reservation
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
+from agent_orchestrator.runtime.model_router import RuntimeProfile
 from agent_orchestrator.storage.store import InjectedCrash, Store
 from agent_orchestrator.testing.fixtures import (
+    RECORDER_SEED,
+    RECORDER_SPEC,
     RoleScriptedProvider,
     critic_step,
+    demo_dynamic_dag_provider,
     envelope_step,
+    graph_change_step,
     graph_proposal_step,
     package_of,
+    recorder_manager_change,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "step05"))
-from graph_helpers import add, change, graph_service  # noqa: E402
+from graph_helpers import HASH, add, change, drive_to_running, graph_service  # noqa: E402
+from graph_helpers import node as graph_node  # noqa: E402
 
 TOOLS3 = ("workspace_read_file", "workspace_write_file", "workspace_list")
 OFF = DeploymentPolicy(allowed_tools=TOOLS3, local_code_execution=False)
@@ -119,7 +135,9 @@ def test_the_floor_formula():
         (800, WITH_CRITIC, TaskBudgetFloor(base=0, critic=6000), 1, False),  # 0 switches it off
     ],
 )
-def test_the_graph_gate_refuses_a_task_budget_below_the_floor(tokens, policy, floor, candidates, refused):
+def test_the_graph_gate_refuses_a_task_budget_below_the_floor(
+    tokens, policy, floor, candidates, refused
+):
     graph = proposal(node("A", tokens=tokens, policy=policy))
     if refused:
         with pytest.raises(GraphRejected) as rejected:
@@ -136,10 +154,18 @@ def test_a_pool_share_below_the_floor_is_refused_too():
     # the Mission bounds tokens, the Planner leaves them blank: 3 × (20000 // 3) < 10096
     bounded = mission(budget=Budget(max_tokens=20_000, max_attempts=3))
     with pytest.raises(GraphRejected) as rejected:
-        validate_graph(bounded, proposal(*(node(k, tokens=None, policy=WITH_CRITIC) for k in "ABC")), task_floor=FLOOR)
+        validate_graph(
+            bounded,
+            proposal(*(node(k, tokens=None, policy=WITH_CRITIC) for k in "ABC")),
+            task_floor=FLOOR,
+        )
     assert "task_budget_below_floor" in str(rejected.value)
     # the same shares without a Critic clear the base floor (6666 ≥ 4096)
-    validate_graph(bounded, proposal(*(node(k, tokens=None, policy=NO_CRITIC) for k in "ABC")), task_floor=FLOOR)
+    validate_graph(
+        bounded,
+        proposal(*(node(k, tokens=None, policy=NO_CRITIC) for k in "ABC")),
+        task_floor=FLOOR,
+    )
 
 
 def test_no_floor_argument_keeps_the_old_behaviour():
@@ -152,8 +178,12 @@ def test_a_synthesis_template_is_not_bound_by_the_floor():
         "success_criteria": ["file:SUMMARY.md"],
         "budget": {"max_tokens": 1000, "max_attempts": 1},
     }
-    bounded = mission(budget=Budget(max_tokens=100_000, max_attempts=6), final_report={"synthesis": template})
-    validate_graph(bounded, proposal(node("A", tokens=30_000, policy=WITH_CRITIC)), task_floor=FLOOR)
+    bounded = mission(
+        budget=Budget(max_tokens=100_000, max_attempts=6), final_report={"synthesis": template}
+    )
+    validate_graph(
+        bounded, proposal(node("A", tokens=30_000, policy=WITH_CRITIC)), task_floor=FLOOR
+    )
 
 
 # ------------------------------------------------------------------ FX-2 the change gate
@@ -172,11 +202,31 @@ def _validate(current, tasks, proposed, floor=FLOOR):
 def test_a_manager_add_task_below_the_floor_is_refused(tmp_path):
     service, current, t = graph_service(tmp_path)
     tasks = service.store.list_tasks(current.id)
-    low = change(1, [add("E", [t["C"].id], budget={"max_tokens": 800, "max_attempts": 2}, parent_task_ids=[t["C"].id])])
+    low = change(
+        1,
+        [
+            add(
+                "E",
+                [t["C"].id],
+                budget={"max_tokens": 800, "max_attempts": 2},
+                parent_task_ids=[t["C"].id],
+            )
+        ],
+    )
     with pytest.raises(GraphChangeRejected) as rejected:
         _validate(current, tasks, low)
     assert rejected.value.reason == "budget" and "task_budget_below_floor" in str(rejected.value)
-    enough = change(1, [add("E", [t["C"].id], budget={"max_tokens": 5000, "max_attempts": 2}, parent_task_ids=[t["C"].id])])
+    enough = change(
+        1,
+        [
+            add(
+                "E",
+                [t["C"].id],
+                budget={"max_tokens": 5000, "max_attempts": 2},
+                parent_task_ids=[t["C"].id],
+            )
+        ],
+    )
     _validate(current, tasks, enough)
     _validate(current, tasks, low, floor=None)  # without a floor the old behaviour stays
 
@@ -185,7 +235,9 @@ def test_a_default_share_below_the_floor_is_refused(tmp_path):
     # DIAMOND commits 4 × 20000; a pool of 82000 leaves 2000 for a new node without a budget
     service, current, t = graph_service(tmp_path, budget=Budget(max_tokens=82_000, max_attempts=12))
     tasks = service.store.list_tasks(current.id)
-    blank = change(1, [add("E", [t["C"].id], budget={"max_attempts": 2}, parent_task_ids=[t["C"].id])])
+    blank = change(
+        1, [add("E", [t["C"].id], budget={"max_attempts": 2}, parent_task_ids=[t["C"].id])]
+    )
     with pytest.raises(GraphChangeRejected) as rejected:
         _validate(current, tasks, blank)
     assert "task_budget_below_floor" in str(rejected.value)
@@ -287,12 +339,18 @@ def test_a_refused_budget_reaches_the_planner_and_the_replan_completes(tmp_path)
             created = await orchestrator.submit_mission(_spec("fx3"))
             await asyncio.wait_for(orchestrator.run(), timeout=120)
             store = orchestrator.store
-            return store.get_mission(created.id), store.list_events(created.id), store.list_tasks(created.id)
+            return (
+                store.get_mission(created.id),
+                store.list_events(created.id),
+                store.list_tasks(created.id),
+            )
 
     current, events, tasks = asyncio.run(run())
     assert str(current.status) == "COMPLETED"
     rejected = [e for e in events if e.type == "TaskGraphRejected"]
-    assert rejected and "task_budget_below_floor" in json.dumps(rejected[0].payload, ensure_ascii=False)
+    assert rejected and "task_budget_below_floor" in json.dumps(
+        rejected[0].payload, ensure_ascii=False
+    )
     assert [t.budget.max_tokens for t in tasks] == [30_000]
     assert len(seen) == 2
     for package in seen:
@@ -308,13 +366,17 @@ def test_a_pool_that_cannot_hold_one_floor_ends_as_planning_failed(tmp_path):
 
     async def run():
         async with Orchestrator(_config(tmp_path), provider) as orchestrator:
-            created = await orchestrator.submit_mission(_spec("fx4", budget=Budget(max_tokens=9_000, max_attempts=6)))
+            created = await orchestrator.submit_mission(
+                _spec("fx4", budget=Budget(max_tokens=9_000, max_attempts=6))
+            )
             await asyncio.wait_for(orchestrator.run(), timeout=120)
             return orchestrator.store.get_mission(created.id)
 
     current = asyncio.run(run())
     assert str(current.status) == "FAILED" and current.stop_reason == "planning_failed"
-    assert "task_budget_below_floor" in json.dumps(current.final_report["planning_failure"], ensure_ascii=False)
+    assert "task_budget_below_floor" in json.dumps(
+        current.final_report["planning_failure"], ensure_ascii=False
+    )
 
 
 def test_min_task_tokens_zero_switches_the_floor_off(tmp_path):
@@ -326,7 +388,9 @@ def test_min_task_tokens_zero_switches_the_floor_off(tmp_path):
         async with Orchestrator(_config(tmp_path, min_task_tokens=0), provider) as orchestrator:
             created = await orchestrator.submit_mission(_spec("fx3-off"))
             await asyncio.wait_for(orchestrator.run(), timeout=120)
-            return orchestrator.store.list_events(created.id), orchestrator.store.list_tasks(created.id)
+            return orchestrator.store.list_events(created.id), orchestrator.store.list_tasks(
+                created.id
+            )
 
     events, tasks = asyncio.run(run())
     assert not [e for e in events if e.type == "TaskGraphRejected"]
@@ -350,14 +414,17 @@ def test_accepted_artifacts_are_verified_and_failed_ones_rejected(tmp_path):
         {
             "planner": [graph_proposal_step([_task(60_000, attempts=3)])],
             "worker": _worker() + _worker(),
-            "critic": [critic_step(verdict="FAIL", criteria_met=False, blocker="要点不够具体")] + _passes(),
+            "critic": [critic_step(verdict="FAIL", criteria_met=False, blocker="要点不够具体")]
+            + _passes(),
         }
     )
     cfg = _config(tmp_path)
 
     async def run():
         async with Orchestrator(cfg, provider) as orchestrator:
-            created = await orchestrator.submit_mission(_spec("fx5", budget=Budget(max_tokens=300_000, max_attempts=6)))
+            created = await orchestrator.submit_mission(
+                _spec("fx5", budget=Budget(max_tokens=300_000, max_attempts=6))
+            )
             await asyncio.wait_for(orchestrator.run(), timeout=120)
             return orchestrator.store.get_mission(created.id)
 
@@ -374,13 +441,19 @@ def test_accepted_artifacts_are_verified_and_failed_ones_rejected(tmp_path):
 
 def test_a_crash_inside_the_accept_transaction_leaves_the_artifact_unverified(tmp_path):
     provider = RoleScriptedProvider(
-        {"planner": [graph_proposal_step([_task(60_000)])], "worker": _worker(), "critic": _passes()}
+        {
+            "planner": [graph_proposal_step([_task(60_000)])],
+            "worker": _worker(),
+            "critic": _passes(),
+        }
     )
     cfg = _config(tmp_path)
 
     async def run():
         async with Orchestrator(cfg, provider) as orchestrator:
-            await orchestrator.submit_mission(_spec("fx5-crash", budget=Budget(max_tokens=300_000, max_attempts=6)))
+            await orchestrator.submit_mission(
+                _spec("fx5-crash", budget=Budget(max_tokens=300_000, max_attempts=6))
+            )
             orchestrator.arm_fault("after_accept_before_supersede", kind="attempt")
             with pytest.raises(InjectedCrash):
                 await asyncio.wait_for(orchestrator.run(), timeout=120)
@@ -388,3 +461,208 @@ def test_a_crash_inside_the_accept_transaction_leaves_the_artifact_unverified(tm
     asyncio.run(run())
     artifacts, _tasks = _statuses(cfg)
     assert artifacts and all(a.verification_status == "UNVERIFIED" for a in artifacts)
+
+
+# ------------------------------------------------------------------ code review round 1
+def _recorder_spec(key):
+    return MissionSpec(
+        goal=RECORDER_SPEC["goal"],
+        success_criteria=tuple(RECORDER_SPEC["success_criteria"]),
+        tenant_id="tenant-floor-manager",
+        idempotency_key=key,
+        allowed_tools=tuple(RECORDER_SPEC["allowed_tools"]),
+        budget=Budget(max_tokens=300_000, max_attempts=16),
+        workspace_seed=RECORDER_SEED,
+    )
+
+
+def test_a_manager_below_the_floor_is_refused_and_told_why(tmp_path):
+    """Review P1-2: the Orchestrator's injection on the Manager path, end to end — the
+    first change asks 800 tokens for the new Task E (format + rule, floor 4096) and is
+    refused; the Manager is asked again, reads why, and the legal change completes."""
+
+    seen: list[dict] = []
+
+    def too_small(package):
+        return [
+            dict(op, budget={"max_tokens": 800, "max_attempts": 2}) if op.get("key") == "E" else op
+            for op in recorder_manager_change(package)
+        ]
+
+    provider = demo_dynamic_dag_provider(
+        manager_steps=[
+            _capturing(graph_change_step(too_small), seen),
+            _capturing(graph_change_step(recorder_manager_change), seen),
+        ]
+    )
+    cfg = OrchestratorConfig(
+        evidence_root=Path(tmp_path) / "evidence", max_concurrency=1, test_timeout_seconds=60
+    )
+
+    async def run():
+        async with Orchestrator(cfg, provider) as orchestrator:
+            created = await orchestrator.submit_mission(_recorder_spec("fx3-manager"))
+            await asyncio.wait_for(orchestrator.run(), timeout=240)
+            store = orchestrator.store
+            return store.get_mission(created.id), store.list_events(created.id)
+
+    current, events = asyncio.run(run())
+    rejected = [e for e in events if e.type == "TaskGraphChangeRejected"]
+    assert rejected and "task_budget_below_floor" in json.dumps(
+        rejected[0].payload, ensure_ascii=False
+    )
+    assert len(seen) == 2
+    for package in seen:
+        assert package["budget_floor"] == {
+            "min_task_tokens": 4096,
+            "min_task_tokens_with_critic_review": 10_096,
+        }
+    assert "task_budget_below_floor" in json.dumps(seen[1]["rejections"], ensure_ascii=False)
+    assert str(current.status) == "COMPLETED"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "profile_output", "expected"),
+    [
+        ({}, None, (4096, 10_096)),
+        ({"candidates_per_task": 2}, None, (8192, 20_192)),  # k from the bound policy
+        ({}, 8192, (8192, 14_192)),  # a profile's larger output cap raises the base
+        ({"min_task_tokens": 5000}, None, (5000, 11_000)),  # an explicit base
+        ({"min_task_tokens": 0}, None, (0, 0)),  # switched off
+    ],
+    ids=["default", "two-candidates", "profile-8192", "explicit-5000", "off"],
+)
+def test_the_floor_is_wired_from_config_profiles_and_the_bound_policy(
+    tmp_path, overrides, profile_output, expected
+):
+    """Review P2-1: ``_budget_floor_rule`` and ``_candidates_for`` without running a turn."""
+
+    provider = RoleScriptedProvider({})
+    profiles = (
+        None
+        if profile_output is None
+        else {
+            "default": RuntimeProfile(
+                "default", provider, "agent-model", default_max_output_tokens=profile_output
+            )
+        }
+    )
+
+    async def run():
+        async with Orchestrator(
+            _config(tmp_path, **overrides), None if profiles else provider, profiles=profiles
+        ) as orchestrator:
+            created = await orchestrator.submit_mission(_spec("wiring"))
+            return orchestrator._budget_floor(created.id)
+
+    floor = asyncio.run(run())
+    assert (floor["min_task_tokens"], floor["min_task_tokens_with_critic_review"]) == expected
+
+
+@pytest.mark.parametrize("bad", [-1, True])
+def test_a_negative_or_boolean_min_task_tokens_is_refused(tmp_path, bad):
+    with pytest.raises(ValueError, match="min_task_tokens"):
+        _config(tmp_path, min_task_tokens=bad)
+
+
+def test_a_proposal_that_meets_the_floor_but_not_the_pool_names_the_pool(tmp_path):
+    """Review P2-3: a proposal at the floor (10096 with critic_review) in a pool of 9000 is
+    refused for exceeding the Mission budget — the stop reason names the pool, not the
+    floor.  (Refusing such a Mission before planning is a follow-up, see journal §4.)"""
+
+    provider = RoleScriptedProvider(
+        {"planner": [graph_proposal_step([_task(10_096)]), graph_proposal_step([_task(10_096)])]}
+    )
+
+    async def run():
+        async with Orchestrator(_config(tmp_path), provider) as orchestrator:
+            created = await orchestrator.submit_mission(
+                _spec("fx4-pool", budget=Budget(max_tokens=9_000, max_attempts=6))
+            )
+            await asyncio.wait_for(orchestrator.run(), timeout=120)
+            return orchestrator.store.get_mission(created.id)
+
+    current = asyncio.run(run())
+    assert str(current.status) == "FAILED" and current.stop_reason == "planning_failed"
+    text = json.dumps(current.final_report["planning_failure"], ensure_ascii=False)
+    assert "exceeds the Mission budget" in text and "task_budget_below_floor" not in text
+
+
+def _submit_candidate(service, task, attempt, *, agent):
+    """Record one candidate's result with its artifact (as ``graph_helpers.complete`` does)."""
+
+    path = task.outputs[0]
+    envelope = ResultEnvelope(
+        id=f"result-{attempt.id}",
+        mission_id=task.mission_id,
+        task_id=task.id,
+        attempt_id=attempt.id,
+        outcome="candidate",
+        summary="done",
+        claims=(ClaimProposal(content="done", confidence=0.9),),
+        evidence=(path,),
+        artifacts=(path,),
+        proposed_tasks=(),
+        used_knowledge=(),
+        risks=(),
+        cost={},
+    )
+    artifact = Artifact(
+        id=ids.artifact_id(attempt.id, path, HASH),
+        mission_id=task.mission_id,
+        task_id=task.id,
+        attempt_id=attempt.id,
+        type="file",
+        path=path,
+        version=1,
+        content_hash=HASH,
+        size_bytes=3,
+        produced_by=agent,
+    )
+    return service.record_result(
+        attempt.id, envelope=envelope, turn_id=f"turn-{agent}", artifacts=[artifact], usage_refs=()
+    )
+
+
+def _drive_second_candidate(service, task, *, agent, turn):
+    """``graph_helpers.drive_to_running`` for a second, concurrent candidate (k = 2)."""
+
+    attempt, intent = service.create_attempt(
+        task.id,
+        role="worker",
+        model="agent-model",
+        prompt_version="worker-v2",
+        context_version="ctx",
+        reservation=Reservation(tokens=4_000, cost_micros=0),
+        intent_config={"agent_config": {}, "message": "do"},
+        input_hash="h",
+        candidates_per_task=2,
+    )
+    service.claim_intent(intent.intent_id, owner="orch-1", lease_seconds=60)
+    service.record_agent_created(intent.intent_id, agent_id=agent, expected_turn_id=turn)
+    service.record_submitted(intent.intent_id, receipt={"turn_id": turn, "seq": 1})
+    return service.store.get_attempt(attempt.id)
+
+
+def test_a_superseded_candidate_keeps_its_artifact_unverified(tmp_path):
+    """Review P1-1: two candidates of one Task both submit; the first is accepted and the
+    second is superseded — read from the file, the winner's artifact is VERIFIED and the
+    loser's stays UNVERIFIED (never judged, so neither VERIFIED nor REJECTED)."""
+
+    service, _current, t = graph_service(tmp_path, nodes=[graph_node("A")])
+    task = t["A"]
+    first = drive_to_running(service, task, agent="agent-1", turn="turn-agent-1")
+    second = _drive_second_candidate(service, task, agent="agent-2", turn="turn-agent-2")
+    winner = _submit_candidate(service, task, first, agent="agent-1")
+    _submit_candidate(service, task, second, agent="agent-2")
+    service.start_verification(winner.envelope.id)
+    service.accept_result(
+        winner.envelope.id, verifier_results=[{"layer": "rule_check", "status": "PASS"}]
+    )
+    assert service.store.get_attempt(second.id).status is AttemptStatus.SUPERSEDED
+    store = Store.open_readonly(tmp_path / "orchestrator.db")  # a fresh connection
+    try:
+        assert [a.verification_status for a in store.list_artifacts(first.id)] == ["VERIFIED"]
+        assert [a.verification_status for a in store.list_artifacts(second.id)] == ["UNVERIFIED"]
+    finally:
+        store.close()
