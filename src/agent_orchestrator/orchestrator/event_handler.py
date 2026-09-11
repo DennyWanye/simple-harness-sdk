@@ -245,13 +245,17 @@ class Orchestrator:
         await self.bridge.recover()
 
     async def run(self, *, max_cycles: int = 10_000, until_idle: bool = True) -> None:
+        """Drive the loop until idle.  ``max_cycles`` bounds *progressing* cycles (work
+        done), never the waiting: a slow real model turn may keep the loop polling for
+        many minutes and must not end the run early (step 4 real-run finding)."""
+
         await self.recover()
         cycles = 0
         idle_rounds = 0
         while cycles < max_cycles:
-            cycles += 1
             progressed = await self._cycle()
             if progressed:
+                cycles += 1
                 idle_rounds = 0
                 continue
             if not until_idle:
