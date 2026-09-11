@@ -747,7 +747,9 @@ class Orchestrator:
         parse the request, ``validate_spec`` against the deployment's tools, the action
         criteria, local code execution, then the Commit with the provider kind and the
         policy binding :meth:`submit_mission` uses.  Idempotent on ``(tenant_id,
-        idempotency_key)``; every refusal is a ``MissionRequestError`` and writes nothing."""
+        idempotency_key)``: the same request returns ``(mission, False)``; a *different*
+        request under the same key raises ``MissionConflict`` (review round 1 P2-4).  Every
+        other refusal is a ``MissionRequestError``; no refusal writes anything."""
 
         from ..api.missions import MissionRequestError, spec_from_request, validate_spec
 
@@ -772,10 +774,14 @@ class Orchestrator:
         self._check_action_criteria(spec.success_criteria)
         if not self._config.deployment_policy.local_code_execution:
             tests = [c for c in spec.success_criteria if c.startswith("pytest:")]
-            if tests:
+            template = dict(spec.synthesis or {})  # review round 1 P2-5: refused up front
+            tests += [
+                c for c in template.get("success_criteria", ()) if str(c).startswith("pytest:")
+            ]
+            if tests or "code_test" in template.get("verification_policy", ()):
                 raise ContractError(
-                    "pytest criteria need local code execution, which this deployment has "
-                    f"turned off: {tests}"
+                    "pytest criteria and code_test need local code execution, which this "
+                    f"deployment has turned off: {tests or ['synthesis: code_test']}"
                 )
 
     def _check_action_criteria(self, criteria: Sequence[str]) -> None:

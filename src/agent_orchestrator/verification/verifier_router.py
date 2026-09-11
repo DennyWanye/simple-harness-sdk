@@ -166,6 +166,7 @@ class VerifierRouter:
                     knowledge=knowledge,
                     require_synthesis_knowledge=require_synthesis_knowledge,
                     extra_problems=action_problems or (),
+                    local_code_execution=self._local_code_execution,
                 )
             elif layer == "critic_review":
                 try:

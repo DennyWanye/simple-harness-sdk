@@ -36,8 +36,9 @@ def _dispute(tmp_path):
         TaskGraphProposal.from_json(
             {
                 "tasks": [
-                    node("A", verification_policy=POLICY),
-                    node("B", verification_policy=POLICY),
+                    # file criteria: with execution off a pytest criterion is refused (P1-1)
+                    node("A", verification_policy=POLICY, success_criteria=["file:NOTES.md"]),
+                    node("B", verification_policy=POLICY, success_criteria=["file:NOTES.md"]),
                 ]
             }
         ),

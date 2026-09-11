@@ -65,7 +65,7 @@
 | P2-3 `CONTEXT_BUILDER_VERSION` | 接受（源码），升到 v4 |
 | P2-4 `create_mission` 的 docstring | 接受（源码）。docstring 写明 `MissionConflict` 会原样抛出（同一个 key 对应不同内容），`submit_mission` 保持原有调用约定 |
 | P2-5 合成模板在入口处没有检查 | 接受（源码）。在 `_check_mission_door` 里检查合成模板 |
-| P2-6 最小配置会报错 | 接受（源码）。`local_code_execution=False` 且 `allowed_tools` 是默认全集时，自动去掉 `run_tests`（只会收窄）；调用方显式列出 `run_tests` 仍然报错 |
+| P2-6 最小配置会报错 | **不采纳**。默认的 `TOOL_NAMES` 恰好就是"三个工作区工具加 `run_tests`"，代码分不清调用方是用了默认值，还是明确列出了全部四个工具。如果自动去掉 `run_tests`，就会悄悄收窄一个调用方明确给出的配置，这比直接报错更糟。现在的报错已经写明两个设置互相矛盾；Host 一直显式传入工具集，不受影响 |
 | P2-7 缺少集成测试 | 接受。补测 `NewTaskNode` 的缺省策略、`synthesis_task` 的缺省策略、`_check_task_proposal` 的拒绝，以及关闭时的 `validate_graph` / `validate_change` |
 
 ## 5. 遗留

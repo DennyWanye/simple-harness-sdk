@@ -26,10 +26,8 @@ from agent_orchestrator.contracts import STEP2_IMPLEMENTED_LAYERS, Budget
 from agent_orchestrator.governance.policies import DeploymentPolicy, deployed_layers
 from agent_orchestrator.graph.changes import default_change_policy
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
-from agent_orchestrator.orchestrator import event_handler as event_handler_module
 from agent_orchestrator.orchestrator.commit_service import MissionSpec
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
-from agent_orchestrator.runtime import tool_gateway
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
 from agent_orchestrator.runtime.role_templates import MANAGER, PLANNER, TEMPLATE_VERSIONS
 from agent_orchestrator.testing.fixtures import (
@@ -39,7 +37,6 @@ from agent_orchestrator.testing.fixtures import (
     graph_proposal_step,
     package_of,
 )
-from agent_orchestrator.verification import deterministic_checks
 
 TOOLS3 = ("workspace_read_file", "workspace_write_file", "workspace_list")
 TOOLS4 = (*TOOLS3, "run_tests")
@@ -109,23 +106,6 @@ def _probe_writes(marker):
 
 def _critics(n=4):
     return [critic_step(verdict="PASS", criteria_met=True) for _ in range(n)]
-
-
-@pytest.fixture
-def pytest_spy(monkeypatch):
-    """Every way the orchestrator reaches pytest, spied — the real runner still runs, so a
-    call would also leave the marker behind."""
-
-    calls: list[dict] = []
-    real = tool_gateway.run_pytest
-
-    async def spy(root, *, path, timeout):
-        calls.append({"root": str(root), "path": path})
-        return await real(root, path=path, timeout=timeout)
-
-    for module in (tool_gateway, deterministic_checks, event_handler_module):
-        monkeypatch.setattr(module, "run_pytest", spy)
-    return calls
 
 
 def _capturing(step, seen):
@@ -237,8 +217,9 @@ def test_model_written_test_files_never_run(tmp_path, pytest_spy):
 
 
 # ------------------------------------------------------------------ before the switch
-def _legacy_mission(tmp_path, *, criteria, policy):
-    """Created and planned while local code execution was on (no model turn yet)."""
+def _legacy_mission(tmp_path, *, criteria, policy, task=None):
+    """Created and planned while local code execution was on (no model turn yet);
+    ``task`` replaces the default Task contract."""
 
     async def phase1():
         async with Orchestrator(_config(tmp_path, ON), RoleScriptedProvider({})) as orchestrator:
@@ -248,7 +229,7 @@ def _legacy_mission(tmp_path, *, criteria, policy):
             planning = orchestrator.commit.begin_planning(mission.id)
             orchestrator.commit.commit_task_graph(
                 mission.id,
-                TaskGraphProposal.from_json({"tasks": [_task("A", policy, tools=TOOLS4)]}),
+                TaskGraphProposal.from_json({"tasks": [task or _task("A", policy, tools=TOOLS4)]}),
                 base_version=planning.version,
                 source={"planner": "fixture"},
             )

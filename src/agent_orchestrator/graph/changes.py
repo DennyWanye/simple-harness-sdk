@@ -526,6 +526,13 @@ def validate_change(
             raise GraphChangeRejected(
                 "contract", f"{node.key}: bad verification_policy {sorted(unknown_layers)}"
             )
+        tests = [c for c in node.success_criteria if c.startswith("pytest:")]
+        if "code_test" not in deployed_layers and tests:  # review round 1 P1-1
+            raise GraphChangeRejected(
+                "verification_policy_undeployed",
+                f"{node.key}: pytest criteria need local code execution, which this "
+                f"deployment has turned off: {tests}",
+            )
         undeployed = set(node.verification_policy) - deployed_layers  # host support 0.9.8
         if undeployed:
             raise GraphChangeRejected(

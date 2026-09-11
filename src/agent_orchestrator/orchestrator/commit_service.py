@@ -764,6 +764,12 @@ class CommitService(
             )
         if not proposal.budget.fits_within(mission.budget):
             raise CommitRejected("task budget exceeds the Mission budget (§18.2)")
+        tests = [c for c in proposal.success_criteria if c.startswith("pytest:")]
+        if "code_test" not in self._deployed_layers and tests:  # review round 1 P1-1
+            raise CommitRejected(
+                "verification_policy_undeployed: pytest criteria need local code execution, "
+                f"which this deployment has turned off: {tests}"
+            )
         unsupported = set(proposal.verification_policy) - self._deployed_layers
         if unsupported:
             raise CommitRejected(

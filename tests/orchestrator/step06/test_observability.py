@@ -189,13 +189,15 @@ def test_an_undeployed_verification_layer_is_refused_at_commit_with_one_reason(t
 def test_a_required_verifier_that_is_not_deployed_blocks_instead_of_passing_or_retrying(
     tmp_path, monkeypatch
 ):
-    # an older library that let a formal_check Task in (the commit gate is patched open);
-    # at verification time the layer is not deployed: the Task stops, nothing is retried
-    import agent_orchestrator.graph.task_graph as task_graph
+    # an older library that let a formal_check Task in (the commit gate is patched open —
+    # since host support 0.9.8 the gate is the deployment's layer set, handed to the Commit
+    # Service by the orchestrator); at verification time the layer is not deployed: the
+    # Task stops, nothing is retried
+    import agent_orchestrator.governance.policies as policies
     from agent_orchestrator.contracts.models import STEP2_IMPLEMENTED_LAYERS
 
     monkeypatch.setattr(
-        task_graph, "STEP2_IMPLEMENTED_LAYERS", STEP2_IMPLEMENTED_LAYERS | {"formal_check"}
+        policies, "STEP2_IMPLEMENTED_LAYERS", STEP2_IMPLEMENTED_LAYERS | {"formal_check"}
     )
     task = _recorder_task(
         "A",

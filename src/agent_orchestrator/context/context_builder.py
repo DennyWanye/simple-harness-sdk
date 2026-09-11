@@ -43,7 +43,7 @@ from ..observability.secrets import environment_secrets, find_secrets
 from ..planning.manager import system_reserve_tokens
 from .retrieval import KnowledgeContext
 
-CONTEXT_BUILDER_VERSION = "context-builder-v3"
+CONTEXT_BUILDER_VERSION = "context-builder-v4"  # host support 0.9.8: deployed_verification_layers
 VISIBILITY_TEMPLATES = ("worker", "synthesizer", "arbiter", "verifier", "critic", "explorer")
 ENABLED_TEMPLATES = ("worker", "synthesizer", "arbiter", "verifier", "critic")
 

@@ -111,6 +111,7 @@ def rule_check(
     knowledge: KnowledgeIndex | None = None,
     require_synthesis_knowledge: bool = True,
     extra_problems: Sequence[str] = (),
+    local_code_execution: bool = True,
 ) -> LayerResult:
     problems: list[str] = [
         f"protected seed file rewritten by the Worker: {path}" for path in tampered
@@ -154,6 +155,13 @@ def rule_check(
                     problems.append(f"success criterion {criterion!r} not met: file missing")
             except Exception as error:  # noqa: BLE001
                 problems.append(f"success criterion {criterion!r} unreadable: {error}")
+        elif criterion.startswith("pytest:") and not local_code_execution:
+            # review round 1 P1-1: a Task committed while execution was on keeps its
+            # criterion; with it off nothing may treat that criterion as met
+            problems.append(
+                f"success criterion {criterion!r} cannot be judged: local_code_execution is "
+                "off in this deployment (model-written tests are not run on this machine)"
+            )
     status = FAIL if problems else PASS
     return LayerResult(
         "rule_check",

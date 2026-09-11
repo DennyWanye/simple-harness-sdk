@@ -227,6 +227,12 @@ def _sibling_output_conflicts(proposal: TaskGraphProposal) -> list[str]:
     return conflicts
 
 
+def pytest_criteria(criteria: Sequence[str]) -> list[str]:
+    """The ``pytest:`` criteria among ``criteria`` — judged only by running code here."""
+
+    return [c for c in criteria if c.startswith("pytest:")]
+
+
 def validate_graph(
     mission: Mission,
     proposal: TaskGraphProposal,
@@ -272,6 +278,13 @@ def validate_graph(
             raise GraphRejected(
                 "verification_policy_undeployed",
                 f"{node.key}: layers not deployed {sorted(undeployed)}",
+            )
+        if "code_test" not in deployed_layers and pytest_criteria(node.success_criteria):
+            # review round 1 P1-1: nobody could judge such a criterion here
+            raise GraphRejected(
+                "verification_policy_undeployed",
+                f"{node.key}: pytest criteria need local code execution, which this "
+                f"deployment has turned off: {pytest_criteria(node.success_criteria)}",
             )
         extra_tools = set(node.allowed_tools) - set(mission.allowed_tools)
         if extra_tools:

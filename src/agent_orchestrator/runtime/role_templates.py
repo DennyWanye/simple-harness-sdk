@@ -304,8 +304,9 @@ def role_for_task(task) -> RoleTemplate:  # type: ignore[no-untyped-def]
 
 
 # step 9 (plan D9-1'): the prompt versions a policy may choose from.  Production code
-# registers exactly one template per role; a second version is registered explicitly
-# (tests register one to prove that a policy can switch it).
+# registers the current template of every role, plus the previous Planner / Manager
+# versions below (host support 0.9.8) so that a library whose ACTIVE policy was seeded
+# with them keeps its words; tests may register more to prove a policy can switch.
 TEMPLATE_VERSIONS: dict[str, dict[str, RoleTemplate]] = {
     name: {template.prompt_version: template} for name, template in ROLES.items()
 }
