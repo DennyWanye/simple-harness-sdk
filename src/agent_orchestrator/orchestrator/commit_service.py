@@ -40,6 +40,7 @@ from ..contracts import (
 )
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, jsonable, sha256_hex
 from ..governance.budgets import AccountSnapshot, BudgetError, BudgetLedger, UsageFact
+from ..governance.policies import DeploymentPolicy
 from ..graph.changes import (
     ChangeLimits,
     GraphChangeRejected,
@@ -2082,6 +2083,9 @@ class CommitService(ActionCommitsMixin):  # step 7: the action ledger + approval
                 )
                 if not self._ledger.has_unknown_usage(intent.subject_id):
                     self._settle_subject(intent.subject_id, mission_id, task_id=task_id)
+        # D7-4' / D7-5': open actions and requests end with the Mission; handed-off and
+        # UNKNOWN actions are left to the reconciliation (reality may already have moved)
+        self._cancel_open_actions(mission_id, reason="mission_stopped")
         return cancelled
 
     def settle_intent(self, intent_id: str, state: str) -> DispatchIntent:
@@ -2909,6 +2913,8 @@ class CommitService(ActionCommitsMixin):  # step 7: the action ledger + approval
         *,
         verifier_results: Sequence[Mapping[str, Any]],
         owner: str | None = None,
+        connectors: Mapping[str, Any] | None = None,
+        deployment: DeploymentPolicy | None = None,
     ) -> Task:
         """PASS (§24 step 11) in one transaction (D3-6'): claims → VERIFIED, Attempt →
         COMPLETED, Task → COMPLETED (via VERIFYING when a sibling candidate had not
@@ -2959,6 +2965,11 @@ class CommitService(ActionCommitsMixin):  # step 7: the action ledger + approval
                     ],
                     owner=owner,
                 )
+            candidates, rejection = self._action_candidates(
+                stored, task, mission, connectors=connectors, deployment=deployment
+            )
+            if rejection is not None:  # D7-2'': re-checked on the accepted bytes, in the Commit
+                return self.fail_result(result_id, failures=[rejection], owner=owner)
             if task.status is TaskStatus.ACTIVE:
                 verifying = next_task(task, TaskStatus.VERIFYING)
                 self._store.update_task(verifying, expected_version=task.version)
@@ -2977,6 +2988,18 @@ class CommitService(ActionCommitsMixin):  # step 7: the action ledger + approval
                 accepted_artifacts=stored.artifacts,
             )
             self._store.update_task(completed, expected_version=task.version)
+            for artifact, candidate in candidates:  # D7-2: registered in the accept transaction
+                self.propose_action(
+                    candidate,
+                    mission_id=mission.id,
+                    task_id=task.id,
+                    result_id=result_id,
+                    attempt_id=attempt.id,
+                    artifact_id=artifact.id,
+                    artifact_hash=artifact.content_hash,
+                    connectors=connectors or {},
+                    deployment=deployment or DeploymentPolicy(),
+                )
             if not self._ledger.has_unknown_usage(attempt.id):  # ORCH §12.2 (P2-12)
                 self._settle_subject(attempt.id, mission.id, task_id=task.id)
             self._emit(
@@ -3107,6 +3130,7 @@ class CommitService(ActionCommitsMixin):  # step 7: the action ledger + approval
                 final_report=report,
             )
             self._store.update_mission(failed, expected_version=mission.version)
+            self._cancel_open_actions(mission_id, reason="mission_criteria_unmet")
             self._emit(
                 "MissionFailed",
                 mission_id,

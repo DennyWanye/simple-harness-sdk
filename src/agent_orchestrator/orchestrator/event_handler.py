@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 from collections.abc import Mapping, Sequence
@@ -77,12 +78,13 @@ from ..contracts import (
 from ..contracts.models import jsonable, sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetError, BudgetExhausted
-from ..governance.policies import effective_tools
+from ..governance.policies import action_decision, effective_tools
 from ..graph.changes import ChangeLimits, TaskGraphChange
 from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
 from ..planning.manager import terminal_task
 from ..planning.planner import parse_task_graph_proposal
+from ..runtime.actions import ActionExecutor
 from ..runtime.agent_worker import AgentBridge, Liveness, user_message_json
 from ..runtime.assembly import (
     AssembledOrchestratorRuntime,
@@ -114,6 +116,15 @@ from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy
 from ..verification.critics import CriticVerdict, parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
 from ..verification.verifier_router import VERIFIER_VERSION, VerifierRouter
+from .action_commits import (
+    ACTION_PREFIX,
+    HANDOFF_READY_STATES,
+    CandidateRejected,
+    check_candidate,
+    is_action_path,
+    judgment_key,
+    parse_action_criterion,
+)
 from .commit_service import (
     GLOBAL_ACCOUNT,
     CommitRejected,
@@ -141,6 +152,9 @@ FAULT_POINTS = (
 MAX_CRITIC_ATTEMPTS = 2
 
 
+RECONCILE_EVERY_CYCLES = 50  # D7-5': UNKNOWN actions are asked about again while a run goes on
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -152,6 +166,7 @@ class Orchestrator:
         critic_wait_seconds: float = 120.0,
         profiles: Mapping[str, RuntimeProfile] | None = None,
         routing: RoutingRules | None = None,
+        connectors: Mapping[str, Any] | None = None,
     ) -> None:
         # D3-10': ``owner`` is this instance's identity for orchestration leases *and* for
         # the SDK runtime (``owner_id``); the SDK ``owner_scope`` is one constant for all.
@@ -200,6 +215,10 @@ class Orchestrator:
         self._verifying: dict[str, asyncio.Task[bool]] = {}  # D6-9': bounded verification set
         self._verification_error: BaseException | None = None  # a crash inside a verification task
         self._pressure = BackpressureState()  # D6-2: the current backpressure signal
+        self._connectors: dict[str, Any] = dict(
+            connectors or {}
+        )  # D7-6: only the executor calls them
+        self._actions: ActionExecutor | None = None
 
     # ------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Orchestrator:
@@ -219,7 +238,15 @@ class Orchestrator:
         self._assembled.gateway.on_executed = self._record_tool_call  # review P1-3
         self._assembled.gateway.executed_counter = self.store.count_tool_calls
         self._pressure = self._commit.backpressure_state()
+        self._actions = ActionExecutor(  # D7-5: the only caller of connectors
+            self._commit, self._connectors, self._config.deployment_policy, owner=self._owner
+        )
         return self
+
+    @property
+    def actions(self) -> ActionExecutor:
+        assert self._actions is not None, "use `async with Orchestrator(...)`"
+        return self._actions
 
     def _audit_tool_rejection(self, run_id: str, record: Mapping[str, Any]) -> None:
         """Every gateway refusal becomes a ``ToolCallRejected`` event on its Mission."""
@@ -457,8 +484,24 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ api
     async def submit_mission(self, spec: MissionSpec) -> Mission:
+        self._check_action_criteria(spec.success_criteria)
         mission, _ = self.commit.create_mission(spec)
         return mission
+
+    def _check_action_criteria(self, criteria: Sequence[str]) -> None:
+        """D7-3' / review P2-10: an action criterion must name an enabled connector and an
+        operation this deployment would run; otherwise the Mission is refused up front."""
+
+        for criterion in criteria:
+            parsed = parse_action_criterion(criterion)  # malformed → ContractError
+            if parsed is None:
+                continue
+            name, operation, _target = parsed
+            decision = action_decision(
+                self._config.deployment_policy, self._connectors.get(name), operation
+            )
+            if decision.refused is not None:
+                raise ContractError(f"action criterion {criterion!r} refused: {decision.refused}")
 
     async def recover(self) -> None:
         """§16.4 recovery (D3-6'): rebind the workspaces of in-flight turns, let the
@@ -496,6 +539,7 @@ class Orchestrator:
         many minutes and must not end the run early (step 4 real-run finding)."""
 
         await self.recover()
+        await self.actions.reconcile()  # D7-5': every run() first asks about UNKNOWN actions
         cycles = 0
         idle_rounds = 0
         while cycles < max_cycles:
@@ -503,6 +547,8 @@ class Orchestrator:
             if progressed:
                 cycles += 1
                 idle_rounds = 0
+                if cycles % RECONCILE_EVERY_CYCLES == 0:
+                    await self.actions.reconcile()
                 continue
             if not until_idle:
                 return
@@ -547,6 +593,8 @@ class Orchestrator:
         terminal Mission (a superseded / cancelled Attempt's cost and late result are
         still collected); critic turns are collected inline by their runner."""
 
+        if self._actions is not None and self._actions.inflight:
+            return True  # D7-5': a hand-off this process is waiting on
         if any(not task.done() for task in self._verifying.values()):
             return True
         self._prune_deferred()  # review P0-2: only live waits keep the loop alive
@@ -1568,6 +1616,7 @@ class Orchestrator:
                 # a required layer that could not run is an ERROR, never a PASS (ORCH §12.4)
                 raise ContractError(f"critic could not be funded: {error}") from error
 
+        action_problems = self._action_problems(mission, task, artifacts, copy)
         verdict = await self._router.verify(
             mission=mission,
             task=task,
@@ -1580,6 +1629,7 @@ class Orchestrator:
             tampered=tampered,
             knowledge=KnowledgeIndex.load(self.store, mission.id),
             require_synthesis_knowledge=self._config.knowledge_sharing,
+            action_problems=action_problems,
         )
         if verdict.critic is not None:
             self._critic_verdicts[result_id] = verdict.critic
@@ -1591,6 +1641,8 @@ class Orchestrator:
                         layer.to_json() for layer in verdict.layers if layer.status == "PASS"
                     ],
                     owner=self._owner,
+                    connectors=self._connectors,
+                    deployment=self._config.deployment_policy,
                 )
             else:
                 self.commit.fail_result(result_id, failures=verdict.failures, owner=self._owner)
@@ -1661,6 +1713,35 @@ class Orchestrator:
                     attempt_id=attempt.id,
                 )
         return True
+
+    def _action_problems(
+        self, mission: Mission, task: Task, artifacts: Sequence[Artifact], copy: Any
+    ) -> list[str] | None:
+        """D7-2'': a result carrying ``actions/*.json`` is always checked for them — schema,
+        deployment policy, the Mission's action scope and the Task's declared outputs —
+        whatever the Task's verification policy says.  ``None`` = no candidate at all."""
+
+        paths = [artifact.path for artifact in artifacts if is_action_path(artifact.path)]
+        if not paths:
+            return None
+        problems: list[str] = []
+        for path in paths:
+            if path not in task.outputs:
+                problems.append(f"action candidate {path} is not a declared output of this Task")
+                continue
+            try:
+                candidate = json.loads(copy.resolve(path).read_text(encoding="utf-8"))
+                check_candidate(
+                    candidate,
+                    criteria=mission.success_criteria,
+                    connectors=self._connectors,
+                    deployment=self._config.deployment_policy,
+                )
+            except CandidateRejected as error:
+                problems.append(f"action candidate {path} rejected ({error.reason}): {error}")
+            except Exception as error:  # noqa: BLE001 - unreadable or not JSON
+                problems.append(f"action candidate {path} unreadable: {error}")
+        return problems
 
     def _hold_lease(self, attempt_id: str) -> Attempt:
         """Renew this owner's lease during a long verification; ``CommitRejected`` when
@@ -2313,10 +2394,14 @@ class Orchestrator:
 
         now = self.store.now
         limit = mission.budget.max_runtime_seconds
-        if limit is not None and now - mission.created_at >= limit:
+        waited = self.store.human_wait_seconds(
+            mission.id, now
+        )  # D7-7': a person's time is not run time
+        if limit is not None and now - mission.created_at - waited >= limit:
             detail = {
                 "dimension": "runtime",
-                "elapsed_seconds": round(now - mission.created_at, 3),
+                "elapsed_seconds": round(now - mission.created_at - waited, 3),
+                "human_wait_seconds": round(waited, 3),
                 "max_runtime_seconds": limit,
                 "account": mission_account(mission.id),
             }
@@ -2364,6 +2449,8 @@ class Orchestrator:
             current = self.store.get_mission(mission.id)  # not the cycle's stale snapshot
             if current is None or current.status is not MissionStatus.ACTIVE:
                 return False
+            if any(c.startswith(ACTION_PREFIX) for c in current.success_criteria):
+                return await self._decide_actions(current, live)  # D7-7' two-stage judgment
             await self._judge(current, live)
             return True
         if await self._runtime_exhausted(mission, tasks):  # after the judge (review P2-9)
@@ -2705,6 +2792,16 @@ class Orchestrator:
         return True
 
     async def _judge(self, mission: Mission, tasks: Sequence[Task]) -> None:
+        evaluated = await self._evaluate_criteria(mission, tasks)
+        if evaluated is None:
+            return
+        judgments, summary = evaluated
+        judged = self.commit.judge_mission(mission.id, judgments=judgments, summary=summary)
+        self._note(f"mission {mission.id} judged: {judged.status} ({judged.stop_reason})")
+
+    async def _evaluate_criteria(
+        self, mission: Mission, tasks: Sequence[Task]
+    ) -> tuple[list[dict[str, Any]], str] | None:
         """D21 / ORCH §12.4 / D3-9': judge the Mission's own success criteria on the
         *integrated* tree — the seed plus every Task's accepted artifacts applied in
         topological order — independently of the Task PASSes.  ``pytest:`` criteria run
@@ -2725,7 +2822,7 @@ class Orchestrator:
                 detail={"error": str(error)},
             )
             self._note(f"mission {mission.id} failed at judgment: {error}")
-            return
+            return None
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
         files: dict[str, Path] = {}
         artifacts: list[Artifact] = []
@@ -2756,7 +2853,9 @@ class Orchestrator:
                 test_runs[criterion] = {**test_run.to_json(), "passed": test_run.passed}
             except Exception as error:  # noqa: BLE001
                 test_runs[criterion] = {"passed": False, "error": str(error), "stdout": ""}
-        needs_critic = any(not c.startswith(("pytest:", "file:")) for c in mission.success_criteria)
+        needs_critic = any(
+            not c.startswith(("pytest:", "file:", ACTION_PREFIX)) for c in mission.success_criteria
+        )
         critic: CriticVerdict | None = None
         if needs_critic:
             if len(tasks) == 1 and stored is not None:
@@ -2775,7 +2874,7 @@ class Orchestrator:
                     )
                 except (ContractError, BudgetExhausted) as error:
                     self._note(f"mission {mission.id}: independent judge unavailable ({error})")
-        judgments = []
+        judgments: list[dict[str, Any]] = []
         for criterion in mission.success_criteria:
             if criterion.startswith("pytest:"):
                 outcome = test_runs.get(criterion, {})
@@ -2801,6 +2900,8 @@ class Orchestrator:
                         "reason": "file exists" if met else "file missing",
                     }
                 )
+            elif criterion.startswith(ACTION_PREFIX):
+                continue  # D7-7': judged from the action ledger by the caller
             else:
                 found: Mapping[str, Any] | None = None
                 if critic is not None:
@@ -2818,6 +2919,127 @@ class Orchestrator:
                         else found.get("reason"),
                     }
                 )
+        return judgments, summary
+
+    async def _decide_actions(self, mission: Mission, tasks: Sequence[Task]) -> bool:
+        """D7-7' / D7-5': judgment in two stages.  ① The non-action criteria are judged once
+        per integrated tree and put on the books.  ② Only then are the actions looked at: an
+        approved (or L0/L1) action is handed off as the *last* step of the judgment, a
+        rejected / revoked / expired one fails the Mission, and one that waits for a person
+        leaves the Mission ACTIVE without progress, so ``run()`` goes idle."""
+
+        progressed = False
+        key = judgment_key(tasks)
+        cached = self.commit.criteria_judgment(mission.id, key)
+        if cached is None:
+            evaluated = await self._evaluate_criteria(mission, tasks)
+            if evaluated is None:
+                return True
+            self.commit.record_criteria_judgment(
+                mission.id, key, evaluated[0], summary=evaluated[1]
+            )
+            cached = evaluated
+            progressed = True
+        plain, summary = cached
+        if not all(bool(item.get("met")) for item in plain):
+            self._judge_with_actions(mission, plain, summary, unmet="another criterion is unmet")
+            return True
+        self.commit.expire_approvals(mission.id)
+        actions = {
+            criterion: self.commit.action_for_criterion(mission.id, criterion, self._connectors)
+            for criterion in mission.success_criteria
+            if criterion.startswith(ACTION_PREFIX)
+        }
+        for criterion, action in actions.items():
+            state = None if action is None else str(action["state"])
+            if action is not None and state in {"REJECTED", "REVOKED", "EXPIRED"}:
+                self.commit.fail_mission(
+                    mission.id,
+                    stop_reason=MissionStopReason.APPROVAL_REJECTED,
+                    detail={
+                        "kind": str(state).lower(),
+                        "criterion": criterion,
+                        "action_key": action["action_key"],
+                    },
+                )
+                await self._release_mission(mission.id)
+                return True
+            if action is not None and state == "FAILED":
+                self.commit.fail_mission(
+                    mission.id,
+                    stop_reason=MissionStopReason.ACTION_FAILED,
+                    detail={
+                        "criterion": criterion,
+                        "action_key": action["action_key"],
+                        "error": action.get("error"),
+                    },
+                )
+                await self._release_mission(mission.id)
+                return True
+            if action is None or state == "CANCELLED":
+                self._judge_with_actions(
+                    mission, plain, summary, unmet="no candidate reached the action ledger"
+                )
+                return True
+        for criterion, action in actions.items():
+            assert action is not None
+            if action["state"] not in HANDOFF_READY_STATES:
+                continue
+            key_ = str(action["action_key"])
+            done = await self.actions.hand_off(key_)
+            after = self.store.get_action(key_) if done is None else done
+            if after is not None and after["state"] in HANDOFF_READY_STATES:
+                # the deployment will not run it (cap, budget, switched off): it cannot happen
+                self.commit.fail_mission(
+                    mission.id,
+                    stop_reason=MissionStopReason.ACTION_FAILED,
+                    detail={
+                        "criterion": criterion,
+                        "action_key": key_,
+                        "reason": "handoff_refused:" + self.actions.last_refusal.get(key_, ""),
+                    },
+                )
+                await self._release_mission(mission.id)
+                return True
+            self._note(
+                f"mission {mission.id}: action {key_} → {None if after is None else after['state']}"
+            )
+            progressed = True
+        if progressed:
+            return True
+        if all(a is not None and a["state"] == "SUCCEEDED" for a in actions.values()):
+            self._judge_with_actions(mission, plain, summary, unmet=None)
+            return True
+        return False  # waiting for a person or a reconciliation: no progress, run() goes idle
+
+    def _judge_with_actions(
+        self,
+        mission: Mission,
+        plain: Sequence[Mapping[str, Any]],
+        summary: str,
+        *,
+        unmet: str | None,
+    ) -> None:
+        by_criterion = {str(item.get("criterion")): dict(item) for item in plain}
+        judgments: list[dict[str, Any]] = []
+        for criterion in mission.success_criteria:
+            if not criterion.startswith(ACTION_PREFIX):
+                judgments.append(by_criterion[criterion])
+                continue
+            action = self.commit.action_for_criterion(mission.id, criterion, self._connectors)
+            met = unmet is None and action is not None and action["state"] == "SUCCEEDED"
+            receipt = {} if action is None else dict(action.get("receipt") or {})
+            judgments.append(
+                {
+                    "criterion": criterion,
+                    "met": met,
+                    "judge": "action_ledger",
+                    "reason": f"receipt {receipt.get('receipt_hash')}"
+                    if met
+                    else (unmet or "the action did not succeed"),
+                    "action_key": None if action is None else action["action_key"],
+                }
+            )
         judged = self.commit.judge_mission(mission.id, judgments=judgments, summary=summary)
         self._note(f"mission {mission.id} judged: {judged.status} ({judged.stop_reason})")
 

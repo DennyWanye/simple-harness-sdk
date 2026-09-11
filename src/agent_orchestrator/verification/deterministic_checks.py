@@ -110,10 +110,12 @@ def rule_check(
     tampered: Sequence[str] = (),
     knowledge: KnowledgeIndex | None = None,
     require_synthesis_knowledge: bool = True,
+    extra_problems: Sequence[str] = (),
 ) -> LayerResult:
     problems: list[str] = [
         f"protected seed file rewritten by the Worker: {path}" for path in tampered
     ]
+    problems.extend(extra_problems)  # step 7 (D7-2''): action candidates, checked by the caller
     if knowledge is not None:
         problems.extend(check_used_knowledge(envelope.used_knowledge, knowledge))
     if task.kind == "synthesis" and require_synthesis_knowledge and not envelope.used_knowledge:

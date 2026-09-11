@@ -15,7 +15,9 @@ SUPERSEDED."""
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..contracts import ContractError, MissionStatus
@@ -141,6 +143,19 @@ def check_candidate(
     if triple not in allowed_actions(criteria, connectors):
         raise CandidateRejected("action_out_of_scope", ".".join(triple[:2]) + ":" + triple[2])
     return cand, decision
+
+
+def is_action_path(path: str) -> bool:
+    """``actions/<name>.json`` in a Task's outputs is an action candidate (D7-2' / P2-1)."""
+
+    return path.startswith("actions/") and path.endswith(".json")
+
+
+def judgment_key(tasks: Sequence[Any]) -> str:
+    """D7-7' ①: the integrated tree is fixed by the live Tasks' accepted results."""
+
+    raw = "|".join(sorted(f"{task.id}={task.accepted_result_id}" for task in tasks))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
 def business_action_id(mission_id: str, connector: str, operation: str, target: str) -> str:
@@ -371,7 +386,10 @@ class ActionCommitsMixin:
             request = self._store.get_approval(request_id)
             if request is not None and request["state"] in {"PENDING", "GRANTED"}:
                 request.update(
-                    state="SUPERSEDED", version=int(request["version"]) + 1, superseded_by=by
+                    state="SUPERSEDED",
+                    closed_at=request.get("closed_at") or self._store.now,
+                    version=int(request["version"]) + 1,
+                    superseded_by=by,
                 )
                 self._store.put_approval(request)
                 self._emit(
@@ -457,6 +475,7 @@ class ActionCommitsMixin:
             if decision == "reject":
                 request.update(
                     state="REJECTED",
+                    closed_at=self._store.now,
                     version=int(request["version"]) + 1,
                     rejected_by=principal.principal_id,
                     reason=reason,
@@ -483,6 +502,7 @@ class ActionCommitsMixin:
             request["version"] = int(request["version"]) + 1
             if int(request["grant_count"]) >= int(request["required_count"]):
                 request["state"] = "GRANTED"
+                request["closed_at"] = self._store.now
                 request["granted_at"] = self._store.now
             self._store.put_approval(request)
             self._emit(
@@ -527,6 +547,7 @@ class ActionCommitsMixin:
                 )
             request.update(
                 state="REVOKED",
+                closed_at=request.get("closed_at") or self._store.now,
                 version=int(request["version"]) + 1,
                 revoked_by=principal.principal_id,
                 reason=reason,
@@ -545,7 +566,11 @@ class ActionCommitsMixin:
             return request
 
     def _expire_request(self, request: dict[str, Any]) -> None:
-        request.update(state="EXPIRED", version=int(request["version"]) + 1)
+        request.update(
+            state="EXPIRED",
+            closed_at=request.get("closed_at") or self._store.now,
+            version=int(request["version"]) + 1,
+        )
         self._store.put_approval(request)
         if request["kind"] == "action":
             action = self._store.get_action(str(request["subject_key"]))
@@ -904,6 +929,97 @@ class ActionCommitsMixin:
                 actor=actor,
             )
 
+    # ------------------------------------------------------------ closure (D7-2'' / D7-7')
+    def _action_candidates(
+        self,
+        stored: Any,
+        task: Any,
+        mission: Any,
+        *,
+        connectors: Mapping[str, Any] | None,
+        deployment: DeploymentPolicy | None,
+    ) -> tuple[list[tuple[Any, dict[str, Any]]], dict[str, Any] | None]:
+        """Re-read every accepted ``actions/*.json`` from its stored bytes, inside the accept
+        transaction (review P1-1: TOCTOU); a rejection is a rule_check failure, never a crash."""
+
+        found: list[tuple[Any, dict[str, Any]]] = []
+        for artifact_id in stored.artifacts:
+            artifact = self._store.get_artifact(artifact_id)
+            if artifact is None or not is_action_path(artifact.path):
+                continue
+            try:
+                if artifact.path not in task.outputs:
+                    raise CandidateRejected("undeclared_action_output", artifact.path)
+                raw = Path(artifact.storage_uri).read_bytes() if artifact.storage_uri else b""
+                if hashlib.sha256(raw).hexdigest() != artifact.content_hash:
+                    raise CandidateRejected("artifact_bytes_mismatch", artifact.path)
+                candidate = json.loads(raw.decode("utf-8"))
+                check_candidate(
+                    candidate,
+                    criteria=mission.success_criteria,
+                    connectors=connectors or {},
+                    deployment=deployment or DeploymentPolicy(),
+                )
+            except (CandidateRejected, ValueError, OSError) as error:
+                reason = getattr(error, "reason", "invalid_candidate")
+                return [], {
+                    "layer": "rule_check",
+                    "status": "FAIL",
+                    "summary": f"action_candidate_rejected ({reason}): {error}",
+                    "detail": {"reason": reason, "path": artifact.path},
+                }
+            found.append((artifact, candidate))
+        return found, None
+
+    def record_criteria_judgment(
+        self,
+        mission_id: str,
+        key: str,
+        judgments: Sequence[Mapping[str, Any]],
+        *,
+        summary: str,
+    ) -> None:
+        """D7-7' ①: the non-action criteria are judged once per integrated tree and the
+        judgment is on the books — waiting for a person never re-runs pytest or a Critic."""
+
+        with self._store.transaction():
+            self._emit(
+                "MissionCriteriaJudged",
+                mission_id,
+                key=f"{mission_id}:{key}",
+                payload={
+                    "tree_key": key,
+                    "judgments": [dict(item) for item in judgments],
+                    "summary": summary,
+                },
+            )
+
+    def criteria_judgment(
+        self, mission_id: str, key: str
+    ) -> tuple[list[dict[str, Any]], str] | None:
+        for event in reversed(self._store.list_events(mission_id)):
+            if event.type == "MissionCriteriaJudged" and event.payload.get("tree_key") == key:
+                return (
+                    [dict(item) for item in event.payload.get("judgments", [])],
+                    str(event.payload.get("summary", "")),
+                )
+        return None
+
+    def action_for_criterion(
+        self, mission_id: str, criterion: str, connectors: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """The latest non-REFUSED version of the business action an ``action:`` criterion names."""
+
+        parsed = parse_action_criterion(criterion)
+        if parsed is None:
+            return None
+        name, operation, target = parsed
+        action_id = business_action_id(
+            mission_id, name, operation, _normalize(connectors.get(name), target)
+        )
+        live = [v for v in self._store.list_action_versions(action_id) if v["state"] != "REFUSED"]
+        return live[-1] if live else None
+
     def cancel_open_actions(self, mission_id: str, *, reason: str) -> list[dict[str, Any]]:
         """D7-4' / D7-5': a Mission that ends (cancelled, failed) or work that is replaced
         closes its *open* actions and requests as CANCELLED.  Handed-off and UNKNOWN actions
@@ -923,7 +1039,12 @@ class ActionCommitsMixin:
                 subject = self._store.get_action(str(request["subject_key"]))
                 if subject is not None and subject["state"] != "CANCELLED":
                     continue  # handed off: the grant stays as the audit of what ran
-            request.update(state="CANCELLED", version=int(request["version"]) + 1, reason=reason)
+            request.update(
+                state="CANCELLED",
+                closed_at=request.get("closed_at") or self._store.now,
+                version=int(request["version"]) + 1,
+                reason=reason,
+            )
             self._store.put_approval(request)
             self._emit(
                 "ApprovalCancelled",
@@ -947,6 +1068,8 @@ __all__ = (
     "allowed_actions",
     "business_action_id",
     "check_candidate",
+    "is_action_path",
+    "judgment_key",
     "parse_action_criterion",
     "receipt_mismatch",
     "validate_candidate",

@@ -79,8 +79,11 @@ class VerifierRouter:
         tampered: Sequence[str] = (),
         knowledge: KnowledgeIndex | None = None,
         require_synthesis_knowledge: bool = True,
+        action_problems: Sequence[str] | None = None,
     ) -> Verdict:
         required = set(task.verification_policy)
+        if action_problems is not None:  # D7-2'': a result carrying actions/ is always rule-checked
+            required.add("rule_check")
         layers: list[LayerResult] = []
         critic: CriticVerdict | None = None
         short_at: str | None = None
@@ -118,6 +121,7 @@ class VerifierRouter:
                     tampered=tampered,
                     knowledge=knowledge,
                     require_synthesis_knowledge=require_synthesis_knowledge,
+                    extra_problems=action_problems or (),
                 )
             elif layer == "critic_review":
                 try:

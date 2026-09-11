@@ -43,6 +43,7 @@ class ActionExecutor:
         # the lease outlives the call's timeout: a live hand-off is never reconciled early
         self._lease = float(lease_seconds) if lease_seconds is not None else 2 * self._timeout + 5.0
         self._inflight: set[str] = set()
+        self.last_refusal: dict[str, str] = {}  # action_key -> why begin_handoff said no
 
     @property
     def inflight(self) -> frozenset[str]:
@@ -65,6 +66,7 @@ class ActionExecutor:
             rehandoff=rehandoff,
         )
         if action is None:
+            self.last_refusal[action_key] = _reason or ""
             return None
         connector = self._connectors[str(action["connector"])]
         self._inflight.add(action_key)

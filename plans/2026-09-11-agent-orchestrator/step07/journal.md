@@ -43,7 +43,8 @@
 | 切片 | 提交 | 内容 | 测试 |
 |---|---|---|---|
 | A | `c0cbd12` | schema v5；动作账本（D7-2' 版本规则：在途 / 已执行不可取代）；审批与决定（nonce、回执哈希、按部署计数、CANCELLED、Mission 须 ACTIVE）；风险政策（默认关闭、event 类拒绝）；范围检查；测试服务（幂等账本、按键加锁、故障注入） | `test_action_ledger.py` 13、`test_schema_v5.py` 2 |
-| B | （本次） | `begin_handoff`（再校验 + CAS + 预留 + 决定回执，同一事务）、`record_action_outcome`（回执核对，不符 → UNKNOWN）、`record_reconciliation`（COMPLETED / CONFIRMED_NOT_STARTED / STILL_UNKNOWN，租约过期视为崩溃）、`override_action_outcome`（人工带证据裁决）；执行器 `runtime/actions.py`（线程 + 超时，只经 Commit Service 写库） | `test_action_execution.py` 12：S7-02；S7-06 回执丢失 / 崩溃在调用前 / 崩溃在应用后 / 恢复旧库 / 取消 Mission / 超时；再交接用完 → FAILED；人工出口 |
+| B | `57cdf12` | `begin_handoff`（再校验 + CAS + 预留 + 决定回执，同一事务）、`record_action_outcome`（回执核对，不符 → UNKNOWN）、`record_reconciliation`（COMPLETED / CONFIRMED_NOT_STARTED / STILL_UNKNOWN，租约过期视为崩溃）、`override_action_outcome`（人工带证据裁决）；执行器 `runtime/actions.py`（线程 + 超时，只经 Commit Service 写库） | `test_action_execution.py` 12：S7-02；S7-06 回执丢失 / 崩溃在调用前 / 崩溃在应用后 / 恢复旧库 / 取消 Mission / 超时；再交接用完 → FAILED；人工出口 |
+| C | （本次） | 闭环：验证时有 `actions/` 就强制 rule_check 检查候选（schema / 部署政策 / Mission 范围 / 声明的 outputs）；accept 事务从已存字节重验并登记，不通过走 `fail_result`；判定分两段（非动作准则按树键只判一次并入账 `MissionCriteriaJudged`，再看动作：可交接则交接、被拒 / 撤回 / 过期 → `approval_rejected`、FAILED → `action_failed`、只剩等待 → 无进展，`run()` 空闲返回）；`waiting_on` 派生视图与快照；请求 `closed_at` 与人工等待时长（运行时间上限扣除）；Mission 结束取消开放动作；提交时检查动作准则 | `test_approvals.py` 10（S7-01 含重启、L0、S7-03、S7-04 ×3、S7-05、S7-08、范围 / 未声明、提交拒绝）、`test_waiting_view.py` 2 |
 
 ## 3. 遗留
 

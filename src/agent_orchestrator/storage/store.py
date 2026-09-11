@@ -1193,6 +1193,57 @@ class Store:
             if cursor.rowcount != 1:
                 raise StoreConflict(f"{table}:{key} is not at version {expected_version}")
 
+    # ------------------------------------------------------------ step 7 waiting view
+    def waiting_on(self, mission_id: str) -> list[dict[str, Any]]:
+        """D7-7': what an ACTIVE Mission waits on a person or a reconciliation for — a
+        derived view, not a Mission state (ORCH §13 keeps the Mission state set)."""
+
+        waiting: list[dict[str, Any]] = [
+            {
+                "kind": str(request["kind"]),
+                "request_id": request["request_id"],
+                "subject": request["subject_key"],
+                "since": request.get("created_at"),
+            }
+            for request in self.list_approvals(mission_id, "PENDING")
+        ]
+        waiting.extend(
+            {
+                "kind": "reconciliation",
+                "action_key": action["action_key"],
+                "needs_human": bool(action.get("needs_human")),
+                "since": action.get("handed_off_at"),
+            }
+            for action in self.list_actions(mission_id, "UNKNOWN")
+        )
+        return waiting
+
+    def human_wait_seconds(self, mission_id: str, now: float) -> float:
+        """D7-7': the union of the spans during which a request of this Mission waited for
+        a person (created → closed, or → now while still open)."""
+
+        spans = sorted(
+            (
+                float(request.get("created_at") or 0.0),
+                now
+                if request["state"] == "PENDING"
+                else float(request.get("closed_at") or request.get("created_at") or 0.0),
+            )
+            for request in self.list_approvals(mission_id)
+        )
+        total = 0.0
+        current: tuple[float, float] | None = None
+        for start, end in spans:
+            if current is not None and start <= current[1]:
+                current = (current[0], max(current[1], end))
+                continue
+            if current is not None:
+                total += current[1] - current[0]
+            current = (start, end)
+        if current is not None:
+            total += current[1] - current[0]
+        return max(total, 0.0)
+
     def snapshot(self, mission_id: str) -> dict[str, Any]:
         """Everything about one Mission, for ``final_state.json`` and CLI ``get``."""
 
@@ -1227,6 +1278,10 @@ class Store:
                 for intent in [self.get_intent_for_subject(attempt.id)]
                 if intent is not None
             ],
+            "actions": self.list_actions(mission_id),  # step 7 (D7-11)
+            "approvals": self.list_approvals(mission_id),
+            "human_overrides": self.list_overrides(mission_id),
+            "waiting_on": self.waiting_on(mission_id),
             "event_count": self.count_events(mission_id),
         }
 
