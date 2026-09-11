@@ -1735,6 +1735,9 @@ class Orchestrator:
             attempts,
             concurrency_limit=self._config.max_concurrency,
             candidates_per_task=self._config.candidates_per_task,
+            now=self.store.now,
+            aging_window_seconds=self._config.aging_window_seconds,
+            mission_max_tokens=mission.budget.max_tokens,
         )
         progressed = False
         for granted, _candidate in plan.grants:
@@ -1743,7 +1746,13 @@ class Orchestrator:
             task = current_task
             if task.status in TERMINAL_TASK:
                 continue
-            if await self._next_attempt(mission, task, self.store.list_attempts(task.id)):
+            score = plan.scores.get(task.id)
+            if await self._next_attempt(
+                mission,
+                task,
+                self.store.list_attempts(task.id),
+                allocation=None if score is None else score.to_json(),
+            ):
                 progressed = True
             current = self.store.get_mission(mission.id)
             if current is None or current.status in TERMINAL_MISSION:
@@ -1762,7 +1771,12 @@ class Orchestrator:
         return by_task
 
     async def _next_attempt(
-        self, mission: Mission, task: Task, attempts: Sequence[Attempt]
+        self,
+        mission: Mission,
+        task: Task,
+        attempts: Sequence[Attempt],
+        *,
+        allocation: Mapping[str, Any] | None = None,
     ) -> bool:
         # a repair follows the last *failed* Attempt; a parallel candidate follows nobody
         previous = next(
@@ -1926,6 +1940,9 @@ class Orchestrator:
                     "retrieval_status": knowledge.retrieval.status,
                     "context_builder_version": CONTEXT_BUILDER_VERSION,
                     "untrusted_sources": untrusted,
+                    "allocation": dict(
+                        allocation or {}
+                    ),  # D5-8': the §29.3 score it was granted on
                 },
                 input_hash=sha256_hex(message),
                 retry_of=placeholder.retry_of,
