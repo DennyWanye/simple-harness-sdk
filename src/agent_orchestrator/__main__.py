@@ -924,7 +924,8 @@ def _evaluation_config(args: argparse.Namespace, config: dict[str, Any]) -> dict
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
     """``evaluate --plan plan.json`` (plan D8-9'): cases × strategies × trials, every run a
-    new Mission in its own directory; the report lands in ``--evidence-dir``."""
+    new Mission in its own directory; the report lands in ``--evidence-dir``.  Exit 0 when
+    every run was counted, 1 when any run was a harness error, 2 for a bad or refused plan."""
 
     from .observability.evaluation import EvaluationPlan, Strategy, run_plan
 

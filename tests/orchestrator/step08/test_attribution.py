@@ -275,3 +275,54 @@ def test_review_p1_4_reconciliation_fails_on_a_stray_subject_or_a_ledger_mismatc
         (mission_id,),
     )
     assert skewed["reconciled"] is False and len(skewed["ledger"]["mismatched_subjects"]) == 1
+
+
+# ------------------------------------------------------------------ code re-review (round 2)
+def test_re_review_knowledge_an_arbitration_superseded_is_refuted_too(
+    tmp_path, capsys, monkeypatch
+):
+    import agent_orchestrator.observability.traces as traces_module
+
+    evidence, mission_id = _demo(tmp_path, "dynamic-dag")
+    capsys.readouterr()
+    report, _snapshot = _read(evidence, mission_id)
+    off = next(a for a in report["attempts"] if not a["on_success_path"])
+    original = traces_module.lineage
+
+    def with_superseded_loser(store, mid):  # a verified record an arbitration superseded
+        view = original(store, mid)
+        view["knowledge"] = [
+            *view["knowledge"],
+            {"id": "k-loser", "status": "SUPERSEDED", "source_attempt": off["attempt_id"]},
+        ]
+        view["edges"] = [*view["edges"], {"knowledge": "k-ruling", "resolves": "k-loser"}]
+        view["attempts"] = [*view["attempts"], {"attempt_id": off["attempt_id"]}]
+        return view
+
+    monkeypatch.setattr(traces_module, "lineage", with_superseded_loser)
+    again, _snapshot = _read(evidence, mission_id)
+    flagged = next(a for a in again["attempts"] if a["attempt_id"] == off["attempt_id"])
+    assert flagged["claim_refuted"] is True and flagged["on_success_path"] is False
+    assert flagged["exploration_reason"] == "claim_refuted"  # not pulled onto the path
+    assert off["attempt_id"] not in again["knowledge_path"]["refuted_on_path"]
+
+
+def test_re_review_a_finished_mission_with_usage_left_unsettled_is_not_reconciled(tmp_path, capsys):
+    evidence, mission_id = _demo(tmp_path, "static-dag")
+    capsys.readouterr()
+    copy = library_copy(evidence / "orchestrator.db", Path(tmp_path) / "held")
+    connection = sqlite3.connect(copy)
+    connection.execute(
+        "UPDATE budget_reservations SET state = 'HELD' WHERE reservation_id = ("
+        "SELECT reservation_id FROM budget_reservations WHERE mission_id = ?"
+        " AND subject_id NOT LIKE 'action:%' ORDER BY settled_tokens DESC LIMIT 1)",
+        (mission_id,),
+    )
+    connection.commit()
+    connection.close()
+    store = Store.open_readonly(copy)
+    try:
+        cost = attribution(store, mission_id)["cost"]
+    finally:
+        store.close()
+    assert cost["ledger"]["unsettled_usage_tokens"] > 0 and cost["reconciled"] is False

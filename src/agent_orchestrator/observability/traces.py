@@ -160,6 +160,16 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
     refuted = {
         str(c.get("source_attempt")) for c in knowledge.get("claims", []) if c.get("source_attempt")
     }
+    # re-review: verified knowledge an arbitration superseded is refuted too (its record
+    # enters the lineage through the resolution's ``resolves`` edge)
+    resolved_ids = {str(e["resolves"]) for e in knowledge.get("edges", []) if e.get("resolves")}
+    refuted.update(
+        str(k["source_attempt"])
+        for k in knowledge.get("knowledge", [])
+        if str(k.get("id")) in resolved_ids
+        and str(k.get("status")) == "SUPERSEDED"
+        and k.get("source_attempt")
+    )
     path_attempts = {aid for tid in path_tasks if (aid := accepted_attempt(by_id[tid]))}
     path_attempts.update(
         str(a["attempt_id"])
@@ -270,8 +280,11 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
             }
         )
     service_total = sum(b["tokens"] for b in services.values())
-    # review P1-4: reconciled = nothing unclassified, the buckets add up, and the budget
-    # ledger (an independent record: what each settled reservation was charged) agrees
+    # review P1-4: reconciled = nothing unclassified, the buckets add up, the budget ledger
+    # (what each settled reservation was charged) agrees subject by subject, and a
+    # finished Mission has no usage left unsettled.  The ledger was summed from the same
+    # usage rows at settlement, so it catches usage imported afterwards or altered — it
+    # is not an independent meter (re-review)
     settled = {
         str(subject): int(tokens or 0)
         for subject, tokens in store.connection.execute(
@@ -292,6 +305,10 @@ def attribution(store: Store, mission_id: str) -> dict[str, Any]:  # noqa: C901 
         unclassified["rows"] == 0
         and path_bucket["tokens"] + exploration_bucket["tokens"] + service_total == total["tokens"]
         and not ledger["mismatched_subjects"]
+        and (
+            str(mission.status) not in {"COMPLETED", "FAILED", "CANCELLED"}
+            or ledger["unsettled_usage_tokens"] == 0
+        )
     )
 
     # -- actions and people on the way (step 7)

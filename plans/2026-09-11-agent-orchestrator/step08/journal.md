@@ -56,6 +56,20 @@
 | P2-10 | P2 | 派生 case 未校验证据版本；未按场景指定 provider | 部分修：证据 `baseline.agent_orchestrator` 必须等于本版本；按场景名指定 provider 登记（§5） | S8-06 断言"own version" |
 | P2-11 | P2 | harness_error 记录不带 Mission id | 修：带 `idempotency_key` 与由它导出的 `mission_id` | `test_a_failure_and_a_broken_harness_are_told_apart` |
 
+### 代码复核（第 2 轮，针对切片 F）
+
+独立复核（claude-opus-5，只读；原文要点 `reports/code-review-round2.md`）在 step03–08 全部测试的 178 个 Mission 上做了回放 / 对账 / 零层 PASS 扫描：1 P1 / 6 P2，结论"范围小，修完跑 step08 与回归即可收尾"。全部修复（切片 G）：
+
+| # | 级别 | 发现 | 处置 | 测试 |
+|---|---|---|---|---|
+| P1-A | P1 | `ResultRejected`（Attempt → RETRY_WAIT）未投影，合法库被报"缺记录"、覆盖率 < 1 | 修：`ResultRejected` 且原因不是 `superseded` → Attempt RETRY_WAIT（Task 保持 ACTIVE）；迟到结果（`superseded`）只作历史；从"无正式状态事件"清单删除 | `test_replay.py::test_re_review_a_rejected_result_then_a_retry_replays_completely`（覆盖率 1.0、0 缺口、0 不一致） |
+| P2-1 | P2 | 测试服务可用子类；可跨运行共用状态文件 | 修：必须 `type(s) is TestConfigService` 且状态文件在本次运行目录（校验时为探针目录）下 | `test_evaluation.py::test_re_review_the_test_service_is_exactly_that_class_under_the_run_directory` |
+| P2-2 | P2 | 被仲裁取代的 VERIFIED 知识的来源 Attempt 未标 `claim_refuted`；P1-1 探索分支无测试 | 修：经 `resolves` 边进入 lineage 且状态 SUPERSEDED 的知识，其来源 Attempt 计入被驳倒集合 | `test_attribution.py::test_re_review_knowledge_an_arbitration_superseded_is_refuted_too`（探索分支：`on_success_path=false`、原因 `claim_refuted`） |
+| P2-3 | P2 | 未结算用量不影响 `reconciled`；账本并非完全独立来源 | 修：终态 Mission 还要求 `unsettled_usage_tokens == 0`；代码注释写明账本是结算时对同一用量表求和，能发现结算后导入或被改的用量，不是独立计量 | `test_re_review_a_finished_mission_with_usage_left_unsettled_is_not_reconciled` |
+| P2-4 | P2 | Critic 消融后 Task 级自由文本准则无人判定未写明 | 修：写进 `ABLATION_EFFECTS["critic"]`（报告"消融连带影响"） | S8-03 断言连带影响非空 |
+| P2-5 | P2 | 投影到 `AttemptStarted` 才把 Task 设为 ACTIVE，库在 `AttemptCreated` 同事务设置 | 修：`AttemptCreated` 时 READY 的 Task → ACTIVE | `test_re_review_a_created_attempt_makes_its_ready_task_active` |
+| P2-6 | P2 | `cmd_evaluate` 未写退出码 | 修：docstring 写明 0 / 1（有脚手架错误）/ 2（坏计划或被拒） | — |
+
 ## 2. 执行记录
 
 | 切片 | 提交 | 内容 | 测试 |
@@ -65,15 +79,18 @@
 | C | `2df01fd` | 消融：`OrchestratorConfig.ablations` 封闭词表 `critic` / `blackboard` / `graph_changes`（去重排序；`blackboard` → `knowledge_sharing=False`，`graph_changes` → `dynamic_graph=False`）；安全边界（权限、网关、幂等、审批、部署政策、密钥检查、format / rule / code_test、human_review、预算）与词表外名字一律拒绝；Router 入口把消融的层从有效必需集合去掉，层记 `NOT_REQUIRED` 且 `detail.ablated=true`、`required_by_policy=true`；Critic 消融时 Mission judge 不运行，自由文本准则判定 `source=ablated`、理由"judge ablated in this run"（不会被当作 Verifier 冲突）；快照登记 `ablations` | `test_ablation.py` 17（安全边界与词表外拒绝 ×14、映射与快照差异、Critic 层显式移除且 Critic 调用 0、judge ablated、Blackboard 消融后检索 disabled 且 KnowledgeUsed=0） |
 | D | `408fb38` | Evaluation `observability/evaluation.py`：`EvaluationCase`（每次试验新 provider、可带隐藏 oracle 与测试连接器）、`Strategy`（覆盖只许白名单）、`EvaluationPlan`（计划级配置白名单、Critic 消融 × 自由文本准则拒绝、带动作的 case 只许测试服务）；每次运行幂等键 `eval:<plan>:<strategy>:<case>:<trial>`、独立新目录与库（目录非空拒绝）、墙钟超时与异常 → `harness_error`（不计入分母）、等待人工单列；逐次记录（耗时、tokens / 金额或未定价、验证通过率、知识复用、重复率、剪枝率、污染率、恢复、失败原因与失败层、消融政策下的 PASS、oracle）；按策略汇总（Wilson 区间）与比较（Fisher 精确检验、区间不重叠、fixture 写"不适用"）及快照差异；`evaluation.json` + 中文 `evaluation.md`；`case_from_evidence`（spec 哈希须与旧库 `MissionCreated.spec_hash` 一致，改写幂等键，记录 derived_from 与旧库摘要） | `test_evaluation.py` 11（S8-03 双策略 × 2 次、oracle 误判、failure 与 harness_error 分开、策略覆盖拒绝 ×5、自由文本 / 真实连接器 / 计划配置拒绝、统计口径、S8-06 派生重跑与篡改拒绝） |
 | E | `49106bf` | CLI `replay --evidence-dir DIR MISSION_ID [--events] [--failures] [--attribution] [--out]`（只读，与库不一致退出 1）、`evaluate --plan plan.json --evidence-dir NEW_DIR [--provider fixtures|env]`（内置 case 目录：parse-kv（带 oracle）、parse-kv-strict（严格 oracle）、parse-kv-bad、textkit；env 只有 parse-kv，统一注入 flash 模型名与真实运行参数）；`demo --scenario evaluate-policies`（完整政策 vs 去掉 Critic × 2 次试验，另写 `samples.json`：一次成功运行的归因、一次失败运行的回放）；计划级配置允许 `model`；step02 未实现检查改用 `policy-promotion`；真实 flash 评测 opt-in | `test_evaluate_policies_closure.py` 2（演示 16 次运行、oracle 误判 2/4、失败原因、归因与回放样例；CLI evaluate / replay / 拒绝坏计划）、`test_real_provider_evaluation.py`（opt-in） |
+| F | `23fcde5` | 代码评审第 1 轮修复（处置表见 §1）：评测每个 case、每次运行都只许测试服务（`EvaluationRefused`）；消融使有效政策为空 → ERROR；回放结构性不变量补齐、违反即字段未决定；归因 `claim_refuted` / `refuted_on_path`（plan D8-4''）与预算账本对账；逐 case 成对比较与脚手架错误不对称降级；计划预构造配置；演示开始快照在运行前；CLI 错误退出码；harness_error 带 Mission id；消融连带影响写进报告；派生 case 校验证据版本；版本号 0.9.6 / 0.8.0 | step08 共 68 passed / 1 skipped（新增 `test_review_*` 11 条与 `test_replay_evaluate_cli_errors.py`） |
 
 ## 3. 真实模型
 
 - 评测运行 1（`49106bf`，deepseek-flash，`reports/real-evaluation-run1.md`）：`parse-kv` × 完整政策 / 去掉 Critic × 2 次真实试验，4 次运行全部 success，隐藏 oracle 全部通过（误判 0/4）；完整政策约 51 s / 5.1 万 tokens，去掉 Critic 约 25 s / 3.8 万 tokens；成功率比较 Fisher p = 1.0，结论"证据不足：样本量 2 / 2 低于 3"；证据 135 个文件，真实密钥逐字节命中 0、`sk-` 模式命中 0。
+- 评测运行 2（`23fcde5`，评审修复之后，`reports/real-evaluation-run2.md`）：4 次运行全部 success，oracle 误判 0/4，脚手架错误 0；完整政策 16–28 s / 2.4–2.6 万 tokens，去掉 Critic 23–29 s / 2.3–3.2 万 tokens；逐 case 成对 2/2 vs 2/2（p = 1.0），成功率、耗时、tokens 三项都是"证据不足"；同一策略两次评测间差一倍，印证小样本不能下结论。证据 126 个文件，真实密钥命中 0，`\bsk-` 命中 0（无边界模式在库内的 453 处匹配全是 `task-` 标识符）。
 - 自查发现：耗时 / tokens 的比较在样本不足时仍写"有差异"。已改为与成功率同一口径（fixture → 不适用；样本不足 → 证据不足；够样本且区间不重叠才写有差异），配测试 `test_time_and_token_differences_need_enough_samples_too`。
 
 ## 4. 回归与 wheel
 
 - SDK 全量回归（`49106bf`，`regress-s8/run.sh`）：58 failed / 2343 passed / 12 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
+- SDK 全量回归（修复切片 F `23fcde5`）：58 failed / 2356 passed / 12 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
 - 版本：simple_harness 0.9.6 / agent_orchestrator 0.8.0（`tests/unit/contracts/public-api.json` 同步）。
 
 ## 5. 遗留

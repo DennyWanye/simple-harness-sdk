@@ -90,7 +90,7 @@ FIXTURE_NOTE = "机制验证（fixture），不代表质量"
 TEST_SERVICE = "test_config"
 # what each ablation switches off, knock-on effects included (plan D8-7'; review P2-9)
 ABLATION_EFFECTS = {
-    "critic": "去掉 Critic 审查层与 Mission judge：自由文本准则判为未满足（source=ablated）；needs_human 升级与第 ② 类仲裁（Verifier 冲突）随之消失；Task 政策只剩 critic_review 时该结果判 ERROR，不会零层 PASS",
+    "critic": "去掉 Critic 审查层与 Mission judge：自由文本准则判为未满足（source=ablated）；needs_human 升级与第 ② 类仲裁（Verifier 冲突）随之消失；Task 级自由文本准则无人判定——Task 政策还剩其他层时结果照样可能 PASS（这正是'消融政策下的 PASS'单列的原因）；Task 政策只剩 critic_review 时该结果判 ERROR，不会零层 PASS",
     "blackboard": "关闭知识检索与共享：Worker 拿不到 Blackboard 知识，KnowledgeUsed 为 0",
     "graph_changes": "关闭动态改图：运行中不能增删改 Task",
 }
@@ -100,15 +100,24 @@ class EvaluationRefused(ValueError):
     """What the evaluator will not run at all — a refusal, never a harness_error."""
 
 
-def _refuse_services(services: Mapping[str, Any]) -> None:
+def _refuse_services(services: Mapping[str, Any], root: Path) -> None:
     """Review P0-1 (plan D8-7'): an evaluation may only reach the local test service —
-    checked on every case, and again on what each run is really handed."""
+    exactly that class (no subclass), keeping its state under this run's own directory
+    (a fresh service per run) — checked on every case, and again on what each run is
+    really handed."""
 
+    base = Path(root).resolve()
     wrong = sorted(
-        n for n, s in services.items() if n != TEST_SERVICE or not isinstance(s, TestConfigService)
+        n
+        for n, s in services.items()
+        if n != TEST_SERVICE
+        or type(s) is not TestConfigService
+        or not Path(s.path).resolve().is_relative_to(base)
     )
     if wrong:
-        raise EvaluationRefused(f"an evaluation may only reach the local test service, not {wrong}")
+        raise EvaluationRefused(
+            f"an evaluation may only reach a fresh local test service under its run directory, not {wrong}"
+        )
 
 
 # ------------------------------------------------------------------ the plan
@@ -215,7 +224,7 @@ class EvaluationPlan:
                     continue
                 probe_dir = Path(scratch) / f"probe-{len(configs)}-{case.name}"
                 probe_dir.mkdir(parents=True, exist_ok=True)
-                _refuse_services(case.connectors(probe_dir))  # every case, action or not
+                _refuse_services(case.connectors(probe_dir), probe_dir)  # every case, action or not
         return configs
 
 
@@ -397,7 +406,9 @@ async def _run_once(
     key = _key(plan, strategy, case, trial)
     spec = case.spec(EVALUATION_TENANT, key)
     services = dict(case.connectors(run_dir)) if case.connectors is not None else {}
-    _refuse_services(services)  # review P0-1: what this run really gets, before any Mission
+    _refuse_services(
+        services, run_dir
+    )  # review P0-1: what this run really gets, before any Mission
     config = OrchestratorConfig(
         evidence_root=run_dir,
         deployment_policy=DeploymentPolicy(enabled_connectors=tuple(sorted(services))),

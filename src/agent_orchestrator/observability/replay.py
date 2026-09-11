@@ -73,7 +73,6 @@ NO_FORMAL_EFFECT = frozenset(
         "ManagementDecided",
         "OutcomeRecorded",
         "ToolCallRejected",
-        "ResultRejected",
         "RetrievalUnavailable",
         "BackpressureRaised",
         "BackpressureCleared",
@@ -224,6 +223,9 @@ class Projection:
         elif kind == "AttemptCreated":
             self._need("task", task_id, "task_committed_missing", event)
             self._set("attempt", attempt_id, status="PENDING")
+            task = self.objects["task"].get(str(task_id or ""))
+            if task is not None and task.get("status") == "READY":  # same transaction (re-review)
+                task["status"] = "ACTIVE"
         elif kind == "AttemptClaimed":
             self._need("attempt", attempt_id, "attempt_created_missing", event)
             self._set("attempt", attempt_id, status="CLAIMED")
@@ -246,6 +248,9 @@ class Projection:
                 self._set("result", result_id, verification_state="PENDING", verdict=None)
                 self._set("attempt", attempt_id, status="SUBMITTED")
                 self._set("task", task_id, status="VERIFYING")
+        elif kind == "ResultRejected":  # re-review P1-A (commit_service reject_result)
+            if p.get("reason") != "superseded":  # a late result is history only (D3-6')
+                self._set("attempt", attempt_id, status="RETRY_WAIT")  # the Task stays ACTIVE
         elif kind == "VerificationStarted":
             self._set("result", p.get("result_id"), verification_state="RUNNING", verdict=None)
             self._set("attempt", attempt_id, status="VERIFYING")

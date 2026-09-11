@@ -440,3 +440,33 @@ def test_review_p2_1_a_plan_that_cannot_build_its_configuration_is_refused_up_fr
             strategies=(Strategy("s"),),
             config={"global_budget": {"max_tokens": 1}},
         ).validate()
+
+
+def test_re_review_the_test_service_is_exactly_that_class_under_the_run_directory(tmp_path):
+    class Lookalike(TestConfigService):
+        pass
+
+    shared_dir = Path(tmp_path) / "shared"
+    shared_dir.mkdir()
+    lookalike = EvaluationCase(
+        "lookalike",
+        _spec(),
+        _provider(),
+        connectors=lambda root: {"test_config": Lookalike(Path(root) / "config.json")},
+    )
+    shared = EvaluationCase(
+        "shared",
+        _spec(),
+        _provider(),
+        connectors=lambda root: {"test_config": TestConfigService(shared_dir / "config.json")},
+    )
+    for case in (lookalike, shared):
+        with pytest.raises(EvaluationRefused, match="fresh local test service"):
+            EvaluationPlan(name="x", cases=(case,), strategies=(Strategy("s"),)).validate()
+    fresh = EvaluationCase(
+        "fresh",
+        _spec(),
+        _provider(),
+        connectors=lambda root: {"test_config": TestConfigService(Path(root) / "config.json")},
+    )
+    EvaluationPlan(name="y", cases=(fresh,), strategies=(Strategy("s"),)).validate()

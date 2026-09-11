@@ -483,3 +483,65 @@ def test_review_p1_2_passed_without_completed_is_a_gap(tmp_path, capsys):
     gaps = {(g["rule"], g.get("id")) for g in projection.gaps}
     assert ("task_completed_missing", completed["task_id"]) in gaps
     assert projection.objects["task"][completed["task_id"]]["status"] is None
+
+
+# ------------------------------------------------------------------ code re-review (round 2)
+def test_re_review_a_rejected_result_then_a_retry_replays_completely(tmp_path):
+    proposal = {**DEMO_PROPOSAL, "budget": {"max_tokens": 50_000, "max_attempts": 3}}
+    provider = RoleScriptedProvider(
+        {
+            "planner": [proposal_step(proposal)],
+            "worker": [
+                ("workspace_write_file", {"path": "parse_kv.py", "content": DEMO_GOOD}),
+                "这不是一个信封，只是自然语言。",  # attempt 1: rejected (envelope_invalid)
+                *demo_worker_script(DEMO_GOOD),
+            ],
+            "critic": [critic_step(verdict="PASS", criteria_met=True)],
+        }
+    )
+
+    async def case():
+        async with Orchestrator(_config(tmp_path), provider) as orchestrator:
+            mission = await orchestrator.submit_mission(_spec("rejected-then-retried"))
+            await orchestrator.run()
+            store = orchestrator.store
+            assert store.get_mission(mission.id).status is MissionStatus.COMPLETED
+            assert store.count_events(mission.id, "ResultRejected") == 1
+            return mission.id
+
+    mission_id = asyncio.run(case())
+    report = replay_mission(
+        mission_id=mission_id, library=Path(tmp_path) / "evidence" / "orchestrator.db"
+    )
+    comparison = report["comparison"]
+    assert comparison["mismatches"] == [] and comparison["coverage"] == 1.0, comparison
+    assert report["gaps"] == []
+    assert "RETRY_WAIT" in {a["status"] for a in report["formal_state"]["attempt"].values()}
+
+
+def test_re_review_a_created_attempt_makes_its_ready_task_active():
+    events = [
+        {"id": "e1", "seq": 1, "type": "MissionCreated", "mission_id": "m", "payload": {}},
+        {
+            "id": "e2",
+            "seq": 2,
+            "type": "TaskCommitted",
+            "mission_id": "m",
+            "task_id": "t",
+            "payload": {"dependencies": []},
+        },
+        {
+            "id": "e3",
+            "seq": 3,
+            "type": "AttemptCreated",
+            "mission_id": "m",
+            "task_id": "t",
+            "attempt_id": "a",
+            "payload": {},
+        },
+    ]
+    projection = Projection().feed(events)
+    assert (
+        projection.objects["task"]["t"]["status"] == "ACTIVE"
+    )  # the library's accept of AttemptCreated
+    assert projection.objects["attempt"]["a"]["status"] == "PENDING"
