@@ -56,13 +56,73 @@
 - fixtures 脚本对不同策略不一定都够用（例如多候选策略需要更多 Worker 脚本）：演示与测试只选脚本能覆盖的策略组合，另写登记；真实模型评测不受脚本限制但有费用与随机性，按 opt-in 与样本量规则处理。
 - 评测运行耗时：每次运行一个完整 Orchestrator，fixtures 上秒级；真实 flash 每次数十秒，试验次数取小值并如实报告样本量。
 
-## 6. 评审后修订
+## 6. 评审后修订（plan review 第 1 轮：4 P0 / 13 P1 / 8 P2，原文 `reports/plan-review-round1.md`；逐条处置见 `journal.md` §1）
 
-（plan review 后填写）
+下面的 D8-x' 与 §3 冲突时以本节为准。
+
+**D8-1'　只读与"不写"的证明**（P1-1、P1-3、P2-4）
+- Replay 与归因不直接打开被分析的库：先把 `orchestrator.db` 及其 `-wal` / `-shm`（存在时）复制到临时目录，再用 `Store.open_readonly`（URI `mode=ro`，不迁移、只校验版本不高于当前，`snapshot` 能感知表是否存在）打开副本。原库在构造上不会被写。
+- "不写 / 不增加外部调用"的证明口径：原库主文件、`-wal`、同目录执行库（`execution*.db`）的 sha256 回放前后都不变；目录设为只读（chmod）时回放照样成功；provider 调用数、连接器调用数、pytest 子进程调用数、Critic 调用数都不变；另有导入图测试：在子进程里导入 `observability.replay` 后，`sys.modules` 里没有 `agent_orchestrator.runtime.*`、`simple_harness.providers`、`verification.deterministic_checks`。
+- 事件来源优先是库；从 `events.jsonl` 回放时报告标注"来源：证据文件（已脱敏，payload 可能被替换）"。事件一律按 `after_seq` 分页读完（`Store.iter_events`），证据与指标也改为分页，不再受 `limit=10_000` 静默截断。
+
+**D8-2'　正式状态的字段集与覆盖率**（P0-1、P1-2）
+- 正式状态字段集（逐项）：Mission{status, stop_reason}；Task{status, accepted_result_id}；Attempt{status}；Result{verification_state, verdict}；Knowledge{status, superseded_by}；Conflict{state}；Action{state, receipt_hash}；Approval{state}；HumanOverride{存在与否}。**明确排除**（登记）：预算账户余额与预留（由账本另算，归因里对账）、dispatch intent、租约与心跳、分配分数、背压状态。
+- 推导规则（写进代码的投影表并在 §6.1 列出）：例如 Attempt COMPLETED ← 同 attempt 的 `VerificationPassed`；Task ACTIVE ← `AttemptStarted`，VERIFYING ← `ResultSubmitted` / `VerificationSuspended`，回到 ACTIVE ← `VerificationFailed` / `TaskVerificationAbandoned`；动作 APPROVED / REJECTED / REVOKED / EXPIRED / SUPERSEDED ← 对应审批事件（`ApprovalRequested.action_key` 建立请求 → 动作映射）。
+- 补事件（只增不改）：`_cancel_open_actions` 取消动作时发 `ActionCancelled`；凡推导不出的状态变化，本步补事件而不是降低要求。
+- **本版本产生的库，字段集覆盖率必须 = 100%**，并与库快照逐字段一致；`not_covered` 只允许出现在旧版本事件或事件被删除的场景（S8-05）。
+- 缺口检测用结构性不变量而不是 seq 连续性（seq 是全库自增，多 Mission 交错）：例如有 `VerificationPassed` 却没有对应 `TaskCompleted`；Mission 已终态而仍有非终态 Task；Attempt 有 `ResultSubmitted` 却没有 `AttemptCreated`；动作有 `ActionHandedOff` 却没有 `ActionProposed`。有库可用时，另把库里的事件集合与给定事件流比对，列出缺失的事件 id。
+
+**D8-3'　崩溃记录**（P1-3）：用编排器的故障点让运行在中途崩溃，在崩溃时刻复制一份库；用该副本的事件投影，结果等于该副本的快照；恢复运行完成后再回放，等于最终快照。
+
+**D8-4'　归因的主体分类与路径规则**（P1-4、P1-5、P2-3）
+- 逐行给 `imported_usage` 分类，主体解析复用 `metrics._service_role` 并补齐：`<mission>:task-k:attempt-n` → Attempt；`<attempt>:critic:<n>` → 该 Attempt 的验证费用（跟随该 Attempt 进入路径内或路径外）；`<mission>:judge:<n>` → Mission 判定（服务）；`:planner:` / `:manager:` → 服务；`unknown=1` 的行单列；另设"未归类"桶，要求为空。工具调用取 `budget_reservations.settled_tool_calls`；动作预留（`action:<key>`，没有模型用量）单列。人工等待时间（`human_wait_seconds`）单列为人工成本。
+- 成功路径规则（逐条，各配用例）：多 Task 以集成树（`merge_accepted`）的输出条目为最终产物，产出它们的已接受结果与其依赖闭包内的已接受结果在路径内；被后续 Task 覆盖的上游产物仍在依赖闭包内时算路径内并注明"被覆盖"；冲突中落败一方 Claim 的 Attempt 算"探索消耗（被驳倒）"，胜出一方与仲裁结果在路径内；同一 Task 被取代的候选 Attempt、失败重试的 Attempt 算探索消耗；动态改图中被取代 / 取消的 Task 算探索消耗；人工 override / 审批作为路径节点（token 为 0，另记人工时间）；失败的 Mission 没有成功路径，全部消耗列为未进入成功路径。
+
+**D8-5'　策略快照全字段枚举**（P1-8、P1-9、P2-6）
+- 用 `dataclasses.fields(OrchestratorConfig)` 枚举全部配置字段：每个字段要么进快照，要么进显式排除清单（`evidence_root`、`owner_id` 等随运行变化的项，理由写在代码里）；测试保证"新增配置字段必须被归类"。
+- 另含：全部角色模板版本（含 explorer / exploiter / simplifier / connector / failure_analyst 等）、`SUMMARY_VERSION`、`CONTRACT_SCHEMA_VERSION`、编排库 `SCHEMA_VERSION`、两个包版本、runtime profiles 与 routing、连接器清单、provider 身份（fixtures：provider 类名与脚本摘要；env：base_url 主机名、模型名、价目 snapshot id，从不含密钥）。
+- 快照在运行开始时写入 `baseline.json` 与 `policy_snapshot.json`，收尾时再算一次，比较有无漂移。
+- 登记（P1-9）：本步**不**提供运行时切换 Prompt / Allocator / Retrieval 版本的注册表（那是第 9 步"候选版本注册 / 版本化优先级候选"）；本步能比较的策略维度是模型与 runtime profile、消融、白名单内的配置项。版本常量的变化（代码升级）由快照差异逐项列出并给出来源（模块与常量名）——S8-07 以此判定。
+- 登记（P2-6）：真实评测默认 unpriced，金额为 null；有 `SH_PRICE_*` 时注入价目；只用 flash 做不了"不同模型名"的真实对比（L6-1），fixtures 用两个 profile 名证明机制。
+
+**D8-6'　评测运行身份、隔离、统计口径**（P0-2、P1-6、P1-7、P1-12）
+- 每次运行的幂等键为 `eval:<plan>:<strategy>:<case>:<trial>`（Mission id 随之不同）；运行目录必须不存在或为空，否则拒绝；每个运行库只含这一个 Mission；测试断言跨运行的 Mission id 两两不同。
+- 每次试验新建 provider（工厂），脚本按策略配足；每次运行有墙钟超时，超时或脚手架错误记为 `harness_error`，不计入成功率分母但必须报告；"等待人工"（waiting_on 非空的 ACTIVE）是单独的终态类别。
+- fixtures 评测结果强制标注"机制验证（fixture），不代表质量"，策略比较结论写"不适用（fixture）"。
+- 统计口径：成功率用 Fisher 精确检验（双侧，p < 0.05）判定差异，同时给 Wilson 95% 区间；按 case 成对比较；耗时与 tokens 给 min / median / max，两策略区间不重叠才写"有差异"，否则"证据不足"。真实 flash 小样本预期为"证据不足"，如实写。
+- 验证误判：`EvaluationCase` 可带隐藏 oracle（评测方的额外测试文件与 pytest 目标，Agent 看不到），评测执行器在运行结束后于最终集成树上跑 oracle；"验证 PASS 但 oracle FAIL"的比例即验证误判率；无 oracle 时为 null 并注明。
+
+**D8-7'　消融 = 有效验证政策的显式变更；安全边界白名单**（P0-3、P0-4、P1-10、P1-11）
+- `critic` 消融：在 Router 入口从有效 required 集合里去掉 `critic_review`；该层状态仍为 `NOT_REQUIRED`，`detail.ablated=true` 记录"原政策要求、被消融"；Mission judge 不运行。消融运行产生的 PASS 在报告里标注"消融政策下的 PASS"，不与完整政策下的 PASS 混算；快照把政策变更列为差异。连带影响写进"关闭了什么"：needs_human 升级与第 ② 类仲裁随之消失。
+- 评测计划校验：`critic` 消融的 case 其 Mission 准则只能是 `pytest:` / `file:`（自由文本准则在消融下结果预先确定，违背"不预设方向"），否则拒绝该组合。
+- `blackboard` 消融（= `knowledge_sharing=False`）：连带关闭冲突任务与综合所需知识；判定写成可数形式：`KnowledgeUsed = 0`，出现 `ConflictOpenDeferred(knowledge_sharing_disabled)`（有冲突时）。
+- `graph_changes` 消融（= `dynamic_graph=False`；原 D8-7 的 `dynamic_graph` 改名）：登记"这是关闭 Manager 改图，不是原文 §23.4 的动态调度 / 理论 12 §11 的动态 Allocator"；本步不提供 Allocator 消融（登记）。
+- Strategy 的配置覆盖改为**白名单**：`ablations`、runtime profile / 模型选择、`candidates_per_task`、`manager_after_failures`、`no_progress_limit`、`max_manager_rounds`、`max_concurrency`、`knowledge_sharing` 与 `dynamic_graph`（只能经消融词表）。预算、Global 预算、`hard_cap_micros`、背压硬上限、`deployment_policy`（权限、连接器、审批规则）、密钥与验证的确定性层一律拒绝覆盖。
+- 评测运行强制部署只启用测试连接器（`enabled_connectors ⊆ {"test_config"}` 且实例是 `TestConfigService`，每次运行一个新的测试服务文件）；带 `action:` 准则的 case 只能在测试连接器下运行，否则拒绝。
+
+**D8-8'　派生 case 的保真性**（P0-2、P1-13、P2-8）：只支持本版本演示产生的证据目录（按 `baseline.json` 的场景名指定 provider 工厂）；从 `baseline.json` 读取 spec 后重算 `spec_hash`，与旧库 `MissionCreated.spec_hash` 比对，不一致就拒绝派生；派生运行改写幂等键，报告记录原 tenant / 原 key / 原 Mission id / 原快照哈希；旧库在运行前后哈希不变。
+
+**D8-9'　CLI**（P2-8、P2-5）：`replay --evidence-dir DIR MISSION_ID [--events FILE] [--failures] [--attribution]`（归因并入 replay，不另设 `attribute`）、`evaluate --plan plan.json --evidence-dir DIR`、`demo --scenario evaluate-policies`。step02 的"未实现"检查改用 `policy-promotion`，`__main__` 文档串同步。
+
+**指标定义修正**（P2-2）：见 §6.1。
+
+**登记**（P2-1）：理论 12 §12 的"新验证规则下重放"的一个变体——用新 Verifier 重新判定旧产物而不重跑 Agent——本步不做，属于第 9 步候选评测；本步凡"新规则 / 新模型"一律是 Evaluation。
+
+**切片调整**（P2-7）
+- A Replay：只读副本打开、分页读事件、`ActionCancelled`、投影表与推导规则、覆盖率、结构性缺口、与快照比较、失败时间线、崩溃前缀。
+- B 归因与快照：主体分类、路径规则、费用与人工时间、策略快照与差异。
+- C 消融：有效政策变更、白名单、安全边界拒绝。
+- D Evaluation：运行身份与隔离、超时与 harness_error、统计口径、oracle、派生 case。
+- E CLI、演示、真实 flash 评测（opt-in）。
+- F 收尾。
 
 ### 6.1 本步实施约定（非原文原句；按 ORCH §13 登记）
 
 - Replay 与 Evaluation 的分界：Replay 只重建既有事实、不执行；任何"用新规则 / 新模型再跑一次"都是 Evaluation（新目录、新库、新费用）。
 - 正式状态的字段集与投影表见 D8-2；覆盖率 = 已覆盖字段数 / 应覆盖字段数，按对象类型分别报告。
-- 重复率 = 同一 Mission 内内容哈希相同的已提交 artifact 占全部已提交 artifact 的比例；剪枝率 = 被取代或取消的 Task 占全部 Task 的比例；污染率 = 被 DISPUTED 或 SUPERSEDED 的 Verified Knowledge 占全部 Verified Knowledge 的比例；验证误报率需要真值，本步记 null 并注明。
-- 策略比较口径：成功率差异以样本量报告；样本量低于 `min_samples`（默认 3）或两策略成功数之差不大于 1 时写"证据不足"。
+- 重复率 = 同一 Mission 内内容哈希相同的已提交 artifact 占全部已提交 artifact 的比例。
+- 剪枝率 = 被取代的 Task 与被取代的候选 Attempt 占全部 Task / Attempt 的比例；排除 Mission 停止的级联取消（`mission_stopped`）与 `not_needed_paused`。
+- 污染率 = 经冲突仲裁被驳倒的 Claim 数 / 全部 Claim 数（只有 Claim 会被 DISPUTED；知识的正常 SUPERSEDED 不算污染）。
+- 故障恢复 = 某 Attempt 失败后同一 Task 的后续 Attempt 被接受的次数（"重试成功"）；崩溃恢复另计（recover 报告里的数）。
+- 验证误判率 = 验证 PASS 但隐藏 oracle FAIL 的运行比例；没有 oracle 的 case 为 null。新思路数：本步没有可靠的记录口径，为 null 并注明。
+- 策略比较口径：成功率用 Fisher 精确检验（双侧 p < 0.05）并给 Wilson 95% 区间；耗时与 tokens 用 min / median / max，区间不重叠才写"有差异"；否则"证据不足"；fixtures 结果写"不适用（fixture）"。
