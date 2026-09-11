@@ -35,6 +35,8 @@ class MissionStopReason(StrEnum):
     MISSION_CRITERIA_UNMET = "mission_criteria_unmet"
     ARTIFACT_CONFLICT = "artifact_conflict"  # step 3: independent branches disagree on a path
     RETRIEVAL_UNAVAILABLE = "retrieval_unavailable"  # step 4 (D4-11'): knowledge index unreadable
+    NO_PROGRESS = "no_progress"  # step 5 (D5-7): repeated no-progress and no change of approach
+    MANAGEMENT_EXHAUSTED = "management_exhausted"  # step 5: Manager rounds used up
 
 
 class TaskStatus(StrEnum):

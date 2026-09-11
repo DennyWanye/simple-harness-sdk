@@ -1328,13 +1328,14 @@ class Orchestrator:
         tasks = self.store.list_tasks(mission.id)
         if not tasks or mission.status is not MissionStatus.ACTIVE:
             return False
-        if all(task.status is TaskStatus.COMPLETED for task in tasks):
+        live = [t for t in tasks if t.status is not TaskStatus.CANCELLED]  # D5-4
+        if live and all(task.status is TaskStatus.COMPLETED for task in live):
             current = self.store.get_mission(mission.id)  # not the cycle's stale snapshot
             if current is None or current.status is not MissionStatus.ACTIVE:
                 return False
-            await self._judge(current, tasks)
+            await self._judge(current, live)
             return True
-        if any(task.status in {TaskStatus.FAILED, TaskStatus.CANCELLED} for task in tasks):
+        if any(task.status is TaskStatus.FAILED for task in tasks):
             return False  # the stop cascade already ended the Mission
         attempts = [a for task in tasks for a in self.store.list_attempts(task.id)]
         open_conflicts = [

@@ -288,6 +288,9 @@ class Task:
     outputs: tuple[str, ...] = ()  # step 3 (D3-7'): upstream paths this Task may rewrite
     kind: str = "work"  # step 4 (D4-7/D4-8): work | conflict | synthesis (system templates)
     context: Mapping[str, Any] = field(default_factory=dict)  # system data of a template Task
+    ready_at: float | None = None  # step 5 (D5-8): when the Task became READY (waiting_age)
+    paused: bool = False  # step 5 (D5-1): Manager pause — a scheduling flag, not a state
+    pause_reason: str | None = None
 
     def __hash__(self) -> int:  # P2-15: ``context`` is a dict; identity is (id, version)
         return hash((self.id, self.version))
@@ -364,6 +367,9 @@ class Task:
             "outputs": list(self.outputs),
             "kind": self.kind,
             "context": dict(self.context),
+            "ready_at": self.ready_at,
+            "paused": self.paused,
+            "pause_reason": self.pause_reason,
         }
 
     @classmethod
@@ -392,6 +398,9 @@ class Task:
             outputs=tuple(data.get("outputs", ())),
             kind=data.get("kind", "work") or "work",
             context=data.get("context", {}) or {},
+            ready_at=data.get("ready_at"),
+            paused=bool(data.get("paused", False)),
+            pause_reason=data.get("pause_reason"),
         )
 
 

@@ -37,6 +37,7 @@ def frontier(tasks: Sequence[Task]) -> list[Task]:
         task
         for task in tasks
         if task.status is TaskStatus.READY
+        and not task.paused  # step 5 (D5-1): a paused route is not allocated
         and all(
             dep in by_id and by_id[dep].status is TaskStatus.COMPLETED
             for dep in task.dependency_ids
@@ -90,7 +91,7 @@ def allocate(
     open_total = sum(open_by_task.values())
     grants: list[tuple[Task, int]] = []
     candidates = frontier(tasks) + sorted(
-        (task for task in tasks if task.status is TaskStatus.ACTIVE),
+        (task for task in tasks if task.status is TaskStatus.ACTIVE and not task.paused),
         key=lambda task: (-task.priority, _ordinal(task.id)),
     )
     seen: set[str] = set()

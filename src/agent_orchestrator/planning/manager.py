@@ -157,12 +157,13 @@ def system_reserve_tokens(mission: Mission) -> int:
 def terminal_task(tasks: Sequence[Task]) -> Task:
     """D4-7': the synthesis Task, else the last non-conflict leaf, else the last Task."""
 
-    for task in tasks:
+    live = [task for task in tasks if task.status is not TaskStatus.CANCELLED] or list(tasks)
+    for task in live:
         if task.kind == "synthesis":
             return task
-    depended = {dep for task in tasks for dep in task.dependency_ids}
-    leaves = [task for task in tasks if task.id not in depended and task.kind != "conflict"]
-    return leaves[-1] if leaves else tasks[-1]
+    depended = {dep for task in live for dep in task.dependency_ids}
+    leaves = [task for task in live if task.id not in depended and task.kind != "conflict"]
+    return leaves[-1] if leaves else live[-1]
 
 
 __all__ = (

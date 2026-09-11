@@ -39,6 +39,13 @@ from ..contracts import (
 )
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, jsonable, sha256_hex
 from ..governance.budgets import BudgetError, BudgetLedger, UsageFact
+from ..graph.changes import (
+    ChangeLimits,
+    GraphChangeRejected,
+    TaskGraphChange,
+    node_budget,
+    validate_change,
+)
 from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
 from ..memory.claims import grade_claim
 from ..memory.summaries import refresh_summaries
@@ -545,6 +552,8 @@ class CommitService:
                     root_goal=mission.goal,
                     created_at=self._store.now,
                     outputs=node.outputs,
+                    ready_at=self._store.now if not dependencies else None,
+                    context={"graph_version": 1},
                 )
                 self._store.insert_task(task, ordinal=ordinal)
                 self._ledger.open_account(
@@ -645,6 +654,379 @@ class CommitService:
             )
             return tasks, receipt
 
+    # ------------------------------------------------------ graph changes (step 5)
+    def commit_graph_change(
+        self,
+        mission_id: str,
+        change: TaskGraphChange,
+        *,
+        source: Mapping[str, Any],
+        limits: ChangeLimits | None = None,
+        allow_rebase: bool = True,
+    ) -> tuple[list[Task], Mapping[str, Any]]:
+        """Apply a Manager's Task DAG change atomically (D5-2 / D5-3 / D5-10).
+
+        The proposal must be based on the current ``graph_version`` (CAS); a stale
+        base is rebased automatically when its operations touch none of the Tasks the
+        intervening changes affected, otherwise refused.  A repeated delivery of the
+        same proposal on the same base returns the same receipt.  Validation failures
+        write only ``TaskGraphChangeRejected`` and leave the formal graph untouched.
+        """
+
+        limits = limits or ChangeLimits()
+        try:
+            return self._commit_graph_change(
+                mission_id, change, source=source, limits=limits, allow_rebase=allow_rebase
+            )
+        except GraphChangeRejected as error:
+            self._emit(
+                "TaskGraphChangeRejected",
+                mission_id,
+                key=f"{mission_id}:{change.base_graph_version}:{change.proposal_hash[:12]}:{source.get('intent_id', '')}",
+                payload={
+                    "reason": error.reason,
+                    "detail": error.detail,
+                    "base_graph_version": change.base_graph_version,
+                    "basis": dict(change.basis),
+                    "source": dict(source),
+                },
+            )
+            raise CommitRejected(
+                f"graph change rejected ({error.reason}): {error.detail}"
+            ) from error
+
+    def _commit_graph_change(
+        self,
+        mission_id: str,
+        change: TaskGraphChange,
+        *,
+        source: Mapping[str, Any],
+        limits: ChangeLimits,
+        allow_rebase: bool,
+    ) -> tuple[list[Task], Mapping[str, Any]]:
+        with self._store.transaction():
+            mission = self._require_mission(mission_id)
+            if mission.status is not MissionStatus.ACTIVE:
+                raise GraphChangeRejected(
+                    "mission_not_active", f"mission {mission_id} is {mission.status}"
+                )
+            report = dict(mission.final_report or {})
+            current = int(report.get("graph_version") or 1)
+            change_id = ids.commit_id(
+                {
+                    "kind": "graph_change",
+                    "mission_id": mission_id,
+                    "proposal": change.proposal_hash,
+                },
+                change.base_graph_version,
+            )
+            receipt = self._store.get_receipt(change_id)
+            if receipt is not None:  # S5-07: the same proposal on the same base, once
+                replayed = [self._require_task(task_id) for task_id in receipt["new_task_ids"]]
+                return replayed, receipt
+            rebased_from: int | None = None
+            if change.base_graph_version != current:
+                if not allow_rebase or change.base_graph_version > current:
+                    raise GraphChangeRejected(
+                        "stale_base",
+                        f"proposal is based on graph version {change.base_graph_version}, current is {current}",
+                    )
+                touched: set[str] = set()
+                for applied in self._store.list_graph_changes(
+                    mission_id, since_version=change.base_graph_version
+                ):
+                    touched.update(str(t) for t in applied.get("affected_task_ids", []))
+                overlap = touched & change.referenced_task_ids()
+                if overlap:
+                    raise GraphChangeRejected(
+                        "stale_base",
+                        f"proposal is based on graph version {change.base_graph_version}, current is {current}; "
+                        f"it touches tasks changed since: {sorted(overlap)}",
+                    )
+                rebased_from = change.base_graph_version
+            tasks = self._store.list_tasks(mission_id)
+            proposals_by_attempt: dict[str, int] = {}
+            for task in tasks:
+                for parent in (
+                    task.context.get("proposed_by_attempt", [])
+                    if isinstance(task.context.get("proposed_by_attempt"), list)
+                    else []
+                ):
+                    proposals_by_attempt[str(parent)] = proposals_by_attempt.get(str(parent), 0) + 1
+            settled: dict[str, int] = {}
+            for task in tasks:
+                if task.status is TaskStatus.CANCELLED:
+                    with self._store.transaction():
+                        account = self._ledger.account(task_account(task.id))
+                    settled[task.id] = int(account.settled_tokens)
+            validated = validate_change(
+                mission,
+                tasks,
+                change,
+                limits=limits,
+                proposals_by_attempt=proposals_by_attempt,
+                settled_tokens_by_task=settled,
+            )
+            by_id = {task.id: task for task in tasks}
+            new_version = current + 1
+            key_to_id: dict[str, str] = {}
+            key_to_ordinal: dict[str, int] = {}
+            ordinal = len(tasks)
+            created: list[Task] = []
+            source_attempt = str(change.basis.get("attempt_id") or "")
+            for key in validated.order:  # topological among the new nodes → ordinal ≡ order
+                ordinal += 1
+                key_to_id[key] = ids.task_id(mission_id, ordinal)
+                key_to_ordinal[key] = ordinal
+            for key in validated.order:
+                node = next(n for n in validated.new_nodes if n.key == key)
+                dependencies = tuple(key_to_id.get(d, d) for d in node.dependencies)
+                supersedes = next(
+                    (old for old, rep in validated.superseded.items() if rep == key), None
+                )
+                context: dict[str, Any] = {
+                    "graph_version": new_version,
+                    "change_id": change_id,
+                    "role": node.role,
+                    "proposed_by_attempt": [source_attempt] if source_attempt else [],
+                }
+                if supersedes is not None:
+                    old = by_id[supersedes]
+                    context["supersedes_task"] = supersedes
+                    context["supersede_depth"] = int(old.context.get("supersede_depth", 0)) + 1
+                deps_done = all(
+                    by_id[d].status is TaskStatus.COMPLETED for d in dependencies if d in by_id
+                ) and all(d in by_id for d in dependencies)
+                task = Task(
+                    id=key_to_id[key],
+                    mission_id=mission_id,
+                    parent_task_ids=tuple(node.parent_task_ids)
+                    or ((supersedes,) if supersedes else ()),
+                    dependency_ids=dependencies,
+                    goal=node.goal,
+                    rationale=node.rationale,
+                    success_criteria=node.success_criteria,
+                    verification_policy=node.verification_policy,
+                    allowed_tools=node.allowed_tools or mission.allowed_tools,
+                    budget=node_budget(node, validated, mission),
+                    priority=node.priority,
+                    status=TaskStatus.READY if deps_done else TaskStatus.BLOCKED,
+                    version=1,
+                    root_goal=mission.goal,
+                    created_at=self._store.now,
+                    outputs=node.outputs,
+                    context=context,
+                    ready_at=self._store.now if deps_done else None,
+                )
+                self._store.insert_task(task, ordinal=key_to_ordinal[key])
+                self._ledger.open_account(
+                    account_id=task_account(task.id),
+                    scope="task",
+                    parent_id=mission_account(mission_id),
+                    mission_id=mission_id,
+                    limits=task.budget,
+                )
+                created.append(task)
+                self._emit(
+                    "TaskCommitted",
+                    mission_id,
+                    key=task.id,
+                    task_id=task.id,
+                    payload={
+                        "commit_id": change_id,
+                        "key": key,
+                        "dependencies": list(dependencies),
+                        "proposal": node.to_json(),
+                        "source": {
+                            **dict(source),
+                            "template": "change",
+                            "graph_version": new_version,
+                        },
+                    },
+                )
+            # in-place rewrites on BLOCKED tasks (data only, §25.1 untouched)
+            for task_id, deps in validated.retargets.items():
+                task = self._require_task(task_id)
+                resolved = tuple(key_to_id.get(d, d) for d in deps)
+                self._store.update_task(
+                    next_task(
+                        task,
+                        dependency_ids=resolved,
+                        context={**dict(task.context), "graph_version": new_version},
+                    ),
+                    expected_version=task.version,
+                )
+                self._emit(
+                    "TaskDependenciesRewritten",
+                    mission_id,
+                    key=f"{task_id}:{new_version}",
+                    task_id=task_id,
+                    payload={
+                        "from": list(task.dependency_ids),
+                        "to": list(resolved),
+                        "graph_version": new_version,
+                    },
+                )
+            # dependents of a superseded task that were not explicitly retargeted follow the replacement
+            for old_id, replacement_key in validated.superseded.items():
+                new_id = key_to_id[replacement_key]
+                for task in self._store.list_tasks(mission_id):
+                    if (
+                        task.status is TaskStatus.BLOCKED
+                        and old_id in task.dependency_ids
+                        and task.id not in validated.retargets
+                    ):
+                        resolved = tuple(new_id if d == old_id else d for d in task.dependency_ids)
+                        self._store.update_task(
+                            next_task(task, dependency_ids=resolved), expected_version=task.version
+                        )
+                        self._emit(
+                            "TaskDependenciesRewritten",
+                            mission_id,
+                            key=f"{task.id}:{new_version}",
+                            task_id=task.id,
+                            payload={
+                                "from": list(task.dependency_ids),
+                                "to": list(resolved),
+                                "graph_version": new_version,
+                                "follows_supersede": old_id,
+                            },
+                        )
+            for task_id, priority in validated.priorities.items():
+                task = self._require_task(task_id)
+                self._store.update_task(
+                    next_task(task, priority=priority), expected_version=task.version
+                )
+            for task_id, reason in validated.pauses.items():
+                task = self._require_task(task_id)
+                self._store.update_task(
+                    next_task(task, paused=True, pause_reason=reason or "paused by manager"),
+                    expected_version=task.version,
+                )
+                self._emit(
+                    "TaskPaused",
+                    mission_id,
+                    key=f"{task_id}:{new_version}",
+                    task_id=task_id,
+                    payload={"reason": reason},
+                )
+            for task_id in validated.resumes:
+                task = self._require_task(task_id)
+                self._store.update_task(
+                    next_task(task, paused=False, pause_reason=None), expected_version=task.version
+                )
+                self._emit(
+                    "TaskResumed",
+                    mission_id,
+                    key=f"{task_id}:{new_version}",
+                    task_id=task_id,
+                    payload={},
+                )
+            for task_id, role in validated.roles.items():
+                task = self._require_task(task_id)
+                self._store.update_task(
+                    next_task(task, context={**dict(task.context), "role": role}),
+                    expected_version=task.version,
+                )
+                self._emit(
+                    "TaskRoleChanged",
+                    mission_id,
+                    key=f"{task_id}:{new_version}",
+                    task_id=task_id,
+                    payload={"role": role},
+                )
+            # superseded / cancelled executing tasks: ACTIVE→CANCELLED (VERIFYING→ACTIVE first), attempts closed
+            for old_id, replacement_key in validated.superseded.items():
+                self._cancel_task_entity(
+                    old_id, reason="superseded", replaced_by=key_to_id[replacement_key]
+                )
+            for old_id, reason in validated.cancels.items():
+                self._cancel_task_entity(
+                    old_id, reason=reason or "cancelled by manager", replaced_by=None
+                )
+            unblocked = [t.id for t in self._unblock(mission_id, unblocked_by=None)]
+            record = {
+                "change_id": change_id,
+                "mission_id": mission_id,
+                "from_version": current,
+                "to_version": new_version,
+                "proposal_hash": change.proposal_hash,
+                "rebased_from": rebased_from,
+                "basis": dict(change.basis),
+                "rationale": change.rationale,
+                "operations": [op.to_json() for op in change.operations],
+                "new_task_ids": [t.id for t in created],
+                "superseded": {old: key_to_id[rep] for old, rep in validated.superseded.items()},
+                "cancelled": list(validated.cancels),
+                "affected_task_ids": [key_to_id.get(t, t) for t in validated.affected_task_ids],
+                "unblocked": unblocked,
+                "warnings": list(validated.warnings),
+                "depth": validated.depth,
+                "source": dict(source),
+            }
+            self._store.insert_graph_change(record)
+            self._store.update_mission(
+                next_mission(mission, final_report={**report, "graph_version": new_version}),
+                expected_version=mission.version,
+            )
+            self._store.insert_receipt(
+                commit_id=change_id,
+                kind="graph_change",
+                subject_id=mission_id,
+                base_version=change.base_graph_version,
+                proposal_hash=change.proposal_hash,
+                receipt=record,
+            )
+            self._emit(
+                "TaskGraphChanged",
+                mission_id,
+                key=change_id,
+                payload={k: v for k, v in record.items() if k not in {"operations"}}
+                | {"operations": len(change.operations)},
+            )
+            return created, record
+
+    def _cancel_task_entity(self, task_id: str, *, reason: str, replaced_by: str | None) -> Task:
+        """READY/ACTIVE → CANCELLED (VERIFYING → ACTIVE first: two legal edges), open
+        Attempts CANCELLED (late results stay history), unsubmitted intents closed."""
+
+        task = self._require_task(task_id)
+        if task.status is TaskStatus.VERIFYING:
+            task = next_task(task, TaskStatus.ACTIVE)
+            self._store.update_task(task, expected_version=task.version - 1)
+            stored = self._store.find_result_for_attempt(
+                next(
+                    (
+                        a.id
+                        for a in self._store.list_attempts(task_id)
+                        if a.status in SUBMITTED_STATES
+                    ),
+                    "",
+                )
+            )
+            if stored is not None and stored.verification_state in {"PENDING", "RUNNING"}:
+                self._store.set_result_verification(
+                    stored.envelope.id, state="REJECTED", verdict="superseded"
+                )
+        cancelled = next_task(
+            task,
+            TaskStatus.CANCELLED,
+            failure_reason=reason,
+            context={**dict(task.context), **({"replaced_by": replaced_by} if replaced_by else {})},
+        )
+        self._store.update_task(cancelled, expected_version=task.version)
+        for attempt in self._store.list_attempts(task_id):
+            if attempt.status in OPEN_ATTEMPT_STATES:
+                self._close_attempt(attempt, AttemptStatus.CANCELLED, reason=f"task_{reason}")
+        self._emit(
+            "TaskSuperseded" if replaced_by else "TaskCancelled",
+            task.mission_id,
+            key=task_id,
+            task_id=task_id,
+            payload={"reason": reason, "replaced_by": replaced_by},
+        )
+        return cancelled
+
     def unblock_dependents(self, task_id: str) -> list[Task]:
         """After a Task COMPLETED: every BLOCKED dependent whose dependencies are all
         COMPLETED becomes READY (§25.1 "dependencies satisfied")."""
@@ -662,7 +1044,7 @@ class CommitService:
             if unblocked_by is not None and unblocked_by not in task.dependency_ids:
                 continue
             if all(tasks[dep].status is TaskStatus.COMPLETED for dep in task.dependency_ids):
-                ready = next_task(task, TaskStatus.READY)
+                ready = next_task(task, TaskStatus.READY, ready_at=self._store.now)
                 self._store.update_task(ready, expected_version=task.version)
                 unblocked.append(ready)
                 self._emit(
@@ -2119,9 +2501,13 @@ class CommitService:
             mission = self._require_mission(mission_id)
             if mission.status in {MissionStatus.COMPLETED, MissionStatus.FAILED}:
                 return mission
-            tasks = self._store.list_tasks(mission_id)
+            tasks = [
+                task
+                for task in self._store.list_tasks(mission_id)
+                if task.status is not TaskStatus.CANCELLED  # D5-4: superseded work is history
+            ]
             if not tasks or any(task.status is not TaskStatus.COMPLETED for task in tasks):
-                raise CommitRejected("mission judgment requires every Task to be COMPLETED")
+                raise CommitRejected("mission judgment requires every live Task to be COMPLETED")
             criteria = list(mission.success_criteria)
             if [item.get("criterion") for item in judgments] != criteria:
                 raise CommitRejected("judgments must cover the Mission success criteria in order")

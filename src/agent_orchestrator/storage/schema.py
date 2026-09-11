@@ -268,9 +268,26 @@ CREATE INDEX claims_mission_key_idx ON claims(mission_id, key);
 CREATE UNIQUE INDEX artifacts_lineage_idx ON artifacts(mission_id, path, version);
 """
 
+# Step 5 (D5-14): the graph change ledger — every applied Task DAG change with its base
+# and new version, basis and operations (the "v1 → v2, why" a user can read back).
+DDL_V3 = """
+CREATE TABLE graph_changes (
+ change_id TEXT PRIMARY KEY,
+ mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ from_version INTEGER NOT NULL,
+ to_version INTEGER NOT NULL,
+ proposal_hash TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ UNIQUE(mission_id, to_version)
+) STRICT;
+CREATE INDEX graph_changes_mission_idx ON graph_changes(mission_id, from_version);
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
+    Migration(3, "orchestrator-step05", DDL_V3),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -285,6 +302,7 @@ __all__ = (
     "DDL",
     "DDL_V1",
     "DDL_V2",
+    "DDL_V3",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

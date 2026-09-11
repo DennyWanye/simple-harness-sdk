@@ -39,26 +39,26 @@ def test_v1_library_is_backed_up_and_upgraded_to_v2(tmp_path):
     rows = store.connection.execute(
         "SELECT version,name FROM orch_schema_migrations ORDER BY version"
     ).fetchall()
-    assert [tuple(r) for r in rows] == [
-        (1, schema.MIGRATIONS[0].name),
-        (2, schema.MIGRATIONS[1].name),
-    ]
+    assert [tuple(r) for r in rows] == [(m.version, m.name) for m in schema.MIGRATIONS]
     tables = {
         r[0] for r in store.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     assert {"knowledge", "summaries", "conflicts"} <= tables
     assert store.connection.execute("SELECT count(*) FROM missions").fetchone()[0] == 1
-    assert (tmp_path / "orchestrator.db.pre-schema-2.backup").is_file()
+    assert (tmp_path / f"orchestrator.db.pre-schema-{schema.SCHEMA_VERSION}.backup").is_file()
     store.close()
     Store.open(path).close()  # idempotent: already at v2
 
 
-def test_fresh_library_is_v2_and_newer_is_refused(tmp_path):
+def test_fresh_library_is_latest_and_newer_is_refused(tmp_path):
     store = Store.open(tmp_path / "fresh.db")
-    assert schema.SCHEMA_VERSION == 2
+    assert schema.SCHEMA_VERSION == schema.MIGRATIONS[-1].version >= 2
     rows = store.connection.execute("SELECT version FROM orch_schema_migrations").fetchall()
-    assert [r[0] for r in rows] == [1, 2]
-    store.connection.execute("INSERT INTO orch_schema_migrations VALUES (3,'future','x',1.0)")
+    assert [r[0] for r in rows] == [m.version for m in schema.MIGRATIONS]
+    store.connection.execute(
+        "INSERT INTO orch_schema_migrations VALUES (?,'future','x',1.0)",
+        (schema.SCHEMA_VERSION + 1,),
+    )
     store.connection.commit()
     store.close()
     with pytest.raises(SchemaIncompatible):
