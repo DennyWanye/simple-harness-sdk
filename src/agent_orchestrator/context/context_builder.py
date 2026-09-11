@@ -222,6 +222,7 @@ def build_planner_package(
     attempt_ordinal: int,
     rejected: Sequence[Mapping[str, Any]] = (),
     deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
+    budget_floor: Mapping[str, int] | None = None,
 ) -> TaskPackage:
     package: dict[str, Any] = {
         "role": "planner",
@@ -248,6 +249,8 @@ def build_planner_package(
             ),
             "system_reserve_tokens": system_reserve_tokens(mission),
             "synthesis_task": (mission.final_report or {}).get("synthesis") is not None,
+            # P3.1 fix F-ORCH-1: the least one Task may hold (with / without critic_review)
+            **dict(budget_floor or {}),
         },
         "planning_rejected": [dict(item) for item in rejected],  # D3-2': why the last one failed
         # host support 0.9.8: the only layers a Task's verification_policy may name here
@@ -321,6 +324,7 @@ def build_manager_package(
     knowledge: KnowledgeContext | None,
     rejections: Sequence[Mapping[str, Any]] = (),
     deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
+    budget_floor: Mapping[str, int] | None = None,
 ) -> TaskPackage:
     """What the Manager sees (D5-6): the trigger, the Verifier's feedback, the affected
     subgraph with its statuses and attempt counts, the graph version it must base its
@@ -356,6 +360,8 @@ def build_manager_package(
         ],
         "disputed_claims": [dict(item) for item in knowledge.disputed],
         "rejections": [dict(item) for item in rejections],  # why the previous proposal was refused
+        # P3.1 fix F-ORCH-1 (plan review P2-4): what an add_task's budget must at least hold
+        "budget_floor": dict(budget_floor or {}),
         "output_contract": "<graph_change_proposal>{json}</graph_change_proposal>",
         "package_version": PACKAGE_VERSION,
     }

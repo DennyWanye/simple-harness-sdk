@@ -1,3 +1,25 @@
+## 0.9.11 — agent_orchestrator 0.9.4: P3.1 follow-up fixes (Phase3)
+
+`agent_orchestrator` 0.9.4 (same wheel).  Fixes found by the Host's native acceptance
+(plans/2026-09-12-phase3/p31-fixes).  **Task budget floor** (F-ORCH-1): the Graph Manager
+refuses a Task whose effective token budget cannot carry a first Attempt and its Critic —
+`k × (base + critic)` with k candidates per Task from the Mission's bound policy, the critic
+part only when the policy names critic_review, `base` the largest
+`default_max_output_tokens` of the config and every profile (`OrchestratorConfig.
+min_task_tokens`: None = derived, 0 = off).  Initial graphs and graph changes alike;
+refused with `task_budget_below_floor`, the Planner and the Manager are told the floor in
+their input packages and why the proposal failed — nothing raises a model's number
+silently; system tasks are exempt; the floor is a necessary condition, not a promise that
+repairs will be affordable.  Only the Orchestrator injects the floor — a bare
+`CommitService`, `validate_graph` or `validate_change` behaves as before.  **Artifact
+verification status** (F-ORCH-3): an accepted result's artifacts become VERIFIED and a
+failed result's REJECTED, each in its commit transaction
+(`Store.update_artifact_verification`); superseded candidates stay UNVERIFIED.  An
+Attempt's RETRY_WAIT after its Mission ended is by design (§25.2: a failed Attempt's
+terminal state) — documented, unchanged.  (0.9.8–0.9.10 were the Host-support slices: the
+local code execution switch, the P3.1 external control facade and their review fixes;
+recorded in plans/2026-09-11-agent-orchestrator/host-support-0.9.8/.)
+
 ## 0.9.7 — agent_orchestrator step 9: learning from history and controlled promotion (source candidate)
 
 `agent_orchestrator` 0.9.0 (same wheel).  Step 9 of ORCH-BUILD-v1.0 — the last step of the

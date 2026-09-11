@@ -1,11 +1,11 @@
-# P3.1 遗留修复 · 验收（第 1 版）
+# P3.1 遗留修复 · 验收（第 2 版）
 
 | 编号 | 场景 | 什么算对 | 证据 |
 |---|---|---|---|
-| FX-1 | 关口有下限 | 生效预算低于 `floor_for(policy)` 的 Task 被 `validate_graph` 拒绝，原因含 `task_budget_below_floor`、所需下限与组成。其中下限等于 base，政策含 critic_review 时再加上 critic 预留。刚好等于下限的放行。`min_task_tokens=0` 时关闭下限 | `test_p31_fixes.py` |
-| FX-2 | 图变更有下限 | `validate_change` 对新增 Task 的最终预算（含缺省份额）做同样的检查，不达下限抛 `GraphChangeRejected("budget")` | 同上 |
-| FX-3 | 反馈与重规划 | Planner 输入的 `budget_for_tasks` 带出 `min_task_tokens`、`min_task_tokens_with_critic_review`；被拒后，下一次 Planner 输入的 `planning_rejected` 带下限原因；第二版图给足预算后，Mission 完成 | 同上 |
-| FX-4 | 系统任务不受约束 | 合成任务照常追加，预算来自模板与继承 | 同上 |
-| FX-5 | 产物验证状态 | 被接受结果的产物为 VERIFIED；FAIL 或被取代的结果，其产物保持 UNVERIFIED；两者都在同一事务里完成 | 同上 |
-| FX-6 | 不回退 | 全量回归红集 ⊆ 基线 73；回放与对账扫描（第 8 步）照常通过；ruff 与 mypy 干净 | journal |
-| FX-7 | 交付 | wheel 0.9.11 在干净环境验证；Host 改钉后 `tests/orchestration` 全部通过；Host ARCHITECTURE 写明下限与 RETRY_WAIT 的语义；推送 | journal；Host 记录 |
+| FX-1 | 关口有下限 | 生效预算低于 `k × (base + critic)` 的 Task 被 `validate_graph` 拒绝，其中 critic 部分只在 policy 含 critic_review 时计入。拒绝原因写明 `task_budget_below_floor`、所需下限和它的组成。<br>边界：刚好等于下限的放行；k=2 时下限翻倍；`min_task_tokens=0` 时不检查；不传 `task_floor` 时行为不变；合成模板不受下限约束 | `test_p31_fixes.py` |
+| FX-2 | 图变更有下限 | `validate_change` 对新增 Task 的最终预算做同样的检查，缺省分到的份额也算在内 | 同上 |
+| FX-3 | 反馈与重规划 | Mission 预算为 null。Planner 输入的 `budget_for_tasks` 带着两个下限字段；被拒后，下一次输入的 `planning_rejected` 带着拒绝原因；第二版图给足预算后 Mission 完成。Manager 的输入包也带下限字段 | 同上 |
+| FX-4 | 容不下时如实失败 | 预算池连一个 Task 的下限都放不下：Mission 结束为 `planning_failed`，失败原因里有 `task_budget_below_floor` | 同上 |
+| FX-5 | 产物验证状态 | 用新连接从库里读回：被接受的是 VERIFIED，被判 FAIL 的是 REJECTED，被取代的保持 UNVERIFIED。在 `after_accept_before_supersede` 注入崩溃后，库里仍是 UNVERIFIED | 同上 |
+| FX-6 | 不回退 | 全量回归红集 ⊆ 基线 73；回放与对账扫描照常通过；ruff 与 mypy 干净 | journal |
+| FX-7 | 交付 | wheel 0.9.11 在干净环境验证通过；Host 改钉后 `tests/orchestration` 全部通过；Host ARCHITECTURE 写明下限、产物状态和 RETRY_WAIT 的语义；已推送。<br>说明：Host 门口已经补了默认预算，原生路径走不到 null 预算，所以 F-ORCH-1 由 SDK 测试证明 | journal；Host 记录 |

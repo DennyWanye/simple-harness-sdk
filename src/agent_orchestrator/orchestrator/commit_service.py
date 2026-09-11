@@ -53,7 +53,7 @@ from ..graph.changes import (
     node_budget,
     validate_change,
 )
-from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
+from ..graph.task_graph import GraphRejected, TaskBudgetFloor, TaskGraphProposal, validate_graph
 from ..memory.claims import grade_claim
 from ..memory.summaries import refresh_summaries
 from ..memory.verified_knowledge import KnowledgeIndex, KnowledgeRecord
@@ -214,8 +214,15 @@ class CommitService(
         conflict_tasks: bool = True,
         global_budget: Budget | None = None,
         deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
+        task_floor: TaskBudgetFloor | None = None,
+        candidates_for: Callable[[str], int] | None = None,
     ) -> None:
         self._store = store
+        # P3.1 fix F-ORCH-1: the Task budget floor the Graph Manager applies — only the
+        # Orchestrator injects one (None = no floor, every earlier construction unchanged);
+        # ``candidates_for`` gives a Mission's candidates per Task from its bound policy
+        self._task_floor = task_floor
+        self._candidates_for = candidates_for
         self._ledger = BudgetLedger(store)
         self._conflict_tasks = conflict_tasks  # D4-19: False = defer every conflict
         self._global_budget = global_budget  # D6-1: None = no deployment-wide cap
@@ -226,6 +233,13 @@ class CommitService(
         # D6-8: the orchestrator installs the gateway's executed-call counter (subject → count)
         # so every settlement path books the tool-call fact without threading it through
         self.tool_calls_for: Callable[[str], int] | None = None
+
+    def _candidates(self, mission_id: str) -> int:
+        """Candidates per Task of ``mission_id``'s bound policy (1 when nobody told us)."""
+
+        if self._candidates_for is None:
+            return 1
+        return max(1, int(self._candidates_for(mission_id)))
 
     # ----------------------------------------------------------- backpressure
     def backpressure_state(self) -> BackpressureState:
@@ -842,7 +856,11 @@ class CommitService(
                     "the Mission already has a committed graph (static DAG, step 3)"
                 )
             graph = validate_graph(  # GraphRejected handled by the caller
-                mission, proposal, deployed_layers=self._deployed_layers
+                mission,
+                proposal,
+                deployed_layers=self._deployed_layers,
+                task_floor=self._task_floor,
+                candidates=self._candidates(mission.id),
             )
             key_to_id = {
                 key: ids.task_id(mission_id, ordinal)
@@ -1084,6 +1102,8 @@ class CommitService(
                 proposals_by_attempt=proposals_by_attempt,
                 committed_tokens_by_task=committed,
                 deployed_layers=self._deployed_layers,
+                task_floor=self._task_floor,
+                candidates=self._candidates(mission.id),
             )
             by_id = {task.id: task for task in tasks}
             new_version = current + 1
@@ -3039,6 +3059,8 @@ class CommitService(
                 accepted_artifacts=stored.artifacts,
             )
             self._store.update_task(completed, expected_version=task.version)
+            for artifact_id in stored.artifacts:  # P3.1 fix F-ORCH-3: in this transaction
+                self._store.update_artifact_verification(artifact_id, "VERIFIED")
             # step 9 (plan D9-10'): an Agent's file that tries to set policy is refused on
             # record in the same transaction; it never reaches the registry
             self.refuse_policy_files(
@@ -3212,6 +3234,8 @@ class CommitService(
             self._require_lease(attempt, owner)
             task = self._require_task(stored.envelope.task_id)
             self._store.set_result_verification(result_id, state="DONE", verdict="FAIL")
+            for artifact_id in stored.artifacts:  # P3.1 fix F-ORCH-3: judged, and not accepted
+                self._store.update_artifact_verification(artifact_id, "REJECTED")
             for claim in self._store.list_claims(result_id):
                 self._store.upsert_claim(
                     next_claim(

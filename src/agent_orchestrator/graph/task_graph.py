@@ -158,6 +158,46 @@ def _sum_dimension(nodes: Sequence[TaskNode], name: str) -> int | None:
     return total
 
 
+@dataclass(frozen=True)
+class TaskBudgetFloor:
+    """P3.1 fix F-ORCH-1: the least a Task's token budget must hold so that its first
+    Attempt *and* that Attempt's Critic can both be reserved — per candidate, because every
+    candidate reserves a turn and has its own result reviewed.  ``base`` is what one turn
+    of a routable profile may emit, ``critic`` the Critic's reservation (counted only when
+    the policy names critic_review).  ``base == 0`` switches the floor off.  A necessary
+    condition only: it never promises that repairs will be affordable (the ledger books
+    what a turn actually spent)."""
+
+    base: int
+    critic: int = 0
+
+    def floor_for(self, policy: Sequence[str], candidates: int = 1) -> int:
+        if self.base <= 0:
+            return 0
+        per_candidate = self.base + (self.critic if "critic_review" in policy else 0)
+        return max(1, int(candidates)) * per_candidate
+
+
+def floor_refusal(
+    floor: TaskBudgetFloor | None, policy: Sequence[str], granted: int | None, candidates: int = 1
+) -> str | None:
+    """Why ``granted`` tokens cannot carry a Task under ``floor`` — or None when it can
+    (no floor, an unlimited budget, or enough)."""
+
+    if floor is None or granted is None:
+        return None
+    need = floor.floor_for(policy, candidates)
+    if granted >= need:
+        return None
+    critic = floor.critic if "critic_review" in policy else 0
+    return (
+        f"task_budget_below_floor: max_tokens={granted} < {need} "
+        f"(= {max(1, int(candidates))} candidate(s) × "
+        f"({floor.base} for one turn + {critic} for its Critic)); "
+        f"a first Attempt and its Critic could not both be reserved — give at least {need}"
+    )
+
+
 def normalise_budgets(mission: Mission, proposal: TaskGraphProposal) -> TaskGraphProposal:
     """D3-2': deterministic budget completion before validation.
 
@@ -238,6 +278,8 @@ def validate_graph(
     proposal: TaskGraphProposal,
     *,
     deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
+    task_floor: TaskBudgetFloor | None = None,
+    candidates: int = 1,
 ) -> ValidatedGraph:
     if not proposal.tasks:
         raise GraphRejected("empty", "a task graph needs at least one task")
@@ -297,6 +339,13 @@ def validate_graph(
                 f"{node.key}: budget exceeds the Mission budget (§18.2); "
                 f"mission={mission.budget.to_json()}",
             )
+        # P3.1 fix F-ORCH-1: the effective budget (explicit, or the pool share) must carry
+        # a first Attempt and its Critic; the proposal is refused, never silently raised
+        refusal = floor_refusal(
+            task_floor, node.verification_policy, node.budget.max_tokens, candidates
+        )
+        if refusal:
+            raise GraphRejected("budget", f"{node.key}: {refusal}")
     # §18.2: the children's budgets come from the parent — in sum, per limited dimension;
     # the system tasks' reserve (D4-20) is part of the sum on the token dimension
     for name in ("max_tokens", "max_cost_micros"):
@@ -344,10 +393,12 @@ def validate_graph(
 __all__ = (
     "MAX_TASKS",
     "GraphRejected",
+    "TaskBudgetFloor",
     "TaskGraphProposal",
     "TaskNode",
     "ValidatedGraph",
     "ancestors_of",
+    "floor_refusal",
     "normalise_budgets",
     "validate_graph",
 )

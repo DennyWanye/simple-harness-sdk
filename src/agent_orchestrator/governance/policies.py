@@ -192,6 +192,7 @@ SNAPSHOT_FIELDS: dict[str, str] = {
             "planner_reserve_tokens",
             "critic_reserve_tokens",
             "attempt_reserve_tokens",
+            "min_task_tokens",  # P3.1 fix F-ORCH-1: shapes which graphs are accepted
             "turn_deadline_seconds",
             "max_model_calls_per_turn",
             "max_tool_calls_per_turn",

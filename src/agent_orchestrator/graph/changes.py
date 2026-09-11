@@ -33,7 +33,7 @@ from ..contracts.models import (
 from ..planning.manager import inherit_limits, system_reserve_tokens
 from .deduplicator import find_duplicates
 from .dependency_checker import DependencyError, check_dependencies
-from .task_graph import MAX_TASKS
+from .task_graph import MAX_TASKS, TaskBudgetFloor, floor_refusal
 
 OPERATIONS = (
     "add_task",
@@ -304,6 +304,8 @@ def validate_change(
     proposals_by_attempt: Mapping[str, int],
     committed_tokens_by_task: Mapping[str, int],
     deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
+    task_floor: TaskBudgetFloor | None = None,
+    candidates: int = 1,
 ) -> ValidatedChange:
     """Graph Manager checks for one change proposal against the current formal graph.
     ``deployed_layers`` (host support 0.9.8) is what this deployment can run: an
@@ -592,6 +594,13 @@ def validate_change(
                 f"new tasks ask {total_new} tokens but the Mission pool has {max(0, remaining)} left "
                 f"(pool={pool}, committed={committed}, system_reserve={reserve}); dimension=max_tokens remaining={max(0, remaining)}",
             )
+    # P3.1 fix F-ORCH-1: every new Task's final budget (explicit, or its default share) must
+    # carry a first Attempt and its Critic — refused, never silently raised
+    for node in nodes:
+        granted = budgets.get(node.key, node.budget.max_tokens)
+        refusal = floor_refusal(task_floor, node.verification_policy, granted, candidates)
+        if refusal:
+            raise GraphChangeRejected("budget", f"{node.key}: {refusal}")
     affected = sorted(
         set(superseded)
         | set(retargets)

@@ -81,6 +81,7 @@ from ..governance.budgets import BudgetError, BudgetExhausted
 from ..governance.policies import action_decision, deployed_layers, effective_tools
 from ..governance.promotion import diff_params, interpreter_versions, resolve_params
 from ..graph.changes import ChangeLimits, TaskGraphChange
+from ..graph.task_graph import TaskBudgetFloor
 from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
 from ..planning.manager import terminal_task
@@ -287,11 +288,14 @@ class Orchestrator:
     # ------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Orchestrator:
         self._store = Store.open(self._config.orchestrator_db)
+        self._task_floor = self._budget_floor_rule()  # P3.1 fix F-ORCH-1
         self._commit = CommitService(
             self._store,
             conflict_tasks=self._config.knowledge_sharing,
             global_budget=self._config.global_budget,
             deployed_layers=self._deployed,
+            task_floor=self._task_floor,
+            candidates_for=self._candidates_for,
         )
         self._open_policy_library()  # step 9 (plan D9-3'): role, seed, drift
         self._assembled = assemble_orchestrator_runtime(
@@ -363,6 +367,39 @@ class Orchestrator:
     def policy_version_of(self, mission_id: str) -> str | None:
         binding = self.store.get_mission_policy(mission_id)
         return None if binding is None else str(binding["version_id"])
+
+    def _budget_floor_rule(self) -> TaskBudgetFloor:
+        """P3.1 fix F-ORCH-1 (plan review P2-1): the floor's base is what one turn of any
+        routable profile may emit — the largest ``default_max_output_tokens`` of the config
+        and every profile — unless the deployment names one (0 = no floor)."""
+
+        base = self._config.min_task_tokens
+        if base is None:
+            outputs = [int(self._config.default_max_output_tokens)]
+            outputs += [
+                int(profile.default_max_output_tokens)
+                for profile in self._profiles.values()
+                if profile.default_max_output_tokens
+            ]
+            base = max(outputs)
+        return TaskBudgetFloor(base=int(base), critic=int(self._config.critic_reserve_tokens))
+
+    def _candidates_for(self, mission_id: str) -> int:
+        """Candidates per Task from the policy ``mission_id`` is bound to (plan review P1-2)."""
+
+        # step 9 (D9-4'): a whitelisted value is read from the bound policy, never the config
+        return max(1, int(self.policy_for(mission_id)["candidates_per_task"]))
+
+    def _budget_floor(self, mission_id: str) -> dict[str, int]:
+        """What the Planner / Manager is told a Task must at least hold."""
+
+        candidates = self._candidates_for(mission_id)
+        return {
+            "min_task_tokens": self._task_floor.floor_for((), candidates),
+            "min_task_tokens_with_critic_review": self._task_floor.floor_for(
+                ("critic_review",), candidates
+            ),
+        }
 
     def policy_for(self, mission_id: str) -> dict[str, Any]:
         """The resolved parameters of the version ``mission_id`` is bound to (plan
@@ -1120,6 +1157,7 @@ class Orchestrator:
             attempt_ordinal=ordinal,
             rejected=self._planning_rejections(mission_id) if ordinal > 1 else (),
             deployed_layers=self._deployed,
+            budget_floor=self._budget_floor(mission_id),
         )
         decision = self._route_service("planner", mission_id)
         config = AgentConfig(
@@ -2401,6 +2439,7 @@ class Orchestrator:
                 knowledge=knowledge,
                 rejections=self._change_rejections(mission.id, trigger),
                 deployed_layers=self._deployed,
+                budget_floor=self._budget_floor(mission.id),
             )
         except ContextRejected as error:
             self._note(f"task {task.id}: manager package refused ({error}); management postponed")

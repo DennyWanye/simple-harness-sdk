@@ -138,6 +138,8 @@ class DispatchIntent:
 
 INTENT_STATES = ("PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED", "SETTLED", "FAILED")
 VERIFICATION_STATES = ("PENDING", "RUNNING", "DONE", "REJECTED")
+# P3.1 fix F-ORCH-3: an artifact is UNVERIFIED until its result is judged
+ARTIFACT_VERIFICATION_STATES = ("UNVERIFIED", "VERIFIED", "REJECTED")
 
 
 def _loads(text: str) -> Any:
@@ -1460,6 +1462,26 @@ class Store:
                     canonical_json(artifact.to_json()),
                     artifact.created_at or self.now,
                 ),
+            )
+
+    def update_artifact_verification(self, artifact_id: str, status: str) -> None:
+        """P3.1 fix F-ORCH-3: an artifact follows its result's verdict — VERIFIED when the
+        result is accepted, REJECTED when it failed.  The only field of an artifact row that
+        changes after it was recorded (``upsert_artifact`` never rewrites a row)."""
+
+        if status not in ARTIFACT_VERIFICATION_STATES:
+            raise StoreError(f"unknown artifact verification status {status!r}")
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT json FROM artifacts WHERE artifact_id = ?", (artifact_id,)
+            ).fetchone()
+            if row is None:
+                raise StoreError(f"artifact {artifact_id} is not recorded")
+            data = json.loads(row[0])
+            data["verification_status"] = status
+            connection.execute(
+                "UPDATE artifacts SET json = ? WHERE artifact_id = ?",
+                (canonical_json(data), artifact_id),
             )
 
     def get_artifact(self, artifact_id: str) -> Artifact | None:

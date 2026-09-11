@@ -92,6 +92,10 @@ class OrchestratorConfig:
     planner_reserve_tokens: int = 4_000
     critic_reserve_tokens: int = 6_000
     attempt_reserve_tokens: int = 20_000
+    # P3.1 fix F-ORCH-1: the base of the Task budget floor — None = the largest
+    # ``default_max_output_tokens`` of the config and every profile (what one turn may
+    # emit), 0 = no floor, a positive number = that base
+    min_task_tokens: int | None = None
     turn_deadline_seconds: float = 900.0
     max_model_calls_per_turn: int = 24
     max_tool_calls_per_turn: int = 48
@@ -150,6 +154,10 @@ class OrchestratorConfig:
             raise ValueError("candidates_per_task and max_concurrency must be >= 1")
         if self.max_planning_attempts < 1:
             raise ValueError("max_planning_attempts must be >= 1")
+        if self.min_task_tokens is not None and (
+            isinstance(self.min_task_tokens, bool) or self.min_task_tokens < 0
+        ):
+            raise ValueError("min_task_tokens must be None, 0 or a positive number of tokens")
         if self.on_retrieval_failure not in {"block", "degrade"}:
             raise ValueError("on_retrieval_failure must be 'block' or 'degrade'")
         if self.max_retrieval_failures < 1 or self.max_knowledge_items < 1:
