@@ -270,18 +270,24 @@ FULL_DAEMONIZE = """
 
 
 @pytest.mark.parametrize(
-    "body,expect_timeout",
-    [(GROUP_CHILD, True), (SETSID_CHILD, True), (DOUBLE_FORK_DAEMON, False)],
+    "body,expect_timeout,wall",
+    # the first two cases are *about* the timeout, so they get a tight budget; the daemon
+    # case is about what it leaves behind — it gets room to finish on a loaded machine,
+    # and does not assert on the clock (a slow interpreter start is not a finding)
+    [(GROUP_CHILD, True, 3), (SETSID_CHILD, True, 3), (DOUBLE_FORK_DAEMON, None, 60)],
     ids=["same-group", "setsid", "double-fork-daemon"],
 )
 @pytest.mark.parametrize("adapter", ["process_only", "seatbelt"])
-def test_p32_3_no_descendant_survives(adapter, body, expect_timeout, workspace):
+def test_p32_3_no_descendant_survives(adapter, body, expect_timeout, wall, workspace):
     executor = _executor(adapter)
     command = _script(workspace, "spawn.py", body)
-    receipt = _run(executor.execute(command, cwd=str(workspace), spec=_spec(wall_seconds=3)))
+    receipt = _run(
+        executor.execute(command, cwd=str(workspace), spec=_spec(wall_seconds=wall)), limit=180
+    )
     pid = int((workspace / "pids.txt").read_text())
     try:
-        assert receipt.timed_out is expect_timeout
+        if expect_timeout is not None:
+            assert receipt.timed_out is expect_timeout
         assert receipt.tree_killed is True and receipt.residual_pids == ()
         assert _wait_dead(pid), f"descendant {pid} survived"
         assert receipt.status == "ok"
@@ -319,7 +325,11 @@ def test_p32_3_a_survivor_that_cannot_be_killed_makes_the_run_an_error(workspace
     executor = ProcessOnlyExecutor(kill=lambda pid: None, max_sweeps=2)
     command = _script(workspace, "spawn.py", SETSID_CHILD)
     try:
-        receipt = _run(executor.execute(command, cwd=str(workspace), spec=_spec(wall_seconds=2)))
+        # a survivor holds the output pipe and every sweep scans the directory, so this
+        # case is the slowest one in the file — give it room on a loaded machine
+        receipt = _run(
+            executor.execute(command, cwd=str(workspace), spec=_spec(wall_seconds=2)), limit=180
+        )
         pid = int((workspace / "pids.txt").read_text())
         assert receipt.status == "error"
         assert receipt.tree_killed is False

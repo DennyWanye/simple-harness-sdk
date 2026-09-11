@@ -220,6 +220,26 @@
   - 基线那次记的 15 条不含它们，说明基线的运行方式没有收集到这 3 个文件；而收集错误会中断整轮，所以本次显式加了 `--continue-on-collection-errors`。
 - **结论**：P3.2 没有新增红项。红集的绝对数字是 76 而不是 73，差额全部是环境缺包导致的既有收集错误，与本轮无关；这里如实记下，不把它算进"⊆ 73"里含糊带过。
 
+### 3.2 评审修复之后的回归，以及 wheel 0.10.0
+
+| 项 | 结果 |
+|---|---|
+| `tests/orchestrator`（HEAD `fe5c762`，即评审处置提交） | **577 passed / 8 skipped / 0 failed**，5 分 58 秒 |
+| wheel 0.10.0 | 从 `fe5c7627a9760aac9cc970491e215a27ded1cfe2` 可复现构建（`SOURCE_DATE_EPOCH=1789166715`），sha256 `ed93145ca51b4cab6f3a00c7f6ca81561cc6502adee91cf73c34f489eb9ed03c`。干净环境安装后：841 passed / 11 skipped / **4 failed**；导入版本 `0.10.0 0.10.0`；demo、demo7、demo8、replay8、demo9、policy9 全部 exit 0 |
+
+**那 4 条失败**（逐条查清，没有一条是产品缺陷被掩盖）：
+
+1. `tests/execution/test_execution_v3_to_v4_migration.py::test_completed_null_continuation_…`——**既有失败**，0.9.9、0.9.10、0.9.11 验证时就有（断言 schema 7，实际 10）。与本轮无关。
+2. `test_p32_3_no_descendant_survives[process_only-double-fork-daemon]`
+3. `test_p32_3_no_descendant_survives[seatbelt-double-fork-daemon]`
+   - 两条的回执都是 `tree_killed=True、residual_pids=()`，**回收本身是对的**；断言挂在 `timed_out is False` 上。原因是我只给了 3 秒墙钟预算，而那一轮是冷 venv 的解释器启动加整机高负载（整轮 7 分 19 秒）。
+   - 这是我把测试写脆了：这条用例要证明的是"守护进程不能活下来"，不该把"必须不超时"一起断言。已改为每个用例带自己的墙钟预算，`timed_out` 只在"超时才是重点"的两个用例里断言。
+4. `test_p32_3_a_survivor_that_cannot_be_killed_makes_the_run_an_error`——外层 90 秒超时。根因在产品侧：`_reap` 每一轮都调 `lsof +D`，而单次超时给到了 20 秒、最多三轮，加上读管道的 2 秒等待，最坏可逼近一分半。已把 `lsof` 单次超时收紧到 5 秒（漏掉一次慢应答只损失一轮扫描，不影响正确性，因为进程集合只会增大），并放宽该用例的外层上限。
+
+**另外**："残留沙箱临时目录 1 个"是我验证脚本的误报——命中的是**空的父目录** `<tmp>/orch-exec-<uid>`，它本来就该长期存在；每次执行的 scratch 都已删除。脚本的匹配已改为只看子目录。残留执行副本为 0。
+
+修完这三处后要重新构建并验证 wheel，钉版以重建后的 sha256 为准。
+
 ## 4. 代码评审处置
 
 第 1 轮（`reports/code-review-round1.md`）结论 **SHIP_WITH_FIXES**：P0 0 条、P1 5 条、P2 13 条。全部接受。其中 P1-1 与 P1-2 是真缺陷，而且我的 117 条 p32 测试都没覆盖到——这两条各补了回归测试。

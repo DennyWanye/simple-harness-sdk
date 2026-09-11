@@ -471,11 +471,14 @@ def _holding(directory: Path) -> set[int]:
     if not Path(LSOF).exists():
         return set()
     try:
+        # bounded on purpose: a reap runs this once per sweep, and on a loaded machine an
+        # unbounded scan made a single reap take over a minute (wheel verification 0.10.0).
+        # Missing a slow answer costs a sweep, never correctness — the pid set only grows.
         out = subprocess.run(
             [LSOF, "-t", "-u", str(os.getuid()), "-a", "+D", str(directory)],
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=5,
             check=False,
         ).stdout
     except (OSError, subprocess.SubprocessError):
