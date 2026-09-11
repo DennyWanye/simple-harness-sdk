@@ -3,8 +3,8 @@
 
 """Evidence directory writer (ORCH-BUILD §14.3): ``baseline.json``, ``events.jsonl``,
 ``final_state.json``, ``artifacts/``, ``verification.json``, ``costs.json``,
-``test-report.json``.  Never contains credentials: only ids, hashes and
-orchestrator state are written."""
+``test-report.json``, plus (step 4) ``knowledge.json`` and ``lineage.json``.  Never
+contains credentials: only ids, hashes and orchestrator state are written."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from typing import Any
 
 from ..orchestrator.commit_service import CommitService
 from ..storage.store import Store
+from .lineage import lineage
 
 
 def _dump(path: Path, value: Any) -> None:
@@ -59,6 +60,15 @@ def write_evidence(
     with store.transaction():
         costs = commit.ledger.costs_report(mission_id)
     _dump(directory / "costs.json", costs)
+    _dump(  # step 4: the Blackboard layers and the final result's lineage
+        directory / "knowledge.json",
+        {
+            "knowledge": snapshot.get("knowledge", []),
+            "conflicts": snapshot.get("conflicts", []),
+            "summaries": snapshot.get("summaries", []),
+        },
+    )
+    _dump(directory / "lineage.json", lineage(store, mission_id))
     artifacts_dir = directory / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for artifact in snapshot["artifacts"]:

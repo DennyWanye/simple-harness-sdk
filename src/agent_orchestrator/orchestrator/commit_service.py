@@ -43,6 +43,7 @@ from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
 from ..memory.claims import grade_claim
 from ..memory.summaries import refresh_summaries
 from ..memory.verified_knowledge import KnowledgeIndex, KnowledgeRecord
+from ..observability.lineage import lineage
 from ..planning.manager import conflict_task, synthesis_task, terminal_task
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
@@ -2116,6 +2117,7 @@ class CommitService:
                 "knowledge": [
                     k.id for k in self._store.list_knowledge(mission_id, status="VERIFIED")
                 ],
+                "lineage": lineage(self._store, mission_id),  # D4-14 / 30-27
             }
             self._emit(
                 "MissionSuccessJudged",

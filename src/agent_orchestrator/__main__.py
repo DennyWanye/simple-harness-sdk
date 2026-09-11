@@ -10,7 +10,7 @@ Subcommands (step 2):
     mission get|cancel|events --evidence-dir DIR MISSION_ID
     attempt get --evidence-dir DIR ATTEMPT_ID
     artifact show --evidence-dir DIR ARTIFACT_ID
-    demo --scenario single-task --provider fixtures|env --evidence-dir DIR
+    demo --scenario single-task|static-dag|knowledge-sharing --provider fixtures|env --evidence-dir DIR
 
 ``--provider env`` reads ``SH_BASEURL`` / ``SH_APIKEY`` / ``SH_MODEL`` (and optional
 ``SH_PRICE_INPUT_MICROS`` / ``SH_PRICE_OUTPUT_MICROS`` per million tokens) from the
@@ -77,6 +77,10 @@ def _provider(args: argparse.Namespace, *, scenario: str = "single-task"):  # ty
 
         if scenario == "static-dag":
             return demo_static_dag_provider(), "agent-model", None, "fixtures"
+        if scenario == "knowledge-sharing":
+            from .testing.fixtures import demo_knowledge_sharing_provider
+
+            return demo_knowledge_sharing_provider(), "agent-model", None, "fixtures"
         return demo_single_task_provider(), "agent-model", None, "fixtures"
     if args.provider == "env":
         base_url = os.environ.get("SH_BASEURL")
@@ -206,11 +210,18 @@ def cmd_demo(args: argparse.Namespace) -> int:
     if step is None:
         _print({"error": f"unknown scenario {args.scenario}"})
         return EXIT_USAGE
-    if step not in {2, 3}:
+    if step not in {2, 3, 4}:
         _print({"scenario": args.scenario, "status": "not_implemented", "step": step})
         return EXIT_NOT_IMPLEMENTED
     from .observability.evidence import write_evidence
-    from .testing.fixtures import DEMO_DAG_SPEC, DEMO_SEED, TEXTKIT_SEED
+    from .testing.fixtures import (
+        COMPARE_SEED,
+        COMPARE_SPEC,
+        COMPARE_SYNTHESIS,
+        DEMO_DAG_SPEC,
+        DEMO_SEED,
+        TEXTKIT_SEED,
+    )
 
     provider, model, price, kind = _provider(args, scenario=args.scenario)
     started = time.time()
@@ -228,6 +239,22 @@ def cmd_demo(args: argparse.Namespace) -> int:
             ),
             budget=Budget(max_tokens=400_000, max_attempts=3),
             workspace_seed=DEMO_SEED,
+        )
+    elif step == 4:
+        spec = MissionSpec(
+            goal=str(COMPARE_SPEC["goal"]),
+            success_criteria=tuple(str(c) for c in COMPARE_SPEC["success_criteria"]),
+            tenant_id=args.tenant,
+            idempotency_key=args.idempotency_key,
+            allowed_tools=tuple(str(t) for t in COMPARE_SPEC["allowed_tools"]),
+            budget=Budget(max_tokens=1_200_000 if kind == "env" else 400_000, max_attempts=16),
+            workspace_seed=COMPARE_SEED,
+            untrusted_sources=tuple(str(p) for p in COMPARE_SPEC["untrusted_sources"]),
+            synthesis={
+                **COMPARE_SYNTHESIS,
+                "budget": {"max_tokens": 200_000 if kind == "env" else 30_000, "max_attempts": 2},
+            },
+            conflict_reserve_tokens=200_000 if kind == "env" else 20_000,
         )
     else:
         spec = MissionSpec(
@@ -265,12 +292,28 @@ def cmd_demo(args: argparse.Namespace) -> int:
                 "tasks": [
                     {
                         "task_id": task.id,
+                        "kind": task.kind,
                         "status": str(task.status),
                         "dependencies": list(task.dependency_ids),
                         "attempts": task.attempt_count,
                     }
                     for task in orchestrator.store.list_tasks(mission.id)
                 ],
+                "knowledge": [
+                    {"id": k.id, "status": k.status, "key": k.key, "used_by": list(k.used_by)}
+                    for k in orchestrator.store.list_knowledge(mission.id)
+                ],
+                "conflicts": [
+                    {"conflict_id": c["conflict_id"], "key": c["key"], "state": c["state"]}
+                    for c in orchestrator.store.list_conflicts(mission.id)
+                ],
+                "lineage": {
+                    "knowledge": [
+                        k["id"]
+                        for k in (final.final_report or {}).get("lineage", {}).get("knowledge", [])
+                    ],
+                    "agents": (final.final_report or {}).get("lineage", {}).get("agents", []),
+                },
             }
             evidence = write_evidence(
                 directory=Path(args.evidence_dir).resolve(),
