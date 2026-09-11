@@ -49,7 +49,10 @@
 
 ## 3. 回归与 wheel
 
-（待填）
+| 次 | HEAD | 结果 |
+|---|---|---|
+| 1 | `627b90e` | **作废**：跑到 74% 时挂住 13 分钟（CPU 占用 5.9%，一直在等），手动终止。原因是 `step06/test_observability.py::test_a_required_verifier_that_is_not_deployed_…` monkeypatch 的是 `task_graph.STEP2_IMPLEMENTED_LAYERS`，而 0.9.8 把"哪些层已部署"的判断改到了部署政策这边（CommitService 从 `governance.policies` 取值），测试的补丁不再生效，Planner 的提议被拒，夹具脚本随即耗尽，结果是 UNKNOWN、挂起（HANDOFF §4 的陷阱）。已改为 patch `governance.policies`（`8444a39`），测试意图不变 |
+| 2 | `8444a39` | 58 failed / **2428 passed** / 13 skipped / 15 errors，用时 300 s；红集 73 条，与基线完全一致，**0 新红**。脚本 `scratchpad/regress-098/watchdog.py` 加了看门狗：20 分钟未结束就杀掉整个进程组，并从进程打开的临时目录推断挂住的测试 |
 
 ## 4. 代码评审
 

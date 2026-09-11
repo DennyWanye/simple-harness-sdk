@@ -402,6 +402,27 @@ class Store:
                 self._depth = 0
                 self._holder = None
 
+    @contextmanager
+    def read_view(self) -> Iterator[sqlite3.Connection]:
+        """A consistent read (host support S2, P3.1-A05): every SELECT inside sees one
+        snapshot of the library, so a Mission snapshot and its event cursor agree.  Inside
+        an open transaction it simply joins it.  Like :meth:`transaction` it must never
+        span an await; it writes nothing."""
+
+        with self._lock:
+            if self._depth:
+                yield self._connection
+                return
+            self._connection.execute("BEGIN")  # deferred: a read snapshot, no write lock
+            self._depth = 1
+            self._holder = self._current_task()
+            try:
+                yield self._connection
+            finally:
+                self._connection.execute("COMMIT")
+                self._depth = 0
+                self._holder = None
+
     @property
     def connection(self) -> sqlite3.Connection:
         return self._connection
@@ -489,6 +510,14 @@ class Store:
                 "SELECT COUNT(*) FROM events WHERE mission_id = ? AND type = ?",
                 (mission_id, event_type),
             ).fetchone()
+        return int(row[0])
+
+    def last_event_seq(self, mission_id: str) -> int:
+        """The Mission's highest event ``seq`` (0 when none) — a snapshot's cursor."""
+
+        row = self._connection.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM events WHERE mission_id = ?", (mission_id,)
+        ).fetchone()
         return int(row[0])
 
     # --------------------------------------------------------------- missions

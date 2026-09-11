@@ -50,6 +50,17 @@ def spec_from_request(
     """The charter a caller's request describes; an omitted tool set is ``default_tools``
     (the deployment's, when an orchestrator parses it — host support 0.9.8)."""
 
+    # host support S2 (P3.1-A06, the user's Phase3 gap G02): the step-4 charter fields are
+    # mapped too — before, a request naming them was accepted and they were silently lost
+    untrusted = request.get("untrusted_sources", ())
+    if isinstance(untrusted, str) or not all(isinstance(s, str) for s in untrusted):
+        raise MissionRequestError("untrusted_sources must be a list of path prefixes")
+    reserve = request.get("conflict_reserve_tokens", 0)
+    if isinstance(reserve, bool) or not isinstance(reserve, int) or reserve < 0:
+        raise MissionRequestError("conflict_reserve_tokens must be a non-negative integer")
+    synthesis = request.get("synthesis")
+    if synthesis is not None and not isinstance(synthesis, Mapping):
+        raise MissionRequestError("synthesis must be an object (a fixed synthesis Task template)")
     try:
         return MissionSpec(
             goal=str(request.get("goal", "")),
@@ -64,6 +75,9 @@ def spec_from_request(
             budget=Budget.from_json(request.get("budget", {})),
             task_kind=str(request.get("task_kind", "code")),
             workspace_seed=dict(request.get("workspace_seed", {})),
+            untrusted_sources=tuple(untrusted),
+            synthesis=None if synthesis is None else dict(synthesis),
+            conflict_reserve_tokens=reserve,
         )
     except (ContractError, TypeError, ValueError) as error:
         raise MissionRequestError(str(error)) from error
