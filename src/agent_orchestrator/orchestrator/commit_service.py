@@ -66,6 +66,7 @@ from ..scheduling.backpressure import (
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
 from ..verification.conflicts import Contradiction, find_contradiction
 from .action_commits import ActionCommitsMixin
+from .human_commits import HumanCommitsMixin
 from .state_machine import next_attempt, next_claim, next_mission, next_task
 
 SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
@@ -197,7 +198,9 @@ def task_account(task_id: str) -> str:
     return f"budget:{task_id}"
 
 
-class CommitService(ActionCommitsMixin):  # step 7: the action ledger + approvals half
+class CommitService(
+    ActionCommitsMixin, HumanCommitsMixin
+):  # step 7: the action ledger + approvals half
     def __init__(
         self, store: Store, *, conflict_tasks: bool = True, global_budget: Budget | None = None
     ) -> None:
@@ -1377,10 +1380,12 @@ class CommitService(ActionCommitsMixin):  # step 7: the action ledger + approval
         updated = next_attempt(attempt, target, failure={"reason": reason})
         self._store.update_attempt(updated, expected_version=attempt.version)
         stored = self._store.find_result_for_attempt(attempt.id)
-        if stored is not None and stored.verification_state in {"PENDING", "RUNNING"}:
+        if stored is not None and stored.verification_state in {"PENDING", "RUNNING", "SUSPENDED"}:
             self._store.set_result_verification(
                 stored.envelope.id, state="REJECTED", verdict="superseded"
             )
+            if stored.verification_state == "SUSPENDED":  # D7-8': the review goes with it
+                self._cancel_review_request(stored.envelope.id, reason=reason)
             for claim in self._store.list_claims(stored.envelope.id):
                 if claim.status in {ClaimStatus.PROPOSED, ClaimStatus.UNDER_REVIEW}:
                     target_claim = (
@@ -3095,7 +3100,7 @@ class CommitService(ActionCommitsMixin):  # step 7: the action ledger + approval
                 "unresolved_conflicts": [
                     c["conflict_id"]
                     for c in self._store.list_conflicts(mission_id)
-                    if c["state"] != "RESOLVED"
+                    if c["state"] not in {"RESOLVED", "RESOLVED_BY_HUMAN"}
                 ],
                 "knowledge": [
                     k.id for k in self._store.list_knowledge(mission_id, status="VERIFIED")

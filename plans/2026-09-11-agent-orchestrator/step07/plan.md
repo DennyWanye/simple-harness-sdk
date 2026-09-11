@@ -164,7 +164,11 @@
 - **Verifier 冲突送人工**：Host 文档 §9.2 的 human_review 行明确要求这一项，不降级。本实现把"多个 Verifier 冲突"定义为两种情形（约定，登记；原文 §22 只列出情形，没有定义；理论 13 §9"仲裁或正式 Commit"；原文 30.2"冲突结论可以同时保存并进入仲裁"）：
   - ① 第 4 步的冲突任务结束后，冲突仍是 UNRESOLVED（两个都经过验证、但结论相反）。
   - ② Mission 判定时，确定性准则全部满足、各 Task 的 critic 层都 PASS，而独立的 judge Critic 判自由文本准则未满足。
-  - 两种情形都建 kind=arbitration 的人工请求，Mission 不立即失败，而是等待人工。人工裁决写 HumanOverride 和依据：① 选定保留的结论，或判定两者都不成立；② 判定准则满足或不满足。①在第 4 步冲突代码里的接入点、以及 Task 状态怎么处理，要到切片 D 读完冲突代码后细化，并回写本节。
+  - 两种情形都建 kind=arbitration 的人工请求，Mission 不立即失败，而是等待人工。人工裁决写 HumanOverride 和依据：① 选定保留的结论，或判定两者都不成立；② 判定准则满足或不满足。①的落地（切片 D 读完第 4 步冲突代码后回写）：
+    - 接入点：分配新 Attempt 时，冲突任务因为 attempts 维度 `BudgetExhausted` 本来要被 `stop_task` 的地方，改为建 `arbitration` 请求（topic=conflict，选项为 `keep:<claim_id>` 各一项加 `unresolved`）；Task 保持 ACTIVE、没有开放 Attempt，Mission 等待。
+    - 裁决 `keep:<claim_id>` → 冲突 `RESOLVED_BY_HUMAN`（记录所选 Claim 与 override_id）、冲突任务的开放 Attempt 关闭、冲突任务 CANCELLED（failure_reason `resolved_by_human`），Mission 继续；不生成 Verified Knowledge——人的裁决是 HumanOverride，不是经证据验证的知识（登记）。
+    - 裁决 `unresolved` → `stop_task(human_override)`，冲突 UNRESOLVED，Mission FAILED（与原行为一致，只是经过了人）。
+    - ②的落地：判定时统计各 live Task 已接受结果中 critic_review 为 PASS 的数量，独立 judge（`source=independent`）判为未满足、而确定性准则全满足时建 `arbitration`（topic=judgment，选项 met / unmet）；等待期间判定结果按树键入账，不重跑 judge；裁决后该准则的 judge 记为 `human_arbitration`。
 
 **D7-9'　接管边界**（P1-7）
 - `retry_with_note` 只用于非终态的 Task：关闭当前开放的 Attempt（被关闭的也计数），下一个 Attempt 走 allocator 和 `create_attempt`，受 `max_attempts` 约束。次数已用完时拒绝接管，并明确报错。

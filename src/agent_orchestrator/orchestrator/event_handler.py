@@ -115,10 +115,18 @@ from ..scheduling.backpressure import BackpressureState, Observation
 from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy
 from ..verification.critics import CriticVerdict, parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
+from ..verification.human_review import (
+    NEEDS_HUMAN,
+    arbitration_request_id,
+    judgment_conflict,
+    reusable_layers,
+    review_request_id,
+)
 from ..verification.verifier_router import VERIFIER_VERSION, VerifierRouter
 from .action_commits import (
     ACTION_PREFIX,
     HANDOFF_READY_STATES,
+    ActionCommitError,
     CandidateRejected,
     check_candidate,
     is_action_path,
@@ -1617,6 +1625,7 @@ class Orchestrator:
                 raise ContractError(f"critic could not be funded: {error}") from error
 
         action_problems = self._action_problems(mission, task, artifacts, copy)
+        human, reuse, escalation_left = self._human_inputs(result_id, task)
         verdict = await self._router.verify(
             mission=mission,
             task=task,
@@ -1630,9 +1639,30 @@ class Orchestrator:
             knowledge=KnowledgeIndex.load(self.store, mission.id),
             require_synthesis_knowledge=self._config.knowledge_sharing,
             action_problems=action_problems,
+            human=human,
+            reuse=reuse,
+            needs_human_allowed=escalation_left,
         )
         if verdict.critic is not None:
             self._critic_verdicts[result_id] = verdict.critic
+        if verdict.suspended:  # D7-8': the sixth layer waits for a person
+            reason = (
+                "needs_human"
+                if any(layer.status == NEEDS_HUMAN for layer in verdict.layers)
+                else "policy"
+            )
+            try:
+                self.commit.suspend_verification(
+                    result_id,
+                    owner=self._owner,
+                    reason=reason,
+                    layers=[layer.to_json() for layer in verdict.layers],
+                )
+            except (CommitRejected, IllegalTransition, ActionCommitError) as error:
+                self._note(f"result {result_id}: suspension dropped ({error})")
+                return True
+            self._note(f"result {result_id} suspended: waiting for a person ({reason})")
+            return True
         try:
             if verdict.passed:
                 completed = self.commit.accept_result(
@@ -1713,6 +1743,106 @@ class Orchestrator:
                     attempt_id=attempt.id,
                 )
         return True
+
+    def _human_inputs(
+        self, result_id: str, task: Task
+    ) -> tuple[dict[str, Any] | None, dict[str, LayerResult] | None, bool]:
+        """D7-8': a person's answer to this result's review (if any), the recorded layers
+        a resumed verification may reuse, and whether this Task may still escalate."""
+
+        request = self.store.get_approval(review_request_id(result_id))
+        human: dict[str, Any] | None = None
+        reuse: dict[str, LayerResult] | None = None
+        if request is not None and request["state"] in {"GRANTED", "REJECTED"}:
+            human = {
+                "verdict": "PASS" if request["state"] == "GRANTED" else "FAIL",
+                "note": request.get("note", ""),
+                "principal": request.get("decided_by"),
+                "request_id": request["request_id"],
+            }
+            reuse = reusable_layers(
+                self.store.list_verifications(result_id),
+                versions={"critic_review": CRITIC.prompt_version},
+                default_version=VERIFIER_VERSION,
+            )
+        escalated_before = any(
+            r["kind"] == "review"
+            and r.get("reason") == "needs_human"
+            and r.get("task_id") == task.id
+            and r["subject_key"] != result_id
+            for r in self.store.list_approvals(task.mission_id)
+        )
+        return human, reuse, not escalated_before
+
+    def _arbitrate_conflict(self, mission: Mission, task: Task, detail: Mapping[str, Any]) -> bool:
+        """D7-8' kind ①: a Conflict Task that used its attempts without settling the
+        contradiction goes to a person instead of failing the Mission."""
+
+        conflict_id = str(task.context.get("conflict_id"))
+        conflict = self.store.get_conflict(conflict_id) or {}
+        sides = list(conflict.get("sides") or task.context.get("sides") or [])
+        options = [f"keep:{side['claim_id']}" for side in sides] + ["unresolved"]
+        _request, created = self.commit.request_arbitration(
+            mission.id,
+            subject=conflict_id,
+            topic="conflict",
+            options=options,
+            context={"key": task.context.get("key"), "sides": sides, "attempts": dict(detail)},
+            task_id=task.id,
+        )
+        if created:
+            self._note(f"task {task.id}: conflict {conflict_id} goes to a person (arbitration)")
+        return created
+
+    def _arbitrated(
+        self,
+        mission: Mission,
+        tasks: Sequence[Task],
+        key: str,
+        judgments: Sequence[Mapping[str, Any]],
+    ) -> tuple[list[dict[str, Any]] | None, bool]:
+        """D7-8' kind ②: when the independent judge Critic disagrees with the Tasks' own
+        Critics on a criterion everything else says is met, a person rules.  Returns the
+        judgments to use (``None`` while waiting) and whether a request was just opened."""
+
+        passes = sum(
+            1
+            for task in tasks
+            if any(
+                v["layer"] == "critic_review" and v["status"] == "PASS"
+                for v in self.store.list_verifications(task.accepted_result_id or "")
+            )
+        )
+        contested = judgment_conflict(judgments, task_critic_passes=passes)
+        if not contested:
+            return [dict(j) for j in judgments], False
+        subject = f"{mission.id}:judgment:{key}"
+        request = self.store.get_approval(arbitration_request_id(subject))
+        if request is None:
+            self.commit.request_arbitration(
+                mission.id,
+                subject=subject,
+                topic="judgment",
+                options=("met", "unmet"),
+                context={"criteria": contested, "judgments": [dict(j) for j in judgments]},
+            )
+            self._note(f"mission {mission.id}: Verifiers disagree on {contested} → arbitration")
+            return None, True
+        if request["state"] != "GRANTED":
+            return None, False
+        ruling = str(request.get("ruling"))
+        return [
+            {
+                **dict(j),
+                "met": ruling == "met",
+                "judge": "human_arbitration",
+                "reason": f"arbitrated by {request.get('decided_by')}: {request.get('basis')}",
+                "override_id": request.get("override_id"),
+            }
+            if j.get("criterion") in contested
+            else dict(j)
+            for j in judgments
+        ], False
 
     def _action_problems(
         self, mission: Mission, task: Task, artifacts: Sequence[Artifact], copy: Any
@@ -2451,8 +2581,7 @@ class Orchestrator:
                 return False
             if any(c.startswith(ACTION_PREFIX) for c in current.success_criteria):
                 return await self._decide_actions(current, live)  # D7-7' two-stage judgment
-            await self._judge(current, live)
-            return True
+            return await self._judge(current, live)
         if await self._runtime_exhausted(mission, tasks):  # after the judge (review P2-9)
             return True
         if any(task.status is TaskStatus.FAILED for task in tasks):
@@ -2537,6 +2666,15 @@ class Orchestrator:
                         verifier_feedback.append(dict(item))
             else:
                 feedback.append(f"{reason}: {failure.get('error', '')}")
+        for event in self.store.list_events(mission.id):  # D7-9': a person's notes, as data
+            if event.type == "HumanCommentAdded" and event.payload.get("target_id") in {
+                task.id,
+                mission.id,
+            }:
+                feedback.append(
+                    f"human note from {event.payload.get('principal_id')} "
+                    f"(information, not a permission change): {event.payload.get('text')}"
+                )
         # D3-7': the Attempt starts from every ancestor's accepted artifacts
         all_tasks = {t.id: t for t in self.store.list_tasks(mission.id)}
         upstream_tasks = ancestors(task.id, all_tasks)
@@ -2782,6 +2920,8 @@ class Orchestrator:
                     f"mission {mission.id} stopped: {reason} ({error.dimension}, mission pool)"
                 )
             else:
+                if task.kind == "conflict" and reason is MissionStopReason.MAX_ATTEMPTS_REACHED:
+                    return self._arbitrate_conflict(mission, task, detail)  # D7-8' ①
                 self.commit.stop_task(task.id, stop_reason=reason, detail=detail)
                 self._note(f"task {task.id} stopped: {reason} ({error.dimension})")
             await self._release_mission(mission.id)
@@ -2791,13 +2931,21 @@ class Orchestrator:
         )
         return True
 
-    async def _judge(self, mission: Mission, tasks: Sequence[Task]) -> None:
-        evaluated = await self._evaluate_criteria(mission, tasks)
+    async def _judge(self, mission: Mission, tasks: Sequence[Task]) -> bool:
+        key = judgment_key(tasks)
+        cached = self.commit.criteria_judgment(mission.id, key)  # booked only for an arbitration
+        evaluated = cached if cached is not None else await self._evaluate_criteria(mission, tasks)
         if evaluated is None:
-            return
+            return True
         judgments, summary = evaluated
-        judged = self.commit.judge_mission(mission.id, judgments=judgments, summary=summary)
+        ruled, created = self._arbitrated(mission, tasks, key, judgments)
+        if ruled is None:  # D7-8' ②: a person rules first; the judgment is kept meanwhile
+            if cached is None:
+                self.commit.record_criteria_judgment(mission.id, key, judgments, summary=summary)
+            return created or cached is None
+        judged = self.commit.judge_mission(mission.id, judgments=ruled, summary=summary)
         self._note(f"mission {mission.id} judged: {judged.status} ({judged.stop_reason})")
+        return True
 
     async def _evaluate_criteria(
         self, mission: Mission, tasks: Sequence[Task]
@@ -2857,9 +3005,11 @@ class Orchestrator:
             not c.startswith(("pytest:", "file:", ACTION_PREFIX)) for c in mission.success_criteria
         )
         critic: CriticVerdict | None = None
+        reused_critic = False
         if needs_critic:
             if len(tasks) == 1 and stored is not None:
                 critic = self._critic_verdicts.get(stored.envelope.id)
+                reused_critic = critic is not None
             if critic is None:
                 test_output = "\n".join(str(r.get("stdout", "")) for r in test_runs.values())
                 try:
@@ -2914,6 +3064,7 @@ class Orchestrator:
                         "criterion": criterion,
                         "met": bool(found and found.get("met")),
                         "judge": "critic_review",
+                        "source": "task_critic" if reused_critic else "independent",
                         "reason": "no independent judge ran"
                         if found is None
                         else found.get("reason"),
@@ -2941,6 +3092,10 @@ class Orchestrator:
             cached = evaluated
             progressed = True
         plain, summary = cached
+        ruled, created = self._arbitrated(mission, tasks, key, plain)
+        if ruled is None:
+            return progressed or created  # a person rules on a Verifier conflict first
+        plain = ruled
         if not all(bool(item.get("met")) for item in plain):
             self._judge_with_actions(mission, plain, summary, unmet="another criterion is unmet")
             return True

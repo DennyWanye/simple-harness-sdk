@@ -39,7 +39,9 @@ VERIFICATION_LAYERS = (
     "formal_check",
     "human_review",
 )
-STEP2_IMPLEMENTED_LAYERS = frozenset({"format_check", "rule_check", "critic_review", "code_test"})
+STEP2_IMPLEMENTED_LAYERS = frozenset(
+    {"format_check", "rule_check", "critic_review", "code_test", "human_review"}  # + step 7 (D7-8)
+)
 TASK_KINDS = ("work", "conflict", "synthesis")
 
 

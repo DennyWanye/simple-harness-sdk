@@ -438,6 +438,8 @@ class ActionCommitsMixin:
             request = self._store.get_approval(request_id)
             if request is None:
                 raise ActionCommitError(f"unknown approval request {request_id}")
+            if request["kind"] != "action":  # reviews and arbitrations have their own entry
+                raise ActionCommitError(f"{request_id} is a {request['kind']} request")
             receipt = decision_receipt_hash(
                 request_id=request_id,
                 binding=request["binding"],
@@ -451,7 +453,11 @@ class ActionCommitsMixin:
             mission = self._store.get_mission(str(request["mission_id"]))
             if mission is None or mission.status is not MissionStatus.ACTIVE:
                 raise ActionCommitError(f"mission {request['mission_id']} is not ACTIVE")  # D7-4'
-            if request["state"] == "PENDING" and self._store.now >= float(request["expires_at"]):
+            if (
+                request["state"] == "PENDING"
+                and request.get("expires_at") is not None
+                and self._store.now >= float(request["expires_at"])
+            ):
                 self._expire_request(request)
                 raise ActionCommitError(f"approval {request_id} expired")
             if request["state"] != "PENDING":
@@ -534,6 +540,8 @@ class ActionCommitsMixin:
             request = self._store.get_approval(request_id)
             if request is None:
                 raise ActionCommitError(f"unknown approval request {request_id}")
+            if request["kind"] != "action":
+                raise ActionCommitError(f"{request_id} is a {request['kind']} request")
             if request["state"] not in {"PENDING", "GRANTED"}:
                 raise ActionCommitError(f"approval {request_id} is {request['state']}")
             action = (
@@ -589,7 +597,9 @@ class ActionCommitsMixin:
         expired = []
         with self._store.transaction():
             for request in self._store.list_approvals(mission_id, "PENDING", "GRANTED"):
-                if self._store.now < float(request["expires_at"]):
+                if request.get("expires_at") is None or self._store.now < float(
+                    request["expires_at"]
+                ):
                     continue
                 if request["kind"] == "action":
                     action = self._store.get_action(str(request["subject_key"]))
@@ -1035,6 +1045,8 @@ class ActionCommitsMixin:
                 self._set_action_state(action["action_key"], "CANCELLED", reason=reason)
             )
         for request in self._store.list_approvals(mission_id, "PENDING", "GRANTED"):
+            if request["kind"] != "action" and request["state"] != "PENDING":
+                continue  # a decided review / arbitration stays as decided
             if request["kind"] == "action":
                 subject = self._store.get_action(str(request["subject_key"]))
                 if subject is not None and subject["state"] != "CANCELLED":
