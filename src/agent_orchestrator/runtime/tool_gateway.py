@@ -74,6 +74,7 @@ class WorkspaceBinding:
     writable: bool
     allowed_tools: tuple[str, ...]
     untrusted_sources: tuple[str, ...] = ()  # step 4 (D4-12): path prefixes marked as data
+    max_tool_calls: int | None = None  # step 6 (D6-7 ⑤ / D6-8): the reserved tool-call cap
 
 
 def is_untrusted(path: str, prefixes: tuple[str, ...]) -> bool:
@@ -149,6 +150,17 @@ class WorkspaceToolGateway:
     def binding_for(self, run_id: str) -> WorkspaceBinding | None:
         return self._bindings.get(run_id)
 
+    def executed_calls(self, run_id: str) -> int:
+        """Tool calls that passed every check and were executed for ``run_id`` — the
+        fact the tool-call dimension settles on (D6-8)."""
+
+        return sum(
+            1
+            for record in self.calls
+            if record.get("run_id") == run_id
+            and str(record.get("outcome", "")).startswith("succeeded")
+        )
+
     def _workspace(self, binding: WorkspaceBinding) -> Workspace:
         if binding.view == "verify":
             return self._workspaces.verification_view(binding.attempt_id)
@@ -172,6 +184,17 @@ class WorkspaceToolGateway:
             record["outcome"] = "rejected:not_allowed"
             return ToolResult.rejected(
                 call.call_id, "tool_not_allowed", f"{call.name} is not allowed for this Attempt"
+            )
+        if (
+            binding.max_tool_calls is not None
+            and self.executed_calls(run_id) >= binding.max_tool_calls
+        ):
+            # §21.1 step 4 (rate and budget): the Attempt's reserved tool-call cap is spent
+            record["outcome"] = "rejected:rate_limited"
+            return ToolResult.rejected(
+                call.call_id,
+                "tool_rate_limited",
+                f"this Attempt may execute at most {binding.max_tool_calls} tool calls",
             )
         try:
             workspace = self._workspace(binding)

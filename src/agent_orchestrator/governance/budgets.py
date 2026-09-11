@@ -205,6 +205,7 @@ class BudgetLedger:
         cost_micros: int,
         counts_attempt: bool,
         tool_calls: int = 0,
+        mission_id: str | None = None,
     ) -> str:
         """Reserve ``tokens`` / ``cost_micros`` (/ ``tool_calls``) on ``account_id`` and every ancestor.
 
@@ -245,7 +246,13 @@ class BudgetLedger:
                 attempts_created=1 if counts_attempt else 0,
             )
         reservation_id = f"reservation-{subject_id}"
-        mission_id = chain[-1].account_id.removeprefix("budget:")
+        if (
+            mission_id is None
+        ):  # review P0-1: the caller names the Mission; the chain may end at Global
+            mission_id = next(
+                (s.account_id.removeprefix("budget:") for s in chain if s.scope == "mission"),
+                chain[-1].account_id.removeprefix("budget:"),
+            )
         self._store.connection.execute(
             "INSERT INTO budget_reservations(reservation_id,account_id,mission_id,subject_id,state,"
             "reserved_tokens,reserved_cost_micros,reserved_tool_calls,created_at,updated_at)"
@@ -364,10 +371,14 @@ class BudgetLedger:
             "SELECT * FROM budget_reservations WHERE mission_id = ? ORDER BY created_at",
             (mission_id,),
         ).fetchall()
+        global_row = self._store.connection.execute(
+            "SELECT account_id FROM budget_accounts WHERE scope = 'global'"
+        ).fetchone()
         return {
             "accounts": [self.account(row["account_id"]).to_json() for row in rows],
             "usage": [dict(row) for row in usage],
             "reservations": [dict(row) for row in reservations],
+            "global": None if global_row is None else self.account(global_row[0]).to_json(),
         }
 
 

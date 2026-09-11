@@ -23,6 +23,7 @@ from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
 from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 
 from ..artifacts.workspace import WorkspaceManager
+from ..contracts import Budget
 from .tool_gateway import TOOL_NAMES, TOOL_SCHEMAS, WorkspaceToolGateway
 
 CONSUMER_PRICING_KEY = "consumer"
@@ -86,6 +87,8 @@ class OrchestratorConfig:
     max_manager_rounds: int = 4
     manager_reserve_tokens: int = 6_000
     aging_window_seconds: float = 300.0
+    # step 6 (D6-1 / D6-8)
+    global_budget: Budget | None = None  # §18.2 Global Budget above every Mission; None = uncapped
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -178,6 +181,7 @@ class OrchestratorConfig:
                 "max_manager_rounds": self.max_manager_rounds,
                 "aging_window_seconds": self.aging_window_seconds,
             },
+            "global_budget": None if self.global_budget is None else self.global_budget.to_json(),
             "knowledge": {
                 "knowledge_sharing": self.knowledge_sharing,
                 "on_retrieval_failure": self.on_retrieval_failure,

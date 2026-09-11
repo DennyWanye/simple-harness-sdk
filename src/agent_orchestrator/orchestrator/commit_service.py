@@ -13,7 +13,7 @@ Orchestrator, the API and the recovery path do.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -39,7 +39,7 @@ from ..contracts import (
     ids,
 )
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, jsonable, sha256_hex
-from ..governance.budgets import BudgetError, BudgetLedger, UsageFact
+from ..governance.budgets import AccountSnapshot, BudgetError, BudgetLedger, UsageFact
 from ..graph.changes import (
     ChangeLimits,
     GraphChangeRejected,
@@ -52,7 +52,7 @@ from ..memory.claims import grade_claim
 from ..memory.summaries import refresh_summaries
 from ..memory.verified_knowledge import KnowledgeIndex, KnowledgeRecord
 from ..observability.lineage import lineage
-from ..planning.manager import conflict_task, synthesis_task, terminal_task
+from ..planning.manager import conflict_task, inherit_limits, synthesis_task, terminal_task
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
 from ..verification.conflicts import Contradiction, find_contradiction
@@ -173,10 +173,14 @@ class TaskProposal:
 class Reservation:
     tokens: int
     cost_micros: int
+    tool_calls: int = 0  # step 6 (D6-8): the Attempt's tool-call cap, reserved up front
 
 
 def mission_account(mission_id: str) -> str:
     return f"budget:{mission_id}"
+
+
+GLOBAL_ACCOUNT = "budget:global"  # step 6 (D6-1): §18.2 "Global Budget" above every Mission
 
 
 def task_account(task_id: str) -> str:
@@ -184,10 +188,27 @@ def task_account(task_id: str) -> str:
 
 
 class CommitService:
-    def __init__(self, store: Store, *, conflict_tasks: bool = True) -> None:
+    def __init__(
+        self, store: Store, *, conflict_tasks: bool = True, global_budget: Budget | None = None
+    ) -> None:
         self._store = store
         self._ledger = BudgetLedger(store)
         self._conflict_tasks = conflict_tasks  # D4-19: False = defer every conflict
+        self._global_budget = global_budget  # D6-1: None = no deployment-wide cap
+        # D6-8: the orchestrator installs the gateway's executed-call counter (subject → count)
+        # so every settlement path books the tool-call fact without threading it through
+        self.tool_calls_for: Callable[[str], int] | None = None
+
+    def global_account(self) -> AccountSnapshot | None:
+        """The deployment-wide account (§18.2 Global Budget), if this deployment set one."""
+
+        if self._global_budget is None:
+            return None
+        with self._store.transaction():
+            try:
+                return self._ledger.account(GLOBAL_ACCOUNT)
+            except BudgetError:
+                return None
 
     @property
     def store(self) -> Store:
@@ -265,12 +286,26 @@ class CommitService:
                 },
             )
             self._store.insert_mission(mission, spec_hash=spec_hash)
-            self._ledger.open_account(
+            parent: str | None = None
+            limits = spec.budget
+            if self._global_budget is not None:  # D6-1: Global → Mission (§18.2), never the reverse
+                self._ledger.open_account(
+                    account_id=GLOBAL_ACCOUNT,
+                    scope="global",
+                    parent_id=None,
+                    mission_id="global",
+                    limits=self._global_budget,
+                )
+                parent = GLOBAL_ACCOUNT
+                # a dimension the Mission does not name is inherited from the Global cap
+                # (review P0-2: ``fits_within`` treats an unnamed child dimension as unbounded)
+                limits = inherit_limits(spec.budget, self._global_budget)
+            self._ledger.open_account(  # BudgetError (does not fit the Global) rolls everything back
                 account_id=mission_account(mission_id),
                 scope="mission",
-                parent_id=None,
+                parent_id=parent,
                 mission_id=mission_id,
-                limits=spec.budget,
+                limits=limits,
             )
             self._emit(
                 "MissionCreated",
@@ -320,6 +355,7 @@ class CommitService:
             self._ledger.reserve(
                 account_id=account_id,
                 subject_id=subject_id,
+                mission_id=mission_id,
                 tokens=reservation.tokens,
                 cost_micros=reservation.cost_micros,
                 counts_attempt=False,
@@ -1700,6 +1736,12 @@ class CommitService:
                 final_report={
                     **dict(mission.final_report or {}),
                     "planning_failure": {"reason": reason, **dict(detail)},
+                    # step 6: a non-planning stop reason (the pool ran out) reads like fail_mission
+                    **(
+                        {}
+                        if stop_reason is MissionStopReason.PLANNING_FAILED
+                        else {"stop_reason": str(stop_reason), "detail": dict(detail)}
+                    ),
                 },
             )
             self._store.update_mission(updated, expected_version=mission.version)
@@ -1885,9 +1927,11 @@ class CommitService:
             self._ledger.reserve(  # BudgetExhausted propagates; nothing was written
                 account_id=task_account(task_id),
                 subject_id=attempt_id,
+                mission_id=task.mission_id,
                 tokens=reservation.tokens,
                 cost_micros=reservation.cost_micros,
                 counts_attempt=True,
+                tool_calls=reservation.tool_calls,
             )
             attempt = Attempt(
                 id=attempt_id,
@@ -2214,15 +2258,29 @@ class CommitService:
             )
 
     def settle_subject(
-        self, subject_id: str, mission_id: str, *, task_id: str | None = None
+        self,
+        subject_id: str,
+        mission_id: str,
+        *,
+        task_id: str | None = None,
+        tool_calls: int | None = None,
     ) -> Mapping[str, Any]:
         with self._store.transaction():
-            return self._settle_subject(subject_id, mission_id, task_id=task_id)
+            return self._settle_subject(
+                subject_id, mission_id, task_id=task_id, tool_calls=tool_calls
+            )
 
     def _settle_subject(
-        self, subject_id: str, mission_id: str, *, task_id: str | None
+        self,
+        subject_id: str,
+        mission_id: str,
+        *,
+        task_id: str | None,
+        tool_calls: int | None = None,
     ) -> Mapping[str, Any]:
-        settled = self._ledger.settle(subject_id=subject_id)
+        if tool_calls is None:
+            tool_calls = 0 if self.tool_calls_for is None else int(self.tool_calls_for(subject_id))
+        settled = self._ledger.settle(subject_id=subject_id, tool_calls=tool_calls)
         self._emit(
             "BudgetReleased",
             mission_id,
@@ -2235,6 +2293,7 @@ class CommitService:
                 "released_tokens": int(settled["reserved_tokens"])
                 - int(settled["settled_tokens"] or 0),
                 "unpriced": bool(settled["unpriced"]),
+                "settled_tool_calls": int(settled.get("settled_tool_calls") or 0),
             },
         )
         return settled

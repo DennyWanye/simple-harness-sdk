@@ -178,7 +178,7 @@ def normalise_budgets(mission: Mission, proposal: TaskGraphProposal) -> TaskGrap
             if getattr(node.budget, name) is None and parent is not None:
                 pool = max(0, parent - reserve) if name == "max_tokens" else parent
                 changes[name] = pool // count
-        for name in ("max_attempts", "max_concurrency", "max_runtime_seconds"):
+        for name in ("max_attempts", "max_concurrency", "max_runtime_seconds", "max_tool_calls"):
             parent = getattr(mission.budget, name)
             if getattr(node.budget, name) is None and parent is not None:
                 changes[name] = parent

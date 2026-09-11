@@ -96,7 +96,7 @@ from ..runtime.role_templates import (
     role_for_task,
 )
 from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding, run_pytest
-from ..scheduling.allocator import allocate
+from ..scheduling.allocator import OPEN_ATTEMPT_STATES, allocate
 from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy
 from ..verification.critics import CriticVerdict, parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
@@ -154,15 +154,30 @@ class Orchestrator:
         self._released: set[str] = set()
         self.progress_log: list[str] = []
         self.cancel_receipts: list[dict[str, Any]] = []
+        self._rotation = 0  # D6-1: round-robin start across active Missions
 
     # ------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Orchestrator:
         self._store = Store.open(self._config.orchestrator_db)
-        self._commit = CommitService(self._store, conflict_tasks=self._config.knowledge_sharing)
+        self._commit = CommitService(
+            self._store,
+            conflict_tasks=self._config.knowledge_sharing,
+            global_budget=self._config.global_budget,
+        )
         self._assembled = assemble_orchestrator_runtime(self._config, self._provider)
         await self._assembled.runtime.__aenter__()
         self._bridge = AgentBridge(self._assembled.runtime, unpriced=self._config.unpriced)
+        self._commit.tool_calls_for = self._executed_tool_calls  # D6-8
         return self
+
+    def _executed_tool_calls(self, subject_id: str) -> int:
+        """The gateway's executed-call count for an Attempt (0 for service intents or an
+        Attempt that never got an agent) — the fact the tool-call dimension settles on."""
+
+        attempt = self.store.get_attempt(subject_id)
+        if attempt is None or attempt.agent_id is None or self._assembled is None:
+            return 0
+        return self._assembled.gateway.executed_calls(attempt.agent_id)
 
     async def __aexit__(self, *exc_info: object) -> None:
         if self._assembled is not None:
@@ -326,7 +341,12 @@ class Orchestrator:
                 continue
             if await self._verify(stored.envelope.id):
                 progressed = True
-        for mission in self._active_missions():
+        missions = self._active_missions()
+        if missions:  # D6-1 fair progress: the allocation order rotates across Missions
+            start = self._rotation % len(missions)
+            self._rotation += 1
+            missions = missions[start:] + missions[:start]
+        for mission in missions:
             if await self._decide(mission):
                 progressed = True
         return progressed
@@ -334,7 +354,27 @@ class Orchestrator:
     # ------------------------------------------------------------- planning
     async def _start_planning(self, mission: Mission) -> None:
         self.commit.begin_planning(mission.id)
-        await self._create_planner_intent(mission.id, ordinal=1)
+        try:
+            await self._create_planner_intent(mission.id, ordinal=1)
+        except BudgetExhausted as error:
+            # D6-8 / D3-12': a pool that cannot even fund the Planner is exhausted on that
+            # dimension; the Mission stops visibly instead of the loop crashing
+            detail = {
+                "dimension": error.dimension,
+                "requested": error.requested,
+                "remaining": error.remaining,
+                "account": error.account_id,
+                "phase": "planning",
+            }
+            self.commit.fail_planning(
+                mission.id,
+                reason="budget_exhausted",
+                detail=detail,
+                stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+            )
+            self._note(
+                f"mission {mission.id} stopped in planning: budget_exhausted ({error.dimension})"
+            )
 
     def _planning_rejections(self, mission_id: str) -> list[dict[str, Any]]:
         """Durable feedback for the next proposal (D3-2'): the recorded rejections."""
@@ -498,6 +538,7 @@ class Orchestrator:
                     workspace.write_text(path, content)
 
     def _bind_agent(self, agent_id: str, config: Mapping[str, Any]) -> None:
+        cap = config.get("max_tool_calls")
         self.assembled.gateway.bind(
             agent_id,
             WorkspaceBinding(
@@ -506,6 +547,7 @@ class Orchestrator:
                 True,
                 tuple(config.get("allowed_tools", WORKER_TOOLS)),
                 tuple(str(p) for p in config.get("untrusted_sources", ())),
+                max_tool_calls=None if cap is None else int(cap),
             ),
         )
 
@@ -1746,10 +1788,64 @@ class Orchestrator:
         raise last_error
 
     # --------------------------------------------------------------- decide
+    def _tool_calls_limited(self, mission: Mission, task: Task) -> bool:
+        """Whether any account on the Task's chain caps tool calls (only then is a
+        reservation meaningful; an unlimited dimension is never reserved)."""
+
+        if task.budget.max_tool_calls is not None or mission.budget.max_tool_calls is not None:
+            return True
+        limits = self._config.global_budget
+        return limits is not None and limits.max_tool_calls is not None
+
+    async def _runtime_exhausted(self, mission: Mission, tasks: Sequence[Task]) -> bool:
+        """D6-8 / §18.1 wall-clock dimension: a Mission (or Task) past ``max_runtime_seconds``
+        gets no new allocation; what was spent and reserved stays on the books."""
+
+        now = self.store.now
+        limit = mission.budget.max_runtime_seconds
+        if limit is not None and now - mission.created_at >= limit:
+            detail = {
+                "dimension": "runtime",
+                "elapsed_seconds": round(now - mission.created_at, 3),
+                "max_runtime_seconds": limit,
+                "account": mission_account(mission.id),
+            }
+            self.commit.fail_mission(
+                mission.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED, detail=detail
+            )
+            await self._release_mission(mission.id)
+            self._note(f"mission {mission.id} stopped: budget_exhausted (runtime)")
+            return True
+        for task in tasks:
+            cap = task.budget.max_runtime_seconds
+            if cap is None or task.status in TERMINAL_TASK:
+                continue
+            attempts = self.store.list_attempts(task.id)
+            if not attempts:
+                continue
+            started = min(a.created_at for a in attempts)
+            if now - started >= cap and not any(a.status in OPEN_ATTEMPT_STATES for a in attempts):
+                self.commit.stop_task(
+                    task.id,
+                    stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+                    detail={
+                        "dimension": "runtime",
+                        "elapsed_seconds": round(now - started, 3),
+                        "max_runtime_seconds": cap,
+                        "account": task_account(task.id),
+                    },
+                )
+                await self._release_mission(mission.id)
+                self._note(f"task {task.id} stopped: budget_exhausted (runtime)")
+                return True
+        return False
+
     async def _decide(self, mission: Mission) -> bool:
         tasks = self.store.list_tasks(mission.id)
         if not tasks or mission.status is not MissionStatus.ACTIVE:
             return False
+        if await self._runtime_exhausted(mission, tasks):
+            return True
         live = [  # D5-4 / R4: superseded work is history and a paused route is not required
             t
             for t in tasks
@@ -1933,6 +2029,11 @@ class Orchestrator:
             role=role.name,
         )
         allowed = tuple(name for name in role.tool_names if name in set(task.allowed_tools))
+        # D6-8: the Attempt's tool-call cap = the deployment's per-turn cap, narrowed by the
+        # Task budget's own dimension; it is reserved up front and enforced at the gateway
+        tool_cap = self._config.max_tool_calls_per_turn
+        if task.budget.max_tool_calls is not None:
+            tool_cap = min(tool_cap, task.budget.max_tool_calls)
         config = AgentConfig(
             name=f"{role.name}-{placeholder.ordinal}",
             instructions=role.instructions,
@@ -1940,7 +2041,7 @@ class Orchestrator:
             tool_names=allowed,
             limits=AgentLimits(
                 max_model_calls_per_turn=self._config.max_model_calls_per_turn,
-                max_tool_calls_per_turn=self._config.max_tool_calls_per_turn,
+                max_tool_calls_per_turn=tool_cap,
                 turn_deadline_seconds=min(
                     self._config.turn_deadline_seconds,
                     float(task.budget.max_runtime_seconds or self._config.turn_deadline_seconds),
@@ -1972,12 +2073,16 @@ class Orchestrator:
                 model=self._config.model,
                 prompt_version=role.prompt_version,
                 context_version=package.context_version,
-                reservation=self._reservation(tokens),
+                reservation=replace(
+                    self._reservation(tokens),
+                    tool_calls=tool_cap if self._tool_calls_limited(mission, task) else 0,
+                ),
                 intent_config={
                     "agent_config": config.to_json(),
                     "message": message,
                     "attempt_id": placeholder.id,
                     "allowed_tools": list(allowed),
+                    "max_tool_calls": tool_cap,
                     "context_version": package.context_version,
                     "prompt_version": role.prompt_version,
                     "task_version": task.version,

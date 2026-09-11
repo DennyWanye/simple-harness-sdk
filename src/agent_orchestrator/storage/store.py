@@ -153,6 +153,7 @@ class Store:
         self._clock = clock
         self._lock = threading.RLock()
         self._depth = 0
+        self._holder: object | None = None
         self._armed: set[str] = set()
         self._skips: dict[str, int] = {}
         self._times: dict[str, int] = {}
@@ -263,10 +264,28 @@ class Store:
             )
 
     # ------------------------------------------------------------- transactions
+    @staticmethod
+    def _current_task() -> object | None:
+        try:
+            import asyncio
+
+            return asyncio.current_task()
+        except RuntimeError:  # no running loop: plain synchronous caller
+            return None
+
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
             if self._depth:
+                # step 6 (review P1-15): an RLock lets a *different* coroutine of the same
+                # thread walk into an open transaction; that would be silent corruption, so a
+                # nested entry must come from the task that opened it
+                holder = self._holder
+                current = self._current_task()
+                if holder is not None and current is not None and current is not holder:
+                    raise StoreError(
+                        "transaction crossed an await: another task entered an open transaction"
+                    )
                 self._depth += 1
                 try:
                     yield self._connection
@@ -280,6 +299,7 @@ class Store:
                     raise StoreBusy(str(error)) from error
                 raise
             self._depth = 1
+            self._holder = self._current_task()
             try:
                 yield self._connection
             except BaseException:
@@ -289,6 +309,7 @@ class Store:
                 self._connection.execute("COMMIT")
             finally:
                 self._depth = 0
+                self._holder = None
 
     @property
     def connection(self) -> sqlite3.Connection:

@@ -62,7 +62,32 @@
 - **多池恢复**：`AgentRuntime.recover_pending_turns` 只恢复本库的 turn；orchestrator 侧按 intent profile 分区即可，不需要 SDK 改动。
 - **真实模型**：pro 作为 Planner 更贵；报告规模控制在 1 个 Mission、≤ 6 个 Attempt。
 
-## 6. 独立 review 后的修订（待填）
+## 6. 独立 review 后的修订（2026-09-11；裁决表见 journal §1）
+
+- **D6-1'（Global 账户）**：`BudgetLedger.reserve` 增加显式 `mission_id`（P0-1）；`create_mission` 里 Mission 未命名的维度从 Global 继承（`inherit_limits`，P0-2）；`fits_within` 比的是父的**上限**而非剩余，超卖由 `reserve` 链兜住（P1-3，§6.1 登记）；Global 池耗尽 → `fail_mission(BUDGET_EXHAUSTED, detail.scope="global")`，不归罪任何 Task（P1-2）。全局运行上限的权威检查点在 `create_attempt` 事务内（跨 Mission 统计 OPEN Attempt，P1-12），`_cycle` 的轮转与它同批落地（P1-13）；demo 用 `--max-concurrency 2` + `max_running_attempts 3`。
+- **D6-2'（背压状态）**：`CommitService.record_backpressure(observation)` 在**一个事务**里写 `scheduler_state` + 各活跃 Mission 的 `BackpressureRaised/Cleared` 事件（P1-4）；`scheduler_state.backpressure.log`（有界 200 条）是变更序列的唯一真值，`scheduler.json`/`metrics.json` 由它统计，events 只是各 Mission 时间线的投影（P1-11）。S6-02 的触发维度定为 `pending_verifications`，因此**验证异步化（有界 asyncio 任务集合 `verifier_workers`）与 `_has_inflight` 计入验证任务提前到切片 A**（P0-6）；D6-3 ⑤ "RAISED 时提升 Verifier 并发"砍掉（P2-6）。
+- **D6-3'（Allocator 措辞）**："公式档 = §29.3 打分档（tier 2）"，不等同于"低优先级"；"合并重复候选"（§18.5/§20.3，候选 Artifact 级）本步不做，归第 8 步（P2-3）。
+- **D6-4'（路由改造面）**：`self._config.model` 的 11 个使用点（Planner/Worker/Manager 的回显核对 3 处、`model_profile_ref` 4 处、`model=` 2 处、`_reservation` 价格表、`AgentBridge(unpriced)`）全部改为**取自冻结在 dispatch intent 里的 `runtime_profile_id / model / price`**；回显核对的 expected 是 intent 里的 `model`（P0-3，重启后换配置也不误判，S6-08）。错误分类表（P1-8）：`provider_unavailable`（连接/超时/5xx/`ProviderUnavailableError`）→ profile 健康（降级）；`verification_failed / outcome_failure / envelope_invalid / turn_failed:provider_protocol_error(tool_parse 等)` → 升级计数；`empty_response` → 都不算（SDK 同 turn 内重试）。每 profile 价格表接进 `_reservation` 与每池的 estimator（P1-9）；真实报告仍 unpriced（未注入 DeepSeek 价目，L2-6 改归第 8 步"评测成本效率"时注入）。
+- **D6-5'（执行池改造面）**：`AssembledOrchestratorRuntime` → `RuntimePools{profiles: {id: (runtime, bridge, execution db)}, gateway, workspaces}`，**gateway 与 WorkspaceManager 共享单例**；`Orchestrator(config, provider)` 保留单 provider 兼容路径（= 单 `default` profile），多 profile 用 `Orchestrator(config, providers={id: provider}, routing=RoutingRules)`（P0-4）。S6-06 有界等待（P0-5）：不可用 profile 无 fallback 时，Task 不分配但**计入 in-flight**（`run()` 不退出），冷却期满再试；等待累计 ≥ `profile_wait_seconds` → `stop_task(RUNTIME_UNAVAILABLE)`；测试用亚秒配置（cooldown 0.2 s / wait 0.6 s）。`stop_task` 是 Mission 级终止（级联取消其余任务），S6-06 的"其他可执行 Mission 继续"只承诺**跨 Mission** 隔离（P1-1）。
+- **D6-8'（预算维度）**：新增维度必须同步四处：`fits_within`、`normalise_budgets`、`inherit_limits`、Global→Mission 继承（P0-2）。S6-07 的"守恒"改为三条可判定断言：同一 `usage_ref` 重复导入返回 0；账户 `settled_tokens` = 该 Mission 全部 `imported_usage` 之和；结算后 `reserved_* ≥ 0` 且开放预留 = 未 SETTLED 的 reservation 之和（P1-5）。L3-3（UNKNOWN 用量让预留永不释放）：本步给 `costs.json` 加 `held_reservations` 列表并在 Mission 终态时发 `ReservationHeld{subject, reason=unknown_usage}` 事件——对账通道是"可见并可追"，不是自动放行（登记）。
+- **D6-9'（验证层常量）**：不新建 `DEPLOYED_LAYERS`，沿用 `STEP2_IMPLEMENTED_LAYERS`（`contracts/models.py`）；拒绝 reason 改为 `verification_policy_undeployed`；运行期未部署层 ERROR → `stop_task(VERIFIER_UNAVAILABLE)` 不重试（P2-2）。`verifier_workers` = 验证的 asyncio 并发度，是实施约定（§6.1 登记）。
+- **D6-10'（Trace）**：`trace_id = ids.trace_id(mission_id)`，与事件信封同值（P1-10）；`metrics.json` 在 unpriced 部署下费用列显式 `null` 并注明（P2-6）。
+- **D6-11'（角色配比）**：配比表按 §9.2 八个角色列全，Connector / Simplifier / Failure Analyst 记 `null`（P2-5）。
+- **fixtures（P1-14）**：`RoleScriptedProvider` 已回显自己的 `model`（`ProviderResponse.model`），两池用不同 model 名，回显核对在 fixtures 上是真实的；`critic_delay_seconds` 让 Critic 变慢（provider 内 `asyncio.sleep`，远小于 `critic_wait_seconds`）；`FailingProvider(kind="unavailable", times=N)` 抛连接类错误。
+- **Store 事务（P1-15）**：`transaction()` 记录持有者 `asyncio.current_task()`，另一任务进入未关闭的事务 → `StoreError`；配不变量测试。
+
+### 6.2 接手的遗留 → 本步处置（review P2-1）
+
+| 遗留 | 处置 |
+|---|---|
+| L2-4 `run_tests` 无网络隔离 | 推迟到第 7 步（真实动作沙箱）；本步 `DeploymentPolicy` 不含网络，登记 |
+| L2-6 真实运行 unpriced | 机制（每 profile 价格表）本步做；DeepSeek 价目注入归第 8 步 |
+| L2-7 每 Attempt token 预留非硬上限 | 不变：硬上限靠 SDK per-turn limits + `hard_cap_micros`（需价格表）；登记 |
+| L3-3 UNKNOWN 出站调用的对账通道 | `held_reservations` + `ReservationHeld` 事件（可见可追），不自动放行 |
+| L3-4 老化 + 背压上限 | 第 5 步 aging + 本步 D6-2/D6-3 → **关闭** |
+| L3-5 跨进程锁压力测试 | 不做（§2） |
+| L4-3 成本维度无系统预留 / `assert_no_secrets` 只查字段名 | 后半句本步做（值模式扫描）；前半句登记不变 |
+| L4-4 `tool_parse` 频繁 turn FAILED | 计入升级计数（D6-4' 分类表）：flash 反复 tool_parse → 升级到 pro |
 
 ### 6.1 本步实施约定（非原文原句；按 ORCH §13 登记）
 
