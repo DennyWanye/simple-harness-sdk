@@ -195,6 +195,7 @@ SNAPSHOT_FIELDS: dict[str, str] = {
             "profile_failure_threshold",
             "profile_cooldown_seconds",
             "profile_wait_seconds",
+            "ablations",
             "extra",
         )
     },

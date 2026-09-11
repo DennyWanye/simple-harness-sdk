@@ -1661,6 +1661,9 @@ class Orchestrator:
             human=human,
             reuse=reuse,
             needs_human_allowed=escalation_left,
+            ablated=frozenset({"critic_review"})
+            if "critic" in self._config.ablations
+            else frozenset(),
         )
         if verdict.critic is not None:
             self._critic_verdicts[result_id] = verdict.critic
@@ -3023,7 +3026,8 @@ class Orchestrator:
                 test_runs[criterion] = {**test_run.to_json(), "passed": test_run.passed}
             except Exception as error:  # noqa: BLE001
                 test_runs[criterion] = {"passed": False, "error": str(error), "stdout": ""}
-        needs_critic = any(
+        judge_ablated = "critic" in self._config.ablations  # step 8 (D8-7'): no judge Critic
+        needs_critic = not judge_ablated and any(
             not c.startswith(("pytest:", "file:", ACTION_PREFIX)) for c in mission.success_criteria
         )
         critic: CriticVerdict | None = None
@@ -3086,10 +3090,14 @@ class Orchestrator:
                         "criterion": criterion,
                         "met": bool(found and found.get("met")),
                         "judge": "critic_review",
-                        "source": "unavailable"  # review P1-2: no judge ran — not a Verifier
+                        "source": "ablated"  # step 8: this run removed the judge Critic
+                        if judge_ablated
+                        else "unavailable"  # review P1-2: no judge ran — not a Verifier
                         if critic is None
                         else ("task_critic" if reused_critic else "independent"),
-                        "reason": "no independent judge ran"
+                        "reason": "judge ablated in this run"
+                        if judge_ablated
+                        else "no independent judge ran"
                         if found is None
                         else found.get("reason"),
                     }

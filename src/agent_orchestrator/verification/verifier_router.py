@@ -86,10 +86,15 @@ class VerifierRouter:
         human: Mapping[str, Any] | None = None,
         reuse: Mapping[str, LayerResult] | None = None,
         needs_human_allowed: bool = True,
+        ablated: frozenset[str] = frozenset(),
     ) -> Verdict:
         required = set(task.verification_policy)
         if action_problems is not None:  # D7-2'': a result carrying actions/ is always rule-checked
             required.add("rule_check")
+        # step 8 (plan D8-7'): an ablation changes the effective policy explicitly — the layer
+        # is not required in this run and says so; it is never a silent PASS
+        removed = {layer for layer in ablated if layer in required}
+        required -= removed
         layers: list[LayerResult] = []
         critic: CriticVerdict | None = None
         short_at: str | None = None
@@ -116,6 +121,16 @@ class VerifierRouter:
                 )
                 continue
             if layer not in required:
+                if layer in removed:
+                    await record(
+                        LayerResult(
+                            layer,
+                            NOT_REQUIRED,
+                            "ablated: the Task policy requires it, this run removed it",
+                            {"ablated": True, "required_by_policy": True},
+                        )
+                    )
+                    continue
                 await record(
                     LayerResult(layer, NOT_REQUIRED, "not in the Task verification policy", {})
                 )

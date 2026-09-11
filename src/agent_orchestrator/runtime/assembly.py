@@ -53,6 +53,22 @@ class PriceTable:
         )
 
 
+ABLATIONS = frozenset({"critic", "blackboard", "graph_changes"})  # step 8 (plan D8-7')
+SAFETY_BOUNDARIES = (
+    "permissions",
+    "tool_gateway",
+    "idempotency",
+    "approvals",
+    "deployment_policy",
+    "secret_checks",
+    "format_check",
+    "rule_check",
+    "code_test",
+    "human_review",
+    "budgets",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class OrchestratorConfig:
     evidence_root: Path
@@ -111,9 +127,25 @@ class OrchestratorConfig:
     profile_failure_threshold: int = 2
     profile_cooldown_seconds: float = 60.0
     profile_wait_seconds: float = 300.0
+    # step 8 (plan D8-7'): components removed for an ablation run — a closed vocabulary;
+    # safety boundaries (permissions, idempotency, approvals, deterministic verification
+    # layers, the deployment policy, secret checks) can never be ablated
+    ablations: tuple[str, ...] = ()
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        ablations = tuple(sorted(set(self.ablations)))
+        refused = [name for name in ablations if name not in ABLATIONS]
+        if refused:
+            raise ValueError(
+                f"not ablatable: {refused}; only {sorted(ABLATIONS)} may be removed — safety "
+                f"boundaries ({', '.join(SAFETY_BOUNDARIES)}) stay on in every run"
+            )
+        object.__setattr__(self, "ablations", ablations)
+        if "blackboard" in ablations:  # D8-7': the knowledge layer's kill switch
+            object.__setattr__(self, "knowledge_sharing", False)
+        if "graph_changes" in ablations:  # Manager graph changes, not the original's scheduling
+            object.__setattr__(self, "dynamic_graph", False)
         if self.candidates_per_task < 1 or self.max_concurrency < 1:
             raise ValueError("candidates_per_task and max_concurrency must be >= 1")
         if self.max_planning_attempts < 1:
@@ -229,6 +261,7 @@ class OrchestratorConfig:
                 "exploration_slots": self.exploration_slots,
                 "verifier_workers": self.verifier_workers,
             },
+            "ablations": list(self.ablations),
             "knowledge": {
                 "knowledge_sharing": self.knowledge_sharing,
                 "on_retrieval_failure": self.on_retrieval_failure,
