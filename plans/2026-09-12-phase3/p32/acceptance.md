@@ -27,7 +27,7 @@
 | P32-6 | 工作区登记 | 每个 Attempt 与各类副本都有登记。已存在的目录：身份相符就复用（恢复路径不会卡住）；登记是 CREATING 的半成品目录，删掉重建；身份不符的，拒绝。清理之后，登记与 CAS 都还在；回放与对账照常通过 | SDK `test_p32_workspace_registry.py` |
 | P32-7 | 审批后发布 | 流程：候选（写 `artifact_path`）→ 系统绑定 hash → 验证 PASS → 审批 → 交接 → 先写 intent → link。回读 hash 等于产物 hash；回执、ledger、CAS 三处一致；`Receipt.target` 是规范化 target | SDK `test_p32_publish_connector.py` |
 | P32-8 | 内容变化重批 | 执行之前内容变了：生成新版本，旧的批准作废。已经 SUCCEEDED 之后要改内容：普通提议被拒；走补偿（`#comp-1`）需要新的批准，原事实不变 | 同上 |
-| P32-9 | 发布回执丢失 | 在三处注入故障：<br>① intent 之后、link 之前崩溃 → lookup 为 CONFIRMED_NOT_STARTED 后重试，只产生一份文件；<br>② link 之后、COMMITTED 之前崩溃 → COMPLETED，不重发；<br>③ COMMITTED 之后、回执返回之前崩溃 → COMPLETED。<br>另加一个场景：发布之后用户删除文件，然后 reconcile → STILL_UNKNOWN，不重发 | 同上 |
+| P32-9 | 发布回执丢失 | 在三处注入故障：<br>① intent 之后、link 之前失败 → 连接器当场补写 ABORTED，lookup 判为未开始，重试后只产生一份文件；如果是进程真的崩在这里（只留下 PREPARED、文件不存在），则判为 STILL_UNKNOWN，不自动重发；<br>② link 之后、COMMITTED 之前崩溃 → COMPLETED，不重发；<br>③ COMMITTED 之后、回执返回之前崩溃 → COMPLETED。<br>另加两个场景：发布之后用户删除或修改文件，然后 reconcile → STILL_UNKNOWN，不重发；账本末行没写完 → 丢弃该行 | 同上 |
 | P32-10 | 非权威查询不可重发 | best_effort 的连接器，lookup 返回 None 时保持 UNKNOWN；L2 及以上的 best_effort 连接器被拒；step07 原有测试不改断言也全部通过 | SDK `test_p32_lookup_authority.py` |
 | P32-11 | 拒绝权限放大；补偿 | target 带 `..`、是绝对路径、或经过软链的，一律拒绝，并记下依据；`artifact_path` 不属于已 accept 的 Result 的，拒绝；`retract`（L3）默认拒绝；两个合成 Principal 的双人审批；补偿有独立的业务键和审批 | SDK `test_p32_compensation.py`（只在 SDK 层做） |
 | P32-12 | SDK 交付 | 全量回归红集 ⊆ 73；`test_facade.py:424` 的改写事先登记；wheel 0.10.0 在干净环境验证；代码评审意见已处置；P3.1 遗留的源码修改已落实 | journal |

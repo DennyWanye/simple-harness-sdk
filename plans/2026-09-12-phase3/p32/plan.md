@@ -204,13 +204,16 @@
 - **最终文件名**：`<stem>.<action_id 中 hex 部分的前 12 位>.v<version><suffix>`。
 - **`lookup(key)` 的真值表**：
 
-  | intent | 文件 | 结论 |
+  | 账本里这个 key 的末条 | 文件 | 结论 |
   |---|---|---|
-  | 没有 | — | CONFIRMED_NOT_STARTED（link 是唯一的提交点，intent 一定先落盘） |
-  | 有 | 存在且 hash 相符 | COMPLETED，按 intent 重建 Receipt |
-  | 有 | 缺失，或 hash 不符 | STILL_UNKNOWN，转人工（可能是发布后被用户删了或改了） |
+  | 没有记录 | — | CONFIRMED_NOT_STARTED（link 是唯一的提交点，intent 一定先落盘） |
+  | ABORTED | — | CONFIRMED_NOT_STARTED（连接器在挂链之前就失败了，而且当场写下了这条） |
+  | PREPARED 或 COMMITTED | 存在且 hash 相符 | COMPLETED，按 intent 重建 Receipt |
+  | PREPARED 或 COMMITTED | 缺失，或 hash 不符 | STILL_UNKNOWN，转人工（进程崩在中间，或者发布后被用户删了、改了） |
 
   ledger 末行没写完的，丢弃这一行。
+
+  **ABORTED 这一条是第 3 版之后补的**：连接器在挂链之前失败时（参数不对、读不到字节、写临时文件出错、当场的传输错误），它自己知道"没有发生过"，于是补写一条 ABORTED。这样常见的当场失败可以直接重试，而真正的进程崩溃（只留下 PREPARED）仍然如实归为不确定，不自动重发。
 - **目标文件已存在**：内容相同、并且 intent 属于同一个 key，按 COMPLETED 处理；否则 `ConnectorRejected("conflict")`。
 - **内容变化**：执行前内容变了，生成新版本，旧的批准作废；已经 SUCCEEDED 之后要改内容，必须走补偿（D8）。
 

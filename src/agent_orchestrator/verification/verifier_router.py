@@ -65,9 +65,16 @@ class Verdict:
 
 
 class VerifierRouter:
-    def __init__(self, *, test_timeout: float = 120.0, local_code_execution: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        test_timeout: float = 120.0,
+        local_code_execution: bool = True,
+        executor: Any = None,
+    ) -> None:
         self._test_timeout = test_timeout
         self._local_code_execution = local_code_execution  # host support 0.9.8
+        self._executor = executor  # P3.2 D2: what code_test runs through
 
     async def verify(
         self,
@@ -225,6 +232,7 @@ class VerifierRouter:
                     task,
                     verification_copy=verification_copy,
                     timeout=self._test_timeout,
+                    executor=self._executor,
                 )
                 runs = result.detail.get("runs", [])
                 test_output = "\n".join(

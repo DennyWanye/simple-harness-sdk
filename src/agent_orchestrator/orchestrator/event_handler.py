@@ -113,6 +113,7 @@ from ..runtime.role_templates import (
     role_for_task,
     template_for,
 )
+from ..runtime.sandbox import resolve_executor
 from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding, run_pytest
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES, allocate
 from ..scheduling.backpressure import BackpressureState, Observation
@@ -255,9 +256,13 @@ class Orchestrator:
         self._commit: CommitService | None = None
         self._assembled: AssembledOrchestratorRuntime | None = None
         self._bridge: AgentBridge | None = None
+        # P3.2 D2: the executor model-written code runs through (None when execution is
+        # off); a sandboxed deployment without a probed seatbelt executor fails right here
+        self._executor = resolve_executor(config.deployment_policy, config.sandbox_executor)
         self._router = VerifierRouter(
             test_timeout=config.test_timeout_seconds,
             local_code_execution=config.deployment_policy.local_code_execution,
+            executor=self._executor,
         )
         # host support 0.9.8: the verification layers this deployment can run
         self._deployed = deployed_layers(config.deployment_policy)
@@ -659,6 +664,13 @@ class Orchestrator:
     def commit(self) -> CommitService:
         assert self._commit is not None
         return self._commit
+
+    @property
+    def connectors(self) -> Mapping[str, Any]:
+        """The connectors this deployment enabled (P3.2 D8: a compensation is proposed
+        against the same connector the original action ran on)."""
+
+        return dict(self._connectors)
 
     @property
     def bridge(self) -> AgentBridge:
@@ -3549,7 +3561,10 @@ class Orchestrator:
                 if target is not None:
                     copy.resolve(target)
                 test_run = await run_pytest(
-                    str(copy.root), path=target, timeout=self._config.test_timeout_seconds
+                    str(copy.root),
+                    path=target,
+                    timeout=self._config.test_timeout_seconds,
+                    executor=self._executor,
                 )
                 test_runs[criterion] = {**test_run.to_json(), "passed": test_run.passed}
             except Exception as error:  # noqa: BLE001

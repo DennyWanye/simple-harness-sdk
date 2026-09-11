@@ -41,6 +41,9 @@ CLOSED_ACTION_STATES = frozenset(
     {"SUCCEEDED", "FAILED", "REJECTED", "REVOKED", "EXPIRED", "SUPERSEDED", "CANCELLED", "REFUSED"}
 )
 CANDIDATE_FIELDS = ("connector", "operation", "target", "params", "reason")
+# P3.2 D6: what a candidate names (artifact_path) versus what the system binds from the
+# Result's own accepted Artifacts — a model may never state the identity of the bytes
+BOUND_ARTIFACT_FIELDS = frozenset({"artifact_id", "content_hash", "size", "storage_uri"})
 ACTION_PREFIX = "action:"
 HANDOFF_READY_STATES = frozenset({"APPROVED", "PROPOSED"})
 MAX_HANDOFFS_PER_ACTION = 2  # one hand-off + at most one re-hand-off (SDK rehandoff_count <= 1)
@@ -142,6 +145,39 @@ def check_candidate(
     if triple not in allowed_actions(criteria, connectors):
         raise CandidateRejected("action_out_of_scope", ".".join(triple[:2]) + ":" + triple[2])
     return cand, decision
+
+
+def bind_artifact_params(params: Mapping[str, Any], artifacts: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind which Artifact an action publishes (P3.2 plan v3 D6).
+
+    A candidate may name *which* file of its own Result to act on (``artifact_path``); it
+    may never state that file's identity.  The system fills in the id, the content hash,
+    the size and where the bytes are stored from this very Result's accepted Artifacts, so
+    ``params_hash`` — and with it the approval — is bound to those exact bytes.
+    """
+
+    bound = dict(params)
+    path = bound.get("artifact_path")
+    if path is None:
+        return bound
+    if not isinstance(path, str) or not path.strip():
+        raise CandidateRejected("invalid_candidate", "artifact_path must be a non-empty string")
+    set_by_model = sorted(BOUND_ARTIFACT_FIELDS & set(bound))
+    if set_by_model:
+        raise CandidateRejected(
+            "invalid_candidate", f"a candidate may not set {set_by_model}: the system binds them"
+        )
+    artifact = artifacts.get(path.strip())
+    if artifact is None:
+        raise CandidateRejected("artifact_not_in_result", str(path))
+    bound.update(
+        artifact_path=artifact.path,
+        artifact_id=artifact.id,
+        content_hash=artifact.content_hash,
+        size=artifact.size_bytes,
+        storage_uri=artifact.storage_uri,
+    )
+    return bound
 
 
 def is_action_path(path: str) -> bool:
@@ -304,73 +340,184 @@ class ActionCommitsMixin:
                 return record
             if latest is not None and latest["state"] in OPEN_ACTION_STATES:
                 self._supersede_action(latest, by=record["action_key"])
-            record["state"] = "AWAITING_APPROVAL" if decision.required_approvals else "PROPOSED"
-            if decision.required_approvals:
-                request_id = f"approval-{record['action_key']}"
-                record["approval_request_id"] = request_id
-                self._store.put_approval(
-                    {
-                        "request_id": request_id,
-                        "kind": "action",
-                        "mission_id": mission_id,
-                        "subject_key": record["action_key"],
-                        "state": "PENDING",
-                        "version": 1,
-                        "binding": binding_of(record),
-                        "level": decision.level,
-                        # D7-4': the deployment's rules are frozen into the request
-                        "required_count": decision.required_approvals,
-                        "distinct_principals": bool(deployment.l3_distinct_principals),
-                        "expires_at": self._store.now + float(deployment.approval_ttl_seconds),
-                        "grant_count": 0,
-                        "granted_by": [],
-                        "summary": {
-                            "connector": record["connector"],
-                            "operation": record["operation"],
-                            "target": record["target"],
-                            "params": record["params"],
-                            "reason": record["reason"],
-                            "reason_source": "model (untrusted)",
-                        },
-                        "comments": [],
-                        "created_at": self._store.now,
-                    }
-                )
-            self._store.put_action(record)
+            return self._open_action(
+                record,
+                decision,
+                deployment=deployment,
+                payload={"artifact_hash": artifact_hash, "after": after},
+            )
+
+    def _open_action(
+        self,
+        record: dict[str, Any],
+        decision: ActionDecision,
+        *,
+        deployment: DeploymentPolicy,
+        payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Put one new action version on the ledger: its approval request when the level
+        needs one, the row itself, and the events (shared by a proposal and a compensation,
+        P3.2 plan v3 D8 — a compensation is an action like any other)."""
+
+        mission_id = str(record["mission_id"])
+        task_id = record.get("task_id")
+        record["state"] = "AWAITING_APPROVAL" if decision.required_approvals else "PROPOSED"
+        if decision.required_approvals:
+            request_id = f"approval-{record['action_key']}"
+            record["approval_request_id"] = request_id
+            self._store.put_approval(
+                {
+                    "request_id": request_id,
+                    "kind": "action",
+                    "mission_id": mission_id,
+                    "subject_key": record["action_key"],
+                    "state": "PENDING",
+                    "version": 1,
+                    "binding": binding_of(record),
+                    "level": decision.level,
+                    # D7-4': the deployment's rules are frozen into the request
+                    "required_count": decision.required_approvals,
+                    "distinct_principals": bool(deployment.l3_distinct_principals),
+                    "expires_at": self._store.now + float(deployment.approval_ttl_seconds),
+                    "grant_count": 0,
+                    "granted_by": [],
+                    "summary": {
+                        "connector": record["connector"],
+                        "operation": record["operation"],
+                        "target": record["target"],
+                        "params": record["params"],
+                        "reason": record["reason"],
+                        "reason_source": "model (untrusted)",
+                    },
+                    "comments": [],
+                    "created_at": self._store.now,
+                }
+            )
+        self._store.put_action(record)
+        self._emit(
+            "ActionProposed",
+            mission_id,
+            key=record["action_key"],
+            task_id=task_id,
+            payload={
+                "action_key": record["action_key"],
+                "action_id": record["action_id"],
+                "version": record["version"],
+                "connector": record["connector"],
+                "operation": record["operation"],
+                "target": record["target"],
+                "params_hash": record["params_hash"],
+                "level": decision.level,
+                **dict(payload or {}),
+            },
+        )
+        if record["approval_request_id"]:
             self._emit(
-                "ActionProposed",
+                "ApprovalRequested",
                 mission_id,
-                key=record["action_key"],
+                key=record["approval_request_id"],
                 task_id=task_id,
                 payload={
+                    "request_id": record["approval_request_id"],
+                    "kind": "action",
                     "action_key": record["action_key"],
-                    "action_id": action_id,
-                    "version": version,
-                    "connector": record["connector"],
-                    "operation": record["operation"],
-                    "target": record["target"],
-                    "params_hash": phash,
-                    "artifact_hash": artifact_hash,
                     "level": decision.level,
-                    "after": after,
+                    "required_count": decision.required_approvals,
+                    "binding": binding_of(record),
                 },
             )
-            if record["approval_request_id"]:
-                self._emit(
-                    "ApprovalRequested",
-                    mission_id,
-                    key=record["approval_request_id"],
-                    task_id=task_id,
-                    payload={
-                        "request_id": record["approval_request_id"],
-                        "kind": "action",
-                        "action_key": record["action_key"],
-                        "level": decision.level,
-                        "required_count": decision.required_approvals,
-                        "binding": binding_of(record),
-                    },
+        return record
+
+    def propose_compensation(
+        self,
+        action_key: str,
+        *,
+        operation: str,
+        params: Mapping[str, Any],
+        reason: str,
+        artifact_id: str,
+        artifact_hash: str,
+        connectors: Mapping[str, Any],
+        deployment: DeploymentPolicy,
+        target: str | None = None,
+    ) -> dict[str, Any]:
+        """Compensate a SUCCEEDED action (P3.2 plan v3 D8; review round 2 P2-1 / P2-7).
+
+        Recovery re-establishes what one action version was already allowed to do — same
+        business key, same idempotency key.  Compensation is something else: the world must
+        change *again*, so it is a new business action (``<action>#comp-<n>``) with its own
+        approval and its own idempotency key.  The original fact stays exactly as recorded;
+        ``compensates`` says what this one answers.  The Mission's action scope, the
+        deployment ceiling and the level rules apply as they do to any other action.
+        """
+
+        with self._store.transaction():
+            original = self._store.get_action(action_key)
+            if original is None:
+                raise ActionCommitError(f"unknown action {action_key}")
+            if original["state"] != "SUCCEEDED":
+                raise ActionCommitError(
+                    f"only a SUCCEEDED action can be compensated: {action_key} is "
+                    f"{original['state']} (an open one is superseded, a failed one retried)"
                 )
-            return record
+            mission_id = str(original["mission_id"])
+            mission = self._store.get_mission(mission_id)
+            if mission is None or mission.status is not MissionStatus.ACTIVE:
+                raise CandidateRejected("mission_not_active", mission_id)
+            candidate = {
+                "connector": str(original["connector"]),
+                "operation": operation,
+                "target": str(original["target"] if target is None else target),
+                "params": dict(params),
+                "reason": reason,
+            }
+            cand, decision = check_candidate(
+                candidate,
+                criteria=mission.success_criteria,
+                connectors=connectors,
+                deployment=deployment,
+            )
+            root = str(original["action_id"]).split("#", 1)[0]
+            taken = {
+                str(row["action_id"])
+                for row in self._store.list_actions(mission_id)
+                if str(row["action_id"]).startswith(f"{root}#comp-")
+            }
+            action_id = f"{root}#comp-{len(taken) + 1}"
+            version = len(self._store.list_action_versions(action_id)) + 1
+            record: dict[str, Any] = {
+                "action_key": f"{action_id}:v{version}",
+                "action_id": action_id,
+                "version": version,
+                "mission_id": mission_id,
+                "task_id": original.get("task_id"),
+                "result_id": original.get("result_id"),
+                "attempt_id": original.get("attempt_id"),
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_hash,
+                "compensates": action_key,  # the fact this one answers; that fact stands
+                "connector": cand["connector"],
+                "operation": cand["operation"],
+                "target": cand["target"],
+                "params": dict(cand["params"]),
+                "params_hash": params_hash(cand["params"]),
+                "reason": cand["reason"],
+                "level": decision.level,
+                "required_approvals": decision.required_approvals,
+                "idempotency_key": f"{action_id}:v{version}",
+                "approval_request_id": None,
+                "after": str(original["state"]),
+                "handoffs": 0,
+                "receipt": None,
+                "history": [],
+                "created_at": self._store.now,
+            }
+            return self._open_action(
+                record,
+                decision,
+                deployment=deployment,
+                payload={"compensates": action_key, "artifact_hash": artifact_hash},
+            )
 
     def _supersede_action(self, action: Mapping[str, Any], *, by: str) -> None:
         old = dict(action)
@@ -957,6 +1104,16 @@ class ActionCommitsMixin:
             )
 
     # ------------------------------------------------------------ closure (D7-2'' / D7-7')
+    def _accepted_by_path(self, stored: Any) -> dict[str, Any]:
+        """The Result's own accepted Artifacts, by workspace path (P3.2 D6)."""
+
+        by_path: dict[str, Any] = {}
+        for artifact_id in stored.artifacts:
+            artifact = self._store.get_artifact(artifact_id)
+            if artifact is not None:
+                by_path[artifact.path] = artifact
+        return by_path
+
     def _action_candidates(
         self,
         stored: Any,
@@ -986,6 +1143,15 @@ class ActionCommitsMixin:
                 if hashlib.sha256(raw).hexdigest() != artifact.content_hash:
                     raise CandidateRejected("artifact_bytes_mismatch", artifact.path)
                 candidate = json.loads(raw.decode("utf-8"))
+                if isinstance(candidate, Mapping) and isinstance(candidate.get("params"), Mapping):
+                    # P3.2 D6: the Result's own Artifacts, bound by the system before the
+                    # params are hashed and an approval is bound to them
+                    candidate = {
+                        **candidate,
+                        "params": bind_artifact_params(
+                            candidate["params"], self._accepted_by_path(stored)
+                        ),
+                    }
                 check_candidate(
                     candidate,
                     criteria=mission.success_criteria,

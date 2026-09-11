@@ -340,6 +340,59 @@ class MissionControlV1:
         except (ActionCommitError, StoreError, ContractError) as error:
             raise FacadeError("refused", str(error)) from error
 
+    def propose_compensation(
+        self,
+        action_key: str,
+        *,
+        operation: str,
+        artifact_id: str,
+        reason: str,
+        target: str | None = None,
+        params: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Ask for a *new* action that answers one that already succeeded (P3.2 plan v3 D8).
+
+        Recovery is the system's own business; compensation is a person's decision, so this
+        is the one way in.  The new action carries its own business key, its own approval
+        and its own idempotency key; the original fact stays as recorded.  The bytes come
+        from an Artifact of this Mission, and the system — never the caller — binds that
+        Artifact's identity into the parameters.
+        """
+
+        from ..orchestrator.action_commits import bind_artifact_params
+
+        if not str(action_key).strip() or not str(operation).strip():
+            raise FacadeError("invalid_request", "a compensation names an action and an operation")
+        if not str(reason).strip():
+            raise FacadeError("invalid_request", "a compensation needs a reason")
+        self._clean(reason)
+        action = self._store.get_action(str(action_key))
+        if action is None:
+            raise FacadeError("not_found", NOT_FOUND)
+        mission = self._mission(action.get("mission_id"))
+        artifact = self._store.get_artifact(str(artifact_id))
+        if artifact is None or artifact.mission_id != mission.id:
+            raise FacadeError("not_found", NOT_FOUND)
+        try:
+            bound = bind_artifact_params(
+                {**dict(params or {}), "artifact_path": artifact.path}, {artifact.path: artifact}
+            )
+            return dict(
+                self._orchestrator.commit.propose_compensation(
+                    str(action_key),
+                    operation=str(operation),
+                    target=None if target is None else str(target),
+                    params=bound,
+                    reason=str(reason),
+                    artifact_id=artifact.id,
+                    artifact_hash=artifact.content_hash,
+                    connectors=self._orchestrator.connectors,
+                    deployment=self._orchestrator.config.deployment_policy,
+                )
+            )
+        except (ActionCommitError, StoreError, ContractError) as error:
+            raise FacadeError("refused", str(error)) from error
+
     def comment(self, target_id: str, text: str) -> dict[str, Any]:
         if not str(text).strip():
             raise FacadeError("invalid_request", "a comment needs text")

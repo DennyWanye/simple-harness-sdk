@@ -179,6 +179,7 @@ async def code_test(
     verification_copy: Workspace,
     timeout: float,
     mission_criteria: Sequence[str] = (),
+    executor: Any = None,
 ) -> LayerResult:
     """Run every ``pytest:`` criterion (Task and Mission) in the verification copy."""
 
@@ -200,7 +201,9 @@ async def code_test(
                 runs.append({"target": target, "error": str(error)})
                 failed = True
                 continue
-        run = await run_pytest(str(verification_copy.root), path=target, timeout=timeout)
+        run = await run_pytest(
+            str(verification_copy.root), path=target, timeout=timeout, executor=executor
+        )
         runs.append({"target": target, **run.to_json(), "passed": run.passed})
         failed = failed or not run.passed
     summary = (

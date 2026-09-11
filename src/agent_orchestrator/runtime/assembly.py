@@ -130,6 +130,9 @@ class OrchestratorConfig:
     exploration_slots: int = 1
     verifier_workers: int = 2  # §29.1 "2 个 Verifier Worker" as the verification concurrency
     deployment_policy: DeploymentPolicy = field(default_factory=DeploymentPolicy)  # D6-7
+    # P3.2 (plan D2): the executor model-written code runs through — required (a probed
+    # SeatbeltExecutor) when the deployment says code_execution="sandboxed"
+    sandbox_executor: Any = None
     # step 6 (D6-5'): runtime profile health — unavailability cooldown and the bounded wait
     profile_failure_threshold: int = 2
     profile_cooldown_seconds: float = 60.0
@@ -379,11 +382,15 @@ def assemble_orchestrator_runtime(
     )
     if chosen_default not in profiles:
         raise ValueError(f"default profile {chosen_default!r} is not among the profiles")
+    from .sandbox import resolve_executor
+
+    executor = resolve_executor(config.deployment_policy, config.sandbox_executor)  # P3.2 D2
     workspaces = WorkspaceManager(config.workspaces_root)
     gateway = WorkspaceToolGateway(
         workspaces,
         test_timeout=config.test_timeout_seconds,
         local_code_execution=config.deployment_policy.local_code_execution,
+        executor=executor,
     )
     pools: dict[str, RuntimePool] = {}
     for profile_id, profile in profiles.items():

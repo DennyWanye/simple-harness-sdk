@@ -28,9 +28,9 @@ def spy_on_pytest(monkeypatch):
     calls: list[dict] = []
     real = tool_gateway.run_pytest
 
-    async def spy(root, *, path, timeout):
+    async def spy(root, *, path, timeout, executor=None):  # P3.2 D1: through the port now
         calls.append({"root": str(root), "path": path})
-        return await real(root, path=path, timeout=timeout)
+        return await real(root, path=path, timeout=timeout, executor=executor)
 
     for module in (tool_gateway, deterministic_checks, event_handler_module):
         monkeypatch.setattr(module, "run_pytest", spy)

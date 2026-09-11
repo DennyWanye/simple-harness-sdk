@@ -5,12 +5,11 @@
 - 2026-09-12（最新）：
   - 计划经过两轮评审，现在是第 3 版（处置见 §1 与 §1b）。切片顺序改为 B → C → A → D → E → F → G。
   - **切片 B（R13）已完成**，见 §2.3。
-  - **切片 C 已完成**：第一部分见 §2.4，已提交 `a18e785`；第二部分见 §2.5，工作区登记。
-  - 下一步：切片 A（D1 + D2）。
-    - 先在本机试准 `sandbox_check` 的 ctypes 调用方式（scratchpad `sbx/canary.py`）；
-    - 再按第 3 版改两个草稿：加 daemonize 用例、改用按沙箱身份扫描、执行器显式接收解释器路径、回执加 `isolated`；
-    - 然后开始实现。
-  - 切片 A 的两个草稿（`test_p32_sandbox.py`、`test_p32_code_execution_modes.py`）还是红的，还没提交。
+  - **切片 C 已完成**：第一部分见 §2.4（`a18e785`）；第二部分见 §2.5，工作区登记（`3da2958`）。
+  - **切片 A 已实现**，见 §2.6：沙箱执行端口、seatbelt 与 ProcessOnly 两个适配器、8 项探针、4 个调用点接线、`code_execution` 三种取值。
+    - 切片 A 自己的测试加上受影响的旧测试，76 条全部通过；
+    - 正在跑 `tests/orchestrator` 全量回归，通过后提交。
+  - 下一步：切片 D（发布连接器、权威查询语义、补偿），要先按计划第 3 版 D6 写测试草稿。
 - 接手须知：
   - 沙箱实验只在 scratchpad 或 `/private/tmp` 里做，做完删除；
   - 同一时间只跑一个 pytest；
@@ -157,6 +156,48 @@
   - 失败的是 `step08/test_policy_snapshot.py::test_s8_07_every_configuration_field_is_classified`。这条测试把"不进快照的字段"写死成 `{"evidence_root", "owner_id"}`。
   - 新字段 `workspace_retention_seconds` 本来就该排除：它只决定多久清理目录，不影响 Mission 怎么规划、运行和验证。这是有意改动，已登记进红集说明。
   - 已把这个字段加进测试里的集合。以后切片 A 新增 `sandbox_executor`，这里还要再加一次。
+
+### 2.6 切片 A：沙箱执行端口与两个适配器
+
+- **新增 `runtime/sandbox.py`**：
+  - `SandboxSpec` 与 `ExecutionReceipt`：回执写明 kind、`isolated`、环境摘要、每项限额是硬还是软、退出码、有界输出、是否超时、触发了哪条限额、进程是否清干净、残留的 pid、以及本次是 ok 还是 error。
+  - `SeatbeltExecutor`：读白名单由执行器持有的那个解释器算出来（prefix、base_prefix、真实可执行文件所在目录，以及全部 `sys.path` 条目，因此 `.pth` 指向的 SDK src 也在内），再加上系统只读路径和 `(literal "/")`。回收用金丝雀加 `sandbox_check`，按沙箱身份认进程。
+  - `ProcessOnlyExecutor`：不是沙箱，回执里 `isolated=False`。沿 ppid 链记录后代，再用 `lsof +D` 补扫工作区。
+  - `probe_sandbox`：8 项探针，外加"探针目标必须落在读白名单之外"这条断言。任何一项不符合，适配器就判为不可用。
+  - `resolve_executor`：off 返回 None；process_only 缺省给进程执行器；sandboxed 必须是已经通过探针、而且环境摘要对得上的 seatbelt 执行器，否则抛 `SandboxUnavailable`。
+- **接线**：4 个调用点都改为走执行端口——gateway 的 `run_tests`、`code_test`、Mission 级的 `pytest:`、评测 oracle。`TestRun` 带上回执；进程没清干净时，这次运行不算通过。
+- **部署语义**：`DeploymentPolicy.code_execution` 三种取值，与旧字段 `local_code_execution` 双向兼容，互相矛盾就报错。新配置项 `sandbox_executor` 登记为不进快照。
+- **相对计划的偏差**：
+  1. **端口只有 `execute` 一个方法**，没有计划里的 start / status / terminate / collect。原因是 4 个调用点都是"起一次、等结果"，取消时在 `execute` 内部回收再抛出。
+  2. **输出保留尾部而不是开头**：pytest 的汇总在最后，截断保留开头会把结论丢掉。
+  3. **部署为 `off` 时，评测 oracle 不运行**：oracle 会导入模型写的代码，所以它也必须服从这条开关。这时报告里的 oracle 字段保持为空，和"这个用例没有 oracle"一样。
+- **有意改动的旧测试**：`step08/test_policy_snapshot.py` 里写死的排除集合，加上了 `sandbox_executor`。
+
+### 2.7 切片 D：发布连接器、权威查询语义、补偿
+
+- **`runtime/connectors_publish.py`**：`FilePublishConnector`，操作 publish 为 L2、state 类、authoritative。
+  - 提交点只有一个：`os.link`。目标已存在就失败，所以不会覆盖，也不会做一半。
+  - 挂链之前先把意图写进自己的账本（在用户目录之外），回读核对 hash 之后再写 COMMITTED。
+  - 文件名取幂等键里的 hex 前 12 位加版本号，同一动作版本重复交接时名字稳定。
+  - 目标越界、路径途经软链、字节与绑定的 hash 不符、名字被占且内容不同，一律拒绝。
+  - 授权目录时先探测硬链接是否可用，不支持就不授权。
+- **权威查询语义**：连接器新增 `lookup_authority`，默认 `best_effort`；`lookup_verdict` 按它判定；L2 及以上必须是 authoritative，否则 `action_decision` 拒绝。测试服务标为 authoritative，step07 的断言不用改。
+- **产物绑定**：候选里只写 `artifact_path`，指明要发布自己这份结果里的哪个文件；id、hash、大小与存放位置由系统在 accept 事务里从该结果的已接受产物中绑定（`bind_artifact_params`）。候选自己写这几项就拒绝，路径不属于该结果也拒绝。这样 params_hash 与人批准的对象，就绑定到那份具体字节。
+- **补偿**：`propose_compensation` 只能补偿 SUCCEEDED 的动作，生成新的业务键 `<根动作>#comp-<n>`，有自己的审批和幂等键，并记下 `compensates`；原事实原样保留。`propose_action` 与它共用新抽出的 `_open_action`。
+- **对外入口**：facade 新增 `propose_compensation`。它校验动作与产物确实属于本租户的这个 Mission（否则一律 not_found，不泄露存在性），自己绑定产物身份，再交给账本；账本的拒绝原样传回调用方。Orchestrator 补了一个公开的 `connectors` 属性给它用。
+- **相对计划的一处修正（ABORTED）**：计划 D6 的真值表里写"有意图但文件缺失一律转人工"，而验收 P32-9 ① 要求"崩溃在写意图之后、挂链之前"能判定为未开始并重试。两者对不上，改成按证据分两种：
+  - 连接器在挂链前失败时，当场补写一条 `ABORTED`。末条是 ABORTED 就是确实没开始，可以重试；
+  - 末条仍是 `PREPARED` 而文件不在，说明进程真的崩在中间，仍然转人工，不自动重发。
+
+  这样常见的当场失败不会被永久卡住，真崩溃时也不说谎。计划 D6 与验收 P32-9 已同步改。
+- **有意改动的旧测试**：`host_support/conftest.py` 的 `pytest_spy`。它包装 `run_pytest` 时写死了参数签名，而生产签名新增了 `executor` 关键字参数，导致调用报错、pytest 根本没跑起来。已让 spy 接收并透传该参数。这是切片 A 全量回归里唯一的红（510 passed / 1 failed）。
+
+### 2.8 切片 A 与切片 D 的回归
+
+- 切片 A 之后的 `tests/orchestrator`：510 passed、8 skipped、1 failed。唯一的红是 `host_support/conftest.py` 的 `pytest_spy` 写死了 `run_pytest` 的参数签名，已按有意改动修好（见 §2.7 末尾）。
+- 切片 D 之后（含切片 A 的修复）：**569 passed、8 skipped、0 failed**（5 分 56 秒）。8 条 skipped 都是需要真实 provider 的测试，按规定只在显式 opt-in 时运行。
+- p32 目录本身 117 条全部通过。
+- 两个切片改到了同样的两个文件（`governance/policies.py`、`orchestrator/event_handler.py`），所以合成一个提交，提交信息里分别写明。
 
 ## 3. 回归与 wheel
 

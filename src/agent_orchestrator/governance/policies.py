@@ -21,6 +21,7 @@ from ..contracts.models import STEP2_IMPLEMENTED_LAYERS
 from ..runtime.tool_gateway import TOOL_NAMES
 
 POLICY_VERSION = "deployment-policy-v1"
+CODE_EXECUTION_MODES = ("off", "sandboxed", "process_only")  # P3.2 plan v3 D2
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,11 +49,27 @@ class DeploymentPolicy:
     # ``pytest:`` criteria are refused, conflicts wait (DEFERRED) and ``run_tests`` is
     # refused.  True keeps every earlier deployment exactly as it was.
     local_code_execution: bool = True
+    # P3.2 (plan v3 D2): how model-written code runs here — "off" (never), "sandboxed" (the
+    # seatbelt executor, only after its probe passed) or "process_only" (a child process,
+    # not isolated; the SDK default so every earlier deployment keeps running as it did).
+    # None = derived from ``local_code_execution`` (True → process_only, False → off).
+    code_execution: str | None = None
 
     def __post_init__(self) -> None:
         unknown = set(self.allowed_tools) - set(TOOL_NAMES)
         if unknown:
             raise ValueError(f"deployment policy names unknown tools: {sorted(unknown)}")
+        mode = self.code_execution
+        if mode is None:
+            object.__setattr__(
+                self, "code_execution", "process_only" if self.local_code_execution else "off"
+            )
+        elif mode not in CODE_EXECUTION_MODES:
+            raise ValueError(f"code_execution must be one of {list(CODE_EXECUTION_MODES)}")
+        elif mode == "off":
+            object.__setattr__(self, "local_code_execution", False)
+        elif not self.local_code_execution:
+            raise ValueError(f"local_code_execution=False contradicts code_execution={mode!r}")
         if not self.local_code_execution and "run_tests" in self.allowed_tools:
             raise ValueError(
                 "local_code_execution=False contradicts allowed_tools containing run_tests"
@@ -71,6 +88,7 @@ class DeploymentPolicy:
             "connector_timeout_seconds": self.connector_timeout_seconds,
             "policy_cooldown_seconds": self.policy_cooldown_seconds,
             "local_code_execution": self.local_code_execution,
+            "code_execution": self.code_execution,
             "version": POLICY_VERSION,
         }
 
@@ -117,6 +135,13 @@ def action_decision(deployment: DeploymentPolicy, connector: Any, operation: str
         and getattr(connector, "supports_reconciliation", False)
     ):
         refused = "connector_without_idempotency_or_reconciliation"
+    elif (
+        level_rank(level) >= level_rank("L2")
+        and getattr(connector, "lookup_authority", "best_effort") != "authoritative"
+    ):
+        # P3.2 D7: without an authoritative lookup, a lost receipt can never be resolved
+        # except by a person — such a connector may not carry an L2 action at all
+        refused = "connector_lookup_not_authoritative"
     elif spec.mutates and spec.kind != "state":
         refused = "event_operation_not_supported"  # D7-2': one business action = one state
     elif level_rank(level) > level_rank(deployment.max_action_level):
@@ -175,6 +200,8 @@ SNAPSHOT_FIELDS: dict[str, str] = {
     # P3.2 (plan D4): when finished Missions' directories are removed — housekeeping,
     # never how a Mission is planned, run or verified
     "workspace_retention_seconds": "excluded: workspace housekeeping, not a behaviour parameter",
+    # P3.2 (plan D2): a runtime object; its environment_digest enters every receipt
+    "sandbox_executor": "excluded: a runtime object (its digest is in every execution receipt)",
     **{
         name: "include"
         for name in (

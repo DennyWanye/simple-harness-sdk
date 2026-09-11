@@ -285,7 +285,7 @@ def _spec_hash_of(spec: MissionSpec) -> str:
 
 
 async def _oracle_check(
-    store: Store, mission_id: str, oracle: Oracle, timeout: float
+    store: Store, mission_id: str, oracle: Oracle, timeout: float, executor: Any = None
 ) -> dict[str, Any]:
     from ..artifacts.store import ArtifactStoreError, read_verified
     from ..artifacts.versioning import merge_accepted
@@ -317,7 +317,7 @@ async def _oracle_check(
         for path, content in oracle.files.items():
             (root / path).parent.mkdir(parents=True, exist_ok=True)
             (root / path).write_text(content, encoding="utf-8")
-        run = await run_pytest(str(root), path=oracle.target, timeout=timeout)
+        run = await run_pytest(str(root), path=oracle.target, timeout=timeout, executor=executor)
     return {"passed": run.passed, "tail": run.stdout[-400:]}
 
 
@@ -474,9 +474,14 @@ async def _run_once(
             "snapshot_hash": start_snapshot["hash"],
             "oracle": None,
         }
-        if case.oracle is not None and category == "success":
+        from ..runtime.sandbox import resolve_executor
+
+        # P3.2 D2: the oracle imports model-written code, so it runs through the
+        # deployment's executor — and not at all when code execution is off
+        executor = resolve_executor(config.deployment_policy, config.sandbox_executor)
+        if case.oracle is not None and category == "success" and executor is not None:
             record["oracle"] = await _oracle_check(
-                store, mission.id, case.oracle, config.test_timeout_seconds
+                store, mission.id, case.oracle, config.test_timeout_seconds, executor
             )
         write_evidence(
             directory=run_dir,

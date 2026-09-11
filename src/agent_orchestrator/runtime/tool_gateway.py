@@ -15,10 +15,7 @@ environment whitelist.  No network isolation is claimed (journal 遗留).
 
 from __future__ import annotations
 
-import asyncio
-import os
 import posixpath
-import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -27,6 +24,7 @@ from simple_harness.tools import ToolResult
 
 from ..artifacts.paths import under_prefix
 from ..artifacts.workspace import Workspace, WorkspaceError, WorkspaceManager
+from .sandbox import ExecutionReceipt, ProcessOnlyExecutor, SandboxExecutorPort, SandboxSpec
 
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "workspace_read_file": {
@@ -92,53 +90,52 @@ class TestRun:
     stdout: str
     timed_out: bool
     command: tuple[str, ...]
+    receipt: ExecutionReceipt | None = None  # P3.2 D1: what the executor really did
 
     @property
     def passed(self) -> bool:
-        return self.returncode == 0 and not self.timed_out
+        # a run whose processes could not all be removed never counts as passed
+        clean = self.receipt is None or self.receipt.status == "ok"
+        return self.returncode == 0 and not self.timed_out and clean
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "returncode": self.returncode,
             "stdout": self.stdout[-8000:],
             "timed_out": self.timed_out,
             "command": list(self.command),
         }
+        if self.receipt is not None:
+            receipt = self.receipt.to_json()
+            receipt["output"] = receipt["output"][-2000:]  # the full tail is in "stdout"
+            data["receipt"] = receipt
+        return data
 
 
-async def run_pytest(workspace_root: str, *, path: str | None, timeout: float) -> TestRun:
-    """pytest in a child process: fixed cwd, whitelisted env, killable process group."""
+async def run_pytest(
+    workspace_root: str,
+    *,
+    path: str | None,
+    timeout: float,
+    executor: SandboxExecutorPort | None = None,
+) -> TestRun:
+    """pytest through the sandbox executor port (P3.2 D1): fixed cwd, an explicit
+    environment, hard CPU and file limits, every process of the run reaped afterwards.
+    Without an executor the process-only adapter runs it (trusted code, not isolated)."""
 
-    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--color=no"]
+    runner = executor if executor is not None else ProcessOnlyExecutor()
+    command = [runner.interpreter, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--color=no"]
     if path:
         command.extend(["--", path])
-    env = {key: value for key, value in os.environ.items() if key in ENV_WHITELIST}
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONHASHSEED"] = "0"
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        cwd=workspace_root,
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True,
+    spec = SandboxSpec(
+        cpu_seconds=max(1, int(timeout)),
+        wall_seconds=timeout,
+        env={"PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0"},
     )
-    try:
-        output, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
-    except asyncio.CancelledError:  # review P2-7: a cancelled turn leaves no orphan pytest
-        try:
-            os.killpg(process.pid, 9)
-        except ProcessLookupError:
-            pass
-        raise
-    except TimeoutError:
-        try:
-            os.killpg(process.pid, 9)
-        except ProcessLookupError:
-            pass
-        await process.wait()
-        return TestRun(None, "pytest timed out", True, tuple(command))
-    return TestRun(process.returncode, output.decode("utf-8", "replace"), False, tuple(command))
+    receipt = await runner.execute(command, cwd=workspace_root, spec=spec)
+    if receipt.timed_out:
+        return TestRun(None, "pytest timed out", True, tuple(command), receipt)
+    return TestRun(receipt.exit_code, receipt.output, False, tuple(command), receipt)
 
 
 class WorkspaceToolGateway:
@@ -150,11 +147,13 @@ class WorkspaceToolGateway:
         *,
         test_timeout: float = 120.0,
         local_code_execution: bool = True,
+        executor: SandboxExecutorPort | None = None,
     ) -> None:
         self._workspaces = workspaces
         self._bindings: dict[str, WorkspaceBinding] = {}
         self._test_timeout = test_timeout
         self._local_code_execution = local_code_execution  # host support 0.9.8
+        self.executor = executor  # P3.2 D2: what run_tests runs through (None = process only)
         self.calls: list[dict[str, Any]] = []
         # step 6 (§21.1 last step): every refusal is reported to the orchestrator, which
         # writes it to the Mission's timeline through the Commit Service
@@ -349,7 +348,12 @@ class WorkspaceToolGateway:
                 # what it writes (caches, temp files, symlinks) never reaches the tree
                 copy = self._workspaces.exec_copy(binding.attempt_id)
                 try:
-                    run = await run_pytest(str(copy.root), path=path, timeout=self._test_timeout)
+                    run = await run_pytest(
+                        str(copy.root),
+                        path=path,
+                        timeout=self._test_timeout,
+                        executor=self.executor,
+                    )
                 finally:
                     self._workspaces.discard(copy)
                 value = {"passed": run.passed, **run.to_json()}

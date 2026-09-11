@@ -25,6 +25,23 @@ if TYPE_CHECKING:
     from ..orchestrator.commit_service import CommitService
 
 
+def lookup_verdict(connector: Any, found: Receipt | None) -> str:
+    """What a lookup's answer is worth (P3.2 plan v3 D7, review round 1 P2-2).
+
+    A receipt is a fact whoever gives it.  "I found nothing" only means "it never started"
+    when the connector's lookup is authoritative; otherwise the action stays UNKNOWN and a
+    person decides — the system never repeats a real-world action on a maybe.
+    """
+
+    if found is not None:
+        return "COMPLETED"
+    if connector is None or not getattr(connector, "supports_reconciliation", False):
+        return "STILL_UNKNOWN"
+    if getattr(connector, "lookup_authority", "best_effort") != "authoritative":
+        return "STILL_UNKNOWN"
+    return "CONFIRMED_NOT_STARTED"
+
+
 class ActionExecutor:
     def __init__(
         self,
@@ -142,7 +159,7 @@ class ActionExecutor:
                     verdict = "STILL_UNKNOWN"
                 else:
                     receipt = found if isinstance(found, Receipt) else None
-                    verdict = "COMPLETED" if receipt is not None else "CONFIRMED_NOT_STARTED"
+                    verdict = lookup_verdict(connector, receipt)
             updated = self._commit.record_reconciliation(key, verdict=verdict, receipt=receipt)
             if (
                 updated["state"] == "UNKNOWN"
@@ -154,4 +171,4 @@ class ActionExecutor:
         return settled
 
 
-__all__ = ("ActionExecutor",)
+__all__ = ("ActionExecutor", "lookup_verdict")

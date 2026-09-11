@@ -128,14 +128,24 @@ class Receipt:
 
 
 class Connector(Protocol):
-    """``supports_reconciliation`` promises an *authoritative* ``lookup``: applying an
-    operation and recording its idempotency key happen atomically, and one key is never
-    executed concurrently (plan D7-5')."""
+    """``supports_reconciliation`` says a ``lookup`` can be asked at all; how much its
+    answer is worth is ``lookup_authority`` (P3.2 plan v3 D7, review round 2 P2-6):
+
+    * ``"authoritative"`` — applying an operation and recording its idempotency key happen
+      atomically, one key is never executed concurrently, and the record cannot be rolled
+      back by anyone else.  Only then does "no record" mean "it never started", which is
+      what lets the system hand the action off again with the same key.
+    * ``"best_effort"`` (the default) — the service may simply not know.  A lookup that
+      finds nothing leaves the action UNKNOWN for a person; it is never retried blindly.
+
+    An action at L2 or above may only run on an authoritative connector.
+    """
 
     name: str
     operations: Mapping[str, OperationSpec]
     supports_idempotency: bool
     supports_reconciliation: bool
+    lookup_authority: str  # "authoritative" | "best_effort"
 
     def normalize_target(self, target: str) -> str: ...
 
@@ -160,6 +170,9 @@ class TestConfigService:
     name: str = "test_config"
     supports_idempotency: bool = True
     supports_reconciliation: bool = True
+    # P3.2 D7: state and ledger live in one file written under an exclusive lock, so a key
+    # that is not in the ledger really was never applied
+    lookup_authority: str = "authoritative"
     lose_receipt_after_apply: int = 0
     reject_next: int = 0
     calls: list[dict[str, Any]] = field(default_factory=list)
