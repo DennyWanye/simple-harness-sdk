@@ -35,3 +35,7 @@
 | 切片 | 提交 | 内容 | 测试 |
 |---|---|---|---|
 | A 图变更 | `7981109` | `graph/changes.py`（提案模型/词汇/整体校验）、`commit_graph_change`（CAS、重基、幂等回执、替代/在位改写/暂停/取消/角色、`graph_changes` 表 schema v3）、判定/前沿/终结任务对 CANCELLED 的处理、`ready_at` | `test_graph_changes.py` 8 |
+| B 触发与 Manager | `9c13d6a` | 非 candidate 结果 `record_outcome_result`（历史、RETRY_WAIT、claims REJECTED）→ `_request_management`（kind=manager 的 service intent，按 trigger 去重，包 = 触发/反馈/受影响子图/限制/知识/拒绝反馈）；`MANAGER` 模板与 `<graph_change_proposal>` 解析（basis 由系统填）；管理门控；任何拒绝 `:retry-1` 一次；`no_progress_limit` → `NO_PROGRESS`，`max_manager_rounds` → `MANAGEMENT_EXHAUSTED`；§29.2 角色变体与 `role_for_task`；`dynamic_graph` 开关；R1/R3/R4/R6/R8/R10/R19 处置 | `test_manager_decisions.py` 5 |
+| C Allocator | `46d47d7` | §29.3 公式原权重、尺度版本化 `allocator-v1`、资格检查先行、冲突任务先、等待满窗口的饥饿保护、打分冻结进 intent | `test_allocator_priority.py` 5 |
+| D 闭环与演示 | 本提交 | `observability/graph_history.py` + 证据 `graph_history.json`；CLI `demo --scenario dynamic-dag`；S5-05/S5-06 闭环（候选 2、被替代候选迟到提交）；真实模型 opt-in 测试 | `test_dynamic_dag_closure.py` 2、`test_real_provider_dynamic_dag.py`（opt-in） |
+

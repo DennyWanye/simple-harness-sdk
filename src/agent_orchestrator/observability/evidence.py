@@ -16,6 +16,7 @@ from typing import Any
 
 from ..orchestrator.commit_service import CommitService
 from ..storage.store import Store
+from .graph_history import graph_history
 from .lineage import lineage
 
 
@@ -69,6 +70,7 @@ def write_evidence(
         },
     )
     _dump(directory / "lineage.json", lineage(store, mission_id))
+    _dump(directory / "graph_history.json", graph_history(store, mission_id))  # step 5
     artifacts_dir = directory / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for artifact in snapshot["artifacts"]:

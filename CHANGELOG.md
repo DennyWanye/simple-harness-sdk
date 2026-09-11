@@ -1,3 +1,30 @@
+## 0.9.3 — agent_orchestrator step 5: the Task DAG changes on execution evidence (source candidate)
+
+`agent_orchestrator` 0.5.0 (same wheel).  Step 5 of ORCH-BUILD-v1.0 — the dynamic Task
+Graph (§6.2) without touching the §25 state machines.  A non-candidate Result Envelope
+(blocked / failure / no_progress / proposed_subtasks) is kept as history and never
+verified; it opens exactly one deduplicated management decision per trigger.  The Manager is
+a BaseAgent role (`manager-v1`) that sees the trigger, the Verifier's feedback, the
+affected subgraph, the graph version and the hard limits, and answers with a
+`<graph_change_proposal>` from a system-defined operation vocabulary (add_task,
+supersede_task, retarget_dependencies, set_priority, pause/resume_task, cancel_task,
+set_role).  `commit_graph_change` validates the whole proposal against the merged graph
+(cycles, depth, task count, proposals per source Attempt, the Mission budget pool counting
+settled and in-flight tokens of superseded work, duplicates, sibling outputs, goal drift,
+§25.1 legality) and applies it in one transaction with a graph_version CAS (disjoint stale
+proposals are rebased, overlapping ones refused), an idempotent receipt and a
+`graph_changes` ledger (schema v3): executing Tasks are superseded by a new entity
+(ACTIVE→CANCELLED, late candidates history only), BLOCKED dependents are rewired in place,
+completed Tasks are only referenced.  Artifact lineage now orders ancestors topologically
+from the edges.  Repeated no-progress must end in a change of approach (§29.2 worker
+variants explorer / exploiter / simplifier / connector / failure_analyst) or an explicit
+stop (`no_progress`, `management_exhausted`); a refused proposal is fed back once.  The
+Allocator ranks the frontier with §29.3's starting formula (weights verbatim, versioned
+input scales, conflict Tasks first, starvation guard after an aging window) and freezes the
+score on the Attempt.  Evidence adds `graph_history.json` (v1 → v2 with basis and old work).
+CLI `demo --scenario dynamic-dag`; kill switch `dynamic_graph`.  No SDK (`simple_harness`)
+API change.
+
 ## 0.9.2 — agent_orchestrator step 4: team knowledge, conflict arbitration, synthesis (source candidate)
 
 `agent_orchestrator` 0.4.0 (same wheel).  Step 4 of ORCH-BUILD-v1.0 — the Blackboard (§11)

@@ -10,7 +10,7 @@ Subcommands (step 2):
     mission get|cancel|events --evidence-dir DIR MISSION_ID
     attempt get --evidence-dir DIR ATTEMPT_ID
     artifact show --evidence-dir DIR ARTIFACT_ID
-    demo --scenario single-task|static-dag|knowledge-sharing --provider fixtures|env --evidence-dir DIR
+    demo --scenario single-task|static-dag|knowledge-sharing|dynamic-dag --provider fixtures|env --evidence-dir DIR
 
 ``--provider env`` reads ``SH_BASEURL`` / ``SH_APIKEY`` / ``SH_MODEL`` (and optional
 ``SH_PRICE_INPUT_MICROS`` / ``SH_PRICE_OUTPUT_MICROS`` per million tokens) from the
@@ -81,6 +81,10 @@ def _provider(args: argparse.Namespace, *, scenario: str = "single-task"):  # ty
             from .testing.fixtures import demo_knowledge_sharing_provider
 
             return demo_knowledge_sharing_provider(), "agent-model", None, "fixtures"
+        if scenario == "dynamic-dag":
+            from .testing.fixtures import demo_dynamic_dag_provider
+
+            return demo_dynamic_dag_provider(), "agent-model", None, "fixtures"
         return demo_single_task_provider(), "agent-model", None, "fixtures"
     if args.provider == "env":
         base_url = os.environ.get("SH_BASEURL")
@@ -210,7 +214,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     if step is None:
         _print({"error": f"unknown scenario {args.scenario}"})
         return EXIT_USAGE
-    if step not in {2, 3, 4}:
+    if step not in {2, 3, 4, 5}:
         _print({"scenario": args.scenario, "status": "not_implemented", "step": step})
         return EXIT_NOT_IMPLEMENTED
     from .observability.evidence import write_evidence
@@ -220,6 +224,8 @@ def cmd_demo(args: argparse.Namespace) -> int:
         COMPARE_SYNTHESIS,
         DEMO_DAG_SPEC,
         DEMO_SEED,
+        RECORDER_SEED,
+        RECORDER_SPEC,
         TEXTKIT_SEED,
     )
 
@@ -239,6 +245,16 @@ def cmd_demo(args: argparse.Namespace) -> int:
             ),
             budget=Budget(max_tokens=400_000, max_attempts=3),
             workspace_seed=DEMO_SEED,
+        )
+    elif step == 5:
+        spec = MissionSpec(
+            goal=str(RECORDER_SPEC["goal"]),
+            success_criteria=tuple(str(c) for c in RECORDER_SPEC["success_criteria"]),
+            tenant_id=args.tenant,
+            idempotency_key=args.idempotency_key,
+            allowed_tools=tuple(str(t) for t in RECORDER_SPEC["allowed_tools"]),
+            budget=Budget(max_tokens=1_200_000 if kind == "env" else 300_000, max_attempts=16),
+            workspace_seed=RECORDER_SEED,
         )
     elif step == 4:
         spec = MissionSpec(
@@ -306,6 +322,17 @@ def cmd_demo(args: argparse.Namespace) -> int:
                 "conflicts": [
                     {"conflict_id": c["conflict_id"], "key": c["key"], "state": c["state"]}
                     for c in orchestrator.store.list_conflicts(mission.id)
+                ],
+                "graph_version": (final.final_report or {}).get("graph_version"),
+                "graph_changes": [
+                    {
+                        "from": c["from_version"],
+                        "to": c["to_version"],
+                        "basis": c.get("basis"),
+                        "new_tasks": c.get("new_task_ids"),
+                        "superseded": c.get("superseded"),
+                    }
+                    for c in orchestrator.store.list_graph_changes(mission.id)
                 ],
                 "lineage": {
                     "knowledge": [
