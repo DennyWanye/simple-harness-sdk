@@ -1,3 +1,35 @@
+## 0.9.2 — agent_orchestrator step 4: team knowledge, conflict arbitration, synthesis (source candidate)
+
+`agent_orchestrator` 0.4.0 (same wheel).  Step 4 of ORCH-BUILD-v1.0 — the Blackboard (§11)
+in four layers.  Claims stay proposals with typed fields (`key`, `stance`, per-claim
+`evidence`, `supersedes`, `contradicts`; `status` may only be PROPOSED) and are graded by the
+system inside the accept transaction from the verification that actually ran: VERIFIED only
+when a cited `pytest:` target was run and passed by `code_test` (a whole-tree run covers no
+claim), SUPPORTED with trusted evidence, otherwise unsupported (untrusted external sources
+count for nothing).  Only VERIFIED claims are projected into a separately stored Verified
+Knowledge table with full provenance (source Task/Attempt/Result/Agent, evidence, verifier,
+dependencies, used_by, supersedes/superseded_by, disputed_by/confirmed_by/resolves).
+`used_knowledge` is a checked reference (VERIFIED, same Mission, not SUPERSEDED — re-checked
+inside the Commit) that records the reuse chain (`KnowledgeUsed`); supersession is explicit
+and legal only VERIFIED→SUPERSEDED.  Contradictions (explicit `contradicts` or same key with
+opposite stance) are detected before grading: contested claims are capped at DISPUTED and
+never projected, VERIFIED knowledge is only marked `disputed_by`, and a system-defined
+Conflict Task is opened as a trailing leaf (funded from an explicit `conflict_reserve_tokens`
+or deferred with `ConflictOpenDeferred`) whose Arbiter must resolve by an external check
+reviewed by an independent Critic — never by a count.  The fixed synthesis Task
+(`MissionSpec.synthesis`) depends on every Planner leaf, is budgeted in the §18.2 sum, is gated
+by open conflicts (`SynthesisGated`, no rewiring) and must pass verification again.  Retrieval
+is deterministic (relevance / trust / DAG distance / recency / reuse, deduplicated, superseded
+marked, Mission-bounded; `retrieval-v1`), the Context Builder (`context-builder-v3`) carries
+all eleven §10 items under worker / verifier / critic / arbiter / synthesizer visibility
+templates, summaries are deterministic compressions that never change a claim's status, a
+failed retrieval degrades or blocks explicitly (`RetrievalUnavailable`, stop reason
+`retrieval_unavailable`), external content under `untrusted_sources` is marked data at the tool
+gateway, and the final report carries the result's lineage.  Orchestrator schema v2 (in-place
+upgrade with backup; artifact versions unique per (mission, path) — step-3 L3-2).  CLI
+`demo --scenario knowledge-sharing`; kill switch `knowledge_sharing`.  No SDK
+(`simple_harness`) API change.
+
 ## 0.9.1 — agent_orchestrator step 3: Planner-decomposed static DAG executed in parallel (source candidate)
 
 `agent_orchestrator` 0.3.0 (same wheel).  Step 3 of ORCH-BUILD-v1.0: the Planner proposes a
