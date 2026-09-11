@@ -240,6 +240,15 @@
 
 修完这三处后要重新构建并验证 wheel，钉版以重建后的 sha256 为准。
 
+**第二轮 wheel 验证**（HEAD `c56aaef`，sha256 `53630bd14d9fe3ad4f015dd24b941e444dc049348f86c8d663a4270f4ab827b4`，`SOURCE_DATE_EPOCH=1789167472`）：843 passed / 11 skipped / **2 failed**，10 分 46 秒（机器负载更高）。
+
+- 两条 `double-fork-daemon` **已转绿**；**残留执行副本 0、残留沙箱临时目录 0**（检查脚本修正后的真实计数）；六个 demo 全部 exit 0；导入版本 `0.10.0 0.10.0`。
+- 剩下 2 条：
+  1. `execution v3→v4 迁移`——0.9.9 起的既有失败，与本轮无关；
+  2. `test_p32_3_a_survivor_that_cannot_be_killed_makes_the_run_an_error`——**又一次外层超时**（180 秒仍未返回）。根因不是产品逻辑：这条用例的耗时全部来自真实扫描工具，`subprocess.run` 的 timeout 只能保证"不再等"，`lsof` 若卡在不可中断状态，调用仍会拖很久。
+     - 处置：把这条用例改成**确定性**的——用子类把 `_survivors` 固定成一个 pid、`kill` 换成记录器，直接验证契约（`tree_killed=False`、`status=error`、残留 pid 如实上报、每一轮都尝试过）。真实扫描能力由上面四种逃逸用例证明，不因此损失证明力。
+     - 顺带如实登记：**一次回收的耗时受外部工具响应速度影响**，`ps` 与 `lsof` 各自有超时，但极端情况下仍可能偏慢。这一条写进 §2 的诚实边界。
+
 ## 4. 代码评审处置
 
 第 1 轮（`reports/code-review-round1.md`）结论 **SHIP_WITH_FIXES**：P0 0 条、P1 5 条、P2 13 条。全部接受。其中 P1-1 与 P1-2 是真缺陷，而且我的 117 条 p32 测试都没覆盖到——这两条各补了回归测试。

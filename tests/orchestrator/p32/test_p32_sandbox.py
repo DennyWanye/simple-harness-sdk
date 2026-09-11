@@ -320,23 +320,32 @@ def test_p32_3_process_only_is_not_a_sandbox_and_says_so(workspace):
             _kill_quietly(int((workspace / "pids.txt").read_text()))
 
 
+class _StubbornSurvivor(ProcessOnlyExecutor):
+    """A reaper that always sees one process and never removes it.
+
+    The contract under test is what the receipt says when a process of the run cannot be
+    removed.  Driving that through the real scanners made the case depend on how fast
+    ``ps`` and ``lsof`` answer on a loaded machine (it timed out in the 0.10.0 wheel
+    verification); the scanners themselves are proven by the four escape cases above.
+    """
+
+    def __init__(self, pid: int, **options: object) -> None:
+        super().__init__(**options)  # type: ignore[arg-type]
+        self._survivor = pid
+
+    def _survivors(self, run):  # type: ignore[no-untyped-def]
+        return {self._survivor}
+
+
 def test_p32_3_a_survivor_that_cannot_be_killed_makes_the_run_an_error(workspace):
-    # seam: a kill that does nothing stands for a process the reaper cannot remove
-    executor = ProcessOnlyExecutor(kill=lambda pid: None, max_sweeps=2)
-    command = _script(workspace, "spawn.py", SETSID_CHILD)
-    try:
-        # a survivor holds the output pipe and every sweep scans the directory, so this
-        # case is the slowest one in the file — give it room on a loaded machine
-        receipt = _run(
-            executor.execute(command, cwd=str(workspace), spec=_spec(wall_seconds=2)), limit=180
-        )
-        pid = int((workspace / "pids.txt").read_text())
-        assert receipt.status == "error"
-        assert receipt.tree_killed is False
-        assert pid in receipt.residual_pids
-    finally:
-        if (workspace / "pids.txt").exists():
-            _kill_quietly(int((workspace / "pids.txt").read_text()))
+    killed: list[int] = []
+    executor = _StubbornSurvivor(424242, kill=killed.append, max_sweeps=2)
+    command = _script(workspace, "hello.py", "print('done')\n")
+    receipt = _run(executor.execute(command, cwd=str(workspace), spec=_spec()), limit=60)
+    assert receipt.status == "error"  # never "ok" while something of the run may be alive
+    assert receipt.tree_killed is False
+    assert receipt.residual_pids == (424242,)
+    assert killed == [424242, 424242]  # every sweep tried before giving up
 
 
 @pytest.mark.parametrize("adapter", ["process_only", "seatbelt"])

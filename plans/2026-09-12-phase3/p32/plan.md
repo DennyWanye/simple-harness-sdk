@@ -38,6 +38,7 @@
   - **内存和进程数都是软限制**：本机没有 cgroup；`RLIMIT_AS` / `RLIMIT_DATA` 设不进去；`RLIMIT_NPROC` 按整个 uid 计数，会误伤宿主。所以只能按沙箱身份集合采样，超了就终止，属于事后回收。
   - **用到的是已废弃的未公开接口**：seatbelt 与 `sandbox_check` 都已被 Apple 标为 deprecated，而且没有公开文档，Chromium 和 WebKit 在用。本机 macOS 26.6 上可用，每次启动都由探针重新验证。Linux 和 Windows 上不提供 `sandboxed`。
   - **`process_only` 不做隔离**：回收有缝隙，标准 daemonize 能逃掉。它的名字、回执（`isolated=false`）和 status 都写明"未隔离，只用于可信代码"。
+  - **回收的耗时受外部工具影响**：认进程要靠 `ps`，ProcessOnly 还要靠 `lsof +D`。两者都设了单次超时（10 秒 / 5 秒），但超时只能保证"不再等"——这些工具若卡在不可中断状态，一次回收仍可能明显变慢。正确性不受影响（进程集合只会增大，漏掉一次慢应答只损失一轮扫描），但"回收总在几百毫秒内完成"这种话不能说。
 
 ## 3. 设计
 
