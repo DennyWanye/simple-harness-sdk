@@ -3010,6 +3010,11 @@ class CommitService(
                 accepted_artifacts=stored.artifacts,
             )
             self._store.update_task(completed, expected_version=task.version)
+            # step 9 (plan D9-10'): an Agent's file that tries to set policy is refused on
+            # record in the same transaction; it never reaches the registry
+            self.refuse_policy_files(
+                stored, mission_id=mission.id, task_id=task.id, result_id=result_id
+            )
             for artifact, candidate in candidates:  # D7-2: registered in the accept transaction
                 self.propose_action(
                     candidate,

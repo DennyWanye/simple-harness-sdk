@@ -39,6 +39,9 @@ class DeploymentPolicy:
     approval_ttl_seconds: float = 24 * 3600.0
     max_action_handoffs_per_mission: int = 8  # D7-5': the hard cap under the Mission budget
     connector_timeout_seconds: float = 30.0
+    # step 9 (plan D9-9): the least time between two policy promotions / rollbacks'
+    # successors — frequent changes are bounded; a rollback itself is never held
+    policy_cooldown_seconds: float = 600.0
 
     def __post_init__(self) -> None:
         unknown = set(self.allowed_tools) - set(TOOL_NAMES)
@@ -56,6 +59,7 @@ class DeploymentPolicy:
             "approval_ttl_seconds": self.approval_ttl_seconds,
             "max_action_handoffs_per_mission": self.max_action_handoffs_per_mission,
             "connector_timeout_seconds": self.connector_timeout_seconds,
+            "policy_cooldown_seconds": self.policy_cooldown_seconds,
             "version": POLICY_VERSION,
         }
 

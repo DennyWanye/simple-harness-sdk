@@ -12,13 +12,16 @@ hash) so a repeated change is never swallowed by idempotency (review P1-7)."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..contracts.models import sha256_hex
 from ..governance.permissions import Principal, decision_receipt_hash
 from ..governance.promotion import (
     DEPLOYMENT_TIMELINE,
+    NON_PROMOTABLE,
     PROPOSAL_TRANSITIONS,
     VERDICTS,
     code_versions,
@@ -42,6 +45,10 @@ if TYPE_CHECKING:
     from ..storage.store import Store
 
 IN_FLIGHT = frozenset({"CREATED", "PLANNING", "ACTIVE"})
+POLICY_PATH_PREFIX = "policy/"  # plan D9-10': files an Agent may write but never apply
+CONFIG_FILE_NAMES = frozenset(
+    {"deployment.json", "deployment_policy.json", "orchestrator_config.json"}
+)
 LIBRARY_ROLE_KEY = "library_role"  # plan D9-3' (review P1-6): production | evaluation
 EVIDENCE_KINDS = ("fixture", "real")
 
@@ -620,6 +627,68 @@ class PolicyCommitsMixin:
                 mission_id,
                 key=f"{version_id}:{mission_id}",
                 payload={"version_id": version_id, "dropped": dict(dropped)},
+            )
+
+    # ------------------------------------------------------------ Agents cannot set policy
+    def record_policy_suggestion_refused(
+        self,
+        mission_id: str,
+        *,
+        source: str,
+        keys: Sequence[str],
+        path: str | None = None,
+        detail: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Plan D9-10' (S9-06): an online Agent proposed changing policy or a core rule.
+        Nothing changes; the refusal is on the Mission's timeline and a person may take
+        the idea up with ``policy propose`` (source ``human:<id>``)."""
+
+        named = sorted({str(k) for k in keys})
+        digest = sha256_hex({"keys": named, "detail": dict(detail or {})})[:16]
+        with self._store.transaction():
+            self._emit(
+                "PolicySuggestionRefused",
+                mission_id,
+                key=f"{source}:{path or ''}:{digest}",
+                payload={
+                    "source": source,
+                    "path": path,
+                    "keys": named,
+                    "core_keys": [k for k in named if k in NON_PROMOTABLE],
+                    "detail": dict(detail or {}),
+                    "note": (
+                        "在线 Agent 不能修改策略或核心安全 / 调度规则；"
+                        "如需调整，由人用 policy propose 提出"
+                    ),
+                },
+            )
+
+    def refuse_policy_files(
+        self, stored: Any, *, mission_id: str, task_id: str, result_id: str
+    ) -> None:
+        """An accepted artifact under ``policy/`` or named like a deployment configuration
+        is the Agent trying to set policy: refused on record, nothing reads it."""
+
+        for artifact_id in stored.artifacts:
+            artifact = self._store.get_artifact(str(artifact_id))
+            if artifact is None:
+                continue
+            path = str(artifact.path)
+            if not (path.startswith(POLICY_PATH_PREFIX) or Path(path).name in CONFIG_FILE_NAMES):
+                continue
+            keys: list[str] = []
+            try:
+                parsed = json.loads(Path(artifact.storage_uri).read_text(encoding="utf-8"))
+                if isinstance(parsed, Mapping):
+                    keys = sorted(str(k) for k in parsed)
+            except (OSError, ValueError):
+                keys = []
+            self.record_policy_suggestion_refused(
+                mission_id,
+                source="worker",
+                keys=keys,
+                path=path,
+                detail={"task_id": task_id, "result_id": result_id, "artifact_id": artifact.id},
             )
 
 

@@ -427,6 +427,31 @@ class Orchestrator:
                 mission.id, version_id=version_id, differences=differences
             )
 
+    def _refuse_policy_ops(self, mission_id: str, task_id: str, operations: Any) -> None:
+        """Plan D9-10': a Manager proposal that smuggles a configuration or safety change
+        — an operation outside the closed vocabulary naming policy items — is refused on
+        record; the closed vocabulary then rejects the proposal exactly as before."""
+
+        from ..graph.changes import OPERATIONS
+
+        smuggled = [
+            op
+            for op in (operations if isinstance(operations, list) else [])
+            if isinstance(op, Mapping) and str(op.get("op")) not in OPERATIONS
+        ]
+        items: set[str] = set()
+        for op in smuggled:
+            if op.get("key"):
+                items.add(str(op["key"]))
+            items.update(str(k) for k in op if k not in {"op", "key", "value", "reason", "task_id"})
+        if items:
+            self.commit.record_policy_suggestion_refused(
+                mission_id,
+                source="manager",
+                keys=sorted(items),
+                detail={"task_id": task_id, "operations": [str(op.get("op")) for op in smuggled]},
+            )
+
     def policy_snapshot(self) -> dict[str, Any]:
         """Step 8 (plan D8-5'): where this orchestrator's behaviour comes from."""
 
@@ -2401,6 +2426,7 @@ class Orchestrator:
                     "task_id": task_id,
                 },
             }
+            self._refuse_policy_ops(mission.id, task_id, raw.get("operations"))  # D9-10'
             change = TaskGraphChange.from_json(raw)
         except (ContractError, BlockError) as error:
             self._settle_intent(intent, "FAILED")
@@ -2844,6 +2870,7 @@ class Orchestrator:
                     "concurrency_limit": plan.concurrency_limit,
                     "eligible": plan.eligible,
                     "slots": plan.slots,
+                    "pressure": plan.pressure,  # S9-08: the gate the grant was made under
                 },
             ):
                 progressed = True
