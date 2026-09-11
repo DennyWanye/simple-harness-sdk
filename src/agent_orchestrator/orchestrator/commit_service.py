@@ -64,6 +64,7 @@ from ..scheduling.backpressure import (
 )
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
 from ..verification.conflicts import Contradiction, find_contradiction
+from .action_commits import ActionCommitsMixin
 from .state_machine import next_attempt, next_claim, next_mission, next_task
 
 SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
@@ -195,7 +196,7 @@ def task_account(task_id: str) -> str:
     return f"budget:{task_id}"
 
 
-class CommitService:
+class CommitService(ActionCommitsMixin):  # step 7: the action ledger + approvals half
     def __init__(
         self, store: Store, *, conflict_tasks: bool = True, global_budget: Budget | None = None
     ) -> None:

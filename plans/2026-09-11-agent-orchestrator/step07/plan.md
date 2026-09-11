@@ -58,12 +58,145 @@
 - 人工等待让 Mission 长时间 ACTIVE：`run()` 空闲返回、状态持久；真实部署需要外部唤醒（CLI 再运行）。
 - 挂起的验证复用已记录层：若 Task Contract 在挂起期间被改（第 5 步改图），旧结果按既有 supersede 路径成为历史，不复用。
 
+## 6. 评审后修订（plan review 第 1 轮：4 P0 / 12 P1 / 11 P2，原文 `reports/plan-review-round1.md`；逐条处置见 `journal.md` §1）
+
+下面的 D7-x' 与 §3 冲突时以本节为准。
+
+**D7-2'　动作状态机与版本规则**（P0-1、P1-3、P2-1）
+
+| 动作状态 | 含义 | 合法出边 |
+|---|---|---|
+| PROPOSED | L0/L1，不需要审批 | HANDED_OFF、SUPERSEDED、CANCELLED |
+| AWAITING_APPROVAL | 等审批 | APPROVED、REJECTED、EXPIRED、SUPERSEDED、CANCELLED |
+| APPROVED | 审批已满额 | HANDED_OFF、REVOKED、EXPIRED、SUPERSEDED、CANCELLED |
+| HANDED_OFF | 已交接（outbox 已落盘，带 owner 与租约） | SUCCEEDED、FAILED、UNKNOWN |
+| UNKNOWN | 交接后结果不明 | SUCCEEDED（核对 COMPLETED 或人工带证据裁决）、FAILED（人工带证据裁决）、HANDED_OFF（核对 CONFIRMED_NOT_STARTED，且再交接次数未用完、完整再校验通过；同一幂等键） |
+| SUCCEEDED、FAILED、REJECTED、REVOKED、EXPIRED、SUPERSEDED、CANCELLED、REFUSED | 终态 | 无 |
+
+禁止的边：HANDED_OFF / UNKNOWN / SUCCEEDED → SUPERSEDED / REVOKED / EXPIRED / CANCELLED（现实已经可能发生，账本不能改写它，纲要 §12.6）。
+
+| 审批请求状态 | 合法出边 |
+|---|---|
+| PENDING | GRANTED、REJECTED、EXPIRED、SUPERSEDED、CANCELLED |
+| GRANTED | REVOKED、EXPIRED、SUPERSEDED、CANCELLED——仅当动作仍是开放态（未交接）；交接后请求保持 GRANTED |
+| REJECTED、REVOKED、EXPIRED、SUPERSEDED、CANCELLED | 终态 |
+
+新候选按"最新的非 REFUSED 版本"处理：
+- 没有版本 → v1。
+- 内容相同（params_hash 与 artifact_hash 都相同）→ 返回原版本，不新建。
+- 最新版本开放（PROPOSED / AWAITING_APPROVAL / APPROVED）且内容不同 → 新版本，旧版本与其审批 SUPERSEDED。
+- 最新版本在途（HANDED_OFF / UNKNOWN）→ 新候选 REFUSED（`action_in_flight`）。
+- 最新版本 SUCCEEDED 且内容不同 → REFUSED（`action_already_executed`）：同一个现实动作已经发生，要再做一次必须由新 Mission 表达（新 action_id，纲要 §12.3）。
+- 最新版本 FAILED / REJECTED / REVOKED / EXPIRED 且内容不同 → 新版本，按等级重新审批，事件 payload 带 `after: <旧状态>`（登记为"新的合法尝试"）。
+
+动作准则满足 = 该业务动作最新的非 REFUSED 版本是 SUCCEEDED。按上面的规则，SUCCEEDED 之后不会再出现开放版本，所以这个判断没有歧义。
+
+`OperationSpec` 增加 `kind`：`state` 表示把目标设置到某个值，重复执行结果相同；`event` 表示每次执行都会产生一个新事实，例如追加或付款。本步只登记 `state` 类操作，`event` 类候选一律 REFUSED（`event_operation_not_supported`）。这样，同一 Mission 对同一目标的同一操作合并成一个业务动作是正确的（选 P1-3 的方案 (b)）。
+
+`target` 先由连接器 `normalize_target` 规范化，再参与业务动作 ID 与哈希。
+
+候选路径的约定：`Task.outputs` 中以 `actions/` 开头的路径就是动作候选（P2-1），不新增字段；这仍符合 outputs 原来的含义，即"本 Task 会写这个路径"。
+
+**D7-2''　候选校验不依赖 Task 政策**（P1-1）
+- 结果中只要出现 `actions/` 下的文件，验证路由就强制加入 rule_check 层的 `action_candidate` 检查，不管 Task 政策里有没有 rule_check。检查内容：schema 与多余字段；部署政策（连接器已启用、操作已知且为 `state` 类、等级不超上限）；范围（D7-3'）；路径已在 outputs 中声明。
+- accept 事务从已接受 artifact 的原字节重新校验，`artifact_hash` 取 artifact 已记录的 `content_hash`。不通过就走 `fail_result`（照 stale 的写法），不抛异常。
+- 登记动作、`ApprovalRequested` 与 accept 在同一个事务里原子提交。
+
+**D7-3'　默认关闭与最小权限**（P1-2、P1-12、P2-2、P2-3、P2-10）
+- `DeploymentPolicy.enabled_connectors` 默认 `()`：不显式启用就没有任何连接器，这就是本步的关闭开关（纲要 §14.1）。演示和测试显式启用 `test_config`。
+- 动作范围：Mission 的 `action:<connector>.<operation>:<target>` 准则就是章程声明的允许动作。候选规范化后必须与某条动作准则完全匹配，否则验证 FAIL（`action_out_of_scope`）。L0/L1 也受这个范围约束。
+- 提交 Mission 时（`validate_spec` 和部署检查），动作准则引用的连接器必须已启用、操作已知且为 `state` 类、等级不超过上限，否则拒绝提交。
+- 以下为约定，登记：`test_config.set` 定为 L2 是为了演示审批而人为定级；未知操作按 L3；等级取连接器声明与部署覆盖中较高者。`Mission.risk_level` 本步不作为动作等级上限，上限只看部署政策。Host 的 auto 模式不适用：接入 Host 时，L2/L3 审批不属于工具授权提示。
+
+**D7-4'　审批**（P1-8、P1-9、P2-5、P2-7）
+- 计数：`l3_distinct_principals=True` 时，同一个 principal_id 对同一请求只计一次；为 False 时，每条独立的决定（不同 nonce、不同回执）各计一次。统一说"不同 principal_id"，不说"不同自然人"。CLI 的 `--as` 是调用方自报身份，演示只证明机制，S7-05 的证据要写明这一点。
+- 政策值（required_count、distinct、ttl）在创建请求时冻结进请求记录。
+- 新增 `CANCELLED`：Mission 终止（取消或失败）、Task 被第 5 步替代时，开放的请求与开放的动作一起 CANCELLED。批准要求 Mission 仍是 ACTIVE。
+- 人工审核与仲裁请求也发 `ApprovalRequested{kind: review|arbitration}`，人工结论发 `ApprovalGranted` / `ApprovalRejected{kind}`。所有人工事件的 `actor_type=user`、`actor_id=principal_id`（§26.6）。
+- 审计链：HANDED_OFF 记录写入授权本次交接的决定回执哈希列表；SUCCEEDED 时写入服务回执哈希。链条为：决定回执 → 交接 → 服务回执。
+
+**D7-5'　执行时点、原子交接、预算、核对**（P0-2、P0-4、P1-4、P1-5、P1-11）
+- 交接门槛：Mission 是 ACTIVE，所有 live Task 都 COMPLETED，且所有非动作准则已在集成树上判定满足（D7-7'）。审批可以更早发起（accept 时），但执行永远是 Mission 判定的最后一步，并且只执行最终版本。
+- 交接由 Commit Service 在一个事务里完成：`begin_handoff(action_key, owner, lease_seconds)`。
+  - 完整再校验：审批 GRANTED、未过期、未撤回；版本是当前版本；哈希与审批一致；连接器已启用；等级不超上限；Mission 是 ACTIVE；本 Mission 的交接次数小于 `max_action_handoffs_per_mission`。
+  - 按动作记录版本做 CAS，写 HANDED_OFF（owner、lease_expires_at、handoffs+1、决定回执哈希）。
+  - 预算预留：subject `action:<action_key>`，挂在 Mission 账户，`tool_calls=1`，`cost_micros` 取连接器声明的单次上限；没有定价时记 null，不写 0。
+  - 执行器自己不写 Store。
+- 连接器调用：`asyncio.to_thread` 加 `wait_for(connector_timeout_seconds)`，不阻塞事件循环。本进程持有的 HANDED_OFF 计入在途。
+- 结果：
+  - 回执与账本一致 → SUCCEEDED，结算预留。
+  - 服务明确拒绝（未应用）→ FAILED，结算预留。
+  - 异常或超时 → UNKNOWN，并发 `ReservationHeld`，预留保持占用。
+- 核对：对象是 UNKNOWN 的动作，以及 HANDED_OFF 且租约已过期的动作。所有 Mission 都要核对，包括已终止的。按幂等键 `lookup`：
+  - COMPLETED → 核对回执 → SUCCEEDED。
+  - CONFIRMED_NOT_STARTED → 在再交接次数（≤1）以内，经 `begin_handoff` 完整再校验后，用同一个幂等键再交接。
+  - 其余情况（含 STILL_UNKNOWN）→ 保持 UNKNOWN，列入 `waiting_on`（待人工核对）。人工用带证据的 HumanOverride 裁决 SUCCEEDED 或 FAILED。
+- 核对节奏：每次 `run()` 开始时一次，之后每 `reconcile_interval_cycles` 轮一次。UNKNOWN 不计入在途，所以服务宕机时 `run()` 也能返回。
+- 部署政策新增 `max_action_handoffs_per_mission`（默认 8）和 `connector_timeout_seconds`（默认 30）。
+- 连接器协议要求：`supports_reconciliation` 意味着 lookup 是权威的，即"应用"与"写幂等账本"原子完成；同一个键串行执行。TestConfigService 用单文件原子替换加 `fcntl.flock` 满足这两点。
+- `_cascade_stop` 不改动 HANDED_OFF / UNKNOWN 的动作，只把开放态的动作与请求置为 CANCELLED。
+- 纲要的表把这些能力列在 `runtime/tool_gateway.py` 一行。本实现放在 `runtime/actions.py`，`tool_gateway` 继续只管模型工具（模型没有连接器工具）。登记。
+
+**D7-7'　判定分段、等待、运行时间**（P0-3、P1-10、P2-11）
+- 所有 live Task 都 COMPLETED 后，`_decide` 分两段：
+  - ① 非动作准则只判定一次并入账：事件 `MissionCriteriaJudged{tree_hash, judgments}`。同一个集成树哈希不重判，也不重跑 pytest / Critic。未满足 → 按原路径失败（`mission_criteria_unmet`）。
+  - ② 满足后再看动作准则：
+    - 全部 SUCCEEDED → COMPLETED。
+    - 有可交接的动作（APPROVED，或 L0/L1 的 PROPOSED）→ 交接。
+    - 有 REJECTED / REVOKED / EXPIRED → `approval_rejected`。
+    - 有 FAILED → `action_failed`。
+    - 只剩等待人工（AWAITING_APPROVAL，或待人工核对的 UNKNOWN）→ `_decide` 返回 False，算作没有进展，`run()` 空闲返回。
+- `needs_critic` 排除 `action:` 前缀的准则。
+- 保留派生字段 `waiting_on`，砍掉 `MissionWaitingForHuman` 事件（P2-11 取其一）。
+- 运行时间：等待人工的时间不计入 Mission 的运行时间上限。运行时间 = 挂钟时间 − 各审批 / 审核 / 仲裁请求从创建到决定（未决定则到现在）的区间并集，由 approvals 表推导，不新增状态。登记：理论 12 把人工时间算作成本；本步不计入运行时间上限，而是在 `approvals.json` 里逐条记录等待时长。
+
+**D7-8'　human_review、NEEDS_HUMAN 与 Verifier 冲突仲裁**（P1-6、P2-5）
+- `results.verification_state` 新增 `SUSPENDED`（这是结果表的列，不是 §25 状态），不在拾取范围内。人工给出结论后改回 PENDING，再重新验证。
+- 恢复：Commit Service 在恢复验证的事务里把该 Attempt 的租约续给当前实例，规则同第 3 步的过期接管。只复用 `verifier_version` 与当前一致的已记录 PASS 层。Critic 裁决从库里取，不依赖内存里的 `_critic_verdicts`。
+- 第 5 步替代处于 VERIFYING 的 Task 时，审核请求 CANCELLED。`review()` 拒绝非 SUSPENDED 的结果。
+- `needs_human`：
+  - `CriticVerdict` 新增 `needs_human: bool = False`（契约变更，登记）。
+  - 有 blocker 时一律 FAIL。
+  - NEEDS_HUMAN 不短路：后面的层（code_test）照常运行，任一层 FAIL 就是 FAIL，人工批准不能掩盖未通过的测试。其余层全部 PASS 时才转人工层。
+  - 即使 Task 政策里没有 human_review，`needs_human` 也强制走人工层（原文 §22"模型无法可靠判断成功条件"）。
+  - 每个 Task 最多升级一次；第二次 `needs_human` 按 FAIL 处理，并计入指标 `human_escalations`。
+  - 最终的 `passed`：critic 层的 NEEDS_HUMAN 由人工 PASS 解决；人工 FAIL 则结果 FAIL，反馈进入下一个 Attempt。
+- **Verifier 冲突送人工**：Host 文档 §9.2 的 human_review 行明确要求这一项，不降级。本实现把"多个 Verifier 冲突"定义为两种情形（约定，登记；原文 §22 只列出情形，没有定义；理论 13 §9"仲裁或正式 Commit"；原文 30.2"冲突结论可以同时保存并进入仲裁"）：
+  - ① 第 4 步的冲突任务结束后，冲突仍是 UNRESOLVED（两个都经过验证、但结论相反）。
+  - ② Mission 判定时，确定性准则全部满足、各 Task 的 critic 层都 PASS，而独立的 judge Critic 判自由文本准则未满足。
+  - 两种情形都建 kind=arbitration 的人工请求，Mission 不立即失败，而是等待人工。人工裁决写 HumanOverride 和依据：① 选定保留的结论，或判定两者都不成立；② 判定准则满足或不满足。①在第 4 步冲突代码里的接入点、以及 Task 状态怎么处理，要到切片 D 读完冲突代码后细化，并回写本节。
+
+**D7-9'　接管边界**（P1-7）
+- `retry_with_note` 只用于非终态的 Task：关闭当前开放的 Attempt（被关闭的也计数），下一个 Attempt 走 allocator 和 `create_attempt`，受 `max_attempts` 约束。次数已用完时拒绝接管，并明确报错。
+- `stop` 调用 `stop_task`，按既有语义整个 Mission FAILED，stop reason 为 `human_override`。
+- 已终止的 Task 或 Mission 不能被接管复活，因为 §25 没有回边。
+
+**D7-10'　命名与入口**（P2-6、P2-8）
+- 统一用 `review(review_id, verdict, note)`，同时用于人工审核和仲裁。
+- CLI 子命令：`approval list|approve|reject|revoke|comment|review|takeover`。不传 nonce 时自动生成 uuid4；`--nonce` 可以显式传入，用来演示重放。
+- 评论与 note 在 API 入口做密钥检查：像密钥的字符串会被拒绝并给出提示。候选的 `reason` 在 list 和 CLI 中标注"来自模型，不可信"。
+
+**测试补充**（P1-3、P1-11、P2-9）
+- S7-06 增加三条决定性测试：
+  - (a) HANDED_OFF 之后，账本行和事件只追加；状态永远不回到 APPROVED。
+  - (b) 交接前用 sqlite backup 备份库 → 执行 → 恢复备份 → 再跑一次：执行器以同一个幂等键交接，服务去重，`applied_count` 仍为 1，账本凭去重回执核对为 SUCCEEDED。
+  - (c) UNKNOWN 期间 `cancel_mission`：动作仍是 UNKNOWN，核对继续，不写 FAILED。
+- S7-08 补两个用例：候选里带 `approved` / `level` / `idempotency_key` 字段 → FAIL；不可信文档要求"降为 L0"→ 等级不变。
+- P1-3：新 Mission 提交相同内容 → 新 action_id、新幂等键 → 服务再应用一次，不被旧回执去重。
+
+**切片调整**
+- A：账本与政策，按 D7-2' / 3' / 4' 调整。
+- B：执行器，含 `begin_handoff`、预算、核对。
+- C：闭环，含判定分段、`waiting_on`、运行时间。
+- D：人工审核、NEEDS_HUMAN、仲裁、接管。
+- E、F：不变。
+
 ### 6.1 本步实施约定（非原文原句；按 ORCH §13 登记）
 
 - 审批在编排层、执行在 turn 外（D7-1），SDK REQUIRE_USER 本步不接入；复用其状态与核对语义。
 - 业务动作 ID = hash(mission, connector, operation, target)；同 Mission 同目标同操作视为同一现实动作，参数变化是新版本。
 - 双重审批：两条独立决定、同 nonce / 同审批人不重复计数；是否必须不同审批人由部署政策 `l3_distinct_principals` 决定（默认是）。
-- 新增事件：ApprovalRevoked、ApprovalExpired、ApprovalSuperseded、ActionProposed、ActionRefused、ActionHandoffRefused、ActionHandedOff、ActionSucceeded、ActionFailed、ActionOutcomeUnknown、ActionReconciled、VerificationSuspended、MissionWaitingForHuman；原文 §24 时序图的 `ApprovalRequired` 不另设，统一用 §22 的 `ApprovalRequested`。
+- 新增事件：ApprovalRevoked、ApprovalExpired、ApprovalSuperseded、ApprovalCancelled（D7-4'）、ActionProposed、ActionRefused、ActionHandoffRefused、ActionHandedOff、ActionSucceeded、ActionFailed、ActionOutcomeUnknown、ActionReconciled、VerificationSuspended、MissionCriteriaJudged（D7-7'）；`MissionWaitingForHuman` 已砍（D7-7'，只保留派生字段 `waiting_on`）；原文 §24 时序图的 `ApprovalRequired` 不另设，统一用 §22 的 `ApprovalRequested`。
 - 「等待人工」是 ACTIVE Mission 的派生视图（`waiting_on`）+ 事件，不改 Mission 状态集。
 - 批准即短期能力（绑定动作版本、有有效期），不另造 Capability Token 格式。
 - 补偿 / 回滚真实世界不做；UNKNOWN 只核对不重发。

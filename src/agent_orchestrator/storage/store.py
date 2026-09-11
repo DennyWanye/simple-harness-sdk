@@ -854,6 +854,140 @@ class Store:
         return [_loads(row[0]) for row in rows]
 
     # ----------------------------------------------------------- graph changes
+    # --------------------------------------------------------------- actions (step 7)
+    def put_action(self, record: Mapping[str, Any]) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO actions(action_key,action_id,version,mission_id,state,json,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(action_key) DO UPDATE SET state = excluded.state,"
+                " json = excluded.json, updated_at = excluded.updated_at",
+                (
+                    str(record["action_key"]),
+                    str(record["action_id"]),
+                    int(record["version"]),
+                    str(record["mission_id"]),
+                    str(record["state"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                    self.now,
+                ),
+            )
+
+    def get_action(self, action_key: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT json FROM actions WHERE action_key = ?", (action_key,)
+        ).fetchone()
+        return None if row is None else dict(_loads(row[0]))
+
+    def list_action_versions(self, action_id: str) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT json FROM actions WHERE action_id = ? ORDER BY version", (action_id,)
+        ).fetchall()
+        return [dict(_loads(row[0])) for row in rows]
+
+    def list_actions(self, mission_id: str | None = None, *states: str) -> list[dict[str, Any]]:
+        sql = "SELECT json FROM actions"
+        clauses: list[str] = []
+        args: list[Any] = []
+        if mission_id is not None:
+            clauses.append("mission_id = ?")
+            args.append(mission_id)
+        if states:
+            clauses.append(f"state IN ({','.join('?' for _ in states)})")
+            args.extend(states)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        rows = self._connection.execute(
+            sql + " ORDER BY created_at, action_key", tuple(args)
+        ).fetchall()
+        return [dict(_loads(row[0])) for row in rows]
+
+    def put_approval(self, record: Mapping[str, Any]) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO approvals(request_id,kind,mission_id,subject_key,state,version,json,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET state = excluded.state,"
+                " version = excluded.version, json = excluded.json, updated_at = excluded.updated_at",
+                (
+                    str(record["request_id"]),
+                    str(record["kind"]),
+                    str(record["mission_id"]),
+                    str(record["subject_key"]),
+                    str(record["state"]),
+                    int(record["version"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                    self.now,
+                ),
+            )
+
+    def get_approval(self, request_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT json FROM approvals WHERE request_id = ?", (request_id,)
+        ).fetchone()
+        return None if row is None else dict(_loads(row[0]))
+
+    def list_approvals(self, mission_id: str | None = None, *states: str) -> list[dict[str, Any]]:
+        sql = "SELECT json FROM approvals"
+        clauses: list[str] = []
+        args: list[Any] = []
+        if mission_id is not None:
+            clauses.append("mission_id = ?")
+            args.append(mission_id)
+        if states:
+            clauses.append(f"state IN ({','.join('?' for _ in states)})")
+            args.extend(states)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        rows = self._connection.execute(
+            sql + " ORDER BY created_at, request_id", tuple(args)
+        ).fetchall()
+        return [dict(_loads(row[0])) for row in rows]
+
+    def insert_decision(self, record: Mapping[str, Any]) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO approval_decisions(receipt_hash,request_id,principal_id,decision,nonce,json,created_at)"
+                " VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                (
+                    str(record["receipt_hash"]),
+                    str(record["request_id"]),
+                    str(record["principal_id"]),
+                    str(record["decision"]),
+                    str(record["nonce"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def list_decisions(self, request_id: str) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT json FROM approval_decisions WHERE request_id = ? ORDER BY created_at, receipt_hash",
+            (request_id,),
+        ).fetchall()
+        return [dict(_loads(row[0])) for row in rows]
+
+    def insert_override(self, record: Mapping[str, Any]) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO human_overrides(override_id,mission_id,json,created_at) VALUES (?,?,?,?)"
+                " ON CONFLICT(override_id) DO NOTHING",
+                (
+                    str(record["override_id"]),
+                    str(record["mission_id"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                ),
+            )
+
+    def list_overrides(self, mission_id: str) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT json FROM human_overrides WHERE mission_id = ? ORDER BY created_at, override_id",
+            (mission_id,),
+        ).fetchall()
+        return [dict(_loads(row[0])) for row in rows]
+
     # ------------------------------------------------------------ tool calls
     def record_tool_call(
         self, *, call_key: str, subject_id: str, mission_id: str, tool: str, outcome: str

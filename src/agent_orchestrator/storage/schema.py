@@ -308,11 +308,58 @@ CREATE TABLE tool_calls (
 CREATE INDEX tool_calls_subject_idx ON tool_calls(subject_id, outcome);
 """
 
+# Step 7 (D7-2 / D7-4 / D7-9): real actions and the people who decide about them — the
+# action ledger (one row per business action version), approval / review requests, the
+# decisions with their receipt hashes, and human overrides.
+DDL_V5 = """
+CREATE TABLE actions (
+ action_key TEXT PRIMARY KEY,
+ action_id TEXT NOT NULL,
+ version INTEGER NOT NULL,
+ mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ state TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL,
+ UNIQUE(action_id, version)
+) STRICT;
+CREATE INDEX actions_mission_idx ON actions(mission_id, state);
+CREATE TABLE approvals (
+ request_id TEXT PRIMARY KEY,
+ kind TEXT NOT NULL,
+ mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ subject_key TEXT NOT NULL,
+ state TEXT NOT NULL,
+ version INTEGER NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL
+) STRICT;
+CREATE INDEX approvals_mission_idx ON approvals(mission_id, state);
+CREATE TABLE approval_decisions (
+ receipt_hash TEXT PRIMARY KEY,
+ request_id TEXT NOT NULL REFERENCES approvals(request_id),
+ principal_id TEXT NOT NULL,
+ decision TEXT NOT NULL,
+ nonce TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ UNIQUE(request_id, nonce)
+) STRICT;
+CREATE TABLE human_overrides (
+ override_id TEXT PRIMARY KEY,
+ mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL
+) STRICT;
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
     Migration(3, "orchestrator-step05", DDL_V3),
     Migration(4, "orchestrator-step06", DDL_V4),
+    Migration(5, "orchestrator-step07", DDL_V5),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -329,6 +376,7 @@ __all__ = (
     "DDL_V2",
     "DDL_V3",
     "DDL_V4",
+    "DDL_V5",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

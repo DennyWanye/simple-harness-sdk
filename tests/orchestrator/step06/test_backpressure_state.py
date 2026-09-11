@@ -106,15 +106,15 @@ def _v3_library(path):
     connection.close()
 
 
-def test_a_v3_library_is_backed_up_and_upgraded_to_v4_keeping_its_accounts(tmp_path):
+def test_a_v3_library_is_backed_up_and_upgraded_keeping_its_accounts(tmp_path):
     path = tmp_path / "orchestrator.db"
     _v3_library(path)
     store = Store.open(path)
-    assert schema.SCHEMA_VERSION == 4
+    assert schema.SCHEMA_VERSION >= 4  # later steps add migrations on top of v4
     rows = store.connection.execute(
         "SELECT version FROM orch_schema_migrations ORDER BY version"
     ).fetchall()
-    assert [r[0] for r in rows] == [1, 2, 3, 4]
+    assert [r[0] for r in rows] == list(range(1, schema.SCHEMA_VERSION + 1))
     tables = {
         r[0] for r in store.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
@@ -123,7 +123,7 @@ def test_a_v3_library_is_backed_up_and_upgraded_to_v4_keeping_its_accounts(tmp_p
         "SELECT reserved_tool_calls, settled_tool_calls FROM budget_accounts"
     ).fetchone()
     assert tuple(row) == (0, 0)  # the old account survived with the new dimension at zero
-    assert (tmp_path / "orchestrator.db.pre-schema-4.backup").is_file()
+    assert (tmp_path / f"orchestrator.db.pre-schema-{schema.SCHEMA_VERSION}.backup").is_file()
     assert store.get_scheduler_state("backpressure") is None
     assert store.put_scheduler_state("backpressure", {"level": "NORMAL"}) == 1
     assert store.put_scheduler_state("backpressure", {"level": "RAISED"}) == 2

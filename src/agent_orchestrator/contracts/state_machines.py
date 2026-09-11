@@ -44,6 +44,9 @@ class MissionStopReason(StrEnum):
         "verifier_unavailable"  # step 6 (D6-9'): a required verifier is not deployed
     )
     CONTEXT_REJECTED = "context_rejected"  # step 6 (review P2-10): a package carried a key
+    APPROVAL_REJECTED = "approval_rejected"  # step 7 (D7-7): rejected / revoked / expired approval
+    ACTION_FAILED = "action_failed"  # step 7 (D7-7): the external system refused the action
+    HUMAN_OVERRIDE = "human_override"  # step 7 (D7-9): a person took over and stopped the Task
 
 
 class TaskStatus(StrEnum):
