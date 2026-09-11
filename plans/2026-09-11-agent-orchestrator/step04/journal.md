@@ -46,3 +46,8 @@
 - **同 key 同 stance 的仲裁结论与被确认知识**：检索按主题去重只提供一条（被确认的原知识），综合引用的是原知识；血缘沿 `confirmed_by` 到达仲裁知识与 Arbiter 的 Agent（30-27 的"依赖的 Agent"包含仲裁者）。
 - **fixtures 脚本必须按 Attempt 分配**：两个 Mission 的同 key Worker 并发时共享平铺脚本会互相消费；`TaskRoutedProvider(per_attempt=…)` 在 Attempt 首次调用时分配一份脚本。顺带观察：脚本耗尽时 provider 抛 AssertionError，SDK 把它归为 UNKNOWN 出站调用（阻塞直到 `stall_seconds`），与 S2-08 语义一致，不是编排层缺陷。
 - **外部文档在 Mission 种子里**：`workspace_seed` 作为 Mission 规格的一部分进入 `final_report`，证据 `final_state.json` 里必然含文档正文；"不内联"的断言对象是上下文包（intent `message`）与 Blackboard（`knowledge.json`），两者都不含 `SYSTEM NOTICE`。
+
+## 4. 证据
+
+- **fixtures 演示**：`python -m agent_orchestrator demo --scenario knowledge-sharing --provider fixtures --evidence-dir <dir> --idempotency-key demo-s4 --max-concurrency 1` → Mission COMPLETED（verification_passed，2.18 s）；任务 [work, work, work, synthesis, conflict] 全部 COMPLETED 各 1 次 Attempt；冲突 `impl_a.empty_input` RESOLVED；知识 6 条 VERIFIED（A 的两条被 B 与综合任务复用、B 的两条被综合任务复用、仲裁结论、综合一致性结论）；血缘含 6 条知识；证据目录含 §14.3 的 7 个文件 + `knowledge.json` + `lineage.json` + 各 Attempt 产物。
+- **确定性测试**：`tests/orchestrator`（step02 + step03 + step04）101 passed, 3 skipped（真实模型 opt-in）；step04 37 条。

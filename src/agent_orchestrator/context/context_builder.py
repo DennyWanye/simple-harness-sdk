@@ -39,6 +39,7 @@ from simple_harness.contracts import canonical_json
 from .. import __version__ as PACKAGE_VERSION
 from ..contracts import Attempt, Mission, Task
 from ..contracts.models import sha256_hex
+from ..planning.manager import system_reserve_tokens
 from .retrieval import KnowledgeContext
 
 CONTEXT_BUILDER_VERSION = "context-builder-v3"
@@ -225,8 +226,18 @@ def build_planner_package(
         "workspace_files": list(workspace_files),
         "constraint": (
             "a static DAG of one or more Tasks (no cycles, dependencies by key); "
-            "success_criteria must be machine-checkable; task budgets sum within the Mission"
+            "success_criteria must be machine-checkable; task budgets sum within "
+            "budget_for_tasks (the Mission budget minus the system reserve)"
         ),
+        "budget_for_tasks": {  # D4-20: the pool the Planner's graph may use
+            "max_tokens": (
+                None
+                if mission.budget.max_tokens is None
+                else max(0, mission.budget.max_tokens - system_reserve_tokens(mission))
+            ),
+            "system_reserve_tokens": system_reserve_tokens(mission),
+            "synthesis_task": (mission.final_report or {}).get("synthesis") is not None,
+        },
         "planning_rejected": [dict(item) for item in rejected],  # D3-2': why the last one failed
         "output_contract": "<task_graph_proposal>{json}</task_graph_proposal>",
         "package_version": PACKAGE_VERSION,

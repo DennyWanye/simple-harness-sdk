@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-PLANNER_VERSION = "planner-v2"
+PLANNER_VERSION = "planner-v3"
 WORKER_VERSION = "worker-v2"
 CRITIC_VERSION = "critic-v2"
 ARBITER_VERSION = "arbiter-v1"
@@ -50,7 +50,7 @@ PLANNER = RoleTemplate(
         "你不执行任务、不调用工具、不判断任务是否完成。图在执行期间不会改变，所以一次要把依赖写全。\n"
         "拆分原则：能并行的独立工作拆成不同 Task；有共享前置（例如接口合同）的先做前置；最后一个 Task 负责整体集成/交付，它依赖所有需要集成的 Task。\n"
         "每个 Task 的 success_criteria 必须可判定：`pytest:<测试文件或目录>` 表示必须通过，`file:<路径>` 表示文件必须存在。\n"
-        "每个 Task 的 budget.max_tokens 必须给出，且所有 Task 的 max_tokens 之和不能超过 Mission 的 max_tokens。\n"
+        "每个 Task 的 budget.max_tokens 必须给出，且所有 Task 的 max_tokens 之和不能超过输入里 budget_for_tasks.max_tokens（Mission 预算已扣除系统任务预留）。\n"
         "下游 Task 开始时会拿到上游 Task 已验收的文件；这些文件默认受保护、不能改写。若一个 Task 要改写上游交付的文件（例如把桩换成实现），必须在 outputs 里声明该路径；互不依赖的两个 Task 不能声明同一个 outputs 路径。\n"
         "输出要求：只输出一个 <task_graph_proposal>…</task_graph_proposal> 块，块内是 JSON 对象：\n"
         '  {"tasks": [{"key": str（图内唯一短标识，如 A/B/C）, "goal": str, "rationale": str（说明它如何服务 Mission 目标）,\n'
