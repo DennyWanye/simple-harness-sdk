@@ -275,18 +275,6 @@ class ValidatedChange:
     depth: int = 0
     budget_pool: Mapping[str, int] = field(default_factory=dict)
 
-    def is_noop(self) -> bool:
-        """Only priority tweaks (or nothing) — the kind of proposal S5-02 refuses."""
-
-        return not (
-            self.new_nodes
-            or self.superseded
-            or self.retargets
-            or self.pauses
-            or self.cancels
-            or self.roles
-        )
-
 
 def _depth(edges: Mapping[str, Sequence[str]], order: Sequence[str]) -> int:
     depth: dict[str, int] = {}
@@ -380,6 +368,14 @@ def validate_change(
                     "illegal_transition", f"{op.op} {task_id}: Task is terminal"
                 )
             if op.op == "pause_task":
+                if task.status not in {TaskStatus.READY, TaskStatus.BLOCKED}:
+                    # review P0-1: an executing route cannot be parked — it would never reach
+                    # a terminal state and the judge would wait forever; supersede or cancel it
+                    raise GraphChangeRejected(
+                        "illegal_transition",
+                        f"pause_task {task_id}: only a READY/BLOCKED Task can be paused; "
+                        f"a {task.status} Task must be superseded or cancelled",
+                    )
                 pauses[task_id] = str(op.args.get("reason", ""))
             else:
                 resumes.append(task_id)
@@ -549,7 +545,13 @@ def validate_change(
         # a superseded/cancelled task's unused allocation returns to the pool once its
         # reservations settle; settled + in-flight reserved stay committed
         remaining = pool - reserve - committed
-        default_share = max(1, remaining // max(1, len(nodes))) if nodes else 0
+        # review P2-7: a node that names no budget gets a bounded share (at most a quarter
+        # of the pool, or the pool split over live + new Tasks), never the whole remainder
+        default_share = (
+            max(1, min(remaining // max(1, len(nodes)), pool // max(4, len(tasks) + len(nodes))))
+            if nodes
+            else 0
+        )
         for node in nodes:
             wanted = node.budget.max_tokens
             budgets[node.key] = int(wanted if wanted is not None else default_share)

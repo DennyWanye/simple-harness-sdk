@@ -71,7 +71,10 @@ def ancestors(task_id: str, tasks_by_id: Mapping[str, Task]) -> list[Task]:
                 visit(dep)
 
     visit(task_id)
-    return topological([tasks_by_id[t] for t in seen], tasks_by_id)
+    # review P2-2 / D5-4: a superseded (CANCELLED) ancestor contributes nothing — its
+    # accepted artifacts belong to the plan the Manager retired
+    live = [tasks_by_id[t] for t in seen if str(tasks_by_id[t].status) != "CANCELLED"]
+    return topological(live, tasks_by_id)
 
 
 def topological(tasks: Sequence[Task], tasks_by_id: Mapping[str, Task]) -> list[Task]:

@@ -406,6 +406,8 @@ class CommitService:
                 version=1,
                 root_goal=proposal.root_goal or mission.goal,
                 created_at=self._store.now,
+                ready_at=self._store.now,  # step 5: waiting_age starts here (review P2-4)
+                context={"graph_version": 1},
             )
             self._store.insert_task(task, ordinal=1)
             self._ledger.open_account(
@@ -844,10 +846,16 @@ class CommitService:
                         },
                     },
                 )
-            # in-place rewrites on BLOCKED tasks (data only, §25.1 untouched)
+            # in-place rewrites on BLOCKED tasks (data only, §25.1 untouched); a dependency
+            # naming a Task this same proposal supersedes follows the replacement (review P1-1)
+            translate = {
+                **key_to_id,
+                **{old: key_to_id[rep] for old, rep in validated.superseded.items()},
+            }
+            implicitly_rewired: list[str] = []
             for task_id, deps in validated.retargets.items():
                 task = self._require_task(task_id)
-                resolved = tuple(key_to_id.get(d, d) for d in deps)
+                resolved = tuple(translate.get(d, d) for d in deps)
                 self._store.update_task(
                     next_task(
                         task,
@@ -877,6 +885,7 @@ class CommitService:
                         and task.id not in validated.retargets
                     ):
                         resolved = tuple(new_id if d == old_id else d for d in task.dependency_ids)
+                        implicitly_rewired.append(task.id)
                         self._store.update_task(
                             next_task(task, dependency_ids=resolved), expected_version=task.version
                         )
@@ -958,7 +967,10 @@ class CommitService:
                 "new_task_ids": [t.id for t in created],
                 "superseded": {old: key_to_id[rep] for old, rep in validated.superseded.items()},
                 "cancelled": list(validated.cancels),
-                "affected_task_ids": [key_to_id.get(t, t) for t in validated.affected_task_ids],
+                "affected_task_ids": sorted(  # review P2-1: implicit rewires are affected too
+                    {key_to_id.get(t, t) for t in validated.affected_task_ids}
+                    | set(implicitly_rewired)
+                ),
                 "unblocked": unblocked,
                 "warnings": list(validated.warnings),
                 "depth": validated.depth,
@@ -1443,6 +1455,13 @@ class CommitService:
                 },
             )
             return
+        task = replace(  # review P2-4: a system Task carries the graph version it joined at
+            task,
+            context={
+                **dict(task.context),
+                "graph_version": int((mission.final_report or {}).get("graph_version") or 1),
+            },
+        )
         self._store.insert_task(task, ordinal=len(tasks) + 1)
         record["task_id"] = task.id
         self._store.upsert_conflict(record)
@@ -1956,6 +1975,16 @@ class CommitService:
                     "cost_micros": reservation.cost_micros,
                 },
             )
+            allocation = intent_config.get("allocation")
+            if allocation:  # step 5 (S5-09): the §29.3 decision is on the timeline as well
+                self._emit(
+                    "AllocationDecided",
+                    task.mission_id,
+                    key=attempt_id,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    payload=dict(allocation),
+                )
             return attempt, intent
 
     def claim_intent(

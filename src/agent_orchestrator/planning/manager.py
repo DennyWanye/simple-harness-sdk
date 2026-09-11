@@ -161,9 +161,12 @@ def terminal_task(tasks: Sequence[Task]) -> Task:
     for task in live:
         if task.kind == "synthesis":
             return task
-    depended = {dep for task in live for dep in task.dependency_ids}
-    leaves = [task for task in live if task.id not in depended and task.kind != "conflict"]
-    return leaves[-1] if leaves else live[-1]
+    from ..artifacts.versioning import topological  # review P2-10: order by edges, not ordinal
+
+    ordered = topological(live, {task.id: task for task in live})
+    depended = {dep for task in ordered for dep in task.dependency_ids}
+    leaves = [task for task in ordered if task.id not in depended and task.kind != "conflict"]
+    return leaves[-1] if leaves else ordered[-1]
 
 
 __all__ = (

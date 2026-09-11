@@ -108,8 +108,8 @@ def test_a_change_adds_a_prerequisite_supersedes_the_executing_task_and_rewires_
     )
     assert judged.status is MissionStatus.COMPLETED
     assert (
-        judged.final_report["terminal_task_id"] == t["D"].id
-    )  # the last leaf in topological order
+        judged.final_report["terminal_task_id"] == t["C"].id
+    )  # review P2-10: the last leaf in topological order (C sits behind E → B2)
 
 
 # ------------------------------------------------------------------ S5-07 / S5-03

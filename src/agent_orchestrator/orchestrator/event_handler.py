@@ -122,6 +122,7 @@ FAULT_POINTS = (
     "after_accept_before_supersede",  # step 3 (inside the accept transaction → rolls back)
     "after_task_completed",  # step 3 (accept committed, release / next cycle not yet run)
     "retrieval_unavailable",  # step 4 (S4-07): the knowledge index cannot be read
+    "before_graph_change",  # step 5: a Manager's proposal parsed, not yet committed
 )
 MAX_CRITIC_ATTEMPTS = 2
 
@@ -1196,8 +1197,45 @@ class Orchestrator:
             for sibling in self.store.list_attempts(task.id):
                 if sibling.status is AttemptStatus.SUPERSEDED:
                     await self._release_attempt(sibling.id, cancel=True)
+            live = self.store.get_mission(mission.id)
+            if (
+                stored.envelope.proposed_tasks
+                and completed.status is TaskStatus.COMPLETED
+                and live is not None
+                and live.status is MissionStatus.ACTIVE  # a finished Mission has no plan to amend
+            ):
+                # S5-01 / D5-5: a Worker's proposed_tasks reach the graph only via the Manager
+                await self._request_management(
+                    mission,
+                    completed,
+                    trigger=f"proposed:{result_id}",
+                    result_id=result_id,
+                    attempt_id=attempt.id,
+                )
         else:
             self._note(f"result {result_id} FAIL at {verdict.short_circuited_at}")
+            failures = self.commit.no_progress_count(task.id)
+            after = self.store.get_task(task.id)
+            # a Task that can still retry and keeps failing is a stall (§19.2); one that
+            # just spent its last attempt is stopped by the next _decide (max_attempts)
+            can_retry = (
+                after is not None
+                and after.status
+                not in {TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED}
+                and (
+                    after.budget.max_attempts is None
+                    or after.attempt_count < after.budget.max_attempts
+                )
+            )
+            if can_retry and failures >= self._config.manager_after_failures:
+                # D5-6: repeated verification failures are a stall signal (§19.2)
+                await self._request_management(
+                    mission,
+                    task,
+                    trigger=f"failures:{task.id}:{failures}",
+                    result_id=result_id,
+                    attempt_id=attempt.id,
+                )
         return True
 
     def _hold_lease(self, attempt_id: str) -> Attempt:
@@ -1512,8 +1550,9 @@ class Orchestrator:
             self._note(f"manager proposal unusable for {task_id}: {error}")
             await self._manager_unusable(intent, reason=f"proposal_unreadable: {error}")
             return
-        self._settle_intent(intent, "SETTLED")
-        self._settle_service_if_known(intent.subject_id, mission.id)
+        # P1-3 (review): the intent is settled only after the decision is durable — a crash
+        # before the Commit re-collects the same turn and the receipt makes it idempotent
+        self._fault("before_graph_change", "manager")
         task = self.store.get_task(task_id)
         assert task is not None
         limits = ChangeLimits(
@@ -1523,6 +1562,10 @@ class Orchestrator:
         )
         no_progress = int(intent.config.get("no_progress_count", 0))
         if not change.operations or all(op.op == "set_priority" for op in change.operations):
+            # priority-only (or empty) proposals are "keep" (S5-02); validation happens inside
+            # the Commit transaction, so the test is on the operations themselves
+            self._settle_intent(intent, "SETTLED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
             self.commit.record_management_decided(
                 mission.id,
                 task_id=task_id,
@@ -1555,6 +1598,8 @@ class Orchestrator:
                 limits=limits,
             )
         except CommitRejected as error:
+            self._settle_intent(intent, "SETTLED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
             self._note(f"manager change rejected for {task_id}: {error}")
             self.commit.record_management_decided(
                 mission.id,
@@ -1575,6 +1620,8 @@ class Orchestrator:
             else:
                 await self._enforce_no_progress(mission, task)
             return
+        self._settle_intent(intent, "SETTLED")
+        self._settle_service_if_known(intent.subject_id, mission.id)
         self.commit.record_management_decided(
             mission.id,
             task_id=task_id,
