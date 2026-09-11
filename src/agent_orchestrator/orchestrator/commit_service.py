@@ -247,6 +247,42 @@ class CommitService:
                     )
             return state, transitions
 
+    # ------------------------------------------------------------ tool audit
+    def record_tool_rejected(
+        self,
+        mission_id: str,
+        *,
+        task_id: str | None,
+        attempt_id: str | None,
+        run_id: str,
+        sequence: int,
+        record: Mapping[str, Any],
+    ) -> Event:
+        """§21.1 last step / §21.3 "对可疑指令进行隔离和审计": a refused tool call is
+        a durable fact on the Mission's timeline (arguments reduced to their keys and
+        the path, never file contents)."""
+
+        arguments = dict(record.get("arguments") or {})
+        with self._store.transaction():
+            return self._emit(
+                "ToolCallRejected",
+                mission_id,
+                key=f"{run_id}:{sequence}",
+                task_id=task_id,
+                attempt_id=attempt_id,
+                payload={
+                    "tool": record.get("tool"),
+                    "reason": record.get("error_code"),
+                    "stage": record.get("stage"),
+                    "outcome": record.get("outcome"),
+                    "argument_keys": sorted(arguments),
+                    "path": arguments.get("path")
+                    if isinstance(arguments.get("path"), str)
+                    else None,
+                    "run_id": run_id,
+                },
+            )
+
     # --------------------------------------------------------- profile health
     PROFILE_HEALTH_KEY = "profile_health"
 
@@ -645,7 +681,7 @@ class CommitService:
         unsupported = set(proposal.verification_policy) - STEP2_IMPLEMENTED_LAYERS
         if unsupported:
             raise CommitRejected(
-                f"verification layers not deployed in this build: {sorted(unsupported)}"
+                f"verification_policy_undeployed: layers not deployed in this build {sorted(unsupported)}"
             )
 
     def commit_task_graph(
@@ -2808,7 +2844,12 @@ class CommitService:
                 key=f"{result_id}:{layer}",
                 task_id=stored.envelope.task_id,
                 attempt_id=stored.envelope.attempt_id,
-                payload={"layer": layer, "status": status, "summary": detail.get("summary")},
+                payload={
+                    "layer": layer,
+                    "status": status,
+                    "summary": detail.get("summary"),
+                    "verifier_version": detail.get("verifier_version"),
+                },
             )
 
     def accept_result(

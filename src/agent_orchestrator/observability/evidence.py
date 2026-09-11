@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +18,15 @@ from ..orchestrator.commit_service import CommitService
 from ..storage.store import Store
 from .graph_history import graph_history
 from .lineage import lineage
+from .metrics import metrics
+from .secrets import guard_text
+from .trace import trace
 
 
 def _dump(path: Path, value: Any) -> None:
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    guard_text(text, where=path.name)  # step 6 (S6-09): a file with a credential is never written
+    path.write_text(text, encoding="utf-8")
 
 
 def write_evidence(
@@ -35,12 +38,17 @@ def write_evidence(
     baseline: Mapping[str, Any],
     workspaces_root: Path,
     test_report: Mapping[str, Any],
+    echoes: Mapping[str, Sequence[str]] | None = None,
+    unpriced: bool = True,
 ) -> dict[str, Any]:
     directory.mkdir(parents=True, exist_ok=True)
     _dump(directory / "baseline.json", dict(baseline))
-    with (directory / "events.jsonl").open("w", encoding="utf-8") as stream:
-        for event in store.list_events(mission_id):
-            stream.write(json.dumps(event.to_json(), ensure_ascii=False, sort_keys=True) + "\n")
+    lines = "".join(
+        json.dumps(event.to_json(), ensure_ascii=False, sort_keys=True) + "\n"
+        for event in store.list_events(mission_id)
+    )
+    guard_text(lines, where="events.jsonl")
+    (directory / "events.jsonl").write_text(lines, encoding="utf-8")
     snapshot = store.snapshot(mission_id)
     _dump(directory / "final_state.json", snapshot)
     _dump(
@@ -73,8 +81,13 @@ def write_evidence(
     _dump(directory / "graph_history.json", graph_history(store, mission_id))  # step 5
     _dump(  # step 6 (D6-2'): the scheduler's durable signals — the transition log is the truth
         directory / "scheduler.json",
-        {"backpressure": store.get_scheduler_state("backpressure")},
+        {
+            "backpressure": store.get_scheduler_state("backpressure"),
+            "profile_health": store.get_scheduler_state("profile_health"),
+        },
     )
+    _dump(directory / "trace.json", trace(store, mission_id, echoes=echoes))  # step 6 (S6-09)
+    _dump(directory / "metrics.json", metrics(store, mission_id, unpriced=unpriced))
     artifacts_dir = directory / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for artifact in snapshot["artifacts"]:

@@ -76,6 +76,7 @@ from ..contracts import (
 from ..contracts.models import jsonable, sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetExhausted
+from ..governance.policies import effective_tools
 from ..graph.changes import ChangeLimits, TaskGraphChange
 from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
@@ -111,7 +112,7 @@ from ..scheduling.backpressure import BackpressureState, Observation
 from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy
 from ..verification.critics import CriticVerdict, parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
-from ..verification.verifier_router import VerifierRouter
+from ..verification.verifier_router import VERIFIER_VERSION, VerifierRouter
 from .commit_service import (
     CommitRejected,
     CommitService,
@@ -210,8 +211,65 @@ class Orchestrator:
         await self._assembled.__aenter__()
         self._bridge = self._assembled.pool(self._default_profile).bridge
         self._commit.tool_calls_for = self._executed_tool_calls  # D6-8
+        self._assembled.gateway.on_rejected = self._audit_tool_rejection  # D6-7
         self._pressure = self._commit.backpressure_state()
         return self
+
+    def _audit_tool_rejection(self, run_id: str, record: Mapping[str, Any]) -> None:
+        """Every gateway refusal becomes a ``ToolCallRejected`` event on its Mission."""
+
+        attempt_id = str(record.get("attempt_id") or "")
+        attempt = self.store.get_attempt(attempt_id)
+        if attempt is not None:
+            mission_id, task_id = attempt.mission_id, attempt.task_id
+        else:  # a Mission-level judgment view: "<mission>-judge-<owner>"
+            candidate = attempt_id.split(":", 1)[0].split("-judge-", 1)[0]
+            if self.store.get_mission(candidate) is None:
+                return
+            mission_id, task_id = candidate, None
+        self.commit.record_tool_rejected(
+            mission_id,
+            task_id=task_id,
+            attempt_id=None if attempt is None else attempt.id,
+            run_id=run_id,
+            sequence=len(self.assembled.gateway.calls),
+            record=record,
+        )
+
+    def _read_only_inputs(self, attempt_id: str) -> tuple[str, ...]:
+        """D6-6: the upstream inputs this Attempt may read but not rewrite (the Task did
+        not declare them as ``outputs``); seed files keep the step-2 tamper detection."""
+
+        attempt = self.store.get_attempt(attempt_id)
+        if attempt is None:
+            return ()
+        task = self.store.get_task(attempt.task_id)
+        mission = self.store.get_mission(attempt.mission_id)
+        if task is None or mission is None:
+            return ()
+        try:
+            protected = self._protected_files(mission, task, attempt)
+        except ArtifactConflict:
+            return ()
+        seed = self._protected_seed(mission, task)
+        return tuple(sorted(path for path in protected if path not in seed))
+
+    def echoed_models_for(self, mission_id: str) -> dict[str, list[str]]:
+        """attempt_id → the model names its provider echoed (read from the Attempt's own
+        pool library) — the physical-route evidence ``trace.json`` carries (S6-03/S6-09)."""
+
+        echoes: dict[str, list[str]] = {}
+        for task in self.store.list_tasks(mission_id):
+            for attempt in self.store.list_attempts(task.id):
+                intent = self.store.get_intent_for_subject(attempt.id)
+                if intent is None or intent.agent_id is None:
+                    continue
+                if self.profile_of(intent) not in self.assembled.pools:
+                    continue
+                models = self.bridge_for(intent).echoed_models(agent_id=intent.agent_id)
+                if models:
+                    echoes[attempt.id] = sorted(models)
+        return echoes
 
     def _executed_tool_calls(self, subject_id: str) -> int:
         """The gateway's executed-call count for an Attempt (0 for service intents or an
@@ -734,6 +792,8 @@ class Orchestrator:
                 tuple(config.get("allowed_tools", WORKER_TOOLS)),
                 tuple(str(p) for p in config.get("untrusted_sources", ())),
                 max_tool_calls=None if cap is None else int(cap),
+                protected=self._read_only_inputs(str(config["attempt_id"])),
+                denied_prefixes=self._config.deployment_policy.denied_path_prefixes,
             ),
         )
 
@@ -744,8 +804,9 @@ class Orchestrator:
                 str(config["attempt_id"]),
                 "verify",
                 False,
-                CRITIC_TOOLS,
+                tuple(t for t in CRITIC_TOOLS if t in self._config.deployment_policy.allowed_tools),
                 tuple(str(p) for p in config.get("untrusted_sources", ())),
+                denied_prefixes=self._config.deployment_policy.denied_path_prefixes,
             ),
         )
 
@@ -1373,7 +1434,14 @@ class Orchestrator:
                 result_id,
                 layer=layer.layer,
                 status=layer.status,
-                detail={"summary": layer.summary, **dict(layer.detail)},
+                detail={
+                    "summary": layer.summary,
+                    **dict(layer.detail),
+                    # S6-09: which verifier produced this layer (the Critic's is its template)
+                    "verifier_version": CRITIC.prompt_version
+                    if layer.layer == "critic_review"
+                    else VERIFIER_VERSION,
+                },
             )
             if layer.status == "PASS":
                 self._fault("after_layer_pass", "attempt")
@@ -1448,6 +1516,22 @@ class Orchestrator:
                 )
         else:
             self._note(f"result {result_id} FAIL at {verdict.short_circuited_at}")
+            undeployed = [
+                layer.layer
+                for layer in verdict.layers
+                if layer.status == "ERROR" and layer.detail.get("undeployed")
+            ]
+            if undeployed:
+                # D6-9': a required verifier that is not deployed blocks — no retry can make
+                # it appear, and a missing layer is never a PASS
+                self.commit.stop_task(
+                    task.id,
+                    stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
+                    detail={"layers": undeployed, "result_id": result_id},
+                )
+                await self._release_mission(mission.id)
+                self._note(f"task {task.id} stopped: verifier(s) {undeployed} not deployed")
+                return True
             failures = self.commit.no_progress_count(task.id)
             after = self.store.get_task(task.id)
             # a Task that can still retry and keeps failing is a stall (§19.2); one that
@@ -2314,7 +2398,13 @@ class Orchestrator:
             untrusted_sources=untrusted,
             role=role.name,
         )
-        allowed = tuple(name for name in role.tool_names if name in set(task.allowed_tools))
+        # D6-7: Mission ∩ Task ∩ Role ∩ Deployment, frozen into the intent below
+        allowed = effective_tools(
+            mission_tools=mission.allowed_tools,
+            task_tools=task.allowed_tools,
+            role_tools=role.tool_names,
+            deployment=self._config.deployment_policy,
+        )
         # D6-8: the Attempt's tool-call cap = the deployment's per-turn cap, narrowed by the
         # Task budget's own dimension; it is reserved up front and enforced at the gateway
         tool_cap = self._config.max_tool_calls_per_turn

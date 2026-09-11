@@ -441,8 +441,10 @@ def test_r1_runtime_artifact_conflict_stops_the_task_cleanly(tmp_path):
 
 
 def test_r1_protected_upstream_path_listed_as_artifact_is_rejected(tmp_path):
-    """P1-6: D rewrites A's contract (an undeclared upstream path) and lists it as its
-    artifact; the submission is rejected before any verification policy runs."""
+    """P1-6: D tries to rewrite A's contract (an undeclared upstream path) and lists it as
+    its artifact.  Since step 6 (D6-6) the rewrite is refused at the Tool Gateway itself
+    (an upstream input is read-only downstream); the contract A delivered stays intact
+    and is what the Mission is judged on."""
 
     from fixtures_provider import envelope_step
 
@@ -471,14 +473,25 @@ def test_r1_protected_upstream_path_listed_as_artifact_is_rejected(tmp_path):
             await orchestrator.run()
             store = orchestrator.store
             by_key = tasks_by_key(store, mission.id)
-            d_attempts = store.list_attempts(by_key["D"].id)
-            assert [a.status for a in d_attempts] == [
-                AttemptStatus.RETRY_WAIT,
-                AttemptStatus.COMPLETED,
+            d_attempts = {a.id for a in store.list_attempts(by_key["D"].id)}
+            refused = [
+                c
+                for c in orchestrator.assembled.gateway.calls
+                if c["tool"] == "workspace_write_file"
+                and c["arguments"]["path"] == "textkit/__init__.py"
+                and c["attempt_id"] in d_attempts  # A writing its own contract is legitimate
             ]
-            assert d_attempts[0].failure["reason"] == "protected_path_rewritten"
-            assert d_attempts[0].failure["paths"] == ["textkit/__init__.py"]
-            assert store.find_result_for_attempt(d_attempts[0].id) is None  # never registered
+            assert refused and all(c["outcome"] == "rejected:protected_input" for c in refused)
+            assert store.count_events(mission.id, "ToolCallRejected") == len(refused)
+            for attempt in store.list_attempts(
+                by_key["D"].id
+            ):  # D never produced another version of it
+                contract_versions = {
+                    a.content_hash
+                    for a in store.list_artifacts(attempt.id)
+                    if a.path == "textkit/__init__.py"
+                }
+                assert len(contract_versions) <= 1
             assert store.get_mission(mission.id).status is MissionStatus.COMPLETED, (
                 orchestrator.progress_log
             )

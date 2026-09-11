@@ -125,6 +125,7 @@ class Workspace:
                     size_bytes=path.stat().st_size,
                     produced_by=produced_by,
                     storage_uri=str(path),
+                    workspace=self.attempt_id,  # §20.2: one writable workspace per Attempt
                 )
             )
         return artifacts

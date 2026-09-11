@@ -38,6 +38,7 @@ from .deterministic_checks import (
 )
 
 CriticRunner = Callable[[str | None], Awaitable[CriticVerdict]]
+VERIFIER_VERSION = "verifier-v1"  # step 6 (S6-09): recorded on every layer result
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,8 +149,10 @@ class VerifierRouter:
                 test_output = "\n".join(
                     str(r.get("stdout", "")) for r in runs if isinstance(r, Mapping)
                 )
-            else:  # formal_check / human_review are not deployed in this build
-                result = LayerResult(layer, ERROR, "layer not deployed in this build", {})
+            else:  # formal_check / human_review are not deployed in this build (human_review: step 7)
+                result = LayerResult(
+                    layer, ERROR, "layer not deployed in this build", {"undeployed": True}
+                )
             await record(result)
             if result.status in {FAIL, ERROR}:
                 short_at = layer
@@ -161,4 +164,4 @@ class VerifierRouter:
         )
 
 
-__all__ = ("CriticRunner", "Verdict", "VerifierRouter")
+__all__ = ("VERIFIER_VERSION", "CriticRunner", "Verdict", "VerifierRouter")

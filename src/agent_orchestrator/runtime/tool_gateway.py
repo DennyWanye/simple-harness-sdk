@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import posixpath
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,6 +76,8 @@ class WorkspaceBinding:
     allowed_tools: tuple[str, ...]
     untrusted_sources: tuple[str, ...] = ()  # step 4 (D4-12): path prefixes marked as data
     max_tool_calls: int | None = None  # step 6 (D6-7 ⑤ / D6-8): the reserved tool-call cap
+    protected: tuple[str, ...] = ()  # step 6 (D6-6): read-only upstream inputs of this Attempt
+    denied_prefixes: tuple[str, ...] = ()  # step 6 (D6-7): the deployment's denied paths
 
 
 def is_untrusted(path: str, prefixes: tuple[str, ...]) -> bool:
@@ -140,6 +143,9 @@ class WorkspaceToolGateway:
         self._bindings: dict[str, WorkspaceBinding] = {}
         self._test_timeout = test_timeout
         self.calls: list[dict[str, Any]] = []
+        # step 6 (§21.1 last step): every refusal is reported to the orchestrator, which
+        # writes it to the Mission's timeline through the Commit Service
+        self.on_rejected: Callable[[str, Mapping[str, Any]], None] | None = None
 
     def bind(self, run_id: str, binding: WorkspaceBinding) -> None:
         self._bindings[run_id] = binding
@@ -166,39 +172,116 @@ class WorkspaceToolGateway:
             return self._workspaces.verification_view(binding.attempt_id)
         return self._workspaces.get(binding.attempt_id, writable=binding.writable)
 
+    def _reject(
+        self, call, record: dict[str, Any], *, code: str, outcome: str, stage: str, message: str
+    ) -> ToolResult:  # type: ignore[no-untyped-def]
+        record["outcome"] = f"rejected:{outcome}"
+        record["stage"] = stage
+        record["error_code"] = code
+        if self.on_rejected is not None and record.get("attempt_id"):
+            try:
+                self.on_rejected(str(record["run_id"]), dict(record))
+            except Exception as error:  # noqa: BLE001 - auditing must never break the call path
+                record["audit_error"] = str(error)[:200]
+        return ToolResult.rejected(call.call_id, code, message[:500])
+
     async def execute(self, call, context: Mapping[str, Any]) -> ToolResult:  # type: ignore[no-untyped-def]
+        """§21.1 in order: identity and permission → argument schema → risk and policy →
+        rate and budget → execute → record (the audit record is ``self.calls`` plus the
+        ``on_rejected`` report for every refusal)."""
+
         run_id = str(context.get("run_id", ""))
         binding = self._bindings.get(run_id)
         record: dict[str, Any] = {
             "run_id": run_id,
             "tool": call.name,
             "arguments": dict(call.arguments),
+            "attempt_id": None if binding is None else binding.attempt_id,
         }
         self.calls.append(record)
+        # 1. identity
         if binding is None:
-            record["outcome"] = "rejected:unbound_run"
-            return ToolResult.rejected(
-                call.call_id, "tool_not_bound", "this run has no workspace binding"
+            return self._reject(
+                call,
+                record,
+                code="tool_not_bound",
+                outcome="unbound_run",
+                stage="identity",
+                message="this run has no workspace binding",
             )
+        # 1b. permission (the frozen Mission ∩ Task ∩ Role ∩ Deployment intersection)
         if call.name not in binding.allowed_tools:
-            record["outcome"] = "rejected:not_allowed"
-            return ToolResult.rejected(
-                call.call_id, "tool_not_allowed", f"{call.name} is not allowed for this Attempt"
+            return self._reject(
+                call,
+                record,
+                code="tool_not_allowed",
+                outcome="not_allowed",
+                stage="permission",
+                message=f"{call.name} is not allowed for this Attempt",
             )
+        arguments = dict(call.arguments)
+        # 2. argument schema
+        problem = _schema_problem(call.name, arguments)
+        if problem is not None:
+            return self._reject(
+                call,
+                record,
+                code="invalid_arguments",
+                outcome="invalid_arguments",
+                stage="schema",
+                message=problem,
+            )
+        # 3. risk and policy: containment, denied prefixes, read-only upstream inputs
+        try:
+            workspace = self._workspace(binding)
+            path = arguments.get("path")
+            if isinstance(path, str):
+                workspace.resolve(path)  # escapes raise WorkspaceError here, before any effect
+                canonical = _canonical(path)
+                if _under(canonical, binding.denied_prefixes):
+                    return self._reject(
+                        call,
+                        record,
+                        code="policy_denied",
+                        outcome="policy_denied",
+                        stage="policy",
+                        message=f"{path} is denied by the deployment policy",
+                    )
+                if call.name == "workspace_write_file" and canonical in {
+                    _canonical(p) for p in binding.protected
+                }:
+                    return self._reject(
+                        call,
+                        record,
+                        code="protected_input",
+                        outcome="protected_input",
+                        stage="policy",
+                        message=f"{path} is a read-only input from an upstream Task",
+                    )
+        except WorkspaceError as error:
+            return self._reject(
+                call,
+                record,
+                code="workspace_error",
+                outcome=type(error).__name__,
+                stage="policy",
+                message=str(error),
+            )
+        # 4. rate and budget: the Attempt's reserved tool-call cap
         if (
             binding.max_tool_calls is not None
             and self.executed_calls(run_id) >= binding.max_tool_calls
         ):
-            # §21.1 step 4 (rate and budget): the Attempt's reserved tool-call cap is spent
-            record["outcome"] = "rejected:rate_limited"
-            return ToolResult.rejected(
-                call.call_id,
-                "tool_rate_limited",
-                f"this Attempt may execute at most {binding.max_tool_calls} tool calls",
+            return self._reject(
+                call,
+                record,
+                code="tool_rate_limited",
+                outcome="rate_limited",
+                stage="rate",
+                message=f"this Attempt may execute at most {binding.max_tool_calls} tool calls",
             )
+        # 5. execute
         try:
-            workspace = self._workspace(binding)
-            arguments = dict(call.arguments)
             if call.name == "workspace_read_file":
                 value: Any = {
                     "path": arguments["path"],
@@ -217,7 +300,10 @@ class WorkspaceToolGateway:
                     "bytes": len(arguments["content"].encode("utf-8")),
                 }
             elif call.name == "workspace_list":
-                value = {"files": workspace.list_files()}
+                files = workspace.list_files()
+                if binding.denied_prefixes:
+                    files = [f for f in files if not _under(_canonical(f), binding.denied_prefixes)]
+                value = {"files": files}
             elif call.name == "run_tests":
                 path = arguments.get("path")
                 if path is not None:
@@ -228,13 +314,59 @@ class WorkspaceToolGateway:
                 run = await run_pytest(str(workspace.root), path=path, timeout=self._test_timeout)
                 value = {"passed": run.passed, **run.to_json()}
             else:  # pragma: no cover - registry never dispatches unknown names here
-                record["outcome"] = "rejected:unknown"
-                return ToolResult.rejected(call.call_id, "unknown_tool", call.name)
+                return self._reject(
+                    call,
+                    record,
+                    code="unknown_tool",
+                    outcome="unknown",
+                    stage="permission",
+                    message=call.name,
+                )
         except (WorkspaceError, KeyError, TypeError) as error:
-            record["outcome"] = f"rejected:{type(error).__name__}"
-            return ToolResult.rejected(call.call_id, "workspace_error", str(error)[:500])
+            return self._reject(
+                call,
+                record,
+                code="workspace_error",
+                outcome=type(error).__name__,
+                stage="execute",
+                message=str(error),
+            )
+        # 6. record
         record["outcome"] = "succeeded"
         return ToolResult.succeeded(call.call_id, value)
+
+
+def _canonical(path: str) -> str:
+    normal = posixpath.normpath(path.replace("\\", "/"))
+    return normal[2:] if normal.startswith("./") else normal
+
+
+def _under(path: str, prefixes: tuple[str, ...]) -> bool:
+    for prefix in prefixes:
+        base = _canonical(prefix).rstrip("/")
+        if path == base or path.startswith(base + "/"):
+            return True
+    return False
+
+
+def _schema_problem(name: str, arguments: Mapping[str, Any]) -> str | None:
+    """§21.1 step 2 against ``TOOL_SCHEMAS``: required keys, string types, no extras."""
+
+    schema = TOOL_SCHEMAS.get(name)
+    if schema is None:
+        return f"no schema for {name}"
+    properties = dict(schema.get("properties", {}))
+    missing = [key for key in schema.get("required", ()) if key not in arguments]
+    if missing:
+        return f"{name}: missing required argument(s) {missing}"
+    extra = sorted(set(arguments) - set(properties))
+    if extra and schema.get("additionalProperties") is False:
+        return f"{name}: unexpected argument(s) {extra}"
+    for key, value in arguments.items():
+        expected = properties.get(key, {}).get("type")
+        if expected == "string" and not isinstance(value, str):
+            return f"{name}: argument {key!r} must be a string"
+    return None
 
 
 __all__ = (

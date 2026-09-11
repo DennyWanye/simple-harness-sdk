@@ -940,6 +940,7 @@ class Artifact:
     verification_status: str = "UNVERIFIED"
     storage_uri: str = ""
     created_at: float = 0.0
+    workspace: str = ""  # step 6 (§20.2 / D6-6): the Attempt workspace that produced it
 
     def __post_init__(self) -> None:
         for name in ("id", "mission_id", "task_id", "attempt_id", "type", "path", "produced_by"):

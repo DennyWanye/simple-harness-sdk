@@ -39,6 +39,7 @@ from simple_harness.contracts import canonical_json
 from .. import __version__ as PACKAGE_VERSION
 from ..contracts import Attempt, Mission, Task
 from ..contracts.models import sha256_hex
+from ..observability.secrets import environment_secrets, find_secrets
 from ..planning.manager import system_reserve_tokens
 from .retrieval import KnowledgeContext
 
@@ -370,6 +371,12 @@ def assert_no_secrets(package: Mapping[str, Any]) -> None:
         elif isinstance(value, (list, tuple)):
             for index, item in enumerate(value):
                 walk(item, f"{path}[{index}]")
+        elif isinstance(value, str):  # step 6 (L4-3 / S6-09): values, not only field names
+            found = find_secrets(value, extra=environment_secrets())
+            if found:
+                raise ValueError(
+                    f"context package carries a credential-like value at {path} ({', '.join(found)})"
+                )
 
     walk(package, "package")
 

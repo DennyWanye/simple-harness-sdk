@@ -26,6 +26,7 @@ from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 
 from ..artifacts.workspace import WorkspaceManager
 from ..contracts import Budget
+from ..governance.policies import DeploymentPolicy
 from ..scheduling.backpressure import BackpressureLimits
 from .agent_worker import AgentBridge
 from .model_router import DEFAULT_PROFILE, RuntimeProfile
@@ -105,6 +106,7 @@ class OrchestratorConfig:
     reduced_reserve_ratio: float = 0.5
     exploration_slots: int = 1
     verifier_workers: int = 2  # §29.1 "2 个 Verifier Worker" as the verification concurrency
+    deployment_policy: DeploymentPolicy = field(default_factory=DeploymentPolicy)  # D6-7
     # step 6 (D6-5'): runtime profile health — unavailability cooldown and the bounded wait
     profile_failure_threshold: int = 2
     profile_cooldown_seconds: float = 60.0
@@ -219,6 +221,7 @@ class OrchestratorConfig:
                 "aging_window_seconds": self.aging_window_seconds,
             },
             "global_budget": None if self.global_budget is None else self.global_budget.to_json(),
+            "deployment_policy": self.deployment_policy.to_json(),
             "backpressure": {
                 **self.backpressure_limits().to_json(),
                 "reduced_concurrency_ratio": self.reduced_concurrency_ratio,

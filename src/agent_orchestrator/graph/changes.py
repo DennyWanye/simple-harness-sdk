@@ -514,7 +514,8 @@ def validate_change(
         undeployed = set(node.verification_policy) - STEP2_IMPLEMENTED_LAYERS
         if undeployed:
             raise GraphChangeRejected(
-                "contract", f"{node.key}: layers not deployed {sorted(undeployed)}"
+                "verification_policy_undeployed",
+                f"{node.key}: layers not deployed {sorted(undeployed)}",
             )
         extra_tools = set(node.allowed_tools) - set(mission.allowed_tools)
         if extra_tools:
