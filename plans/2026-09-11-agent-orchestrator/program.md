@@ -52,3 +52,5 @@
 6. 回归口径：`.venv/bin/python -m pytest -q -p no:cacheprovider tests/orchestrator`（累计）+ 原有 SDK 回归（`plans/2026-09-10-base-agent-phase1/baseline-known-failures.txt` 基线不变）。
 7. 真实模型测试复用 `--run-real-provider` 与 `tests/agents/real_provider_config.py`（SH_BASEURL/SH_APIKEY/SH_MODEL 或 Host `.env`），报告与 fixture 测试分开；凭证不进证据目录。
 8. 术语纪律（§0）；术语用错视为缺陷。
+
+交接说明：`HANDOFF.md`（当前状态、第 7 步起步方式、不变量、陷阱、真实模型与 wheel 重建方法、遗留）。
