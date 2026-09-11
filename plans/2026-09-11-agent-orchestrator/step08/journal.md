@@ -80,6 +80,7 @@
 | D | `408fb38` | Evaluation `observability/evaluation.py`：`EvaluationCase`（每次试验新 provider、可带隐藏 oracle 与测试连接器）、`Strategy`（覆盖只许白名单）、`EvaluationPlan`（计划级配置白名单、Critic 消融 × 自由文本准则拒绝、带动作的 case 只许测试服务）；每次运行幂等键 `eval:<plan>:<strategy>:<case>:<trial>`、独立新目录与库（目录非空拒绝）、墙钟超时与异常 → `harness_error`（不计入分母）、等待人工单列；逐次记录（耗时、tokens / 金额或未定价、验证通过率、知识复用、重复率、剪枝率、污染率、恢复、失败原因与失败层、消融政策下的 PASS、oracle）；按策略汇总（Wilson 区间）与比较（Fisher 精确检验、区间不重叠、fixture 写"不适用"）及快照差异；`evaluation.json` + 中文 `evaluation.md`；`case_from_evidence`（spec 哈希须与旧库 `MissionCreated.spec_hash` 一致，改写幂等键，记录 derived_from 与旧库摘要） | `test_evaluation.py` 11（S8-03 双策略 × 2 次、oracle 误判、failure 与 harness_error 分开、策略覆盖拒绝 ×5、自由文本 / 真实连接器 / 计划配置拒绝、统计口径、S8-06 派生重跑与篡改拒绝） |
 | E | `49106bf` | CLI `replay --evidence-dir DIR MISSION_ID [--events] [--failures] [--attribution] [--out]`（只读，与库不一致退出 1）、`evaluate --plan plan.json --evidence-dir NEW_DIR [--provider fixtures|env]`（内置 case 目录：parse-kv（带 oracle）、parse-kv-strict（严格 oracle）、parse-kv-bad、textkit；env 只有 parse-kv，统一注入 flash 模型名与真实运行参数）；`demo --scenario evaluate-policies`（完整政策 vs 去掉 Critic × 2 次试验，另写 `samples.json`：一次成功运行的归因、一次失败运行的回放）；计划级配置允许 `model`；step02 未实现检查改用 `policy-promotion`；真实 flash 评测 opt-in | `test_evaluate_policies_closure.py` 2（演示 16 次运行、oracle 误判 2/4、失败原因、归因与回放样例；CLI evaluate / replay / 拒绝坏计划）、`test_real_provider_evaluation.py`（opt-in） |
 | F | `23fcde5` | 代码评审第 1 轮修复（处置表见 §1）：评测每个 case、每次运行都只许测试服务（`EvaluationRefused`）；消融使有效政策为空 → ERROR；回放结构性不变量补齐、违反即字段未决定；归因 `claim_refuted` / `refuted_on_path`（plan D8-4''）与预算账本对账；逐 case 成对比较与脚手架错误不对称降级；计划预构造配置；演示开始快照在运行前；CLI 错误退出码；harness_error 带 Mission id；消融连带影响写进报告；派生 case 校验证据版本；版本号 0.9.6 / 0.8.0 | step08 共 68 passed / 1 skipped（新增 `test_review_*` 11 条与 `test_replay_evaluate_cli_errors.py`） |
+| G | `a094f46` | 代码复核第 2 轮修复（处置表见 §1 第 2 轮）：`ResultRejected` 投影、`AttemptCreated` 使 READY 的 Task ACTIVE、测试服务必须是本类且状态文件在本次运行目录下、被仲裁取代知识的来源 Attempt 计入被驳倒、终态 Mission 有未结算用量不算对账、消融连带影响补"自由文本准则无人判定"、`evaluate` 退出码写明；真实评测运行 2 记录 | step08 共 73 passed / 1 skipped（新增 `test_re_review_*` 5 条） |
 
 ## 3. 真实模型
 
@@ -91,6 +92,8 @@
 
 - SDK 全量回归（`49106bf`，`regress-s8/run.sh`）：58 failed / 2343 passed / 12 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
 - SDK 全量回归（修复切片 F `23fcde5`）：58 failed / 2356 passed / 12 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
+- SDK 全量回归（复核修复切片 G `a094f46`，wheel 源）：58 failed / 2361 passed / 12 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
+- wheel：自 `a094f46`（`SOURCE_DATE_EPOCH=1789126927`）可复现构建 `simple_harness_sdk-0.9.6-py3-none-any.whl`，sha256 `a1bc14331fed3bbbdf2201f2a31b1a3ab547c3d55725e3a81596c0feef2e2e6f`；干净 venv（Python 3.12）安装后在解出的源码树跑 `tests/orchestrator tests/agents tests/unit/contracts` 与迁移测试：584 passed / 1 failed / 10 skipped，唯一失败是基线已知的 `test_execution_v3_to_v4_migration::test_completed_null_continuation_resolves_unique_pair_and_preserves_facts`；`demo --scenario multi-mission` / `approval-action` / `evaluate-policies`（fixtures）与一次 `replay --attribution` 退出码都是 0；版本 0.9.6 / 0.8.0（脚本 scratchpad `wheel-0.9.6/build-and-verify.sh`）。
 - 版本：simple_harness 0.9.6 / agent_orchestrator 0.8.0（`tests/unit/contracts/public-api.json` 同步）。
 
 ## 5. 遗留
@@ -98,3 +101,19 @@
 - 第 6 步移交：DeepSeek 价目注入（L2-6、L6-2）；合并重复候选、角色配比调度、多样性配额（L6-3）；新思路数、剪枝率、重复率、误报率、污染率等指标（L6-8）——本步在评测指标里实现可由记录导出的部分，其余给 null 与原因。
 - 运行时切换 Prompt / Allocator / Retrieval 版本（P1-9）、Allocator 消融（P1-11）、新 Verifier 重判旧产物（P2-1）：第 9 步。
 - 代码评审登记：provider 身份补 `OpenAICompatibleProvider` 的端点主机与目标模型、fixtures 脚本摘要（CR P2-3）；`snapshot_diff` 对 profiles / routing / connectors / provider 给到字段级来源（CR P2-4）；回放覆盖场景扩到候选被取代、`KnowledgeSuperseded`、冲突 DEFERRED / UNRESOLVED、仲裁 / 接管、审批撤销 / 过期、动作 FAILED / UNKNOWN / Reconciled（CR P2-7）；派生 case 按场景名指定 provider 工厂（CR P2-10）。第 9 步"候选版本注册"时一并处理。
+
+## 6. 结论
+
+**SHIPPED**：simple_harness 0.9.6 / agent_orchestrator 0.8.0，wheel 源提交 `a094f46`（sha256 `a1bc14331fed3bbbdf2201f2a31b1a3ab547c3d55725e3a81596c0feef2e2e6f`）。
+
+| 验收 | 结果 | 证据 |
+|---|---|---|
+| S8-01 最终产物依赖链与费用归属 | PASS | `test_attribution.py`（静态 DAG、知识与冲突、改图探索、动作与人、失败 Mission；`claim_refuted`、账本对账、未结算用量） |
+| S8-02 回放得到相同正式状态 | PASS | `test_replay.py`（四个演示 + 失败 + 审批被拒 + 取消开放动作 + 人工审核两个时刻 + 被拒后重试，覆盖率 100%、0 不一致；重复投递；崩溃前缀；只读、不写、不导入 runtime） |
+| S8-03 两策略同 case 同预算比较，诚实统计 | PASS | `test_evaluation.py`、`test_evaluate_policies_closure.py`；真实 flash 运行 1、2（小样本写"证据不足"） |
+| S8-04 消融 Critic / Blackboard，安全边界不可关 | PASS | `test_ablation.py`（含零层验证判 ERROR）、`test_evaluation.py`（策略越权与非测试服务被拒） |
+| S8-05 Trace 不完整：覆盖率 < 100%、缺口逐项列出、不回填 | PASS | `test_replay.py::test_s8_05_*`、`test_review_p1_2_*`；`test_attribution.py::test_s8_05_*` |
+| S8-06 新模型重跑旧任务是新 Evaluation，旧库不变 | PASS | `test_evaluation.py::test_s8_06_*`（含篡改 charter 与旧版本证据被拒） |
+| S8-07 版本差异与配置来源 | PASS | `test_policy_snapshot.py` |
+
+门：step08 73 passed / 1 skipped；SDK 全量回归红集 73 = 基线、0 新红（`a094f46`）；wheel 干净 venv 584 passed / 1 failed（基线已知）/ 10 skipped，三个演示与 `replay --attribution` 退出码 0；代码评审两轮全部处置（§1）；真实 deepseek-flash 评测两次（§3）。

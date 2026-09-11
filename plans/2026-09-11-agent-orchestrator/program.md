@@ -37,7 +37,7 @@
 | 5 | 二 | 根据 Worker 返回动态修改 Task DAG | **SHIPPED**（`step05/`，SDK 0.9.3 / agent_orchestrator 0.5.0，wheel 自 `399d0e7`；真实 deepseek-flash 运行 3 改图 v1→v2 后完成） |
 | 6 | 三 | 多 Mission、多模型、背压、隔离 | **SHIPPED**（`step06/`，SDK 0.9.4 / agent_orchestrator 0.6.0，wheel 自 `a2ce656`；真实 deepseek-flash 两执行池运行 1、2 都完成） |
 | 7 | 三 | Human-in-the-loop 与受控真实操作 | **SHIPPED**（`step07/`，SDK 0.9.5 / agent_orchestrator 0.7.0，wheel 自 `418a6d7`；真实 deepseek-flash 运行 1、2 都完成：候选 → L2 审批 → 交接一次 → 回执核对） |
-| 8 | 四 | 归因、Replay、策略对照评测 | 待做 |
+| 8 | 四 | 归因、Replay、策略对照评测 | **SHIPPED**（`step08/`，SDK 0.9.6 / agent_orchestrator 0.8.0，wheel 自 `a094f46`；代码评审两轮全部处置；真实 deepseek-flash 评测运行 1、2 都完成，小样本比较如实写"证据不足"） |
 | 9 | 四 | 从历史学习并受控晋级 | 待做 |
 
 进入下一步的门槛：本步验收场景全部 PASS + 累计回归 + 安装 wheel 后验证 + 真实模型演示记录 + 独立 review 处置。
@@ -53,4 +53,4 @@
 7. 真实模型测试复用 `--run-real-provider` 与 `tests/agents/real_provider_config.py`（SH_BASEURL/SH_APIKEY/SH_MODEL 或 Host `.env`），报告与 fixture 测试分开；凭证不进证据目录。
 8. 术语纪律（§0）；术语用错视为缺陷。
 
-交接说明：`HANDOFF.md`（当前状态、第 7 步起步方式、不变量、陷阱、真实模型与 wheel 重建方法、遗留）。
+交接说明：`HANDOFF.md`（当前状态、第 9 步起步方式、不变量、陷阱、真实模型与 wheel 重建方法、遗留）。
