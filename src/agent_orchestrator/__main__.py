@@ -12,6 +12,14 @@ Subcommands (step 2):
     artifact show --evidence-dir DIR ARTIFACT_ID
     demo --scenario single-task|static-dag|knowledge-sharing|dynamic-dag|multi-mission|approval-action --provider fixtures|env --evidence-dir DIR
     approval list|approve|reject|revoke|comment|review|arbitrate|takeover|resolve --evidence-dir DIR --as PRINCIPAL ...
+    replay --evidence-dir DIR MISSION_ID [--events FILE] [--failures] [--attribution] [--out FILE]
+    evaluate --plan plan.json --evidence-dir NEW_DIR [--provider fixtures|env]
+    demo --scenario evaluate-policies --provider fixtures|env --evidence-dir NEW_DIR
+
+``replay`` (step 8) rebuilds a Mission's formal state from its events on a read-only copy
+of the library and compares it with the library; it never executes or writes.
+``evaluate`` runs a plan — named cases × strategies × trials — every run a new Mission in
+its own new directory, and writes ``evaluation.json`` / ``evaluation.md``.
 
 ``approval`` (step 7) acts as the caller named by ``--as`` — in this local build a
 self-declared identity; a real deployment binds it to its authentication.  ``demo
@@ -223,13 +231,15 @@ def cmd_demo(args: argparse.Namespace) -> int:
     if step is None:
         _print({"error": f"unknown scenario {args.scenario}"})
         return EXIT_USAGE
-    if step not in {2, 3, 4, 5, 6, 7}:
+    if step not in {2, 3, 4, 5, 6, 7, 8}:
         _print({"scenario": args.scenario, "status": "not_implemented", "step": step})
         return EXIT_NOT_IMPLEMENTED
     if step == 6:
         return _demo_multi_mission(args)
     if step == 7:
         return _demo_approval_action(args)
+    if step == 8:
+        return _demo_evaluate_policies(args)
     from .observability.evidence import write_evidence
     from .testing.fixtures import (
         COMPARE_SEED,
@@ -795,6 +805,255 @@ def _demo_approval_action(args: argparse.Namespace) -> int:
     return asyncio.run(run())
 
 
+ORACLE_PAIRS = (
+    "from parse_kv import parse_kv\n\n\ndef test_pairs():\n"
+    "    assert parse_kv('x=1;y=2') == {'x': '1', 'y': '2'}\n"
+)
+ORACLE_SPACES = (
+    "from parse_kv import parse_kv\n\n\ndef test_spaces():\n"
+    "    assert parse_kv(' a = 1 ') == {'a': '1'}\n"
+)
+
+
+def _evaluation_cases(args: argparse.Namespace, names: list[str]) -> tuple[Any, ...]:
+    """The named cases an evaluation plan may use (fixtures, or the real provider for
+    ``parse-kv``); every trial gets a fresh provider (plan D8-6')."""
+
+    from .observability.evaluation import EvaluationCase, Oracle
+    from .testing.fixtures import (
+        DEMO_BAD,
+        DEMO_DAG_SPEC,
+        DEMO_GOOD,
+        DEMO_PROPOSAL,
+        DEMO_SEED,
+        TEXTKIT_SEED,
+        RoleScriptedProvider,
+        critic_step,
+        demo_static_dag_provider,
+        demo_worker_script,
+        proposal_step,
+    )
+
+    real = args.provider == "env"
+    tools = ("workspace_read_file", "workspace_write_file", "workspace_list", "run_tests")
+
+    def parse_kv(tenant: str, key: str) -> MissionSpec:
+        return MissionSpec(
+            goal="在隔离工作区实现字符串解析函数 parse_kv(text) -> dict（按 ; 分隔、= 分键值），并通过 tests/test_parse_kv.py；tests/ 下文件不可修改。",
+            success_criteria=("pytest:tests/test_parse_kv.py",),
+            tenant_id=tenant,
+            idempotency_key=key,
+            allowed_tools=tools,
+            budget=Budget(max_tokens=600_000 if real else 200_000, max_attempts=4),
+            workspace_seed=DEMO_SEED,
+        )
+
+    def textkit(tenant: str, key: str) -> MissionSpec:
+        return MissionSpec(
+            goal=str(DEMO_DAG_SPEC["goal"]),
+            success_criteria=tuple(str(c) for c in DEMO_DAG_SPEC["success_criteria"]),
+            tenant_id=tenant,
+            idempotency_key=key,
+            allowed_tools=tuple(str(t) for t in DEMO_DAG_SPEC["allowed_tools"]),
+            budget=Budget(max_tokens=400_000, max_attempts=12),
+            workspace_seed=TEXTKIT_SEED,
+        )
+
+    def scripted(code: str, attempts: int = 1) -> Any:
+        def make() -> RoleScriptedProvider:
+            return RoleScriptedProvider(
+                {
+                    "planner": [proposal_step(DEMO_PROPOSAL)],
+                    "worker": demo_worker_script(code) * attempts,
+                    "critic": [critic_step(verdict="PASS", criteria_met=True)] * attempts,
+                }
+            )
+
+        return make
+
+    def env() -> Any:
+        return _provider(args, scenario="evaluate-policies")[0]
+
+    pairs = Oracle({"hidden/test_oracle.py": ORACLE_PAIRS}, "hidden/test_oracle.py")
+    spaces = Oracle({"hidden/test_oracle.py": ORACLE_SPACES}, "hidden/test_oracle.py")
+    catalog = {
+        "parse-kv": EvaluationCase(
+            "parse-kv",
+            parse_kv,
+            env if real else scripted(DEMO_GOOD),
+            kind="env" if real else "fixtures",
+            oracle=pairs,
+        ),
+    }
+    if not real:
+        catalog.update(
+            {
+                "parse-kv-strict": EvaluationCase(
+                    "parse-kv-strict", parse_kv, scripted(DEMO_GOOD), oracle=spaces
+                ),
+                "parse-kv-bad": EvaluationCase(
+                    "parse-kv-bad", parse_kv, scripted(DEMO_BAD, attempts=2)
+                ),
+                "textkit": EvaluationCase("textkit", textkit, demo_static_dag_provider),
+            }
+        )
+    unknown = [n for n in names if n not in catalog]
+    if unknown:
+        raise SystemExit(
+            f"unknown evaluation cases for --provider {args.provider}: {unknown}; known: {sorted(catalog)}"
+        )
+    return tuple(catalog[n] for n in names)
+
+
+def _evaluation_config(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
+    if args.provider != "env":
+        return {"test_timeout_seconds": getattr(args, "test_timeout", 120.0), **config}
+    _provider_object, model, price, _kind = _provider(args, scenario="evaluate-policies")
+    knobs = {k: v for k, v in REAL_KNOBS.items()}
+    return {
+        **knobs,
+        "model": model,
+        "price_table": price,
+        "test_timeout_seconds": getattr(args, "test_timeout", 120.0),
+        **config,
+    }
+
+
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    """``evaluate --plan plan.json`` (plan D8-9'): cases × strategies × trials, every run a
+    new Mission in its own directory; the report lands in ``--evidence-dir``."""
+
+    from .observability.evaluation import EvaluationPlan, Strategy, run_plan
+
+    data = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+    try:
+        plan = EvaluationPlan(
+            name=str(data["name"]),
+            cases=_evaluation_cases(args, [str(n) for n in data["cases"]]),
+            strategies=tuple(
+                Strategy(str(s["name"]), dict(s.get("overrides", {}))) for s in data["strategies"]
+            ),
+            trials=int(data.get("trials", 1)),
+            config=_evaluation_config(args, dict(data.get("config", {}))),
+            timeout_seconds=float(data.get("timeout_seconds", 300.0)),
+            min_samples=int(data.get("min_samples", 3)),
+        )
+        report = run_plan(plan, Path(args.evidence_dir).resolve())
+    except (KeyError, ValueError) as error:
+        _print({"error": str(error)})
+        return EXIT_USAGE
+    _print(
+        {"plan": report["plan"], "summary": report["summary"], "comparisons": report["comparisons"]}
+    )
+    return EXIT_OK
+
+
+def _demo_evaluate_policies(args: argparse.Namespace) -> int:
+    """Step 8 (ORCH §10): the same cases under two strategies (the full policy and one
+    without the Critic), two independent trials each, every run a new Mission; plus the
+    attribution of one completed run and the replay of one failed run."""
+
+    import tempfile
+
+    from .observability.evaluation import EvaluationPlan, Strategy, run_plan
+    from .observability.replay import library_copy, replay_mission
+    from .observability.secrets import redact_text
+    from .observability.traces import attribution
+
+    real = args.provider == "env"
+    names = ["parse-kv"] if real else ["parse-kv", "parse-kv-strict", "parse-kv-bad", "textkit"]
+    plan = EvaluationPlan(
+        name="evaluate-policies",
+        cases=_evaluation_cases(args, names),
+        strategies=(Strategy("full-policy"), Strategy("no-critic", {"ablations": ("critic",)})),
+        trials=2,
+        config=_evaluation_config(args, {}),
+        timeout_seconds=1800.0 if real else 300.0,
+    )
+    root = Path(args.evidence_dir).resolve()
+    try:
+        report = run_plan(plan, root)
+    except ValueError as error:
+        _print({"error": str(error)})
+        return EXIT_USAGE
+    samples: dict[str, Any] = {"attribution": None, "replay": None}
+    success = next((r for r in report["runs"] if r["category"] == "success"), None)
+    failure = next((r for r in report["runs"] if r["category"] == "failure"), None)
+    if success is not None:
+        with tempfile.TemporaryDirectory() as scratch:
+            store = Store.open_readonly(
+                library_copy(Path(success["run_dir"]) / "orchestrator.db", Path(scratch))
+            )
+            try:
+                samples["attribution"] = {
+                    "run": success["run_dir"],
+                    **attribution(store, success["mission_id"]),
+                }
+            finally:
+                store.close()
+    if failure is not None:
+        samples["replay"] = {
+            "run": failure["run_dir"],
+            **replay_mission(
+                mission_id=failure["mission_id"],
+                library=Path(failure["run_dir"]) / "orchestrator.db",
+                failures=True,
+            ),
+        }
+    text, _found = redact_text(
+        json.dumps(samples, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n"
+    )
+    (root / "samples.json").write_text(text, encoding="utf-8")
+    _print(
+        {
+            "scenario": "evaluate-policies",
+            "note": report["note"],
+            "runs": len(report["runs"]),
+            "summary": {
+                k: {f: v[f] for f in ("samples", "successes", "success_rate", "harness_errors")}
+                for k, v in report["summary"].items()
+            },
+            "comparisons": [c["verdict"] for c in report["comparisons"]],
+            "files": ["evaluation.json", "evaluation.md", "samples.json"],
+        }
+    )
+    errors = sum(v["harness_errors"] for v in report["summary"].values())
+    return EXIT_OK if errors == 0 else EXIT_FAILED
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """``replay`` (plan D8-9'): read-only; a mismatch with the library exits 1."""
+
+    import tempfile
+
+    from .observability.replay import library_copy, replay_mission
+    from .observability.secrets import redact_text
+    from .observability.traces import attribution
+
+    library = Path(args.evidence_dir).resolve() / "orchestrator.db"
+    report = replay_mission(
+        mission_id=args.mission_id,
+        library=library if library.is_file() else None,
+        events_file=Path(args.events).resolve() if args.events else None,
+        failures=args.failures,
+    )
+    if args.attribution and library.is_file():
+        with tempfile.TemporaryDirectory() as scratch:
+            store = Store.open_readonly(library_copy(library, Path(scratch)))
+            try:
+                report["attribution"] = attribution(store, args.mission_id)
+            finally:
+                store.close()
+    text, _found = redact_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n"
+    )
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+    sys.stdout.write(text)
+    comparison = report.get("comparison") or {}
+    return EXIT_OK if comparison.get("consistent", True) else EXIT_FAILED
+
+
 def cmd_approval(args: argparse.Namespace) -> int:
     """``approval ...`` (plan D7-10'): the caller named by ``--as`` decides; the local
     build takes that name as given — a real deployment binds it to authentication."""
@@ -961,6 +1220,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--basis", required=True)
     p.add_argument("--evidence", required=True, help="a JSON object with what the person saw")
 
+    replay = sub.add_parser("replay")  # step 8
+    common(replay, provider=False)
+    replay.add_argument("mission_id")
+    replay.add_argument(
+        "--events", default=None, help="replay an events.jsonl instead of the library's events"
+    )
+    replay.add_argument("--failures", action="store_true", help="add the timeline of what failed")
+    replay.add_argument(
+        "--attribution", action="store_true", help="add the contribution attribution"
+    )
+    replay.add_argument("--out", default=None, help="also write the report to this file")
+    evaluate = sub.add_parser("evaluate")  # step 8
+    common(evaluate, provider=True)
+    evaluate.add_argument(
+        "--plan", required=True, help="JSON: name, cases, strategies, trials, config"
+    )
+
     demo = sub.add_parser("demo")
     common(demo, provider=True)
     demo.add_argument("--scenario", required=True)
@@ -991,6 +1267,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_demo(args)
     if args.command == "approval":
         return cmd_approval(args)
+    if args.command == "replay":
+        return cmd_replay(args)
+    if args.command == "evaluate":
+        return cmd_evaluate(args)
     return EXIT_USAGE
 
 

@@ -66,6 +66,7 @@ STRATEGY_OVERRIDES = frozenset(
 # what the plan (the operator, the same for every strategy) may set
 PLAN_CONFIG = frozenset(
     {
+        "model",  # the provider's model name, the same for every strategy
         "test_timeout_seconds",
         "max_concurrency",
         "max_concurrent_model_calls",
