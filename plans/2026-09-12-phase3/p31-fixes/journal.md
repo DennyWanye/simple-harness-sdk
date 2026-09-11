@@ -7,6 +7,16 @@
   - 在评审给出结论之前，只写测试草稿，不改源码。这是第 7 步的教训。
   - 测试草稿已写好：`drafts/test_p31_fixes.py`，覆盖 FX-1..FX-5，接口按 plan §2 设计，包括 `TaskBudgetFloor`、`validate_graph(task_floor=)`、`validate_change(task_floor=)`、`OrchestratorConfig.min_task_tokens`，以及 Planner 输入里的两个下限字段。评审结论出来后，移到 `tests/orchestrator/host_support/`，先确认它们是红的，再动手实现。
   - P3.2 相关代码的梳理已派给只读的 Explore 子代理，结果回来后写进 `p32/` 的计划。
+  - 进展：
+    - 计划评审 READY_WITH_CHANGES，已处置（§1）；
+    - 实现完成，提交 `a84e2a4` 已推送；
+    - 目前三件事在进行：全量回归（看门狗）、代码评审第 1 轮、P3.2 计划评审。
+  - 下一步：
+    1. 处置代码评审意见；
+    2. 回归红集 ⊆ 73；
+    3. 构建 wheel 0.9.11，脚本在新 scratchpad 的 `wheel-0.9.11/build-and-verify.sh`；
+    4. Host 用 `pin-0911/pin.py <wheel> <commit> <epoch> 0.9.10 0.9.11 0.9.4` 改钉；
+    5. 跑 Host `tests/orchestration`，更新 ARCHITECTURE。
   - 起点：SDK main `29daa9c`（0.9.10 / 0.9.3），Host main `e1f9e6cb`。
 - 接手须知：
   - 真实模型只用 deepseek-flash；
@@ -59,6 +69,11 @@
   - 它不在已知失败基线里。
   - 这条测试用了 `lease_seconds=0.3`，挂住那一次，mypy 和 ruff 同时在跑，初步判断是时序敏感。
   - 已加 `faulthandler_timeout=120` 和 900 s 看门狗，整批重跑以确认。
+- 第三轮（带看门狗）：278 passed / 3 skipped / 1 failed，用时 170 s。step05 那条这次正常通过，印证它是时序敏感，不是这次改动造成的。
+  - 失败的是 step09 的结构测试 `test_no_decision_point_reads_a_whitelisted_value_from_the_configuration`。原因：`_candidates_for` 在读不到时退回读 `self._config.candidates_per_task`，而这条测试规定，第 9 步之后，白名单里的值只能从 Mission 绑定的策略里读。
+  - 修复：改为只读 `policy_for(mission_id)["candidates_per_task"]`。策略里的参数总是解析完整的，这个键一定存在。
+  - 修复后，step09 的策略绑定测试加上本切片的测试，31 passed；ruff 与 format 干净。
+- 提交：`a84e2a4`（代码、测试、文档），另有 `6871376`（P3.2 的计划），都已推送。
 
 ## 3. 回归与 wheel
 
