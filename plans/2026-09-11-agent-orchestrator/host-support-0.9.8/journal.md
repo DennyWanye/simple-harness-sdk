@@ -14,6 +14,12 @@
     3. 再跑一次全量回归，构建 wheel，做代码评审；
     4. 回到 Host 做 H1，钉 0.9.9。
   - 方向依据：用户 2026-09-11 22:39 放入 Host 的 `plans/taskSys2/agent-orchestrator-phase3-plan.zh-CN.md`。当前的 Host 接线即其中的 P3.1（Host 直连路径）。
+- 2026-09-12：
+  - S2 已推送（`8444a39`、`4bd8c52`，0.9.9 / 0.9.2）。
+  - 代码评审第 2 轮已处置，修复提交 `7915e40`（0.9.10 / 0.9.3），见 §4.2。
+  - 全量回归第 4 次：红集 = 基线，0 新红。
+  - wheel 0.9.10 已构建，并在干净环境验证（§3）。
+  - 本仓库这一轮的工作已经完成。Host 改钉 0.9.10 以及后续验收，记录在 Host 仓库 `plans/2026-09-11-orchestrator-host-integration/journal.md`。
 - 接手须知：
   - 全量回归在后台跑时，不要改源码与版本号，也不要往 `tests/` 放新测试。
   - 真实模型一律用 deepseek-flash。
@@ -54,6 +60,13 @@
 | 1 | `627b90e` | **作废**：跑到 74% 时挂住 13 分钟（CPU 占用 5.9%，一直在等），手动终止。原因是 `step06/test_observability.py::test_a_required_verifier_that_is_not_deployed_…` monkeypatch 的是 `task_graph.STEP2_IMPLEMENTED_LAYERS`，而 0.9.8 把"哪些层已部署"的判断改到了部署政策这边（CommitService 从 `governance.policies` 取值），测试的补丁不再生效，Planner 的提议被拒，夹具脚本随即耗尽，结果是 UNKNOWN、挂起（HANDOFF §4 的陷阱）。已改为 patch `governance.policies`（`8444a39`），测试意图不变 |
 | 2 | `8444a39` | 58 failed / **2428 passed** / 13 skipped / 15 errors，用时 300 s；红集 73 条，与基线完全一致，**0 新红**。脚本 `scratchpad/regress-098/watchdog.py` 加了看门狗：20 分钟未结束就杀掉整个进程组，并从进程打开的临时目录推断挂住的测试 |
 | 3 | `4bd8c52`（S2，0.9.9 / 0.9.2） | 58 failed / **2439 passed** / 13 skipped / 15 errors，用时 303 s；红集 73 条 = 基线，**0 新红**；mypy 80 个源文件无问题 |
+| 4 | `7915e40`（评审第 2 轮修复，0.9.10 / 0.9.3） | 58 failed / **2461 passed** / 13 skipped / 15 errors，用时 306 s；红集 73 条 = 基线，**0 新红**；看门狗没有触发 |
+
+wheel 0.9.10：
+- 从 `7915e40` 可复现构建，`SOURCE_DATE_EPOCH=1789142477`，sha256 `f36f467b…93b0`。
+- 在干净的虚拟环境里安装后跑测试：684 passed / 11 skipped / 1 failed。那 1 条失败是 `tests/execution/test_execution_v3_to_v4_migration.py::test_completed_null_continuation_resolves_unique_pair_and_preserves_facts`，0.9.9 wheel 验证时就已存在，同一条，不是新问题。
+- demo、demo7、demo8、replay8、demo9、policy9 全部 exit 0。
+- 导入的版本为 `0.9.10 0.9.3`。
 
 ### S2 实现要点（P3.1 外部控制面）
 
