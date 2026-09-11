@@ -71,7 +71,7 @@
 
 - **确定性测试**：`tests/orchestrator`（step02–05）137 passed / 4 skipped（真实模型 opt-in）；step05 30 条（含评审处置 10 条）。
 - **SDK 全量回归**（评审处置后 HEAD `ccc99af`，脚本 scratchpad `regress/run.sh`）：58 failed / 2177 passed / 9 skipped / 15 errors，红集 73 条 = 基线，**0 新红**（处置前 `07327ef` 同为 73 条 = 基线）。
-- **wheel 0.9.3（第一次构建，源提交 `07327ef`）**：`simple_harness_sdk-0.9.3-py3-none-any.whl` sha256 `7142a04573eab2ae4bc6c400508969937f34934d4ed85d15a93b857bf65781e3`；干净 venv 安装后 390 passed / 7 skipped / 1 failed（唯一失败为基线已知红 `test_execution_v3_to_v4_migration::test_completed_null_continuation_*`）；安装态 `demo --scenario dynamic-dag --provider fixtures` → COMPLETED（verification_passed，graph_version 2）。若代码 review 处置改动代码则重建并以最终 sha 为准。
+- **wheel 0.9.3（最终构建，源提交 `399d0e7`，含评审处置）**：`simple_harness_sdk-0.9.3-py3-none-any.whl` sha256 `100bb8dfa18ef1dd7fe603cc8ac1f9eac7e25437e110939adc307d847fb18c9e`；干净 venv（Python 3.12）安装后 400 passed / 7 skipped / 1 failed（唯一失败为基线已知红 `test_execution_v3_to_v4_migration::test_completed_null_continuation_*`）；安装态 `demo --scenario dynamic-dag --provider fixtures` → COMPLETED（verification_passed，graph_version 2，证据含 §14.3 七个文件 + `graph_history.json` + `lineage.json`）。第一次构建（`07327ef`，sha `7142a045…`）作废。
 - **真实模型（deepseek-flash）**：运行 1（`reports/real-dynamic-dag-run1.md`，Planner 前置消解歧义、无改图）→ 运行 2（`run2.md`，blocked 触发管理决策但 Manager 空响应，暴露 `max_output_tokens_ceiling`）→ **运行 3（`run3.md`，真实 Manager 改图 v1→v2，同一 Mission 完成）**。
 
 ## 5. 遗留
@@ -80,3 +80,7 @@
 - 重基判据 `touched` 未并入 `unblocked` 任务（P2-1 后半）；由"重基后对当前图整份重校验"兜住。
 - 冲突任务的 `context.graph_version` 只有代码路径，无单独测试（step 4 冲突测试覆盖其创建）。
 - Allocator 预算资格下沉（P2-11）、`duplication_score` 口径（P2-13）为登记项，未改实现。
+
+## 6. 终态
+
+**SHIPPED**（2026-09-11）：S5-01…S5-09 全部由确定性测试判定（`tests/orchestrator` 137 passed / 4 skipped），真实模型 deepseek-flash 运行 3 给出"执行中改图后同一 Mission 完成"的证据，独立 review 1 P0 / 5 P1 / 14 P2 全部处置（10 项修复各配决定性测试、6 项登记/文本修正、1 项由真实运行闭合），SDK 全量回归 0 新红（73 = 基线），wheel 0.9.3 从 `399d0e7` 构建并在干净 venv 验证；推送 origin main。
