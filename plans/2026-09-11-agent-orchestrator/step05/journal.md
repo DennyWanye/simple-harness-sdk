@@ -39,3 +39,9 @@
 | C Allocator | `46d47d7` | §29.3 公式原权重、尺度版本化 `allocator-v1`、资格检查先行、冲突任务先、等待满窗口的饥饿保护、打分冻结进 intent | `test_allocator_priority.py` 5 |
 | D 闭环与演示 | 本提交 | `observability/graph_history.py` + 证据 `graph_history.json`；CLI `demo --scenario dynamic-dag`；S5-05/S5-06 闭环（候选 2、被替代候选迟到提交）；真实模型 opt-in 测试 | `test_dynamic_dag_closure.py` 2、`test_real_provider_dynamic_dag.py`（opt-in） |
 
+
+## 4. 证据
+
+- **确定性测试**：`tests/orchestrator`（step02–05）126 passed / 4 skipped（真实模型 opt-in）；step05 20 条。
+- **SDK 全量回归**（HEAD `07327ef`，脚本 scratchpad `regress/run.sh`）：58 failed / 2167 passed / 9 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
+- **wheel 0.9.3（第一次构建，源提交 `07327ef`）**：`simple_harness_sdk-0.9.3-py3-none-any.whl` sha256 `7142a04573eab2ae4bc6c400508969937f34934d4ed85d15a93b857bf65781e3`；干净 venv 安装后 390 passed / 7 skipped / 1 failed（唯一失败为基线已知红 `test_execution_v3_to_v4_migration::test_completed_null_continuation_*`）；安装态 `demo --scenario dynamic-dag --provider fixtures` → COMPLETED（verification_passed，graph_version 2）。若代码 review 处置改动代码则重建并以最终 sha 为准。
