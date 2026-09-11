@@ -155,19 +155,22 @@ def materialise_inputs(
 ) -> list[str]:
     """Copy each upstream artifact file into the workspace (verifying its hash first)."""
 
-    from .workspace import sha256_file
+    from .store import ArtifactStoreError, read_verified
 
     written = []
     for item in inputs:
         artifact = artifacts_by_id[item.artifact_id]
-        source = Path(artifact.storage_uri)
-        if not source.is_file() or sha256_file(source) != item.content_hash:
+        try:  # P3.2 D3: the stored bytes, hash re-checked, never through a symlink
+            data = read_verified(artifact) if artifact.content_hash == item.content_hash else None
+        except ArtifactStoreError:
+            data = None
+        if data is None:
             raise ArtifactConflict(
                 f"upstream artifact {item.artifact_id} ({item.path}) is missing or changed"
             )
         target = workspace_root / item.path
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(source.read_bytes())
+        target.write_bytes(data)
         written.append(item.path)
     return written
 

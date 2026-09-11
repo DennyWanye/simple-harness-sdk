@@ -221,8 +221,12 @@ def cmd_artifact(args: argparse.Namespace) -> int:
             _print({"error": "unknown artifact"})
             return EXIT_FAILED
         record = artifact.to_json()
-        path = Path(artifact.storage_uri)
-        record["content"] = path.read_text(encoding="utf-8") if path.is_file() else None
+        from .artifacts.store import ArtifactStoreError, read_verified
+
+        try:  # P3.2 D3: the stored bytes, hash re-checked, never through a symlink
+            record["content"] = read_verified(artifact).decode("utf-8")
+        except (ArtifactStoreError, UnicodeDecodeError):
+            record["content"] = None
         _print(record)
     finally:
         store.close()

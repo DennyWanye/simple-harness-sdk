@@ -428,14 +428,18 @@ class MissionControlV1:
         digest = hashlib.sha256()
         head = bytearray()
         size = 0
+        from ..artifacts.store import ArtifactStoreError, open_nofollow
+
         try:
-            with Path(artifact.storage_uri).open("rb") as handle:
+            if not artifact.storage_uri:  # P3.2 D3: bytes lost before the library upgrade
+                raise ArtifactStoreError("unavailable", artifact.path)
+            with open_nofollow(Path(artifact.storage_uri)) as handle:  # P3.2 D3: no symlink
                 for chunk in iter(lambda: handle.read(65536), b""):
                     digest.update(chunk)
                     size += len(chunk)
                     if len(head) <= MAX_ARTIFACT_BYTES:
                         head.extend(chunk[: MAX_ARTIFACT_BYTES + 1 - len(head)])
-        except OSError as error:
+        except (OSError, ArtifactStoreError) as error:
             raise FacadeError("integrity_error", "the artifact's content is missing") from error
         if digest.hexdigest() != artifact.content_hash:
             raise FacadeError(

@@ -17,7 +17,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..contracts import ContractError, MissionStatus
@@ -978,7 +977,12 @@ class ActionCommitsMixin:
             try:
                 if artifact.path not in task.outputs:
                     raise CandidateRejected("undeclared_action_output", artifact.path)
-                raw = Path(artifact.storage_uri).read_bytes() if artifact.storage_uri else b""
+                from ..artifacts.store import ArtifactStoreError, read_verified
+
+                try:  # P3.2 D3: stored bytes only, hash re-checked, never through a symlink
+                    raw = read_verified(artifact)
+                except ArtifactStoreError as error:
+                    raise CandidateRejected("artifact_bytes_mismatch", artifact.path) from error
                 if hashlib.sha256(raw).hexdigest() != artifact.content_hash:
                     raise CandidateRejected("artifact_bytes_mismatch", artifact.path)
                 candidate = json.loads(raw.decode("utf-8"))

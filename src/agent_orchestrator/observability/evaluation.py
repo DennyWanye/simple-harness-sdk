@@ -25,7 +25,6 @@ import asyncio
 import hashlib
 import json
 import math
-import shutil
 import statistics
 import tempfile
 import time
@@ -288,6 +287,7 @@ def _spec_hash_of(spec: MissionSpec) -> str:
 async def _oracle_check(
     store: Store, mission_id: str, oracle: Oracle, timeout: float
 ) -> dict[str, Any]:
+    from ..artifacts.store import ArtifactStoreError, read_verified
     from ..artifacts.versioning import merge_accepted
     from ..runtime.tool_gateway import run_pytest
 
@@ -306,9 +306,14 @@ async def _oracle_check(
             (root / path).write_text(str(content), encoding="utf-8")
         for item in merge_accepted(tasks, artifacts, tasks_by_id=by_id):
             artifact = store.get_artifact(item.artifact_id)
-            if artifact is not None and Path(artifact.storage_uri).is_file():
-                (root / item.path).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(artifact.storage_uri, root / item.path)
+            if artifact is None:
+                continue
+            try:  # P3.2 D3: unavailable or changed bytes are skipped, never guessed
+                data = read_verified(artifact)
+            except ArtifactStoreError:
+                continue
+            (root / item.path).parent.mkdir(parents=True, exist_ok=True)
+            (root / item.path).write_bytes(data)
         for path, content in oracle.files.items():
             (root / path).parent.mkdir(parents=True, exist_ok=True)
             (root / path).write_text(content, encoding="utf-8")

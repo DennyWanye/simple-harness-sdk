@@ -93,6 +93,38 @@
   - ruff 通过。
 - 版本号到切片 E 统一升级（0.10.0）。
 
+### 2.4 切片 C 第一部分：CAS、执行副本、从 CAS 重建的验证副本、软链防护、9 个读取点
+
+- 新增 `artifacts/store.py`：
+  - `ArtifactStore` 按 sha256 寻址，只写一次，文件只读。
+  - `read_verified` 是唯一的读取入口：不跟随软链（`O_NOFOLLOW`），只读普通文件，并重新核对 hash。
+  - `backfill` 用于迁移旧产物。
+- `artifacts/workspace.py`：
+  - 所有复制都用 `symlinks=True`，复制后扫描，发现软链就拒绝（`workspace_symlink`），拒绝原因里只列链接路径，不透露指向。半成品目录会被删掉。
+  - `snapshot` 遇到软链就拒绝，产物字节写进 CAS。
+  - `verification_copy(artifacts=…)` 从 seed、上游输入（CAS）、登记产物（CAS）和受保护文件重建。
+  - 新增 `exec_copy`、`discard`、`sweep_exec_copies`。
+- gateway：`run_tests` 在执行副本里跑，跑完删除。
+- 9 个读取点全部改为走 `read_verified` 或 `open_nofollow`：
+  - facade 与 `__main__`；
+  - evaluation 的 oracle（遇到不可用的产物就跳过）；
+  - `materialise_inputs`；
+  - event_handler 的上游输入、受保护输入、判定树；
+  - action_commits；
+  - policy_commits。
+- **相对计划第 3 版的偏差**（都往简单的方向取，已核对不影响验收）：
+  1. **迁移放在启动时补写**：不挂 schema 迁移钩子，改在 `Orchestrator.__aenter__` 里调 `backfill`，可以重跑。原因：Store 不知道 CAS 放在哪里，而装配后的 `WorkspaceManager` 知道；多个实例同时补写，结果也一样。
+  2. **不新增 `storage_state` 列**：约定 `storage_uri == ""` 就是 unavailable。这是评审 R2 P2-3 给出的备选做法，好处是 Artifact 契约不变，public-api 不受影响。
+  3. **`verification_copy` 保留不传 `artifacts` 的旧模式**：旧模式复制活树，但遇到软链会拒绝。编排器自己一律走重建模式。
+  4. **执行副本不进登记表**：执行结束就删；宿主启动时，把超过 1 小时的残留执行副本扫掉。之所以按时间筛，是因为较新的副本可能属于另一个还在运行的实例。
+- **有意改动的旧测试**，登记进红集说明：
+  - `step02/test_workspace_and_gateway.py`：原来断言 `snapshot` 会跳过软链，现在的语义是拒绝。
+  - `host_support/test_facade.py:424`：篡改测试改为先 chmod，再改 CAS 里的只读文件。
+- 测试结果：
+  - `test_p32_workspace_symlinks.py` 16 条全部通过；
+  - step02 与 test_facade 通过；
+  - `tests/orchestrator` 整目录回归：**466 passed、8 skipped、0 failed**（4 分 17 秒）。回归时排除了切片 A 两个还是红的草稿；8 条 skipped 都是需要真实 provider 的测试，按规定只在显式 opt-in 时运行。
+
 ## 3. 回归与 wheel
 
 （待填）

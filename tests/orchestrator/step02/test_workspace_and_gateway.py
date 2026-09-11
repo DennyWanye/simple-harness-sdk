@@ -41,6 +41,10 @@ def test_workspace_paths_are_confined(tmp_path):
     with pytest.raises(WorkspaceError):
         workspace.read_text("link")
     assert "link" not in workspace.list_files()
+    # P3.2 D3: a tree holding a symlink is refused, no longer recorded without it
+    with pytest.raises(WorkspaceError, match="workspace_symlink"):
+        workspace.snapshot(mission_id="m", task_id="t", produced_by="agent")
+    (workspace.root / "link").unlink()
     artifacts = workspace.snapshot(mission_id="m", task_id="t", produced_by="agent")
     assert {a.path for a in artifacts} == {"parse_kv.py", "tests/test_parse_kv.py"}
     assert all(len(a.content_hash) == 64 for a in artifacts)

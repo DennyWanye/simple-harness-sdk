@@ -33,6 +33,7 @@ from typing import Any
 
 from simple_harness.agents import AgentConfig, AgentLimits, AgentTurnState
 
+from ..artifacts.store import ArtifactStoreError, backfill, read_verified
 from ..artifacts.versioning import (
     ArtifactConflict,
     UpstreamInput,
@@ -40,7 +41,7 @@ from ..artifacts.versioning import (
     merge_accepted,
     next_versions,
 )
-from ..artifacts.workspace import sha256_file
+from ..artifacts.workspace import WorkspaceError
 from ..context.context_builder import (
     CONTEXT_BUILDER_VERSION,
     ContextRejected,
@@ -302,6 +303,13 @@ class Orchestrator:
             self._config, profiles=self._profiles, default_profile=self._default_profile
         )
         await self._assembled.__aenter__()
+        # P3.2 D3: artifacts recorded before 0.10 move into the content-addressed store
+        # (or are marked unavailable); execution copies a crash left behind are removed
+        workspaces = self._assembled.workspaces
+        changes = backfill(self._store.list_all_artifacts(), workspaces.artifact_store)
+        if changes:
+            self._store.update_artifact_storage(changes)
+        workspaces.sweep_exec_copies()
         self._bridge = self._assembled.pool(self._default_profile).bridge
         self._commit.tool_calls_for = self._executed_tool_calls  # D6-8
         self._assembled.gateway.on_rejected = self._audit_tool_rejection  # D6-7
@@ -1287,15 +1295,21 @@ class Orchestrator:
         inputs: dict[str, Path] = {}
         for item in self._upstream_inputs(attempt):
             artifact = self.store.get_artifact(item.artifact_id)
-            source = None if artifact is None else Path(artifact.storage_uri)
-            if source is None or not source.is_file() or sha256_file(source) != item.content_hash:
+            try:  # P3.2 D3: the stored bytes, hash re-checked, never through a symlink
+                if artifact is None or artifact.content_hash != item.content_hash:
+                    raise ArtifactStoreError("missing", item.path)
+                read_verified(artifact)
+            except ArtifactStoreError as error:
                 raise ArtifactConflict(
                     f"upstream artifact {item.artifact_id} ({item.path}) is missing or changed"
-                )
-            inputs[item.path] = source
-        workspace = self.assembled.workspaces.create(
-            attempt.id, seed=seed, previous=previous, inputs=inputs
-        )
+                ) from error
+            inputs[item.path] = Path(artifact.storage_uri)
+        try:
+            workspace = self.assembled.workspaces.create(
+                attempt.id, seed=seed, previous=previous, inputs=inputs
+            )
+        except WorkspaceError as error:  # P3.2 D3: e.g. a symlink in the previous tree
+            raise ArtifactConflict(str(error)) from error
         task = self.store.get_task(attempt.task_id)
         if task is not None:
             for path, content in self._protected_files(mission, task, attempt).items():
@@ -1305,6 +1319,21 @@ class Orchestrator:
                     else True
                 ):
                     workspace.write_text(path, content)
+
+    def _input_files(self, attempt: Attempt) -> dict[str, bytes]:
+        """P3.2 review round 2 P1-3: an Attempt's upstream inputs, read back from the
+        store with their hashes re-checked — the verification copy is rebuilt from them."""
+
+        files: dict[str, bytes] = {}
+        for item in self._upstream_inputs(attempt):
+            artifact = self.store.get_artifact(item.artifact_id)
+            try:
+                if artifact is None or artifact.content_hash != item.content_hash:
+                    raise ArtifactStoreError("missing", item.path)
+                files[item.path] = read_verified(artifact)
+            except ArtifactStoreError as error:
+                raise WorkspaceError(f"upstream input unreadable: {error}") from error
+        return files
 
     def _bind_agent(self, agent_id: str, config: Mapping[str, Any]) -> None:
         cap = config.get("max_tool_calls")
@@ -1951,10 +1980,18 @@ class Orchestrator:
         stored = self.commit.start_verification(result_id)
         protected = self._protected_files(mission, task, attempt)
         tampered = self.assembled.workspaces.tampered_protected(attempt.id, protected)
-        copy = self.assembled.workspaces.verification_copy(attempt.id, protected=protected)
         artifacts = [
             a for a in self.store.list_artifacts(attempt.id) if a.id in set(stored.artifacts)
         ]
+        # P3.2 review round 2 P1-3: rebuilt from the recorded bytes, never the live tree —
+        # what is verified is what was recorded and what an approval will bind
+        copy = self.assembled.workspaces.verification_copy(
+            attempt.id,
+            protected=protected,
+            seed=dict((mission.final_report or {}).get("workspace_seed", {})),
+            inputs=self._input_files(attempt),
+            artifacts=artifacts,
+        )
 
         async def recorder(layer: LayerResult) -> None:
             self._hold_lease(attempt.id)  # P1-3: a lost lease aborts the verification
@@ -2288,13 +2325,16 @@ class Orchestrator:
             if item.path in declared:  # the Task declared it will rewrite this path
                 continue
             artifact = self.store.get_artifact(item.artifact_id)
-            source = None if artifact is None else Path(artifact.storage_uri)
-            if source is None or not source.is_file():
+            try:  # P3.2 D3: the stored bytes, hash re-checked
+                if artifact is None:
+                    raise ArtifactStoreError("missing", item.path)
+                raw = read_verified(artifact)
+            except ArtifactStoreError as error:
                 raise ArtifactConflict(
                     f"upstream artifact {item.artifact_id} ({item.path}) is missing"
-                )
+                ) from error
             try:
-                protected[item.path] = source.read_text(encoding="utf-8")
+                protected[item.path] = raw.decode("utf-8")
             except UnicodeDecodeError as error:
                 raise ArtifactConflict(f"upstream artifact {item.path} is not text") from error
         return protected
@@ -3369,14 +3409,23 @@ class Orchestrator:
             self._note(f"mission {mission.id} failed at judgment: {error}")
             return None
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
-        files: dict[str, Path] = {}
+        files: dict[str, Path | bytes] = {}
         artifacts: list[Artifact] = []
-        for item in merged:
-            artifact = self.store.get_artifact(item.artifact_id)
-            if artifact is None:
-                continue
-            files[item.path] = Path(artifact.storage_uri)
-            artifacts.append(artifact)
+        try:
+            for item in merged:
+                artifact = self.store.get_artifact(item.artifact_id)
+                if artifact is None:
+                    continue
+                files[item.path] = read_verified(artifact)  # P3.2 D3: hash re-checked
+                artifacts.append(artifact)
+        except ArtifactStoreError as error:
+            self.commit.fail_mission(
+                mission.id,
+                stop_reason=MissionStopReason.ARTIFACT_CONFLICT,
+                detail={"error": str(error)},
+            )
+            self._note(f"mission {mission.id} failed at judgment: {error}")
+            return None
         # P0-2: one judgment tree per orchestrator instance — another instance may be
         # running pytest in its own; the judgment Commit itself is idempotent
         view_id = f"{mission.id}-judge-{self._owner}"

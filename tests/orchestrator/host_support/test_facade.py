@@ -421,7 +421,9 @@ def test_artifacts_are_read_by_id_and_checked_against_their_hash(tmp_path):
         await orchestrator.run()
         artifact = control.snapshot(mission_id)["snapshot"]["artifacts"][0]
         read = control.artifact_read(artifact["id"])
-        Path(artifact["storage_uri"]).write_text("被改过", encoding="utf-8")
+        stored = Path(artifact["storage_uri"])  # P3.2 D3: the store's read-only file
+        stored.chmod(0o644)
+        stored.write_text("被改过", encoding="utf-8")
         with pytest.raises(FacadeError) as tampered:
             control.artifact_read(artifact["id"])
         with pytest.raises(FacadeError) as missing:

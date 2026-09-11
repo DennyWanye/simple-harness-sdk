@@ -683,7 +683,9 @@ class PolicyCommitsMixin:
                 continue
             keys: list[str] = []
             try:
-                parsed = json.loads(Path(artifact.storage_uri).read_text(encoding="utf-8"))
+                from ..artifacts.store import read_verified  # P3.2 D3: one way to read
+
+                parsed = json.loads(read_verified(artifact).decode("utf-8"))
                 if isinstance(parsed, Mapping):
                     keys = sorted(str(k) for k in parsed)
             except (OSError, ValueError):

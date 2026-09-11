@@ -345,7 +345,13 @@ class WorkspaceToolGateway:
                     if not resolved.exists():
                         raise WorkspaceError(f"no such test path: {path}")
                     path = str(resolved.relative_to(workspace.root.resolve()))
-                run = await run_pytest(str(workspace.root), path=path, timeout=self._test_timeout)
+                # P3.2 review round 2 P1-1: model-written code runs in a throw-away copy;
+                # what it writes (caches, temp files, symlinks) never reaches the tree
+                copy = self._workspaces.exec_copy(binding.attempt_id)
+                try:
+                    run = await run_pytest(str(copy.root), path=path, timeout=self._test_timeout)
+                finally:
+                    self._workspaces.discard(copy)
                 value = {"passed": run.passed, **run.to_json()}
             else:  # pragma: no cover - registry never dispatches unknown names here
                 return self._reject(
