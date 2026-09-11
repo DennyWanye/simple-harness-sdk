@@ -1,3 +1,32 @@
+## 0.9.4 — agent_orchestrator step 6: many Missions, many models, backpressure, isolation (source candidate)
+
+`agent_orchestrator` 0.6.0 (same wheel).  Step 6 of ORCH-BUILD-v1.0 — controlled
+concurrency.  Missions share one orchestrator under an optional Global Budget
+(`budget:global` above every Mission account, §18.2; unnamed dimensions inherited) and
+two new budget dimensions, tool calls (reserved per Attempt, settled on the gateway's
+count, capped at the gateway) and wall-clock runtime; a pool that cannot fund planning
+stops the Mission visibly.  `scheduling/backpressure.py` registers §18.5's six caps and
+raises / clears backpressure on high / low watermarks (hysteresis) — state and the
+`BackpressureRaised` / `BackpressureCleared` events are written in one transaction; while
+raised the Allocator halves Worker concurrency, expands only conflict and starving Tasks
+plus one exploration slot, shrinks reservations and refuses `add_task` from the Manager.
+Verification runs in a bounded set of tasks (`verifier_workers`).  `runtime/model_router.py`
+maps runtime profiles (provider, model, price, output caps) to one `AgentRuntime` and one
+execution library each; the route is frozen into the dispatch intent (`ModelRouted`) and
+proven by the provider echo; failures climb the §9.3 ladder to a stronger profile with the
+earlier Attempt kept; an unavailable profile falls back or makes the Task wait a bounded
+time (`runtime_unavailable`); a restart only resumes an Attempt in its own pool.  Tool
+permissions are Mission ∩ Task ∩ Role ∩ Deployment; the Tool Gateway checks in §21.1
+order (identity, permission, schema, policy, rate) and every refusal is a
+`ToolCallRejected` event; upstream inputs are read-only in a downstream workspace;
+`Artifact.workspace` records the producing workspace.  An undeployed verification layer
+is refused at commit (`verification_policy_undeployed`) and blocks at run time
+(`verifier_unavailable`).  Evidence adds `trace.json` (per-Attempt versions: profile,
+requested and echoed model, prompt, context, retrieval, allocator, router, verifier),
+`metrics.json` and `scheduler.json`, and is scanned for credentials before it is written.
+CLI `demo --scenario multi-mission`.  Schema v4 (`scheduler_state`, tool-call columns).
+No SDK (`simple_harness`) API change.
+
 ## 0.9.3 — agent_orchestrator step 5: the Task DAG changes on execution evidence (source candidate)
 
 `agent_orchestrator` 0.5.0 (same wheel).  Step 5 of ORCH-BUILD-v1.0 — the dynamic Task

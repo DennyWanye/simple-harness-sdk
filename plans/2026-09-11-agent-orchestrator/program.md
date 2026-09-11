@@ -35,7 +35,7 @@
 | 3 | 一 | Planner 自动拆解并并行执行静态 DAG | **SHIPPED**（`step03/`，SDK 0.9.1 / agent_orchestrator 0.3.0） |
 | 4 | 二 | 团队共享知识、冲突仲裁、综合 | **SHIPPED**（`step04/`，SDK 0.9.2 / agent_orchestrator 0.4.0） |
 | 5 | 二 | 根据 Worker 返回动态修改 Task DAG | **SHIPPED**（`step05/`，SDK 0.9.3 / agent_orchestrator 0.5.0，wheel 自 `399d0e7`；真实 deepseek-flash 运行 3 改图 v1→v2 后完成） |
-| 6 | 三 | 多 Mission、多模型、背压、隔离 | 待做 |
+| 6 | 三 | 多 Mission、多模型、背压、隔离 | **实现完成，收尾中**（`step06/`，SDK 0.9.4 / agent_orchestrator 0.6.0 候选） |
 | 7 | 三 | Human-in-the-loop 与受控真实操作 | 待做 |
 | 8 | 四 | 归因、Replay、策略对照评测 | 待做 |
 | 9 | 四 | 从历史学习并受控晋级 | 待做 |

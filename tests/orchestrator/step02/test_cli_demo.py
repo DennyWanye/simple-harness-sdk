@@ -78,7 +78,7 @@ def test_later_step_scenarios_are_not_implemented(tmp_path, capsys):
         [
             "demo",
             "--scenario",
-            "multi-mission",
+            "approval-action",
             "--provider",
             "fixtures",
             "--evidence-dir",

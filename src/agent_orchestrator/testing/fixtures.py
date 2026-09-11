@@ -1368,3 +1368,61 @@ class UnavailableProvider:
         if self.times is None or self.calls <= self.times:
             raise self.error(public_message=f"{self.model} is unavailable (call {self.calls})")
         raise AssertionError(f"UnavailableProvider {self.model} has no scripted answer")
+
+
+# ---------------------------------------------------------------- step 6 demo
+MULTI_MISSION_TASKS = [
+    _recorder_task(
+        "A",
+        "分析 spec/INPUT.md 并写出 analysis.md",
+        [],
+        ["file:analysis.md"],
+        3.0,
+        ["analysis.md"],
+        policy=["format_check", "rule_check", "critic_review"],
+    ),
+    _recorder_task(
+        "D",
+        "独立文档检查：写 DOCS.md",
+        ["A"],
+        ["file:DOCS.md"],
+        0.5,
+        ["DOCS.md"],
+        policy=["format_check", "rule_check", "critic_review"],
+    ),
+]
+
+
+def demo_multi_mission_profiles(*, missions: int = 2, critic_delay_seconds: float = 0.15):  # type: ignore[no-untyped-def]
+    """Step 6 (S6-01/02/03, ``demo --scenario multi-mission``): two execution pools —
+    ``small`` runs the Workers, ``large`` the Planner / Manager / Critic and anything
+    escalated — for ``missions`` recorder Missions (A → D, each with a Critic layer);
+    the large pool's Critic is slow so the verification queue can back up."""
+
+    from ..runtime.model_router import RoutingRules, RuntimeProfile
+
+    scripts = recorder_scripts()
+    small = demo_dynamic_dag_provider(
+        tasks=MULTI_MISSION_TASKS,
+        per_attempt={"A": [scripts["A"]] * (missions * 2), "D": [scripts["D"]] * (missions * 2)},
+        model="fixture-small",
+    )
+    large = demo_dynamic_dag_provider(
+        tasks=MULTI_MISSION_TASKS,
+        planner_steps=[graph_proposal_step(MULTI_MISSION_TASKS)] * missions,
+        critic_steps=[critic_step(verdict="PASS", criteria_met=True)] * (missions * 6),
+        critic_delay_seconds=critic_delay_seconds,
+        manager_steps=[graph_change_step([])] * 4,
+        model="fixture-large",
+    )
+    profiles = {
+        "small": RuntimeProfile("small", small, "fixture-small", tier=1),
+        "large": RuntimeProfile("large", large, "fixture-large", tier=2),
+    }
+    rules = RoutingRules(
+        default="small",
+        by_role={"planner": "large", "manager": "large", "critic": "large"},
+        escalate={"small": "large"},
+        fallback={"small": "large"},
+    )
+    return profiles, rules

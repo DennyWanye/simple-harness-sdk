@@ -10,7 +10,7 @@ Subcommands (step 2):
     mission get|cancel|events --evidence-dir DIR MISSION_ID
     attempt get --evidence-dir DIR ATTEMPT_ID
     artifact show --evidence-dir DIR ARTIFACT_ID
-    demo --scenario single-task|static-dag|knowledge-sharing|dynamic-dag --provider fixtures|env --evidence-dir DIR
+    demo --scenario single-task|static-dag|knowledge-sharing|dynamic-dag|multi-mission --provider fixtures|env --evidence-dir DIR
 
 ``--provider env`` reads ``SH_BASEURL`` / ``SH_APIKEY`` / ``SH_MODEL`` (and optional
 ``SH_PRICE_INPUT_MICROS`` / ``SH_PRICE_OUTPUT_MICROS`` per million tokens) from the
@@ -214,9 +214,11 @@ def cmd_demo(args: argparse.Namespace) -> int:
     if step is None:
         _print({"error": f"unknown scenario {args.scenario}"})
         return EXIT_USAGE
-    if step not in {2, 3, 4, 5}:
+    if step not in {2, 3, 4, 5, 6}:
         _print({"scenario": args.scenario, "status": "not_implemented", "step": step})
         return EXIT_NOT_IMPLEMENTED
+    if step == 6:
+        return _demo_multi_mission(args)
     from .observability.evidence import write_evidence
     from .testing.fixtures import (
         COMPARE_SEED,
@@ -353,6 +355,242 @@ def cmd_demo(args: argparse.Namespace) -> int:
             )
             _print({**report, "evidence_files": evidence["files"]})
             return EXIT_OK if str(final.status) == "COMPLETED" else EXIT_FAILED
+
+    return asyncio.run(run())
+
+
+def _multi_mission_profiles(args: argparse.Namespace):  # type: ignore[no-untyped-def]
+    """Two execution pools for the step-6 demo: fixtures ``small``/``large``, or — with
+    ``--provider env`` — two profiles of the model in ``SH_MODEL`` (the operator's choice;
+    this program's real runs use deepseek-flash for both), differing in pool and output
+    caps; the physical route of each Attempt is proven by its pool's echo."""
+
+    from .runtime.model_router import RoutingRules, RuntimeProfile
+
+    if args.provider == "fixtures":
+        from .testing.fixtures import demo_multi_mission_profiles
+
+        profiles, rules = demo_multi_mission_profiles()
+        return profiles, rules, "fixtures", None
+    base_url = os.environ.get("SH_BASEURL")
+    api_key = os.environ.get("SH_APIKEY")
+    model = os.environ.get("SH_MODEL")
+    if not (base_url and api_key and model):
+        raise SystemExit("--provider env needs SH_BASEURL, SH_APIKEY and SH_MODEL")
+    import httpx
+
+    from simple_harness.providers import OpenAICompatibleProvider, Secret
+
+    price = None
+    if os.environ.get("SH_PRICE_INPUT_MICROS") and os.environ.get("SH_PRICE_OUTPUT_MICROS"):
+        price = PriceTable(
+            snapshot_id=f"env-{model}",
+            input_micros_per_million_tokens=int(os.environ["SH_PRICE_INPUT_MICROS"]),
+            output_micros_per_million_tokens=int(os.environ["SH_PRICE_OUTPUT_MICROS"]),
+        )
+    elif not getattr(args, "unpriced", False):
+        raise SystemExit("--provider env is a paid provider: set SH_PRICE_* or pass --unpriced")
+
+    def provider():  # type: ignore[no-untyped-def]
+        return OpenAICompatibleProvider(
+            httpx.AsyncClient(), base_url, model, Secret(api_key), timeout=300.0
+        )
+
+    profiles = {
+        "small": RuntimeProfile(
+            "small",
+            provider(),
+            model,
+            tier=1,
+            price_table=price,
+            default_max_output_tokens=8192,
+            max_output_tokens_ceiling=16384,
+            provider_kind="env",
+        ),
+        "large": RuntimeProfile(
+            "large",
+            provider(),
+            model,
+            tier=2,
+            price_table=price,
+            default_max_output_tokens=8192,
+            max_output_tokens_ceiling=32768,
+            provider_kind="env",
+        ),
+    }
+    rules = RoutingRules(
+        default="small",
+        by_role={"planner": "large", "manager": "large", "critic": "large"},
+        escalate={"small": "large"},
+        fallback={"small": "large"},
+    )
+    return profiles, rules, "env", price
+
+
+def _demo_multi_mission(args: argparse.Namespace) -> int:
+    """Step 6 (ORCH §8.4): two Missions at once under a Global Budget, two execution
+    pools with routing and escalation, a bounded verification queue with backpressure;
+    evidence per Mission under ``missions/<id>/`` plus ``multi-mission.json``."""
+
+    from .observability.evidence import write_evidence
+    from .orchestrator.commit_service import GLOBAL_ACCOUNT
+    from .testing.fixtures import DEMO_SEED, RECORDER_SEED, RECORDER_SPEC
+
+    profiles, rules, kind, _price = _multi_mission_profiles(args)
+    real = kind == "env"
+    started = time.time()
+    tools = tuple(str(t) for t in RECORDER_SPEC["allowed_tools"])
+    per_mission = Budget(max_tokens=1_200_000 if real else 300_000, max_attempts=16)
+    if real:
+        specs = [
+            MissionSpec(
+                goal="阅读 spec/INPUT.md 与 tests/test_recorder.py，写出输入分析 analysis.md，再写一份文档检查 DOCS.md（核对分析与测试是否一致）。tests/ 下文件不可修改。",
+                success_criteria=("file:analysis.md", "file:DOCS.md"),
+                tenant_id=args.tenant,
+                idempotency_key=f"{args.idempotency_key}-recorder",
+                allowed_tools=tools,
+                budget=per_mission,
+                workspace_seed=RECORDER_SEED,
+            ),
+            MissionSpec(
+                goal="在隔离工作区实现字符串解析函数 parse_kv，并通过 tests/test_parse_kv.py；tests/ 下文件不可修改。",
+                success_criteria=("pytest:tests/test_parse_kv.py",),
+                tenant_id=args.tenant,
+                idempotency_key=f"{args.idempotency_key}-parse-kv",
+                allowed_tools=tools,
+                budget=per_mission,
+                workspace_seed=DEMO_SEED,
+            ),
+        ]
+    else:
+        specs = [
+            MissionSpec(
+                goal=str(RECORDER_SPEC["goal"]),
+                success_criteria=("file:DOCS.md",),
+                tenant_id=args.tenant,
+                idempotency_key=f"{args.idempotency_key}-{n}",
+                allowed_tools=tools,
+                budget=per_mission,
+                workspace_seed=RECORDER_SEED,
+            )
+            for n in (1, 2)
+        ]
+    real_knobs: dict[str, Any] = (  # flash spends its cap on reasoning (step 5 run 2)
+        {
+            "max_concurrent_model_calls": 4,
+            "default_max_output_tokens": 8192,
+            "max_output_tokens_ceiling": 32768,
+            "attempt_reserve_tokens": 120_000,
+            "critic_reserve_tokens": 30_000,
+            "manager_reserve_tokens": 30_000,
+            "planner_reserve_tokens": 30_000,
+            "lease_seconds": 120.0,
+            "stall_seconds": 300.0,
+            "turn_deadline_seconds": 900.0,
+        }
+        if real
+        else {}
+    )
+    config = OrchestratorConfig(
+        evidence_root=Path(args.evidence_dir).resolve(),
+        model=profiles["small"].model,
+        max_concurrency=max(2, getattr(args, "max_concurrency", 1)),
+        max_running_attempts=3,
+        verifier_workers=1,
+        max_pending_verifications=2,
+        global_budget=Budget(max_tokens=int(per_mission.max_tokens or 0) * 3, max_attempts=48),
+        test_timeout_seconds=getattr(args, "test_timeout", 120.0),
+        hard_cap_micros=getattr(args, "hard_cap_micros", None),
+        **real_knobs,
+    )
+
+    async def run() -> int:
+        async with Orchestrator(config, profiles=profiles, routing=rules) as orchestrator:
+            missions = [await orchestrator.submit_mission(spec) for spec in specs]
+            await orchestrator.run()
+            store = orchestrator.store
+            root = Path(args.evidence_dir).resolve()
+            reports = []
+            for mission, spec in zip(missions, specs, strict=True):
+                final = store.get_mission(mission.id)
+                assert final is not None
+                echoes = orchestrator.echoed_models_for(mission.id)
+                attempts = [
+                    {
+                        "attempt_id": a.id,
+                        "task_id": a.task_id,
+                        "status": str(a.status),
+                        "runtime_profile_id": a.runtime_profile_id,
+                        "requested_model": a.model,
+                        "echoed_models": echoes.get(a.id),
+                        "retry_of": a.retry_of,
+                        "failure": None if a.failure is None else a.failure.get("reason"),
+                    }
+                    for t in store.list_tasks(mission.id)
+                    for a in store.list_attempts(t.id)
+                ]
+                report = {
+                    "mission_id": mission.id,
+                    "status": str(final.status),
+                    "stop_reason": final.stop_reason,
+                    "tasks": [
+                        {"task_id": t.id, "status": str(t.status), "goal": t.goal}
+                        for t in store.list_tasks(mission.id)
+                    ],
+                    "attempts": attempts,
+                    "services": [
+                        {
+                            "kind": i.kind,
+                            "subject_id": i.subject_id,
+                            "runtime_profile_id": i.config.get("runtime_profile_id"),
+                            "model": i.config.get("model"),
+                        }
+                        for i in store.list_intents("SETTLED", "FAILED")
+                        if i.mission_id == mission.id and i.kind != "attempt"
+                    ],
+                }
+                evidence = write_evidence(
+                    directory=root / "missions" / mission.id,
+                    store=store,
+                    commit=orchestrator.commit,
+                    mission_id=mission.id,
+                    baseline={
+                        "agent_orchestrator": __version__,
+                        "provider_kind": kind,
+                        "profiles": {k: p.to_json() for k, p in profiles.items()},
+                        "routing": rules.to_json(),
+                        "config": config.to_json(),
+                        "spec": spec.to_json(),
+                        "started_at": started,
+                    },
+                    workspaces_root=config.workspaces_root,
+                    test_report=report,
+                    echoes=echoes,
+                    unpriced=all(p.unpriced for p in profiles.values()),
+                )
+                reports.append({**report, "evidence_files": evidence["files"]})
+            with store.transaction():
+                global_account = orchestrator.commit.ledger.account(GLOBAL_ACCOUNT).to_json()
+            summary = {
+                "scenario": "multi-mission",
+                "provider_kind": kind,
+                "elapsed_seconds": round(time.time() - started, 2),
+                "profiles": {k: p.to_json() for k, p in profiles.items()},
+                "routing": rules.to_json(),
+                "missions": reports,
+                "global_account": global_account,
+                "backpressure": store.get_scheduler_state("backpressure"),
+                "profile_health": store.get_scheduler_state("profile_health"),
+                "progress": orchestrator.progress_log,
+            }
+            from .observability.secrets import guard_text
+
+            text = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            guard_text(text, where="multi-mission.json")
+            (root / "multi-mission.json").write_text(text, encoding="utf-8")
+            _print({k: v for k, v in summary.items() if k != "progress"})
+            ok = all(r["status"] == "COMPLETED" for r in reports)
+            return EXIT_OK if ok else EXIT_FAILED
 
     return asyncio.run(run())
 

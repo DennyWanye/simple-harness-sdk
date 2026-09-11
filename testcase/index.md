@@ -11,3 +11,4 @@
 | `agent-orchestrator-step03/` | Agent 编排框架第 3 步：Planner 自动拆解并并行执行静态 DAG（S3-01–08） | `plans/2026-09-11-agent-orchestrator/step03/acceptance.md` |
 | `agent-orchestrator-step04/` | Agent 编排框架第 4 步：团队共享知识、冲突仲裁与综合成果（S4-01–08） | `plans/2026-09-11-agent-orchestrator/step04/acceptance.md` |
 | `agent-orchestrator-step05/` | Agent 编排框架第 5 步：根据 Worker 返回动态修改 Task DAG（S5-01–09） | `plans/2026-09-11-agent-orchestrator/step05/acceptance.md` |
+| `agent-orchestrator-step06/` | Agent 编排框架第 6 步：多 Mission、多模型、背压和隔离运行（S6-01–09） | `plans/2026-09-11-agent-orchestrator/step06/acceptance.md` |
