@@ -354,12 +354,71 @@ CREATE TABLE human_overrides (
 ) STRICT;
 """
 
+# Step 9 (plan D9-2' / D9-3'): the policy registry — parameter versions (content-addressed,
+# resolved), proposals with their provenance, evaluations, human decisions, the ordered
+# activation log, and the version every Mission is bound to.  Written by the Commit
+# Service's policy half only.
+DDL_V6 = """
+CREATE TABLE policy_versions (
+ version_id TEXT PRIMARY KEY,
+ params_hash TEXT NOT NULL UNIQUE,
+ source TEXT NOT NULL,
+ status TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL
+) STRICT;
+CREATE TABLE policy_proposals (
+ proposal_id TEXT PRIMARY KEY,
+ version_id TEXT NOT NULL REFERENCES policy_versions(version_id),
+ state TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL
+) STRICT;
+CREATE TABLE policy_evaluations (
+ evaluation_id TEXT PRIMARY KEY,
+ proposal_id TEXT NOT NULL REFERENCES policy_proposals(proposal_id),
+ verdict TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL
+) STRICT;
+CREATE TABLE policy_decisions (
+ receipt_hash TEXT PRIMARY KEY,
+ proposal_id TEXT NOT NULL REFERENCES policy_proposals(proposal_id),
+ principal_id TEXT NOT NULL,
+ decision TEXT NOT NULL,
+ nonce TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ UNIQUE(proposal_id, nonce)
+) STRICT;
+CREATE TABLE policy_activations (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT,
+ version_id TEXT NOT NULL REFERENCES policy_versions(version_id),
+ action TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL
+);
+CREATE TABLE mission_policies (
+ mission_id TEXT PRIMARY KEY REFERENCES missions(mission_id),
+ version_id TEXT NOT NULL REFERENCES policy_versions(version_id),
+ source TEXT NOT NULL,
+ provider_kind TEXT NOT NULL,
+ json TEXT NOT NULL,
+ bound_at REAL NOT NULL
+) STRICT;
+CREATE INDEX mission_policies_version_idx ON mission_policies(version_id)
+"""
+LEGACY_POLICY_VERSION = "policy-legacy"  # Missions that predate policy binding (plan D9-3')
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
     Migration(3, "orchestrator-step05", DDL_V3),
     Migration(4, "orchestrator-step06", DDL_V4),
     Migration(5, "orchestrator-step07", DDL_V5),
+    Migration(6, "orchestrator-step09", DDL_V6),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name

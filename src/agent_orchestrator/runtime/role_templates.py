@@ -18,6 +18,7 @@ Output contracts (the only thing the orchestrator parses):
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 PLANNER_VERSION = "planner-v3"
@@ -257,6 +258,33 @@ def role_for_task(task) -> RoleTemplate:  # type: ignore[no-untyped-def]
     return WORKER_VARIANTS.get(str(task.context.get("role", "worker")), WORKER)
 
 
+# step 9 (plan D9-1'): the prompt versions a policy may choose from.  Production code
+# registers exactly one template per role; a second version is registered explicitly
+# (tests register one to prove that a policy can switch it).
+TEMPLATE_VERSIONS: dict[str, dict[str, RoleTemplate]] = {
+    name: {template.prompt_version: template} for name, template in ROLES.items()
+}
+
+
+def register_template(template: RoleTemplate) -> None:
+    TEMPLATE_VERSIONS.setdefault(template.name, {})[template.prompt_version] = template
+
+
+def registered_versions() -> dict[str, frozenset[str]]:
+    return {name: frozenset(versions) for name, versions in TEMPLATE_VERSIONS.items()}
+
+
+def template_for(template: RoleTemplate, prompt_versions: Mapping[str, str] | None) -> RoleTemplate:
+    """The version of ``template``'s role a policy asks for; the code's own template
+    when the policy names none (or names one this code does not register — the caller
+    records that as interpreter drift, plan D9-4')."""
+
+    wanted = (prompt_versions or {}).get(template.name)
+    if wanted is None or wanted == template.prompt_version:
+        return template
+    return TEMPLATE_VERSIONS.get(template.name, {}).get(wanted, template)
+
+
 __all__ = (
     "ARBITER",
     "ARBITER_VERSION",
@@ -269,6 +297,10 @@ __all__ = (
     "MANAGER_VERSION",
     "ROLE_MIX_START",
     "SIMPLIFIER",
+    "TEMPLATE_VERSIONS",
+    "register_template",
+    "registered_versions",
+    "template_for",
     "WORKER_VARIANTS",
     "role_for_task",
     "SYNTHESIZER",

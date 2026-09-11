@@ -284,10 +284,49 @@ class Store:
         for statement in migration.ddl.split(";"):
             if statement.strip():
                 connection.execute(statement)
+        if migration.version == 6:
+            self._bind_legacy_missions(connection)
         connection.execute(
             "INSERT INTO orch_schema_migrations VALUES (?,?,?,?)",
             (migration.version, migration.name, migration.checksum, self.now),
         )
+
+    def _bind_legacy_missions(self, connection: sqlite3.Connection) -> None:
+        """Step 9 (plan D9-3', review P1-2): Missions created before policy binding are
+        bound to ``policy-legacy`` — no parameters, meaning "the deployment configuration,
+        as these Missions always ran" — so an upgraded library still recovers them.
+        ``legacy`` is never ACTIVE."""
+
+        missions = [str(row[0]) for row in connection.execute("SELECT mission_id FROM missions")]
+        if not missions:
+            return
+        legacy = schema.LEGACY_POLICY_VERSION
+        now = self.now
+        record: dict[str, Any] = {
+            "version_id": legacy,
+            "params_hash": "legacy",
+            "params": None,
+            "source": "legacy",
+            "status": "LEGACY",
+            "detail": {"note": "迁移推定：迁移前的 Mission 沿用部署配置运行"},
+        }
+        connection.execute(
+            "INSERT INTO policy_versions(version_id,params_hash,source,status,json,created_at,updated_at)"
+            " VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+            (legacy, "legacy", "legacy", "LEGACY", canonical_json(record), now, now),
+        )
+        for mission_id in missions:
+            binding: dict[str, Any] = {
+                "mission_id": mission_id,
+                "version_id": legacy,
+                "source": "legacy",
+                "provider_kind": "unknown",
+            }
+            connection.execute(
+                "INSERT INTO mission_policies(mission_id,version_id,source,provider_kind,json,bound_at)"
+                " VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                (mission_id, legacy, "legacy", "unknown", canonical_json(binding), now),
+            )
 
     @staticmethod
     def _renumber_artifact_lineage(connection: sqlite3.Connection) -> None:
@@ -1083,6 +1122,212 @@ class Store:
                 (key, canonical_json(dict(value)), version, self.now),
             )
             return version
+
+    # --------------------------------------------------------- policy registry (step 9)
+    def insert_policy_version(self, record: Mapping[str, Any]) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO policy_versions(version_id,params_hash,source,status,json,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                (
+                    str(record["version_id"]),
+                    str(record["params_hash"]),
+                    str(record["source"]),
+                    str(record["status"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                    self.now,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def set_policy_version_status(self, version_id: str, status: str) -> None:
+        with self.transaction() as connection:
+            record = self.get_policy_version(version_id)
+            if record is None:
+                raise StoreError(f"unknown policy version {version_id}")
+            record["status"] = status
+            connection.execute(
+                "UPDATE policy_versions SET status = ?, json = ?, updated_at = ? WHERE version_id = ?",
+                (status, canonical_json(record), self.now, version_id),
+            )
+
+    def get_policy_version(self, version_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT json FROM policy_versions WHERE version_id = ?", (version_id,)
+        ).fetchone()
+        return None if row is None else dict(_loads(row[0]))
+
+    def list_policy_versions(self) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT json FROM policy_versions ORDER BY created_at, version_id"
+        ).fetchall()
+        return [dict(_loads(row[0])) for row in rows]
+
+    def insert_policy_proposal(self, record: Mapping[str, Any]) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO policy_proposals(proposal_id,version_id,state,json,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                (
+                    str(record["proposal_id"]),
+                    str(record["version_id"]),
+                    str(record["state"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                    self.now,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def update_policy_proposal(self, record: Mapping[str, Any]) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "UPDATE policy_proposals SET state = ?, json = ?, updated_at = ? WHERE proposal_id = ?",
+                (
+                    str(record["state"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                    str(record["proposal_id"]),
+                ),
+            )
+
+    def get_policy_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT json FROM policy_proposals WHERE proposal_id = ?", (proposal_id,)
+        ).fetchone()
+        return None if row is None else dict(_loads(row[0]))
+
+    def list_policy_proposals(self) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT json FROM policy_proposals ORDER BY created_at, proposal_id"
+        ).fetchall()
+        return [dict(_loads(row[0])) for row in rows]
+
+    def insert_policy_evaluation(self, record: Mapping[str, Any]) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO policy_evaluations(evaluation_id,proposal_id,verdict,json,created_at)"
+                " VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING",
+                (
+                    str(record["evaluation_id"]),
+                    str(record["proposal_id"]),
+                    str(record["verdict"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def list_policy_evaluations(self, proposal_id: str) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT json FROM policy_evaluations WHERE proposal_id = ? ORDER BY rowid",
+            (proposal_id,),
+        ).fetchall()
+        return [dict(_loads(row[0])) for row in rows]
+
+    def insert_policy_decision(self, record: Mapping[str, Any]) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO policy_decisions(receipt_hash,proposal_id,principal_id,decision,nonce,json,created_at)"
+                " VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                (
+                    str(record["receipt_hash"]),
+                    str(record["proposal_id"]),
+                    str(record["principal_id"]),
+                    str(record["decision"]),
+                    str(record["nonce"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def list_policy_decisions(self, proposal_id: str) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT json FROM policy_decisions WHERE proposal_id = ? ORDER BY rowid",
+            (proposal_id,),
+        ).fetchall()
+        return [dict(_loads(row[0])) for row in rows]
+
+    def insert_policy_activation(self, record: Mapping[str, Any]) -> int:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO policy_activations(version_id,action,json,created_at) VALUES (?,?,?,?)",
+                (
+                    str(record["version_id"]),
+                    str(record["action"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                ),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def list_policy_activations(self) -> list[dict[str, Any]]:
+        if not self.has_table("policy_activations"):
+            return []
+        rows = self._connection.execute(
+            "SELECT seq, json, created_at FROM policy_activations ORDER BY seq"
+        ).fetchall()
+        return [
+            {**dict(_loads(row[1])), "seq": int(row[0]), "created_at": float(row[2])}
+            for row in rows
+        ]
+
+    def active_policy(self) -> dict[str, Any] | None:
+        """The version the last activation made ACTIVE (plan D9-2'), or None."""
+
+        if not self.has_table("policy_activations"):
+            return None
+        row = self._connection.execute(
+            "SELECT version_id FROM policy_activations ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        return None if row is None else self.get_policy_version(str(row[0]))
+
+    def bind_mission_policy(self, record: Mapping[str, Any]) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO mission_policies(mission_id,version_id,source,provider_kind,json,bound_at)"
+                " VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                (
+                    str(record["mission_id"]),
+                    str(record["version_id"]),
+                    str(record["source"]),
+                    str(record["provider_kind"]),
+                    canonical_json(dict(record)),
+                    self.now,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def get_mission_policy(self, mission_id: str) -> dict[str, Any] | None:
+        if not self.has_table("mission_policies"):
+            return None
+        row = self._connection.execute(
+            "SELECT json FROM mission_policies WHERE mission_id = ?", (mission_id,)
+        ).fetchone()
+        return None if row is None else dict(_loads(row[0]))
+
+    def list_mission_policies(self, version_id: str | None = None) -> list[dict[str, Any]]:
+        if not self.has_table("mission_policies"):
+            return []
+        sql = "SELECT json FROM mission_policies"
+        args: tuple[Any, ...] = ()
+        if version_id is not None:
+            sql, args = sql + " WHERE version_id = ?", (version_id,)
+        rows = self._connection.execute(sql + " ORDER BY bound_at, mission_id", args).fetchall()
+        return [dict(_loads(row[0])) for row in rows]
+
+    def has_non_fixture_missions(self) -> bool:
+        """Plan D9-8': has this deployment ever bound a Mission that did not run on
+        fixtures (a real model, or a kind nobody recorded)?"""
+
+        if not self.has_table("mission_policies"):
+            return False
+        row = self._connection.execute(
+            "SELECT 1 FROM mission_policies WHERE provider_kind != 'fixtures' LIMIT 1"
+        ).fetchone()
+        return row is not None
 
     def insert_graph_change(self, record: Mapping[str, Any]) -> None:
         with self.transaction() as connection:

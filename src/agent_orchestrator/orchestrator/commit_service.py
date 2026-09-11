@@ -67,6 +67,7 @@ from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
 from ..verification.conflicts import Contradiction, find_contradiction
 from .action_commits import ActionCommitsMixin
 from .human_commits import HumanCommitsMixin
+from .policy_commits import PolicyCommitsMixin
 from .state_machine import next_attempt, next_claim, next_mission, next_task
 
 SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
@@ -199,8 +200,8 @@ def task_account(task_id: str) -> str:
 
 
 class CommitService(
-    ActionCommitsMixin, HumanCommitsMixin
-):  # step 7: the action ledger + approvals half
+    ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin
+):  # step 7: the action ledger + approvals half; step 9: the policy registry half
     def __init__(
         self, store: Store, *, conflict_tasks: bool = True, global_budget: Budget | None = None
     ) -> None:
@@ -481,7 +482,14 @@ class CommitService(
         )
 
     # ------------------------------------------------------------- missions
-    def create_mission(self, spec: MissionSpec) -> tuple[Mission, bool]:
+    def create_mission(
+        self,
+        spec: MissionSpec,
+        *,
+        provider_kind: str = "unknown",
+        policy_defaults: Mapping[str, Any] | None = None,
+        policy_pin: Mapping[str, Any] | None = None,
+    ) -> tuple[Mission, bool]:
         """Idempotent on (tenant_id, idempotency_key); a different spec is a conflict."""
 
         spec_hash = sha256_hex(spec.to_json())
@@ -546,6 +554,14 @@ class CommitService(
                 mission_id=mission_id,
                 limits=limits,
             )
+            # step 9 (plan D9-3'): the policy version this Mission runs under, in the same
+            # transaction — a later promotion or configuration never changes it silently
+            binding = self.bind_policy(
+                mission_id,
+                provider_kind=provider_kind,
+                default_params=policy_defaults,
+                pin=policy_pin,
+            )
             self._emit(
                 "MissionCreated",
                 mission_id,
@@ -554,6 +570,7 @@ class CommitService(
                     "goal": spec.goal,
                     "budget": spec.budget.to_json(),
                     "spec_hash": spec_hash,
+                    "policy_version_id": binding["version_id"],
                 },
                 actor_type="user",
                 actor_id=spec.tenant_id,
