@@ -53,9 +53,9 @@ def test_real_dynamic_dag_closure(tmp_path):
     spec = MissionSpec(
         goal=(
             str(RECORDER_SPEC["goal"])
-            + "。注意：spec/INPUT.md 里时间戳格式尚未确认——实现前必须先确认格式（写 FORMAT.md）；"
-            "如果你的任务缺少必要的前置结论，请返回 outcome=blocked 并在 proposed_tasks 里提出需要的前置任务，不要猜。"
-            "tests/ 下的测试不可修改；最后写 VERIFY.md。"
+            + "。做法：先分析输入（analysis.md），再实现 recorder.py，再独立验证（VERIFY.md）与文档检查（DOCS.md）。"
+            "任何任务如果缺少必要的前置结论（例如某个格式没有被明确定义），不要猜：返回 outcome=blocked，"
+            "并在 proposed_tasks 里提出需要先完成的前置任务，由系统调整计划。tests/ 下的测试不可修改。"
         ),
         success_criteria=tuple(str(c) for c in RECORDER_SPEC["success_criteria"]),
         tenant_id="real",
