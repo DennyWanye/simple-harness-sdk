@@ -1463,8 +1463,12 @@ APPROVAL_SPEC = {
 }
 
 
-def demo_approval_action_provider() -> RoleScriptedProvider:
-    """S7 demo on fixtures: one Task writes the candidate and the change note."""
+def demo_approval_action_provider(
+    allowed_tools: Sequence[str] | None = None,
+) -> RoleScriptedProvider:
+    """S7 demo on fixtures: one Task writes the candidate and the change note.
+    ``allowed_tools`` lets a deployment with a narrower tool set (the Host: workspace
+    tools only) run the same script (host support S2)."""
 
     task = {
         "key": "A",
@@ -1474,7 +1478,7 @@ def demo_approval_action_provider() -> RoleScriptedProvider:
         "success_criteria": ["file:CHANGE.md"],
         "verification_policy": ["format_check", "rule_check"],
         "outputs": ["CHANGE.md", "actions/set-new-ui.json"],
-        "allowed_tools": list(APPROVAL_SPEC["allowed_tools"]),
+        "allowed_tools": list(allowed_tools or APPROVAL_SPEC["allowed_tools"]),
         "budget": {"max_tokens": 30_000, "max_attempts": 2},
         "priority": 1.0,
     }

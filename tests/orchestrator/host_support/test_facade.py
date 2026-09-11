@@ -16,6 +16,7 @@ Draft (moved into tests/orchestrator/host_support/ when S2 starts).
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 
@@ -108,6 +109,63 @@ def test_open_fields_round_trip(tmp_path):
     assert report["untrusted_sources"] == ["docs/"]
     assert report["conflict_reserve_tokens"] == 12_000
     assert report["workspace_seed"] == {"docs/brief.md": "资料"}
+    assert mission["stop_conditions"] == ["verification_passed", "budget_exhausted"]
+    assert mission["budget"]["max_tokens"] == 200_000 and mission["budget"]["max_attempts"] == 4
+
+
+SYNTHESIS = {
+    "goal": "把两份笔记合成一份",
+    "success_criteria": ["file:SUMMARY.md"],
+    "verification_policy": ["format_check", "rule_check", "critic_review"],
+    "outputs": ["SUMMARY.md"],
+    "budget": {"max_tokens": 20_000, "max_attempts": 2},
+}
+
+
+def test_a_synthesis_template_round_trips(tmp_path):
+    def body(orchestrator, control):
+        receipt = control.create(_command("k-synth", synthesis=SYNTHESIS))
+        return control.snapshot(receipt["mission_id"])["snapshot"]["mission"]["final_report"]
+
+    assert _with(tmp_path, body)["synthesis"] == SYNTHESIS
+
+
+@pytest.mark.parametrize(
+    ("template", "fragment"),
+    [
+        ({**SYNTHESIS, "allowed_tools": [*TOOLS3, "run_tests"]}, "synthesis.allowed_tools"),
+        ({**SYNTHESIS, "surprise": 1}, "synthesis.surprise"),
+        ({**SYNTHESIS, "budget": {"max_cost_micros": 5}}, "synthesis.budget.max_cost_micros"),
+        ({**SYNTHESIS, "verification_policy": ["formal_check"]}, "undeployed"),
+        ({**SYNTHESIS, "verification_policy": ["format_check", "code_test"]}, "code_test"),
+        ({**SYNTHESIS, "budget": {"max_tokens": 10**9}}, "exceeds the Mission budget"),
+        ({**SYNTHESIS, "goal": " "}, "synthesis.goal"),
+        ({**SYNTHESIS, "success_criteria": "file:SUMMARY.md"}, "synthesis.success_criteria"),
+    ],
+)
+def test_a_synthesis_template_meets_the_door(tmp_path, template, fragment):
+    """Review round 2 P1-A: the template is no side door past the strict fields."""
+
+    def body(orchestrator, control):
+        with pytest.raises(FacadeError) as refused:
+            control.create(_command("k-synth-bad", synthesis=template))
+        return refused.value, len(orchestrator.store.list_missions())
+
+    error, count = _with(tmp_path, body)
+    assert error.code == "invalid_request" and fragment in str(error)
+    assert count == 0
+
+
+@pytest.mark.parametrize("name", ["success_criteria", "stop_conditions", "untrusted_sources"])
+def test_a_string_is_not_a_list_of_strings(tmp_path, name):
+    """Review round 2 P2-1: a string would split into characters."""
+
+    def body(orchestrator, control):
+        with pytest.raises(FacadeError) as refused:
+            control.create(_command("k-str", **{name: "file:NOTES.md"}))
+        return refused.value.code, len(orchestrator.store.list_missions())
+
+    assert _with(tmp_path, body) == ("invalid_request", 0)
 
 
 @pytest.mark.parametrize(
@@ -146,6 +204,22 @@ def test_the_create_receipt_is_persistent_and_a_different_body_conflicts(tmp_pat
     assert code == "conflict" and count == 1
 
 
+def _accounts(tmp_path) -> int:
+    with sqlite3.connect(Path(tmp_path) / "evidence" / "orchestrator.db") as db:
+        return int(db.execute("SELECT COUNT(*) FROM budget_accounts").fetchone()[0])
+
+
+def test_a_repeated_create_reserves_nothing_twice(tmp_path):
+    def body(orchestrator, control):
+        control.create(_command("k-once"))
+        before = _accounts(tmp_path)
+        control.create(_command("k-once"))
+        return before, _accounts(tmp_path)
+
+    before, after = _with(tmp_path, body)
+    assert before == after
+
+
 # ------------------------------------------------------------------ SB-3
 def test_a_foreign_tenant_sees_nothing(tmp_path):
     def body(orchestrator, control):
@@ -180,7 +254,131 @@ def test_a_foreign_tenant_sees_nothing(tmp_path):
     )
 
 
+def _needs_human_critic(request):  # type: ignore[no-untyped-def]
+    from agent_orchestrator.testing.fixtures import package_of
+
+    criteria = package_of(request).get("mission_success_criteria", [])
+    body = {
+        "verdict": "PASS",
+        "needs_human": True,
+        "findings": [],
+        "mission_criteria": [{"criterion": c, "met": True, "reason": "scripted"} for c in criteria],
+    }
+    return "<critic_verdict>" + json.dumps(body, ensure_ascii=False) + "</critic_verdict>"
+
+
+def _review_provider() -> RoleScriptedProvider:
+    return RoleScriptedProvider(
+        {
+            "planner": [graph_proposal_step([TASK])],
+            "worker": [
+                ("workspace_write_file", {"path": "NOTES.md", "content": "- 一\n- 二\n- 三\n"}),
+                envelope_step(summary="写好了", artifacts=["NOTES.md"], claims=["三个要点"]),
+            ],
+            "critic": [_needs_human_critic, critic_step(verdict="PASS", criteria_met=True)],
+        }
+    )
+
+
+def test_a_foreign_tenant_cannot_decide_take_over_comment_or_read(tmp_path):
+    """Review round 2 P1-C: every object kind, and nothing changes."""
+
+    async def body(orchestrator, control):
+        mission_id = control.create(_command("k-review"))["mission_id"]
+        await orchestrator.run()
+        view = control.snapshot(mission_id)["snapshot"]
+        request_id = control.approvals(mission_id)[0]["request_id"]
+        task_id = view["tasks"][0]["id"]
+        artifact_id = view["artifacts"][0]["id"]
+        events_before = orchestrator.store.count_events(mission_id)
+        stranger = MissionControlV1(
+            orchestrator, tenant_id="other", principal=Principal("other:x", "x")
+        )
+        messages = set()
+        for call in (
+            lambda: stranger.decide(request_id, "approve"),
+            lambda: stranger.decide(request_id, "reject", reason="不要"),
+            lambda: stranger.takeover(task_id, "stop", basis="我想停"),
+            lambda: stranger.comment(task_id, "看看"),
+            lambda: stranger.comment(request_id, "看看"),
+            lambda: stranger.artifact_read(artifact_id),
+        ):
+            with pytest.raises(FacadeError) as refused:
+                call()
+            assert refused.value.code == "not_found"
+            messages.add(str(refused.value))
+        return (
+            messages,
+            stranger.approvals(None),
+            control.approvals(mission_id)[0]["state"],
+            events_before,
+            orchestrator.store.count_events(mission_id),
+        )
+
+    messages, foreign_list, state, before, after = _with(tmp_path, body, _review_provider())
+    assert len(messages) == 1  # one wording, no id
+    assert foreign_list == [] and state == "PENDING" and before == after
+
+
+def test_cancel_is_idempotent_and_leaves_an_ended_mission_alone(tmp_path):
+    async def body(orchestrator, control):
+        running = control.create(_command("k-cancel"))["mission_id"]
+        first = control.cancel(running)
+        second = control.cancel(running)
+        done = control.create(_command("k-done"))["mission_id"]
+        orchestrator_provider_note = None
+        return first, second, done, orchestrator_provider_note
+
+    first, second, _done, _ = _with(tmp_path, body)
+    assert first == {**first, "status": "CANCELLED", "changed": True}
+    assert second["status"] == "CANCELLED" and second["changed"] is False
+
+
+def test_a_completed_mission_is_not_cancelled(tmp_path):
+    async def body(orchestrator, control):
+        mission_id = control.create(_command("k-completed"))["mission_id"]
+        await orchestrator.run()
+        return control.cancel(mission_id)
+
+    result = _with(tmp_path, body)
+    assert result["status"] == "COMPLETED" and result["changed"] is False
+
+
 # ------------------------------------------------------------------ SB-4
+def test_the_snapshot_cursor_comes_from_the_same_read(tmp_path, monkeypatch):
+    """Review round 2 P1-C: an event committed by another connection *between* the
+    snapshot's SELECTs is not counted in its ``through_seq`` (it would be without the
+    read view)."""
+
+    def body(orchestrator, control):
+        mission_id = control.create(_command("k-race"))["mission_id"]
+        store = orchestrator.store
+        original = store.list_tasks
+        path = Path(tmp_path) / "evidence" / "orchestrator.db"
+        inserted: list[int] = []
+
+        def list_tasks_then_write(mid):  # type: ignore[no-untyped-def]
+            rows = original(mid)
+            if not inserted:
+                with sqlite3.connect(path) as other:
+                    cursor = other.execute(
+                        "INSERT INTO events(event_id, idempotency_key, type, trace_id, mission_id,"
+                        " task_id, attempt_id, actor_type, actor_id, payload_json, created_at,"
+                        " schema_version) VALUES (?, ?, 'HumanCommentAdded', 'trace', ?, NULL,"
+                        " NULL, 'user', 'probe', '{}', 0, 1)",
+                        ("event-race-probe", "race-probe", mid),
+                    )
+                    inserted.append(int(cursor.lastrowid))
+            return rows
+
+        monkeypatch.setattr(store, "list_tasks", list_tasks_then_write)
+        view = control.snapshot(mission_id)
+        return view["through_seq"], inserted[0]
+
+    through, inserted = _with(tmp_path, body)
+    assert through < inserted
+
+
 def test_snapshot_cursor_and_event_pages_agree(tmp_path):
     async def body(orchestrator, control):
         mission_id = control.create(_command("k-cursor"))["mission_id"]
@@ -236,5 +434,21 @@ def test_artifacts_are_read_by_id_and_checked_against_their_hash(tmp_path):
     assert (
         read["content"] == "- 一\n- 二\n- 三\n" and read["content_hash"] == artifact["content_hash"]
     )
-    assert read["truncated"] is False
+    assert read["truncated"] is False and read["encoding"] == "utf-8"
     assert tampered == "integrity_error" and missing == "not_found" and path_like == "not_found"
+
+
+def test_a_large_artifact_is_truncated_and_says_so(tmp_path, monkeypatch):
+    import agent_orchestrator.api.facade as facade
+
+    monkeypatch.setattr(facade, "MAX_ARTIFACT_BYTES", 5)  # "- " + one 3-byte character
+
+    async def body(orchestrator, control):
+        mission_id = control.create(_command("k-large"))["mission_id"]
+        await orchestrator.run()
+        artifact = control.snapshot(mission_id)["snapshot"]["artifacts"][0]
+        return control.artifact_read(artifact["id"])
+
+    read = _with(tmp_path, body)
+    assert read["truncated"] is True and read["size_bytes"] > 5
+    assert read["content"] == "- 一" and read["encoding"] == "utf-8"

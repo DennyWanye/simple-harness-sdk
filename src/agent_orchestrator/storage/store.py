@@ -154,6 +154,7 @@ class Store:
         self._lock = threading.RLock()
         self._depth = 0
         self._holder: object | None = None
+        self._reading = False  # host support S2 review P1-B: a read view writes nothing
         self._armed: set[str] = set()
         self._skips: dict[str, int] = {}
         self._times: dict[str, int] = {}
@@ -367,6 +368,8 @@ class Store:
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
+            if self._reading:
+                raise StoreError("a read view is open: nothing may be written inside it")
             if self._depth:
                 # step 6 (review P1-15): an RLock lets a *different* coroutine of the same
                 # thread walk into an open transaction; that would be silent corruption, so a
@@ -407,7 +410,10 @@ class Store:
         """A consistent read (host support S2, P3.1-A05): every SELECT inside sees one
         snapshot of the library, so a Mission snapshot and its event cursor agree.  Inside
         an open transaction it simply joins it.  Like :meth:`transaction` it must never
-        span an await; it writes nothing."""
+        span an await.  It writes nothing: a :meth:`transaction` opened inside it is refused
+        (review P1-B); an exception rolls the view back, and the state is reset whatever
+        COMMIT / ROLLBACK does, so a failed end can never leave later transactions
+        non-atomic."""
 
         with self._lock:
             if self._depth:
@@ -416,12 +422,20 @@ class Store:
             self._connection.execute("BEGIN")  # deferred: a read snapshot, no write lock
             self._depth = 1
             self._holder = self._current_task()
+            self._reading = True
             try:
                 yield self._connection
-            finally:
-                self._connection.execute("COMMIT")
-                self._depth = 0
-                self._holder = None
+            except BaseException:
+                try:
+                    self._connection.execute("ROLLBACK")
+                finally:
+                    self._depth, self._holder, self._reading = 0, None, False
+                raise
+            else:
+                try:
+                    self._connection.execute("COMMIT")
+                finally:
+                    self._depth, self._holder, self._reading = 0, None, False
 
     @property
     def connection(self) -> sqlite3.Connection:

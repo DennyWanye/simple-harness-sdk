@@ -92,6 +92,13 @@ class VerifierRouter:
         required = set(task.verification_policy)
         if action_problems is not None:  # D7-2'': a result carrying actions/ is always rule-checked
             required.add("rule_check")
+        if not self._local_code_execution and any(
+            c.startswith("pytest:") for c in task.success_criteria
+        ):
+            # host support review round 2 P2-5: a Task from before the switch keeps a pytest
+            # criterion nobody can judge here; the rule layer must run and FAIL it, whatever
+            # the policy says — a Critic's PASS alone may never complete it
+            required.add("rule_check")
         # step 8 (plan D8-7'): an ablation changes the effective policy explicitly — the layer
         # is not required in this run and says so; it is never a silent PASS
         removed = {layer for layer in ablated if layer in required}

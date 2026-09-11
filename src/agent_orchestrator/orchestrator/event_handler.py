@@ -783,6 +783,39 @@ class Orchestrator:
                     "pytest criteria and code_test need local code execution, which this "
                     f"deployment has turned off: {tests or ['synthesis: code_test']}"
                 )
+        if spec.synthesis is not None:
+            self._check_synthesis_template(spec)
+
+    def _check_synthesis_template(self, spec: MissionSpec) -> None:
+        """Review round 2 P1-A: a synthesis template is a Task contract written by the
+        caller; it meets a Planner Task's gates at the door, not first at graph commit."""
+
+        from ..contracts import Budget
+
+        template = dict(spec.synthesis or {})
+        goal, criteria = template.get("goal"), template.get("success_criteria")
+        if not isinstance(goal, str) or not goal.strip():
+            raise ContractError("synthesis.goal must be a non-blank string")
+        if (
+            isinstance(criteria, str)
+            or not isinstance(criteria, (list, tuple))
+            or not criteria
+            or not all(isinstance(c, str) and c.strip() for c in criteria)
+        ):
+            raise ContractError("synthesis.success_criteria must be a list of non-blank strings")
+        policy = template.get("verification_policy")
+        if policy is not None:
+            undeployed = set(policy) - self._deployed
+            if undeployed:
+                raise ContractError(
+                    f"synthesis.verification_policy names undeployed layers: {sorted(undeployed)}"
+                )
+        if not Budget.from_json(template.get("budget", {})).fits_within(spec.budget):
+            raise ContractError("synthesis.budget exceeds the Mission budget (§18.2)")
+        tools = template.get("allowed_tools")
+        if tools is not None and set(tools) - set(spec.allowed_tools):
+            raise ContractError("synthesis.allowed_tools must stay inside the Mission's tools")
+        self._check_action_criteria(tuple(criteria))
 
     def _check_action_criteria(self, criteria: Sequence[str]) -> None:
         """D7-3' / review P2-10: an action criterion must name an enabled connector and an

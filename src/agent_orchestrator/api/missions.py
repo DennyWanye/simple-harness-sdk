@@ -50,6 +50,18 @@ def spec_from_request(
     """The charter a caller's request describes; an omitted tool set is ``default_tools``
     (the deployment's, when an orchestrator parses it — host support 0.9.8)."""
 
+    # review round 2 P2-1: a string is not a list of strings (it would split into characters)
+    for name in ("success_criteria", "stop_conditions", "untrusted_sources", "allowed_tools"):
+        value = request.get(name)
+        if value is not None and (
+            isinstance(value, str) or not all(isinstance(item, str) for item in value)
+        ):
+            raise MissionRequestError(f"{name} must be a list of strings")
+    seed = request.get("workspace_seed", {})
+    if not isinstance(seed, Mapping) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in seed.items()
+    ):
+        raise MissionRequestError("workspace_seed must map paths to text")
     # host support S2 (P3.1-A06, the user's Phase3 gap G02): the step-4 charter fields are
     # mapped too — before, a request naming them was accepted and they were silently lost
     untrusted = request.get("untrusted_sources", ())

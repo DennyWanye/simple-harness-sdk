@@ -103,6 +103,26 @@ def test_a_legacy_task_pytest_criterion_fails_the_rule_layer(tmp_path, pytest_sp
     assert pytest_spy == []
 
 
+def test_a_legacy_pytest_criterion_fails_even_without_rule_check_in_the_policy(
+    tmp_path, pytest_spy
+):
+    """Review round 2 P2-5: format + critic only — a Critic PASS may not complete it."""
+
+    task = _pytest_task(tools=TOOLS4)
+    task["verification_policy"] = ["format_check", "critic_review"]
+    mission_id = _legacy_mission(
+        tmp_path, criteria=("file:NOTES.md",), policy=task["verification_policy"], task=task
+    )
+    provider = RoleScriptedProvider(
+        {"worker": _notes_worker() + _notes_worker(), "critic": _critics()}
+    )
+    mission, layers, _events = _resume_off(tmp_path, mission_id, provider)
+    rule = [layer for layer in layers if layer["layer"] == "rule_check"]
+    assert rule and all(layer["status"] == "FAIL" for layer in rule)
+    assert str(mission.status) == "FAILED"
+    assert pytest_spy == []
+
+
 # ------------------------------------------------------------------ P1-3
 @pytest.mark.parametrize("deployment", [ON, OFF], ids=["on", "off"])
 def test_the_same_scenario_runs_model_code_only_when_on(tmp_path, pytest_spy, deployment):
