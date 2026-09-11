@@ -39,6 +39,7 @@ from ..contracts import Budget
 from ..contracts.ids import mission_id as mission_id_of
 from ..contracts.models import sha256_hex
 from ..governance.policies import DeploymentPolicy, snapshot_diff
+from ..governance.promotion import version_id
 from ..orchestrator.action_commits import parse_action_criterion
 from ..orchestrator.commit_service import MissionSpec
 from ..runtime.assembly import OrchestratorConfig
@@ -139,12 +140,19 @@ class EvaluationCase:
     connectors: Callable[[Path], Mapping[str, Any]] | None = None  # fresh test services per run
     oracle: Oracle | None = None
     derived_from: Mapping[str, Any] | None = None
+    # step 9 (plan D9-7'): several runtime profiles and their routing — a candidate that
+    # changes routing is only visible when the case has more than one profile
+    profiles: Callable[[], Mapping[str, Any]] | None = None
+    routing: Any = None
 
 
 @dataclass(frozen=True)
 class Strategy:
     name: str
     overrides: Mapping[str, Any] = field(default_factory=dict)
+    # step 9 (plan D9-3' / D9-7'): a resolved policy pinned for this strategy's runs —
+    # only ever in each run's own new (evaluation) library
+    policy_pin: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -425,7 +433,16 @@ async def _run_once(
         "derived_from": None if case.derived_from is None else dict(case.derived_from),
     }
     started = time.monotonic()
-    async with Orchestrator(config, case.provider(), connectors=services) as orchestrator:
+    profiles = None if case.profiles is None else dict(case.profiles())
+    async with Orchestrator(
+        config,
+        None if profiles is not None else case.provider(),
+        profiles=profiles,
+        routing=case.routing,
+        connectors=services,
+        provider_kind="real" if case.kind == "env" else "fixtures",
+        policy_pin=strategy.policy_pin,
+    ) as orchestrator:
         start_snapshot = orchestrator.policy_snapshot()
         mission = await orchestrator.submit_mission(spec)
         await orchestrator.run()
@@ -715,6 +732,7 @@ async def run_plan_async(plan: EvaluationPlan, directory: Path) -> dict[str, Any
             {
                 "name": s.name,
                 "overrides": dict(s.overrides),
+                "policy_pin": None if s.policy_pin is None else version_id(s.policy_pin),
                 "ablation_effects": [ABLATION_EFFECTS[a] for a in configs[s.name].ablations],
             }
             for s in plan.strategies
@@ -881,6 +899,7 @@ def case_from_evidence(
             "tenant_id": original.tenant_id,
             "idempotency_key": original.idempotency_key,
             "spec_hash": recorded,
+            "created_at": created[0].created_at,  # step 9 (D9-6'): the time rule
             "policy_snapshot_hash": old_snapshot.get("hash"),
             "library": str(evidence / "orchestrator.db"),
             "library_sha256": library_digest(evidence / "orchestrator.db"),

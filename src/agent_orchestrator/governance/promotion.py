@@ -399,6 +399,22 @@ def task_identity_hash(spec: Mapping[str, Any]) -> str:
     return _hash(body)
 
 
+def spec_task_identity(spec: Any) -> str:
+    """The task identity of a MissionSpec — the same fields the learner reads from a
+    Mission (``governance/learning.task_identity``), so both sides of the leakage check
+    hash the same thing (plan D9-6')."""
+
+    return task_identity_hash(
+        {
+            "goal": spec.goal,
+            "success_criteria": list(spec.success_criteria),
+            "allowed_tools": list(spec.allowed_tools),
+            "task_kind": str(spec.task_kind or "code"),
+            "workspace_seed": dict(spec.workspace_seed or {}),
+        }
+    )
+
+
 # ------------------------------------------------------------------ registry projection
 def registry_projection(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Fold the deployment timeline into registry states (step 8 lesson: every event
