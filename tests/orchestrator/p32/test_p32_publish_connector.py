@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -73,11 +73,14 @@ def test_p32_7_publish_writes_the_recorded_bytes_and_reads_them_back(connector, 
     published = Path(receipt.after["path"])
     assert published.is_file() and published.read_bytes() == REPORT
     assert published.parent == connector.root / "weekly"
-    # a stable name of this action version, never overwriting anything
-    assert published.name == "report.0123456789ab.v1.md"
+    # a name of this action version's own, never overwriting anything: <stem>.<digest>.v1<suffix>
+    # (the digest covers the whole idempotency key — see test_p32_publish_regressions.py)
+    stem, digest, version, suffix = published.name.split(".")
+    assert (stem, version, suffix) == ("report", "v1", "md")
+    assert len(digest) == 12 and set(digest) <= set("0123456789abcdef")
     assert receipt.after["content_hash"] == hashlib.sha256(REPORT).hexdigest()
     assert receipt.target == "weekly/report.md" and receipt.applied is True
-    assert receipt.service_ref == "weekly/report.0123456789ab.v1.md"
+    assert receipt.service_ref == f"weekly/{published.name}"
     states = [entry["state"] for entry in _ledger(connector)]
     assert states == ["PREPARED", "COMMITTED"]
 
@@ -142,9 +145,18 @@ def test_p32_9_a_changed_published_file_is_unknown_too(connector, store_root):
 
 
 def test_p32_9_a_half_written_ledger_line_is_ignored(connector, store_root):
-    connector.fail_after = "intent"
-    with pytest.raises(ConnectorTransportError):
-        _publish(connector, store_root)
+    # the half line must be what decides this, so publish first: the key's last *whole*
+    # line is COMMITTED, and a torn line after it may not take that away
+    published = _publish(connector, store_root)
+    with connector.ledger_path.open("a", encoding="utf-8") as handle:
+        handle.write('{"key": "action-0123456789abcdef:v1", "state": "PREP')
+    found = connector.lookup(KEY)
+    assert found is not None and found.receipt_hash == published.receipt_hash
+
+
+def test_p32_9_a_torn_intent_line_reads_as_never_started(connector):
+    # a line that was not written whole is no intent at all: the link never happened
+    connector.ledger_path.parent.mkdir(parents=True, exist_ok=True)
     with connector.ledger_path.open("a", encoding="utf-8") as handle:
         handle.write('{"key": "action-0123456789abcdef:v1", "state": "PREP')
     assert connector.lookup(KEY) is None
@@ -192,8 +204,11 @@ def test_p32_11_a_missing_artifact_file_is_refused(connector, tmp_path):
 
 
 def test_p32_11_a_taken_name_with_other_content_is_a_conflict(connector, store_root):
+    from agent_orchestrator.runtime.connectors_publish import _name_for
+
+    taken = _name_for(KEY, PurePosixPath("weekly/report.md"))
     (connector.root / "weekly").mkdir()
-    (connector.root / "weekly" / "report.0123456789ab.v1.md").write_bytes(b"someone else's file")
+    (connector.root / "weekly" / taken).write_bytes(b"someone else's file")
     with pytest.raises(ConnectorRejected) as refused:
         _publish(connector, store_root)
     assert "conflict" in str(refused.value)

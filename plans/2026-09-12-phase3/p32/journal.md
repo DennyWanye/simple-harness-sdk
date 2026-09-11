@@ -222,7 +222,43 @@
 
 ## 4. 代码评审处置
 
-（待填）
+第 1 轮（`reports/code-review-round1.md`）结论 **SHIP_WITH_FIXES**：P0 0 条、P1 5 条、P2 13 条。全部接受。其中 P1-1 与 P1-2 是真缺陷，而且我的 117 条 p32 测试都没覆盖到——这两条各补了回归测试。
+
+### 4.1 P1（5 条，全部已修）
+
+| 编号 | 问题 | 处置 |
+|---|---|---|
+| P1-1 | 发布文件名从 `action-<hex>` 里切 hex，把补偿键末尾的 `#comp-<n>` 截掉，补偿与原动作同名，D8 的主场景必被判 conflict | `_name_for` 改为对整个幂等键取 sha256 前 12 位。补回归测试：补偿与原动作各落一个文件、内容互不覆盖；四种键（两个版本、两个补偿）名字互不相同 |
+| P1-2 | `execute` 把"末条不是 ABORTED"当成已发布，直接返回 `applied=true`，既不读文件也不核 hash | 新增 `_published()`，与 `lookup` 同一判定：必须由文件本身证明，缺失或 hash 不符就抛 `ConnectorTransportError`（停在 UNKNOWN 转人工）。快路径改走它。补回归测试：只留下 PREPARED 后再次 execute 必须报不确定；发布后用户删文件再 execute 同样报不确定 |
+| P1-3 | 非隔离的 process_only 回执照样写 `network = none / hard` | `effective_limits(isolated=…)`：非隔离时写 `unrestricted / none`。补断言 |
+| P1-4 | mypy 3 条红，其中 `_hash(idempotency_key)` 在兜底分支会真崩 TypeError | 三条全修：`_name_for` 重写后不再有该调用；`workspace.py` 循环变量改名、`removed` 补注解 |
+| P1-5 | `_reap` 每次执行结束都对可能已被回收的 pid 调 `killpg`，pid 复用时会杀掉无关进程组 | `_reap(root_alive=…)`：只在根进程仍在运行时才发信号；正常结束不再发。顺带消掉 P2-12 的多余开销 |
+
+### 4.2 P2：已修 8 条
+
+- **P2-2** 账本写入加 `fcntl.flock`（计划 D6 原本就写了）。
+- **P2-3** 目标名已被占用时一律判 conflict，绝不认领不是本键创建的文件。
+- **P2-4** "候选不得自写产物身份"的守卫提到早返回之前，无条件生效。
+- **P2-6** 计划里去掉 `limit_exceeded` 的 `output` 取值（输出只截断、不中止运行），并把那条等于没断言的 `in (None, "output")` 改成 `is None`。
+- **P2-8** 删掉死代码 `ENV_WHITELIST` 与 `__all__` 条目，模块说明改写为"经执行端口运行，是否隔离看回执的 `isolated`"。
+- **P2-9** `scan_symlinks` 先判 `is_symlink()` 再判忽略名——叫 `.git` 的软链不再被放过。
+- **P2-10** 收养分支前置软链判断：`<workspaces>/<attempt_id>` 是软链时按 `workspace_identity_mismatch` 拒绝。
+- **P2-12** 见 P1-5。
+- 另外按评审意见改强了一条测试：半行账本改为"发布成功之后再追加半行，仍能重建回执"，并单独加一条"只有半行 = 从未开始"。
+
+### 4.3 P2：登记但本轮不修（5 条，连同一条残余风险）
+
+1. **P2-1 宿主启动时的沙箱身份扫描没有实现**。计划 D1 回收第 3.iv 条要求宿主启动时按未清理的 execution_id 扫一遍，实现里 `_Run.close()` 在 `finally` 就删掉了金丝雀与诱饵，所以**宿主崩溃后，逃出去的沙箱进程再也认不出来**（`sweep_exec_copies` 只删目录、不扫进程）。如实登记为剩余风险：这类进程仍然出不了网、写不出它那次执行的写路径，CPU 也有每进程上限，但它可以一直占内存。要修就得把 marks 目录保留到下次启动扫描之后，涉及跨进程生命周期，放到 P3.5 或 Host 接线时一并处理。
+2. **P2-5 CPU 是每进程限额，不是整次执行的总量**。已在 `effective_limits` 里给 `cpu_seconds` 加 `"scope": "process"`，措辞不再含糊；真正兜住整次执行的是 `wall_seconds`。按沙箱身份汇总 CPU 不做。
+3. **P2-7 `run_pytest(executor=None)` 等同 process_only，而不是 off**。四个调用点都在上游判过开关，当前是安全的；改成抛错会让 `run_pytest` 的便利默认值失效（现有测试依赖它）。登记为语义重叠，不改。
+4. **P2-11 每次启动 `backfill` 都全表读 artifact 行**。已在 CAS 内的行会被跳过、不读文件，只是多一次全表扫描；Mission 多了之后再优化（例如按 schema 版本打一次性标记）。
+5. **P2-13 剩余风险没有面向使用者的落点**。仓库里没有 ARCHITECTURE 文档，这些边界目前只在 plan 与 CHANGELOG 里。Host 侧的 `ARCHITECTURE/AGENT_ORCHESTRATION.md` 会在切片 F 写明（沙箱模式、软限制、不隔离时的措辞）。
+6. **残余风险：`ProcessOnlyExecutor` 的 `run.seen` 有 pid 复用风险**。曾见后代退出后 pid 被复用，回收时可能误杀。seatbelt 适配器不受影响（它按沙箱身份认进程，不看 pid 历史）。ProcessOnly 本来就写明"只用于可信代码、不隔离"，这条一并登记。
+
+### 4.4 评审指出的测试缺口
+
+- **已补**：P1-1 与 P1-2 的回归（`test_p32_publish_regressions.py`）；非隔离回执的措辞断言；半行账本。
+- **未补，登记**：P32-7 的"候选 → accept 绑定 → 审批 → 交接 → link → 回读"完整链路仍然没有一条测试串起来（三段各自有测）。这条链路会在切片 G 的原生验收里真实走一遍（真实模型 + 真实发布目录），届时作为该验收的证据；如果原生验收发现问题，再回头补 SDK 层的端到端测试。
 
 ## 5. 遗留
 

@@ -23,6 +23,7 @@ it was given, never follows a symlink on the way, and refuses any target outside
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -58,15 +59,17 @@ def _read_nofollow(path: Path) -> bytes:
 
 
 def _name_for(idempotency_key: str, path: PurePosixPath) -> str:
-    """``<stem>.<action hex>.v<version><suffix>`` — stable for one action version, and
-    distinct from any other action's file (review round 2 P2-5: the hex part, not the
-    first 12 characters of ``action-…``, which hold only five hex digits)."""
+    """``<stem>.<key digest>.v<version><suffix>`` — stable for one action version and
+    distinct from every other action's file.
+
+    The digest covers the *whole* idempotency key (code review round 1 P1-1): slicing the
+    hex out of ``action-<hex>`` dropped the ``#comp-<n>`` a compensation carries, so a
+    compensation produced the same file name as the action it answers and could never be
+    published at all.
+    """
 
     head, _, version = idempotency_key.partition(":v")
-    _, _, digits = head.partition("-")
-    digits = (digits or _hash(idempotency_key))[:12]
-    version = version or "1"
-    return f"{path.stem}.{digits}.v{version}{path.suffix}"
+    return f"{path.stem}.{_hash(head.encode('utf-8'))[:12]}.v{version or '1'}{path.suffix}"
 
 
 class FilePublishConnector:
@@ -154,9 +157,31 @@ class FilePublishConnector:
     def _append(self, entry: Mapping[str, Any]) -> None:
         self._ledger_dir.mkdir(parents=True, exist_ok=True)
         with self.ledger_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(dict(entry), sort_keys=True, ensure_ascii=False) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+            # plan D6: one writer at a time, and the line is on disk before we go on
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                handle.write(json.dumps(dict(entry), sort_keys=True, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _published(self, entry: Mapping[str, Any]) -> Receipt:
+        """The receipt of a key that reached the link — proven by the file, never by the
+        ledger alone (code review round 1 P1-2).  A PREPARED line with no file means the
+        process died between the intent and the link: that is unknown, not success."""
+
+        try:
+            data = _read_nofollow(self._root / str(entry["final_path"]))
+        except ConnectorRejected as error:
+            raise ConnectorTransportError(
+                f"file_publish: {entry['final_path']} has an intent but no file ({error})"
+            ) from error
+        if _hash(data) != str(entry["content_hash"]):
+            raise ConnectorTransportError(
+                f"file_publish: {entry['final_path']} was published but has changed"
+            )
+        return self._receipt(entry)
 
     def _receipt(self, entry: Mapping[str, Any]) -> Receipt:
         published = self._root / str(entry["final_path"])
@@ -192,8 +217,8 @@ class FilePublishConnector:
         if _hash(data) != content_hash:
             raise ConnectorRejected("artifact_bytes_mismatch")
         done = self._entries(idempotency_key)
-        if done and done[-1].get("state") != "ABORTED":  # this version already reached the link
-            return self._receipt(done[-1])
+        if done and done[-1].get("state") != "ABORTED":  # this key already reached the link
+            return self._published(done[-1])
         final_name = _name_for(idempotency_key, relative)
         final_path = str(PurePosixPath(*relative.parts[:-1], final_name))
         entry = {
@@ -208,12 +233,10 @@ class FilePublishConnector:
         }
         fd = self._open_directory(relative.parts[:-1], create=True)
         try:
-            existing = self._existing(fd, final_name)
-            if existing is not None:
-                if _hash(existing) != content_hash:
-                    raise ConnectorRejected(f"conflict: {final_path} exists with other content")
-                self._append({**entry, "state": "COMMITTED"})
-                return self._receipt(entry)
+            if self._existing(fd, final_name) is not None:
+                # code review round 1 P2-3: a file this key did not create is never adopted,
+                # whatever it holds — the key's own file is returned by the fast path above
+                raise ConnectorRejected(f"conflict: {final_path} already exists")
             self._append(entry)  # the intent is on disk before the only commit point
             try:
                 if self.fail_after == "intent":

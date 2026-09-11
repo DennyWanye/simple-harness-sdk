@@ -84,15 +84,24 @@ class SandboxSpec:
         if self.cpu_seconds < 1 or self.wall_seconds <= 0 or self.max_output_bytes < 1:
             raise ValueError("sandbox limits must be positive")
 
-    def effective_limits(self) -> dict[str, dict[str, Any]]:
+    def effective_limits(self, *, isolated: bool = True) -> dict[str, dict[str, Any]]:
+        """What this run is really held to.  ``cpu_seconds`` is a *per-process* rlimit, not
+        a total for the run; the network is only denied when an adapter isolates the run —
+        an unsandboxed one says so rather than claiming a limit it does not apply (code
+        review round 1 P1-3 / P2-5)."""
+
         return {
-            "cpu_seconds": {"value": self.cpu_seconds, "enforcement": "hard"},
+            "cpu_seconds": {"value": self.cpu_seconds, "enforcement": "hard", "scope": "process"},
             "wall_seconds": {"value": self.wall_seconds, "enforcement": "hard"},
             "max_file_bytes": {"value": self.max_file_bytes, "enforcement": "hard"},
             "max_output_bytes": {"value": self.max_output_bytes, "enforcement": "hard"},
             "max_rss_bytes": {"value": self.max_rss_bytes, "enforcement": "soft"},
             "max_processes": {"value": self.max_processes, "enforcement": "soft"},
-            "network": {"value": self.network, "enforcement": "hard"},
+            "network": (
+                {"value": self.network, "enforcement": "hard"}
+                if isolated
+                else {"value": "unrestricted", "enforcement": "none"}
+            ),
         }
 
 
@@ -320,9 +329,11 @@ class _Executor:
                         limit = "rss"
                         break
             except asyncio.CancelledError:
-                await asyncio.shield(asyncio.to_thread(self._reap, run))
+                await asyncio.shield(asyncio.to_thread(self._reap, run, root_alive=True))
                 raise
-            residual = await asyncio.to_thread(self._reap, run)
+            # code review round 1 P1-5: once ``process.wait()`` has returned, the child is
+            # reaped and its pid may already belong to someone else — never signal it then
+            residual = await asyncio.to_thread(self._reap, run, root_alive=not waiter.done())
             returncode = await waiter
             try:
                 await asyncio.wait_for(reader, timeout=2.0)
@@ -338,7 +349,7 @@ class _Executor:
             kind=self.kind,
             isolated=self.isolated,
             environment_digest=self.environment_digest,
-            effective_limits=spec.effective_limits(),
+            effective_limits=spec.effective_limits(isolated=self.isolated),
             exit_code=None if timed_out else returncode,
             output=output,
             truncated=truncated,
@@ -355,17 +366,22 @@ class _Executor:
         rss = sum(p.rss_kb for p in run.table if p.pid in members) * 1024
         return members, rss
 
-    def _reap(self, run: _Run) -> set[int]:
+    def _reap(self, run: _Run, *, root_alive: bool = True) -> set[int]:
         """Kill every process of the run, sweep again until none is left or the sweeps
-        run out; what is still alive afterwards is returned (``tree_killed`` = empty)."""
+        run out; what is still alive afterwards is returned (``tree_killed`` = empty).
+
+        ``root_alive`` says whether the run's own process is still running.  After a normal
+        exit it is not, and its pid may have been handed to an unrelated process — signalling
+        the group then could kill a stranger (code review round 1 P1-5)."""
 
         for _ in range(self._max_sweeps):
-            if run.root_pid is not None:
+            if root_alive and run.root_pid is not None:
                 try:
                     os.killpg(run.root_pid, signal.SIGKILL)  # the run's own group
                 except (ProcessLookupError, PermissionError):
                     pass
                 _sigkill(run.root_pid)
+            root_alive = False  # after one sweep the run's own process is gone either way
             survivors = self._survivors(run)
             if not survivors:
                 return set()

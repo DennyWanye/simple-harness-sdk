@@ -74,7 +74,7 @@
   - `exit_code`；
   - 有界的 `output`，以及 `truncated`；
   - `timed_out`；
-  - `limit_exceeded`：取值 cpu / rss / processes / output；
+  - `limit_exceeded`：取值 cpu / rss / processes。输出不在其列——超出上限时只是截断（`truncated`），不会因此中止运行（代码评审第 1 轮 P2-6）；
   - `tree_killed`、`residual_pids`；
   - `status`：ok 或 error。
 - **seatbelt 规则**（本机已实测可行）：

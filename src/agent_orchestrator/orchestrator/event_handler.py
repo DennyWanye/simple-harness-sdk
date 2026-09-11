@@ -1335,7 +1335,12 @@ class Orchestrator:
             "adopted": False,
         }
         record = self.store.get_workspace(attempt.id)
-        exists = (self.assembled.workspaces.root / attempt.id).exists()
+        root_path = self.assembled.workspaces.root / attempt.id
+        if root_path.is_symlink():  # code review round 1 P2-10: never adopt a link as a tree
+            raise ArtifactConflict(
+                f"workspace_identity_mismatch: {attempt.id} is a symlink, not a workspace"
+            )
+        exists = root_path.exists()
         building = False
         if record is None and exists:  # a tree from before 0.10: adopted as it is
             self.store.register_workspace(

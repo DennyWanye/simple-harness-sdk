@@ -60,11 +60,11 @@ def scan_symlinks(root: Path) -> list[str]:
         base = Path(dirpath)
         kept = []
         for name in dirnames:
-            if name in IGNORED_DIRS:
-                continue
+            # a symlink is reported whatever it is called (code review round 1 P2-9):
+            # the ignored names are for real directories, not for links wearing them
             if (base / name).is_symlink():
                 found.append(str((base / name).relative_to(root)))
-            else:
+            elif name not in IGNORED_DIRS:
                 kept.append(name)
         dirnames[:] = kept
         for name in filenames:
@@ -325,8 +325,8 @@ class WorkspaceManager:
             try:
                 for relative, content in (seed or {}).items():
                     rebuilt.write_text(relative, content)
-                for relative, source in (inputs or {}).items():
-                    data = source if isinstance(source, bytes) else _source_bytes(source, relative)
+                for relative, item in (inputs or {}).items():
+                    data = item if isinstance(item, bytes) else _source_bytes(item, relative)
                     rebuilt.write_bytes(relative, data)
                 for artifact in artifacts:
                     try:
@@ -375,7 +375,7 @@ class WorkspaceManager:
         """Execution copies left by a crash; a copy younger than ``older_than`` seconds may
         belong to another live instance and is left alone."""
 
-        removed = []
+        removed: list[str] = []
         if not self._root.is_dir():
             return removed
         cutoff = time.time() - older_than

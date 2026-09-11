@@ -8,9 +8,11 @@ arrives with the SDK ``run_id`` (== ``agent_id``); the gateway resolves it to a
 ``(attempt_id, view, mode)`` binding registered by the orchestrator and refuses
 anything else.  Only four tools exist and all of them are confined to the
 Attempt's workspace: ``workspace_read_file`` / ``workspace_write_file`` /
-``workspace_list`` / ``run_tests``.  ``run_tests`` runs pytest in a child process
-with a timeout, a fresh session (so the whole process group can be killed) and an
-environment whitelist.  No network isolation is claimed (journal 遗留).
+``workspace_list`` / ``run_tests``.  ``run_tests`` goes through the sandbox executor port
+(P3.2 plan v3 D1): it runs in a throw-away copy of the Attempt's tree, with the environment
+the executor builds, and every process of the run is reaped afterwards.  Whether that run
+was isolated at all — no network, no reading outside a whitelist — is what the receipt's
+``isolated`` field says; the process-only adapter isolates nothing and reports so.
 """
 
 from __future__ import annotations
@@ -57,7 +59,6 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 TOOL_NAMES = tuple(TOOL_SCHEMAS)
 WORKER_TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list", "run_tests")
 CRITIC_TOOLS = ("workspace_read_file", "workspace_list")
-ENV_WHITELIST = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT", "TEMP", "TMP")
 
 
 UNTRUSTED_NOTICE = (
@@ -420,7 +421,6 @@ def _schema_problem(name: str, arguments: Mapping[str, Any]) -> str | None:
 
 __all__ = (
     "CRITIC_TOOLS",
-    "ENV_WHITELIST",
     "UNTRUSTED_NOTICE",
     "TOOL_NAMES",
     "TOOL_SCHEMAS",

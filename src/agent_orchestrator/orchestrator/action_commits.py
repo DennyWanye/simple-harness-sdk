@@ -157,16 +157,18 @@ def bind_artifact_params(params: Mapping[str, Any], artifacts: Mapping[str, Any]
     """
 
     bound = dict(params)
-    path = bound.get("artifact_path")
-    if path is None:
-        return bound
-    if not isinstance(path, str) or not path.strip():
-        raise CandidateRejected("invalid_candidate", "artifact_path must be a non-empty string")
+    # unconditional (code review round 1 P2-4): a candidate may not state an Artifact's
+    # identity even when it names no artifact_path at all
     set_by_model = sorted(BOUND_ARTIFACT_FIELDS & set(bound))
     if set_by_model:
         raise CandidateRejected(
             "invalid_candidate", f"a candidate may not set {set_by_model}: the system binds them"
         )
+    path = bound.get("artifact_path")
+    if path is None:
+        return bound
+    if not isinstance(path, str) or not path.strip():
+        raise CandidateRejected("invalid_candidate", "artifact_path must be a non-empty string")
     artifact = artifacts.get(path.strip())
     if artifact is None:
         raise CandidateRejected("artifact_not_in_result", str(path))

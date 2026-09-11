@@ -338,7 +338,9 @@ def test_p32_3_output_is_bounded(adapter, workspace):
     )
     assert receipt.truncated is True
     assert len(receipt.output.encode()) <= 10_000
-    assert receipt.limit_exceeded in (None, "output")
+    # an output flood is cut, never a reason to stop the run (code review round 1 P2-6)
+    assert receipt.limit_exceeded is None
+    assert receipt.exit_code == 0
 
 
 @pytest.mark.parametrize("adapter", ["process_only", "seatbelt"])
