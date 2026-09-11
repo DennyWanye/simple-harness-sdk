@@ -20,7 +20,7 @@ from typing import Any
 
 from ..contracts import Budget, ContractError, Mission
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, VERIFICATION_LAYERS
-from ..planning.manager import system_reserve_tokens
+from ..planning.manager import inherit_limits, system_reserve_tokens
 from .deduplicator import find_duplicates
 from .dependency_checker import DependencyError, check_dependencies, roots_and_leaves
 
@@ -286,6 +286,20 @@ def validate_graph(mission: Mission, proposal: TaskGraphProposal) -> ValidatedGr
                 "budget",
                 f"sum of task {name} ({total}) plus the system reserve ({reserve}) exceeds "
                 f"the Mission ({parent}); dimension={name} remaining={max(0, parent - reserve)}",
+            )
+    template = (mission.final_report or {}).get("synthesis")
+    if template:  # P1-2: the synthesis Task's own budget must fit the Mission too
+        try:
+            synthesis_budget = inherit_limits(
+                Budget.from_json(dict(template).get("budget", {})), mission.budget
+            )
+        except ContractError as error:
+            raise GraphRejected("budget", f"synthesis template budget invalid: {error}") from error
+        if not synthesis_budget.fits_within(mission.budget):
+            raise GraphRejected(
+                "budget",
+                f"synthesis task budget {synthesis_budget.to_json()} exceeds the Mission "
+                "budget (§18.2)",
             )
     roots, leaves = roots_and_leaves(proposal.edges())
     if not roots or not leaves:

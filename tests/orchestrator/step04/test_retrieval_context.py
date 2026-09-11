@@ -527,9 +527,7 @@ def test_s4_02_unverified_claims_never_reach_a_worker_as_fact_and_citing_one_fai
             assert {c.status for c in a_claims} == {
                 ClaimStatus.SUPPORTED
             }  # confident, no test coverage
-            assert store.list_knowledge(mission.id) == [] or all(
-                k.source_task != tasks["A"].id for k in store.list_knowledge(mission.id)
-            )
+            assert all(k.source_task != tasks["A"].id for k in store.list_knowledge(mission.id))
             b_attempts = store.list_attempts(tasks["B"].id)
             assert [a.status for a in b_attempts] == [
                 AttemptStatus.RETRY_WAIT,

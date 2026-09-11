@@ -226,6 +226,8 @@ class Store:
                 self._apply_migration(connection, migration)
 
     def _apply_migration(self, connection: sqlite3.Connection, migration: schema.Migration) -> None:
+        if migration.version == 2:
+            self._renumber_artifact_lineage(connection)  # P1-5: v1 libraries may hold duplicates
         for statement in migration.ddl.split(";"):
             if statement.strip():
                 connection.execute(statement)
@@ -233,6 +235,32 @@ class Store:
             "INSERT INTO orch_schema_migrations VALUES (?,?,?,?)",
             (migration.version, migration.name, migration.checksum, self.now),
         )
+
+    @staticmethod
+    def _renumber_artifact_lineage(connection: sqlite3.Connection) -> None:
+        """Step-3 libraries (L3-2) could record two candidates of one path with the same
+        version; before the (mission, path, version) index exists, renumber each lineage
+        in (created_at, artifact_id) order — ids and hashes are untouched."""
+
+        rows = connection.execute(
+            "SELECT artifact_id, mission_id, path, version, json FROM artifacts"
+            " ORDER BY mission_id, path, created_at, artifact_id"
+        ).fetchall()
+        current: tuple[str, str] | None = None
+        counter = 0
+        for artifact_id, mission_id, path, version, raw in rows:
+            key = (mission_id, path)
+            if key != current:
+                current, counter = key, 0
+            counter += 1
+            if counter == version:
+                continue
+            document = _loads(raw)
+            document["version"] = counter
+            connection.execute(
+                "UPDATE artifacts SET version = ?, json = ? WHERE artifact_id = ?",
+                (counter, canonical_json(document), artifact_id),
+            )
 
     # ------------------------------------------------------------- transactions
     @contextmanager

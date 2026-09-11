@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ..artifacts.paths import under_prefix
 from ..artifacts.workspace import Workspace, sha256_file
 from ..contracts import Artifact, ResultEnvelope, Task
 from ..memory.verified_knowledge import KnowledgeIndex
@@ -84,9 +85,18 @@ def check_arbitration(envelope: ResultEnvelope, task: Task) -> list[str]:
             )
             continue
         evidence = matching[0].evidence or envelope.evidence
-        if not any(item.startswith("pytest:") for item in evidence):
+        probes = [item for item in evidence if item.startswith("pytest:")]
+        if not probes:
             problems.append(
                 f"arbitration of {key!r} must cite an external check (pytest: evidence), not an opinion"
+            )
+            continue
+        directory = str(task.context.get("artifact_dir") or "")
+        if directory and not any(
+            under_prefix(item.removeprefix("pytest:"), (directory,)) for item in probes
+        ):
+            problems.append(
+                f"arbitration of {key!r} must run its probe under {directory}/ (got {probes})"
             )
     return problems
 

@@ -95,3 +95,9 @@
 | Raw Logs 层 | 本版本 = 对既有 `events`/`results`/`artifacts`/SDK 回执的只读引用视图（`Blackboard.raw_refs`），不建原始日志表、不收集隐藏推理；Context Builder 只给引用；包内不含任何凭证字段 | §11、§21.3；ORCH §13 |
 | 知识不可变 | "由谁修改过"由 `superseded_by`/`resolves`/`confirmed_by`/`disputed_by` 链回答 | §11.2 |
 | 冲突检测范围 | 只识别显式 `contradicts` 与同 key 反 stance；语义相反但 key 不同的 Claim 不识别（遗留） | §14.4 |
+| 检索可信维度 | 本版本只对 VERIFIED 知识排序，`TRUST={"VERIFIED":1.0}`，可信因子恒定；候选 Claim 进入排序时须变更 `RETRIEVAL_VERSION`（review P2-6） | §10.1 |
+| 上下文无凭证断言 | `assert_no_secrets` 是字段名级（api_key/secret/password/token…），不检查字符串值；工作区文件正文若含密钥仍可进包（review P2-12） | §21.3 |
+| 系统预留只覆盖 token 维度 | `max_cost_micros` 上综合/冲突任务无预留，只受 Mission 上限约束；第 6 步预算硬限时一并处理（review P2-12） | ORCH §12.2 |
+| `Task` 可哈希性 | `Task.context` 是 dict，`__hash__` 改为 `(id, version)`（review P2-15） | — |
+| 修复 Attempt 预留 = min(名义份额, 剩余 − Critic 份额)（D4-21） | 剩余 ≤ Critic 份额时仍按名义份额预留并按 §18.3 失败；S3-08b 据此改为真实耗尽 | §18.3 |
+

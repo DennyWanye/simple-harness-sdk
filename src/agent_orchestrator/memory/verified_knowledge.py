@@ -16,7 +16,7 @@ claim below VERIFIED never appears here — SUPPORTED is evidence, not knowledge
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 from ..contracts import ClaimStatus, ContractError
@@ -54,7 +54,6 @@ class KnowledgeRecord:
     confirmed_by: tuple[str, ...] = ()
     resolves: tuple[str, ...] = ()
     evidence_trust: tuple[str, ...] = ()
-    useful_for: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         for name in (
@@ -80,7 +79,6 @@ class KnowledgeRecord:
             "confirmed_by",
             "resolves",
             "evidence_trust",
-            "useful_for",
         ):
             object.__setattr__(self, name, _texts(getattr(self, name), f"knowledge.{name}"))
 
@@ -111,7 +109,6 @@ class KnowledgeIndex:
     mission_id: str
     records: Mapping[str, KnowledgeRecord]
     claim_status: Mapping[str, ClaimStatus]
-    foreign_ids: frozenset[str] = frozenset()
 
     @classmethod
     def load(cls, store: Store, mission_id: str) -> KnowledgeIndex:
@@ -135,7 +132,7 @@ class KnowledgeIndex:
             if record is None:
                 status = self.claim_status.get(reference)
                 if status is None:
-                    if reference in self.foreign_ids or ":claim-" in reference:
+                    if ":claim-" in reference:  # shaped like a claim id → another Mission's
                         problems.append(
                             f"used_knowledge {reference!r} is not in this Mission's "
                             "Verified Knowledge"

@@ -71,18 +71,4 @@ def refresh_summaries(store: Store, mission_id: str) -> Mapping[str, dict[str, A
     return summaries
 
 
-def branch_summary_for(store: Store, task_id: str, mission_id: str) -> dict[str, Any] | None:
-    tasks = store.list_tasks(mission_id)
-    tasks_by_id = {task.id: task for task in tasks}
-    task = tasks_by_id.get(task_id)
-    if task is None:
-        return None
-    subject = branch_of(task, tasks_by_id)
-    scope = "global" if subject == GLOBAL_BRANCH else "branch"
-    for summary in store.list_summaries(mission_id, scope=scope):
-        if summary.get("subject_id") == subject:
-            return summary
-    return None
-
-
-__all__ = ("branch_summary_for", "build_summaries", "refresh_summaries")
+__all__ = ("build_summaries", "refresh_summaries")

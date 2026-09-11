@@ -21,8 +21,6 @@ from knowledge_helpers import (
     two_branch_service,
 )
 
-from agent_orchestrator.runtime.assembly import OrchestratorConfig
-
 
 def test_same_path_candidates_get_distinct_versions(tmp_path):
     service, mission, (task_a, _) = two_branch_service(tmp_path)
@@ -76,7 +74,6 @@ def test_same_path_candidates_get_distinct_versions(tmp_path):
                 " VALUES ('dup', ?, ?, ?, ?, ?, 2, '{}', 1.0)",
                 (mission.id, task_a.id, second.id, path, HASH_B),
             )
-    assert OrchestratorConfig  # keep the import (config knobs are exercised by the closure tests)
 
 
 def test_duplicate_delivery_of_the_same_turn_keeps_the_version(tmp_path):

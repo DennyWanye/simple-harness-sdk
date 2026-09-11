@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ..artifacts.paths import normalise_workspace_path, under_prefix
 from ..contracts import ClaimStatus
 
 TRUST_TRUSTED = "trusted"
@@ -42,7 +43,7 @@ class EvidenceRef:
 
 
 def _normalise(path: str) -> str:
-    return path.strip().strip("/").replace("\\", "/")
+    return normalise_workspace_path(path)
 
 
 def parse_evidence(
@@ -82,12 +83,7 @@ def parse_evidence(
 
 
 def _is_untrusted(path: str, prefixes: Sequence[str]) -> bool:
-    normalised = _normalise(path)
-    return any(
-        normalised == _normalise(prefix) or normalised.startswith(_normalise(prefix) + "/")
-        for prefix in prefixes
-        if prefix.strip()
-    )
+    return under_prefix(path, tuple(prefixes))
 
 
 def ran_test_targets(verifier_results: Sequence[Mapping[str, Any]]) -> dict[str, bool]:

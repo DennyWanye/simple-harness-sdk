@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from ..contracts import Budget, Mission, Task, TaskStatus
@@ -58,6 +59,7 @@ def conflict_task(
         mission_id=mission.id,
         parent_task_ids=(),
         dependency_ids=tuple(sources),
+        kind="conflict",
         goal=f"{ARBITRATION_PREFIX}: 仲裁主题 {key} — 双方结论相反，运行外部检查后提交结论",
         rationale=(
             f"§14.4 冲突处理：{len(sides)} 条 Claim 对 {key} 得出相反结论；"
@@ -66,14 +68,13 @@ def conflict_task(
         success_criteria=(f"arbitration:{key}", f"pytest:{directory}/test_probe.py"),
         verification_policy=CONFLICT_POLICY,
         allowed_tools=mission.allowed_tools,
-        budget=Budget(max_tokens=tokens, max_attempts=max_attempts),
+        budget=inherit_limits(Budget(max_tokens=tokens, max_attempts=max_attempts), mission.budget),
         priority=10.0,  # a dispute about a delivered fact is resolved before anything else
         status=TaskStatus.BLOCKED,
         version=1,
         root_goal=mission.goal,
         created_at=now,
         outputs=(f"{directory}/",),
-        kind="conflict",
         context={
             "conflict_id": conflict_id,
             "key": key,
@@ -94,7 +95,7 @@ def synthesis_task(
 ) -> Task:
     """The fixed synthesis Task from ``MissionSpec.synthesis`` (D4-8)."""
 
-    budget = Budget.from_json(template.get("budget", {}))
+    budget = inherit_limits(Budget.from_json(template.get("budget", {})), mission.budget)
     return Task(
         id=task_id,
         mission_id=mission.id,
@@ -125,6 +126,24 @@ def synthesis_task(
     )
 
 
+def inherit_limits(budget: Budget, parent: Budget) -> Budget:
+    """P0-1 / P1-2: a system template only names tokens / attempts; every other dimension
+    the Mission bounds is inherited (child = parent cap) so ``fits_within`` holds and
+    ``open_account`` can never reject a system Task inside an accept transaction."""
+
+    changes: dict[str, Any] = {}
+    for name in (
+        "max_tokens",
+        "max_cost_micros",
+        "max_attempts",
+        "max_concurrency",
+        "max_runtime_seconds",
+    ):
+        if getattr(budget, name) is None and getattr(parent, name) is not None:
+            changes[name] = getattr(parent, name)
+    return replace(budget, **changes) if changes else budget
+
+
 def system_reserve_tokens(mission: Mission) -> int:
     """Tokens the Planner's graph may not use (D4-20): the synthesis budget plus the
     conflict reserve, both fixed in the Mission spec."""
@@ -148,6 +167,7 @@ def terminal_task(tasks: Sequence[Task]) -> Task:
 
 __all__ = (
     "ARBITRATION_PREFIX",
+    "inherit_limits",
     "CONFLICT_MAX_ATTEMPTS",
     "CONFLICT_POLICY",
     "arbitration_dir",

@@ -52,3 +52,30 @@
 - **fixtures 演示**：`python -m agent_orchestrator demo --scenario knowledge-sharing --provider fixtures --evidence-dir <dir> --idempotency-key demo-s4 --max-concurrency 1` → Mission COMPLETED（verification_passed，2.18 s）；任务 [work, work, work, synthesis, conflict] 全部 COMPLETED 各 1 次 Attempt；冲突 `impl_a.empty_input` RESOLVED；知识 6 条 VERIFIED（A 的两条被 B 与综合任务复用、B 的两条被综合任务复用、仲裁结论、综合一致性结论）；血缘含 6 条知识；证据目录含 §14.3 的 7 个文件 + `knowledge.json` + `lineage.json` + 各 Attempt 产物。
 - **确定性测试**：`tests/orchestrator`（step02 + step03 + step04）101 passed, 3 skipped（真实模型 opt-in）；step04 37 条。
 - **SDK 全量回归**（提交 `986820d` 前的 HEAD `043e8e0`，脚本 scratchpad `regress/run.sh`，忽略 3 个 memory-sdk 模块）：58 failed / 2141 passed / 8 skipped / 15 errors，红集 73 条 = 基线 `baseline-known-failures.txt`，**0 新红**。
+
+## 3. 独立 review（代码）
+
+独立 review（claude-opus-5，只读；原文 `reports/code-review-round1.md`）：1 P0、4 P1、13 P2；15 项核查通过（唯一写入者、accept 原子、§25.3/Task 状态机无新边、`ordinal ≡ 拓扑序`、版本幂等、两段引用校验、整树 pytest 不定级、双实例幂等、可见性模板等）。处置：
+
+| # | 级别 | 发现 | 处置 |
+|---|---|---|---|
+| P0-1 | P0 | 冲突任务预算只给 tokens/attempts，Mission 限定其它维度时 `open_account` 抛 `BudgetError` 回滚整个 accept、异常逃出循环 | `inherit_limits`：系统模板继承 Mission 所有受限维度；`_open_conflict` 捕获 `BudgetError` → `ConflictOpenDeferred(budget_unavailable)`，accept 永不因预算回滚（`test_step04_review_round1.py` 前两条） |
+| P1-2 | P1 | 综合模板预算同源问题，且 `validate_graph` 不校验它 | 同上继承；`validate_graph` 校验综合模板预算 `fits_within`（`GraphRejected(budget)`，第三条测试） |
+| P1-3 | P1 | `is_untrusted` 不折叠 `./`，`./docs/x` 绕过标记 | 新 `artifacts/paths.py::normalise_workspace_path/under_prefix`，网关与分级共用一套归一化 |
+| P1-4 | P1 | `pytest:./docs/x` 被判可信 → SUPPORTED | 同上；负例覆盖 `./docs`、`docs/../docs`、`pytest:./docs` |
+| P1-5 | P1 | v1 库含 L3-2 重复行时唯一索引建不起来 | 迁移 v2 前 `_renumber_artifact_lineage`（按 created_at, artifact_id 重排 version，id/hash 不变）；含重复行的 v1 库测试 |
+| P2-6 | P2 | trust 维度恒为常数 | `TRUST={"VERIFIED":1.0}` 并在 plan §6.1 登记"本版本只排 VERIFIED" |
+| P2-7 | P2 | 去重缺 `duplicate_of` | `dropped["duplicate_of"]` 记录被丢弃 id → 代表 id |
+| P2-8 | P2 | verifier 拿到争议正文而非证据引用 | `disputed_claims` 带 `evidence`；verifier 模板去掉 `content` |
+| P2-9 | P2 | `_open_conflict` 末尾 `_unblock` 空操作且注释误导 | 删除该行，注释改为事实（由 accept 的 `_unblock(unblocked_by=task)` 解锁） |
+| P2-10 | P2 | `check_arbitration` 不校验探针路径前缀 | 探针必须在 `arbitration/<key>/` 下 |
+| P2-11 | P2 | Raw Logs 无消费者；`foreign_ids`/`useful_for`/`branch_summary_for` 死代码 | synthesizer 包加 `raw_logs` 引用（`Blackboard.raw_refs`）；删除三处死代码 |
+| P2-12 | P2 | `assert_no_secrets` 只查键名；预留只覆盖 token 维度 | 登记 §6.1 已知边界（凭证断言是字段级；成本维度无系统预留，第 6 步预算硬限时一并） |
+| P2-13 | P2 | 取代时抬高被取代记录 version | 不再抬版本（version 是身份） |
+| P2-14 | P2 | 三处恒真/死代码断言 | 清理 |
+| P2-15 | P2 | `Task` 加 dict 字段后不可哈希 | `Task.__hash__ = hash((id, version))` |
+| P2-16 | P2 | R11 不可达性无断言 | 闭环测试断言所有 `ConflictOpened.seq` < 终结任务 `TaskCompleted.seq` |
+| P2-17 | P2 | D4-21 改变 S3-08 语义、旧路径无覆盖 | step03 acceptance 加注（S3-08b 改为真实耗尽）；`head_room ≤ 0` 分支即 S3-08b 所走路径 |
+| P2-18 | P2 | Judge 消歧只在 plan | `judge_mission` docstring 写明与理论 04-7 的 Judge 不同 |
+
+真实运行发现（与 review 无关、同批修复）：SDK turn 失败时 `error.output_cap_escalations` 是元组，`reject_result` 的 `_object` 校验抛 `ContractValidationError` 逃出 `run()`（运行 2）；新增 `contracts.jsonable` 在进入正式记录前把 SDK 结构转成纯 JSON（`reject_result`/`record_planning_rejected`/`mark_attempt_timed_out`/`fail_planning` 入口统一做）。运行 1 的 `max_cycles` 只计进展轮次已在 `8cdb06b` 修复。

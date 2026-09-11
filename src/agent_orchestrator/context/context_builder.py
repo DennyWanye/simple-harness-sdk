@@ -112,6 +112,15 @@ def _knowledge_section(knowledge: KnowledgeContext, visibility: str) -> dict[str
             if knowledge.global_summary is not None
             else {"status": knowledge.summary_status.get("status", "unavailable")}
         )
+        section["raw_logs"] = (  # §11 layer 1 / §10 "只引用不直接喂": ids and counts only
+            dict(knowledge.raw_refs)
+            if knowledge.raw_refs is not None
+            else {"status": "unavailable"}
+        )
+    if visibility == "verifier":  # D4-10': the independent layer gets references, not prose
+        section["disputed_claims"] = [
+            {k: v for k, v in item.items() if k != "content"} for item in section["disputed_claims"]
+        ]
     if visibility in {"critic", "explorer"}:
         section["candidate_claims"] = [dict(item) for item in knowledge.candidates]
     if visibility == "critic":

@@ -18,6 +18,7 @@ from .models import (
     Mission,
     ResultEnvelope,
     Task,
+    jsonable,
     sha256_hex,
 )
 from .state_machines import (
@@ -66,5 +67,6 @@ __all__ = (
     "assert_mission_transition",
     "assert_task_transition",
     "ids",
+    "jsonable",
     "sha256_hex",
 )

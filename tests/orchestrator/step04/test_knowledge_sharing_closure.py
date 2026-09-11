@@ -216,5 +216,8 @@ def test_s4_01_s4_03_s4_05_s4_08_knowledge_sharing_closure(tmp_path):
             assert final.final_report["unresolved_conflicts"] == []
             assert final.final_report["graph_version"] == 2
             assert final.stop_reason == "verification_passed"
+            # R11 / P2-16: no conflict can open after the terminal task completed (constructive bound)
+            terminal_done = seq(events, "TaskCompleted", task_id=tasks["S"].id)
+            assert all(e.seq < terminal_done for e in events if e.type == "ConflictOpened")
 
     asyncio.run(case())

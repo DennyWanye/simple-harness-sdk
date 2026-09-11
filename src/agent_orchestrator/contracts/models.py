@@ -107,6 +107,26 @@ def _enum(kind, value: object, name: str):  # type: ignore[no-untyped-def]
         raise ContractError(f"{name} is not one of {[str(item) for item in kind]}") from error
 
 
+def jsonable(value: object) -> Any:
+    """Coerce an SDK-side structure (tuples, sets, enums, dataclasses) into plain JSON
+    values so it can enter a contract object; strings are kept, unknown scalars become
+    their ``str`` (step 4 real-run finding: a turn error carried a tuple)."""
+
+    if isinstance(value, Mapping):
+        return {str(k): jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        items = list(value)
+        if isinstance(value, (set, frozenset)):
+            items = sorted(items, key=str)
+        return [jsonable(item) for item in items]
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    to_json = getattr(value, "to_json", None)
+    if callable(to_json):
+        return jsonable(to_json())
+    return str(value)
+
+
 def sha256_hex(payload: object) -> str:
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()  # type: ignore[arg-type]
 
@@ -268,6 +288,9 @@ class Task:
     outputs: tuple[str, ...] = ()  # step 3 (D3-7'): upstream paths this Task may rewrite
     kind: str = "work"  # step 4 (D4-7/D4-8): work | conflict | synthesis (system templates)
     context: Mapping[str, Any] = field(default_factory=dict)  # system data of a template Task
+
+    def __hash__(self) -> int:  # P2-15: ``context`` is a dict; identity is (id, version)
+        return hash((self.id, self.version))
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _text(self.id, "task.id", limit=256))
@@ -943,5 +966,6 @@ __all__ = (
     "Mission",
     "ResultEnvelope",
     "Task",
+    "jsonable",
     "sha256_hex",
 )

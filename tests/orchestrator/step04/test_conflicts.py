@@ -184,18 +184,6 @@ def test_arbitration_resolves_on_the_external_check_not_on_a_count(tmp_path):
     service, mission, (task_a, task_b), knowledge, sb, _ = _dispute(tmp_path)
     conflict = service.store.list_tasks(mission.id)[-1]
     disputed = service.store.list_claims(sb.envelope.id)[0]
-    # an opinion is not an arbitration (D4-7'): the deterministic rule refuses it
-    opinion = (
-        envelope(
-            drive_to_running(service, task_a, agent="x", turn="tx")
-            if False
-            else sb.envelope and None,
-            claims=[],
-        )
-        if False
-        else None
-    )
-    assert opinion is None
     from knowledge_helpers import envelope as make_envelope
 
     attempt, stored = _arbitrate(service, conflict)

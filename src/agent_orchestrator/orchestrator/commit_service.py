@@ -37,8 +37,8 @@ from ..contracts import (
     TaskStatus,
     ids,
 )
-from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, sha256_hex
-from ..governance.budgets import BudgetLedger, UsageFact
+from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, jsonable, sha256_hex
+from ..governance.budgets import BudgetError, BudgetLedger, UsageFact
 from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
 from ..memory.claims import grade_claim
 from ..memory.summaries import refresh_summaries
@@ -1034,14 +1034,34 @@ class CommitService:
             tokens=tokens,
             now=self._store.now,
         )
+        try:  # P0-1: an accept transaction never rolls back on a budget problem (D4-20)
+            self._ledger.open_account(
+                account_id=task_account(task.id),
+                scope="task",
+                parent_id=mission_account(mission.id),
+                mission_id=mission.id,
+                limits=task.budget,
+            )
+        except BudgetError as error:
+            record["state"] = "DEFERRED"
+            record["deferred_reason"] = f"budget_unavailable: {error}"
+            self._store.upsert_conflict(record)
+            for side in sides:
+                self._store.upsert_claim(
+                    next_claim(self._require_claim(str(side["claim_id"])), conflict_id=conflict_id)
+                )
+            self._emit(
+                "ConflictOpenDeferred",
+                mission.id,
+                key=conflict_id,
+                payload={
+                    "conflict_id": conflict_id,
+                    "key": contradiction.key,
+                    "reason": "budget_unavailable",
+                },
+            )
+            return
         self._store.insert_task(task, ordinal=len(tasks) + 1)
-        self._ledger.open_account(
-            account_id=task_account(task.id),
-            scope="task",
-            parent_id=mission_account(mission.id),
-            mission_id=mission.id,
-            limits=task.budget,
-        )
         record["task_id"] = task.id
         self._store.upsert_conflict(record)
         for side in sides:
@@ -1087,7 +1107,8 @@ class CommitService:
                 "source": {"template": "conflict", "conflict_id": conflict_id},
             },
         )
-        self._unblock(mission.id, unblocked_by=None)  # D4-7': BLOCKED → READY, same transaction
+        # D4-7': committed BLOCKED; the enclosing accept's ``_unblock(unblocked_by=task)``
+        # turns it READY in this same transaction once the current Task is COMPLETED (P2-9)
 
     def _resolve_conflict(self, mission: Mission, task: Task, resolution: KnowledgeRecord) -> None:
         """The arbitration claim became VERIFIED knowledge: the conflict is RESOLVED on
@@ -1199,7 +1220,7 @@ class CommitService:
         if record is None or record.status != "VERIFIED":
             return
         self._store.upsert_knowledge(
-            replace(record, status="SUPERSEDED", superseded_by=by, version=record.version + 1)
+            replace(record, status="SUPERSEDED", superseded_by=by)  # P2-13: version = identity
         )
         claim = self._store.get_claim(record.claim_id)
         if claim is not None and claim.status is ClaimStatus.VERIFIED:
@@ -1233,6 +1254,8 @@ class CommitService:
         detail: Mapping[str, Any],
         stop_reason: MissionStopReason = MissionStopReason.PLANNING_FAILED,
     ) -> Mission:
+        detail = jsonable(detail)
+        detail = jsonable(detail)
         with self._store.transaction():
             mission = self._require_mission(mission_id)
             if mission.status is MissionStatus.FAILED:
@@ -1719,6 +1742,7 @@ class CommitService:
     ) -> Attempt:
         """D6' stall: alive executor with no blocker and no progress within stall_seconds."""
 
+        detail = jsonable(detail)
         with self._store.transaction():
             attempt = self._require_attempt(attempt_id)
             if attempt.status is AttemptStatus.TIMED_OUT:
@@ -1905,6 +1929,7 @@ class CommitService:
     ) -> Attempt:
         """An invalid / forged submission: ResultRejected, Attempt → RETRY_WAIT, Task stays ACTIVE (S2-07)."""
 
+        detail = jsonable(detail)
         with self._store.transaction():
             attempt = self._require_attempt(attempt_id)
             if attempt.status is AttemptStatus.RETRY_WAIT:
@@ -2081,6 +2106,9 @@ class CommitService:
         self, mission_id: str, *, judgments: Sequence[Mapping[str, Any]], summary: str
     ) -> Mission:
         """Mission-level success judgment, independent of the Task PASS (D21, ORCH §12.4).
+
+        Not the "Judge" of 理论 04-7 (which picks a champion candidate; not implemented in
+        this build) — this is the check of the Mission's own success criteria.
 
         ``judgments`` carries one entry per ``Mission.success_criteria`` item with
         ``met: bool``; all met → COMPLETED, otherwise FAILED(mission_criteria_unmet)

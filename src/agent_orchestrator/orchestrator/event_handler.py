@@ -70,7 +70,7 @@ from ..contracts import (
     TaskStatus,
     ids,
 )
-from ..contracts.models import sha256_hex
+from ..contracts.models import jsonable, sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetExhausted
 from ..memory.summaries import build_summaries
@@ -649,7 +649,7 @@ class Orchestrator:
             summary = str(raw.get("summary", ""))[:400]
             late_paths = [str(p) for p in raw.get("artifacts", [])]
         except BlockError:
-            summary = text[:200] or f"turn {result.state}: {dict(result.error or {})}"[:200]
+            summary = text[:200] or f"turn {result.state}: {jsonable(result.error or {})}"[:200]
         self.commit.record_late_result(
             attempt.id, turn_id=result.turn_id, summary=summary, artifacts=late_paths
         )
@@ -941,7 +941,7 @@ class Orchestrator:
                 attempt.id,
                 turn_id=result.turn_id,
                 reason="turn_failed",
-                detail={"error": dict(result.error or {})},
+                detail={"error": jsonable(result.error or {})},
             )
             self._settle_intent(intent, "FAILED")
             self._settle_if_known(attempt)

@@ -28,15 +28,10 @@ from ..memory.verified_knowledge import KnowledgeRecord
 
 RETRIEVAL_VERSION = "retrieval-v1"
 WEIGHTS = {"relevance": 3.0, "trust": 2.0, "proximity": 1.0, "recency": 0.5, "reuse": 0.5}
-TRUST = {
-    "VERIFIED": 1.0,
-    "SUPPORTED": 0.5,
-    "DISPUTED": 0.3,
-    "UNDER_REVIEW": 0.2,
-    "PROPOSED": 0.1,
-    "REJECTED": 0.0,
-    "SUPERSEDED": 0.0,
-}
+# Only Verified Knowledge is ranked in this build (plan §6.1 / review P2-6): the trust
+# factor is constant for it and is kept as a weighted term so a later build that ranks
+# candidate claims for explorer/critic templates changes RETRIEVAL_VERSION, not the shape.
+TRUST = {"VERIFIED": 1.0}
 DEFAULT_LIMIT = 12
 _TOKEN = re.compile(r"[A-Za-z0-9_]+|[一-鿿]")
 
@@ -92,7 +87,7 @@ class RetrievalResult:
     status: str  # ok | unavailable | disabled
     items: tuple[Scored, ...]
     superseded: tuple[Mapping[str, Any], ...]
-    dropped: Mapping[str, Sequence[str]]
+    dropped: Mapping[str, Any]
     considered: int
     reason: str | None = None
     limit: int = DEFAULT_LIMIT
@@ -105,7 +100,9 @@ class RetrievalResult:
             "considered": self.considered,
             "returned": len(self.items),
             "limit": self.limit,
-            "dropped": {k: list(v) for k, v in self.dropped.items()},
+            "dropped": {
+                k: (dict(v) if isinstance(v, Mapping) else list(v)) for k, v in self.dropped.items()
+            },
             "items": [item.to_json() for item in self.items],
             "superseded": [dict(item) for item in self.superseded],
         }
@@ -210,7 +207,8 @@ def rank_knowledge(
     scored.sort(key=lambda item: (-item.score, item.id))
     kept: list[Scored] = []
     duplicates: list[str] = []
-    seen_subjects: set[str] = set()
+    duplicate_of: dict[str, str] = {}  # P2-7: dropped id → the record that represents it
+    representative: dict[str, str] = {}
     by_id = {r.id: r for r in live}
     for item in scored:
         record = by_id[item.id]
@@ -219,10 +217,11 @@ def rank_knowledge(
             if record.key
             else f"content:{normalised_content(record.content)}"
         )
-        if subject in seen_subjects:
+        if subject in representative:
             duplicates.append(item.id)
+            duplicate_of[item.id] = representative[subject]
             continue
-        seen_subjects.add(subject)
+        representative[subject] = item.id
         kept.append(item)
     truncated = [item.id for item in kept[limit:]]
     return RetrievalResult(
@@ -232,6 +231,7 @@ def rank_knowledge(
         tuple(superseded),
         {
             "duplicate": duplicates,
+            "duplicate_of": duplicate_of,
             "superseded": superseded_ids,
             "over_limit": truncated,
         },
@@ -250,6 +250,7 @@ def disputed_claims(claims: Sequence[Claim], *, mission_id: str) -> list[dict[st
             "key": claim.key,
             "stance": claim.stance,
             "content": claim.content,
+            "evidence": list(claim.evidence),  # P2-8: the verifier sees the references
             "source_task": claim.source_task,
             "conflict_id": claim.conflict_id,
             "resolved_by": claim.resolved_by,
@@ -292,6 +293,7 @@ class KnowledgeContext:
     branch_summary: Mapping[str, Any] | None = None
     global_summary: Mapping[str, Any] | None = None
     summary_status: Mapping[str, Any] = field(default_factory=lambda: {"status": "ok"})
+    raw_refs: Mapping[str, Any] | None = None  # §11 layer 1: references only (P2-11)
 
     @classmethod
     def unavailable(cls, reason: str, *, status: str = "unavailable") -> KnowledgeContext:

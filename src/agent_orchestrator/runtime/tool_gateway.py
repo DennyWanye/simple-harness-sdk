@@ -24,6 +24,7 @@ from typing import Any
 
 from simple_harness.tools import ToolResult
 
+from ..artifacts.paths import under_prefix
 from ..artifacts.workspace import Workspace, WorkspaceError, WorkspaceManager
 
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -76,12 +77,9 @@ class WorkspaceBinding:
 
 
 def is_untrusted(path: str, prefixes: tuple[str, ...]) -> bool:
-    normalised = path.strip().strip("/").replace("\\", "/")
-    for prefix in prefixes:
-        clean = prefix.strip().strip("/")
-        if clean and (normalised == clean or normalised.startswith(clean + "/")):
-            return True
-    return False
+    """Prefix check on the canonical workspace path (P1-3: ``./docs/x`` is ``docs/x``)."""
+
+    return under_prefix(path, prefixes)
 
 
 @dataclass(frozen=True, slots=True)
