@@ -76,10 +76,10 @@
 
 ## 4. 证据
 
-- **确定性测试**：`tests/orchestrator`（step02–06）171 passed / 5 skipped（skip 均为真实模型 opt-in）；step06 共 35 条（34 条确定性 + 1 条真实模型 opt-in；S6-01…S6-09 各有决定性测试，另含背压状态机、路由规则、网关顺序、验证路由单测与 CLI 演示闭环）。
-- **真实模型（deepseek-flash ×2 执行池）**：运行 1（`reports/real-multi-mission-run1.md`）两个 Mission 同时运行都 COMPLETED，82.6 s；一次真实升级（parse_kv 的 task-2 在 small 池验证失败 → large 池重试通过，`retry_of` 保留旧 Attempt）；背压两次升起与清除；全部回显 `deepseek-flash`；密钥检查：真实密钥值逐字节比对全部文件未出现，词边界模式 0 命中。
-- **SDK 全量回归**（HEAD `6e87e6f`，脚本 scratchpad `regress/run.sh`）：58 failed / 2211 passed / 10 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
-- **wheel 0.9.4**：（待回填）
+- **确定性测试**：`tests/orchestrator`（step02–06）184 passed / 5 skipped（skip 均为真实模型 opt-in）；step06 共 48 条（47 条确定性 + 1 条真实模型 opt-in；S6-01…S6-09 各有决定性测试，另含背压状态机、路由规则、网关顺序、验证路由单测、CLI 演示闭环与代码 review 处置 14 条）。
+- **真实模型（deepseek-flash ×2 执行池）**：运行 1（`reports/real-multi-mission-run1.md`，HEAD 0948c1a+E）两个 Mission 都 COMPLETED，82.6 s，一次真实升级（small 验证失败 → large 重试通过，`retry_of` 保留旧 Attempt），背压两次升起与清除；运行 2（`reports/real-multi-mission-run2.md`，代码 review 处置后 HEAD `a2ce656`）两个 Mission 都 COMPLETED，79.0 s，5 个 Attempt 全部 `only_in_own_pool = true`，服务 intent 全在 large 池，背压一次升起与清除。两次运行回显全部 `deepseek-flash`，真实密钥值逐字节比对与词边界模式扫描均 0 命中。
+- **SDK 全量回归**（代码 review 处置后 HEAD `a2ce656`，脚本 scratchpad `regress/run.sh`）：58 failed / 2224 passed / 10 skipped / 15 errors，红集 73 条 = 基线，**0 新红**（处置前 `6e87e6f` 同为 73 条 = 基线）。
+- **wheel 0.9.4（最终构建，源提交 `a2ce656`，含代码 review 处置）**：`simple_harness_sdk-0.9.4-py3-none-any.whl` sha256 `0f292029ca5aca3499db0ad780036fb23096a81776372e0b0ce43a02624803f2`；干净 venv（Python 3.12）安装后版本 0.9.4 / 0.6.0，447 passed / 8 skipped / 1 failed（唯一失败为基线已知红 `test_execution_v3_to_v4_migration::test_completed_null_continuation_*`）；安装态 `demo --scenario multi-mission --provider fixtures` exit 0。处置前的构建（`6e87e6f`，sha `794d8723…`）作废。
 
 ## 5. 遗留
 
@@ -95,3 +95,6 @@
 | L6-8 | 指标里新思路数、剪枝率、结果重复率、误报率、污染率未统计 | 第 8 步 |
 | L6-9 | 代码 review 登记项：RAISED 期间才创建的 Mission 只收到 Cleared；多实例时验证名额可能被别的实例的结果占住；异步验证只抛第一个异常；Global 账户换配置被静默忽略、Global 的运行时间按 Mission 各自计时；规划阶段不做运行时间检查；Critic / Planner 的工具调用不计入维度；等待执行池没有持久事件（重启后等待时钟重置）；env 路径的 httpx 客户端未显式关闭 | 视第 7/8 步需要 |
 
+## 6. 终态
+
+**SHIPPED**（2026-09-11）：S6-01…S6-09 全部由确定性测试判定（`tests/orchestrator` 184 passed / 5 skipped），真实 deepseek-flash 两执行池运行 1、2 都完成（运行 1 含一次真实升级，运行 2 证明每个 Attempt 只在自己的执行池里），plan review 6 P0 / 13 P1 / 7 P2 与代码 review 2 P0 / 7 P1 / 12 P2 全部处置（修复各配决定性测试，其余登记在 §5），SDK 全量回归 0 新红（73 = 基线），wheel 0.9.4 从 `a2ce656` 构建并在干净 venv 验证；推送 origin main。
