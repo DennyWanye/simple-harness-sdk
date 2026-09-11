@@ -90,6 +90,31 @@ def write_evidence(
     )
     dump(directory / "lineage.json", lineage(store, mission_id))
     dump(directory / "graph_history.json", graph_history(store, mission_id))  # step 5
+    requests = snapshot.get("approvals", [])
+    dump(  # step 7 (D7-11): the action ledger and the human record
+        directory / "actions.json",
+        {"actions": snapshot.get("actions", []), "overrides": snapshot.get("human_overrides", [])},
+    )
+    dump(
+        directory / "approvals.json",
+        {
+            "requests": requests,
+            "decisions": {r["request_id"]: store.list_decisions(r["request_id"]) for r in requests},
+            "waiting_on": snapshot.get("waiting_on", []),
+            "human_time": [
+                {
+                    "request_id": r["request_id"],
+                    "kind": r["kind"],
+                    "state": r["state"],
+                    "waited_seconds": round(
+                        float(r.get("closed_at") or store.now) - float(r.get("created_at") or 0.0),
+                        3,
+                    ),
+                }
+                for r in requests
+            ],
+        },
+    )
     dump(  # step 6 (D6-2'): the scheduler's durable signals — the transition log is the truth
         directory / "scheduler.json",
         {

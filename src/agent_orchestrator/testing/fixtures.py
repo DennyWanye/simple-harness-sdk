@@ -1429,3 +1429,76 @@ def demo_multi_mission_profiles(*, missions: int = 2, critic_delay_seconds: floa
         fallback={"small": "large"},
     )
     return profiles, rules
+
+
+# ------------------------------------------------------------ approval-action demo (step 7)
+APPROVAL_ACTION_FORMAT = (
+    "# 动作候选格式（actions/<name>.json）\n\n"
+    "一个 JSON 对象，只能有这五个字段：\n\n"
+    '- `connector`：连接器名，这里是 "test_config"（专门的测试配置服务，不是生产）\n'
+    '- `operation`：操作名，这里是 "set"\n'
+    '- `target`：配置项，这里是 "feature_flags.new_ui"\n'
+    '- `params`：参数对象，这里是 {"value": "on"}\n'
+    "- `reason`：一句话说明为什么要改\n\n"
+    "不要写别的字段（例如 approved、level、idempotency_key）：审批、风险等级和幂等键都由系统决定，"
+    "写了会被拒绝。候选只是提议——系统在人批准后才执行，并核对服务回执。\n"
+)
+APPROVAL_SEED = {"docs/ACTION_FORMAT.md": APPROVAL_ACTION_FORMAT}
+APPROVAL_CANDIDATE = {
+    "connector": "test_config",
+    "operation": "set",
+    "target": "feature_flags.new_ui",
+    "params": {"value": "on"},
+    "reason": "按 Mission 要求在测试环境打开新界面开关",
+}
+APPROVAL_SPEC = {
+    "goal": (
+        "为测试配置服务（专门的测试服务，不是生产）准备一次受控修改：把 feature_flags.new_ui 设为 on，"
+        "并写变更说明 CHANGE.md。你不能直接修改配置，只能在工作区写动作候选 actions/set-new-ui.json"
+        "（格式见 docs/ACTION_FORMAT.md）；系统会在人批准后执行并核对回执。拆解时只需要一个 Task，"
+        "它的 outputs 必须包含 CHANGE.md 与 actions/set-new-ui.json，验收层用 format_check 与 rule_check。"
+    ),
+    "success_criteria": ["file:CHANGE.md", "action:test_config.set:feature_flags.new_ui"],
+    "allowed_tools": ["workspace_read_file", "workspace_write_file", "workspace_list", "run_tests"],
+}
+
+
+def demo_approval_action_provider() -> RoleScriptedProvider:
+    """S7 demo on fixtures: one Task writes the candidate and the change note."""
+
+    task = {
+        "key": "A",
+        "goal": "写出把测试配置 feature_flags.new_ui 设为 on 的动作候选与变更说明",
+        "rationale": "真实修改只能由系统在人批准后执行；Agent 只交候选",
+        "dependencies": [],
+        "success_criteria": ["file:CHANGE.md"],
+        "verification_policy": ["format_check", "rule_check"],
+        "outputs": ["CHANGE.md", "actions/set-new-ui.json"],
+        "allowed_tools": list(APPROVAL_SPEC["allowed_tools"]),
+        "budget": {"max_tokens": 30_000, "max_attempts": 2},
+        "priority": 1.0,
+    }
+    worker: list[object] = [
+        ("workspace_list", {}),
+        ("workspace_read_file", {"path": "docs/ACTION_FORMAT.md"}),
+        (
+            "workspace_write_file",
+            {
+                "path": "CHANGE.md",
+                "content": "# 变更说明\n\n在测试配置服务把 feature_flags.new_ui 设为 on。回滚：设回 off。\n",
+            },
+        ),
+        (
+            "workspace_write_file",
+            {
+                "path": "actions/set-new-ui.json",
+                "content": json.dumps(APPROVAL_CANDIDATE, ensure_ascii=False, indent=2),
+            },
+        ),
+        envelope_step(
+            summary="写好了动作候选与变更说明，等待系统审批",
+            artifacts=["CHANGE.md", "actions/set-new-ui.json"],
+            claims=["候选把 feature_flags.new_ui 设为 on"],
+        ),
+    ]
+    return RoleScriptedProvider({"planner": [graph_proposal_step([task])], "worker": worker})

@@ -106,9 +106,25 @@ def metrics(store: Store, mission_id: str, *, unpriced: bool) -> dict[str, Any]:
         "observed": role_counts.get("worker", 0),
         "observed_share": round(role_counts.get("worker", 0) / total_roles, 4),
     }
+    approvals = store.list_approvals(mission_id)
+    actions = store.list_actions(mission_id)
     return {
         "version": METRICS_VERSION,
         "mission_id": mission_id,
+        "human": {  # step 7 (D7-11): where people came in, and how long they took
+            "requests": dict(Counter(f"{r['kind']}:{r['state']}" for r in approvals)),
+            "decisions": sum(len(store.list_decisions(r["request_id"])) for r in approvals),
+            "human_escalations": sum(
+                1 for r in approvals if r["kind"] == "review" and r.get("reason") == "needs_human"
+            ),
+            "overrides": len(store.list_overrides(mission_id)),
+            "comments": store.count_events(mission_id, "HumanCommentAdded"),
+            "human_wait_seconds": round(store.human_wait_seconds(mission_id, store.now), 3),
+        },
+        "actions": {
+            "by_state": dict(Counter(str(a["state"]) for a in actions)),
+            "handoffs": sum(int(a.get("handoffs") or 0) for a in actions),
+        },
         "health": {
             "attempts": len(attempts),
             "attempts_by_status": dict(statuses),

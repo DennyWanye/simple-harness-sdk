@@ -82,12 +82,30 @@ def trace(
         )
         if intent.mission_id == mission_id and intent.kind != "attempt"
     ]
+    actions = [  # step 7 (D7-11): decision receipt → hand-off → service receipt
+        {
+            "trace_id": trace_id,
+            "action_key": a["action_key"],
+            "action_id": a["action_id"],
+            "version": a["version"],
+            "state": a["state"],
+            "task_id": a.get("task_id"),
+            "result_id": a.get("result_id"),
+            "idempotency_key": a.get("idempotency_key"),
+            "approval_request_id": a.get("approval_request_id"),
+            "decision_receipts": list(a.get("decision_receipts") or []),
+            "handoffs": a.get("handoffs", 0),
+            "receipt_hash": (a.get("receipt") or {}).get("receipt_hash"),
+        }
+        for a in store.list_actions(mission_id)
+    ]
     return {
         "trace_id": trace_id,
         "mission_id": mission_id,
         "version": TRACE_VERSION,
         "spans": spans,
         "services": services,
+        "actions": actions,
     }
 
 

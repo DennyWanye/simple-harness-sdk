@@ -10,7 +10,14 @@ Subcommands (step 2):
     mission get|cancel|events --evidence-dir DIR MISSION_ID
     attempt get --evidence-dir DIR ATTEMPT_ID
     artifact show --evidence-dir DIR ARTIFACT_ID
-    demo --scenario single-task|static-dag|knowledge-sharing|dynamic-dag|multi-mission --provider fixtures|env --evidence-dir DIR
+    demo --scenario single-task|static-dag|knowledge-sharing|dynamic-dag|multi-mission|approval-action --provider fixtures|env --evidence-dir DIR
+    approval list|approve|reject|revoke|comment|review|arbitrate|takeover|resolve --evidence-dir DIR --as PRINCIPAL ...
+
+``approval`` (step 7) acts as the caller named by ``--as`` — in this local build a
+self-declared identity; a real deployment binds it to its authentication.  ``demo
+--scenario approval-action --pause-for-approval`` stops while the Mission waits for a
+person (exit code 4); run the same demo again with the same ``--idempotency-key`` to
+continue after ``approval approve``.
 
 ``--provider env`` reads ``SH_BASEURL`` / ``SH_APIKEY`` / ``SH_MODEL`` (and optional
 ``SH_PRICE_INPUT_MICROS`` / ``SH_PRICE_OUTPUT_MICROS`` per million tokens) from the
@@ -26,6 +33,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +48,7 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_NOT_IMPLEMENTED = 3
+EXIT_WAITING = 4  # step 7: the Mission waits for a person
 SCENARIOS = {
     "single-task": 2,
     "static-dag": 3,
@@ -214,11 +223,13 @@ def cmd_demo(args: argparse.Namespace) -> int:
     if step is None:
         _print({"error": f"unknown scenario {args.scenario}"})
         return EXIT_USAGE
-    if step not in {2, 3, 4, 5, 6}:
+    if step not in {2, 3, 4, 5, 6, 7}:
         _print({"scenario": args.scenario, "status": "not_implemented", "step": step})
         return EXIT_NOT_IMPLEMENTED
     if step == 6:
         return _demo_multi_mission(args)
+    if step == 7:
+        return _demo_approval_action(args)
     from .observability.evidence import write_evidence
     from .testing.fixtures import (
         COMPARE_SEED,
@@ -612,6 +623,225 @@ def _demo_multi_mission(args: argparse.Namespace) -> int:
     return asyncio.run(run())
 
 
+REAL_KNOBS: dict[str, Any] = {  # flash spends its output cap on reasoning (step 5 run 2)
+    "max_concurrent_model_calls": 2,
+    "default_max_output_tokens": 8192,
+    "max_output_tokens_ceiling": 32768,
+    "attempt_reserve_tokens": 120_000,
+    "critic_reserve_tokens": 30_000,
+    "manager_reserve_tokens": 30_000,
+    "planner_reserve_tokens": 30_000,
+    "lease_seconds": 120.0,
+    "stall_seconds": 300.0,
+    "turn_deadline_seconds": 900.0,
+}
+
+
+def _approval_chain(store: Store, mission_id: str, service: Any) -> dict[str, Any]:
+    """Candidate → approval → hand-off → service receipt, one line per action version."""
+
+    state = service.state()
+    return {
+        "actions": [
+            {
+                "action_key": a["action_key"],
+                "version": a["version"],
+                "state": a["state"],
+                "level": a.get("level"),
+                "connector": a["connector"],
+                "operation": a["operation"],
+                "target": a["target"],
+                "params_hash": a["params_hash"],
+                "candidate_artifact_id": a.get("artifact_id"),
+                "artifact_hash": a["artifact_hash"],
+                "approval_request_id": a.get("approval_request_id"),
+                "decision_receipts": list(a.get("decision_receipts") or []),
+                "idempotency_key": a.get("idempotency_key"),
+                "handoffs": a.get("handoffs", 0),
+                "receipt_hash": (a.get("receipt") or {}).get("receipt_hash"),
+                "service_ref": (a.get("receipt") or {}).get("service_ref"),
+            }
+            for a in store.list_actions(mission_id)
+        ],
+        "service": {
+            "kind": "test service (not production)",
+            "config": state.get("config", {}),
+            "applied_count": state.get("applied_count", 0),
+        },
+    }
+
+
+def _demo_approval_action(args: argparse.Namespace) -> int:
+    """Step 7 (ORCH §9.1): a Worker writes an action candidate against the dedicated test
+    configuration service; the system asks for approval and ``run()`` goes idle; the demo
+    operator (``--as``) approves; the executor hands the approved version off as the last
+    step of the Mission judgment and checks the service's receipt.  Passing against the
+    test service grants nothing for production."""
+
+    from .api.approvals import ApprovalApi
+    from .contracts import MissionStatus
+    from .governance.permissions import Principal
+    from .governance.policies import DeploymentPolicy
+    from .observability.evidence import write_evidence
+    from .runtime.connectors import TestConfigService
+    from .testing.fixtures import APPROVAL_SEED, APPROVAL_SPEC
+
+    if args.provider == "fixtures":
+        from .testing.fixtures import demo_approval_action_provider
+
+        provider, model, price, kind = (
+            demo_approval_action_provider(),
+            "agent-model",
+            None,
+            "fixtures",
+        )
+    else:
+        provider, model, price, kind = _provider(args, scenario="approval-action")
+    real = kind == "env"
+    root = Path(args.evidence_dir).resolve()
+    service = TestConfigService(root / "test-services" / "config.json")
+    deployment = DeploymentPolicy(enabled_connectors=("test_config",))
+    config = replace(
+        _config(args, model=model, price=price),
+        deployment_policy=deployment,
+        **(REAL_KNOBS if real else {}),
+    )
+    spec = MissionSpec(
+        goal=str(APPROVAL_SPEC["goal"]),
+        success_criteria=tuple(str(c) for c in APPROVAL_SPEC["success_criteria"]),
+        tenant_id=args.tenant,
+        idempotency_key=args.idempotency_key,
+        allowed_tools=tuple(str(t) for t in APPROVAL_SPEC["allowed_tools"]),
+        budget=Budget(max_tokens=800_000 if real else 200_000, max_attempts=8),
+        workspace_seed=APPROVAL_SEED,
+    )
+    started = time.time()
+
+    async def run() -> int:
+        async with Orchestrator(
+            config, provider, connectors={"test_config": service}
+        ) as orchestrator:
+            mission = await orchestrator.submit_mission(spec)  # idempotent: a rerun continues it
+            await orchestrator.run()
+            store = orchestrator.store
+            pending = [
+                r for r in store.list_approvals(mission.id, "PENDING") if r["kind"] == "action"
+            ]
+            approved_here = []
+            if pending and not args.pause_for_approval:
+                operator = ApprovalApi(
+                    orchestrator.commit,
+                    Principal(args.as_principal, args.as_principal),
+                    deployment=deployment,
+                )
+                approved_here = [operator.approve(r["request_id"])["receipt_hash"] for r in pending]
+                await orchestrator.run()
+            final = store.get_mission(mission.id)
+            assert final is not None
+            waiting = store.waiting_on(mission.id)
+            report = {
+                "scenario": "approval-action",
+                "mission_id": mission.id,
+                "status": str(final.status),
+                "stop_reason": final.stop_reason,
+                "waiting_on": waiting,
+                "operator": args.as_principal,
+                "approved_in_this_run": approved_here,
+                "chain": _approval_chain(store, mission.id, service),
+                "elapsed_seconds": round(time.time() - started, 2),
+                "provider_calls": getattr(provider, "by_role", None),
+                "progress": orchestrator.progress_log,
+            }
+            evidence = write_evidence(
+                directory=root,
+                store=store,
+                commit=orchestrator.commit,
+                mission_id=mission.id,
+                baseline={
+                    "agent_orchestrator": __version__,
+                    "provider_kind": kind,
+                    "model": model,
+                    "config": config.to_json(),
+                    "spec": spec.to_json(),
+                    "connectors": {
+                        "test_config": {
+                            "kind": "test service (not production)",
+                            "state_file": "test-services/config.json",
+                            "operations": {n: o.to_json() for n, o in service.operations.items()},
+                        }
+                    },
+                    "started_at": started,
+                },
+                workspaces_root=config.workspaces_root,
+                test_report=report,
+            )
+            _print(
+                {
+                    **{k: v for k, v in report.items() if k != "progress"},
+                    "evidence_files": evidence["files"],
+                }
+            )
+            if str(final.status) == "COMPLETED":
+                return EXIT_OK
+            if final.status is MissionStatus.ACTIVE and waiting:
+                return EXIT_WAITING
+            return EXIT_FAILED
+
+    return asyncio.run(run())
+
+
+def cmd_approval(args: argparse.Namespace) -> int:
+    """``approval ...`` (plan D7-10'): the caller named by ``--as`` decides; the local
+    build takes that name as given — a real deployment binds it to authentication."""
+
+    from .api.approvals import ApprovalApi, ApprovalRequestError
+    from .contracts import ContractError
+    from .governance.permissions import Principal
+    from .orchestrator.action_commits import ActionCommitError
+
+    store = _open_store(args)
+    try:
+        api = ApprovalApi(CommitService(store), Principal(args.as_principal, args.as_principal))
+        try:
+            value: Any
+            if args.action == "list":
+                value = api.list(args.mission_id, state=None if args.all else "PENDING")
+            elif args.action == "approve":
+                value = api.approve(args.request_id, nonce=args.nonce)
+            elif args.action == "reject":
+                value = api.reject(args.request_id, reason=args.reason, nonce=args.nonce)
+            elif args.action == "revoke":
+                value = api.revoke(args.request_id, reason=args.reason)
+            elif args.action == "comment":
+                value = api.comment(args.target_id, args.text)
+            elif args.action == "review":
+                value = api.review(
+                    args.request_id, verdict=args.verdict, note=args.note, nonce=args.nonce
+                )
+            elif args.action == "arbitrate":
+                value = api.arbitrate(
+                    args.request_id, ruling=args.ruling, basis=args.basis, nonce=args.nonce
+                )
+            elif args.action == "takeover":
+                value = api.takeover(
+                    args.task_id, action=args.takeover_action, basis=args.basis, note=args.note
+                )
+            else:  # resolve
+                value = api.resolve_unknown(
+                    args.action_key,
+                    outcome=args.outcome,
+                    basis=args.basis,
+                    evidence=json.loads(args.evidence),
+                )
+        except (ApprovalRequestError, ActionCommitError, ContractError, ValueError) as error:
+            _print({"error": str(error)})
+            return EXIT_FAILED
+        _print(value)
+    finally:
+        store.close()
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent_orchestrator", description=__doc__)
     parser.add_argument("--version", action="version", version=f"agent_orchestrator {__version__}")
@@ -658,9 +888,77 @@ def build_parser() -> argparse.ArgumentParser:
     common(show, provider=False)
     show.add_argument("artifact_id")
 
+    approval = sub.add_parser("approval")
+    approval_sub = approval.add_subparsers(dest="action", required=True)
+
+    def caller(p: argparse.ArgumentParser) -> None:
+        common(p, provider=False)
+        p.add_argument(
+            "--as",
+            required=True,
+            dest="as_principal",
+            help="the caller's identity (local build: self-declared; a real deployment authenticates it)",
+        )
+
+    listing = approval_sub.add_parser("list")
+    caller(listing)
+    listing.add_argument("--mission", dest="mission_id", default=None)
+    listing.add_argument("--all", action="store_true", help="every request, not only PENDING")
+    for name, target in (
+        ("approve", "request_id"),
+        ("reject", "request_id"),
+        ("revoke", "request_id"),
+    ):
+        p = approval_sub.add_parser(name)
+        caller(p)
+        p.add_argument(target)
+        if name != "approve":
+            p.add_argument("--reason", required=True)
+        if name != "revoke":
+            p.add_argument("--nonce", default=None)
+    p = approval_sub.add_parser("comment")
+    caller(p)
+    p.add_argument("target_id")
+    p.add_argument("--text", required=True)
+    p = approval_sub.add_parser("review")
+    caller(p)
+    p.add_argument("request_id")
+    p.add_argument("--verdict", required=True, choices=("pass", "fail"))
+    p.add_argument("--note", default="")
+    p.add_argument("--nonce", default=None)
+    p = approval_sub.add_parser("arbitrate")
+    caller(p)
+    p.add_argument("request_id")
+    p.add_argument("--ruling", required=True)
+    p.add_argument("--basis", required=True)
+    p.add_argument("--nonce", default=None)
+    p = approval_sub.add_parser("takeover")
+    caller(p)
+    p.add_argument("task_id")
+    p.add_argument(
+        "--action", required=True, choices=("stop", "retry_with_note"), dest="takeover_action"
+    )
+    p.add_argument("--basis", required=True)
+    p.add_argument("--note", default="")
+    p = approval_sub.add_parser("resolve")
+    caller(p)
+    p.add_argument("action_key")
+    p.add_argument("--outcome", required=True, choices=("succeeded", "failed"))
+    p.add_argument("--basis", required=True)
+    p.add_argument("--evidence", required=True, help="a JSON object with what the person saw")
+
     demo = sub.add_parser("demo")
     common(demo, provider=True)
     demo.add_argument("--scenario", required=True)
+    demo.add_argument(  # step 7
+        "--pause-for-approval",
+        action="store_true",
+        dest="pause_for_approval",
+        help="stop while the Mission waits for a person (exit 4); rerun with the same key to continue",
+    )
+    demo.add_argument(
+        "--as", default="demo-operator", dest="as_principal", help="the demo operator who approves"
+    )
     demo.add_argument(
         "--idempotency-key", default=f"demo-{int(time.time())}", dest="idempotency_key"
     )
@@ -677,6 +975,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_artifact(args)
     if args.command == "demo":
         return cmd_demo(args)
+    if args.command == "approval":
+        return cmd_approval(args)
     return EXIT_USAGE
 
 
