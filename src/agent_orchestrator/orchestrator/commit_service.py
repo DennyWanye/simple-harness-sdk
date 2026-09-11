@@ -43,8 +43,10 @@ from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
 from ..memory.claims import grade_claim
 from ..memory.summaries import refresh_summaries
 from ..memory.verified_knowledge import KnowledgeIndex, KnowledgeRecord
+from ..planning.manager import conflict_task, synthesis_task, terminal_task
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
+from ..verification.conflicts import Contradiction, find_contradiction
 from .state_machine import next_attempt, next_claim, next_mission, next_task
 
 SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
@@ -77,9 +79,10 @@ class MissionSpec:
     workspace_seed: Mapping[str, str] = field(default_factory=dict)
     untrusted_sources: tuple[str, ...] = ()  # step 4 (D4-12): path prefixes of external content
     synthesis: Mapping[str, Any] | None = None  # step 4 (D4-8): fixed synthesis Task template
+    conflict_reserve_tokens: int = 0  # step 4 (D4-20): tokens set aside for Conflict Tasks
 
     def to_json(self) -> dict[str, Any]:
-        data = {
+        data: dict[str, Any] = {
             "goal": self.goal,
             "success_criteria": list(self.success_criteria),
             "tenant_id": self.tenant_id,
@@ -95,6 +98,8 @@ class MissionSpec:
             data["untrusted_sources"] = list(self.untrusted_sources)
         if self.synthesis is not None:
             data["synthesis"] = dict(self.synthesis)
+        if self.conflict_reserve_tokens:
+            data["conflict_reserve_tokens"] = self.conflict_reserve_tokens
         return data
 
 
@@ -170,9 +175,10 @@ def task_account(task_id: str) -> str:
 
 
 class CommitService:
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store: Store, *, conflict_tasks: bool = True) -> None:
         self._store = store
         self._ledger = BudgetLedger(store)
+        self._conflict_tasks = conflict_tasks  # D4-19: False = defer every conflict
 
     @property
     def store(self) -> Store:
@@ -244,6 +250,8 @@ class CommitService:
                     "task_kind": spec.task_kind,
                     "workspace_seed": dict(spec.workspace_seed),
                     "untrusted_sources": list(spec.untrusted_sources),
+                    "conflict_reserve_tokens": int(spec.conflict_reserve_tokens),
+                    "conflict_reserve_remaining": int(spec.conflict_reserve_tokens),
                     **({} if spec.synthesis is None else {"synthesis": dict(spec.synthesis)}),
                 },
             )
@@ -559,6 +567,39 @@ class CommitService:
                         "source": dict(source),
                     },
                 )
+            terminal_id = key_to_id[graph.terminal_key]
+            template = (mission.final_report or {}).get("synthesis")
+            if template:  # D4-8: the fixed synthesis Task depends on every Planner leaf
+                synthesis = synthesis_task(
+                    mission,
+                    task_id=ids.task_id(mission_id, len(tasks) + 1),
+                    template=template,
+                    leaves=[key_to_id[key] for key in graph.order if key in set(graph.leaves)],
+                    now=self._store.now,
+                )
+                self._store.insert_task(synthesis, ordinal=len(tasks) + 1)
+                self._ledger.open_account(
+                    account_id=task_account(synthesis.id),
+                    scope="task",
+                    parent_id=mission_account(mission_id),
+                    mission_id=mission_id,
+                    limits=synthesis.budget,
+                )
+                tasks.append(synthesis)
+                terminal_id = synthesis.id
+                self._emit(
+                    "TaskCommitted",
+                    mission_id,
+                    key=synthesis.id,
+                    task_id=synthesis.id,
+                    payload={
+                        "commit_id": commit,
+                        "key": "synthesis",
+                        "dependencies": list(synthesis.dependency_ids),
+                        "proposal": dict(template),
+                        "source": {"template": "synthesis"},
+                    },
+                )
             activated = next_mission(
                 mission,
                 MissionStatus.ACTIVE,
@@ -569,7 +610,7 @@ class CommitService:
                 "commit_id": commit,
                 "graph_version": 1,
                 "task_ids": [task.id for task in tasks],
-                "terminal_task_id": key_to_id[graph.terminal_key],
+                "terminal_task_id": terminal_id,
                 "mission_version": activated.version,
                 "proposal_hash": sha256_hex(proposal_json),
                 "source": dict(source),
@@ -734,6 +775,11 @@ class CommitService:
         ]
         layers = [dict(item) for item in verifier_results]
         report: list[dict[str, Any]] = []
+        existing_claims = [
+            other
+            for other in self._store.list_mission_claims(mission.id)
+            if other.result_id != envelope.id and self._accepted_result(other.result_id)
+        ]
         for claim in self._store.list_claims(envelope.id):
             grade = grade_claim(
                 claim.id,
@@ -771,15 +817,29 @@ class CommitService:
                 *layers,
                 dict(grade.basis, layer=grade.basis.get("layer", "grading")),
             )
+            target_status = grade.status
+            contradiction = None
+            if task.kind != "conflict":
+                # D4-6': conflict precedes grading — a contested claim is capped at
+                # DISPUTED and never projected, whatever its own evidence says
+                contradiction = find_contradiction(claim, existing_claims)
+                if contradiction is not None:
+                    target_status = ClaimStatus.DISPUTED
+                    metadata["grade_before_dispute"] = metadata["grade"]
+                    metadata["grade"] = "disputed"
+                    supersedes = None
             updated = next_claim(
                 claim,
-                grade.status if grade.status is not claim.status else None,
+                target_status if target_status is not claim.status else None,
                 verifier_results=tuple(results),
                 confidence_metadata=metadata,
                 supersedes=supersedes,
             )
             self._store.upsert_claim(updated)
             report.append({"claim_id": claim.id, "status": str(updated.status), "key": claim.key})
+            if contradiction is not None:
+                self._dispute(mission, updated, contradiction, stored)
+                continue
             if updated.status is ClaimStatus.VERIFIED:
                 record = KnowledgeRecord(
                     id=updated.id,
@@ -819,6 +879,8 @@ class CommitService:
                 )
                 if supersedes is not None:
                     self._supersede_knowledge(supersedes, by=record.id)
+                if task.kind == "conflict" and record.key == task.context.get("key"):
+                    self._resolve_conflict(mission, task, record)
         for reference in envelope.used_knowledge:
             used = self._store.get_knowledge(reference)
             if used is None or used.mission_id != mission.id or used.status != "VERIFIED":
@@ -840,6 +902,272 @@ class CommitService:
                 },
             )
         return report
+
+    def _accepted_result(self, result_id: str) -> bool:
+        stored = self._store.get_result(result_id)
+        return (
+            stored is not None and stored.verification_state == "DONE" and stored.verdict == "PASS"
+        )
+
+    def _dispute(
+        self, mission: Mission, claim: Claim, contradiction: Contradiction, stored: StoredResult
+    ) -> None:
+        """§14.4 保留双方 → 标 DISPUTED → 创建 Conflict Task (D4-6' / D4-7' / D4-20)."""
+
+        other = contradiction.other
+        if other.status is ClaimStatus.VERIFIED:
+            # VERIFIED has no edge to DISPUTED (§25.3): the knowledge stays formal and is
+            # marked as contested on both the claim and its projection
+            if claim.id not in other.disputed_by:
+                self._store.upsert_claim(
+                    next_claim(other, disputed_by=(*other.disputed_by, claim.id))
+                )
+            record = self._store.get_knowledge(other.id)
+            if record is not None and claim.id not in record.disputed_by:
+                self._store.upsert_knowledge(
+                    replace(record, disputed_by=(*record.disputed_by, claim.id))
+                )
+        elif other.status is not ClaimStatus.DISPUTED:
+            self._store.upsert_claim(
+                next_claim(other, ClaimStatus.DISPUTED, disputed_by=(*other.disputed_by, claim.id))
+            )
+        self._emit(
+            "ClaimDisputed",
+            mission.id,
+            key=f"{claim.id}:{other.id}",
+            task_id=claim.source_task,
+            attempt_id=claim.source_attempt,
+            payload={
+                "claim_id": claim.id,
+                "contradicts": other.id,
+                "key": contradiction.key,
+                "reason": contradiction.reason,
+                "other_status": str(other.status),
+            },
+        )
+        existing = next(
+            (
+                c
+                for c in self._store.list_conflicts(mission.id)
+                if c["key"] == contradiction.key and c["state"] in {"OPEN", "DEFERRED"}
+            ),
+            None,
+        )
+        if existing is not None:
+            if claim.id not in existing["claim_ids"]:
+                existing = {**existing, "claim_ids": [*existing["claim_ids"], claim.id]}
+                self._store.upsert_conflict(existing)
+            self._store.upsert_claim(
+                next_claim(self._require_claim(claim.id), conflict_id=str(existing["conflict_id"]))
+            )
+            return
+        self._open_conflict(mission, contradiction, opened_by=stored.envelope.id)
+
+    def _open_conflict(
+        self, mission: Mission, contradiction: Contradiction, *, opened_by: str
+    ) -> None:
+        mission = self._require_mission(mission.id)  # fresh: the reserve is on the record
+        report = dict(mission.final_report or {})
+        ordinal = len(self._store.list_conflicts(mission.id)) + 1
+        conflict_id = f"{mission.id}:conflict-{ordinal}"
+        sides = [
+            {
+                "claim_id": side.id,
+                "stance": side.stance,
+                "content": side.content,
+                "evidence": list(side.evidence),
+                "source_task": side.source_task,
+                "status": str(self._require_claim(side.id).status),
+            }
+            for side in (contradiction.other, contradiction.claim)
+        ]
+        remaining = int(report.get("conflict_reserve_remaining") or 0)
+        per_task = int(report.get("conflict_reserve_tokens") or 0)
+        record: dict[str, Any] = {
+            "conflict_id": conflict_id,
+            "mission_id": mission.id,
+            "key": contradiction.key,
+            "state": "OPEN",
+            "task_id": None,
+            "claim_ids": [side["claim_id"] for side in sides],
+            "sides": sides,
+            "opened_by": opened_by,
+            "created_at": self._store.now,
+            "version": 1,
+            "resolution_knowledge_id": None,
+        }
+        deferred_reason = None
+        if not self._conflict_tasks:
+            deferred_reason = "knowledge_sharing_disabled"
+        elif per_task <= 0:
+            deferred_reason = "no_reserve"
+        elif remaining <= 0:
+            deferred_reason = "reserve_exhausted"
+        if deferred_reason is not None:
+            record["state"] = "DEFERRED"
+            record["deferred_reason"] = deferred_reason
+            self._store.upsert_conflict(record)
+            for side in sides:
+                self._store.upsert_claim(
+                    next_claim(self._require_claim(str(side["claim_id"])), conflict_id=conflict_id)
+                )
+            self._emit(
+                "ConflictOpenDeferred",
+                mission.id,
+                key=conflict_id,
+                payload={
+                    "conflict_id": conflict_id,
+                    "key": contradiction.key,
+                    "reason": deferred_reason,
+                },
+            )
+            return
+        tokens = min(remaining, per_task)
+        tasks = self._store.list_tasks(mission.id)
+        task = conflict_task(
+            mission,
+            task_id=ids.task_id(mission.id, len(tasks) + 1),
+            key=contradiction.key,
+            sides=sides,
+            conflict_id=conflict_id,
+            tokens=tokens,
+            now=self._store.now,
+        )
+        self._store.insert_task(task, ordinal=len(tasks) + 1)
+        self._ledger.open_account(
+            account_id=task_account(task.id),
+            scope="task",
+            parent_id=mission_account(mission.id),
+            mission_id=mission.id,
+            limits=task.budget,
+        )
+        record["task_id"] = task.id
+        self._store.upsert_conflict(record)
+        for side in sides:
+            self._store.upsert_claim(
+                next_claim(self._require_claim(str(side["claim_id"])), conflict_id=conflict_id)
+            )
+        graph_version = int(report.get("graph_version") or 1) + 1
+        self._store.update_mission(
+            next_mission(
+                mission,
+                final_report={
+                    **report,
+                    "graph_version": graph_version,
+                    "conflict_reserve_remaining": remaining - tokens,
+                },
+            ),
+            expected_version=mission.version,
+        )
+        self._emit(
+            "ConflictOpened",
+            mission.id,
+            key=conflict_id,
+            task_id=task.id,
+            payload={
+                "conflict_id": conflict_id,
+                "key": contradiction.key,
+                "claim_ids": record["claim_ids"],
+                "task_id": task.id,
+                "reserve_tokens": tokens,
+                "graph_version": graph_version,
+            },
+        )
+        self._emit(
+            "TaskCommitted",
+            mission.id,
+            key=task.id,
+            task_id=task.id,
+            payload={
+                "commit_id": conflict_id,
+                "key": "conflict",
+                "dependencies": list(task.dependency_ids),
+                "proposal": {"goal": task.goal, "success_criteria": list(task.success_criteria)},
+                "source": {"template": "conflict", "conflict_id": conflict_id},
+            },
+        )
+        self._unblock(mission.id, unblocked_by=None)  # D4-7': BLOCKED → READY, same transaction
+
+    def _resolve_conflict(self, mission: Mission, task: Task, resolution: KnowledgeRecord) -> None:
+        """The arbitration claim became VERIFIED knowledge: the conflict is RESOLVED on
+        the strength of its external check — never on a count (D4-7')."""
+
+        conflict_id = str(task.context.get("conflict_id"))
+        conflict = self._store.get_conflict(conflict_id)
+        if conflict is None or conflict["state"] == "RESOLVED":
+            return
+        resolved_ids = [str(c) for c in conflict["claim_ids"]]
+        superseded: list[str] = []
+        confirmed: list[str] = []
+        for claim_id in resolved_ids:
+            claim = self._store.get_claim(claim_id)
+            if claim is None:
+                continue
+            self._store.upsert_claim(next_claim(claim, resolved_by=resolution.id))
+            record = self._store.get_knowledge(claim_id)
+            if record is None or record.status != "VERIFIED":
+                continue
+            if record.stance != resolution.stance:
+                self._supersede_knowledge(record.id, by=resolution.id)
+                superseded.append(record.id)
+            else:
+                fresh = self._store.get_knowledge(record.id)
+                assert fresh is not None
+                self._store.upsert_knowledge(
+                    replace(fresh, confirmed_by=(*fresh.confirmed_by, resolution.id))
+                )
+                confirmed.append(record.id)
+        current = self._store.get_knowledge(resolution.id)
+        assert current is not None
+        self._store.upsert_knowledge(replace(current, resolves=tuple(resolved_ids)))
+        self._store.upsert_conflict(
+            {
+                **conflict,
+                "state": "RESOLVED",
+                "resolution_knowledge_id": resolution.id,
+                "version": int(conflict.get("version", 1)) + 1,
+            }
+        )
+        self._emit(
+            "ConflictResolved",
+            mission.id,
+            key=conflict_id,
+            task_id=task.id,
+            payload={
+                "conflict_id": conflict_id,
+                "key": conflict["key"],
+                "resolution_knowledge_id": resolution.id,
+                "basis": dict(resolution.verifier),
+                "resolved_claims": resolved_ids,
+                "superseded": superseded,
+                "confirmed": confirmed,
+            },
+        )
+
+    def record_synthesis_gated(self, task_id: str, *, conflict_ids: Sequence[str]) -> bool:
+        """D4-8': the synthesis Task waits (no state change) while a conflict is OPEN;
+        one event per (task, conflict) — returns True when a new event was written."""
+
+        with self._store.transaction():
+            task = self._require_task(task_id)
+            new = False
+            for conflict_id in conflict_ids:
+                before = self._store.count_events(task.mission_id, "SynthesisGated")
+                self._emit(
+                    "SynthesisGated",
+                    task.mission_id,
+                    key=f"{task_id}:{conflict_id}",
+                    task_id=task_id,
+                    payload={"conflict_id": conflict_id},
+                )
+                new = new or self._store.count_events(task.mission_id, "SynthesisGated") > before
+            return new
+
+    def _require_claim(self, claim_id: str) -> Claim:
+        claim = self._store.get_claim(claim_id)
+        if claim is None:
+            raise CommitRejected(f"unknown claim {claim_id}")
+        return claim
 
     def record_retrieval_unavailable(self, task_id: str, *, reason: str, policy: str) -> int:
         """S4-07 / D4-11': one durable event per failed retrieval; returns the count so
@@ -1674,6 +2002,26 @@ class CommitService:
                     ],
                     owner=owner,
                 )
+            open_conflicts = [
+                c["conflict_id"] for c in self._store.list_conflicts(mission.id, state="OPEN")
+            ]
+            if task.kind == "synthesis" and open_conflicts:  # D4-8': guard inside the Commit
+                return self.fail_result(
+                    result_id,
+                    failures=[
+                        {
+                            "layer": "rule_check",
+                            "status": "FAIL",
+                            "summary": "synthesis_blocked_by_open_conflict: "
+                            + ", ".join(open_conflicts),
+                            "detail": {
+                                "reason": "synthesis_blocked_by_open_conflict",
+                                "conflicts": open_conflicts,
+                            },
+                        }
+                    ],
+                    owner=owner,
+                )
             if task.status is TaskStatus.ACTIVE:
                 verifying = next_task(task, TaskStatus.VERIFYING)
                 self._store.update_task(verifying, expected_version=task.version)
@@ -1749,15 +2097,25 @@ class CommitService:
             if [item.get("criterion") for item in judgments] != criteria:
                 raise CommitRejected("judgments must cover the Mission success criteria in order")
             met = all(bool(item.get("met")) for item in judgments)
-            terminal = tasks[-1]  # last in topological order (D3-9': the report covers all)
+            terminal = terminal_task(tasks)  # D4-7': synthesis, else the last non-conflict leaf
             report = {
                 **dict(mission.final_report or {}),
                 "accepted_result_id": terminal.accepted_result_id,
                 "accepted_artifacts": list(terminal.accepted_artifacts),
+                "terminal_task_id": terminal.id,
                 "summary": summary,
                 "attempts": sum(task.attempt_count for task in tasks),
                 "tasks": self._task_reports(mission_id),
                 "success_criteria": [dict(item) for item in judgments],
+                "conflicts": self._store.list_conflicts(mission_id),
+                "unresolved_conflicts": [
+                    c["conflict_id"]
+                    for c in self._store.list_conflicts(mission_id)
+                    if c["state"] != "RESOLVED"
+                ],
+                "knowledge": [
+                    k.id for k in self._store.list_knowledge(mission_id, status="VERIFIED")
+                ],
             }
             self._emit(
                 "MissionSuccessJudged",
@@ -1873,6 +2231,16 @@ class CommitService:
             for attempt in self._store.list_attempts(task_id):
                 if attempt.status in OPEN_ATTEMPT_STATES:
                     self._close_attempt(attempt, AttemptStatus.CANCELLED, reason="task_stopped")
+            if task.kind == "conflict":
+                conflict = self._store.get_conflict(str(task.context.get("conflict_id")))
+                if conflict is not None and conflict["state"] == "OPEN":
+                    self._store.upsert_conflict(
+                        {
+                            **conflict,
+                            "state": "UNRESOLVED",
+                            "version": int(conflict.get("version", 1)) + 1,
+                        }
+                    )
             report = {
                 **dict(mission.final_report or {}),
                 "stop_reason": str(stop_reason),

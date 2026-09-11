@@ -77,6 +77,7 @@ class VerifierRouter:
         recorder: Callable[[LayerResult], Awaitable[None]] | None = None,
         tampered: Sequence[str] = (),
         knowledge: KnowledgeIndex | None = None,
+        require_synthesis_knowledge: bool = True,
     ) -> Verdict:
         required = set(task.verification_policy)
         layers: list[LayerResult] = []
@@ -115,6 +116,7 @@ class VerifierRouter:
                     verification_copy=verification_copy,
                     tampered=tampered,
                     knowledge=knowledge,
+                    require_synthesis_knowledge=require_synthesis_knowledge,
                 )
             elif layer == "critic_review":
                 try:

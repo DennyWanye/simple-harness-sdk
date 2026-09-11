@@ -99,13 +99,14 @@ def rule_check(
     verification_copy: Workspace,
     tampered: Sequence[str] = (),
     knowledge: KnowledgeIndex | None = None,
+    require_synthesis_knowledge: bool = True,
 ) -> LayerResult:
     problems: list[str] = [
         f"protected seed file rewritten by the Worker: {path}" for path in tampered
     ]
     if knowledge is not None:
         problems.extend(check_used_knowledge(envelope.used_knowledge, knowledge))
-    if task.kind == "synthesis" and not envelope.used_knowledge:
+    if task.kind == "synthesis" and require_synthesis_knowledge and not envelope.used_knowledge:
         problems.append(
             "a synthesis result must cite the Verified Knowledge it combined (used_knowledge)"
         )

@@ -20,6 +20,7 @@ from typing import Any
 
 from ..contracts import Budget, ContractError, Mission
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, VERIFICATION_LAYERS
+from ..planning.manager import system_reserve_tokens
 from .deduplicator import find_duplicates
 from .dependency_checker import DependencyError, check_dependencies, roots_and_leaves
 
@@ -167,13 +168,15 @@ def normalise_budgets(mission: Mission, proposal: TaskGraphProposal) -> TaskGrap
     """
 
     count = max(1, len(proposal.tasks))
+    reserve = system_reserve_tokens(mission)  # D4-20: synthesis + conflict reserve
     nodes = []
     for node in proposal.tasks:
         changes: dict[str, Any] = {}
         for name in ("max_tokens", "max_cost_micros"):
             parent = getattr(mission.budget, name)
             if getattr(node.budget, name) is None and parent is not None:
-                changes[name] = parent // count
+                pool = max(0, parent - reserve) if name == "max_tokens" else parent
+                changes[name] = pool // count
         for name in ("max_attempts", "max_concurrency", "max_runtime_seconds"):
             parent = getattr(mission.budget, name)
             if getattr(node.budget, name) is None and parent is not None:
@@ -266,7 +269,8 @@ def validate_graph(mission: Mission, proposal: TaskGraphProposal) -> ValidatedGr
                 f"{node.key}: budget exceeds the Mission budget (§18.2); "
                 f"mission={mission.budget.to_json()}",
             )
-    # §18.2: the children's budgets come from the parent — in sum, per limited dimension
+    # §18.2: the children's budgets come from the parent — in sum, per limited dimension;
+    # the system tasks' reserve (D4-20) is part of the sum on the token dimension
     for name in ("max_tokens", "max_cost_micros"):
         parent = getattr(mission.budget, name)
         if parent is None:
@@ -276,11 +280,12 @@ def validate_graph(mission: Mission, proposal: TaskGraphProposal) -> ValidatedGr
             raise GraphRejected(
                 "budget", f"every task must bound {name} when the Mission bounds it"
             )
-        if total > parent:
+        reserve = system_reserve_tokens(mission) if name == "max_tokens" else 0
+        if total + reserve > parent:
             raise GraphRejected(
                 "budget",
-                f"sum of task {name} ({total}) exceeds the Mission ({parent}); "
-                f"dimension={name} remaining={parent}",
+                f"sum of task {name} ({total}) plus the system reserve ({reserve}) exceeds "
+                f"the Mission ({parent}); dimension={name} remaining={max(0, parent - reserve)}",
             )
     roots, leaves = roots_and_leaves(proposal.edges())
     if not roots or not leaves:

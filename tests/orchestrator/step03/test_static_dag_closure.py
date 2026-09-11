@@ -344,6 +344,9 @@ def test_s3_08b_task_reservation_failure_stops_the_task_and_leaves_blocked_tasks
     ]
     provider = demo_static_dag_provider()
     provider.worker_by_key["A"] = bad_a + provider.worker_by_key["A"]
+    # step 4 (D4-21): a repair reserves what the Task still has, so the exhaustion must be
+    # real — the bad Attempt's two calls settle more than A's whole 20k account
+    provider.usage_tokens = 7_000
 
     async def case():
         async with Orchestrator(

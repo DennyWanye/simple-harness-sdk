@@ -75,6 +75,7 @@ from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetExhausted
 from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
+from ..planning.manager import terminal_task
 from ..planning.planner import parse_task_graph_proposal
 from ..runtime.agent_worker import AgentBridge, Liveness, user_message_json
 from ..runtime.assembly import (
@@ -152,7 +153,7 @@ class Orchestrator:
     # ------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Orchestrator:
         self._store = Store.open(self._config.orchestrator_db)
-        self._commit = CommitService(self._store)
+        self._commit = CommitService(self._store, conflict_tasks=self._config.knowledge_sharing)
         self._assembled = assemble_orchestrator_runtime(self._config, self._provider)
         await self._assembled.runtime.__aenter__()
         self._bridge = AgentBridge(self._assembled.runtime, unpriced=self._config.unpriced)
@@ -1106,16 +1107,20 @@ class Orchestrator:
                 self._fault("after_layer_pass", "attempt")
 
         async def run_critic(test_output: str | None) -> CriticVerdict:
-            return await self._run_critic(
-                mission,
-                task,
-                view_id=attempt.id,
-                subject_prefix=f"{attempt.id}:critic",
-                account_id=task_account(task.id),
-                artifacts=artifacts,
-                test_output=test_output,
-                attempt_id=attempt.id,
-            )
+            try:
+                return await self._run_critic(
+                    mission,
+                    task,
+                    view_id=attempt.id,
+                    subject_prefix=f"{attempt.id}:critic",
+                    account_id=task_account(task.id),
+                    artifacts=artifacts,
+                    test_output=test_output,
+                    attempt_id=attempt.id,
+                )
+            except BudgetExhausted as error:
+                # a required layer that could not run is an ERROR, never a PASS (ORCH §12.4)
+                raise ContractError(f"critic could not be funded: {error}") from error
 
         verdict = await self._router.verify(
             mission=mission,
@@ -1128,6 +1133,7 @@ class Orchestrator:
             recorder=recorder,
             tampered=tampered,
             knowledge=KnowledgeIndex.load(self.store, mission.id),
+            require_synthesis_knowledge=self._config.knowledge_sharing,
         )
         if verdict.critic is not None:
             self._critic_verdicts[result_id] = verdict.critic
@@ -1327,6 +1333,15 @@ class Orchestrator:
         if any(task.status in {TaskStatus.FAILED, TaskStatus.CANCELLED} for task in tasks):
             return False  # the stop cascade already ended the Mission
         attempts = [a for task in tasks for a in self.store.list_attempts(task.id)]
+        open_conflicts = [
+            c["conflict_id"] for c in self.store.list_conflicts(mission.id, state="OPEN")
+        ]
+        if open_conflicts:  # D4-8': an open conflict gates the synthesis Task (no state change)
+            gated = [t for t in tasks if t.kind == "synthesis" and t.status is TaskStatus.READY]
+            for task in gated:
+                if self.commit.record_synthesis_gated(task.id, conflict_ids=open_conflicts):
+                    self._note(f"synthesis task {task.id} gated by open conflicts {open_conflicts}")
+            tasks = [t for t in tasks if t not in gated]
         plan = allocate(
             tasks,
             attempts,
@@ -1335,8 +1350,9 @@ class Orchestrator:
         )
         progressed = False
         for granted, _candidate in plan.grants:
-            task = self.store.get_task(granted.id)
-            assert task is not None
+            current_task = self.store.get_task(granted.id)
+            assert current_task is not None
+            task = current_task
             if task.status in TERMINAL_TASK:
                 continue
             if await self._next_attempt(mission, task, self.store.list_attempts(task.id)):
@@ -1487,6 +1503,19 @@ class Orchestrator:
         if task.budget.max_tokens is not None:
             # D3-5': explorative candidates share the Task's token budget evenly
             tokens = min(tokens, max(1, task.budget.max_tokens // self._config.candidates_per_task))
+            # step 4: a repair reserves what the Task still has rather than failing on a
+            # nominal share it no longer can afford (the reservation is a cap, not a spend)
+            with self.store.transaction():
+                remaining = self.commit.ledger.account(task_account(task.id)).remaining_tokens()
+            if remaining is not None:
+                critic_share = (
+                    self._config.critic_reserve_tokens
+                    if "critic_review" in task.verification_policy
+                    else 0
+                )
+                head_room = remaining - critic_share  # keep the Critic's own share free
+                if 0 < head_room < tokens:
+                    tokens = head_room
         try:
             attempt, _intent = self.commit.create_attempt(
                 task.id,
@@ -1585,7 +1614,7 @@ class Orchestrator:
         # running pytest in its own; the judgment Commit itself is idempotent
         view_id = f"{mission.id}-judge-{self._owner}"
         copy = self.assembled.workspaces.integrated_copy(view_id, seed=seed, files=files)
-        terminal = tasks[-1]
+        terminal = terminal_task(list(tasks))
         stored = self.store.get_result(terminal.accepted_result_id or "")
         summary = "" if stored is None else stored.envelope.summary
         test_runs: dict[str, dict[str, Any]] = {}
@@ -1619,7 +1648,7 @@ class Orchestrator:
                         artifacts=artifacts,
                         test_output=test_output or None,
                     )
-                except ContractError as error:
+                except (ContractError, BudgetExhausted) as error:
                     self._note(f"mission {mission.id}: independent judge unavailable ({error})")
         judgments = []
         for criterion in mission.success_criteria:

@@ -914,45 +914,55 @@ def compare_script_c(*, request_forbidden_tool: bool = True) -> list[object]:
     return steps
 
 
-def compare_script_arbiter(*, opinion_only: bool = False) -> list[object]:
+COMPARE_ARBITRATION_DIR = "arbitration/impl_a.empty_input"
+
+
+def compare_script_arbiter(*, opinion_only: bool = False, stance: str = "refutes") -> list[object]:
+    """K arbitrates ``impl_a.empty_input``; ``opinion_only`` submits a verdict without any
+    external check (S4-03: refused, retried); ``stance`` lets a test make the arbitration
+    contradict the earlier VERIFIED knowledge (→ SUPERSEDED)."""
+
+    verdict = f"{COMPARE_ARBITRATION_DIR}/verdict.md"
+    probe = f"{COMPARE_ARBITRATION_DIR}/test_probe.py"
     if opinion_only:
         return [
             (
                 "workspace_write_file",
-                {"path": "notes/arbitration.md", "content": "# 仲裁意见\n\n我认为 A 是对的。\n"},
+                {"path": verdict, "content": "# 仲裁意见\n\n我认为 A 是对的。\n"},
             ),
             knowledge_envelope_step(
                 summary="仲裁意见：A 正确",
-                artifacts=["notes/arbitration.md"],
+                artifacts=[verdict],
                 claims=[
                     typed_claim(
                         "impl_a 对空输入抛 ValueError",
                         key="impl_a.empty_input",
                         stance="refutes",
-                        evidence=["notes/arbitration.md"],
+                        evidence=[verdict],
                     )
                 ],
                 cite_knowledge=False,
             ),
         ]
     return [
+        ("workspace_write_file", {"path": probe, "content": COMPARE_ARBITRATION_TEST}),
         (
             "workspace_write_file",
             {
-                "path": "tests/arbitration/test_impl_a_empty_input.py",
-                "content": COMPARE_ARBITRATION_TEST,
+                "path": verdict,
+                "content": "# 仲裁结论\n\n探针测试复现：impl_a 对空输入抛 ValueError。\n",
             },
         ),
-        ("run_tests", {"path": "tests/arbitration/test_impl_a_empty_input.py"}),
+        ("run_tests", {"path": probe}),
         knowledge_envelope_step(
             summary="外部验证：impl_a 对空输入抛 ValueError",
-            artifacts=["tests/arbitration/test_impl_a_empty_input.py"],
+            artifacts=[probe, verdict],
             claims=[
                 typed_claim(
                     "impl_a 对空输入抛 ValueError（仲裁：外部测试复现）",
                     key="impl_a.empty_input",
-                    stance="refutes",
-                    evidence=["pytest:tests/arbitration/test_impl_a_empty_input.py"],
+                    stance=stance,
+                    evidence=[f"pytest:{probe}"],
                 )
             ],
             cite_knowledge=False,
