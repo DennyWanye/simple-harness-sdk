@@ -41,6 +41,7 @@ from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, sha256_hex
 from ..governance.budgets import BudgetLedger, UsageFact
 from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
 from ..memory.claims import grade_claim
+from ..memory.summaries import refresh_summaries
 from ..memory.verified_knowledge import KnowledgeIndex, KnowledgeRecord
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
@@ -839,6 +840,27 @@ class CommitService:
                 },
             )
         return report
+
+    def record_retrieval_unavailable(self, task_id: str, *, reason: str, policy: str) -> int:
+        """S4-07 / D4-11': one durable event per failed retrieval; returns the count so
+        far for this Task (it survives restarts — it is derived from the events)."""
+
+        with self._store.transaction():
+            task = self._require_task(task_id)
+            previous = sum(
+                1
+                for event in self._store.list_events(task.mission_id)
+                if event.type == "RetrievalUnavailable" and event.task_id == task_id
+            )
+            count = previous + 1
+            self._emit(
+                "RetrievalUnavailable",
+                task.mission_id,
+                key=f"{task_id}:retrieval:{count}",
+                task_id=task_id,
+                payload={"reason": reason, "policy": policy, "count": count},
+            )
+            return count
 
     def _supersede_knowledge(self, knowledge_id: str, *, by: str) -> None:
         """VERIFIED → SUPERSEDED (§25.3, the one legal edge out of VERIFIED) on both the
@@ -1691,6 +1713,7 @@ class CommitService:
                     self._close_attempt(other, AttemptStatus.SUPERSEDED, reason="sibling_accepted")
                     superseded.append(other.id)
             unblocked = self._unblock(mission.id, unblocked_by=task.id)
+            refresh_summaries(self._store, mission.id)  # D4-13: Summaries layer, same transaction
             self._emit(
                 "TaskCompleted",
                 mission.id,

@@ -40,9 +40,18 @@ from ..artifacts.versioning import (
 )
 from ..artifacts.workspace import sha256_file
 from ..context.context_builder import (
+    CONTEXT_BUILDER_VERSION,
     build_critic_package,
     build_planner_package,
     build_worker_package,
+)
+from ..context.retrieval import (
+    KnowledgeContext,
+    RetrievalUnavailable,
+    candidate_claims,
+    disputed_claims,
+    knowledge_view,
+    rank_knowledge,
 )
 from ..contracts import (
     TERMINAL_ATTEMPT,
@@ -51,6 +60,7 @@ from ..contracts import (
     Artifact,
     Attempt,
     AttemptStatus,
+    ClaimStatus,
     ContractError,
     Mission,
     MissionStatus,
@@ -63,6 +73,7 @@ from ..contracts import (
 from ..contracts.models import sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetExhausted
+from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
 from ..planning.planner import parse_task_graph_proposal
 from ..runtime.agent_worker import AgentBridge, Liveness, user_message_json
@@ -72,7 +83,13 @@ from ..runtime.assembly import (
     assemble_orchestrator_runtime,
 )
 from ..runtime.output_blocks import BlockError, extract_block, outside_text
-from ..runtime.role_templates import CRITIC, PLANNER, RESULT_ENVELOPE_TAG, WORKER
+from ..runtime.role_templates import (
+    CRITIC,
+    PLANNER,
+    RESULT_ENVELOPE_TAG,
+    TASK_ROLE_BY_KIND,
+    WORKER,
+)
 from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding, run_pytest
 from ..scheduling.allocator import allocate
 from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy
@@ -99,6 +116,7 @@ FAULT_POINTS = (
     "mid_commit",
     "after_accept_before_supersede",  # step 3 (inside the accept transaction → rolls back)
     "after_task_completed",  # step 3 (accept committed, release / next cycle not yet run)
+    "retrieval_unavailable",  # step 4 (S4-07): the knowledge index cannot be read
 )
 MAX_CRITIC_ATTEMPTS = 2
 
@@ -174,13 +192,15 @@ class Orchestrator:
     def owner(self) -> str:
         return self._owner
 
-    def arm_fault(self, point: str, *, kind: str | None = None, skip: int = 0) -> None:
+    def arm_fault(
+        self, point: str, *, kind: str | None = None, skip: int = 0, times: int = 1
+    ) -> None:
         """Arm a crash at ``point``; ``kind`` restricts it to plan / attempt / critic intents;
-        ``skip`` lets that many hits pass first (crash on the n+1-th)."""
+        ``skip`` lets that many hits pass first (crash on the n+1-th); ``times`` repeats."""
 
         if point not in FAULT_POINTS:
             raise ValueError(f"unknown fault point {point}")
-        self.store.arm(point if kind is None else f"{point}:{kind}", skip=skip)
+        self.store.arm(point if kind is None else f"{point}:{kind}", skip=skip, times=times)
 
     def _fault(self, point: str, kind: str | None = None) -> None:
         self.store.fault(point, kind)
@@ -475,13 +495,84 @@ class Orchestrator:
                 "work",
                 True,
                 tuple(config.get("allowed_tools", WORKER_TOOLS)),
+                tuple(str(p) for p in config.get("untrusted_sources", ())),
             ),
         )
 
     def _bind_critic(self, agent_id: str, config: Mapping[str, Any]) -> None:
         self.assembled.gateway.bind(
-            agent_id, WorkspaceBinding(str(config["attempt_id"]), "verify", False, CRITIC_TOOLS)
+            agent_id,
+            WorkspaceBinding(
+                str(config["attempt_id"]),
+                "verify",
+                False,
+                CRITIC_TOOLS,
+                tuple(str(p) for p in config.get("untrusted_sources", ())),
+            ),
         )
+
+    # ------------------------------------------------------------ knowledge (step 4)
+    def _gather_knowledge(
+        self, mission: Mission, task: Task, tasks_by_id: Mapping[str, Task]
+    ) -> KnowledgeContext:
+        """§10 items 4/5/7 for one Task: ranked Verified Knowledge (read back in full),
+        the disputed claims (marked), the candidate / rejected claims for the templates
+        that may see them, and the deterministic summaries.  Raises
+        ``RetrievalUnavailable`` instead of pretending the Mission has no knowledge."""
+
+        if not self._config.knowledge_sharing:
+            return KnowledgeContext.unavailable("knowledge_sharing disabled", status="disabled")
+        try:
+            self._fault("retrieval_unavailable", "attempt")
+        except InjectedCrash as error:
+            raise RetrievalUnavailable(str(error)) from error
+        try:
+            records = self.store.list_knowledge(mission.id)
+            claims = self.store.list_mission_claims(mission.id)
+            summaries = build_summaries(self.store, mission.id)
+        except (StoreBusy, OSError, ValueError) as error:  # index unreadable / not ready
+            raise RetrievalUnavailable(str(error)) from error
+        ranked = rank_knowledge(
+            task, records, tasks_by_id=tasks_by_id, limit=self._config.max_knowledge_items
+        )
+        by_id = {record.id: record for record in records}
+        from ..context.compression import GLOBAL_BRANCH, branch_of
+
+        branch = branch_of(task, tasks_by_id)
+        return KnowledgeContext(
+            retrieval=ranked,
+            verified=tuple(knowledge_view(by_id[item.id], item) for item in ranked.items),
+            disputed=tuple(disputed_claims(claims, mission_id=mission.id)),
+            candidates=tuple(
+                candidate_claims(
+                    claims,
+                    mission_id=mission.id,
+                    statuses=(
+                        ClaimStatus.PROPOSED,
+                        ClaimStatus.UNDER_REVIEW,
+                        ClaimStatus.SUPPORTED,
+                    ),
+                )
+            ),
+            rejected=tuple(
+                candidate_claims(claims, mission_id=mission.id, statuses=(ClaimStatus.REJECTED,))
+            ),
+            branch_summary=summaries.get(branch if branch != GLOBAL_BRANCH else GLOBAL_BRANCH),
+            global_summary=summaries.get(f"mission:{mission.id}"),
+        )
+
+    def _knowledge_or_unavailable(
+        self, mission: Mission, task: Task | None
+    ) -> KnowledgeContext | None:
+        """For the Critic / Verifier layer: never blocks a verification on retrieval."""
+
+        if task is None:
+            return None
+        tasks_by_id = {t.id: t for t in self.store.list_tasks(mission.id)}
+        try:
+            return self._gather_knowledge(mission, task, tasks_by_id)
+        except RetrievalUnavailable as error:
+            return KnowledgeContext.unavailable(str(error))
 
     # --------------------------------------------------------------- collect
     async def _collect(self, intent: DispatchIntent) -> bool:
@@ -1132,6 +1223,7 @@ class Orchestrator:
         attempt_id: str | None = None,
     ) -> CriticVerdict:
         copy = self.assembled.workspaces.verification_view(view_id)
+        untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
         package = build_critic_package(
             mission,
             task,
@@ -1142,6 +1234,8 @@ class Orchestrator:
             ],
             test_output=test_output,
             workspace_files=copy.list_files(),
+            knowledge=self._knowledge_or_unavailable(mission, task),
+            visibility="critic" if task is not None and task.kind == "conflict" else "verifier",
         )
         task_id = None if task is None else task.id
         last_error: ContractError | None = None
@@ -1173,6 +1267,7 @@ class Orchestrator:
                     "attempt_id": view_id,
                     "context_version": package.context_version,
                     "prompt_version": CRITIC.prompt_version,
+                    "untrusted_sources": untrusted,
                 },
                 reservation=self._reservation(self._config.critic_reserve_tokens),
                 task_id=task_id,
@@ -1297,13 +1392,37 @@ class Orchestrator:
             await self._release_mission(mission.id)
             self._note(f"task {task.id} stopped: artifact conflict ({error})")
             return True
+        role = TASK_ROLE_BY_KIND.get(task.kind, WORKER)
+        untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
+        try:
+            knowledge = self._gather_knowledge(mission, task, all_tasks)
+        except RetrievalUnavailable as error:
+            # S4-07 / D4-11': never "no knowledge" — degrade explicitly or block visibly
+            count = self.commit.record_retrieval_unavailable(
+                task.id, reason=str(error), policy=self._config.on_retrieval_failure
+            )
+            if self._config.on_retrieval_failure == "degrade":
+                knowledge = KnowledgeContext.unavailable(str(error))
+                self._note(f"task {task.id}: retrieval unavailable, degraded ({error})")
+            else:
+                if count >= self._config.max_retrieval_failures:
+                    self.commit.stop_task(
+                        task.id,
+                        stop_reason=MissionStopReason.RETRIEVAL_UNAVAILABLE,
+                        detail={"failures": count, "reason": str(error)},
+                    )
+                    await self._release_mission(mission.id)
+                    self._note(f"task {task.id} stopped: retrieval unavailable {count} times")
+                else:
+                    self._note(f"task {task.id}: retrieval unavailable, blocked ({count})")
+                return True
         placeholder = Attempt(
             id=ids.attempt_id(task.id, len(attempts) + 1),
             task_id=task.id,
             mission_id=mission.id,
-            role=WORKER.name,
+            role=role.name,
             model=self._config.model,
-            prompt_version=WORKER.prompt_version,
+            prompt_version=role.prompt_version,
             context_version="pending",
             budget_reserved=task.budget,
             lease_owner=None,
@@ -1344,11 +1463,14 @@ class Orchestrator:
                 for dep in upstream_tasks
                 if dep.id in set(task.dependency_ids)
             ],
+            knowledge=knowledge,
+            untrusted_sources=untrusted,
+            role=role.name,
         )
-        allowed = tuple(name for name in WORKER_TOOLS if name in set(task.allowed_tools))
+        allowed = tuple(name for name in role.tool_names if name in set(task.allowed_tools))
         config = AgentConfig(
-            name=f"worker-{placeholder.ordinal}",
-            instructions=WORKER.instructions,
+            name=f"{role.name}-{placeholder.ordinal}",
+            instructions=role.instructions,
             model_profile_ref=self._config.model,
             tool_names=allowed,
             limits=AgentLimits(
@@ -1368,9 +1490,9 @@ class Orchestrator:
         try:
             attempt, _intent = self.commit.create_attempt(
                 task.id,
-                role=WORKER.name,
+                role=role.name,
                 model=self._config.model,
-                prompt_version=WORKER.prompt_version,
+                prompt_version=role.prompt_version,
                 context_version=package.context_version,
                 reservation=self._reservation(tokens),
                 intent_config={
@@ -1379,8 +1501,14 @@ class Orchestrator:
                     "attempt_id": placeholder.id,
                     "allowed_tools": list(allowed),
                     "context_version": package.context_version,
-                    "prompt_version": WORKER.prompt_version,
+                    "prompt_version": role.prompt_version,
                     "task_version": task.version,
+                    "role": role.name,
+                    "knowledge": knowledge.frozen_ids,  # D4-10: what this Attempt saw
+                    "retrieval_version": knowledge.retrieval.version,
+                    "retrieval_status": knowledge.retrieval.status,
+                    "context_builder_version": CONTEXT_BUILDER_VERSION,
+                    "untrusted_sources": untrusted,
                 },
                 input_hash=sha256_hex(message),
                 retry_of=placeholder.retry_of,

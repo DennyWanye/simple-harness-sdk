@@ -155,6 +155,7 @@ class Store:
         self._depth = 0
         self._armed: set[str] = set()
         self._skips: dict[str, int] = {}
+        self._times: dict[str, int] = {}
         self.fired: list[str] = []
 
     # ---------------------------------------------------------------- lifecycle
@@ -266,12 +267,15 @@ class Store:
         return self._connection
 
     # ---------------------------------------------------------- fault injection
-    def arm(self, *points: str, skip: int = 0) -> None:
-        """Arm crash points; ``skip`` lets the first ``skip`` hits pass (crash on the next)."""
+    def arm(self, *points: str, skip: int = 0, times: int = 1) -> None:
+        """Arm crash points; ``skip`` lets the first ``skip`` hits pass (crash on the next);
+        ``times`` keeps the point armed for that many crashes (step 4: repeated retrieval
+        failures)."""
 
         self._armed.update(points)
         for point in points:
             self._skips[point] = skip
+            self._times[point] = max(1, times)
 
     def disarm(self, *points: str) -> None:
         if points:
@@ -287,7 +291,11 @@ class Store:
                 if self._skips.get(candidate, 0) > 0:
                     self._skips[candidate] -= 1
                     continue
-                self._armed.discard(candidate)
+                remaining = self._times.get(candidate, 1) - 1
+                if remaining <= 0:
+                    self._armed.discard(candidate)
+                else:
+                    self._times[candidate] = remaining
                 self.fired.append(candidate)
                 raise InjectedCrash(candidate)
 

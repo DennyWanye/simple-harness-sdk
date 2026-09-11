@@ -70,6 +70,10 @@ class OrchestratorConfig:
     turn_deadline_seconds: float = 900.0
     max_model_calls_per_turn: int = 24
     max_tool_calls_per_turn: int = 48
+    knowledge_sharing: bool = True  # step 4 (D4-19): the layer's kill switch
+    on_retrieval_failure: str = "block"  # step 4 (D4-11'): block | degrade
+    max_retrieval_failures: int = 3
+    max_knowledge_items: int = 12
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -77,6 +81,10 @@ class OrchestratorConfig:
             raise ValueError("candidates_per_task and max_concurrency must be >= 1")
         if self.max_planning_attempts < 1:
             raise ValueError("max_planning_attempts must be >= 1")
+        if self.on_retrieval_failure not in {"block", "degrade"}:
+            raise ValueError("on_retrieval_failure must be 'block' or 'degrade'")
+        if self.max_retrieval_failures < 1 or self.max_knowledge_items < 1:
+            raise ValueError("max_retrieval_failures and max_knowledge_items must be >= 1")
         if self.sdk_lease_ttl_seconds is None:
             object.__setattr__(self, "sdk_lease_ttl_seconds", self.lease_seconds / 2)
         elif self.lease_seconds < 2 * self.sdk_lease_ttl_seconds:
@@ -147,6 +155,12 @@ class OrchestratorConfig:
                 "planner_tokens": self.planner_reserve_tokens,
                 "critic_tokens": self.critic_reserve_tokens,
                 "attempt_tokens": self.attempt_reserve_tokens,
+            },
+            "knowledge": {
+                "knowledge_sharing": self.knowledge_sharing,
+                "on_retrieval_failure": self.on_retrieval_failure,
+                "max_retrieval_failures": self.max_retrieval_failures,
+                "max_knowledge_items": self.max_knowledge_items,
             },
         }
 

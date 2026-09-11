@@ -466,12 +466,19 @@ class TaskRoutedProvider(RoleScriptedProvider):
         *,
         goals: dict[str, str] | None = None,
         holds: dict[str, list[asyncio.Event | None]] | None = None,
+        per_attempt: dict[str, list[list[object]]] | None = None,
         **kwargs,
     ) -> None:  # type: ignore[no-untyped-def]
         super().__init__({"planner": list(planner_steps), "critic": list(critic_steps)}, **kwargs)
         self.worker_by_key = {key: list(steps) for key, steps in worker_by_key.items()}
         self.goals = dict(DEMO_TASK_GOALS if goals is None else goals)
         self.holds = {key: list(events) for key, events in (holds or {}).items()}
+        # step 4: ``per_attempt[key]`` = one script *per Attempt*, handed out on the
+        # Attempt's first call, so concurrent Attempts of one key never interleave
+        self.per_attempt = {
+            k: [list(s) for s in scripts] for k, scripts in (per_attempt or {}).items()
+        }
+        self.attempt_queues: dict[str, list[object]] = {}
         self.calls_by_key: dict[str, int] = {}
         self.seen_attempts: set[str] = set()
         self.inflight: set[str] = set()
@@ -497,16 +504,21 @@ class TaskRoutedProvider(RoleScriptedProvider):
             self.seen_attempts.add(attempt_id)
             pending = self.holds.get(key)
             hold = pending.pop(0) if pending else None
+            if key in self.per_attempt:
+                scripts = self.per_attempt[key]
+                if not scripts:
+                    raise AssertionError(f"no per-attempt script left for task {key!r}")
+                self.attempt_queues[attempt_id] = scripts.pop(0)
         self.inflight.add(attempt_id)
         self.max_inflight = max(self.max_inflight, len(self.inflight))
         try:
             if hold is not None:
                 await hold.wait()
             self.calls_by_key[key] = self.calls_by_key.get(key, 0) + 1
-            queue = self.worker_by_key.get(key)
+            queue = self.attempt_queues.get(attempt_id) or self.worker_by_key.get(key)
             if not queue:
                 raise AssertionError(f"worker script exhausted for task {key!r}")
-            self.scripts["worker"] = queue  # borrow the role queue for this call
+            self.scripts[role_of(request)] = queue  # borrow the role queue for this call
             return await super().invoke(request, cancel=cancel)
         finally:
             self.inflight.discard(attempt_id)
@@ -659,7 +671,9 @@ COMPARE_ARBITRATION_TEST = (
     "    with pytest.raises(ValueError):\n"
     "        parse_kv('')\n"
 )
-COMPARE_REVIEW_NOTE = "# impl_a 复核记录\n\n依据 docs/vendor_notes.md：impl_a 对空输入返回空字典。\n"
+COMPARE_REVIEW_NOTE = (
+    "# impl_a 复核记录\n\n依据 docs/vendor_notes.md：impl_a 对空输入返回空字典。\n"
+)
 COMPARE_REPORT = {
     "impl_a": {
         "basic": "passes",
@@ -737,8 +751,15 @@ COMPARE_GOALS = {task["key"]: task["goal"] for task in COMPARE_TASKS}
 COMPARE_GOALS["S"] = COMPARE_SYNTHESIS["goal"]
 
 
-def typed_claim(content: str, *, key: str | None = None, stance: str = "affirms", evidence=(), supersedes=None) -> dict[str, Any]:
-    claim: dict[str, Any] = {"content": content, "confidence": 0.85, "stance": stance, "evidence": list(evidence)}
+def typed_claim(
+    content: str, *, key: str | None = None, stance: str = "affirms", evidence=(), supersedes=None
+) -> dict[str, Any]:
+    claim: dict[str, Any] = {
+        "content": content,
+        "confidence": 0.85,
+        "stance": stance,
+        "evidence": list(evidence),
+    }
     if key is not None:
         claim["key"] = key
     if supersedes is not None:
@@ -796,7 +817,10 @@ def compare_script_a(*, verified: bool = True) -> list[object]:
 
     steps: list[object] = [
         ("workspace_read_file", {"path": "contract/CONTRACT.md"}),
-        ("workspace_write_file", {"path": "tests/probe/test_impl_a.py", "content": COMPARE_PROBE_A}),
+        (
+            "workspace_write_file",
+            {"path": "tests/probe/test_impl_a.py", "content": COMPARE_PROBE_A},
+        ),
     ]
     if verified:
         steps.append(("run_tests", {"path": "tests/probe/test_impl_a.py"}))
@@ -808,8 +832,18 @@ def compare_script_a(*, verified: bool = True) -> list[object]:
             summary="impl_a：空输入抛 ValueError（违反第 2 条），尾部分隔符被忽略（满足第 3 条）",
             artifacts=["tests/probe/test_impl_a.py"],
             claims=[
-                typed_claim("impl_a 对空输入抛 ValueError，不满足合同第 2 条", key="impl_a.empty_input", stance="refutes", evidence=evidence),
-                typed_claim("impl_a 忽略尾部分隔符，满足合同第 3 条", key="impl_a.trailing_separator", stance="affirms", evidence=evidence),
+                typed_claim(
+                    "impl_a 对空输入抛 ValueError，不满足合同第 2 条",
+                    key="impl_a.empty_input",
+                    stance="refutes",
+                    evidence=evidence,
+                ),
+                typed_claim(
+                    "impl_a 忽略尾部分隔符，满足合同第 3 条",
+                    key="impl_a.trailing_separator",
+                    stance="affirms",
+                    evidence=evidence,
+                ),
             ],
             cite_knowledge=False,
         )
@@ -820,14 +854,27 @@ def compare_script_a(*, verified: bool = True) -> list[object]:
 def compare_script_b(*, cite: bool | Callable[[dict[str, Any]], list[str]] = True) -> list[object]:
     return [
         ("workspace_read_file", {"path": "contract/CONTRACT.md"}),
-        ("workspace_write_file", {"path": "tests/probe/test_impl_b.py", "content": COMPARE_PROBE_B}),
+        (
+            "workspace_write_file",
+            {"path": "tests/probe/test_impl_b.py", "content": COMPARE_PROBE_B},
+        ),
         ("run_tests", {"path": "tests/probe/test_impl_b.py"}),
         knowledge_envelope_step(
             summary="impl_b：空输入返回 {}（满足第 2 条），尾部分隔符抛错（违反第 3 条）",
             artifacts=["tests/probe/test_impl_b.py"],
             claims=[
-                typed_claim("impl_b 对空输入返回 {}，满足合同第 2 条", key="impl_b.empty_input", stance="affirms", evidence=["pytest:tests/probe/test_impl_b.py"]),
-                typed_claim("impl_b 对尾部分隔符抛 ValueError，不满足合同第 3 条", key="impl_b.trailing_separator", stance="refutes", evidence=["pytest:tests/probe/test_impl_b.py"]),
+                typed_claim(
+                    "impl_b 对空输入返回 {}，满足合同第 2 条",
+                    key="impl_b.empty_input",
+                    stance="affirms",
+                    evidence=["pytest:tests/probe/test_impl_b.py"],
+                ),
+                typed_claim(
+                    "impl_b 对尾部分隔符抛 ValueError，不满足合同第 3 条",
+                    key="impl_b.trailing_separator",
+                    stance="refutes",
+                    evidence=["pytest:tests/probe/test_impl_b.py"],
+                ),
             ],
             cite_knowledge=cite,
         ),
@@ -844,13 +891,21 @@ def compare_script_c(*, request_forbidden_tool: bool = True) -> list[object]:
         steps.append(("run_tests", {"path": "tests"}))
     steps.extend(
         [
-            ("workspace_write_file", {"path": "notes/review_impl_a.md", "content": COMPARE_REVIEW_NOTE}),
+            (
+                "workspace_write_file",
+                {"path": "notes/review_impl_a.md", "content": COMPARE_REVIEW_NOTE},
+            ),
             knowledge_envelope_step(
                 summary="依据供应商说明，impl_a 满足合同",
                 artifacts=["notes/review_impl_a.md"],
                 evidence=["docs/vendor_notes.md", "notes/review_impl_a.md"],
                 claims=[
-                    typed_claim("impl_a 对空输入返回 {}，满足合同第 2 条", key="impl_a.empty_input", stance="affirms", evidence=["docs/vendor_notes.md"]),
+                    typed_claim(
+                        "impl_a 对空输入返回 {}，满足合同第 2 条",
+                        key="impl_a.empty_input",
+                        stance="affirms",
+                        evidence=["docs/vendor_notes.md"],
+                    ),
                 ],
                 cite_knowledge=False,
             ),
@@ -862,16 +917,32 @@ def compare_script_c(*, request_forbidden_tool: bool = True) -> list[object]:
 def compare_script_arbiter(*, opinion_only: bool = False) -> list[object]:
     if opinion_only:
         return [
-            ("workspace_write_file", {"path": "notes/arbitration.md", "content": "# 仲裁意见\n\n我认为 A 是对的。\n"}),
+            (
+                "workspace_write_file",
+                {"path": "notes/arbitration.md", "content": "# 仲裁意见\n\n我认为 A 是对的。\n"},
+            ),
             knowledge_envelope_step(
                 summary="仲裁意见：A 正确",
                 artifacts=["notes/arbitration.md"],
-                claims=[typed_claim("impl_a 对空输入抛 ValueError", key="impl_a.empty_input", stance="refutes", evidence=["notes/arbitration.md"])],
+                claims=[
+                    typed_claim(
+                        "impl_a 对空输入抛 ValueError",
+                        key="impl_a.empty_input",
+                        stance="refutes",
+                        evidence=["notes/arbitration.md"],
+                    )
+                ],
                 cite_knowledge=False,
             ),
         ]
     return [
-        ("workspace_write_file", {"path": "tests/arbitration/test_impl_a_empty_input.py", "content": COMPARE_ARBITRATION_TEST}),
+        (
+            "workspace_write_file",
+            {
+                "path": "tests/arbitration/test_impl_a_empty_input.py",
+                "content": COMPARE_ARBITRATION_TEST,
+            },
+        ),
         ("run_tests", {"path": "tests/arbitration/test_impl_a_empty_input.py"}),
         knowledge_envelope_step(
             summary="外部验证：impl_a 对空输入抛 ValueError",
@@ -895,13 +966,19 @@ def compare_script_synthesizer(*, wrong: bool = False) -> list[object]:
         report["impl_a"]["empty_input"] = "passes"  # a new error that no source had
 
     def write_report(package: dict[str, Any]) -> dict[str, Any]:
-        return {**report, "knowledge": [str(k["id"]) for k in package.get("verified_knowledge", [])]}
+        return {
+            **report,
+            "knowledge": [str(k["id"]) for k in package.get("verified_knowledge", [])],
+        }
 
     def step_write(request: ProviderRequest):  # type: ignore[no-untyped-def]
         package = package_of(request)
         return (
             "workspace_write_file",
-            {"path": "comparison.json", "content": json.dumps(write_report(package), ensure_ascii=False, indent=2)},
+            {
+                "path": "comparison.json",
+                "content": json.dumps(write_report(package), ensure_ascii=False, indent=2),
+            },
         )
 
     return [
@@ -912,7 +989,13 @@ def compare_script_synthesizer(*, wrong: bool = False) -> list[object]:
         knowledge_envelope_step(
             summary="综合报告完成" if not wrong else "综合报告完成（含错误判断）",
             artifacts=["comparison.json", "COMPARISON.md"],
-            claims=[typed_claim("对比报告与两份实现的实际行为一致", key="comparison.consistent", evidence=["pytest:tests/test_comparison.py"])],
+            claims=[
+                typed_claim(
+                    "对比报告与两份实现的实际行为一致",
+                    key="comparison.consistent",
+                    evidence=["pytest:tests/test_comparison.py"],
+                )
+            ],
             cite_knowledge=True,
         ),
     ]
@@ -933,6 +1016,7 @@ def demo_knowledge_sharing_provider(
     planner_steps: Sequence[object] | None = None,
     holds: dict[str, list[asyncio.Event | None]] | None = None,
     critic_steps: Sequence[object] | None = None,
+    per_attempt: dict[str, list[list[object]]] | None = None,
 ) -> TaskRoutedProvider:
     """Fixture provider for the step-4 demo: A ‖ B ‖ C (+ the synthesis Task S from the
     Mission spec, + the Conflict Task K the system opens when C contradicts A)."""
@@ -953,7 +1037,10 @@ def demo_knowledge_sharing_provider(
     return TaskRoutedProvider(
         list(planner_steps) if planner_steps is not None else [graph_proposal_step(graph)],
         worker_scripts,
-        critic_steps=list(critic_steps) if critic_steps is not None else [critic_step(verdict="PASS", criteria_met=True)] * 4,
+        critic_steps=list(critic_steps)
+        if critic_steps is not None
+        else [critic_step(verdict="PASS", criteria_met=True)] * 4,
         goals=goals,
         holds=holds,
+        per_attempt=per_attempt,
     )
