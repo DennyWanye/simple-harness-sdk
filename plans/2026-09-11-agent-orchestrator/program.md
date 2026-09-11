@@ -33,8 +33,8 @@
 | 1 | 底座 | BaseAgent + 独立短期记忆（0.8.0） | 已完成 |
 | 2 | 一 | 单 Task Mission 的可靠验收闭环 | **SHIPPED**（`step02/`，SDK 0.9.0） |
 | 3 | 一 | Planner 自动拆解并并行执行静态 DAG | **SHIPPED**（`step03/`，SDK 0.9.1 / agent_orchestrator 0.3.0） |
-| 4 | 二 | 团队共享知识、冲突仲裁、综合 | **实现完成，收尾中**（`step04/`，SDK 0.9.2 / agent_orchestrator 0.4.0 候选） |
-| 5 | 二 | 根据 Worker 返回动态修改 Task DAG | 待做 |
+| 4 | 二 | 团队共享知识、冲突仲裁、综合 | **SHIPPED**（`step04/`，SDK 0.9.2 / agent_orchestrator 0.4.0） |
+| 5 | 二 | 根据 Worker 返回动态修改 Task DAG | 待做（下一步） |
 | 6 | 三 | 多 Mission、多模型、背压、隔离 | 待做 |
 | 7 | 三 | Human-in-the-loop 与受控真实操作 | 待做 |
 | 8 | 四 | 归因、Replay、策略对照评测 | 待做 |

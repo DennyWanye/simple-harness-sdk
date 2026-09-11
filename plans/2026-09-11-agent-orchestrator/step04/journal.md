@@ -79,7 +79,7 @@
 | P2-18 | P2 | Judge 消歧只在 plan | `judge_mission` docstring 写明与理论 04-7 的 Judge 不同 |
 
 真实运行发现（与 review 无关、同批修复）：SDK turn 失败时 `error.output_cap_escalations` 是元组，`reject_result` 的 `_object` 校验抛 `ContractValidationError` 逃出 `run()`（运行 2）；新增 `contracts.jsonable` 在进入正式记录前把 SDK 结构转成纯 JSON（`reject_result`/`record_planning_rejected`/`mark_attempt_timed_out`/`fail_planning` 入口统一做）。运行 1 的 `max_cycles` 只计进展轮次已在 `8cdb06b` 修复。
-- **wheel 0.9.2**（脚本 scratchpad `wheel-0.9.2/build-and-verify.sh`，源提交 `7303469`，`SOURCE_DATE_EPOCH` 可复现）：`simple_harness_sdk-0.9.2-py3-none-any.whl` sha256 `c58696265288cf9efe5528c5788d5320ce8354a736e5bc232f85388a0019c0d1`；干净 venv（Python 3.12）安装后 `tests/orchestrator tests/agents tests/unit/contracts` + 迁移测试：370 passed / 6 skipped / 1 failed——唯一失败 `test_execution_v3_to_v4_migration.py::test_completed_null_continuation_*` 是基线已知红（`baseline-known-failures.txt` 第 23 行，0.9.1 wheel 验证时同样失败）；安装态 `demo --scenario knowledge-sharing --provider fixtures` → COMPLETED（verification_passed）。
+- **wheel 0.9.2**（脚本 scratchpad `wheel-0.9.2/build-and-verify.sh`，`SOURCE_DATE_EPOCH` 可复现）：第一次构建自 `7303469`（sha `c5869626…`，review 处置后）；**最终构建自 `57e6368`**（模板 v2 + 全部记录）：`simple_harness_sdk-0.9.2-py3-none-any.whl` sha256 `104b0ebf2bee610227ee1b35d0e31630acef35a22551f045c26b61cdd2eb3c27`；干净 venv（Python 3.12）安装后 `tests/orchestrator tests/agents tests/unit/contracts` + 迁移测试：370 passed / 6 skipped / 1 failed——唯一失败 `test_execution_v3_to_v4_migration.py::test_completed_null_continuation_*` 是基线已知红（`baseline-known-failures.txt` 第 23 行，0.9.1 wheel 验证时同样失败）；安装态 `demo --scenario knowledge-sharing --provider fixtures` → COMPLETED（verification_passed）。
 - **真实模型运行**（用例 `test_real_provider_knowledge_sharing.py --run-real-provider`，凭证 `deepseek.env`，脚本 scratchpad `real-s4-run{1..5}/run.sh` 带 `\bsk-` 脱敏；报告 `reports/real-knowledge-sharing-run{1,2,3,5}.md`）：
   - 运行 1（pro，534 s）：`run(max_cycles)` 把等待轮次计入上限而提前返回 → 修复 `8cdb06b`；顺带 Planner 包给出 `budget_for_tasks`（`986820d`）。
   - 运行 2（pro，329 s）：SDK turn 错误里的元组进入正式记录抛 `ContractValidationError` → 修复 `contracts.jsonable`（`7303469`）。
@@ -99,3 +99,15 @@
 | L4-6 | `knowledge_sharing=False` 只在 fixtures 上测过；真实模型下未跑 | 视需要 |
 | L4-7 | 第 3 步遗留 L3-1（真实 Planner 偏好链式拆分）、L3-3～L3-6 未变；L3-2 已在本步关闭 | 各自归属 |
 | L4-8 | 真实运行中 Mission 判定的 `pytest:tests/test_comparison.py` 目标要求 `comparison.json` 的 `knowledge` 非空——这是演示种子对综合产物的约束，不是通用规则 | 演示范围 |
+
+## 6. 终态
+
+**VERDICT: SHIPPED（第 4 步，SDK 0.9.2 / agent_orchestrator 0.4.0，wheel 源提交 `57e6368`，sha256 `104b0ebf…eb3c27`）。**
+
+- 验收：S4-01～S4-08 全部有决定性测试且通过（`tests/orchestrator/step04` 43 条；累计 `tests/orchestrator` 107 passed / 3 skipped 真实模型 opt-in）。
+- 回归：SDK 全量红集 73 = 基线，0 新红（review 处置后 HEAD `7303469`；之后只改了角色模板文本与文档）。
+- 安装：wheel 干净 venv 验证通过（唯一失败为基线已知红），安装态演示 COMPLETED。
+- 真实模型：运行 5（deepseek-flash）COMPLETED——知识被复用（33 次）、综合再验收通过、冲突经外部验证仲裁；运行 1–4 暴露并修复了 3 个编排层缺陷（max_cycles 计等待、SDK 错误元组、模板缺 schema）与 1 个配置事实（flash 的端点 id）。
+- review：plan review 23 条、代码 review 18 条全部处置（§1、§3）。
+- 遗留见 §5；下一步：第 5 步（根据 Worker 返回动态修改 Task DAG，`step05/`）。
+
