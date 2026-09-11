@@ -40,6 +40,7 @@ from ..contracts import (
     Task,
 )
 from ..contracts.models import sha256_hex
+from ..memory.verified_knowledge import KnowledgeRecord
 from . import schema
 
 
@@ -188,18 +189,12 @@ class Store:
             row[0]
             for row in self._connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        expected = schema.checksum()
         if "orch_schema_migrations" not in tables:
             if tables:
                 raise SchemaIncompatible("file is not an orchestrator library")
             with self.transaction() as connection:
-                for statement in schema.DDL.split(";"):
-                    if statement.strip():
-                        connection.execute(statement)
-                connection.execute(
-                    "INSERT INTO orch_schema_migrations VALUES (?,?,?,?)",
-                    (schema.SCHEMA_VERSION, schema.SCHEMA_NAME, expected, self.now),
-                )
+                for migration in schema.MIGRATIONS:
+                    self._apply_migration(connection, migration)
             return
         rows = [
             tuple(row)
@@ -207,8 +202,36 @@ class Store:
                 "SELECT version,name,checksum FROM orch_schema_migrations ORDER BY version"
             )
         ]
-        if rows != [(schema.SCHEMA_VERSION, schema.SCHEMA_NAME, expected)]:
+        expected = [(m.version, m.name, m.checksum) for m in schema.MIGRATIONS]
+        if rows == expected:
+            return
+        if len(rows) > len(expected) or rows != expected[: len(rows)]:
             raise SchemaIncompatible(f"orchestrator schema mismatch: {rows}")
+        # D4-15 / ORCH §12.6: an older library is backed up, then upgraded in place
+        pending = schema.MIGRATIONS[len(rows) :]
+        if str(self._path) != ":memory:" and self._path.is_file():
+            backup = self._path.with_name(
+                f"{self._path.name}.pre-schema-{pending[-1].version}.backup"
+            )
+            if not backup.exists():
+                self._connection.commit()
+                target = sqlite3.connect(backup)
+                try:
+                    self._connection.backup(target)
+                finally:
+                    target.close()
+        with self.transaction() as connection:
+            for migration in pending:
+                self._apply_migration(connection, migration)
+
+    def _apply_migration(self, connection: sqlite3.Connection, migration: schema.Migration) -> None:
+        for statement in migration.ddl.split(";"):
+            if statement.strip():
+                connection.execute(statement)
+        connection.execute(
+            "INSERT INTO orch_schema_migrations VALUES (?,?,?,?)",
+            (migration.version, migration.name, migration.checksum, self.now),
+        )
 
     # ------------------------------------------------------------- transactions
     @contextmanager
@@ -644,9 +667,10 @@ class Store:
     def upsert_claim(self, claim: Claim) -> None:
         with self.transaction() as connection:
             connection.execute(
-                "INSERT INTO claims(claim_id,mission_id,result_id,status,version,json,updated_at)"
-                " VALUES (?,?,?,?,?,?,?) ON CONFLICT(claim_id) DO UPDATE SET status = excluded.status,"
-                " version = excluded.version, json = excluded.json, updated_at = excluded.updated_at",
+                "INSERT INTO claims(claim_id,mission_id,result_id,status,version,json,updated_at,key)"
+                " VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(claim_id) DO UPDATE SET status = excluded.status,"
+                " version = excluded.version, json = excluded.json, updated_at = excluded.updated_at,"
+                " key = excluded.key",
                 (
                     claim.id,
                     claim.mission_id,
@@ -655,8 +679,15 @@ class Store:
                     claim.version,
                     canonical_json(claim.to_json()),
                     self.now,
+                    claim.key,
                 ),
             )
+
+    def get_claim(self, claim_id: str) -> Claim | None:
+        row = self._connection.execute(
+            "SELECT json FROM claims WHERE claim_id = ?", (claim_id,)
+        ).fetchone()
+        return None if row is None else Claim.from_json(_loads(row[0]))
 
     def list_claims(self, result_id: str) -> list[Claim]:
         rows = self._connection.execute(
@@ -669,6 +700,130 @@ class Store:
             "SELECT json FROM claims WHERE mission_id = ? ORDER BY claim_id", (mission_id,)
         ).fetchall()
         return [Claim.from_json(_loads(row[0])) for row in rows]
+
+    # --------------------------------------------------------------- knowledge
+    def upsert_knowledge(self, record: KnowledgeRecord) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO knowledge(knowledge_id,mission_id,claim_id,key,status,version,source_task,json,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(knowledge_id) DO UPDATE SET status = excluded.status,"
+                " version = excluded.version, json = excluded.json, updated_at = excluded.updated_at",
+                (
+                    record.id,
+                    record.mission_id,
+                    record.claim_id,
+                    record.key,
+                    record.status,
+                    record.version,
+                    record.source_task,
+                    canonical_json(record.to_json()),
+                    record.created_at,
+                    self.now,
+                ),
+            )
+
+    def get_knowledge(self, knowledge_id: str) -> KnowledgeRecord | None:
+        row = self._connection.execute(
+            "SELECT json FROM knowledge WHERE knowledge_id = ?", (knowledge_id,)
+        ).fetchone()
+        return None if row is None else KnowledgeRecord.from_json(_loads(row[0]))
+
+    def list_knowledge(
+        self, mission_id: str, *, status: str | None = None
+    ) -> list[KnowledgeRecord]:
+        """Knowledge of one Mission only — the Mission boundary is the permission
+        pre-filter of retrieval (S4-06)."""
+
+        if status is None:
+            rows = self._connection.execute(
+                "SELECT json FROM knowledge WHERE mission_id = ? ORDER BY created_at, knowledge_id",
+                (mission_id,),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT json FROM knowledge WHERE mission_id = ? AND status = ? ORDER BY created_at, knowledge_id",
+                (mission_id, status),
+            ).fetchall()
+        return [KnowledgeRecord.from_json(_loads(row[0])) for row in rows]
+
+    # --------------------------------------------------------------- summaries
+    def upsert_summary(
+        self,
+        mission_id: str,
+        *,
+        scope: str,
+        subject_id: str,
+        version: str,
+        summary: Mapping[str, Any],
+    ) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO summaries(summary_id,mission_id,scope,subject_id,version,json,created_at)"
+                " VALUES (?,?,?,?,?,?,?) ON CONFLICT(mission_id, scope, subject_id) DO UPDATE SET"
+                " version = excluded.version, json = excluded.json, created_at = excluded.created_at",
+                (
+                    f"{mission_id}:{scope}:{subject_id}",
+                    mission_id,
+                    scope,
+                    subject_id,
+                    version,
+                    canonical_json(dict(summary)),
+                    self.now,
+                ),
+            )
+
+    def list_summaries(self, mission_id: str, *, scope: str | None = None) -> list[dict[str, Any]]:
+        if scope is None:
+            rows = self._connection.execute(
+                "SELECT json FROM summaries WHERE mission_id = ? ORDER BY scope, subject_id",
+                (mission_id,),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT json FROM summaries WHERE mission_id = ? AND scope = ? ORDER BY subject_id",
+                (mission_id, scope),
+            ).fetchall()
+        return [_loads(row[0]) for row in rows]
+
+    # --------------------------------------------------------------- conflicts
+    def upsert_conflict(self, conflict: Mapping[str, Any]) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO conflicts(conflict_id,mission_id,key,state,task_id,version,json,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(conflict_id) DO UPDATE SET state = excluded.state,"
+                " task_id = excluded.task_id, version = excluded.version, json = excluded.json,"
+                " updated_at = excluded.updated_at",
+                (
+                    str(conflict["conflict_id"]),
+                    str(conflict["mission_id"]),
+                    str(conflict["key"]),
+                    str(conflict["state"]),
+                    conflict.get("task_id"),
+                    int(conflict.get("version", 1)),
+                    canonical_json(dict(conflict)),
+                    float(conflict.get("created_at") or self.now),
+                    self.now,
+                ),
+            )
+
+    def get_conflict(self, conflict_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT json FROM conflicts WHERE conflict_id = ?", (conflict_id,)
+        ).fetchone()
+        return None if row is None else _loads(row[0])
+
+    def list_conflicts(self, mission_id: str, *, state: str | None = None) -> list[dict[str, Any]]:
+        if state is None:
+            rows = self._connection.execute(
+                "SELECT json FROM conflicts WHERE mission_id = ? ORDER BY created_at, conflict_id",
+                (mission_id,),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT json FROM conflicts WHERE mission_id = ? AND state = ? ORDER BY created_at, conflict_id",
+                (mission_id, state),
+            ).fetchall()
+        return [_loads(row[0]) for row in rows]
 
     # --------------------------------------------------------------- artifacts
     def upsert_artifact(self, artifact: Artifact) -> None:
@@ -779,6 +934,9 @@ class Store:
                 if stored is not None
             ],
             "claims": [claim.to_json() for claim in self.list_mission_claims(mission_id)],
+            "knowledge": [record.to_json() for record in self.list_knowledge(mission_id)],
+            "conflicts": self.list_conflicts(mission_id),
+            "summaries": self.list_summaries(mission_id),
             "artifacts": [
                 artifact.to_json()
                 for attempt in attempts

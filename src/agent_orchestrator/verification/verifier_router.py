@@ -24,6 +24,7 @@ from typing import Any
 from ..artifacts.workspace import Workspace
 from ..contracts import Artifact, ContractError, Mission, ResultEnvelope, Task
 from ..contracts.models import VERIFICATION_LAYERS
+from ..memory.verified_knowledge import KnowledgeIndex
 from .critics import CriticVerdict
 from .deterministic_checks import (
     ERROR,
@@ -75,6 +76,7 @@ class VerifierRouter:
         run_critic: CriticRunner,
         recorder: Callable[[LayerResult], Awaitable[None]] | None = None,
         tampered: Sequence[str] = (),
+        knowledge: KnowledgeIndex | None = None,
     ) -> Verdict:
         required = set(task.verification_policy)
         layers: list[LayerResult] = []
@@ -112,6 +114,7 @@ class VerifierRouter:
                     artifacts=artifacts,
                     verification_copy=verification_copy,
                     tampered=tampered,
+                    knowledge=knowledge,
                 )
             elif layer == "critic_review":
                 try:

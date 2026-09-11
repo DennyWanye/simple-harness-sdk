@@ -22,6 +22,7 @@ from typing import Any
 
 from ..artifacts.workspace import Workspace, sha256_file
 from ..contracts import Artifact, ResultEnvelope, Task
+from ..memory.verified_knowledge import KnowledgeIndex
 from ..runtime.tool_gateway import run_pytest
 
 PASS = "PASS"
@@ -59,6 +60,37 @@ def format_check(envelope: ResultEnvelope, *, client_result_id: str | None) -> L
     )
 
 
+def check_used_knowledge(used_knowledge: Sequence[str], index: KnowledgeIndex) -> list[str]:
+    """D4-4: every cited knowledge id must be VERIFIED knowledge of *this* Mission and
+    not SUPERSEDED (the message names the current version)."""
+
+    return index.check(used_knowledge)
+
+
+def check_arbitration(envelope: ResultEnvelope, task: Task) -> list[str]:
+    """D4-7: an ``arbitration:<key>`` criterion demands exactly one claim on that key,
+    backed by an external check (a ``pytest:`` evidence item) — an opinion is not a
+    resolution."""
+
+    problems: list[str] = []
+    for criterion in task.success_criteria:
+        if not criterion.startswith("arbitration:"):
+            continue
+        key = criterion.removeprefix("arbitration:").strip()
+        matching = [claim for claim in envelope.claims if claim.key == key]
+        if len(matching) != 1:
+            problems.append(
+                f"arbitration of {key!r} needs exactly one claim on that key (got {len(matching)})"
+            )
+            continue
+        evidence = matching[0].evidence or envelope.evidence
+        if not any(item.startswith("pytest:") for item in evidence):
+            problems.append(
+                f"arbitration of {key!r} must cite an external check (pytest: evidence), not an opinion"
+            )
+    return problems
+
+
 def rule_check(
     envelope: ResultEnvelope,
     task: Task,
@@ -66,10 +98,18 @@ def rule_check(
     artifacts: Sequence[Artifact],
     verification_copy: Workspace,
     tampered: Sequence[str] = (),
+    knowledge: KnowledgeIndex | None = None,
 ) -> LayerResult:
     problems: list[str] = [
         f"protected seed file rewritten by the Worker: {path}" for path in tampered
     ]
+    if knowledge is not None:
+        problems.extend(check_used_knowledge(envelope.used_knowledge, knowledge))
+    if task.kind == "synthesis" and not envelope.used_knowledge:
+        problems.append(
+            "a synthesis result must cite the Verified Knowledge it combined (used_knowledge)"
+        )
+    problems.extend(check_arbitration(envelope, task))
     by_path = {artifact.path: artifact for artifact in artifacts}
     if envelope.outcome.value != "candidate":
         problems.append(f"outcome is {envelope.outcome}, not a candidate")
@@ -163,6 +203,8 @@ __all__ = (
     "NOT_REQUIRED",
     "PASS",
     "LayerResult",
+    "check_arbitration",
+    "check_used_knowledge",
     "code_test",
     "format_check",
     "rule_check",

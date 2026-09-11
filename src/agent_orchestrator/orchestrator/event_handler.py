@@ -63,6 +63,7 @@ from ..contracts import (
 from ..contracts.models import sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetExhausted
+from ..memory.verified_knowledge import KnowledgeIndex
 from ..planning.planner import parse_task_graph_proposal
 from ..runtime.agent_worker import AgentBridge, Liveness, user_message_json
 from ..runtime.assembly import (
@@ -1035,6 +1036,7 @@ class Orchestrator:
             run_critic=run_critic,
             recorder=recorder,
             tampered=tampered,
+            knowledge=KnowledgeIndex.load(self.store, mission.id),
         )
         if verdict.critic is not None:
             self._critic_verdicts[result_id] = verdict.critic

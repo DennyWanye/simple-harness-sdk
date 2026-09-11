@@ -14,9 +14,10 @@ Orchestrator, the API and the recovery path do.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from ..artifacts.versioning import next_versions
 from ..contracts import (
     TERMINAL_ATTEMPT,
     TERMINAL_TASK,
@@ -39,6 +40,8 @@ from ..contracts import (
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, sha256_hex
 from ..governance.budgets import BudgetLedger, UsageFact
 from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
+from ..memory.claims import grade_claim
+from ..memory.verified_knowledge import KnowledgeRecord
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
 from .state_machine import next_attempt, next_claim, next_mission, next_task
@@ -71,9 +74,11 @@ class MissionSpec:
     budget: Budget = field(default_factory=Budget)
     task_kind: str = "code"
     workspace_seed: Mapping[str, str] = field(default_factory=dict)
+    untrusted_sources: tuple[str, ...] = ()  # step 4 (D4-12): path prefixes of external content
+    synthesis: Mapping[str, Any] | None = None  # step 4 (D4-8): fixed synthesis Task template
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        data = {
             "goal": self.goal,
             "success_criteria": list(self.success_criteria),
             "tenant_id": self.tenant_id,
@@ -85,6 +90,11 @@ class MissionSpec:
             "task_kind": self.task_kind,
             "workspace_seed": dict(self.workspace_seed),
         }
+        if self.untrusted_sources:
+            data["untrusted_sources"] = list(self.untrusted_sources)
+        if self.synthesis is not None:
+            data["synthesis"] = dict(self.synthesis)
+        return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +242,8 @@ class CommitService:
                 final_report={
                     "task_kind": spec.task_kind,
                     "workspace_seed": dict(spec.workspace_seed),
+                    "untrusted_sources": list(spec.untrusted_sources),
+                    **({} if spec.synthesis is None else {"synthesis": dict(spec.synthesis)}),
                 },
             )
             self._store.insert_mission(mission, spec_hash=spec_hash)
@@ -695,6 +707,159 @@ class CommitService:
             payload={"reason": reason, "from": str(attempt.status)},
         )
         return updated
+
+    # ---------------------------------------------------------- knowledge (step 4)
+    def _grade_and_project(
+        self,
+        mission: Mission,
+        task: Task,
+        attempt: Attempt,
+        stored: StoredResult,
+        *,
+        verifier_results: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """D4-2/D4-3/D4-4/D4-5 inside the accept transaction: grade every claim of the
+        accepted result from the verification that ran, project the VERIFIED ones into
+        the Verified Knowledge store with their provenance, record the reuse chain of
+        ``used_knowledge`` and apply an explicit, legal supersession."""
+
+        envelope = stored.envelope
+        untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
+        artifact_paths = [
+            artifact.path
+            for artifact_id in stored.artifacts
+            for artifact in [self._store.get_artifact(artifact_id)]
+            if artifact is not None
+        ]
+        layers = [dict(item) for item in verifier_results]
+        report: list[dict[str, Any]] = []
+        for claim in self._store.list_claims(envelope.id):
+            grade = grade_claim(
+                claim.id,
+                claim.evidence,
+                verifier_results=layers,
+                artifact_paths=artifact_paths,
+                untrusted_prefixes=untrusted,
+            )
+            metadata = {
+                **dict(claim.confidence_metadata),
+                "grade": str(grade.status).lower()
+                if grade.status is not ClaimStatus.UNDER_REVIEW
+                else "unsupported",
+                "basis": dict(grade.basis),
+                "evidence_trust": list(grade.evidence_trust),
+            }
+            supersedes: str | None = None
+            proposed = claim.confidence_metadata.get("proposed_supersedes")
+            if proposed is not None:
+                target = self._store.get_knowledge(str(proposed))
+                if grade.status is not ClaimStatus.VERIFIED:
+                    metadata["supersedes_rejected"] = (
+                        f"only a VERIFIED claim may supersede knowledge (graded {grade.status})"
+                    )
+                elif (
+                    target is None or target.mission_id != mission.id or target.status != "VERIFIED"
+                ):
+                    metadata["supersedes_rejected"] = (
+                        f"{proposed!r} is not VERIFIED knowledge of this Mission"
+                    )
+                else:
+                    supersedes = target.id
+            results = (
+                *claim.verifier_results,
+                *layers,
+                dict(grade.basis, layer=grade.basis.get("layer", "grading")),
+            )
+            updated = next_claim(
+                claim,
+                grade.status if grade.status is not claim.status else None,
+                verifier_results=tuple(results),
+                confidence_metadata=metadata,
+                supersedes=supersedes,
+            )
+            self._store.upsert_claim(updated)
+            report.append({"claim_id": claim.id, "status": str(updated.status), "key": claim.key})
+            if updated.status is ClaimStatus.VERIFIED:
+                record = KnowledgeRecord(
+                    id=updated.id,
+                    mission_id=mission.id,
+                    claim_id=updated.id,
+                    content=updated.content,
+                    type=updated.type,
+                    status="VERIFIED",
+                    version=1,
+                    key=updated.key,
+                    stance=updated.stance,
+                    proposed_by=updated.proposed_by,
+                    source_task=task.id,
+                    source_attempt=attempt.id,
+                    source_result=envelope.id,
+                    evidence=updated.evidence,
+                    verifier=dict(grade.basis),
+                    dependencies=envelope.used_knowledge,
+                    created_at=self._store.now,
+                    supersedes=supersedes,
+                    evidence_trust=grade.evidence_trust,
+                )
+                self._store.upsert_knowledge(record)
+                self._emit(
+                    "KnowledgeCommitted",
+                    mission.id,
+                    key=record.id,
+                    task_id=task.id,
+                    attempt_id=attempt.id,
+                    payload={
+                        "knowledge_id": record.id,
+                        "key": record.key,
+                        "stance": record.stance,
+                        "verifier": dict(record.verifier),
+                        "supersedes": supersedes,
+                    },
+                )
+                if supersedes is not None:
+                    self._supersede_knowledge(supersedes, by=record.id)
+        for reference in envelope.used_knowledge:
+            used = self._store.get_knowledge(reference)
+            if used is None or used.mission_id != mission.id or used.status != "VERIFIED":
+                continue
+            if task.id not in used.used_by:
+                self._store.upsert_knowledge(replace(used, used_by=(*used.used_by, task.id)))
+            self._emit(
+                "KnowledgeUsed",
+                mission.id,
+                key=f"{envelope.id}:{used.id}",
+                task_id=task.id,
+                attempt_id=attempt.id,
+                payload={
+                    "knowledge_id": used.id,
+                    "version": used.version,
+                    "result_id": envelope.id,
+                    "source_task": used.source_task,
+                    "source_attempt": used.source_attempt,
+                },
+            )
+        return report
+
+    def _supersede_knowledge(self, knowledge_id: str, *, by: str) -> None:
+        """VERIFIED → SUPERSEDED (§25.3, the one legal edge out of VERIFIED) on both the
+        claim and its knowledge projection, pointing at the newer version."""
+
+        record = self._store.get_knowledge(knowledge_id)
+        if record is None or record.status != "VERIFIED":
+            return
+        self._store.upsert_knowledge(
+            replace(record, status="SUPERSEDED", superseded_by=by, version=record.version + 1)
+        )
+        claim = self._store.get_claim(record.claim_id)
+        if claim is not None and claim.status is ClaimStatus.VERIFIED:
+            self._store.upsert_claim(next_claim(claim, ClaimStatus.SUPERSEDED, superseded_by=by))
+        self._emit(
+            "KnowledgeSuperseded",
+            record.mission_id,
+            key=f"{knowledge_id}:{by}",
+            task_id=record.source_task,
+            payload={"knowledge_id": knowledge_id, "superseded_by": by, "key": record.key},
+        )
 
     def record_planning_rejected(
         self, mission_id: str, *, ordinal: int, reason: str, detail: Mapping[str, Any]
@@ -1293,8 +1458,18 @@ class CommitService:
                 artifacts=tuple(artifact.id for artifact in artifacts),
                 usage_refs=tuple(usage_refs),
             )
+            # D4-15 (L3-2): the version is assigned here, inside the transaction, along the
+            # (mission, path) lineage — two candidates snapshotting concurrently never collide
+            lineage = next_versions(self._store.list_mission_artifacts(attempt.mission_id))
+            registered: list[Artifact] = []
             for artifact in artifacts:
+                if self._store.get_artifact(artifact.id) is None:
+                    version = lineage.get(artifact.path, 0) + 1
+                    lineage[artifact.path] = version
+                    artifact = replace(artifact, version=version)
                 self._store.upsert_artifact(artifact)
+                registered.append(artifact)
+            stored = replace(stored, artifacts=tuple(artifact.id for artifact in registered))
             self._store.insert_result(stored)
             self._store.fault("mid_commit", "attempt")
             for index, proposal in enumerate(envelope.claims, start=1):
@@ -1306,13 +1481,20 @@ class CommitService:
                         status=ClaimStatus.PROPOSED,
                         source_task=attempt.task_id,
                         source_attempt=attempt_id,
-                        evidence=envelope.evidence,
+                        evidence=proposal.evidence or envelope.evidence,
                         dependencies=envelope.used_knowledge,
                         verifier_results=(),
-                        confidence_metadata={"self_reported_confidence": proposal.confidence},
+                        confidence_metadata={
+                            "self_reported_confidence": proposal.confidence,
+                            "proposed_supersedes": proposal.supersedes,
+                        },
                         supersedes=None,
                         mission_id=attempt.mission_id,
                         result_id=envelope.id,
+                        key=proposal.key,
+                        stance=proposal.stance,
+                        proposed_by=attempt.agent_id or "",
+                        contradicts=proposal.contradicts,
                     )
                 )
             self._store.update_attempt(
@@ -1459,14 +1641,9 @@ class CommitService:
                 self._store.update_task(verifying, expected_version=task.version)
                 task = verifying
             self._store.set_result_verification(result_id, state="DONE", verdict="PASS")
-            for claim in self._store.list_claims(result_id):
-                self._store.upsert_claim(
-                    next_claim(
-                        claim,
-                        ClaimStatus.VERIFIED,
-                        verifier_results=tuple(dict(item) for item in verifier_results),
-                    )
-                )
+            grading = self._grade_and_project(
+                mission, task, attempt, stored, verifier_results=verifier_results
+            )
             self._store.update_attempt(
                 next_attempt(attempt, AttemptStatus.COMPLETED), expected_version=attempt.version
             )
@@ -1488,6 +1665,7 @@ class CommitService:
                 payload={
                     "result_id": result_id,
                     "layers": [dict(item) for item in verifier_results],
+                    "claims": grading,
                 },
             )
             self._store.fault("after_accept_before_supersede", "attempt")

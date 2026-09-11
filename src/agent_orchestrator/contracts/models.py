@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from simple_harness.contracts import canonical_json
@@ -40,6 +40,7 @@ VERIFICATION_LAYERS = (
     "human_review",
 )
 STEP2_IMPLEMENTED_LAYERS = frozenset({"format_check", "rule_check", "critic_review", "code_test"})
+TASK_KINDS = ("work", "conflict", "synthesis")
 
 
 class ContractError(ValueError):
@@ -265,10 +266,15 @@ class Task:
     attempt_count: int = 0
     failure_reason: str | None = None
     outputs: tuple[str, ...] = ()  # step 3 (D3-7'): upstream paths this Task may rewrite
+    kind: str = "work"  # step 4 (D4-7/D4-8): work | conflict | synthesis (system templates)
+    context: Mapping[str, Any] = field(default_factory=dict)  # system data of a template Task
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _text(self.id, "task.id", limit=256))
         object.__setattr__(self, "outputs", _texts(self.outputs, "task.outputs"))
+        if self.kind not in TASK_KINDS:
+            raise ContractError(f"task.kind must be one of {list(TASK_KINDS)}")
+        object.__setattr__(self, "context", _object(self.context, "task.context"))
         object.__setattr__(self, "mission_id", _text(self.mission_id, "task.mission_id", limit=256))
         object.__setattr__(
             self, "parent_task_ids", _texts(self.parent_task_ids, "task.parent_task_ids")
@@ -333,6 +339,8 @@ class Task:
             "attempt_count": self.attempt_count,
             "failure_reason": self.failure_reason,
             "outputs": list(self.outputs),
+            "kind": self.kind,
+            "context": dict(self.context),
         }
 
     @classmethod
@@ -359,6 +367,8 @@ class Task:
             attempt_count=data.get("attempt_count", 0),
             failure_reason=data.get("failure_reason"),
             outputs=tuple(data.get("outputs", ())),
+            kind=data.get("kind", "work") or "work",
+            context=data.get("context", {}) or {},
         )
 
 
@@ -489,14 +499,29 @@ class Attempt:
         )
 
 
+CLAIM_STANCES = ("affirms", "refutes")
+
+
 @dataclass(frozen=True, slots=True)
 class ClaimProposal:
-    """A claim as it appears inside a Result Envelope (§13 ``claims[]``)."""
+    """A claim as it appears inside a Result Envelope (§13 ``claims[]``).
+
+    Step 4 (D4-1): a claim may carry its own ``evidence`` (default: the envelope's),
+    a subject ``key`` with a ``stance`` (two claims on one key with different stances
+    contradict each other), an explicit ``supersedes`` (knowledge id) and a
+    ``contradicts`` list (§12.3 冲突报告).  All of it is *data*: the system grades
+    the claim from the verification it actually ran (D4-2).
+    """
 
     content: str
     confidence: float
     status: ClaimStatus = ClaimStatus.PROPOSED
     type: str = "statement"
+    evidence: tuple[str, ...] = ()
+    key: str | None = None
+    stance: str = "affirms"
+    supersedes: str | None = None
+    contradicts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "content", _text(self.content, "claim.content"))
@@ -510,6 +535,16 @@ class ClaimProposal:
             raise ContractError("an Agent may only propose claims with status PROPOSED")
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "type", _text(self.type, "claim.type", limit=64))
+        object.__setattr__(self, "evidence", _texts(self.evidence, "claim.evidence"))
+        if self.key is not None:
+            object.__setattr__(self, "key", _text(self.key, "claim.key", limit=128))
+        if self.stance not in CLAIM_STANCES:
+            raise ContractError(f"claim.stance must be one of {list(CLAIM_STANCES)}")
+        if self.supersedes is not None:
+            object.__setattr__(
+                self, "supersedes", _text(self.supersedes, "claim.supersedes", limit=512)
+            )
+        object.__setattr__(self, "contradicts", _texts(self.contradicts, "claim.contradicts"))
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -517,12 +552,27 @@ class ClaimProposal:
             "confidence": self.confidence,
             "status": str(self.status),
             "type": self.type,
+            "evidence": list(self.evidence),
+            "key": self.key,
+            "stance": self.stance,
+            "supersedes": self.supersedes,
+            "contradicts": list(self.contradicts),
         }
 
     @classmethod
     def from_json(cls, value: object) -> ClaimProposal:
         data = _object(value, "claim")
-        unknown = set(data) - {"content", "confidence", "status", "type"}
+        unknown = set(data) - {
+            "content",
+            "confidence",
+            "status",
+            "type",
+            "evidence",
+            "key",
+            "stance",
+            "supersedes",
+            "contradicts",
+        }
         if unknown:
             raise ContractError(f"claim has unknown fields: {sorted(unknown)}")
         return cls(
@@ -530,6 +580,11 @@ class ClaimProposal:
             confidence=data.get("confidence"),  # type: ignore[arg-type]
             status=data.get("status", "PROPOSED"),
             type=data.get("type", "statement"),
+            evidence=tuple(data.get("evidence", ()) or ()),
+            key=data.get("key"),
+            stance=data.get("stance", "affirms") or "affirms",
+            supersedes=data.get("supersedes"),
+            contradicts=tuple(data.get("contradicts", ()) or ()),
         )
 
 
@@ -652,7 +707,12 @@ class ResultEnvelope:
 
 @dataclass(frozen=True, slots=True)
 class Claim:
-    """§26.5 Claim / Knowledge Schema (formal record owned by the Commit Service)."""
+    """§26.5 Claim / Knowledge Schema (formal record owned by the Commit Service).
+
+    Step 4 adds the subject ``key`` / ``stance``, who proposed it, and the dispute /
+    resolution / supersession markers (data fields; the §25.3 status machine is not
+    extended — a DISPUTED claim stays DISPUTED and points at what resolved it).
+    """
 
     id: str
     content: str
@@ -668,6 +728,14 @@ class Claim:
     mission_id: str
     result_id: str
     version: int = 1
+    key: str | None = None
+    stance: str = "affirms"
+    proposed_by: str = ""
+    contradicts: tuple[str, ...] = ()
+    superseded_by: str | None = None
+    disputed_by: tuple[str, ...] = ()
+    resolved_by: str | None = None
+    conflict_id: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("id", "source_task", "source_attempt", "mission_id", "result_id"):
@@ -685,6 +753,15 @@ class Claim:
             "confidence_metadata",
             _object(self.confidence_metadata, "claim.confidence_metadata"),
         )
+        if self.key is not None:
+            object.__setattr__(self, "key", _text(self.key, "claim.key", limit=128))
+        if self.stance not in CLAIM_STANCES:
+            raise ContractError(f"claim.stance must be one of {list(CLAIM_STANCES)}")
+        object.__setattr__(
+            self, "proposed_by", _text(self.proposed_by, "claim.proposed_by", allow_blank=True)
+        )
+        object.__setattr__(self, "contradicts", _texts(self.contradicts, "claim.contradicts"))
+        object.__setattr__(self, "disputed_by", _texts(self.disputed_by, "claim.disputed_by"))
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -702,6 +779,14 @@ class Claim:
             "mission_id": self.mission_id,
             "result_id": self.result_id,
             "version": self.version,
+            "key": self.key,
+            "stance": self.stance,
+            "proposed_by": self.proposed_by,
+            "contradicts": list(self.contradicts),
+            "superseded_by": self.superseded_by,
+            "disputed_by": list(self.disputed_by),
+            "resolved_by": self.resolved_by,
+            "conflict_id": self.conflict_id,
         }
 
     @classmethod
@@ -722,6 +807,14 @@ class Claim:
             mission_id=data["mission_id"],
             result_id=data["result_id"],
             version=data.get("version", 1),
+            key=data.get("key"),
+            stance=data.get("stance", "affirms") or "affirms",
+            proposed_by=data.get("proposed_by", "") or "",
+            contradicts=tuple(data.get("contradicts", ()) or ()),
+            superseded_by=data.get("superseded_by"),
+            disputed_by=tuple(data.get("disputed_by", ()) or ()),
+            resolved_by=data.get("resolved_by"),
+            conflict_id=data.get("conflict_id"),
         )
 
 
@@ -835,8 +928,10 @@ class Artifact:
 
 
 __all__ = (
+    "CLAIM_STANCES",
     "CONTRACT_SCHEMA_VERSION",
     "STEP2_IMPLEMENTED_LAYERS",
+    "TASK_KINDS",
     "VERIFICATION_LAYERS",
     "Artifact",
     "Attempt",

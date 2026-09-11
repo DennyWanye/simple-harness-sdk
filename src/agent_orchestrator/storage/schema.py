@@ -13,11 +13,21 @@ the columns are indexes.  Never opened by the SDK; never shares a file with
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 
-SCHEMA_VERSION = 1
-SCHEMA_NAME = "orchestrator-step02"
 
-DDL = """
+@dataclass(frozen=True, slots=True)
+class Migration:
+    version: int
+    name: str
+    ddl: str
+
+    @property
+    def checksum(self) -> str:
+        return hashlib.sha256(self.ddl.encode("utf-8")).hexdigest()
+
+
+DDL_V1 = """
 CREATE TABLE orch_schema_migrations (
  version INTEGER PRIMARY KEY,
  name TEXT NOT NULL,
@@ -210,8 +220,74 @@ CREATE TABLE commit_receipts (
 """
 
 
+# Step 4 (D4-15): the Blackboard layers that are stored separately from the claims
+# (Verified Knowledge, Summaries), the conflict ledger, a claim subject index and the
+# (mission, path, version) artifact lineage guard (step-3 leftover L3-2).
+DDL_V2 = """
+CREATE TABLE knowledge (
+ knowledge_id TEXT PRIMARY KEY,
+ mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ claim_id TEXT NOT NULL,
+ key TEXT,
+ status TEXT NOT NULL,
+ version INTEGER NOT NULL,
+ source_task TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL
+) STRICT;
+CREATE INDEX knowledge_mission_idx ON knowledge(mission_id, status, created_at);
+
+CREATE TABLE summaries (
+ summary_id TEXT PRIMARY KEY,
+ mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ scope TEXT NOT NULL,
+ subject_id TEXT NOT NULL,
+ version TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ UNIQUE(mission_id, scope, subject_id)
+) STRICT;
+
+CREATE TABLE conflicts (
+ conflict_id TEXT PRIMARY KEY,
+ mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ key TEXT NOT NULL,
+ state TEXT NOT NULL,
+ task_id TEXT,
+ version INTEGER NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL
+) STRICT;
+CREATE INDEX conflicts_mission_idx ON conflicts(mission_id, state, key);
+
+ALTER TABLE claims ADD COLUMN key TEXT;
+CREATE INDEX claims_mission_key_idx ON claims(mission_id, key);
+
+CREATE UNIQUE INDEX artifacts_lineage_idx ON artifacts(mission_id, path, version);
+"""
+
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(1, "orchestrator-step02", DDL_V1),
+    Migration(2, "orchestrator-step04", DDL_V2),
+)
+SCHEMA_VERSION = MIGRATIONS[-1].version
+SCHEMA_NAME = MIGRATIONS[-1].name
+DDL = DDL_V1  # kept for readers of the step-2/3 descriptor
+
+
 def checksum() -> str:
-    return hashlib.sha256(DDL.encode("utf-8")).hexdigest()
+    return MIGRATIONS[-1].checksum
 
 
-__all__ = ("DDL", "SCHEMA_NAME", "SCHEMA_VERSION", "checksum")
+__all__ = (
+    "DDL",
+    "DDL_V1",
+    "DDL_V2",
+    "MIGRATIONS",
+    "SCHEMA_NAME",
+    "SCHEMA_VERSION",
+    "Migration",
+    "checksum",
+)
