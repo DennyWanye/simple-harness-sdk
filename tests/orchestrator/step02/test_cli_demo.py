@@ -73,20 +73,26 @@ def test_demo_single_task_on_fixtures_writes_evidence(tmp_path, capsys):
     assert "def parse_kv" in shown["content"]
 
 
-def test_later_step_scenarios_are_not_implemented(tmp_path, capsys):
+def test_every_scenario_is_implemented_and_an_unknown_one_is_a_usage_error(tmp_path, capsys):
+    """Step 9 implements the last scenario (policy-promotion): every step 2–9 has its
+    demo, and a scenario nobody built is an answer (exit 2), not a traceback."""
+
+    from agent_orchestrator.__main__ import EXIT_USAGE, SCENARIOS
+
+    assert sorted(SCENARIOS.values()) == list(range(2, 10)) and EXIT_NOT_IMPLEMENTED == 3
     code = main(
         [
             "demo",
             "--scenario",
-            "policy-promotion",  # step 9; evaluate-policies is step 8 and implemented
+            "no-such-scenario",
             "--provider",
             "fixtures",
             "--evidence-dir",
             str(tmp_path / "e"),
         ]
     )
-    assert code == EXIT_NOT_IMPLEMENTED
-    assert json.loads(capsys.readouterr().out)["status"] == "not_implemented"
+    assert code == EXIT_USAGE
+    assert "unknown scenario" in json.loads(capsys.readouterr().out)["error"]
 
 
 def test_mission_create_validates_and_is_idempotent(tmp_path, capsys):

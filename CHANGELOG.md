@@ -1,3 +1,36 @@
+## 0.9.7 — agent_orchestrator step 9: learning from history and controlled promotion (source candidate)
+
+`agent_orchestrator` 0.9.0 (same wheel).  Step 9 of ORCH-BUILD-v1.0 — the last step of the
+original design's stage four (§28: "收集 Trace → 离线训练或规则改进 → 生成新策略版本 →
+Offline Evaluation → A/B Test → 审批后上线"; "不要让在线 Agent 直接自我修改核心安全和调度
+规则").  **Policy registry** (orchestrator schema v6): a policy is the promotable layer
+over the deployment configuration — the §29.3 allocator weights, candidates per task,
+exploration slots, a per-Mission concurrency under the deployment cap, the Manager
+thresholds, the aging window, routing overrides and each role's prompt version — always
+stored resolved and content-addressed; safety boundaries, budgets, the deployment
+policy, ablations, timeouts and layer switches can never be part of one.  Proposals
+carry their provenance; evaluation → human approval (nonce, receipt) → promotion →
+rollback follow a closed state table, with a bounded step, a cooldown
+(`DeploymentPolicy.policy_cooldown_seconds`) and no widening under backpressure; a
+rollback is immediate and returns only to a previously ACTIVE version.  **Binding**:
+every Mission is bound to one version in its creation transaction (`MissionCreated`
+carries it, Replay projects it) and runs under it to the end — allocation, routing,
+Manager thresholds and prompt templates read the bound version, never a later promotion
+or another configuration; a production library seeds the resolved built-in policy,
+records configuration drift and interpreter drift, and evaluation libraries take pinned
+policies only.  **Rule improver** (`governance/learning.py`, `rules-v1`, a heuristic —
+never called a trained model): reads history read-only, refuses untrustworthy
+(replay / attribution), mixed or thin history and registers nothing then; R1 moves
+allocator weights on contested allocations, R2 routes a failing task kind to its
+escalation target; reputation per role × prompt × profile is evidence only.  **Gates**
+(`governance/gates.py`): candidate vs ACTIVE on held-out cases in new evaluation
+libraries, the step-8 statistics (per case and side, harness errors → INSUFFICIENT,
+clearly-worse cost only), task-identity leakage refusal; PASSED means non-inferior
+within the samples.  Online Agents cannot set policy: a Worker's `policy/` file or a
+Manager's configuration operation is refused on record.  `PolicyApi`, CLI `policy
+propose / evaluate / approve / reject / promote / rollback / list / show / status`, `demo
+--scenario policy-promotion`.  No SDK (`simple_harness`) API change.
+
 ## 0.9.6 — agent_orchestrator step 8: contribution attribution, replay and policy evaluation (source candidate)
 
 `agent_orchestrator` 0.8.0 (same wheel).  Step 8 of ORCH-BUILD-v1.0 — explaining one run

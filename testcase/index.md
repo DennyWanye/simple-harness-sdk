@@ -14,3 +14,4 @@
 | `agent-orchestrator-step06/` | Agent 编排框架第 6 步：多 Mission、多模型、背压和隔离运行（S6-01–09） | `plans/2026-09-11-agent-orchestrator/step06/acceptance.md` |
 | `agent-orchestrator-step07/` | Agent 编排框架第 7 步：Human-in-the-loop 与受控真实操作（S7-01–08） | `plans/2026-09-11-agent-orchestrator/step07/acceptance.md` |
 | `agent-orchestrator-step08/` | Agent 编排框架第 8 步：贡献归因、Replay 与策略对照评测（S8-01–07） | `plans/2026-09-11-agent-orchestrator/step08/acceptance.md` |
+| `agent-orchestrator-step09/` | Agent 编排框架第 9 步：从历史学习、受控晋级新策略（S9-01–08） | `plans/2026-09-11-agent-orchestrator/step09/acceptance.md` |

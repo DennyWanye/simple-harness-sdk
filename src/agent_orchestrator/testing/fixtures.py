@@ -1502,3 +1502,63 @@ def demo_approval_action_provider() -> RoleScriptedProvider:
         ),
     ]
     return RoleScriptedProvider({"planner": [graph_proposal_step([task])], "worker": worker})
+
+
+# ------------------------------------------------------------ policy-promotion demo (step 9)
+POLICY_HISTORY_GOAL = "在隔离工作区实现字符串解析函数 parse_kv，并通过 tests/test_parse_kv.py"
+POLICY_HOLDOUT_GOAL = "实现 parse_kv（留出评测 case），并通过 tests/test_parse_kv.py"
+POLICY_TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list", "run_tests")
+
+
+def policy_spec(goal: str, tenant_id: str, idempotency_key: str):  # type: ignore[no-untyped-def]
+    """Step 9: the parse-kv charter the policy demo, its history and its held-out case use."""
+
+    from ..contracts import Budget
+    from ..orchestrator.commit_service import MissionSpec
+
+    return MissionSpec(
+        goal=goal,
+        success_criteria=("pytest:tests/test_parse_kv.py",),
+        tenant_id=tenant_id,
+        idempotency_key=idempotency_key,
+        allowed_tools=POLICY_TOOLS,
+        budget=Budget(max_tokens=400_000, max_attempts=4),
+        workspace_seed=DEMO_SEED,
+    )
+
+
+def policy_demo_routing():  # type: ignore[no-untyped-def]
+    """The deployment's routing: everything on ``small``, a failure climbs to ``large``."""
+
+    from ..runtime.model_router import RoutingRules
+
+    return RoutingRules(default="small", escalate={"small": "large"}, escalate_after_failures=1)
+
+
+def policy_demo_profiles(*, missions: int, first: str = DEMO_BAD):  # type: ignore[no-untyped-def]
+    """Step 9 (``demo --scenario policy-promotion``): ``small`` runs the Planner, the
+    Critic and every first Worker attempt (``first``: a bad implementation by default),
+    ``large`` passes, ``flaky`` always fails — a candidate that routes there is caught
+    by the gates.  Scripts are sized for ``missions`` Missions run one after another."""
+
+    from ..runtime.model_router import RuntimeProfile
+
+    small = RoleScriptedProvider(
+        {
+            "planner": [proposal_step(DEMO_PROPOSAL)] * missions,
+            "worker": demo_worker_script(first) * missions,
+            "critic": [critic_step(verdict="PASS", criteria_met=True)] * (3 * missions),
+        },
+        model="fixture-small",
+    )
+    large = RoleScriptedProvider(
+        {"worker": demo_worker_script(DEMO_GOOD) * missions}, model="fixture-large"
+    )
+    flaky = RoleScriptedProvider(
+        {"worker": demo_worker_script(DEMO_BAD) * (2 * missions)}, model="fixture-flaky"
+    )
+    return {
+        "small": RuntimeProfile("small", small, "fixture-small", tier=1),
+        "large": RuntimeProfile("large", large, "fixture-large", tier=2),
+        "flaky": RuntimeProfile("flaky", flaky, "fixture-flaky", tier=1),
+    }
