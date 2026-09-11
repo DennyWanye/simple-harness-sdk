@@ -427,6 +427,19 @@ def _multi_mission_profiles(args: argparse.Namespace):  # type: ignore[no-untype
     return profiles, rules, "env", price
 
 
+async def _own_pool_only(orchestrator, attempt) -> bool | None:  # type: ignore[no-untyped-def]
+    intent = orchestrator.store.get_intent_for_subject(attempt.id)
+    if intent is None or intent.agent_id is None or intent.expected_turn_id is None:
+        return None
+    for profile_id, pool in orchestrator.assembled.pools.items():
+        if profile_id == attempt.runtime_profile_id:
+            continue
+        view = await pool.bridge.liveness(agent_id=intent.agent_id, turn_id=intent.expected_turn_id)
+        if view.exists:
+            return False
+    return True
+
+
 def _demo_multi_mission(args: argparse.Namespace) -> int:
     """Step 6 (ORCH §8.4): two Missions at once under a Global Budget, two execution
     pools with routing and escalation, a bounded verification queue with backpressure;
@@ -515,20 +528,24 @@ def _demo_multi_mission(args: argparse.Namespace) -> int:
                 final = store.get_mission(mission.id)
                 assert final is not None
                 echoes = orchestrator.echoed_models_for(mission.id)
-                attempts = [
-                    {
-                        "attempt_id": a.id,
-                        "task_id": a.task_id,
-                        "status": str(a.status),
-                        "runtime_profile_id": a.runtime_profile_id,
-                        "requested_model": a.model,
-                        "echoed_models": echoes.get(a.id),
-                        "retry_of": a.retry_of,
-                        "failure": None if a.failure is None else a.failure.get("reason"),
-                    }
-                    for t in store.list_tasks(mission.id)
-                    for a in store.list_attempts(t.id)
-                ]
+                attempts = []
+                for t in store.list_tasks(mission.id):
+                    for a in store.list_attempts(t.id):
+                        attempts.append(
+                            {
+                                "attempt_id": a.id,
+                                "task_id": a.task_id,
+                                "status": str(a.status),
+                                "runtime_profile_id": a.runtime_profile_id,
+                                "requested_model": a.model,
+                                "echoed_models": echoes.get(a.id),
+                                "retry_of": a.retry_of,
+                                "failure": None if a.failure is None else a.failure.get("reason"),
+                                # review P1-7: with one model name on both pools, the physical route is
+                                # proven by the Agent living only in its own pool's execution library
+                                "only_in_own_pool": await _own_pool_only(orchestrator, a),
+                            }
+                        )
                 report = {
                     "mission_id": mission.id,
                     "status": str(final.status),
@@ -583,10 +600,10 @@ def _demo_multi_mission(args: argparse.Namespace) -> int:
                 "profile_health": store.get_scheduler_state("profile_health"),
                 "progress": orchestrator.progress_log,
             }
-            from .observability.secrets import guard_text
+            from .observability.secrets import redact_text
 
             text = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-            guard_text(text, where="multi-mission.json")
+            text, _found = redact_text(text)
             (root / "multi-mission.json").write_text(text, encoding="utf-8")
             _print({k: v for k, v in summary.items() if k != "progress"})
             ok = all(r["status"] == "COMPLETED" for r in reports)

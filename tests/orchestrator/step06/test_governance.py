@@ -381,6 +381,7 @@ def test_s6_05_the_gateway_checks_in_the_21_1_order_and_reports_every_refusal(tm
     assert "secrets/key.txt" not in listed and "a.md" in listed  # denied paths are not even listed
     stages = [stage for _run, stage, _code in reported]
     assert stages == [
+        "identity",
         "permission",
         "schema",
         "schema",
@@ -391,9 +392,8 @@ def test_s6_05_the_gateway_checks_in_the_21_1_order_and_reports_every_refusal(tm
         "policy",
         "rate",
     ]
-    assert all(
-        run == "run-1" for run, _s, _c in reported
-    )  # an unbound run has no Attempt to report on
+    assert reported[0][0] == "run-x"  # an unbound run is reported too (review P2-5)
+    assert all(run == "run-1" for run, _s, _c in reported[1:])
     assert (tmp_path / "ws" / "m:task-1:attempt-1" / "up.md").read_text() == "upstream"
 
 

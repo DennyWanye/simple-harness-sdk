@@ -42,6 +42,7 @@ from ..artifacts.versioning import (
 from ..artifacts.workspace import sha256_file
 from ..context.context_builder import (
     CONTEXT_BUILDER_VERSION,
+    ContextRejected,
     build_critic_package,
     build_manager_package,
     build_planner_package,
@@ -75,7 +76,7 @@ from ..contracts import (
 )
 from ..contracts.models import jsonable, sha256_hex
 from ..contracts.state_machines import IllegalTransition
-from ..governance.budgets import BudgetExhausted
+from ..governance.budgets import BudgetError, BudgetExhausted
 from ..governance.policies import effective_tools
 from ..graph.changes import ChangeLimits, TaskGraphChange
 from ..memory.summaries import build_summaries
@@ -114,6 +115,7 @@ from ..verification.critics import CriticVerdict, parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
 from ..verification.verifier_router import VERIFIER_VERSION, VerifierRouter
 from .commit_service import (
+    GLOBAL_ACCOUNT,
     CommitRejected,
     CommitService,
     MissionSpec,
@@ -180,6 +182,8 @@ class Orchestrator:
         )
         self._default_profile = default_profile
         self._deferred: dict[str, float] = {}  # task_id → first time it waited for a profile
+        # review P0-1: a Planner whose pool is cooling down waits too: mission_id → (since, ordinal)
+        self._deferred_planning: dict[str, tuple[float, int]] = {}
         self._poll = poll_interval
         self._critic_wait = critic_wait_seconds
         self._store: Store | None = None
@@ -212,6 +216,8 @@ class Orchestrator:
         self._bridge = self._assembled.pool(self._default_profile).bridge
         self._commit.tool_calls_for = self._executed_tool_calls  # D6-8
         self._assembled.gateway.on_rejected = self._audit_tool_rejection  # D6-7
+        self._assembled.gateway.on_executed = self._record_tool_call  # review P1-3
+        self._assembled.gateway.executed_counter = self.store.count_tool_calls
         self._pressure = self._commit.backpressure_state()
         return self
 
@@ -219,21 +225,48 @@ class Orchestrator:
         """Every gateway refusal becomes a ``ToolCallRejected`` event on its Mission."""
 
         attempt_id = str(record.get("attempt_id") or "")
-        attempt = self.store.get_attempt(attempt_id)
+        attempt = self.store.get_attempt(attempt_id) if attempt_id else None
+        mission_id: str | None = None
+        task_id: str | None = None
         if attempt is not None:
             mission_id, task_id = attempt.mission_id, attempt.task_id
-        else:  # a Mission-level judgment view: "<mission>-judge-<owner>"
+        elif attempt_id:  # a Mission-level judgment view: "<mission>-judge-<owner>"
             candidate = attempt_id.split(":", 1)[0].split("-judge-", 1)[0]
-            if self.store.get_mission(candidate) is None:
-                return
-            mission_id, task_id = candidate, None
+            if self.store.get_mission(candidate) is not None:
+                mission_id = candidate
+        else:  # review P2-5: an unbound run (e.g. a released zombie turn) — find its intent
+            for intent in self.store.list_intents(
+                "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED", "SETTLED", "FAILED"
+            ):
+                if intent.agent_id == run_id:
+                    mission_id = intent.mission_id
+                    attempt = self.store.get_attempt(intent.subject_id)
+                    task_id = None if attempt is None else attempt.task_id
+                    break
+        if mission_id is None:
+            return
         self.commit.record_tool_rejected(
             mission_id,
             task_id=task_id,
             attempt_id=None if attempt is None else attempt.id,
             run_id=run_id,
-            sequence=len(self.assembled.gateway.calls),
+            call_key=f"{run_id}:{record.get('call_id')}",
             record=record,
+        )
+
+    def _record_tool_call(self, run_id: str, record: Mapping[str, Any]) -> None:
+        """Review P1-3: an executed Worker tool call is a durable fact (once per SDK call id)."""
+
+        if record.get("view") != "work":
+            return  # Critic / judgment views are read-only and not charged to the dimension
+        attempt = self.store.get_attempt(str(record.get("attempt_id") or ""))
+        if attempt is None:
+            return
+        self.commit.record_tool_call(
+            call_key=f"{run_id}:{record.get('call_id')}",
+            subject_id=attempt.id,
+            mission_id=attempt.mission_id,
+            tool=str(record.get("tool")),
         )
 
     def _read_only_inputs(self, attempt_id: str) -> tuple[str, ...]:
@@ -275,10 +308,7 @@ class Orchestrator:
         """The gateway's executed-call count for an Attempt (0 for service intents or an
         Attempt that never got an agent) — the fact the tool-call dimension settles on."""
 
-        attempt = self.store.get_attempt(subject_id)
-        if attempt is None or attempt.agent_id is None or self._assembled is None:
-            return 0
-        return self._assembled.gateway.executed_calls(attempt.agent_id)
+        return self.store.count_tool_calls(subject_id)  # durable (review P1-3)
 
     async def __aexit__(self, *exc_info: object) -> None:
         for task in list(self._verifying.values()):
@@ -519,9 +549,13 @@ class Orchestrator:
 
         if any(not task.done() for task in self._verifying.values()):
             return True
-        if self._deferred:  # D6-5': a Task waiting for its profile is bounded, not idle
+        self._prune_deferred()  # review P0-2: only live waits keep the loop alive
+        if self._deferred or self._deferred_planning:  # D6-5': bounded, not idle
             return True
-        return any(intent.kind != "critic" for intent in self.store.list_intents("SUBMITTED"))
+        return any(
+            intent.kind != "critic" and self.profile_of(intent) in self.assembled.pools
+            for intent in self.store.list_intents("SUBMITTED")
+        )  # review P1-4: a turn bound to a pool this process does not run is not ours to wait for
 
     async def _cycle(self) -> bool:
         try:
@@ -544,6 +578,8 @@ class Orchestrator:
             if mission.status is MissionStatus.CREATED:
                 await self._start_planning(mission)
                 progressed = True
+        if await self._retry_deferred_planning():
+            progressed = True
         active = {mission.id for mission in self._active_missions()}
         for intent in self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED"):
             if intent.mission_id not in active:
@@ -591,10 +627,75 @@ class Orchestrator:
         return progressed
 
     # ------------------------------------------------------------- planning
+    def _prune_deferred(self) -> None:
+        """Review P0-2: a wait whose Task or Mission has ended is dropped, whoever ended it."""
+
+        for task_id in list(self._deferred):
+            task = self.store.get_task(task_id)
+            mission = None if task is None else self.store.get_mission(task.mission_id)
+            if (
+                task is None
+                or task.status in TERMINAL_TASK
+                or mission is None
+                or mission.status is not MissionStatus.ACTIVE
+            ):
+                self._deferred.pop(task_id, None)
+        for mission_id in list(self._deferred_planning):
+            mission = self.store.get_mission(mission_id)
+            if mission is None or mission.status is not MissionStatus.PLANNING:
+                self._deferred_planning.pop(mission_id, None)
+
+    async def _try_planner_intent(self, mission_id: str, *, ordinal: int) -> bool:
+        """Create the Planner intent, or — review P0-1 — wait (bounded) while its pool is
+        cooling down; a package that would carry a credential stops planning visibly."""
+
+        try:
+            await self._create_planner_intent(mission_id, ordinal=ordinal)
+        except RoutingUnavailable as unavailable:
+            since = self._deferred_planning.get(mission_id, (self.store.now, ordinal))[0]
+            self._deferred_planning[mission_id] = (since, ordinal)
+            if self.store.now - since >= self._config.profile_wait_seconds:
+                self._deferred_planning.pop(mission_id, None)
+                self.commit.fail_planning(
+                    mission_id,
+                    reason="runtime_unavailable",
+                    detail={
+                        "profile_id": unavailable.profile_id,
+                        "waited_seconds": round(self.store.now - since, 3),
+                        "profile_wait_seconds": self._config.profile_wait_seconds,
+                        "ordinal": ordinal,
+                    },
+                    stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+                )
+                self._note(
+                    f"mission {mission_id}: planner pool {unavailable.profile_id!r} unavailable → stopped"
+                )
+            return False
+        except ContextRejected as error:
+            self._deferred_planning.pop(mission_id, None)
+            self.commit.fail_planning(
+                mission_id,
+                reason="context_rejected",
+                detail={"error": str(error)[:300]},
+                stop_reason=MissionStopReason.CONTEXT_REJECTED,
+            )
+            self._note(f"mission {mission_id}: planner package refused ({error})")
+            return False
+        self._deferred_planning.pop(mission_id, None)
+        return True
+
+    async def _retry_deferred_planning(self) -> bool:
+        progressed = False
+        self._prune_deferred()
+        for mission_id, (_since, ordinal) in list(self._deferred_planning.items()):
+            if await self._try_planner_intent(mission_id, ordinal=ordinal):
+                progressed = True
+        return progressed
+
     async def _start_planning(self, mission: Mission) -> None:
         self.commit.begin_planning(mission.id)
         try:
-            await self._create_planner_intent(mission.id, ordinal=1)
+            await self._try_planner_intent(mission.id, ordinal=1)
         except BudgetExhausted as error:
             # D6-8 / D3-12': a pool that cannot even fund the Planner is exhausted on that
             # dimension; the Mission stops visibly instead of the loop crashing
@@ -604,6 +705,8 @@ class Orchestrator:
                 "remaining": error.remaining,
                 "account": error.account_id,
                 "phase": "planning",
+                # review P1-1: the Global pool is named as such — no Mission is to blame
+                "scope": "global" if error.account_id == GLOBAL_ACCOUNT else "mission",
             }
             self.commit.fail_planning(
                 mission.id,
@@ -1137,6 +1240,9 @@ class Orchestrator:
             unknown = self.commit.ledger.has_unknown_usage(attempt.id)
         if unknown:
             self._note(f"attempt {attempt.id}: unknown provider charge, reservation held")
+            self.commit.record_reservation_held(  # L3-3: visible and traceable, never auto-released
+                attempt.id, attempt.mission_id, task_id=attempt.task_id, reason="unknown_usage"
+            )
             return
         self.commit.settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
 
@@ -1152,7 +1258,7 @@ class Orchestrator:
                 mission.id, ordinal=ordinal, reason=reason, detail=detail
             )
         if ordinal < self._config.max_planning_attempts:
-            await self._create_planner_intent(mission.id, ordinal=ordinal + 1)
+            await self._try_planner_intent(mission.id, ordinal=ordinal + 1)
         else:
             self.commit.fail_planning(
                 mission.id, reason=reason, detail={"attempts": ordinal, **dict(detail)}
@@ -1735,18 +1841,29 @@ class Orchestrator:
             knowledge = self._gather_knowledge(mission, task, {t.id: t for t in tasks})
         except RetrievalUnavailable as error:
             knowledge = KnowledgeContext.unavailable(str(error))
-        package = build_manager_package(
-            mission,
-            task,
-            trigger=trigger_view,
-            verifier_feedback=feedback[-6:],
-            subgraph=self._affected_subgraph(task, tasks),
-            graph_version=int(report.get("graph_version") or 1),
-            limits=limits,
-            knowledge=knowledge,
-            rejections=self._change_rejections(mission.id, trigger),
-        )
-        decision = self._route_service("manager", mission.id)
+        try:
+            package = build_manager_package(
+                mission,
+                task,
+                trigger=trigger_view,
+                verifier_feedback=feedback[-6:],
+                subgraph=self._affected_subgraph(task, tasks),
+                graph_version=int(report.get("graph_version") or 1),
+                limits=limits,
+                knowledge=knowledge,
+                rejections=self._change_rejections(mission.id, trigger),
+            )
+        except ContextRejected as error:
+            self._note(f"task {task.id}: manager package refused ({error}); management postponed")
+            return None
+        try:
+            decision = self._route_service("manager", mission.id)
+        except RoutingUnavailable as unavailable:
+            # review P0-1: the decision is postponed; the Task keeps its own retries meanwhile
+            self._note(
+                f"task {task.id}: manager pool {unavailable.profile_id!r} unavailable; management postponed"
+            )
+            return None
         config = AgentConfig(
             name=f"manager-{rounds + 1}",
             instructions=MANAGER.instructions,
@@ -1977,24 +2094,33 @@ class Orchestrator:
     ) -> CriticVerdict:
         copy = self.assembled.workspaces.verification_view(view_id)
         untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
-        package = build_critic_package(
-            mission,
-            task,
-            attempt_id=view_id,
-            artifacts=[
-                {"path": a.path, "content_hash": a.content_hash, "size_bytes": a.size_bytes}
-                for a in artifacts
-            ],
-            test_output=test_output,
-            workspace_files=copy.list_files(),
-            knowledge=self._knowledge_or_unavailable(mission, task),
-            visibility="critic" if task is not None and task.kind == "conflict" else "verifier",
-        )
+        try:
+            package = build_critic_package(
+                mission,
+                task,
+                attempt_id=view_id,
+                artifacts=[
+                    {"path": a.path, "content_hash": a.content_hash, "size_bytes": a.size_bytes}
+                    for a in artifacts
+                ],
+                test_output=test_output,
+                workspace_files=copy.list_files(),
+                knowledge=self._knowledge_or_unavailable(mission, task),
+                visibility="critic" if task is not None and task.kind == "conflict" else "verifier",
+            )
+        except ContextRejected as error:
+            raise ContractError(f"critic package refused: {error}") from error
         task_id = None if task is None else task.id
         last_error: ContractError | None = None
         for ordinal in range(1, MAX_CRITIC_ATTEMPTS + 1):
             subject = f"{subject_prefix}:{ordinal}"
-            decision = self._route_service("critic", mission.id)
+            try:
+                decision = self._route_service("critic", mission.id)
+            except RoutingUnavailable as unavailable:
+                # review P0-1: an unavailable Critic makes the layer an ERROR (never a PASS)
+                raise ContractError(
+                    f"critic runtime profile {unavailable.profile_id!r} unavailable"
+                ) from unavailable
             config = AgentConfig(
                 name=f"critic-{ordinal}",
                 instructions=CRITIC.instructions,
@@ -2055,6 +2181,10 @@ class Orchestrator:
             try:
                 if result is None:
                     raise ContractError("critic did not answer within the wait window")
+                self._note_turn_health(intent, result)  # review P2-2: Critic turns count too
+                echoed = self.bridge_for(intent).echoed_models(agent_id=intent.agent_id)
+                if echoed and echoed != {self._expected_model(intent)}:
+                    raise ContractError(f"critic model echo mismatch: {sorted(echoed)}")
                 if result.state is not AgentTurnState.COMMITTED:
                     raise ContractError(f"critic turn failed: {dict(result.error or {})}")
                 text = "" if result.public_output is None else str(result.public_output.content)
@@ -2116,7 +2246,9 @@ class Orchestrator:
         pending_dispatch = sum(
             1
             for intent in self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED")
-            if intent.kind == "attempt" and intent.mission_id in active
+            if intent.kind == "attempt"
+            and intent.mission_id in active
+            and self.profile_of(intent) in self.assembled.pools  # review P1-4
         )
         pending_verifications = sum(
             1
@@ -2142,6 +2274,29 @@ class Orchestrator:
     @property
     def pressure(self) -> BackpressureState:
         return self._pressure
+
+    def _tool_call_room(self, mission: Mission, task: Task) -> tuple[int | None, int | None]:
+        """(reservable now, not yet spent) on the Task → Mission → Global chain."""
+
+        accounts = [task_account(task.id), mission_account(mission.id)]
+        if self._config.global_budget is not None:
+            accounts.append(GLOBAL_ACCOUNT)
+        reservable: int | None = None
+        spent_room: int | None = None
+        with self.store.transaction():
+            for account_id in accounts:
+                try:
+                    snap = self.commit.ledger.account(account_id)
+                except BudgetError:
+                    continue
+                limit = snap.limits.max_tool_calls
+                if limit is None:
+                    continue
+                room = limit - snap.reserved_tool_calls - snap.settled_tool_calls
+                left = limit - snap.settled_tool_calls
+                reservable = room if reservable is None else min(reservable, room)
+                spent_room = left if spent_room is None else min(spent_room, left)
+        return reservable, spent_room
 
     def _tool_calls_limited(self, mission: Mission, task: Task) -> bool:
         """Whether any account on the Task's chain caps tool calls (only then is a
@@ -2199,8 +2354,6 @@ class Orchestrator:
         tasks = self.store.list_tasks(mission.id)
         if not tasks or mission.status is not MissionStatus.ACTIVE:
             return False
-        if await self._runtime_exhausted(mission, tasks):
-            return True
         live = [  # D5-4 / R4: superseded work is history and a paused route is not required
             t
             for t in tasks
@@ -2212,6 +2365,8 @@ class Orchestrator:
             if current is None or current.status is not MissionStatus.ACTIVE:
                 return False
             await self._judge(current, live)
+            return True
+        if await self._runtime_exhausted(mission, tasks):  # after the judge (review P2-9)
             return True
         if any(task.status is TaskStatus.FAILED for task in tasks):
             return False  # the stop cascade already ended the Mission
@@ -2375,29 +2530,39 @@ class Orchestrator:
                 previous_files = self.assembled.workspaces.get(previous.id).list_files()
             except Exception:  # noqa: BLE001
                 pass
-        package = build_worker_package(
-            mission,
-            task,
-            placeholder,
-            previous_attempts=attempts,
-            verifier_feedback=verifier_feedback,
-            workspace_files=previous_files,
-            dependencies=[
-                {
-                    "task_id": dep.id,
-                    "goal": dep.goal,
-                    "status": str(dep.status),
-                    "accepted_artifacts": [
-                        item.to_json() for item in inputs if item.task_id == dep.id
-                    ],
-                }
-                for dep in upstream_tasks
-                if dep.id in set(task.dependency_ids)
-            ],
-            knowledge=knowledge,
-            untrusted_sources=untrusted,
-            role=role.name,
-        )
+        try:
+            package = build_worker_package(
+                mission,
+                task,
+                placeholder,
+                previous_attempts=attempts,
+                verifier_feedback=verifier_feedback,
+                workspace_files=previous_files,
+                dependencies=[
+                    {
+                        "task_id": dep.id,
+                        "goal": dep.goal,
+                        "status": str(dep.status),
+                        "accepted_artifacts": [
+                            item.to_json() for item in inputs if item.task_id == dep.id
+                        ],
+                    }
+                    for dep in upstream_tasks
+                    if dep.id in set(task.dependency_ids)
+                ],
+                knowledge=knowledge,
+                untrusted_sources=untrusted,
+                role=role.name,
+            )
+        except ContextRejected as error:
+            self.commit.stop_task(
+                task.id,
+                stop_reason=MissionStopReason.CONTEXT_REJECTED,
+                detail={"error": str(error)[:300]},
+            )
+            await self._release_mission(mission.id)
+            self._note(f"task {task.id} stopped: worker package refused ({error})")
+            return True
         # D6-7: Mission ∩ Task ∩ Role ∩ Deployment, frozen into the intent below
         allowed = effective_tools(
             mission_tools=mission.allowed_tools,
@@ -2410,6 +2575,15 @@ class Orchestrator:
         tool_cap = self._config.max_tool_calls_per_turn
         if task.budget.max_tool_calls is not None:
             tool_cap = min(tool_cap, task.budget.max_tool_calls)
+        if self._tool_calls_limited(mission, task):
+            # review P1-2: never reserve more than the chain can still hold; in-flight
+            # reservations are not spending — only a spent dimension is exhaustion
+            reservable, spent_room = self._tool_call_room(mission, task)
+            if spent_room is not None and spent_room > 0 and reservable is not None:
+                if reservable <= 0:
+                    self._note(f"task {task.id}: tool calls all reserved in flight; waiting")
+                    return False
+                tool_cap = min(tool_cap, reservable)
         config = AgentConfig(
             name=f"{role.name}-{placeholder.ordinal}",
             instructions=role.instructions,
@@ -2500,11 +2674,23 @@ class Orchestrator:
                 if error.dimension == "attempts"
                 else MissionStopReason.BUDGET_EXHAUSTED
             )
-            if error.account_id == mission_account(mission.id):
+            if error.account_id == GLOBAL_ACCOUNT:
+                # review P1-1 / D6-1': the deployment-wide pool ran out — no Task and no
+                # Mission is to blame; the Mission stops with the Global scope named
+                reason = MissionStopReason.BUDGET_EXHAUSTED
+                self.commit.fail_mission(
+                    mission.id, stop_reason=reason, detail={**detail, "scope": "global"}
+                )
+                self._note(
+                    f"mission {mission.id} stopped: {reason} ({error.dimension}, global pool)"
+                )
+            elif error.account_id == mission_account(mission.id):
                 # D3-12': the Mission pool itself is exhausted (any dimension) — no Task
                 # is to blame and the stop reason is the pool's: budget_exhausted
                 reason = MissionStopReason.BUDGET_EXHAUSTED
-                self.commit.fail_mission(mission.id, stop_reason=reason, detail=detail)
+                self.commit.fail_mission(
+                    mission.id, stop_reason=reason, detail={**detail, "scope": "mission"}
+                )
                 self._note(
                     f"mission {mission.id} stopped: {reason} ({error.dimension}, mission pool)"
                 )

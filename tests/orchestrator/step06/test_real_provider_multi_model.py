@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 
 import pytest
 
 from agent_orchestrator.__main__ import main
+from agent_orchestrator.observability.secrets import find_secrets
 
 pytestmark = pytest.mark.real_provider
 
@@ -68,6 +68,7 @@ def test_real_multi_mission_on_two_flash_pools(tmp_path, capsys):
                             "echoed_models",
                             "retry_of",
                             "failure",
+                            "only_in_own_pool",
                         )
                     }
                     for a in m["attempts"]
@@ -92,12 +93,21 @@ def test_real_multi_mission_on_two_flash_pools(tmp_path, capsys):
             assert attempt["runtime_profile_id"] in {"small", "large"}
             if attempt["echoed_models"]:
                 assert attempt["echoed_models"] == [model]
+            # review P1-7: both pools echo the same model name, so the physical route is proven
+            # by the Agent living only in its own pool's execution library
+            if attempt["only_in_own_pool"] is not None:
+                assert attempt["only_in_own_pool"] is True
         assert all(
-            s["runtime_profile_id"] == "large" for s in mission["services"] if s["kind"] == "plan"
+            s["runtime_profile_id"] == "large"
+            for s in mission["services"]
+            if s["kind"] in {"plan", "critic", "manager"}
         )
     assert summary["global_account"]["reserved_tokens"] == 0
-    pattern = re.compile(r"sk-[A-Za-z0-9_-]{20,}")
-    for path in evidence.rglob("*"):
-        if path.is_file() and path.suffix in {".json", ".jsonl"}:
-            assert not pattern.search(path.read_text(encoding="utf-8"))
-    assert any(m["status"] == "COMPLETED" for m in summary["missions"]), report
+    for path in evidence.rglob("*"):  # every file, every pattern
+        if path.is_file():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            assert find_secrets(text) == [], path.name
+    assert all(m["status"] == "COMPLETED" for m in summary["missions"]), report

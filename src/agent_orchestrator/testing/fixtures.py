@@ -1410,10 +1410,13 @@ def demo_multi_mission_profiles(*, missions: int = 2, critic_delay_seconds: floa
     large = demo_dynamic_dag_provider(
         tasks=MULTI_MISSION_TASKS,
         planner_steps=[graph_proposal_step(MULTI_MISSION_TASKS)] * missions,
-        critic_steps=[critic_step(verdict="PASS", criteria_met=True)] * (missions * 6),
+        critic_steps=[critic_step(verdict="FAIL", criteria_met=False, blocker="再核对一次输入分析")]
+        + [critic_step(verdict="PASS", criteria_met=True)] * (missions * 6),
         critic_delay_seconds=critic_delay_seconds,
         manager_steps=[graph_change_step([])] * 4,
         model="fixture-large",
+        # the first verdict is a FAIL: that Attempt climbs to the large pool (§9.3 ladder)
+        per_attempt={"A": [scripts["A"]] * missions, "D": [scripts["D"]] * missions},
     )
     profiles = {
         "small": RuntimeProfile("small", small, "fixture-small", tier=1),

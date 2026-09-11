@@ -35,7 +35,7 @@ def _service_role(subject_id: str) -> str:
     for marker, role in ((":planner:", "planner"), (":manager:", "manager"), (":critic", "critic")):
         if marker in subject_id:
             return role
-    if "-judge-" in subject_id:
+    if "-judge-" in subject_id or ":judge" in subject_id:  # the Mission-level judgment Critic
         return "critic"
     return "service"
 
@@ -86,11 +86,10 @@ def metrics(store: Store, mission_id: str, *, unpriced: bool) -> dict[str, Any]:
         None,
     )
     backpressure = store.get_scheduler_state("backpressure") or {}
-    peaks: dict[str, int] = {}
-    for entry in backpressure.get("log") or []:
-        dim = str(entry.get("dimension"))
-        peaks[dim] = max(peaks.get(dim, 0), int(entry.get("observed", 0)))
-    critic_turns = sum(1 for s in intents if _service_role(s) == "critic")
+    peaks = {str(k): int(v) for k, v in dict(backpressure.get("peaks") or {}).items()}
+    critic_turns = sum(
+        1 for s, i in intents.items() if _service_role(s) == "critic" and i.state == "SETTLED"
+    )
     role_counts = Counter(a.role for a in attempts)
     role_counts["critic"] += critic_turns
     total_roles = sum(role_counts.values()) or 1
@@ -116,7 +115,8 @@ def metrics(store: Store, mission_id: str, *, unpriced: bool) -> dict[str, Any]:
             "timed_out": statuses.get("TIMED_OUT", 0),
             "lost": statuses.get("LOST", 0),
             "tool_calls_rejected": store.count_events(mission_id, "ToolCallRejected"),
-            "backpressure_transitions": len(backpressure.get("log") or []),
+            "backpressure_transitions": store.count_events(mission_id, "BackpressureRaised")
+            + store.count_events(mission_id, "BackpressureCleared"),
             "peak_observed": peaks,
             "profile_unavailable_events": store.count_events(
                 mission_id, "RuntimeProfileUnavailable"

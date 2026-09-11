@@ -147,7 +147,7 @@ def test_the_escalation_ladder_climbs_after_failures_on_the_current_rung_only():
         role="worker",
         previous_attempts=[
             _attempt("small", "verification_failed"),
-            _attempt("medium", "turn_failed", 2),
+            _attempt("medium", "turn_failed", 2, error_kind="provider_error"),
         ],
     )
     assert two.profile_id == "large" and two.escalated_from == "medium"

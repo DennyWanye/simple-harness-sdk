@@ -252,6 +252,7 @@ def build_planner_package(
         "output_contract": "<task_graph_proposal>{json}</task_graph_proposal>",
         "package_version": PACKAGE_VERSION,
     }
+    assert_no_secrets(package)  # step 6 (review P2-10): the Planner sees no credential either
     return _seal(package)
 
 
@@ -356,6 +357,11 @@ def build_manager_package(
     return _seal(package)
 
 
+class ContextRejected(ValueError):
+    """A model package would carry a credential (§10.2 / §21.3); the orchestrator stops
+    that piece of work visibly instead of crashing its loop (review P2-10)."""
+
+
 def assert_no_secrets(package: Mapping[str, Any]) -> None:
     """§21.3 / ORCH §13: no credential-looking field ever enters a model context."""
 
@@ -364,7 +370,7 @@ def assert_no_secrets(package: Mapping[str, Any]) -> None:
             for key, item in value.items():
                 lowered = str(key).lower()
                 if lowered in _SECRET_EXACT or any(m in lowered for m in _SECRET_MARKERS):
-                    raise ValueError(
+                    raise ContextRejected(
                         f"context package carries a credential-like field: {path}.{key}"
                     )
                 walk(item, f"{path}.{key}")
@@ -374,7 +380,7 @@ def assert_no_secrets(package: Mapping[str, Any]) -> None:
         elif isinstance(value, str):  # step 6 (L4-3 / S6-09): values, not only field names
             found = find_secrets(value, extra=environment_secrets())
             if found:
-                raise ValueError(
+                raise ContextRejected(
                     f"context package carries a credential-like value at {path} ({', '.join(found)})"
                 )
 
@@ -383,6 +389,7 @@ def assert_no_secrets(package: Mapping[str, Any]) -> None:
 
 __all__ = (
     "CONTEXT_BUILDER_VERSION",
+    "ContextRejected",
     "ENABLED_TEMPLATES",
     "VISIBILITY_TEMPLATES",
     "TaskPackage",

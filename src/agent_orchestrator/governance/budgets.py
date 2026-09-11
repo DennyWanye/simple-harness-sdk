@@ -379,6 +379,12 @@ class BudgetLedger:
             "usage": [dict(row) for row in usage],
             "reservations": [dict(row) for row in reservations],
             "global": None if global_row is None else self.account(global_row[0]).to_json(),
+            # L3-3: reservations an UNKNOWN provider charge keeps occupied (never auto-released)
+            "held_reservations": [
+                dict(row)
+                for row in reservations
+                if row["state"] != "SETTLED" and self.has_unknown_usage(row["subject_id"])
+            ],
         }
 
 

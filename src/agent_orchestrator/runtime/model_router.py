@@ -16,7 +16,6 @@ the physical route (S6-03), never the label.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,13 +26,20 @@ ROUTER_VERSION = "model-router-v1"
 DEFAULT_PROFILE = "default"
 # review P1-8: the error classification table.  Kinds are the SDK audit vocabulary
 # (``simple_harness.execution.audit``); they are matched inside the turn's error record.
-UNAVAILABLE_KINDS = (
-    "provider_server_error",
-    "provider_rate_limited",
-    "provider_timeout",
-    "provider_transport_error",
-    "provider_cancelled",
+UNAVAILABLE_KINDS = frozenset(
+    {
+        "provider_server_error",
+        "provider_rate_limited",
+        "provider_timeout",
+        "provider_transport_error",
+    }
 )
+# neither a health signal nor a reason to escalate: the SDK already retried inside the turn,
+# or the turn was cancelled on purpose
+NEUTRAL_KINDS = frozenset(
+    {"provider_empty_response", "provider_cancelled", "provider_cancelled_after_handoff"}
+)
+CODE_KEYS = frozenset({"error_code", "code", "kind"})
 ESCALATION_REASONS = frozenset(
     {"verification_failed", "outcome_failure", "envelope_invalid", "turn_failed"}
 )
@@ -130,12 +136,29 @@ def classify_turn_error(error: Mapping[str, Any] | None) -> str:
 
     if not error:
         return "other"
-    text = json.dumps(error, ensure_ascii=False, sort_keys=True, default=str)
-    if any(kind in text for kind in UNAVAILABLE_KINDS):
+    codes = _error_codes(error)
+    if codes & UNAVAILABLE_KINDS:
         return "provider_unavailable"
-    if "provider_" in text:
+    if any(code.startswith("provider_") and code not in NEUTRAL_KINDS for code in codes):
         return "provider_error"
     return "other"
+
+
+def _error_codes(value: Any) -> set[str]:
+    """Exact error codes anywhere in the SDK's turn error record (review P2-1: no substring
+    matching over free text)."""
+
+    found: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if key in CODE_KEYS and isinstance(item, str):
+                found.add(item)
+            else:
+                found |= _error_codes(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            found |= _error_codes(item)
+    return found
 
 
 class ModelRouter:
@@ -201,12 +224,16 @@ class ModelRouter:
             profile_id = self._rules.escalate[profile_id]
             reason = f"escalate:{escalated_from}->{profile_id}:failures={failures}"
         fallback_from: str | None = None
-        until = (unavailable_until or {}).get(profile_id)
+        health = unavailable_until or {}
+        until = health.get(profile_id)
         if until is not None and now < until:
             if profile_id in self._rules.fallback:
                 fallback_from = profile_id
                 profile_id = self._rules.fallback[profile_id]
                 reason = f"fallback:unavailable:{fallback_from}->{profile_id}"
+                target_until = health.get(profile_id)  # review P2-3: the fallback may be down too
+                if target_until is not None and now < target_until:
+                    raise RoutingUnavailable(profile_id, target_until)
             else:
                 raise RoutingUnavailable(profile_id, until)
         return RoutingDecision(
@@ -223,8 +250,11 @@ def _counts_for_escalation(attempt: Attempt) -> bool:
     reason = str(failure.get("reason", ""))
     if reason not in ESCALATION_REASONS:
         return False
-    # an unavailable provider is a health matter (fallback), not a reason to escalate
-    return str(failure.get("error_kind", "")) != "provider_unavailable"
+    if reason == "turn_failed":
+        # review P2-1: only a provider-side error of the turn (e.g. tool_parse) climbs the
+        # ladder; unavailability is a health matter and an empty answer was already retried
+        return str(failure.get("error_kind", "")) == "provider_error"
+    return True
 
 
 __all__ = (

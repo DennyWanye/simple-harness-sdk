@@ -39,6 +39,22 @@ def find_secrets(text: str, *, extra: Iterable[str] = ()) -> list[str]:
     return found
 
 
+def redact_text(text: str) -> tuple[str, list[str]]:
+    """Replace every credential-looking value (and configured secrets) by a marker;
+    returns the cleaned text and the pattern names found — never the values."""
+
+    found: list[str] = []
+    for name, pattern in SECRET_PATTERNS:
+        text, count = pattern.subn(f"<redacted:{name}>", text)
+        if count:
+            found.append(name)
+    for value in environment_secrets():
+        if value in text:
+            text = text.replace(value, "<redacted:env_value>")
+            found.append("env_value")
+    return text, found
+
+
 def guard_text(text: str, *, where: str) -> None:
     found = find_secrets(text, extra=environment_secrets())
     if found:
@@ -52,4 +68,5 @@ __all__ = (
     "environment_secrets",
     "find_secrets",
     "guard_text",
+    "redact_text",
 )

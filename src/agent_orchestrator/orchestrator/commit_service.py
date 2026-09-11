@@ -227,10 +227,18 @@ class CommitService:
         with self._store.transaction():
             previous = BackpressureState.from_json(self._store.get_scheduler_state(STATE_KEY))
             state, transitions = evaluate(previous, observation, limits)
-            if not transitions and previous.observation is not None:
+            raw = self._store.get_scheduler_state(STATE_KEY) or {}
+            peaks = {str(k): int(v) for k, v in dict(raw.get("peaks") or {}).items()}
+            new_peak = False
+            for dimension in ("running_attempts", "pending_dispatch", "pending_verifications"):
+                observed = observation.value(dimension)
+                if observed > peaks.get(dimension, 0):  # review P2-4: the real peak
+                    peaks[dimension] = observed
+                    new_peak = True
+            if not transitions and not new_peak and previous.observation is not None:
                 return state, []
             document = state.to_json()
-            raw = self._store.get_scheduler_state(STATE_KEY) or {}
+            document["peaks"] = peaks
             log = list(raw.get("log") or [])
             for transition in transitions:
                 log.append({**transition.to_json(), "at": observation.observed_at})
@@ -255,7 +263,7 @@ class CommitService:
         task_id: str | None,
         attempt_id: str | None,
         run_id: str,
-        sequence: int,
+        call_key: str,
         record: Mapping[str, Any],
     ) -> Event:
         """§21.1 last step / §21.3 "对可疑指令进行隔离和审计": a refused tool call is
@@ -267,7 +275,7 @@ class CommitService:
             return self._emit(
                 "ToolCallRejected",
                 mission_id,
-                key=f"{run_id}:{sequence}",
+                key=call_key,  # review P1-3: the SDK call id — stable across a restart
                 task_id=task_id,
                 attempt_id=attempt_id,
                 payload={
@@ -276,10 +284,45 @@ class CommitService:
                     "stage": record.get("stage"),
                     "outcome": record.get("outcome"),
                     "argument_keys": sorted(arguments),
-                    "path": arguments.get("path")
+                    "path": str(arguments["path"])[:200]  # review P2-5: bounded, never content
                     if isinstance(arguments.get("path"), str)
                     else None,
                     "run_id": run_id,
+                },
+            )
+
+    def record_tool_call(
+        self, *, call_key: str, subject_id: str, mission_id: str, tool: str
+    ) -> bool:
+        """An executed tool call of an Attempt — the tool-call dimension's fact (review P1-3)."""
+
+        return self._store.record_tool_call(
+            call_key=call_key,
+            subject_id=subject_id,
+            mission_id=mission_id,
+            tool=tool,
+            outcome="succeeded",
+        )
+
+    def record_reservation_held(
+        self, subject_id: str, mission_id: str, *, task_id: str | None, reason: str
+    ) -> Event:
+        """L3-3 (plan §6.2): a reservation an UNKNOWN charge keeps occupied is visible on the
+        timeline — once per subject — and listed in ``costs.json``; never auto-released."""
+
+        with self._store.transaction():
+            reservation = self._ledger.reservation(subject_id) or {}
+            return self._emit(
+                "ReservationHeld",
+                mission_id,
+                key=subject_id,
+                task_id=task_id,
+                attempt_id=subject_id if task_id else None,
+                payload={
+                    "subject_id": subject_id,
+                    "reason": reason,
+                    "reserved_tokens": reservation.get("reserved_tokens"),
+                    "reserved_cost_micros": reservation.get("reserved_cost_micros"),
                 },
             )
 
@@ -447,6 +490,13 @@ class CommitService:
                     )
                 return mission, False
             mission_id = ids.mission_id(spec.tenant_id, spec.idempotency_key)
+            # review fix: with a Global Budget the Mission's unnamed dimensions are inherited, and
+            # the Mission contract must say so — graph checks compare against it (D6-1')
+            effective_budget = (
+                inherit_limits(spec.budget, self._global_budget)
+                if self._global_budget is not None
+                else spec.budget
+            )
             mission = Mission(
                 id=mission_id,
                 goal=spec.goal,
@@ -454,7 +504,7 @@ class CommitService:
                 stop_conditions=spec.stop_conditions,
                 allowed_tools=spec.allowed_tools,
                 risk_level=spec.risk_level,
-                budget=spec.budget,
+                budget=effective_budget,
                 tenant_id=spec.tenant_id,
                 status=MissionStatus.CREATED,
                 created_at=self._store.now,
@@ -483,7 +533,7 @@ class CommitService:
                 parent = GLOBAL_ACCOUNT
                 # a dimension the Mission does not name is inherited from the Global cap
                 # (review P0-2: ``fits_within`` treats an unnamed child dimension as unbounded)
-                limits = inherit_limits(spec.budget, self._global_budget)
+                limits = effective_budget
             self._ledger.open_account(  # BudgetError (does not fit the Global) rolls everything back
                 account_id=mission_account(mission_id),
                 scope="mission",

@@ -854,6 +854,27 @@ class Store:
         return [_loads(row[0]) for row in rows]
 
     # ----------------------------------------------------------- graph changes
+    # ------------------------------------------------------------ tool calls
+    def record_tool_call(
+        self, *, call_key: str, subject_id: str, mission_id: str, tool: str, outcome: str
+    ) -> bool:
+        """One executed tool call, at most once per SDK call id (review P1-3)."""
+
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO tool_calls(call_key,subject_id,mission_id,tool,outcome,created_at)"
+                " VALUES (?,?,?,?,?,?) ON CONFLICT(call_key) DO NOTHING",
+                (call_key, subject_id, mission_id, tool, outcome, self.now),
+            )
+            return cursor.rowcount == 1
+
+    def count_tool_calls(self, subject_id: str, *, outcome: str = "succeeded") -> int:
+        row = self._connection.execute(
+            "SELECT COUNT(*) FROM tool_calls WHERE subject_id = ? AND outcome = ?",
+            (subject_id, outcome),
+        ).fetchone()
+        return int(row[0])
+
     # --------------------------------------------------------- scheduler state
     def get_scheduler_state(self, key: str) -> dict[str, Any] | None:
         row = self._connection.execute(

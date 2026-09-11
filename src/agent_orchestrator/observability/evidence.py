@@ -19,13 +19,17 @@ from ..storage.store import Store
 from .graph_history import graph_history
 from .lineage import lineage
 from .metrics import metrics
-from .secrets import guard_text
+from .secrets import environment_secrets, find_secrets, redact_text
 from .trace import trace
 
 
-def _dump(path: Path, value: Any) -> None:
+def _dump(path: Path, value: Any, redactions: list[dict[str, Any]] | None = None) -> None:
     text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    guard_text(text, where=path.name)  # step 6 (S6-09): a file with a credential is never written
+    # step 6 (S6-09 / review P2-10): a credential never reaches the evidence — it is replaced
+    # by a marker naming the pattern, and the redaction itself is reported
+    text, found = redact_text(text)
+    if found and redactions is not None:
+        redactions.append({"file": path.name, "patterns": sorted(set(found))})
     path.write_text(text, encoding="utf-8")
 
 
@@ -42,16 +46,23 @@ def write_evidence(
     unpriced: bool = True,
 ) -> dict[str, Any]:
     directory.mkdir(parents=True, exist_ok=True)
-    _dump(directory / "baseline.json", dict(baseline))
+    redactions: list[dict[str, Any]] = []
+
+    def dump(path: Path, value: Any) -> None:
+        _dump(path, value, redactions)
+
+    dump(directory / "baseline.json", dict(baseline))
     lines = "".join(
         json.dumps(event.to_json(), ensure_ascii=False, sort_keys=True) + "\n"
         for event in store.list_events(mission_id)
     )
-    guard_text(lines, where="events.jsonl")
+    lines, found = redact_text(lines)
+    if found:
+        redactions.append({"file": "events.jsonl", "patterns": sorted(set(found))})
     (directory / "events.jsonl").write_text(lines, encoding="utf-8")
     snapshot = store.snapshot(mission_id)
-    _dump(directory / "final_state.json", snapshot)
-    _dump(
+    dump(directory / "final_state.json", snapshot)
+    dump(
         directory / "verification.json",
         {
             "results": [
@@ -68,8 +79,8 @@ def write_evidence(
     )
     with store.transaction():
         costs = commit.ledger.costs_report(mission_id)
-    _dump(directory / "costs.json", costs)
-    _dump(  # step 4: the Blackboard layers and the final result's lineage
+    dump(directory / "costs.json", costs)
+    dump(  # step 4: the Blackboard layers and the final result's lineage
         directory / "knowledge.json",
         {
             "knowledge": snapshot.get("knowledge", []),
@@ -77,27 +88,43 @@ def write_evidence(
             "summaries": snapshot.get("summaries", []),
         },
     )
-    _dump(directory / "lineage.json", lineage(store, mission_id))
-    _dump(directory / "graph_history.json", graph_history(store, mission_id))  # step 5
-    _dump(  # step 6 (D6-2'): the scheduler's durable signals — the transition log is the truth
+    dump(directory / "lineage.json", lineage(store, mission_id))
+    dump(directory / "graph_history.json", graph_history(store, mission_id))  # step 5
+    dump(  # step 6 (D6-2'): the scheduler's durable signals — the transition log is the truth
         directory / "scheduler.json",
         {
             "backpressure": store.get_scheduler_state("backpressure"),
             "profile_health": store.get_scheduler_state("profile_health"),
         },
     )
-    _dump(directory / "trace.json", trace(store, mission_id, echoes=echoes))  # step 6 (S6-09)
-    _dump(directory / "metrics.json", metrics(store, mission_id, unpriced=unpriced))
+    dump(directory / "trace.json", trace(store, mission_id, echoes=echoes))  # step 6 (S6-09)
+    dump(directory / "metrics.json", metrics(store, mission_id, unpriced=unpriced))
     artifacts_dir = directory / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
+    withheld: list[dict[str, Any]] = []
     for artifact in snapshot["artifacts"]:
         source = workspaces_root / artifact["attempt_id"] / artifact["path"]
         if source.is_file():
+            data = source.read_bytes()
+            try:  # review P1-5: work product is scanned too; a binary file is listed, not read
+                found_here = find_secrets(data.decode("utf-8"), extra=environment_secrets())
+            except UnicodeDecodeError:
+                found_here = []
+                withheld.append(
+                    {"artifact_id": artifact["id"], "reason": "binary_not_scanned", "copied": True}
+                )
+            if found_here:  # a credential-bearing artifact is withheld, never copied
+                withheld.append(
+                    {"artifact_id": artifact["id"], "patterns": found_here, "copied": False}
+                )
+                continue
             target = artifacts_dir / artifact["attempt_id"] / artifact["path"]
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
-    _dump(directory / "test-report.json", dict(test_report))
+    dump(directory / "test-report.json", dict(test_report))
     return {
+        "redactions": redactions,
+        "withheld_artifacts": withheld,
         "mission": snapshot["mission"],
         "files": sorted(str(p.relative_to(directory)) for p in directory.rglob("*") if p.is_file()),
     }

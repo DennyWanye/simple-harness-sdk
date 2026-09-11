@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 
 import pytest
 from helpers_step06 import config, only, spec
@@ -20,7 +19,7 @@ from helpers_step06 import config, only, spec
 from agent_orchestrator.context.context_builder import assert_no_secrets
 from agent_orchestrator.contracts import MissionStatus, ids
 from agent_orchestrator.observability.evidence import write_evidence
-from agent_orchestrator.observability.secrets import SecretLeak, find_secrets
+from agent_orchestrator.observability.secrets import find_secrets
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
 from agent_orchestrator.testing.fixtures import MODEL, _recorder_task, demo_dynamic_dag_provider
 
@@ -108,13 +107,16 @@ def test_s6_09_every_result_is_traceable_to_its_versions_and_the_evidence_is_cle
     ]
     assert recorded and all(e["payload"]["verifier_version"] == "verifier-v1" for e in recorded)
     # S6-09 "无密钥": nothing in the evidence directory looks like a credential
-    pattern = re.compile(r"sk-[A-Za-z0-9_-]{20,}")
-    for path in evidence.rglob("*"):
-        if path.is_file() and path.suffix in {".json", ".jsonl"}:
-            assert not pattern.search(path.read_text(encoding="utf-8")), path.name
+    for path in evidence.rglob("*"):  # every file, every pattern (review P1-5)
+        if path.is_file():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            assert find_secrets(text) == [], path.name
 
 
-def test_s6_09_a_file_that_would_carry_a_credential_is_refused_and_names_no_value(
+def test_s6_09_a_credential_never_reaches_the_evidence_and_no_value_is_echoed(
     tmp_path, monkeypatch
 ):
     provider = demo_dynamic_dag_provider(tasks=only("A"))
@@ -132,25 +134,23 @@ def test_s6_09_a_file_that_would_carry_a_credential_is_refused_and_names_no_valu
                 workspaces_root=orchestrator.assembled.workspaces.root,
                 test_report={},
             )
-            with pytest.raises(SecretLeak) as leaked:
-                write_evidence(
-                    directory=tmp_path / "e1", baseline={"note": f"key {FAKE_KEY}"}, **kwargs
-                )
-            assert FAKE_KEY not in str(leaked.value) and "api_key_sk" in str(leaked.value)
-            assert not (tmp_path / "e1" / "baseline.json").exists()
-            monkeypatch.setenv("SH_APIKEY", "fixture-env-secret-0123456789")
-            with pytest.raises(SecretLeak) as env_leak:
-                write_evidence(
-                    directory=tmp_path / "e2",
-                    baseline={"note": "fixture-env-secret-0123456789"},
-                    **kwargs,
-                )
-            assert "env_value" in str(env_leak.value) and "fixture-env-secret" not in str(
-                env_leak.value
+            out = write_evidence(
+                directory=tmp_path / "e1", baseline={"note": f"key {FAKE_KEY}"}, **kwargs
             )
+            assert out["redactions"] == [{"file": "baseline.json", "patterns": ["api_key_sk"]}]
+            text = (tmp_path / "e1" / "baseline.json").read_text()
+            assert FAKE_KEY not in text and "<redacted:api_key_sk>" in text
+            monkeypatch.setenv("SH_APIKEY", "fixture-env-secret-0123456789")
+            out = write_evidence(
+                directory=tmp_path / "e2",
+                baseline={"note": "fixture-env-secret-0123456789"},
+                **kwargs,
+            )
+            assert out["redactions"] == [{"file": "baseline.json", "patterns": ["env_value"]}]
+            assert "fixture-env-secret" not in (tmp_path / "e2" / "baseline.json").read_text()
             monkeypatch.delenv("SH_APIKEY")
-            write_evidence(directory=tmp_path / "e3", baseline={"note": "clean"}, **kwargs)
-            assert (tmp_path / "e3" / "trace.json").is_file()
+            out = write_evidence(directory=tmp_path / "e3", baseline={"note": "clean"}, **kwargs)
+            assert out["redactions"] == [] and (tmp_path / "e3" / "trace.json").is_file()
 
     asyncio.run(case())
 

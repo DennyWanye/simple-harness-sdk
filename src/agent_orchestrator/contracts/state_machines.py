@@ -43,6 +43,7 @@ class MissionStopReason(StrEnum):
     VERIFIER_UNAVAILABLE = (
         "verifier_unavailable"  # step 6 (D6-9'): a required verifier is not deployed
     )
+    CONTEXT_REJECTED = "context_rejected"  # step 6 (review P2-10): a package carried a key
 
 
 class TaskStatus(StrEnum):

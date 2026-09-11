@@ -104,6 +104,7 @@
 - 上游输入只读（执行中登记，行为变更）：下游工作区里上游 Task 交付、而本 Task 未在 `outputs` 声明的路径，写入在网关就被拒（`protected_input`）；第 3 步"改写上游合同在提交时被拒"的测试相应改为"在网关被拒"。Mission 种子里的受保护文件仍按第 2 步的篡改检测处理（验证副本重建 + rule_check），不在网关拒绝。
 - S6-08 的崩溃点选"Agent 已在小池创建、尚未提交输入"：崩溃若落在工具调用进行中，SDK 把它记为 UNKNOWN 出站效果并保持阻塞（S2-08 的既定语义，L3-3），那是另一件事；关闭时所有执行池一起停，避免先关一个池时另一个池继续推进 turn。
 - 真实报告只用 deepseek-flash（用户指示）：两个执行池同模型，`small` 输出上限 16384、`large` 32768；报告中的"升级"是换池与输出上限，不是换模型名。
+- 代码 review 后（journal §3）：证据文件遇到密钥样式的值改为**脱敏写入**并在 `redactions` 里报告（原计划"命中即拒写"会让整份证据因一条普通示例而放弃）；带密钥的 artifact 不复制、列入 `withheld_artifacts`。服务角色执行池不可用时：Planner 有界等待、Critic 该层 ERROR、Manager 推迟决策。Mission 的 `max_tool_calls` 按任务数分摊给 Task；工具调用计数持久在 `tool_calls` 表。
 
 ## 7. 原文规则对照（review P2-4；规则编号见 `reports/design-brief.md` §3）
 

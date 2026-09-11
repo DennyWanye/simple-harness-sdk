@@ -173,12 +173,13 @@ def normalise_budgets(mission: Mission, proposal: TaskGraphProposal) -> TaskGrap
     nodes = []
     for node in proposal.tasks:
         changes: dict[str, Any] = {}
-        for name in ("max_tokens", "max_cost_micros"):
+        for name in ("max_tokens", "max_cost_micros", "max_tool_calls"):
             parent = getattr(mission.budget, name)
             if getattr(node.budget, name) is None and parent is not None:
                 pool = max(0, parent - reserve) if name == "max_tokens" else parent
-                changes[name] = pool // count
-        for name in ("max_attempts", "max_concurrency", "max_runtime_seconds", "max_tool_calls"):
+                # review P1-2: a pool dimension is shared out, never copied to every Task
+                changes[name] = max(1, pool // count) if name == "max_tool_calls" else pool // count
+        for name in ("max_attempts", "max_concurrency", "max_runtime_seconds"):
             parent = getattr(mission.budget, name)
             if getattr(node.budget, name) is None and parent is not None:
                 changes[name] = parent

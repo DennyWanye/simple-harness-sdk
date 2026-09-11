@@ -297,6 +297,15 @@ ALTER TABLE budget_accounts ADD COLUMN reserved_tool_calls INTEGER NOT NULL DEFA
 ALTER TABLE budget_accounts ADD COLUMN settled_tool_calls INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE budget_reservations ADD COLUMN reserved_tool_calls INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE budget_reservations ADD COLUMN settled_tool_calls INTEGER;
+CREATE TABLE tool_calls (
+ call_key TEXT PRIMARY KEY,
+ subject_id TEXT NOT NULL,
+ mission_id TEXT NOT NULL,
+ tool TEXT NOT NULL,
+ outcome TEXT NOT NULL,
+ created_at REAL NOT NULL
+) STRICT;
+CREATE INDEX tool_calls_subject_idx ON tool_calls(subject_id, outcome);
 """
 
 MIGRATIONS: tuple[Migration, ...] = (

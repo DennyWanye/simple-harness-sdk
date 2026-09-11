@@ -125,6 +125,12 @@ async def run_pytest(workspace_root: str, *, path: str | None, timeout: float) -
     )
     try:
         output, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except asyncio.CancelledError:  # review P2-7: a cancelled turn leaves no orphan pytest
+        try:
+            os.killpg(process.pid, 9)
+        except ProcessLookupError:
+            pass
+        raise
     except TimeoutError:
         try:
             os.killpg(process.pid, 9)
@@ -146,6 +152,10 @@ class WorkspaceToolGateway:
         # step 6 (§21.1 last step): every refusal is reported to the orchestrator, which
         # writes it to the Mission's timeline through the Commit Service
         self.on_rejected: Callable[[str, Mapping[str, Any]], None] | None = None
+        # review P1-3: executed calls are recorded durably by the orchestrator and the
+        # per-Attempt cap is checked against that durable count (it survives a restart)
+        self.on_executed: Callable[[str, Mapping[str, Any]], None] | None = None
+        self.executed_counter: Callable[[str], int] | None = None
 
     def bind(self, run_id: str, binding: WorkspaceBinding) -> None:
         self._bindings[run_id] = binding
@@ -178,7 +188,7 @@ class WorkspaceToolGateway:
         record["outcome"] = f"rejected:{outcome}"
         record["stage"] = stage
         record["error_code"] = code
-        if self.on_rejected is not None and record.get("attempt_id"):
+        if self.on_rejected is not None:  # review P2-5: every refusal, bound or not
             try:
                 self.on_rejected(str(record["run_id"]), dict(record))
             except Exception as error:  # noqa: BLE001 - auditing must never break the call path
@@ -197,6 +207,8 @@ class WorkspaceToolGateway:
             "tool": call.name,
             "arguments": dict(call.arguments),
             "attempt_id": None if binding is None else binding.attempt_id,
+            "call_id": str(getattr(call.call_id, "value", call.call_id)),
+            "view": None if binding is None else binding.view,
         }
         self.calls.append(record)
         # 1. identity
@@ -247,8 +259,9 @@ class WorkspaceToolGateway:
                         stage="policy",
                         message=f"{path} is denied by the deployment policy",
                     )
-                if call.name == "workspace_write_file" and canonical in {
-                    _canonical(p) for p in binding.protected
+                if call.name == "workspace_write_file" and canonical.casefold() in {
+                    _canonical(p).casefold()
+                    for p in binding.protected  # case-insensitive FS
                 }:
                     return self._reject(
                         call,
@@ -268,10 +281,12 @@ class WorkspaceToolGateway:
                 message=str(error),
             )
         # 4. rate and budget: the Attempt's reserved tool-call cap
-        if (
-            binding.max_tool_calls is not None
-            and self.executed_calls(run_id) >= binding.max_tool_calls
-        ):
+        used = (
+            self.executed_counter(binding.attempt_id)
+            if self.executed_counter is not None and binding.view == "work"
+            else self.executed_calls(run_id)
+        )
+        if binding.max_tool_calls is not None and used >= binding.max_tool_calls:
             return self._reject(
                 call,
                 record,
@@ -333,6 +348,11 @@ class WorkspaceToolGateway:
             )
         # 6. record
         record["outcome"] = "succeeded"
+        if self.on_executed is not None:
+            try:
+                self.on_executed(run_id, dict(record))
+            except Exception as error:  # noqa: BLE001 - accounting must never break the call path
+                record["accounting_error"] = str(error)[:200]
         return ToolResult.succeeded(call.call_id, value)
 
 
