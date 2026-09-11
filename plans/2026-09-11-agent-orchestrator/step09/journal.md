@@ -65,6 +65,7 @@
 | D | `f44e228` | 门槛评测 `governance/gates.py`：生效版本与候选各钉进一个策略（`Strategy.policy_pin`），每次运行在自己的新评测库里（库角色 evaluation、Mission 以 sandbox 绑定）；评测 case 可带多个 runtime profile 与路由（`EvaluationCase.profiles` / `routing`），派生 case 记来源时间；门槛与第 8 步同口径：每个 case 每一方的样本下限（真实 3、fixture 1）、任一方脚手架错误 → INSUFFICIENT（不判 FAILED）、逐 case 成功率非劣、oracle 误判不增、候选 tokens 最小值高于基线最大值才判成本 FAILED、等待人工不增、白名单外快照差异 → FAILED；PASSED 写"非劣：样本内未见退化"；评测前按任务身份哈希（去掉租户与幂等键）、派生来源 Mission、来源时间做防泄漏检查，泄漏直接拒绝、不运行；结论经 Commit 记入提议（报告哈希、基线版本、代码版本、证据种类），另写 `gate.json` | `test_policy_gates.py` 4（S9-03 合格候选只在评测库运行、正式库无候选绑定、未批准不能晋级；S9-02 路由到必败档位的候选 FAILED 且不可批准；样本不足与脚手架错误都是 INSUFFICIENT；S9-07 同任务 / 派生自训练 Mission / 来源早于窗口的泄漏在运行前拒绝）；`tests/orchestrator` 全套 350 passed |
 | E | `a3427b2` | 防护与稳定性：结果接受事务内，Worker 已接受产物落在 `policy/` 或名为部署配置文件的 → `PolicySuggestionRefused`（Mission 时间线，列出键与核心规则键），不进版本库、不改任何规则；Manager 提议解析前，封闭词表之外且点名策略项的操作 → `PolicySuggestionRefused`，随后照旧被封闭词表拒绝；`api/policies.py` 的 `PolicyApi`（身份只来自人类 `Principal`；人工参数须在白名单与范围内，来源 `human:<id>`、标"人工参数，非规则改进"；批准 / 拒绝 / 晋级 / 回滚；按版本健康报告）；部署政策新增 `policy_cooldown_seconds`（默认 600）；分配记录写入当时的背压状态 | `test_policy_guard.py` 5（S9-06 Manager 夹带配置操作被拒且版本库不变、Worker 写 `policy/` 文件被拒、只有人能提出且只能在白名单内；S9-08 冷却 / 背压限制晋级而回滚即时、任何版本不含安全与预算项；高负载实跑：背压升起、RAISED 下并发 ≤ 1、所有分配 ≤ 部署上限、运行峰值有界、预算不超支）；`tests/orchestrator` 全套 355 passed |
 | F | `c519a1c` | CLI 与演示：`policy propose`（`--history` 规则改进 / `--params` 人工参数）/ `evaluate`（fixtures 留出 case 或真实 parse-kv）/ `approve` / `reject` / `promote`（冷却默认取部署政策、`--accept-fixture-evidence`）/ `rollback` / `list` / `show` / `status`（含版本库一致性），退出码 0 / 1（规则或门槛拒绝）/ 2（用法）；`demo --scenario policy-promotion`（history 六个 Mission → 正式库：样本不足拒绝、规则改进器候选（R2 路由 code→large）、人工候选路由到 flaky 被门槛拒绝、学习候选门槛通过且未批准不能晋级、晋级前创建的 Mission 仍按种子运行、晋级后按候选路由、回滚后既有事件与用量不变；`summary.json` / `registry.json` / `policy_events.jsonl` / 每个正式 Mission 的证据）；夹具 `policy_demo_profiles` / `policy_demo_routing` / `policy_spec`；step02"未实现"测试改为"全部场景已实现、未知场景退出 2"；真实门槛 opt-in；版本 0.9.7 / 0.9.0 | `test_policy_promotion_closure.py`（演示闭环 S9-01…07 + CLI 拒绝路径）；`tests/orchestrator` 全套 356 passed / 8 skipped |
+| G | `88e5582` | 代码评审第 1 轮修复（处置表见 §1）：legacy 绑定不计入回放覆盖率；S9-08 演练改为高负载下周期间交替晋级 / 回滚并逐周期核对边界；Manager 越界操作一律记录、合法操作夹带策略键也记录；评测库一致性跳过 sandbox 版本；CLI 只读命令复制后只读打开、库不存在退出 2、去掉 `--cooldown`；provider 种类按每个 profile 的 provider 类判定；路由缺失按 Mission 各记、配置漂移每次打开都记；已晋级 / 已拒绝提议评测前拒绝；单一写入者检查参数结构 | step09 新增 `test_review_*` 7 条与重写的 S9-08 演练；SDK 全量回归红集 = 基线 |
 
 ## 3. 真实模型
 
@@ -75,7 +76,7 @@
 - 每个切片提交前都跑 `tests/orchestrator` 全套：A 333、B 339、D 350、E 355、F 356 passed（真实模型 opt-in 跳过）。
 - SDK 全量回归（代码评审修复之后，wheel 源）：58 failed / 2403 passed / 13 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
 - 版本：simple_harness 0.9.7 / agent_orchestrator 0.9.0（`tests/unit/contracts/public-api.json` 同步）；编排库 schema v6。
-- wheel：WHEEL_LINE_PLACEHOLDER
+- wheel：自 `88e5582`（`SOURCE_DATE_EPOCH=1789133695`）可复现构建 `simple_harness_sdk-0.9.7-py3-none-any.whl`，sha256 `291c824deeaf70c5c535413f3b2cb405c615e8654c216739eb1e1940ea4c06d2`；wheel 在干净 venv（Python 3.12）安装后 626 passed / 1 failed（基线已知的 `test_execution_v3_to_v4_migration::test_completed_null_continuation_*`）/ 11 skipped，multi-mission、approval-action、evaluate-policies、policy-promotion 四个演示与 `replay --attribution`、`policy status` 退出码都是 0；版本 0.9.7 / 0.9.0（脚本 scratchpad `wheel-0.9.7/build-and-verify.sh`）。
 
 ## 5. 遗留
 
@@ -87,7 +88,7 @@
 
 ## 6. 结论
 
-**SHIPPED**：simple_harness 0.9.7 / agent_orchestrator 0.9.0，wheel 源提交 `WHEEL_COMMIT_PLACEHOLDER`（sha256 `WHEEL_SHA_PLACEHOLDER`）。
+**SHIPPED**：simple_harness 0.9.7 / agent_orchestrator 0.9.0，wheel 源提交 `88e5582`（sha256 `291c824deeaf70c5c535413f3b2cb405c615e8654c216739eb1e1940ea4c06d2`）。
 
 | 验收 | 结果 | 证据 |
 |---|---|---|
@@ -100,4 +101,4 @@
 | S9-07 数据不足 / 污染 / 泄漏拒绝晋级、无虚假提升结论 | PASS | `test_policy_learning.py::test_s9_07_*`、`test_policy_gates.py::test_s9_07_*`、真实 flash 门槛 INSUFFICIENT（§3） |
 | S9-08 高负载下频繁调整有边界、安全 / 预算上限始终有效 | PASS | `test_policy_guard.py::test_s9_08_*`（周期间交替晋级 / 回滚、RAISED 扩张被拒、每周期开放 Attempt / 账户 / 部署配置哈希核对）、`test_policy_registry.py::test_s9_08_*` |
 
-门：step09 全部通过（真实模型 opt-in 跳过）；SDK 全量回归红集 ⊆ 基线（§4）；WHEEL_SUMMARY_PLACEHOLDER；plan 评审与代码评审全部处置（§1）；真实 deepseek-flash 门槛评测（§3）。ORCH-BUILD-v1.0 第 2–9 步至此全部交付。
+门：step09 全部通过（真实模型 opt-in 跳过）；SDK 全量回归红集 ⊆ 基线（§4）；wheel 在干净 venv（Python 3.12）安装后 626 passed / 1 failed（基线已知的 `test_execution_v3_to_v4_migration::test_completed_null_continuation_*`）/ 11 skipped，multi-mission、approval-action、evaluate-policies、policy-promotion 四个演示与 `replay --attribution`、`policy status` 退出码都是 0；plan 评审与代码评审全部处置（§1）；真实 deepseek-flash 门槛评测（§3）。ORCH-BUILD-v1.0 第 2–9 步至此全部交付。

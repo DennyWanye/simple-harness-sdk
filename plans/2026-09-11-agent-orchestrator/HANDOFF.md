@@ -1,7 +1,7 @@
 # Agent 编排框架 · 交接说明（第 2–9 步全部交付）
 
 - 日期：2026-09-11
-- 仓库：`simple-harness-sdk`，分支 `main`；第 9 步代码与 wheel 源提交 `WHEEL_COMMIT_PLACEHOLDER`，之后只有文档提交（已推送 origin/main，本地干净，只有主工作树）
+- 仓库：`simple-harness-sdk`，分支 `main`；第 9 步代码与 wheel 源提交 `88e5582`，之后只有文档提交（已推送 origin/main，本地干净，只有主工作树）
 - 版本：simple_harness **0.9.7** / agent_orchestrator **0.9.0**（同一个 wheel）
 - 纲要：Host 仓库 `simple_harness/plans/taskSys2/agent-orchestrator-incremental-build-plan-phase2-zh-CN.md`（ORCH-BUILD-v1.0，第 2–9 步）；原文 `agent-orchestration-layer-complete-design.md`；术语 `agent-orchestration-theory/`
 - 本仓库的总表：`plans/2026-09-11-agent-orchestrator/program.md`；每步 `stepNN/{plan,acceptance,journal}.md` 与 `reports/`；测试归档 `testcase/agent-orchestrator-stepNN/`
@@ -19,9 +19,9 @@ ORCH-BUILD-v1.0 的第 2–9 步全部 SHIPPED——纲要 §11 写的"第 9 步
 | 6 | 多 Mission、多模型、背压、隔离 | SHIPPED 0.9.4 | `a2ce656` |
 | 7 | Human-in-the-loop 与受控真实操作 | SHIPPED 0.9.5 | `418a6d7` |
 | 8 | 归因、Replay、策略对照评测 | SHIPPED 0.9.6 | `a094f46` |
-| 9 | 从历史学习并受控晋级 | SHIPPED 0.9.7 | `WHEEL_COMMIT_PLACEHOLDER`（sha256 `WHEEL_SHA_PLACEHOLDER`） |
+| 9 | 从历史学习并受控晋级 | SHIPPED 0.9.7 | `88e5582`（sha256 `291c824deeaf70c5c535413f3b2cb405c615e8654c216739eb1e1940ea4c06d2`） |
 
-第 9 步最终证据：WHEEL_SUMMARY_PLACEHOLDER。细节见 `step09/journal.md` §1–§6。
+第 9 步最终证据：step09 全部通过；SDK 全量回归红集 73 = 基线、0 新红；wheel 在干净 venv（Python 3.12）安装后 626 passed / 1 failed（基线已知的 `test_execution_v3_to_v4_migration::test_completed_null_continuation_*`）/ 11 skipped，multi-mission、approval-action、evaluate-policies、policy-promotion 四个演示与 `replay --attribution`、`policy status` 退出码都是 0；真实 deepseek-flash 门槛评测如实给出 INSUFFICIENT（每一方样本 2 < 3）。细节见 `step09/journal.md` §1–§6。
 
 ## 2. 之后可以做什么（不在 ORCH-BUILD-v1.0 范围内）
 
