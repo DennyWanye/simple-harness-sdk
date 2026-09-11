@@ -18,3 +18,4 @@
 | S5-09 低优先级任务因等待老化获得执行；§29.3 公式确定性；打分冻结在 Attempt | `test_allocator_priority.py` |
 | §25.1 合法性（READY 不在位改依赖、COMPLETED 不替代、pause/resume/set_role 数据标记）、提案解析严格、替代链上限 | `test_graph_changes.py` |
 | CLI `dynamic-dag` 证据目录 | `test_dynamic_dag_closure.py::test_demo_dynamic_dag_on_fixtures_writes_evidence` |
+| 代码 review round 1 处置（P0-1 pause 合法性、P1-1 旧 id retarget、P1-2 两处 Manager 触发、P1-3 commit 前崩溃、P1-4 `AllocationDecided`、P2-7/8/9/4） | `test_step05_review_fixes.py` |

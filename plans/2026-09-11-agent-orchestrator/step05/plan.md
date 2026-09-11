@@ -85,3 +85,15 @@
 | `stop_task` 是 Mission 级停止（R17） | 分支级停滞处置 = 换角色/拆小/暂停；`NO_PROGRESS` / `MANAGEMENT_EXHAUSTED` 是 Mission 级停止原因 | §19 |
 | 被替代任务的在途 SDK turn（R18） | 编排层 `cancel_turn` 协作取消、`gateway.unbind` 立即撤销工具资格；迟到结果只记历史（S5-06 观察的正是这条） | ORCH §12.1 |
 | 演示可观察性（R23） | 证据 `graph_history.json` 每个版本含任务快照、变更依据与被取代任务的已登记产物 id | ORCH §7.4 |
+
+## 7. 代码 review 后的修订（2026-09-11；裁决表见 journal §3）
+
+- **D5-16（pause 合法性）**：`pause_task` 只作用于 READY/BLOCKED；ACTIVE/VERIFYING 的路线必须 `supersede_task` 或 `cancel_task`（原 D5-4' 的"有 BLOCKED 依赖者用 pause"限定为 READY/BLOCKED 任务本身）。
+- **D5-17（Manager 触发时机，完整清单）**：① 非 candidate 结果（blocked / failure / no_progress / proposed_subtasks）→ `outcome:<result>`；② candidate 结果 accept 后仍带 `proposed_tasks` 且 Mission 仍 ACTIVE → `proposed:<result>`；③ `VerificationFailed` 累计 ≥ `manager_after_failures` 且任务仍可重试 → `failures:<task>:<n>`（用尽 `max_attempts` 的任务由 `_decide` 按 max_attempts 停止，不再请求管理）。每个 trigger 一个去重的 intent（D5-6）。
+- **D5-18（manager intent 结算时机）**：与 planner 同路径——`commit_graph_change` 成功 / 拒绝 / keep 之后才 `SETTLED`；新增故障点 `before_graph_change`，崩溃后同一 turn 被再收集、幂等回执保证只提交一次。
+- **D5-8''（Allocator 事件与老化语义）**：`create_attempt` 发 `AllocationDecided`（payload = 冻结进 intent 的 `allocation`）；饥饿保护的语义是"等满一个 `aging_window` 后提升到第二档"，窗口内只有 0.10 权重。
+- **D5-2''（缺省预算份额）**：未写 `budget.max_tokens` 的 `add_task` 得到 min(剩余/新任务数, 池/max(4, 现有任务数+新任务数))，不再是剩余池等分。
+- **D5-3''（拓扑序的两处补齐）**：`ancestors` 显式跳过 CANCELLED（与 D5-4 文本对齐）；`terminal_task` 按拓扑序取最后一个非冲突叶子。
+- **D5-7' 文本修正**：blocked / proposed 触发的空提案不计 `no_progress_count`，由 `max_manager_rounds` 兜底（`MANAGEMENT_EXHAUSTED`）；no_progress / failure / verification_failed 触发的空提案受 `no_progress_limit` 约束。
+- **§6.1 登记补充**：（a）ORCH §7.2 的"事务性应用 Task DAG Proposal"落在 `graph/changes.py` + `commit_service.commit_graph_change`，`graph/task_graph.py` 只保留初始图；（b）Allocator 资格清单中的"任务账户有剩余"下沉到 `_next_attempt`（`BudgetExhausted` → 停止），不进分数排序；（c）`duplication_score` 的尺度是"规范化 goal 完全相同"的分组，`graph/deduplicator.find_duplicates` 的 suspected 另用于提案校验；（d）`graph_history.json` 各版本快照的 `dependencies` 为任务当前边，边的历史以 `graph_changes.operations` 为准。
+

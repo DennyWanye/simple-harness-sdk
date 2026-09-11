@@ -22,8 +22,12 @@ stop (`no_progress`, `management_exhausted`); a refused proposal is fed back onc
 Allocator ranks the frontier with §29.3's starting formula (weights verbatim, versioned
 input scales, conflict Tasks first, starvation guard after an aging window) and freezes the
 score on the Attempt.  Evidence adds `graph_history.json` (v1 → v2 with basis and old work).
-CLI `demo --scenario dynamic-dag`; kill switch `dynamic_graph`.  No SDK (`simple_harness`)
-API change.
+CLI `demo --scenario dynamic-dag`; kill switch `dynamic_graph`.  Review round 1: `pause_task`
+is legal only for READY/BLOCKED Tasks; a Manager decision is also requested after a PASS that
+still carries `proposed_tasks` and after `manager_after_failures` verification failures; the
+manager intent settles only once the change is durable; `AllocationDecided` carries the frozen
+score; an `add_task` without a budget gets a bounded share.  No SDK (`simple_harness`) API
+change.
 
 ## 0.9.2 — agent_orchestrator step 4: team knowledge, conflict arbitration, synthesis (source candidate)
 

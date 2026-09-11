@@ -10,6 +10,7 @@
 | S5-06 | 被替代 Worker 迟到提交 | B 的在途候选被 CANCELLED 后其结果 `ResultRejected(superseded)` 只记历史；不批准当前任务；usage 导入、预留结算 | 闭环 `test_s5_06` | — |
 | S5-07 | 同一建议重复发送 | 同一提案（哈希 + base）两次投递 → 同一回执、一次 `TaskGraphChanged`；同一触发结果只建一个 manager intent；proposal/result/commit 可关联（`basis.result_id`、receipt.change_id） | `test_graph_changes.py::test_s5_07`、`test_manager_decisions.py::test_s5_07` | — |
 | S5-08 | 超过深度 / 单 Agent 建议数 / 预算 | 拒绝并给出维度与剩余（`TaskGraphChangeRejected(reason=depth|proposals|budget)`），拒绝反馈进入下一次 Manager 包；不绕限制 | `test_graph_changes.py::test_s5_08_*`、`test_manager_decisions.py::test_s5_08_feedback` | 30-13 |
-| S5-09 | 低优先级可执行 Task 长期等待 | 并发 1 下，高优先级任务持续存在时，低优先级 READY 任务因 `waiting_age` 上升在 `aging_window` 内获得 Attempt；`allocator-v1` 打分记入事件 `AllocationDecided` | `test_allocator_priority.py::test_s5_09` | — |
+| S5-09 | 低优先级可执行 Task 长期等待 | 并发 1 下，高优先级任务持续存在时，低优先级 READY 任务因 `waiting_age` 上升、等满一个 `aging_window` 后被提升到饥饿档获得 Attempt；`allocator-v1` 打分冻结进 Attempt 的 intent 并记入事件 `AllocationDecided` | `test_allocator_priority.py::test_s5_09`、`test_step05_review_fixes.py::test_p1_4_*` | — |
+| 评审处置 | 代码 review round 1 的 P0/P1/P2 修复各一条决定性测试 | pause 合法性、旧 id retarget、PASS+proposed / 反复验证失败两处触发、commit 前崩溃、`AllocationDecided`、缺省预算上限、`dynamic_graph=False`、替代链真实路径、单任务 `graph_version`/`ready_at` | `test_step05_review_fixes.py`（10 条） | — |
 
 附加门槛：`tests/orchestrator`（step02–05）全绿；SDK 全量红集 ⊆ 基线；schema v2 库升级 v3；安装 wheel 后跑 `tests/orchestrator` 与 `python -m agent_orchestrator demo --scenario dynamic-dag --provider fixtures --evidence-dir evidence/s5`（证据含 §14.3 七个文件 + `graph_history.json`）；真实模型（deepseek-flash）演示记录（至少"执行中改图后同一 Mission 完成、已完成任务未重跑"）；独立 review 处置；推送 origin main 且本地干净。
