@@ -151,9 +151,9 @@ def cmd_mission(args: argparse.Namespace) -> int:
             ) as orchestrator:
                 from .api.missions import MissionApi
 
-                mission, created = MissionApi(orchestrator.commit).create(
-                    tenant_id=args.tenant, request=spec_data
-                )
+                mission, created = MissionApi(  # host support 0.9.8: the deployment-aware door
+                    orchestrator.commit, orchestrator=orchestrator
+                ).create(tenant_id=args.tenant, request=spec_data)
                 _print(
                     {"mission_id": mission.id, "created": created, "status": str(mission.status)}
                 )

@@ -44,28 +44,47 @@ def validate_spec(spec: MissionSpec, *, available_tools: Sequence[str] = TOOL_NA
             raise MissionRequestError(f"workspace_seed path escapes the workspace: {path}")
 
 
+def spec_from_request(
+    tenant_id: str, request: Mapping[str, Any], *, default_tools: Sequence[str] = TOOL_NAMES
+) -> MissionSpec:
+    """The charter a caller's request describes; an omitted tool set is ``default_tools``
+    (the deployment's, when an orchestrator parses it — host support 0.9.8)."""
+
+    try:
+        return MissionSpec(
+            goal=str(request.get("goal", "")),
+            success_criteria=tuple(request.get("success_criteria", ())),
+            tenant_id=tenant_id,
+            idempotency_key=str(request.get("idempotency_key", "")),
+            stop_conditions=tuple(
+                request.get("stop_conditions", ("verification_passed", "budget_exhausted"))
+            ),
+            allowed_tools=tuple(request.get("allowed_tools", default_tools)),
+            risk_level=str(request.get("risk_level", "sandbox")),
+            budget=Budget.from_json(request.get("budget", {})),
+            task_kind=str(request.get("task_kind", "code")),
+            workspace_seed=dict(request.get("workspace_seed", {})),
+        )
+    except (ContractError, TypeError, ValueError) as error:
+        raise MissionRequestError(str(error)) from error
+
+
 class MissionApi:
-    def __init__(self, commit: CommitService) -> None:
+    def __init__(self, commit: CommitService, *, orchestrator: Any = None) -> None:
+        """With ``orchestrator`` (host support 0.9.8, plan review P1-1) ``create`` goes
+        through :meth:`Orchestrator.create_mission` — the door that knows the deployment,
+        the action criteria, the provider kind and the policy binding."""
+
         self._commit = commit
+        self._orchestrator = orchestrator
 
     def create(self, *, tenant_id: str, request: Mapping[str, Any]) -> tuple[Mission, bool]:
-        try:
-            spec = MissionSpec(
-                goal=str(request.get("goal", "")),
-                success_criteria=tuple(request.get("success_criteria", ())),
-                tenant_id=tenant_id,
-                idempotency_key=str(request.get("idempotency_key", "")),
-                stop_conditions=tuple(
-                    request.get("stop_conditions", ("verification_passed", "budget_exhausted"))
-                ),
-                allowed_tools=tuple(request.get("allowed_tools", TOOL_NAMES)),
-                risk_level=str(request.get("risk_level", "sandbox")),
-                budget=Budget.from_json(request.get("budget", {})),
-                task_kind=str(request.get("task_kind", "code")),
-                workspace_seed=dict(request.get("workspace_seed", {})),
+        if self._orchestrator is not None:
+            created: tuple[Mission, bool] = self._orchestrator.create_mission(
+                tenant_id=tenant_id, request=request
             )
-        except (ContractError, TypeError, ValueError) as error:
-            raise MissionRequestError(str(error)) from error
+            return created
+        spec = spec_from_request(tenant_id, request)
         validate_spec(spec)
         return self._commit.create_mission(spec)
 
@@ -79,4 +98,4 @@ class MissionApi:
         return self._commit.store.list_events(mission_id, after_seq=after_seq)
 
 
-__all__ = ("MissionApi", "MissionRequestError", "validate_spec")
+__all__ = ("MissionApi", "MissionRequestError", "spec_from_request", "validate_spec")

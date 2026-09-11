@@ -42,6 +42,23 @@ VERIFICATION_LAYERS = (
 STEP2_IMPLEMENTED_LAYERS = frozenset(
     {"format_check", "rule_check", "critic_review", "code_test", "human_review"}  # + step 7 (D7-8)
 )
+# the system default for a Task whose proposal names no verification policy (a Manager
+# ``add_task``, a synthesis template)
+SYSTEM_DEFAULT_POLICY = ("format_check", "rule_check", "code_test")
+
+
+def default_change_policy(
+    deployed: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
+) -> tuple[str, ...]:
+    """Host support 0.9.8: the system default narrowed to what the deployment runs.  Without
+    local code execution the substantive check is the independent Critic instead of the
+    tests — never a policy with no check beyond format and rules."""
+
+    if "code_test" in deployed:
+        return SYSTEM_DEFAULT_POLICY
+    return ("format_check", "rule_check", "critic_review")
+
+
 TASK_KINDS = ("work", "conflict", "synthesis")
 
 
@@ -970,6 +987,8 @@ __all__ = (
     "CLAIM_STANCES",
     "CONTRACT_SCHEMA_VERSION",
     "STEP2_IMPLEMENTED_LAYERS",
+    "SYSTEM_DEFAULT_POLICY",
+    "default_change_policy",
     "TASK_KINDS",
     "VERIFICATION_LAYERS",
     "Artifact",

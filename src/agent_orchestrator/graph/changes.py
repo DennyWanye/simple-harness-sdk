@@ -23,7 +23,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..contracts import Budget, ContractError, Mission, Task, TaskStatus
-from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, VERIFICATION_LAYERS, sha256_hex
+from ..contracts.models import (
+    STEP2_IMPLEMENTED_LAYERS,
+    SYSTEM_DEFAULT_POLICY,
+    VERIFICATION_LAYERS,
+    default_change_policy,
+    sha256_hex,
+)
 from ..planning.manager import inherit_limits, system_reserve_tokens
 from .deduplicator import find_duplicates
 from .dependency_checker import DependencyError, check_dependencies
@@ -91,7 +97,9 @@ class NewTaskNode:
         }
 
     @classmethod
-    def from_json(cls, value: object) -> NewTaskNode:
+    def from_json(
+        cls, value: object, *, default_policy: Sequence[str] = SYSTEM_DEFAULT_POLICY
+    ) -> NewTaskNode:
         if not isinstance(value, Mapping):
             raise ContractError("add_task must be an object")
         allowed = {
@@ -141,10 +149,7 @@ class NewTaskNode:
             dependencies=tuple(str(d) for d in value.get("dependencies", ())),
             success_criteria=tuple(str(c) for c in value["success_criteria"]),
             verification_policy=tuple(
-                str(layer)
-                for layer in value.get(
-                    "verification_policy", ("format_check", "rule_check", "code_test")
-                )
+                str(layer) for layer in value.get("verification_policy", default_policy)
             ),
             allowed_tools=tuple(str(t) for t in value.get("allowed_tools", ())),
             budget=Budget.from_json(value.get("budget", {})),
@@ -245,8 +250,14 @@ class TaskGraphChange:
             operations=tuple(Operation.from_json(item) for item in raw_ops),
         )
 
-    def add_tasks(self) -> list[NewTaskNode]:
-        return [NewTaskNode.from_json(op.args) for op in self.operations if op.op == "add_task"]
+    def add_tasks(
+        self, *, default_policy: Sequence[str] = SYSTEM_DEFAULT_POLICY
+    ) -> list[NewTaskNode]:
+        return [
+            NewTaskNode.from_json(op.args, default_policy=default_policy)
+            for op in self.operations
+            if op.op == "add_task"
+        ]
 
     def referenced_task_ids(self) -> set[str]:
         ids: set[str] = set()
@@ -292,8 +303,12 @@ def validate_change(
     limits: ChangeLimits,
     proposals_by_attempt: Mapping[str, int],
     committed_tokens_by_task: Mapping[str, int],
+    deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
 ) -> ValidatedChange:
-    """Graph Manager checks for one change proposal against the current formal graph."""
+    """Graph Manager checks for one change proposal against the current formal graph.
+    ``deployed_layers`` (host support 0.9.8) is what this deployment can run: an
+    ``add_task`` without a policy gets the system default narrowed to it, one that names
+    an undeployed layer is refused."""
 
     by_id = {task.id: task for task in tasks}
     live = {task.id: task for task in tasks if task.status is not TaskStatus.CANCELLED}
@@ -303,7 +318,7 @@ def validate_change(
         raise GraphChangeRejected(
             "backpressure", "no new Task may be added while backpressure is raised (§18.5)"
         )
-    nodes = change.add_tasks()
+    nodes = change.add_tasks(default_policy=default_change_policy(deployed_layers))
     keys = [node.key for node in nodes]
     if len(set(keys)) != len(keys):
         raise GraphChangeRejected("duplicate", f"repeated add_task keys {keys}")
@@ -511,7 +526,7 @@ def validate_change(
             raise GraphChangeRejected(
                 "contract", f"{node.key}: bad verification_policy {sorted(unknown_layers)}"
             )
-        undeployed = set(node.verification_policy) - STEP2_IMPLEMENTED_LAYERS
+        undeployed = set(node.verification_policy) - deployed_layers  # host support 0.9.8
         if undeployed:
             raise GraphChangeRejected(
                 "verification_policy_undeployed",

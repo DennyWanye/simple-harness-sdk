@@ -65,8 +65,9 @@ class Verdict:
 
 
 class VerifierRouter:
-    def __init__(self, *, test_timeout: float = 120.0) -> None:
+    def __init__(self, *, test_timeout: float = 120.0, local_code_execution: bool = True) -> None:
         self._test_timeout = test_timeout
+        self._local_code_execution = local_code_execution  # host support 0.9.8
 
     async def verify(
         self,
@@ -200,6 +201,15 @@ class VerifierRouter:
                             )
                 except ContractError as error:
                     result = LayerResult(layer, ERROR, f"critic verdict unusable: {error}", {})
+            elif layer == "code_test" and not self._local_code_execution:
+                # host support 0.9.8: a Task from before the switch still asks for the layer;
+                # it cannot run here, which is an ERROR — never a PASS or NOT_REQUIRED
+                result = LayerResult(
+                    layer,
+                    ERROR,
+                    "local_code_execution is off in this deployment: model-written tests are not run on this machine",
+                    {"undeployed": True, "local_code_execution": False},
+                )
             elif layer == "code_test":
                 # step 3 (D3-9'): Mission-level pytest targets are judged on the
                 # integrated tree, not against one Task's partial workspace

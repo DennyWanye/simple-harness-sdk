@@ -38,7 +38,12 @@ from ..contracts import (
     TaskStatus,
     ids,
 )
-from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, jsonable, sha256_hex
+from ..contracts.models import (
+    STEP2_IMPLEMENTED_LAYERS,
+    default_change_policy,
+    jsonable,
+    sha256_hex,
+)
 from ..governance.budgets import AccountSnapshot, BudgetError, BudgetLedger, UsageFact
 from ..governance.policies import DeploymentPolicy
 from ..graph.changes import (
@@ -203,12 +208,21 @@ class CommitService(
     ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin
 ):  # step 7: the action ledger + approvals half; step 9: the policy registry half
     def __init__(
-        self, store: Store, *, conflict_tasks: bool = True, global_budget: Budget | None = None
+        self,
+        store: Store,
+        *,
+        conflict_tasks: bool = True,
+        global_budget: Budget | None = None,
+        deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
     ) -> None:
         self._store = store
         self._ledger = BudgetLedger(store)
         self._conflict_tasks = conflict_tasks  # D4-19: False = defer every conflict
         self._global_budget = global_budget  # D6-1: None = no deployment-wide cap
+        # host support 0.9.8: the verification layers this deployment runs — without local
+        # code execution ``code_test`` is not among them; the Graph Manager checks, the
+        # system default policies and the conflict path all follow it
+        self._deployed_layers = frozenset(deployed_layers)
         # D6-8: the orchestrator installs the gateway's executed-call counter (subject → count)
         # so every settlement path books the tool-call fact without threading it through
         self.tool_calls_for: Callable[[str], int] | None = None
@@ -750,7 +764,7 @@ class CommitService(
             )
         if not proposal.budget.fits_within(mission.budget):
             raise CommitRejected("task budget exceeds the Mission budget (§18.2)")
-        unsupported = set(proposal.verification_policy) - STEP2_IMPLEMENTED_LAYERS
+        unsupported = set(proposal.verification_policy) - self._deployed_layers
         if unsupported:
             raise CommitRejected(
                 f"verification_policy_undeployed: layers not deployed in this build {sorted(unsupported)}"
@@ -821,7 +835,9 @@ class CommitService(
                 raise CommitRejected(
                     "the Mission already has a committed graph (static DAG, step 3)"
                 )
-            graph = validate_graph(mission, proposal)  # GraphRejected handled by the caller
+            graph = validate_graph(  # GraphRejected handled by the caller
+                mission, proposal, deployed_layers=self._deployed_layers
+            )
             key_to_id = {
                 key: ids.task_id(mission_id, ordinal)
                 for ordinal, key in enumerate(graph.order, start=1)
@@ -881,6 +897,7 @@ class CommitService(
                     template=template,
                     leaves=[key_to_id[key] for key in graph.order if key in set(graph.leaves)],
                     now=self._store.now,
+                    default_policy=default_change_policy(self._deployed_layers),
                 )
                 self._store.insert_task(synthesis, ordinal=len(tasks) + 1)
                 self._ledger.open_account(
@@ -1060,6 +1077,7 @@ class CommitService(
                 limits=limits,
                 proposals_by_attempt=proposals_by_attempt,
                 committed_tokens_by_task=committed,
+                deployed_layers=self._deployed_layers,
             )
             by_id = {task.id: task for task in tasks}
             new_version = current + 1
@@ -1688,6 +1706,11 @@ class CommitService(
         deferred_reason = None
         if not self._conflict_tasks:
             deferred_reason = "knowledge_sharing_disabled"
+        elif "code_test" not in self._deployed_layers:
+            # host support 0.9.8: a Conflict Task settles on a probe test run on this
+            # machine; without local code execution an unexecuted probe would stand as
+            # evidence, so the dispute stays DISPUTED and the conflict waits
+            deferred_reason = "local_code_execution_disabled"
         elif per_task <= 0:
             deferred_reason = "no_reserve"
         elif remaining <= 0:

@@ -92,8 +92,11 @@ def synthesis_task(
     template: Mapping[str, Any],
     leaves: Sequence[str],
     now: float,
+    default_policy: Sequence[str] = ("format_check", "rule_check", "code_test"),
 ) -> Task:
-    """The fixed synthesis Task from ``MissionSpec.synthesis`` (D4-8)."""
+    """The fixed synthesis Task from ``MissionSpec.synthesis`` (D4-8).  A template without
+    a policy gets ``default_policy`` — the Commit Service narrows it to the deployed layers
+    (host support 0.9.8)."""
 
     budget = inherit_limits(Budget.from_json(template.get("budget", {})), mission.budget)
     return Task(
@@ -108,10 +111,7 @@ def synthesis_task(
         ),
         success_criteria=tuple(str(c) for c in template["success_criteria"]),
         verification_policy=tuple(
-            str(layer)
-            for layer in template.get(
-                "verification_policy", ("format_check", "rule_check", "code_test")
-            )
+            str(layer) for layer in template.get("verification_policy", tuple(default_policy))
         ),
         allowed_tools=tuple(str(t) for t in template.get("allowed_tools", mission.allowed_tools)),
         budget=budget,

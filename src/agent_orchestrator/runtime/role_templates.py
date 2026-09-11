@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-PLANNER_VERSION = "planner-v3"
+PLANNER_VERSION = "planner-v4"  # host support 0.9.8: layers from the package
 WORKER_VERSION = "worker-v2"
 CRITIC_VERSION = "critic-v2"
 ARBITER_VERSION = "arbiter-v2"
@@ -41,9 +41,9 @@ class RoleTemplate:
     tool_names: tuple[str, ...]
 
 
-PLANNER = RoleTemplate(
+PLANNER_V3 = RoleTemplate(
     name="planner",
-    prompt_version=PLANNER_VERSION,
+    prompt_version="planner-v3",
     tool_names=(),
     instructions=(
         "[role:planner]\n"
@@ -61,6 +61,40 @@ PLANNER = RoleTemplate(
         '             "budget": {"max_tokens": int, "max_attempts": int}, "priority": number,\n'
         '             "outputs": [该 Task 会写入/改写的路径]}, …]}\n'
         "不允许循环依赖、自依赖、引用不存在的 key、重复的 Task。块外不要输出任何文字。"
+    ),
+)
+
+
+def _revise(template: RoleTemplate, version: str, *pairs: tuple[str, str]) -> RoleTemplate:
+    """A new prompt version made of exact edits to an older one; a missing anchor fails
+    at import instead of silently shipping the old words."""
+
+    text = template.instructions
+    for old, new in pairs:
+        if old not in text:
+            raise RuntimeError(f"{template.name}: revision anchor not found: {old[:40]!r}")
+        text = text.replace(old, new, 1)
+    return RoleTemplate(
+        name=template.name,
+        prompt_version=version,
+        instructions=text,
+        tool_names=template.tool_names,
+    )
+
+
+# host support 0.9.8 (Host plan 2026-09-11 §3.1): the Planner chooses layers only from what
+# the deployment runs (``deployed_verification_layers`` in its package) and writes
+# ``pytest:`` criteria only when code_test is among them.  planner-v3 stays registered.
+PLANNER = _revise(
+    PLANNER_V3,
+    PLANNER_VERSION,
+    (
+        "`pytest:<测试文件或目录>` 表示必须通过，",
+        "`pytest:<测试文件或目录>` 表示必须通过（只有输入 deployed_verification_layers 含 code_test 时才能使用），",
+    ),
+    (
+        "[从 format_check / rule_check / critic_review / code_test 中选择]",
+        "[只能从输入 deployed_verification_layers 列出的层中选择]",
     ),
 )
 
@@ -157,12 +191,12 @@ SYNTHESIZER = RoleTemplate(
     ),
 )
 
-MANAGER_VERSION = "manager-v1"
+MANAGER_VERSION = "manager-v2"  # host support 0.9.8: layers from the package
 GRAPH_CHANGE_PROPOSAL_TAG = "graph_change_proposal"
 
-MANAGER = RoleTemplate(
+MANAGER_V1 = RoleTemplate(
     name="manager",
-    prompt_version=MANAGER_VERSION,
+    prompt_version="manager-v1",
     tool_names=(),
     instructions=(
         "[role:manager]\n"
@@ -178,6 +212,17 @@ MANAGER = RoleTemplate(
         "已 COMPLETED 的任务不能重做、只能被依赖；在执行中的任务要改合同只能 supersede；反复无进展时必须换角色/拆小或明确停止（cancel_task），空提案会被系统当作放弃。\n"
         "最终回答必须只包含一个 <graph_change_proposal>…</graph_change_proposal> 块，块内 JSON：\n"
         '  {"base_graph_version": 输入里的 graph_version, "rationale": str, "operations": [ … ]}（operations 可以为空 = 保持计划继续重试）。块外不要输出任何文字。'
+    ),
+)
+
+# host support 0.9.8: an add_task may only name deployed layers; manager-v1 stays registered
+MANAGER = _revise(
+    MANAGER_V1,
+    MANAGER_VERSION,
+    (
+        "空提案会被系统当作放弃。\n",
+        "空提案会被系统当作放弃。add_task 的 verification_policy 只能从输入 deployed_verification_layers 列出的层中选择"
+        "（省略时由系统按部署补默认）；不含 code_test 时不要写 pytest: 条件。\n",
     ),
 )
 
@@ -268,6 +313,12 @@ TEMPLATE_VERSIONS: dict[str, dict[str, RoleTemplate]] = {
 
 def register_template(template: RoleTemplate) -> None:
     TEMPLATE_VERSIONS.setdefault(template.name, {})[template.prompt_version] = template
+
+
+# host support 0.9.8: the previous Planner / Manager prompts stay available — a library
+# whose ACTIVE policy was seeded with them keeps running on the same words
+register_template(PLANNER_V3)
+register_template(MANAGER_V1)
 
 
 def registered_versions() -> dict[str, frozenset[str]]:

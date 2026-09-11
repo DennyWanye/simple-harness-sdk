@@ -17,6 +17,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ..contracts.models import STEP2_IMPLEMENTED_LAYERS
 from ..runtime.tool_gateway import TOOL_NAMES
 
 POLICY_VERSION = "deployment-policy-v1"
@@ -42,11 +43,20 @@ class DeploymentPolicy:
     # step 9 (plan D9-9): the least time between two policy promotions / rollbacks'
     # successors — frequent changes are bounded; a rollback itself is never held
     policy_cooldown_seconds: float = 600.0
+    # host support 0.9.8 (Host plan 2026-09-11 §3.1, plan review P0-1): False = no
+    # model-written code runs on this machine — ``code_test`` is not a deployed layer,
+    # ``pytest:`` criteria are refused, conflicts wait (DEFERRED) and ``run_tests`` is
+    # refused.  True keeps every earlier deployment exactly as it was.
+    local_code_execution: bool = True
 
     def __post_init__(self) -> None:
         unknown = set(self.allowed_tools) - set(TOOL_NAMES)
         if unknown:
             raise ValueError(f"deployment policy names unknown tools: {sorted(unknown)}")
+        if not self.local_code_execution and "run_tests" in self.allowed_tools:
+            raise ValueError(
+                "local_code_execution=False contradicts allowed_tools containing run_tests"
+            )
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -60,6 +70,7 @@ class DeploymentPolicy:
             "max_action_handoffs_per_mission": self.max_action_handoffs_per_mission,
             "connector_timeout_seconds": self.connector_timeout_seconds,
             "policy_cooldown_seconds": self.policy_cooldown_seconds,
+            "local_code_execution": self.local_code_execution,
             "version": POLICY_VERSION,
         }
 
@@ -128,8 +139,19 @@ def effective_tools(
     return tuple(name for name in role_tools if name in allowed)
 
 
+def deployed_layers(deployment: DeploymentPolicy) -> frozenset[str]:
+    """The verification layers this deployment can run (host support 0.9.8).  Without
+    local code execution ``code_test`` is not deployed: a Task that asks for it is refused
+    as ``verification_policy_undeployed`` — never silently weakened."""
+
+    if deployment.local_code_execution:
+        return STEP2_IMPLEMENTED_LAYERS
+    return STEP2_IMPLEMENTED_LAYERS - {"code_test"}
+
+
 __all__ = (
     "POLICY_VERSION",
+    "deployed_layers",
     "SNAPSHOT_FIELDS",
     "SNAPSHOT_VERSION",
     "VERSION_SOURCES",

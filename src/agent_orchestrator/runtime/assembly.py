@@ -367,7 +367,11 @@ def assemble_orchestrator_runtime(
     if chosen_default not in profiles:
         raise ValueError(f"default profile {chosen_default!r} is not among the profiles")
     workspaces = WorkspaceManager(config.workspaces_root)
-    gateway = WorkspaceToolGateway(workspaces, test_timeout=config.test_timeout_seconds)
+    gateway = WorkspaceToolGateway(
+        workspaces,
+        test_timeout=config.test_timeout_seconds,
+        local_code_execution=config.deployment_policy.local_code_execution,
+    )
     pools: dict[str, RuntimePool] = {}
     for profile_id, profile in profiles.items():
         if profile_id != profile.profile_id:

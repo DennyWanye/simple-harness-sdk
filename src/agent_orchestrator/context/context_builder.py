@@ -38,7 +38,7 @@ from simple_harness.contracts import canonical_json
 
 from .. import __version__ as PACKAGE_VERSION
 from ..contracts import Attempt, Mission, Task
-from ..contracts.models import sha256_hex
+from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, sha256_hex
 from ..observability.secrets import environment_secrets, find_secrets
 from ..planning.manager import system_reserve_tokens
 from .retrieval import KnowledgeContext
@@ -221,6 +221,7 @@ def build_planner_package(
     workspace_files: Sequence[str],
     attempt_ordinal: int,
     rejected: Sequence[Mapping[str, Any]] = (),
+    deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
 ) -> TaskPackage:
     package: dict[str, Any] = {
         "role": "planner",
@@ -249,6 +250,8 @@ def build_planner_package(
             "synthesis_task": (mission.final_report or {}).get("synthesis") is not None,
         },
         "planning_rejected": [dict(item) for item in rejected],  # D3-2': why the last one failed
+        # host support 0.9.8: the only layers a Task's verification_policy may name here
+        "deployed_verification_layers": sorted(deployed_layers),
         "output_contract": "<task_graph_proposal>{json}</task_graph_proposal>",
         "package_version": PACKAGE_VERSION,
     }
@@ -317,6 +320,7 @@ def build_manager_package(
     limits: Mapping[str, Any],
     knowledge: KnowledgeContext | None,
     rejections: Sequence[Mapping[str, Any]] = (),
+    deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
 ) -> TaskPackage:
     """What the Manager sees (D5-6): the trigger, the Verifier's feedback, the affected
     subgraph with its statuses and attempt counts, the graph version it must base its
@@ -339,6 +343,8 @@ def build_manager_package(
         "verifier_feedback": [dict(item) for item in verifier_feedback],
         "affected_subgraph": [dict(item) for item in subgraph],
         "limits": dict(limits),
+        # host support 0.9.8: the only layers an add_task's verification_policy may name here
+        "deployed_verification_layers": sorted(deployed_layers),
         "verified_knowledge": [
             {
                 "id": item["id"],

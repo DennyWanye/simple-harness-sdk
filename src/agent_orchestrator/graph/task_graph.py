@@ -227,7 +227,12 @@ def _sibling_output_conflicts(proposal: TaskGraphProposal) -> list[str]:
     return conflicts
 
 
-def validate_graph(mission: Mission, proposal: TaskGraphProposal) -> ValidatedGraph:
+def validate_graph(
+    mission: Mission,
+    proposal: TaskGraphProposal,
+    *,
+    deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
+) -> ValidatedGraph:
     if not proposal.tasks:
         raise GraphRejected("empty", "a task graph needs at least one task")
     if len(proposal.tasks) > MAX_TASKS:
@@ -262,7 +267,7 @@ def validate_graph(mission: Mission, proposal: TaskGraphProposal) -> ValidatedGr
         unknown_layers = set(node.verification_policy) - set(VERIFICATION_LAYERS)
         if unknown_layers:
             raise GraphRejected("contract", f"{node.key}: unknown layers {sorted(unknown_layers)}")
-        undeployed = set(node.verification_policy) - STEP2_IMPLEMENTED_LAYERS
+        undeployed = set(node.verification_policy) - deployed_layers  # host support 0.9.8
         if undeployed:
             raise GraphRejected(
                 "verification_policy_undeployed",

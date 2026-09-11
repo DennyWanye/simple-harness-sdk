@@ -78,7 +78,7 @@ from ..contracts import (
 from ..contracts.models import jsonable, sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetError, BudgetExhausted
-from ..governance.policies import action_decision, effective_tools
+from ..governance.policies import action_decision, deployed_layers, effective_tools
 from ..governance.promotion import diff_params, interpreter_versions, resolve_params
 from ..graph.changes import ChangeLimits, TaskGraphChange
 from ..memory.summaries import build_summaries
@@ -253,7 +253,12 @@ class Orchestrator:
         self._commit: CommitService | None = None
         self._assembled: AssembledOrchestratorRuntime | None = None
         self._bridge: AgentBridge | None = None
-        self._router = VerifierRouter(test_timeout=config.test_timeout_seconds)
+        self._router = VerifierRouter(
+            test_timeout=config.test_timeout_seconds,
+            local_code_execution=config.deployment_policy.local_code_execution,
+        )
+        # host support 0.9.8: the verification layers this deployment can run
+        self._deployed = deployed_layers(config.deployment_policy)
         self._critic_verdicts: dict[str, CriticVerdict] = {}
         self._client_ids: dict[str, str | None] = {}
         self._released: set[str] = set()
@@ -286,6 +291,7 @@ class Orchestrator:
             self._store,
             conflict_tasks=self._config.knowledge_sharing,
             global_budget=self._config.global_budget,
+            deployed_layers=self._deployed,
         )
         self._open_policy_library()  # step 9 (plan D9-3'): role, seed, drift
         self._assembled = assemble_orchestrator_runtime(
@@ -732,14 +738,45 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ api
     async def submit_mission(self, spec: MissionSpec) -> Mission:
-        self._check_action_criteria(spec.success_criteria)
-        mission, _ = self.commit.create_mission(
+        self._check_mission_door(spec)
+        mission, _ = self._commit_mission(spec)
+        return mission
+
+    def create_mission(self, *, tenant_id: str, request: Mapping[str, Any]) -> tuple[Mission, bool]:
+        """Host support 0.9.8 (plan review P1-1): the one door that knows the deployment —
+        parse the request, ``validate_spec`` against the deployment's tools, the action
+        criteria, local code execution, then the Commit with the provider kind and the
+        policy binding :meth:`submit_mission` uses.  Idempotent on ``(tenant_id,
+        idempotency_key)``; every refusal is a ``MissionRequestError`` and writes nothing."""
+
+        from ..api.missions import MissionRequestError, spec_from_request, validate_spec
+
+        deployment = self._config.deployment_policy
+        spec = spec_from_request(tenant_id, request, default_tools=deployment.allowed_tools)
+        validate_spec(spec, available_tools=deployment.allowed_tools)
+        try:
+            self._check_mission_door(spec)
+        except ContractError as error:
+            raise MissionRequestError(str(error)) from error
+        return self._commit_mission(spec)
+
+    def _commit_mission(self, spec: MissionSpec) -> tuple[Mission, bool]:
+        return self.commit.create_mission(
             spec,
             provider_kind=self._provider_kind,
             policy_defaults=self._config_policy(),
             policy_pin=self._policy_pin,
         )
-        return mission
+
+    def _check_mission_door(self, spec: MissionSpec) -> None:
+        self._check_action_criteria(spec.success_criteria)
+        if not self._config.deployment_policy.local_code_execution:
+            tests = [c for c in spec.success_criteria if c.startswith("pytest:")]
+            if tests:
+                raise ContractError(
+                    "pytest criteria need local code execution, which this deployment has "
+                    f"turned off: {tests}"
+                )
 
     def _check_action_criteria(self, criteria: Sequence[str]) -> None:
         """D7-3' / review P2-10: an action criterion must name an enabled connector and an
@@ -1043,6 +1080,7 @@ class Orchestrator:
             workspace_files=sorted(seed),
             attempt_ordinal=ordinal,
             rejected=self._planning_rejections(mission_id) if ordinal > 1 else (),
+            deployed_layers=self._deployed,
         )
         decision = self._route_service("planner", mission_id)
         config = AgentConfig(
@@ -2323,6 +2361,7 @@ class Orchestrator:
                 limits=limits,
                 knowledge=knowledge,
                 rejections=self._change_rejections(mission.id, trigger),
+                deployed_layers=self._deployed,
             )
         except ContextRejected as error:
             self._note(f"task {task.id}: manager package refused ({error}); management postponed")
@@ -3272,6 +3311,15 @@ class Orchestrator:
             if not criterion.startswith("pytest:"):
                 continue
             target = criterion.removeprefix("pytest:").strip() or None
+            if not self._config.deployment_policy.local_code_execution:
+                # host support 0.9.8: a criterion from before the switch is judged unmet —
+                # never run on this machine
+                test_runs[criterion] = {
+                    "passed": False,
+                    "error": "local_code_execution is off in this deployment: pytest criteria are not run on this machine",
+                    "stdout": "",
+                }
+                continue
             try:
                 if target is not None:
                     copy.resolve(target)

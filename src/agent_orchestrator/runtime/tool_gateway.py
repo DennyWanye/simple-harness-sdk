@@ -144,10 +144,17 @@ async def run_pytest(workspace_root: str, *, path: str | None, timeout: float) -
 class WorkspaceToolGateway:
     """``ToolExecutorPort`` confined to registered Attempt workspaces."""
 
-    def __init__(self, workspaces: WorkspaceManager, *, test_timeout: float = 120.0) -> None:
+    def __init__(
+        self,
+        workspaces: WorkspaceManager,
+        *,
+        test_timeout: float = 120.0,
+        local_code_execution: bool = True,
+    ) -> None:
         self._workspaces = workspaces
         self._bindings: dict[str, WorkspaceBinding] = {}
         self._test_timeout = test_timeout
+        self._local_code_execution = local_code_execution  # host support 0.9.8
         self.calls: list[dict[str, Any]] = []
         # step 6 (§21.1 last step): every refusal is reported to the orchestrator, which
         # writes it to the Mission's timeline through the Commit Service
@@ -320,6 +327,18 @@ class WorkspaceToolGateway:
                     files = [f for f in files if not _under(_canonical(f), binding.denied_prefixes)]
                 value = {"files": files}
             elif call.name == "run_tests":
+                if not self._local_code_execution:  # host support 0.9.8: defence in depth
+                    return self._reject(
+                        call,
+                        record,
+                        code="local_code_execution_disabled",
+                        outcome="policy",
+                        stage="policy",
+                        message=(
+                            "run_tests is refused: this deployment does not run "
+                            "model-written code on this machine"
+                        ),
+                    )
                 path = arguments.get("path")
                 if path is not None:
                     resolved = workspace.resolve(path)
