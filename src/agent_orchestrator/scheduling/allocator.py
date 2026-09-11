@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..contracts import Attempt, AttemptStatus, Task, TaskStatus
+from ..governance.promotion import weights_hash
 from ..graph.deduplicator import normalise_goal
 from .backpressure import BackpressureState
 
@@ -83,6 +84,7 @@ class TaskScore:
     parts: Mapping[str, float]
     tier: int  # 0 = conflict task, 1 = starving (waited a whole window), 2 = formula
     version: str = ALLOCATOR_VERSION
+    weights_hash: str | None = None  # step 9 (plan D9-4'): which weights scored it
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -91,6 +93,7 @@ class TaskScore:
             "parts": {k: round(v, 4) for k, v in self.parts.items()},
             "tier": self.tier,
             "allocator_version": self.version,
+            "weights_hash": self.weights_hash,
         }
 
 
@@ -125,6 +128,7 @@ def score_tasks(
     now: float,
     aging_window_seconds: float = 300.0,
     mission_max_tokens: int | None = None,
+    weights: Mapping[str, float] | None = None,
 ) -> dict[str, TaskScore]:
     """§29.3 for every live Task (the caller picks the eligible ones)."""
 
@@ -141,6 +145,8 @@ def score_tasks(
     for task in live:
         goals.setdefault(normalise_goal(task.goal), []).append(task.id)
     pool = mission_max_tokens or sum(int(t.budget.max_tokens or 0) for t in live) or 1
+    table = WEIGHTS if weights is None else weights  # step 9: a policy version's weights
+    hashed = weights_hash(table)
     scores: dict[str, TaskScore] = {}
     for task in live:
         history = attempts_by_task.get(task.id, [])
@@ -160,9 +166,9 @@ def score_tasks(
             "estimated_cost": min(1.0, int(task.budget.max_tokens or 0) / pool),
             "duplication_score": (len(goals[normalise_goal(task.goal)]) - 1) / total,
         }
-        score = sum(WEIGHTS[name] * value for name, value in parts.items())
+        score = sum(float(table[name]) * value for name, value in parts.items())
         tier = 0 if task.kind == "conflict" else (1 if waiting >= 1.0 else 2)
-        scores[task.id] = TaskScore(task.id, score, parts, tier)
+        scores[task.id] = TaskScore(task.id, score, parts, tier, weights_hash=hashed)
     return scores
 
 
@@ -175,6 +181,8 @@ class AllocationPlan:
     concurrency_limit: int | None
     scores: Mapping[str, TaskScore] = field(default_factory=dict)
     pressure: str | None = None  # the BackpressureState.level the plan was made under
+    eligible: int = 0  # step 9 (plan D9-5'): Tasks competing for the free slots
+    slots: int | None = None  # free slots before granting (None = no concurrency limit)
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -190,6 +198,8 @@ class AllocationPlan:
             "open_attempts": self.open_attempts,
             "concurrency_limit": self.concurrency_limit,
             "pressure": self.pressure,
+            "eligible": self.eligible,
+            "slots": self.slots,
         }
 
 
@@ -205,6 +215,7 @@ def allocate(
     pressure: BackpressureState | None = None,
     reduced_concurrency_ratio: float = 0.5,
     exploration_slots: int = 1,
+    weights: Mapping[str, float] | None = None,
 ) -> AllocationPlan:
     """Bounded allocation over the Frontier plus ACTIVE Tasks that still lack a candidate.
 
@@ -232,6 +243,7 @@ def allocate(
         now=now if now is not None else 0.0,
         aging_window_seconds=aging_window_seconds if now is not None else 0.0,
         mission_max_tokens=mission_max_tokens,
+        weights=weights,
     )
     seen: set[str] = set()
     ordered: list[Task] = []
@@ -262,6 +274,7 @@ def allocate(
                 kept.append(task)
                 explored += 1
         ordered = kept
+    slots = None if concurrency_limit is None else max(0, concurrency_limit - open_total)
     for task in ordered:
         open_here = open_by_task.get(task.id, 0)
         while open_here < max(1, candidates_per_task):
@@ -276,6 +289,8 @@ def allocate(
         concurrency_limit=concurrency_limit,
         scores={task.id: scores[task.id] for task in ordered if task.id in scores},
         pressure=None if pressure is None else pressure.level,
+        eligible=len(ordered),
+        slots=slots,
     )
 
 

@@ -1591,6 +1591,7 @@ class Store:
             if self.has_table("human_overrides")
             else [],
             "waiting_on": self.waiting_on(mission_id) if self.has_table("approvals") else [],
+            "mission_policy": self.get_mission_policy(mission_id),  # step 9 (plan D9-3')
             "event_count": self.count_events(mission_id),
         }
 

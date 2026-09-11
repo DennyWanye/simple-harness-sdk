@@ -32,7 +32,7 @@ REPLAY_VERSION = "replay-v1"
 # plan D8-2': the formal state; everything else (budgets, intents, leases, heartbeats,
 # allocation scores, backpressure) is explicitly out of scope
 FORMAL_FIELDS: dict[str, tuple[str, ...]] = {
-    "mission": ("status", "stop_reason"),
+    "mission": ("status", "stop_reason", "policy_version_id"),
     "task": ("status", "accepted_result_id"),
     "attempt": ("status",),
     "result": ("verification_state", "verdict"),
@@ -42,6 +42,9 @@ FORMAL_FIELDS: dict[str, tuple[str, ...]] = {
     "approval": ("state",),
     "override": ("present",),
 }
+# fields an older library does not record: expected only where the library has them
+# (step 9, plan D9-3': the policy binding is formal state from schema v6 on)
+OPTIONAL_FIELDS = frozenset({("mission", "policy_version_id")})
 # events that carry no formal state (known, deliberately not projected)
 NO_FORMAL_EFFECT = frozenset(
     {
@@ -79,6 +82,9 @@ NO_FORMAL_EFFECT = frozenset(
         "ActionHandoffRefused",
         "HumanCommentAdded",
         "MissionConflict",
+        "PolicyInterpreterDrift",
+        "PolicyRouteUnavailable",
+        "PolicySuggestionRefused",
     }
 )
 TERMINAL_TASK = {"COMPLETED", "FAILED", "CANCELLED"}
@@ -182,6 +188,8 @@ class Projection:
         # ---------------------------------------------------------- Mission
         if kind == "MissionCreated":
             self._set("mission", mission, status="CREATED", stop_reason=None)
+            if p.get("policy_version_id"):  # step 9 (plan D9-3'): bound at creation
+                self._set("mission", mission, policy_version_id=p["policy_version_id"])
         elif kind == "MissionPlanning":
             self._need("mission", mission, "mission_created_missing", event)
             self._set("mission", mission, status="PLANNING")
@@ -479,6 +487,11 @@ def formal_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, dict[str, dic
             str(mission["id"]): {
                 "status": mission.get("status"),
                 "stop_reason": mission.get("stop_reason"),
+                **(
+                    {"policy_version_id": snapshot["mission_policy"]["version_id"]}
+                    if snapshot.get("mission_policy")
+                    else {}
+                ),
             }
         },
         "task": {
@@ -537,6 +550,8 @@ def compare(
         for key, values in library.get(kind, {}).items():
             mine = replayed.get(kind, {}).get(key)
             for name in fields:
+                if (kind, name) in OPTIONAL_FIELDS and name not in values:
+                    continue  # an older library does not record it (plan D9-3')
                 kind_expected += 1
                 if (
                     mine is None

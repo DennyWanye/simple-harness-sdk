@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from ..storage.store import Store
 
 IN_FLIGHT = frozenset({"CREATED", "PLANNING", "ACTIVE"})
+LIBRARY_ROLE_KEY = "library_role"  # plan D9-3' (review P1-6): production | evaluation
 EVIDENCE_KINDS = ("fixture", "real")
 
 
@@ -568,5 +569,58 @@ class PolicyCommitsMixin:
             )
             return {**activation, "seq": seq}
 
+    # ------------------------------------------------------------ library role and drift
+    def library_role(self) -> str | None:
+        state = self._store.get_scheduler_state(LIBRARY_ROLE_KEY)
+        return None if state is None else str(state.get("role"))
 
-__all__ = ("PolicyCommitError", "PolicyCommitsMixin")
+    def set_library_role(self, role: str) -> None:
+        """A library is production or evaluation for its whole life (plan D9-3')."""
+
+        if role not in {"production", "evaluation"}:
+            raise PolicyCommitError(f"a library is production or evaluation, not {role!r}")
+        with self._store.transaction():
+            current = self.library_role()
+            if current is not None and current != role:
+                raise PolicyCommitError(f"this is a {current} library; it cannot become {role}")
+            if current is None:
+                self._store.put_scheduler_state(LIBRARY_ROLE_KEY, {"role": role})
+
+    def record_interpreter_drift(
+        self, mission_id: str, *, version_id: str, differences: Sequence[Mapping[str, Any]]
+    ) -> None:
+        """A resumed Mission's policy is read by other code than the code it was bound
+        under (plan D9-4'): said once, on the Mission's own timeline — never silent."""
+
+        rows = [dict(d) for d in differences]
+        with self._store.transaction():
+            self._emit(
+                "PolicyInterpreterDrift",
+                mission_id,
+                key=f"{version_id}:{sha256_hex(rows)[:16]}",
+                payload={
+                    "version_id": version_id,
+                    "differences": rows,
+                    "note": (
+                        "绑定版本记录的解释器版本与当前代码不同；"
+                        "代码无法运行旧解释器，按当前代码继续并如实记录"
+                    ),
+                },
+            )
+
+    def record_policy_route_unavailable(
+        self, mission_id: str, *, version_id: str, dropped: Mapping[str, str]
+    ) -> None:
+        """A bound routing override names a profile this deployment does not have: that
+        item falls back to the deployment's routing, on record (plan D9-4')."""
+
+        with self._store.transaction():
+            self._emit(
+                "PolicyRouteUnavailable",
+                mission_id,
+                key=f"{version_id}:{mission_id}",
+                payload={"version_id": version_id, "dropped": dict(dropped)},
+            )
+
+
+__all__ = ("LIBRARY_ROLE_KEY", "PolicyCommitError", "PolicyCommitsMixin")

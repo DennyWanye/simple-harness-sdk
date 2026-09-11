@@ -79,6 +79,7 @@ from ..contracts.models import jsonable, sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetError, BudgetExhausted
 from ..governance.policies import action_decision, effective_tools
+from ..governance.promotion import diff_params, interpreter_versions, resolve_params
 from ..graph.changes import ChangeLimits, TaskGraphChange
 from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
@@ -108,6 +109,7 @@ from ..runtime.role_templates import (
     PLANNER,
     RESULT_ENVELOPE_TAG,
     role_for_task,
+    template_for,
 )
 from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding, run_pytest
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES, allocate
@@ -161,6 +163,38 @@ MAX_CRITIC_ATTEMPTS = 2
 
 
 RECONCILE_EVERY_CYCLES = 50  # D7-5': UNKNOWN actions are asked about again while a run goes on
+# step 9 (plan D9-3'): the whitelisted items a deployment configuration also names — a
+# difference from the ACTIVE version is recorded as drift (the version still governs)
+CONFIG_DERIVED = frozenset(
+    {
+        "candidates_per_task",
+        "exploration_slots",
+        "mission_concurrency",
+        "manager_after_failures",
+        "no_progress_limit",
+        "max_manager_rounds",
+        "aging_window_seconds",
+        "routing",
+    }
+)
+
+
+def _provider_kind(
+    provider: Any, profiles: Mapping[str, RuntimeProfile], default_profile: str
+) -> str:
+    """Plan D9-3' (review P1-5): fixtures, a real model, or unknown — recorded with every
+    Mission binding, so fixture evidence is never mistaken for a real deployment."""
+
+    profile = profiles.get(default_profile)
+    if provider is None and profile is not None:
+        kind = str(profile.provider_kind)
+        return {"env": "real", "fixtures": "fixtures"}.get(kind, kind)
+    module = type(provider).__module__
+    if module == "fixtures_provider" or module.startswith("agent_orchestrator.testing"):
+        return "fixtures"
+    if module.startswith("simple_harness.providers"):
+        return "real"
+    return "unknown"
 
 
 class Orchestrator:
@@ -175,6 +209,8 @@ class Orchestrator:
         profiles: Mapping[str, RuntimeProfile] | None = None,
         routing: RoutingRules | None = None,
         connectors: Mapping[str, Any] | None = None,
+        provider_kind: str | None = None,
+        policy_pin: Mapping[str, Any] | None = None,
     ) -> None:
         # D3-10': ``owner`` is this instance's identity for orchestration leases *and* for
         # the SDK runtime (``owner_id``); the SDK ``owner_scope`` is one constant for all.
@@ -228,6 +264,14 @@ class Orchestrator:
         )  # D7-6: only the executor calls them
         self._actions: ActionExecutor | None = None
         self._routing = routing  # step 8 (D8-5'): part of the policy snapshot
+        # step 9 (plan D9-3' / D9-4'): the provider kind recorded with each binding, the
+        # evaluation pin (evaluation libraries only), per-version parameter and router caches
+        self._provider_kind = provider_kind or _provider_kind(
+            provider, self._profiles, default_profile
+        )
+        self._policy_pin = None if policy_pin is None else dict(policy_pin)
+        self._policies: dict[str, dict[str, Any]] = {}
+        self._routers: dict[str, ModelRouter] = {}
 
     # ------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Orchestrator:
@@ -237,6 +281,7 @@ class Orchestrator:
             conflict_tasks=self._config.knowledge_sharing,
             global_budget=self._config.global_budget,
         )
+        self._open_policy_library()  # step 9 (plan D9-3'): role, seed, drift
         self._assembled = assemble_orchestrator_runtime(
             self._config, profiles=self._profiles, default_profile=self._default_profile
         )
@@ -251,6 +296,136 @@ class Orchestrator:
             self._commit, self._connectors, self._config.deployment_policy, owner=self._owner
         )
         return self
+
+    # ------------------------------------------------------------ policies (step 9)
+    def _config_policy(self) -> dict[str, Any]:
+        """The deployment configuration read as a resolved policy (plan D9-1')."""
+
+        return resolve_params(self._config, routing=self._model_router.rules)
+
+    def _refuse_library(self, message: str) -> None:
+        if self._store is not None:
+            self._store.close()
+        self._store = None
+        self._commit = None
+        raise ValueError(message)
+
+    def _open_policy_library(self) -> None:
+        """Plan D9-3': an evaluation library only takes pinned Missions; a production
+        library gets its seed (the resolved built-in policy) on first use; a
+        configuration whose whitelisted values differ from the ACTIVE version is
+        recorded as drift, and the ACTIVE version still governs."""
+
+        role = self.commit.library_role()
+        if self._policy_pin is not None:
+            if role == "production" or (role is None and self.store.list_missions()):
+                self._refuse_library(
+                    "a policy pin is only for an evaluation library; this is a production library"
+                )
+            self.commit.set_library_role("evaluation")
+            return
+        if role == "evaluation":
+            self._refuse_library(
+                "this is an evaluation library (pinned Missions only); a normal orchestrator does not run it"
+            )
+        if role is None:
+            self.commit.set_library_role("production")
+        configured = self._config_policy()
+        config_hash = sha256_hex(configured)[:16]
+        active = self.commit.seed_policy(
+            configured,
+            detail={
+                "config_hash": config_hash,
+                "sources": "OrchestratorConfig + code constants (allocator WEIGHTS, role templates)",
+            },
+        )
+        if active.get("params"):
+            differences = [
+                d
+                for d in diff_params(active["params"], configured)
+                if str(d["key"]).split(".")[0] in CONFIG_DERIVED
+            ]
+            if differences:
+                self.commit.record_policy_drift(config_hash=config_hash, differences=differences)
+
+    def policy_version_of(self, mission_id: str) -> str | None:
+        binding = self.store.get_mission_policy(mission_id)
+        return None if binding is None else str(binding["version_id"])
+
+    def policy_for(self, mission_id: str) -> dict[str, Any]:
+        """The resolved parameters of the version ``mission_id`` is bound to (plan
+        D9-4'); ``legacy`` Missions follow the deployment configuration, as they did."""
+
+        version_id = self.policy_version_of(mission_id)
+        if version_id is None:
+            raise ContractError(f"mission {mission_id} is bound to no policy version")
+        cached = self._policies.get(version_id)
+        if cached is None:
+            version = self.store.get_policy_version(version_id)
+            if version is None:
+                raise ContractError(
+                    f"mission {mission_id} is bound to {version_id}, which this library does not have"
+                )
+            params = version.get("params")
+            cached = dict(params) if params else self._config_policy()
+            self._policies[version_id] = cached
+        return cached
+
+    def _template(self, template: Any, mission_id: str) -> Any:
+        return template_for(template, self.policy_for(mission_id)["prompt_versions"])
+
+    def _router_for(self, mission_id: str) -> ModelRouter:
+        """One router per policy version: the deployment's rules with the version's
+        routing items on top; an item naming a profile this deployment lacks falls back
+        to the deployment's rule, on record (plan D9-4')."""
+
+        version_id = self.policy_version_of(mission_id) or ""
+        router = self._routers.get(version_id)
+        if router is not None:
+            return router
+        routing = dict(self.policy_for(mission_id).get("routing") or {})
+        base = self._model_router.rules
+        by_kind = dict(base.by_task_kind)
+        dropped: dict[str, str] = {}
+        for kind, target in dict(routing.get("by_task_kind") or {}).items():
+            if target in self._profiles:
+                by_kind[str(kind)] = str(target)
+            else:
+                dropped[str(kind)] = str(target)
+        if dropped:
+            self.commit.record_policy_route_unavailable(
+                mission_id, version_id=version_id, dropped=dropped
+            )
+        rules = replace(
+            base,
+            by_task_kind=by_kind,
+            escalate_after_failures=int(
+                routing.get("escalate_after_failures", base.escalate_after_failures)
+            ),
+        )
+        router = ModelRouter(self._profiles, rules)
+        self._routers[version_id] = router
+        return router
+
+    def _check_interpreter(self, mission: Mission) -> None:
+        """Plan D9-4': a resumed Mission whose bound version was recorded under other
+        interpreter versions says so on its timeline (once) — never silently."""
+
+        version_id = self.policy_version_of(mission.id)
+        version = None if version_id is None else self.store.get_policy_version(version_id)
+        bound = dict((version or {}).get("interpreter_versions") or {})
+        if not bound or version_id is None:
+            return
+        running = interpreter_versions()
+        differences = [
+            {"key": key, "bound": bound[key], "running": running.get(key)}
+            for key in sorted(bound)
+            if running.get(key) != bound[key]
+        ]
+        if differences:
+            self.commit.record_interpreter_drift(
+                mission.id, version_id=version_id, differences=differences
+            )
 
     def policy_snapshot(self) -> dict[str, Any]:
         """Step 8 (plan D8-5'): where this orchestrator's behaviour comes from."""
@@ -407,7 +582,7 @@ class Orchestrator:
         """Planner / Manager / Critic routing (D6-4'): by role, with the profile health
         applied; a cooling-down profile without fallback fails the caller fast."""
 
-        return self._model_router.route(
+        return self._router_for(mission_id).route(
             role=role,
             task_kind=None,
             previous_attempts=(),
@@ -507,7 +682,12 @@ class Orchestrator:
     # ------------------------------------------------------------------ api
     async def submit_mission(self, spec: MissionSpec) -> Mission:
         self._check_action_criteria(spec.success_criteria)
-        mission, _ = self.commit.create_mission(spec)
+        mission, _ = self.commit.create_mission(
+            spec,
+            provider_kind=self._provider_kind,
+            policy_defaults=self._config_policy(),
+            policy_pin=self._policy_pin,
+        )
         return mission
 
     def _check_action_criteria(self, criteria: Sequence[str]) -> None:
@@ -552,6 +732,7 @@ class Orchestrator:
             for attempt_id in report["closed_attempts"]:
                 await self._release_attempt(attempt_id, cancel=True)
             self._reimport_unsettled(mission)
+            self._check_interpreter(mission)  # step 9 (plan D9-4')
         for pool in self.assembled.pools.values():  # D6-5': each pool recovers only its own library
             await pool.bridge.recover()
 
@@ -815,7 +996,7 @@ class Orchestrator:
         decision = self._route_service("planner", mission_id)
         config = AgentConfig(
             name=f"planner-{ordinal}",
-            instructions=PLANNER.instructions,
+            instructions=self._template(PLANNER, mission_id).instructions,
             model_profile_ref=decision.profile_id,
             tool_names=(),
             limits=AgentLimits(
@@ -838,7 +1019,7 @@ class Orchestrator:
                 "agent_config": config.to_json(),
                 "message": message,
                 "context_version": package.context_version,
-                "prompt_version": PLANNER.prompt_version,
+                "prompt_version": self._template(PLANNER, mission_id).prompt_version,
                 "base_version": mission.version,
                 "ordinal": ordinal,
                 **self._service_config(decision),
@@ -1619,7 +1800,7 @@ class Orchestrator:
                     "summary": layer.summary,
                     **dict(layer.detail),
                     # S6-09: which verifier produced this layer (the Critic's is its template)
-                    "verifier_version": CRITIC.prompt_version
+                    "verifier_version": self._template(CRITIC, mission.id).prompt_version
                     if layer.layer == "critic_review"
                     else VERIFIER_VERSION,
                 },
@@ -1755,7 +1936,8 @@ class Orchestrator:
                     or after.attempt_count < after.budget.max_attempts
                 )
             )
-            if can_retry and failures >= self._config.manager_after_failures:
+            manager_after = int(self.policy_for(mission.id)["manager_after_failures"])
+            if can_retry and failures >= manager_after:
                 # D5-6: repeated verification failures are a stall signal (§19.2)
                 await self._request_management(
                     mission,
@@ -1784,7 +1966,7 @@ class Orchestrator:
             }
             reuse = reusable_layers(
                 self.store.list_verifications(result_id),
-                versions={"critic_review": CRITIC.prompt_version},
+                versions={"critic_review": self._template(CRITIC, task.mission_id).prompt_version},
                 default_version=VERIFIER_VERSION,
             )
         escalated_before = any(
@@ -2018,13 +2200,15 @@ class Orchestrator:
         if existing is not None:
             return existing
         rounds = self._manager_rounds(mission.id)
-        if rounds >= self._config.max_manager_rounds:
+        bound = self.policy_for(mission.id)  # step 9 (plan D9-4'): the Mission's version
+        rounds_cap = int(bound["max_manager_rounds"])
+        if rounds >= rounds_cap:
             self.commit.stop_task(
                 task.id,
                 stop_reason=MissionStopReason.MANAGEMENT_EXHAUSTED,
                 detail={
                     "rounds": rounds,
-                    "max_manager_rounds": self._config.max_manager_rounds,
+                    "max_manager_rounds": rounds_cap,
                     "trigger": trigger,
                 },
             )
@@ -2070,8 +2254,8 @@ class Orchestrator:
             if task.budget.max_attempts is None
             else max(0, task.budget.max_attempts - task.attempt_count),
             "no_progress_count": no_progress,
-            "no_progress_limit": self._config.no_progress_limit,
-            "management_rounds_remaining": self._config.max_manager_rounds - rounds,
+            "no_progress_limit": int(bound["no_progress_limit"]),
+            "management_rounds_remaining": rounds_cap - rounds,
         }
         try:
             knowledge = self._gather_knowledge(mission, task, {t.id: t for t in tasks})
@@ -2102,7 +2286,7 @@ class Orchestrator:
             return None
         config = AgentConfig(
             name=f"manager-{rounds + 1}",
-            instructions=MANAGER.instructions,
+            instructions=self._template(MANAGER, mission.id).instructions,
             model_profile_ref=decision.profile_id,
             tool_names=(),
             limits=AgentLimits(
@@ -2124,7 +2308,7 @@ class Orchestrator:
                 "agent_config": config.to_json(),
                 "message": message,
                 "context_version": package.context_version,
-                "prompt_version": MANAGER.prompt_version,
+                "prompt_version": self._template(MANAGER, mission.id).prompt_version,
                 "task_id": task.id,
                 "trigger": trigger,
                 "result_id": result_id,
@@ -2165,13 +2349,14 @@ class Orchestrator:
         if task.status in TERMINAL_TASK:
             return False
         count = self.commit.no_progress_count(task.id)
-        if count >= self._config.no_progress_limit:
+        limit = int(self.policy_for(mission.id)["no_progress_limit"])
+        if count >= limit:
             self.commit.stop_task(
                 task.id,
                 stop_reason=MissionStopReason.NO_PROGRESS,
                 detail={
                     "no_progress_count": count,
-                    "no_progress_limit": self._config.no_progress_limit,
+                    "no_progress_limit": limit,
                 },
             )
             await self._release_mission(mission.id)
@@ -2247,7 +2432,7 @@ class Orchestrator:
                 decision="keep",
                 detail={"rationale": change.rationale},
             )
-            if no_progress >= self._config.no_progress_limit:
+            if no_progress >= int(self.policy_for(mission.id)["no_progress_limit"]):
                 await self._enforce_no_progress(mission, task)
             elif change.operations:
                 try:
@@ -2359,9 +2544,9 @@ class Orchestrator:
                 ) from unavailable
             config = AgentConfig(
                 name=f"critic-{ordinal}",
-                instructions=CRITIC.instructions,
+                instructions=self._template(CRITIC, mission.id).instructions,
                 model_profile_ref=decision.profile_id,
-                tool_names=CRITIC.tool_names,
+                tool_names=self._template(CRITIC, mission.id).tool_names,
                 limits=AgentLimits(
                     max_model_calls_per_turn=12,
                     max_tool_calls_per_turn=24,
@@ -2382,7 +2567,7 @@ class Orchestrator:
                     "message": message,
                     "attempt_id": view_id,
                     "context_version": package.context_version,
-                    "prompt_version": CRITIC.prompt_version,
+                    "prompt_version": self._template(CRITIC, mission.id).prompt_version,
                     "untrusted_sources": untrusted,
                     **self._service_config(decision),
                 },
@@ -2624,17 +2809,19 @@ class Orchestrator:
         pending = self._tasks_under_management(mission.id)
         if pending:  # D5-6: no new Attempt while the Manager decides about the Task
             tasks = [t for t in tasks if t.id not in pending]
+        bound = self.policy_for(mission.id)  # step 9 (plan D9-4'): the Mission's own version
         plan = allocate(
             tasks,
             attempts,
-            concurrency_limit=self._config.max_concurrency,
-            candidates_per_task=self._config.candidates_per_task,
+            concurrency_limit=min(int(bound["mission_concurrency"]), self._config.max_concurrency),
+            candidates_per_task=int(bound["candidates_per_task"]),
             now=self.store.now,
-            aging_window_seconds=self._config.aging_window_seconds,
+            aging_window_seconds=float(bound["aging_window_seconds"]),
             mission_max_tokens=mission.budget.max_tokens,
             pressure=self._pressure,  # D6-3: the gate outside the §29.3 formula
             reduced_concurrency_ratio=self._config.reduced_concurrency_ratio,
-            exploration_slots=self._config.exploration_slots,
+            exploration_slots=int(bound["exploration_slots"]),
+            weights=bound["allocator_weights"],
         )
         progressed = False
         for granted, _candidate in plan.grants:
@@ -2648,7 +2835,16 @@ class Orchestrator:
                 mission,
                 task,
                 self.store.list_attempts(task.id),
-                allocation=None if score is None else score.to_json(),
+                allocation=None
+                if score is None
+                else {
+                    **score.to_json(),
+                    "policy_version_id": self.policy_version_of(mission.id),
+                    "candidates_per_task": int(bound["candidates_per_task"]),
+                    "concurrency_limit": plan.concurrency_limit,
+                    "eligible": plan.eligible,
+                    "slots": plan.slots,
+                },
             ):
                 progressed = True
             current = self.store.get_mission(mission.id)
@@ -2716,7 +2912,8 @@ class Orchestrator:
             await self._release_mission(mission.id)
             self._note(f"task {task.id} stopped: artifact conflict ({error})")
             return True
-        role = role_for_task(task)  # D5-9: the Manager may have switched the approach
+        bound = self.policy_for(mission.id)  # step 9 (plan D9-4'): the Mission's own version
+        role = template_for(role_for_task(task), bound["prompt_versions"])  # D5-9: approach
         untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
         try:
             knowledge = self._gather_knowledge(mission, task, all_tasks)
@@ -2742,7 +2939,7 @@ class Orchestrator:
                 return True
         task_kind = str((mission.final_report or {}).get("task_kind") or "code")
         try:
-            decision = self._model_router.route(
+            decision = self._router_for(mission.id).route(
                 role=role.name,
                 task_kind=task_kind,
                 previous_attempts=attempts,
@@ -2854,7 +3051,9 @@ class Orchestrator:
             tokens = max(4_000, int(tokens * self._config.reduced_reserve_ratio))
         if task.budget.max_tokens is not None:
             # D3-5': explorative candidates share the Task's token budget evenly
-            tokens = min(tokens, max(1, task.budget.max_tokens // self._config.candidates_per_task))
+            tokens = min(
+                tokens, max(1, task.budget.max_tokens // int(bound["candidates_per_task"]))
+            )
             # step 4: a repair reserves what the Task still has rather than failing on a
             # nominal share it no longer can afford (the reservation is a cap, not a spend)
             with self.store.transaction():
@@ -2890,6 +3089,7 @@ class Orchestrator:
                     "max_tool_calls": tool_cap,
                     "context_version": package.context_version,
                     "prompt_version": role.prompt_version,
+                    "policy_version_id": self.policy_version_of(mission.id),
                     "task_version": task.version,
                     "role": role.name,
                     "knowledge": knowledge.frozen_ids,  # D4-10: what this Attempt saw
@@ -2904,9 +3104,11 @@ class Orchestrator:
                 input_hash=sha256_hex(message),
                 retry_of=placeholder.retry_of,
                 feedback=feedback,
-                candidates_per_task=self._config.candidates_per_task,
+                candidates_per_task=int(bound["candidates_per_task"]),
                 inputs=[item.to_json() for item in inputs],
-                max_open_attempts=self._config.max_concurrency,
+                max_open_attempts=min(
+                    int(bound["mission_concurrency"]), self._config.max_concurrency
+                ),
                 max_running_attempts=self._config.max_running_attempts,
             )
         except CommitRejected as error:
