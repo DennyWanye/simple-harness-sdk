@@ -80,3 +80,22 @@
 
 真实运行发现（与 review 无关、同批修复）：SDK turn 失败时 `error.output_cap_escalations` 是元组，`reject_result` 的 `_object` 校验抛 `ContractValidationError` 逃出 `run()`（运行 2）；新增 `contracts.jsonable` 在进入正式记录前把 SDK 结构转成纯 JSON（`reject_result`/`record_planning_rejected`/`mark_attempt_timed_out`/`fail_planning` 入口统一做）。运行 1 的 `max_cycles` 只计进展轮次已在 `8cdb06b` 修复。
 - **wheel 0.9.2**（脚本 scratchpad `wheel-0.9.2/build-and-verify.sh`，源提交 `7303469`，`SOURCE_DATE_EPOCH` 可复现）：`simple_harness_sdk-0.9.2-py3-none-any.whl` sha256 `c58696265288cf9efe5528c5788d5320ce8354a736e5bc232f85388a0019c0d1`；干净 venv（Python 3.12）安装后 `tests/orchestrator tests/agents tests/unit/contracts` + 迁移测试：370 passed / 6 skipped / 1 failed——唯一失败 `test_execution_v3_to_v4_migration.py::test_completed_null_continuation_*` 是基线已知红（`baseline-known-failures.txt` 第 23 行，0.9.1 wheel 验证时同样失败）；安装态 `demo --scenario knowledge-sharing --provider fixtures` → COMPLETED（verification_passed）。
+- **真实模型运行**（用例 `test_real_provider_knowledge_sharing.py --run-real-provider`，凭证 `deepseek.env`，脚本 scratchpad `real-s4-run{1..5}/run.sh` 带 `\bsk-` 脱敏；报告 `reports/real-knowledge-sharing-run{1,2,3,5}.md`）：
+  - 运行 1（pro，534 s）：`run(max_cycles)` 把等待轮次计入上限而提前返回 → 修复 `8cdb06b`；顺带 Planner 包给出 `budget_for_tasks`（`986820d`）。
+  - 运行 2（pro，329 s）：SDK turn 错误里的元组进入正式记录抛 `ContractValidationError` → 修复 `contracts.jsonable`（`7303469`）。
+  - 运行 3（pro，499 s）：知识复用成立（8 个 `KnowledgeUsed`，16 条 VERIFIED），综合任务两次信封不合规 → 模板重述完整 schema（arbiter-v2 / synthesizer-v2，`098703b`）。
+  - 运行 4（`deepseek-v4-flash`，16 s）：端点回显 `deepseek-flash` → D10' `model_echo_mismatch` 停止；DeepSeek 官方端点 `/models` 只有 `deepseek-flash` 与 `deepseek-v4-pro`，用户指示的 flash 模型 id 是 **`deepseek-flash`**。
+  - **运行 5（`deepseek-flash`，192 s）：Mission COMPLETED（verification_passed）**：6 个 Task 全部 COMPLETED（4 个 Planner 任务 + 综合 + 系统开出的冲突任务）；Claim 分布 VERIFIED 28 / SUPPORTED 1 / UNDER_REVIEW 2 / DISPUTED 1 / SUPERSEDED 1，知识 29 条；`KnowledgeUsed` 33 次；综合任务的一条 Claim 与已验证知识同 key 反 stance → `ClaimDisputed` → `ConflictOpened`（预留 300k）→ Arbiter 探针 `arbitration/comparison.summary/test_probe.py` → `ConflictResolved(basis=code_test)`（被取代 1 条）→ Mission 判定 pytest/file 均 met；血缘含终结任务、知识、Agent 与争议 Claim；结算 481,520 tokens（unpriced）。本步真实模型要求的两条证据（知识被复用 + 综合再验收）都成立，冲突→仲裁→外部验证也在真实模型上走通。
+
+## 5. 遗留
+
+| # | 事项 | 归属 |
+|---|---|---|
+| L4-1 | 冲突检测只识别显式 `contradicts` 与同 key 反 stance；语义相反但 key 不同的 Claim 不识别（plan §6.1） | 第 5 步（Critic 冲突报告）/ 第 8 步评测 |
+| L4-2 | 检索是确定性词元打分、只排 VERIFIED（trust 因子恒定）；无 embedding；`max_knowledge_items=12` 之外的知识只在 `dropped.over_limit` 里可见 | 第 6 步（规模）/ 第 8 步（评测检索质量） |
+| L4-3 | 系统预留只覆盖 token 维度；成本维度上综合/冲突任务无预留；`assert_no_secrets` 只查字段名 | 第 6 步（预算硬限、密钥扫描） |
+| L4-4 | 真实模型下 `provider_protocol_error/tool_parse`（DeepSeek 工具调用解析失败）频繁触发 turn FAILED → 重试；重试可用但每次浪费一个 Attempt 与费用；SDK 侧无自动纠错 | 第 6 步（模型路由/升级策略） |
+| L4-5 | 真实模型的同 key 知识重复（汇总任务把探针结论重新提交为自己的 Claim → 同 key 同 stance 的第二条 VERIFIED 知识，检索去重后只提供一条）；是否应在 accept 时合并为复用而不是新知识 | 第 5 步 |
+| L4-6 | `knowledge_sharing=False` 只在 fixtures 上测过；真实模型下未跑 | 视需要 |
+| L4-7 | 第 3 步遗留 L3-1（真实 Planner 偏好链式拆分）、L3-3～L3-6 未变；L3-2 已在本步关闭 | 各自归属 |
+| L4-8 | 真实运行中 Mission 判定的 `pytest:tests/test_comparison.py` 目标要求 `comparison.json` 的 `knowledge` 非空——这是演示种子对综合产物的约束，不是通用规则 | 演示范围 |
