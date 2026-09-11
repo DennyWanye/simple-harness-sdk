@@ -42,6 +42,8 @@
 
 | 切片 | 提交 | 内容 | 测试 |
 |---|---|---|---|
+| A | `c0cbd12` | schema v5；动作账本（D7-2' 版本规则：在途 / 已执行不可取代）；审批与决定（nonce、回执哈希、按部署计数、CANCELLED、Mission 须 ACTIVE）；风险政策（默认关闭、event 类拒绝）；范围检查；测试服务（幂等账本、按键加锁、故障注入） | `test_action_ledger.py` 13、`test_schema_v5.py` 2 |
+| B | （本次） | `begin_handoff`（再校验 + CAS + 预留 + 决定回执，同一事务）、`record_action_outcome`（回执核对，不符 → UNKNOWN）、`record_reconciliation`（COMPLETED / CONFIRMED_NOT_STARTED / STILL_UNKNOWN，租约过期视为崩溃）、`override_action_outcome`（人工带证据裁决）；执行器 `runtime/actions.py`（线程 + 超时，只经 Commit Service 写库） | `test_action_execution.py` 12：S7-02；S7-06 回执丢失 / 崩溃在调用前 / 崩溃在应用后 / 恢复旧库 / 取消 Mission / 超时；再交接用完 → FAILED；人工出口 |
 
 ## 3. 遗留
 

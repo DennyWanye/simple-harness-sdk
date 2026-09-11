@@ -19,16 +19,19 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..contracts import ContractError, MissionStatus
+from ..governance.budgets import BudgetExhausted
 from ..governance.permissions import (
     Principal,
+    binding_matches,
     binding_of,
     decision_receipt_hash,
 )
 from ..governance.policies import ActionDecision, DeploymentPolicy, action_decision
-from ..runtime.connectors import params_hash
+from ..runtime.connectors import Receipt, level_rank, params_hash
 
 if TYPE_CHECKING:
     from ..contracts import Event
+    from ..governance.budgets import BudgetLedger
     from ..storage.store import Store
 
 OPEN_ACTION_STATES = frozenset({"PROPOSED", "AWAITING_APPROVAL", "APPROVED"})
@@ -38,6 +41,13 @@ CLOSED_ACTION_STATES = frozenset(
 )
 CANDIDATE_FIELDS = ("connector", "operation", "target", "params", "reason")
 ACTION_PREFIX = "action:"
+HANDOFF_READY_STATES = frozenset({"APPROVED", "PROPOSED"})
+MAX_HANDOFFS_PER_ACTION = 2  # one hand-off + at most one re-hand-off (SDK rehandoff_count <= 1)
+OUTCOME_EVENTS = {
+    "SUCCEEDED": "ActionSucceeded",
+    "FAILED": "ActionFailed",
+    "UNKNOWN": "ActionOutcomeUnknown",
+}
 
 
 class ActionCommitError(RuntimeError):
@@ -141,9 +151,34 @@ def business_action_id(mission_id: str, connector: str, operation: str, target: 
     return "action-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def receipt_mismatch(action: Mapping[str, Any], receipt: Receipt | None) -> str | None:
+    """A receipt counts only when it names this very action version (D7-5 ③)."""
+
+    if receipt is None:
+        return "missing"
+    for name in ("idempotency_key", "params_hash", "target", "connector", "operation"):
+        if getattr(receipt, name) != action.get(name):
+            return name
+    return None
+
+
 class ActionCommitsMixin:
     if TYPE_CHECKING:
         _store: Store
+        _ledger: BudgetLedger
+
+        def _settle_subject(
+            self,
+            subject_id: str,
+            mission_id: str,
+            *,
+            task_id: str | None,
+            tool_calls: int | None = None,
+        ) -> Mapping[str, Any]: ...
+
+        def record_reservation_held(
+            self, subject_id: str, mission_id: str, *, task_id: str | None, reason: str
+        ) -> Event: ...
 
         def _emit(
             self,
@@ -539,6 +574,336 @@ class ActionCommitsMixin:
                 expired.append(request)
         return expired
 
+    # ------------------------------------------------------------ hand-off (D7-5')
+    def begin_handoff(
+        self,
+        action_key: str,
+        *,
+        owner: str,
+        lease_seconds: float,
+        connectors: Mapping[str, Any],
+        deployment: DeploymentPolicy,
+        rehandoff: bool = False,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """The outbox step of a real action, in one transaction: re-check everything the
+        approval was bound to, reserve the budget, then write HANDED_OFF with the owner, a
+        lease and the decision receipts that authorised it.  ``(action, None)`` = the caller
+        may now call the connector; ``(None, reason)`` = it may not."""
+
+        from .commit_service import mission_account  # noqa: PLC0415 - import cycle
+
+        with self._store.transaction():
+            action = self._store.get_action(action_key)
+            if action is None:
+                raise ActionCommitError(f"unknown action {action_key}")
+            reason = self._handoff_refusal(
+                action, connectors=connectors, deployment=deployment, rehandoff=rehandoff
+            )
+            subject = f"action:{action_key}"
+            if reason is None:
+                spec = connectors[str(action["connector"])].operations[str(action["operation"])]
+                try:  # re-hand-off finds the held reservation (idempotent per subject)
+                    self._ledger.reserve(
+                        account_id=mission_account(str(action["mission_id"])),
+                        subject_id=subject,
+                        tokens=0,
+                        cost_micros=int(spec.cost_micros_ceiling or 0),
+                        counts_attempt=False,
+                        tool_calls=1,
+                        mission_id=str(action["mission_id"]),
+                    )
+                except BudgetExhausted:
+                    reason = "budget_exhausted"
+            if reason is not None:
+                self._emit(
+                    "ActionHandoffRefused",
+                    str(action["mission_id"]),
+                    key=f"{action_key}:{reason}",
+                    task_id=action.get("task_id"),
+                    payload={"action_key": action_key, "reason": reason, "rehandoff": rehandoff},
+                )
+                if rehandoff and action.get("reconcile") == "CONFIRMED_NOT_STARTED":
+                    # an authoritative "never happened" that may not run again ends as FAILED
+                    self._resolve_action(action, "FAILED", error=f"not_started:{reason}")
+                elif reason == "approval_expired":
+                    request = self._store.get_approval(str(action["approval_request_id"]))
+                    if request is not None and request["state"] in {"PENDING", "GRANTED"}:
+                        self._expire_request(request)
+                return None, reason
+            request_id = action.get("approval_request_id")
+            receipts = (
+                []
+                if not request_id
+                else [
+                    d["receipt_hash"]
+                    for d in self._store.list_decisions(str(request_id))
+                    if d["decision"] == "grant"
+                ]
+            )
+            handoffs = int(action.get("handoffs") or 0) + 1
+            updated = self._set_action_state(
+                action_key,
+                "HANDED_OFF",
+                owner=owner,
+                lease_expires_at=self._store.now + float(lease_seconds),
+                handoffs=handoffs,
+                handed_off_at=self._store.now,
+                decision_receipts=receipts,
+                reservation_subject=subject,
+                reconcile=None,
+            )
+            self._emit(
+                "ActionHandedOff",
+                str(action["mission_id"]),
+                key=f"{action_key}:h{handoffs}",
+                task_id=action.get("task_id"),
+                payload={
+                    "action_key": action_key,
+                    "idempotency_key": action["idempotency_key"],
+                    "handoff": handoffs,
+                    "owner": owner,
+                    "decision_receipts": receipts,
+                    "rehandoff": rehandoff,
+                },
+            )
+            return updated, None
+
+    def _handoff_refusal(
+        self,
+        action: Mapping[str, Any],
+        *,
+        connectors: Mapping[str, Any],
+        deployment: DeploymentPolicy,
+        rehandoff: bool,
+    ) -> str | None:
+        mission = self._store.get_mission(str(action["mission_id"]))
+        if mission is None or mission.status is not MissionStatus.ACTIVE:
+            return "mission_not_active"
+        if rehandoff:
+            if action["state"] != "UNKNOWN" or action.get("reconcile") != "CONFIRMED_NOT_STARTED":
+                return "rehandoff_needs_confirmed_not_started"
+            if int(action.get("handoffs") or 0) >= MAX_HANDOFFS_PER_ACTION:
+                return "rehandoff_exhausted"
+        elif action["state"] not in HANDOFF_READY_STATES:
+            return f"not_ready:{action['state']}"
+        live = [
+            v
+            for v in self._store.list_action_versions(str(action["action_id"]))
+            if v["state"] != "REFUSED"
+        ]
+        if not live or live[-1]["action_key"] != action["action_key"]:
+            return "not_current_version"
+        decision = action_decision(
+            deployment, connectors.get(str(action["connector"])), str(action["operation"])
+        )
+        if decision.refused is not None:
+            return decision.refused
+        if level_rank(decision.level) > level_rank(str(action["level"])):
+            return "level_raised"  # the approval was given under a milder level
+        if int(action.get("required_approvals") or 0):
+            request = self._store.get_approval(str(action.get("approval_request_id") or ""))
+            if request is None or request["state"] != "GRANTED":
+                return "approval_not_granted"
+            if self._store.now >= float(request["expires_at"]):
+                return "approval_expired"
+            if not binding_matches(request, action):
+                return "binding_mismatch"
+        if not rehandoff:
+            started = sum(
+                1
+                for a in self._store.list_actions(str(action["mission_id"]))
+                if int(a.get("handoffs") or 0) > 0
+            )
+            if started >= int(deployment.max_action_handoffs_per_mission):
+                return "handoff_cap_reached"
+        return None
+
+    def _update_action(self, action_key: str, **fields: Any) -> dict[str, Any]:
+        action = self._store.get_action(action_key)
+        if action is None:
+            raise ActionCommitError(f"unknown action {action_key}")
+        action.update(fields)
+        self._store.put_action(action)
+        return action
+
+    def _resolve_action(
+        self,
+        action: Mapping[str, Any],
+        state: str,
+        *,
+        receipt: Receipt | None = None,
+        error: str = "",
+        event: str | None = None,
+        extra: Mapping[str, Any] | None = None,
+        actor: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """HANDED_OFF / UNKNOWN → SUCCEEDED / FAILED settle the reservation with the calls
+        actually made; → UNKNOWN holds it (ORCH §12.2)."""
+
+        key = str(action["action_key"])
+        mission_id = str(action["mission_id"])
+        subject = str(action.get("reservation_subject") or f"action:{key}")
+        fields: dict[str, Any] = {"error": error or None}
+        if receipt is not None:
+            fields["receipt"] = receipt.to_json()
+        updated = self._set_action_state(key, state, **fields)
+        if state in {"SUCCEEDED", "FAILED"}:
+            if self._ledger.reservation(subject) is not None:
+                self._settle_subject(
+                    subject, mission_id, task_id=None, tool_calls=int(action.get("handoffs") or 0)
+                )
+        else:
+            self.record_reservation_held(
+                subject, mission_id, task_id=None, reason="action_outcome_unknown"
+            )
+        self._emit(
+            event or OUTCOME_EVENTS[state],
+            mission_id,
+            key=f"{key}:h{int(action.get('handoffs') or 0)}:{state}",
+            task_id=action.get("task_id"),
+            payload={
+                "action_key": key,
+                "state": state,
+                "error": error or None,
+                "receipt_hash": None if receipt is None else receipt.receipt_hash,
+                **dict(extra or {}),
+            },
+            **dict(actor or {}),
+        )
+        return updated
+
+    def record_action_outcome(
+        self,
+        action_key: str,
+        *,
+        owner: str,
+        outcome: str,
+        receipt: Receipt | None = None,
+        error: str = "",
+    ) -> dict[str, Any]:
+        """What the connector call returned (D7-5 ③④).  Only the owner of the live hand-off
+        may record it; a late answer after someone else resolved the action is ignored."""
+
+        if outcome not in {"succeeded", "failed", "unknown"}:
+            raise ActionCommitError(f"unknown outcome {outcome!r}")
+        with self._store.transaction():
+            action = self._store.get_action(action_key)
+            if action is None:
+                raise ActionCommitError(f"unknown action {action_key}")
+            if action["state"] != "HANDED_OFF" or action.get("owner") != owner:
+                return action
+            if outcome == "succeeded":
+                mismatch = receipt_mismatch(action, receipt)
+                if mismatch is not None:  # a receipt for something else proves nothing
+                    outcome, error, receipt = "unknown", f"receipt_mismatch:{mismatch}", None
+            state = {"succeeded": "SUCCEEDED", "failed": "FAILED", "unknown": "UNKNOWN"}[outcome]
+            return self._resolve_action(action, state, receipt=receipt, error=error)
+
+    def record_reconciliation(
+        self, action_key: str, *, verdict: str, receipt: Receipt | None = None
+    ) -> dict[str, Any]:
+        """The answer of an authoritative lookup by idempotency key (D7-5 ⑤): COMPLETED →
+        SUCCEEDED; CONFIRMED_NOT_STARTED → may be handed off again with the *same* key;
+        STILL_UNKNOWN → stays UNKNOWN and waits for a person.  A HANDED_OFF action whose
+        lease lapsed without an outcome (a crash) is UNKNOWN first."""
+
+        if verdict not in {"COMPLETED", "CONFIRMED_NOT_STARTED", "STILL_UNKNOWN"}:
+            raise ActionCommitError(f"unknown reconciliation verdict {verdict!r}")
+        with self._store.transaction():
+            action = self._store.get_action(action_key)
+            if action is None:
+                raise ActionCommitError(f"unknown action {action_key}")
+            lapsed = (
+                action["state"] == "HANDED_OFF"
+                and float(action.get("lease_expires_at") or 0.0) <= self._store.now
+            )
+            if action["state"] != "UNKNOWN" and not lapsed:
+                return action
+            if lapsed:
+                action = self._resolve_action(
+                    action, "UNKNOWN", error="lease_lapsed_without_outcome"
+                )
+            handoffs = int(action.get("handoffs") or 0)
+            note = None
+            if verdict == "COMPLETED":
+                mismatch = receipt_mismatch(action, receipt)
+                if mismatch is None:
+                    return self._resolve_action(
+                        action,
+                        "SUCCEEDED",
+                        receipt=receipt,
+                        event="ActionReconciled",
+                        extra={"verdict": verdict},
+                    )
+                verdict, note = "STILL_UNKNOWN", f"receipt_mismatch:{mismatch}"
+            if verdict == "CONFIRMED_NOT_STARTED":
+                updated = self._update_action(action_key, reconcile=verdict)
+            else:
+                updated = self._update_action(
+                    action_key, reconcile=verdict, needs_human=True, reconcile_note=note
+                )
+            self._emit(
+                "ActionReconciled",
+                str(action["mission_id"]),
+                key=f"{action_key}:h{handoffs}:{verdict}",
+                task_id=action.get("task_id"),
+                payload={"action_key": action_key, "verdict": verdict, "note": note},
+            )
+            return updated
+
+    def override_action_outcome(
+        self,
+        action_key: str,
+        *,
+        principal: Principal,
+        outcome: str,
+        basis: str,
+        evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """A person rules on an UNKNOWN action the lookup cannot settle (D7-5' human exit):
+        a HumanOverride with basis and evidence; the ruling covers this version only."""
+
+        if not isinstance(principal, Principal):
+            raise ActionCommitError("a ruling needs an authenticated Principal from the caller")
+        if outcome not in {"succeeded", "failed"}:
+            raise ActionCommitError(f"a ruling is succeeded or failed, not {outcome!r}")
+        if not basis.strip() or not evidence:
+            raise ActionCommitError("a ruling on an UNKNOWN action needs a basis and evidence")
+        with self._store.transaction():
+            action = self._store.get_action(action_key)
+            if action is None or action["state"] != "UNKNOWN":
+                raise ActionCommitError(f"only an UNKNOWN action takes a ruling ({action_key})")
+            override_id = f"override:{action_key}:h{int(action.get('handoffs') or 0)}"
+            actor = {"actor_type": "user", "actor_id": principal.principal_id}
+            record = {
+                "override_id": override_id,
+                "mission_id": action["mission_id"],
+                "principal": principal.to_json(),
+                "action": "resolve_unknown_action",
+                "subject": action_key,
+                "outcome": outcome,
+                "basis": basis,
+                "evidence": dict(evidence),
+                "scope": "this action version only",
+                "at": self._store.now,
+            }
+            self._store.insert_override(record)
+            self._emit(
+                "HumanOverride",
+                str(action["mission_id"]),
+                key=override_id,
+                task_id=action.get("task_id"),
+                payload=record,
+                **actor,
+            )
+            return self._resolve_action(
+                action,
+                "SUCCEEDED" if outcome == "succeeded" else "FAILED",
+                error="" if outcome == "succeeded" else "human_ruled_failed",
+                extra={"resolved_by": principal.principal_id, "override_id": override_id},
+                actor=actor,
+            )
+
     def cancel_open_actions(self, mission_id: str, *, reason: str) -> list[dict[str, Any]]:
         """D7-4' / D7-5': a Mission that ends (cancelled, failed) or work that is replaced
         closes its *open* actions and requests as CANCELLED.  Handed-off and UNKNOWN actions
@@ -574,6 +939,8 @@ __all__ = (
     "IN_FLIGHT_ACTION_STATES",
     "OPEN_ACTION_STATES",
     "ACTION_PREFIX",
+    "HANDOFF_READY_STATES",
+    "MAX_HANDOFFS_PER_ACTION",
     "ActionCommitError",
     "ActionCommitsMixin",
     "CandidateRejected",
@@ -581,5 +948,6 @@ __all__ = (
     "business_action_id",
     "check_candidate",
     "parse_action_criterion",
+    "receipt_mismatch",
     "validate_candidate",
 )
