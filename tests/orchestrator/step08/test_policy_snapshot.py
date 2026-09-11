@@ -29,7 +29,9 @@ def test_s8_07_every_configuration_field_is_classified(tmp_path):
     assert names == set(SNAPSHOT_FIELDS), sorted(names ^ set(SNAPSHOT_FIELDS))
     snapshot = policy_snapshot(_config(tmp_path))
     assert set(snapshot["config"]) == {n for n, c in SNAPSHOT_FIELDS.items() if c == "include"}
-    assert set(snapshot["excluded"]) == {"evidence_root", "owner_id"}
+    # P3.2 (plan D4): workspace housekeeping is left out on purpose — it never changes how a
+    # Mission is planned, run or verified
+    assert set(snapshot["excluded"]) == {"evidence_root", "owner_id", "workspace_retention_seconds"}
 
 
 def test_s8_07_the_same_configuration_has_the_same_hash_wherever_it_runs(tmp_path):

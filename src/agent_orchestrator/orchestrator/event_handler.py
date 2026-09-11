@@ -310,6 +310,7 @@ class Orchestrator:
         if changes:
             self._store.update_artifact_storage(changes)
         workspaces.sweep_exec_copies()
+        self.cleanup_workspaces()  # P3.2 D4: finished Missions past their retention
         self._bridge = self._assembled.pool(self._default_profile).bridge
         self._commit.tool_calls_for = self._executed_tool_calls  # D6-8
         self._assembled.gateway.on_rejected = self._audit_tool_rejection  # D6-7
@@ -1304,13 +1305,62 @@ class Orchestrator:
                     f"upstream artifact {item.artifact_id} ({item.path}) is missing or changed"
                 ) from error
             inputs[item.path] = Path(artifact.storage_uri)
+        task = self.store.get_task(attempt.task_id)
+        # P3.2 D4 (review round 2 P2-4): a rebind — recover() and every dispatch — is
+        # checked against the registered identity, never the directory's content
+        base = sha256_hex(
+            {
+                "seed": {path: sha256_hex_text(content) for path, content in seed.items()},
+                "inputs": {item.path: item.content_hash for item in self._upstream_inputs(attempt)},
+                "previous": attempt.retry_of,
+            }
+        )
+        detail = {
+            "path": attempt.id,
+            "seed": sorted(seed),
+            "read_only_inputs": sorted(self._read_only_inputs(attempt.id)),
+            "writable_outputs": [] if task is None else list(task.outputs),
+            "adopted": False,
+        }
+        record = self.store.get_workspace(attempt.id)
+        exists = (self.assembled.workspaces.root / attempt.id).exists()
+        building = False
+        if record is None and exists:  # a tree from before 0.10: adopted as it is
+            self.store.register_workspace(
+                attempt.id,
+                kind="attempt",
+                mission_id=attempt.mission_id,
+                attempt_id=attempt.id,
+                base_snapshot=base,
+                state="ACTIVE",
+                detail={**detail, "adopted": True},
+            )
+        elif record is None or record["state"] == "CREATING":
+            if record is not None:  # a tree half-made by a crash is rebuilt
+                self.assembled.workspaces.remove(attempt.id)
+            self.store.register_workspace(
+                attempt.id,
+                kind="attempt",
+                mission_id=attempt.mission_id,
+                attempt_id=attempt.id,
+                base_snapshot=base,
+                state="CREATING",
+                detail=detail,
+            )
+            building = True
+        elif record["state"] != "ACTIVE" or record["base_snapshot"] != base:
+            raise ArtifactConflict(
+                f"workspace_identity_mismatch: {attempt.id} is registered "
+                f"{record['state']} with another seed, inputs or repair source"
+            )
         try:
             workspace = self.assembled.workspaces.create(
                 attempt.id, seed=seed, previous=previous, inputs=inputs
             )
         except WorkspaceError as error:  # P3.2 D3: e.g. a symlink in the previous tree
             raise ArtifactConflict(str(error)) from error
-        task = self.store.get_task(attempt.task_id)
+        if building:
+            self.store.set_workspace_state(attempt.id, "ACTIVE")
         if task is not None:
             for path, content in self._protected_files(mission, task, attempt).items():
                 if (
@@ -1319,6 +1369,40 @@ class Orchestrator:
                     else True
                 ):
                     workspace.write_text(path, content)
+
+    def _register_copy(
+        self, kind: str, name: str, *, mission_id: str, attempt_id: str, detail: dict[str, Any]
+    ) -> None:
+        """P3.2 D4: a verification copy or judgment tree, registered each time it is rebuilt
+        (its identity is what it was rebuilt from)."""
+
+        self.store.register_workspace(
+            name,
+            kind=kind,
+            mission_id=mission_id,
+            attempt_id=attempt_id,
+            base_snapshot=sha256_hex(detail),
+            state="ACTIVE",
+            detail={"path": name, **detail},
+        )
+
+    def cleanup_workspaces(self) -> list[str]:
+        """P3.2 D4: remove the directories of finished Missions once the retention period
+        has passed.  The registry rows (now CLEANED) and the content-addressed Artifact
+        bytes stay, so snapshots, artifact reads, replay and reconciliation still work."""
+
+        cutoff = self.store.now - self._config.workspace_retention_seconds
+        removed: list[str] = []
+        for row in self.store.list_workspaces():
+            if row["state"] == "CLEANED" or row["updated_at"] > cutoff:
+                continue
+            mission = self.store.get_mission(row["mission_id"])
+            if mission is None or mission.status not in TERMINAL_MISSION:
+                continue
+            self.assembled.workspaces.remove(str(row["detail"].get("path", row["workspace_id"])))
+            self.store.set_workspace_state(row["workspace_id"], "CLEANED")
+            removed.append(row["workspace_id"])
+        return removed
 
     def _input_files(self, attempt: Attempt) -> dict[str, bytes]:
         """P3.2 review round 2 P1-3: an Attempt's upstream inputs, read back from the
@@ -1991,6 +2075,13 @@ class Orchestrator:
             seed=dict((mission.final_report or {}).get("workspace_seed", {})),
             inputs=self._input_files(attempt),
             artifacts=artifacts,
+        )
+        self._register_copy(
+            "verify",
+            f"{attempt.id}-verify",
+            mission_id=attempt.mission_id,
+            attempt_id=attempt.id,
+            detail={"artifacts": sorted(a.id for a in artifacts), "protected": sorted(protected)},
         )
 
         async def recorder(layer: LayerResult) -> None:
@@ -3430,6 +3521,13 @@ class Orchestrator:
         # running pytest in its own; the judgment Commit itself is idempotent
         view_id = f"{mission.id}-judge-{self._owner}"
         copy = self.assembled.workspaces.integrated_copy(view_id, seed=seed, files=files)
+        self._register_copy(
+            "judge",
+            f"{view_id}-verify",
+            mission_id=mission.id,
+            attempt_id="",
+            detail={"artifacts": sorted(a.id for a in artifacts), "seed": sorted(seed)},
+        )
         terminal = terminal_task(list(tasks))
         stored = self.store.get_result(terminal.accepted_result_id or "")
         summary = "" if stored is None else stored.envelope.summary

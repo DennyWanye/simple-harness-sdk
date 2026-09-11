@@ -172,6 +172,9 @@ SNAPSHOT_VERSION = "policy-snapshot-v1"
 SNAPSHOT_FIELDS: dict[str, str] = {
     "evidence_root": "excluded: a different directory for every run",
     "owner_id": "excluded: the orchestrator replaces it by an instance name with the pid",
+    # P3.2 (plan D4): when finished Missions' directories are removed — housekeeping,
+    # never how a Mission is planned, run or verified
+    "workspace_retention_seconds": "excluded: workspace housekeeping, not a behaviour parameter",
     **{
         name: "include"
         for name in (

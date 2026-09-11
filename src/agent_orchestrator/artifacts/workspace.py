@@ -354,6 +354,18 @@ class WorkspaceManager:
         _copy_tree(source, target)
         return self._workspace(target, attempt_id, True)
 
+    def remove(self, name: str) -> None:
+        """Remove one registered workspace directory (cleanup, or a tree half-made by a
+        crash) — only a direct child of the workspaces root, never a path."""
+
+        target = self._root / name
+        if not name or name in {".", ".."} or "/" in name or target.parent != self._root:
+            raise WorkspaceError(f"not a workspace name: {name!r}")
+        if target.is_symlink():
+            target.unlink()
+        elif target.exists():
+            shutil.rmtree(target)
+
     def discard(self, copy: Workspace) -> None:
         if EXEC_COPY_MARK not in copy.root.name or copy.root.parent != self._root:
             raise WorkspaceError(f"not an execution copy: {copy.root.name}")

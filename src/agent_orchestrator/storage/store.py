@@ -140,6 +140,26 @@ INTENT_STATES = ("PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED", "SETTLED", 
 VERIFICATION_STATES = ("PENDING", "RUNNING", "DONE", "REJECTED")
 # P3.1 fix F-ORCH-3: an artifact is UNVERIFIED until its result is judged
 ARTIFACT_VERIFICATION_STATES = ("UNVERIFIED", "VERIFIED", "REJECTED")
+# P3.2 D4: a workspace directory is CREATING until it is fully built, ACTIVE while it may
+# be used, CLEANED once its directory was removed (the row stays)
+WORKSPACE_STATES = ("CREATING", "ACTIVE", "CLEANED")
+_WORKSPACE_COLUMNS = (
+    "workspace_id,kind,mission_id,attempt_id,base_snapshot,state,json,created_at,updated_at"
+)
+
+
+def _workspace_row(row: Any) -> dict[str, Any]:
+    return {
+        "workspace_id": row[0],
+        "kind": row[1],
+        "mission_id": row[2],
+        "attempt_id": row[3],
+        "base_snapshot": row[4],
+        "state": row[5],
+        "detail": json.loads(row[6]),
+        "created_at": row[7],
+        "updated_at": row[8],
+    }
 
 
 def _loads(text: str) -> Any:
@@ -1483,6 +1503,72 @@ class Store:
                 "UPDATE artifacts SET json = ? WHERE artifact_id = ?",
                 (canonical_json(data), artifact_id),
             )
+
+    # --------------------------------------------------------------- workspaces (P3.2 D4)
+    def register_workspace(
+        self,
+        workspace_id: str,
+        *,
+        kind: str,
+        mission_id: str,
+        attempt_id: str,
+        base_snapshot: str,
+        state: str,
+        detail: Mapping[str, Any],
+    ) -> None:
+        """Register (or re-register) one workspace directory: its identity and state."""
+
+        if state not in WORKSPACE_STATES:
+            raise StoreError(f"unknown workspace state {state!r}")
+        now = self.now
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO workspaces(workspace_id,kind,mission_id,attempt_id,base_snapshot,"
+                "state,json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(workspace_id) DO UPDATE SET base_snapshot=excluded.base_snapshot,"
+                "state=excluded.state,json=excluded.json,updated_at=excluded.updated_at",
+                (
+                    workspace_id,
+                    kind,
+                    mission_id,
+                    attempt_id,
+                    base_snapshot,
+                    state,
+                    canonical_json(dict(detail)),
+                    now,
+                    now,
+                ),
+            )
+
+    def set_workspace_state(self, workspace_id: str, state: str) -> None:
+        if state not in WORKSPACE_STATES:
+            raise StoreError(f"unknown workspace state {state!r}")
+        with self.transaction() as connection:
+            updated = connection.execute(
+                "UPDATE workspaces SET state = ?, updated_at = ? WHERE workspace_id = ?",
+                (state, self.now, workspace_id),
+            ).rowcount
+            if not updated:
+                raise StoreError(f"workspace {workspace_id} is not registered")
+
+    def get_workspace(self, workspace_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            f"SELECT {_WORKSPACE_COLUMNS} FROM workspaces WHERE workspace_id = ?", (workspace_id,)
+        ).fetchone()
+        return None if row is None else _workspace_row(row)
+
+    def list_workspaces(self, mission_id: str | None = None) -> list[dict[str, Any]]:
+        if mission_id is None:
+            rows = self._connection.execute(
+                f"SELECT {_WORKSPACE_COLUMNS} FROM workspaces ORDER BY created_at, workspace_id"
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                f"SELECT {_WORKSPACE_COLUMNS} FROM workspaces WHERE mission_id = ? "
+                "ORDER BY created_at, workspace_id",
+                (mission_id,),
+            ).fetchall()
+        return [_workspace_row(row) for row in rows]
 
     def list_all_artifacts(self) -> list[Artifact]:
         rows = self._connection.execute(

@@ -96,6 +96,9 @@ class OrchestratorConfig:
     # ``default_max_output_tokens`` of the config and every profile (what one turn may
     # emit), 0 = no floor, a positive number = that base
     min_task_tokens: int | None = None
+    # P3.2 (plan D4): how long a finished Mission's workspace directories are kept before
+    # cleanup removes them (the registry rows and the content-addressed bytes stay)
+    workspace_retention_seconds: float = 7 * 24 * 3600.0
     turn_deadline_seconds: float = 900.0
     max_model_calls_per_turn: int = 24
     max_tool_calls_per_turn: int = 48
@@ -158,6 +161,8 @@ class OrchestratorConfig:
             isinstance(self.min_task_tokens, bool) or self.min_task_tokens < 0
         ):
             raise ValueError("min_task_tokens must be None, 0 or a positive number of tokens")
+        if self.workspace_retention_seconds < 0:
+            raise ValueError("workspace_retention_seconds must be >= 0")
         if self.on_retrieval_failure not in {"block", "degrade"}:
             raise ValueError("on_retrieval_failure must be 'block' or 'degrade'")
         if self.max_retrieval_failures < 1 or self.max_knowledge_items < 1:

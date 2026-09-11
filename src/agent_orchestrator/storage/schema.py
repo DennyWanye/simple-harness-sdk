@@ -411,6 +411,24 @@ CREATE TABLE mission_policies (
 CREATE INDEX mission_policies_version_idx ON mission_policies(version_id)
 """
 LEGACY_POLICY_VERSION = "policy-legacy"  # Missions that predate policy binding (plan D9-3')
+# P3.2 (plan D4, review round 2 P2-4): every workspace directory the system makes — an
+# Attempt's tree, a verification copy, a judgment tree — with the identity a rebind is
+# checked against (base_snapshot) and its lifecycle (CREATING → ACTIVE → CLEANED).
+# Operational state, not a Mission fact: no event, not part of the replay projection.
+DDL_V7 = """
+CREATE TABLE workspaces (
+ workspace_id TEXT PRIMARY KEY,
+ kind TEXT NOT NULL,
+ mission_id TEXT NOT NULL,
+ attempt_id TEXT NOT NULL,
+ base_snapshot TEXT NOT NULL,
+ state TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL
+) STRICT;
+CREATE INDEX workspaces_mission_idx ON workspaces(mission_id, state)
+"""
 
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
@@ -419,6 +437,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(4, "orchestrator-step06", DDL_V4),
     Migration(5, "orchestrator-step07", DDL_V5),
     Migration(6, "orchestrator-step09", DDL_V6),
+    Migration(7, "orchestrator-p32", DDL_V7),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -436,6 +455,8 @@ __all__ = (
     "DDL_V3",
     "DDL_V4",
     "DDL_V5",
+    "DDL_V6",
+    "DDL_V7",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

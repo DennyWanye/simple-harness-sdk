@@ -5,11 +5,12 @@
 - 2026-09-12（最新）：
   - 计划经过两轮评审，现在是第 3 版（处置见 §1 与 §1b）。切片顺序改为 B → C → A → D → E → F → G。
   - **切片 B（R13）已完成**，见 §2.3。
-  - 下一步：切片 C（D3 + D4）。
-    - 草稿 `tests/orchestrator/p32/test_p32_workspace_symlinks.py` 还没提交，要先按第 3 版补齐：执行副本、验证副本从 CAS 重建、`open_verified`、迁移、登记；
+  - **切片 C 已完成**：第一部分见 §2.4，已提交 `a18e785`；第二部分见 §2.5，工作区登记。
+  - 下一步：切片 A（D1 + D2）。
+    - 先在本机试准 `sandbox_check` 的 ctypes 调用方式（scratchpad `sbx/canary.py`）；
+    - 再按第 3 版改两个草稿：加 daemonize 用例、改用按沙箱身份扫描、执行器显式接收解释器路径、回执加 `isolated`；
     - 然后开始实现。
-  - 切片 A 的两个草稿也没提交，要按第 3 版改：加 daemonize 用例，改用按沙箱身份扫描，执行器显式接收解释器路径。
-  - 还没提交的草稿都是红的，不能随切片 B 提交。
+  - 切片 A 的两个草稿（`test_p32_sandbox.py`、`test_p32_code_execution_modes.py`）还是红的，还没提交。
 - 接手须知：
   - 沙箱实验只在 scratchpad 或 `/private/tmp` 里做，做完删除；
   - 同一时间只跑一个 pytest；
@@ -71,6 +72,14 @@
   - 给宿主进程发信号 → PermissionError（不加 signal 规则时是 ALLOWED，与评审的实测一致）。
 - 那次实验里，"读 HOME"探针用的是 `~`；而 HOME 被设成了工作区，所以结论无效。正式探针改为用真实家目录的绝对路径做 `os.listdir`。
 
+### 2.1b 本机实验：用沙箱身份扫描进程（scratchpad `sbx/canary.py`）
+
+- **调用方式**：`sandbox_check` 通过 ctypes 调用。`argtypes` 只声明前三个固定参数，路径参数以 `ctypes.c_char_p` 显式传入。本机上 `SANDBOX_CHECK_NO_REPORT` 这个导出符号的值是 `0x40000000`，`SANDBOX_FILTER_PATH` 取 1。
+- **逃逸进程**：在沙箱里做一次标准 daemonize，依次是 fork、setsid、再 fork、`chdir("/")`、关掉全部 fd，然后睡眠。这个进程已经被 reparent 到 pid 1。
+- **扫描结果**：枚举本 uid 的 431 个进程，用时 18.3 ms。判定规则是"金丝雀放行、诱饵拒绝"，命中的只有这个逃逸进程，没有误中其他进程。宿主自己的返回是 `0/0`（两个都放行），不算成员。
+- **回收**：SIGKILL 之后，这个进程确认已经不在了。
+- **结论**：评审 R2 P1-2 建议的办法在本机可行，切片 A 照此实现。
+
 ### 2.2 测试草稿（评审第 2 轮出结论之前，只写测试）
 
 | 文件 | 覆盖 | 当前状态 |
@@ -123,7 +132,31 @@
 - 测试结果：
   - `test_p32_workspace_symlinks.py` 16 条全部通过；
   - step02 与 test_facade 通过；
+  - 已提交：SDK `a18e785`。
   - `tests/orchestrator` 整目录回归：**466 passed、8 skipped、0 failed**（4 分 17 秒）。回归时排除了切片 A 两个还是红的草稿；8 条 skipped 都是需要真实 provider 的测试，按规定只在显式 opt-in 时运行。
+
+### 2.5 切片 C 第二部分：工作区登记（D4，schema v7）
+
+- **表结构**：schema v7 新增 `workspaces` 表，字段有 workspace_id（就是目录名）、kind（attempt / verify / judge）、mission_id、attempt_id、base_snapshot、state、json、created_at、updated_at。
+- **Store**：新增 `register_workspace`（同一 workspace_id 再次登记时覆盖原记录）、`set_workspace_state`、`get_workspace`、`list_workspaces` 四个方法。
+- **`_bind_workspace`**：先登记，再建目录。base_snapshot 是 seed、上游输入和修复来源三者合起来算出的 hash。遇到已有目录，按下面的规则处理：
+  - 没有登记记录、目录已存在：说明是 0.10 之前留下的，收养，记为 ACTIVE，并标记 `adopted`；
+  - 没有登记记录、目录也不存在：先登记为 CREATING，建好后改为 ACTIVE；
+  - 登记为 CREATING：说明上次建到一半就崩了，删掉重建；
+  - 登记为 ACTIVE、身份相符：复用。Worker 自己的改动原样保留，恢复流程不会卡住；
+  - 其他情况（身份不符，或者已被清理）：抛 ArtifactConflict，理由 `workspace_identity_mismatch`。这条异常沿用派发路径现有的处理方式，任务会停下来。
+- **副本登记**：验证副本和判定树每次重建时都会登记，它们的身份就是重建时用到的产物清单。
+- **清理**：`Orchestrator.cleanup_workspaces()` 只删终态 Mission 的目录，而且要超过 `workspace_retention_seconds`（默认 7 天）。清理后登记记录改为 CLEANED，CAS 里的字节保留。这个配置项在 SNAPSHOT_FIELDS 里登记为不进快照，理由是它只管收拾目录，不影响 Mission 的行为。
+- **相对计划的偏差**：
+  1. **不写事件，也不进回放投影**：登记表是运行状态，不是 Mission 的正式事实。这样做回放不会漂移。评审 R2 已经指出，回放投影本来就不含 artifacts。
+  2. **状态只保留三个**：CREATING、ACTIVE、CLEANED，没有用计划里的 RETAINED。原因是保留期内的目录本来就是 ACTIVE，多一个状态没有额外意义。
+  3. **清理只在启动时做**（`__aenter__` 里），运行期间不定期扫。Host 每次启动 App 时会清理一次。以后如果有需要，再加周期性清理。
+  4. **执行副本不进登记表**：跑完就删，残留的由启动时的清扫处理。
+- **测试**：`test_p32_workspace_registry.py` 7 条，全部通过。
+- **tests/orchestrator 回归**：472 passed、8 skipped，1 failed。
+  - 失败的是 `step08/test_policy_snapshot.py::test_s8_07_every_configuration_field_is_classified`。这条测试把"不进快照的字段"写死成 `{"evidence_root", "owner_id"}`。
+  - 新字段 `workspace_retention_seconds` 本来就该排除：它只决定多久清理目录，不影响 Mission 怎么规划、运行和验证。这是有意改动，已登记进红集说明。
+  - 已把这个字段加进测试里的集合。以后切片 A 新增 `sandbox_executor`，这里还要再加一次。
 
 ## 3. 回归与 wheel
 
