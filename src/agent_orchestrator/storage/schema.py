@@ -284,10 +284,26 @@ CREATE TABLE graph_changes (
 CREATE INDEX graph_changes_mission_idx ON graph_changes(mission_id, from_version);
 """
 
+# Step 6 (D6-2 / D6-8 / D6-13): the scheduler's durable signals (backpressure state,
+# runtime profile health) and the tool-call budget dimension (§18.1 "工具调用次数").
+DDL_V4 = """
+CREATE TABLE scheduler_state (
+ key TEXT PRIMARY KEY,
+ json TEXT NOT NULL,
+ version INTEGER NOT NULL,
+ updated_at REAL NOT NULL
+) STRICT;
+ALTER TABLE budget_accounts ADD COLUMN reserved_tool_calls INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE budget_accounts ADD COLUMN settled_tool_calls INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE budget_reservations ADD COLUMN reserved_tool_calls INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE budget_reservations ADD COLUMN settled_tool_calls INTEGER;
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
     Migration(3, "orchestrator-step05", DDL_V3),
+    Migration(4, "orchestrator-step06", DDL_V4),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -303,6 +319,7 @@ __all__ = (
     "DDL_V1",
     "DDL_V2",
     "DDL_V3",
+    "DDL_V4",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

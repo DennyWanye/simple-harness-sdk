@@ -140,6 +140,7 @@ class Budget:
     max_attempts: int | None = None
     max_runtime_seconds: int | None = None
     max_concurrency: int | None = None
+    max_tool_calls: int | None = None  # step 6 (D6-8): §18.1 "工具调用次数"
 
     def __post_init__(self) -> None:
         for name in fields(self):

@@ -77,6 +77,13 @@ class AccountSnapshot:
     unpriced_settlements: int
     attempts_created: int
     version: int
+    reserved_tool_calls: int = 0
+    settled_tool_calls: int = 0
+
+    def remaining_tool_calls(self) -> int | None:
+        if self.limits.max_tool_calls is None:
+            return None
+        return self.limits.max_tool_calls - self.reserved_tool_calls - self.settled_tool_calls
 
     def remaining_tokens(self) -> int | None:
         if self.limits.max_tokens is None:
@@ -105,6 +112,9 @@ class AccountSnapshot:
             "settled_cost_micros": self.settled_cost_micros,
             "unpriced_settlements": self.unpriced_settlements,
             "attempts_created": self.attempts_created,
+            "reserved_tool_calls": self.reserved_tool_calls,
+            "settled_tool_calls": self.settled_tool_calls,
+            "remaining_tool_calls": self.remaining_tool_calls(),
             "remaining_tokens": self.remaining_tokens(),
             "remaining_cost_micros": self.remaining_cost_micros(),
             "remaining_attempts": self.remaining_attempts(),
@@ -162,6 +172,8 @@ class BudgetLedger:
             unpriced_settlements=row["unpriced_settlements"],
             attempts_created=row["attempts_created"],
             version=row["version"],
+            reserved_tool_calls=int(row["reserved_tool_calls"] or 0),
+            settled_tool_calls=int(row["settled_tool_calls"] or 0),
         )
 
     def _chain(self, account_id: str) -> list[AccountSnapshot]:
@@ -192,8 +204,9 @@ class BudgetLedger:
         tokens: int,
         cost_micros: int,
         counts_attempt: bool,
+        tool_calls: int = 0,
     ) -> str:
-        """Reserve ``tokens`` / ``cost_micros`` on ``account_id`` and every ancestor.
+        """Reserve ``tokens`` / ``cost_micros`` (/ ``tool_calls``) on ``account_id`` and every ancestor.
 
         Idempotent per ``subject_id``: a second call returns the existing reservation.
         Fails closed on the first dimension that does not fit (§18.3: 避免并发 Agent 同时超支).
@@ -218,18 +231,25 @@ class BudgetLedger:
                 remaining_attempts = snapshot.remaining_attempts()
                 if remaining_attempts is not None and remaining_attempts < 1:
                     raise BudgetExhausted(snapshot.account_id, "attempts", 1, remaining_attempts)
+            remaining_calls = snapshot.remaining_tool_calls()
+            if remaining_calls is not None and tool_calls > remaining_calls:
+                raise BudgetExhausted(
+                    snapshot.account_id, "tool_calls", tool_calls, remaining_calls
+                )
         for snapshot in chain:
             self._apply(
                 snapshot.account_id,
                 reserved_tokens=tokens,
                 reserved_cost_micros=cost_micros,
+                reserved_tool_calls=tool_calls,
                 attempts_created=1 if counts_attempt else 0,
             )
         reservation_id = f"reservation-{subject_id}"
         mission_id = chain[-1].account_id.removeprefix("budget:")
         self._store.connection.execute(
             "INSERT INTO budget_reservations(reservation_id,account_id,mission_id,subject_id,state,"
-            "reserved_tokens,reserved_cost_micros,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "reserved_tokens,reserved_cost_micros,reserved_tool_calls,created_at,updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 reservation_id,
                 account_id,
@@ -238,6 +258,7 @@ class BudgetLedger:
                 "RESERVED",
                 tokens,
                 cost_micros,
+                tool_calls,
                 self._store.now,
                 self._store.now,
             ),
@@ -296,8 +317,9 @@ class BudgetLedger:
         return int(row[0]) > 0
 
     # ----------------------------------------------------------------- settle
-    def settle(self, *, subject_id: str) -> dict[str, Any]:
-        """Replace the reservation by the imported facts on the whole account chain."""
+    def settle(self, *, subject_id: str, tool_calls: int = 0) -> dict[str, Any]:
+        """Replace the reservation by the imported facts on the whole account chain
+        (``tool_calls`` is the gateway's count for the subject — a fact, never a guess)."""
 
         reservation = self.reservation(subject_id)
         if reservation is None:
@@ -314,14 +336,16 @@ class BudgetLedger:
                 snapshot.account_id,
                 reserved_tokens=-int(reservation["reserved_tokens"]),
                 reserved_cost_micros=-int(reservation["reserved_cost_micros"]),
+                reserved_tool_calls=-int(reservation.get("reserved_tool_calls") or 0),
                 settled_tokens=tokens,
                 settled_cost_micros=settled_cost,
+                settled_tool_calls=int(tool_calls),
                 unpriced_settlements=1 if unpriced else 0,
             )
         self._store.connection.execute(
             "UPDATE budget_reservations SET state = 'SETTLED', settled_tokens = ?, settled_cost_micros = ?,"
-            " unpriced = ?, updated_at = ? WHERE subject_id = ?",
-            (tokens, cost, 1 if unpriced else 0, self._store.now, subject_id),
+            " settled_tool_calls = ?, unpriced = ?, updated_at = ? WHERE subject_id = ?",
+            (tokens, cost, int(tool_calls), 1 if unpriced else 0, self._store.now, subject_id),
         )
         settled = self.reservation(subject_id)
         assert settled is not None

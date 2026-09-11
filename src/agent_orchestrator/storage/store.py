@@ -822,6 +822,29 @@ class Store:
         return [_loads(row[0]) for row in rows]
 
     # ----------------------------------------------------------- graph changes
+    # --------------------------------------------------------- scheduler state
+    def get_scheduler_state(self, key: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT json FROM scheduler_state WHERE key = ?", (key,)
+        ).fetchone()
+        return None if row is None else dict(_loads(row[0]))
+
+    def put_scheduler_state(self, key: str, value: Mapping[str, Any]) -> int:
+        """Upsert; returns the new version.  Inside a Commit Service transaction."""
+
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT version FROM scheduler_state WHERE key = ?", (key,)
+            ).fetchone()
+            version = 1 if row is None else int(row[0]) + 1
+            connection.execute(
+                "INSERT INTO scheduler_state(key,json,version,updated_at) VALUES (?,?,?,?)"
+                " ON CONFLICT(key) DO UPDATE SET json = excluded.json, version = excluded.version,"
+                " updated_at = excluded.updated_at",
+                (key, canonical_json(dict(value)), version, self.now),
+            )
+            return version
+
     def insert_graph_change(self, record: Mapping[str, Any]) -> None:
         with self.transaction() as connection:
             connection.execute(
