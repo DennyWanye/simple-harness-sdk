@@ -258,6 +258,7 @@ def test_s7_06_a_crash_between_hand_off_and_outcome_is_reconciled_after_the_leas
         key, owner="dead-1", lease_seconds=30.0, connectors=connectors, deployment=ENABLED
     )
     assert handed["state"] == "HANDED_OFF" and handed["owner"] == "dead-1"
+    assert [w["kind"] for w in service.store.waiting_on(mission.id)] == ["handoff"]  # review P2-6
     survivor = ActionExecutor(service, connectors, ENABLED, owner="orch-2")
     assert asyncio.run(survivor.reconcile()) == []  # the lease is live: the call may be on its way
     clock["now"] += 31.0
@@ -341,7 +342,9 @@ def test_a_call_that_outlives_its_timeout_is_unknown_and_then_reconciled(tmp_pat
 
     async def scenario():
         unknown = await executor.hand_off(action["action_key"])
+        assert action["action_key"] in executor.inflight  # review P2-4: its thread still runs
         await asyncio.sleep(0.5)  # the call finishes in its thread after we stopped waiting
+        assert executor.inflight == frozenset()
         config.delay = 0.0
         return unknown, await executor.reconcile()
 
@@ -399,3 +402,20 @@ def test_an_unknown_the_service_cannot_answer_waits_for_a_person_with_evidence(t
     [event] = [e for e in service.store.list_events(mission.id) if e.type == "HumanOverride"]
     assert event.actor_type == "user" and event.actor_id == "alice"
     assert _reservation(service, key)[0] == "SETTLED"
+
+
+def test_altered_stored_parameters_are_refused_at_hand_off(tmp_path):
+    service, mission, _t, config, connectors, action = _approved(tmp_path)
+    tampered = service.store.get_action(action["action_key"])
+    tampered["params"] = {"value": "evil"}  # the ledger row no longer matches its own hash
+    service.store.put_action(tampered)
+    assert (
+        asyncio.run(
+            ActionExecutor(service, connectors, ENABLED, owner="orch-1").hand_off(
+                action["action_key"]
+            )
+        )
+        is None
+    )
+    assert _events(service, mission, "ActionHandoffRefused")[-1]["reason"] == "params_hash_mismatch"
+    assert config.calls == []

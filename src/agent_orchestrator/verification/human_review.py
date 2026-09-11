@@ -72,24 +72,25 @@ def reusable_layers(
 
 
 def judgment_conflict(
-    judgments: Sequence[Mapping[str, Any]], *, task_critic_passes: int
+    judgments: Sequence[Mapping[str, Any]], *, task_opinions: Mapping[str, Sequence[bool]]
 ) -> list[str]:
     """The criteria on which Verifiers disagree (plan D7-8' kind ②): an *independent*
-    judge Critic found them unmet, while every deterministic criterion is met and the
-    Tasks' own Critics passed.  Empty = no conflict (the ordinary judgment stands)."""
+    judge Critic found one unmet, every deterministic criterion is met, and every Task
+    Critic that judged that criterion found it met.  A judge that did not run
+    (``source=unavailable``) is no Verifier and never a conflict — its missing layer stays
+    a failure (review P1-2, ORCH §12.4).  Empty = no conflict (the ordinary judgment)."""
 
-    if task_critic_passes <= 0:
-        return []
     deterministic = [j for j in judgments if j.get("judge") in {"code_test", "rule_check"}]
     if not all(bool(j.get("met")) for j in deterministic):
         return []
-    return [
-        str(j.get("criterion"))
-        for j in judgments
-        if j.get("judge") == "critic_review"
-        and j.get("source") == "independent"
-        and not j.get("met")
-    ]
+    contested = []
+    for j in judgments:
+        if j.get("judge") != "critic_review" or j.get("source") != "independent" or j.get("met"):
+            continue
+        opinions = list(task_opinions.get(str(j.get("criterion")), ()))
+        if opinions and all(opinions):
+            contested.append(str(j.get("criterion")))
+    return contested
 
 
 __all__ = (

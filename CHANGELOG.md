@@ -1,3 +1,41 @@
+## 0.9.5 — agent_orchestrator step 7: human-in-the-loop and controlled real actions (source candidate)
+
+`agent_orchestrator` 0.7.0 (same wheel).  Step 7 of ORCH-BUILD-v1.0 — the "scale and
+safety" stage of the original design (§14.4, §15, §21–22, §24).  An Agent never performs
+a real change: it writes an action candidate (`actions/<name>.json`: connector, operation,
+target, params, reason) declared in its Task's outputs.  Verification always checks a
+candidate (schema, deployment policy, the Mission's `action:<connector>.<operation>:<target>`
+scope, declared outputs) and the accept transaction re-reads the stored bytes and
+registers it in an action ledger (`actions`, schema v5) under a stable business action id;
+changed content is a new version that supersedes only an *open* one — a handed-off or
+executed version is never superseded (`action_in_flight` / `action_already_executed`).
+Risk levels follow original §22 (L0/L1 automatic, L2 one approval, L3 two; connectors
+declare levels, deployments may only raise them; connectors are off unless a deployment
+enables one, and L2+ needs idempotency and reconciliation).  Approvals (`approvals`,
+`approval_decisions`) bind mission, task, action id, version, params hash and artifact
+hash; decisions come only from a caller's `Principal`, carry a nonce and a receipt hash,
+are counted once per receipt (and once per principal for L3 by default — a deployment
+convention), and can be rejected, revoked, expire or be cancelled with the Mission.  The
+Action Executor (`runtime/actions.py`) hands off only as the last step of the Mission
+judgment: `begin_handoff` re-checks the binding, reserves `action:<key>` (one tool call)
+and writes HANDED_OFF with owner, lease and decision receipts in one transaction before
+the connector is called in a thread under a timeout; a mismatching or lost receipt is
+UNKNOWN (reservation held), reconciled by idempotency key (COMPLETED → SUCCEEDED,
+CONFIRMED_NOT_STARTED → one re-hand-off with the same key, otherwise a person rules with
+evidence); an ended Mission is still reconciled.  The judgment runs in two stages (non-action
+criteria booked once per integrated tree; waiting for a person is no progress, so `run()`
+goes idle; the runtime cap excludes human waiting).  Human review is deployed as the sixth
+verification layer: a result waits SUSPENDED for a person, resumes reusing the layers that
+passed, and a Critic may answer `needs_human` (never short-circuiting the code tests, one
+escalation per Task).  Verifier conflicts go to a person as arbitration (a Conflict Task
+out of attempts; a judge Critic disagreeing with the Task Critics).  Takeover (stop /
+retry with a note), comments and rulings are `HumanOverride` / `HumanCommentAdded` events
+with their basis and never widen scope.  `api/approvals.py`, CLI `approval
+list|approve|reject|revoke|comment|review|arbitrate|takeover|resolve --as`, `demo
+--scenario approval-action` (local test configuration service; `--pause-for-approval`),
+evidence `actions.json` / `approvals.json` and trace / metrics sections.  A dedicated test
+service passing grants nothing for production.  No SDK (`simple_harness`) API change.
+
 ## 0.9.4 — agent_orchestrator step 6: many Missions, many models, backpressure, isolation (source candidate)
 
 `agent_orchestrator` 0.6.0 (same wheel).  Step 6 of ORCH-BUILD-v1.0 — controlled

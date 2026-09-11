@@ -70,36 +70,51 @@ class ActionExecutor:
             return None
         connector = self._connectors[str(action["connector"])]
         self._inflight.add(action_key)
-        try:
-            receipt = await asyncio.wait_for(
-                asyncio.to_thread(
-                    connector.execute,
-                    str(action["operation"]),
-                    str(action["target"]),
-                    dict(action["params"]),
-                    idempotency_key=str(action["idempotency_key"]),
-                ),
-                timeout=self._timeout,
+        call = asyncio.ensure_future(
+            asyncio.to_thread(
+                connector.execute,
+                str(action["operation"]),
+                str(action["target"]),
+                dict(action["params"]),
+                idempotency_key=str(action["idempotency_key"]),
             )
+        )
+        try:
+            receipt = await asyncio.wait_for(asyncio.shield(call), timeout=self._timeout)
         except ConnectorRejected as error:  # the service said no: nothing was applied
+            self._inflight.discard(action_key)
             return self._commit.record_action_outcome(
                 action_key, owner=self._owner, outcome="failed", error=str(error)
             )
         except Exception as error:  # noqa: BLE001 - transport, timeout: it may have happened
+            self._release_when_done(action_key, call)
             return self._commit.record_action_outcome(
                 action_key,
                 owner=self._owner,
                 outcome="unknown",
                 error=f"{type(error).__name__}: {error}",
             )
-        finally:
-            self._inflight.discard(action_key)
+        self._inflight.discard(action_key)
         return self._commit.record_action_outcome(
             action_key,
             owner=self._owner,
             outcome="succeeded",
             receipt=receipt if isinstance(receipt, Receipt) else None,
         )
+
+    def _release_when_done(self, action_key: str, call: asyncio.Future[Any]) -> None:
+        """Review P2-4: a call that outlived its timeout is still in flight until its thread
+        ends — this process never asks "did it start?" before then."""
+
+        def finished(future: asyncio.Future[Any]) -> None:
+            if not future.cancelled():
+                future.exception()  # retrieved: the outcome is already booked as UNKNOWN
+            self._inflight.discard(action_key)
+
+        if call.done():
+            finished(call)
+        else:
+            call.add_done_callback(finished)
 
     async def reconcile(self, mission_id: str | None = None) -> list[dict[str, Any]]:
         """UNKNOWN actions, and hand-offs whose lease lapsed without an outcome, of every

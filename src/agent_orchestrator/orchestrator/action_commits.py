@@ -434,6 +434,10 @@ class ActionCommitsMixin:
             raise ActionCommitError(f"unknown decision {decision!r}")
         if not nonce.strip():
             raise ActionCommitError("a decision needs a nonce")
+        pre = self._store.get_approval(request_id)
+        if pre is not None and pre["kind"] == "action":
+            # review P2-3: an expiry is committed on its own, never rolled back with a refusal
+            self.expire_approvals(str(pre["mission_id"]))
         with self._store.transaction():
             request = self._store.get_approval(request_id)
             if request is None:
@@ -458,10 +462,18 @@ class ActionCommitsMixin:
                 and request.get("expires_at") is not None
                 and self._store.now >= float(request["expires_at"])
             ):
-                self._expire_request(request)
                 raise ActionCommitError(f"approval {request_id} expired")
             if request["state"] != "PENDING":
                 raise ActionCommitError(f"approval {request_id} is {request['state']}")
+            if (
+                decision == "grant"
+                and request.get("distinct_principals", True)
+                and principal.principal_id in (request.get("granted_by") or [])
+            ):  # review P1-1 / S7-05: refused, not silently uncounted — nothing is written
+                raise ActionCommitError(
+                    f"{principal.principal_id} already approved {request_id};"
+                    " the second approval must come from a different principal"
+                )
             inserted = self._store.insert_decision(
                 {
                     "receipt_hash": receipt,
@@ -497,14 +509,9 @@ class ActionCommitsMixin:
                     **actor,
                 )
                 return request, receipt
-            granted_by = list(request.get("granted_by") or [])
-            counts = True
-            if request.get("distinct_principals", True) and principal.principal_id in granted_by:
-                counts = False  # one person counts once (deployment rule, plan D7-3)
-            if counts:
-                granted_by.append(principal.principal_id)
-                request["grant_count"] = int(request.get("grant_count", 0)) + 1
-            request["granted_by"] = granted_by
+            # every recorded grant counts: the decision receipts are the authorisation (D7-4')
+            request["granted_by"] = [*list(request.get("granted_by") or []), principal.principal_id]
+            request["grant_count"] = int(request.get("grant_count", 0)) + 1
             request["version"] = int(request["version"]) + 1
             if int(request["grant_count"]) >= int(request["required_count"]):
                 request["state"] = "GRANTED"
@@ -518,7 +525,7 @@ class ActionCommitsMixin:
                 payload={
                     "request_id": request_id,
                     "receipt_hash": receipt,
-                    "counted": counts,
+                    "counted": True,
                     "grant_count": request["grant_count"],
                     "required_count": request["required_count"],
                     "state": request["state"],
@@ -542,7 +549,9 @@ class ActionCommitsMixin:
                 raise ActionCommitError(f"unknown approval request {request_id}")
             if request["kind"] != "action":
                 raise ActionCommitError(f"{request_id} is a {request['kind']} request")
-            if request["state"] not in {"PENDING", "GRANTED"}:
+            if (
+                request["state"] != "GRANTED"
+            ):  # review P2-2: a PENDING request is rejected, not revoked
                 raise ActionCommitError(f"approval {request_id} is {request['state']}")
             action = (
                 self._store.get_action(str(request["subject_key"]))
@@ -728,6 +737,8 @@ class ActionCommitsMixin:
         ]
         if not live or live[-1]["action_key"] != action["action_key"]:
             return "not_current_version"
+        if params_hash(action.get("params") or {}) != action.get("params_hash"):
+            return "params_hash_mismatch"  # review P2-5: the stored parameters were altered
         decision = action_decision(
             deployment, connectors.get(str(action["connector"])), str(action["operation"])
         )

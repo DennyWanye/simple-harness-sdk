@@ -436,12 +436,13 @@ def test_l3_needs_two_independent_grants_from_different_people_by_default(tmp_pa
         one["state"] == "PENDING"
         and service.store.get_action(action["action_key"])["state"] == "AWAITING_APPROVAL"
     )
-    same_person, _ = service.decide_approval(
-        request_id, principal=ALICE, decision="grant", nonce="n-2", deployment=deployment
-    )
-    assert (
-        same_person["state"] == "PENDING" and same_person["grant_count"] == 1
-    )  # same person does not count twice
+    with pytest.raises(ActionCommitError):  # review P1-1: the same person again is refused
+        service.decide_approval(
+            request_id, principal=ALICE, decision="grant", nonce="n-2", deployment=deployment
+        )
+    same_person = service.store.get_approval(request_id)
+    assert same_person["state"] == "PENDING" and same_person["grant_count"] == 1
+    assert len(service.store.list_decisions(request_id)) == 1  # nothing was written
     two, _ = service.decide_approval(
         request_id, principal=BOB, decision="grant", nonce="n-3", deployment=deployment
     )
@@ -469,3 +470,46 @@ def test_without_the_distinct_people_rule_two_distinct_receipts_of_one_person_co
         request_id, principal=ALICE, decision="grant", nonce="n-2", deployment=relaxed
     )
     assert done["state"] == "GRANTED" and done["grant_count"] == 2
+
+
+def test_every_recorded_grant_counts_and_only_a_granted_request_can_be_revoked(tmp_path):
+    service, mission, t, _config, connectors, deployment = ledger_service(tmp_path)
+    action = _propose(
+        service, mission, t["A"], connectors, deployment, candidate(operation="delete")
+    )
+    request_id = action["approval_request_id"]
+    with pytest.raises(ActionCommitError):  # review P2-2: a PENDING request is rejected instead
+        service.revoke_approval(request_id, principal=BOB, reason="还没批就撤")
+    service.decide_approval(
+        request_id, principal=ALICE, decision="grant", nonce="n-1", deployment=deployment
+    )
+    service.decide_approval(
+        request_id, principal=BOB, decision="grant", nonce="n-2", deployment=deployment
+    )
+    grants = [
+        e.payload for e in service.store.list_events(mission.id) if e.type == "ApprovalGranted"
+    ]
+    assert len(grants) == 2 and all(g["counted"] for g in grants)
+    decisions = service.store.list_decisions(request_id)
+    assert sorted(d["principal_id"] for d in decisions) == ["alice", "bob"]
+
+
+def test_an_expiry_found_by_a_decision_is_committed_not_rolled_back(tmp_path):
+    clock = {"now": 1_000.0}
+    deployment = DeploymentPolicy(enabled_connectors=("test_config",), approval_ttl_seconds=60.0)
+    service, mission, t, _config, connectors, _ = ledger_service(
+        tmp_path, deployment=deployment, clock=lambda: clock["now"]
+    )
+    action = _propose(service, mission, t["A"], connectors, deployment, candidate())
+    clock["now"] += 61.0
+    with pytest.raises(ActionCommitError):  # review P2-3
+        service.decide_approval(
+            action["approval_request_id"],
+            principal=ALICE,
+            decision="grant",
+            nonce="n-1",
+            deployment=deployment,
+        )
+    assert service.store.get_approval(action["approval_request_id"])["state"] == "EXPIRED"
+    assert service.store.get_action(action["action_key"])["state"] == "EXPIRED"
+    assert service.store.count_events(mission.id, "ApprovalExpired") == 1

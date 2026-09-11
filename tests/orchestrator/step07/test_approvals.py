@@ -15,11 +15,12 @@ import time
 from pathlib import Path
 
 import pytest
-from fixtures_provider import RoleScriptedProvider, envelope_step, graph_proposal_step
+from fixtures_provider import RoleScriptedProvider, critic_step, envelope_step, graph_proposal_step
 from helpers_step07 import ALICE, BOB
 
 from agent_orchestrator.contracts import Budget, ContractError, MissionStatus
 from agent_orchestrator.governance.policies import DeploymentPolicy
+from agent_orchestrator.orchestrator.action_commits import ActionCommitError
 from agent_orchestrator.orchestrator.commit_service import MissionSpec
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
@@ -293,13 +294,18 @@ def test_s7_05_an_l3_action_runs_only_after_two_grants_of_different_people(tmp_p
             assert request["required_count"] == 2 and request["level"] == "L3"
             _grant(orchestrator, request["request_id"], ALICE, "n-1")
             _grant(orchestrator, request["request_id"], ALICE, "n-1")  # the same receipt again
-            _grant(orchestrator, request["request_id"], ALICE, "n-2")  # the same person again
+            with pytest.raises(ActionCommitError):  # review P1-1: refused, not uncounted
+                _grant(orchestrator, request["request_id"], ALICE, "n-2")
             await orchestrator.run()
             assert orchestrator.store.get_mission(mission.id).status is MissionStatus.ACTIVE
             assert len(service.calls) == 1  # only the seed write
             _grant(orchestrator, request["request_id"], BOB, "n-3")
             await orchestrator.run()
             assert orchestrator.store.get_mission(mission.id).status is MissionStatus.COMPLETED
+            [done] = orchestrator.store.list_actions(mission.id)
+            decisions = orchestrator.store.list_decisions(request["request_id"])
+            assert len(done["decision_receipts"]) == 2 == request["required_count"]
+            assert sorted(d["principal_id"] for d in decisions) == ["alice", "bob"]
 
     asyncio.run(case())
     assert "feature_flags.old_ui" not in service.state()["config"]
@@ -391,3 +397,143 @@ def test_a_mission_naming_a_disabled_connector_or_event_operation_is_refused_up_
                 await orchestrator.submit_mission(_spec(key="s7-c"))
 
     asyncio.run(case())
+
+
+# ------------------------------------------------------------------ code review round 1
+def test_s7_01_waiting_never_reruns_the_tests_or_the_judge(tmp_path, monkeypatch):
+    """Review P2-10: with a pytest and a free-text criterion, waiting for a person runs
+    the judgment's tests and its Critic once — not once per run()."""
+
+    import agent_orchestrator.orchestrator.event_handler as handler
+
+    runs: list[str] = []
+    real = handler.run_pytest
+
+    async def counting(*args, **kwargs):
+        runs.append(str(kwargs.get("path")))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(handler, "run_pytest", counting)
+    cfg = _config(tmp_path)
+    service = TestConfigService(Path(tmp_path) / "test-services" / "config.json")
+    provider = RoleScriptedProvider(
+        {
+            "planner": [graph_proposal_step([_task("A")])],
+            "worker": _worker(),
+            "critic": [critic_step(verdict="PASS", criteria_met=True)],
+        }
+    )
+    spec = MissionSpec(
+        goal="把测试配置服务的 feature_flags.new_ui 设为 on，并写一份变更说明",
+        success_criteria=(
+            "file:CHANGE.md",
+            "pytest:tests/test_ok.py",
+            "变更说明写明了回滚方式",
+            SET_NEW_UI,
+        ),
+        tenant_id="tenant-7",
+        idempotency_key="s7-01-strong",
+        allowed_tools=tuple(TOOLS),
+        budget=Budget(max_tokens=300_000, max_attempts=8),
+        workspace_seed={"tests/test_ok.py": "def test_ok():\n    assert True\n"},
+    )
+
+    async def case():
+        async with Orchestrator(cfg, provider, connectors={"test_config": service}) as orchestrator:
+            mission = await orchestrator.submit_mission(spec)
+            for _ in range(3):
+                await orchestrator.run()
+            assert orchestrator.store.get_mission(mission.id).status is MissionStatus.ACTIVE
+            assert runs == ["tests/test_ok.py"] and provider.by_role.get("critic") == 1
+            [request] = orchestrator.store.list_approvals(mission.id)
+            _grant(orchestrator, request["request_id"])
+            await orchestrator.run()
+            assert orchestrator.store.get_mission(mission.id).status is MissionStatus.COMPLETED
+            assert runs == ["tests/test_ok.py"] and provider.by_role.get("critic") == 1
+
+    asyncio.run(case())
+
+
+def test_the_same_change_asked_by_a_new_mission_is_a_new_action_and_applies_again(tmp_path):
+    """Plan §6 / review P1-3: a new Mission is a new business action (ORCH §12.3)."""
+
+    cfg = _config(tmp_path)
+    service = TestConfigService(Path(tmp_path) / "test-services" / "config.json")
+    provider = RoleScriptedProvider(
+        {
+            "planner": [graph_proposal_step([_task("A")]), graph_proposal_step([_task("A")])],
+            "worker": _worker() + _worker(),
+        }
+    )
+
+    async def case():
+        done = []
+        async with Orchestrator(cfg, provider, connectors={"test_config": service}) as orchestrator:
+            for key in ("again-1", "again-2"):
+                mission = await orchestrator.submit_mission(_spec(key))
+                await orchestrator.run()
+                [request] = orchestrator.store.list_approvals(mission.id)
+                _grant(orchestrator, request["request_id"], nonce=f"n-{key}")
+                await orchestrator.run()
+                assert orchestrator.store.get_mission(mission.id).status is MissionStatus.COMPLETED
+                [action] = orchestrator.store.list_actions(mission.id)
+                done.append(action)
+        return done
+
+    first, second = asyncio.run(case())
+    assert first["action_id"] != second["action_id"]
+    assert first["idempotency_key"] != second["idempotency_key"]
+    assert service.state()["applied_count"] == 2  # not deduplicated by the old receipt
+    assert [c["idempotency_key"] for c in service.calls] == [
+        first["idempotency_key"],
+        second["idempotency_key"],
+    ]
+
+
+def test_nothing_runs_until_every_action_of_the_mission_may_run(tmp_path):
+    """Review P2-1: one approved action does not run while another still waits."""
+
+    dark = "action:test_config.set:feature_flags.dark_mode"
+    cfg = _config(tmp_path)
+    service = TestConfigService(Path(tmp_path) / "test-services" / "config.json")
+    outputs = ("CHANGE.md", "actions/set-new-ui.json", "actions/set-dark-mode.json")
+    worker = [
+        ("workspace_list", {}),
+        (
+            "workspace_write_file",
+            {"path": "CHANGE.md", "content": "# 变更说明\n\n打开两个开关。\n"},
+        ),
+        ("workspace_write_file", {"path": "actions/set-new-ui.json", "content": _candidate("on")}),
+        (
+            "workspace_write_file",
+            {
+                "path": "actions/set-dark-mode.json",
+                "content": _candidate("on", target="feature_flags.dark_mode"),
+            },
+        ),
+        envelope_step(summary="两个候选", artifacts=list(outputs), claims=["两个候选已写出"]),
+    ]
+    provider = RoleScriptedProvider(
+        {"planner": [graph_proposal_step([_task("A", outputs=outputs)])], "worker": worker}
+    )
+
+    async def case():
+        async with Orchestrator(cfg, provider, connectors={"test_config": service}) as orchestrator:
+            mission = await orchestrator.submit_mission(
+                _spec(criteria=("file:CHANGE.md", SET_NEW_UI, dark))
+            )
+            await orchestrator.run()
+            first, second = orchestrator.store.list_approvals(mission.id)
+            _grant(orchestrator, first["request_id"], nonce="n-1")
+            await orchestrator.run()
+            assert service.calls == []  # half a change never happens
+            assert orchestrator.store.get_mission(mission.id).status is MissionStatus.ACTIVE
+            _grant(orchestrator, second["request_id"], nonce="n-2")
+            await orchestrator.run()
+            assert orchestrator.store.get_mission(mission.id).status is MissionStatus.COMPLETED
+
+    asyncio.run(case())
+    assert service.state()["config"] == {
+        "feature_flags.new_ui": "on",
+        "feature_flags.dark_mode": "on",
+    }

@@ -1216,6 +1216,15 @@ class Store:
             }
             for action in self.list_actions(mission_id, "UNKNOWN")
         )
+        waiting.extend(  # review P2-6: a hand-off whose outcome is not in yet (maybe a crash)
+            {
+                "kind": "handoff",
+                "action_key": action["action_key"],
+                "owner": action.get("owner"),
+                "lease_expires_at": action.get("lease_expires_at"),
+            }
+            for action in self.list_actions(mission_id, "HANDED_OFF")
+        )
         return waiting
 
     def human_wait_seconds(self, mission_id: str, now: float) -> float:

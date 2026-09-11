@@ -566,6 +566,11 @@ class Orchestrator:
                 continue
             idle_rounds += 1
             if idle_rounds >= 2:
+                # review P2-6: one more look at hand-offs whose lease lapsed (a crashed owner)
+                settled = await self.actions.reconcile()
+                if any(a["state"] != "UNKNOWN" for a in settled):
+                    idle_rounds = 0
+                    continue
                 return
             await asyncio.sleep(self._poll)
 
@@ -1805,15 +1810,18 @@ class Orchestrator:
         Critics on a criterion everything else says is met, a person rules.  Returns the
         judgments to use (``None`` while waiting) and whether a request was just opened."""
 
-        passes = sum(
-            1
-            for task in tasks
-            if any(
-                v["layer"] == "critic_review" and v["status"] == "PASS"
-                for v in self.store.list_verifications(task.accepted_result_id or "")
-            )
-        )
-        contested = judgment_conflict(judgments, task_critic_passes=passes)
+        opinions: dict[
+            str, list[bool]
+        ] = {}  # review P2-7: what each Task Critic said, per criterion
+        for task in tasks:
+            for layer in self.store.list_verifications(task.accepted_result_id or ""):
+                if layer["layer"] != "critic_review" or layer["status"] != "PASS":
+                    continue
+                for item in (layer.get("detail") or {}).get("mission_criteria", []):
+                    opinions.setdefault(str(item.get("criterion")), []).append(
+                        bool(item.get("met"))
+                    )
+        contested = judgment_conflict(judgments, task_opinions=opinions)
         if not contested:
             return [dict(j) for j in judgments], False
         subject = f"{mission.id}:judgment:{key}"
@@ -3064,7 +3072,9 @@ class Orchestrator:
                         "criterion": criterion,
                         "met": bool(found and found.get("met")),
                         "judge": "critic_review",
-                        "source": "task_critic" if reused_critic else "independent",
+                        "source": "unavailable"  # review P1-2: no judge ran — not a Verifier
+                        if critic is None
+                        else ("task_critic" if reused_critic else "independent"),
                         "reason": "no independent judge ran"
                         if found is None
                         else found.get("reason"),
@@ -3136,6 +3146,11 @@ class Orchestrator:
                     mission, plain, summary, unmet="no candidate reached the action ledger"
                 )
                 return True
+        if any(
+            a is not None and a["state"] not in HANDOFF_READY_STATES | {"SUCCEEDED"}
+            for a in actions.values()
+        ):  # review P2-1: nothing is handed off while another action of the Mission waits
+            return progressed
         for criterion, action in actions.items():
             assert action is not None
             if action["state"] not in HANDOFF_READY_STATES:

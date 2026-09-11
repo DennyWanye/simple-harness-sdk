@@ -530,3 +530,123 @@ def test_comments_are_kept_as_data_on_a_task_or_a_request(tmp_path):
         if e.type == "HumanCommentAdded"
     ]
     assert texts == ["上线窗口在周四", "注意兼容旧客户端"]
+
+
+# ------------------------------------------------------------------ code review round 1
+def _compare_spec(key):
+    from agent_orchestrator.testing.fixtures import COMPARE_SEED, COMPARE_SPEC
+
+    return MissionSpec(
+        goal=COMPARE_SPEC["goal"],
+        success_criteria=("file:contract/CONTRACT.md",),
+        tenant_id="tenant-7",
+        idempotency_key=key,
+        allowed_tools=tuple(COMPARE_SPEC["allowed_tools"]),
+        budget=Budget(max_tokens=200_000, max_attempts=12),
+        workspace_seed=COMPARE_SEED,
+        untrusted_sources=("docs/",),
+        conflict_reserve_tokens=20_000,
+    )
+
+
+@pytest.mark.parametrize("ruling", ["keep", "unresolved"])
+def test_s7_07_a_conflict_task_out_of_attempts_goes_to_a_person_not_to_failure(tmp_path, ruling):
+    """Review P1-3: the orchestrator's entry point of arbitration kind ① — the Arbiter
+    twice offers an opinion instead of an external check, the Conflict Task runs out of
+    attempts, and the Mission waits for a person instead of failing (step 4 failed it)."""
+
+    from agent_orchestrator.testing.fixtures import (
+        compare_script_arbiter,
+        demo_knowledge_sharing_provider,
+    )
+
+    provider = demo_knowledge_sharing_provider(
+        per_attempt={
+            "K": [
+                compare_script_arbiter(opinion_only=True),
+                compare_script_arbiter(opinion_only=True),
+            ]
+        }
+    )
+
+    async def case():
+        async with Orchestrator(_config(tmp_path), provider) as orchestrator:
+            mission = await orchestrator.submit_mission(_compare_spec(f"k-{ruling}"))
+            await orchestrator.run()
+            await orchestrator.run()  # idle: nothing to do until a person rules
+            store = orchestrator.store
+            assert store.get_mission(mission.id).status is MissionStatus.ACTIVE, (
+                orchestrator.progress_log
+            )
+            conflict_task = next(t for t in store.list_tasks(mission.id) if t.kind == "conflict")
+            assert [a.status for a in store.list_attempts(conflict_task.id)] == [
+                AttemptStatus.RETRY_WAIT,
+                AttemptStatus.RETRY_WAIT,
+            ]
+            [request] = [r for r in store.list_approvals(mission.id) if r["kind"] == "arbitration"]
+            assert request["topic"] == "conflict" and request["options"][-1] == "unresolved"
+            assert [w["kind"] for w in store.waiting_on(mission.id)] == ["arbitration"]
+            choice = request["options"][0] if ruling == "keep" else "unresolved"
+            orchestrator.commit.arbitrate(
+                request["request_id"],
+                principal=ALICE,
+                ruling=choice,
+                basis="我复现了探针",
+                nonce="n-1",
+            )
+            await orchestrator.run()
+            final = store.get_mission(mission.id)
+            [conflict] = store.list_conflicts(mission.id)
+            if ruling == "keep":
+                assert final.status is MissionStatus.COMPLETED, orchestrator.progress_log
+                assert conflict["state"] == "RESOLVED_BY_HUMAN"
+                assert store.get_task(conflict_task.id).status is TaskStatus.CANCELLED
+                assert final.final_report["unresolved_conflicts"] == []
+            else:
+                assert (
+                    final.status is MissionStatus.FAILED and final.stop_reason == "human_override"
+                )
+                assert conflict["state"] == "UNRESOLVED"
+
+    asyncio.run(case())
+
+
+def test_a_judge_that_could_not_run_is_no_verifier_and_no_conflict(tmp_path):
+    """Review P1-2: when the independent judge cannot answer, its criterion stays unmet
+    (a missing layer is never a PASS, ORCH §12.4) — nobody is asked to rule it met."""
+
+    criteria = ("file:REPORT.md", "报告写明了回滚方式")
+    provider = RoleScriptedProvider(
+        {
+            "planner": [
+                graph_proposal_step(
+                    [
+                        _task("A", ["format_check", "rule_check", "critic_review"]),
+                        _task("B", ["format_check", "rule_check", "critic_review"], deps=["A"]),
+                    ]
+                )
+            ],
+            "worker": _worker() + _worker(text="# 报告\n\n第 3 节写了回滚。\n"),
+            "critic": [
+                critic_step(verdict="PASS", criteria_met=True),
+                critic_step(verdict="PASS", criteria_met=True),
+            ]
+            + ["这不是一个裁决"] * 6,  # the judge answers nothing usable, every time
+        }
+    )
+
+    async def case():
+        async with Orchestrator(_config(tmp_path), provider) as orchestrator:
+            mission = await orchestrator.submit_mission(_spec("j-none", criteria=criteria))
+            await orchestrator.run()
+            store = orchestrator.store
+            final = store.get_mission(mission.id)
+            assert (
+                final.status is MissionStatus.FAILED
+                and final.stop_reason == "mission_criteria_unmet"
+            )
+            assert store.list_approvals(mission.id) == []
+            judged = {j["criterion"]: j for j in final.final_report["success_criteria"]}
+            assert judged["报告写明了回滚方式"]["source"] == "unavailable"
+
+    asyncio.run(case())

@@ -798,6 +798,8 @@ def cmd_approval(args: argparse.Namespace) -> int:
     from .contracts import ContractError
     from .governance.permissions import Principal
     from .orchestrator.action_commits import ActionCommitError
+    from .orchestrator.commit_service import CommitRejected
+    from .storage.store import StoreError
 
     store = _open_store(args)
     try:
@@ -833,7 +835,14 @@ def cmd_approval(args: argparse.Namespace) -> int:
                     basis=args.basis,
                     evidence=json.loads(args.evidence),
                 )
-        except (ApprovalRequestError, ActionCommitError, ContractError, ValueError) as error:
+        except (
+            ApprovalRequestError,
+            ActionCommitError,
+            CommitRejected,
+            ContractError,
+            StoreError,
+            ValueError,
+        ) as error:  # review P2-8: a refusal is an answer, never a traceback
             _print({"error": str(error)})
             return EXIT_FAILED
         _print(value)

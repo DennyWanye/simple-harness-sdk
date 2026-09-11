@@ -38,6 +38,26 @@
 | P2-10 | P2 | 提交 Mission 时检查动作准则 | 采纳（D7-3'） |
 | P2-11 | P2 | 可砍 | PaymentConnectorStub 只保留单元测试；砍掉 `MissionWaitingForHuman` 事件，保留 `waiting_on` |
 
+### 代码评审（第 1 轮，claude-opus-5，只读；原文见 `reports/code-review-round1.md`）
+
+结论：无 P0、3 P1、10 P2。修复都配有决定性测试，修完后 `tests/orchestrator` 248 passed / 6 skipped。
+
+| # | 发现 | 处置 | 测试 |
+|---|---|---|---|
+| P1-1 | L3 同一审批人第二次批准没被拒，还写进授权回执链 | 写入之前抛错；此后每条记下的批准都计数，`decision_receipts` = 真实授权 | `test_action_ledger.py` L3 测试与 `test_every_recorded_grant_counts_*`；`test_approvals.py::test_s7_05_*`（第二次抛错、回执 2 条且审批人不同） |
+| P1-2 | judge 没跑成被当成 Verifier 冲突送仲裁 | 判定项标 `source=unavailable`，冲突判断只看真正独立运行的 judge | `test_human_review.py::test_a_judge_that_could_not_run_*` |
+| P1-3 | 冲突仲裁①编排接入点、新 Mission 再应用一次没有测试 | 补两条编排级测试 | `test_human_review.py::test_s7_07_a_conflict_task_out_of_attempts_*`（keep / unresolved）、`test_approvals.py::test_the_same_change_asked_by_a_new_mission_*` |
+| P2-1 | 多个动作准则会部分执行 | 全部动作都可交接或已 SUCCEEDED 才开始交接 | `test_nothing_runs_until_every_action_*` |
+| P2-2 | PENDING 请求可以撤回 | 只有 GRANTED 可撤回，PENDING 走拒绝 | `test_every_recorded_grant_counts_*` |
+| P2-3 | 决定时发现过期，过期写入被回滚 | 先单独提交过期，再做决定 | `test_an_expiry_found_by_a_decision_*` |
+| P2-4 | 超时后在途标记提前清掉 | 线程真正结束才移出在途 | 超时测试加断言 |
+| P2-5 | 交接前没重算参数哈希 | 重算，不符 → `params_hash_mismatch` | `test_altered_stored_parameters_*` |
+| P2-6 | 崩溃在租约期内重启时无人核对、`waiting_on` 不列 HANDED_OFF | 空闲返回前再核对一次；`waiting_on` 列出 `handoff` | 崩溃测试加断言 |
+| P2-7 | 仲裁②条件比 plan 宽 | 逐条比较：每个判过该准则的 Task Critic 都判满足才算冲突 | 仲裁②测试（原有两条） |
+| P2-8 | CLI 漏接 `CommitRejected` / `StoreError` | 捕获并以错误信息返回 | — |
+| P2-9 | 连接器调用在本轮内 await，最长 `connector_timeout_seconds` | 登记（遗留）：调用有超时兜底，线程执行不阻塞事件循环，但同轮其他 Mission 要等 | — |
+| P2-10 | S7-01 断言偏弱 | 新增含 `pytest:` 与自由文本准则的用例，数 pytest 与 Critic 调用次数（等待期间各 1 次） | `test_s7_01_waiting_never_reruns_*` |
+
 ## 2. 执行记录
 
 | 切片 | 提交 | 内容 | 测试 |
@@ -46,10 +66,22 @@
 | B | `57cdf12` | `begin_handoff`（再校验 + CAS + 预留 + 决定回执，同一事务）、`record_action_outcome`（回执核对，不符 → UNKNOWN）、`record_reconciliation`（COMPLETED / CONFIRMED_NOT_STARTED / STILL_UNKNOWN，租约过期视为崩溃）、`override_action_outcome`（人工带证据裁决）；执行器 `runtime/actions.py`（线程 + 超时，只经 Commit Service 写库） | `test_action_execution.py` 12：S7-02；S7-06 回执丢失 / 崩溃在调用前 / 崩溃在应用后 / 恢复旧库 / 取消 Mission / 超时；再交接用完 → FAILED；人工出口 |
 | C | `259eae7` | 闭环：验证时有 `actions/` 就强制 rule_check 检查候选（schema / 部署政策 / Mission 范围 / 声明的 outputs）；accept 事务从已存字节重验并登记，不通过走 `fail_result`；判定分两段（非动作准则按树键只判一次并入账 `MissionCriteriaJudged`，再看动作：可交接则交接、被拒 / 撤回 / 过期 → `approval_rejected`、FAILED → `action_failed`、只剩等待 → 无进展，`run()` 空闲返回）；`waiting_on` 派生视图与快照；请求 `closed_at` 与人工等待时长（运行时间上限扣除）；Mission 结束取消开放动作；提交时检查动作准则 | `test_approvals.py` 10（S7-01 含重启、L0、S7-03、S7-04 ×3、S7-05、S7-08、范围 / 未声明、提交拒绝）、`test_waiting_view.py` 2 |
 | D | `38deb9d` | 第六层 human_review 部署：人工层在 §14.1 顺序最后，未答复时结果 SUSPENDED（不在拾取范围）并建 `review` 请求，Attempt / Task 不动；人工答复后回到拾取，只复用同版本已 PASS 的层（Critic 不再问、测试不再跑），第六层取人工结论；`needs_human`：Critic 契约新增字段，有 blocker 一律 FAIL，不短路（code_test 照跑，任一 FAIL 就不问人），政策没写 human_review 也强制走人工层，每个 Task 只升级一次；Verifier 冲突仲裁两种（冲突任务次数用完 → 选边 / unresolved；judge Critic 与 Task Critic 分歧 → met / unmet），裁决写 HumanOverride + 依据；接管 stop / retry_with_note（不加次数、不复活、带说明进下一次反馈）；评论 HumanCommentAdded 作为数据进下一次 Worker 反馈；人工文本做密钥检查；审批入口按请求类型分流 | `test_human_review.py` 13（S7-07：政策审核含重启、needs_human 强制与 Critic 只问一次、不替失败测试兜底、人工 FAIL 反馈与只升级一次、Mission 结束关闭审核、判定分歧仲裁 ×2、冲突选边 / 未解决、接管 stop / retry、不复活、评论） |
-| E | （本次） | `api/approvals.py`（调用方身份在构造时给定，入口做密钥检查，候选 reason 标注"来自模型，不可信"）；CLI `approval list|approve|reject|revoke|comment|review|arbitrate|takeover|resolve --as`；`demo --scenario approval-action`（一条命令走完候选 → 审批 → 交接 → 回执核对；`--pause-for-approval` 停在等待人工，退出码 4，用同一 `--idempotency-key` 再跑继续）；证据新增 `actions.json`、`approvals.json`（含决定与等待时长），`trace.json` 的 actions 链、`metrics.json` 的 human / actions；真实模型 opt-in 测试 | `test_approval_action_closure.py` 3（demo 全链与证据无密钥、CLI 在两次运行之间批准、CLI 拒绝与不能复活）、`test_real_provider_approval.py` 1（opt-in）；step02 `test_later_step_scenarios_are_not_implemented` 改用第 8 步场景 |
+| E | `5abe6ff` | `api/approvals.py`（调用方身份在构造时给定，入口做密钥检查，候选 reason 标注"来自模型，不可信"）；CLI `approval list|approve|reject|revoke|comment|review|arbitrate|takeover|resolve --as`；`demo --scenario approval-action`（一条命令走完候选 → 审批 → 交接 → 回执核对；`--pause-for-approval` 停在等待人工，退出码 4，用同一 `--idempotency-key` 再跑继续）；证据新增 `actions.json`、`approvals.json`（含决定与等待时长），`trace.json` 的 actions 链、`metrics.json` 的 human / actions；真实模型 opt-in 测试 | `test_approval_action_closure.py` 3（demo 全链与证据无密钥、CLI 在两次运行之间批准、CLI 拒绝与不能复活）、`test_real_provider_approval.py` 1（opt-in）；step02 `test_later_step_scenarios_are_not_implemented` 改用第 8 步场景 |
+| F | （本次） | 代码评审处置（上表）；版本 0.9.5 / 0.7.0；CHANGELOG、testcase、真实运行报告 | step07 合计 66 条（含 opt-in 1 条） |
 
-## 3. 遗留
+## 3. 真实模型
+
+- 运行 1（`5abe6ff`，deepseek-flash，`reports/real-approval-run1.md`）：真实 Planner（1223 tokens）拆出一个 Task，outputs 正确声明 `CHANGE.md` 与 `actions/set-new-ui.json`；真实 Worker（11702 tokens）按 `docs/ACTION_FORMAT.md` 写出只含五个字段的候选；验证与 accept 登记为 L2 动作，`run()` 空闲返回；演示操作员批准后在判定最后一步交接一次，测试服务 `applied_count=1`，回执核对一致 → Mission COMPLETED；11.5 s。证据 29 个文件，真实密钥逐字节命中 0、`sk-` 模式命中 0。
+
+## 4. 回归与 wheel
+
+- SDK 全量回归（`5abe6ff` 工作树，脚本 scratchpad `regress-s7/run.sh`）：58 failed / 2279 passed / 11 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
+- 版本：simple_harness 0.9.5 / agent_orchestrator 0.7.0（`tests/unit/contracts/public-api.json` 同步）。
+
+## 5. 遗留
 
 - L3-3 / L6-4（SDK 出站 UNKNOWN 对账）：本步的动作核对只覆盖编排层连接器动作；SDK 工具效果的 UNKNOWN 不在编排可依赖的 `simple_harness.agents` 公共面，继续登记，不在本步处理。
 - L2-4 / L6-5（`run_tests` 网络隔离）：继续登记。
 - 补偿动作 / 回滚真实世界：不做（纲要 §12.6）。
+- 代码评审 P2-9：连接器调用在判定循环内 await（有超时），同一轮其他 Mission 要等它结束；多 Mission 高并发时再改为独立任务。
+- 交接前没有复核候选 artifact 的字节（只重算参数哈希）；artifact 由内容寻址存放、accept 时已从字节重验。
