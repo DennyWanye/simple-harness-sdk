@@ -51,3 +51,4 @@
 
 - **fixtures 演示**：`python -m agent_orchestrator demo --scenario knowledge-sharing --provider fixtures --evidence-dir <dir> --idempotency-key demo-s4 --max-concurrency 1` → Mission COMPLETED（verification_passed，2.18 s）；任务 [work, work, work, synthesis, conflict] 全部 COMPLETED 各 1 次 Attempt；冲突 `impl_a.empty_input` RESOLVED；知识 6 条 VERIFIED（A 的两条被 B 与综合任务复用、B 的两条被综合任务复用、仲裁结论、综合一致性结论）；血缘含 6 条知识；证据目录含 §14.3 的 7 个文件 + `knowledge.json` + `lineage.json` + 各 Attempt 产物。
 - **确定性测试**：`tests/orchestrator`（step02 + step03 + step04）101 passed, 3 skipped（真实模型 opt-in）；step04 37 条。
+- **SDK 全量回归**（提交 `986820d` 前的 HEAD `043e8e0`，脚本 scratchpad `regress/run.sh`，忽略 3 个 memory-sdk 模块）：58 failed / 2141 passed / 8 skipped / 15 errors，红集 73 条 = 基线 `baseline-known-failures.txt`，**0 新红**。
