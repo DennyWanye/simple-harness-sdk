@@ -36,7 +36,7 @@
 | 4 | 二 | 团队共享知识、冲突仲裁、综合 | **SHIPPED**（`step04/`，SDK 0.9.2 / agent_orchestrator 0.4.0） |
 | 5 | 二 | 根据 Worker 返回动态修改 Task DAG | **SHIPPED**（`step05/`，SDK 0.9.3 / agent_orchestrator 0.5.0，wheel 自 `399d0e7`；真实 deepseek-flash 运行 3 改图 v1→v2 后完成） |
 | 6 | 三 | 多 Mission、多模型、背压、隔离 | **SHIPPED**（`step06/`，SDK 0.9.4 / agent_orchestrator 0.6.0，wheel 自 `a2ce656`；真实 deepseek-flash 两执行池运行 1、2 都完成） |
-| 7 | 三 | Human-in-the-loop 与受控真实操作 | 待做 |
+| 7 | 三 | Human-in-the-loop 与受控真实操作 | **SHIPPED**（`step07/`，SDK 0.9.5 / agent_orchestrator 0.7.0，wheel 自 `418a6d7`；真实 deepseek-flash 运行 1、2 都完成：候选 → L2 审批 → 交接一次 → 回执核对） |
 | 8 | 四 | 归因、Replay、策略对照评测 | 待做 |
 | 9 | 四 | 从历史学习并受控晋级 | 待做 |
 

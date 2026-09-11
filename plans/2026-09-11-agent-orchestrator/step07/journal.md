@@ -67,7 +67,7 @@
 | C | `259eae7` | 闭环：验证时有 `actions/` 就强制 rule_check 检查候选（schema / 部署政策 / Mission 范围 / 声明的 outputs）；accept 事务从已存字节重验并登记，不通过走 `fail_result`；判定分两段（非动作准则按树键只判一次并入账 `MissionCriteriaJudged`，再看动作：可交接则交接、被拒 / 撤回 / 过期 → `approval_rejected`、FAILED → `action_failed`、只剩等待 → 无进展，`run()` 空闲返回）；`waiting_on` 派生视图与快照；请求 `closed_at` 与人工等待时长（运行时间上限扣除）；Mission 结束取消开放动作；提交时检查动作准则 | `test_approvals.py` 10（S7-01 含重启、L0、S7-03、S7-04 ×3、S7-05、S7-08、范围 / 未声明、提交拒绝）、`test_waiting_view.py` 2 |
 | D | `38deb9d` | 第六层 human_review 部署：人工层在 §14.1 顺序最后，未答复时结果 SUSPENDED（不在拾取范围）并建 `review` 请求，Attempt / Task 不动；人工答复后回到拾取，只复用同版本已 PASS 的层（Critic 不再问、测试不再跑），第六层取人工结论；`needs_human`：Critic 契约新增字段，有 blocker 一律 FAIL，不短路（code_test 照跑，任一 FAIL 就不问人），政策没写 human_review 也强制走人工层，每个 Task 只升级一次；Verifier 冲突仲裁两种（冲突任务次数用完 → 选边 / unresolved；judge Critic 与 Task Critic 分歧 → met / unmet），裁决写 HumanOverride + 依据；接管 stop / retry_with_note（不加次数、不复活、带说明进下一次反馈）；评论 HumanCommentAdded 作为数据进下一次 Worker 反馈；人工文本做密钥检查；审批入口按请求类型分流 | `test_human_review.py` 13（S7-07：政策审核含重启、needs_human 强制与 Critic 只问一次、不替失败测试兜底、人工 FAIL 反馈与只升级一次、Mission 结束关闭审核、判定分歧仲裁 ×2、冲突选边 / 未解决、接管 stop / retry、不复活、评论） |
 | E | `5abe6ff` | `api/approvals.py`（调用方身份在构造时给定，入口做密钥检查，候选 reason 标注"来自模型，不可信"）；CLI `approval list|approve|reject|revoke|comment|review|arbitrate|takeover|resolve --as`；`demo --scenario approval-action`（一条命令走完候选 → 审批 → 交接 → 回执核对；`--pause-for-approval` 停在等待人工，退出码 4，用同一 `--idempotency-key` 再跑继续）；证据新增 `actions.json`、`approvals.json`（含决定与等待时长），`trace.json` 的 actions 链、`metrics.json` 的 human / actions；真实模型 opt-in 测试 | `test_approval_action_closure.py` 3（demo 全链与证据无密钥、CLI 在两次运行之间批准、CLI 拒绝与不能复活）、`test_real_provider_approval.py` 1（opt-in）；step02 `test_later_step_scenarios_are_not_implemented` 改用第 8 步场景 |
-| F | （本次） | 代码评审处置（上表）；版本 0.9.5 / 0.7.0；CHANGELOG、testcase、真实运行报告 | step07 合计 66 条（含 opt-in 1 条） |
+| F | `418a6d7` | 代码评审处置（上表）；版本 0.9.5 / 0.7.0；CHANGELOG、testcase、真实运行报告 | step07 合计 66 条（含 opt-in 1 条） |
 
 ## 3. 真实模型
 
@@ -76,7 +76,9 @@
 ## 4. 回归与 wheel
 
 - SDK 全量回归（`5abe6ff` 工作树，脚本 scratchpad `regress-s7/run.sh`）：58 failed / 2279 passed / 11 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
+- 代码评审修复后 SDK 全量回归（`418a6d7`，`regress-s7b/run.sh`）：58 failed / 2288 passed / 11 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
 - 版本：simple_harness 0.9.5 / agent_orchestrator 0.7.0（`tests/unit/contracts/public-api.json` 同步）。
+- wheel：从 `418a6d7` 用 `git archive` + `SOURCE_DATE_EPOCH` 可复现构建（scratchpad `wheel-0.9.5/build-and-verify.sh`），`simple_harness_sdk-0.9.5-py3-none-any.whl` sha256 `a1c4061067545a34f2f3815b0fa1b84c4c8b9245a0b48bf3f9757326c14c6640`；干净 venv（Python 3.12）安装后 `tests/orchestrator tests/agents tests/unit/contracts` 与迁移测试 511 passed / 1 failed / 9 skipped，唯一失败为基线已知 `test_execution_v3_to_v4_migration::test_completed_null_continuation_*`；`demo --scenario multi-mission` 与 `demo --scenario approval-action`（fixtures）退出码 0；版本 0.9.5 / 0.7.0。
 
 ## 5. 遗留
 
@@ -85,3 +87,7 @@
 - 补偿动作 / 回滚真实世界：不做（纲要 §12.6）。
 - 代码评审 P2-9：连接器调用在判定循环内 await（有超时），同一轮其他 Mission 要等它结束；多 Mission 高并发时再改为独立任务。
 - 交接前没有复核候选 artifact 的字节（只重算参数哈希）；artifact 由内容寻址存放、accept 时已从字节重验。
+
+## 6. 终态
+
+**SHIPPED**（2026-09-11）：S7-01…S7-08 全部由确定性测试判定（`tests/orchestrator` 248 passed / 6 skipped，step07 共 66 条含 opt-in 1 条）；plan review 4 P0 / 12 P1 / 11 P2 与代码 review 0 P0 / 3 P1 / 10 P2 全部处置（修复各配决定性测试，P2-9 等登记在 §5）；真实 deepseek-flash 运行 1、2 都完成（候选 → L2 审批 → 交接一次 → 回执核对，证据无密钥）；SDK 全量回归 0 新红（73 = 基线）；wheel 0.9.5 从 `418a6d7` 构建并在干净 venv 验证；推送 origin main。

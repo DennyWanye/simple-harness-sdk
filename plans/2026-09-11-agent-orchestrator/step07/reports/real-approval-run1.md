@@ -43,3 +43,10 @@
 - S7-01/02 的真实闭环成立：真实模型只能交候选；未批准前服务零调用；批准后只执行一次并核对回执。
 - 本次是"演示操作员"在同一进程内批准，身份是自报的 `--as`（本地构建的约定，真实部署需接认证）。
 - 本轮 Worker 一次写对，没有触发重试、拒绝、UNKNOWN 等分支；这些分支由 fixtures 上的确定性测试覆盖（S7-03…S7-08）。
+
+## 5. 运行 2（代码评审修复后，`418a6d7`）
+
+- 同一命令，deepseek-flash：`1 passed in 12.47s`，exit 0；Mission COMPLETED（`verification_passed`），12.19 s。
+- tokens：planner 1373 / worker 12842；1 个动作请求 GRANTED；动作 `action-b913a4c5dba0c303:v1` SUCCEEDED，交接 1 次，决定回执 1 条，服务回执 `9cf43da2…`；测试服务 `applied_count=1`、`feature_flags.new_ui=on`。
+- 证据 29 个文件：真实密钥逐字节命中 0，`sk-` 模式命中 0。
+- 说明修复（同一人重复批准被拒、全部动作就绪才交接、超时在途、空闲前再核对等）没有破坏真实闭环。
