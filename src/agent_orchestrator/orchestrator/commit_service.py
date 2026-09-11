@@ -54,6 +54,14 @@ from ..memory.verified_knowledge import KnowledgeIndex, KnowledgeRecord
 from ..observability.lineage import lineage
 from ..planning.manager import conflict_task, inherit_limits, synthesis_task, terminal_task
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES
+from ..scheduling.backpressure import (
+    STATE_KEY,
+    BackpressureLimits,
+    BackpressureState,
+    Observation,
+    Transition,
+    evaluate,
+)
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
 from ..verification.conflicts import Contradiction, find_contradiction
 from .state_machine import next_attempt, next_claim, next_mission, next_task
@@ -198,6 +206,46 @@ class CommitService:
         # D6-8: the orchestrator installs the gateway's executed-call counter (subject → count)
         # so every settlement path books the tool-call fact without threading it through
         self.tool_calls_for: Callable[[str], int] | None = None
+
+    # ----------------------------------------------------------- backpressure
+    def backpressure_state(self) -> BackpressureState:
+        return BackpressureState.from_json(self._store.get_scheduler_state(STATE_KEY))
+
+    def record_backpressure(
+        self,
+        observation: Observation,
+        *,
+        limits: BackpressureLimits,
+        mission_ids: Sequence[str],
+    ) -> tuple[BackpressureState, list[Transition]]:
+        """One evaluation step (D6-2'): the new state and, when a dimension crossed a
+        watermark, the ``BackpressureRaised`` / ``BackpressureCleared`` events on every
+        active Mission's timeline — state and events in one transaction (review P1-4).
+        The state document keeps a bounded log of transitions: that log is the single
+        truth for ``scheduler.json`` / ``metrics.json`` (review P1-11)."""
+
+        with self._store.transaction():
+            previous = BackpressureState.from_json(self._store.get_scheduler_state(STATE_KEY))
+            state, transitions = evaluate(previous, observation, limits)
+            if not transitions and previous.observation is not None:
+                return state, []
+            document = state.to_json()
+            raw = self._store.get_scheduler_state(STATE_KEY) or {}
+            log = list(raw.get("log") or [])
+            for transition in transitions:
+                log.append({**transition.to_json(), "at": observation.observed_at})
+            document["log"] = log[-200:]
+            document["limits"] = limits.to_json()
+            self._store.put_scheduler_state(STATE_KEY, document)
+            for transition in transitions:
+                for mission_id in mission_ids:
+                    self._emit(
+                        transition.event_type,
+                        mission_id,
+                        key=f"{transition.dimension}:{state.changes}:{mission_id}",
+                        payload={**transition.to_json(), "since": state.since},
+                    )
+            return state, transitions
 
     def global_account(self) -> AccountSnapshot | None:
         """The deployment-wide account (§18.2 Global Budget), if this deployment set one."""
@@ -1889,6 +1937,7 @@ class CommitService:
         candidates_per_task: int = 1,
         inputs: Sequence[Mapping[str, Any]] = (),
         max_open_attempts: int | None = None,
+        max_running_attempts: int | None = None,
     ) -> tuple[Attempt, DispatchIntent]:
         """Atomic Reserve + Attempt(PENDING) + dispatch intent (ORCH-BUILD §4.3 step 1).
 
@@ -1921,6 +1970,15 @@ class CommitService:
                     raise CommitRejected(
                         f"mission {task.mission_id} already has {open_in_mission} open Attempts "
                         f"(max_concurrency={max_open_attempts})"
+                    )
+            if max_running_attempts is not None:  # D6-1' / review P1-12: the deployment-wide cap
+                open_everywhere = self._store.count_attempts_by_status(
+                    *(str(s) for s in OPEN_ATTEMPT_STATES)
+                )
+                if open_everywhere >= max_running_attempts:
+                    raise CommitRejected(
+                        f"{open_everywhere} Attempts are open across all Missions "
+                        f"(max_running_attempts={max_running_attempts})"
                     )
             ordinal = len(existing) + 1
             attempt_id = ids.attempt_id(task_id, ordinal)

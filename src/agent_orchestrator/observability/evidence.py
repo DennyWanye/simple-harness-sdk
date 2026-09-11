@@ -71,6 +71,10 @@ def write_evidence(
     )
     _dump(directory / "lineage.json", lineage(store, mission_id))
     _dump(directory / "graph_history.json", graph_history(store, mission_id))  # step 5
+    _dump(  # step 6 (D6-2'): the scheduler's durable signals — the transition log is the truth
+        directory / "scheduler.json",
+        {"backpressure": store.get_scheduler_state("backpressure")},
+    )
     artifacts_dir = directory / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for artifact in snapshot["artifacts"]:

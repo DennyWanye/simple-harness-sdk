@@ -56,6 +56,7 @@ class ChangeLimits:
     max_proposals_per_agent: int = 3
     max_tasks: int = MAX_TASKS
     max_supersede_chain: int = 2
+    admit_new_tasks: bool = True  # step 6 (D6-3 ③): False while backpressure is raised
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +297,12 @@ def validate_change(
 
     by_id = {task.id: task for task in tasks}
     live = {task.id: task for task in tasks if task.status is not TaskStatus.CANCELLED}
+    if not limits.admit_new_tasks and any(op.op == "add_task" for op in change.operations):
+        # §18.5 "禁止新任务继续分裂": while the pipeline is backed up no proposal may grow
+        # the graph; the Manager is told so and may still change roles or priorities
+        raise GraphChangeRejected(
+            "backpressure", "no new Task may be added while backpressure is raised (§18.5)"
+        )
     nodes = change.add_tasks()
     keys = [node.key for node in nodes]
     if len(set(keys)) != len(keys):

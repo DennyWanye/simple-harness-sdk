@@ -28,6 +28,7 @@ from typing import Any
 
 from ..contracts import Attempt, AttemptStatus, Task, TaskStatus
 from ..graph.deduplicator import normalise_goal
+from .backpressure import BackpressureState
 
 ALLOCATOR_VERSION = "allocator-v1"
 WEIGHTS: Mapping[str, float] = {
@@ -173,6 +174,7 @@ class AllocationPlan:
     open_attempts: int
     concurrency_limit: int | None
     scores: Mapping[str, TaskScore] = field(default_factory=dict)
+    pressure: str | None = None  # the BackpressureState.level the plan was made under
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -187,6 +189,7 @@ class AllocationPlan:
             ],
             "open_attempts": self.open_attempts,
             "concurrency_limit": self.concurrency_limit,
+            "pressure": self.pressure,
         }
 
 
@@ -199,6 +202,9 @@ def allocate(
     now: float | None = None,
     aging_window_seconds: float = 300.0,
     mission_max_tokens: int | None = None,
+    pressure: BackpressureState | None = None,
+    reduced_concurrency_ratio: float = 0.5,
+    exploration_slots: int = 1,
 ) -> AllocationPlan:
     """Bounded allocation over the Frontier plus ACTIVE Tasks that still lack a candidate.
 
@@ -212,6 +218,10 @@ def allocate(
         if attempt.status in OPEN_ATTEMPT_STATES:
             open_by_task[attempt.task_id] = open_by_task.get(attempt.task_id, 0) + 1
     open_total = sum(open_by_task.values())
+    raised = pressure is not None and pressure.is_raised
+    if raised and concurrency_limit is not None:
+        # §18.5 "降低 Worker 并发" (D6-3 ①): the gate outside the §29.3 formula
+        concurrency_limit = max(1, int(concurrency_limit * reduced_concurrency_ratio))
     grants: list[tuple[Task, int]] = []
     eligible = frontier(tasks) + [
         task for task in tasks if task.status is TaskStatus.ACTIVE and not task.paused
@@ -237,6 +247,21 @@ def allocate(
             _ordinal(task.id),
         )
     )
+    if raised:
+        # §18.5 "暂停低优先级任务" (D6-3 ②): only conflict (tier 0) and starving (tier 1)
+        # Tasks are expanded; formula-tier Tasks wait — except an exploration quota of
+        # never-attempted Tasks (theory 05-10 "保留固定探索预算")
+        tried = {attempt.task_id for attempt in attempts}
+        kept: list[Task] = []
+        explored = 0
+        for task in ordered:
+            tier = scores[task.id].tier if task.id in scores else 2
+            if tier <= 1:
+                kept.append(task)
+            elif task.id not in tried and explored < max(0, exploration_slots):
+                kept.append(task)
+                explored += 1
+        ordered = kept
     for task in ordered:
         open_here = open_by_task.get(task.id, 0)
         while open_here < max(1, candidates_per_task):
@@ -250,6 +275,7 @@ def allocate(
         open_attempts=open_total,
         concurrency_limit=concurrency_limit,
         scores={task.id: scores[task.id] for task in ordered if task.id in scores},
+        pressure=None if pressure is None else pressure.level,
     )
 
 

@@ -552,6 +552,17 @@ class Store:
         ).fetchall()
         return [Attempt.from_json(_loads(row[0])) for row in rows]
 
+    def count_attempts_by_status(self, *statuses: str) -> int:
+        """Attempts in any of ``statuses`` across every Mission (step 6: the global cap)."""
+
+        if not statuses:
+            return 0
+        marks = ",".join("?" for _ in statuses)
+        row = self._connection.execute(
+            f"SELECT COUNT(*) FROM attempts WHERE status IN ({marks})", tuple(statuses)
+        ).fetchone()
+        return int(row[0])
+
     def list_attempts_by_status(self, *statuses: str) -> list[Attempt]:
         marks = ",".join("?" for _ in statuses)
         rows = self._connection.execute(

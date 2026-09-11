@@ -24,6 +24,7 @@ from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 
 from ..artifacts.workspace import WorkspaceManager
 from ..contracts import Budget
+from ..scheduling.backpressure import BackpressureLimits
 from .tool_gateway import TOOL_NAMES, TOOL_SCHEMAS, WorkspaceToolGateway
 
 CONSUMER_PRICING_KEY = "consumer"
@@ -89,6 +90,17 @@ class OrchestratorConfig:
     aging_window_seconds: float = 300.0
     # step 6 (D6-1 / D6-8)
     global_budget: Budget | None = None  # §18.2 Global Budget above every Mission; None = uncapped
+    # step 6 (D6-2 / D6-3): the §18.5 caps and the gate they drive
+    max_running_attempts: int | None = (
+        None  # deployment-wide open Attempts; None = max_concurrency × 4
+    )
+    max_pending_dispatch: int = 8
+    max_pending_verifications: int = 4
+    low_watermark_ratio: float = 0.5
+    reduced_concurrency_ratio: float = 0.5
+    reduced_reserve_ratio: float = 0.5
+    exploration_slots: int = 1
+    verifier_workers: int = 2  # §29.1 "2 个 Verifier Worker" as the verification concurrency
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -100,6 +112,10 @@ class OrchestratorConfig:
             raise ValueError("on_retrieval_failure must be 'block' or 'degrade'")
         if self.max_retrieval_failures < 1 or self.max_knowledge_items < 1:
             raise ValueError("max_retrieval_failures and max_knowledge_items must be >= 1")
+        if self.max_running_attempts is None:
+            object.__setattr__(self, "max_running_attempts", self.max_concurrency * 4)
+        if self.max_running_attempts < 1 or self.verifier_workers < 1:  # type: ignore[operator]
+            raise ValueError("max_running_attempts and verifier_workers must be >= 1")
         if self.sdk_lease_ttl_seconds is None:
             object.__setattr__(self, "sdk_lease_ttl_seconds", self.lease_seconds / 2)
         elif self.lease_seconds < 2 * self.sdk_lease_ttl_seconds:
@@ -116,6 +132,19 @@ class OrchestratorConfig:
     @property
     def unpriced(self) -> bool:
         return self.price_table is None
+
+    def backpressure_limits(self) -> BackpressureLimits:
+        """The six §18.5 caps as one registry (D6-2)."""
+
+        return BackpressureLimits(
+            max_running_attempts=int(self.max_running_attempts or 1),
+            max_pending_dispatch=self.max_pending_dispatch,
+            max_pending_verifications=self.max_pending_verifications,
+            max_graph_depth=self.max_graph_depth,
+            max_attempts_per_task=None,
+            max_proposals_per_agent=self.max_proposals_per_agent,
+            low_watermark_ratio=self.low_watermark_ratio,
+        )
 
     @property
     def orchestrator_db(self) -> Path:
@@ -182,6 +211,13 @@ class OrchestratorConfig:
                 "aging_window_seconds": self.aging_window_seconds,
             },
             "global_budget": None if self.global_budget is None else self.global_budget.to_json(),
+            "backpressure": {
+                **self.backpressure_limits().to_json(),
+                "reduced_concurrency_ratio": self.reduced_concurrency_ratio,
+                "reduced_reserve_ratio": self.reduced_reserve_ratio,
+                "exploration_slots": self.exploration_slots,
+                "verifier_workers": self.verifier_workers,
+            },
             "knowledge": {
                 "knowledge_sharing": self.knowledge_sharing,
                 "on_retrieval_failure": self.on_retrieval_failure,

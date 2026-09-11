@@ -22,6 +22,7 @@ Task, and the Mission is judged on the integrated tree of every Task.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from collections.abc import Mapping, Sequence
@@ -97,6 +98,7 @@ from ..runtime.role_templates import (
 )
 from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding, run_pytest
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES, allocate
+from ..scheduling.backpressure import BackpressureState, Observation
 from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy
 from ..verification.critics import CriticVerdict, parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
@@ -155,6 +157,9 @@ class Orchestrator:
         self.progress_log: list[str] = []
         self.cancel_receipts: list[dict[str, Any]] = []
         self._rotation = 0  # D6-1: round-robin start across active Missions
+        self._verifying: dict[str, asyncio.Task[bool]] = {}  # D6-9': bounded verification set
+        self._verification_error: BaseException | None = None  # a crash inside a verification task
+        self._pressure = BackpressureState()  # D6-2: the current backpressure signal
 
     # ------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Orchestrator:
@@ -168,6 +173,7 @@ class Orchestrator:
         await self._assembled.runtime.__aenter__()
         self._bridge = AgentBridge(self._assembled.runtime, unpriced=self._config.unpriced)
         self._commit.tool_calls_for = self._executed_tool_calls  # D6-8
+        self._pressure = self._commit.backpressure_state()
         return self
 
     def _executed_tool_calls(self, subject_id: str) -> int:
@@ -180,6 +186,13 @@ class Orchestrator:
         return self._assembled.gateway.executed_calls(attempt.agent_id)
 
     async def __aexit__(self, *exc_info: object) -> None:
+        for task in list(self._verifying.values()):
+            if not task.done():
+                task.cancel()
+        for task in list(self._verifying.values()):
+            with contextlib.suppress(BaseException):
+                await task
+        self._verifying.clear()
         if self._assembled is not None:
             await self._assembled.runtime.__aexit__(*exc_info)
         if self._store is not None:
@@ -293,11 +306,36 @@ class Orchestrator:
     def _active_missions(self) -> list[Mission]:
         return [m for m in self.store.list_missions() if m.status not in TERMINAL_MISSION]
 
+    def _note_verification_done(self, task: asyncio.Task[bool]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None and self._verification_error is None:
+            self._verification_error = error
+
+    def _raise_if_verification_crashed(self) -> None:
+        # look at the tasks themselves: a done-callback is only scheduled *after* the loop
+        # resumed us, so a crash that happened during our last yield would otherwise be
+        # seen one phase too late (step-3 fault-point tests)
+        error = self._verification_error
+        for result_id, task in list(self._verifying.items()):
+            if task.done() and not task.cancelled() and task.exception() is not None:
+                error = error or task.exception()
+                del self._verifying[result_id]
+        if error is not None:
+            self._verification_error = None
+            for result_id, task in list(self._verifying.items()):
+                if task.done():
+                    del self._verifying[result_id]
+            raise error
+
     def _has_inflight(self) -> bool:
         """A submitted turn counts as in flight until it is collected — also for a
         terminal Mission (a superseded / cancelled Attempt's cost and late result are
         still collected); critic turns are collected inline by their runner."""
 
+        if any(not task.done() for task in self._verifying.values()):
+            return True
         return any(intent.kind != "critic" for intent in self.store.list_intents("SUBMITTED"))
 
     async def _cycle(self) -> bool:
@@ -336,17 +374,33 @@ class Orchestrator:
                 continue
             if await self._collect(intent):
                 progressed = True
+        # D6-9': verification runs in a bounded set of tasks (``verifier_workers``); the loop
+        # reaps finished ones and starts new ones.  A crash inside a verification is raised at
+        # the next phase boundary — nothing else is decided after it (fault-injection tests)
+        self._raise_if_verification_crashed()
+        for result_id, task in list(self._verifying.items()):
+            if task.done():
+                del self._verifying[result_id]
+                if task.result():
+                    progressed = True
         for stored in self.store.list_results_by_verification("PENDING", "RUNNING"):
-            if stored.envelope.mission_id not in active:
+            if stored.envelope.mission_id not in active or stored.envelope.id in self._verifying:
                 continue
-            if await self._verify(stored.envelope.id):
-                progressed = True
+            if len(self._verifying) >= self._config.verifier_workers:
+                break
+            task = asyncio.create_task(self._verify(stored.envelope.id))
+            task.add_done_callback(self._note_verification_done)
+            self._verifying[stored.envelope.id] = task
+            await asyncio.sleep(0)  # let the verification reach its first Commit before deciding
+        self._raise_if_verification_crashed()
+        self._observe_pressure(active)
         missions = self._active_missions()
         if missions:  # D6-1 fair progress: the allocation order rotates across Missions
             start = self._rotation % len(missions)
             self._rotation += 1
             missions = missions[start:] + missions[:start]
         for mission in missions:
+            self._raise_if_verification_crashed()
             if await self._decide(mission):
                 progressed = True
         return progressed
@@ -1601,6 +1655,7 @@ class Orchestrator:
             max_graph_depth=self._config.max_graph_depth,
             max_proposals_per_agent=self._config.max_proposals_per_agent,
             max_supersede_chain=self._config.max_supersede_chain,
+            admit_new_tasks=not self._pressure.is_raised,  # §18.5 "禁止新任务继续分裂" (D6-3 ③)
         )
         no_progress = int(intent.config.get("no_progress_count", 0))
         if not change.operations or all(op.op == "set_priority" for op in change.operations):
@@ -1788,6 +1843,42 @@ class Orchestrator:
         raise last_error
 
     # --------------------------------------------------------------- decide
+    def _observe_pressure(self, active: set[str]) -> None:
+        """D6-2: one watermark evaluation per cycle, before any allocation."""
+
+        running = self.store.count_attempts_by_status(
+            str(AttemptStatus.CLAIMED), str(AttemptStatus.RUNNING)
+        )
+        pending_dispatch = sum(
+            1
+            for intent in self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED")
+            if intent.kind == "attempt" and intent.mission_id in active
+        )
+        pending_verifications = sum(
+            1
+            for stored in self.store.list_results_by_verification("PENDING", "RUNNING")
+            if stored.envelope.mission_id in active
+        )
+        observation = Observation(
+            running_attempts=running,
+            pending_dispatch=pending_dispatch,
+            pending_verifications=pending_verifications,
+            observed_at=self.store.now,
+        )
+        state, transitions = self.commit.record_backpressure(
+            observation, limits=self._config.backpressure_limits(), mission_ids=sorted(active)
+        )
+        self._pressure = state
+        for transition in transitions:
+            self._note(
+                f"backpressure {transition.to_level.lower()} on {transition.dimension}: "
+                f"{transition.observed} (high {transition.high} / low {transition.low})"
+            )
+
+    @property
+    def pressure(self) -> BackpressureState:
+        return self._pressure
+
     def _tool_calls_limited(self, mission: Mission, task: Task) -> bool:
         """Whether any account on the Task's chain caps tool calls (only then is a
         reservation meaningful; an unlimited dimension is never reserved)."""
@@ -1881,6 +1972,9 @@ class Orchestrator:
             now=self.store.now,
             aging_window_seconds=self._config.aging_window_seconds,
             mission_max_tokens=mission.budget.max_tokens,
+            pressure=self._pressure,  # D6-3: the gate outside the §29.3 formula
+            reduced_concurrency_ratio=self._config.reduced_concurrency_ratio,
+            exploration_slots=self._config.exploration_slots,
         )
         progressed = False
         for granted, _candidate in plan.grants:
@@ -2050,6 +2144,8 @@ class Orchestrator:
         )
         message = user_message_json(package.text)
         tokens = self._config.attempt_reserve_tokens
+        if self._pressure.is_raised:  # §18.5 "缩小每个 Attempt 预算" (D6-3 ④)
+            tokens = max(4_000, int(tokens * self._config.reduced_reserve_ratio))
         if task.budget.max_tokens is not None:
             # D3-5': explorative candidates share the Task's token budget evenly
             tokens = min(tokens, max(1, task.budget.max_tokens // self._config.candidates_per_task))
@@ -2102,6 +2198,7 @@ class Orchestrator:
                 candidates_per_task=self._config.candidates_per_task,
                 inputs=[item.to_json() for item in inputs],
                 max_open_attempts=self._config.max_concurrency,
+                max_running_attempts=self._config.max_running_attempts,
             )
         except CommitRejected as error:
             self._note(f"task {task.id}: no new attempt ({error})")

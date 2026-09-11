@@ -39,3 +39,4 @@
 |---|---|---|---|
 | A/1 | `45328bf` | 背压状态机（水位/滞回）、schema v4、`Budget.max_tool_calls` 账本维度 | `test_backpressure_state.py` 5 |
 | A/2 | 本提交 | Global 账户（`budget:global`，Mission 继承未命名维度）、`reserve(mission_id=…)`、工具调用维度的预留/结算/网关上限（`tool_calls_for` 计数器）、运行时间维度（Mission/Task）、规划期池耗尽的显式停止、Mission 轮转、事务持有者校验（P1-15） | `test_multi_mission.py` 2（S6-01）、`test_governance.py` 5（S6-07） |
+| A/3 | 本提交 | 背压落地：每轮观测 → `record_backpressure`（状态 + 各 Mission 事件同一事务，`log` 为唯一真值）→ Allocator 闸门（并发减半、只放行冲突/饥饿档 + 1 个探索槽）、预留缩减、Manager 不得 add_task（`ChangeLimits.admit_new_tasks`）、全局运行上限在 `create_attempt` 事务内；验证改为有界 asyncio 任务集合（`verifier_workers`，计入 in-flight，崩溃在下一阶段边界抛出）；fixtures 慢 Critic / 可配置 critic 脚本；证据 `scheduler.json` | `test_backpressure.py` 3（S6-02 + 闸门/准入单测） |

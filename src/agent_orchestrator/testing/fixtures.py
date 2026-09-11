@@ -73,8 +73,10 @@ class RoleScriptedProvider:
         usage_tokens: int = 100,
         model: str = MODEL,
         gate: asyncio.Event | None = None,
+        critic_delay_seconds: float = 0.0,
     ) -> None:
         self.scripts = {role: list(steps) for role, steps in scripts.items()}
+        self.critic_delay_seconds = critic_delay_seconds  # step 6 (S6-02): a slow Verifier
         self.requests: list[ProviderRequest] = []
         self.by_role: dict[str, int] = {}
         self.usage_tokens = usage_tokens
@@ -95,6 +97,8 @@ class RoleScriptedProvider:
         self.by_role[role] = self.by_role.get(role, 0) + 1
         if self.gate is not None:
             await self.gate.wait()
+        if role == "critic" and self.critic_delay_seconds > 0:
+            await asyncio.sleep(self.critic_delay_seconds)
         queue = self.scripts.get(role)
         if not queue:
             raise AssertionError(f"scripted provider exhausted for role {role!r}")
@@ -1313,6 +1317,8 @@ def demo_dynamic_dag_provider(
     planner_steps: Sequence[object] | None = None,
     holds: dict[str, list[asyncio.Event | None]] | None = None,
     per_attempt: dict[str, list[list[object]]] | None = None,
+    critic_steps: Sequence[object] | None = None,
+    critic_delay_seconds: float = 0.0,
 ) -> TaskRoutedProvider:
     graph = list(RECORDER_TASKS if tasks is None else tasks)
     worker_scripts = recorder_scripts()
@@ -1323,10 +1329,13 @@ def demo_dynamic_dag_provider(
     provider = TaskRoutedProvider(
         list(planner_steps) if planner_steps is not None else [graph_proposal_step(graph)],
         worker_scripts,
-        critic_steps=[critic_step(verdict="PASS", criteria_met=True)] * 4,
+        critic_steps=list(critic_steps)
+        if critic_steps is not None
+        else [critic_step(verdict="PASS", criteria_met=True)] * 4,
         goals=goals,
         holds=holds,
         per_attempt=per_attempt,
+        critic_delay_seconds=critic_delay_seconds,
     )
     provider.scripts["manager"] = (
         list(manager_steps)
