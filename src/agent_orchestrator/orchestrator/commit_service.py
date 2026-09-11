@@ -41,7 +41,7 @@ from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, sha256_hex
 from ..governance.budgets import BudgetLedger, UsageFact
 from ..graph.task_graph import GraphRejected, TaskGraphProposal, validate_graph
 from ..memory.claims import grade_claim
-from ..memory.verified_knowledge import KnowledgeRecord
+from ..memory.verified_knowledge import KnowledgeIndex, KnowledgeRecord
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
 from .state_machine import next_attempt, next_claim, next_mission, next_task
@@ -1636,6 +1636,22 @@ class CommitService:
             self._require_lease(attempt, owner)
             task = self._require_task(stored.envelope.task_id)
             mission = self._require_mission(stored.envelope.mission_id)
+            stale = KnowledgeIndex.load(self._store, mission.id).check(
+                stored.envelope.used_knowledge
+            )
+            if stale:  # D4-4': the reference check is repeated inside the Commit (TOCTOU)
+                return self.fail_result(
+                    result_id,
+                    failures=[
+                        {
+                            "layer": "rule_check",
+                            "status": "FAIL",
+                            "summary": "used_knowledge_stale: " + "; ".join(stale),
+                            "detail": {"problems": stale, "reason": "used_knowledge_stale"},
+                        }
+                    ],
+                    owner=owner,
+                )
             if task.status is TaskStatus.ACTIVE:
                 verifying = next_task(task, TaskStatus.VERIFYING)
                 self._store.update_task(verifying, expected_version=task.version)

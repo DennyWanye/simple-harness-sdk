@@ -340,3 +340,66 @@ def test_knowledge_never_crosses_the_mission_boundary(tmp_path):
     assert service.store.list_knowledge(planning.id) == []
     problems = check_used_knowledge((foreign.id,), KnowledgeIndex.load(service.store, planning.id))
     assert problems and "not in this Mission" in problems[0]
+
+
+# ------------------------------------------------------------------ D4-2' (R6)
+def test_a_whole_tree_run_covers_no_claim(tmp_path):
+    service, mission, (task_a, _) = two_branch_service(tmp_path)
+    attempt = drive_to_running(service, task_a)
+    stored = submit(
+        service,
+        attempt,
+        envelope(
+            attempt,
+            claims=[
+                claim("整树跑通", key="k.tree", evidence=["pytest:tests/probe/test_impl_a.py"])
+            ],
+        ),
+    )
+    whole_tree = passed_layers()
+    whole_tree[-1]["detail"]["runs"] = [{"target": None, "passed": True, "stdout": "9 passed"}]
+    service.accept_result(stored.envelope.id, verifier_results=whole_tree)
+    only = service.store.list_claims(stored.envelope.id)[0]
+    assert only.status is ClaimStatus.SUPPORTED
+    assert service.store.list_knowledge(mission.id) == []
+
+
+# ------------------------------------------------------------------ D4-4' (R5)
+def test_accept_rechecks_used_knowledge_inside_the_commit(tmp_path):
+    service, mission, (task_a, task_b) = two_branch_service(tmp_path)
+    a1 = drive_to_running(service, task_a)
+    s1 = submit(
+        service,
+        a1,
+        envelope(a1, claims=[claim("v1", key="k", evidence=["pytest:tests/probe/test_impl_a.py"])]),
+    )
+    service.accept_result(
+        s1.envelope.id, verifier_results=passed_layers("tests/probe/test_impl_a.py")
+    )
+    k1 = service.store.list_knowledge(mission.id)[0]
+    # B verified its result while K1 was current…
+    b1 = drive_to_running(service, task_b, agent="agent-2", turn="turn-2")
+    sb = submit(
+        service,
+        b1,
+        envelope(
+            b1,
+            claims=[claim("uses K1", evidence=["pytest:tests/probe/test_impl_b.py"])],
+            artifacts=("tests/probe/test_impl_b.py",),
+            used_knowledge=[k1.id],
+        ),
+        artifact_paths=("tests/probe/test_impl_b.py",),
+        turn="turn-2",
+    )
+    # …but K1 was superseded before B's accept landed (another branch's Commit)
+    service._supersede_knowledge(k1.id, by="result-x:claim-9")
+    returned = service.accept_result(
+        sb.envelope.id, verifier_results=passed_layers("tests/probe/test_impl_b.py")
+    )
+    assert returned.status is TaskStatus.ACTIVE
+    attempt = service.store.get_attempt(b1.id)
+    assert attempt.status.value == "RETRY_WAIT"
+    assert attempt.failure["failures"][0]["detail"]["reason"] == "used_knowledge_stale"
+    assert service.store.get_result(sb.envelope.id).verdict == "FAIL"
+    assert all(c.status is ClaimStatus.REJECTED for c in service.store.list_claims(sb.envelope.id))
+    assert service.store.count_events(mission.id, "VerificationFailed") == 1

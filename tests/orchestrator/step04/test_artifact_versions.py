@@ -77,3 +77,28 @@ def test_same_path_candidates_get_distinct_versions(tmp_path):
                 (mission.id, task_a.id, second.id, path, HASH_B),
             )
     assert OrchestratorConfig  # keep the import (config knobs are exercised by the closure tests)
+
+
+def test_duplicate_delivery_of_the_same_turn_keeps_the_version(tmp_path):
+    service, mission, (task_a, _) = two_branch_service(tmp_path)
+    first = drive_to_running(service, task_a)
+    path = "tests/probe/test_impl_a.py"
+    s1 = service.record_result(
+        first.id,
+        envelope=envelope(first, claims=[claim("c1")]),
+        turn_id="turn-1",
+        artifacts=[artifact(first, path, HASH_A, version=1)],
+        usage_refs=(),
+    )
+    again = service.record_result(
+        first.id,
+        envelope=envelope(first, claims=[claim("c1")]),
+        turn_id="turn-1",
+        artifacts=[artifact(first, path, HASH_A, version=1)],
+        usage_refs=(),
+    )
+    assert again == s1
+    versions = [
+        a.version for a in service.store.list_mission_artifacts(mission.id) if a.path == path
+    ]
+    assert versions == [1]

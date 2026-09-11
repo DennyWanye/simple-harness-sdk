@@ -108,15 +108,16 @@ def ran_test_targets(verifier_results: Sequence[Mapping[str, Any]]) -> dict[str,
 
 
 def covering_target(path: str, ran: Mapping[str, bool]) -> str | None:
-    """The passed run target that covers ``path`` (exact, or a directory prefix; the
-    whole-tree run is the empty target)."""
+    """The passed run target that covers ``path``: the exact target or a directory that
+    contains it.  A whole-tree run (empty target) covers **nothing** (D4-2'): it only
+    supports the Mission-level judgment, never a claim (ORCH §12.4)."""
 
     normalised = _normalise(path)
     best: str | None = None
     for target, passed in ran.items():
-        if not passed:
+        if not passed or target == "":
             continue
-        if target == normalised or target == "" or normalised.startswith(target + "/"):
+        if target == normalised or normalised.startswith(target + "/"):
             if best is None or len(target) > len(best):
                 best = target
     return best
@@ -167,7 +168,7 @@ def grade_claim(
                 return ClaimGrade(
                     claim_id,
                     ClaimStatus.VERIFIED,
-                    {"layer": "code_test", "target": target or "<workspace>", "evidence": ref.raw},
+                    {"layer": "code_test", "target": target, "evidence": ref.raw},
                     refs,
                 )
     if any(ref.trust == TRUST_TRUSTED for ref in refs):
