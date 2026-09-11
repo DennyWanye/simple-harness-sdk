@@ -62,6 +62,8 @@ class OrchestratorConfig:
     stall_seconds: float = 180.0
     test_timeout_seconds: float = 120.0
     default_max_output_tokens: int = 4096
+    max_output_tokens_ceiling: int = 8192  # SDK empty-response escalation cap (F-BA-1)
+    empty_response_retries: int = 2
     price_table: PriceTable | None = None
     hard_cap_micros: int | None = None
     planner_reserve_tokens: int = 4_000
@@ -211,6 +213,10 @@ def assemble_orchestrator_runtime(
         lease_ttl_seconds=float(config.sdk_lease_ttl_seconds or 30.0),
         policies=config.policies(),
         default_max_output_tokens=config.default_max_output_tokens,
+        max_output_tokens_ceiling=max(
+            config.max_output_tokens_ceiling, config.default_max_output_tokens
+        ),
+        empty_response_retries=config.empty_response_retries,
         max_concurrent_model_calls=config.max_concurrent_model_calls,
         max_concurrent_tool_calls=config.max_concurrency,
     )
