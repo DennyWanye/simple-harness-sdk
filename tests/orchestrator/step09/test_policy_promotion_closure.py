@@ -166,3 +166,13 @@ def test_the_policy_promotion_demo_closes_the_loop(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["outcome"] == "insufficient"
     assert main(["policy", "show", "no-such-thing", "--evidence-dir", prod]) == 1
     capsys.readouterr()
+
+
+def test_review_p2_4_policy_reading_verbs_never_write_and_a_missing_library_is_an_error(
+    tmp_path, capsys
+):
+    nowhere = Path(tmp_path) / "nowhere"
+    for verb in ("list", "status"):
+        assert main(["policy", verb, "--evidence-dir", str(nowhere)]) == 2
+        assert "no orchestrator library" in json.loads(capsys.readouterr().out)["error"]
+    assert not (nowhere / "orchestrator.db").exists()  # no empty library created by accident

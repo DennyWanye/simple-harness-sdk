@@ -149,6 +149,10 @@ async def evaluate_candidate_async(
     proposal = store.get_policy_proposal(proposal_id)
     if proposal is None:
         raise EvaluationRefused(f"unknown policy proposal {proposal_id}")
+    if proposal["state"] in {"PROMOTED", "REJECTED"}:  # review P2-8: before any run
+        raise EvaluationRefused(
+            f"proposal {proposal_id} is {proposal['state']}; it is not evaluated again"
+        )
     version = store.get_policy_version(str(proposal["version_id"]))
     active = store.active_policy()
     if active is None or not active.get("params") or version is None:

@@ -459,7 +459,7 @@ def registry_consistency(store: Store) -> list[dict[str, Any]]:
     problems: list[dict[str, Any]] = []
     for version in store.list_policy_versions():
         vid, status = version["version_id"], version["status"]
-        if status == "LEGACY":
+        if status == "LEGACY" or version.get("source") == "sandbox":  # pinned, not promoted
             continue
         if folded["versions"].get(vid) != status:
             problems.append(

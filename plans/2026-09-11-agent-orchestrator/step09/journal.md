@@ -31,6 +31,26 @@
 | P2-9 | P2 | 既有测试与接口 | step02 测试改写保留语义；查第 5 步精确断言；`public-api.json`（D9-11'） |
 | P2-10 | P2 | 切片与可砍范围 | C 只做训练侧；泄漏移到 D；`policy list/show` 最简；沿用 pytest 插件扫描（§6.1） |
 
+### 代码评审（第 1 轮）
+
+独立代码评审（claude-opus-5，只读；范围 `a8ce3b6..c519a1c`；原文要点见 `reports/code-review-round1.md`）：0 P0 / 2 P1 / 11 P2。评审者用 pytest 插件在 `tests/orchestrator` 全部测试的每个 Orchestrator 关闭前扫描了 205 个库、231 个 Mission：回放 100% / 0 不一致 / 0 缺口、绑定行与 `MissionCreated.policy_version_id` 一致均 0 例违反；2 例归因未对账（step02 重复投递、step06 模型回显不符）在第 8 步代码上同样，是预留被按设计扣住（`ReservationHeld`）后"未结算用量"如实判未对账，不是缺陷。处置（修复切片 G）：
+
+| # | 级别 | 发现 | 处置 | 测试 |
+|---|---|---|---|---|
+| P1-1 | P1 | 升级后的旧库回放覆盖率掉到 0.909，`replay` 退出 1 | 修：`policy-legacy` 绑定不输出 `policy_version_id`（它不是这些 Mission 的事件能决定的正式状态） | `test_policy_binding.py::test_review_p1_1_*`（把已完成 Mission 改成迁移后的样子，回放覆盖率 1.0） |
+| P1-2 | P1 | S9-08 演练没有"高负载下频繁调整"，断言偏空 | 修：重写演练——Attempt 在途时于两次运行周期之间交替晋级 / 回滚、RAISED 下扩张被拒、中途新建 Mission 绑定当时的版本；每周期断言每个 Mission 的开放 Attempt ≤ min(绑定 `mission_concurrency`, 部署上限)、各 Mission 与 Global 账户不超支、部署配置快照哈希不变 | `test_policy_guard.py::test_s9_08_frequent_changes_under_load_*` |
+| P2-1 | P2 | Manager 越界操作漏报 | 修：封闭词表外的操作一律记录（含操作名），合法操作夹带策略 / 核心键也记录 | `test_s9_06_a_manager_*`（加 `disable_code_test` 与夹带 `max_concurrency`） |
+| P2-2 | P2 | Worker 检测只认根目录 `policy/` 与三个文件名 | 登记（§5）：嵌套路径 / 大小写变体漏报、用户项目的同名文件误报，均只影响审计记录 | — |
+| P2-3 | P2 | 评测库版本库一致性必然报错 | 修：一致性检查跳过钉版的 sandbox 版本 | `test_policy_gates.py::test_review_p2_3_p2_8_*` |
+| P2-4 | P2 | CLI 只读命令写库（新建空库、迁移 v5 库） | 修：list / show / status 复制后只读打开；库不存在退出 2 | `test_policy_promotion_closure.py::test_review_p2_4_*` |
+| P2-5 | P2 | `--cooldown` 可绕过部署冷却；nonce 自动生成；人工提议不知道部署并发与 profiles | 部分修：去掉 `--cooldown`，冷却只取部署政策；nonce 自动生成与 CLI 提议不带部署信息登记（§5） | — |
+| P2-6 | P2 | provider 种类只读声明字段、只看默认档位 | 修：按每个 profile 的 provider 类判定，全部是 fixture 才记 fixtures | `test_review_p2_6_*` |
+| P2-7 | P2 | `PolicyRouteUnavailable` 每进程只记第一个 Mission；`PolicyConfigDrift` 回摆不再记 | 修：路由缺失按 Mission 各记一次；配置漂移每次打开都记 | 既有测试 |
+| P2-8 | P2 | 对已晋级 / 已拒绝提议先跑完评测才被拒 | 修：运行前拒绝 | `test_review_p2_3_p2_8_*` |
+| P2-9 | P2 | Commit 层 `propose_policy` 不校验参数 | 修：单一写入者检查参数结构（恰好是白名单项），范围与模板仍由 API / 学习器检查 | `test_policy_registry.py::test_review_p2_9_*` |
+| P2-10 | P2 | 缺 prompt 版本运行时切换、两侧任务身份一致的测试 | 修：补测试（登记第二个 Worker 模板，绑定版本的 Attempt 用它；学习器侧与门槛侧哈希一致） | `test_review_p2_10_*` ×2 |
+| P2-11 | P2 | R2 的 Wilson 区间按首次 Attempt 计、DAG 型 Mission 样本不独立 | 登记（§5），启发式，报告已写明 | — |
+
 ### 实现前摸底（只读，plan review 期间）
 
 要改为"读 Mission 绑定策略"的决策点（`src/agent_orchestrator/orchestrator/event_handler.py`，基线 `c9d4879`）：`manager_after_failures` 1758；`max_manager_rounds` 2021 / 2027 / 2074；`no_progress_limit` 2073 / 2168 / 2174 / 2250；`allocate(...)` 2627–2637（`max_concurrency` / `candidates_per_task` / `aging_window_seconds` / `reduced_concurrency_ratio` / `exploration_slots`）；候选预算分摊 2857；`create_attempt(candidates_per_task=…, max_open_attempts=max_concurrency)` 2907–2909；模型路由在 202 行只构造一个 `ModelRouter`（按版本需要多个）。打分权重：`scheduling/allocator.py:163` 直接读模块常量 `WEIGHTS`，`TaskScore.version` 固定为 `allocator-v1`。其他可复用：`governance/permissions.py` 的 `Principal`（只许 human）、`decision_receipt_hash`；`human_commits.py` 的 `_decision` / `_book_decision` 模式（但 `insert_decision` 写的是 `approval_decisions`，外键到 `approvals`，策略审批要新表）；schema 迁移按 `;` 切分 DDL、应用前备份；`Store.snapshot` 按表是否存在取数（新表照此处理）；step02 `test_cli_demo.py:76-89` 断言 `policy-promotion` 未实现，第 9 步实现后改写。
@@ -52,6 +72,32 @@
 
 ## 4. 回归与 wheel
 
+- 每个切片提交前都跑 `tests/orchestrator` 全套：A 333、B 339、D 350、E 355、F 356 passed（真实模型 opt-in 跳过）。
+- SDK 全量回归（代码评审修复之后，wheel 源）：58 failed / 2403 passed / 13 skipped / 15 errors，红集 73 条 = 基线，**0 新红**。
+- 版本：simple_harness 0.9.7 / agent_orchestrator 0.9.0（`tests/unit/contracts/public-api.json` 同步）；编排库 schema v6。
+- wheel：WHEEL_LINE_PLACEHOLDER
+
 ## 5. 遗留
 
+- **偏离（如实登记）**：纲要 §11.2"有足够数据时实现学习型候选"本步未做——历史数据量不足以训练，候选生成只有规则改进（`rules-v1`，启发式）；报告与记录一律写"规则改进（启发式规则，非训练模型）"。
+- 代码评审登记：Worker 策略文件检测只认根目录 `policy/` 与三个固定文件名，嵌套路径 / 大小写变体漏报、用户项目同名文件误报（CR P2-2，只影响审计记录）；CLI 不传 `--nonce` 时自动生成、`policy propose --params` 不知道部署的并发上限与 profiles（CR P2-5 余项）；R2 的 Wilson 区间按首次 Attempt 计、DAG 型 Mission 的样本不独立（CR P2-11，启发式）。
+- 残余风险（plan D9-10'）：`run_tests` 是普通子进程、无文件系统隔离（第 7 步遗留 L2-4 / L6-5），CLI `--as` 为自报身份——"Agent 不能批准 / 晋级"只在 API 层成立。
+- 角色配比（原文 §29.2 `ROLE_MIX_START`）未做成可晋级参数（角色按任务种类选取）；Retrieval 版本运行时切换、新 Verifier 重判旧产物、`snapshot_diff` 字段级来源、回放覆盖更宽场景、派生 case 按场景指定 provider 工厂——第 8 步移交项中本步未做的部分，继续登记。
+- 只用 flash：路由类候选的"换模型"只由 fixtures 证明（L6-1）；真实门槛评测用的是人工参数候选。价目未注入，真实金额为 null（L2-6、L6-2）。
+
 ## 6. 结论
+
+**SHIPPED**：simple_harness 0.9.7 / agent_orchestrator 0.9.0，wheel 源提交 `WHEEL_COMMIT_PLACEHOLDER`（sha256 `WHEEL_SHA_PLACEHOLDER`）。
+
+| 验收 | 结果 | 证据 |
+|---|---|---|
+| S9-01 候选可追溯到训练数据、代码、参数和评测版本 | PASS | `test_policy_learning.py::test_s9_01_*`（训练集 Mission / 任务身份 / 库 sha256 / provider 种类、代码与解释器版本、逐规则统计；同输入同提议；历史库不变）、`test_policy_registry.py::test_s9_01_*`、演示 `summary.json.learned` |
+| S9-02 未通过门槛不上线、保留理由、旧策略继续 | PASS | `test_policy_gates.py::test_s9_02_*`、`test_policy_registry.py::test_s9_02_*`、演示 `flaky` |
+| S9-03 合格未批准只在评测库运行 | PASS | `test_policy_gates.py::test_s9_03_*`（评测库角色 evaluation、sandbox 绑定、正式库无候选绑定、未批准晋级被拒） |
+| S9-04 审批后上线、新 Mission 绑定新版本、在途不被静默改策略 | PASS | `test_policy_binding.py::test_s9_04_*`、结构测试、演示 `missions.before/after` |
+| S9-05 快速回滚、既有事件与费用保留 | PASS | `test_policy_registry.py::test_s9_05_*`、`test_policy_binding.py::test_s9_05_*`（回放 100%）、演示 `rollback` |
+| S9-06 在线 Agent 改安全阈值被拒、人工审查出路 | PASS | `test_policy_guard.py::test_s9_06_*` |
+| S9-07 数据不足 / 污染 / 泄漏拒绝晋级、无虚假提升结论 | PASS | `test_policy_learning.py::test_s9_07_*`、`test_policy_gates.py::test_s9_07_*`、真实 flash 门槛 INSUFFICIENT（§3） |
+| S9-08 高负载下频繁调整有边界、安全 / 预算上限始终有效 | PASS | `test_policy_guard.py::test_s9_08_*`（周期间交替晋级 / 回滚、RAISED 扩张被拒、每周期开放 Attempt / 账户 / 部署配置哈希核对）、`test_policy_registry.py::test_s9_08_*` |
+
+门：step09 全部通过（真实模型 opt-in 跳过）；SDK 全量回归红集 ⊆ 基线（§4）；WHEEL_SUMMARY_PLACEHOLDER；plan 评审与代码评审全部处置（§1）；真实 deepseek-flash 门槛评测（§3）。ORCH-BUILD-v1.0 第 2–9 步至此全部交付。

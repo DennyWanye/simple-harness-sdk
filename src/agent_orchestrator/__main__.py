@@ -1220,13 +1220,26 @@ def cmd_policy(args: argparse.Namespace) -> int:  # noqa: C901 - one command, se
     local build takes the name as given — a real deployment authenticates it).  Exit 0
     done, 1 refused by a rule or a gate, 2 a bad call."""
 
+    import tempfile
+
     from .api.policies import PolicyApi, PolicyRequestError
     from .governance.permissions import Principal
     from .governance.promotion import registry_consistency
     from .observability.evaluation import EvaluationRefused
+    from .observability.replay import library_copy
     from .orchestrator.policy_commits import PolicyCommitError
 
-    store = _open_store(args)
+    library = Path(args.evidence_dir).resolve() / "orchestrator.db"
+    if not library.is_file():  # review P2-4: never create an empty library by accident
+        _print({"error": f"no orchestrator library at {library}"})
+        return EXIT_USAGE
+    scratch = tempfile.TemporaryDirectory(prefix="orch-policy-")
+    reading = args.action in {"list", "show", "status"}
+    store = (
+        Store.open_readonly(library_copy(library, Path(scratch.name)))
+        if reading
+        else _open_store(args)
+    )
     try:
         commit = CommitService(store)
         who = getattr(args, "as_principal", None) or "cli-reader"
@@ -1308,11 +1321,7 @@ def cmd_policy(args: argparse.Namespace) -> int:  # noqa: C901 - one command, se
                 decide = api.approve if args.action == "approve" else api.reject
                 value = decide(args.proposal_id, nonce=args.nonce, note=args.note)
             elif args.action == "promote":
-                deployment = DeploymentPolicy(
-                    policy_cooldown_seconds=DeploymentPolicy().policy_cooldown_seconds
-                    if args.cooldown is None
-                    else float(args.cooldown)
-                )
+                deployment = DeploymentPolicy()  # review P2-5: the deployment's cooldown only
                 value = PolicyApi(commit, principal, deployment=deployment).promote(
                     args.proposal_id, accept_fixture_evidence=args.accept_fixture_evidence
                 )
@@ -1327,6 +1336,7 @@ def cmd_policy(args: argparse.Namespace) -> int:  # noqa: C901 - one command, se
         _print(value)
     finally:
         store.close()
+        scratch.cleanup()
     return EXIT_OK
 
 
@@ -1763,9 +1773,6 @@ def build_parser() -> argparse.ArgumentParser:
     caller(p)
     p.add_argument("proposal_id")
     p.add_argument("--accept-fixture-evidence", action="store_true", dest="accept_fixture_evidence")
-    p.add_argument(
-        "--cooldown", type=float, default=None, help="seconds (default: deployment policy)"
-    )
     p = policy_sub.add_parser("rollback")
     caller(p)
     p.add_argument("--to", default=None, help="a RETIRED version (default: the most recent one)")

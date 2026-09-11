@@ -489,7 +489,7 @@ def formal_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, dict[str, dic
                 "stop_reason": mission.get("stop_reason"),
                 **(
                     {"policy_version_id": snapshot["mission_policy"]["version_id"]}
-                    if snapshot.get("mission_policy")
+                    if (snapshot.get("mission_policy") or {}).get("source") not in (None, "legacy")
                     else {}
                 ),
             }

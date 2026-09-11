@@ -77,6 +77,8 @@ def test_s9_06_a_manager_that_smuggles_a_safety_change_is_refused_and_nothing_ch
         [
             {"op": "set_config", "key": "hard_cap_micros", "value": 10**12},
             {"op": "set_policy", "allocator_weights": {"mission_importance": 0.5}},
+            {"op": "disable_code_test"},
+            {"op": "set_priority", "task_id": "task-x", "priority": 1.0, "max_concurrency": 99},
         ],
         rationale="放宽预算上限以便继续",
     )
@@ -104,7 +106,12 @@ def test_s9_06_a_manager_that_smuggles_a_safety_change_is_refused_and_nothing_ch
             assert refused, orch.progress_log
             payload = refused[0].payload
             assert payload["source"] == "manager"
-            assert {"hard_cap_micros", "allocator_weights"} <= set(payload["keys"])
+            assert {
+                "hard_cap_micros",
+                "allocator_weights",
+                "disable_code_test",
+                "max_concurrency",
+            } <= set(payload["keys"])
             assert "hard_cap_micros" in payload["core_keys"]
             after = store.active_policy()
             assert (
@@ -224,7 +231,7 @@ def test_s9_08_cooldown_and_backpressure_bound_changes_while_a_rollback_stays_fa
     )
 
     def ready(partial, n):
-        proposal = api.propose(partial)
+        proposal = api.propose(partial, note=f"演练 {n}")  # a new proposal each time
         commit.record_policy_evaluation(
             proposal["proposal_id"],
             verdict="PASSED",
@@ -263,54 +270,125 @@ def test_s9_08_cooldown_and_backpressure_bound_changes_while_a_rollback_stays_fa
     store.close()
 
 
-def test_s9_08_under_load_concurrency_and_budgets_stay_inside_the_deployment_limits(tmp_path):
-    profiles, rules = demo_multi_mission_profiles(missions=3, critic_delay_seconds=0.05)
+def test_s9_08_frequent_changes_under_load_stay_inside_every_bound(tmp_path):
+    """Review P1-2 (plan D9-9'): while Attempts are in flight, promotions and rollbacks
+    follow each other between run cycles and a widening promotion is tried under
+    backpressure; after every cycle each Mission's open Attempts stay within its bound
+    version and the deployment cap, no budget account is overspent, and the deployment
+    configuration (safety boundaries included) is the same as at the start."""
+
+    import hashlib
+
+    from agent_orchestrator.contracts import AttemptStatus
+    from agent_orchestrator.orchestrator.commit_service import GLOBAL_ACCOUNT
+
+    profiles, rules = demo_multi_mission_profiles(missions=4, critic_delay_seconds=0.05)
     config = OrchestratorConfig(
         evidence_root=Path(tmp_path) / "evidence",
         model=profiles["small"].model,
         max_concurrency=2,
-        max_running_attempts=1,  # the drill: keep the deployment under backpressure
+        max_running_attempts=1,  # keep the deployment under backpressure
         verifier_workers=1,
         max_pending_verifications=2,
-        global_budget=Budget(max_tokens=900_000, max_attempts=48),
+        global_budget=Budget(max_tokens=1_200_000, max_attempts=64),
         test_timeout_seconds=60,
     )
+    open_states = {
+        AttemptStatus.PENDING,
+        AttemptStatus.CLAIMED,
+        AttemptStatus.RUNNING,
+        AttemptStatus.SUBMITTED,
+        AttemptStatus.VERIFYING,
+    }
 
     async def case():
         async with Orchestrator(config, profiles=profiles, routing=rules) as orch:
-            store = orch.store
-            missions = [await orch.submit_mission(_recorder(f"load-{n}")) for n in range(3)]
-            await orch.run()
-            raised = [
-                e
-                for m in missions
-                for e in store.iter_events(m.id)
-                if e.type == "BackpressureRaised"
-            ]
-            assert raised, "the drill has to load the deployment"
-            limits = []
-            for mission in missions:
-                assert store.get_mission(mission.id).status is MissionStatus.COMPLETED, (
-                    orch.progress_log
-                )
-                for task in store.list_tasks(mission.id):
-                    for attempt in store.list_attempts(task.id):
-                        intent = store.get_intent_for_subject(attempt.id)
-                        allocation = dict(intent.config.get("allocation") or {})
-                        if allocation:
-                            limits.append(int(allocation["concurrency_limit"]))
-                            if allocation.get("pressure") == "RAISED":  # §18.5: halved
-                                assert int(allocation["concurrency_limit"]) <= 1
-                            assert int(allocation["candidates_per_task"]) <= 3
-                with store.transaction():
-                    remaining = orch.commit.ledger.account(
-                        mission_account(mission.id)
-                    ).remaining_tokens()
-                assert remaining is None or remaining >= 0  # no Mission overspent
-            assert limits and max(limits) <= config.max_concurrency
-            peaks = dict((store.get_scheduler_state("backpressure") or {}).get("peaks") or {})
-            assert (
-                0 < int(peaks.get("running_attempts", 0)) <= config.max_concurrency * len(missions)
+            store, commit = orch.store, orch.commit
+            api = PolicyApi(
+                commit,
+                ALICE,
+                deployment=DeploymentPolicy(policy_cooldown_seconds=0),
+                max_concurrency=2,
             )
+
+            def ready(partial, n):
+                proposal = api.propose(partial, note=f"演练 {n}")  # a new proposal each time
+                commit.record_policy_evaluation(
+                    proposal["proposal_id"],
+                    verdict="PASSED",
+                    reasons=[],
+                    report_hash=f"drill-{n}",
+                    baseline_version_id=store.active_policy()["version_id"],
+                    code_versions=code_versions(),
+                    evidence_kind="real",
+                )
+                api.approve(proposal["proposal_id"])
+                return proposal
+
+            def deployment_hash():
+                snapshot = orch.policy_snapshot()
+                return hashlib.sha256(
+                    json.dumps(snapshot["config"], sort_keys=True, default=str).encode()
+                ).hexdigest()
+
+            start = deployment_hash()
+            missions = [await orch.submit_mission(_recorder(f"drill-{n}")) for n in range(3)]
+            changes, widen_refused, raised_seen = [], 0, 0
+            for cycle in range(400):
+                await orch.run(max_cycles=1, until_idle=False)
+                await asyncio.sleep(0.02)
+                raised = commit.backpressure_state().is_raised
+                raised_seen += int(raised)
+                if cycle % 3 == 1:  # frequent changes while work is in flight
+                    if len(changes) % 2 == 0:
+                        proposal = ready({"no_progress_limit": 3}, cycle)
+                        changes.append(api.promote(proposal["proposal_id"])["action"])
+                    else:
+                        changes.append(api.rollback(reason=f"演练第 {cycle} 周期")["action"])
+                if raised and widen_refused == 0:
+                    wider = ready({"candidates_per_task": 2}, f"w{cycle}")
+                    with pytest.raises(PolicyCommitError, match="backpressure"):
+                        api.promote(wider["proposal_id"])
+                    widen_refused += 1
+                if cycle == 2:  # created right after a promotion: it binds the promoted version
+                    missions.append(await orch.submit_mission(_recorder("drill-late")))
+                for mission in missions:  # every bound: per Mission, per deployment, per budget
+                    bound = min(
+                        int(orch.policy_for(mission.id)["mission_concurrency"]),
+                        config.max_concurrency,
+                    )
+                    open_now = sum(
+                        1
+                        for task in store.list_tasks(mission.id)
+                        for attempt in store.list_attempts(task.id)
+                        if attempt.status in open_states
+                    )
+                    assert open_now <= bound
+                    with store.transaction():
+                        remaining = commit.ledger.account(
+                            mission_account(mission.id)
+                        ).remaining_tokens()
+                    assert remaining is None or remaining >= 0
+                with store.transaction():
+                    remaining = commit.ledger.account(GLOBAL_ACCOUNT).remaining_tokens()
+                assert remaining is None or remaining >= 0
+                assert deployment_hash() == start  # no version touches the configuration
+                if all(
+                    store.get_mission(m.id).status
+                    in {MissionStatus.COMPLETED, MissionStatus.FAILED}
+                    for m in missions
+                ):
+                    break
+            await orch.run()
+            assert all(
+                store.get_mission(m.id).status is MissionStatus.COMPLETED for m in missions
+            ), orch.progress_log
+            assert changes.count("promote") >= 2 and changes.count("rollback") >= 2, changes
+            assert raised_seen and widen_refused == 1  # the drill really ran under backpressure
+            versions = {orch.policy_version_of(m.id) for m in missions}
+            assert len(versions) >= 2  # Missions ran under different versions side by side
+            for version in store.list_policy_versions():
+                assert set(version["params"]) == set(PROMOTABLE)  # no safety or budget item
+            assert deployment_hash() == start
 
     asyncio.run(case())

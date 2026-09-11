@@ -368,3 +368,14 @@ def test_a_v5_library_binds_its_missions_to_legacy_and_keeps_them_runnable(tmp_p
     assert store.active_policy() is None  # legacy is never ACTIVE
     assert (Path(tmp_path) / f"orchestrator.db.pre-schema-{schema.SCHEMA_VERSION}.backup").is_file()
     store.close()
+
+
+def test_review_p2_9_the_single_writer_refuses_a_partial_or_foreign_policy(tmp_path):
+    _clock, store, commit, cfg, _seed = _setup(tmp_path)
+    with pytest.raises(PolicyCommitError, match="exactly"):
+        commit.propose_policy({"candidates_per_task": 2}, manifest={"kind": "unit"}, source="unit")
+    with pytest.raises(PolicyCommitError, match="exactly"):
+        commit.propose_policy(
+            {**resolve_params(cfg), "hard_cap_micros": 1}, manifest={"kind": "unit"}, source="unit"
+        )
+    assert store.list_policy_proposals() == []

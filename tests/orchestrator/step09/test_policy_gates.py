@@ -250,3 +250,30 @@ def test_s9_07_a_case_that_leaks_from_the_training_set_is_refused_before_it_runs
     )  # nothing ran
     assert store.get_policy_proposal(learned["proposal_id"])["state"] == "PROPOSED"
     store.close()
+
+
+# ------------------------------------------------------------------ code review round 1
+def test_review_p2_3_p2_8_evaluation_libraries_are_consistent_and_closed_proposals_are_not_run(
+    tmp_path,
+):
+    from agent_orchestrator.governance.promotion import code_versions, registry_consistency
+
+    config, store, commit = _registry(tmp_path)
+    proposal = _propose(commit, config, routing={"by_task_kind": {"code": "large"}})
+    evaluate_candidate(
+        commit, proposal["proposal_id"], cases=[_case()], directory=Path(tmp_path) / "gate"
+    )
+    for library in sorted((Path(tmp_path) / "gate").glob("runs/*/*/*/orchestrator.db")):
+        sandbox = Store.open(library)
+        assert registry_consistency(sandbox) == []  # a pinned version is not a promoted one
+        sandbox.close()
+    commit.decide_policy(
+        proposal["proposal_id"], principal=ALICE, decision="reject", nonce="r", note="不用"
+    )
+    with pytest.raises(EvaluationRefused, match="not evaluated again"):
+        evaluate_candidate(
+            commit, proposal["proposal_id"], cases=[_case()], directory=Path(tmp_path) / "again"
+        )
+    assert not (Path(tmp_path) / "again").exists()  # refused before anything ran
+    assert code_versions()  # (the registry records the code of every evaluation)
+    store.close()

@@ -289,3 +289,134 @@ def test_a_resumed_mission_says_when_the_code_that_reads_its_policy_changed(tmp_
             assert orch.store.get_mission(mission.id).status is MissionStatus.COMPLETED
 
     asyncio.run(case())
+
+
+# ------------------------------------------------------------------ code review round 1
+def test_review_p1_1_a_mission_older_than_policy_binding_still_replays_completely(tmp_path):
+    """A Mission migrated to ``policy-legacy`` has no ``policy_version_id`` in its
+    ``MissionCreated``: the field is not formal state its events decide, so replay
+    coverage stays 100 % after the upgrade."""
+
+    config = _config(tmp_path)
+
+    async def case():
+        async with Orchestrator(config, _provider()) as orch:
+            mission = await orch.submit_mission(_spec("pre-binding"))
+            await orch.run()
+            return mission.id
+
+    mission_id = asyncio.run(case())
+    connection = sqlite3.connect(config.orchestrator_db)  # make it look like a v5 Mission, migrated
+    connection.execute(
+        "INSERT INTO policy_versions(version_id,params_hash,source,status,json,created_at,updated_at)"
+        " VALUES ('policy-legacy','legacy','legacy','LEGACY',?,1.0,1.0)",
+        (
+            json.dumps(
+                {
+                    "version_id": "policy-legacy",
+                    "params": None,
+                    "source": "legacy",
+                    "status": "LEGACY",
+                }
+            ),
+        ),
+    )
+    connection.execute(
+        "UPDATE mission_policies SET version_id='policy-legacy', source='legacy', json=? WHERE mission_id=?",
+        (
+            json.dumps(
+                {
+                    "mission_id": mission_id,
+                    "version_id": "policy-legacy",
+                    "source": "legacy",
+                    "provider_kind": "unknown",
+                }
+            ),
+            mission_id,
+        ),
+    )
+    event_id, payload = connection.execute(
+        "SELECT event_id, payload_json FROM events WHERE type='MissionCreated' AND mission_id=?",
+        (mission_id,),
+    ).fetchone()
+    old_payload = {k: v for k, v in json.loads(payload).items() if k != "policy_version_id"}
+    connection.execute(
+        "UPDATE events SET payload_json=? WHERE event_id=?", (json.dumps(old_payload), event_id)
+    )
+    connection.commit()
+    connection.close()
+    report = replay_mission(mission_id=mission_id, library=config.orchestrator_db)
+    assert report["comparison"]["coverage"] == 1.0 and report["comparison"]["mismatches"] == []
+    assert "policy_version_id" not in report["formal_state"]["mission"][mission_id]
+
+
+def test_review_p2_10_a_policy_switches_the_prompt_version_at_run_time(tmp_path):
+    from agent_orchestrator.runtime.role_templates import (
+        TEMPLATE_VERSIONS,
+        WORKER,
+        RoleTemplate,
+        register_template,
+    )
+
+    register_template(
+        RoleTemplate("worker", "worker-v2-drill", WORKER.instructions, WORKER.tool_names)
+    )
+    config = _config(tmp_path)
+    try:
+
+        async def case():
+            async with Orchestrator(config, _provider()) as orch:
+                store = orch.store
+                promoted = _promote(
+                    orch.commit,
+                    store,
+                    config,
+                    "prompt",
+                    prompt_versions={"worker": "worker-v2-drill"},
+                )
+                mission = await orch.submit_mission(_spec("prompt-switch"))
+                await orch.run()
+                [attempt] = _only_attempt(store, mission.id)
+                assert attempt.prompt_version == "worker-v2-drill"  # the bound version's template
+                assert (
+                    store.get_intent_for_subject(attempt.id).config["prompt_version"]
+                    == "worker-v2-drill"
+                )
+                assert orch.policy_version_of(mission.id) == promoted["version_id"]
+
+        asyncio.run(case())
+    finally:
+        TEMPLATE_VERSIONS["worker"].pop("worker-v2-drill", None)
+
+
+def test_review_p2_10_the_learner_and_the_gates_hash_the_same_task(tmp_path):
+    from agent_orchestrator.governance.learning import task_identity
+    from agent_orchestrator.governance.promotion import spec_task_identity
+
+    config = _config(tmp_path)
+
+    async def case():
+        async with Orchestrator(config, _provider()) as orch:
+            mission = await orch.submit_mission(_spec("identity"))
+            return orch.store.get_mission(mission.id)
+
+    mission = asyncio.run(case())
+    assert task_identity(mission) == spec_task_identity(_spec("some-other-key"))
+
+
+def test_review_p2_6_a_profile_nobody_labelled_is_not_taken_for_fixtures():
+    from agent_orchestrator.orchestrator.event_handler import _provider_kind
+    from agent_orchestrator.runtime.model_router import RuntimeProfile
+
+    class SomeVendorProvider:  # not a fixture class, and nobody set provider_kind
+        async def invoke(self, request, *, cancel):  # pragma: no cover - never called
+            raise NotImplementedError
+
+    unlabelled = {"default": RuntimeProfile("default", SomeVendorProvider(), "vendor-model")}
+    assert _provider_kind(None, unlabelled, "default") == "unknown"
+    mixed = {**unlabelled, "small": RuntimeProfile("small", _provider(), "m")}
+    assert _provider_kind(None, mixed, "small") == "unknown"  # one non-fixture profile is enough
+    assert (
+        _provider_kind(None, {"small": RuntimeProfile("small", _provider(), "m")}, "small")
+        == "fixtures"
+    )

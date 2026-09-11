@@ -182,19 +182,23 @@ CONFIG_DERIVED = frozenset(
 def _provider_kind(
     provider: Any, profiles: Mapping[str, RuntimeProfile], default_profile: str
 ) -> str:
-    """Plan D9-3' (review P1-5): fixtures, a real model, or unknown — recorded with every
-    Mission binding, so fixture evidence is never mistaken for a real deployment."""
+    """Plan D9-3' (review P1-5 / P2-6): fixtures, a real model, or unknown — judged from
+    the provider classes of every profile; "fixtures" only when all of them are."""
 
-    profile = profiles.get(default_profile)
-    if provider is None and profile is not None:
-        kind = str(profile.provider_kind)
-        return {"env": "real", "fixtures": "fixtures"}.get(kind, kind)
-    module = type(provider).__module__
-    if module == "fixtures_provider" or module.startswith("agent_orchestrator.testing"):
+    def classify(candidate: Any, declared: str | None = None) -> str:
+        module = type(candidate).__module__
+        if module == "fixtures_provider" or module.startswith("agent_orchestrator.testing"):
+            return "fixtures"
+        if module.startswith("simple_harness.providers") or declared == "env":
+            return "real"
+        return "unknown"
+
+    if provider is not None:
+        return classify(provider)
+    kinds = {classify(p.provider, str(p.provider_kind)) for p in profiles.values()}
+    if kinds == {"fixtures"}:
         return "fixtures"
-    if module.startswith("simple_harness.providers"):
-        return "real"
-    return "unknown"
+    return "real" if "real" in kinds else "unknown"
 
 
 class Orchestrator:
@@ -272,6 +276,8 @@ class Orchestrator:
         self._policy_pin = None if policy_pin is None else dict(policy_pin)
         self._policies: dict[str, dict[str, Any]] = {}
         self._routers: dict[str, ModelRouter] = {}
+        self._route_drops: dict[str, dict[str, str]] = {}
+        self._route_noted: set[str] = set()
 
     # ------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Orchestrator:
@@ -382,6 +388,7 @@ class Orchestrator:
         version_id = self.policy_version_of(mission_id) or ""
         router = self._routers.get(version_id)
         if router is not None:
+            self._note_route_drops(mission_id, version_id)
             return router
         routing = dict(self.policy_for(mission_id).get("routing") or {})
         base = self._model_router.rules
@@ -392,10 +399,8 @@ class Orchestrator:
                 by_kind[str(kind)] = str(target)
             else:
                 dropped[str(kind)] = str(target)
-        if dropped:
-            self.commit.record_policy_route_unavailable(
-                mission_id, version_id=version_id, dropped=dropped
-            )
+        self._route_drops[version_id] = dropped
+        self._note_route_drops(mission_id, version_id)
         rules = replace(
             base,
             by_task_kind=by_kind,
@@ -406,6 +411,14 @@ class Orchestrator:
         router = ModelRouter(self._profiles, rules)
         self._routers[version_id] = router
         return router
+
+    def _note_route_drops(self, mission_id: str, version_id: str) -> None:
+        dropped = self._route_drops.get(version_id)
+        if dropped and mission_id not in self._route_noted:
+            self._route_noted.add(mission_id)
+            self.commit.record_policy_route_unavailable(
+                mission_id, version_id=version_id, dropped=dropped
+            )
 
     def _check_interpreter(self, mission: Mission) -> None:
         """Plan D9-4': a resumed Mission whose bound version was recorded under other
@@ -428,28 +441,41 @@ class Orchestrator:
             )
 
     def _refuse_policy_ops(self, mission_id: str, task_id: str, operations: Any) -> None:
-        """Plan D9-10': a Manager proposal that smuggles a configuration or safety change
-        — an operation outside the closed vocabulary naming policy items — is refused on
-        record; the closed vocabulary then rejects the proposal exactly as before."""
+        """Plan D9-10' (review P2-1): a Manager proposal that smuggles a configuration or
+        safety change — any operation outside the closed vocabulary, or policy keys
+        carried inside a legal one — is refused on record; the closed vocabulary then
+        rejects the proposal exactly as before (unknown keys of a legal operation are
+        never read)."""
 
+        from ..governance.promotion import NON_PROMOTABLE, PROMOTABLE
         from ..graph.changes import OPERATIONS
 
-        smuggled = [
-            op
-            for op in (operations if isinstance(operations, list) else [])
-            if isinstance(op, Mapping) and str(op.get("op")) not in OPERATIONS
-        ]
+        policy_keys = NON_PROMOTABLE | PROMOTABLE
         items: set[str] = set()
-        for op in smuggled:
-            if op.get("key"):
-                items.add(str(op["key"]))
-            items.update(str(k) for k in op if k not in {"op", "key", "value", "reason", "task_id"})
+        names: list[str] = []
+        for op in operations if isinstance(operations, list) else []:
+            if not isinstance(op, Mapping):
+                continue
+            name = str(op.get("op"))
+            if name not in OPERATIONS:
+                names.append(name)
+                items.add(name)
+                if op.get("key"):
+                    items.add(str(op["key"]))
+                items.update(
+                    str(k) for k in op if k not in {"op", "key", "value", "reason", "task_id"}
+                )
+            else:
+                carried = sorted(str(k) for k in op if str(k) in policy_keys)
+                if carried:
+                    names.append(name)
+                    items.update(carried)
         if items:
             self.commit.record_policy_suggestion_refused(
                 mission_id,
                 source="manager",
                 keys=sorted(items),
-                detail={"task_id": task_id, "operations": [str(op.get("op")) for op in smuggled]},
+                detail={"task_id": task_id, "operations": names},
             )
 
     def policy_snapshot(self) -> dict[str, Any]:

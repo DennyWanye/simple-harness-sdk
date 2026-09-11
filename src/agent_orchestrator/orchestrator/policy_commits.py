@@ -22,6 +22,7 @@ from ..governance.permissions import Principal, decision_receipt_hash
 from ..governance.promotion import (
     DEPLOYMENT_TIMELINE,
     NON_PROMOTABLE,
+    PROMOTABLE,
     PROPOSAL_TRANSITIONS,
     VERDICTS,
     code_versions,
@@ -181,7 +182,7 @@ class PolicyCommitsMixin:
             seq = len(self._store.list_policy_activations())
             self._policy_event(
                 "PolicyConfigDrift",
-                f"{seq}:{config_hash}",
+                f"{seq}:{config_hash}:{self._store.now}",
                 {
                     "active_version_id": None if active is None else active["version_id"],
                     "config_hash": config_hash,
@@ -247,6 +248,10 @@ class PolicyCommitsMixin:
         input is the same proposal; the same parameters from other history are the same
         version with another proposal."""
 
+        if set(params) != set(PROMOTABLE):  # review P2-9: the single writer's own guard
+            raise PolicyCommitError(
+                f"a policy carries exactly {sorted(PROMOTABLE)}; got {sorted(params)}"
+            )
         with self._store.transaction():
             record = self._version_record(params, source=source, status="NEVER_ACTIVE", detail=None)
             self._store.insert_policy_version(record)  # a known version keeps its status
