@@ -81,6 +81,9 @@ PLAN_CONFIG = frozenset(
         "critic_reserve_tokens",
         "attempt_reserve_tokens",
         "manager_reserve_tokens",
+        # P3.1 fix F-ORCH-1 follow-up: the Task budget floor shapes which graphs are
+        # accepted, so the plan (the operator) sets it, the same for every strategy
+        "min_task_tokens",
         "global_budget",
         "price_table",
         "hard_cap_micros",

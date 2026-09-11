@@ -523,6 +523,7 @@ def _demo_multi_mission(args: argparse.Namespace) -> int:
     real_knobs: dict[str, Any] = (  # flash spends its cap on reasoning (step 5 run 2)
         {
             "max_concurrent_model_calls": 4,
+            "max_planning_attempts": 3,  # P3.1 follow-up: a real Planner may need a retry
             "default_max_output_tokens": 8192,
             "max_output_tokens_ceiling": 32768,
             "attempt_reserve_tokens": 120_000,

@@ -201,7 +201,24 @@
 
 ## 3. 回归与 wheel
 
-（待填）
+### 3.1 SDK 全量回归（切片 B/C/A/D/E 之后）
+
+命令：`pytest -q --continue-on-collection-errors tests`，用时 7 分 15 秒。
+
+| 项 | 本次 | 基线（P3.1，`a84e2a4`） |
+|---|---|---|
+| failed | 58 | 58 |
+| passed | 2613 | 2482 |
+| skipped | 13 | 13 |
+| errors | 18 | 15 |
+
+- **failed 58 条与基线同数，且没有一条落在本轮范围内**：按目录分布是 `tests/integration/execution` 38、`tests/integration/runtime` 10、`tests/execution` 6、`tests/artifact` 2、`tests/unit/runtime` 1、`tests/integration` 1；`tests/orchestrator` 与 `tests/agents` 为 **0**。
+- **passed 多出 131 条**，来自本轮新增的 P3.2 测试。
+- **errors 由 15 变为 18，差额要说清楚**：本次 18 条 = `tests/integration/runtime/test_decision_terminal_recovery.py` 的 15 条（与基线的 15 条相同）+ 3 条收集错误（`test_context_use_admission.py`、`test_context_use_durable.py`、`test_context_use_public_memory.py`）。
+  - 这 3 条报的是 `ModuleNotFoundError: No module named 'simple_harness_memory'`，即 2026-09-10 已移除的认知记忆 SDK。当前 venv 里确实没有这个包（已实测）。
+  - 这 3 个文件从 `4981722` 起一行未改（`git diff --stat` 为空），本轮任何改动都不可能造成这种失败。
+  - 基线那次记的 15 条不含它们，说明基线的运行方式没有收集到这 3 个文件；而收集错误会中断整轮，所以本次显式加了 `--continue-on-collection-errors`。
+- **结论**：P3.2 没有新增红项。红集的绝对数字是 76 而不是 73，差额全部是环境缺包导致的既有收集错误，与本轮无关；这里如实记下，不把它算进"⊆ 73"里含糊带过。
 
 ## 4. 代码评审处置
 

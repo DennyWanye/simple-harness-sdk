@@ -160,13 +160,17 @@ def _sum_dimension(nodes: Sequence[TaskNode], name: str) -> int | None:
 
 @dataclass(frozen=True)
 class TaskBudgetFloor:
-    """P3.1 fix F-ORCH-1: the least a Task's token budget must hold so that its first
-    Attempt *and* that Attempt's Critic can both be reserved — per candidate, because every
-    candidate reserves a turn and has its own result reviewed.  ``base`` is what one turn
-    of a routable profile may emit, ``critic`` the Critic's reservation (counted only when
-    the policy names critic_review).  ``base == 0`` switches the floor off.  A necessary
-    condition only: it never promises that repairs will be affordable (the ledger books
-    what a turn actually spent)."""
+    """P3.1 fix F-ORCH-1: the least a Task's token budget must hold for its first Attempt
+    and that Attempt's Critic to be *reserved* — per candidate, because every candidate
+    reserves a turn and has its own result reviewed.  ``base`` is what one turn of a
+    routable profile may emit, ``critic`` the Critic's reservation (counted only when the
+    policy names critic_review).  ``base == 0`` switches the floor off.
+
+    A necessary condition at reservation time, and no more (review round 1 P2-2): it holds
+    only while a turn settles within its reservation, since the ledger books what a turn
+    actually spent — a real turn also pays for its input tokens and may call the model more
+    than once.  A Task whose budget is exactly the floor can therefore still run out before
+    its Critic is reserved; the floor never promises that repairs will be affordable."""
 
     base: int
     critic: int = 0

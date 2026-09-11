@@ -1,3 +1,48 @@
+## 0.10.0 — agent_orchestrator 0.10.0: isolated execution and real, controlled delivery (P3.2)
+
+Model-written code now runs through a **sandbox executor port** (`runtime/sandbox.py`).  The
+receipt of every run says what really happened: whether it was isolated, which limits are
+hard (CPU time, file size, wall clock, output) and which are soft (memory, process count —
+sampled and reaped, because this platform has no cgroups), and whether every process of the
+run is gone, measured after the reaping.  The macOS **seatbelt adapter** denies the network,
+denies file content outside a read whitelist computed from the interpreter it runs, allows
+writes only into the run's own throw-away copy and scratch directory, and denies signals,
+mach lookups and information about other processes.  Its processes are found by *sandbox
+identity* (a per-run canary plus `sandbox_check`), so a grandchild that left the process tree
+with `setsid`, a double fork, `chdir("/")` and closed descriptors is still found and removed.
+`ProcessOnlyExecutor` is **not** a sandbox and says so (`isolated=false`) — for trusted code.
+A capability probe (8 behavioural checks) must pass before a deployment may call itself
+sandboxed.  `DeploymentPolicy.code_execution` is `off` / `sandboxed` / `process_only`; the old
+`local_code_execution` switch keeps working in both directions.
+
+**Artifacts are content-addressed** (`artifacts/store.py`): bytes are written once, read-only,
+under `<evidence_root>/artifacts/sha256/`, and every reader goes through one entry that
+re-checks the hash and never follows a symlink.  They outlive the workspace.  Model-written
+code runs in a **throw-away copy**, so what it writes never reaches the Attempt's own tree,
+and the **verification copy is rebuilt from the recorded bytes** — what is verified is what
+was recorded and what an approval binds.  Every copy the system makes refuses a symlink
+(`workspace_symlink`) instead of dereferencing it.  Workspaces are **registered** (schema v7):
+a rebind compares the registered identity, never the directory's content, and finished
+Missions' directories are cleaned after a retention period while the registry rows and the
+bytes stay.
+
+**Real delivery**: `FilePublishConnector` publishes one verified Artifact into a directory the
+user authorised.  The commit point is a single `os.link` — it fails if the name is taken, so
+nothing is overwritten — and the connector writes its intent to its own ledger before it, so
+every crash is decidable.  A connector now declares `lookup_authority`; an action at L2 or
+above may only run on an authoritative one, and "I found nothing" from a best-effort lookup
+leaves the action UNKNOWN for a person instead of being retried.  **Compensation** is a new
+business action (`<action>#comp-<n>`) with its own approval and idempotency key — the original
+fact stays as recorded — and `MissionControlV1.propose_compensation` is the way in.  A
+candidate names *which* Artifact to publish; the system binds its identity.
+
+Recalled Journal text no longer reaches a model as a SYSTEM instruction: it arrives as a USER
+message inside an untrusted-history frame it cannot close early.
+
+Correction to the 0.9.11 notes below: the Task budget floor is a *necessary condition at
+reservation time* — it assumes one turn settles within its reservation — not a promise that a
+first Attempt and its Critic will both fit (review P2-2).
+
 ## 0.9.11 — agent_orchestrator 0.9.4: P3.1 follow-up fixes (Phase3)
 
 `agent_orchestrator` 0.9.4 (same wheel).  Fixes found by the Host's native acceptance

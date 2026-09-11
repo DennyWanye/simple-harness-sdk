@@ -1487,7 +1487,11 @@ class Store:
     def update_artifact_verification(self, artifact_id: str, status: str) -> None:
         """P3.1 fix F-ORCH-3: an artifact follows its result's verdict — VERIFIED when the
         result is accepted, REJECTED when it failed.  The only field of an artifact row that
-        changes after it was recorded (``upsert_artifact`` never rewrites a row)."""
+        changes after it was recorded (``upsert_artifact`` never rewrites a row).
+
+        A missing row means the library is damaged: ``record_result`` writes every artifact
+        in the same transaction, so it fails loudly rather than carrying on (review P2-5).
+        """
 
         if status not in ARTIFACT_VERIFICATION_STATES:
             raise StoreError(f"unknown artifact verification status {status!r}")
