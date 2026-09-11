@@ -40,6 +40,7 @@
 | 切片 | 提交 | 内容 | 测试 |
 |---|---|---|---|
 | A | `d5b740d` | 版本库：`governance/promotion.py`（白名单与范围、`resolve_params` 展开、内容寻址版本 id、提议 id、幅度 / 扩张检查、解释器与代码版本、任务身份哈希、版本库事件折叠投影与一致性检查）；schema v6 六张表与 v5 迁移时的 `policy-legacy` 绑定；Store 读写；`orchestrator/policy_commits.py`（种子、提议、拒绝提议、评测记录、人工决定、晋级、回滚、绑定、配置漂移）；`create_mission` 同一事务绑定版本并在 `MissionCreated` 记 `policy_version_id`；角色模板版本登记 | `test_policy_registry.py` 12（白名单 / 内容寻址、任务身份、S9-01 提议身份、S9-02 未通过不可批准晋级、状态表与重评作废批准、基线 / 代码 / fixture 证据条件、S9-08 幅度 / 冷却 / 背压、S9-05 回滚目标、重复激活事件与折叠投影、仅人工决定与 nonce、v5 迁移 legacy）；`tests/orchestrator` 全套 333 passed |
+| B | `12fdb13` | 绑定与按版本运行：库角色标记（`scheduler_state.library_role`：production / evaluation；钉版只进评测库，普通实例拒开评测库）；正式库 `__aenter__` 物化种子版本（记配置哈希与来源）、配置白名单项与 ACTIVE 不同时记 `PolicyConfigDrift`（ACTIVE 仍生效）；`submit_mission` 带 `provider_kind`（按 provider 类判定，可显式传入）与评测钉版；`policy_for` / `_router_for`（每个版本一个 ModelRouter，缺失 profile 记 `PolicyRouteUnavailable` 并回落）；全部决策点改读绑定版本（分配权重 / 候选数 / 探索配额 / 并发上限 / aging、候选预算分摊、提交守卫、Manager 三个阈值含恢复路径、Attempt 与 Planner / Manager / Critic 路由和模板版本）；intent 与 `AllocationDecided` 记 `policy_version_id` / `weights_hash` / `eligible` / `slots`；恢复时解释器版本不同记 `PolicyInterpreterDrift`；Replay 可选正式字段 `mission.policy_version_id` | `test_policy_binding.py` 6（S9-04 新 Mission 按生效版本运行、在途 Mission 换配置恢复仍用绑定版本且记漂移、结构测试"无决策点读白名单配置"、S9-05 回滚不动既有事件与费用且回放 100%、库角色隔离、解释器漂移）；`tests/orchestrator` 全套 339 passed |
 
 ## 3. 真实模型
 
