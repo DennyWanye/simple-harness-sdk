@@ -1319,6 +1319,7 @@ def demo_dynamic_dag_provider(
     per_attempt: dict[str, list[list[object]]] | None = None,
     critic_steps: Sequence[object] | None = None,
     critic_delay_seconds: float = 0.0,
+    model: str = MODEL,
 ) -> TaskRoutedProvider:
     graph = list(RECORDER_TASKS if tasks is None else tasks)
     worker_scripts = recorder_scripts()
@@ -1336,6 +1337,7 @@ def demo_dynamic_dag_provider(
         holds=holds,
         per_attempt=per_attempt,
         critic_delay_seconds=critic_delay_seconds,
+        model=model,
     )
     provider.scripts["manager"] = (
         list(manager_steps)
@@ -1343,3 +1345,26 @@ def demo_dynamic_dag_provider(
         else [graph_change_step(recorder_manager_change)]
     )
     return provider
+
+
+class UnavailableProvider:
+    """Step 6 (S6-06): a model service that is down.  Raises a *definite* provider failure
+    (``ProviderServerError`` by default — a transport error would be an UNKNOWN outbound
+    call, S2-08) for the first ``times`` calls, or forever when ``times`` is None."""
+
+    def __init__(
+        self, *, model: str = "fixture-down", times: int | None = None, error=None
+    ) -> None:  # type: ignore[no-untyped-def]
+        from simple_harness.providers.errors import ProviderServerError
+
+        self.model = model
+        self.times = times
+        self.error = error or ProviderServerError
+        self.calls = 0
+
+    async def invoke(self, request: ProviderRequest, *, cancel) -> ProviderResponse:  # type: ignore[no-untyped-def]
+        del cancel
+        self.calls += 1
+        if self.times is None or self.calls <= self.times:
+            raise self.error(public_message=f"{self.model} is unavailable (call {self.calls})")
+        raise AssertionError(f"UnavailableProvider {self.model} has no scripted answer")

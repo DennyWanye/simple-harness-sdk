@@ -12,6 +12,8 @@ Attempt is its own Run, acts as the per-Attempt hard limit.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,8 @@ from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 from ..artifacts.workspace import WorkspaceManager
 from ..contracts import Budget
 from ..scheduling.backpressure import BackpressureLimits
+from .agent_worker import AgentBridge
+from .model_router import DEFAULT_PROFILE, RuntimeProfile
 from .tool_gateway import TOOL_NAMES, TOOL_SCHEMAS, WorkspaceToolGateway
 
 CONSUMER_PRICING_KEY = "consumer"
@@ -101,6 +105,10 @@ class OrchestratorConfig:
     reduced_reserve_ratio: float = 0.5
     exploration_slots: int = 1
     verifier_workers: int = 2  # §29.1 "2 个 Verifier Worker" as the verification concurrency
+    # step 6 (D6-5'): runtime profile health — unavailability cooldown and the bounded wait
+    profile_failure_threshold: int = 2
+    profile_cooldown_seconds: float = 60.0
+    profile_wait_seconds: float = 300.0
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -228,41 +236,139 @@ class OrchestratorConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class AssembledOrchestratorRuntime:
+class RuntimePool:
+    """One physical execution pool (plan D6-5'): a profile, its own AgentRuntime and its
+    own SDK execution library — never shared with another model."""
+
+    profile: RuntimeProfile
     runtime: AgentRuntime
-    gateway: WorkspaceToolGateway
-    workspaces: WorkspaceManager
+    bridge: AgentBridge
+    execution_db: Path
+
+
+@dataclass(frozen=True, slots=True)
+class AssembledOrchestratorRuntime:
+    pools: Mapping[str, RuntimePool]
+    gateway: WorkspaceToolGateway  # shared: one Tool Gateway for every pool (review P0-4)
+    workspaces: WorkspaceManager  # shared: one workspace tree for every pool
     config: OrchestratorConfig
+    default_profile: str
+
+    @property
+    def runtime(self) -> AgentRuntime:  # the default pool's runtime (single-profile callers)
+        return self.pools[self.default_profile].runtime
+
+    def pool(self, profile_id: str) -> RuntimePool:
+        try:
+            return self.pools[profile_id]
+        except KeyError as error:
+            raise KeyError(f"runtime profile {profile_id!r} is not configured") from error
+
+    async def __aenter__(self) -> AssembledOrchestratorRuntime:
+        for pool in self.pools.values():
+            await pool.runtime.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        # all pools stop together: closing them one after another would let the pools
+        # still open keep driving turns during shutdown (S6-08 finding)
+        results = await asyncio.gather(
+            *(pool.runtime.__aexit__(*exc_info) for pool in self.pools.values()),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+
+def execution_db_for(config: OrchestratorConfig, profile_id: str) -> Path:
+    """The ``default`` pool keeps ``execution.db`` (older evidence directories still open);
+    every other profile gets ``execution-<profile>.db`` — separate SDK storage per pool."""
+
+    if profile_id == DEFAULT_PROFILE:
+        return config.execution_db
+    return config.evidence_root / f"execution-{profile_id}.db"
+
+
+def _policies_for(config: OrchestratorConfig, profile: RuntimeProfile) -> ConsumerRuntimePolicies:
+    table = profile.price_table
+    if table is None:
+        return ConsumerRuntimePolicies.local_default()
+    return ConsumerRuntimePolicies(
+        "consumer_supplied",
+        False,
+        "fail_closed",
+        estimator=table.estimator(),
+        budget_policy=BudgetPolicy(hard_cap_micros=config.hard_cap_micros, refuse_on_unknown=True),
+    )
 
 
 def assemble_orchestrator_runtime(
-    config: OrchestratorConfig, provider
-) -> AssembledOrchestratorRuntime:  # type: ignore[no-untyped-def]
+    config: OrchestratorConfig,
+    provider=None,  # type: ignore[no-untyped-def]
+    *,
+    profiles: Mapping[str, RuntimeProfile] | None = None,
+    default_profile: str | None = None,
+) -> AssembledOrchestratorRuntime:
+    """One pool per runtime profile (D6-5').  ``provider`` alone is the single-profile
+    path every earlier step used: the ``default`` profile with ``config.model`` and
+    ``config.price_table``."""
+
     config.evidence_root.mkdir(parents=True, exist_ok=True)
+    if profiles is None:
+        if provider is None:
+            raise ValueError("either a provider or runtime profiles are required")
+        profiles = {
+            DEFAULT_PROFILE: RuntimeProfile(
+                DEFAULT_PROFILE, provider, config.model, price_table=config.price_table
+            )
+        }
+    if not profiles:
+        raise ValueError("at least one runtime profile is required")
+    chosen_default = default_profile or (
+        DEFAULT_PROFILE if DEFAULT_PROFILE in profiles else next(iter(profiles))
+    )
+    if chosen_default not in profiles:
+        raise ValueError(f"default profile {chosen_default!r} is not among the profiles")
     workspaces = WorkspaceManager(config.workspaces_root)
     gateway = WorkspaceToolGateway(workspaces, test_timeout=config.test_timeout_seconds)
-    ports = AgentRuntimePorts(
-        provider=provider,
-        authorization=AllowAllAuthorization(),
-        database_path=str(config.execution_db),
-        tool_executor=gateway,
-        tool_names=TOOL_NAMES,
-        tool_schemas=dict(TOOL_SCHEMAS),
-        model=config.model,
-        owner_id=config.owner_id,
-        lease_ttl_seconds=float(config.sdk_lease_ttl_seconds or 30.0),
-        policies=config.policies(),
-        default_max_output_tokens=config.default_max_output_tokens,
-        max_output_tokens_ceiling=max(
-            config.max_output_tokens_ceiling, config.default_max_output_tokens
-        ),
-        empty_response_retries=config.empty_response_retries,
-        max_concurrent_model_calls=config.max_concurrent_model_calls,
-        max_concurrent_tool_calls=config.max_concurrency,
-    )
-    runtime = build_agent_runtime(ports, owner_scope=OWNER_SCOPE)
+    pools: dict[str, RuntimePool] = {}
+    for profile_id, profile in profiles.items():
+        if profile_id != profile.profile_id:
+            raise ValueError(f"profile key {profile_id!r} != profile_id {profile.profile_id!r}")
+        database = execution_db_for(config, profile_id)
+        default_out = profile.default_max_output_tokens or config.default_max_output_tokens
+        ceiling = profile.max_output_tokens_ceiling or config.max_output_tokens_ceiling
+        ports = AgentRuntimePorts(
+            provider=profile.provider,
+            authorization=AllowAllAuthorization(),
+            database_path=str(database),
+            tool_executor=gateway,
+            tool_names=TOOL_NAMES,
+            tool_schemas=dict(TOOL_SCHEMAS),
+            model=profile.model,
+            owner_id=config.owner_id,
+            lease_ttl_seconds=float(config.sdk_lease_ttl_seconds or 30.0),
+            policies=_policies_for(config, profile),
+            default_max_output_tokens=default_out,
+            max_output_tokens_ceiling=max(ceiling, default_out),
+            empty_response_retries=config.empty_response_retries,
+            max_concurrent_model_calls=config.max_concurrent_model_calls,
+            max_concurrent_tool_calls=config.max_concurrency,
+        )
+        runtime = build_agent_runtime(ports, owner_scope=OWNER_SCOPE)
+        pools[profile_id] = RuntimePool(
+            profile=profile,
+            runtime=runtime,
+            bridge=AgentBridge(runtime, unpriced=profile.unpriced),
+            execution_db=database,
+        )
     return AssembledOrchestratorRuntime(
-        runtime=runtime, gateway=gateway, workspaces=workspaces, config=config
+        pools=pools,
+        gateway=gateway,
+        workspaces=workspaces,
+        config=config,
+        default_profile=chosen_default,
     )
 
 
@@ -272,5 +378,7 @@ __all__ = (
     "AssembledOrchestratorRuntime",
     "OrchestratorConfig",
     "PriceTable",
+    "RuntimePool",
     "assemble_orchestrator_runtime",
+    "execution_db_for",
 )

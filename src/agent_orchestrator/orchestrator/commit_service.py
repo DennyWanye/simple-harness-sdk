@@ -247,6 +247,106 @@ class CommitService:
                     )
             return state, transitions
 
+    # --------------------------------------------------------- profile health
+    PROFILE_HEALTH_KEY = "profile_health"
+
+    def profile_health(self) -> dict[str, dict[str, Any]]:
+        raw = self._store.get_scheduler_state(self.PROFILE_HEALTH_KEY) or {}
+        return {str(k): dict(v) for k, v in dict(raw.get("profiles") or {}).items()}
+
+    def unavailable_until(self) -> dict[str, float]:
+        """profile → cooldown end, for the router (D6-5')."""
+
+        return {
+            pid: float(entry["unavailable_until"])
+            for pid, entry in self.profile_health().items()
+            if entry.get("unavailable_until") is not None
+        }
+
+    def record_profile_failure(
+        self,
+        profile_id: str,
+        *,
+        error: Mapping[str, Any] | None,
+        threshold: int,
+        cooldown_seconds: float,
+        mission_ids: Sequence[str],
+    ) -> float | None:
+        """A provider-unavailable turn failure on ``profile_id``; ``threshold`` of them in
+        a row put the profile into a cooldown (``RuntimeProfileUnavailable`` on every
+        active Mission's timeline).  Returns the cooldown end when tripped."""
+
+        with self._store.transaction():
+            raw = self._store.get_scheduler_state(self.PROFILE_HEALTH_KEY) or {"profiles": {}}
+            profiles = dict(raw.get("profiles") or {})
+            entry = dict(profiles.get(profile_id) or {"failures": 0, "unavailable_until": None})
+            entry["failures"] = int(entry.get("failures", 0)) + 1
+            entry["last_error"] = jsonable(error or {})
+            entry["last_failure_at"] = self._store.now
+            until: float | None = None
+            if entry["failures"] >= max(1, threshold):
+                until = self._store.now + float(cooldown_seconds)
+                entry["unavailable_until"] = until
+                entry["trips"] = int(entry.get("trips", 0)) + 1
+                entry["failures"] = 0
+            profiles[profile_id] = entry
+            self._store.put_scheduler_state(self.PROFILE_HEALTH_KEY, {"profiles": profiles})
+            if until is not None:
+                for mission_id in mission_ids:
+                    self._emit(
+                        "RuntimeProfileUnavailable",
+                        mission_id,
+                        key=f"{profile_id}:{entry['trips']}:{mission_id}",
+                        payload={
+                            "profile_id": profile_id,
+                            "reason": "provider_unavailable",
+                            "until": until,
+                            "trips": entry["trips"],
+                            "last_error": entry["last_error"],
+                        },
+                    )
+            return until
+
+    def record_profile_success(self, profile_id: str) -> None:
+        """A committed turn on ``profile_id`` closes its failure streak and any cooldown."""
+
+        with self._store.transaction():
+            raw = self._store.get_scheduler_state(self.PROFILE_HEALTH_KEY) or {"profiles": {}}
+            profiles = dict(raw.get("profiles") or {})
+            entry = dict(profiles.get(profile_id) or {})
+            if not entry or (
+                entry.get("failures", 0) == 0 and entry.get("unavailable_until") is None
+            ):
+                return
+            entry["failures"] = 0
+            entry["unavailable_until"] = None
+            entry["recovered_at"] = self._store.now
+            profiles[profile_id] = entry
+            self._store.put_scheduler_state(self.PROFILE_HEALTH_KEY, {"profiles": profiles})
+
+    def record_profile_unavailable(
+        self,
+        profile_id: str,
+        *,
+        reason: str,
+        until: float | None,
+        mission_ids: Sequence[str],
+        detail: Mapping[str, Any] | None = None,
+    ) -> None:
+        with self._store.transaction():
+            for mission_id in mission_ids:
+                self._emit(
+                    "RuntimeProfileUnavailable",
+                    mission_id,
+                    key=f"{profile_id}:{reason}:{(detail or {}).get('intent_id', '')}:{mission_id}",
+                    payload={
+                        "profile_id": profile_id,
+                        "reason": reason,
+                        "until": until,
+                        **dict(detail or {}),
+                    },
+                )
+
     def global_account(self) -> AccountSnapshot | None:
         """The deployment-wide account (§18.2 Global Budget), if this deployment set one."""
 
@@ -1938,6 +2038,8 @@ class CommitService:
         inputs: Sequence[Mapping[str, Any]] = (),
         max_open_attempts: int | None = None,
         max_running_attempts: int | None = None,
+        runtime_profile_id: str = "default",
+        routing: Mapping[str, Any] | None = None,
     ) -> tuple[Attempt, DispatchIntent]:
         """Atomic Reserve + Attempt(PENDING) + dispatch intent (ORCH-BUILD §4.3 step 1).
 
@@ -2011,6 +2113,7 @@ class CommitService:
                 ordinal=ordinal,
                 creation_key=attempt_id,
                 input_id="attempt-input",
+                runtime_profile_id=runtime_profile_id,
                 task_version=task.version,
                 input_hash=input_hash,
                 feedback=tuple(feedback),
@@ -2077,6 +2180,21 @@ class CommitService:
                     "cost_micros": reservation.cost_micros,
                 },
             )
+            if (
+                routing
+            ):  # step 6 (S6-03): the physical route is on the timeline, frozen before the call
+                self._emit(
+                    "ModelRouted",
+                    task.mission_id,
+                    key=attempt_id,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    payload={
+                        "runtime_profile_id": runtime_profile_id,
+                        "model": model,
+                        **dict(routing),
+                    },
+                )
             allocation = intent_config.get("allocation")
             if allocation:  # step 5 (S5-09): the §29.3 decision is on the timeline as well
                 self._emit(

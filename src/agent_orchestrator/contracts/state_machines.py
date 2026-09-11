@@ -37,6 +37,12 @@ class MissionStopReason(StrEnum):
     RETRIEVAL_UNAVAILABLE = "retrieval_unavailable"  # step 4 (D4-11'): knowledge index unreadable
     NO_PROGRESS = "no_progress"  # step 5 (D5-7): repeated no-progress and no change of approach
     MANAGEMENT_EXHAUSTED = "management_exhausted"  # step 5: Manager rounds used up
+    RUNTIME_UNAVAILABLE = (
+        "runtime_unavailable"  # step 6 (D6-5'): a model service stayed unavailable
+    )
+    VERIFIER_UNAVAILABLE = (
+        "verifier_unavailable"  # step 6 (D6-9'): a required verifier is not deployed
+    )
 
 
 class TaskStatus(StrEnum):

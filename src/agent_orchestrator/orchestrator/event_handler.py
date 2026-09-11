@@ -87,6 +87,15 @@ from ..runtime.assembly import (
     OrchestratorConfig,
     assemble_orchestrator_runtime,
 )
+from ..runtime.model_router import (
+    DEFAULT_PROFILE,
+    ModelRouter,
+    RoutingDecision,
+    RoutingRules,
+    RoutingUnavailable,
+    RuntimeProfile,
+    classify_turn_error,
+)
 from ..runtime.output_blocks import BlockError, extract_block, outside_text
 from ..runtime.role_templates import (
     CRITIC,
@@ -133,17 +142,43 @@ class Orchestrator:
     def __init__(
         self,
         config: OrchestratorConfig,
-        provider,  # type: ignore[no-untyped-def]
+        provider=None,  # type: ignore[no-untyped-def]
         *,
         owner: str | None = None,
         poll_interval: float = 0.05,
         critic_wait_seconds: float = 120.0,
+        profiles: Mapping[str, RuntimeProfile] | None = None,
+        routing: RoutingRules | None = None,
     ) -> None:
         # D3-10': ``owner`` is this instance's identity for orchestration leases *and* for
         # the SDK runtime (``owner_id``); the SDK ``owner_scope`` is one constant for all.
         self._owner = owner or f"orchestrator-{os.getpid()}"
         self._config = replace(config, owner_id=self._owner)
         self._provider = provider
+        # D6-4' / D6-5': one provider == the single ``default`` profile (every earlier
+        # step's path); several profiles == several execution pools routed by rules
+        if profiles is None:
+            if provider is None:
+                raise ValueError("Orchestrator needs a provider or runtime profiles")
+            profiles = {
+                DEFAULT_PROFILE: RuntimeProfile(
+                    DEFAULT_PROFILE, provider, config.model, price_table=config.price_table
+                )
+            }
+        self._profiles: dict[str, RuntimeProfile] = dict(profiles)
+        default_profile = (
+            routing.default
+            if routing is not None
+            else (
+                DEFAULT_PROFILE if DEFAULT_PROFILE in self._profiles else next(iter(self._profiles))
+            )
+        )
+        self._model_router = ModelRouter(
+            self._profiles,
+            routing if routing is not None else RoutingRules(default=default_profile),
+        )
+        self._default_profile = default_profile
+        self._deferred: dict[str, float] = {}  # task_id → first time it waited for a profile
         self._poll = poll_interval
         self._critic_wait = critic_wait_seconds
         self._store: Store | None = None
@@ -169,9 +204,11 @@ class Orchestrator:
             conflict_tasks=self._config.knowledge_sharing,
             global_budget=self._config.global_budget,
         )
-        self._assembled = assemble_orchestrator_runtime(self._config, self._provider)
-        await self._assembled.runtime.__aenter__()
-        self._bridge = AgentBridge(self._assembled.runtime, unpriced=self._config.unpriced)
+        self._assembled = assemble_orchestrator_runtime(
+            self._config, profiles=self._profiles, default_profile=self._default_profile
+        )
+        await self._assembled.__aenter__()
+        self._bridge = self._assembled.pool(self._default_profile).bridge
         self._commit.tool_calls_for = self._executed_tool_calls  # D6-8
         self._pressure = self._commit.backpressure_state()
         return self
@@ -194,7 +231,7 @@ class Orchestrator:
                 await task
         self._verifying.clear()
         if self._assembled is not None:
-            await self._assembled.runtime.__aexit__(*exc_info)
+            await self._assembled.__aexit__(*exc_info)
         if self._store is not None:
             self._store.close()
 
@@ -210,8 +247,95 @@ class Orchestrator:
 
     @property
     def bridge(self) -> AgentBridge:
+        """The default pool's bridge (single-profile callers and tests)."""
+
         assert self._bridge is not None
         return self._bridge
+
+    @property
+    def model_router(self) -> ModelRouter:
+        return self._model_router
+
+    def _expected_model(self, intent: DispatchIntent) -> str:
+        """The model frozen in the intent (review P0-3): the echo is checked against what
+        was routed at dispatch time, never against the current configuration."""
+
+        frozen = intent.config.get("model")
+        if frozen:
+            return str(frozen)
+        profile = self._profiles.get(self.profile_of(intent))
+        return profile.model if profile is not None else self._config.model
+
+    def _route_service(self, role: str, mission_id: str) -> RoutingDecision:
+        """Planner / Manager / Critic routing (D6-4'): by role, with the profile health
+        applied; a cooling-down profile without fallback fails the caller fast."""
+
+        return self._model_router.route(
+            role=role,
+            task_kind=None,
+            previous_attempts=(),
+            unavailable_until=self.commit.unavailable_until(),
+            now=self.store.now,
+        )
+
+    def _service_config(self, decision: RoutingDecision) -> dict[str, Any]:
+        return {
+            "runtime_profile_id": decision.profile_id,
+            "model": decision.model,
+            "routing": decision.to_json(),
+        }
+
+    def _note_turn_health(self, intent: DispatchIntent, result) -> str:  # type: ignore[no-untyped-def]
+        """D6-5' / review P1-8: a committed turn closes the profile's failure streak; a
+        provider-unavailable failure counts towards its cooldown.  Returns the error class."""
+
+        profile_id = self.profile_of(intent)
+        if result.state is AgentTurnState.COMMITTED:
+            self.commit.record_profile_success(profile_id)
+            return "ok"
+        kind = classify_turn_error(result.error)
+        if kind == "provider_unavailable":
+            until = self.commit.record_profile_failure(
+                profile_id,
+                error=result.error,
+                threshold=self._config.profile_failure_threshold,
+                cooldown_seconds=self._config.profile_cooldown_seconds,
+                mission_ids=[m.id for m in self._active_missions()],
+            )
+            if until is not None:
+                self._note(f"runtime profile {profile_id!r} unavailable until {until:.3f}")
+        return kind
+
+    def profile_of(self, intent: DispatchIntent) -> str:
+        return str(intent.config.get("runtime_profile_id") or self._default_profile)
+
+    def bridge_for(self, intent: DispatchIntent) -> AgentBridge:
+        """The pool an intent is bound to (D6-5'): an intent bound to a profile this
+        process does not run raises — it is never handed to another model."""
+
+        return self.assembled.pool(self.profile_of(intent)).bridge
+
+    def _pool_missing(self, intent: DispatchIntent) -> bool:
+        """S6-08: an intent whose profile is not configured here stays untouched (its
+        lease lapses like any dead executor's); recorded once per intent."""
+
+        profile_id = self.profile_of(intent)
+        if profile_id in self.assembled.pools:
+            return False
+        key = f"{intent.intent_id}:not_configured"
+        if key not in self._released:
+            self._released.add(key)
+            self.commit.record_profile_unavailable(
+                profile_id,
+                reason="not_configured",
+                until=None,
+                mission_ids=[intent.mission_id],
+                detail={"intent_id": intent.intent_id, "subject_id": intent.subject_id},
+            )
+            self._note(
+                f"{intent.subject_id}: bound to profile {profile_id!r} which is not configured here"
+            )
+        return True
 
     @property
     def assembled(self) -> AssembledOrchestratorRuntime:
@@ -275,7 +399,8 @@ class Orchestrator:
             for attempt_id in report["closed_attempts"]:
                 await self._release_attempt(attempt_id, cancel=True)
             self._reimport_unsettled(mission)
-        await self.bridge.recover()
+        for pool in self.assembled.pools.values():  # D6-5': each pool recovers only its own library
+            await pool.bridge.recover()
 
     async def run(self, *, max_cycles: int = 10_000, until_idle: bool = True) -> None:
         """Drive the loop until idle.  ``max_cycles`` bounds *progressing* cycles (work
@@ -335,6 +460,8 @@ class Orchestrator:
         still collected); critic turns are collected inline by their runner."""
 
         if any(not task.done() for task in self._verifying.values()):
+            return True
+        if self._deferred:  # D6-5': a Task waiting for its profile is bounded, not idle
             return True
         return any(intent.kind != "critic" for intent in self.store.list_intents("SUBMITTED"))
 
@@ -449,10 +576,11 @@ class Orchestrator:
             attempt_ordinal=ordinal,
             rejected=self._planning_rejections(mission_id) if ordinal > 1 else (),
         )
+        decision = self._route_service("planner", mission_id)
         config = AgentConfig(
             name=f"planner-{ordinal}",
             instructions=PLANNER.instructions,
-            model_profile_ref=self._config.model,
+            model_profile_ref=decision.profile_id,
             tool_names=(),
             limits=AgentLimits(
                 max_model_calls_per_turn=4,
@@ -477,13 +605,15 @@ class Orchestrator:
                 "prompt_version": PLANNER.prompt_version,
                 "base_version": mission.version,
                 "ordinal": ordinal,
+                **self._service_config(decision),
             },
-            reservation=self._reservation(self._config.planner_reserve_tokens),
+            reservation=self._reservation(self._config.planner_reserve_tokens, decision.profile_id),
         )
 
     # -------------------------------------------------------------- dispatch
-    def _reservation(self, tokens: int) -> Reservation:
-        table = self._config.price_table
+    def _reservation(self, tokens: int, profile_id: str | None = None) -> Reservation:
+        profile = self._profiles.get(profile_id or self._default_profile)
+        table = profile.price_table if profile is not None else self._config.price_table
         if table is None:
             return Reservation(tokens=tokens, cost_micros=0)
         rate = max(table.input_micros_per_million_tokens, table.output_micros_per_million_tokens)
@@ -492,6 +622,8 @@ class Orchestrator:
     async def _dispatch(self, intent: DispatchIntent) -> bool:
         """ORCH §4.3 steps 2–3 with the identity frozen in the intent (D5')."""
 
+        if self._pool_missing(intent):
+            return False
         claimed = self.commit.claim_intent(
             intent.intent_id, owner=self._owner, lease_seconds=self._config.lease_seconds
         )
@@ -518,10 +650,10 @@ class Orchestrator:
                 self._note(f"attempt {attempt.id}: upstream artifacts unusable → stopped")
                 return True
         if claimed.state == "CLAIMED":
-            agent_id, _run_id, _ = await self.bridge.create(
+            agent_id, _run_id, _ = await self.bridge_for(claimed).create(
                 creation_key=claimed.creation_key, config_json=config["agent_config"]
             )
-            expected = await self.bridge.expected_turn_id(
+            expected = await self.bridge_for(claimed).expected_turn_id(
                 agent_id=agent_id, input_id=claimed.input_id
             )
             self._fault("after_agent_created", claimed.kind)
@@ -539,7 +671,7 @@ class Orchestrator:
             elif claimed.kind == "attempt":
                 self._bind_agent(claimed.agent_id, config)
             try:
-                receipt = await self.bridge.submit(
+                receipt = await self.bridge_for(claimed).submit(
                     agent_id=claimed.agent_id,
                     input_id=claimed.input_id,
                     message_json=config["message"],
@@ -683,8 +815,10 @@ class Orchestrator:
     # --------------------------------------------------------------- collect
     async def _collect(self, intent: DispatchIntent) -> bool:
         assert intent.agent_id is not None and intent.expected_turn_id is not None
+        if self._pool_missing(intent):
+            return False
         try:
-            result = await self.bridge.result(
+            result = await self.bridge_for(intent).result(
                 agent_id=intent.agent_id, turn_id=intent.expected_turn_id
             )
         except Exception as error:  # noqa: BLE001 - AgentNotFound & co.: not alive (P0-3)
@@ -692,6 +826,7 @@ class Orchestrator:
             result = None
         if result is None:
             return await self._observe_liveness(intent)
+        self._note_turn_health(intent, result)
         self._fault("after_turn_committed", intent.kind)
         if intent.kind == "plan":
             await self._collect_plan(intent, result)
@@ -708,7 +843,7 @@ class Orchestrator:
 
         assert intent.agent_id is not None and intent.expected_turn_id is not None
         try:
-            result = await self.bridge.result(
+            result = await self.bridge_for(intent).result(
                 agent_id=intent.agent_id, turn_id=intent.expected_turn_id
             )
         except Exception:  # noqa: BLE001 - executor gone: nothing more to collect
@@ -718,7 +853,7 @@ class Orchestrator:
             liveness = (
                 Liveness(True, None, False, None, None, True)
                 if result is not None
-                else await self.bridge.liveness(
+                else await self.bridge_for(intent).liveness(
                     agent_id=intent.agent_id, turn_id=intent.expected_turn_id
                 )
             )
@@ -760,7 +895,7 @@ class Orchestrator:
 
     async def _observe_liveness(self, intent: DispatchIntent) -> bool:
         assert intent.agent_id and intent.expected_turn_id
-        liveness: Liveness = await self.bridge.liveness(
+        liveness: Liveness = await self.bridge_for(intent).liveness(
             agent_id=intent.agent_id, turn_id=intent.expected_turn_id
         )
         if intent.kind == "plan":
@@ -847,7 +982,7 @@ class Orchestrator:
         if intent.agent_id is None or intent.expected_turn_id is None:
             return
         try:
-            receipt = await self.bridge.runtime.cancel_turn(
+            receipt = await self.bridge_for(intent).runtime.cancel_turn(
                 intent.agent_id,
                 intent.expected_turn_id,
                 command_id=f"{intent.subject_id}:cancel",
@@ -879,7 +1014,7 @@ class Orchestrator:
         self._released.add(key)
         if cancel and intent.expected_turn_id is not None:
             try:
-                liveness = await self.bridge.liveness(
+                liveness = await self.bridge_for(intent).liveness(
                     agent_id=intent.agent_id, turn_id=intent.expected_turn_id
                 )
             except Exception:  # noqa: BLE001
@@ -900,7 +1035,7 @@ class Orchestrator:
 
     def _import_usage(self, intent: DispatchIntent) -> None:
         assert intent.agent_id is not None
-        facts = self.bridge.usage_facts(agent_id=intent.agent_id)
+        facts = self.bridge_for(intent).usage_facts(agent_id=intent.agent_id)
         self.commit.import_usage(intent.subject_id, intent.mission_id, facts)
 
     def _reimport_unsettled(self, mission: Mission) -> None:
@@ -967,14 +1102,14 @@ class Orchestrator:
         assert mission is not None
         self._import_usage(intent)
         text = "" if result.public_output is None else str(result.public_output.content)
-        echoed = self.bridge.echoed_models(agent_id=intent.agent_id or "")
-        if echoed and echoed != {self._config.model}:
+        echoed = self.bridge_for(intent).echoed_models(agent_id=intent.agent_id or "")
+        if echoed and echoed != {self._expected_model(intent)}:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
             self.commit.fail_planning(
                 mission.id,
                 reason="model_echo_mismatch",
-                detail={"expected": self._config.model, "echoed": sorted(echoed)},
+                detail={"expected": self._expected_model(intent), "echoed": sorted(echoed)},
                 stop_reason=MissionStopReason.MODEL_ECHO_MISMATCH,
             )
             self._note(f"planner: model echo mismatch {sorted(echoed)} → mission stopped")
@@ -1026,15 +1161,15 @@ class Orchestrator:
             self._settle_intent(intent, "SETTLED")
             await self._release_attempt(attempt.id, cancel=False)
             return
-        echoed = self.bridge.echoed_models(agent_id=intent.agent_id or "")
-        if echoed and echoed != {self._config.model}:
+        echoed = self.bridge_for(intent).echoed_models(agent_id=intent.agent_id or "")
+        if echoed and echoed != {self._expected_model(intent)}:
             # D10': the provider answered as a different model; charges are unknown and
             # the deployment binding is wrong.  Fail fast and visibly, hold the reservation.
             self.commit.reject_result(
                 attempt.id,
                 turn_id=result.turn_id,
                 reason="model_echo_mismatch",
-                detail={"expected": self._config.model, "echoed": sorted(echoed)},
+                detail={"expected": self._expected_model(intent), "echoed": sorted(echoed)},
             )
             self._settle_intent(intent, "FAILED")
             self._settle_if_known(attempt)
@@ -1042,7 +1177,7 @@ class Orchestrator:
             self.commit.stop_task(
                 attempt.task_id,
                 stop_reason=MissionStopReason.MODEL_ECHO_MISMATCH,
-                detail={"expected": self._config.model, "echoed": sorted(echoed)},
+                detail={"expected": self._expected_model(intent), "echoed": sorted(echoed)},
             )
             await self._release_mission(attempt.mission_id)
             self._note(f"attempt {attempt.id}: model echo mismatch {sorted(echoed)} → stopped")
@@ -1052,7 +1187,10 @@ class Orchestrator:
                 attempt.id,
                 turn_id=result.turn_id,
                 reason="turn_failed",
-                detail={"error": jsonable(result.error or {})},
+                detail={
+                    "error": jsonable(result.error or {}),
+                    "error_kind": classify_turn_error(result.error),  # D6-4' classification
+                },
             )
             self._settle_intent(intent, "FAILED")
             self._settle_if_known(attempt)
@@ -1524,10 +1662,11 @@ class Orchestrator:
             knowledge=knowledge,
             rejections=self._change_rejections(mission.id, trigger),
         )
+        decision = self._route_service("manager", mission.id)
         config = AgentConfig(
             name=f"manager-{rounds + 1}",
             instructions=MANAGER.instructions,
-            model_profile_ref=self._config.model,
+            model_profile_ref=decision.profile_id,
             tool_names=(),
             limits=AgentLimits(
                 max_model_calls_per_turn=4,
@@ -1555,8 +1694,9 @@ class Orchestrator:
                 "attempt_id": attempt_id,
                 "graph_version": int(report.get("graph_version") or 1),
                 "no_progress_count": no_progress,
+                **self._service_config(decision),
             },
-            reservation=self._reservation(self._config.manager_reserve_tokens),
+            reservation=self._reservation(self._config.manager_reserve_tokens, decision.profile_id),
             task_id=task.id,
             attempt_id=attempt_id,
         )
@@ -1611,14 +1751,14 @@ class Orchestrator:
         task_id = str(intent.config.get("task_id"))
         trigger = str(intent.config.get("trigger"))
         text = "" if result.public_output is None else str(result.public_output.content)
-        echoed = self.bridge.echoed_models(agent_id=intent.agent_id or "")
-        if echoed and echoed != {self._config.model}:
+        echoed = self.bridge_for(intent).echoed_models(agent_id=intent.agent_id or "")
+        if echoed and echoed != {self._expected_model(intent)}:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
             self.commit.stop_task(
                 task_id,
                 stop_reason=MissionStopReason.MODEL_ECHO_MISMATCH,
-                detail={"expected": self._config.model, "echoed": sorted(echoed)},
+                detail={"expected": self._expected_model(intent), "echoed": sorted(echoed)},
             )
             await self._release_mission(mission.id)
             return
@@ -1770,10 +1910,11 @@ class Orchestrator:
         last_error: ContractError | None = None
         for ordinal in range(1, MAX_CRITIC_ATTEMPTS + 1):
             subject = f"{subject_prefix}:{ordinal}"
+            decision = self._route_service("critic", mission.id)
             config = AgentConfig(
                 name=f"critic-{ordinal}",
                 instructions=CRITIC.instructions,
-                model_profile_ref=self._config.model,
+                model_profile_ref=decision.profile_id,
                 tool_names=CRITIC.tool_names,
                 limits=AgentLimits(
                     max_model_calls_per_turn=12,
@@ -1797,8 +1938,11 @@ class Orchestrator:
                     "context_version": package.context_version,
                     "prompt_version": CRITIC.prompt_version,
                     "untrusted_sources": untrusted,
+                    **self._service_config(decision),
                 },
-                reservation=self._reservation(self._config.critic_reserve_tokens),
+                reservation=self._reservation(
+                    self._config.critic_reserve_tokens, decision.profile_id
+                ),
                 task_id=task_id,
                 attempt_id=attempt_id,
             )
@@ -1814,7 +1958,7 @@ class Orchestrator:
             assert intent.agent_id and intent.expected_turn_id
             result = None
             while self.store.now < deadline:
-                result = await self.bridge.result(
+                result = await self.bridge_for(intent).result(
                     agent_id=intent.agent_id, turn_id=intent.expected_turn_id
                 )
                 if result is not None:
@@ -1843,6 +1987,42 @@ class Orchestrator:
         raise last_error
 
     # --------------------------------------------------------------- decide
+    async def _defer_for_profile(
+        self, mission: Mission, task: Task, unavailable: RoutingUnavailable
+    ) -> bool:
+        """S6-06 (D6-5'): the profile the Task needs is cooling down and has no fallback —
+        the Task waits visibly (no Attempt, the loop stays alive) for at most
+        ``profile_wait_seconds`` measured on the store clock, then stops explicitly."""
+
+        now = self.store.now
+        since = self._deferred.get(task.id)
+        if since is None:
+            self._deferred[task.id] = now
+            self._note(
+                f"task {task.id}: waiting for runtime profile {unavailable.profile_id!r} "
+                f"(unavailable until {unavailable.until})"
+            )
+            return False
+        if now - since < self._config.profile_wait_seconds:
+            return False
+        self._deferred.pop(task.id, None)
+        self.commit.stop_task(
+            task.id,
+            stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+            detail={
+                "profile_id": unavailable.profile_id,
+                "waited_seconds": round(now - since, 3),
+                "profile_wait_seconds": self._config.profile_wait_seconds,
+                "unavailable_until": unavailable.until,
+            },
+        )
+        await self._release_mission(mission.id)
+        self._note(
+            f"task {task.id} stopped: runtime profile {unavailable.profile_id!r} unavailable "
+            f"for {now - since:.1f}s"
+        )
+        return True
+
     def _observe_pressure(self, active: set[str]) -> None:
         """D6-2: one watermark evaluation per cycle, before any allocation."""
 
@@ -2071,12 +2251,24 @@ class Orchestrator:
                 else:
                     self._note(f"task {task.id}: retrieval unavailable, blocked ({count})")
                 return True
+        task_kind = str((mission.final_report or {}).get("task_kind") or "code")
+        try:
+            decision = self._model_router.route(
+                role=role.name,
+                task_kind=task_kind,
+                previous_attempts=attempts,
+                unavailable_until=self.commit.unavailable_until(),
+                now=self.store.now,
+            )
+        except RoutingUnavailable as unavailable:
+            return await self._defer_for_profile(mission, task, unavailable)
+        self._deferred.pop(task.id, None)
         placeholder = Attempt(
             id=ids.attempt_id(task.id, len(attempts) + 1),
             task_id=task.id,
             mission_id=mission.id,
             role=role.name,
-            model=self._config.model,
+            model=decision.model,
             prompt_version=role.prompt_version,
             context_version="pending",
             budget_reserved=task.budget,
@@ -2131,7 +2323,7 @@ class Orchestrator:
         config = AgentConfig(
             name=f"{role.name}-{placeholder.ordinal}",
             instructions=role.instructions,
-            model_profile_ref=self._config.model,
+            model_profile_ref=decision.profile_id,  # the label *is* the pool it runs in
             tool_names=allowed,
             limits=AgentLimits(
                 max_model_calls_per_turn=self._config.max_model_calls_per_turn,
@@ -2166,18 +2358,21 @@ class Orchestrator:
             attempt, _intent = self.commit.create_attempt(
                 task.id,
                 role=role.name,
-                model=self._config.model,
+                model=decision.model,
                 prompt_version=role.prompt_version,
                 context_version=package.context_version,
                 reservation=replace(
-                    self._reservation(tokens),
+                    self._reservation(tokens, decision.profile_id),
                     tool_calls=tool_cap if self._tool_calls_limited(mission, task) else 0,
                 ),
+                runtime_profile_id=decision.profile_id,
+                routing=decision.to_json(),
                 intent_config={
                     "agent_config": config.to_json(),
                     "message": message,
                     "attempt_id": placeholder.id,
                     "allowed_tools": list(allowed),
+                    **self._service_config(decision),
                     "max_tool_calls": tool_cap,
                     "context_version": package.context_version,
                     "prompt_version": role.prompt_version,

@@ -431,6 +431,7 @@ class Attempt:
     creation_key: str
     input_id: str
     task_version: int = 1
+    runtime_profile_id: str = "default"  # step 6 (D6-4): the physical pool this Attempt is bound to
     agent_id: str | None = None
     turn_id: str | None = None
     input_hash: str | None = None
@@ -489,6 +490,7 @@ class Attempt:
             "creation_key": self.creation_key,
             "input_id": self.input_id,
             "task_version": self.task_version,
+            "runtime_profile_id": self.runtime_profile_id,
             "agent_id": self.agent_id,
             "turn_id": self.turn_id,
             "input_hash": self.input_hash,
@@ -521,6 +523,7 @@ class Attempt:
             creation_key=data["creation_key"],
             input_id=data["input_id"],
             task_version=data.get("task_version", 1),
+            runtime_profile_id=str(data.get("runtime_profile_id", "default")),
             agent_id=data.get("agent_id"),
             turn_id=data.get("turn_id"),
             input_hash=data.get("input_hash"),
