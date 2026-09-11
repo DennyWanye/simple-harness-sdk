@@ -65,3 +65,33 @@
 - **Conflict Task 让 Mission 变慢/失败**：争议事实关乎交付物，阻塞是正确行为；仲裁失败 → Task FAILED → Mission FAILED（可解释）。
 - **综合任务在途时又开冲突**：由 D4-4 在验证期拒绝引用被取代知识，综合重试时拿到新知识。
 - **真实模型**：Planner 可能不按 A‖B‖C 拆，冲突可能不出现；真实证据只要求"知识被复用 + 综合再验收"两条，冲突路径由 fixtures 证明。
+
+## 6. 独立 review 后的修订（2026-09-11；裁决表见 journal §1；本节覆盖上文对应决定）
+
+| # | 修订 |
+|---|---|
+| D4-8' | **综合任务不改依赖、不改状态（R1）**：综合任务在 Graph Commit 时依赖 = Planner 图全部叶子，之后**永不修改** `dependency_ids`。冲突任务与综合任务的关系是**门控**：Allocator 的前沿过滤对 `kind=synthesis` 的 READY 任务检查"本 Mission 无 `state=OPEN`（已开任务）的冲突"，有则不建 Attempt、不转状态，事件 `SynthesisGated`（每个冲突一次）。综合结果在 accept 事务内再守一次：存在 OPEN 冲突 → 按 FAIL 处理（`synthesis_blocked_by_open_conflict`），Task 回 ACTIVE，门控放开后重试。"综合已 COMPLETED 后才出现冲突"在静态图里**不可达**（综合依赖全部叶子，叶子的冲突都在其 accept 时检出，早于综合 READY），登记为构造性边界并用测试断言 |
+| D4-7' | **冲突任务是拓扑序末尾的叶子（R2/R19/R13/R9/R22）**：取下一个 ordinal，依赖 = 争议 Claim 的来源 Task（都已 COMPLETED），**先以 BLOCKED 落库、同事务内经 `_unblock` 转 READY**（时间线有 `TaskUnblocked`），从不成为任何既有任务的依赖，`ordinal ≡ 拓扑序` 不变量保持；`merge_accepted` 与终结任务选择不受影响。终结任务 = `kind=synthesis` 的任务；没有综合任务时 = 非 conflict 的最后一个叶子（`terminal_task()`）。产物契约：仲裁的全部文件放在 `arbitration/<key>/` 前缀下（探针测试 `arbitration/<key>/test_probe.py`、结论 `arbitration/<key>/verdict.md`），`outputs=["arbitration/<key>/"]`，与种子/综合产物不重叠；`verification_policy=[format_check, rule_check, critic_review, code_test]`（仲裁也过独立 Critic，Critic 看双方证据、不看任何一方自述）；`max_attempts=2`（S4-03 的"意见→重试"前提） |
+| D4-6' | **冲突优先于分级、命中冲突不投影（R3）**：accept 事务内先按 D4-2 算出候选等级，再做冲突检测；命中冲突的 Claim 一律封顶 DISPUTED（UNDER_REVIEW→DISPUTED / SUPPORTED→DISPUTED，既有合法边），**不写入 `knowledge`**；对方 X 若是 VERIFIED 知识保持 VERIFIED 并记 `disputed_by`（无 VERIFIED→DISPUTED 边）；X 若是候选 → DISPUTED。仲裁结论 VERIFIED 后：`resolves=[…]`，争议 Claim 记 `resolved_by`；与 X stance 相反 → X SUPERSEDED（合法边），相同 → X 记 `confirmed_by` |
+| D4-4' | **引用校验两段（R5）**：验证期 `rule_check(knowledge=KnowledgeIndex)` 给可读反馈；accept 事务内用**当时**的索引再校验一次 `used_knowledge`，不通过 → 该 accept 按 FAIL 处理（`VerificationFailed` 层 `rule_check`，原因 `used_knowledge_stale`），Attempt RETRY_WAIT，不静默通过 |
+| D4-2' | **整树运行不给 Claim 定级（R6/R21）**：只有本次 `code_test` 实际以**具体目标**（非空、非整树根）运行且 PASS 的目标才能覆盖 Claim 的 `pytest:` 证据；整树运行只支撑 Mission 判定。VERIFIED 只经 `code_test` 是本版本收紧的实施约定（原文"机器验证或可靠规则"），`formal_check` 开放时再扩展 |
+| D4-15' | **迁移契约（R7/R12/R20）**：`orch_schema_migrations` 保留全部历史行，校验 = 已应用行是 `MIGRATIONS` 的前缀且 checksum 逐行匹配，缺的按序补应用（升级前 `backup()` 到 `<db>.pre-schema-<n>.backup`）；产物血缘唯一性用 `CREATE UNIQUE INDEX artifacts_lineage_idx(mission_id, path, version)`；`claims` 加 `key` 列（`stance` 只在 JSON）；`tasks.kind/context`、`claims.stance/proposed_by/…` 只在 JSON 记录。版本分配在 `record_result` 幂等短路**之后**，同一 `(attempt, path, hash)` 的产物已登记则版本不变（重复投递不抬版本，测试覆盖）。契约哈希：`proposal_hash`/`commit_id` 只取 Planner 提案，不含 Task JSON，旧回执可重放 |
+| D4-11' | **检索失败可观察（R8）**：`block` 下写事件 `RetrievalUnavailable` 即算本轮有进展（循环继续），计数 = 该 Task 的此类事件数（持久、重启后成立）；达到 `max_retrieval_failures` → `stop_task(RETRIEVAL_UNAVAILABLE)`，`MissionStopReason` 新增 `retrieval_unavailable`，**Mission 随之 FAILED**（S4-07 写明） |
+| D4-10' | **可见性模板（R10/R23）**：worker / verifier / critic / arbiter / synthesizer 五种启用；**verifier** = 独立验证层（critic_review）所用：只有产物、测试输出、准则与争议 Claim 的证据引用，**不含提交者 summary 与 confidence**；critic = 仲裁复核用（双方 Claim 与证据引用，无作者自述）；explorer 只登记不启用（第 5 步） |
+| D4-13' | **分支归属确定式（R18）**：任务归属 = 其祖先闭包中 ordinal 最小的根；祖先含多个根的任务（如综合任务）归入 `global`；摘要 `version` 对固定图稳定（测试断言） |
+| D4-17' | 血缘只交付 `final_report.lineage` + 证据 `lineage.json`；`mission lineage` CLI 子命令推迟到第 8 步（R23） |
+| D4-19 | **关闭开关（R22）**：`OrchestratorConfig.knowledge_sharing`（默认 True）。False 时：不检索（包内 `knowledge_retrieval.status="disabled"`）、不开冲突任务（争议 Claim 仍 DISPUTED，事件 `ConflictOpenDeferred(reason=knowledge_sharing_disabled)`）、综合任务不要求 `used_knowledge`；分级/投影/引用校验照常 |
+| D4-20 | **系统任务预算（R4）**：`MissionSpec.conflict_reserve_tokens`（默认 0 = 不开仲裁任务，只记 `ConflictOpenDeferred(reason=no_reserve)`）；`normalise_budgets` 先从 Mission 池扣除 `synthesis.budget.max_tokens + conflict_reserve_tokens` 再均分给 Planner 任务；Σ 检查 = Planner Σ + 综合 + 冲突预留 ≤ Mission；冲突任务预算 = `min(conflict_reserve_remaining, conflict_reserve_tokens)`，余量记在 `final_report.conflict_reserve_remaining`；余量不足 → 不开任务、事件 `ConflictOpenDeferred(reason=reserve_exhausted)`，**accept 事务永不因预算失败回滚**。DEFERRED 的冲突不门控综合任务，Mission 判定报告 `unresolved_conflicts` |
+
+### 6.1 本步实施约定（非原文原句；按 ORCH §13 登记）
+
+| 项 | 约定 | 原文位置 |
+|---|---|---|
+| Claim 扩展字段 `key`/`stance`/`contradicts`/每条 `evidence` | 本版本为确定性冲突检测与分级新增；§26.5 只有 id/content/type/status/source_task/source_attempt/evidence/dependencies/verifier_results/confidence_metadata/supersedes | §13、§26.5 |
+| SUPPORTED 的出边 {VERIFIED, REJECTED, DISPUTED} | §25.3 原图 SUPPORTED 无出边，SUPPORTED→VERIFIED 由 §14.3 链式图推出，REJECTED/DISPUTED 是第 2 步实现时的扩展；本步不再加边 | §14.3、§25.3 |
+| Retrieval 权重 3/2/1/0.5/0.5、`used_by` 封顶 3、`max_knowledge_items=12` | 原文只给因子清单；权重变更须变 `RETRIEVAL_VERSION` | §10.1 |
+| VERIFIED 只经 `code_test` 具体目标 | 原文"机器验证或可靠规则"的收紧子集 | §14.3；理论 04-9 |
+| Judge | 理论 04-7 的 Judge（选冠军）本版本不实现；代码 `judge_mission` 是 Mission 成功判定，不是同一概念 | 理论 04-7 |
+| Raw Logs 层 | 本版本 = 对既有 `events`/`results`/`artifacts`/SDK 回执的只读引用视图（`Blackboard.raw_refs`），不建原始日志表、不收集隐藏推理；Context Builder 只给引用；包内不含任何凭证字段 | §11、§21.3；ORCH §13 |
+| 知识不可变 | "由谁修改过"由 `superseded_by`/`resolves`/`confirmed_by`/`disputed_by` 链回答 | §11.2 |
+| 冲突检测范围 | 只识别显式 `contradicts` 与同 key 反 stance；语义相反但 key 不同的 Claim 不识别（遗留） | §14.4 |
