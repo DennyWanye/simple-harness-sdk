@@ -25,6 +25,7 @@ from .deduplicator import find_duplicates
 from .dependency_checker import DependencyError, check_dependencies, roots_and_leaves
 
 MAX_TASKS = 32
+MAX_GRAPH_DEPTH = 6  # step 5 (R19): the same bound the change path enforces
 
 
 class GraphRejected(ValueError):
@@ -243,6 +244,11 @@ def validate_graph(mission: Mission, proposal: TaskGraphProposal) -> ValidatedGr
     conflicts = _sibling_output_conflicts(proposal)
     if conflicts:
         raise GraphRejected("artifact_conflict", "; ".join(conflicts))
+    depth: dict[str, int] = {}
+    for key in order:
+        depth[key] = 1 + max((depth[d] for d in proposal.edges()[key]), default=0)
+    if depth and max(depth.values()) > MAX_GRAPH_DEPTH:
+        raise GraphRejected("depth", f"graph depth {max(depth.values())} > {MAX_GRAPH_DEPTH}")
     for node in proposal.tasks:
         if not node.goal.strip():
             raise GraphRejected("contract", f"{node.key}: goal is blank")

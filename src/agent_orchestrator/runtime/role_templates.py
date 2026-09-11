@@ -156,12 +156,121 @@ SYNTHESIZER = RoleTemplate(
     ),
 )
 
-ROLES = {template.name: template for template in (PLANNER, WORKER, CRITIC, ARBITER, SYNTHESIZER)}
+MANAGER_VERSION = "manager-v1"
+GRAPH_CHANGE_PROPOSAL_TAG = "graph_change_proposal"
+
+MANAGER = RoleTemplate(
+    name="manager",
+    prompt_version=MANAGER_VERSION,
+    tool_names=(),
+    instructions=(
+        "[role:manager]\n"
+        "你是编排系统的 Manager（带队走地图）。一个 Task 刚返回了执行证据（blocked / no_progress / failure / 提出的子任务，或反复验证失败）。"
+        "你观察 trigger、verifier_feedback、affected_subgraph 与 verified_knowledge，决定是否改变正式计划。你不执行任务、不调用工具。\n"
+        "你只能提出下列操作（系统会检查并 Commit，任何操作都不会直接生效）：\n"
+        "  add_task{key, goal, rationale, dependencies:[已有 task_id 或本提案里的 key], success_criteria, verification_policy, allowed_tools, budget:{max_tokens,max_attempts}, priority, outputs, parent_task_ids, role}\n"
+        "  supersede_task{task_id, replacement_key}（被替代的任务会被取消，替代者必须是本提案里的 add_task）\n"
+        "  retarget_dependencies{task_id, dependencies}（只对 BLOCKED 任务）\n"
+        "  set_priority{task_id, priority} · pause_task{task_id, reason} · resume_task{task_id} · cancel_task{task_id, reason}\n"
+        "  set_role{task_id, role}（role ∈ worker/explorer/exploiter/simplifier/connector/failure_analyst：换一种做法再试）\n"
+        "规则：新任务必须说明它如何服务根目标并且被某个任务依赖、替代某任务或细化某任务（parent_task_ids）；不能形成环；总深度、每个来源 Attempt 的新增任务数、Mission 剩余预算见 limits；"
+        "已 COMPLETED 的任务不能重做、只能被依赖；在执行中的任务要改合同只能 supersede；反复无进展时必须换角色/拆小或明确停止（cancel_task），空提案会被系统当作放弃。\n"
+        "最终回答必须只包含一个 <graph_change_proposal>…</graph_change_proposal> 块，块内 JSON：\n"
+        '  {"base_graph_version": 输入里的 graph_version, "rationale": str, "operations": [ … ]}（operations 可以为空 = 保持计划继续重试）。块外不要输出任何文字。'
+    ),
+)
+
+
+def _variant(name: str, version: str, bias: str) -> RoleTemplate:
+    return RoleTemplate(
+        name=name,
+        prompt_version=version,
+        tool_names=WORKER.tool_names,
+        instructions=WORKER.instructions.replace("[role:worker]", f"[role:{name}]", 1)
+        + "\n搜索偏置："
+        + bias,
+    )
+
+
+EXPLORER = _variant(
+    "explorer",
+    "explorer-v1",
+    "寻找全新路线和不同假设——先列出至少两种与已有尝试不同的做法，再选一种实现；不要重复失败过的路线。",
+)
+EXPLOITER = _variant(
+    "exploiter",
+    "exploiter-v1",
+    "把当前最好的路线继续做深做完——沿用已验证知识与已通过的部分，只补缺口。",
+)
+SIMPLIFIER = _variant(
+    "simplifier",
+    "simplifier-v1",
+    "从特殊情况、简化版本入手——先让最小可验证的子集通过测试，再扩展；宁可交付有限但正确的部分。",
+)
+CONNECTOR = _variant(
+    "connector",
+    "connector-v1",
+    "连接不同分支里的知识——优先复用 verified_knowledge 里其他分支的结论，把它们组合成本任务的解。",
+)
+FAILURE_ANALYST = _variant(
+    "failure_analyst",
+    "failure_analyst-v1",
+    "分析重复失败的共同原因——读取 failure_history 与 verifier_feedback，写出 analysis/failure_analysis.md，并在 proposed_tasks 里提出更小、可验证的子任务；不必自己解决原问题。",
+)
+
+ROLES = {
+    template.name: template
+    for template in (
+        PLANNER,
+        WORKER,
+        CRITIC,
+        ARBITER,
+        SYNTHESIZER,
+        MANAGER,
+        EXPLORER,
+        EXPLOITER,
+        SIMPLIFIER,
+        CONNECTOR,
+        FAILURE_ANALYST,
+    )
+}
 TASK_ROLE_BY_KIND = {"work": WORKER, "conflict": ARBITER, "synthesis": SYNTHESIZER}
+WORKER_VARIANTS = {
+    t.name: t for t in (WORKER, EXPLORER, EXPLOITER, SIMPLIFIER, CONNECTOR, FAILURE_ANALYST)
+}
+# §29.2 起始比例：登记为常量，第 6 步的配比调度使用；本步不据此分配
+ROLE_MIX_START = {
+    "explorer": 0.20,
+    "exploiter": 0.40,
+    "critic": 0.20,
+    "synthesizer": 0.10,
+    "verifier": 0.10,
+}
+
+
+def role_for_task(task) -> RoleTemplate:  # type: ignore[no-untyped-def]
+    """The template an Attempt of ``task`` uses: system kinds are fixed; a work Task
+    uses the Manager-set ``context.role`` (D5-9), else the Worker."""
+
+    if task.kind != "work":
+        return TASK_ROLE_BY_KIND[task.kind]
+    return WORKER_VARIANTS.get(str(task.context.get("role", "worker")), WORKER)
+
 
 __all__ = (
     "ARBITER",
     "ARBITER_VERSION",
+    "CONNECTOR",
+    "EXPLOITER",
+    "EXPLORER",
+    "FAILURE_ANALYST",
+    "GRAPH_CHANGE_PROPOSAL_TAG",
+    "MANAGER",
+    "MANAGER_VERSION",
+    "ROLE_MIX_START",
+    "SIMPLIFIER",
+    "WORKER_VARIANTS",
+    "role_for_task",
     "SYNTHESIZER",
     "SYNTHESIZER_VERSION",
     "TASK_GRAPH_PROPOSAL_TAG",

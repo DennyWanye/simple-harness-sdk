@@ -304,6 +304,57 @@ def build_critic_package(
     return _seal(package)
 
 
+def build_manager_package(
+    mission: Mission,
+    task: Task,
+    *,
+    trigger: Mapping[str, Any],
+    verifier_feedback: Sequence[Mapping[str, Any]],
+    subgraph: Sequence[Mapping[str, Any]],
+    graph_version: int,
+    limits: Mapping[str, Any],
+    knowledge: KnowledgeContext | None,
+    rejections: Sequence[Mapping[str, Any]] = (),
+) -> TaskPackage:
+    """What the Manager sees (D5-6): the trigger, the Verifier's feedback, the affected
+    subgraph with its statuses and attempt counts, the graph version it must base its
+    proposal on, the hard limits and the knowledge summary — never a whole Mission dump."""
+
+    knowledge = knowledge or KnowledgeContext.unavailable("not retrieved")
+    package: dict[str, Any] = {
+        "role": "manager",
+        "mission_root_goal": mission.goal,
+        "mission_success_criteria": list(mission.success_criteria),
+        "graph_version": graph_version,
+        "trigger": dict(trigger),
+        "task_contract": _task_contract(task),
+        "task_state": {
+            "status": str(task.status),
+            "attempts": task.attempt_count,
+            "role": task.context.get("role", "worker"),
+            "supersede_depth": task.context.get("supersede_depth", 0),
+        },
+        "verifier_feedback": [dict(item) for item in verifier_feedback],
+        "affected_subgraph": [dict(item) for item in subgraph],
+        "limits": dict(limits),
+        "verified_knowledge": [
+            {
+                "id": item["id"],
+                "key": item.get("key"),
+                "stance": item.get("stance"),
+                "content": item.get("content"),
+            }
+            for item in knowledge.verified
+        ],
+        "disputed_claims": [dict(item) for item in knowledge.disputed],
+        "rejections": [dict(item) for item in rejections],  # why the previous proposal was refused
+        "output_contract": "<graph_change_proposal>{json}</graph_change_proposal>",
+        "package_version": PACKAGE_VERSION,
+    }
+    assert_no_secrets(package)
+    return _seal(package)
+
+
 def assert_no_secrets(package: Mapping[str, Any]) -> None:
     """§21.3 / ORCH §13: no credential-looking field ever enters a model context."""
 
@@ -330,6 +381,7 @@ __all__ = (
     "TaskPackage",
     "assert_no_secrets",
     "build_critic_package",
+    "build_manager_package",
     "build_planner_package",
     "build_worker_package",
 )

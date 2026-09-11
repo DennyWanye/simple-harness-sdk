@@ -55,7 +55,9 @@ class UpstreamInput:
 
 
 def ancestors(task_id: str, tasks_by_id: Mapping[str, Task]) -> list[Task]:
-    """All transitive dependencies of ``task_id`` in topological (ordinal) order."""
+    """All transitive dependencies of ``task_id`` in topological order (step 5 D5-3': a
+    BLOCKED Task rewired to a later-created dependency keeps its ordinal, so the order
+    is computed from the edges; ordinal only breaks ties)."""
 
     seen: set[str] = set()
 
@@ -69,7 +71,31 @@ def ancestors(task_id: str, tasks_by_id: Mapping[str, Task]) -> list[Task]:
                 visit(dep)
 
     visit(task_id)
-    return sorted((tasks_by_id[t] for t in seen), key=lambda task: _ordinal(task.id))
+    return topological([tasks_by_id[t] for t in seen], tasks_by_id)
+
+
+def topological(tasks: Sequence[Task], tasks_by_id: Mapping[str, Task]) -> list[Task]:
+    """Kahn over the given tasks' dependency edges (restricted to the set), ordinal as
+    the deterministic tie-break."""
+
+    members = {task.id: task for task in tasks}
+    indegree = {tid: sum(1 for d in t.dependency_ids if d in members) for tid, t in members.items()}
+    ready = sorted((tid for tid, n in indegree.items() if n == 0), key=_ordinal)
+    order: list[Task] = []
+    while ready:
+        current = ready.pop(0)
+        order.append(members[current])
+        for tid, task in members.items():
+            if current in task.dependency_ids:
+                indegree[tid] -= 1
+                if indegree[tid] == 0:
+                    ready.append(tid)
+                    ready.sort(key=_ordinal)
+    if len(order) != len(members):  # a cycle can only come from a corrupted library
+        order.extend(
+            sorted((t for t in members.values() if t not in order), key=lambda t: _ordinal(t.id))
+        )
+    return order
 
 
 def _ordinal(task_id: str) -> int:
@@ -93,7 +119,7 @@ def merge_accepted(
 
     closure = {task.id: {t.id for t in ancestors(task.id, tasks_by_id)} for task in producers}
     inputs: dict[str, UpstreamInput] = {}
-    for task in sorted(producers, key=lambda task: _ordinal(task.id)):
+    for task in topological(list(producers), tasks_by_id):
         accepted = set(task.accepted_artifacts)
         for artifact in artifacts_by_task.get(task.id, ()):
             if artifact.id not in accepted:
@@ -156,6 +182,7 @@ __all__ = (
     "ArtifactConflict",
     "UpstreamInput",
     "ancestors",
+    "topological",
     "collect_upstream_inputs",
     "materialise_inputs",
     "merge_accepted",

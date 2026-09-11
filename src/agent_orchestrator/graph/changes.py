@@ -302,7 +302,7 @@ def validate_change(
     *,
     limits: ChangeLimits,
     proposals_by_attempt: Mapping[str, int],
-    settled_tokens_by_task: Mapping[str, int],
+    committed_tokens_by_task: Mapping[str, int],
 ) -> ValidatedChange:
     """Graph Manager checks for one change proposal against the current formal graph."""
 
@@ -401,6 +401,15 @@ def validate_change(
                     "illegal_transition", f"set_role {task_id}: Task is terminal"
                 )
             roles[task_id] = str(op.args["role"])
+    # ---- R10: a Task appears in at most one structural operation per proposal
+    structural = [set(superseded), set(retargets), set(cancels)]
+    for index, left in enumerate(structural):
+        for right in structural[index + 1 :]:
+            clash = left & right
+            if clash:
+                raise GraphChangeRejected(
+                    "conflicting_operations", f"tasks in two structural operations: {sorted(clash)}"
+                )
     # ---- the merged graph: live tasks (minus superseded/cancelled) + new nodes
     removed = set(superseded) | set(cancels)
     edges: dict[str, list[str]] = {}
@@ -456,6 +465,33 @@ def validate_change(
     report = find_duplicates(items)
     if report.problems:
         raise GraphChangeRejected("duplicate", "; ".join(report.problems))
+    # ---- D3-7' on the merged graph: independent tasks may not declare the same output path
+    outputs_of: dict[str, set[str]] = {
+        t.id: set(t.outputs) for t in live.values() if t.id not in removed
+    }
+    for node in nodes:
+        outputs_of[node.key] = set(node.outputs)
+    closure: dict[str, set[str]] = {}
+
+    def anc(key: str) -> set[str]:
+        if key not in closure:
+            found: set[str] = set()
+            for dep in edges.get(key, ()):
+                found.add(dep)
+                found |= anc(dep)
+            closure[key] = found
+        return closure[key]
+
+    for node in nodes:
+        for other, outs in outputs_of.items():
+            if other == node.key or other in anc(node.key) or node.key in anc(other):
+                continue
+            shared = sorted(outputs_of[node.key] & outs)
+            if shared:
+                raise GraphChangeRejected(
+                    "artifact_conflict",
+                    f"{node.key} and {other} are independent but both declare outputs {shared}",
+                )
     # ---- contracts of the new nodes
     for node in nodes:
         if not node.goal.strip() or not node.success_criteria:
@@ -504,12 +540,14 @@ def validate_change(
         committed = 0
         for task in tasks:
             if task.status is TaskStatus.CANCELLED or task.id in removed:
-                committed += int(settled_tokens_by_task.get(task.id, 0))
+                # R3 / ORCH §12.2: a cancelled task keeps what it settled *and* what is
+                # still reserved in flight — nothing is freed by cancelling
+                committed += int(committed_tokens_by_task.get(task.id, 0))
             else:
                 committed += int(task.budget.max_tokens or 0)
         reserve = system_reserve_tokens(mission)
-        # a superseded/cancelled task's unused allocation returns to the pool: only its
-        # settled usage stays committed
+        # a superseded/cancelled task's unused allocation returns to the pool once its
+        # reservations settle; settled + in-flight reserved stay committed
         remaining = pool - reserve - committed
         default_share = max(1, remaining // max(1, len(nodes))) if nodes else 0
         for node in nodes:

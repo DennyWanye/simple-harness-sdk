@@ -60,3 +60,28 @@
 - **Manager 质量**：真实模型的提案可能反复被拒（漂移/预算）；拒绝反馈进入下一次 Manager 包（同 D3-2'），且总次数受 `max_manager_rounds`（默认 4/Mission）限制 → 超限 `stop_task(MANAGEMENT_EXHAUSTED)`。
 - **替代链与预算**：替代任务反复申请预算把池耗尽 → 正常 `budget_exhausted` 路径。
 - **真实模型**：flash 上 `tool_parse` 失败频繁（L4-4），影响耗时不影响语义。
+
+## 6. 独立 review 后的修订（2026-09-11；裁决表见 journal §1）
+
+| # | 修订 |
+|---|---|
+| D5-3' | **拓扑序不再等于 ordinal（R1）**：`artifacts/versioning.ancestors/merge_accepted` 改为按依赖边做 Kahn 拓扑序（ordinal 只做平局），BLOCKED 任务在位改依赖（`retarget_dependencies`）后 `ordinal` 保持提交次序而合并顺序仍正确；D4-7' 的"冲突任务是末尾叶子"不受影响（它仍在拓扑序末尾）。§7.4 的"C2"在本实现里是"C 在位改依赖到 B2"——这是纲要 §7.3 允许的"尚未执行任务的细化"，图历史（`graph_changes`、`TaskDependenciesRewritten`）可回看 |
+| D5-2' | **预算池按已结算 + 在途预留计入（R3）**：被取代/取消任务的额度只在其预留结算后回到池里，不为新任务清空旧费用（ORCH §12.2）；变更路径同样做 D3-7' 的兄弟 `outputs` 冲突检查（R6）；初始图也受 `MAX_GRAPH_DEPTH=6` 限制（R19） |
+| D5-4' | **暂停路线有终局（R4）**：`pause_task` 只对不会阻塞判定的路线有意义——判定与"全部完成"检查排除 paused 的 READY/BLOCKED 任务；Mission 判定通过时 paused 的 READY 任务按 §25.1 READY→CANCELLED 记 `not_needed_paused`，paused 的 BLOCKED 任务随 Mission 终止（同 D3-13'）。"停止一条路线"（R5）：`cancel_task` 只能用于没有未完成依赖者的 READY/ACTIVE 任务（§25.1 无 BLOCKED→CANCELLED 边，有依赖者时整份提案被拒 `missing_dependency`）；有 BLOCKED 依赖者的路线用 `pause_task` |
+| D5-10' | **任何拒绝都反馈一次（R7）**：Manager 提案被拒（含 CAS 重叠、深度、预算、漂移）→ 记 `ManagementDecided(rejected)` 并用 `<trigger>:retry-1` 再请求一次，包内 `rejections` 带原因；再次被拒 → 按 D5-7 的无进展规则处置。`_open_conflict` 同样写 `graph_changes` 行（R8），`graph_version` 的每次递增都有账 |
+| D5-8' | **§29.3 输入尺度（R9）**：`mission_importance` = task.priority / max(live priority)（冲突任务 priority 10 使其为 1.0，其余按比例），且资格检查阶段 `kind=conflict` 的任务优先于普通任务；其余尺度见 D5-8 |
+| D5-7' | 无进展计数（R15）= `no_progress` / `failure` 结果 + 验证失败；`blocked` / `proposed_subtasks` 是"欠一个子任务"的进展信号不计入，但 Manager 对同一 trigger 的空提案仍受 `no_progress_limit` 约束；`max_manager_rounds`（默认 4）超限 → `stop_task(MANAGEMENT_EXHAUSTED)`（R14，进决定表与验收附加门槛） |
+| D5-15 | **关闭开关（R13）**：`OrchestratorConfig.dynamic_graph=True`；False 时非 candidate 结果只记历史并按旧路径重试，不请求 Manager，`commit_graph_change` 仍可由 API 调用 |
+
+### 6.1 本步实施约定（非原文原句；按 ORCH §13 登记）
+
+| 项 | 约定 | 原文位置 |
+|---|---|---|
+| 操作词汇（add_task / supersede_task / retarget_dependencies / set_priority / pause_task / resume_task / cancel_task / set_role） | 原文只说"新增 Task、提高优先级、申请预算、建议停止路线"；本表是实现定义的封闭词汇 | §15 |
+| Manager 触发时机 | 非 candidate 结果、`VerificationFailed` 累计 ≥ `manager_after_failures`、PASS 结果带 `proposed_tasks`；不在 token/心跳后重规划 | §7.2、ORCH §7.2 |
+| 无进展计数、`no_progress_limit=2`、`max_supersede_chain=2`、`max_manager_rounds=4`、`max_graph_depth=6`、`max_proposals_per_agent=3` | 原文 §19.2 只给"连续多轮"；数值为本版本默认 | §19.2；30-17 |
+| §29.3 输入尺度与老化窗口 `aging_window_seconds=300` | 原文只给权重；尺度是实施约定，`ALLOCATOR_VERSION` 随之变更 | §29.3 |
+| 非 candidate 结果的 claims | 记为 PROPOSED→UNDER_REVIEW→REJECTED（历史），不进知识 | §13 |
+| `stop_task` 是 Mission 级停止（R17） | 分支级停滞处置 = 换角色/拆小/暂停；`NO_PROGRESS` / `MANAGEMENT_EXHAUSTED` 是 Mission 级停止原因 | §19 |
+| 被替代任务的在途 SDK turn（R18） | 编排层 `cancel_turn` 协作取消、`gateway.unbind` 立即撤销工具资格；迟到结果只记历史（S5-06 观察的正是这条） | ORCH §12.1 |
+| 演示可观察性（R23） | 证据 `graph_history.json` 每个版本含任务快照、变更依据与被取代任务的已登记产物 id | ORCH §7.4 |

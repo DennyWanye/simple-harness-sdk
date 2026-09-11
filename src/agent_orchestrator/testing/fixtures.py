@@ -525,7 +525,16 @@ class TaskRoutedProvider(RoleScriptedProvider):
 
 
 DEMO_TASK_GOALS = {task["key"]: task["goal"] for task in DEMO_DAG_TASKS}
-TASK_ROLES = ("worker", "arbiter", "synthesizer")
+TASK_ROLES = (
+    "worker",
+    "explorer",
+    "exploiter",
+    "simplifier",
+    "connector",
+    "failure_analyst",
+    "arbiter",
+    "synthesizer",
+)
 
 
 def demo_static_dag_provider(
@@ -1054,3 +1063,274 @@ def demo_knowledge_sharing_provider(
         holds=holds,
         per_attempt=per_attempt,
     )
+
+
+# ------------------------------------------------------------ dynamic-dag demo (step 5)
+RECORDER_SEED = {
+    "spec/INPUT.md": (
+        "# 记录器输入\n\n记录器接收一行行的事件文本，每行是 `<时间戳> <级别> <消息>`。\n"
+        "时间戳格式**尚未确认**（可能是 ISO-8601，也可能是 Unix 秒）。级别是 INFO/WARN/ERROR。\n"
+    ),
+    "tests/test_recorder.py": (
+        "from recorder import parse_line\n\n\n"
+        "def test_parse_iso_line():\n"
+        "    event = parse_line('2026-09-11T10:00:00Z INFO started')\n"
+        "    assert event == {'ts': '2026-09-11T10:00:00Z', 'level': 'INFO', 'message': 'started'}\n\n\n"
+        "def test_parse_message_with_spaces():\n"
+        "    event = parse_line('2026-09-11T10:00:01Z ERROR disk full on /data')\n"
+        "    assert event['message'] == 'disk full on /data'\n"
+    ),
+}
+RECORDER_IMPL = (
+    "def parse_line(line: str) -> dict:\n"
+    "    ts, level, message = line.split(' ', 2)\n"
+    "    return {'ts': ts, 'level': level, 'message': message}\n"
+)
+RECORDER_ANALYSIS = "# 输入分析\n\n每行三段：时间戳、级别、消息；消息可含空格。时间戳格式待确认。\n"
+RECORDER_FORMAT = "# 格式确认\n\n时间戳采用 ISO-8601（如 2026-09-11T10:00:00Z）；级别 INFO/WARN/ERROR；消息取剩余全部文本。\n"
+RECORDER_DOCS = "# 文档检查\n\nspec/INPUT.md 的三段结构描述完整；时间戳格式由 FORMAT.md 确认。\n"
+RECORDER_VERIFY = "# 验证\n\ntests/test_recorder.py 全部通过。\n"
+RECORDER_SPEC: dict[str, Any] = {
+    "goal": "实现记录器 recorder.py 的 parse_line 并通过 tests/test_recorder.py，附分析、格式确认、验证与文档检查",
+    "success_criteria": ["pytest:tests/test_recorder.py", "file:VERIFY.md"],
+    "allowed_tools": COMPARE_TOOLS,
+    "budget": {"max_tokens": 300_000, "max_attempts": 16},
+}
+
+
+def _recorder_task(key, goal, deps, criteria, priority, outputs, tokens=30_000, policy=None):
+    return {
+        "key": key,
+        "goal": goal,
+        "rationale": f"{key} 是记录器交付计划的一部分",
+        "dependencies": list(deps),
+        "success_criteria": list(criteria),
+        "verification_policy": policy or ["format_check", "rule_check"],
+        "allowed_tools": list(COMPARE_TOOLS),
+        "budget": {"max_tokens": tokens, "max_attempts": 3},
+        "priority": priority,
+        "outputs": list(outputs),
+    }
+
+
+RECORDER_TASKS = [
+    _recorder_task(
+        "A", "分析 spec/INPUT.md 并写出 analysis.md", [], ["file:analysis.md"], 3.0, ["analysis.md"]
+    ),
+    _recorder_task(
+        "B",
+        "实现 recorder.py 并通过 tests/test_recorder.py",
+        ["A"],
+        ["pytest:tests/test_recorder.py"],
+        2.0,
+        ["recorder.py"],
+        policy=["format_check", "rule_check", "code_test"],
+    ),
+    _recorder_task(
+        "C",
+        "验证：运行全部测试并写 VERIFY.md",
+        ["B"],
+        ["pytest:tests/test_recorder.py", "file:VERIFY.md"],
+        1.0,
+        ["VERIFY.md"],
+        policy=["format_check", "rule_check", "code_test"],
+    ),
+    _recorder_task("D", "独立文档检查：写 DOCS.md", ["A"], ["file:DOCS.md"], 0.5, ["DOCS.md"]),
+]
+RECORDER_GOALS = {t["key"]: t["goal"] for t in RECORDER_TASKS}
+RECORDER_GOALS["E"] = "确认时间戳格式并写 FORMAT.md"
+RECORDER_GOALS["B2"] = "按 FORMAT.md 确认的格式实现 recorder.py 并通过 tests/test_recorder.py"
+
+
+def outcome_step(
+    *,
+    outcome: str,
+    summary: str,
+    proposed_tasks: Sequence[dict[str, Any]] = (),
+    risks: Sequence[str] = (),
+) -> Callable[[ProviderRequest], str]:
+    """A non-candidate Result Envelope (§13): blocked / failure / no_progress."""
+
+    def step(request: ProviderRequest) -> str:
+        package = package_of(request)
+        envelope = {
+            "task_id": package.get("task_contract", {}).get("task_id", ""),
+            "attempt_id": package.get("attempt", {}).get("attempt_id", ""),
+            "outcome": outcome,
+            "summary": summary,
+            "claims": [],
+            "evidence": [],
+            "artifacts": [],
+            "proposed_tasks": [dict(p) for p in proposed_tasks],
+            "used_knowledge": [],
+            "risks": list(risks),
+            "cost": {"tool_calls": 0},
+        }
+        return "<result_envelope>" + json.dumps(envelope, ensure_ascii=False) + "</result_envelope>"
+
+    return step
+
+
+def graph_change_step(
+    operations: Sequence[dict[str, Any]] | Callable[[dict[str, Any]], list[dict[str, Any]]],
+    *,
+    rationale: str = "按执行证据调整计划",
+) -> Callable[[ProviderRequest], str]:
+    """A Manager step: the proposal is based on the graph_version the package carries;
+    ``operations`` may be a callable of the package (to reference task ids it lists)."""
+
+    def step(request: ProviderRequest) -> str:
+        package = package_of(request)
+        ops = operations(package) if callable(operations) else list(operations)
+        body = {
+            "base_graph_version": package.get("graph_version", 1),
+            "rationale": rationale,
+            "operations": ops,
+        }
+        return (
+            "<graph_change_proposal>"
+            + json.dumps(body, ensure_ascii=False)
+            + "</graph_change_proposal>"
+        )
+
+    return step
+
+
+def _write_files_then(
+    files: dict[str, str], *, test_path: str | None, summary: str, claim: str
+) -> list[object]:
+    steps: list[object] = [("workspace_list", {})]
+    for path, content in files.items():
+        steps.append(("workspace_write_file", {"path": path, "content": content}))
+    if test_path is not None:
+        steps.append(("run_tests", {"path": test_path}))
+    steps.append(
+        knowledge_envelope_step(
+            summary=summary,
+            artifacts=list(files),
+            claims=[
+                typed_claim(claim, evidence=[f"pytest:{test_path}"] if test_path else list(files))
+            ],
+            cite_knowledge=False,
+        )
+    )
+    return steps
+
+
+def recorder_scripts() -> dict[str, list[object]]:
+    """§7.4: B reports the missing format definition and proposes a sub-task; after the
+    Manager's change, E confirms the format, B2 implements, C verifies, D documents."""
+
+    return {
+        "A": _write_files_then(
+            {"analysis.md": RECORDER_ANALYSIS},
+            test_path=None,
+            summary="分析完成",
+            claim="analysis.md 写出",
+        ),
+        "B": [
+            ("workspace_read_file", {"path": "spec/INPUT.md"}),
+            outcome_step(
+                outcome="blocked",
+                summary="时间戳格式未确认，无法实现 parse_line",
+                proposed_tasks=[
+                    {
+                        "goal": "确认时间戳格式并写 FORMAT.md",
+                        "reason": "实现依赖格式定义",
+                        "estimated_cost_tokens": 5000,
+                    }
+                ],
+                risks=["格式猜错会让实现与测试不一致"],
+            ),
+        ],
+        "E": _write_files_then(
+            {"FORMAT.md": RECORDER_FORMAT},
+            test_path=None,
+            summary="格式确认",
+            claim="FORMAT.md 写出",
+        ),
+        "B2": _write_files_then(
+            {"recorder.py": RECORDER_IMPL},
+            test_path="tests/test_recorder.py",
+            summary="实现完成",
+            claim="tests/test_recorder.py 通过",
+        ),
+        "C": _write_files_then(
+            {"VERIFY.md": RECORDER_VERIFY},
+            test_path="tests/test_recorder.py",
+            summary="验证通过",
+            claim="全部测试通过",
+        ),
+        "D": _write_files_then(
+            {"DOCS.md": RECORDER_DOCS}, test_path=None, summary="文档检查完成", claim="DOCS.md 写出"
+        ),
+    }
+
+
+def recorder_manager_change(package: dict[str, Any]) -> list[dict[str, Any]]:
+    """The §7.4 decision: add E (format), add B2 (implement after E), supersede B."""
+
+    task_id = str(package["trigger"]["task_id"])
+    subgraph = {t["task_id"]: t for t in package.get("affected_subgraph", [])}
+    a_id = next(t for t in subgraph.values() if t["goal"].startswith("分析"))["task_id"]
+    return [
+        {
+            "op": "add_task",
+            "key": "E",
+            "goal": RECORDER_GOALS["E"],
+            "rationale": "B 实现依赖格式定义；确认格式解锁实现",
+            "dependencies": [a_id],
+            "success_criteria": ["file:FORMAT.md"],
+            "verification_policy": ["format_check", "rule_check"],
+            "allowed_tools": list(COMPARE_TOOLS),
+            "budget": {"max_tokens": 20_000, "max_attempts": 2},
+            "priority": 2.5,
+            "outputs": ["FORMAT.md"],
+            "parent_task_ids": [task_id],
+        },
+        {
+            "op": "add_task",
+            "key": "B2",
+            "goal": RECORDER_GOALS["B2"],
+            "rationale": "替代被阻塞的实现任务，按确认的格式实现",
+            "dependencies": [a_id, "E"],
+            "success_criteria": ["pytest:tests/test_recorder.py"],
+            "verification_policy": ["format_check", "rule_check", "code_test"],
+            "allowed_tools": list(COMPARE_TOOLS),
+            "budget": {"max_tokens": 30_000, "max_attempts": 3},
+            "priority": 2.0,
+            "outputs": ["recorder.py"],
+        },
+        {"op": "supersede_task", "task_id": task_id, "replacement_key": "B2"},
+    ]
+
+
+def demo_dynamic_dag_provider(
+    *,
+    scripts: dict[str, list[object]] | None = None,
+    manager_steps: Sequence[object] | None = None,
+    tasks: Sequence[dict[str, Any]] | None = None,
+    planner_steps: Sequence[object] | None = None,
+    holds: dict[str, list[asyncio.Event | None]] | None = None,
+    per_attempt: dict[str, list[list[object]]] | None = None,
+) -> TaskRoutedProvider:
+    graph = list(RECORDER_TASKS if tasks is None else tasks)
+    worker_scripts = recorder_scripts()
+    for key, steps in (scripts or {}).items():
+        worker_scripts[key] = list(steps)
+    goals = {task["key"]: task["goal"] for task in graph}
+    goals.update({"E": RECORDER_GOALS["E"], "B2": RECORDER_GOALS["B2"]})
+    provider = TaskRoutedProvider(
+        list(planner_steps) if planner_steps is not None else [graph_proposal_step(graph)],
+        worker_scripts,
+        critic_steps=[critic_step(verdict="PASS", criteria_met=True)] * 4,
+        goals=goals,
+        holds=holds,
+        per_attempt=per_attempt,
+    )
+    provider.scripts["manager"] = (
+        list(manager_steps)
+        if manager_steps is not None
+        else [graph_change_step(recorder_manager_change)]
+    )
+    return provider

@@ -33,6 +33,7 @@ from ..contracts import (
     MissionStatus,
     MissionStopReason,
     ResultEnvelope,
+    ResultOutcome,
     Task,
     TaskStatus,
     ids,
@@ -753,19 +754,18 @@ class CommitService:
                     else []
                 ):
                     proposals_by_attempt[str(parent)] = proposals_by_attempt.get(str(parent), 0) + 1
-            settled: dict[str, int] = {}
+            committed: dict[str, int] = {}
             for task in tasks:
-                if task.status is TaskStatus.CANCELLED:
-                    with self._store.transaction():
-                        account = self._ledger.account(task_account(task.id))
-                    settled[task.id] = int(account.settled_tokens)
+                if task.status is TaskStatus.CANCELLED or task.id in change.referenced_task_ids():
+                    account = self._ledger.account(task_account(task.id))
+                    committed[task.id] = int(account.settled_tokens) + int(account.reserved_tokens)
             validated = validate_change(
                 mission,
                 tasks,
                 change,
                 limits=limits,
                 proposals_by_attempt=proposals_by_attempt,
-                settled_tokens_by_task=settled,
+                committed_tokens_by_task=committed,
             )
             by_id = {task.id: task for task in tasks}
             new_version = current + 1
@@ -1461,6 +1461,38 @@ class CommitService:
                 },
             ),
             expected_version=mission.version,
+        )
+        self._store.insert_graph_change(  # R8: every graph_version has a ledger row
+            {
+                "change_id": conflict_id,
+                "mission_id": mission.id,
+                "from_version": graph_version - 1,
+                "to_version": graph_version,
+                "proposal_hash": sha256_hex({"conflict": conflict_id}),
+                "rebased_from": None,
+                "basis": {
+                    "trigger": "conflict",
+                    "conflict_id": conflict_id,
+                    "result_id": opened_by,
+                },
+                "rationale": f"§14.4 conflict on {contradiction.key}: arbitration task opened by the system",
+                "operations": [
+                    {
+                        "op": "add_task",
+                        "key": "conflict",
+                        "task_id": task.id,
+                        "dependencies": list(task.dependency_ids),
+                    }
+                ],
+                "new_task_ids": [task.id],
+                "superseded": {},
+                "cancelled": [],
+                "affected_task_ids": [task.id, *task.dependency_ids],
+                "unblocked": [],
+                "warnings": [],
+                "depth": 0,
+                "source": {"template": "conflict"},
+            }
         )
         self._emit(
             "ConflictOpened",
@@ -2282,6 +2314,147 @@ class CommitService:
             )
             return stored
 
+    def record_outcome_result(
+        self,
+        attempt_id: str,
+        *,
+        envelope: ResultEnvelope,
+        turn_id: str,
+        usage_refs: Sequence[str],
+    ) -> StoredResult:
+        """A non-candidate Result Envelope (§13 blocked / failure / no_progress /
+        proposed_subtasks; D5-5): kept as history (never verified), the Attempt ends in
+        RETRY_WAIT with the outcome as its failure, the Task stays ACTIVE for the
+        Manager's decision (D5-6).  Idempotent on (attempt, turn)."""
+
+        with self._store.transaction():
+            attempt = self._require_attempt(attempt_id)
+            existing = self._store.find_result_for_attempt(attempt_id)
+            if existing is not None and existing.turn_id == turn_id:
+                return existing
+            if attempt.status is not AttemptStatus.RUNNING:
+                raise CommitRejected(
+                    f"attempt {attempt_id} is {attempt.status}; cannot accept a result"
+                )
+            if envelope.attempt_id != attempt_id or envelope.task_id != attempt.task_id:
+                raise CommitRejected("result identity does not match the Attempt")
+            if envelope.outcome is ResultOutcome.CANDIDATE:
+                raise CommitRejected("a candidate result goes through record_result / verification")
+            stored = StoredResult(
+                envelope=envelope,
+                turn_id=turn_id,
+                verification_state="REJECTED",
+                verdict=f"outcome:{envelope.outcome}",
+                received_at=self._store.now,
+                artifacts=(),
+                usage_refs=tuple(usage_refs),
+            )
+            self._store.insert_result(stored)
+            for index, proposal in enumerate(envelope.claims, start=1):
+                claim = Claim(
+                    id=ids.claim_id(envelope.id, index),
+                    content=proposal.content,
+                    type=proposal.type,
+                    status=ClaimStatus.PROPOSED,
+                    source_task=attempt.task_id,
+                    source_attempt=attempt_id,
+                    evidence=proposal.evidence or envelope.evidence,
+                    dependencies=envelope.used_knowledge,
+                    verifier_results=(),
+                    confidence_metadata={
+                        "self_reported_confidence": proposal.confidence,
+                        "grade": "not_verified_non_candidate",
+                    },
+                    supersedes=None,
+                    mission_id=attempt.mission_id,
+                    result_id=envelope.id,
+                    key=proposal.key,
+                    stance=proposal.stance,
+                    proposed_by=attempt.agent_id or "",
+                )
+                self._store.upsert_claim(claim)
+                self._store.upsert_claim(
+                    next_claim(next_claim(claim, ClaimStatus.UNDER_REVIEW), ClaimStatus.REJECTED)
+                )
+            failure = {
+                "reason": f"outcome_{envelope.outcome}",
+                "summary": envelope.summary,
+                "proposed_tasks": [dict(item) for item in envelope.proposed_tasks],
+                "risks": list(envelope.risks),
+                "result_id": envelope.id,
+            }
+            self._store.update_attempt(
+                next_attempt(
+                    attempt, AttemptStatus.RETRY_WAIT, result_id=envelope.id, failure=failure
+                ),
+                expected_version=attempt.version,
+            )
+            self._settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
+            self._emit(
+                "ResultSubmitted",
+                attempt.mission_id,
+                key=envelope.id,
+                task_id=attempt.task_id,
+                attempt_id=attempt_id,
+                payload={
+                    "result_id": envelope.id,
+                    "outcome": str(envelope.outcome),
+                    "artifacts": [],
+                    "claims": len(envelope.claims),
+                    "proposed_tasks": [dict(item) for item in envelope.proposed_tasks],
+                },
+                actor_type="agent",
+                actor_id=attempt.agent_id or attempt_id,
+            )
+            self._emit(
+                "OutcomeRecorded",
+                attempt.mission_id,
+                key=envelope.id,
+                task_id=attempt.task_id,
+                attempt_id=attempt_id,
+                payload={"outcome": str(envelope.outcome), "summary": envelope.summary[:400]},
+            )
+            return stored
+
+    def no_progress_count(self, task_id: str) -> int:
+        """Attempts of the Task that ended without progress (D5-7): no_progress / failure
+        outcomes and failed verifications."""
+
+        count = 0
+        for attempt in self._store.list_attempts(task_id):
+            reason = str((attempt.failure or {}).get("reason", ""))
+            if reason in {"outcome_no_progress", "outcome_failure", "verification_failed"}:
+                count += 1
+        return count
+
+    def record_management_requested(
+        self, mission_id: str, *, task_id: str, trigger: str, subject: str, round_number: int
+    ) -> Event:
+        return self._emit(
+            "ManagementRequested",
+            mission_id,
+            key=subject,
+            task_id=task_id,
+            payload={"trigger": trigger, "subject": subject, "round": round_number},
+        )
+
+    def record_management_decided(
+        self,
+        mission_id: str,
+        *,
+        task_id: str,
+        trigger: str,
+        decision: str,
+        detail: Mapping[str, Any],
+    ) -> Event:
+        return self._emit(
+            "ManagementDecided",
+            mission_id,
+            key=f"{mission_id}:manager:{trigger}:{decision}",
+            task_id=task_id,
+            payload={"trigger": trigger, "decision": decision, "detail": jsonable(detail)},
+        )
+
     def record_late_result(
         self, attempt_id: str, *, turn_id: str, summary: str, artifacts: Sequence[str]
     ) -> Attempt:
@@ -2501,13 +2674,30 @@ class CommitService:
             mission = self._require_mission(mission_id)
             if mission.status in {MissionStatus.COMPLETED, MissionStatus.FAILED}:
                 return mission
+            all_tasks = self._store.list_tasks(mission_id)
             tasks = [
                 task
-                for task in self._store.list_tasks(mission_id)
+                for task in all_tasks
                 if task.status is not TaskStatus.CANCELLED  # D5-4: superseded work is history
+                and not (
+                    task.paused and task.status in {TaskStatus.READY, TaskStatus.BLOCKED}
+                )  # R4: a paused route is not required
             ]
             if not tasks or any(task.status is not TaskStatus.COMPLETED for task in tasks):
                 raise CommitRejected("mission judgment requires every live Task to be COMPLETED")
+            for task in all_tasks:  # a paused READY route ends with the Mission as not needed
+                if task.paused and task.status is TaskStatus.READY:
+                    self._store.update_task(
+                        next_task(task, TaskStatus.CANCELLED, failure_reason="not_needed_paused"),
+                        expected_version=task.version,
+                    )
+                    self._emit(
+                        "TaskCancelled",
+                        mission_id,
+                        key=task.id,
+                        task_id=task.id,
+                        payload={"reason": "not_needed_paused"},
+                    )
             criteria = list(mission.success_criteria)
             if [item.get("criterion") for item in judgments] != criteria:
                 raise CommitRejected("judgments must cover the Mission success criteria in order")

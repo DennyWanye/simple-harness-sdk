@@ -42,6 +42,7 @@ from ..artifacts.workspace import sha256_file
 from ..context.context_builder import (
     CONTEXT_BUILDER_VERSION,
     build_critic_package,
+    build_manager_package,
     build_planner_package,
     build_worker_package,
 )
@@ -66,6 +67,7 @@ from ..contracts import (
     MissionStatus,
     MissionStopReason,
     ResultEnvelope,
+    ResultOutcome,
     Task,
     TaskStatus,
     ids,
@@ -73,6 +75,7 @@ from ..contracts import (
 from ..contracts.models import jsonable, sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetExhausted
+from ..graph.changes import ChangeLimits, TaskGraphChange
 from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
 from ..planning.manager import terminal_task
@@ -86,10 +89,11 @@ from ..runtime.assembly import (
 from ..runtime.output_blocks import BlockError, extract_block, outside_text
 from ..runtime.role_templates import (
     CRITIC,
+    GRAPH_CHANGE_PROPOSAL_TAG,
+    MANAGER,
     PLANNER,
     RESULT_ENVELOPE_TAG,
-    TASK_ROLE_BY_KIND,
-    WORKER,
+    role_for_task,
 )
 from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding, run_pytest
 from ..scheduling.allocator import allocate
@@ -596,6 +600,8 @@ class Orchestrator:
             await self._collect_plan(intent, result)
         elif intent.kind == "attempt":
             await self._collect_attempt(intent, result)
+        elif intent.kind == "manager":
+            await self._collect_manager(intent, result)
         return True
 
     async def _collect_after_stop(self, intent: DispatchIntent) -> bool:
@@ -669,6 +675,14 @@ class Orchestrator:
             await self._planning_rejected(
                 intent, reason="planner_turn_missing", detail={"agent_id": intent.agent_id}
             )
+            return True
+        if intent.kind == "manager":
+            if liveness.exists:
+                return False
+            self._import_usage(intent)
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, intent.mission_id)
+            await self._manager_unusable(intent, reason="manager_turn_missing")
             return True
         if intent.kind != "attempt":
             return False
@@ -963,10 +977,29 @@ class Orchestrator:
             await self._release_attempt(attempt.id, cancel=False)
             self._note(f"attempt {attempt.id}: envelope invalid → RETRY_WAIT ({error})")
             return
-        workspace = self.assembled.workspaces.get(attempt.id)
         mission = self.store.get_mission(attempt.mission_id)
         task = self.store.get_task(attempt.task_id)
         assert mission is not None and task is not None
+        if envelope.outcome is not ResultOutcome.CANDIDATE:
+            # D5-5: execution evidence, not a candidate — history + a management decision
+            stored = self.commit.record_outcome_result(
+                attempt.id,
+                envelope=envelope,
+                turn_id=result.turn_id,
+                usage_refs=tuple(result.usage_refs),
+            )
+            self._settle_intent(intent, "SETTLED")
+            await self._release_attempt(attempt.id, cancel=False)
+            self._note(f"attempt {attempt.id}: outcome {envelope.outcome} → manager decision")
+            await self._request_management(
+                mission,
+                task,
+                trigger=f"outcome:{stored.envelope.id}",
+                result_id=stored.envelope.id,
+                attempt_id=attempt.id,
+            )
+            return
+        workspace = self.assembled.workspaces.get(attempt.id)
         artifacts = workspace.snapshot(
             mission_id=attempt.mission_id,
             task_id=attempt.task_id,
@@ -1220,6 +1253,348 @@ class Orchestrator:
                 raise ArtifactConflict(f"upstream artifact {item.path} is not text") from error
         return protected
 
+    # ------------------------------------------------------- management (step 5)
+    def _tasks_under_management(self, mission_id: str) -> set[str]:
+        return {
+            str(intent.config.get("task_id"))
+            for intent in self.store.list_intents(
+                "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+            )
+            if intent.kind == "manager"
+            and intent.mission_id == mission_id
+            and intent.config.get("task_id")
+        }
+
+    def _manager_rounds(self, mission_id: str) -> int:
+        return sum(1 for e in self.store.list_events(mission_id) if e.type == "ManagementRequested")
+
+    def _change_rejections(self, mission_id: str, trigger: str) -> list[dict[str, Any]]:
+        return [
+            {"reason": e.payload.get("reason"), "detail": e.payload.get("detail")}
+            for e in self.store.list_events(mission_id)
+            if e.type == "TaskGraphChangeRejected"
+            and str(e.payload.get("basis", {}).get("trigger", "")).split(":retry-")[0]
+            == trigger.split(":retry-")[0]
+        ]
+
+    def _affected_subgraph(self, task: Task, tasks: Sequence[Task]) -> list[dict[str, Any]]:
+        by_id = {t.id: t for t in tasks}
+        related = {task.id} | set(task.dependency_ids)
+        related |= {t.id for t in tasks if task.id in t.dependency_ids}
+        for dep in task.dependency_ids:  # siblings under the same dependency
+            related |= {t.id for t in tasks if dep in t.dependency_ids}
+        view = []
+        for tid in sorted(related, key=lambda x: by_id[x].id):
+            t = by_id[tid]
+            view.append(
+                {
+                    "task_id": t.id,
+                    "kind": t.kind,
+                    "goal": t.goal,
+                    "status": str(t.status),
+                    "dependencies": list(t.dependency_ids),
+                    "attempts": t.attempt_count,
+                    "paused": t.paused,
+                    "role": t.context.get("role", "worker"),
+                    "supersedes_task": t.context.get("supersedes_task"),
+                }
+            )
+        return view
+
+    async def _request_management(
+        self,
+        mission: Mission,
+        task: Task,
+        *,
+        trigger: str,
+        result_id: str | None,
+        attempt_id: str | None,
+    ) -> DispatchIntent | None:
+        """One durable, deduplicated management decision per trigger (D5-6 / S5-07)."""
+
+        if not self._config.dynamic_graph:  # D5-15: the layer's kill switch
+            self._note(f"dynamic graph disabled: no management for {task.id} ({trigger})")
+            return None
+        subject = f"{mission.id}:manager:{trigger}"
+        existing = self.store.get_intent_for_subject(subject)
+        if existing is not None:
+            return existing
+        rounds = self._manager_rounds(mission.id)
+        if rounds >= self._config.max_manager_rounds:
+            self.commit.stop_task(
+                task.id,
+                stop_reason=MissionStopReason.MANAGEMENT_EXHAUSTED,
+                detail={
+                    "rounds": rounds,
+                    "max_manager_rounds": self._config.max_manager_rounds,
+                    "trigger": trigger,
+                },
+            )
+            await self._release_mission(mission.id)
+            self._note(f"task {task.id}: management rounds exhausted ({rounds})")
+            return None
+        mission = self.store.get_mission(mission.id) or mission
+        tasks = self.store.list_tasks(mission.id)
+        task = self.store.get_task(task.id) or task
+        report = dict(mission.final_report or {})
+        stored = self.store.get_result(result_id) if result_id else None
+        feedback: list[dict[str, Any]] = []
+        for attempt in self.store.list_attempts(task.id):
+            failure = attempt.failure or {}
+            if failure.get("reason") == "verification_failed":
+                feedback.extend(
+                    dict(item) for item in failure.get("failures", []) if isinstance(item, Mapping)
+                )
+        no_progress = self.commit.no_progress_count(task.id)
+        with self.store.transaction():
+            account = self.commit.ledger.account(mission_account(mission.id))
+        trigger_view: dict[str, Any] = {
+            "trigger": trigger,
+            "result_id": result_id,
+            "attempt_id": attempt_id,
+            "task_id": task.id,
+        }
+        if stored is not None:
+            trigger_view.update(
+                {
+                    "outcome": str(stored.envelope.outcome),
+                    "summary": stored.envelope.summary,
+                    "proposed_tasks": [dict(item) for item in stored.envelope.proposed_tasks],
+                    "risks": list(stored.envelope.risks),
+                }
+            )
+        limits = {
+            "max_graph_depth": self._config.max_graph_depth,
+            "max_proposals_per_agent": self._config.max_proposals_per_agent,
+            "max_supersede_chain": self._config.max_supersede_chain,
+            "mission_tokens_remaining": account.remaining_tokens(),
+            "task_attempts_remaining": None
+            if task.budget.max_attempts is None
+            else max(0, task.budget.max_attempts - task.attempt_count),
+            "no_progress_count": no_progress,
+            "no_progress_limit": self._config.no_progress_limit,
+            "management_rounds_remaining": self._config.max_manager_rounds - rounds,
+        }
+        try:
+            knowledge = self._gather_knowledge(mission, task, {t.id: t for t in tasks})
+        except RetrievalUnavailable as error:
+            knowledge = KnowledgeContext.unavailable(str(error))
+        package = build_manager_package(
+            mission,
+            task,
+            trigger=trigger_view,
+            verifier_feedback=feedback[-6:],
+            subgraph=self._affected_subgraph(task, tasks),
+            graph_version=int(report.get("graph_version") or 1),
+            limits=limits,
+            knowledge=knowledge,
+            rejections=self._change_rejections(mission.id, trigger),
+        )
+        config = AgentConfig(
+            name=f"manager-{rounds + 1}",
+            instructions=MANAGER.instructions,
+            model_profile_ref=self._config.model,
+            tool_names=(),
+            limits=AgentLimits(
+                max_model_calls_per_turn=4,
+                max_tool_calls_per_turn=1,
+                turn_deadline_seconds=self._config.turn_deadline_seconds,
+            ),
+        )
+        message = user_message_json(package.text)
+        intent = self.commit.create_service_intent(
+            kind="manager",
+            subject_id=subject,
+            mission_id=mission.id,
+            account_id=mission_account(mission.id),
+            creation_key=subject,
+            input_id="attempt-input",
+            input_hash=sha256_hex(message),
+            config={
+                "agent_config": config.to_json(),
+                "message": message,
+                "context_version": package.context_version,
+                "prompt_version": MANAGER.prompt_version,
+                "task_id": task.id,
+                "trigger": trigger,
+                "result_id": result_id,
+                "attempt_id": attempt_id,
+                "graph_version": int(report.get("graph_version") or 1),
+                "no_progress_count": no_progress,
+            },
+            reservation=self._reservation(self._config.manager_reserve_tokens),
+            task_id=task.id,
+            attempt_id=attempt_id,
+        )
+        self.commit.record_management_requested(
+            mission.id, task_id=task.id, trigger=trigger, subject=subject, round_number=rounds + 1
+        )
+        self._note(f"management requested for {task.id} ({trigger})")
+        return intent
+
+    async def _manager_unusable(self, intent: DispatchIntent, *, reason: str) -> None:
+        """No usable proposal from the Manager: the Task continues its own retry path
+        unless it is out of progress (D5-7)."""
+
+        task = self.store.get_task(str(intent.config.get("task_id")))
+        mission = self.store.get_mission(intent.mission_id)
+        if task is None or mission is None:
+            return
+        self.commit.record_management_decided(
+            mission.id,
+            task_id=task.id,
+            trigger=str(intent.config.get("trigger")),
+            decision="unusable",
+            detail={"reason": reason},
+        )
+        await self._enforce_no_progress(mission, task)
+
+    async def _enforce_no_progress(self, mission: Mission, task: Task) -> bool:
+        task = self.store.get_task(task.id) or task
+        if task.status in TERMINAL_TASK:
+            return False
+        count = self.commit.no_progress_count(task.id)
+        if count >= self._config.no_progress_limit:
+            self.commit.stop_task(
+                task.id,
+                stop_reason=MissionStopReason.NO_PROGRESS,
+                detail={
+                    "no_progress_count": count,
+                    "no_progress_limit": self._config.no_progress_limit,
+                },
+            )
+            await self._release_mission(mission.id)
+            self._note(
+                f"task {task.id} stopped: no progress after {count} attempts and no change of approach"
+            )
+            return True
+        return False
+
+    async def _collect_manager(self, intent: DispatchIntent, result) -> None:  # type: ignore[no-untyped-def]
+        mission = self.store.get_mission(intent.mission_id)
+        assert mission is not None
+        self._import_usage(intent)
+        task_id = str(intent.config.get("task_id"))
+        trigger = str(intent.config.get("trigger"))
+        text = "" if result.public_output is None else str(result.public_output.content)
+        echoed = self.bridge.echoed_models(agent_id=intent.agent_id or "")
+        if echoed and echoed != {self._config.model}:
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            self.commit.stop_task(
+                task_id,
+                stop_reason=MissionStopReason.MODEL_ECHO_MISMATCH,
+                detail={"expected": self._config.model, "echoed": sorted(echoed)},
+            )
+            await self._release_mission(mission.id)
+            return
+        try:
+            if result.state is not AgentTurnState.COMMITTED:
+                raise ContractError(f"manager turn failed: {jsonable(result.error or {})}")
+            raw = extract_block(text, GRAPH_CHANGE_PROPOSAL_TAG)
+            raw = {
+                **{
+                    k: v
+                    for k, v in raw.items()
+                    if k in {"base_graph_version", "rationale", "operations"}
+                },
+                "basis": {  # the system fills the basis; a model may not forge it
+                    "trigger": trigger,
+                    "result_id": intent.config.get("result_id"),
+                    "attempt_id": intent.config.get("attempt_id"),
+                    "task_id": task_id,
+                },
+            }
+            change = TaskGraphChange.from_json(raw)
+        except (ContractError, BlockError) as error:
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            self._note(f"manager proposal unusable for {task_id}: {error}")
+            await self._manager_unusable(intent, reason=f"proposal_unreadable: {error}")
+            return
+        self._settle_intent(intent, "SETTLED")
+        self._settle_service_if_known(intent.subject_id, mission.id)
+        task = self.store.get_task(task_id)
+        assert task is not None
+        limits = ChangeLimits(
+            max_graph_depth=self._config.max_graph_depth,
+            max_proposals_per_agent=self._config.max_proposals_per_agent,
+            max_supersede_chain=self._config.max_supersede_chain,
+        )
+        no_progress = int(intent.config.get("no_progress_count", 0))
+        if not change.operations or all(op.op == "set_priority" for op in change.operations):
+            self.commit.record_management_decided(
+                mission.id,
+                task_id=task_id,
+                trigger=trigger,
+                decision="keep",
+                detail={"rationale": change.rationale},
+            )
+            if no_progress >= self._config.no_progress_limit:
+                await self._enforce_no_progress(mission, task)
+            elif change.operations:
+                try:
+                    self.commit.commit_graph_change(
+                        mission.id,
+                        change,
+                        source={"intent_id": intent.intent_id, "agent_id": intent.agent_id},
+                        limits=limits,
+                    )
+                except CommitRejected as error:
+                    self._note(f"manager priority change refused: {error}")
+            return
+        try:
+            created, receipt = self.commit.commit_graph_change(
+                mission.id,
+                change,
+                source={
+                    "intent_id": intent.intent_id,
+                    "agent_id": intent.agent_id,
+                    "turn_id": result.turn_id,
+                },
+                limits=limits,
+            )
+        except CommitRejected as error:
+            self._note(f"manager change rejected for {task_id}: {error}")
+            self.commit.record_management_decided(
+                mission.id,
+                task_id=task_id,
+                trigger=trigger,
+                decision="rejected",
+                detail={"error": str(error)},
+            )
+            retry = 0 if ":retry-" not in trigger else int(trigger.rsplit("-", 1)[1])
+            if retry < 1:  # D5-10 / S5-08: once more, with the rejection in the package
+                await self._request_management(
+                    mission,
+                    task,
+                    trigger=f"{trigger}:retry-{retry + 1}",
+                    result_id=intent.config.get("result_id"),
+                    attempt_id=intent.config.get("attempt_id"),
+                )
+            else:
+                await self._enforce_no_progress(mission, task)
+            return
+        self.commit.record_management_decided(
+            mission.id,
+            task_id=task_id,
+            trigger=trigger,
+            decision="changed",
+            detail={
+                "change_id": receipt["change_id"],
+                "to_version": receipt["to_version"],
+                "new_tasks": [t.id for t in created],
+                "superseded": receipt["superseded"],
+            },
+        )
+        for old_id in receipt["superseded"]:
+            for attempt in self.store.list_attempts(old_id):
+                if attempt.status is AttemptStatus.CANCELLED:
+                    await self._release_attempt(attempt.id, cancel=True)
+        self._note(
+            f"graph changed v{receipt['from_version']}→v{receipt['to_version']} for {task_id}: {[t.id for t in created]} superseded={receipt['superseded']}"
+        )
+
     async def _run_critic(
         self,
         mission: Mission,
@@ -1328,7 +1703,12 @@ class Orchestrator:
         tasks = self.store.list_tasks(mission.id)
         if not tasks or mission.status is not MissionStatus.ACTIVE:
             return False
-        live = [t for t in tasks if t.status is not TaskStatus.CANCELLED]  # D5-4
+        live = [  # D5-4 / R4: superseded work is history and a paused route is not required
+            t
+            for t in tasks
+            if t.status is not TaskStatus.CANCELLED
+            and not (t.paused and t.status in {TaskStatus.READY, TaskStatus.BLOCKED})
+        ]
         if live and all(task.status is TaskStatus.COMPLETED for task in live):
             current = self.store.get_mission(mission.id)  # not the cycle's stale snapshot
             if current is None or current.status is not MissionStatus.ACTIVE:
@@ -1347,6 +1727,9 @@ class Orchestrator:
                 if self.commit.record_synthesis_gated(task.id, conflict_ids=open_conflicts):
                     self._note(f"synthesis task {task.id} gated by open conflicts {open_conflicts}")
             tasks = [t for t in tasks if t not in gated]
+        pending = self._tasks_under_management(mission.id)
+        if pending:  # D5-6: no new Attempt while the Manager decides about the Task
+            tasks = [t for t in tasks if t.id not in pending]
         plan = allocate(
             tasks,
             attempts,
@@ -1413,7 +1796,7 @@ class Orchestrator:
             await self._release_mission(mission.id)
             self._note(f"task {task.id} stopped: artifact conflict ({error})")
             return True
-        role = TASK_ROLE_BY_KIND.get(task.kind, WORKER)
+        role = role_for_task(task)  # D5-9: the Manager may have switched the approach
         untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
         try:
             knowledge = self._gather_knowledge(mission, task, all_tasks)

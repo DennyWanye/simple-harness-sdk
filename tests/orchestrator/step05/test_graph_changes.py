@@ -358,6 +358,6 @@ def test_validate_change_reports_supersede_chain_limit(tmp_path):
             proposal,
             limits=ChangeLimits(),
             proposals_by_attempt={},
-            settled_tokens_by_task={},
+            committed_tokens_by_task={},
         )
     assert rejected.value.reason == "supersede_chain"

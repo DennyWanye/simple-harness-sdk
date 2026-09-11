@@ -74,6 +74,16 @@ class OrchestratorConfig:
     on_retrieval_failure: str = "block"  # step 4 (D4-11'): block | degrade
     max_retrieval_failures: int = 3
     max_knowledge_items: int = 12
+    # step 5 (D5-2 / D5-6 / D5-7 / D5-8 / D5-15)
+    dynamic_graph: bool = True  # False: no Manager decisions; non-candidate outcomes just retry
+    max_graph_depth: int = 6
+    max_proposals_per_agent: int = 3
+    max_supersede_chain: int = 2
+    manager_after_failures: int = 2
+    no_progress_limit: int = 2
+    max_manager_rounds: int = 4
+    manager_reserve_tokens: int = 6_000
+    aging_window_seconds: float = 300.0
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -155,6 +165,16 @@ class OrchestratorConfig:
                 "planner_tokens": self.planner_reserve_tokens,
                 "critic_tokens": self.critic_reserve_tokens,
                 "attempt_tokens": self.attempt_reserve_tokens,
+            },
+            "dynamic_graph": {
+                "enabled": self.dynamic_graph,
+                "max_graph_depth": self.max_graph_depth,
+                "max_proposals_per_agent": self.max_proposals_per_agent,
+                "max_supersede_chain": self.max_supersede_chain,
+                "manager_after_failures": self.manager_after_failures,
+                "no_progress_limit": self.no_progress_limit,
+                "max_manager_rounds": self.max_manager_rounds,
+                "aging_window_seconds": self.aging_window_seconds,
             },
             "knowledge": {
                 "knowledge_sharing": self.knowledge_sharing,
