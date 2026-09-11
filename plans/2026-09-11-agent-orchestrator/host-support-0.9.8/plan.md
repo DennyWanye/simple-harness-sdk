@@ -54,6 +54,26 @@
 - simple_harness 0.9.8，agent_orchestrator 0.9.1。
 - `simple_harness` 的执行库 schema 不变，仍是 10。
 
+## 2.4 S2：P3.1 外部控制面（0.9.9 / agent_orchestrator 0.9.2）
+
+依据：用户的 Phase3 计划（Host `plans/taskSys2/agent-orchestrator-phase3-plan.zh-CN.md`）§3.3–§3.4，以及 P3.1-A01 至 A08。Host 目前在进程内直连 SDK，按 P3.1"只选实际主路径"的要求，把直连路径收敛到同一个 Facade 与合同上，不改 Service SDK。
+
+- `api/facade.py`，`MissionControlV1(orchestrator, tenant_id)`：
+  - `create(command)`：严格映射字段。
+    - 开放的字段：`goal`、`success_criteria`、`idempotency_key`、`budget.max_tokens` / `budget.max_attempts`、`stop_conditions`、`untrusted_sources`、`synthesis`、`conflict_reserve_tokens`、`workspace_seed`。
+    - 未知字段一律拒绝。
+    - 暂不开放的字段（`allowed_tools`、`risk_level`、`task_kind`、金额预算）明确报错，不静默忽略（P3.1-A06）。
+    - 内部走 `Orchestrator.create_mission`。
+    - 返回持久回执 `{mission_id, created, spec_hash}`。同一个 key 且内容相同时返回原回执；内容不同则报 `conflict`（P3.1-A03）。
+  - `snapshot(mission_id)`：返回 `MissionViewV1 {mission_id, through_seq, graph_version, state_version, snapshot}`，快照与游标在同一个读事务里取得（P3.1-A05）。
+  - `events(mission_id, after_seq, limit ≤ 200)`：返回 `{events, through_seq, has_more}`。
+  - `cancel(mission_id)`：幂等。
+  - `artifact_read(artifact_id)`：按不可变 id 读取；先核对文件 hash 与记录一致；只读文本，有大小上限。不接受本机路径。
+  - `decide(request_id, …)` 与 `comment(target_id, text)`：经 `ApprovalApi`；调用方的 Principal 在构造时固定。
+- 归属：每次读写都先检查 `mission.tenant_id == tenant_id`；不符合就一律报 `not_found`，不泄露对象是否存在（P3.1-A04）。审批与产物按它所属的 Mission 判断归属。
+- `Store.read_view()`：只读的一致性读取，内部是一个 DEFERRED 事务，只用于 SELECT，不跨 await。
+- 测试：`tests/orchestrator/host_support/test_facade.py`，覆盖 P3.1-A03 至 A06 的 SDK 部分。
+
 ## 3. 切片
 
 | 片 | 内容 | 测试 |
@@ -62,3 +82,5 @@
 | B | 部署开关与五个位置 | SA-1 至 SA-4、SA-6 |
 | C | 创建入口、MissionApi、CLI | SA-5 |
 | D | 版本号、全量回归、wheel、独立代码评审与处置、记录、推送 | SA-7 |
+| E | 代码评审第 1 轮的源码修改与补测（journal §4） | 新增的决定性测试 |
+| F（S2） | P3.1 外部控制面 `api/facade.py`、`Store.read_view()`，版本 0.9.9 / 0.9.2；随后全量回归、构建 wheel、代码评审、推送 | Host acceptance §A2 SB-1 至 SB-6 |

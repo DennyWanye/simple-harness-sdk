@@ -7,12 +7,13 @@
 
 - 2026-09-11：
   - 切片 A、B、C 已完成：测试先行写好 `tests/orchestrator/host_support/`（先红），实现后 18 条全绿，ruff 与 mypy（79 个源文件）都干净。
-  - 下一步是切片 D：
-    1. 版本号升到 0.9.8 / 0.9.1；
-    2. 跑全量回归，红集必须 ⊆ 73 条基线；
-    3. 构建 wheel，在干净 venv 中验证；
-    4. 独立代码评审并处置；
-    5. 推送，然后回到 Host 做 H1（钉 0.9.8）。
+  - 版本号已升到 0.9.8 / 0.9.1，`627b90e` 已推送；全量回归在后台运行（scratchpad `regress-098`）；代码评审第 1 轮已处置（§4）。
+  - 下一步：
+    1. 回归跑完后，修改评审 P1 / P2 涉及的源码并补测试；
+    2. 切片 S2：P3.1 外部控制面（`plan.md` §2.4，版本 0.9.9 / 0.9.2）；
+    3. 再跑一次全量回归，构建 wheel，做代码评审；
+    4. 回到 Host 做 H1，钉 0.9.9。
+  - 方向依据：用户 2026-09-11 22:39 放入 Host 的 `plans/taskSys2/agent-orchestrator-phase3-plan.zh-CN.md`。当前的 Host 接线即其中的 P3.1（Host 直连路径）。
 - 接手须知：
   - 全量回归在后台跑时，不要改源码与版本号，也不要往 `tests/` 放新测试。
   - 真实模型一律用 deepseek-flash。
@@ -52,7 +53,20 @@
 
 ## 4. 代码评审
 
-（待填）
+第 1 轮（`reports/code-review-round1.md`）的结论是 SHIP_WITH_FIXES。评审确认：开关关闭时，编排运行期没有在本机执行模型代码的路径。下面逐条处置；带"源码"字样的，都等全量回归跑完后再改。
+
+| 编号 | 处置 |
+|---|---|
+| P1-1 关闭时 Task 级 `pytest:` 条件没人判定却能 PASS | 接受（源码）。部署层不含 code_test 时，三个判定点（图、改图、提议）以及合成模板都拒绝 Task 级 `pytest:` 条件（`verification_policy_undeployed`，写明原因）。对于开关打开时就已建好的旧 Task，`rule_check` 把这类条件判为 FAIL，理由写明本机代码执行已关闭，不留"条件从未验证却 PASS"的空档 |
+| P1-2 SA-4 与原文不符 | 选择改写 SA-4（评审给了两个方案，这里取第二个），不在关闭时新开一条"无冲突 Task 的仲裁"状态路径。理由有两点：一是现有仲裁裁决要靠冲突 Task（`_apply_conflict_ruling` 的 unresolved 分支会 `stop_task`），离开冲突 Task 需要新增状态路径；二是用户 Phase3 计划的 P3.3 专门处理非代码任务的冲突，P3.3-A05 接受"双方带范围进入 DISPUTED"。改写后的 SA-4 是：关闭时冲突进入 DEFERRED（`local_code_execution_disabled`），有争议的 Claim 保持 DISPUTED、不进入正式知识，Mission 不死锁，最终报告列出未解决的冲突。关闭状态下的人工冲突仲裁登记为遗留，归 P3.3 |
+| P1-3 SA-2 的判定口径分不出新旧行为 | 接受。同一个场景按开关开/关各跑一次：Worker 写好探针后调用 `run_tests`；打开时标记文件出现、间谍记录到调用，关闭时两者都没有。另加一条直接测试网关兜底分支的用例：`WorkspaceToolGateway(local_code_execution=False)` 绑定了 `run_tests` 时，拒绝码为 `local_code_execution_disabled` |
+| P2-1 评测不受开关约束 | 登记为遗留。评测只能从 CLI 触发，Host 不暴露；Host 文档写明"评测会在本机跑 oracle pytest" |
+| P2-2 旧库沿用 v3 / v1 提示词 | 登记（行为如此）。更新 `role_templates.py` 里那段过时的注释 |
+| P2-3 `CONTEXT_BUILDER_VERSION` | 接受（源码），升到 v4 |
+| P2-4 `create_mission` 的 docstring | 接受（源码）。docstring 写明 `MissionConflict` 会原样抛出（同一个 key 对应不同内容），`submit_mission` 保持原有调用约定 |
+| P2-5 合成模板在入口处没有检查 | 接受（源码）。在 `_check_mission_door` 里检查合成模板 |
+| P2-6 最小配置会报错 | 接受（源码）。`local_code_execution=False` 且 `allowed_tools` 是默认全集时，自动去掉 `run_tests`（只会收窄）；调用方显式列出 `run_tests` 仍然报错 |
+| P2-7 缺少集成测试 | 接受。补测 `NewTaskNode` 的缺省策略、`synthesis_task` 的缺省策略、`_check_task_proposal` 的拒绝，以及关闭时的 `validate_graph` / `validate_change` |
 
 ## 5. 遗留
 
