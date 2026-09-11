@@ -36,7 +36,8 @@
 
 | 切片 | 提交 | 内容 | 测试 |
 |---|---|---|---|
-| A | （本次） | Replay：`observability/replay.py` 纯折叠（按 seq 排序、按事件 id 去重）、投影表与推导规则（含非候选结果、审批→动作、审核→结果回到 RUNNING、冲突任务失败→UNRESOLVED）、结构性缺口、与只读副本快照逐字段比较、失败时间线；`Store.open_readonly` / `iter_events` / `has_table`（快照按表是否存在）；证据与指标改为分页读事件；补事件 `ActionSuperseded`、`ActionCancelled` | `test_replay.py` 12：四个演示 + 失败 Mission + 审批被拒 + 取消开放动作 + 人工审核挂起 / 通过，覆盖率 100% 且 0 不一致；重复投递；崩溃前缀；只读目录、不写、不外调、不导入 runtime；S8-05 删事件 / 缺字段 |
+| A | `211500d` | Replay：`observability/replay.py` 纯折叠（按 seq 排序、按事件 id 去重）、投影表与推导规则（含非候选结果、审批→动作、审核→结果回到 RUNNING、冲突任务失败→UNRESOLVED）、结构性缺口、与只读副本快照逐字段比较、失败时间线；`Store.open_readonly` / `iter_events` / `has_table`（快照按表是否存在）；证据与指标改为分页读事件；补事件 `ActionSuperseded`、`ActionCancelled` | `test_replay.py` 12：四个演示 + 失败 Mission + 审批被拒 + 取消开放动作 + 人工审核挂起 / 通过，覆盖率 100% 且 0 不一致；重复投递；崩溃前缀；只读目录、不写、不外调、不导入 runtime；S8-05 删事件 / 缺字段 |
+| B | （本次） | 贡献归因 `observability/traces.py`：最终产物 = 集成树（`merge_accepted`），产出者 Task / Attempt / Agent / 角色 / 模型 / profile / prompt 版本与通过的验证层；依赖闭包内的 Task 在路径内（被覆盖的上游产物标注）；知识路径来自 lineage，被驳倒的 Claim 所在 Attempt 列为探索；探索消耗逐条带原因；用量逐行归类（Attempt、其 Critic、planner / manager / judge、未归类桶必须为空、unknown 行单列），工具调用、动作预留、人工时间单列，未定价金额 null；记录缺失列为断点、不补边。策略快照 `governance/policies.py`：`SNAPSHOT_FIELDS` 逐字段归类（未归类即报错）、`VERSION_SOURCES` 版本常量带来源、全部角色模板版本、profiles / routing / 连接器 / provider 身份（不含密钥）、`snapshot_diff`；编排器 `policy_snapshot()`；证据 `attribution.json`、`policy_snapshot.json`（开始快照存 baseline，收尾比对漂移明细） | `test_attribution.py` 6（S8-01 静态 DAG / 知识与冲突 / 改图探索 / 动作与人 / 失败 Mission，S8-05 断点）、`test_policy_snapshot.py` 6（S8-07：全字段归类、同配置同哈希、差异带来源、版本常量改变、未归类字段拒绝、演示证据无漂移） |
 
 ## 3. 真实模型
 

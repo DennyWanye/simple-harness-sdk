@@ -13,7 +13,7 @@ frozen into the dispatch intent; the Tool Gateway enforces it again on every cal
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -126,8 +126,221 @@ def effective_tools(
 
 __all__ = (
     "POLICY_VERSION",
+    "SNAPSHOT_FIELDS",
+    "SNAPSHOT_VERSION",
+    "VERSION_SOURCES",
+    "policy_snapshot",
+    "snapshot_diff",
     "ActionDecision",
     "DeploymentPolicy",
     "action_decision",
     "effective_tools",
 )
+
+
+# ------------------------------------------------------------------ step 8: policy snapshot
+SNAPSHOT_VERSION = "policy-snapshot-v1"
+# plan D8-5': every OrchestratorConfig field is classified here — "include" enters the
+# snapshot, anything else is the reason it is left out.  A new field that is not listed
+# fails the snapshot test until someone decides.
+SNAPSHOT_FIELDS: dict[str, str] = {
+    "evidence_root": "excluded: a different directory for every run",
+    "owner_id": "excluded: the orchestrator replaces it by an instance name with the pid",
+    **{
+        name: "include"
+        for name in (
+            "model",
+            "max_concurrency",
+            "max_concurrent_model_calls",
+            "candidates_per_task",
+            "max_planning_attempts",
+            "lease_seconds",
+            "sdk_lease_ttl_seconds",
+            "stall_seconds",
+            "test_timeout_seconds",
+            "default_max_output_tokens",
+            "max_output_tokens_ceiling",
+            "empty_response_retries",
+            "price_table",
+            "hard_cap_micros",
+            "planner_reserve_tokens",
+            "critic_reserve_tokens",
+            "attempt_reserve_tokens",
+            "turn_deadline_seconds",
+            "max_model_calls_per_turn",
+            "max_tool_calls_per_turn",
+            "knowledge_sharing",
+            "on_retrieval_failure",
+            "max_retrieval_failures",
+            "max_knowledge_items",
+            "dynamic_graph",
+            "max_graph_depth",
+            "max_proposals_per_agent",
+            "max_supersede_chain",
+            "manager_after_failures",
+            "no_progress_limit",
+            "max_manager_rounds",
+            "manager_reserve_tokens",
+            "aging_window_seconds",
+            "global_budget",
+            "max_running_attempts",
+            "max_pending_dispatch",
+            "max_pending_verifications",
+            "low_watermark_ratio",
+            "reduced_concurrency_ratio",
+            "reduced_reserve_ratio",
+            "exploration_slots",
+            "verifier_workers",
+            "deployment_policy",
+            "profile_failure_threshold",
+            "profile_cooldown_seconds",
+            "profile_wait_seconds",
+            "extra",
+        )
+    },
+}
+# (snapshot key, module, attribute): the version constants of original §23.1 and theory
+# 12 §13, with where each one lives — the "source" a diff reports (S8-07)
+VERSION_SOURCES: tuple[tuple[str, str, str], ...] = (
+    ("retrieval", "agent_orchestrator.context.retrieval", "RETRIEVAL_VERSION"),
+    ("context_builder", "agent_orchestrator.context.context_builder", "CONTEXT_BUILDER_VERSION"),
+    ("summary", "agent_orchestrator.context.compression", "SUMMARY_VERSION"),
+    ("allocator", "agent_orchestrator.scheduling.allocator", "ALLOCATOR_VERSION"),
+    ("backpressure", "agent_orchestrator.scheduling.backpressure", "BACKPRESSURE_VERSION"),
+    ("model_router", "agent_orchestrator.runtime.model_router", "ROUTER_VERSION"),
+    ("verifier", "agent_orchestrator.verification.verifier_router", "VERIFIER_VERSION"),
+    ("deployment_policy", "agent_orchestrator.governance.policies", "POLICY_VERSION"),
+    ("contract_schema", "agent_orchestrator.contracts.models", "CONTRACT_SCHEMA_VERSION"),
+    ("orchestrator_schema", "agent_orchestrator.storage.schema", "SCHEMA_VERSION"),
+    ("trace", "agent_orchestrator.observability.trace", "TRACE_VERSION"),
+    ("metrics", "agent_orchestrator.observability.metrics", "METRICS_VERSION"),
+    ("agent_orchestrator", "agent_orchestrator.version", "__version__"),
+    ("simple_harness", "simple_harness.version", "__version__"),
+)
+
+
+def _plain(value: Any) -> Any:
+    import dataclasses
+    from pathlib import Path
+
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "to_json") and callable(value.to_json):
+        return value.to_json()
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {f.name: _plain(getattr(value, f.name)) for f in dataclasses.fields(value)}
+    if isinstance(value, Mapping):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_plain(v) for v in value]
+    return value
+
+
+def _provider_identity(provider: Any) -> dict[str, Any] | None:
+    """What provider ran — never its credentials (plan D8-5')."""
+
+    if provider is None:
+        return None
+    identity: dict[str, Any] = {"class": type(provider).__name__}
+    for name in ("model", "base_url"):
+        value = getattr(provider, name, None) or getattr(provider, f"_{name}", None)
+        if isinstance(value, str):
+            identity[name] = value.split("?")[0]
+    return identity
+
+
+def policy_snapshot(
+    config: Any,
+    *,
+    profiles: Mapping[str, Any] | None = None,
+    routing: Any = None,
+    connectors: Mapping[str, Any] | None = None,
+    provider: Any = None,
+) -> dict[str, Any]:
+    """Freeze where a run's behaviour comes from (plan D8-5'; original §23.1; theory 12
+    §13): every classified configuration field, every version constant with its source,
+    the role templates, profiles, routing, connectors and the provider's identity."""
+
+    import dataclasses
+    import hashlib
+    import importlib
+
+    from simple_harness.contracts import canonical_json
+
+    from ..runtime.role_templates import ROLES
+
+    fields = {f.name for f in dataclasses.fields(config)}
+    unclassified = sorted(fields - set(SNAPSHOT_FIELDS))
+    if unclassified:
+        raise ValueError(
+            f"configuration fields not classified for the policy snapshot: {unclassified}"
+        )
+    sources: dict[str, str] = {}
+    versions: dict[str, Any] = {}
+    for key, module, attribute in VERSION_SOURCES:
+        versions[key] = getattr(importlib.import_module(module), attribute)
+        sources[f"versions.{key}"] = f"{module}.{attribute}"
+    roles = {name: template.prompt_version for name, template in sorted(ROLES.items())}
+    for name in roles:
+        sources[f"role_templates.{name}"] = (
+            f"agent_orchestrator.runtime.role_templates.ROLES[{name!r}].prompt_version"
+        )
+    configuration = {
+        name: _plain(getattr(config, name))
+        for name in sorted(fields)
+        if SNAPSHOT_FIELDS.get(name) == "include"
+    }
+    for name in configuration:
+        sources[f"config.{name}"] = f"OrchestratorConfig.{name}"
+    body: dict[str, Any] = {
+        "version": SNAPSHOT_VERSION,
+        "config": configuration,
+        "excluded": {n: r for n, r in sorted(SNAPSHOT_FIELDS.items()) if r != "include"},
+        "versions": versions,
+        "role_templates": roles,
+        "profiles": {k: _plain(v) for k, v in sorted((profiles or {}).items())},
+        "routing": None if routing is None else _plain(routing),
+        "connectors": {
+            name: {
+                "class": type(connector).__name__,
+                "operations": {
+                    k: _plain(v) for k, v in getattr(connector, "operations", {}).items()
+                },
+            }
+            for name, connector in sorted((connectors or {}).items())
+        },
+        "provider": _provider_identity(provider),
+        "sources": sources,
+    }
+    body["hash"] = hashlib.sha256(canonical_json(_plain(body)).encode("utf-8")).hexdigest()
+    return body
+
+
+def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        flat: dict[str, Any] = {}
+        for key, item in value.items():
+            flat.update(_flatten(item, f"{prefix}.{key}" if prefix else str(key)))
+        return flat
+    return {prefix: value}
+
+
+def snapshot_diff(a: Mapping[str, Any], b: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every difference between two snapshots with where it comes from (S8-07)."""
+
+    left = _flatten({k: v for k, v in a.items() if k not in {"hash", "sources"}})
+    right = _flatten({k: v for k, v in b.items() if k not in {"hash", "sources"}})
+    sources = {**dict(b.get("sources", {})), **dict(a.get("sources", {}))}
+    differences = []
+    for key in sorted(set(left) | set(right)):
+        if left.get(key) != right.get(key):
+            head = ".".join(key.split(".")[:2])
+            differences.append(
+                {
+                    "key": key,
+                    "a": left.get(key),
+                    "b": right.get(key),
+                    "source": sources.get(head) or sources.get(key) or key.split(".")[0],
+                }
+            )
+    return differences

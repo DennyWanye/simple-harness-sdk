@@ -21,6 +21,7 @@ from .lineage import lineage
 from .metrics import metrics
 from .secrets import environment_secrets, find_secrets, redact_text
 from .trace import trace
+from .traces import attribution
 
 
 def _dump(path: Path, value: Any, redactions: list[dict[str, Any]] | None = None) -> None:
@@ -44,6 +45,7 @@ def write_evidence(
     test_report: Mapping[str, Any],
     echoes: Mapping[str, Sequence[str]] | None = None,
     unpriced: bool = True,
+    policy_snapshot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     directory.mkdir(parents=True, exist_ok=True)
     redactions: list[dict[str, Any]] = []
@@ -89,6 +91,23 @@ def write_evidence(
         },
     )
     dump(directory / "lineage.json", lineage(store, mission_id))
+    dump(directory / "attribution.json", attribution(store, mission_id))  # step 8 (D8-4')
+    if policy_snapshot is not None:  # step 8 (D8-5'): computed at the start and at the end
+        from ..governance.policies import snapshot_diff
+
+        start = baseline.get("policy_snapshot")
+        dump(
+            directory / "policy_snapshot.json",
+            {
+                "snapshot": dict(policy_snapshot),
+                "start_hash": None if start is None else start.get("hash"),
+                "end_hash": policy_snapshot.get("hash"),
+                "drift": None
+                if start is None
+                else start.get("hash") != policy_snapshot.get("hash"),
+                "drift_detail": [] if start is None else snapshot_diff(start, policy_snapshot),
+            },
+        )
     dump(directory / "graph_history.json", graph_history(store, mission_id))  # step 5
     requests = snapshot.get("approvals", [])
     dump(  # step 7 (D7-11): the action ledger and the human record

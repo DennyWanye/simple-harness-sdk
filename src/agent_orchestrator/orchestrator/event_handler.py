@@ -227,6 +227,7 @@ class Orchestrator:
             connectors or {}
         )  # D7-6: only the executor calls them
         self._actions: ActionExecutor | None = None
+        self._routing = routing  # step 8 (D8-5'): part of the policy snapshot
 
     # ------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Orchestrator:
@@ -250,6 +251,19 @@ class Orchestrator:
             self._commit, self._connectors, self._config.deployment_policy, owner=self._owner
         )
         return self
+
+    def policy_snapshot(self) -> dict[str, Any]:
+        """Step 8 (plan D8-5'): where this orchestrator's behaviour comes from."""
+
+        from ..governance.policies import policy_snapshot
+
+        return policy_snapshot(
+            self._config,
+            profiles=self._profiles,
+            routing=self._routing,
+            connectors=self._connectors,
+            provider=self._provider,
+        )
 
     @property
     def actions(self) -> ActionExecutor:

@@ -303,6 +303,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
                 "agent_orchestrator": __version__,
                 "provider_kind": kind,
                 "model": model,
+                "policy_snapshot": orchestrator.policy_snapshot(),
                 "config": config.to_json(),
                 "spec": spec.to_json(),
                 "started_at": started,
@@ -363,6 +364,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
                 baseline=baseline,
                 workspaces_root=config.workspaces_root,
                 test_report=report,
+                policy_snapshot=orchestrator.policy_snapshot(),
             )
             _print({**report, "evidence_files": evidence["files"]})
             return EXIT_OK if str(final.status) == "COMPLETED" else EXIT_FAILED
@@ -593,6 +595,7 @@ def _demo_multi_mission(args: argparse.Namespace) -> int:
                     },
                     workspaces_root=config.workspaces_root,
                     test_report=report,
+                    policy_snapshot=orchestrator.policy_snapshot(),
                     echoes=echoes,
                     unpriced=all(p.unpriced for p in profiles.values()),
                 )
@@ -761,6 +764,7 @@ def _demo_approval_action(args: argparse.Namespace) -> int:
                     "agent_orchestrator": __version__,
                     "provider_kind": kind,
                     "model": model,
+                    "policy_snapshot": orchestrator.policy_snapshot(),
                     "config": config.to_json(),
                     "spec": spec.to_json(),
                     "connectors": {
@@ -774,6 +778,7 @@ def _demo_approval_action(args: argparse.Namespace) -> int:
                 },
                 workspaces_root=config.workspaces_root,
                 test_report=report,
+                policy_snapshot=orchestrator.policy_snapshot(),
             )
             _print(
                 {
