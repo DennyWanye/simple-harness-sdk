@@ -64,6 +64,11 @@ class HumanCommitsMixin:
 
         def domain_for(self, mission_id: str) -> DomainProfileV1: ...
 
+        def release_terminal_tail_holds(
+            self, *, mission_id: str, task_id: str | None = None,
+            attempt_id: str | None = None,
+        ) -> list[str]: ...
+
         def _document_conflict_sides(self, claim_ids: Sequence[str]) -> list[dict[str, Any]]: ...
 
         def _validated_criterion_assessments(
@@ -759,6 +764,7 @@ class HumanCommitsMixin:
                 task_id=task_id,
                 payload={"reason": "resolved_by_human", "override_id": override_id},
             )
+            self.release_terminal_tail_holds(mission_id=task.mission_id, task_id=task.id)
         self._emit(
             "ConflictResolvedByHuman",
             str(request["mission_id"]),

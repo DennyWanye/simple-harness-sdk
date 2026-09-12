@@ -132,7 +132,9 @@ class AgentBridge:
         """Cost facts from the SDK invocation ledger (D10'): one fact per invocation."""
 
         facts = []
-        for record in self._runtime.uow.list_provider_invocations(RunId(agent_id)):
+        for original in self._runtime.uow.list_provider_invocations(RunId(agent_id)):
+            record = self._runtime.uow.read_effective_provider_invocation(original.invocation_id)
+            assert record is not None
             if str(record.state) not in {"succeeded", "failed"}:
                 # CLAIMED is not a call; provisional/UNKNOWN is not a final 0.
                 # Inserting it here would occupy the append-only usage identity

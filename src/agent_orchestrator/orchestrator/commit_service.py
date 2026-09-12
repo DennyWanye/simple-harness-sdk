@@ -113,6 +113,7 @@ from ..verification.mission_coverage import mission_coverage
 from .action_commits import ActionCommitsMixin
 from .fragment_commits import FragmentCommitsMixin
 from .human_commits import HumanCommitsMixin
+from .mission_tail_commits import MissionTailCommitsMixin
 from .policy_commits import PolicyCommitsMixin
 from .protected_tail_commits import ProtectedTailCommitsMixin
 from .selection_commits import SelectionCommitsMixin
@@ -268,7 +269,7 @@ def task_account(task_id: str) -> str:
     return f"budget:{task_id}"
 
 
-class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCommitsMixin,
+class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCommitsMixin,
     ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin, SourceCommitsMixin
 ):  # step 7: the action ledger + approvals half; step 9: the policy registry half
     def __init__(
@@ -281,8 +282,10 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
         task_floor: TaskBudgetFloor | None = None,
         candidates_for: Callable[[str], int] | None = None,
         artifact_store: ArtifactStore | None = None,
+        system_tail_factory: Callable[..., Any] | None = None,
     ) -> None:
         self._store = store
+        self._system_tail_factory = system_tail_factory
         self._source_artifact_store = artifact_store
         if self._source_artifact_store is None and str(store.path) != ":memory:":
             self._source_artifact_store = ArtifactStore(store.path.parent / "artifacts")
@@ -670,6 +673,7 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
                 domain_version=domain.version,
                 snapshot=domain.to_json(),
             )
+            self._reserve_mission_system_pools(mission)
             self._emit(
                 "MissionCreated",
                 mission_id,
@@ -726,7 +730,18 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
             first_reservation = (
                 self._ledger.reservation(first_hold["subject_id"]) if first_hold else None
             )
-            if first_reservation and first_reservation["state"] != "SETTLED" and (
+            system_consumed = False
+            if task_id is not None and self.system_task_hold(task_id) is not None:
+                if kind != "critic" or attempt_id is None or account_id != task_account(task_id):
+                    raise CommitRejected("system Task hold is only for its actual Worker/Critic")
+                system_consumed = self._consume_mission_system_hold(
+                    self._require_task(task_id), attempt_id=attempt_id, subject_id=subject_id,
+                    reservation=reservation, profile_id=config.get("runtime_profile_id"),
+                    model=config.get("model"), agent_config=config.get("agent_config"), critic=True,
+                )
+            if system_consumed:
+                pass
+            elif first_reservation and first_reservation["state"] != "SETTLED" and (
                 first_reservation["reserved_tokens"] > 0
             ):
                 assert isinstance(attempt_id, str) and isinstance(task_id, str)
@@ -1079,6 +1094,7 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
                     mission_id=mission_id,
                     limits=synthesis.budget,
                 )
+                self._transfer_mission_system_pool(synthesis)
                 tasks.append(synthesis)
                 terminal_id = synthesis.id
                 self._emit(
@@ -2089,6 +2105,11 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
         # anything a model proposes — a template the domain would refuse is a bug here,
         # not something to discover four slices later as a Task that never completes
         self._check_system_template(domain, task)
+        task = replace(
+            task, context={**dict(task.context),
+                           "graph_version": int((mission.final_report or {}).get("graph_version") or 1)},
+        )
+        self._store.connection.execute("SAVEPOINT conflict_system_pool")
         try:  # P0-1: an accept transaction never rolls back on a budget problem (D4-20)
             self._ledger.open_account(
                 account_id=task_account(task.id),
@@ -2097,7 +2118,11 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
                 mission_id=mission.id,
                 limits=task.budget,
             )
+            self._store.insert_task(task, ordinal=len(tasks) + 1)
+            self._transfer_mission_system_pool(task)
         except BudgetError as error:
+            self._store.connection.execute("ROLLBACK TO conflict_system_pool")
+            self._store.connection.execute("RELEASE conflict_system_pool")
             record["state"] = "DEFERRED"
             record["deferred_reason"] = f"budget_unavailable: {error}"
             self._store.upsert_conflict(record)
@@ -2116,14 +2141,7 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
                 },
             )
             return
-        task = replace(  # review P2-4: a system Task carries the graph version it joined at
-            task,
-            context={
-                **dict(task.context),
-                "graph_version": int((mission.final_report or {}).get("graph_version") or 1),
-            },
-        )
-        self._store.insert_task(task, ordinal=len(tasks) + 1)
+        self._store.connection.execute("RELEASE conflict_system_pool")
         record["task_id"] = task.id
         self._store.upsert_conflict(record)
         for side in sides:
@@ -2482,6 +2500,7 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
         self._cancel_open_actions(mission_id, reason="mission_stopped")
         self.release_terminal_tail_holds(mission_id=mission_id)
         self.release_terminal_selection_holds(mission_id)
+        self._release_terminal_mission_pools(mission_id)
         return cancelled
 
     def settle_intent(self, intent_id: str, state: str) -> DispatchIntent:
@@ -2667,7 +2686,8 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
                 intent_config = {**dict(intent_config), "fragment_execution": execution}
             elif "fragment_execution" in intent_config:
                 raise CommitRejected("fragment execution requires an explicit artifact store")
-            if critic_tail is not None:
+            system_hold = self.system_task_hold(task.id)
+            if critic_tail is not None and system_hold is None:
                 from ..governance.tail_budget import TailReserve
 
                 if selection_decision_id is not None:
@@ -2686,6 +2706,12 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
                                     reservation.tokens, reservation.cost_micros,
                                     reservation.tool_calls, counts_attempt=True)],
                     task_revision=selection["task_revision_id"],
+                )
+            elif system_hold is not None:
+                self._consume_mission_system_hold(
+                    task, attempt_id=attempt_id, subject_id=attempt_id, reservation=reservation,
+                    profile_id=runtime_profile_id, model=model,
+                    agent_config=intent_config.get("agent_config"),
                 )
             else:
                 self._ledger.reserve(  # BudgetExhausted propagates; nothing was written
@@ -3094,9 +3120,13 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
     ) -> Mapping[str, Any]:
         if tool_calls is None:
             tool_calls = 0 if self.tool_calls_for is None else int(self.tool_calls_for(subject_id))
+        prior_reservation = self._ledger.reservation(subject_id)
         settled = self._ledger.settle(subject_id=subject_id, tool_calls=tool_calls)
+        if prior_reservation is not None and prior_reservation["state"] != "SETTLED":
+            self._return_system_unused_allowance(settled)
         self.release_terminal_tail_holds(mission_id=mission_id, task_id=task_id)
         self.release_terminal_selection_holds(mission_id, task_id=task_id)
+        self._release_terminal_mission_pools(mission_id)
         self._emit(
             "BudgetReleased",
             mission_id,
@@ -3794,7 +3824,13 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
                     refuse()
                 return json.loads(pieces[1].split("\n\n## ", 1)[0])
 
-            binding = self._assessment_binding(stored, task, attempt)
+            if (stored.verification_state == "DONE" and stored.verdict == "PASS"
+                    and task.accepted_result_id == stored.envelope.id):
+                from ..verification.assessments import accepted_assessments_for
+
+                binding = accepted_assessments_for(self._store, task=task)[0]
+            else:
+                binding = self._assessment_binding(stored, task, attempt)
             if (
                 task_contract_revision(section("task_contract")) != binding.task_contract_revision
                 or section("mission_success_criteria") != list(
@@ -4391,6 +4427,7 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
                     final_report=report,
                 )
                 self._store.update_mission(done, expected_version=mission.version)
+                self._release_terminal_mission_pools(mission_id)
                 self._emit(
                     "MissionCompleted",
                     mission_id,
@@ -4406,6 +4443,7 @@ class CommitService(ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCo
             )
             self._store.update_mission(failed, expected_version=mission.version)
             self._cancel_open_actions(mission_id, reason="mission_criteria_unmet")
+            self._release_terminal_mission_pools(mission_id)
             self._emit(
                 "MissionFailed",
                 mission_id,

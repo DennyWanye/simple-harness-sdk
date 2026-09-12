@@ -9,6 +9,7 @@ Every accepted doc Task executes its own Critic; no PASS row is fabricated.
 import asyncio
 import json
 
+import pytest
 from fixtures_provider import RoleScriptedProvider, envelope_step, package_of
 from test_g_source_instructions_runtime import _drive
 
@@ -19,7 +20,7 @@ from agent_orchestrator.governance.domains import DOC_DOMAIN
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.graph.changes import TaskGraphChange
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
-from agent_orchestrator.orchestrator.commit_service import MissionSpec
+from agent_orchestrator.orchestrator.commit_service import CommitRejected, MissionSpec
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
 from agent_orchestrator.planning.fragments import current_task_revision, revision_for_result
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
@@ -28,7 +29,8 @@ PATH = "sources/observations.md"
 QUOTE = "本次记录只覆盖离线实验。"
 
 
-def test_failed_origin_actual_independent_verification_and_downstream_scope(tmp_path):
+@pytest.mark.parametrize("change_input", [False, True])
+def test_failed_origin_actual_independent_verification_and_downstream_scope(tmp_path, change_input):
     async def run():
         version = ""
         received = []
@@ -39,13 +41,13 @@ def test_failed_origin_actual_independent_verification_and_downstream_scope(tmp_
                 {"path": PATH, "version": version, "start_line": 1, "end_line": 1, "quote": QUOTE}
             ]
             body["used_knowledge"] = list(used)
-            body["claims"][0]["dependencies"] = list(used)
             return body
 
         def read_original(request):
             # Full original file must be in the real new workspace, not a summary.
-            assert "good.md" in package_of(request)["tools_and_permissions"]["workspace_files"]
+            path = "good.md"
             if received:
+                path = receipt["output_path_mapping"]["good.md"]
                 task = orch.store.get_task(package_of(request)["task_contract"]["task_id"])
                 revision = current_task_revision(orch.store, task)
                 consumed = orch.commit.fragment_input(
@@ -53,8 +55,49 @@ def test_failed_origin_actual_independent_verification_and_downstream_scope(tmp_
                 )
                 assert consumed["validation_result_id"] == accepted.envelope.id
                 assert all(item["artifact_id"] != artifact.id for item in consumed["material_refs"])
+                assert consumed["material_refs"][0]["path"] == path
+                assert consumed["material_refs"][0]["original_path"] == "good.md"
+                assert [item["path"] for item in consumed["material_refs"]] == [path]
+                # Accepted Claim revisions legitimately differ from their original
+                # proposals, but the original real Critic proof is still mandatory.
+                proof_id = "critic-verdict:" + proof["detail"]["critic_intent_id"]
+                original_proof = orch.store.get_receipt(proof_id)
+                assert original_proof is not None
+
+                class RestoreProof(Exception):
+                    pass
+
+                try:
+                    with orch.store.transaction() as connection:
+                        connection.execute(
+                            "DELETE FROM commit_receipts WHERE commit_id=?", (proof_id,)
+                        )
+                        with pytest.raises(CommitRejected, match="Critic proof"):
+                            orch.commit.fragment_input(
+                                receipt["fragment_id"],
+                                consumer_task_revision_id=revision.revision_id,
+                            )
+                        raise RestoreProof
+                except RestoreProof:
+                    pass
+                assert orch.store.get_receipt(proof_id) == original_proof
+            assert path in package_of(request)["tools_and_permissions"]["workspace_files"]
             received.append(package_of(request)["task_contract"]["task_id"])
-            return "workspace_read_file", {"path": "good.md"}
+            return "workspace_read_file", {"path": path}
+
+        def write_validation(request):
+            scope = package_of(request)["fragment_scope"]
+            path = scope["output_path_mapping"]["good.md"]
+            assert path == receipt["output_path_mapping"]["good.md"]
+            assert scope["criterion_mapping"][0]["origin_text"] == "file:good.md"
+            return "workspace_write_file", {"path": path, "content": "独立复核后的完整材料\n"}
+
+        def finish_validation(request):
+            path = package_of(request)["fragment_scope"]["output_path_mapping"]["good.md"]
+            return final(path)(request)
+
+        def critic_read_validation(_request):
+            return "workspace_read_file", {"path": receipt["output_path_mapping"]["good.md"]}
 
         def critic(request):
             messages = [json.loads(m.content) for m in request.messages if str(m.role) == "tool"]
@@ -91,11 +134,13 @@ def test_failed_origin_actual_independent_verification_and_downstream_scope(tmp_
                     final("good.md"),
                     read_original,
                     ("workspace_read_file", {"path": PATH}),
-                    (
-                        "workspace_write_file",
-                        {"path": "good.md", "content": "独立复核后的完整材料\n"},
+                    *(
+                        [("workspace_write_file", {"path": "good.md", "content": "未选输入改动\n"})]
+                        if change_input
+                        else []
                     ),
-                    final("good.md"),
+                    write_validation,
+                    finish_validation,
                     read_original,
                     ("workspace_read_file", {"path": PATH}),
                     (
@@ -106,7 +151,7 @@ def test_failed_origin_actual_independent_verification_and_downstream_scope(tmp_
                 ],
                 "critic": [
                     ("workspace_read_file", {"path": PATH}),
-                    ("workspace_read_file", {"path": "good.md"}),
+                    critic_read_validation,
                     critic,
                     ("workspace_read_file", {"path": PATH}),
                     ("workspace_read_file", {"path": "final.md"}),
@@ -214,9 +259,28 @@ def test_failed_origin_actual_independent_verification_and_downstream_scope(tmp_
             )
             validation = orch.store.get_task(receipt["validation_task_id"])
             assert validation.dependency_ids == ()
+            mapped = receipt["output_path_mapping"]["good.md"]
+            assert validation.outputs == (mapped,)
+            assert validation.success_criteria == ("file:" + mapped, "cite:" + PATH)
+            assert receipt["criterion_mapping"][1]["origin_text"] == "cite:" + PATH
+            assert receipt["criterion_mapping"][1]["text"] == "cite:" + PATH
             new_attempt, accepted = await _drive(orch, validation)
             assert accepted.verdict == "PASS"
             assert orch.store.get_task(validation.id).accepted_result_id == accepted.envelope.id
+            actual = {
+                orch.store.get_artifact(a).path: orch.store.get_artifact(a)
+                for a in accepted.artifacts
+            }
+            assert set(actual) == ({mapped, "good.md"} if change_input else {mapped})
+            baseline = orch.commit.fragment_collection_baseline(new_attempt.id)
+            assert baseline["good.md"] == artifact.content_hash
+            assert mapped not in baseline
+            if change_input:
+                assert actual["good.md"].content_hash != artifact.content_hash
+            assert (
+                orch.commit.fragment_validation_inputs(validation.id)["good.md"]
+                == "原始完整材料\n".encode()
+            )
             proof = next(
                 row
                 for row in orch.store.list_verifications(accepted.envelope.id)
@@ -238,6 +302,7 @@ def test_failed_origin_actual_independent_verification_and_downstream_scope(tmp_
                                 "goal": mission.goal + "：仅复用已核对范围",
                                 "rationale": "新的交付仍需独立核验",
                                 "dependencies": [validation.id],
+                                "parent_task_ids": [validation.id],
                                 "success_criteria": list(validation.success_criteria),
                                 "verification_policy": list(validation.verification_policy),
                                 "allowed_tools": list(validation.allowed_tools),
@@ -260,7 +325,13 @@ def test_failed_origin_actual_independent_verification_and_downstream_scope(tmp_
             assert new_attempt.id != old_attempt.id != consumer_attempt.id
             assert all("file:missing.md" != row["text"] for row in receipt["criterion_mapping"])
             assert (
-                len([intent for intent in orch.store.list_intents() if intent.kind == "critic"])
+                len(
+                    [
+                        intent
+                        for intent in orch.store.list_intents("SETTLED")
+                        if intent.kind == "critic"
+                    ]
+                )
                 == 2
             )
             # Reading historical receipts never changes original Mission denominator.

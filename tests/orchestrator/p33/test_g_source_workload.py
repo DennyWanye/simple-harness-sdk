@@ -48,6 +48,8 @@ def test_planner_freezes_verified_source_scale_without_inlining_source_body(tmp_
             assert "source-workload-v1" in content
             assert "permitted_ceiling_not_expected_spend" in content
             assert "unallocated tokens cannot be borrowed" in content
+            assert "Do not duplicate them as newly invented" in content
+            assert "preserve_original_mission_criteria" in content
             assert "source text only; excludes prompts" in content
             assert '"total_bytes":27' in content  # actual UTF-8 bytes, including CRLF/LF
             for source in value["sources"]:

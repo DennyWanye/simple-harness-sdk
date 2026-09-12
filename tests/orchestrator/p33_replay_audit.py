@@ -106,6 +106,7 @@ class ReplayAudit:
         self.known_database_paths = {}
         self.discovery_roots = set()
         self.discovery_passes = []
+        self.execution_databases = {}
         self.test_roots = {}
         self.serial = 0
         self.original_init = None
@@ -420,6 +421,29 @@ class ReplayAudit:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA query_only=ON")
             connection.execute("BEGIN")
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            # The sibling SDK execution store has Runs, not Mission Events.
+            # Inventory it explicitly; never interpret its tables as a damaged
+            # orchestration library or silently omit an actual Mission table.
+            if (
+                path.name != "orchestrator.db"
+                and not tables.intersection({"missions", "events"})
+                and {"sdk_schema_migrations", "runs", "run_events", "provider_invocations"}
+                <= tables
+            ):
+                self.execution_databases[str(path.resolve())] = {
+                    "path": str(path.resolve()),
+                    "scope": "SDK execution; no Mission/event tables",
+                    "run_count": connection.execute("SELECT count(*) FROM runs").fetchone()[0],
+                    "provider_invocation_count": connection.execute(
+                        "SELECT count(*) FROM provider_invocations"
+                    ).fetchone()[0],
+                    "execution_replay_verified": False,
+                }
+                return
             # Initialize an inspection object without Store.open's migrations or
             # feeding audit-owned reader instances back into nested observers.
             initialize = Store.__init__
@@ -477,6 +501,7 @@ class ReplayAudit:
             ],
             "discovery_roots": sorted(self.discovery_roots),
             "discovery_passes": list(self.discovery_passes),
+            "execution_databases": list(self.execution_databases.values()),
             "discovery_limit": "unobserved files deleted between checkpoints cannot be recovered",
             "negative_fixture_exemptions": [],
             "gate": "PASS" if observations and not findings and not self.store_errors else "OPEN",

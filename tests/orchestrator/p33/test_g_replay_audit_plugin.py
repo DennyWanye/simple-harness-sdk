@@ -19,6 +19,30 @@ from agent_orchestrator.orchestrator.commit_service import CommitService, Missio
 from agent_orchestrator.storage.store import Store
 
 
+def test_actual_sibling_execution_db_is_inventoried_without_hiding_mission_damage(tmp_path, audit):
+    from simple_harness.execution.sqlite import Database
+
+    database = Database.open(tmp_path / "execution.db")
+    database.close()
+    store = Store.open(tmp_path / "orchestrator.db")
+    CommitService(store).create_mission(MissionSpec(
+        goal="test", success_criteria=("file:x",), tenant_id="t", idempotency_key="x"
+    ))
+    store.close()
+    audit.discover([tmp_path], "closed")
+    report = audit.report()
+    assert report["gate"] == "PASS"
+    assert report["mission_count"] == 1
+    assert len(report["execution_databases"]) == 1
+    assert report["execution_databases"][0]["execution_replay_verified"] is False
+    connection = sqlite3.connect(tmp_path / "execution.db")
+    connection.execute("CREATE TABLE missions(broken TEXT)")
+    connection.commit()
+    connection.close()
+    audit.discover([tmp_path], "mixed-damaged")
+    assert audit.report()["gate"] == "OPEN"
+
+
 @pytest.fixture
 def audit():
     path = Path(__file__).parents[1] / "p33_replay_audit.py"

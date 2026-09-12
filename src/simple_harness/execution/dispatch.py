@@ -26,6 +26,10 @@ from simple_harness.observability import CorrelationContext, ObservabilityRuntim
 from simple_harness.providers import (
     CancelToken,
     Provider,
+    ProviderAccountingIdentity,
+    ProviderAccountingObservation,
+    ProviderAccountingPort,
+    ProviderAccountingState,
     ProviderAuthenticationError,
     ProviderCancelledError,
     ProviderPaymentRequiredError,
@@ -115,6 +119,10 @@ class ProviderInvocationUnitOfWork(Protocol):
     ) -> tuple[ProviderInvocationRecord, ...]: ...
 
     def read_provider_budget(self, run_id: RunId) -> BudgetSnapshot: ...
+
+    def list_pending_provider_accounting(self) -> tuple[ProviderInvocationRecord, ...]: ...
+
+    def record_provider_accounting(self, record, *, observation, now, fault=None): ...
 
     def record_provider_reconciliation(
         self,
@@ -845,6 +853,23 @@ class ProviderInvocationCoordinator:
                     now=self._clock(),
                 )
             settled += 1
+        if isinstance(provider_reconciliation, ProviderAccountingPort):
+            for original in self._uow.list_pending_provider_accounting():
+                # Observe without a DB transaction/lease. Only a typed receipt
+                # over the same original terminal call may be committed below.
+                accounting = await provider_reconciliation.observe_accounting(original)
+                if not isinstance(accounting, ProviderAccountingObservation):
+                    raise TypeError("provider accounting port returned an invalid observation")
+                if accounting.identity != ProviderAccountingIdentity.from_record(original):
+                    raise ProviderInvocationConflictError("Provider accounting identity differs.")
+                if accounting.state is ProviderAccountingState.STILL_UNKNOWN:
+                    continue
+                self._uow.record_provider_accounting(
+                    original,
+                    observation=accounting,
+                    now=self._clock(),
+                )
+                settled += 1
         if self._provider_admission is not None:
             self._provider_admission.recover(self._uow)
         return settled

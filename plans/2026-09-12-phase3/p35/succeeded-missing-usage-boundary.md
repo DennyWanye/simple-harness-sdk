@@ -1,6 +1,8 @@
 # P35 open gate：SUCCEEDED 但 usage 缺失的迟到账务
 
-状态：**OPEN / 已只读定位，2 个新边界控制待主 runner；未改生产 API**。2026-09-13。
+状态：**OPEN / 用户已授权并实现最小 accounting-only 通路，待主 runner 与独立审查收口**。2026-09-13。
+
+**§1–§4 保留实现前的调查边界；当前增量以 §5 为准。** 主集成已报告原 2 个边界控制 PASS；这不再意味着产品必须永远缺少补账接口。原测试保留为 legacy port 不隐式获得补账权限的负控，新端口有独立实际 SDK 正反控制。
 
 本文件只界定当前缺口与最小后续补充。FIRST、Mission pool core 保持 freeze；schema 15 由 Kepler 聚合。N1 v6 可按主线程既定范围继续，不把此处调查误称为 P34/P35 完成或要求 N1 等待全部后续。原始测试证据保持 ignored；本文无原始日志、数据库或凭据。
 
@@ -58,3 +60,27 @@
 ```
 
 生产实现后，应将“仍拒绝补账”的 characterization 断言更新为新端口的实际成功/拒绝 oracle，并保留当前无假零、不重发、身份和取消边界；不能让旧缺口测试永久要求缺口存在。
+
+## 5. 用户授权后的最小实现与待验证项
+
+已按用户确认的 write set 实施，没有修改 Kepler 的 Commit/event/assembly/schema、FIRST 或 Mission pool。没有安装、build、UI、pytest 或 commit。
+
+- `providers/reconciliation.py` 新公开 `ProviderAccountingIdentity`、`ProviderAccountingObservation`、`ProviderAccountingState`、可选 `ProviderAccountingPort.observe_accounting`。观察只可返回原 identity、权威 evidence ref 和真实 usage，不能返回替换正文或 NOT_STARTED。现有仅 `observe` 的 reconciliation port 不自动启用补账；没有权威端口仍明确 held。
+- `execution/provider_accounting.py` 根据原 invocation/run/request/ordinal/fingerprint/target/price/response digest/原 state+version 生成 receipt，并只按原 frozen estimator 算实际费用；不使用当前 profile 价格。effective fact 保留原 response、state、version 和请求，只补充有效 usage/charge。既有已知 usage 的纠错、单独价争议不在本 slice。
+- `execution/sqlite/provider_accounting.py` 使用现有 `run_events` / `_insert_event` 的同事务审计 witness，唯一 event ID 为 `provider-accounting:<invocation_id>:<handoff_attempt>`，kind 为 `provider.accounting_resolved.v1`。不改数据库 schema。写入事务重新读取完整原 record，严格比较；重复同 payload 不写版本/事件，异 kind/run/event identity 或冲突 payload 拒绝。读 receipt 时重验原 canonical identity、原价与 payload hash，不仅信任 event 内容。
+- UOW 公开 `list_pending_provider_accounting`、`record_provider_accounting`、`read_provider_accounting_receipt`、`read_effective_provider_invocation`。原 `read_provider_invocation/list_provider_invocations` 仍返回原事实，原 provider row 不更新。`read_provider_budget` 使用有效费用；missing usage 未解决时原 guard 保守行为不变。
+- coordinator 在原 reconcile 生命周期中调用独立 accounting observation，网络 await 不在 SQLite 事务内。receipt 提交后通过原 guard recovery 核对 intent/turn/request/grant/price，再记录 SETTLED/OVERRUN；实际 overrun 先持久化，再拒绝新准入。AgentBridge 从有效事实按原 `provider-invocation:<id>` key 导入原 subject，跨两库仍是幂等衔接而非原子事务。
+
+新测试 `tests/orchestrator/p35/test_provider_accounting.py` 覆盖：真实 SUCCEEDED 漏 usage 后从权威端口补账；STILL_UNKNOWN 保持；同 original response/state/price、费用只导入一次；SDK receipt 提交而 Host import 前，两库真正 close/reopen + 新 owner/public cancel 仍可补账且不接受结果；两个 SQLite writer 同时提交只生成一张 immutable receipt，冲突 usage/evidence 拒绝；错原身份拒绝；实际迟到 overrun 先记录再拒绝。原 2 个测试保留 legacy `observe` 不隐式获得 accounting authority 的边界。测试源已落盘，**尚未运行**。
+
+主 runner 建议：
+
+```sh
+.venv/bin/python -m pytest -q \
+  tests/orchestrator/p35/test_provider_accounting.py \
+  tests/orchestrator/p35/test_succeeded_missing_usage_boundary.py \
+  tests/orchestrator/p35/test_priced_budget_cold_reopen.py \
+  tests/orchestrator/p35/test_tail_and_priced_budget.py
+```
+
+本次 owned Ruff/format、定向 mypy 与生产导入静态检查通过；独立 Ohm review 已请求。完整测试与审查仍待结果，不据此关闭 P35 整体 open gates，亦不声称现有真实 DeepSeek endpoint 已提供权威迟到账单查询。

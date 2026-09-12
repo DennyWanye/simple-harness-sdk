@@ -163,6 +163,7 @@ from simple_harness.workflow.lease import WorkflowLease
 
 from ..command_ingress import CommandClaim, CommandIngress
 from .database import Database
+from .provider_accounting import ProviderAccountingMixin
 
 if TYPE_CHECKING:
     from simple_harness.runtime.orchestration import (
@@ -864,7 +865,7 @@ def _verify_stage_replay(
         raise UnitOfWorkConflict("context stage replay differs")
 
 
-class SqliteExecutionUnitOfWork:
+class SqliteExecutionUnitOfWork(ProviderAccountingMixin):
     __slots__ = ("database", "workflow_fault", "_context_use_scope", "_context_use_configured")
 
     def __init__(self, database: Database, *, workflow_fault: FaultHook | None = None) -> None:
@@ -7736,13 +7737,14 @@ class SqliteExecutionUnitOfWork:
         reserved = 0
         unknown = False
         rows = connection.execute(
-            "SELECT state, usage_json FROM provider_invocations WHERE run_id = ?",
+            "SELECT invocation_id FROM provider_invocations WHERE run_id = ?",
             (run_id.value,),
         ).fetchall()
         for row in rows:
-            usage = json.loads(str(row["usage_json"]))
-            charge = BudgetCharge.from_json(usage["budget"])
-            state = ProviderInvocationState(str(row["state"]))
+            record = self.read_effective_provider_invocation(row["invocation_id"])
+            assert record is not None
+            charge = record.budget_charge
+            state = record.state
             if charge.amount_micros is None:
                 unknown = True
             elif state in {

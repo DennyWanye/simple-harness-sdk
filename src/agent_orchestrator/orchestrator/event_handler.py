@@ -172,6 +172,7 @@ FAULT_POINTS = (
     "before_graph_change",  # step 5: a Manager's proposal parsed, not yet committed
 )
 MAX_CRITIC_ATTEMPTS = 2
+SYSTEM_CRITIC_MODEL_CALLS = 12
 
 
 RECONCILE_EVERY_CYCLES = 50  # D7-5': UNKNOWN actions are asked about again while a run goes on
@@ -318,6 +319,7 @@ class Orchestrator:
             deployed_layers=self._deployed,
             task_floor=self._task_floor,
             candidates_for=self._candidates_for,
+            system_tail_factory=self._mission_system_tail_plan,
         )
         if self._provider_token_estimator is not None:
             from ..runtime.provider_budget_guard import ProviderBudgetGuard
@@ -1392,6 +1394,96 @@ class Orchestrator:
         rate = max(table.input_micros_per_million_tokens, table.output_micros_per_million_tokens)
         return Reservation(tokens=tokens, cost_micros=(tokens * rate + 999_999) // 1_000_000)
 
+    def _system_reservation(self, tokens: int, profile_id: str, calls: int) -> Reservation:
+        from .mission_tail_commits import system_cost_upper
+
+        profile = self._profiles[profile_id]
+        table = profile.price_table
+        if table is None:
+            return self._reservation(tokens, profile_id)
+        return Reservation(tokens, system_cost_upper(tokens,
+            rate=max(table.input_micros_per_million_tokens, table.output_micros_per_million_tokens),
+            physical_calls=calls))
+
+    def _mission_system_tail_plan(self, mission: Mission, purpose: str, *, agent_config=None,
+                                  critic=False, critic_ordinal=None):
+        """Protect only the existing explicit system allowance, never enlarge it.
+
+        The same frozen Mission policy supplies both original and consumption
+        routes. Provider health/upgrade cannot silently reprice an existing hold.
+        """
+        from ..governance.mission_system_tail import SystemTailBinding, SystemTailRoute
+        from ..governance.tail_budget import TailReserve
+        from .mission_tail_commits import system_cost_upper
+
+        if agent_config is not None:
+            raw_limits = agent_config.get("limits") if isinstance(agent_config, Mapping) else None
+            actual_calls = raw_limits.get("max_model_calls_per_turn") if isinstance(raw_limits, Mapping) else None
+            ceiling = SYSTEM_CRITIC_MODEL_CALLS if critic else self._config.max_model_calls_per_turn
+            if type(actual_calls) is not int or not 0 < actual_calls <= ceiling:
+                raise BudgetError("system Agent limits exceed the frozen physical call bound")
+            if critic and (type(critic_ordinal) is not int or not 1 <= critic_ordinal <= MAX_CRITIC_ATTEMPTS):
+                raise BudgetError("system Critic ordinal exceeds the frozen physical call bound")
+
+        report = mission.final_report or {}
+        template = report.get("synthesis") or {}
+        if purpose == "synthesis":
+            if not template:
+                return None
+            limits = template.get("budget") or {}
+            tokens = int(limits.get("max_tokens") or 0)
+            attempts = int(limits.get("max_attempts") or 1)
+            policy = template.get("verification_policy", self.commit.domain_for(mission.id).synthesis_default_policy)
+            role = "synthesizer"
+        else:
+            tokens = int(report.get("conflict_reserve_tokens") or 0)
+            attempts = min(2, mission.budget.max_attempts or 2)
+            limits = {}
+            policy = self.commit.domain_for(mission.id).conflict_template.policy
+            role = "arbiter"
+        if tokens <= 0:
+            return None
+
+        def route(name, task_kind):
+            decision = self._router_for(mission.id).route(
+                role=name, task_kind=task_kind, previous_attempts=(),
+                unavailable_until={}, now=self.store.now,
+            )
+            profile = self._profiles[decision.profile_id]
+            identity = {"schema": 1, "profile_id": profile.profile_id, "model": profile.model,
+                        "provider_kind": profile.provider_kind, "context": profile.context_snapshot(),
+                        "attempt_tokens": self._config.attempt_reserve_tokens,
+                        "critic_tokens": self._config.critic_reserve_tokens,
+                        "tool_cap": self._config.max_tool_calls_per_turn,
+                        "max_model_calls_per_turn": self._config.max_model_calls_per_turn,
+                        "critic_model_calls": SYSTEM_CRITIC_MODEL_CALLS,
+                        "critic_turns": MAX_CRITIC_ATTEMPTS,
+                        "empty_response_retries": self._config.empty_response_retries,
+                        "default_max_output_tokens": profile.default_max_output_tokens,
+                        "max_output_tokens_ceiling": profile.max_output_tokens_ceiling}
+            return SystemTailRoute(decision.profile_id, decision.model, sha256_hex(identity),
+                                   None if profile.price_table is None else profile.price_table.estimator())
+
+        worker = route(role, str(report.get("task_kind") or "code"))
+        critic = route("critic", None) if "critic_review" in policy else None
+        # A single conservative ceiling over the total token allowance covers
+        # either role; this is explicit price authority, not an estimated bill.
+        rates = [max(r.price.input_micros_per_million_tokens, r.price.output_micros_per_million_tokens)
+                 for r in (worker, critic) if r is not None and r.price is not None]
+        # TerminationState.before_provider increments a durable ordinal BEFORE
+        # every call; AgentTurn output-cap retry resets only phase, not totals.
+        # Thus retries are already inside each AgentLimits cap, not a multiplier.
+        calls = attempts * (self._config.max_model_calls_per_turn
+                            + (MAX_CRITIC_ATTEMPTS * SYSTEM_CRITIC_MODEL_CALLS if critic else 0))
+        cost = system_cost_upper(tokens, rate=max(rates), physical_calls=calls) if rates else 0
+        tools_limit = limits.get("max_tool_calls", mission.budget.max_tool_calls)
+        if tools_limit is None and self._config.global_budget is not None:
+            tools_limit = self._config.global_budget.max_tool_calls
+        tools = (0 if tools_limit is None else
+                 min(int(tools_limit), self._config.max_tool_calls_per_turn * attempts))
+        return TailReserve(tokens, cost, tools, attempts), SystemTailBinding(
+            worker, critic, "runtime-system-physical-call-double-ceil-v2")
+
     async def _dispatch(self, intent: DispatchIntent) -> bool:
         """ORCH §4.3 steps 2–3 with the identity frozen in the intent (D5')."""
 
@@ -2267,6 +2359,10 @@ class Orchestrator:
             return
         if result.state is AgentTurnState.FAILED:
             error = result.error
+            context_limit = (
+                isinstance(error, Mapping)
+                and error.get("error_code") == "context_required_content_too_large"
+            )
             admission = (
                 error.get("detail")
                 if isinstance(error, Mapping)
@@ -2282,7 +2378,8 @@ class Orchestrator:
             self.commit.reject_result(
                 attempt.id,
                 turn_id=result.turn_id,
-                reason="provider_admission_denied" if admission is not None else "turn_failed",
+                reason=("context_required_content_too_large" if context_limit else
+                        "provider_admission_denied" if admission is not None else "turn_failed"),
                 detail={
                     "error": jsonable(result.error or {}),
                     "error_kind": classify_turn_error(result.error),  # D6-4' classification
@@ -2291,6 +2388,15 @@ class Orchestrator:
             self._settle_intent(intent, "FAILED")
             self._settle_if_known(attempt)
             await self._release_attempt(attempt.id, cancel=False)
+            if context_limit:
+                self.commit.stop_task(
+                    attempt.task_id, stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+                    detail={"source_kind": "runtime_context", "retryable": False,
+                            "error": jsonable(error)},
+                )
+                await self._release_mission(attempt.mission_id)
+                self._note(f"attempt {attempt.id}: required context exceeds limit → stopped")
+                return
             if admission is not None:
                 reason = admission.get("reason_code")
                 if reason == "usage_unresolved":
@@ -2403,6 +2509,7 @@ class Orchestrator:
         }
         for item in self._upstream_inputs(attempt):
             initial[item.path] = item.content_hash
+        initial.update(self.commit.fragment_collection_baseline(attempt.id))
         guarded = {
             path: sha256_hex_text(content)
             for path, content in self._protected_files(mission, task, attempt).items()
@@ -3496,7 +3603,7 @@ class Orchestrator:
                     model_profile_ref=decision.profile_id,
                     tool_names=template.tool_names,
                     limits=AgentLimits(
-                        max_model_calls_per_turn=12,
+                        max_model_calls_per_turn=SYSTEM_CRITIC_MODEL_CALLS,
                         max_tool_calls_per_turn=24,
                         turn_deadline_seconds=min(self._config.turn_deadline_seconds, remaining_selection),
                     ),
@@ -3520,9 +3627,11 @@ class Orchestrator:
                         "untrusted_sources": untrusted,
                         **self._service_config(decision),
                     },
-                    reservation=self._reservation(
-                        self._config.critic_reserve_tokens, decision.profile_id
-                    ),
+                    reservation=(self._system_reservation(
+                        self._config.critic_reserve_tokens, decision.profile_id,
+                        SYSTEM_CRITIC_MODEL_CALLS,
+                    ) if task_id is not None and self.commit.system_task_hold(task_id) is not None
+                    else self._reservation(self._config.critic_reserve_tokens, decision.profile_id)),
                     task_id=task_id,
                     attempt_id=attempt_id,
                 )
@@ -4167,7 +4276,8 @@ class Orchestrator:
         tool_cap = self._config.max_tool_calls_per_turn
         if task.budget.max_tool_calls is not None:
             tool_cap = min(tool_cap, task.budget.max_tool_calls)
-        if self._tool_calls_limited(mission, task):
+        system_hold = self.commit.system_task_hold(task.id)
+        if self._tool_calls_limited(mission, task) and system_hold is None:
             # review P1-2: never reserve more than the chain can still hold; in-flight
             # reservations are not spending — only a spent dimension is exhaustion
             reservable, spent_room = self._tool_call_room(mission, task)
@@ -4202,6 +4312,10 @@ class Orchestrator:
             critic_tail = self._reservation(
                 self._config.critic_reserve_tokens, critic_decision.profile_id
             )
+        if system_hold is not None:
+            # The original Task hold already protects both roles. Do not create
+            # another FIRST Critic reservation against its fully reserved cap.
+            critic_tail = None
         if self._pressure.is_raised:  # §18.5 "缩小每个 Attempt 预算" (D6-3 ④)
             tokens = max(4_000, int(tokens * self._config.reduced_reserve_ratio))
         if task.budget.max_tokens is not None:
@@ -4229,6 +4343,22 @@ class Orchestrator:
             if tokens <= 0:
                 self.commit.stop_selection(task.id, reason="selection_tail_insufficient")
                 return True
+        if system_hold is not None:
+            held = self.commit.protected_tail_hold(system_hold["hold_id"])
+            allowance = None if held is None else self.commit.ledger.reservation(held["subject_id"])
+            if allowance is None:
+                raise ContractError("system Task has no original protected allowance")
+            critic_share = self._config.critic_reserve_tokens if "critic_review" in task.verification_policy else 0
+            room = allowance["reserved_tokens"] - critic_share
+            if allowance["state"] == "SETTLED" or room <= 0:
+                self.commit.stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+                                      detail={"reason": "system_tail_exhausted", "dimension": "tokens"})
+                await self._release_mission(mission.id)
+                return True
+            tokens = min(tokens, room)
+            if self._tool_calls_limited(mission, task):
+                tool_cap = min(tool_cap, allowance["reserved_tool_calls"])
+                config = replace(config, limits=replace(config.limits, max_tool_calls_per_turn=tool_cap))
         try:
             attempt, _intent = self.commit.create_attempt(
                 task.id,
@@ -4240,7 +4370,9 @@ class Orchestrator:
                 prompt_version=role.prompt_version,
                 context_version=package.context_version,
                 reservation=replace(
-                    self._reservation(tokens, decision.profile_id),
+                    (self._system_reservation(tokens, decision.profile_id,
+                                              config.limits.max_model_calls_per_turn)
+                     if system_hold is not None else self._reservation(tokens, decision.profile_id)),
                     tool_calls=tool_cap if self._tool_calls_limited(mission, task) else 0,
                 ),
                 runtime_profile_id=decision.profile_id,
@@ -4328,6 +4460,15 @@ class Orchestrator:
                     return self._arbitrate_conflict(mission, task, detail)  # D7-8' ①
                 self.commit.stop_task(task.id, stop_reason=reason, detail=detail)
                 self._note(f"task {task.id} stopped: {reason} ({error.dimension})")
+            await self._release_mission(mission.id)
+            return True
+        except BudgetError as error:
+            if system_hold is None:
+                raise
+            self.commit.stop_task(
+                task.id, stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+                detail={"reason": "system_tail_binding_unavailable", "error": str(error)},
+            )
             await self._release_mission(mission.id)
             return True
         self._note(

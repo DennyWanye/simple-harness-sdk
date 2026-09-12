@@ -317,6 +317,51 @@ def read_input_closure(
     return result
 
 
+def fragment_validation_layout(projection: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
+    """Relocate output file predicates, never source locators or executable tests.
+
+    Original inputs retain their paths and CAS identities. A file predicate is
+    rebound as a whole to its new output; arbitrary pytest code cannot safely be
+    rewritten this way or tested against the old input in lieu of the new output.
+    """
+    criteria = projection["criteria"]
+    outputs = list(projection["origin_revision"]["contract"]["outputs"])
+    outputs.extend(
+        item["text"].removeprefix("file:") for item in criteria if item["kind"] == "file"
+    )
+    if outputs and any(item["kind"] == "pytest" for item in criteria):
+        raise ContractError(
+            "scope_not_derivable: pytest output relocation needs an independent contract"
+        )
+    prefix = "fragment-output/" + projection["fragment_id"].removeprefix("fragment-")
+    folded_prefix = unicodedata.normalize("NFC", prefix).casefold()
+    for path in projection["input_closure"]:
+        folded = unicodedata.normalize("NFC", path).casefold()
+        if (
+            folded == folded_prefix
+            or folded.startswith(folded_prefix + "/")
+            or folded_prefix.startswith(folded + "/")
+        ):
+            raise ContractError("fragment output namespace overlaps original input")
+    paths = {_path(path): _path(prefix + "/" + path) for path in sorted(set(outputs))}
+    if len({unicodedata.normalize("NFC", path).casefold() for path in paths}) != len(paths):
+        raise ContractError("fragment ambiguous output path alias")
+    roots = projection["origin_revision"]["execution_constraints"]["source_roots"]
+    for path in paths.values():
+        folded = unicodedata.normalize("NFC", path).casefold()
+        for root in roots:
+            protected = unicodedata.normalize("NFC", root).casefold().rstrip("/")
+            if folded == protected or folded.startswith(protected + "/"):
+                raise ContractError("fragment output namespace overlaps protected source root")
+    texts = [
+        "file:" + paths[item["text"].removeprefix("file:")]
+        if item["kind"] == "file"
+        else item["text"]
+        for item in criteria
+    ]
+    return paths, texts
+
+
 def project_fragment(
     store: Store, artifact_store: ArtifactStore, proposal: FragmentProposalV1
 ) -> ScopeProjectionV1:
@@ -447,7 +492,7 @@ def project_fragment(
         "input_closure": closure,
         "constraints_revision": revision.constraints_revision,
     }
-    return ScopeProjectionV1(
+    projection = ScopeProjectionV1(
         "fragment-" + sha256_hex(identity),
         revision.to_json(),
         criteria,
@@ -456,3 +501,5 @@ def project_fragment(
         materials,
         closure,
     )
+    fragment_validation_layout(projection.to_json())
+    return projection

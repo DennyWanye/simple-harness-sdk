@@ -16,8 +16,10 @@ from ..governance.domains import DOC_DOMAIN, requires_document_critic_proof
 from ..graph.changes import ChangeLimits, TaskGraphChange
 from ..planning.fragments import (
     _current_sources,
+    _revision,
     _task_contract,
     current_task_revision,
+    fragment_validation_layout,
     project_fragment,
     read_input_closure,
     revision_for_result,
@@ -87,6 +89,7 @@ class FragmentCommitsMixin:
                     raise ContractError("fragment validation requires an active Mission")
                 original = projection.origin_revision
                 constraints = original["execution_constraints"]
+                output_paths, validation_criteria = fragment_validation_layout(projection.to_json())
                 if constraints["policy_binding"] != self._store.get_mission_policy(mission.id):
                     raise ContractError("fragment frozen policy binding changed")
                 # The old Task is provenance (parent_task_ids), never a dependency
@@ -102,6 +105,9 @@ class FragmentCommitsMixin:
                     + original["contract"]["rationale"]
                     + "\n不在本次结论范围内的原准则："
                     + canonical_json([item["text"] for item in projection.outside_scope])
+                    + "\n原输入路径及CAS不变。独立输出必须写入以下映射的新路径；"
+                    + "仅file完整谓词重绑定："
+                    + canonical_json(thaw_json(output_paths))
                 )
                 change = TaskGraphChange.from_json(
                     {
@@ -114,7 +120,7 @@ class FragmentCommitsMixin:
                                 "key": projection.fragment_id,
                                 "goal": goal,
                                 "rationale": fixed_reason,
-                                "success_criteria": [item["text"] for item in projection.criteria],
+                                "success_criteria": validation_criteria,
                                 "dependencies": [],
                                 "parent_task_ids": [original["task_id"]],
                                 "verification_policy": list(
@@ -122,7 +128,7 @@ class FragmentCommitsMixin:
                                 ),
                                 "allowed_tools": list(constraints["allowed_tools"]),
                                 "budget": thaw_json(constraints["budget"]),
-                                "outputs": list(original["contract"]["outputs"]),
+                                "outputs": list(output_paths.values()),
                                 "role": "worker",
                             }
                         ],
@@ -160,9 +166,12 @@ class FragmentCommitsMixin:
                 mapping = [
                     {
                         "origin_criterion_id": item["id"],
-                        "criterion_id": criterion_id(new_revision, ordinal, item["text"]),
+                        "criterion_id": criterion_id(
+                            new_revision, ordinal, validation_criteria[ordinal - 1]
+                        ),
                         "ordinal": ordinal,
-                        "text": item["text"],
+                        "origin_text": item["text"],
+                        "text": validation_criteria[ordinal - 1],
                     }
                     for ordinal, item in enumerate(projection.criteria, 1)
                 ]
@@ -178,6 +187,8 @@ class FragmentCommitsMixin:
                     "validation_task_id": task.id,
                     "validation_task_contract_revision": new_revision,
                     "criterion_mapping": mapping,
+                    "path_mapping_version": "fragment-output-v1",
+                    "output_path_mapping": output_paths,
                     "graph_change_id": graph["change_id"],
                     "source": dict(source),
                     "command_id": command_id,
@@ -252,10 +263,28 @@ class FragmentCommitsMixin:
         ):
             raise ContractError("fragment validation Task binding changed")
         original = receipt["projection"]["origin_revision"]["execution_constraints"]
+        output_paths, criteria = fragment_validation_layout(receipt["projection"])
+        expected_mapping = [
+            {
+                "origin_criterion_id": item["id"],
+                "criterion_id": criterion_id(
+                    receipt["validation_task_contract_revision"], ordinal, criteria[ordinal - 1]
+                ),
+                "ordinal": ordinal,
+                "origin_text": item["text"],
+                "text": criteria[ordinal - 1],
+            }
+            for ordinal, item in enumerate(receipt["projection"]["criteria"], 1)
+        ]
         if (
             task.allowed_tools != tuple(original["allowed_tools"])
             or task.budget.to_json() != original["budget"]
             or task.dependency_ids
+            or task.outputs != tuple(output_paths.values())
+            or task.success_criteria != tuple(criteria)
+            or receipt.get("path_mapping_version") != "fragment-output-v1"
+            or receipt.get("output_path_mapping") != output_paths
+            or receipt["criterion_mapping"] != expected_mapping
         ):
             raise ContractError("fragment validation constraints changed")
         return {
@@ -275,6 +304,31 @@ class FragmentCommitsMixin:
         if projection.projection_hash != receipt["projection_hash"]:
             raise ContractError("fragment original projection changed")
         return read_input_closure(self._store, self._source_cas(), receipt["projection"])
+
+    def fragment_collection_baseline(self: Any, attempt_id: str) -> dict[str, str]:
+        """Frozen initial hashes, not today's source catalog or workspace bytes.
+
+        The ordinary collector still keeps listed and changed files. This only
+        prevents an unchanged original CAS input from appearing newly produced.
+        """
+        attempt = self._require_attempt(attempt_id)
+        task = self._require_task(attempt.task_id)
+        marker = task.context.get("fragment_validation")
+        if not isinstance(marker, Mapping):
+            return {}
+        self.fragment_validation_binding(task.id)
+        receipt = self._fragment_receipt(marker["fragment_id"])
+        intent = self._store.get_intent_for_subject(attempt_id)
+        if intent is None:
+            raise ContractError("fragment collection has no frozen intent")
+        revision = _revision(self._store, intent)
+        files = thaw_json(revision.execution_constraints["files"])
+        if (
+            revision.task_contract_revision != receipt["validation_task_contract_revision"]
+            or files != receipt["projection"]["input_closure"]
+        ):
+            raise ContractError("fragment collection input binding changed")
+        return {path: item["content_hash"] for path, item in files.items()}
 
     def fragment_validation_context(self: Any, task_id: str) -> Mapping[str, Any]:
         """Bound context metadata, keeping original Claim wording and limitations.
@@ -298,6 +352,8 @@ class FragmentCommitsMixin:
             "trust": "unverified_origin_material_requires_independent_verification",
             "origin_contract": receipt["projection"]["origin_revision"]["contract"],
             "criterion_mapping": receipt["criterion_mapping"],
+            "output_path_mapping": receipt["output_path_mapping"],
+            "path_mapping_version": receipt["path_mapping_version"],
             "outside_scope": receipt["projection"]["outside_scope"],
             "original_claims": [claim.to_json() for claim in claims if claim.id in selected],
             "original_limitations": [item.to_json() for item in stored.envelope.limitations],
@@ -334,10 +390,10 @@ class FragmentCommitsMixin:
             if len(consumers) != 1:
                 raise ContractError("fragment consumer revision is absent, stale, or foreign")
             consumer, consumer_revision = consumers[0]
-            scope = {item["text"] for item in receipt["projection"]["criteria"]}
-            if not scope <= set(consumer.success_criteria) or not set(
-                consumer.allowed_tools
-            ) <= set(
+            if not all(
+                {item["origin_text"], item["text"]} & set(consumer.success_criteria)
+                for item in receipt["criterion_mapping"]
+            ) or not set(consumer.allowed_tools) <= set(
                 receipt["projection"]["origin_revision"]["execution_constraints"]["allowed_tools"]
             ):
                 raise ContractError("fragment scope or permissions do not cover consumer")
@@ -383,6 +439,7 @@ class FragmentCommitsMixin:
                 in {item["criterion_id"] for item in receipt["criterion_mapping"]}
             }
             materials = []
+            original_paths = {new: old for old, new in receipt["output_path_mapping"].items()}
             for artifact_id in stored.artifacts:
                 artifact = self._store.get_artifact(artifact_id)
                 if artifact is None or artifact.attempt_id != attempt.id:
@@ -391,12 +448,15 @@ class FragmentCommitsMixin:
                     read_verified(artifact)
                 except ArtifactStoreError as error:
                     raise ContractError("fragment accepted material_unavailable") from error
+                if artifact.path not in original_paths:
+                    continue  # side artifacts have no projected output predicate
                 materials.append(
                     {
                         "kind": "artifact",
                         "artifact_id": artifact.id,
                         "content_hash": artifact.content_hash,
                         "path": artifact.path,
+                        "original_path": original_paths[artifact.path],
                     }
                 )
             claims = [

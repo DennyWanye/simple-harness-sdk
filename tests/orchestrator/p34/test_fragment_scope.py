@@ -27,9 +27,15 @@ from agent_orchestrator.contracts import (
 from agent_orchestrator.contracts.fragments import FragmentProposalV1
 from agent_orchestrator.graph.changes import TaskGraphChange
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
-from agent_orchestrator.orchestrator.commit_service import CommitService, MissionSpec, Reservation
+from agent_orchestrator.orchestrator.commit_service import (
+    CommitRejected,
+    CommitService,
+    MissionSpec,
+    Reservation,
+)
 from agent_orchestrator.planning.fragments import (
     current_task_revision,
+    fragment_validation_layout,
     freeze_fragment_execution,
     revision_for_result,
 )
@@ -54,8 +60,10 @@ def contract(task):
     }
 
 
-def submit(s, task, *, accept=False):
+def submit(s, task, *, accept=False, output_path=None):
     task = s.store.get_task(task.id)
+    if output_path is None:
+        output_path = task.outputs[0] if "fragment_validation" in task.context else "good.md"
     config = {"task_contract": contract(task), "message": {"content": "verify"}, "agent_config": {}}
     config["fragment_execution"] = freeze_fragment_execution(
         s.store, s.cas, task=task, intent_config=config, inputs=(), retry_of=None
@@ -79,12 +87,12 @@ def submit(s, task, *, accept=False):
     data = "完整记录。\n".encode()
     digest = s.cas.put_bytes(data)
     artifact = Artifact(
-        id=ids.artifact_id(attempt.id, "good.md", digest),
+        id=ids.artifact_id(attempt.id, output_path, digest),
         mission_id=task.mission_id,
         task_id=task.id,
         attempt_id=attempt.id,
         type="file",
-        path="good.md",
+        path=output_path,
         version=1,
         content_hash=digest,
         size_bytes=len(data),
@@ -99,8 +107,8 @@ def submit(s, task, *, accept=False):
         outcome="candidate",
         summary="recorded",
         claims=(ClaimProposal(content="完整记录。", confidence=0.8),),
-        evidence=("good.md",),
-        artifacts=("good.md",),
+        evidence=(output_path,),
+        artifacts=(output_path,),
         proposed_tasks=(),
         used_knowledge=(),
         risks=(),
@@ -116,7 +124,7 @@ def submit(s, task, *, accept=False):
     s.commit.start_verification(envelope.id)
     workspace = Workspace(s.root / attempt.id, attempt_id=attempt.id, writable=True)
     workspace.root.mkdir(parents=True)
-    workspace.write_text("good.md", data.decode())
+    workspace.write_text(output_path, data.decode())
 
     async def critic(_):
         raise AssertionError("code file-only oracle must not invent a Critic verdict")
@@ -239,12 +247,19 @@ def test_independent_validation_maps_new_ids_and_does_not_accept_origin(scene):
     new = s.store.get_task(receipt["validation_task_id"])
     assert new.id != s.task.id and new.dependency_ids == ()
     assert new.parent_task_ids == (s.task.id,)
-    assert new.success_criteria == ("file:good.md",)
+    mapped = receipt["output_path_mapping"]["good.md"]
+    assert (
+        mapped == "fragment-output/" + receipt["fragment_id"].removeprefix("fragment-") + "/good.md"
+    )
+    assert new.success_criteria == ("file:" + mapped,)
+    assert new.outputs == (mapped,) and not set(new.outputs) & set(s.task.outputs)
     assert new.verification_policy == s.task.verification_policy
     assert new.allowed_tools == s.task.allowed_tools and new.budget == s.task.budget
     mapping = receipt["criterion_mapping"]
     assert mapping[0]["origin_criterion_id"] == s.proposal.criterion_ids[0]
     assert mapping[0]["criterion_id"] != s.proposal.criterion_ids[0]
+    assert mapping[0]["origin_text"] == "file:good.md"
+    assert mapping[0]["text"] == "file:" + mapped
     assert s.commit.fragment_validation_inputs(new.id)["good.md"].decode() == "完整记录。\n"
     accepted, _ = submit(s, new, accept=True)
     assert s.store.get_task(new.id).accepted_result_id == accepted.id
@@ -260,6 +275,62 @@ def test_independent_validation_maps_new_ids_and_does_not_accept_origin(scene):
         == receipt
     )
     assert len(s.store.list_tasks(s.mission.id)) == 2
+
+
+def test_original_path_does_not_satisfy_relocated_file_predicate(scene):
+    s = scene
+    receipt = s.commit.commit_fragment_validation(
+        s.proposal, command_id="namespace", base_graph_version=1, source={"manager": "oracle"}
+    )
+    task = s.store.get_task(receipt["validation_task_id"])
+    before = s.store.get_result(s.envelope.id).to_json()
+    rejected, _ = submit(s, task, output_path="good.md")
+    assert s.store.get_result(rejected.id).verdict == "FAIL"
+    assert s.store.get_task(task.id).accepted_result_id is None
+    accepted, artifact = submit(s, task, accept=True)
+    assert artifact.path == receipt["output_path_mapping"]["good.md"]
+    assert s.store.get_task(task.id).accepted_result_id == accepted.id
+    assert s.store.get_result(s.envelope.id).to_json() == before
+
+
+def test_namespace_does_not_disable_independent_graph_collision(scene):
+    s = scene
+    s.commit.commit_fragment_validation(
+        s.proposal, command_id="namespace", base_graph_version=1, source={"manager": "oracle"}
+    )
+    with pytest.raises(CommitRejected, match="artifact_conflict"):
+        s.commit.commit_graph_change(
+            s.mission.id,
+            TaskGraphChange.from_json(
+                {
+                    "base_graph_version": 2,
+                    "basis": {"trigger": "unrelated_duplicate"},
+                    "rationale": "独立任务不能覆盖原输出",
+                    "operations": [
+                        {
+                            "op": "add_task",
+                            "key": "duplicate",
+                            "goal": s.task.goal,
+                            "rationale": "duplicate",
+                            "dependencies": [],
+                            "success_criteria": ["file:good.md"],
+                            "verification_policy": ["format_check", "rule_check"],
+                            "outputs": ["good.md"],
+                            "budget": s.task.budget.to_json(),
+                        }
+                    ],
+                }
+            ),
+            source={"manager": "oracle"},
+        )
+    assert len(s.store.list_tasks(s.mission.id)) == 2
+
+
+def test_executable_predicate_cannot_validate_relocated_output_against_old_input(scene):
+    projection = scene.commit.project_fragment(scene.proposal).to_json()
+    projection["criteria"][0].update(kind="pytest", text="pytest:test_original.py")
+    with pytest.raises(ContractError, match="pytest output relocation"):
+        fragment_validation_layout(projection)
 
 
 @pytest.mark.parametrize(
@@ -360,10 +431,11 @@ def test_consumer_requires_accepted_validation_and_does_not_promote_file_claims(
                         "goal": "完整记录与独立验证：读取已验证文件",
                         "rationale": "只复用文件存在性",
                         "dependencies": [validation.id],
+                        "parent_task_ids": [validation.id],
                         "success_criteria": ["file:good.md"],
                         "verification_policy": ["format_check", "rule_check"],
                         "budget": {"max_tokens": 10000, "max_attempts": 3},
-                        "outputs": ["good.md"],
+                        "outputs": ["consumer.md"],
                     }
                 ],
             }
@@ -397,6 +469,8 @@ def test_consumer_requires_accepted_validation_and_does_not_promote_file_claims(
     assert value["validation_result_id"] == s.store.get_task(validation.id).accepted_result_id
     assert value["claims"] == []  # file structure cannot promote a content claim
     assert all(ref["artifact_id"] != s.artifact.id for ref in value["material_refs"])
+    assert value["material_refs"][0]["original_path"] == "good.md"
+    assert value["material_refs"][0]["path"] == receipt["output_path_mapping"]["good.md"]
     assert s.store.get_result(s.envelope.id).verdict == "FAIL"
     with pytest.raises(ContractError, match="consumer"):
         s.commit.fragment_input(receipt["fragment_id"], consumer_task_revision_id="0" * 64)

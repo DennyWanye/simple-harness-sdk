@@ -299,6 +299,8 @@ class ProviderBudgetGuard:
                     raise _deny("SDK turn cancelled before admission", reason_code="cancelled")
                 prior_output = 0
                 for previous in uow.list_provider_invocations(record.run_id):
+                    previous = uow.read_effective_provider_invocation(previous.invocation_id)
+                    assert previous is not None
                     if previous.invocation_id == record.invocation_id:
                         continue
                     if str(previous.state) == "claimed":
@@ -584,7 +586,7 @@ class ProviderBudgetGuard:
                 binding = uow.read_agent_binding(row["agent_id"])
                 if binding is None:
                     continue  # another pool's database is not negative evidence
-                record = uow.read_provider_invocation(row["invocation_id"])
+                record = uow.read_effective_provider_invocation(row["invocation_id"])
                 if record is not None:
                     turn = uow.read_agent_turn(row["turn_id"])
                     intent = self.store.get_intent(row["intent_id"])

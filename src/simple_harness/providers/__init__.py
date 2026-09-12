@@ -30,6 +30,10 @@ from .errors import (
 )
 from .openai_compatible import OpenAICompatibleProvider
 from .reconciliation import (
+    ProviderAccountingIdentity,
+    ProviderAccountingObservation,
+    ProviderAccountingPort,
+    ProviderAccountingState,
     ProviderReconciliationObservation,
     ProviderReconciliationPort,
     ProviderReconciliationState,
@@ -37,6 +41,10 @@ from .reconciliation import (
 from .redaction import SecretRedactor
 
 __all__ = (
+    "ProviderAccountingIdentity",
+    "ProviderAccountingObservation",
+    "ProviderAccountingPort",
+    "ProviderAccountingState",
     "CancelToken",
     "OpenAICompatibleProvider",
     "Provider",

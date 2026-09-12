@@ -343,8 +343,15 @@ def test_unused_mission_conflict_pool_releases_without_erasing_actual_sdk_unknow
             bridge = AgentBridge(runtime, unpriced=False)
             assert bridge.usage_facts(agent_id=agent.agent_id) == []
             with commit.store.transaction():
+                released = pools.pool("future-conflict")
+                assert released["state"] == "RELEASED"
+                assert released["release_reason"] == "mission_terminal"
+                with pytest.raises(BudgetError, match="replay changed reason"):
+                    pools.release_unused_pool(
+                        "future-conflict", mission_revision=revision, reason="cancelled"
+                    )
                 pools.release_unused_pool(
-                    "future-conflict", mission_revision=revision, reason="cancelled"
+                    "future-conflict", mission_revision=revision, reason="mission_terminal"
                 )
                 with pytest.raises(BudgetError, match="unknown"):
                     commit.ledger.settle(subject_id=attempt.id)

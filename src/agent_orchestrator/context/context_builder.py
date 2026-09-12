@@ -39,7 +39,12 @@ from simple_harness.contracts import canonical_json
 from .. import __version__ as PACKAGE_VERSION
 from ..contracts import Attempt, Mission, Task
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, sha256_hex
-from ..governance.domains import CODE_PROFILE, DomainProfileV1, supports_document_assessments
+from ..governance.domains import (
+    CODE_PROFILE,
+    DOC_DOMAIN,
+    DomainProfileV1,
+    supports_document_assessments,
+)
 from ..observability.secrets import environment_secrets, find_secrets
 from ..planning.manager import system_reserve_tokens
 from .retrieval import KnowledgeContext
@@ -353,6 +358,14 @@ def build_worker_package(
             "version": ROLE_VISIBILITY_VERSION, "role": role, "alias": "worker",
             "data_not_instruction": True,
         }
+    if domain.id == DOC_DOMAIN and int(domain.version) >= 6 and role not in SEARCH_ROLES:
+        from .document_feedback import document_repair_feedback
+
+        package["failure_history"] = [document_repair_feedback(item) for item in failures]
+        package["verifier_feedback"] = [document_repair_feedback(item) for item in verifier_feedback]
+        # Attempt.feedback is a string rendering of the same raw verification
+        # detail. Its current machine diagnostics are carried once above.
+        package["feedback"] = [{"diagnostics_in_verifier_feedback": True}] if attempt.feedback else []
     if role == "arbiter":
         package["dispute"] = dict(task.context)
         package["visibility"] = domain.context_wording.get(
@@ -421,6 +434,18 @@ def build_planner_package(
     _source_section(package, domain, source_versions)
     if workload is not None:
         package["source_workload"] = dict(workload)
+        package["criterion_allocation_semantics"] = {
+            "preserve_original_mission_criteria": True,
+            "quality_requirements": (
+                "Keep all original Mission success_criteria. Report-writing, formatting, "
+                "comparison and citation-quality requirements belong in the full Task goal "
+                "and independent Critic review. Do not duplicate them as newly invented "
+                "free-text success_criteria: those require literal source-backed claims, "
+                "not the Critic's assessment of how the report is written. Add a source "
+                "fact criterion only when it is a real independently verifiable subgoal. "
+                "This changes neither the Mission requirements nor the Critic quality bar."
+            ),
+        }
         package["budget_allocation_semantics"] = {
             "kind": "permitted_ceiling_not_expected_spend",
             "task_tokens": (

@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
-"""Characterize an OPEN accounting gate; passing does not mean late usage works.
+"""Legacy ports cannot silently become accounting authorities.
 
 The real SDK receives a successful response whose transport omits usage. An
 external fixture retains the matching original response with actual usage, but
-the current public recovery path cannot attach it to a SUCCEEDED invocation.
+the legacy execution-recovery path cannot attach it to a SUCCEEDED invocation.
+The new explicit accounting-only path has separate actual-SDK controls.
 No ledger state is manufactured, no UNKNOWN rewrite, no provider replay.
 """
 
@@ -52,7 +53,7 @@ class OriginalUsageEvidence:
         )
 
 
-async def successful_without_usage(commit, task, guard, provider, runtime):
+async def successful_without_usage(commit, task, guard, provider, runtime, *, actual_tokens=150):
     agent, attempt, key = await create_bound(commit, task, guard, runtime, "usage-omitted")
     receipt = await agent.submit("request", input_id=key)
     intent = commit.store.get_intent_for_subject(attempt.id)
@@ -67,7 +68,7 @@ async def successful_without_usage(commit, task, guard, provider, runtime):
     assert str(record.state) == "succeeded" and record.handoff_attempt == 1
     assert record.usage_json["usage"] is None and record.response_json["usage"] is None
     assert record.request_id == provider.actual.request_id
-    assert provider.actual.usage.total_tokens == 150
+    assert provider.actual.usage.total_tokens == actual_tokens
     assert record.budget_charge.kind.value != "trusted_usage"
     assert grants(commit)[0]["state"] == "UNKNOWN"
     assert grants(commit)[0]["actual_tokens"] is None
@@ -89,7 +90,7 @@ def assert_accounting_held(commit, runtime, subject_id, agent_id):
     assert reservation["settled_tokens"] is None
 
 
-def test_succeeded_missing_usage_has_no_current_public_late_accounting_path(tmp_path):
+def test_legacy_execution_reconciliation_cannot_replace_succeeded_usage(tmp_path):
     async def exercise():
         provider = UsageOmitted()
         evidence = OriginalUsageEvidence(provider)

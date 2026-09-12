@@ -186,6 +186,8 @@ def classify_turn_error(error: Mapping[str, Any] | None) -> str:
     if not error:
         return "other"
     codes = _error_codes(error)
+    if "context_required_content_too_large" in codes:
+        return "runtime_context_limit"
     if "provider_admission_denied" in codes:
         # Local allocation/authority refusal must not degrade Provider health or
         # escalate models. The scheduler handles its durable, typed reason.
