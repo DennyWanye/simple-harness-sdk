@@ -83,6 +83,7 @@ def scenes(tmp_path):
         *,
         mission_criteria=(CRITERION,),
         task_criteria=(CRITERION,),
+        task_criteria_by_index=None,
         tasks=1,
         domain=DOC_DOMAIN,
         profile=None,
@@ -130,7 +131,9 @@ def scenes(tmp_path):
                 "key": f"T{n}",
                 "goal": f"核对候选{n}",
                 "rationale": f"独立候选{n}",
-                "success_criteria": list(task_criteria),
+                "success_criteria": list(
+                    task_criteria if task_criteria_by_index is None else task_criteria_by_index[n]
+                ),
                 "verification_policy": ["format_check", "rule_check", "critic_review"],
                 "allowed_tools": [],
                 "dependencies": [],
@@ -195,6 +198,7 @@ def submitted(
     stance="affirms",
     candidates=True,
     mission_candidates=True,
+    mission_candidate_ordinals=None,
 ):
     from agent_orchestrator.contracts import LimitationV1
     from agent_orchestrator.verification.assessments import mission_criterion_catalog
@@ -208,8 +212,9 @@ def submitted(
     )
     mission_ids = tuple(
         row["criterion_id"]
-        for row in mission_criterion_catalog(s.mission)
+        for ordinal, row in enumerate(mission_criterion_catalog(s.mission), 1)
         if row["kind"] not in {"file", "action", "arbitration"}
+        and (mission_candidate_ordinals is None or ordinal in mission_candidate_ordinals)
     )
     attempt, intent = attempt_pair or dispatch(s, task_index=task_index)
     turn = "turn:" + attempt.id

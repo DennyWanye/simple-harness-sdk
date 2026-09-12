@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING, Any
 
 from ..contracts import ClaimStatus, ContractError, Mission, TaskStatus, ids
 from ..contracts.models import sha256_hex
-from ..governance.domains import DOC_DOMAIN, DomainProfileV1
+from ..governance.domains import (
+    DomainProfileV1,
+    requires_mission_source_binding,
+    supports_document_assessments,
+)
 from .assessments import (
     accepted_assessments_for,
     mission_contract_revision,
@@ -26,9 +30,20 @@ if TYPE_CHECKING:
     from ..storage.store import Store
 
 
-def mission_coverage(store: Store, mission: Mission, domain: DomainProfileV1) -> dict[str, Any]:
-    if domain.id != DOC_DOMAIN or domain.version != "3":
-        raise ContractError("Mission coverage requires the frozen document v3 profile")
+def mission_coverage(
+    store: Store, mission: Mission, domain: DomainProfileV1, *, artifact_store: Any = None
+) -> dict[str, Any]:
+    if not supports_document_assessments(domain):
+        raise ContractError("Mission coverage requires a frozen document assessment profile")
+    current_sources = requires_mission_source_binding(domain)
+    if current_sources:
+        from ..artifacts.store import ArtifactStore
+        from ..memory.source_dependencies import (
+            source_dependencies_for,
+            source_versions_current_issues,
+        )
+
+        artifact_store = artifact_store or ArtifactStore(store.path.parent / "artifacts")
     catalog = mission_criterion_catalog(mission)
     evaluations = []
     for task in store.list_tasks(mission.id):
@@ -46,7 +61,20 @@ def mission_coverage(store: Store, mission: Mission, domain: DomainProfileV1) ->
             cid = ids.claim_id(binding.result_id, ordinal)
             claim = store.get_claim(cid)
             rows = grouped.get(cid, [])
-            evaluations.append((binding, ordinal, proposal, claim, rows))
+            issues: list[dict[str, Any]] = []
+            if current_sources:
+                versions, issues = source_dependencies_for(
+                    store,
+                    mission_id=mission.id,
+                    evidence_refs=[ref for row in rows for ref in row.evidence_refs],
+                    used_knowledge=binding.envelope.used_knowledge,
+                )
+                issues.extend(
+                    source_versions_current_issues(store, mission.id, versions, artifact_store)
+                )
+                if any(issue["code"] == "ERROR" for issue in issues):
+                    raise ContractError("Mission source provenance unavailable")
+            evaluations.append((binding, ordinal, proposal, claim, rows, issues))
     verdicts = []
     for criterion in catalog:
         kind, text = criterion["kind"], criterion["text"]
@@ -58,13 +86,15 @@ def mission_coverage(store: Store, mission: Mission, domain: DomainProfileV1) ->
             "task_assessment_receipt_ids": [],
             "limitations": [],
         }
+        if current_sources:
+            item.update(excluded_claim_ids=[], source_provenance_issues=[])
         if kind in {"file", "action", "arbitration"}:
             item["verdict"] = "STRUCTURAL"
             item["reasons"] = ["requires_actual_structural_or_execution_check"]
             verdicts.append(item)
             continue
         passed, uncertain, failed = False, False, False
-        for binding, ordinal, proposal, claim, rows in evaluations:
+        for binding, ordinal, proposal, claim, rows, issues in evaluations:
             candidate = criterion["criterion_id"] in proposal.mission_criterion_ids
             matches = (
                 any(c.path == text.removeprefix("cite:") for c in proposal.citations)
@@ -72,6 +102,12 @@ def mission_coverage(store: Store, mission: Mission, domain: DomainProfileV1) ->
                 else normalise_literal(proposal.content) == normalise_literal(text)
             )
             if not candidate and not matches:
+                continue
+            if issues:
+                # Exclude this contribution only: an independent live replacement may
+                # still establish the criterion. Never rewrite the historical Claim.
+                item["excluded_claim_ids"].append(ids.claim_id(binding.result_id, ordinal))
+                item["source_provenance_issues"].extend(issues)
                 continue
             if claim is None or claim.status not in {
                 ClaimStatus.VERIFIED,
@@ -137,6 +173,13 @@ def mission_coverage(store: Store, mission: Mission, domain: DomainProfileV1) ->
         )
         if not passed and not uncertain and not item["reasons"]:
             item["reasons"].append("no_accepted_content_binding")
+        if current_sources and item["excluded_claim_ids"]:
+            item["excluded_claim_ids"] = sorted(set(item["excluded_claim_ids"]))
+            item["source_provenance_issues"] = list(
+                {sha256_hex(i): i for i in item["source_provenance_issues"]}.values()
+            )
+            if not passed and not uncertain:
+                item["reasons"].append("no_current_source_basis")
         item["reasons"] = sorted(set(item["reasons"]))
         item["claim_ids"] = sorted(set(item["claim_ids"]))
         item["task_assessment_receipt_ids"] = sorted(set(item["task_assessment_receipt_ids"]))
@@ -157,7 +200,13 @@ def mission_coverage(store: Store, mission: Mission, domain: DomainProfileV1) ->
         "denominator": denominator,
         "share": share,
         "limit": limit,
-        "insufficient": share > limit,
+        "insufficient": share > limit
+        and not (
+            current_sources
+            and any(
+                item["verdict"] == "FAIL" and item.get("excluded_claim_ids") for item in verdicts
+            )
+        ),
     }
     return {**body, "hash": sha256_hex(body)}
 

@@ -4,11 +4,13 @@
 - 上一份交接（`plans/2026-09-11-agent-orchestrator/HANDOFF.md`，停在第 2–9 步收官）已删除，本文件取代它。
 - 仓库与分支：
   - SDK `simple-harness-sdk`，`main`（本文件所在仓库）
-  - Host `simple_harness`，`main` = `04350956`，**干净且与远端同步；P3.3 还没有碰 Host**
+  - Host `simple_harness`，`main` = `04350956`，**HEAD仍为P3.2基线；G后端/UI工作区有未提交改动，候选wheel尚未更新**
 - 长期规则：专业术语先查 Host `plans/taskSys2/agent-orchestration-theory/` 的定义再写代码；真实模型只用 `deepseek-flash`（**绝不**用 deepseek-v4-pro）；记录与回复一律中文；技术取舍交独立评审子代理裁决并记录；测试先行；回归红集 ⊆ 基线 73；每切片提交推送并同步更新本文件；不用 `git stash`；同一时间只跑一个 pytest。
 - 安全：绝不打印或提交 API 密钥。本机真实测试从 Host 主仓 ignored `.env` 的 `DEEPSEEKER_APIKEY` 注入进程；该字段已确认存在。旧机 `.local-test-evidence/2026-09-07/credentials/deepseek.env` 本机不存在，不要据此判断无 key。模型固定 `deepseek-flash`，endpoint 按真实测试配置核实，密钥不复制到配置或证据。提交前扫 `\bsk-[A-Za-z0-9_-]{20,}` **只打印计数**。
 
 ---
+
+当前接续：G进行中（21:09 CST）：SDK默认文档画像v4、原子创建、历史引用全文分页、Mission判定树恢复和每次发布前来源复查已实现；两个SDK范围独立审查均限定ACCEPT。串行定向744 passed /17.44秒，非完整回归。Host后端/UI已实现但尚未安装新wheel验收；前端86 passed、typecheck通过。0.11.1只是候选版本，完整编排、制品、原生deepseek-flash及46项最终审计仍待做。
 
 ## 1. 整体进度
 
@@ -53,7 +55,7 @@
 | D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | ✅ SDK源码验证完成（`d3d3fd8`）；1119 passed /8 skipped，446.64秒 |
 | E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | ✅ SDK源码验证完成（cf40b8e）；1199 passed /8 skipped，481.36秒 |
 | F | 全量回归、wheel 干净环境验证 | ✅ 候选0.11.0完成验证；无新增回归，既有失败保留，见journal§2.6 |
-| G | Host 钉版、接线、系统渲染结论区、真实 flash 原生验收 | 未开始 |
+| G | Host 钉版、接线、系统渲染结论区、真实 flash 原生验收 | 进行中：SDK与Host接线实现，定向744通过；wheel与原生待验 |
 
 **每个切片完成即跑 `tests/orchestrator` 全量**，不等切片 F。
 

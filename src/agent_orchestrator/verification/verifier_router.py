@@ -24,7 +24,7 @@ from typing import Any
 from ..artifacts.workspace import Workspace
 from ..contracts import Artifact, ContractError, Mission, ResultEnvelope, Task
 from ..contracts.models import VERIFICATION_LAYERS
-from ..governance.domains import CODE_PROFILE, DomainProfileV1
+from ..governance.domains import CODE_PROFILE, DomainProfileV1, supports_document_assessments
 from ..memory.verified_knowledge import KnowledgeIndex
 from .assessments import AssessmentBindingV1, citation_integrity, doc_rule_reusable
 from .critics import CriticVerdict
@@ -286,11 +286,7 @@ class VerifierRouter:
             if result.status == NEEDS_HUMAN:
                 if not needs_human_allowed and (
                     layer != "critic_review"
-                    or (
-                        actual_domain is not None
-                        and actual_domain.id == "doc-research-v1"
-                        and actual_domain.version == "3"
-                    )
+                    or (actual_domain is not None and supports_document_assessments(actual_domain))
                 ):
                     result = LayerResult(
                         layer,

@@ -376,3 +376,20 @@ F 验证完成（保留既有红集）：干净源码 `5bcca08fe666b8e20524206b7
 - `.local-test-evidence/2026-09-12/p33-f/installed-full.json` SHA-256 `a14dd2cebebb12cc75ac2a29d0ed5fa714e4d885130f14efd86defad37213d89`
 - `.local-test-evidence/2026-09-12/p33-f/installed-origins.json` SHA-256 `1d7153c4dbacda1af4f0cf72d0fc1fca5fd88965e43e7feda96fd4d504144e35`
 - `.local-test-evidence/2026-09-12/p33-f/installed-process-check.json` SHA-256 `af2488be5442025f8dcdb397177f0e01d9115a90b41b2405530f5e31008b0842`
+
+
+## 2.7 切片G实施中（20:25–21:09 CST，已用44分钟）
+
+G进行中（21:09 CST）：SDK默认文档画像v4、原子创建、历史引用全文分页、Mission判定树恢复和每次发布前来源复查已实现；两个SDK范围独立审查均限定ACCEPT。串行定向744 passed /17.44秒，非完整回归。Host后端/UI已实现但尚未安装新wheel验收；前端86 passed、typecheck通过。0.11.1只是候选版本，完整编排、制品、原生deepseek-flash及46项最终审计仍待做。
+
+SDK v4冻结Mission source catalog与完整判定树，已有intent保留原消息/费用/view并在recover前验真；历史v3/code不迁改。真实accepted refs及used_knowledge递归来源决定当前coverage，每次effect handoff事务内再查；终态/历史assessment不重判。G1同事务原子批次创建；citation_read绑定Mission/result/receipt/ref序号，精确CAS原版本完整块分页。
+
+测试过程保留：全局极短lease夹具导致旧recovery2 failed/10 passed，移除该测试全局覆盖后14通过；它自然退出后kill返回ProcessLookup，不能称成功中止。第一G1 47通过与旧recovery约1.1秒重叠，不算串行验收，后续97与744组合已串行重跑。Ruff误删fixture导入造成19 setup errors，显式同名导入修复后组合绿色。中间各轮为重复覆盖，不相加宣称唯一用例。
+
+Host第一次源码overlay检查21 passed/6 failed，6项均由实际SDK版本/安装身份闸门拒绝；保留闸门，待0.11.1新wheel重验。没有真实模型调用。前端86 passed是组件测试，不是原生证据。独立审查见reports/code-review-g-source.md。完整回归将绑定随后干净源码提交；本批工作区测试不伪称干净提交验收。
+
+- `.local-test-evidence/2026-09-12/p33-g/g-cheap-v3.log` SHA-256 `c3b4156c13dfb7d1b844902f40f25c52617546ab9f70a898f127e2382b990c74`
+- `.local-test-evidence/2026-09-12/p33-g/g-cheap-v3.json` SHA-256 `9a63731bfd13ef72a30416635bb09e99f10cce111cc540979c356497679f8ab0`
+- `.local-test-evidence/2026-09-12/p33-g/g-recovery-v5.log` SHA-256 `a5610c529fb985a2253d57b07b153f3e34867601fbd9f84b6bf1d6ed583680ab`
+- `.local-test-evidence/2026-09-12/p33-g/g-action-v1.log` SHA-256 `36628d9288a7053a36fef344f7d77295a6fb21e8ab5726fbbb262ff5e21f2dc0`
+- `.local-test-evidence/2026-09-12/p33-g/host-source-g-first.log` SHA-256 `5dc1df2f7d2b207940a6d3b3cb9b5e3794a3a51100f491ea1b54ae52cde232f8`

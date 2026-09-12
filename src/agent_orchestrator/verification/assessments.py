@@ -29,7 +29,11 @@ from ..contracts import (
 )
 from ..contracts.assessments import content_hash, freeze_json, required_text, thaw_json
 from ..contracts.models import sha256_hex
-from ..governance.domains import DOC_DOMAIN, DomainProfileV1, criterion_kind
+from ..governance.domains import (
+    DomainProfileV1,
+    criterion_kind,
+    supports_document_assessments,
+)
 from . import adapters
 from .deterministic_checks import ERROR, FAIL, PASS, LayerResult
 from .evidence_resolver import EvidenceResolver
@@ -289,7 +293,7 @@ def _assessment_binding_for(
             raise ValueError("domain identity mismatch")
     except (KeyError, TypeError, ValueError) as error:
         raise ContractError(f"invalid frozen assessment domain: {error}") from error
-    if domain is not None and (domain.id, domain.version) == (DOC_DOMAIN, "3"):
+    if domain is not None and supports_document_assessments(domain):
         if tuple(specs) != tuple(sorted(domain.adapters.values())):
             raise ContractError("DOC3 requires its exact frozen check specifications")
     elif any(

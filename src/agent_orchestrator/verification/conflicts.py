@@ -26,6 +26,7 @@ from ..contracts import (
     ResultEnvelope,
     ids,
 )
+from ..governance.domains import supports_document_assessments
 from ..memory.claims import grade_claim, system_attribution
 
 if TYPE_CHECKING:
@@ -158,7 +159,7 @@ def document_uncertainty_conflicts(
     if domain_row is None or domain_row["domain_id"] != DOC_DOMAIN:
         return []
     domain = DomainProfileV1.from_json(domain_row["json"])
-    if domain.version != "3":
+    if not supports_document_assessments(domain):
         return []
     proposed = []
     uncertain = set()

@@ -264,7 +264,22 @@ def source_current_issues(
     artifact_store: ArtifactStore,
 ) -> list[dict[str, Any]]:
     """Direct citation fence, called inside the accept transaction after receipt checks."""
-    if not citations:
+    return source_versions_current_issues(
+        store,
+        mission_id,
+        merge_source_versions(*({c.path: (c.version,)} for c in citations)),
+        artifact_store,
+    )
+
+
+def source_versions_current_issues(
+    store: Store,
+    mission_id: str,
+    versions: Mapping[str, Sequence[str]],
+    artifact_store: ArtifactStore,
+) -> list[dict[str, Any]]:
+    """Read exact historical bytes and current lifecycle for a validated lineage union."""
+    if not versions:
         return []
     try:
         mission = store.get_mission(mission_id)
@@ -275,7 +290,9 @@ def source_current_issues(
         return [_issue("ERROR", "source_authority_unavailable")]
     issues = []
     resolver = EvidenceResolver(store, artifact_store)
-    for path, version in sorted({(c.path, c.version) for c in citations}):
+    for path, version in sorted(
+        (path, version) for path, hashes in versions.items() for version in hashes
+    ):
         try:
             read = resolver.read_source(
                 tenant_id=mission.tenant_id,

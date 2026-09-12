@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any
 
@@ -106,6 +106,16 @@ class ConflictTemplateV1:
         return tuple(criteria)
 
 
+def supports_document_assessments(domain: DomainProfileV1) -> bool:
+    """Only the two registered profiles share the assessment-v2 contract."""
+    return domain.id == DOC_DOMAIN and domain.version in {"3", "4"}
+
+
+def requires_mission_source_binding(domain: DomainProfileV1) -> bool:
+    """Successor Missions recheck current sources and bind the independent judge tree."""
+    return domain.id == DOC_DOMAIN and domain.version == "4"
+
+
 @dataclass(frozen=True, slots=True)
 class DomainProfileV1:
     id: str
@@ -137,12 +147,12 @@ class DomainProfileV1:
         object.__setattr__(self, "role_templates", MappingProxyType(dict(self.role_templates)))
         object.__setattr__(self, "context_wording", MappingProxyType(dict(self.context_wording)))
         object.__setattr__(self, "adapters", MappingProxyType(dict(self.adapters)))
-        if (self.id, self.version) == (DOC_DOMAIN, "3") and dict(self.adapters) != {
+        if supports_document_assessments(self) and dict(self.adapters) != {
             "citation_integrity": "citation_integrity@v2",
             "source_coverage": "source_coverage@v1",
         }:
             raise ValueError("document profile 3 requires its registered frozen adapters")
-        if (self.id, self.version) == (DOC_DOMAIN, "3"):
+        if supports_document_assessments(self):
             retry = self.completion_rules.get("inconclusive_retry_limit")
             share = self.completion_rules.get("inconclusive_share_limit")
             if type(retry) is not int or retry < 0:
@@ -242,7 +252,7 @@ CODE_PROFILE = DomainProfileV1(
     external_check="code_test",
 )
 
-DOC_PROFILE = DomainProfileV1(
+DOC_PROFILE_V3 = DomainProfileV1(
     id=DOC_DOMAIN,
     version="3",
     allowed_input_kinds=("text/markdown", "text/plain", "text/csv", "application/json"),
@@ -277,6 +287,9 @@ DOC_PROFILE = DomainProfileV1(
         "require_limitations": True,
     },
 )
+
+# Frozen v3 remains replayable; new Missions immediately use the successor gates.
+DOC_PROFILE = replace(DOC_PROFILE_V3, version="4")
 
 DOMAINS: Mapping[str, DomainProfileV1] = MappingProxyType(
     {CODE_DOMAIN: CODE_PROFILE, DOC_DOMAIN: DOC_PROFILE}
@@ -344,6 +357,9 @@ __all__ = (
     "CRITERION_KINDS",
     "DOC_DOMAIN",
     "DOC_PROFILE",
+    "DOC_PROFILE_V3",
+    "supports_document_assessments",
+    "requires_mission_source_binding",
     "DOMAIN_SCHEMA_VERSION",
     "DOMAINS",
     "EVIDENCE_KINDS",

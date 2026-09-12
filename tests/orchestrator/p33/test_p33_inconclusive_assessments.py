@@ -711,6 +711,9 @@ def test_reused_critic_obeys_doc3_escalation_quota_without_changing_code(
 
 
 def test_new_profile_and_specs_preserve_six_layers_and_old_domain_encoding():
+    # D published profile remains exact after the G default successor switch.
+    from agent_orchestrator.governance.domains import DOC_PROFILE_V3 as DOC_PROFILE
+
     assert DOC_PROFILE.version == "3"
     assert dict(DOC_PROFILE.adapters) == {
         "citation_integrity": SPECS[0],

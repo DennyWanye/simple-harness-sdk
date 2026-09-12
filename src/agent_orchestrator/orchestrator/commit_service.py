@@ -52,7 +52,9 @@ from ..governance.domains import (
     DOC_DOMAIN,
     DomainProfileV1,
     check_against_domain,
+    requires_mission_source_binding,
     resolve_domain,
+    supports_document_assessments,
 )
 from ..governance.policies import DeploymentPolicy
 from ..graph.changes import (
@@ -2488,8 +2490,7 @@ class CommitService(
             mission = self._require_mission(task.mission_id)
             domain = self.domain_for(task.mission_id)
             if (
-                domain.id != DOC_DOMAIN
-                or domain.version != "3"
+                not supports_document_assessments(domain)
                 or mission.status is not MissionStatus.ACTIVE
                 or task.status in TERMINAL_TASK
             ):
@@ -2546,7 +2547,7 @@ class CommitService(
             if task.status not in {TaskStatus.READY, TaskStatus.ACTIVE, TaskStatus.VERIFYING}:
                 raise CommitRejected(f"task {task_id} is {task.status}; no new Attempt")
             domain = self.domain_for(task.mission_id)
-            if domain.id == DOC_DOMAIN and domain.version == "3":
+            if supports_document_assessments(domain):
                 mission = self._require_mission(task.mission_id)
                 frozen = {
                     "check_spec_ids": sorted(domain.adapters.values()),
@@ -3490,7 +3491,7 @@ class CommitService(
                 )
             if domain.id == DOC_DOMAIN:
                 assessments = self._validated_criterion_assessments(stored, task, attempt)
-                if domain.version == "3":
+                if supports_document_assessments(domain):
                     hard_failures = tuple(
                         LayerResult(
                             row["layer"],
@@ -3503,7 +3504,7 @@ class CommitService(
                     )
                     if hard_failures:
                         return self.fail_result(result_id, failures=hard_failures, owner=owner)
-                if domain.version == "3":
+                if supports_document_assessments(domain):
                     rows = self._store.list_verifications(result_id)
                     self._require_document_human_pass(stored, task, rows)
                     conflicts = document_uncertainty_conflicts(
@@ -3741,6 +3742,39 @@ class CommitService(
             )
             return completed
 
+    def document_handoff_refusal(self, mission_id: str) -> str | None:
+        """Called inside begin_handoff's transaction, before reservation/outbox write.
+
+        Each effect takes a fresh source eligibility decision; a previous connector's
+        await cannot lend its old source snapshot to the next action.
+        """
+        domain = self.domain_for(mission_id)
+        if not requires_mission_source_binding(domain):
+            return None
+        mission = self._require_mission(mission_id)
+        try:
+            coverage = mission_coverage(
+                self._store, mission, domain, artifact_store=self._source_artifact_store
+            )
+        except ContractError as error:
+            self.fail_mission(
+                mission_id,
+                stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
+                detail={"source_assessment_error": str(error)},
+            )
+            return "document_sources_unavailable"
+        if any(
+            row["verdict"] == "FAIL" and row.get("excluded_claim_ids")
+            for row in coverage["criteria"]
+        ):
+            self.fail_mission(
+                mission_id,
+                stop_reason=MissionStopReason.MISSION_CRITERIA_UNMET,
+                detail={"document_coverage": coverage},
+            )
+            return "document_sources_stale"
+        return None
+
     def stop_insufficient_mission(self, mission_id: str) -> Mission | None:
         """Recompute the original Mission catalogue before any judge or publication."""
 
@@ -3748,8 +3782,7 @@ class CommitService(
             mission = self._require_mission(mission_id)
             domain = self.domain_for(mission_id)
             if (
-                domain.id != DOC_DOMAIN
-                or domain.version != "3"
+                not supports_document_assessments(domain)
                 or mission.status is not MissionStatus.ACTIVE
             ):
                 return None
@@ -3761,7 +3794,9 @@ class CommitService(
             ]
             if not tasks or any(task.status is not TaskStatus.COMPLETED for task in tasks):
                 return None
-            coverage = mission_coverage(self._store, mission, domain)
+            coverage = mission_coverage(
+                self._store, mission, domain, artifact_store=self._source_artifact_store
+            )
             if not coverage["insufficient"]:
                 return None
             return self._stop_insufficient_mission(mission, tasks, coverage)
@@ -3828,20 +3863,49 @@ class CommitService(
             ]
             if not tasks or any(task.status is not TaskStatus.COMPLETED for task in tasks):
                 raise CommitRejected("mission judgment requires every live Task to be COMPLETED")
+            mutable_judgments = [dict(item) for item in judgments]
+            judgments = mutable_judgments
             domain = self.domain_for(mission_id)
             document_coverage = None
-            if domain.id == DOC_DOMAIN and domain.version == "3":
-                document_coverage = mission_coverage(self._store, mission, domain)
+            if supports_document_assessments(domain):
+                try:
+                    document_coverage = mission_coverage(
+                        self._store, mission, domain, artifact_store=self._source_artifact_store
+                    )
+                except ContractError as error:
+                    if not requires_mission_source_binding(domain):
+                        raise
+                    return self.fail_mission(
+                        mission.id,
+                        stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
+                        detail={"source_assessment_error": str(error)},
+                    )
                 if document_coverage["insufficient"]:
                     return self._stop_insufficient_mission(mission, tasks, document_coverage)
                 if [item.get("criterion") for item in judgments] != list(mission.success_criteria):
                     raise CommitRejected(
                         "judgments must cover the Mission success criteria in order"
                     )
-                for item, assessed in zip(judgments, document_coverage["criteria"], strict=True):
+                for item, assessed in zip(
+                    mutable_judgments, document_coverage["criteria"], strict=True
+                ):
                     if assessed["verdict"] == "STRUCTURAL":
                         continue
                     allowed = assessed["verdict"] in {"PASS", "INCONCLUSIVE"}
+                    if (
+                        requires_mission_source_binding(domain)
+                        and item.get("met") is True
+                        and not allowed
+                        and item.get("judge") == "document_coverage"
+                        and item.get("criterion_id") == assessed["criterion_id"]
+                    ):
+                        # A once-valid deterministic judgment can become stale while
+                        # waiting for actions/approval. Commit the fresh failure once.
+                        item.update(
+                            met=False,
+                            verdict=assessed["verdict"],
+                            reason="; ".join(assessed["reasons"]),
+                        )
                     if type(item.get("met")) is not bool or item["met"] != allowed:
                         raise CommitRejected(
                             "Mission content judgment disagrees with deterministic coverage"
@@ -3956,7 +4020,7 @@ class CommitService(
             }
             recorded = tuple(self._store.list_verifications(result_id))
             failure_reason = "verification_failed"
-            if document and domain.version == "3":
+            if document and supports_document_assessments(domain):
                 rule = next((row for row in recorded if row["layer"] == "rule_check"), None)
                 other_failure = any(
                     row["layer"] != "rule_check" and row["status"] in {"FAIL", "ERROR"}
@@ -4145,7 +4209,7 @@ class CommitService(
             }
             if stop_reason is MissionStopReason.INSUFFICIENT_EVIDENCE:
                 domain = self.domain_for(mission.id)
-                if domain.id == DOC_DOMAIN and domain.version == "3":
+                if supports_document_assessments(domain):
                     report["result"] = "INSUFFICIENT"
             done = next_mission(
                 mission, MissionStatus.FAILED, stop_reason=str(stop_reason), final_report=report

@@ -79,6 +79,8 @@ from ..contracts import (
 from ..contracts.models import jsonable, sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetError, BudgetExhausted
+from ..governance.domains import requires_mission_source_binding, supports_document_assessments
+from ..governance.permissions import Principal
 from ..governance.policies import action_decision, deployed_layers, effective_tools
 from ..governance.promotion import diff_params, interpreter_versions, resolve_params
 from ..graph.changes import ChangeLimits, TaskGraphChange
@@ -831,6 +833,33 @@ class Orchestrator:
             raise MissionRequestError(str(error)) from error
         return self._commit_mission(spec)
 
+    def create_mission_with_sources(
+        self,
+        *,
+        tenant_id: str,
+        request: Mapping[str, Any],
+        sources: Sequence[Mapping[str, Any]],
+        principal: Principal,
+    ) -> dict[str, Any]:
+        """Apply the deployment door before the single atomic Mission/source commit."""
+        from ..api.missions import MissionRequestError, spec_from_request, validate_spec
+
+        deployment = self._config.deployment_policy
+        spec = spec_from_request(tenant_id, request, default_tools=deployment.allowed_tools)
+        validate_spec(spec, available_tools=deployment.allowed_tools)
+        try:
+            self._check_mission_door(spec)
+        except ContractError as error:
+            raise MissionRequestError(str(error)) from error
+        return self.commit.create_mission_with_sources(
+            spec,
+            sources=sources,
+            principal=principal,
+            provider_kind=self._provider_kind,
+            policy_defaults=self._config_policy(),
+            policy_pin=self._policy_pin,
+        )
+
     def _commit_mission(self, spec: MissionSpec) -> tuple[Mission, bool]:
         return self.commit.create_mission(
             spec,
@@ -951,6 +980,18 @@ class Orchestrator:
                     self._bind_workspace(attempt)
                     self._bind_agent(intent.agent_id, intent.config)
             elif intent.kind == "critic":
+                try:
+                    self._validate_mission_judge_intent(intent)
+                except ContractError as error:
+                    self.assembled.gateway.unbind(intent.agent_id)
+                    await self._cancel_turn(intent)
+                    self.commit.fail_mission(
+                        intent.mission_id,
+                        stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
+                        detail={"source_binding_error": str(error)},
+                    )
+                    # Fail closed before bridge.recover could wake this invalid turn.
+                    raise
                 self._bind_critic(intent.agent_id, intent.config)
         for mission in self._active_missions():
             try:
@@ -1279,6 +1320,7 @@ class Orchestrator:
 
         if self._pool_missing(intent):
             return False
+        self._validate_mission_judge_intent(intent)
         claimed = self.commit.claim_intent(
             intent.intent_id, owner=self._owner, lease_seconds=self._config.lease_seconds
         )
@@ -1572,6 +1614,36 @@ class Orchestrator:
                 denied_prefixes=self._config.deployment_policy.denied_path_prefixes,
             ),
         )
+
+    def _validate_mission_judge_intent(self, intent: DispatchIntent) -> None:
+        if intent.kind != "critic" or not intent.subject_id.startswith(
+            f"{intent.mission_id}:judge:"
+        ):
+            return
+        domain = self.commit.domain_for(intent.mission_id)
+        if not requires_mission_source_binding(domain):
+            return
+        from ..verification.mission_sources import ensure_mission_tree
+
+        mission = self.store.get_mission(intent.mission_id)
+        if mission is None:
+            raise ContractError("Mission source owner unavailable")
+        if sha256_hex(intent.config.get("message")) != intent.input_hash:
+            raise ContractError("Mission source request identity mismatch")
+        from simple_harness.contracts import canonical_json as context_json
+
+        message = intent.config.get("message")
+        text = message.get("content") if isinstance(message, Mapping) else None
+        catalog = intent.config.get("mission_source_catalog")
+        view_id = intent.config.get("attempt_id")
+        if not isinstance(text, str) or not isinstance(catalog, Mapping):
+            raise ContractError("Mission source request catalog unavailable")
+        if (
+            f"## mission_source_catalog\n{context_json(dict(catalog))}\n\n" not in text
+            or f"## attempt_id\n{view_id}\n\n" not in text
+        ):
+            raise ContractError("Mission source request catalog differs from frozen tree")
+        ensure_mission_tree(self.store, mission, domain, self.assembled.workspaces, intent.config)
 
     def _bind_critic(self, agent_id: str, config: Mapping[str, Any]) -> None:
         self.assembled.gateway.bind(
@@ -2325,7 +2397,7 @@ class Orchestrator:
                 # registry. Persist a real failure; never fabricate a reusable PASS.
                 failure = LayerResult(
                     "rule_check",
-                    "ERROR" if domain.version == "3" else "FAIL",
+                    "ERROR" if supports_document_assessments(domain) else "FAIL",
                     "document assessment binding invalid",
                     {"reason": "assessment_binding_invalid", "error": str(error)},
                 )
@@ -2358,11 +2430,7 @@ class Orchestrator:
             if "critic" in self._config.ablations
             else frozenset(),
         )
-        if (
-            domain.id == "doc-research-v1"
-            and domain.version == "3"
-            and assessment_binding is not None
-        ):
+        if supports_document_assessments(domain) and assessment_binding is not None:
             from ..verification.assessments import validated_assessments
             from ..verification.conflicts import document_uncertainty_conflicts
 
@@ -2469,7 +2537,7 @@ class Orchestrator:
                 await self._release_mission(mission.id)
                 self._note(f"task {task.id} stopped: verifier(s) {undeployed} not deployed")
                 return True
-            if domain.id == "doc-research-v1" and domain.version == "3":
+            if supports_document_assessments(domain):
                 failed_attempt = self.store.get_attempt(attempt.id)
                 if (
                     failed_attempt is not None
@@ -3149,81 +3217,100 @@ class Orchestrator:
         artifacts: Sequence[Artifact],
         test_output: str | None,
         attempt_id: str | None = None,
+        mission_source_binding: Mapping[str, Any] | None = None,
     ) -> CriticVerdict:
-        copy = self.assembled.workspaces.verification_view(view_id)
-        source_attempt = None if attempt_id is None else self.store.get_attempt(attempt_id)
-        source_binding = (
-            {} if source_attempt is None else self._frozen_source_binding(source_attempt)
-        )
-        untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
-        if source_binding:
-            untrusted = sorted(set(untrusted) | set(source_binding.get("source_versions", {})))
-        try:
-            package = build_critic_package(
-                mission,
-                task,
-                attempt_id=view_id,
-                artifacts=[
-                    {"path": a.path, "content_hash": a.content_hash, "size_bytes": a.size_bytes}
-                    for a in artifacts
-                ],
-                test_output=test_output,
-                workspace_files=copy.list_files(),
-                knowledge=self._knowledge_or_unavailable(mission, task),
-                visibility="critic" if task is not None and task.kind == "conflict" else "verifier",
-                domain=self.commit.domain_for(mission.id),
-                source_versions=source_binding.get("source_versions"),
-            )
-        except ContextRejected as error:
-            raise ContractError(f"critic package refused: {error}") from error
         task_id = None if task is None else task.id
         last_error: ContractError | None = None
         for ordinal in range(1, MAX_CRITIC_ATTEMPTS + 1):
             subject = f"{subject_prefix}:{ordinal}"
-            try:
-                decision = self._route_service("critic", mission.id)
-            except RoutingUnavailable as unavailable:
-                # review P0-1: an unavailable Critic makes the layer an ERROR (never a PASS)
-                raise ContractError(
-                    f"critic runtime profile {unavailable.profile_id!r} unavailable"
-                ) from unavailable
-            template = self._template(CRITIC, mission.id)
-            config = AgentConfig(
-                name=f"critic-{ordinal}",
-                instructions=template.instructions,
-                model_profile_ref=decision.profile_id,
-                tool_names=template.tool_names,
-                limits=AgentLimits(
-                    max_model_calls_per_turn=12,
-                    max_tool_calls_per_turn=24,
-                    turn_deadline_seconds=self._config.turn_deadline_seconds,
-                ),
-            )
-            message = user_message_json(package.text)
-            intent = self.commit.create_service_intent(
-                kind="critic",
-                subject_id=subject,
-                mission_id=mission.id,
-                account_id=account_id,
-                creation_key=subject,
-                input_id="attempt-input",
-                input_hash=sha256_hex(message),
-                config={
-                    "agent_config": config.to_json(),
-                    "message": message,
-                    "attempt_id": view_id,
-                    "context_version": package.context_version,
-                    "prompt_version": template.prompt_version,
-                    "untrusted_sources": untrusted,
-                    **source_binding,
-                    **self._service_config(decision),
-                },
-                reservation=self._reservation(
-                    self._config.critic_reserve_tokens, decision.profile_id
-                ),
-                task_id=task_id,
-                attempt_id=attempt_id,
-            )
+            intent = self.store.get_intent_for_subject(subject)
+            if intent is not None:
+                self._validate_mission_judge_intent(intent)
+            else:
+                copy = self.assembled.workspaces.verification_view(view_id)
+                source_attempt = None if attempt_id is None else self.store.get_attempt(attempt_id)
+                source_binding = (
+                    {} if source_attempt is None else self._frozen_source_binding(source_attempt)
+                )
+                untrusted = [
+                    str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])
+                ]
+                if mission_source_binding is not None:
+                    source_binding = dict(mission_source_binding)
+                    untrusted = sorted(set(untrusted) | set(source_binding["untrusted_sources"]))
+                if source_binding:
+                    untrusted = sorted(
+                        set(untrusted) | set(source_binding.get("source_versions", {}))
+                    )
+                try:
+                    package = build_critic_package(
+                        mission,
+                        task,
+                        attempt_id=view_id,
+                        artifacts=[
+                            {
+                                "path": a.path,
+                                "content_hash": a.content_hash,
+                                "size_bytes": a.size_bytes,
+                            }
+                            for a in artifacts
+                        ],
+                        test_output=test_output,
+                        workspace_files=copy.list_files(),
+                        knowledge=self._knowledge_or_unavailable(mission, task),
+                        visibility="critic"
+                        if task is not None and task.kind == "conflict"
+                        else "verifier",
+                        domain=self.commit.domain_for(mission.id),
+                        source_versions=source_binding.get("source_versions"),
+                        mission_source_catalog=source_binding.get("mission_source_catalog"),
+                    )
+                except ContextRejected as error:
+                    raise ContractError(f"critic package refused: {error}") from error
+                try:
+                    decision = self._route_service("critic", mission.id)
+                except RoutingUnavailable as unavailable:
+                    # review P0-1: an unavailable Critic makes the layer an ERROR (never a PASS)
+                    raise ContractError(
+                        f"critic runtime profile {unavailable.profile_id!r} unavailable"
+                    ) from unavailable
+                template = self._template(CRITIC, mission.id)
+                config = AgentConfig(
+                    name=f"critic-{ordinal}",
+                    instructions=template.instructions,
+                    model_profile_ref=decision.profile_id,
+                    tool_names=template.tool_names,
+                    limits=AgentLimits(
+                        max_model_calls_per_turn=12,
+                        max_tool_calls_per_turn=24,
+                        turn_deadline_seconds=self._config.turn_deadline_seconds,
+                    ),
+                )
+                message = user_message_json(package.text)
+                intent = self.commit.create_service_intent(
+                    kind="critic",
+                    subject_id=subject,
+                    mission_id=mission.id,
+                    account_id=account_id,
+                    creation_key=subject,
+                    input_id="attempt-input",
+                    input_hash=sha256_hex(message),
+                    config={
+                        "agent_config": config.to_json(),
+                        "message": message,
+                        "attempt_id": view_id,
+                        "context_version": package.context_version,
+                        "prompt_version": template.prompt_version,
+                        **source_binding,
+                        "untrusted_sources": untrusted,
+                        **self._service_config(decision),
+                    },
+                    reservation=self._reservation(
+                        self._config.critic_reserve_tokens, decision.profile_id
+                    ),
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                )
             deadline = self.store.now + self._critic_wait
             while intent.state in {"PENDING", "CLAIMED", "AGENT_CREATED"}:
                 if not await self._dispatch(intent):  # another owner holds the claim (P1-8)
@@ -3436,9 +3523,20 @@ class Orchestrator:
             current = self.store.get_mission(mission.id)  # not the cycle's stale snapshot
             if current is None or current.status is not MissionStatus.ACTIVE:
                 return False
-            if any(c.startswith(ACTION_PREFIX) for c in current.success_criteria):
-                return await self._decide_actions(current, live)  # D7-7' two-stage judgment
-            return await self._judge(current, live)
+            try:
+                if any(c.startswith(ACTION_PREFIX) for c in current.success_criteria):
+                    return await self._decide_actions(current, live)  # D7-7' two-stage judgment
+                return await self._judge(current, live)
+            except ContractError as error:
+                if not requires_mission_source_binding(self.commit.domain_for(current.id)):
+                    raise
+                self.commit.fail_mission(
+                    current.id,
+                    stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
+                    detail={"source_assessment_error": str(error)},
+                )
+                await self._release_mission(current.id)
+                return True
         if await self._runtime_exhausted(mission, tasks):  # after the judge (review P2-9)
             return True
         if any(task.status is TaskStatus.FAILED for task in tasks):
@@ -3834,6 +3932,39 @@ class Orchestrator:
         )
         return True
 
+    def _refresh_document_judgments(
+        self,
+        mission: Mission,
+        judgments: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        domain = self.commit.domain_for(mission.id)
+        result = [dict(item) for item in judgments]
+        if not requires_mission_source_binding(domain):
+            return result
+        from ..verification.mission_coverage import mission_coverage
+
+        coverage = mission_coverage(
+            self.store, mission, domain, artifact_store=self.assembled.workspaces.artifact_store
+        )
+        assessed = {
+            item["text"]: item for item in coverage["criteria"] if item["verdict"] != "STRUCTURAL"
+        }
+        for item in result:
+            row = assessed.get(item["criterion"])
+            if row is not None:
+                item.update(
+                    criterion_id=row["criterion_id"],
+                    met=row["verdict"] in {"PASS", "INCONCLUSIVE"},
+                    verdict=row["verdict"],
+                    judge="document_coverage",
+                    reason="; ".join(row["reasons"]),
+                    limitations=list(row["limitations"]),
+                    task_assessment_receipt_ids=list(row["task_assessment_receipt_ids"]),
+                    excluded_claim_ids=list(row["excluded_claim_ids"]),
+                    source_provenance_issues=list(row["source_provenance_issues"]),
+                )
+        return result
+
     async def _judge(self, mission: Mission, tasks: Sequence[Task]) -> bool:
         key = judgment_key(tasks)
         cached = self.commit.criteria_judgment(mission.id, key)  # booked only for an arbitration
@@ -3843,6 +3974,7 @@ class Orchestrator:
         if evaluated is None:
             return True
         judgments, summary = evaluated
+        judgments = self._refresh_document_judgments(mission, judgments)
         ruled, created = self._arbitrated(mission, tasks, key, judgments)
         if ruled is None:  # D7-8' ②: a person rules first; the judgment is kept meanwhile
             if cached is None:
@@ -3854,7 +3986,7 @@ class Orchestrator:
 
     async def _stop_document_insufficient(self, mission: Mission) -> bool:
         domain = self.commit.domain_for(mission.id)
-        if domain.id != "doc-research-v1" or domain.version != "3":
+        if not supports_document_assessments(domain):
             return False
         try:
             stopped = self.commit.stop_insufficient_mission(mission.id)
@@ -3885,12 +4017,14 @@ class Orchestrator:
         self._reimport_unsettled(mission)
         domain = self.commit.domain_for(mission.id)
         document_coverage = None
-        if domain.id == "doc-research-v1" and domain.version == "3":
+        if supports_document_assessments(domain):
             if await self._stop_document_insufficient(mission):
                 return None
             from ..verification.mission_coverage import mission_coverage
 
-            document_coverage = mission_coverage(self.store, mission, domain)
+            document_coverage = mission_coverage(
+                self.store, mission, domain, artifact_store=self.assembled.workspaces.artifact_store
+            )
         all_tasks = {t.id: t for t in tasks}
         try:
             merged = merge_accepted(
@@ -3925,7 +4059,56 @@ class Orchestrator:
         # P0-2: one judgment tree per orchestrator instance — another instance may be
         # running pytest in its own; the judgment Commit itself is idempotent
         view_id = f"{mission.id}-judge-{self._owner}"
-        copy = self.assembled.workspaces.integrated_copy(view_id, seed=seed, files=files)
+        mission_sources = None
+        if requires_mission_source_binding(domain):
+            from ..verification.mission_sources import ensure_mission_tree, prepare_mission_tree
+
+            existing = next(
+                (
+                    self.store.get_intent_for_subject(f"{mission.id}:judge:{n}")
+                    for n in range(1, MAX_CRITIC_ATTEMPTS + 1)
+                    if self.store.get_intent_for_subject(f"{mission.id}:judge:{n}") is not None
+                ),
+                None,
+            )
+            try:
+                if existing is not None:
+                    self._validate_mission_judge_intent(existing)
+                    view_id = str(existing.config["attempt_id"])
+                    mission_sources = {
+                        k: existing.config[k]
+                        for k in (
+                            "mission_source_catalog",
+                            "mission_judge_tree",
+                            "source_roots",
+                            "untrusted_sources",
+                        )
+                    }
+                else:
+                    mission_sources = prepare_mission_tree(
+                        self.store,
+                        mission,
+                        domain,
+                        self.assembled.workspaces.artifact_store,
+                        seed=seed,
+                        files=files,
+                    )
+                copy = ensure_mission_tree(
+                    self.store,
+                    mission,
+                    domain,
+                    self.assembled.workspaces,
+                    {**mission_sources, "attempt_id": view_id},
+                )
+            except ContractError as error:
+                self.commit.fail_mission(
+                    mission.id,
+                    stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
+                    detail={"source_binding_error": str(error)},
+                )
+                return None
+        else:
+            copy = self.assembled.workspaces.integrated_copy(view_id, seed=seed, files=files)
         self._register_copy(
             "judge",
             f"{view_id}-verify",
@@ -3971,7 +4154,11 @@ class Orchestrator:
         critic: CriticVerdict | None = None
         reused_critic = False
         if needs_critic:
-            if len(tasks) == 1 and stored is not None:
+            if (
+                len(tasks) == 1
+                and stored is not None
+                and not requires_mission_source_binding(domain)
+            ):
                 critic = self._critic_verdicts.get(stored.envelope.id)
                 reused_critic = critic is not None
             if critic is None:
@@ -3985,6 +4172,7 @@ class Orchestrator:
                         account_id=mission_account(mission.id),
                         artifacts=artifacts,
                         test_output=test_output or None,
+                        mission_source_binding=mission_sources,
                     )
                 except (ContractError, BudgetExhausted) as error:
                     self._note(f"mission {mission.id}: independent judge unavailable ({error})")
@@ -4083,6 +4271,7 @@ class Orchestrator:
             cached = evaluated
             progressed = True
         plain, summary = cached
+        plain = self._refresh_document_judgments(mission, plain)
         ruled, created = self._arbitrated(mission, tasks, key, plain)
         if ruled is None:
             return progressed or created  # a person rules on a Verifier conflict first

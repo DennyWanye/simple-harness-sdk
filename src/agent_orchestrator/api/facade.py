@@ -162,6 +162,29 @@ class MissionControlV1:
             "facade": FACADE_VERSION,
         }
 
+    def create_with_sources(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        """Create the Mission and all initial source registrations before Host wake."""
+        if not isinstance(command, Mapping) or set(command) != {"mission", "sources"}:
+            raise FacadeError("invalid_request", "source batch requires exactly mission/sources")
+        request = self._strict(command["mission"])
+        self._clean(*self._texts(request))
+        try:
+            receipt = self._orchestrator.create_mission_with_sources(
+                tenant_id=self._tenant,
+                request=request,
+                sources=command["sources"],
+                principal=self._principal,
+            )
+        except SourceCommitError as error:
+            raise FacadeError(error.code, str(error)) from error
+        except MissionConflict as error:
+            raise FacadeError("conflict", "source batch key has a different body") from error
+        except (MissionRequestError, ContractError, BudgetError, ValueError) as error:
+            raise FacadeError("invalid_request", str(error)) from error
+        except StoreError as error:
+            raise FacadeError("refused", str(error)) from error
+        return {**dict(receipt), "facade": FACADE_VERSION}
+
     def register_source(self, command: Mapping[str, Any]) -> dict[str, Any]:
         return self._source_command("register", command)
 
@@ -516,6 +539,36 @@ class MissionControlV1:
             return self._approvals.list(mission_id)
         mine = {m.id for m in self._store.list_missions() if m.tenant_id == self._tenant}
         return [item for item in self._approvals.list(None) if item.get("mission_id") in mine]
+
+    def citation_read(
+        self,
+        mission_id: str,
+        *,
+        result_id: str,
+        receipt_id: str,
+        citation_index: int,
+        offset: int = 0,
+        limit: int = 65536,
+    ) -> dict[str, Any]:
+        """Read a page of an original accepted citation block, never a caller path."""
+        from .citations import CitationReadError, citation_page
+
+        try:
+            return citation_page(
+                self._store,
+                self._orchestrator.commit._source_cas(),
+                tenant_id=self._tenant,
+                mission_id=mission_id,
+                result_id=result_id,
+                receipt_id=receipt_id,
+                citation_index=citation_index,
+                offset=offset,
+                limit=limit,
+            )
+        except CitationReadError as error:
+            raise FacadeError(error.code, str(error)) from error
+        except StoreError as error:
+            raise FacadeError("refused", "citation storage is unavailable") from error
 
     def artifact_read(self, artifact_id: str) -> dict[str, Any]:
         identifier = str(artifact_id)

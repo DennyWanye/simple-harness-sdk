@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import posixpath
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from simple_harness.contracts import canonical_json
@@ -24,9 +24,10 @@ from ..governance.policies import DeploymentPolicy
 from .action_commits import ActionCommitError
 
 if TYPE_CHECKING:
-    from ..contracts import Event
+    from ..contracts import Event, Mission
     from ..governance.domains import DomainProfileV1
     from ..storage.store import Store
+    from .commit_service import MissionSpec
 
 SOURCE_TRUST = "untrusted_external"
 SOURCE_NOT_FOUND = "no such object for this caller"
@@ -49,6 +50,15 @@ class SourceCommitsMixin:
 
         def domain_for(self, mission_id: str) -> DomainProfileV1: ...
 
+        def create_mission(
+            self,
+            spec: MissionSpec,
+            *,
+            provider_kind: str = ...,
+            policy_defaults: Mapping[str, Any] | None = ...,
+            policy_pin: Mapping[str, Any] | None = ...,
+        ) -> tuple[Mission, bool]: ...
+
         def _emit(
             self,
             event_type: str,
@@ -61,6 +71,108 @@ class SourceCommitsMixin:
             actor_type: str = ...,
             actor_id: str = ...,
         ) -> Event: ...
+
+    def create_mission_with_sources(
+        self,
+        spec: MissionSpec,
+        *,
+        sources: Sequence[Mapping[str, Any]],
+        principal: Principal,
+        provider_kind: str = "unknown",
+        policy_defaults: Mapping[str, Any] | None = None,
+        policy_pin: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """One initial source batch; the Orchestrator validates the deployment door.
+
+        Nested Store transactions join this transaction. Do not catch a failed
+        registration here: only its unreferenced immutable CAS blob may survive.
+        Neither this method nor its caller may dispatch before the outer commit.
+        """
+        if not isinstance(principal, Principal):
+            raise SourceCommitError("refused", "source batches require an authenticated Principal")
+        if not isinstance(sources, (list, tuple)):
+            raise SourceCommitError("invalid_request", "sources must be an array")
+        prepared: list[dict[str, str]] = []
+        for item in sources:
+            if (
+                not isinstance(item, Mapping)
+                or set(item) != {"path", "content", "kind"}
+                or any(not isinstance(item[name], str) for name in item)
+                or not item["kind"].strip()
+            ):
+                raise SourceCommitError(
+                    "invalid_request", "each source requires exactly string path/content/kind"
+                )
+            try:
+                version = hashlib.sha256(item["content"].encode("utf-8")).hexdigest()
+            except UnicodeEncodeError as error:
+                raise SourceCommitError(
+                    "invalid_request", "source content must be UTF-8"
+                ) from error
+            prepared.append({**dict(item), "version_hash": version})
+        prepared.sort(key=lambda item: item["path"])
+        if len({item["path"] for item in prepared}) != len(prepared):
+            raise SourceCommitError("conflict", "a source batch contains a duplicate path")
+        spec_hash = _digest(spec.to_json())
+        body_hash = _digest(
+            {
+                "mission": spec.to_json(),
+                "sources": [
+                    {key: item[key] for key in ("path", "kind", "version_hash")}
+                    for item in prepared
+                ],
+            }
+        )
+        command_id = "mission-source-batch-" + _digest(
+            {"tenant_id": spec.tenant_id, "idempotency_key": spec.idempotency_key}
+        )
+        with self._store.transaction():
+            known = self._store.get_receipt(command_id)
+            if known is not None:
+                if known.get("batch_hash") != body_hash:
+                    raise SourceCommitError("conflict", "source batch key has a different body")
+                return dict(known)
+            if self._store.find_mission(spec.tenant_id, spec.idempotency_key) is not None:
+                raise SourceCommitError(
+                    "conflict", "an existing Mission is not an initial source batch"
+                )
+            mission, created = self.create_mission(
+                spec,
+                provider_kind=provider_kind,
+                policy_defaults=policy_defaults,
+                policy_pin=policy_pin,
+            )
+            receipts = [
+                self.register_source(
+                    mission_id=mission.id,
+                    tenant_id=spec.tenant_id,
+                    principal=principal,
+                    path=item["path"],
+                    content=item["content"],
+                    kind=item["kind"],
+                    idempotency_key=command_id + ":" + _digest({"path": item["path"]}),
+                )
+                for item in prepared
+            ]
+            receipt = {
+                "mission_id": mission.id,
+                "created": created,
+                "spec_hash": spec_hash,
+                "status": str(mission.status),
+                "command_id": command_id,
+                "batch_hash": body_hash,
+                "source_versions": {item["path"]: item["version_hash"] for item in prepared},
+                "sources": receipts,
+            }
+            self._store.insert_receipt(
+                commit_id=command_id,
+                kind="mission_source_batch",
+                subject_id=mission.id,
+                base_version=None,
+                proposal_hash=body_hash,
+                receipt=receipt,
+            )
+            return receipt
 
     def _source_scope(self, mission_id: str, tenant_id: str, path: str) -> None:
         mission = self._store.get_mission(mission_id)

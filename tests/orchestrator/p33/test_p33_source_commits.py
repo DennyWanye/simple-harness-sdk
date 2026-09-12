@@ -85,7 +85,13 @@ def attach(s, store):
 def e_scenes(tmp_path):
     opened = []
 
-    def make(*, paths=(PATH, PATH, PATH), sources=None, domain=DOC_DOMAIN):
+    def make(
+        *,
+        paths=(PATH, PATH, PATH),
+        sources=None,
+        domain=DOC_DOMAIN,
+        mission_criteria=("file:REPORT.md",),
+    ):
         root = tmp_path / str(len(opened))
         root.mkdir()
         store = Store.open(root / "orchestrator.db", clock=lambda: 1000.0)
@@ -101,7 +107,7 @@ def e_scenes(tmp_path):
         mission, _ = s.commit.create_mission(
             MissionSpec(
                 goal="来源与争议的实际提交",
-                success_criteria=("file:REPORT.md",),
+                success_criteria=mission_criteria,
                 tenant_id="tenant",
                 idempotency_key="e-oracle",
                 domain=domain,
