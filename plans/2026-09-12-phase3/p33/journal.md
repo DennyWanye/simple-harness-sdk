@@ -2,7 +2,7 @@
 
 ## 0. 交接（冷会话先读这一节）
 
-- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A 实施中**。
+- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A 已完成（SDK 源码）；下一步 B**。
 - **中心断言**：文档领域的 VERIFIED 只意味着「这份文件的这个版本的这几行里，逐字写着这句话」，且要在记录层 / 消费层 / 交付层三层同时成立。详见 `plan.md` §0。
 - **切片顺序**：A 领域画像与五处闸门 → B 来源与证据解析 → C 评估记录与分级 → D adapter 与证据不足出口 → E 冲突与失效 → F 回归与 wheel → G Host 与原生验收。
 - **每切片完成即跑 `tests/orchestrator` 全量**（不等切片 F），并同步更新本文件。
@@ -64,7 +64,7 @@ schema 迁移**追加式**推进，一个切片一版：v8 `mission_domains`（�
 
 ## 3. 回归
 
-### 3.1 切片 A
+### 3.1 切片 A 早期原机记录（历史）
 
 `tests/orchestrator` 全量：**603 passed, 8 skipped, 0 failed（360.8 秒）**。8 个 skip 全部是需要 `--run-real-provider` 的真实端点用例，与本切片无关。
 
@@ -84,3 +84,45 @@ schema 迁移**追加式**推进，一个切片一版：v8 `mission_domains`（�
 ## 5. 遗留
 
 计划里已登记 F-P33-1..4，见 `acceptance.md` 退出门槛一节。
+
+
+## 6. 2026-09-12 本机切片 A 收口
+
+### 实际完成与审查
+
+- 完成画像 role/context 冻结、11 角色接线、注册表变化后的 snapshot 读取，以及其余四个入口的真实 commit rollback 控制。code 默认提示和政策语义保持兼容。
+- Ohm 独立审查发现 Critic 旧 intent 错标新版本的 P1，已修复实际 SETTLED ordinal 的来源记录/人工复用，并通过两条重启控制。新版画像缺字段拒绝、固定 doc prompt 派生版本两条 P2 也已处置。
+- Kepler 对 A 累计 diff 独立审查 ACCEPT；对后续 pytest 配置边界修复再次审查 ACCEPT，无未解决 P0/P1。四入口测试由主代理复核；恢复 fixture 的修复未改生产状态机或降低“不重跑 A”的预期。
+- Push 前文档审查的 P2 已修：testcase 中整图入口改为正确测试文件，并将其独立合法对照与其余四入口的同实例 rollback/重试区分，证据范围不扩大。
+- 本机首次全量三个失败全部处置，包含原源码对照；原因与未伪造的 red/green 边界见 [baseline.md](baseline.md)。当前 source 与冻结计划的差异只是必要的回归修复，没有删除 B–G 的 MUST。
+
+### 提交与最终验证
+
+- 起点：`a4aae8c23a2b72b9f2b07c62986fc7dd39f36cdf`。
+- 实现：`fdc9c91d98410287ec0645ccbdee43a38cbf44e7`。
+- 修正与**被测源码 HEAD**：`1eaa91f67b93eacaa7f5862a595421bb20d828a9`，开始测试时工作树为空。
+- 命令：`.venv/bin/python -m pytest tests/orchestrator -q -x --basetemp .local-test-evidence/2026-09-12/p33-a-resume/final-tmp`，外部进程组 watchdog 900 s。
+- **651 passed / 8 skipped / 0 failed，490.43 s**；8 个既有真实 Provider 用例要求 `--run-real-provider`，本次未启用。
+- 类型检查：85 源文件通过；改动范围 Ruff / diff-check 通过。两轮 pytest 进程组均已退出，无残留。
+- [分步验收索引](testcase.md)；[当前架构事实](../../../ARCHITECTURE/ORCHESTRATOR.md)。完整 P3.3 尚未完成，当前只关闭 A 源码验证；F/wheel、G/Host 与真实模型门保留。
+
+### 本地原始证据索引
+
+目录：`.local-test-evidence/2026-09-12/p33-a-resume/`。以下均 ignored，仅本机保存，未提交原始日志、数据库或机器报告。
+
+| 文件 | SHA-256 | 结论 |
+|---|---|---|
+| baseline.log | 01b21240cd135e06bcb54ecf3fa86246caff4be90464b7f7a0facfe1527f0768 | 实现前定向 66 passed |
+| orchestrator-full.log | f0e55511ecb821540323dbe76f570e142997f4e42bf2617aad7d0d76fed33cfc | 首次全量 3 failed / 632 passed / 8 skipped |
+| baseline-red-check.log | 0f51d2c7cc18eacb4b535e5243680d61bea6607750a5ec305226ddde2a13bd5e | 原源码复现两个本机问题 |
+| regression-repair.log | fcc40070f6cc3487485917991face1c0c388078e14696b3655e9ed5c2bf75190 | 16 配置场景加两原失败：18 passed |
+| orchestrator-final.log | e74b7b6efab590e6a9b30761d523273af8509ff2ca86a34a5cd57254f3668fae | 干净源码最终编排全量通过 |
+| mypy-final.log | 9ad320a85ca21c0eff33d60d04b500d1f61878a0511449d431cc57cbc0d0a44d | 85 文件通过 |
+
+### 继续 B
+
+来源 Store/facade/审批由一位代理负责，SourceCitation/resolver 由另一位负责，主代理负责 workspace 与 Attempt 冻结接线。接口与目录隔离的实际证明范围见 [HANDOFF](../HANDOFF.md) §3.3；不另开审批系统。
+
+真实测试凭据已在 Host 主仓 ignored `.env` 的 `DEEPSEEKER_APIKEY` 字段找到，只注入进程；模型固定 `deepseek-flash`。本节没有声称执行了真实模型调用。
+
+片状态：A SOURCE_VERIFIED；整体 P3.3 IN_PROGRESS。沿用整体 journal，不制造片级发布 receipt。

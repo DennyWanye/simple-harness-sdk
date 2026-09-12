@@ -1,3 +1,15 @@
+最后更新：2026-09-12。
+
+## Agent 编排 Phase3 当前状态
+
+P3.1/P3.2 已交付；P3.3 切片 A 已完成 SDK 源码验证，B–G 仍待实施；P3.4/P3.5 未开始。
+当前源码 `1eaa91f` 的编排全量 **651 passed / 8 skipped / 0 failed**；8 个真实 Provider 用例未启用。
+本次未换 Host wheel、未做新的原生或真实模型验收；Host `04350956` 仍钉 SDK 0.10.0。
+生产链路与边界见 [ORCHESTRATOR.md](ORCHESTRATOR.md)，接续与证据见
+[Phase3 HANDOFF](../plans/2026-09-12-phase3/HANDOFF.md)。本机未新增 worktree。
+
+## 以下为此前 SDK 能力与验证记录
+
 最后更新：2026-09-07。0.7.10 nullable源031fdc6+Host2d64e6e5/fad81ebb：仅明确原类型/null pair，保留required/enum/const/非null约束与原raw hash；Host两字段无值不请求复用，非适用hash拒绝。新增4唯一控制通过，Host首批夹具缺真实evidence入口红已保留，仅重红1。PG76045 exit0/remaining[]，旧H079不改；主统一一次wheel/installed组合，尚非真实模型或main质量通过。[限定结果](../plans/2026-09-07-nullable-tool-schema/RESULTS.md)。
 
 ## Mandatory context repair source — 2026-09-06

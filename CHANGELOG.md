@@ -1,3 +1,12 @@
+## 未发布 — P3.3 切片 A（SDK 源码）
+
+文档领域的角色、上下文与工具集现在遵循 Mission 冻结的领域快照；code-v1 保留原默认提示与政策选版。
+旧 Critic 执行恢复后按真实 intent 记录版本，人工审阅仅复用匹配层。补齐其余四个 Task 入口的拒绝/回滚控制。
+嵌套工作区的 pytest 8 不再读取父目录配置或 conftest，保留工作区配置优先级，不扩大沙箱权限。
+
+源码 `1eaa91f`：编排全量 651 passed / 8 skipped，真实 Provider 用例未启用。
+P3.3 来源、分级、Host 接线与原生验收尚未完成；没有发布新 wheel。见 [handoff](plans/2026-09-12-phase3/HANDOFF.md)。
+
 ## 0.10.0 — agent_orchestrator 0.10.0: isolated execution and real, controlled delivery (P3.2)
 
 Model-written code now runs through a **sandbox executor port** (`runtime/sandbox.py`).  The

@@ -6,7 +6,7 @@
   - SDK `simple-harness-sdk`，`main`（本文件所在仓库）
   - Host `simple_harness`，`main` = `04350956`，**干净且与远端同步；P3.3 还没有碰 Host**
 - 长期规则：专业术语先查 Host `plans/taskSys2/agent-orchestration-theory/` 的定义再写代码；真实模型只用 `deepseek-flash`（**绝不**用 deepseek-v4-pro）；记录与回复一律中文；技术取舍交独立评审子代理裁决并记录；测试先行；回归红集 ⊆ 基线 73；每切片提交推送并同步更新本文件；不用 `git stash`；同一时间只跑一个 pytest。
-- 安全：绝不打印或提交 API 密钥。真实运行在脚本里 `source` 凭证（`.local-test-evidence/2026-09-07/credentials/deepseek.env`，含 BASEURL/APIKEY）。提交前扫 `\bsk-[A-Za-z0-9_-]{20,}` **只打印计数**。
+- 安全：绝不打印或提交 API 密钥。本机真实测试从 Host 主仓 ignored `.env` 的 `DEEPSEEKER_APIKEY` 注入进程；该字段已确认存在。旧机 `.local-test-evidence/2026-09-07/credentials/deepseek.env` 本机不存在，不要据此判断无 key。模型固定 `deepseek-flash`，endpoint 按真实测试配置核实，密钥不复制到配置或证据。提交前扫 `\bsk-[A-Za-z0-9_-]{20,}` **只打印计数**。
 
 ---
 
@@ -19,7 +19,7 @@
 | Phase3 **P3.1** 真实 App Mission 控制闭环 | ✅ SHIPPED |
 | Phase3 **P3.1 遗留修复** | ✅ SHIPPED（SDK 0.9.11） |
 | Phase3 **P3.2** 隔离执行与真实受控交付 | ✅ SHIPPED（SDK 0.10.0，SDK `48e441a`，Host `04350956`） |
-| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A 实施到一半** |
+| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A 已完成；下一步 B** |
 | Phase3 P3.4 / P3.5 | 未开始 |
 
 用户的总指示（原话）："先修复，然后开始P3.2 到 P3.5，文件提交"。所以 P3.3 做完继续 P3.4、P3.5。
@@ -47,8 +47,8 @@
 
 | 切片 | 内容 | 状态 |
 |---|---|---|
-| A | 领域画像、**五处**闸门、`mission_domains` 与 facade、schema v8、D9 事件与回放、仲裁路径的两处 pytest 硬编码 | 🔨 **实施到一半，见 §3** |
-| B | schema v9 `sources` 表与三个 facade 命令、来源进 CAS、protected 扩成 `Path\|bytes`、`SourceCitation` 契约、EvidenceResolver 七个失败码 | 未开始 |
+| A | 领域画像、**五处**闸门、`mission_domains` 与 facade、schema v8、D9 事件与回放、仲裁路径的两处 pytest 硬编码 | ✅ SDK 源码验证完成（`1eaa91f`），见 §3–4 |
+| B | schema v9 `sources` 表与三个 facade 命令、来源进 CAS、protected 扩成 `Path\|bytes`、`SourceCitation` 契约、EvidenceResolver 七个失败码 | 接口与技术边界已核对，待实施 |
 | C | schema v10 `criterion_assessments`、评估记录传递、`grade_claim` v2、**attribution 三层收口** | 未开始 |
 | D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | 未开始 |
 | E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | 未开始 |
@@ -59,7 +59,7 @@
 
 ---
 
-## 3. 切片 A：已完成什么、还差什么
+## 3. 切片 A 已完成，下一步 B
 
 ### 3.1 已完成（代码已提交）
 
@@ -73,24 +73,35 @@
 - **系统模板可替换**：`planning/manager.conflict_task` 接受 `template`，准则与政策来自画像；综合任务的默认政策来自 `domain.synthesis_default_policy`。
 - **仲裁路径的两处硬编码**（原计划在切片 E，评审要求前移）：`check_arbitration` 增加 `domain` 参数（code 领域判据一字不变；`decides_with == "human_review"` 的领域不再要求引 `pytest:`）；`_open_conflict` 的部署闸门从写死 `code_test` 改为按画像的 `decides_with` 判断。
 - **回放（D9 的一半）**：`MissionCreated` payload 带 `domain_id`；`FORMAL_FIELDS["mission"]` 与 `OPTIONAL_FIELDS` 各加一项；`formal_from_snapshot` 与 `Store.snapshot` 同步补 `mission_domain`（带 `has_table()` 守卫）。
-- **测试**：`tests/orchestrator/p33/` 三个文件 25 条（`test_p33_domains.py` / `test_p33_domain_binding.py` / `test_p33_arbitration_domain.py`）。
+- **早期测试（历史）**：`tests/orchestrator/p33/` 三个文件 25 条（`test_p33_domains.py` / `test_p33_domain_binding.py` / `test_p33_arbitration_domain.py`）。
 
-### 3.2 切片 A 还差的（下一个 session 从这里接）
+### 3.2 本机完成的余项与恢复修复
 
-1. **角色模板与上下文文案**（第 2 轮评审 B P0-3 的余项，**还没做**）：
-   - `runtime/role_templates.py:166` 的 Arbiter 模板逐字要求 `evidence 必须包含 "pytest:arbitration/<key>/test_probe.py"`；
-   - `runtime/role_templates.py:121,125` 与 `context/context_builder.py:207` 告诉 Worker「结论必须有外部检查（pytest 证据）」「只有引用了你实际运行并通过的 pytest 目标才可能被判 VERIFIED」。
-   - 这三处在文档领域都是**该领域不成立的规则**，模型照做就会被闸门拒，跑满重试后 UNRESOLVED。要让画像能替换这些措辞（`DomainProfileV1.role_templates` / `context_wording` 字段已在计划 D1 里列出，但**尚未实现**）。
-2. **验收条目 P33-09 的五条**：目前只写了闸门 1 的用例（`test_p33_a19`），闸门 2/3/4/5 各还缺一条。
-3. （已完成）全量回归见 §4。
+- 11 个文档角色的专属模板、工具集合和 domain context 已接入实际 dispatch；code-v1 默认提示与冻结 policy 选版保持兼容。
+- `domain_for()` 从绑定 JSON 读取完整快照；文档画像 v2 冻结 role/context，新版缺字段拒绝。历史 doc-v1 缺字段使用固定兼容表，已有 intent 不重写。
+- 旧 Critic 幂等复用时，层版本来自真正 SETTLED 的 ordinal；关闭/重开库与人工审阅后复用都有决定性控制。
+- P33-09 五入口准则拒绝覆盖齐，闸门 2–5 另补 rollback 与同实例修正重试；结果 evidence kind 校验仍属于 B/C，不能扩大 A 的完成范围。
+- 全量暴露的 pytest 上级配置问题已修；消失执行器 fixture 加显式 gate，生产恢复逻辑未改。首次失败及原源码对照详见 `p33/baseline.md`。
+- 提交：`fdc9c91`（冻结角色和 Critic 来源）、`1eaa91f`（pytest 配置边界及回归修正）。架构事实源见 `ARCHITECTURE/ORCHESTRATOR.md`。
+
+### 3.3 B 开工接口与边界（实现待做）
+
+- Store：`get_source(mission_id, path, version_hash=None)`；指定 hash 读历史版本，不指定读有效版本。`list_sources(mission_id, active_only=False)` 返回确定顺序。
+- resolver 接收系统冻结的 tenant/Mission/source_versions/source_roots；精确登记版本缺失统一 not_found，已登记但不在冻结集才 stale_source。CAS 共用取数口，不能改读工作区或当前 head。
+- supersede/revoke 复用 Facade.decide → ApprovalApi → decide_approval 与现有审批表，L2；批准时同事务检查旧版本、记录决定、更新来源与事件。
+- 发布根与实际 CAS/来源挂载根作物理路径不相交检查；逻辑 `sources/` 不与物理目录直接比较。这是写入边界，不声称证明用户复制内容的原创性。
+- Citation 文案后续增加时发布新 prompt/profile 版本；不能修改已冻结 doc prompt v1。
 
 ---
 
-## 4. 测试状态
+## 4. 当前测试状态
 
-- ✅ **`tests/orchestrator` 全量：603 passed, 8 skipped, 0 failed（6 分 00 秒）**，在本交接的全部代码改动之后跑的。8 个 skip 全是需要 `--run-real-provider` 的真实端点用例。
-- ✅ `tests/orchestrator/p33`：26 passed。
-- ℹ️ 整仓 `tests/` 的基线红集 73 条与本切片无关（红的都在 orchestrator 之外），清单在 `baseline-known-failures.txt`，回归脚本忽略 3 个 memory-sdk 模块。切片 F 会跑整仓。
+- ✅ **干净提交 `1eaa91f67b93eacaa7f5862a595421bb20d828a9`：编排全量 651 passed / 8 skipped / 0 failed，490.43 s**。8 个 skip 均要求 `--run-real-provider`，不冒称真实模型验收。
+- ✅ 定向 P3.3 最初 58 passed；之后 16 条配置边界场景加两条原失败 18 passed；类型检查 85 文件、改动范围 Ruff、diff-check 均通过。最终全量包含全部新控制。
+- ✅ 两轮独立累计 diff 审查，无未解决 P0/P1；测试进程组已退出，未遗留子进程。
+- 原机早期 603 passed / 8 skipped 为历史；本机首次全量 632 passed / 3 failed / 8 skipped 保留在记录里，已逐项修复。
+- 整仓 `tests/` 的历史 73 条红集仍未在本机重跑，按计划切片 F 核对；本次不将两个本机复现问题并入历史红集。
+- 本地证据索引：`.local-test-evidence/2026-09-12/p33-a-resume/`；`orchestrator-final.log` SHA-256 `e74b7b6efab590e6a9b30761d523273af8509ff2ca86a34a5cd57254f3668fae`。完整小型结论见 `p33/journal.md`、分步入口见 `p33/testcase.md`。
 
 ### 4.1 跑回归的正确姿势（这一轮踩过）
 
