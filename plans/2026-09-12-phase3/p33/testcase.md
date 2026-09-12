@@ -39,8 +39,8 @@
 | Context 准则目录、来源提醒、召回降权与精确引用去重 | test_p33_doc_context.py；test_p33_doc_consumption.py | PASS；旧 code 分级函数体保持不变 |
 | citation-only 文档证据入口与 Critic 恢复 | test_p33_citation_evidence_gate.py；test_p33_critic_provenance.py | PASS；真实评估前置，复用原 Critic ordinal |
 
-P33 + step04：445 passed / 1 skipped，24.95 秒；长引用重开及上限 3 passed，0.38 秒。独立累计审查 ACCEPT；干净提交全量待完成。
+P33 + step04：445 passed / 1 skipped，24.95 秒；长引用重开及上限 3 passed，0.38 秒。独立累计审查 ACCEPT；963b090 干净完整编排 979 passed / 8 skipped / 0 failed，475.47 秒；首次 code 重放失败及修复见 journal。
 
 ## 后续门
 
-C 完整回归、D 证据不足、E 失效和冲突、F 整仓/wheel、G Host/真实 flash 原生验收仍未完成。A/B/C 定向的 PASS 不能扩大为 P3.3 完成。
+D 证据不足、E 失效和冲突、F 整仓/wheel、G Host/真实 flash 原生验收仍未完成。A/B/C 源码的 PASS 不能扩大为 P3.3 完成。

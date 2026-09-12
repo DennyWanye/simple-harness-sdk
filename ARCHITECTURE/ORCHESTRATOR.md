@@ -23,7 +23,7 @@
 - EvidenceResolver 按租户/Mission/精确版本和根范围读取 CAS；越权/不存在/根外返回同一 not_found；七种失败码按固定顺序判断。NFC/空白折叠、全文唯一与完整结构单元决定 locator；display_block 保留父标题和原文块坐标，预览限制 2048 字符，完整内容需后续 UI 按坐标读取。
 - 创建/导入和每次发布 handoff 使用同一个物理根相交判据（symlink、NFC、casefold）。全库只要存在文档来源领域，任何 Mission 的 file_publish 都不得写入共享 CAS/workspaces；guard 在预算预留/outbox 写入前的事务内运行。已有 receipt 仍可对账，纯 code 库保留旧行为。
 
-C 已实现 SDK 评估/分级链路，定向 445 passed / 1 skipped，干净全量待完成：
+C 已完成 SDK 评估/分级链路；干净源码 `963b090` 编排全量 **979 passed / 8 skipped / 0 failed**（475.47 秒）；独立审查闭环。旧 code 重放兼容回归已修复：
 
 - 评估由确定性 producer 经 verifications.detail 进入 accept；事务内复核冻结合同、claim revision、完整产物 hash 和来源绑定后，与 claim/knowledge 一起写入 schema 10 表。结构 verdict 与 claim assessment 分开，旧 accepted 历史不回填。
 - 来源归属 content/key/stance 由系统构造，完整引用+字面归属+确定性评估才能 VERIFIED；推论最多 SUPPORTED。原信封不改，失败的文档 claim 保持 UNDER_REVIEW/unsupported。

@@ -49,7 +49,7 @@
 |---|---|---|
 | A | 领域画像、**五处**闸门、`mission_domains` 与 facade、schema v8、D9 事件与回放、仲裁路径的两处 pytest 硬编码 | ✅ SDK 源码验证完成（`1eaa91f`），见 §3–4 |
 | B | schema v9 `sources` 表与三个 facade 命令、来源进 CAS、protected 扩成 `Path\|bytes`、`SourceCitation` 契约、EvidenceResolver 七个失败码 | ✅ SDK 源码验证完成（`fb58bf1`），独立审查闭环；867 passed / 8 skipped |
-| C | schema v10 `criterion_assessments`、评估记录传递、`grade_claim` v2、attribution 记录/消费/压制通道（Host 交付层仍 G） | 已实现；定向 445 passed / 1 skipped，干净全量待完成 |
+| C | schema v10 `criterion_assessments`、评估记录传递、`grade_claim` v2、attribution 记录/消费/压制通道（Host 交付层仍 G） | ✅ SDK 源码验证完成（`963b090`）；979 passed / 8 skipped，475.47 秒 |
 | D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | 未开始 |
 | E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | 未开始 |
 | F | 全量回归、wheel 干净环境验证 | 未开始 |
@@ -59,7 +59,7 @@
 
 ---
 
-## 3. 切片 A、B 已完成，下一步 C
+## 3. 切片 A、B、C 已完成，下一步 D
 
 ### 3.1 已完成（代码已提交）
 
@@ -97,7 +97,7 @@
 ## 4. 当前测试状态
 
 - ✅ **B 干净提交 `fb58bf1c6e5ad92bb7e64791e24c786282684058`：编排全量 867 passed / 8 skipped / 0 failed，488.39 s**；专项 300 passed / 8.13 s。8 个 skip 均为未启用的真实 Provider 门。审查无剩余 P1/P2；测试进程组 531 已退出，无遗留子进程。
-- B 证据和 SHA-256 索引见 `p33/journal.md` §2.2；下面 A 的 651 项是历史切片基线。C 已实现并有真实 SDK 定向链路验证，干净全量待完成，P3.3 整体及 wheel、Host/真实模型仍未验收。
+- B 证据和 SHA-256 索引见 `p33/journal.md` §2.2；下面 A 的 651 项是历史切片基线。C 已完成 SDK 源码验证（963b090 全量 979/8/0），P3.3 整体及 wheel、Host/真实模型仍未验收。
 
 - ✅ **干净提交 `1eaa91f67b93eacaa7f5862a595421bb20d828a9`：编排全量 651 passed / 8 skipped / 0 failed，490.43 s**。8 个 skip 均要求 `--run-real-provider`，不冒称真实模型验收。
 - ✅ 定向 P3.3 最初 58 passed；之后 16 条配置边界场景加两条原失败 18 passed；类型检查 85 文件、改动范围 Ruff、diff-check 均通过。最终全量包含全部新控制。

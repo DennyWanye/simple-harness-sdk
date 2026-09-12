@@ -11,3 +11,5 @@
 主代理统一执行：P33 + step04 定向 445 passed / 1 skipped（24.95 秒）；长引用重开与边界专项 3 passed（0.38 秒）；mypy 89 source files、修改 Python 的 Ruff 通过。干净提交全量尚待运行。本结论不是 P3.3 整体 SHIP，不含 wheel、Host 原生或真实 Provider 验收。
 
 首次 clean full 发现旧 code 重放兼容回归，主线程将新 record/fail 历史保护限定 doc。Kepler 独立复核两处 guard：ACCEPT；code 原 upsert/事件幂等恢复，原终态转换及事务回滚保留，doc 不可变检查完整。原 step02 测试不改；原失败用例 + 文档接受/历史套件 29 passed / 1.62 秒，mypy 89 files、Ruff 通过。完整回归待重新执行。
+
+最终修复由 Kepler/Ohm 独立 ACCEPT；干净 963b090 编排全量 979 passed / 8 skipped / 0 failed（475.47 秒），当前 C SDK 源码里程碑通过。

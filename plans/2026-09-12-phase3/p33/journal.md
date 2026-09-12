@@ -2,7 +2,7 @@
 
 ## 0. 交接（冷会话先读这一节）
 
-- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A、B 已完成（SDK 源码）；C 已实现，独立审查与干净全量验收收尾中**。
+- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A、B、C 已完成（SDK 源码）；C 全量 979 passed / 8 skipped / 0 failed；下一步 D**。
 - **中心断言**：文档领域的 VERIFIED 只意味着「这份文件的这个版本的这几行里，逐字写着这句话」，且要在记录层 / 消费层 / 交付层三层同时成立。详见 `plan.md` §0。
 - **切片顺序**：A 领域画像与五处闸门 → B 来源与证据解析 → C 评估记录与分级 → D adapter 与证据不足出口 → E 冲突与失效 → F 回归与 wheel → G Host 与原生验收。
 - **每切片完成即跑 `tests/orchestrator` 全量**（不等切片 F），并同步更新本文件。
@@ -206,3 +206,15 @@ schema v9、来源三个 Host 命令、CAS 原文、SourceCitation v2 契约、E
 - `.local-test-evidence/2026-09-12/p33-c/orchestrator-full.json` SHA-256 `59a1736d9b95c6a70027c1b766c3ed739150398da3a8f00608b69ffcd17b5985`
 
 - `.local-test-evidence/2026-09-12/p33-c/replay-fix.log` SHA-256 `684efba1f9aaac09d99a7375d09fe508a34a39ebcd82e4de4633185531f68d07`
+
+### C 干净完整回归完成（18:02）
+
+修复源码 `963b0903bab2a6d3bc645184966919df667e614c` 完整编排 **979 passed / 8 skipped / 0 failed**，pytest 475.47 秒、watchdog 475.74 秒。PG 10668 正常退出，剩余进程为空。8 个 skip 全为未启用的真实 Provider 门。首次真实兼容失败已保留，未改原 step02 预期；Kepler/Ohm 均复核限定 doc 的修复 ACCEPT。
+
+本片核心：派发冻结 → 引用解析 → 完整评估记录 → accept 事务 → 文档分级/知识投影 → 下游来源提醒，以及历史/恢复/压制通道反例。mypy 89 files、修改 Python 的 Ruff、独立累计审查与架构回写完成。C 为 SDK 源码里程碑，不是 P3.3 整体完成；D/E/F/G 与 Host/wheel/真实 flash 仍待实施。
+
+C 17:14–18:02 约 48 分钟，含实现、定向验证、评审及两轮完整回归；后者测试运行合计 652.54 秒（首轮早停 177.07 + 最终 475.47）。不把两轮测试时间当作全部开发耗时，也不把首轮已通过项累计为额外覆盖。
+
+- `.local-test-evidence/2026-09-12/p33-c/orchestrator-full-fixed.log` SHA-256 `fd85ee7e5521f86cedf63357fe33d4f8334068e3b13988c30b1d27fbceb8f5a5`
+
+- `.local-test-evidence/2026-09-12/p33-c/orchestrator-full-fixed.json` SHA-256 `a0aaf607b837b72f985368d866a5c5248321a1fb3cef797db38f4a2e24681632`
