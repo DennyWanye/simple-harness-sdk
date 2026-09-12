@@ -151,6 +151,20 @@ class AgentBridge:
             input_tokens = int((tokens or {}).get("input_tokens") or 0)
             output_tokens = int((tokens or {}).get("output_tokens") or 0)
             charge = record.budget_charge
+            if self._runtime.ports.provider_admission is not None and not self._unpriced:
+                # A final token count does not settle an unknown price. Do not
+                # occupy the append-only usage_ref before real reconciliation.
+                from ..governance.provider_prices import ProviderPrice
+
+                price = ProviderPrice.from_record(record)
+                if (
+                    price is None
+                    or price.known_charge(
+                        record, input_tokens=input_tokens, output_tokens=output_tokens
+                    )
+                    is None
+                ):
+                    continue
             amount = None if self._unpriced else charge.amount_micros
             unknown = (not self._unpriced) and charge.amount_micros is None
             facts.append(

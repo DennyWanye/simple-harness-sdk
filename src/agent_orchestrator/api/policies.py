@@ -124,10 +124,23 @@ class PolicyApi:
                 }
             )
         active = self._store.active_policy()
+        eligible_search_policies = []
+        from ..orchestrator.commit_service import CommitRejected
+
+        for version in self._store.list_policy_versions():
+            if version["status"] != "ACTIVE":
+                continue
+            try:
+                approved = self._commit.approved_search_policy(version["version_id"])
+            except CommitRejected:
+                continue
+            if approved["policy"]["mode"] == "COMPARE_THEN_SYNTHESIZE":
+                eligible_search_policies.append(approved)
         return {
             "active_version_id": None if active is None else active["version_id"],
             "versions": rows,
             "activations": self._store.list_policy_activations(),
+            "eligible_search_policies": eligible_search_policies,
             "note": "回滚由人执行：policy rollback [--to VERSION]",
         }
 

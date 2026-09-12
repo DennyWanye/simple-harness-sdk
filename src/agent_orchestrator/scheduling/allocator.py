@@ -216,6 +216,8 @@ def allocate(
     reduced_concurrency_ratio: float = 0.5,
     exploration_slots: int = 1,
     weights: Mapping[str, float] | None = None,
+    waiting_attempt_ids: frozenset[str] = frozenset(),
+    selection_task_ids: frozenset[str] = frozenset(),
 ) -> AllocationPlan:
     """Bounded allocation over the Frontier plus ACTIVE Tasks that still lack a candidate.
 
@@ -226,7 +228,7 @@ def allocate(
 
     open_by_task: dict[str, int] = {}
     for attempt in attempts:
-        if attempt.status in OPEN_ATTEMPT_STATES:
+        if attempt.status in OPEN_ATTEMPT_STATES and attempt.id not in waiting_attempt_ids:
             open_by_task[attempt.task_id] = open_by_task.get(attempt.task_id, 0) + 1
     open_total = sum(open_by_task.values())
     raised = pressure is not None and pressure.is_raised
@@ -235,7 +237,13 @@ def allocate(
         concurrency_limit = max(1, int(concurrency_limit * reduced_concurrency_ratio))
     grants: list[tuple[Task, int]] = []
     eligible = frontier(tasks) + [
-        task for task in tasks if task.status is TaskStatus.ACTIVE and not task.paused
+        task
+        for task in tasks
+        if (
+            task.status is TaskStatus.ACTIVE
+            or (task.id in selection_task_ids and task.status is TaskStatus.VERIFYING)
+        )
+        and not task.paused
     ]
     scores = score_tasks(
         tasks,

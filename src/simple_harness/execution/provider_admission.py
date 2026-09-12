@@ -10,7 +10,7 @@ is supplied by default. Accounting and the physical slot belong to the caller.
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Protocol
 
 from simple_harness.providers import CancelToken, ProviderRequest
@@ -29,10 +29,42 @@ class TokenEstimatorPort(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderAdmissionFailure:
+    """Safe durable denial data; requested/remaining describe incremental growth."""
+
+    reason_code: str = "authority_rejected"
+    account_id: str | None = None
+    dimension: str | None = None
+    requested: int | None = None
+    remaining: int | None = None
+    invocation_id: str | None = None
+    handoff_ordinal: int | None = None
+    mission_id: str | None = None
+    subject_id: str | None = None
+    bound_protocol: str | None = None
+    request_tokens: int | None = None
+    request_cost_micros: int | None = None
+
+    def to_json(self) -> dict:
+        return {"schema_version": 1, **asdict(self)}
+
+
 class ProviderAdmissionDenied(ProviderRequestRejectedError):
     """No handoff was authorized. Retrying must obtain fresh admission."""
 
     error_code = "provider_admission_denied"
+
+    def __init__(
+        self,
+        *,
+        public_message: str | None = None,
+        admission_detail: ProviderAdmissionFailure | None = None,
+    ) -> None:
+        super().__init__(public_message=public_message, retryable=False)
+        self.admission_detail = admission_detail or ProviderAdmissionFailure()
+        # Existing SDK failure persistence consumes Mapping-valued ``detail``.
+        self.detail = self.admission_detail.to_json()
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +120,7 @@ class ProviderAdmissionPort(Protocol):
 
 __all__ = (
     "ProviderAdmissionDenied",
+    "ProviderAdmissionFailure",
     "ProviderAdmissionPort",
     "ProviderAdmissionTicket",
     "TokenEstimatorPort",

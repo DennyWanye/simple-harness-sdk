@@ -53,6 +53,7 @@ OPEN_FIELDS = frozenset(
         "untrusted_sources",
         "synthesis",
         "conflict_reserve_tokens",
+        "search_policy_version_id",
         "workspace_seed",
         "domain",  # P3.3 (D1): which domain profile this Mission freezes
     }

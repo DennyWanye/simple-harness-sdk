@@ -186,6 +186,10 @@ def classify_turn_error(error: Mapping[str, Any] | None) -> str:
     if not error:
         return "other"
     codes = _error_codes(error)
+    if "provider_admission_denied" in codes:
+        # Local allocation/authority refusal must not degrade Provider health or
+        # escalate models. The scheduler handles its durable, typed reason.
+        return "admission_denied"
     if codes & UNAVAILABLE_KINDS:
         return "provider_unavailable"
     if any(code.startswith("provider_") and code not in NEUTRAL_KINDS for code in codes):

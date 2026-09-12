@@ -564,9 +564,14 @@ class AgentExecutionDriver:
                     self._settle_failed_turn(invocation, run_id)
                     error_payload: dict[str, JsonValue] = {
                         "error_code": code,
-                        "source_kind": "tool_parse",
+                        "source_kind": (
+                            "provider_admission" if code == "provider_admission_denied"
+                            else "tool_parse"
+                        ),
                         "error_type": type(error).__name__,
                     }
+                    if code == "provider_admission_denied":
+                        error_payload["retryable"] = False
                     if isinstance(detail, Mapping):
                         # e.g. finish_reason / observed usage of an empty provider response,
                         # kept in the durable turn result (review F6).

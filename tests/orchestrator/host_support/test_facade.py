@@ -356,6 +356,7 @@ def test_the_snapshot_cursor_comes_from_the_same_read(tmp_path, monkeypatch):
         original = store.list_tasks
         path = Path(tmp_path) / "evidence" / "orchestrator.db"
         inserted: list[int] = []
+        before = store.mission_budget_usage(mission_id)
 
         def list_tasks_then_write(mid):  # type: ignore[no-untyped-def]
             rows = original(mid)
@@ -369,10 +370,16 @@ def test_the_snapshot_cursor_comes_from_the_same_read(tmp_path, monkeypatch):
                         ("event-race-probe", "race-probe", mid),
                     )
                     inserted.append(int(cursor.lastrowid))
+                    other.execute(
+                        "UPDATE budget_accounts SET reserved_tokens = reserved_tokens + 77 "
+                        "WHERE mission_id = ? AND scope = 'mission'", (mid,),
+                    )
             return rows
 
         monkeypatch.setattr(store, "list_tasks", list_tasks_then_write)
         view = control.snapshot(mission_id)
+        assert view["snapshot"]["budget_usage"] == before
+        assert store.mission_budget_usage(mission_id)["reserved_tokens"] == before["reserved_tokens"] + 77
         return view["through_seq"], inserted[0]
 
     through, inserted = _with(tmp_path, body)

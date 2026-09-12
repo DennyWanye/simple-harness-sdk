@@ -25,9 +25,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..contracts.models import sha256_hex
 from ..storage.store import Store
 
-REPLAY_VERSION = "replay-v1"
+REPLAY_VERSION = "replay-v2"
 
 # plan D8-2': the formal state; everything else (budgets, intents, leases, heartbeats,
 # allocation scores, backpressure) is explicitly out of scope
@@ -42,6 +43,11 @@ FORMAL_FIELDS: dict[str, tuple[str, ...]] = {
     "approval": ("state",),
     "override": ("present",),
     "source": ("version_hash", "superseded_by", "revoked"),
+    "search_binding": ("payload_hash",),
+    "selection_round": ("state", "version", "decision_id", "synthesis_attempt_id", "payload_hash"),
+    "selection_candidate": ("state", "attempt_id", "round_id", "payload_hash"),
+    "selection_decision": ("action", "round_id", "payload_hash"),
+    "fragment_validation": ("validation_task_id", "projection_hash", "payload_hash"),
 }
 # fields an older library does not record: expected only where the library has them
 # (step 9, plan D9-3': the policy binding is formal state from schema v6 on)
@@ -368,6 +374,34 @@ class Projection:
             self._set(
                 "override", p.get("override_id") or event.get("idempotency_key"), present=True
             )
+        elif kind == "SearchPolicyBound":
+            self._set("search_binding", mission, payload_hash=sha256_hex(dict(p)))
+        elif kind in {"SelectionRoundStarted", "SelectionRoundUpdated"}:
+            self._set(
+                "selection_round", p.get("round_id"), **_selection_fields("selection_round", p)
+            )
+        elif kind in {"CandidateReady", "CandidateInvalidated"}:
+            self._need("selection_round", p.get("round_id"), "candidate_round_missing", event)
+            self._set(
+                "selection_candidate",
+                p.get("result_id"),
+                **_selection_fields("selection_candidate", p),
+            )
+        elif kind == "SelectionDecisionRecorded":
+            self._need("selection_round", p.get("round_id"), "decision_round_missing", event)
+            self._set(
+                "selection_decision", p.get("receipt_id"),
+                **_selection_fields("selection_decision", p),
+            )
+        elif kind == "FragmentValidationCommitted":
+            self._need(
+                "task", p.get("validation_task_id"), "fragment_validation_task_missing", event
+            )
+            self._set(
+                "fragment_validation",
+                p.get("fragment_id"),
+                **_selection_fields("fragment_validation", p),
+            )
         elif kind not in NO_FORMAL_EFFECT:
             self.unknown[kind] += 1
 
@@ -499,6 +533,14 @@ def source_key(source: Mapping[str, Any]) -> str:
     )
 
 
+def _selection_fields(kind: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    # Compare the immutable contract and provenance too, not just a state label.
+    return {
+        name: sha256_hex(dict(payload)) if name == "payload_hash" else payload.get(name)
+        for name in FORMAL_FIELDS[kind]
+    }
+
+
 def formal_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
     """The same field set, read from ``Store.snapshot`` (the comparison baseline)."""
 
@@ -560,6 +602,27 @@ def formal_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, dict[str, dic
         "source": {
             source_key(s): {field: s[field] for field in FORMAL_FIELDS["source"]}
             for s in snapshot.get("sources", [])
+        },
+        "search_binding": (
+            {str(mission["id"]): {"payload_hash": sha256_hex(snapshot["search"]["binding"])}}
+            if (snapshot.get("search") or {}).get("binding")
+            else {}
+        ),
+        "selection_round": {
+            row["round_id"]: _selection_fields("selection_round", row)
+            for row in (snapshot.get("search") or {}).get("rounds", [])
+        },
+        "selection_candidate": {
+            row["result_id"]: _selection_fields("selection_candidate", row)
+            for row in (snapshot.get("search") or {}).get("candidates", [])
+        },
+        "selection_decision": {
+            row["receipt_id"]: _selection_fields("selection_decision", row)
+            for row in (snapshot.get("search") or {}).get("decisions", [])
+        },
+        "fragment_validation": {
+            row["fragment_id"]: _selection_fields("fragment_validation", row)
+            for row in snapshot.get("fragments", [])
         },
     }
 

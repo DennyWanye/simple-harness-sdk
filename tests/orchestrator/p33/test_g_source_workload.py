@@ -46,6 +46,8 @@ def test_planner_freezes_verified_source_scale_without_inlining_source_body(tmp_
             intent = await orch._create_planner_intent(mid, ordinal=1)
             content = intent.config["message"]["content"]
             assert "source-workload-v1" in content
+            assert "permitted_ceiling_not_expected_spend" in content
+            assert "unallocated tokens cannot be borrowed" in content
             assert "source text only; excludes prompts" in content
             assert '"total_bytes":27' in content  # actual UTF-8 bytes, including CRLF/LF
             for source in value["sources"]:

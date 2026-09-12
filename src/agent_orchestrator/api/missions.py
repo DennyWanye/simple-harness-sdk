@@ -75,6 +75,9 @@ def spec_from_request(
     reserve = request.get("conflict_reserve_tokens", 0)
     if isinstance(reserve, bool) or not isinstance(reserve, int) or reserve < 0:
         raise MissionRequestError("conflict_reserve_tokens must be a non-negative integer")
+    search_policy = request.get("search_policy_version_id")
+    if search_policy is not None and (not isinstance(search_policy, str) or not search_policy.strip()):
+        raise MissionRequestError("search_policy_version_id must be a nonempty registry reference")
     synthesis = request.get("synthesis")
     if synthesis is not None and not isinstance(synthesis, Mapping):
         raise MissionRequestError("synthesis must be an object (a fixed synthesis Task template)")
@@ -96,6 +99,7 @@ def spec_from_request(
             synthesis=None if synthesis is None else dict(synthesis),
             conflict_reserve_tokens=reserve,
             domain=str(request.get("domain", CODE_DOMAIN)),
+            search_policy_version_id=search_policy,
         )
     except (ContractError, TypeError, ValueError) as error:
         raise MissionRequestError(str(error)) from error

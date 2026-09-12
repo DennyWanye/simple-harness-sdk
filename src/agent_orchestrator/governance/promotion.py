@@ -161,8 +161,29 @@ def resolve_params(
     return overlay(resolved, partial or {})
 
 
+def policy_fields(params: Mapping[str, Any]) -> frozenset[str]:
+    return (PROMOTABLE | {"schema_version", "search_selection"}
+            if type(params.get("schema_version")) is int and params.get("schema_version") == 2
+            else PROMOTABLE)
+
+
+def selection_policy_problems(params: Mapping[str, Any]) -> list[str]:
+    if "schema_version" not in params and "search_selection" not in params:
+        return []
+    from ..planning.candidate_selection import validate_selection_policy
+    try:
+        if params.get("schema_version") != 2 or type(params.get("schema_version")) is not int:
+            raise ValueError("policy schema must be 2")
+        selection = validate_selection_policy(params.get("search_selection"))
+        if selection["max_candidates"] > int(params["candidates_per_task"]):
+            raise ValueError("selection candidates exceed the approved candidate limit")
+    except ValueError as error:
+        return [str(error)]
+    return []
+
+
 def overlay(base: Mapping[str, Any], partial: Mapping[str, Any]) -> dict[str, Any]:
-    refused = sorted(set(partial) - PROMOTABLE)
+    refused = sorted(set(partial) - policy_fields({**base, **partial}))
     if refused:
         core = [k for k in refused if k in NON_PROMOTABLE]
         raise PolicyError(
@@ -171,7 +192,14 @@ def overlay(base: Mapping[str, Any], partial: Mapping[str, Any]) -> dict[str, An
         )
     merged = {key: value for key, value in base.items()}
     for key, value in partial.items():
-        if key == "allocator_weights":
+        if key == "search_selection":
+            from ..planning.candidate_selection import validate_selection_policy
+            merged[key] = validate_selection_policy(value)
+        elif key == "schema_version":
+            if type(value) is not int or value != 2:
+                raise PolicyError("invalid policy schema version")
+            merged[key] = value
+        elif key == "allocator_weights":
             merged[key] = {**dict(base[key]), **{str(k): float(v) for k, v in dict(value).items()}}
         elif key == "routing":
             routing = dict(value)
@@ -208,12 +236,13 @@ def validate_params(
 
     problems: list[str] = []
     keys = set(params)
-    if keys != set(PROMOTABLE):
+    if keys != set(policy_fields(params)):
         problems.append(
             f"a policy carries exactly {sorted(PROMOTABLE)}; "
             f"missing {sorted(PROMOTABLE - keys)}, unknown {sorted(keys - PROMOTABLE)}"
         )
         return problems
+    problems.extend(selection_policy_problems(params))
     weights = dict(params["allocator_weights"])
     if set(weights) != set(WEIGHT_RANGES):
         problems.append(f"allocator_weights must name exactly {sorted(WEIGHT_RANGES)}")

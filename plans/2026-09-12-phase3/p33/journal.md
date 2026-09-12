@@ -553,3 +553,71 @@ Integration command: `DEEPSEEK_TOKENIZER_PATH=<pinned local tokenizer> python -m
 - `.local-test-evidence/2026-09-12/p33-g/g-source-integration-v8.log`: SHA-256 `9f25a56d9046f30dc2c8381a7e60c8c22bf33c9ff9678ff08fb1d7a88641bca1`.
 - `.local-test-evidence/2026-09-12/p33-g/g-profile-compat-v9.log`: SHA-256 `2293f65e6203b27ee8d501e60813d051cf5d7fbe19140591e2efd2379942a9b8`.
 - `.local-test-evidence/2026-09-12/p33-g/p35-cold-owner-v4.log`: SHA-256 `3a75cdc9908b3a2bc2fc2c788afa5fe7624c777b6d68d869d817d96e1a51725e`.
+
+## N1 source v5b actual failure, 2026-09-13 02:25 CST
+
+Immutable source Host `133aaa62` / SDK `dfc9b7c`, doc profile6; actual UI Mission
+`mission-a7960c5f9be8b736` **FAILED**, `max_attempts_reached`. The original two
+sources, goal, criteria and Mission400000 tokens/12 attempts were unchanged.
+Planner made one complete Task but gave it90000 tokens/4 attempts. First Worker
+read both sources completely in4 pages; a later response spent8192 output tokens
+on reasoning and returned no body. Its larger-output retry was denied by the
+Task ceiling. Later zero-handoff failures consumed Task attempts. No REPORT or
+Critic acceptance exists; this is not a business pass.
+
+Eight physical handoffs (7 successful,1 empty-response failure) are all SETTLED.
+Mission known usage86732 tokens (Planner4979 + Worker81753); actual current
+reserved tokens0. UI incorrectly displayed44494 by summing historical initial
+Attempt reservations. Source fixes for current-ledger projection, typed denial
+stopping and Planner ceiling semantics are in progress, not yet UI verified.
+
+Raw local record: Host `.local-test-evidence/2026-09-13/p33-g/source-ui-n1-v5b/failure-summary.json`,
+SHA-256 `dc0cdd92e55ca404bdb331e7e5e6f4469a5499f986feea9ae0841a8e5fdb0291`.
+Owned PG13015 exited normally; elapsed660.36s, peak921616KiB, remaining[].
+Earlier v5 boot-only failure was missing sparse-checkout capability packs;
+full same-commit runtime resources were provisioned before v5b.
+N1–N6/O4 remain open. No packaging, release or P3.6.
+
+## Budget/selection source integration checkpoint, 2026-09-13 02:35 CST
+These are source tests, not N1 UI acceptance. P3.3/G, P3.4 and P3.5 remain open.
+- `p35-tail-price-v1`: exit2, wrapper0.7s, PG16926; command `python -m pytest -q tests/orchestrator/p35/test_tail_and_priced_budget.py tests/orchestrator/p35/test_provider_budget_guard.py tests/orchestrator/p35/test_provider_budget_identity.py --maxfail=5`. Raw sibling SDK `.local-test-evidence/2026-09-12/p33-g/p35-tail-price-v1.log`, SHA-256 `fac0607f74c19f5785cbcd75c3dfec38632d2dc4024f9d1291b1aca52467b6e9`.
+- `p35-tail-price-v2`: exit0, wrapper1.26s, PG17191; command `python -m pytest -q tests/orchestrator/p35/test_tail_and_priced_budget.py tests/orchestrator/p35/test_provider_budget_guard.py tests/orchestrator/p35/test_provider_budget_identity.py --maxfail=5`. Raw sibling SDK `.local-test-evidence/2026-09-12/p33-g/p35-tail-price-v2.log`, SHA-256 `ac75a7f88d4d202f0e7e1a5e53c50a93aa0e86b94c201e623314d35a82be2155`.
+- `g-budget-public-v1`: exit0, wrapper5.57s, PG17239; command `python -m pytest -q tests/orchestrator/host_support/test_facade.py tests/orchestrator/p33/test_g_source_workload.py tests/orchestrator/step06/test_model_router.py --maxfail=5`. Raw sibling SDK `.local-test-evidence/2026-09-12/p33-g/g-budget-public-v1.log`, SHA-256 `1727d03b467056b87bc1518249a7a9f882e0d22877fd639eae8442cc045875d4`.
+- `g-host-budget-projection-v1`: exit0, wrapper9.09s, PG17301; command `python -m pytest -q tests/orchestration/test_projection.py --maxfail=5`. Raw sibling SDK `.local-test-evidence/2026-09-12/p33-g/g-host-budget-projection-v1.log`, SHA-256 `d6e5c7545fbc7c35270891af5eb548302146b975a7711ec32f92df0e09a30ed2`.
+p35 v1 had3 collection errors from an incorrect selection module import; fixed by its owner. v2:19 passed/1.00s. Public snapshot/workload/router:39 passed/5.12s, including simultaneous second-connection budget mutation remaining outside the original snapshot cursor. Host projection:22 passed/8.42s, including actual completed service ledger0, terminal held reservations and unavailable legacy values.
+Frontend MissionsView first run47 passed/1 failed (new fixture reused a consumed request ID); corrected normal-load fixture gives49 passed/0.941s total (tests0.452s). Typecheck passed before the new fixture, and will be repeated for the final frontend state. Raw logs Host `.local-test-evidence/2026-09-13/p33-g/ui-budget-projection-v1/`.
+
+## P34/P35 runtime integration, 2026-09-13 02:50 CST
+- `p35-admission-collection-v1` exit1, wrapper0.7s; PG17691. Command `python -m pytest -q tests/orchestrator/p35/test_admission_collection_runtime.py --maxfail=3`; raw sibling SDK `.local-test-evidence/2026-09-12/p33-g/p35-admission-collection-v1.log`, SHA-256 `002acc7c54c87c34d539ae54e29a4aaf76deee1282017ecbd175d9350d82b8dd`.
+- `p35-admission-collection-v2` exit1, wrapper1.02s; PG18132. Command `python -m pytest -q tests/orchestrator/p35/test_admission_collection_runtime.py --maxfail=3`; raw sibling SDK `.local-test-evidence/2026-09-12/p33-g/p35-admission-collection-v2.log`, SHA-256 `a8b10200c6f1dbad90ecb34760f79e54a70c720172bd67f7abbb365c00cf283d`.
+- `p35-admission-collection-v3` exit0, wrapper0.56s; PG18144. Command `python -m pytest -q tests/orchestrator/p35/test_admission_collection_runtime.py --maxfail=3`; raw sibling SDK `.local-test-evidence/2026-09-12/p33-g/p35-admission-collection-v3.log`, SHA-256 `12c13b571d8e8108a46c806d2eb1b853b9b760aa4925f151f6ea89c325c4e808`.
+- `p35-priced-cold-v1` exit0, wrapper0.64s; PG18391. Command `python -m pytest -q tests/orchestrator/p35/test_priced_budget_cold_reopen.py --maxfail=1`; raw sibling SDK `.local-test-evidence/2026-09-12/p33-g/p35-priced-cold-v1.log`, SHA-256 `59b9466559aeabf218a54ec041fd83cd357cf9bf1d80a17c47aab62ed0c205bf`.
+- `p35-first-default-v1` exit0, wrapper0.8s; PG18526. Command `python -m pytest -q tests/orchestrator/p35/test_first_protected_tail_hooks.py --maxfail=3`; raw sibling SDK `.local-test-evidence/2026-09-12/p33-g/p35-first-default-v1.log`, SHA-256 `83ef11ace12d1ef8964708e04e58196db7ea23f86721f1686aa707958b594b11`.
+- `p34-selection-fragment-v1` exit1, wrapper2.7s; PG18644. Command `python -m pytest -q tests/orchestrator/p34/test_candidate_selection_runtime.py tests/orchestrator/p34/test_fragment_scope.py tests/orchestrator/p34/test_fragment_runtime.py tests/orchestrator/p34/test_search_replay.py --maxfail=8`; raw sibling SDK `.local-test-evidence/2026-09-12/p33-g/p34-selection-fragment-v1.log`, SHA-256 `ffc52228cb494729224fc3a2a44e757d25f40c29a59bb0ee33286e27365aa1b2`.
+Admission collection v1:3 FAIL/.43s from an empty list_intents query; v2:1 PASS/2 FAIL/.75s from main FIRST-release keyword-only call misuse. Both fixed; v3:3 PASS/.36s, actual SDK refusal routes stop or preserve UNKNOWN without blind retries. A SUCCEEDED provider record missing usage remains held because the existing late-accounting API cannot supplement a SUCCEEDED record; no automatic release or fabricated reconciliation.
+Priced cold:1 PASS/.40s after both SQLite connections actually close/reopen, new owner epoch and actual response reconciliation preserve original price and charge once; this is not an OS-kill test. FIRST default:6 PASS/.58s, actual production Orchestrator (no overlay subclass) Worker write → Critic read/derived verdict → acceptance, failed/cancelled/UNKNOWN and terminal unused-tail release. Independent review scoped ACCEPT. Mission-level future conflict/synthesis pool implementation remains open.
+P34 selection/fragment v1:3 FAIL/4 PASS/5 setupERROR,2.27s, maxfail8. Candidate mount identity mismatch and fixture tuple-vs-JSON contract require fixes. A separate code review found missing inherited candidate source dependencies in document C; fix and dedicated oracle are in progress. No P34 completion claim. Frontend search UI51 controls passed/1.01s total; its new test unused React import was fixed after a typecheck error; final typecheck rerun in progress. Native fixture/N1 and the remaining full audit still open.
+
+## 2026-09-13 03:12 CST — source checkpoint (incomplete)
+**Source checkpoint, 2026-09-13 03:12 CST:** integrated source checks:1037 PASS/2 legacy schema FAIL (48.27s); pre-schema15 reserved-attempt read compatibility fixed, targeted9 PASS/0.36s. Includes15 candidate controls, Mission system pool7, FIRST6, priced cold1 and missing-usage boundary2. COMPARE decisions and full immutable payloads now replay; frozen candidate deadline cannot dispatch new pending candidates. Controlled Host document fixture software2 PASS/6.21s proves28 formal citations and >256KiB paging; frontend search51 PASS/1.04s and typecheck pass. Fragment branch remains5 output-conflict failures (16 other controls passed); Mission-system runtime hooks, SUCCEEDED-missing-usage settlement, N1–N6/O4 and real P34/P35 gates remain OPEN. No release packaging/P3.6. This is an incomplete development checkpoint.
+
+| Run | Exit | Actual wrapper seconds | Raw log SHA-256 |
+|---|---:|---:|---|
+| g-source-checkpoint-v10 | 1 | 48.75 | `bb7a232841dbc7adbf823791dc3777a4d89f1715c0de7b423ac9da07d3412b1c` |
+<!-- Command g-source-checkpoint-v10: /Users/denny/projects/simple-harness-sdk/.venv/bin/python -m pytest -q tests/orchestrator/p33 tests/orchestrator/p35 tests/orchestrator/p34/test_role_context_runtime.py tests/orchestrator/p34/test_candidate_selection_runtime.py tests/orchestrator/p34/test_search_replay.py::test_actual_compare_snapshot_and_dropped_round_events tests/orchestrator/step02/test_workspace_and_gateway.py tests/orchestrator/step02/test_recovery_matrix.py tests/conformance/test_provider_contract.py tests/agents/test_provider_wire.py tests/agents/test_context_journal.py --maxfail=5 -->
+| g-legacy-budget-v11 | 0 | 0.56 | `4326a6149a721258a65f0bb6017df2bef4fecac91560bf07f2f16de8517a5865` |
+<!-- Command g-legacy-budget-v11: /Users/denny/projects/simple-harness-sdk/.venv/bin/python -m pytest -q tests/orchestrator/p33/test_p33_assessment_commits.py::test_schema9_readonly_and_upgrade_do_not_backfill_assessments tests/orchestrator/p33/test_p33_sources.py::test_schema8_readonly_snapshot_has_no_sources_and_needs_no_optional_fields tests/orchestrator/p35/test_mission_system_tail.py --maxfail=3 -->
+| p34-selection-fragment-v2 | 1 | 4.03 | `5ec25d2141713ca52eae4df1301540d795fd6c9a0959402285c209490642a1b5` |
+<!-- Command p34-selection-fragment-v2: /Users/denny/projects/simple-harness-sdk/.venv/bin/python -m pytest -q tests/orchestrator/p34/test_candidate_selection_runtime.py tests/orchestrator/p34/test_fragment_scope.py tests/orchestrator/p34/test_fragment_runtime.py tests/orchestrator/p34/test_search_replay.py --maxfail=8 -->
+| p34-fragment-v3 | 1 | 1.54 | `a73440c8f252d56f01210948623e3bc960c1fa8ba3183e48f3dcd66b88d5d40a` |
+<!-- Command p34-fragment-v3: /Users/denny/projects/simple-harness-sdk/.venv/bin/python -m pytest -q tests/orchestrator/p34/test_fragment_scope.py tests/orchestrator/p34/test_fragment_runtime.py tests/orchestrator/p34/test_search_replay.py --maxfail=6 -->
+| g-native-document-fixture-v1 | 1 | 62.75 | `86dd06cc4e99556439297b7e63557530b47b8e9fe45a3e83ea0b283196d19f0b` |
+<!-- Command g-native-document-fixture-v1: /Users/denny/projects/simple_harness/.local-test-evidence/2026-09-12/p33-g/source-sdk-venv/bin/python -m pytest -q tests/orchestration/test_native_document_fixture.py --maxfail=2 -->
+| g-native-document-fixture-v2 | 1 | 32.76 | `5de15728be4ce5d6883a4d08365cd6ec7472e56e1a28a933ec0b88b9f8769e68` |
+<!-- Command g-native-document-fixture-v2: /Users/denny/projects/simple_harness/.local-test-evidence/2026-09-12/p33-g/source-sdk-venv/bin/python -m pytest -q tests/orchestration/test_native_document_fixture.py --maxfail=2 -->
+| g-native-document-fixture-v3 | 0 | 6.82 | `758386efe1e98f0b6a411c503f54e790941e389892603609533129a81b37d1b2` |
+<!-- Command g-native-document-fixture-v3: /Users/denny/projects/simple_harness/.local-test-evidence/2026-09-12/p33-g/source-sdk-venv/bin/python -m pytest -q tests/orchestration/test_native_document_fixture.py --maxfail=2 -->
+| g-host-search-launcher-v1 | 0 | 10.86 | `3964a55f44664e606922847e65fea363af16601f05e4fdf1dcb3f9e8ba6a5f70` |
+<!-- Command g-host-search-launcher-v1: /Users/denny/projects/simple_harness/.local-test-evidence/2026-09-12/p33-g/source-sdk-venv/bin/python -m pytest -q tests/orchestration/test_projection.py tests/orchestration/test_test_scenario.py tests/orchestration/test_source_orchestrator_launcher.py --maxfail=5 -->
+
+Evidence paths are SDK `.local-test-evidence/2026-09-12/p33-g/<run>.{json,log}`. Source runtime remains development-only; no overall SHIP verdict. N1 v5b failure is preserved. Fragment v2 failures were bad dependency field/mapping shape; v3 reached the real output collision, still unresolved. Native fixture first callback used a string as function; second omitted required continuation SHA; both fixed without bypassing formal verification.

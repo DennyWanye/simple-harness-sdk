@@ -79,6 +79,7 @@ class AccountSnapshot:
     version: int
     reserved_tool_calls: int = 0
     settled_tool_calls: int = 0
+    reserved_attempts: int = 0
 
     def remaining_tool_calls(self) -> int | None:
         if self.limits.max_tool_calls is None:
@@ -98,7 +99,7 @@ class AccountSnapshot:
     def remaining_attempts(self) -> int | None:
         if self.limits.max_attempts is None:
             return None
-        return self.limits.max_attempts - self.attempts_created
+        return self.limits.max_attempts - self.attempts_created - self.reserved_attempts
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -112,6 +113,7 @@ class AccountSnapshot:
             "settled_cost_micros": self.settled_cost_micros,
             "unpriced_settlements": self.unpriced_settlements,
             "attempts_created": self.attempts_created,
+            "reserved_attempts": self.reserved_attempts,
             "reserved_tool_calls": self.reserved_tool_calls,
             "settled_tool_calls": self.settled_tool_calls,
             "remaining_tool_calls": self.remaining_tool_calls(),
@@ -174,6 +176,8 @@ class BudgetLedger:
             version=row["version"],
             reserved_tool_calls=int(row["reserved_tool_calls"] or 0),
             settled_tool_calls=int(row["settled_tool_calls"] or 0),
+            # Pre-system-tail libraries cannot contain reserved attempt pools.
+            reserved_attempts=int(row["reserved_attempts"]) if "reserved_attempts" in row.keys() else 0,
         )
 
     def _chain(self, account_id: str) -> list[AccountSnapshot]:
@@ -277,6 +281,38 @@ class BudgetLedger:
             "SELECT * FROM budget_reservations WHERE subject_id = ?", (subject_id,)
         ).fetchone()
         return None if row is None else dict(row)
+
+    def grow(self, *, subject_id: str, tokens: int, cost_micros: int) -> None:
+        """Raise an existing envelope in both dimensions; all checks precede writes."""
+        if not self._store.connection.in_transaction:
+            raise BudgetError("reservation grow requires a Commit transaction")
+        if any(type(v) is not int or v < 0 for v in (tokens, cost_micros)):
+            raise BudgetError("reservation allowance must be nonnegative integers")
+        reservation = self.reservation(subject_id)
+        if reservation is None or reservation["state"] != "RESERVED":
+            raise BudgetError("reservation grow requires a live original subject")
+        deltas = {
+            "tokens": max(0, tokens - reservation["reserved_tokens"]),
+            "cost_micros": max(0, cost_micros - reservation["reserved_cost_micros"]),
+        }
+        if not any(deltas.values()):
+            return
+        chain = self._chain(reservation["account_id"])
+        for snapshot in chain:
+            for dimension, delta in deltas.items():
+                remaining = getattr(snapshot, "remaining_" + dimension)()
+                if remaining is not None and delta > remaining:
+                    raise BudgetExhausted(snapshot.account_id, dimension, delta, remaining)
+        for snapshot in chain:
+            self._apply(
+                snapshot.account_id,
+                **{"reserved_" + dimension: delta for dimension, delta in deltas.items()},
+            )
+        self._store.connection.execute(
+            "UPDATE budget_reservations SET reserved_tokens=reserved_tokens+?,"
+            "reserved_cost_micros=reserved_cost_micros+?,updated_at=? WHERE subject_id=?",
+            (deltas["tokens"], deltas["cost_micros"], self._store.now, subject_id),
+        )
 
     # ------------------------------------------------------------ usage facts
     def import_usage(self, *, subject_id: str, mission_id: str, facts: Sequence[UsageFact]) -> int:

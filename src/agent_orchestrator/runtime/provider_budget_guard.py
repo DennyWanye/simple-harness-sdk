@@ -14,25 +14,35 @@ import asyncio
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
+from dataclasses import replace
 from hashlib import sha256
+from types import MappingProxyType
 from typing import Any
 
 from simple_harness.contracts import canonical_json
+from simple_harness.execution.budget import FrozenPriceEstimator
 from simple_harness.execution.provider_admission import (
     ProviderAdmissionDenied,
+    ProviderAdmissionFailure,
     ProviderAdmissionTicket,
     TokenEstimatorPort,
 )
 from simple_harness.execution.provider_invocations import provider_request_fingerprint
 
 from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK
-from ..governance.budgets import BudgetExhausted
+from ..governance.budgets import BudgetError, BudgetExhausted
+from ..governance.provider_prices import ProviderPrice
 
 HELD = ("RESERVED", "HANDED_OFF", "UNKNOWN")
 
 
-def _deny(reason: str) -> ProviderAdmissionDenied:
-    return ProviderAdmissionDenied(public_message=reason)
+def _deny(
+    reason: str, *, reason_code: str = "authority_rejected", **detail
+) -> ProviderAdmissionDenied:
+    return ProviderAdmissionDenied(
+        public_message=reason,
+        admission_detail=ProviderAdmissionFailure(reason_code=reason_code, **detail),
+    )
 
 
 def _tokens(value: object, name: str, *, positive: bool = False) -> int:
@@ -108,26 +118,16 @@ class ProviderBudgetCommitAdapter:
             raise _deny("provider subject has no live budget reservation")
         return intent, reservation
 
-    def grow(self, reservation, *, required: int) -> None:
-        delta = max(0, required - int(reservation["reserved_tokens"]))
-        if not delta:
-            return
-        chain = self.commit.ledger._chain(reservation["account_id"])
-        for account in chain:
-            remaining = account.remaining_tokens()
-            if remaining is not None and delta > remaining:
-                raise BudgetExhausted(account.account_id, "tokens", delta, remaining)
-        for account in chain:
-            self.commit.ledger._apply(account.account_id, reserved_tokens=delta)
-        self.store.connection.execute(
-            "UPDATE budget_reservations SET reserved_tokens=reserved_tokens+?,updated_at=?"
-            " WHERE reservation_id=? AND state='RESERVED'",
-            (delta, self.store.now, reservation["reservation_id"]),
+    def grow(self, reservation, *, required: int, required_cost_micros: int = 0) -> None:
+        self.commit.ledger.grow(
+            subject_id=reservation["subject_id"],
+            tokens=required,
+            cost_micros=required_cost_micros,
         )
 
 
 class ProviderBudgetGuard:
-    supports_priced_budgets = False
+    supports_priced_budgets = True
 
     def __init__(
         self,
@@ -138,11 +138,21 @@ class ProviderBudgetGuard:
         max_slots: int,
         poll_seconds: float = 0.01,
         priced: bool = False,
+        price_tables: Mapping[str, FrozenPriceEstimator | None] | None = None,
     ) -> None:
-        if priced:
-            raise ValueError(
-                "priced shared provider admission is not supported by this token guard"
-            )
+        if type(priced) is not bool:
+            raise ValueError("priced must be an explicit boolean")
+        self.requires_price = priced
+        self._price_tables = None if price_tables is None else MappingProxyType(dict(price_tables))
+        if self.price_tables is not None and any(
+            not isinstance(key, str)
+            or not key
+            or (value is not None and not isinstance(value, FrozenPriceEstimator))
+            for key, value in self.price_tables.items()
+        ):
+            raise ValueError("price tables must be explicitly frozen per profile")
+        if priced and not self.price_tables:
+            raise ValueError("priced admission requires frozen profile price tables")
         if not owner or not callable(getattr(estimator, "estimate_input_tokens", None)):
             raise ValueError("provider admission requires owner and an explicit estimator")
         for name in ("fingerprint", "bound_protocol"):
@@ -155,7 +165,7 @@ class ProviderBudgetGuard:
             raise ValueError("provider admission polling must be in (0,1]")
         self.estimator = estimator
         self.fingerprint = (
-            "provider-token-admission-v1:"
+            "provider-budget-admission-v2:"
             + sha256(
                 canonical_json(
                     {
@@ -163,7 +173,14 @@ class ProviderBudgetGuard:
                         "protocol": estimator.bound_protocol,
                         "prior_output": estimator.requires_prior_output_reserve,
                         "max_slots": max_slots,
-                        "version": 1,
+                        "version": 2,
+                        "requires_price": priced,
+                        "prices": None
+                        if self.price_tables is None
+                        else {
+                            key: None if value is None else value.snapshot_json()
+                            for key, value in self.price_tables.items()
+                        },
                     }
                 ).encode()
             ).hexdigest()
@@ -176,6 +193,10 @@ class ProviderBudgetGuard:
         self._waiting: dict[str, tuple[str, str]] = {}
         self._clock = time.time
 
+    @property
+    def price_tables(self) -> Mapping[str, FrozenPriceEstimator | None] | None:
+        return self._price_tables
+
     async def acquire(
         self, *, request, record, cancel, uow, execution_lease
     ) -> ProviderAdmissionTicket:
@@ -187,6 +208,15 @@ class ProviderBudgetGuard:
                 uow=uow,
                 execution_lease=execution_lease,
             )
+        except ProviderAdmissionDenied as exc:
+            exc.admission_detail = replace(
+                exc.admission_detail,
+                invocation_id=record.invocation_id,
+                handoff_ordinal=record.handoff_attempt + 1,
+                bound_protocol=self.estimator.bound_protocol,
+            )
+            exc.detail = exc.admission_detail.to_json()
+            raise
         finally:
             self._waiting.pop(record.invocation_id, None)
 
@@ -197,20 +227,35 @@ class ProviderBudgetGuard:
     async def _acquire(
         self, *, request, record, cancel, uow, execution_lease
     ) -> ProviderAdmissionTicket:
-        snapshot = record.estimator_snapshot
-        if isinstance(snapshot, Mapping) and any(
-            snapshot.get(name, 0) != 0
-            for name in (
-                "input_micros_per_million_tokens",
-                "output_micros_per_million_tokens",
-            )
-        ):
-            raise _deny("priced provider admission is not supported by this token guard")
+        try:
+            sdk_price = ProviderPrice.from_record(record)
+        except BudgetError as exc:
+            raise _deny(str(exc)) from exc
+        price_json = None if sdk_price is None else sdk_price.json
+        price_digest = None if sdk_price is None else sdk_price.digest
         # Resolve identities from SDK records, never provider-message metadata.
         binding = uow.read_agent_binding_for_run(record.run_id.value)
         turn = uow.read_open_agent_turn(record.run_id.value)
         if binding is None or turn is None or binding.agent_id != turn.agent_id:
             raise _deny("provider admission requires a live SDK Agent turn")
+        profile = binding.config_json.get("model_profile_ref")
+        if self.price_tables is not None and profile not in self.price_tables:
+            raise _deny("provider profile has no declared price contract")
+        expected_price = None if self.price_tables is None else self.price_tables[profile]
+        if expected_price is None:
+            sentinel = FrozenPriceEstimator("consumer-v1", "consumer", 0, 0)
+            if sdk_price is not None and sdk_price.digest != sentinel.snapshot_digest:
+                raise _deny("unpriced profile received a different frozen provider price")
+            if self.requires_price:
+                raise _deny("priced admission requires a priced profile")
+            price = None
+        else:
+            if sdk_price is None or sdk_price.digest != expected_price.snapshot_digest:
+                raise _deny(
+                    "provider price differs from the frozen profile price",
+                    reason_code="price_mismatch",
+                )
+            price = sdk_price
         limits = binding.config_json.get("limits", {})
         seconds = limits.get("turn_deadline_seconds")
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= 0:
@@ -222,7 +267,10 @@ class ProviderBudgetGuard:
         except ProviderAdmissionDenied:
             raise
         except Exception as exc:
-            raise _deny("provider input estimator unavailable for this request") from exc
+            raise _deny(
+                "provider input estimator unavailable for this request",
+                reason_code="estimator_unavailable",
+            ) from exc
         output = _tokens(request.max_output_tokens, "maximum output", positive=True)
         wire_hash = provider_request_fingerprint(request)
         ticket = ProviderAdmissionTicket(
@@ -230,9 +278,11 @@ class ProviderBudgetGuard:
         )
         while True:
             if self._clock() >= deadline:
-                raise _deny("provider slot wait exceeded the SDK turn deadline")
+                raise _deny(
+                    "provider slot wait exceeded the SDK turn deadline", reason_code="deadline"
+                )
             if cancel.is_cancelled:
-                raise _deny("provider cancelled before admission")
+                raise _deny("provider cancelled before admission", reason_code="cancelled")
             with self.store.transaction():
                 actual_lease = uow.read_provider_runtime_lease(record.run_id.value)
                 if (
@@ -246,7 +296,7 @@ class ProviderBudgetGuard:
                     agent_id=binding.agent_id, turn_id=turn.turn_id
                 )
                 if uow.read_agent_turn_cancel(turn.turn_id) is not None:
-                    raise _deny("SDK turn cancelled before admission")
+                    raise _deny("SDK turn cancelled before admission", reason_code="cancelled")
                 prior_output = 0
                 for previous in uow.list_provider_invocations(record.run_id):
                     if previous.invocation_id == record.invocation_id:
@@ -255,10 +305,32 @@ class ProviderBudgetGuard:
                         continue  # a proven never-handed-off request has no usage
                     actual = _usage(previous)
                     if str(previous.state) not in {"succeeded", "failed"} or actual is None:
-                        raise _deny("prior provider usage is unresolved; allowance held")
+                        raise _deny(
+                            "prior provider usage is unresolved; allowance held",
+                            reason_code="usage_unresolved",
+                        )
+                    previous_price = ProviderPrice.from_record(previous)
+                    if (None if previous_price is None else previous_price.digest) != price_digest:
+                        raise _deny(
+                            "Agent provider price changed from its frozen history",
+                            reason_code="price_mismatch",
+                        )
+                    if (
+                        price is not None
+                        and previous_price is not None
+                        and previous_price.known_charge(
+                            previous, input_tokens=actual[0], output_tokens=actual[1]
+                        )
+                        is None
+                    ):
+                        raise _deny(
+                            "prior provider price is unresolved; allowance held",
+                            reason_code="usage_unresolved",
+                        )
                     prior_output += actual[1]
                 extra = prior_output if self.estimator.requires_prior_output_reserve else 0
                 upper = public_input + extra + output
+                cost_upper = None if price is None else price.cost(public_input + extra, output)
                 row = self._row(ticket)
                 if row is not None and row["state"] != "RELEASED":
                     raise _deny("provider invocation already owns an admission grant")
@@ -276,6 +348,9 @@ class ProviderBudgetGuard:
                         "prior_output_upper": extra,
                         "output_ceiling": output,
                         "total_upper": upper,
+                        "price_json": price_json,
+                        "price_digest": price_digest,
+                        "cost_upper_micros": cost_upper,
                     }
                     if any(row[key] != value for key, value in expected.items()):
                         raise _deny("released provider grant identity or allowance changed")
@@ -284,7 +359,10 @@ class ProviderBudgetGuard:
                     " WHERE mission_id=? AND state='OVERRUN' LIMIT 1",
                     (intent.mission_id,),
                 ).fetchone():
-                    raise _deny("observed provider usage exceeded its bound protocol")
+                    raise _deny(
+                        "observed provider usage exceeded its bound protocol",
+                        reason_code="bound_overrun",
+                    )
                 active = self.store.connection.execute(
                     "SELECT COUNT(*) FROM provider_token_grants"
                     " WHERE state IN ('RESERVED','HANDED_OFF','UNKNOWN')"
@@ -313,17 +391,42 @@ class ProviderBudgetGuard:
                             "existing Agent history predates the provider admission contract"
                         )
                     try:
-                        self.adapter.grow(reservation, required=int(spent) + upper)
+                        costs = self.store.connection.execute(
+                            "SELECT actual_cost_micros,cost_upper_micros,state "
+                            "FROM provider_token_grants WHERE subject_id=? AND state!='RELEASED'",
+                            (intent.subject_id,),
+                        ).fetchall()
+                        if price is not None and any(c[1] is None for c in costs):
+                            raise _deny("priced subject contains unpriced provider history")
+                        if price is None and any(c[1] is not None for c in costs):
+                            raise _deny("unpriced subject contains priced provider history")
+                        spent_cost = sum(c[0] if c[0] is not None else (c[1] or 0) for c in costs)
+                        self.adapter.grow(
+                            reservation,
+                            required=int(spent) + upper,
+                            required_cost_micros=spent_cost + (cost_upper or 0),
+                        )
                     except BudgetExhausted as exc:
-                        raise _deny(str(exc)) from exc
+                        raise _deny(
+                            str(exc),
+                            reason_code="budget_exhausted",
+                            account_id=exc.account_id,
+                            dimension=exc.dimension,
+                            requested=exc.requested,
+                            remaining=exc.remaining,
+                            mission_id=intent.mission_id,
+                            subject_id=intent.subject_id,
+                            request_tokens=upper,
+                            request_cost_micros=cost_upper,
+                        ) from exc
                     self.store.connection.execute(
                         "INSERT INTO provider_token_grants("
                         "invocation_id,handoff_ordinal,mission_id,"
                         "subject_id,agent_id,turn_id,intent_id,owner,sdk_owner,sdk_epoch,"
                         "fingerprint,request_hash,wire_hash,"
                         "public_input_upper,prior_output_upper,output_ceiling,total_upper,"
-                        "state,created_at,updated_at)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'RESERVED',?,?)"
+                        "price_json,price_digest,cost_upper_micros,state,created_at,updated_at)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'RESERVED',?,?)"
                         " ON CONFLICT(invocation_id,handoff_ordinal) DO UPDATE SET "
                         "owner=excluded.owner,"
                         "sdk_owner=excluded.sdk_owner,sdk_epoch=excluded.sdk_epoch,"
@@ -347,6 +450,9 @@ class ProviderBudgetGuard:
                             extra,
                             output,
                             upper,
+                            price_json,
+                            price_digest,
+                            cost_upper,
                             self.store.now,
                             self.store.now,
                         ),
@@ -377,7 +483,7 @@ class ProviderBudgetGuard:
             if row is None or row["state"] != "RESERVED" or row["owner"] != self.adapter.owner:
                 raise _deny("provider grant is not owned and reserved")
             if cancel.is_cancelled:
-                raise _deny("provider cancelled before handoff")
+                raise _deny("provider cancelled before handoff", reason_code="cancelled")
             if (
                 ticket.authority_fingerprint != self.fingerprint
                 or row["fingerprint"] != self.fingerprint
@@ -394,7 +500,8 @@ class ProviderBudgetGuard:
             overrun = self._observe_in_transaction(ticket, record=record)
         if overrun:
             raise _deny(
-                "actual provider usage exceeded the admitted bound; Mission admission stopped"
+                "actual provider usage exceeded the admitted bound; Mission admission stopped",
+                reason_code="bound_overrun",
             )
 
     def _observe_in_transaction(self, ticket, *, record) -> bool:
@@ -406,6 +513,29 @@ class ProviderBudgetGuard:
             return False  # no evidence that a different pool's call never started
         if record.request_fingerprint != row["request_hash"]:
             raise _deny("SDK record differs from admission identity")
+        price = ProviderPrice.from_record(record)
+        # Migration v11 contained only token/unpriced grants. Their absent price
+        # columns are compatible only with the exact original SDK zero sentinel.
+        legacy_unpriced = (
+            row["price_digest"] is None
+            and row["price_json"] is None
+            and row["cost_upper_micros"] is None
+            and (
+                price is None
+                or price.digest
+                == FrozenPriceEstimator("consumer-v1", "consumer", 0, 0).snapshot_digest
+            )
+        )
+        if not legacy_unpriced and (
+            (None if price is None else price.digest) != row["price_digest"]
+            or (None if price is None else price.json) != row["price_json"]
+        ):
+            raise _deny(
+                "observed provider price differs from the admitted snapshot",
+                reason_code="price_mismatch",
+            )
+        if row["cost_upper_micros"] is None:
+            price = None  # original declared unpriced profile, not a zero-priced claim
         state = str(record.state)
         if record.handoff_attempt < ticket.handoff_ordinal and state == "claimed":
             # This callback runs after the synchronous SDK CAS returned/failed.
@@ -420,12 +550,25 @@ class ProviderBudgetGuard:
                 self._update(ticket, "UNKNOWN")
             return False
         total = sum(actual)
-        overrun = total > row["total_upper"] or actual[1] > row["output_ceiling"]
+        actual_cost = (
+            None
+            if price is None
+            else price.known_charge(record, input_tokens=actual[0], output_tokens=actual[1])
+        )
+        if price is not None and actual_cost is None:
+            self._update(ticket, "UNKNOWN", actual_tokens=total, actual_output_tokens=actual[1])
+            return False
+        overrun = (
+            total > row["total_upper"]
+            or actual[1] > row["output_ceiling"]
+            or (actual_cost is not None and actual_cost > row["cost_upper_micros"])
+        )
         self._update(
             ticket,
             "OVERRUN" if overrun else "SETTLED",
             actual_tokens=total,
             actual_output_tokens=actual[1],
+            actual_cost_micros=actual_cost,
         )
         return overrun
 
@@ -509,7 +652,8 @@ class ProviderBudgetGuard:
 
         if overrun:
             raise _deny(
-                "actual provider usage exceeded the admitted bound; Mission admission stopped"
+                "actual provider usage exceeded the admitted bound; Mission admission stopped",
+                reason_code="bound_overrun",
             )
 
 

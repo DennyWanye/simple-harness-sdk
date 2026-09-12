@@ -75,18 +75,18 @@ async def setup_runtime(
         commit.store.close()
 
 
-async def create_bound(commit, task, guard, runtime, key):
+async def create_bound(commit, task, guard, runtime, key, *, role="worker", reservation=None):
     agent = await runtime.create(
         AgentConfig(name=key, instructions="Answer briefly.", model_profile_ref="agent.general"),
         creation_key=key,
     )
     attempt, intent = commit.create_attempt(
         task.id,
-        role="worker",
+        role=role,
         model="agent-model",
         prompt_version="worker-v2",
         context_version="ctx",
-        reservation=Reservation(tokens=4_000, cost_micros=0),
+        reservation=reservation or Reservation(tokens=4_000, cost_micros=0),
         intent_config={
             "agent_config": agent.config.to_json(),
             "message": user_message_json("request"),
@@ -126,6 +126,19 @@ def test_input_plus_output_refuses_before_physical_handoff(tmp_path):
             result = await agent.ask("request", input_id=key, timeout=5)
             assert str(result.state) == "failed"
             assert provider.calls == 0
+            assert result.error["source_kind"] == "provider_admission"
+            assert result.error["retryable"] is False
+            denial = result.error["detail"]
+            assert denial["reason_code"] == "budget_exhausted"
+            assert denial["dimension"] == "tokens"
+            assert denial["requested"] == 5500 and denial["remaining"] == 5000
+            assert denial["request_tokens"] == 9500
+            from agent_orchestrator.runtime.model_router import classify_turn_error
+
+            assert classify_turn_error(result.error) == "admission_denied"
+            persisted = runtime.uow.read_agent_turn_result(result.turn_id)
+            assert persisted is not None
+            assert persisted.result_json["error"]["detail"] == denial
             records = runtime.uow.list_provider_invocations(RunId(agent.run_id))
             assert all(record.handoff_attempt == 0 for record in records)
             assert commit.ledger.reservation(attempt.id)["reserved_tokens"] == 4_000

@@ -247,10 +247,6 @@ class Orchestrator:
                 )
             }
         self._profiles: dict[str, RuntimeProfile] = dict(profiles)
-        if provider_token_estimator is not None and any(
-            profile.price_table is not None for profile in self._profiles.values()
-        ):
-            raise ValueError("priced profiles are not supported by the token admission guard")
         default_profile = (
             routing.default
             if routing is not None
@@ -329,6 +325,9 @@ class Orchestrator:
             self._provider_admission = ProviderBudgetGuard(
                 self._commit, owner=self._owner, estimator=self._provider_token_estimator,
                 max_slots=self._config.max_concurrent_model_calls,
+                price_tables={key: (profile.price_table.estimator()
+                                    if profile.price_table is not None else None)
+                              for key, profile in self._profiles.items()},
             )
         self._open_policy_library()  # step 9 (plan D9-3'): role, seed, drift
         self._assembled = assemble_orchestrator_runtime(
@@ -1192,7 +1191,8 @@ class Orchestrator:
                 if task.result():
                     progressed = True
         for stored in self.store.list_results_by_verification("PENDING", "RUNNING"):
-            if stored.envelope.mission_id not in active or stored.envelope.id in self._verifying:
+            if (stored.envelope.mission_id not in active or stored.envelope.id in self._verifying
+                    or self.commit.candidate_is_waiting(stored.envelope.id)):
                 continue
             if len(self._verifying) >= self._config.verifier_workers:
                 break
@@ -1395,6 +1395,13 @@ class Orchestrator:
     async def _dispatch(self, intent: DispatchIntent) -> bool:
         """ORCH §4.3 steps 2–3 with the identity frozen in the intent (D5')."""
 
+        if intent.kind == "attempt":
+            deadline = self.commit.selection_deadline(intent.subject_id)
+            if deadline is not None and self.store.now >= deadline:
+                expired = self.commit.expire_selection_dispatch(intent.subject_id, owner=self._owner)
+                if expired:
+                    await self._release_attempt(intent.subject_id, cancel=True)
+                return expired
         if self._pool_missing(intent):
             return False
         self._context_profile_for(intent.config)
@@ -1547,6 +1554,8 @@ class Orchestrator:
         }
         inputs.update(self._source_files(attempt))
         task = self.store.get_task(attempt.task_id)
+        fragment_files = self.commit.fragment_validation_inputs(attempt.task_id)
+        inputs.update(fragment_files)
         # P3.2 D4 (review round 2 P2-4): a rebind — recover() and every dispatch — is
         # checked against the registered identity, never the directory's content
         base = sha256_hex(
@@ -1554,6 +1563,9 @@ class Orchestrator:
                 "seed": {path: sha256_hex_text(content) for path, content in seed.items()},
                 "inputs": {item.path: item.content_hash for item in self._upstream_inputs(attempt)},
                 "previous": attempt.retry_of,
+                **({"fragment_input_hashes": {path: sha256_hex_text(data)
+                                               for path, data in fragment_files.items()}}
+                   if fragment_files else {}),
                 **self._frozen_source_binding(attempt),
             }
         )
@@ -1678,6 +1690,7 @@ class Orchestrator:
             except ArtifactStoreError as error:
                 raise WorkspaceError(f"upstream input unreadable: {error}") from error
         files.update(self._source_files(attempt))
+        files.update(self.commit.fragment_validation_inputs(attempt.task_id))
         return files
 
     def _bind_agent(self, agent_id: str, config: Mapping[str, Any]) -> None:
@@ -2253,10 +2266,23 @@ class Orchestrator:
             self._note(f"attempt {attempt.id}: model echo mismatch {sorted(echoed)} → stopped")
             return
         if result.state is AgentTurnState.FAILED:
+            error = result.error
+            admission = (
+                error.get("detail")
+                if isinstance(error, Mapping)
+                and error.get("error_code") == "provider_admission_denied"
+                and error.get("source_kind") == "provider_admission"
+                and error.get("retryable") is False
+                else None
+            )
+            if not (isinstance(admission, Mapping)
+                    and type(admission.get("schema_version")) is int
+                    and admission.get("schema_version") == 1):
+                admission = None
             self.commit.reject_result(
                 attempt.id,
                 turn_id=result.turn_id,
-                reason="turn_failed",
+                reason="provider_admission_denied" if admission is not None else "turn_failed",
                 detail={
                     "error": jsonable(result.error or {}),
                     "error_kind": classify_turn_error(result.error),  # D6-4' classification
@@ -2265,6 +2291,30 @@ class Orchestrator:
             self._settle_intent(intent, "FAILED")
             self._settle_if_known(attempt)
             await self._release_attempt(attempt.id, cancel=False)
+            if admission is not None:
+                reason = admission.get("reason_code")
+                if reason == "usage_unresolved":
+                    self.commit.wait_for_admission_usage(attempt.id)
+                    self._note(f"attempt {attempt.id}: admission waits for usage; no new Attempt")
+                    return
+                if reason == "cancelled":
+                    self.commit.cancel_mission(attempt.mission_id)
+                else:
+                    # Runtime/deadline is the existing budget time-cap category.
+                    # Other admission failures retain their exact configuration /
+                    # authority cause; they never enter provider health fallback.
+                    stop = (MissionStopReason.BUDGET_EXHAUSTED
+                            if reason in {"budget_exhausted", "deadline"}
+                            else MissionStopReason.RUNTIME_UNAVAILABLE)
+                    self.commit.stop_task(
+                        attempt.task_id, stop_reason=stop,
+                        detail={"source_kind": "provider_admission", "retryable": False,
+                                "admission": dict(admission),
+                                **({"dimension": "runtime"} if reason == "deadline" else {})},
+                    )
+                await self._release_mission(attempt.mission_id)
+                self._note(f"attempt {attempt.id}: admission denied ({reason}) → stopped")
+                return
             self._note(f"attempt {attempt.id}: SDK turn failed → RETRY_WAIT")
             return
         text = "" if result.public_output is None else str(result.public_output.content)
@@ -2615,6 +2665,15 @@ class Orchestrator:
             self._note(f"result {result_id} suspended: waiting for a person ({reason})")
             return True
         try:
+            if verdict.passed and self.commit.selection_policy_for(task.id) is not None:
+                selection = self.commit.selection_round(task.id)
+                assert selection is not None
+                self.commit.record_candidate_ready(
+                    result_id, owner=self._owner, round_id=selection["round_id"],
+                    expected_round_version=selection["version"], command_id="ready:" + result_id,
+                    connectors=self._connectors, deployment=self._config.deployment_policy,
+                )
+                return True
             if verdict.passed:
                 completed = self.commit.accept_result(
                     result_id,
@@ -2631,6 +2690,8 @@ class Orchestrator:
             # the Attempt was closed / taken over while we verified (P1-4): the verdict is
             # dropped; the library's state is whatever the other Commit made it
             self._note(f"result {result_id}: verdict dropped ({error})")
+            return True
+        if self.commit.selection_policy_for(task.id) is not None:
             return True
         accepted = verdict.passed and completed.status is TaskStatus.COMPLETED
         if accepted:
@@ -3028,6 +3089,8 @@ class Orchestrator:
     ) -> DispatchIntent | None:
         """One durable, deduplicated management decision per trigger (D5-6 / S5-07)."""
 
+        if self.commit.selection_policy_for(task.id) is not None:
+            return None  # candidate failure stays in its bounded round, with original cost
         if not self._config.dynamic_graph:  # D5-15: the layer's kill switch
             self._note(f"dynamic graph disabled: no management for {task.id} ({trigger})")
             return None
@@ -3420,6 +3483,12 @@ class Orchestrator:
                     raise ContractError(
                         f"critic runtime profile {unavailable.profile_id!r} unavailable"
                     ) from unavailable
+                selection_deadline = (None if attempt_id is None or self.store.get_attempt(attempt_id) is None
+                                      else self.commit.selection_deadline(attempt_id))
+                remaining_selection = (self._config.turn_deadline_seconds if selection_deadline is None
+                                       else selection_deadline - self.store.now)
+                if remaining_selection <= 0:
+                    raise ContractError("selection deadline elapsed before Critic")
                 template = self._template(CRITIC, mission.id)
                 config = AgentConfig(
                     name=f"critic-{ordinal}",
@@ -3429,7 +3498,7 @@ class Orchestrator:
                     limits=AgentLimits(
                         max_model_calls_per_turn=12,
                         max_tool_calls_per_turn=24,
-                        turn_deadline_seconds=self._config.turn_deadline_seconds,
+                        turn_deadline_seconds=min(self._config.turn_deadline_seconds, remaining_selection),
                     ),
                 )
                 message = user_message_json(package.text)
@@ -3457,7 +3526,10 @@ class Orchestrator:
                     task_id=task_id,
                     attempt_id=attempt_id,
                 )
-            deadline = self.store.now + self._critic_wait
+            selection_deadline = (None if attempt_id is None or self.store.get_attempt(attempt_id) is None
+                                  else self.commit.selection_deadline(attempt_id))
+            deadline = min(self.store.now + self._critic_wait,
+                           selection_deadline if selection_deadline is not None else float("inf"))
             while intent.state in {"PENDING", "CLAIMED", "AGENT_CREATED"}:
                 if not await self._dispatch(intent):  # another owner holds the claim (P1-8)
                     if self.store.now >= deadline:
@@ -3577,6 +3649,7 @@ class Orchestrator:
             1
             for stored in self.store.list_results_by_verification("PENDING", "RUNNING")
             if stored.envelope.mission_id in active
+            and not self.commit.candidate_is_waiting(stored.envelope.id)
         )
         observation = Observation(
             running_attempts=running,
@@ -3677,10 +3750,102 @@ class Orchestrator:
                 return True
         return False
 
+    async def _drive_selection(self, mission: Mission, task: Task) -> bool:
+        """Advance one bounded round; waiting candidates never impersonate running turns."""
+        if task.status in TERMINAL_TASK or task.status is TaskStatus.BLOCKED or task.paused:
+            return False
+        selection = self.commit.selection_round(task.id)
+        if selection is None:
+            try:
+                self.commit.begin_selection_round(task.id, command_id="round:" + task.id)
+            except BudgetExhausted:
+                self.commit.stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+                                      detail={"reason": "selection_tail_unavailable"})
+            return True
+        if selection["state"] in {"COMMITTED", "EXHAUSTED", "INVALIDATED"}:
+            return False
+        # Takeover uses the original Attempt lease CAS. Never cancel another live owner.
+        candidates = self.commit.selection_candidates(task.id)
+        for candidate in candidates:
+            if candidate["state"] != "READY":
+                continue
+            attempt = self.store.get_attempt(candidate["attempt_id"])
+            if attempt is None or attempt.status in TERMINAL_ATTEMPT:
+                continue
+            # A past deadline forbids new exploration/C, but an expired READY
+            # lease may still be acquired solely to finish best_complete_else_stop.
+            if candidate["state"] == "READY":
+                try:
+                    self.commit.renew_lease(
+                        attempt.id, owner=self._owner, lease_seconds=self._config.lease_seconds,
+                        minimum_remaining_seconds=self._config.lease_seconds / 2,
+                        liveness={"progress": attempt.progress_marker,
+                                  "phase": "selection_finalize" if self.store.now >= selection["deadline_at"]
+                                  else "selection_wait"},
+                    )
+                except CommitRejected:
+                    return False
+        try:
+            decision = self.commit.decide_selection(
+                task.id, owner=self._owner,
+                command_id=f"decision:{selection['round_id']}:{selection['version']}",
+                connectors=self._connectors, deployment=self._config.deployment_policy,
+            )
+        except CommitRejected:
+            if self.store.now >= selection["deadline_at"]:
+                self.commit.stop_selection(task.id, reason="selection_deadline_unavailable")
+                await self._release_mission(mission.id)
+                return True
+            raise
+        if decision is None:
+            return False
+        selection = self.commit.selection_round(task.id)
+        assert selection is not None
+        if decision["action"] == "stop":
+            self.commit.stop_selection(task.id, reason="selection_no_eligible_complete_candidate")
+            await self._release_mission(mission.id)
+            return True
+        if decision["action"] == "synthesize" and selection["synthesis_attempt_id"] is None:
+            current_task = self.store.get_task(task.id)
+            assert current_task is not None
+            return await self._next_attempt(
+                mission, current_task, self.store.list_attempts(task.id),
+                selection_decision=decision,
+            )
+        if decision["action"] == "synthesize":
+            result = self.store.find_result_for_attempt(selection["synthesis_attempt_id"])
+            if result is None or not self.commit.candidate_is_waiting(result.envelope.id):
+                return False
+            result_id = result.envelope.id
+        else:
+            result_id = decision["selected_results"][0]
+        receipt = self.commit.accept_selected_result(
+            result_id, round_id=selection["round_id"], decision_id=decision["receipt_id"],
+            expected_round_version=selection["version"], owner=self._owner,
+            command_id="selection-accept:" + result_id,
+            connectors=self._connectors, deployment=self._config.deployment_policy,
+        )
+        if receipt.get("accepted"):
+            for sibling in self.store.list_attempts(task.id):
+                if sibling.status is AttemptStatus.SUPERSEDED:
+                    await self._release_attempt(sibling.id, cancel=True)
+        return True
+
     async def _decide(self, mission: Mission) -> bool:
         tasks = self.store.list_tasks(mission.id)
         if not tasks or mission.status is not MissionStatus.ACTIVE:
             return False
+        if any(t.paused and t.pause_reason == "provider_admission:usage_unresolved" for t in tasks):
+            # Read the SDK's actual reconciliation records before importing and
+            # settling; elapsed time and a new owner are not evidence of zero cost.
+            if self._provider_admission is not None:
+                for pool in self.assembled.pools.values():
+                    self._provider_admission.recover(pool.bridge.runtime.uow)
+            self._reimport_unsettled(mission)
+            resumed = any(self.commit.resume_admission_usage(t.id) for t in tasks
+                          if t.paused and t.pause_reason == "provider_admission:usage_unresolved")
+            if resumed:
+                return True
         live = [  # D5-4 / R4: superseded work is history and a paused route is not required
             t
             for t in tasks
@@ -3719,6 +3884,15 @@ class Orchestrator:
                 if self.commit.record_synthesis_gated(task.id, conflict_ids=open_conflicts):
                     self._note(f"synthesis task {task.id} gated by open conflicts {open_conflicts}")
             tasks = [t for t in tasks if t not in gated]
+        compare_tasks = [t for t in tasks if self.commit.selection_policy_for(t.id) is not None]
+        for search_task in compare_tasks:
+            if await self._drive_selection(mission, search_task):
+                return True
+        tasks = [t for t in tasks if t not in compare_tasks or (
+            (selection := self.commit.selection_round(t.id)) is not None
+            and selection["state"] == "COLLECTING"
+            and len(selection["attempt_ids"]) < selection["policy"]["max_candidates"]
+        )]
         pending = self._tasks_under_management(mission.id)
         if pending:  # D5-6: no new Attempt while the Manager decides about the Task
             tasks = [t for t in tasks if t.id not in pending]
@@ -3735,6 +3909,8 @@ class Orchestrator:
             reduced_concurrency_ratio=self._config.reduced_concurrency_ratio,
             exploration_slots=int(bound["exploration_slots"]),
             weights=bound["allocator_weights"],
+            waiting_attempt_ids=self.commit.selection_waiting_ids(),
+            selection_task_ids=frozenset(t.id for t in compare_tasks),
         )
         progressed = False
         for granted, _candidate in plan.grants:
@@ -3784,11 +3960,14 @@ class Orchestrator:
         attempts: Sequence[Attempt],
         *,
         allocation: Mapping[str, Any] | None = None,
+        selection_decision: Mapping[str, Any] | None = None,
     ) -> bool:
         # a repair follows the last *failed* Attempt; a parallel candidate follows nobody
         previous = next(
             (a for a in reversed(attempts) if a.status in TERMINAL_ATTEMPT and a.failure), None
         )
+        if selection_decision is not None:
+            previous = None
         feedback: list[str] = []
         verifier_feedback: list[Mapping[str, Any]] = []
         if previous is not None and previous.failure is not None:
@@ -3828,6 +4007,17 @@ class Orchestrator:
             return True
         bound = self.policy_for(mission.id)  # step 9 (plan D9-4'): the Mission's own version
         role = self._template(role_for_task(task), mission.id)  # D5-9: approach
+        if selection_decision is not None:
+            from ..runtime.role_templates import SYNTHESIZER
+            role = self._template(SYNTHESIZER, mission.id)
+            role = replace(role, prompt_version=role.prompt_version + ":compare-v1",
+                           instructions=role.instructions + "\n候选输入不是正式知识；读取selection_inputs中的"
+                           "独立候选文件，对照原完整Task合同生成新输出。不得将输入PASS视为输出PASS；"
+                           "不要把候选result ID填写成used_knowledge。相同逻辑文件由你明确合成新文件。")
+            inputs = [*inputs, *(
+                UpstreamInput(artifact.task_id, artifact.path, artifact.content_hash, artifact.id)
+                for artifact in self.commit.selection_input_artifacts(selection_decision["receipt_id"])
+            )]
         untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
         try:
             knowledge = self._gather_knowledge(
@@ -3887,12 +4077,15 @@ class Orchestrator:
             feedback=tuple(feedback),
         )
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
-        source_binding = self._active_source_binding(mission.id)
+        source_binding = (self.commit.fragment_validation_binding(task.id)
+                          if "fragment_validation" in task.context
+                          else self._active_source_binding(mission.id))
+        fragment_files = self.commit.fragment_validation_inputs(task.id)
         source_versions = source_binding.get("source_versions")
         source_paths = set(source_versions or {})
         if source_binding:
             untrusted = sorted(set(untrusted) | source_paths)
-        previous_files = sorted({*seed, *(item.path for item in inputs), *source_paths})
+        previous_files = sorted({*seed, *(item.path for item in inputs), *source_paths, *fragment_files})
         if previous is not None:
             try:
                 previous_files = sorted(
@@ -3942,6 +4135,26 @@ class Orchestrator:
             await self._release_mission(mission.id)
             self._note(f"task {task.id} stopped: worker package refused ({error})")
             return True
+        if selection_decision is not None:
+            from ..context.context_builder import _seal
+            package = _seal({**dict(package.package), "selection_inputs": {
+                "data_not_instruction": True, "version": "candidate-inputs-v1",
+                "decision_id": selection_decision["receipt_id"],
+                "inputs": [{"path": a.path, "hash": a.content_hash, "artifact_id": a.id}
+                           for a in self.commit.selection_input_artifacts(selection_decision["receipt_id"])],
+                "marker": "UNVERIFIED candidate material; C needs its own complete verification",
+            }})
+        fragment_context = self.commit.fragment_validation_context(task.id)
+        if fragment_context:
+            from ..context.context_builder import _seal
+            package = _seal({**dict(package.package), "fragment_scope": {
+                **dict(fragment_context), "data_not_instruction": True,
+            }})
+        selection = self.commit.selection_round(task.id)
+        remaining_selection = (self._config.turn_deadline_seconds if selection is None else
+                               selection["deadline_at"] - self.store.now)
+        if remaining_selection <= 0:
+            return False
         # D6-7: Mission ∩ Task ∩ Role ∩ Deployment, frozen into the intent below
         allowed = effective_tools(
             mission_tools=mission.allowed_tools,
@@ -3972,13 +4185,23 @@ class Orchestrator:
                 max_model_calls_per_turn=self._config.max_model_calls_per_turn,
                 max_tool_calls_per_turn=tool_cap,
                 turn_deadline_seconds=min(
-                    self._config.turn_deadline_seconds,
+                    self._config.turn_deadline_seconds, remaining_selection,
                     float(task.budget.max_runtime_seconds or self._config.turn_deadline_seconds),
                 ),
             ),
         )
         message = user_message_json(package.text)
         tokens = self._config.attempt_reserve_tokens
+        critic_tail = None
+        if "critic_review" in task.verification_policy and selection_decision is None:
+            try:
+                critic_decision = self._route_service("critic", mission.id)
+            except RoutingUnavailable as unavailable:
+                self._note(f"task {task.id}: Critic profile {unavailable.profile_id} unavailable")
+                return False
+            critic_tail = self._reservation(
+                self._config.critic_reserve_tokens, critic_decision.profile_id
+            )
         if self._pressure.is_raised:  # §18.5 "缩小每个 Attempt 预算" (D6-3 ④)
             tokens = max(4_000, int(tokens * self._config.reduced_reserve_ratio))
         if task.budget.max_tokens is not None:
@@ -3999,9 +4222,19 @@ class Orchestrator:
                 head_room = remaining - critic_share  # keep the Critic's own share free
                 if 0 < head_room < tokens:
                     tokens = head_room
+        if selection_decision is not None:
+            assert selection is not None
+            critic_tokens = self._config.critic_reserve_tokens if "critic_review" in task.verification_policy else 0
+            tokens = min(tokens, selection["policy"]["synthesis_reserve"]["tokens"] - critic_tokens)
+            if tokens <= 0:
+                self.commit.stop_selection(task.id, reason="selection_tail_insufficient")
+                return True
         try:
             attempt, _intent = self.commit.create_attempt(
                 task.id,
+                selection_decision_id=None if selection_decision is None else selection_decision["receipt_id"],
+                selection_owner=self._owner if selection_decision is not None else None,
+                critic_tail=critic_tail,
                 role=role.name,
                 model=decision.model,
                 prompt_version=role.prompt_version,

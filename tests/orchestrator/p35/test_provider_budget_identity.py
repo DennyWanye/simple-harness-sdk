@@ -44,52 +44,35 @@ def test_real_terminal_failure_without_usage_keeps_allowance_and_slot_unknown(tm
     asyncio.run(exercise())
 
 
-def test_current_token_guard_explicitly_rejects_priced_configuration(tmp_path):
-    from graph_helpers7 import graph_service, node
-    from test_provider_budget_guard import ActualProvider, Counter
+def test_priced_ports_require_explicit_admission_capability(tmp_path):
+    from test_provider_budget_guard import ActualProvider
 
-    from agent_orchestrator.orchestrator.event_handler import Orchestrator
-    from agent_orchestrator.runtime.assembly import OrchestratorConfig, PriceTable
     from simple_harness.agents import AgentRuntimePorts
     from simple_harness.agents.ports import AllowAllAuthorization
     from simple_harness.execution.budget import FrozenPriceEstimator
     from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 
-    commit, _, _ = graph_service(tmp_path, nodes=[node("A")])
-    provider = ActualProvider()
-    counter = Counter(100)
-    try:
-        with pytest.raises(ValueError, match="priced"):
-            ProviderBudgetGuard(commit, owner="owner", estimator=counter, max_slots=1, priced=True)
-        guard = ProviderBudgetGuard(commit, owner="owner", estimator=counter, max_slots=1)
-        priced = ConsumerRuntimePolicies(
-            "consumer_supplied",
-            False,
-            "fail_closed",
-            estimator=FrozenPriceEstimator("fixture-price", "consumer", 1000, 2000),
+    class OldTokenOnlyGuard:
+        fingerprint = "legacy-token-only"
+        acquire = handoff = observe = recover = lambda *a, **kw: None
+
+        def waiting_for_slot(self, **kwargs):
+            return False
+
+    with pytest.raises(ValueError, match="priced"):
+        AgentRuntimePorts(
+            provider=ActualProvider(),
+            authorization=AllowAllAuthorization(),
+            database_path=str(tmp_path / "never-opened.db"),
+            policies=ConsumerRuntimePolicies(
+                "consumer_supplied",
+                False,
+                "fail_closed",
+                estimator=FrozenPriceEstimator("fixture-price", "consumer", 1000, 2000),
+            ),
+            provider_admission=OldTokenOnlyGuard(),
         )
-        with pytest.raises(ValueError, match="priced"):
-            AgentRuntimePorts(
-                provider=provider,
-                authorization=AllowAllAuthorization(),
-                database_path=str(tmp_path / "never-opened.db"),
-                policies=priced,
-                provider_admission=guard,
-            )
-        with pytest.raises(ValueError, match="priced"):
-            Orchestrator(
-                OrchestratorConfig(
-                    evidence_root=tmp_path / "never-started",
-                    price_table=PriceTable("fixture-price", 1000, 2000),
-                ),
-                provider,
-                provider_token_estimator=counter,
-            )
-        assert provider.calls == 0
-        assert not (tmp_path / "never-opened.db").exists()
-        assert not (tmp_path / "never-started").exists()
-    finally:
-        commit.store.close()
+    assert not (tmp_path / "never-opened.db").exists()
 
 
 def test_cold_overrun_commits_actual_usage_before_refusing_and_blocks_next_call(tmp_path):

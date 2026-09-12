@@ -15,6 +15,10 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
+from ..governance.budget_tail_schema import DDL as DDL_V13
+from ..governance.mission_system_tail_schema import DDL as DDL_V15
+from .fragment_schema import FRAGMENT_SCHEMA_SQL as DDL_V14
+
 
 @dataclass(frozen=True, slots=True)
 class Migration:
@@ -513,6 +517,21 @@ CREATE INDEX provider_token_grants_subject_idx ON provider_token_grants(subject_
 CREATE INDEX provider_token_grants_slots_idx ON provider_token_grants(state);
 """
 
+DDL_V12 = """
+CREATE TABLE search_bindings (
+ mission_id TEXT PRIMARY KEY REFERENCES missions(mission_id), json TEXT NOT NULL
+) STRICT;
+CREATE TABLE selection_rounds (
+ round_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id), version INTEGER NOT NULL,
+ state TEXT NOT NULL, json TEXT NOT NULL
+) STRICT;
+CREATE TABLE selection_candidates (
+ result_id TEXT PRIMARY KEY REFERENCES results(result_id), round_id TEXT NOT NULL
+ REFERENCES selection_rounds(round_id), state TEXT NOT NULL, json TEXT NOT NULL
+) STRICT;
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
@@ -525,6 +544,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(9, "orchestrator-p33-sources", DDL_V9),
     Migration(10, "orchestrator-p33-assessments", DDL_V10),
     Migration(11, "orchestrator-p35-provider-admission", DDL_V11),
+    Migration(12, "orchestrator-p34-selection", DDL_V12),
+    Migration(13, "orchestrator-tail-reservations", DDL_V13),
+    Migration(14, "orchestrator-p34-fragments", DDL_V14),
+    Migration(15, "orchestrator-mission-system-tail", DDL_V15),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name

@@ -30,6 +30,8 @@ from ..governance.promotion import (
     expands,
     interpreter_versions,
     params_hash,
+    policy_fields,
+    selection_policy_problems,
     step_problems,
 )
 from ..governance.promotion import (
@@ -248,10 +250,13 @@ class PolicyCommitsMixin:
         input is the same proposal; the same parameters from other history are the same
         version with another proposal."""
 
-        if set(params) != set(PROMOTABLE):  # review P2-9: the single writer's own guard
+        if set(params) != set(policy_fields(params)):  # exact legacy or explicit successor
             raise PolicyCommitError(
                 f"a policy carries exactly {sorted(PROMOTABLE)}; got {sorted(params)}"
             )
+        problems = selection_policy_problems(params)
+        if problems:
+            raise PolicyCommitError("; ".join(problems))
         with self._store.transaction():
             record = self._version_record(params, source=source, status="NEVER_ACTIVE", detail=None)
             self._store.insert_policy_version(record)  # a known version keeps its status
