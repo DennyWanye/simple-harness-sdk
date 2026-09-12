@@ -2,7 +2,9 @@
 
 ## 0. handoff（每次提交时更新）
 
-**写于 2026-09-12 07:55。P3.2 的 7 个切片里，B/C/A/D/E/F 已交付并推送；只剩切片 G（真实模型的原生验收）。**
+**更新于 2026-09-12 11:10。P3.2 的 7 个切片全部交付，原生验收已通过，终态 SHIPPED（见 §5、§6）。**
+
+接手的人请从 §6 的遗留表开始：最重要的是 F-P32-1（宿主崩溃后逃逸的沙箱进程认不出来），其次是 F-P32-2（真实模型写动作候选时拿不到 schema，原生验收第一轮就栽在这里）。
 
 ### 现在在哪
 
@@ -25,9 +27,11 @@
 | Host 前端 | 773 passed，`npm run typecheck` 干净 |
 | mypy | 118 个源文件无问题 |
 
-### 下一步：切片 G（P32-16 原生验收）
+### 切片 G 已完成（P32-16）
 
-**硬前提**：`tauri-app/src-tauri/target/debug/bundle/macos/` 下**没有** Host 提交 `0f1af2b0` 的验收 bundle，必须先构建（耗时长，放后台）。没有它，原生验收无法开始。
+复跑的办法：用 `.local-test-evidence/2026-09-12/native-build-0910/build.py` 构建 bundle（要求工作树干净），`launch-p32.sh prod <sha>` 起 App，再跑 `drive_p32.sh <sha>`（发布流程）与 `drive_p32_pytest.sh <sha>`（沙箱内执行）。证据见 §5。
+
+原先的步骤清单（已全部做完）：
 
 要做的事，按顺序：
 
@@ -409,4 +413,17 @@ Mission 以 `verification_passed` 完成。
 - `drive_p32_pytest.sh <sha>`：沙箱内执行，直接从 `verifications` 表取 `code_test` 的回执。
 
 ## 6. 遗留
-（待填）
+
+P3.2 的七个切片全部交付（B/C/A/D/E/F/G），SDK 0.10.0 已钉进 Host，原生验收通过。下面几条如实留着，不在本轮修：
+
+| 编号 | 事项 | 为什么现在不修 |
+|---|---|---|
+| F-P32-1 | **宿主崩溃后，逃出去的沙箱进程认不出来**：金丝雀随执行目录一起删除，重启时没有线索可扫（`sweep_exec_copies` 只删目录、不扫进程） | 要把 marks 目录保留到下次启动扫描之后，涉及跨进程生命周期。这是本轮最重要的一条遗留，建议放 P3.5 |
+| F-P32-2 | **真实模型写动作候选时，系统没把候选 schema 放进它的输入包** | 原生验收第一轮就栽在这里（见 §5.4）：模型两次写错格式被 rule_check 挡下。目前靠 Mission 目标里的人工说明兜住；正解是把 schema 随连接器声明注入 Worker 的输入包 |
+| F-P32-3 | CPU 是每进程限额，不是整次执行的总量 | 回执已标 `scope: process`，整次执行由墙钟兜底；按沙箱身份汇总 CPU 的代价不划算 |
+| F-P32-4 | `run_pytest(executor=None)` 等同 process_only，而不是 off | 四个调用点都在上游判过开关，当前安全；改成抛错会让便利默认值失效 |
+| F-P32-5 | 每次启动 `backfill` 全表读一次 artifact 行 | 已在 CAS 内的行会被跳过、不读文件；Mission 多了之后再按 schema 版本打一次性标记 |
+| F-P32-6 | ProcessOnly 的 `run.seen` 有 pid 复用误杀的可能 | Host 不使用该模式；seatbelt 按沙箱身份认进程，不看 pid 历史 |
+| F-P32-7 | SDK 侧没有面向使用者的沙箱边界文档 | Host 的 `ARCHITECTURE/AGENT_ORCHESTRATION.md` 已写明；SDK 侧目前只在 plan 与 CHANGELOG 里 |
+
+**终态：SHIPPED**（2026-09-12）。Host `main` = `04350956`。
