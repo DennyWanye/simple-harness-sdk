@@ -698,3 +698,10 @@ N1v8 failure summary: Host .local-test-evidence/2026-09-13/p33-g/source-ui-n1-v8
 **源码与原生 UI 检查点 — 2026-09-13 05:25 CST：** N1v9 原始两文档、400000/12 原目标在 SDK c9a1f183 / Host 45c09756 源码环境完成：220.968s，正式 REPORT f6b192a3…f905、6 条 VERIFIED 逐字引用（两来源、完整表格行、完整限定单元），242431 tokens 已结算/预留0，13 次 Provider handoff。真实 UI 读报告、引用并冷启动重读，调用仍13/无重复；文档区“尚未判定”投影缺陷已修复，后端13 PASS/0.06s、前端25 PASS/0.912s及typecheck通过，新 UI 待验。动态新增已完成依赖的 Task 回放修复42 PASS/36.16s，原 v14 #14 历史43事件全覆盖/无差异；Python3.12空AST字段兼容35 PASS/0.29s，保持原生产基线。总体P33/P34/P35仍OPEN；进程kill测试仍在修复，FIRST请求保护仅helper7 PASS未集成；不打包/P36/推送。
 
 测试命令：`tests/orchestrator/p34/test_fragment_scope.py tests/orchestrator/p34/test_search_replay.py tests/orchestrator/step08/test_replay.py` 42 PASS；新增完整fragment事件流回放断言先红1FAIL，再修复TaskCommitted按此前依赖状态推导READY/BLOCKED。原始v14库只读重放证据 `.local-test-evidence/2026-09-12/p33-g/replay-v14-gap14-repaired.json` SHA256 `acf7819fe5afa18d30ca4d14e3cc983fb37f372d9bf1518725eda25935a6b138`。独立Luna审查无P0/P1。v18冻结检查点1126 PASS/1 AST兼容FAIL/93.85s；修复仅剔除空type_params表示、原hash保留，Python3.12定向35PASS/0.29s。首次green命令误写不存在的p33/test_replay.py，未执行测试，证据保留。
+
+
+## 2026-09-13 05:40 — 原生边界与实际OS恢复
+
+**原生边界与恢复检查点 — 2026-09-13 05:40 CST：** 新冻结 SDK c8e2541 / Host b7dc4c64 综合1127 PASS/75.26s。N1v9真模型正式交付及同源冷恢复已核对；新Host显示修复在受控原生来源指令用例验证。N4来源指令归属、错误逐字引用、矛盾证据三例原生UI符合预期，独立原始证据保存在Host `.local-test-evidence/2026-09-13/p33-g/source-ui-n4-*-v10/`。实际OS SIGKILL后两库冷恢复2 PASS/9.59s：成功结果零重复Worker、独立Critic读产物；UNKNOWN保持原token/cost占用。仅覆盖该两边界，不覆盖完整Mission或P32逃逸进程恢复。FIRST新保护虽18PASS/0.91s，独立审查仍有系统hold丢cap和priced分别取整2项P1，修复中。P33剩余N6/active管理/O4、P34综合价值场景及P35其余门槛保持OPEN，不打包/P36/推送。
+
+OSkill selector：`tests/orchestrator/p35/test_process_kill_recovery.py`；raw `.local-test-evidence/2026-09-12/p33-g/g-process-kill-astra-v3.{json,log}`，wrapper9.87s。Terra初稿及三轮返工保留：v1两项importFAIL0.65s；v2 marker45sFAIL/第二case无壁钟上限，主线程139.62s中止；Astra重做合法envelope/真实分库/硬超时后首次实测2PASS。新启动器SO_REUSEADDR只允许TIME_WAIT重绑定，仍拒绝live监听，定向20PASS/0.11s。所有新证据不入Git。
