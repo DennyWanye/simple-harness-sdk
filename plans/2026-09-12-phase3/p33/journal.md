@@ -218,3 +218,45 @@ C 17:14–18:02 约 48 分钟，含实现、定向验证、评审及两轮完整
 - `.local-test-evidence/2026-09-12/p33-c/orchestrator-full-fixed.log` SHA-256 `fd85ee7e5521f86cedf63357fe33d4f8334068e3b13988c30b1d27fbceb8f5a5`
 
 - `.local-test-evidence/2026-09-12/p33-c/orchestrator-full-fixed.json` SHA-256 `a0aaf607b837b72f985368d866a5c5248321a1fb3cef797db38f4a2e24681632`
+
+### C 推送与 D 开始（18:04）
+
+C 文档提交 `ddf922fe16156ffd031ea8bdb19dab418c2910fa` 后 P33 **402 passed / 6.83 秒**（watchdog 7.06 秒），PG 15843 无残留，发送差异 key 模式匹配 0；SDK main 推送成功，HEAD/origin/main 0/0。C 含收尾约 50 分钟（17:14–18:04）。D 执行细化由 Kepler/Ohm 只读挑战确认，见 slice-d-readiness.md，18:04 开始实施。
+
+## 2.4 切片 D：证据不足与有限接受
+
+18:04 开始实施；当前候选通过定向与独立审查收口，准备冻结源码完整编排回归，尚非 D 完成。细化及先于实现的 D01–D09 oracle 见 slice-d-readiness.md。
+
+- DOC3 冻结 citation_integrity@v2/source_coverage@v1；六层不变，unknown/crash/非法 PASS/损坏绑定 ERROR。coverage 从实际 CAS 取数；普通确定性 PASS 不触发 coverage。
+- 严格 candidate 与结构化 limitations；仅有真实 INCONCLUSIVE、全部引用有效及完整局限可有限接受，claim UNDER_REVIEW/insufficient_evidence，无正式 Knowledge。同 claim 的 PASS 不遮盖 INCONCLUSIVE。
+- 缺局限的实际失败计入已有 Attempt，限额前置于预算 reserve；runtime 避免通用 Manager 重建 Task 绕过限额。同结果重复失败不双计；人工升级 fresh/reuse 共用一次额度并要求同结果真实批准。
+- Mission 固定原始准则分母，严格超过 0.5 才停止：FAILED + final_report.result=INSUFFICIENT；判定在 judge/发布前，事务内重算。文件/动作继续真实检查，root arbitration 保留既有 Critic 路径；来源挂载留 G。
+- 接受历史评估需实际产物 bytes/hash/非符号链接检查；确定性同 key 反 stance 涉及 INCONCLUSIVE 时在 verification/accept/failure 推断实时复查，不能转证据不足。
+- 契约 schema3 为已推送 C schema2 的后继；新 Event 默认 schema 和后续 VERSION_SOURCES 同步变化，历史事件/旧 intent/旧空信封字节不迁改。旧 C 测试明确固定 DOC2；DOC3 由 D 套件覆盖。legacy grade AST 与 ddf922f 相同。
+
+| 验证及反例 | 实际结果 | 本地日志（p33-d/） |
+|---|---|---|
+| 缺 D 分级/context | 4 产品反例失败、1通过；实现后通过 | consumption-red.log |
+| 初步整合 | 93 passed / 0.36s | integrity-first.log |
+| 已接受产物损坏/丢失/符号链接 | 先3失败，修后3 passed / 0.13s | artifact-red.log、artifact-green.log |
+| DOC3 reused Critic 人工额度 | doc先失败、code正对照通过；修复后并入127绿集 | critic-quota-red.log |
+| root arbitration 实际 judge | 先 FAILED vs COMPLETED；恢复原 Critic 后通过 | arbitration-red.log |
+| 损坏冻结绑定分类 | SQL真实故障注入先 FAIL vs ERROR；修复后通过 | binding-error-red.log |
+| runtime/接受事务/评估组合 | 127 passed / 2.41s | integration-third.log |
+| P33 全量便宜门 | 542 passed / 8.81s | p33-final.log |
+| 类型/静态 | mypy 91 source files、修改 Python Ruff 通过 | mypy-final.log |
+
+首次 dependency ImportError/接口尚未接通不算产品 red；损坏绑定首次用 update_intent 被不可变 config 保护忽略，后改真实 SQL 故障注入。随后的缩进错误只影响新增测试，已修；integration-third 才是最终绿集。原 C fixture 缺新增 read API 与默认画像升级的旧版断言分别修为明确历史绑定，保留原预期。accept 的实际硬失败 guard 最初位置遮住 rule FAIL 的 CommitRejected，调整至真实性校验之后，原 oracle 不改。
+
+原始证据永久 ignored，未调用真实 Provider，未更换 Host wheel，未计入原生 UI 验收。
+
+| 本地证据 | SHA-256 |
+|---|---|
+| `.local-test-evidence/2026-09-12/p33-d/artifact-red.log` | `c2b154bf6077f8c1e6d11dbcac87460bfc1fc0a7f66accbb54d0d066f68dbed5` |
+| `.local-test-evidence/2026-09-12/p33-d/artifact-green.log` | `fbbf95fa6aa44c84e3793103c430a7b2d9d64cfff1e8b96a9b45f7abe33a5be7` |
+| `.local-test-evidence/2026-09-12/p33-d/critic-quota-red.log` | `08566313e7e80b12a01ad3740b0fc7906f6bec974f192c47b1e053ad994f1afe` |
+| `.local-test-evidence/2026-09-12/p33-d/arbitration-red.log` | `10aedc8366690f1ed973d25eb246c7f6b95313f56561b58015ae17d55ba52671` |
+| `.local-test-evidence/2026-09-12/p33-d/binding-error-red.log` | `1f6897f475714ba2a3bd01226d336b888e34f3c8f1adc2202c04a3db648f3ce9` |
+| `.local-test-evidence/2026-09-12/p33-d/integration-third.log` | `6ac1117464f9186fa53e4c0cb5d08026b2f9c8f5d5b6c6fe3f8b4ee675127f30` |
+| `.local-test-evidence/2026-09-12/p33-d/p33-final.log` | `0f6ecdab4d82da3f20d5c8c65efb2b0eaa327f6520b6fac4f34667a63acb3e54` |
+| `.local-test-evidence/2026-09-12/p33-d/mypy-final.log` | `fe0ce6e3b1983c3e150c09b415036599a0bee120f2cad38e219412ce21d84a67` |

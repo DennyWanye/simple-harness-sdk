@@ -16,19 +16,22 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..artifacts.store import ArtifactStoreError, read_verified
 from ..contracts import (
     Artifact,
     Attempt,
     ContractError,
     CriterionAssessmentV1,
+    Mission,
     ResultEnvelope,
     Task,
     ids,
 )
 from ..contracts.assessments import content_hash, freeze_json, required_text, thaw_json
 from ..contracts.models import sha256_hex
-from ..governance.domains import criterion_kind
-from .deterministic_checks import FAIL, PASS, LayerResult
+from ..governance.domains import DOC_DOMAIN, DomainProfileV1, criterion_kind
+from . import adapters
+from .deterministic_checks import ERROR, FAIL, PASS, LayerResult
 from .evidence_resolver import EvidenceResolver
 
 if TYPE_CHECKING:
@@ -81,6 +84,37 @@ def criterion_id(revision: str, ordinal: int, text: str) -> str:
     return "criterion-" + sha256_hex({"revision": revision, "ordinal": ordinal, "text": text})
 
 
+def mission_contract_revision(mission: Mission) -> str:
+    criteria = mission.success_criteria
+    if not isinstance(criteria, (list, tuple)) or any(
+        not isinstance(text, str) or not text.strip() for text in criteria
+    ):
+        raise ContractError("invalid original Mission criteria")
+    if len(set(criteria)) != len(criteria):
+        raise ContractError("original Mission criteria must not contain duplicates")
+    return sha256_hex(
+        {
+            "scope": "mission",
+            "mission_id": required_text(mission.id, "mission_id"),
+            "goal": required_text(mission.goal, "mission goal"),
+            "success_criteria": list(criteria),
+        }
+    )
+
+
+def mission_criterion_catalog(mission: Mission) -> tuple[dict[str, Any], ...]:
+    revision = mission_contract_revision(mission)
+    return tuple(
+        {
+            "criterion_id": criterion_id(revision, ordinal, text),
+            "ordinal": ordinal,
+            "text": text,
+            "kind": criterion_kind(text),
+        }
+        for ordinal, text in enumerate(mission.success_criteria, 1)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AssessmentBindingV1:
     tenant_id: str
@@ -94,10 +128,15 @@ class AssessmentBindingV1:
     source_roots: tuple[str, ...]
     claim_revisions: Mapping[str, int]
     envelope: ResultEnvelope
+    mission_contract_revision: str | None = None
+    mission_criteria: tuple[Mapping[str, Any], ...] = ()
+    check_spec_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("task_contract", "source_versions", "claim_revisions"):
             object.__setattr__(self, name, freeze_json(getattr(self, name)))
+        object.__setattr__(self, "mission_criteria", freeze_json(self.mission_criteria))
+        object.__setattr__(self, "check_spec_ids", tuple(self.check_spec_ids))
 
     @property
     def task_contract_revision(self) -> str:
@@ -119,7 +158,7 @@ class AssessmentBindingV1:
         )
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema": 1,
             "tenant_id": self.tenant_id,
             "mission_id": self.mission_id,
@@ -134,6 +173,13 @@ class AssessmentBindingV1:
             "claim_revisions": thaw_json(self.claim_revisions),
             "envelope": self.envelope.to_json(),
         }
+        if self.check_spec_ids:
+            result.update(
+                mission_contract_revision=self.mission_contract_revision,
+                mission_criteria=thaw_json(self.mission_criteria),
+                check_spec_ids=list(self.check_spec_ids),
+            )
+        return result
 
     @property
     def binding_hash(self) -> str:
@@ -172,6 +218,20 @@ def assessment_binding_for(
     envelope: ResultEnvelope,
     artifacts: Sequence[Artifact],
 ) -> AssessmentBindingV1:
+    return _assessment_binding_for(
+        store, task=task, attempt=attempt, envelope=envelope, artifacts=artifacts
+    )
+
+
+def _assessment_binding_for(
+    store: Store,
+    *,
+    task: Task,
+    attempt: Attempt,
+    envelope: ResultEnvelope,
+    artifacts: Sequence[Artifact],
+    historical_revisions: Mapping[str, int] | None = None,
+) -> AssessmentBindingV1:
     """Read authoritative frozen identities; never write or consult active sources."""
     mission = store.get_mission(attempt.mission_id)
     intent = store.get_intent_for_subject(attempt.id)
@@ -205,6 +265,47 @@ def assessment_binding_for(
         content_hash(version, "source version")
     for root in roots:
         required_text(root, "source root")
+    specs = intent.config.get("check_spec_ids", ())
+    mission_revision = None
+    mission_criteria: tuple[Mapping[str, Any], ...] = ()
+    if (
+        not isinstance(specs, (list, tuple))
+        or any(not isinstance(spec, str) or not spec.strip() for spec in specs)
+        or len(set(specs)) != len(specs)
+    ):
+        raise ContractError("invalid frozen check specifications")
+    frozen = store.get_mission_domain(mission.id)
+    try:
+        domain = DomainProfileV1.from_json(frozen["json"]) if frozen is not None else None
+        if (
+            frozen is not None
+            and domain is not None
+            and (domain.id, domain.version)
+            != (
+                frozen["domain_id"],
+                frozen["domain_version"],
+            )
+        ):
+            raise ValueError("domain identity mismatch")
+    except (KeyError, TypeError, ValueError) as error:
+        raise ContractError(f"invalid frozen assessment domain: {error}") from error
+    if domain is not None and (domain.id, domain.version) == (DOC_DOMAIN, "3"):
+        if tuple(specs) != tuple(sorted(domain.adapters.values())):
+            raise ContractError("DOC3 requires its exact frozen check specifications")
+    elif any(
+        key in intent.config
+        for key in ("check_spec_ids", "mission_contract_revision", "mission_criteria")
+    ):
+        raise ContractError("legacy domain cannot acquire D check specifications")
+    if specs:
+        mission_revision = mission_contract_revision(mission)
+        mission_criteria = mission_criterion_catalog(mission)
+        if intent.config.get("mission_contract_revision") != mission_revision or intent.config.get(
+            "mission_criteria"
+        ) != list(mission_criteria):
+            raise ContractError("frozen Mission criterion directory or revision mismatch")
+    elif any(key in intent.config for key in ("mission_contract_revision", "mission_criteria")):
+        raise ContractError("Mission directory has no frozen check specification")
     claims = {}
     for ordinal, proposal in enumerate(envelope.claims, 1):
         cid = ids.claim_id(envelope.id, ordinal)
@@ -215,12 +316,19 @@ def assessment_binding_for(
             or claim.result_id != envelope.id
             or claim.source_task != task.id
             or claim.source_attempt != attempt.id
-            or claim.content != proposal.content
+            or (historical_revisions is None and claim.content != proposal.content)
             or type(claim.version) is not int
             or claim.version < 1
         ):
             raise ContractError("assessment claim identity, content or revision mismatch")
-        claims[cid] = claim.version
+        claim_revision = (
+            claim.version if historical_revisions is None else historical_revisions.get(cid)
+        )
+        if type(claim_revision) is not int or not 1 <= claim_revision <= claim.version:
+            raise ContractError("invalid original assessment claim revision")
+        claims[cid] = claim_revision
+    if historical_revisions is not None and set(historical_revisions) != set(claims):
+        raise ContractError("original claim revision directory is incomplete")
     artifact_rows: list[dict[str, str]] = []
     for artifact in artifacts:
         if (
@@ -243,7 +351,7 @@ def assessment_binding_for(
     if not set(envelope.artifacts).issubset({a["path"] for a in artifact_rows}):
         raise ContractError("assessment artifact catalogue does not cover output")
     sorted_artifacts = sorted(artifact_rows, key=lambda a: (a["id"], a["path"], a["content_hash"]))
-    return AssessmentBindingV1(
+    binding = AssessmentBindingV1(
         tenant_id=mission.tenant_id,
         mission_id=mission.id,
         task_id=task.id,
@@ -260,7 +368,74 @@ def assessment_binding_for(
         source_roots=tuple(roots),
         claim_revisions=claims,
         envelope=ResultEnvelope.from_json(envelope.to_json()),
+        mission_contract_revision=mission_revision,
+        mission_criteria=mission_criteria,
+        check_spec_ids=tuple(specs),
     )
+    if specs:
+        _check_candidate_ids(binding)
+    return binding
+
+
+def _check_candidate_ids(binding: AssessmentBindingV1) -> None:
+    task_ids = {c["id"] for c in binding.criteria}
+    mission_ids = {c["criterion_id"] for c in binding.mission_criteria}
+    for proposal in binding.envelope.claims:
+        if (
+            not set(proposal.criterion_ids) <= task_ids
+            or not set(proposal.mission_criterion_ids) <= mission_ids
+        ):
+            raise ContractError("candidate IDs are outside their frozen criterion catalogue")
+    for item in binding.envelope.limitations:
+        if item.criterion_id not in task_ids:
+            raise ContractError("limitations must reference a frozen Task criterion")
+
+
+def accepted_assessments_for(
+    store: Store, *, task: Task
+) -> tuple[AssessmentBindingV1, tuple[CriterionAssessmentV1, ...]]:
+    """Read accepted original evidence without regrading current historical claims."""
+    stored = store.get_result(task.accepted_result_id or "")
+    if stored is None or stored.verification_state != "DONE" or stored.verdict != PASS:
+        raise ContractError("assessment reader requires the Task's accepted DONE/PASS result")
+    envelope = stored.envelope
+    if envelope.task_id != task.id or envelope.mission_id != task.mission_id:
+        raise ContractError("accepted assessment result belongs to another Task/Mission")
+    attempt = store.get_attempt(envelope.attempt_id)
+    if attempt is None:
+        raise ContractError("accepted assessment Attempt is unavailable")
+    rules = [row for row in store.list_verifications(envelope.id) if row["layer"] == "rule_check"]
+    if len(rules) != 1:
+        raise ContractError("accepted assessment needs one real rule_check record")
+    original = rules[0]["detail"].get("assessment_binding")
+    if not isinstance(original, Mapping) or not isinstance(
+        original.get("claim_revisions"), Mapping
+    ):
+        raise ContractError("accepted original binding is unavailable")
+    artifacts = []
+    for aid in stored.artifacts:
+        artifact = store.get_artifact(aid)
+        if artifact is None:
+            raise ContractError("accepted assessment artifact is unavailable")
+        try:
+            read_verified(artifact)
+        except ArtifactStoreError as error:
+            raise ContractError(f"accepted artifact invalid: {error.reason}") from error
+        artifacts.append(artifact)
+    binding = _assessment_binding_for(
+        store,
+        task=task,
+        attempt=attempt,
+        envelope=envelope,
+        artifacts=artifacts,
+        historical_revisions=original["claim_revisions"],
+    )
+    rows = validated_assessments(rules[0], binding=binding)
+    persisted = store.list_criterion_assessments(task.mission_id, result_id=envelope.id)
+    expected = sorted(sha256_hex(row.to_json()) for row in rows)
+    if sorted(sha256_hex(row) for row in persisted) != expected:
+        raise ContractError("accepted assessment receipt table differs from the validated record")
+    return binding, rows
 
 
 def _layer(value: object) -> LayerResult:
@@ -469,6 +644,172 @@ def _evaluation(
     )
 
 
+def _v2_parts(
+    binding: AssessmentBindingV1,
+    resolutions: Sequence[Mapping[str, Any]],
+    structural: LayerResult,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    """Deterministic eligibility and complete limitations; never run the external phase."""
+    if binding.check_spec_ids != adapters.DOCUMENT_CHECKS or any(
+        spec not in adapters.CHECK_SPECS for spec in binding.check_spec_ids
+    ):
+        raise ContractError("unknown or missing required document check specification")
+    _check_candidate_ids(binding)
+    # Reuse v1's exact resolution/identity validation and structural directory. Its
+    # published producer and receipts remain untouched when the binding selects v1.
+    baseline = _evaluation(binding, resolutions, structural)
+    detail = dict(baseline.detail)
+    by_claim: dict[str, list[Mapping[str, Any]]] = {}
+    for item in resolutions:
+        by_claim.setdefault(item["claim_id"], []).append(item["resolution"])
+    rows: list[dict[str, Any]] = []
+    verdicts: list[dict[str, Any]] = []
+    hard: list[str] = []
+    if structural.status != PASS:
+        hard.append("structural_failure")
+    if any(item["resolution"]["status"] != "resolved" for item in resolutions):
+        hard.append("citation_not_resolved")
+    for criterion, old in zip(binding.criteria, detail["criterion_verdicts"], strict=True):
+        kind, text = criterion["kind"], criterion["text"]
+        if kind in {"file", "action", "arbitration"}:
+            verdicts.append(old)
+            continue
+        linked: list[str] = []
+        reasons: list[str] = []
+        pair_verdicts: list[str] = []
+        for ordinal, proposal in enumerate(binding.envelope.claims, 1):
+            cid = ids.claim_id(binding.result_id, ordinal)
+            matches = (
+                any(c.path == text.removeprefix("cite:") for c in proposal.citations)
+                if kind == "cite"
+                else kind == "free"
+                and normalise_literal(proposal.content) == normalise_literal(text)
+            )
+            candidate = criterion["id"] in proposal.criterion_ids
+            if not matches and not candidate:
+                continue
+            linked.append(cid)
+            refs = by_claim.get(cid, [])
+            if not refs:
+                reasons.append("missing_citation")
+                continue
+            if any(ref["status"] != "resolved" for ref in refs):
+                reasons.append("citation_not_resolved")
+                continue
+            verdict = PASS if matches else "INCONCLUSIVE"
+            pair_verdicts.append(verdict)
+            if structural.status != PASS:
+                continue
+            ordered = sorted(
+                refs,
+                key=lambda r: (
+                    r["source_version"],
+                    r["target"],
+                    r["locator"]["start_line"],
+                    r["locator"]["end_line"],
+                    normalise_literal(r["ref"]["quote"]),
+                    sha256_hex(r),
+                ),
+            )
+            rows.append(
+                CriterionAssessmentV1.create(
+                    criterion_id=criterion["id"],
+                    task_contract_revision=binding.task_contract_revision,
+                    claim_id=cid,
+                    claim_revision=binding.claim_revisions[cid],
+                    output_ref=binding.result_id,
+                    output_hash=binding.output_hash,
+                    evidence_refs=ordered,
+                    source_versions={r["target"]: r["source_version"] for r in ordered},
+                    verifier_adapter_id="citation_integrity",
+                    version="2",
+                    checked_scope={
+                        "kind": "source_citation",
+                        "catalog": "task",
+                        "criterion": text,
+                        "binding": ("source_path" if kind == "cite" else "literal")
+                        if matches
+                        else "candidate",
+                    },
+                    verdict=verdict,
+                    provenance={
+                        "schema": 1,
+                        "producer": "citation_integrity@v2",
+                        "binding_hash": binding.binding_hash,
+                        "tenant_id": binding.tenant_id,
+                        "mission_id": binding.mission_id,
+                        "task_id": binding.task_id,
+                        "attempt_id": binding.attempt_id,
+                        "claim_hash": sha256_hex(proposal.to_json()),
+                        "mission_contract_revision": binding.mission_contract_revision,
+                    },
+                ).to_json()
+            )
+        if not linked:
+            reasons.append("no_content_binding_or_candidate")
+        verdicts.append(
+            {
+                "criterion_id": criterion["id"],
+                "kind": kind,
+                "scope": old["scope"],
+                "verdict": FAIL
+                if reasons
+                else "INCONCLUSIVE"
+                if "INCONCLUSIVE" in pair_verdicts
+                else PASS,
+                "claim_ids": linked,
+                "reasons": sorted(set(reasons)),
+            }
+        )
+        hard.extend(reasons)
+    eligible = [row for row in rows if row["verdict"] == "INCONCLUSIVE"]
+    required = sorted({(row["criterion_id"], row["claim_id"]) for row in eligible})
+    provided = {
+        (
+            item.criterion_id,
+            ids.claim_id(binding.result_id, int(item.claim_id.split(":")[1])),
+        ): item.missing
+        for item in binding.envelope.limitations
+    }
+    missing = [pair for pair in required if pair not in provided]
+    if missing:
+        hard.append("missing_limitations")
+    detail.update(
+        criterion_verdicts=verdicts,
+        criterion_assessments=rows,
+        limitations_check={
+            "required": [{"criterion_id": cid, "claim_id": claim} for cid, claim in required],
+            "provided": [
+                {"criterion_id": cid, "claim_id": claim, "missing": value}
+                for (cid, claim), value in sorted(provided.items())
+            ],
+            "missing": [{"criterion_id": cid, "claim_id": claim} for cid, claim in missing],
+        },
+        hard_failures=sorted(set(hard)),
+    )
+    return detail, eligible, sorted(set(hard))
+
+
+def _evaluation_v2(
+    binding: AssessmentBindingV1,
+    resolutions: Sequence[Mapping[str, Any]],
+    structural: LayerResult,
+    external: Mapping[str, Any],
+) -> LayerResult:
+    detail, eligible, hard = _v2_parts(binding, resolutions, structural)
+    dispatched = eligible if not hard else []
+    expected = adapters.coverage_record(
+        binding=binding, eligible=dispatched, verdict=external.get("verdict")
+    )
+    if dict(external) != expected:
+        raise ContractError("external phase receipt or frozen input differs")
+    status = structural.status if structural.status != PASS else FAIL if hard else PASS
+    if not hard and eligible and external["verdict"] in {FAIL, "NEEDS_HUMAN"}:
+        status = external["verdict"]
+    detail["external_check"] = expected
+    return LayerResult("rule_check", status, "document citation and limitations checked", detail)
+
+
 def citation_integrity(
     *,
     binding: AssessmentBindingV1,
@@ -495,15 +836,38 @@ def citation_integrity(
                     "resolution": result.to_json(),
                 }
             )
-    return _evaluation(binding, resolutions, structural_result)
+    if not binding.check_spec_ids:
+        return _evaluation(binding, resolutions, structural_result)
+    detail: dict[str, Any] = {}
+    try:
+        detail, eligible, hard = _v2_parts(binding, resolutions, structural_result)
+        external = (
+            adapters.source_coverage(binding=binding, eligible=eligible, resolver=resolver)
+            if eligible and not hard
+            else adapters.coverage_record(binding=binding, eligible=(), verdict=None)
+        )
+        return _evaluation_v2(binding, resolutions, structural_result, external)
+    except Exception as error:
+        # A required external stage cannot be replaced by an uncertainty or a PASS.
+        return LayerResult(
+            "rule_check",
+            ERROR,
+            "document check unavailable",
+            {
+                **detail,
+                "assessment_error": f"{type(error).__name__}: {error}",
+                "external_check": {"phase": "external", "execution": ERROR, "verdict": None},
+            },
+        )
 
 
 def validated_assessments(
     layer: LayerResult | Mapping[str, Any], *, binding: AssessmentBindingV1
 ) -> tuple[CriterionAssessmentV1, ...]:
     recorded = _layer(layer)
-    if recorded.layer != "rule_check" or recorded.status != PASS:
-        raise ContractError("only a recorded rule_check PASS can supply assessments")
+    allowed = {PASS, "NEEDS_HUMAN"} if binding.check_spec_ids else {PASS}
+    if recorded.layer != "rule_check" or recorded.status not in allowed:
+        raise ContractError("only a recorded rule_check PASS/NEEDS_HUMAN can supply assessments")
     detail = recorded.detail
     if (
         detail.get("assessment_schema") != 1
@@ -518,7 +882,13 @@ def validated_assessments(
     structural = _layer(detail.get("structural_result"))
     if structural.status != PASS:
         raise ContractError("assessment cannot override a structural failure")
-    expected = _evaluation(binding, resolutions, structural)
+    if binding.check_spec_ids:
+        external = detail.get("external_check")
+        if not isinstance(external, Mapping):
+            raise ContractError("missing external phase record")
+        expected = _evaluation_v2(binding, resolutions, structural, external)
+    else:
+        expected = _evaluation(binding, resolutions, structural)
     # The recorder adds these two transport fields after the producer returns.
     compared = {
         key: value
@@ -530,9 +900,43 @@ def validated_assessments(
         for key, value in expected.detail.items()
         if key not in {"summary", "verifier_version"}
     }
-    if expected.status != PASS or compared != expected_detail:
+    if expected.status != recorded.status or compared != expected_detail:
         raise ContractError("assessment receipt, scope, references or criterion catalogue mismatch")
     return parsed
+
+
+def inconclusive_retryable(
+    layer: LayerResult | Mapping[str, Any], *, binding: AssessmentBindingV1
+) -> bool:
+    """Only a genuine pure missing-limitations failure; contextual conflicts run separately."""
+    if not binding.check_spec_ids:
+        return False
+    try:
+        recorded = _layer(layer)
+        detail = recorded.detail
+        if recorded.layer != "rule_check" or recorded.status != FAIL:
+            return False
+        if detail.get("assessment_binding") != binding.to_json():
+            return False
+        structural = _layer(detail.get("structural_result"))
+        if structural.status != PASS or structural.detail.get("problems"):
+            return False
+        resolutions, external = detail.get("evidence_resolutions"), detail.get("external_check")
+        if not isinstance(resolutions, (list, tuple)) or not isinstance(external, Mapping):
+            return False
+        expected = _evaluation_v2(binding, resolutions, structural, external)
+        compared = {k: v for k, v in detail.items() if k not in {"summary", "verifier_version"}}
+        expected_detail = {
+            k: v for k, v in expected.detail.items() if k not in {"summary", "verifier_version"}
+        }
+        return (
+            expected.status == FAIL
+            and compared == expected_detail
+            and expected.detail["hard_failures"] == ["missing_limitations"]
+            and bool(expected.detail["limitations_check"]["required"])
+        )
+    except ContractError:
+        return False
 
 
 def doc_rule_reusable(
@@ -548,9 +952,13 @@ def doc_rule_reusable(
 __all__ = (
     "AssessmentBindingV1",
     "assessment_binding_for",
+    "accepted_assessments_for",
     "citation_integrity",
     "criterion_id",
     "doc_rule_reusable",
+    "inconclusive_retryable",
+    "mission_contract_revision",
+    "mission_criterion_catalog",
     "normalise_literal",
     "task_contract_revision",
     "validated_assessments",

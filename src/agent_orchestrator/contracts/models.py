@@ -13,6 +13,7 @@ compatibility adapter in the collector (ORCH-BUILD §13).
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any
@@ -27,7 +28,7 @@ from .state_machines import (
     TaskStatus,
 )
 
-CONTRACT_SCHEMA_VERSION = 2
+CONTRACT_SCHEMA_VERSION = 3
 MAX_TEXT = 20_000
 # Persisted source attributions wrap a bounded quote and path with a system locator.
 # Model-submitted ClaimProposal and SourceCitation retain MAX_TEXT independently.
@@ -603,6 +604,43 @@ def _citation_items(value: object) -> tuple[Any, ...]:
     return tuple(value)
 
 
+def _criterion_ids(value: object, name: str) -> tuple[str, ...]:
+    values = _texts(value, name)
+    if any(re.fullmatch(r"criterion-[0-9a-f]{64}", item) is None for item in values):
+        raise ContractError(f"{name} must contain complete criterion IDs")
+    return values
+
+
+@dataclass(frozen=True, slots=True)
+class LimitationV1:
+    """Model-declared missing evidence; claim:N is an envelope-local reference."""
+
+    criterion_id: str
+    claim_id: str
+    missing: str
+
+    def __post_init__(self) -> None:
+        _criterion_ids((self.criterion_id,), "limitation.criterion_id")
+        _text(self.claim_id, "limitation.claim_id", limit=128)
+        if re.fullmatch(r"claim:[1-9][0-9]*", self.claim_id) is None:
+            raise ContractError("limitation.claim_id must be an envelope-local claim:N")
+        _text(self.missing, "limitation.missing")
+
+    def to_json(self) -> dict[str, str]:
+        return {
+            "criterion_id": self.criterion_id,
+            "claim_id": self.claim_id,
+            "missing": self.missing,
+        }
+
+    @classmethod
+    def from_json(cls, value: object) -> LimitationV1:
+        data = _object(value, "limitation")
+        if set(data) != {"criterion_id", "claim_id", "missing"}:
+            raise ContractError("limitation requires exactly criterion_id, claim_id and missing")
+        return cls(**data)
+
+
 @dataclass(frozen=True, slots=True)
 class ClaimProposal:
     """A claim as it appears inside a Result Envelope (§13 ``claims[]``).
@@ -624,6 +662,8 @@ class ClaimProposal:
     supersedes: str | None = None
     contradicts: tuple[str, ...] = ()
     citations: tuple[SourceCitation, ...] = ()
+    criterion_ids: tuple[str, ...] = ()
+    mission_criterion_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "content", _text(self.content, "claim.content"))
@@ -651,6 +691,8 @@ class ClaimProposal:
         if any(not isinstance(item, SourceCitation) for item in citations):
             raise ContractError("claim.citations must contain SourceCitation objects")
         object.__setattr__(self, "citations", citations)
+        for name in ("criterion_ids", "mission_criterion_ids"):
+            object.__setattr__(self, name, _criterion_ids(getattr(self, name), f"claim.{name}"))
 
     def to_json(self) -> dict[str, Any]:
         result = {
@@ -667,6 +709,9 @@ class ClaimProposal:
         # Preserve canonical v1 envelope bytes and hashes when no citations exist.
         if self.citations:
             result["citations"] = [item.to_json() for item in self.citations]
+        for name in ("criterion_ids", "mission_criterion_ids"):
+            if getattr(self, name):
+                result[name] = list(getattr(self, name))
         return result
 
     @classmethod
@@ -683,6 +728,8 @@ class ClaimProposal:
             "supersedes",
             "contradicts",
             "citations",
+            "criterion_ids",
+            "mission_criterion_ids",
         }
         if unknown:
             raise ContractError(f"claim has unknown fields: {sorted(unknown)}")
@@ -700,6 +747,8 @@ class ClaimProposal:
                 SourceCitation.from_json(item)
                 for item in _citation_items(data.get("citations", ()))
             ),
+            criterion_ids=data.get("criterion_ids", ()),
+            mission_criterion_ids=data.get("mission_criterion_ids", ()),
         )
 
 
@@ -720,6 +769,7 @@ class ResultEnvelope:
     risks: tuple[str, ...]
     cost: Mapping[str, Any]
     mission_id: str = ""
+    limitations: tuple[LimitationV1, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("id", "task_id", "attempt_id"):
@@ -731,6 +781,15 @@ class ResultEnvelope:
             if not isinstance(claim, ClaimProposal):
                 raise ContractError("result.claims must contain ClaimProposal objects")
         object.__setattr__(self, "claims", claims)
+        limitations = _citation_items(self.limitations)
+        if any(not isinstance(item, LimitationV1) for item in limitations):
+            raise ContractError("result.limitations must contain LimitationV1 objects")
+        pairs = [(item.criterion_id, item.claim_id) for item in limitations]
+        if len(set(pairs)) != len(pairs):
+            raise ContractError("result.limitations has duplicate criterion/claim pairs")
+        if any(int(item.claim_id.removeprefix("claim:")) > len(claims) for item in limitations):
+            raise ContractError("result limitation refers to a claim outside this envelope")
+        object.__setattr__(self, "limitations", limitations)
         for name in ("evidence", "artifacts", "used_knowledge", "risks"):
             object.__setattr__(self, name, _texts(getattr(self, name), f"result.{name}"))
         object.__setattr__(
@@ -744,7 +803,7 @@ class ResultEnvelope:
         )
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        result = {
             "id": self.id,
             "mission_id": self.mission_id,
             "task_id": self.task_id,
@@ -759,6 +818,9 @@ class ResultEnvelope:
             "risks": list(self.risks),
             "cost": dict(self.cost),
         }
+        if self.limitations:
+            result["limitations"] = [item.to_json() for item in self.limitations]
+        return result
 
     @property
     def result_hash(self) -> str:
@@ -793,6 +855,7 @@ class ResultEnvelope:
             "used_knowledge",
             "risks",
             "cost",
+            "limitations",
         }
         unknown = set(data) - allowed
         if strict and unknown:
@@ -817,6 +880,10 @@ class ResultEnvelope:
             used_knowledge=tuple(data.get("used_knowledge", ())),
             risks=tuple(data.get("risks", ())),
             cost=data.get("cost", {}),
+            limitations=tuple(
+                LimitationV1.from_json(item)
+                for item in _citation_items(data.get("limitations", ()))
+            ),
         )
 
 
@@ -1066,6 +1133,7 @@ __all__ = (
     "ClaimProposal",
     "ContractError",
     "Event",
+    "LimitationV1",
     "Mission",
     "ResultEnvelope",
     "SourceCitation",

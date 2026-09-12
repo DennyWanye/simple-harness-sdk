@@ -2303,7 +2303,7 @@ class Orchestrator:
                 # registry. Persist a real failure; never fabricate a reusable PASS.
                 failure = LayerResult(
                     "rule_check",
-                    "FAIL",
+                    "ERROR" if domain.version == "3" else "FAIL",
                     "document assessment binding invalid",
                     {"reason": "assessment_binding_invalid", "error": str(error)},
                 )
@@ -2336,6 +2336,39 @@ class Orchestrator:
             if "critic" in self._config.ablations
             else frozenset(),
         )
+        if (
+            domain.id == "doc-research-v1"
+            and domain.version == "3"
+            and assessment_binding is not None
+        ):
+            from ..verification.assessments import validated_assessments
+            from ..verification.conflicts import document_uncertainty_conflicts
+
+            rule = next((r for r in verdict.layers if r.layer == "rule_check"), None)
+            if rule is not None and rule.status in {"PASS", NEEDS_HUMAN}:
+                assessments = validated_assessments(rule, binding=assessment_binding)
+                conflicts = document_uncertainty_conflicts(
+                    self.store,
+                    mission_id=mission.id,
+                    envelope=stored.envelope,
+                    assessments=assessments,
+                )
+                if conflicts:
+                    failure = LayerResult(
+                        "rule_check",
+                        "FAIL",
+                        "uncertainty conflicts with another claim",
+                        {
+                            **dict(rule.detail),
+                            "reason": "uncertainty_conflict",
+                            "uncertainty_conflicts": conflicts,
+                        },
+                    )
+                    await recorder(failure)
+                    self.commit.fail_result(
+                        result_id, failures=[failure.to_json()], owner=self._owner
+                    )
+                    return True
         if verdict.critic is not None:
             self._critic_verdicts[result_id] = verdict.critic
         if verdict.suspended:  # D7-8': the sixth layer waits for a person
@@ -2374,7 +2407,8 @@ class Orchestrator:
             # dropped; the library's state is whatever the other Commit made it
             self._note(f"result {result_id}: verdict dropped ({error})")
             return True
-        if verdict.passed:
+        accepted = verdict.passed and completed.status is TaskStatus.COMPLETED
+        if accepted:
             self._fault("after_task_completed", "attempt")
             self._note(f"result {result_id} PASS → task {completed.id} COMPLETED")
             for sibling in self.store.list_attempts(task.id):
@@ -2413,6 +2447,18 @@ class Orchestrator:
                 await self._release_mission(mission.id)
                 self._note(f"task {task.id} stopped: verifier(s) {undeployed} not deployed")
                 return True
+            if domain.id == "doc-research-v1" and domain.version == "3":
+                failed_attempt = self.store.get_attempt(attempt.id)
+                if (
+                    failed_attempt is not None
+                    and (failed_attempt.failure or {}).get("reason") == "inconclusive"
+                ):
+                    if self.commit.stop_inconclusive_task(task.id):
+                        await self._release_mission(mission.id)
+                        self._note(f"task {task.id} stopped: insufficient_evidence (retry limit)")
+                    # Pure missing-limitations rework follows its own frozen allowance,
+                    # not the generic Manager stall route (which could replace the Task).
+                    return True
             failures = self.commit.no_progress_count(task.id)
             after = self.store.get_task(task.id)
             # a Task that can still retry and keeps failing is a stall (§19.2); one that
@@ -3705,6 +3751,13 @@ class Orchestrator:
                 max_running_attempts=self._config.max_running_attempts,
             )
         except CommitRejected as error:
+            from .commit_service import InconclusiveRetryExhausted
+
+            if isinstance(error, InconclusiveRetryExhausted):
+                if self.commit.stop_inconclusive_task(task.id):
+                    await self._release_mission(mission.id)
+                    self._note(f"task {task.id} stopped: insufficient_evidence (retry limit)")
+                    return True
             self._note(f"task {task.id}: no new attempt ({error})")
             return False
         except BudgetExhausted as error:
@@ -3754,6 +3807,8 @@ class Orchestrator:
     async def _judge(self, mission: Mission, tasks: Sequence[Task]) -> bool:
         key = judgment_key(tasks)
         cached = self.commit.criteria_judgment(mission.id, key)  # booked only for an arbitration
+        if cached is not None and await self._stop_document_insufficient(mission):
+            return True
         evaluated = cached if cached is not None else await self._evaluate_criteria(mission, tasks)
         if evaluated is None:
             return True
@@ -3767,6 +3822,26 @@ class Orchestrator:
         self._note(f"mission {mission.id} judged: {judged.status} ({judged.stop_reason})")
         return True
 
+    async def _stop_document_insufficient(self, mission: Mission) -> bool:
+        domain = self.commit.domain_for(mission.id)
+        if domain.id != "doc-research-v1" or domain.version != "3":
+            return False
+        try:
+            stopped = self.commit.stop_insufficient_mission(mission.id)
+        except ContractError as error:
+            self.commit.fail_mission(
+                mission.id,
+                stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
+                detail={"assessment_error": str(error)},
+            )
+            await self._release_mission(mission.id)
+            return True
+        if stopped is not None:
+            await self._release_mission(mission.id)
+            self._note(f"mission {mission.id} stopped: insufficient_evidence")
+            return True
+        return False
+
     async def _evaluate_criteria(
         self, mission: Mission, tasks: Sequence[Task]
     ) -> tuple[list[dict[str, Any]], str] | None:
@@ -3778,6 +3853,14 @@ class Orchestrator:
         critic_review when the Mission has exactly one Task)."""
 
         self._reimport_unsettled(mission)
+        domain = self.commit.domain_for(mission.id)
+        document_coverage = None
+        if domain.id == "doc-research-v1" and domain.version == "3":
+            if await self._stop_document_insufficient(mission):
+                return None
+            from ..verification.mission_coverage import mission_coverage
+
+            document_coverage = mission_coverage(self.store, mission, domain)
         all_tasks = {t.id: t for t in tasks}
         try:
             merged = merge_accepted(
@@ -3850,8 +3933,13 @@ class Orchestrator:
             except Exception as error:  # noqa: BLE001
                 test_runs[criterion] = {"passed": False, "error": str(error), "stdout": ""}
         judge_ablated = "critic" in self._config.ablations  # step 8 (D8-7'): no judge Critic
-        needs_critic = not judge_ablated and any(
-            not c.startswith(("pytest:", "file:", ACTION_PREFIX)) for c in mission.success_criteria
+        needs_critic = (
+            not judge_ablated
+            and any(
+                not c.startswith(("pytest:", "file:", ACTION_PREFIX))
+                and (document_coverage is None or c.startswith("arbitration:"))
+                for c in mission.success_criteria
+            )
         )
         critic: CriticVerdict | None = None
         reused_critic = False
@@ -3874,7 +3962,7 @@ class Orchestrator:
                 except (ContractError, BudgetExhausted) as error:
                     self._note(f"mission {mission.id}: independent judge unavailable ({error})")
         judgments: list[dict[str, Any]] = []
-        for criterion in mission.success_criteria:
+        for ordinal, criterion in enumerate(mission.success_criteria):
             if criterion.startswith("pytest:"):
                 outcome = test_runs.get(criterion, {})
                 judgments.append(
@@ -3901,6 +3989,25 @@ class Orchestrator:
                 )
             elif criterion.startswith(ACTION_PREFIX):
                 continue  # D7-7': judged from the action ledger by the caller
+            elif (
+                document_coverage is not None
+                and document_coverage["criteria"][ordinal]["verdict"] != "STRUCTURAL"
+            ):
+                assessed = document_coverage["criteria"][ordinal]
+                judgments.append(
+                    {
+                        "criterion": criterion,
+                        "criterion_id": assessed["criterion_id"],
+                        "met": assessed["verdict"] in {"PASS", "INCONCLUSIVE"},
+                        "verdict": assessed["verdict"],
+                        "judge": "document_coverage",
+                        "reason": "; ".join(assessed["reasons"]),
+                        "limitations": list(assessed["limitations"]),
+                        "task_assessment_receipt_ids": list(
+                            assessed["task_assessment_receipt_ids"]
+                        ),
+                    }
+                )
             else:
                 found: Mapping[str, Any] | None = None
                 if critic is not None:
@@ -3935,6 +4042,8 @@ class Orchestrator:
         leaves the Mission ACTIVE without progress, so ``run()`` goes idle."""
 
         progressed = False
+        if await self._stop_document_insufficient(mission):
+            return True
         key = judgment_key(tasks)
         cached = self.commit.criteria_judgment(mission.id, key)
         if cached is None:
@@ -4037,7 +4146,7 @@ class Orchestrator:
     ) -> None:
         by_criterion = {str(item.get("criterion")): dict(item) for item in plain}
         judgments: list[dict[str, Any]] = []
-        for criterion in mission.success_criteria:
+        for ordinal, criterion in enumerate(mission.success_criteria):
             if not criterion.startswith(ACTION_PREFIX):
                 judgments.append(by_criterion[criterion])
                 continue

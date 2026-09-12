@@ -78,9 +78,23 @@ from ..scheduling.backpressure import (
     evaluate,
 )
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
-from ..verification.assessments import assessment_binding_for, validated_assessments
-from ..verification.conflicts import Contradiction, find_contradiction, supported_contradiction
+from ..verification.assessments import (
+    AssessmentBindingV1,
+    assessment_binding_for,
+    inconclusive_retryable,
+    mission_contract_revision,
+    mission_criterion_catalog,
+    validated_assessments,
+)
+from ..verification.conflicts import (
+    Contradiction,
+    document_uncertainty_conflicts,
+    find_contradiction,
+    supported_contradiction,
+)
 from ..verification.deterministic_checks import LayerResult
+from ..verification.human_review import review_request_id
+from ..verification.mission_coverage import mission_coverage
 from .action_commits import ActionCommitsMixin
 from .human_commits import HumanCommitsMixin
 from .policy_commits import PolicyCommitsMixin
@@ -99,6 +113,18 @@ class CommitRejected(StoreError):
 
 class MissionConflict(CommitRejected):
     """Same (tenant, idempotency_key) with a different specification."""
+
+
+class InconclusiveRetryExhausted(CommitRejected):
+    """The frozen uncertainty rework allowance is spent; no budget was reserved."""
+
+    def __init__(self, task_id: str, failure_count: int, retry_limit: int) -> None:
+        self.task_id = task_id
+        self.failure_count = failure_count
+        self.retry_limit = retry_limit
+        super().__init__(
+            f"task {task_id} has {failure_count} inconclusive failures (limit={retry_limit})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1633,6 +1659,8 @@ class CommitService(
                 **dict(claim.confidence_metadata),
                 "grade": str(grade.status).lower()
                 if grade.status is not ClaimStatus.UNDER_REVIEW
+                else str(grade.basis.get("grade", "unsupported"))
+                if document
                 else "unsupported",
                 "basis": dict(grade.basis),
                 "evidence_trust": list(grade.evidence_trust),
@@ -2354,6 +2382,55 @@ class CommitService(
         return updated
 
     # ------------------------------------------------------------- attempts
+    def inconclusive_failure_count(self, task_id: str) -> int:
+        """Count durable failures, never invocations or reconstructed retry requests."""
+
+        self._require_task(task_id)
+        return sum(
+            attempt.status is AttemptStatus.RETRY_WAIT
+            and (attempt.failure or {}).get("reason") == "inconclusive"
+            for attempt in self._store.list_attempts(task_id)
+        )
+
+    @staticmethod
+    def _inconclusive_retry_limit(domain: DomainProfileV1) -> int:
+        limit = domain.completion_rules.get("inconclusive_retry_limit")
+        if type(limit) is not int or limit < 0:
+            raise CommitRejected("invalid frozen inconclusive retry limit")
+        return limit
+
+    def stop_inconclusive_task(self, task_id: str) -> bool:
+        """Stop spent rework only after already dispatched candidates have converged."""
+
+        with self._store.transaction():
+            task = self._require_task(task_id)
+            mission = self._require_mission(task.mission_id)
+            domain = self.domain_for(task.mission_id)
+            if (
+                domain.id != DOC_DOMAIN
+                or domain.version != "3"
+                or mission.status is not MissionStatus.ACTIVE
+                or task.status in TERMINAL_TASK
+            ):
+                return False
+            count = self.inconclusive_failure_count(task_id)
+            limit = self._inconclusive_retry_limit(domain)
+            if count <= limit or any(
+                attempt.status in OPEN_ATTEMPT_STATES
+                for attempt in self._store.list_attempts(task_id)
+            ):
+                return False
+            self.stop_task(
+                task_id,
+                stop_reason=MissionStopReason.INSUFFICIENT_EVIDENCE,
+                detail={
+                    "reason": "inconclusive_retry_exhausted",
+                    "failure_count": count,
+                    "retry_limit": limit,
+                },
+            )
+            return True
+
     def create_attempt(
         self,
         task_id: str,
@@ -2387,6 +2464,24 @@ class CommitService(
             task = self._require_task(task_id)
             if task.status not in {TaskStatus.READY, TaskStatus.ACTIVE, TaskStatus.VERIFYING}:
                 raise CommitRejected(f"task {task_id} is {task.status}; no new Attempt")
+            domain = self.domain_for(task.mission_id)
+            if domain.id == DOC_DOMAIN and domain.version == "3":
+                mission = self._require_mission(task.mission_id)
+                frozen = {
+                    "check_spec_ids": sorted(domain.adapters.values()),
+                    "mission_contract_revision": mission_contract_revision(mission),
+                    "mission_criteria": [dict(item) for item in mission_criterion_catalog(mission)],
+                }
+                for name, value in frozen.items():
+                    if name in intent_config and sha256_hex(intent_config[name]) != sha256_hex(
+                        value
+                    ):
+                        raise CommitRejected(f"dispatch {name} conflicts with the frozen Mission")
+                intent_config = {**dict(intent_config), **frozen}
+                count = self.inconclusive_failure_count(task_id)
+                limit = self._inconclusive_retry_limit(domain)
+                if count > limit:
+                    raise InconclusiveRetryExhausted(task_id, count, limit)
             existing = self._store.list_attempts(task_id)
             open_attempts = [a for a in existing if a.status in OPEN_ATTEMPT_STATES]
             if len(open_attempts) >= max(1, candidates_per_task):
@@ -3195,6 +3290,23 @@ class CommitService(
                 },
             )
 
+    def _assessment_binding(
+        self, stored: StoredResult, task: Task, attempt: Attempt
+    ) -> AssessmentBindingV1:
+        artifacts = []
+        for artifact_id in stored.artifacts:
+            artifact = self._store.get_artifact(artifact_id)
+            if artifact is None:
+                raise CommitRejected("assessment artifact is unavailable")
+            artifacts.append(artifact)
+        return assessment_binding_for(
+            self._store,
+            task=task,
+            attempt=attempt,
+            envelope=stored.envelope,
+            artifacts=artifacts,
+        )
+
     def _validated_criterion_assessments(
         self, stored: StoredResult, task: Task, attempt: Attempt
     ) -> tuple[CriterionAssessmentV1, ...]:
@@ -3210,20 +3322,8 @@ class CommitService(
         )
         if row is None:
             raise CommitRejected("doc assessment requires a recorded rule_check layer")
-        artifacts = []
-        for artifact_id in stored.artifacts:
-            artifact = self._store.get_artifact(artifact_id)
-            if artifact is None:
-                raise CommitRejected("assessment artifact is unavailable")
-            artifacts.append(artifact)
         try:
-            binding = assessment_binding_for(
-                self._store,
-                task=task,
-                attempt=attempt,
-                envelope=stored.envelope,
-                artifacts=artifacts,
-            )
+            binding = self._assessment_binding(stored, task, attempt)
             return validated_assessments(
                 LayerResult(
                     str(row["layer"]),
@@ -3235,6 +3335,49 @@ class CommitService(
             )
         except ContractError as error:
             raise CommitRejected(f"doc assessment rejected: {error}") from error
+
+    def _require_document_human_pass(
+        self, stored: StoredResult, task: Task, rows: Sequence[Mapping[str, Any]]
+    ) -> None:
+        """A recorded NEEDS_HUMAN is not approval; require the actual same-result review."""
+
+        request_id = review_request_id(stored.envelope.id)
+        request = self._store.get_approval(request_id)
+        required = (
+            "human_review" in task.verification_policy
+            or any(row["status"] == "NEEDS_HUMAN" for row in rows)
+            or request is not None
+        )
+        if not required:
+            return
+        human = next((row for row in rows if row["layer"] == "human_review"), None)
+        expected = {
+            "mission_id": task.mission_id,
+            "task_id": task.id,
+            "result_id": stored.envelope.id,
+            "attempt_id": stored.envelope.attempt_id,
+            "artifacts": sorted(stored.artifacts),
+        }
+        if (
+            request is None
+            or request.get("kind") != "review"
+            or request.get("state") != "GRANTED"
+            or request.get("mission_id") != task.mission_id
+            or request.get("task_id") != task.id
+            or request.get("subject_key") != stored.envelope.id
+            or request.get("binding") != expected
+            or human is None
+            or human["status"] != "PASS"
+            or human["detail"].get("request_id") != request_id
+            or not request.get("decided_by")
+            or human["detail"].get("principal_id") != request.get("decided_by")
+            or not any(
+                decision.get("decision") == "grant"
+                and decision.get("principal_id") == request.get("decided_by")
+                for decision in self._store.list_decisions(request_id)
+            )
+        ):
+            raise CommitRejected("document acceptance requires the actual same-result human PASS")
 
     def accept_result(
         self,
@@ -3259,8 +3402,54 @@ class CommitService(
             task = self._require_task(stored.envelope.task_id)
             mission = self._require_mission(stored.envelope.mission_id)
             assessments: tuple[CriterionAssessmentV1, ...] = ()
-            if self.domain_for(mission.id).id == DOC_DOMAIN:
+            domain = self.domain_for(mission.id)
+            if domain.id == DOC_DOMAIN:
                 assessments = self._validated_criterion_assessments(stored, task, attempt)
+                if domain.version == "3":
+                    hard_failures = tuple(
+                        LayerResult(
+                            row["layer"],
+                            row["status"],
+                            str(row["detail"].get("summary", "")),
+                            row["detail"],
+                        ).to_json()
+                        for row in self._store.list_verifications(result_id)
+                        if row["status"] in {"FAIL", "ERROR"}
+                    )
+                    if hard_failures:
+                        return self.fail_result(result_id, failures=hard_failures, owner=owner)
+                if domain.version == "3":
+                    rows = self._store.list_verifications(result_id)
+                    self._require_document_human_pass(stored, task, rows)
+                    conflicts = document_uncertainty_conflicts(
+                        self._store,
+                        mission_id=mission.id,
+                        envelope=stored.envelope,
+                        assessments=assessments,
+                    )
+                    if conflicts:
+                        rule_detail = next(
+                            row["detail"] for row in rows if row["layer"] == "rule_check"
+                        )
+                        failure = LayerResult(
+                            "rule_check",
+                            "FAIL",
+                            "uncertainty conflicts with another claim",
+                            {
+                                **dict(rule_detail),
+                                "reason": "uncertainty_conflict",
+                                "conflicts": conflicts,
+                            },
+                        )
+                        self.record_verification_layer(
+                            result_id,
+                            layer=failure.layer,
+                            status=failure.status,
+                            detail=failure.detail,
+                        )
+                        return self.fail_result(
+                            result_id, failures=(failure.to_json(),), owner=owner
+                        )
                 # The caller's PASS list remains the legacy code API, never the doc
                 # assessment authority or an opportunity to invent audited layers.
                 verifier_results = tuple(
@@ -3399,6 +3588,65 @@ class CommitService(
             )
             return completed
 
+    def stop_insufficient_mission(self, mission_id: str) -> Mission | None:
+        """Recompute the original Mission catalogue before any judge or publication."""
+
+        with self._store.transaction():
+            mission = self._require_mission(mission_id)
+            domain = self.domain_for(mission_id)
+            if (
+                domain.id != DOC_DOMAIN
+                or domain.version != "3"
+                or mission.status is not MissionStatus.ACTIVE
+            ):
+                return None
+            tasks = [
+                task
+                for task in self._store.list_tasks(mission_id)
+                if task.status is not TaskStatus.CANCELLED
+                and not (task.paused and task.status in {TaskStatus.READY, TaskStatus.BLOCKED})
+            ]
+            if not tasks or any(task.status is not TaskStatus.COMPLETED for task in tasks):
+                return None
+            coverage = mission_coverage(self._store, mission, domain)
+            if not coverage["insufficient"]:
+                return None
+            return self._stop_insufficient_mission(mission, tasks, coverage)
+
+    def _stop_insufficient_mission(
+        self, mission: Mission, tasks: Sequence[Task], coverage: Mapping[str, Any]
+    ) -> Mission:
+        """Only called with authoritative coverage inside the current writer transaction."""
+
+        terminal = terminal_task(list(tasks))
+        report = {
+            **dict(mission.final_report or {}),
+            "result": "INSUFFICIENT",
+            "stop_reason": "insufficient_evidence",
+            "document_coverage": dict(coverage),
+            "accepted_result_id": terminal.accepted_result_id,
+            "accepted_artifacts": list(terminal.accepted_artifacts),
+            "terminal_task_id": terminal.id,
+            "tasks": self._task_reports(mission.id),
+            "attempts": sum(task.attempt_count for task in tasks),
+            "lineage": lineage(self._store, mission.id),
+        }
+        failed = next_mission(
+            mission,
+            MissionStatus.FAILED,
+            stop_reason=str(MissionStopReason.INSUFFICIENT_EVIDENCE),
+            final_report=report,
+        )
+        self._store.update_mission(failed, expected_version=mission.version)
+        self._cascade_stop(mission.id, skip_task=None)
+        self._emit(
+            "MissionFailed",
+            mission.id,
+            key=mission.id,
+            payload={"stop_reason": failed.stop_reason, "final_report": report},
+        )
+        return failed
+
     def judge_mission(
         self, mission_id: str, *, judgments: Sequence[Mapping[str, Any]], summary: str
     ) -> Mission:
@@ -3427,6 +3675,24 @@ class CommitService(
             ]
             if not tasks or any(task.status is not TaskStatus.COMPLETED for task in tasks):
                 raise CommitRejected("mission judgment requires every live Task to be COMPLETED")
+            domain = self.domain_for(mission_id)
+            document_coverage = None
+            if domain.id == DOC_DOMAIN and domain.version == "3":
+                document_coverage = mission_coverage(self._store, mission, domain)
+                if document_coverage["insufficient"]:
+                    return self._stop_insufficient_mission(mission, tasks, document_coverage)
+                if [item.get("criterion") for item in judgments] != list(mission.success_criteria):
+                    raise CommitRejected(
+                        "judgments must cover the Mission success criteria in order"
+                    )
+                for item, assessed in zip(judgments, document_coverage["criteria"], strict=True):
+                    if assessed["verdict"] == "STRUCTURAL":
+                        continue
+                    allowed = assessed["verdict"] in {"PASS", "INCONCLUSIVE"}
+                    if type(item.get("met")) is not bool or item["met"] != allowed:
+                        raise CommitRejected(
+                            "Mission content judgment disagrees with deterministic coverage"
+                        )
             for task in all_tasks:  # a paused READY route ends with the Mission as not needed
                 if task.paused and task.status is TaskStatus.READY:
                     self._store.update_task(
@@ -3447,6 +3713,11 @@ class CommitService(
             terminal = terminal_task(tasks)  # D4-7': synthesis, else the last non-conflict leaf
             report = {
                 **dict(mission.final_report or {}),
+                **(
+                    {"document_coverage": document_coverage}
+                    if document_coverage is not None
+                    else {}
+                ),
                 "accepted_result_id": terminal.accepted_result_id,
                 "accepted_artifacts": list(terminal.accepted_artifacts),
                 "terminal_task_id": terminal.id,
@@ -3531,6 +3802,72 @@ class CommitService(
                 for index, proposal in enumerate(stored.envelope.claims, 1)
             }
             recorded = tuple(self._store.list_verifications(result_id))
+            failure_reason = "verification_failed"
+            if document and domain.version == "3":
+                rule = next((row for row in recorded if row["layer"] == "rule_check"), None)
+                other_failure = any(
+                    row["layer"] != "rule_check" and row["status"] in {"FAIL", "ERROR"}
+                    for row in recorded
+                ) or any(item.get("layer") != "rule_check" for item in failures)
+                if rule is not None and rule["status"] == "FAIL" and not other_failure:
+                    try:
+                        binding = self._assessment_binding(stored, task, attempt)
+                        retryable = inconclusive_retryable(rule, binding=binding)
+                    except ContractError:
+                        retryable = False
+                    if retryable:
+                        # The retry helper validated the full failed evaluation. Recheck
+                        # live peers before classifying its sole missing-limitations failure.
+                        assessments = tuple(
+                            CriterionAssessmentV1.from_json(item)
+                            for item in rule["detail"]["criterion_assessments"]
+                        )
+                        conflicts = document_uncertainty_conflicts(
+                            self._store,
+                            mission_id=task.mission_id,
+                            envelope=stored.envelope,
+                            assessments=assessments,
+                        )
+                        if conflicts:
+                            failure = LayerResult(
+                                "rule_check",
+                                "FAIL",
+                                "uncertainty conflicts with another claim",
+                                {
+                                    **dict(rule["detail"]),
+                                    "reason": "uncertainty_conflict",
+                                    "conflicts": conflicts,
+                                },
+                            )
+                            self.record_verification_layer(
+                                result_id,
+                                layer=failure.layer,
+                                status=failure.status,
+                                detail=failure.detail,
+                            )
+                            failures = (failure.to_json(),)
+                            recorded = tuple(self._store.list_verifications(result_id))
+                        else:
+                            # Extra caller failures cannot be hidden behind the authentic
+                            # rule row, including commit-time stale inputs/action rejection.
+                            detail = {
+                                k: v
+                                for k, v in rule["detail"].items()
+                                if k not in {"summary", "verifier_version"}
+                            }
+                            if all(
+                                item.get("status") == "FAIL"
+                                and sha256_hex(
+                                    {
+                                        k: v
+                                        for k, v in item.get("detail", {}).items()
+                                        if k not in {"summary", "verifier_version"}
+                                    }
+                                )
+                                == sha256_hex(detail)
+                                for item in failures
+                            ):
+                                failure_reason = "inconclusive"
             self._store.set_result_verification(result_id, state="DONE", verdict="FAIL")
             for artifact_id in stored.artifacts:  # P3.1 fix F-ORCH-3: judged, and not accepted
                 self._store.update_artifact_verification(artifact_id, "REJECTED")
@@ -3586,7 +3923,7 @@ class CommitService(
                     attempt,
                     AttemptStatus.RETRY_WAIT,
                     failure={
-                        "reason": "verification_failed",
+                        "reason": failure_reason,
                         "failures": [dict(item) for item in failures],
                     },
                 ),
@@ -3653,6 +3990,10 @@ class CommitService(
                 "completed_parts": self._completed_parts(task_id),
                 "tasks": self._task_reports(mission.id),
             }
+            if stop_reason is MissionStopReason.INSUFFICIENT_EVIDENCE:
+                domain = self.domain_for(mission.id)
+                if domain.id == DOC_DOMAIN and domain.version == "3":
+                    report["result"] = "INSUFFICIENT"
             done = next_mission(
                 mission, MissionStatus.FAILED, stop_reason=str(stop_reason), final_report=report
             )
@@ -3750,6 +4091,7 @@ class CommitService(
 __all__ = (
     "CommitRejected",
     "CommitService",
+    "InconclusiveRetryExhausted",
     "MissionConflict",
     "MissionSpec",
     "Reservation",

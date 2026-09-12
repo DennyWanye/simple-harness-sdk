@@ -63,7 +63,7 @@ def legacy_envelope():
 def test_empty_citations_preserve_legacy_envelope_bytes_and_hash():
     expected = legacy_envelope()
     envelope = ResultEnvelope.from_json(expected)
-    assert CONTRACT_SCHEMA_VERSION == 2
+    assert CONTRACT_SCHEMA_VERSION == 3
     assert envelope.claims[0].citations == ()
     assert canonical_json(envelope.to_json()) == canonical_json(expected)
     assert envelope.result_hash == sha256_hex(expected)

@@ -39,6 +39,10 @@ from agent_orchestrator.verification.verifier_router import VerifierRouter
 
 
 class Repository:
+    def get_mission_domain(self, mission_id):
+        # This C fixture represents the legacy binding without D adapter specs.
+        return None
+
     def get_mission(self, mid):
         return self.mission if mid == self.mission.id else None
 

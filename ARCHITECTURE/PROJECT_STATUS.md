@@ -2,6 +2,8 @@
 
 ## Agent 编排 Phase3 当前状态
 
+D 候选已实现证据不足出口、有限接受、人工恢复与 Mission 固定分母判定；P33 定向542 passed /8.81秒，完整编排回归待 clean HEAD。DOC_PROFILE v3、契约 schema3（新事件默认同变）；旧历史不迁改。来源失效/冲突深化与 Host 交付仍 E–G，详见 P33 journal §2.4。
+
 P3.1/P3.2 已交付；P3.3 切片 A、B、C 已完成 SDK 源码验证；C 干净源码 `963b090` 编排全量 **979 passed / 8 skipped / 0 failed**（475.47 秒）；独立审查闭环；D–G、P3.4/P3.5 未完成。
 切片 A 源码 `1eaa91f` 的编排全量 **651 passed / 8 skipped / 0 failed**；8 个真实 Provider 用例未启用。
 切片 B 干净源码 `fb58bf1`：编排全量 **867 passed / 8 skipped / 0 failed**（488.39 s），定向 300 passed；独立审查无剩余 P1/P2。8 个真实 Provider 用例未启用。

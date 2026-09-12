@@ -127,6 +127,7 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
                     legacy["version"] = "1"
                     legacy.pop("role_templates")
                     legacy.pop("context_wording")
+                    legacy.pop("adapters")
                     return bind(
                         mission_id, domain_id=domain_id, domain_version="1", snapshot=legacy
                     )

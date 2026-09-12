@@ -2,6 +2,8 @@
 
 最后更新：2026-09-12。
 
+D 候选已实现证据不足出口、有限接受、人工恢复与 Mission 固定分母判定；P33 定向542 passed /8.81秒，完整编排回归待 clean HEAD。DOC_PROFILE v3、契约 schema3（新事件默认同变）；旧历史不迁改。来源失效/冲突深化与 Host 交付仍 E–G，详见 P33 journal §2.4。
+
 当前发布基线为 SDK 0.10.0（P3.2）；P3.3 切片 A、B 已完成源码验证，B 干净提交 `fb58bf1` 编排全量 867 passed / 8 skipped / 0 failed，完整文档证据闭环仍在实施。Host `04350956` 仍钉 0.10.0，本次尚未换 wheel 或进行新的原生/真实 Provider 验收。
 
 ## 当前链路
@@ -15,7 +17,7 @@
 
 ## 状态与边界
 
-编排 schema 为 v10（新增 criterion_assessments；v9 为 sources）；契约 schema 为 2（SourceCitation）。空 citations 不写入旧信封，旧 code 契约保持兼容；携带新字段的信封会被旧严格 SDK 拒绝，Host 尚未切换本轮源码。
+编排 schema 为 v10（新增 criterion_assessments；v9 为 sources）；契约 schema 为 3（在 C 的 SourceCitation v2 后新增 candidate/limitations）。空 citations 不写入旧信封，旧 code 契约保持兼容；携带新字段的信封会被旧严格 SDK 拒绝，Host 尚未切换本轮源码。
 
 - 来源通过 Host/人 facade 登记到 CAS；权威原文在 CAS，SQLite/事件记录版本与元数据。supersede/revoke 复用既有审批/decision 事务，绑定旧 head revision 和新版本，重放幂等、ABA 和坏 CAS 拒绝；失效审批仍可拒绝，但绑定不可伪造。
 - Worker 和 Planner 意图冻结 source_versions/source_roots；任务 Critic 复用 Attempt 的冻结值。重开库不以当前 registry 重建旧意图；新 repair 去除已撤销来源、保留普通草稿。来源副本仅在新树构建时物化，ACTIVE 树的篡改证据保留到收集/验证。

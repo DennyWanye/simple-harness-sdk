@@ -77,7 +77,7 @@ def _seal(package: dict[str, Any]) -> TaskPackage:
     return TaskPackage(text=_render(package), context_version=version, package=package)
 
 
-def _domain_section(package: dict[str, Any], domain: DomainProfileV1) -> None:
+def _domain_section(package: dict[str, Any], domain: DomainProfileV1, mission: Mission) -> None:
     if domain.id == CODE_PROFILE.id:
         return  # Preserve the existing code-domain request and its hash verbatim.
     package["domain"] = {
@@ -118,6 +118,29 @@ def _domain_section(package: dict[str, Any], domain: DomainProfileV1) -> None:
             {"criterion_id": criterion_id(revision, index, text), "ordinal": index, "text": text}
             for index, text in enumerate(contract["success_criteria"], 1)
         ]
+    if domain.version == "3":
+        from ..verification.assessments import mission_contract_revision, mission_criterion_catalog
+
+        document.update(
+            version="doc-assessment-v2",
+            mission_contract_revision=mission_contract_revision(mission),
+            mission_criteria=[dict(item) for item in mission_criterion_catalog(mission)],
+            check_spec_ids=sorted(domain.adapters.values()),
+            candidate_fields=["criterion_ids", "mission_criterion_ids"],
+            limitations_fields=["criterion_id", "claim_id", "missing"],
+            criterion_rule=(
+                "cite:<path> 核验对应来源，自由准则仍只用原始 content 字面相等绑定。"
+                "criterion_ids 仅声明本 Task 的 candidate，mission_criterion_ids 只关联原始 Mission。"
+                "candidate 不能代替内容证据；全部引用有效但无内容绑定时由系统判断证据不足。"
+                "任务需设实质内容准则；仅 cite PASS 不能证明 Mission 的开放结论。"
+            ),
+            limitation_rule=(
+                "每项系统可判断的 Task 证据不足都须用 limitations 精确说明缺什么："
+                "criterion_id 使用本 Task 目录；claim_id 使用 claim:1、claim:2 等一基序号；"
+                "missing 必须非空。Mission 候选仅可承接同一 claim 的有效 Task 不确定性。"
+                "不得自报 verdict/评估 receipt，不可用空说明或无引用代替证据。"
+            ),
+        )
     package["doc_assessment"] = document
     if "visibility" in package:
         package["visibility"] += (
@@ -286,7 +309,7 @@ def build_worker_package(
             "synthesizer: 组合各分支 VERIFIED 成果，不是选最高分；只把 VERIFIED 当事实；used_knowledge 必须列出引用",
         )
     package["package_version"] = PACKAGE_VERSION
-    _domain_section(package, domain)
+    _domain_section(package, domain, mission)
     _source_section(package, domain, source_versions)
     assert_no_secrets(package)
     return _seal(package)
@@ -337,7 +360,7 @@ def build_planner_package(
         "output_contract": "<task_graph_proposal>{json}</task_graph_proposal>",
         "package_version": PACKAGE_VERSION,
     }
-    _domain_section(package, domain)
+    _domain_section(package, domain, mission)
     _source_section(package, domain, source_versions)
     assert_no_secrets(package)  # step 6 (review P2-10): the Planner sees no credential either
     return _seal(package)
@@ -391,7 +414,7 @@ def build_critic_package(
         package.update(section)
     if task is not None and task.kind == "conflict":
         package["dispute"] = dict(task.context)
-    _domain_section(package, domain)
+    _domain_section(package, domain, mission)
     _source_section(package, domain, source_versions)
     assert_no_secrets(package)
     return _seal(package)
@@ -451,7 +474,7 @@ def build_manager_package(
         "output_contract": "<graph_change_proposal>{json}</graph_change_proposal>",
         "package_version": PACKAGE_VERSION,
     }
-    _domain_section(package, domain)
+    _domain_section(package, domain, mission)
     assert_no_secrets(package)
     return _seal(package)
 

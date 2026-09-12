@@ -126,7 +126,7 @@ class VerifierRouter:
         critic: CriticVerdict | None = None
         short_at: str | None = None
         test_output: str | None = None
-        escalated = False  # D7-8': the Critic asked for a person
+        escalated = False  # any required verifier can ask for a person
         suspended = False
 
         async def record(result: LayerResult) -> None:
@@ -182,7 +182,6 @@ class VerifierRouter:
                 result = reuse[layer]
                 if layer == "critic_review":
                     critic = CriticVerdict.from_json(result.detail)
-                    escalated = escalated or result.status == NEEDS_HUMAN
             elif layer == "format_check":
                 result = format_check(envelope, client_result_id=client_result_id)
             elif layer == "rule_check":
@@ -284,6 +283,23 @@ class VerifierRouter:
                 result = LayerResult(
                     layer, ERROR, "layer not deployed in this build", {"undeployed": True}
                 )
+            if result.status == NEEDS_HUMAN:
+                if not needs_human_allowed and (
+                    layer != "critic_review"
+                    or (
+                        actual_domain is not None
+                        and actual_domain.id == "doc-research-v1"
+                        and actual_domain.version == "3"
+                    )
+                ):
+                    result = LayerResult(
+                        layer,
+                        FAIL,
+                        "one human escalation per Task; quota already used",
+                        {**dict(result.detail), "escalation_quota_exhausted": True},
+                    )
+                else:
+                    escalated = True
             await record(result)
             if result.status in {FAIL, ERROR}:
                 short_at = layer

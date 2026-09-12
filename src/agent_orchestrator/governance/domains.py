@@ -18,6 +18,7 @@ before this version bind it, and every field below is the value the code already
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -129,11 +130,32 @@ class DomainProfileV1:
     completion_rules: Mapping[str, Any] = field(default_factory=dict)
     role_templates: Mapping[str, str] = field(default_factory=dict)
     context_wording: Mapping[str, str] = field(default_factory=dict)
+    adapters: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "completion_rules", MappingProxyType(dict(self.completion_rules)))
         object.__setattr__(self, "role_templates", MappingProxyType(dict(self.role_templates)))
         object.__setattr__(self, "context_wording", MappingProxyType(dict(self.context_wording)))
+        object.__setattr__(self, "adapters", MappingProxyType(dict(self.adapters)))
+        if (self.id, self.version) == (DOC_DOMAIN, "3") and dict(self.adapters) != {
+            "citation_integrity": "citation_integrity@v2",
+            "source_coverage": "source_coverage@v1",
+        }:
+            raise ValueError("document profile 3 requires its registered frozen adapters")
+        if (self.id, self.version) == (DOC_DOMAIN, "3"):
+            retry = self.completion_rules.get("inconclusive_retry_limit")
+            share = self.completion_rules.get("inconclusive_share_limit")
+            if type(retry) is not int or retry < 0:
+                raise ValueError("inconclusive_retry_limit must be a nonnegative integer")
+            if (
+                not isinstance(share, (int, float))
+                or isinstance(share, bool)
+                or not math.isfinite(share)
+                or not 0 <= share <= 1
+            ):
+                raise ValueError("inconclusive_share_limit must be a finite number in [0, 1]")
+            if self.completion_rules.get("require_limitations") is not True:
+                raise ValueError("document profile 3 requires complete limitations")
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> DomainProfileV1:
@@ -171,7 +193,7 @@ class DomainProfileV1:
         return cls(**data)
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema": DOMAIN_SCHEMA_VERSION,
             "id": self.id,
             "version": self.version,
@@ -194,6 +216,9 @@ class DomainProfileV1:
             "role_templates": dict(self.role_templates),
             "context_wording": dict(self.context_wording),
         }
+        if self.adapters:
+            result["adapters"] = dict(self.adapters)
+        return result
 
 
 CODE_PROFILE = DomainProfileV1(
@@ -219,7 +244,7 @@ CODE_PROFILE = DomainProfileV1(
 
 DOC_PROFILE = DomainProfileV1(
     id=DOC_DOMAIN,
-    version="2",
+    version="3",
     allowed_input_kinds=("text/markdown", "text/plain", "text/csv", "application/json"),
     allowed_artifact_kinds=("text/*",),
     # no ``pytest`` (a document Task may not buy VERIFIED with an unrelated test) and no
@@ -239,6 +264,10 @@ DOC_PROFILE = DomainProfileV1(
     source_roots=("sources/",),
     role_templates=DOC_ROLE_TEMPLATES_V1,
     context_wording=DOC_CONTEXT_WORDING_V1,
+    adapters={
+        "citation_integrity": "citation_integrity@v2",
+        "source_coverage": "source_coverage@v1",
+    },
     completion_rules={
         # D5: how many times a Task may come back only because evidence was inconclusive,
         # and how large a share of the *Mission's own* criteria may stay inconclusive

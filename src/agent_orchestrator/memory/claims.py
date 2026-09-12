@@ -228,7 +228,7 @@ def system_attribution(basis: Mapping[str, Any]) -> Mapping[str, Any] | None:
     item = basis.get("attribution")
     if (
         basis.get("system_domain") == "doc-research-v1"
-        and basis.get("adapter") == "citation_integrity@v1"
+        and basis.get("adapter") in {"citation_integrity@v1", "citation_integrity@v2"}
         and basis.get("grade") == "verified"
         and isinstance(item, Mapping)
         and item.get("source_trust") == TRUST_UNTRUSTED
@@ -274,14 +274,18 @@ def _grade_document(
     claim_hash = sha256_hex(proposal.to_json())
     if any(
         a.verifier_adapter_id != "citation_integrity"
-        or a.version != "1"
-        or a.verdict != "PASS"
-        or a.provenance.get("producer") != "citation_integrity@v1"
+        or a.version not in {"1", "2"}
+        or a.verdict not in ({"PASS", "INCONCLUSIVE"} if a.version == "2" else {"PASS"})
+        or a.provenance.get("producer") != f"citation_integrity@v{a.version}"
         or a.provenance.get("claim_hash") != claim_hash
         for a in rows
     ):
         basis["reason"] = "assessment is not a deterministic PASS for this claim"
         return ClaimGrade(claim_id, ClaimStatus.UNDER_REVIEW, basis, ())
+    if len({a.version for a in rows}) != 1:
+        basis["reason"] = "mixed assessment versions cannot grade one claim"
+        return ClaimGrade(claim_id, ClaimStatus.UNDER_REVIEW, basis, ())
+    basis["adapter"] = f"citation_integrity@v{rows[0].version}"
     expected = sorted(canonical_json(c.to_json()) for c in proposal.citations)
     # Every linked criterion must have evaluated the complete citation set. Choosing
     # one good reference from a partially failed set would launder the other quote.
@@ -304,6 +308,15 @@ def _grade_document(
     )
     basis["assessment_receipts"] = sorted(a.receipt_id for a in rows)
     basis["evidence_refs"] = [dict(item) for item in resolved]
+    if any(a.verdict == "INCONCLUSIVE" for a in rows):
+        basis.update(
+            grade="insufficient_evidence",
+            reason="resolved sources do not bind this claim to every candidate criterion",
+            inconclusive_criteria=sorted(
+                {a.criterion_id for a in rows if a.verdict == "INCONCLUSIVE"}
+            ),
+        )
+        return ClaimGrade(claim_id, ClaimStatus.UNDER_REVIEW, basis, refs)
     matching = [
         item
         for item in resolved

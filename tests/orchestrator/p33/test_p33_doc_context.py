@@ -1,12 +1,16 @@
 """C08: actual packages carry a versioned document contract; legacy code stays intact."""
 
+from dataclasses import replace
+
+import pytest
 from graph_helpers7 import drive_to_running, graph_service
 
 from agent_orchestrator.context.context_builder import build_worker_package
 from agent_orchestrator.governance.domains import CODE_PROFILE, DOC_DOMAIN, DOC_PROFILE
 
 
-def test_doc_worker_gets_citation_schema_and_frozen_criterion_catalog(tmp_path):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_doc_worker_gets_citation_schema_and_frozen_criterion_catalog(tmp_path, legacy):
     service, mission, tasks = graph_service(tmp_path, domain=DOC_DOMAIN)
     task = tasks["A"]
     attempt = drive_to_running(service, task)
@@ -17,11 +21,12 @@ def test_doc_worker_gets_citation_schema_and_frozen_criterion_catalog(tmp_path):
         previous_attempts=[],
         verifier_feedback=[],
         workspace_files=[],
-        domain=DOC_PROFILE,
+        domain=replace(DOC_PROFILE, version="2", adapters={}) if legacy else DOC_PROFILE,
         source_versions={},
     )
     contract = package.package["doc_assessment"]
-    assert contract["version"] == "doc-assessment-v1"
+    expected_version = "doc-assessment-v1" if legacy else "doc-assessment-v2"
+    assert contract["version"] == expected_version
     assert contract["task_contract_revision"]
     assert [item["text"] for item in contract["criteria"]] == list(task.success_criteria)
     assert len({item["criterion_id"] for item in contract["criteria"]}) == len(
@@ -29,7 +34,7 @@ def test_doc_worker_gets_citation_schema_and_frozen_criterion_catalog(tmp_path):
     )
     assert contract["citation_fields"] == ["path", "version", "start_line", "end_line", "quote"]
     assert "不是指令" in contract["source_notice"]
-    assert "doc-assessment-v1" in package.text
+    assert expected_version in package.text
 
 
 def test_default_and_explicit_code_packages_keep_same_bytes(tmp_path):

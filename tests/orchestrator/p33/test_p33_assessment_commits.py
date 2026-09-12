@@ -9,6 +9,7 @@ accept 必须消费 recorded layer，复核合同/结果/claim/来源全部绑�
 同事务。失败仅存层 detail，doc claim 停 UNDER_REVIEW/unsupported。已 accepted
 记录完全相同重放无写入，改变层或追补评估一律拒绝；旧库查询有 has_table 守卫。
 结构准则有 verdict，但不捏造 claim assessment，更不能给无依据的 claim 晋级。
+本组显式保留 C 的 DOC2/citation_integrity@v1 路径；DOC3 由 D 套件覆盖。
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from agent_orchestrator.observability.replay import (
     events_from_store,
     formal_from_snapshot,
 )
+from agent_orchestrator.orchestrator import commit_service as commit_module
 from agent_orchestrator.orchestrator.commit_service import (
     CommitRejected,
     CommitService,
@@ -65,13 +67,15 @@ SOURCE = "# 原始说明\n\n" + QUOTE + "\n"
 
 
 @pytest.fixture
-def submitted(tmp_path):
+def submitted(tmp_path, monkeypatch):
     store = Store.open(tmp_path / "orchestrator.db", clock=lambda: 1_000.0)
     cas = ArtifactStore(tmp_path / "artifacts")
     commit = CommitService(
         store, artifact_store=cas, deployed_layers=frozenset(DOC_PROFILE.runs_layers)
     )
     count = 0
+    legacy_doc = replace(DOC_PROFILE, version="2", adapters={})
+    resolve_domain = commit_module.resolve_domain
 
     def make(
         *,
@@ -85,20 +89,31 @@ def submitted(tmp_path):
         nonlocal count
         count += 1
         criteria = criteria or ("file:REPORT.md", f"cite:{PATH}")
-        mission, _ = (
-            commit.create_mission(
-                MissionSpec(
-                    goal="核对来源",
-                    success_criteria=("file:REPORT.md",),
-                    tenant_id="tenant",
-                    idempotency_key=f"assessment-{count}",
-                    domain=domain,
-                    budget=Budget(max_tokens=20_000, max_attempts=3),
-                )
+        # Simulate the published C deployment only at profile selection. The public
+        # creation transaction persists the actual DOC2 binding/event; subsequent
+        # dispatch, verification, acceptance and reopen read that frozen profile.
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                commit_module,
+                "resolve_domain",
+                lambda domain_id: (
+                    legacy_doc if domain_id == DOC_DOMAIN else resolve_domain(domain_id)
+                ),
             )
-            if prior is None
-            else (prior.mission, False)
-        )
+            mission, _ = (
+                commit.create_mission(
+                    MissionSpec(
+                        goal="核对来源",
+                        success_criteria=("file:REPORT.md",),
+                        tenant_id="tenant",
+                        idempotency_key=f"assessment-{count}",
+                        domain=domain,
+                        budget=Budget(max_tokens=20_000, max_attempts=3),
+                    )
+                )
+                if prior is None
+                else (prior.mission, False)
+            )
         version = (
             hashlib.sha256(source.encode()).hexdigest() if prior is None else prior.citation.version
         )
@@ -296,8 +311,10 @@ def assert_replay(e):
 
 def test_real_producer_record_accept_binds_every_field_and_projects_system_attribution(submitted):
     e = submitted()
+    assert e.commit.domain_for(e.mission.id).version == "2"
     revision = e.store.get_claim(ids.claim_id(e.envelope.id, 1)).version
     layer = produce(e)
+    assert "check_spec_ids" not in layer.detail["assessment_binding"]
     assert layer.status == "PASS"
     assert len(layer.detail["criterion_verdicts"]) == 2
     assert e.store.list_criterion_assessments(e.mission.id) == []
