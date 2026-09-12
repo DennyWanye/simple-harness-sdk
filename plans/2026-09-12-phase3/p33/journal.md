@@ -325,3 +325,25 @@ E18:53–19:38约45分钟，含8分01.36秒完整测试。定向、独立审查�
 ### E推送与F启动（19:40）
 
 53a08ac文档提交后P33 622 passed /13.37秒（watchdog13.63），PG30480无残留。发送secret模式计数0，main推送成功。E18:53–19:40约47分钟。F19:40正式开始，见slice-f-readiness.md。G工作量上调为初步16–32工程小时，原2–4小时估计撤回；实际需SDK/Host多层接线和最终新制品，尚未完成。
+
+## 2.6 切片F进行中（19:55）
+
+候选ab09885（两个runtime0.11.0）首次整仓：80failed /3209passed /14skipped /18errors，546.07秒，watchdog546.50秒，PG30733无残留。没有ignore/maxfail，全部收集错误保留。实际原始红集98nodeid已落本机current-reds.json。
+
+同依赖环境以a4aae8c归档源码和原tests逐项复跑98项：75failed /5passed /18errors，7.56秒，PG36140无残留；两个包实际导入归档src，identity文件保留。baseline-red.json继承runner的source_head字段表示控制仓ab09885，已追加actual_source_head与说明；原log不改，不把控制仓HEAD混称旧源码。
+
+5项新增失败全部是发布版本快照遗漏：current public-api.json仍为0.10.0；只更新version→0.11.0，其余导出列表逐字未变，历史snapshot未动。独立Kepler ACCEPT。
+
+15项agents失败在新旧源码均为缺可选tiktoken。本机测试env安装tiktoken0.14.0/regex2026.9.10，未改变SDK生产依赖。API快照+相关agents合计21 passed /4.64秒。剩余60失败、18错误仍须同依赖逐项对照及最终干净整仓核实，不宣称全绿或“等于原73”。
+
+历史差额初查：原73=58fail+15旧版target setup；当前额外2个runtime memory committed断言同样在a4aae8c复现，另3个Memory SDK缺包collection也独立登记。原机汇总不取代本机实测。
+
+- `.local-test-evidence/2026-09-12/p33-f/repository.log` SHA-256 `569c09b7a09e8bd127d2c1695d3e4147898e7e766f997fc92dc38b3fd67ede9b`
+- `.local-test-evidence/2026-09-12/p33-f/repository.xml` SHA-256 `c51d5178d8f6691639c56a49b244b954780b846b993d1588e54e267c9a8da244`
+- `.local-test-evidence/2026-09-12/p33-f/repository.json` SHA-256 `1f86a13bf4dee68c23ed5e46f11236b8a33f57d8360967932ed6494ca6fc6f80`
+- `.local-test-evidence/2026-09-12/p33-f/current-reds.json` SHA-256 `f7d67de856690a171bb1ec3e2302d1a40edb257f4a61e6d3424d145f6da0c1db`
+- `.local-test-evidence/2026-09-12/p33-f/baseline-identity.json` SHA-256 `c900a2a27920304fdf2449e1959b932875f1604787735aac0cba400b2c991326`
+- `.local-test-evidence/2026-09-12/p33-f/baseline-red.log` SHA-256 `fca8573adaa8325e096f55b95bda36a18c678c8829041a71d6717f8fc2bde5a3`
+- `.local-test-evidence/2026-09-12/p33-f/baseline-red.xml` SHA-256 `bc92048f6753ee63c5b2a31938f41b36882f67a4299d7d0b2b5603aa6622ae66`
+- `.local-test-evidence/2026-09-12/p33-f/baseline-red.json` SHA-256 `c2cd59a5dffd46466e62c403e64c250ebcf3a59d2953f3225ef286af5680f87f`
+- `.local-test-evidence/2026-09-12/p33-f/environment-and-version.log` SHA-256 `ba10dc734c4d2953c982e6573d246054da7f50bb31be9971a6f176fe3d7eb076`
