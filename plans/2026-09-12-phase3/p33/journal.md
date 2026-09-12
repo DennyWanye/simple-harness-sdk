@@ -64,7 +64,18 @@ schema 迁移**追加式**推进，一个切片一版：v8 `mission_domains`（�
 
 ## 3. 回归
 
-（逐切片记录）
+### 3.1 切片 A
+
+`tests/orchestrator` 全量：**603 passed, 8 skipped, 0 failed（360.8 秒）**。8 个 skip 全部是需要 `--run-real-provider` 的真实端点用例，与本切片无关。
+
+第一次跑的时候**整套悬挂了一个多小时**，根因是我自己引入的缺陷，记在这里：
+
+- 我给 `code-v1` 画像设了 `planner_floor=("format_check",)`，而今天的代码**没有任何政策下限**。`step08/test_ablation.py::test_review_p1_3_an_ablation_that_leaves_no_layer_is_never_a_pass` 提交的政策是 `("critic_review",)` 一层，被新闸门拒 → Planner 重试 → `RoleScriptedProvider` 只配了一个 planner 步、脚本耗尽 → SDK UNKNOWN 出站调用 → 悬挂。
+- 这正是 plan §6 风险表里登记的那条（fixtures 悬挂），第一次就被我自己踩中。
+- 处置：`code-v1.planner_floor` 改回空（下限是文档领域的概念）；补钉子 `test_p33_a14`，并在 `test_p33_a13` 之外**单独钉住下限**——原来那条只钉了 `runs_layers`，所以没拦住。
+- 教训：**任何加在既有路径上的新校验，先问"今天的 fixtures 会不会被它拒"**，而不是只问"新领域对不对"。
+
+定位方式（工具在 scratchpad）：`-o faulthandler_timeout=N` 当看门狗是错的（只打栈不杀进程），pytest 输出接 `tail` 会全缓冲。改用 `subprocess.Popen(...).wait(timeout=...)` + `kill()`，输出直接写文件，逐套件 → 逐文件 → 逐用例二分。
 
 ## 4. 真实与原生
 

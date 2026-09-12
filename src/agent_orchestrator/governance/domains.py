@@ -124,7 +124,11 @@ CODE_PROFILE = DomainProfileV1(
     allowed_evidence_kinds=("pytest", "file", "artifact", "tool-run", "knowledge"),
     criterion_kinds=("pytest", "file", "action", "arbitration", "free"),
     runs_layers=VERIFICATION_LAYERS,
-    planner_floor=("format_check",),
+    # A07: today's code has **no** floor — a Task may name a single layer (step 8's
+    # ablation tests commit a ``("critic_review",)`` policy).  Inventing one here rejects
+    # the Planner's proposal, the scripted provider runs out of steps, and the run hangs
+    # on an UNKNOWN outbound call.  The floor is a document-domain idea only.
+    planner_floor=(),
     default_policy=SYSTEM_DEFAULT_POLICY,
     conflict_template=ConflictTemplateV1(
         policy=CONFLICT_POLICY, decides_with="code_test", probe="test_probe.py"

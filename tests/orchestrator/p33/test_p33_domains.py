@@ -161,3 +161,18 @@ def test_p33_a13_the_code_domain_still_accepts_every_layer_name() -> None:
         success_criteria=("pytest:tests/test_x.py",),
         verification_policy=tuple(resolve_domain(CODE_DOMAIN).runs_layers),
     )
+
+
+def test_p33_a14_the_code_domain_has_no_policy_floor_at_all() -> None:
+    """A07 的第二条钉子（这条是踩过坑补的）。
+
+    第一版给 `code-v1` 设了 `planner_floor=("format_check",)`，而今天的代码没有任何下限：
+    step 8 的消融用例会提交只有 `("critic_review",)` 一层的政策。加了下限之后提案被拒 →
+    Planner 重试 → scripted provider 脚本耗尽 → SDK UNKNOWN 出站调用 → **整套回归悬挂**。
+    下限是文档领域的概念，不能加到代码领域头上。
+    """
+
+    assert resolve_domain(CODE_DOMAIN).planner_floor == ()
+    assert not _problems(
+        CODE_DOMAIN, success_criteria=("file:REPORT.md",), verification_policy=("critic_review",)
+    )

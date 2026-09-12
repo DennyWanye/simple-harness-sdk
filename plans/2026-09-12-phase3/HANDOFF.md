@@ -82,15 +82,21 @@
    - `runtime/role_templates.py:121,125` 与 `context/context_builder.py:207` 告诉 Worker「结论必须有外部检查（pytest 证据）」「只有引用了你实际运行并通过的 pytest 目标才可能被判 VERIFIED」。
    - 这三处在文档领域都是**该领域不成立的规则**，模型照做就会被闸门拒，跑满重试后 UNRESOLVED。要让画像能替换这些措辞（`DomainProfileV1.role_templates` / `context_wording` 字段已在计划 D1 里列出，但**尚未实现**）。
 2. **验收条目 P33-09 的五条**：目前只写了闸门 1 的用例（`test_p33_a19`），闸门 2/3/4/5 各还缺一条。
-3. **跑一次 `tests/orchestrator` 全量**并把结果写进 `p33/journal.md` §3（见 §4 的状态说明）。
+3. （已完成）全量回归见 §4。
 
 ---
 
-## 4. 测试状态（如实）
+## 4. 测试状态
 
-- ✅ `tests/orchestrator/p33` + `tests/orchestrator/step08/test_replay.py`：**44 passed**（在本交接的全部代码改动之后跑的）。
-- ✅ `tests/orchestrator/p33` + `tests/orchestrator/step04`：68 passed（在回放改动**之前**跑的）。
-- ⚠️ **`tests/orchestrator` 全量在本次交接时尚未跑完**（用户中途要求停止，后台进程被杀）。下一个 session 的**第一件事**应当是跑一次全量，确认红集 ⊆ 基线 73，再继续写代码。基线清单：`baseline-known-failures.txt`；回归脚本忽略 3 个 memory-sdk 模块。
+- ✅ **`tests/orchestrator` 全量：603 passed, 8 skipped, 0 failed（6 分 00 秒）**，在本交接的全部代码改动之后跑的。8 个 skip 全是需要 `--run-real-provider` 的真实端点用例。
+- ✅ `tests/orchestrator/p33`：26 passed。
+- ℹ️ 整仓 `tests/` 的基线红集 73 条与本切片无关（红的都在 orchestrator 之外），清单在 `baseline-known-failures.txt`，回归脚本忽略 3 个 memory-sdk 模块。切片 F 会跑整仓。
+
+### 4.1 跑回归的正确姿势（这一轮踩过）
+
+- **不要**用 `-o faulthandler_timeout=N` 当看门狗：它只打印栈、**不杀进程**，挂住时看上去像"还在跑"（这轮因此空转了一个多小时）。
+- **不要**把 pytest 输出接进 `tail`：全缓冲，进度完全不可见。
+- 用 `scratchpad/full.py` 那种 `subprocess.Popen(...).wait(timeout=...)` + `proc.kill()` 的看门狗，输出直接写文件。挂住时逐套件、再逐文件二分定位。
 
 ---
 
@@ -111,6 +117,8 @@
 11. **`MissionSpec.to_json()` 里 `domain` 只在非默认时出现**，否则升级后 Host 重发同一请求会因 `spec_hash` 变化拿到 `MissionConflict`（`test_p33_a16` 钉住）。
 12. **fixtures 悬挂**：脚本耗尽直接抛 AssertionError（`testing/fixtures.py:104,514,524`）。历史上多次"新增校验让旧脚本多走一轮 → 耗尽 → SDK UNKNOWN 出站调用 → 悬挂"。切片 B/C/E 每一个都可能触发，所以每切片完成即跑全量。
 13. **真实模型写不出合规 citation 的可行性风险**：表格单元格与冒号句（`：` 不是句终符）只能整行整引，而 P3.3 的场景恰以表格与冒号句为主；模型的省力反应是**改结论去迁就可引的句子**，比引用失败更糟。切片 G 要先用真实文档做一次可行性 spike，不合格就回头调文法**而不是调结论**。
+
+14. **领域画像不能给 `code-v1` 设政策下限**。今天的代码**没有任何下限**：step 8 的消融用例会提交只有 `("critic_review",)` 一层的政策。加了下限 → 提案被闸门拒 → Planner 重试 → scripted provider 脚本耗尽 → SDK UNKNOWN 出站调用 → **整套回归悬挂**。这是本轮真实踩到的第 12 条风险，钉子是 `test_p33_a14`。推论：**任何加在既有路径上的新校验，都要先问"今天的 fixtures 会不会被它拒"**。
 
 ---
 
