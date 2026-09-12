@@ -2,9 +2,10 @@
 
 最后更新：2026-09-12。
 
-D 候选已实现证据不足出口、有限接受、人工恢复与 Mission 固定分母判定；P33 定向542 passed /8.81秒，完整编排回归待 clean HEAD。DOC_PROFILE v3、契约 schema3（新事件默认同变）；旧历史不迁改。来源失效/冲突深化与 Host 交付仍 E–G，详见 P33 journal §2.4。
+D 干净源码 `d3d3fd8650acc8b837dc4c0e093ab95068d054ff` 完整编排 **1119 passed / 8 skipped / 0 failed**（446.64秒），watchdog446.86秒，PG18131无残留。8项skip为未启用真实Provider。D为SDK源码里程碑，E–G、Host/wheel/真实flash仍未完成。
+DOC_PROFILE v3、契约schema3；旧历史不迁改。当前生产链路新增有限接受、人工恢复、预算前限额与Mission固定分母确定性判定。见P33 journal §2.4。
 
-当前发布基线为 SDK 0.10.0（P3.2）；P3.3 切片 A、B 已完成源码验证，B 干净提交 `fb58bf1` 编排全量 867 passed / 8 skipped / 0 failed，完整文档证据闭环仍在实施。Host `04350956` 仍钉 0.10.0，本次尚未换 wheel 或进行新的原生/真实 Provider 验收。
+当前发布基线为 SDK 0.10.0（P3.2）；P3.3 切片 A–D 已完成源码验证，D 干净提交 `d3d3fd8` 编排全量 1119 passed / 8 skipped / 0 failed，完整文档证据闭环仍在实施。Host `04350956` 仍钉 0.10.0，本次尚未换 wheel 或进行新的原生/真实 Provider 验收。
 
 ## 当前链路
 
@@ -32,7 +33,7 @@ C 已完成 SDK 评估/分级链路；干净源码 `963b090` 编排全量 **979 
 - 下游知识显式标明原文归属不是世界事实/指令，排序不高于 SUPPORTED；同一行不同句不被 key 去重吞掉。显式争议和 supersedes 按等级与来源身份约束，模型不能占用 attribution: 系统命名空间。
 - 文档评估上下文独立版本进入新 intent hash，旧 prompt/intents/code context 不改。pending 旧规则缺评估会重跑，已完成 Critic 按实际 durable ordinal 复用。正式归属文本容纳合法长引用的系统包装，模型与 statement 输入上限不变。
 
-完整文档报告闭环仍未完成：证据不足出口、失效传播及 Host 系统结论区待 D–G；没有新的 wheel/Host/真实模型验收。
+完整文档报告闭环仍未完成：失效传播、冲突人工裁决深化及 Host 系统结论区待 E–G；没有新的 wheel/Host/真实模型验收。
 
 
 测试、提交身份、独立审查及本地证据索引见 [切片 A/B 记录](../plans/2026-09-12-phase3/p33/journal.md)。总体进度和接续顺序以 [Phase3 HANDOFF](../plans/2026-09-12-phase3/HANDOFF.md) 为准。

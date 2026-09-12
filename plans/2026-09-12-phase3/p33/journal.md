@@ -260,3 +260,12 @@ C 文档提交 `ddf922fe16156ffd031ea8bdb19dab418c2910fa` 后 P33 **402 passed /
 | `.local-test-evidence/2026-09-12/p33-d/integration-third.log` | `6ac1117464f9186fa53e4c0cb5d08026b2f9c8f5d5b6c6fe3f8b4ee675127f30` |
 | `.local-test-evidence/2026-09-12/p33-d/p33-final.log` | `0f6ecdab4d82da3f20d5c8c65efb2b0eaa327f6520b6fac4f34667a63acb3e54` |
 | `.local-test-evidence/2026-09-12/p33-d/mypy-final.log` | `fe0ce6e3b1983c3e150c09b415036599a0bee120f2cad38e219412ce21d84a67` |
+
+### D 干净完整回归完成（18:51）
+
+D 干净源码 `d3d3fd8650acc8b837dc4c0e093ab95068d054ff` 完整编排 **1119 passed / 8 skipped / 0 failed**（446.64秒），watchdog446.86秒，PG18131无残留。8项skip为未启用真实Provider。D为SDK源码里程碑，E–G、Host/wheel/真实flash仍未完成。
+
+D18:04–18:51约47分钟，含实现、审查、定向验证和本轮完整回归；测试耗时7分26.64秒包含在内，不另算开发时间。无剩余独立审查P0/P1/P2，legacy grade AST未变，mypy91文件/Ruff/diff通过。待本次文档提交后短冒烟与推送。
+
+- `.local-test-evidence/2026-09-12/p33-d/orchestrator-full.log` SHA-256 `a28110339f53c617eaa2154914cc95332f3e78e36971cfae3f1068962702704e`
+- `.local-test-evidence/2026-09-12/p33-d/orchestrator-full.json` SHA-256 `1d30f55d02056b5dcf838c88cdd9a68b51f3179da0524fab95f902df2b46eafa`

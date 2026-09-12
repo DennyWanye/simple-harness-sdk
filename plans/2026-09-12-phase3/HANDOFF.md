@@ -19,7 +19,7 @@
 | Phase3 **P3.1** 真实 App Mission 控制闭环 | ✅ SHIPPED |
 | Phase3 **P3.1 遗留修复** | ✅ SHIPPED（SDK 0.9.11） |
 | Phase3 **P3.2** 隔离执行与真实受控交付 | ✅ SHIPPED（SDK 0.10.0，SDK `48e441a`，Host `04350956`） |
-| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A、B、C 已完成 SDK 源码验证；D 定向通过、干净全量待验收** |
+| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A–D 已完成 SDK 源码验证；D 全量1119 passed /8 skipped，E–G未完成** |
 | Phase3 P3.4 / P3.5 | 未开始 |
 
 用户的总指示（原话）："先修复，然后开始P3.2 到 P3.5，文件提交"。所以 P3.3 做完继续 P3.4、P3.5。
@@ -50,7 +50,7 @@
 | A | 领域画像、**五处**闸门、`mission_domains` 与 facade、schema v8、D9 事件与回放、仲裁路径的两处 pytest 硬编码 | ✅ SDK 源码验证完成（`1eaa91f`），见 §3–4 |
 | B | schema v9 `sources` 表与三个 facade 命令、来源进 CAS、protected 扩成 `Path\|bytes`、`SourceCitation` 契约、EvidenceResolver 七个失败码 | ✅ SDK 源码验证完成（`fb58bf1`），独立审查闭环；867 passed / 8 skipped |
 | C | schema v10 `criterion_assessments`、评估记录传递、`grade_claim` v2、attribution 记录/消费/压制通道（Host 交付层仍 G） | ✅ SDK 源码验证完成（`963b090`）；979 passed / 8 skipped，475.47 秒 |
-| D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | 已实现，542 定向通过，完整编排待验收 |
+| D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | ✅ SDK源码验证完成（`d3d3fd8`）；1119 passed /8 skipped，446.64秒 |
 | E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | 未开始 |
 | F | 全量回归、wheel 干净环境验证 | 未开始 |
 | G | Host 钉版、接线、系统渲染结论区、真实 flash 原生验收 | 未开始 |
@@ -59,7 +59,7 @@
 
 ---
 
-## 3. 切片 A、B、C 已完成，下一步 D
+## 3. 切片 A–D 已完成，下一步 E
 
 ### 3.1 已完成（代码已提交）
 
@@ -154,3 +154,9 @@
 - P3.3 已登记：F-P33-1（`code-v1` 路径前缀覆盖判定）、F-P33-2（二进制来源无登记通道）、F-P33-3（`tool-run:` 不可核验：`call_key = run_id:call_id`，模型写信封时两个 id 都不知道）、F-P33-4（混合领域 Mission）。
 - P3.2 的 F-P32-1..7 在 `p32/journal.md` §6（最重要的是 F-P32-1 宿主崩溃后逃逸进程认不出来、F-P32-2 候选 schema 没进模型输入包，建议放 P3.5）。
 - P3.1 的 F-ORCH-1..7 在 Host `plans/2026-09-11-orchestrator-host-integration/journal.md` §5。
+
+## D 最新交接（18:51）
+
+D 干净源码 `d3d3fd8650acc8b837dc4c0e093ab95068d054ff` 完整编排 **1119 passed / 8 skipped / 0 failed**（446.64秒），watchdog446.86秒，PG18131无残留。8项skip为未启用真实Provider。D为SDK源码里程碑，E–G、Host/wheel/真实flash仍未完成。
+
+E只读挑战已完成：直接citation新接受检查与stale used_knowledge分离；Knowledge来源依赖用同路径多版本并集；普通review不可代替doc冲突仲裁；已有HumanOverride/ConflictResolvedByHuman可承载contextual裁决，不升级Claim。开始E前写slice-e-readiness并保留全部原AC。

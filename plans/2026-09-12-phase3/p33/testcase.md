@@ -41,7 +41,7 @@
 
 P33 + step04：445 passed / 1 skipped，24.95 秒；长引用重开及上限 3 passed，0.38 秒。独立累计审查 ACCEPT；963b090 干净完整编排 979 passed / 8 skipped / 0 failed，475.47 秒；首次 code 重放失败及修复见 journal。
 
-## 切片 D（完整回归待验收）
+## 切片 D
 
 | 原始 AC / 实际操作 | 回归入口（tests/orchestrator/p33） | 结果 |
 |---|---|---|
@@ -50,8 +50,8 @@ P33 + step04：445 passed / 1 skipped，24.95 秒；长引用重开及上限 3 p
 | 12/32：同 claim 多 verdict、确定性矛盾与 Knowledge 排除 | test_p33_inconclusive_consumption.py；test_p33_inconclusive_conflicts.py | 定向 PASS |
 | 14/31/46 部分：实际 dispatch/验证/接受/重开、分母固定、阈值上下、20琐碎准则、judge前停止 | test_p33_inconclusive_runtime.py | 8 个 runtime 场景 PASS；46 挂载来源仍 G |
 
-上述含真实 SQLite、CAS、SDK runtime 与确定性 Provider，P33 累计542 passed /8.81秒；完整编排待 clean HEAD。
+上述含真实 SQLite、CAS、SDK runtime 与确定性 Provider，P33 累计542 passed /8.81秒；干净d3d3fd8完整编排1119 passed /8 skipped /446.64秒。
 
 ## 后续门
 
-D 证据不足、E 失效和冲突、F 整仓/wheel、G Host/真实 flash 原生验收仍未完成。A/B/C 源码的 PASS 不能扩大为 P3.3 完成。
+E 失效和冲突、F 整仓/wheel、G Host/真实 flash 原生验收仍未完成。A/B/C/D 源码的 PASS 不能扩大为 P3.3 完成。
