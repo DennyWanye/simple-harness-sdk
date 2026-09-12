@@ -113,6 +113,55 @@ class TestRun:
         return data
 
 
+# Runs inside the executor, using that interpreter's pytest (supported major: 8).
+# Do not call locate_config: it walks above the workspace before applying rootdir.
+# Keep pytest's file parsing semantics, including malformed-config errors and the
+# empty-pytest.ini priority, without reading model-written configuration in the host.
+_PYTEST_WORKSPACE_BOOTSTRAP = r"""
+import os
+import sys
+from pathlib import Path
+
+import pytest
+from _pytest.config.findpaths import load_config_dict_from_file
+
+root = Path.cwd().resolve()
+requested = sys.argv[1] if len(sys.argv) > 1 else None
+target = (root / requested.split("::", 1)[0]).resolve() if requested else root
+if not target.is_relative_to(root):
+    raise SystemExit("pytest target escapes workspace")
+directory = target if target.is_dir() else target.parent
+selected = None
+fallback = None
+# Same priority as pytest 8's locate_config, bounded inclusively by workspace root.
+names = ("pytest.ini", ".pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
+while directory.is_relative_to(root):
+    for name in names:
+        candidate = directory / name
+        if candidate.is_symlink():
+            raise SystemExit(f"workspace config symlink is not allowed: {candidate}")
+        if not candidate.is_file():
+            continue
+        config = load_config_dict_from_file(candidate)
+        if config is not None:
+            selected = candidate
+            break
+        if name == "pyproject.toml" and fallback is None:
+            fallback = candidate
+    if selected is not None or directory == root:
+        break
+    directory = directory.parent
+args = [
+    "-q", "-p", "no:cacheprovider", "--color=no",
+    "-c", str(selected or fallback or os.devnull),
+    "--rootdir", str(root), "--confcutdir", str(root),
+]
+if requested:
+    args.extend(["--", requested])
+raise SystemExit(pytest.main(args))
+"""
+
+
 async def run_pytest(
     workspace_root: str,
     *,
@@ -125,9 +174,9 @@ async def run_pytest(
     Without an executor the process-only adapter runs it (trusted code, not isolated)."""
 
     runner = executor if executor is not None else ProcessOnlyExecutor()
-    command = [runner.interpreter, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--color=no"]
+    command = [runner.interpreter, "-c", _PYTEST_WORKSPACE_BOOTSTRAP]
     if path:
-        command.extend(["--", path])
+        command.append(path)
     spec = SandboxSpec(
         cpu_seconds=max(1, int(timeout)),
         wall_seconds=timeout,

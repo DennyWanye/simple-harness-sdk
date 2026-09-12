@@ -128,9 +128,16 @@ def test_s3_07a_new_owner_takes_over_the_in_flight_turn_without_rerunning(tmp_pa
 
 
 def test_s3_07b_vanished_executor_is_lost_and_retried_without_rerunning_finished_work(tmp_path):
-    provider = demo_static_dag_provider()
+    # Oracle: the vanished executor consumes none of B's shared script; only its
+    # replacement executes B, while completed A is never re-run. after_submit
+    # alone cannot guarantee this: SDK shutdown can still advance a queued turn.
+    provider = demo_static_dag_provider(holds={"B": [asyncio.Event()]})
     lease = dict(lease_seconds=0.6, sdk_lease_ttl_seconds=0.3)
     mission_id, b_attempt, _ = _crash_after_b_submitted(tmp_path, provider, lease)
+    # The first runtime is fully closed. If B never invoked the provider, its
+    # unconsumed hold must not block Attempt 2 (which runs in a new event loop).
+    assert provider.calls_by_key.get("B", 0) == 0
+    provider.holds["B"].clear()
     # B's executor vanishes: its SDK records belong to a foreign scope and its turn is not
     # resumable (the "executor invisible" case of S3-07)
     connection = sqlite3.connect(Path(tmp_path) / "evidence" / "execution.db")

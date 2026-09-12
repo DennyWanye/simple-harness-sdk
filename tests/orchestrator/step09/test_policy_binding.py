@@ -11,6 +11,7 @@ pins stay out of production libraries."""
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import sqlite3
@@ -192,7 +193,11 @@ def test_no_decision_point_reads_a_whitelisted_value_from_the_configuration():
     assert "self._model_router.route(" not in source  # routing goes through the Mission's router
     for constant in ("PLANNER.prompt_version", "MANAGER.prompt_version", "CRITIC.prompt_version"):
         assert constant not in source
-    assert source.count("role_for_task(") == source.count("template_for(role_for_task(")
+    assert source.count("role_for_task(") == source.count("self._template(role_for_task(") > 0
+    # The shared domain selector must still receive this Mission's frozen policy.
+    selector = inspect.getsource(Orchestrator._template)
+    assert "return template_for_domain(" in selector
+    assert 'self.policy_for(mission_id)["prompt_versions"]' in selector
 
 
 # ------------------------------------------------------------------ S9-05 (binding half)

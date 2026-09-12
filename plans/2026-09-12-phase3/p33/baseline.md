@@ -39,3 +39,13 @@
 - 文档提示词派生绑定具体 legacy 注册版本，不随未来 code 默认版漂移。
 - Kepler 独立累计 diff 静态审查：ACCEPT，未发现新增 P0/P1；全量测试仍由主代理执行。角色/freeze 接线与范围边界已审，不等于真实 Provider 或 App 验收。
 - 类型检查：85 个源文件通过。当前源码提交后再执行 P33-36 编排全量；完整引用闭环仍属于 B–G。
+
+## 本机全量暴露的问题
+
+`fdc9c91` 干净提交的首次全量：**632 passed / 3 failed / 8 skipped，493.62 s**，原始日志 `orchestrator-full.log`。失败未忽略：
+
+1. step09 结构断言仍匹配旧的 `template_for(role_for_task(...))`。改为核对统一的 Mission 选择入口及冻结 policy 传参；结构检查与既有实际 runtime 选版控制 **2 passed / 1.35 s**。
+2. P32 沙箱内 pytest 的配置发现向上读到仓库 `pyproject.toml`，触发权限拒绝。在实际执行器里限定配置搜索边界，仍支持工作区自己的五种 pytest 8 配置、优先级与错误语义；固定 rootdir/confcutdir，不扩大 sandbox 权限。
+3. step03 vanished-executor 测试假定 after_submit 后原 B 没消费脚本，实际 SDK 关闭期间可以推进队列。原 B 消费了 write 而新 B 只剩后续步骤，所以 CAS 忠实登记 stub。为该 case 增加 provider hold 与零调用断言；保留 LOST→COMPLETED、A 不重跑和最终调用次数，生产恢复代码不改。
+
+后两条在隔离导入 `a4aae8c` 原源码时均复现（`baseline-red-check.log`，**2 failed / 1.87 s**）；不冒称本轮引入，也不把它们塞进原机“整仓 73”红集。修复的 16 条配置场景加这两条原失败：**18 passed / 7.01 s**，`regression-repair.log`。仍需修复后干净提交的编排全量。
