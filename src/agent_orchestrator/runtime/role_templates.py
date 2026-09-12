@@ -20,6 +20,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from ..contracts import ContractError
+
+if TYPE_CHECKING:
+    from ..governance.domains import DomainProfileV1
 
 PLANNER_VERSION = "planner-v4"  # host support 0.9.8: layers from the package
 WORKER_VERSION = "worker-v2"
@@ -335,6 +341,26 @@ def template_for(template: RoleTemplate, prompt_versions: Mapping[str, str] | No
     if wanted is None or wanted == template.prompt_version:
         return template
     return TEMPLATE_VERSIONS.get(template.name, {}).get(wanted, template)
+
+
+def template_for_domain(
+    template: RoleTemplate, domain: DomainProfileV1, prompt_versions: Mapping[str, str] | None,
+) -> RoleTemplate:
+    """An explicit frozen domain override precedes the frozen policy selection."""
+    wanted = domain.role_templates.get(template.name)
+    if wanted is None:
+        return template_for(template, prompt_versions)
+    selected = TEMPLATE_VERSIONS.get(template.name, {}).get(wanted)
+    if selected is None:
+        raise ContractError(f"unavailable domain prompt: {domain.id}/{template.name}/{wanted}")
+    return selected
+
+
+# Register after the legacy templates and registry exist; the module only defines
+# extra versions and never replaces a code-domain default.
+from .domain_templates import register_document_templates  # noqa: E402
+
+register_document_templates()
 
 
 __all__ = (

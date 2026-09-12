@@ -45,6 +45,7 @@ from ..contracts.models import (
     sha256_hex,
 )
 from ..governance.budgets import AccountSnapshot, BudgetError, BudgetLedger, UsageFact
+from ..governance.domains import CODE_DOMAIN, DomainProfileV1, check_against_domain, resolve_domain
 from ..governance.policies import DeploymentPolicy
 from ..graph.changes import (
     ChangeLimits,
@@ -53,7 +54,6 @@ from ..graph.changes import (
     node_budget,
     validate_change,
 )
-from ..governance.domains import CODE_DOMAIN, DomainProfileV1, check_against_domain, resolve_domain
 from ..graph.task_graph import GraphRejected, TaskBudgetFloor, TaskGraphProposal, validate_graph
 from ..memory.claims import grade_claim
 from ..memory.summaries import refresh_summaries
@@ -786,7 +786,15 @@ class CommitService(
         before domain binding existed (plan D1, A07)."""
 
         binding = self._store.get_mission_domain(mission_id)
-        return resolve_domain(None if binding is None else str(binding["domain_id"]))
+        if binding is None:
+            return resolve_domain(None)
+        try:
+            domain = DomainProfileV1.from_json(binding["json"])
+            if (domain.id, domain.version) != (binding["domain_id"], binding["domain_version"]):
+                raise ValueError("frozen domain identity mismatch")
+            return domain
+        except (KeyError, TypeError, ValueError) as error:
+            raise CommitRejected(f"invalid frozen domain: {error}") from error
 
     def _check_system_template(self, domain: DomainProfileV1, task: Task) -> None:
         """A Task the *system* writes (a conflict or synthesis template) against the

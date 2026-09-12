@@ -1,5 +1,8 @@
 # P3.3 非代码 Mission 与证据闭环 · 计划（第 3 版）
 
+- plan-status: finalized（来源：Phase3 HANDOFF §2.1 两轮评审处置完毕；用户本轮明确要求继续执行）
+- 本机续接：保持既有 A–G 切片与 46 条编号验收；当前收尾 A，不把本片自动化通过等同文档领域产品交付。依赖后续切片的引用、等级与真实 App 验收仍待执行。
+
 - 版本沿革：第 1 版 → 第 2 版吸收第 1 轮两位独立评审（A 威胁模型 READY_WITH_CHANGES、B 代码一致性 NOT_READY）；第 2 版 → **第 3 版**吸收第 2 轮复评（A、B 均 READY_WITH_CHANGES）。四份评审原文在 `reports/`，逐条处置表在 §7。
 - 依据：Host `plans/taskSys2/agent-orchestrator-phase3-plan.zh-CN.md` §5（P3.3）与 §11 的 P3.3-A01..A08。
 - 理论定义（写代码前已查）：`04_tree_search_blackboard_memory.md` §9 **VERIFIED = 通过机器验证或可靠规则**、§10 知识必须带 provenance；`10_concurrency_conflict.md` §7 冲突不投票而是开 Conflict Task、§8 知识状态不是 True/False。

@@ -111,7 +111,7 @@ from ..runtime.role_templates import (
     PLANNER,
     RESULT_ENVELOPE_TAG,
     role_for_task,
-    template_for,
+    template_for_domain,
 )
 from ..runtime.sandbox import resolve_executor
 from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding, run_pytest
@@ -435,7 +435,10 @@ class Orchestrator:
         return cached
 
     def _template(self, template: Any, mission_id: str) -> Any:
-        return template_for(template, self.policy_for(mission_id)["prompt_versions"])
+        return template_for_domain(
+            template, self.commit.domain_for(mission_id),
+            self.policy_for(mission_id)["prompt_versions"],
+        )
 
     def _router_for(self, mission_id: str) -> ModelRouter:
         """One router per policy version: the deployment's rules with the version's
@@ -1179,11 +1182,13 @@ class Orchestrator:
             rejected=self._planning_rejections(mission_id) if ordinal > 1 else (),
             deployed_layers=self._deployed,
             budget_floor=self._budget_floor(mission_id),
+            domain=self.commit.domain_for(mission_id),
         )
         decision = self._route_service("planner", mission_id)
+        template = self._template(PLANNER, mission_id)
         config = AgentConfig(
             name=f"planner-{ordinal}",
-            instructions=self._template(PLANNER, mission_id).instructions,
+            instructions=template.instructions,
             model_profile_ref=decision.profile_id,
             tool_names=(),
             limits=AgentLimits(
@@ -1206,7 +1211,7 @@ class Orchestrator:
                 "agent_config": config.to_json(),
                 "message": message,
                 "context_version": package.context_version,
-                "prompt_version": self._template(PLANNER, mission_id).prompt_version,
+                "prompt_version": template.prompt_version,
                 "base_version": mission.version,
                 "ordinal": ordinal,
                 **self._service_config(decision),
@@ -2103,18 +2108,22 @@ class Orchestrator:
 
         async def recorder(layer: LayerResult) -> None:
             self._hold_lease(attempt.id)  # P1-3: a lost lease aborts the verification
+            detail = {"summary": layer.summary, **dict(layer.detail)}
+            if layer.layer == "critic_review":
+                # A recovered intent may still contain an older prompt than the
+                # domain now selects. Attribute only a completed Critic verdict,
+                # including a reused layer, to its durable execution ordinal.
+                detail.pop("critic_intent_id", None)
+                detail["verifier_version"] = None
+                if layer.status in {"PASS", "FAIL", NEEDS_HUMAN}:
+                    detail.update(self._critic_provenance(mission.id, attempt.id))
+            else:
+                detail["verifier_version"] = VERIFIER_VERSION
             self.commit.record_verification_layer(
                 result_id,
                 layer=layer.layer,
                 status=layer.status,
-                detail={
-                    "summary": layer.summary,
-                    **dict(layer.detail),
-                    # S6-09: which verifier produced this layer (the Critic's is its template)
-                    "verifier_version": self._template(CRITIC, mission.id).prompt_version
-                    if layer.layer == "critic_review"
-                    else VERIFIER_VERSION,
-                },
+                detail=detail,
             )
             if layer.status == "PASS":
                 self._fault("after_layer_pass", "attempt")
@@ -2259,6 +2268,34 @@ class Orchestrator:
                 )
         return True
 
+    def _critic_provenance(self, mission_id: str, attempt_id: str) -> dict[str, str]:
+        """The one parsed Critic verdict's durable intent, not a current template.
+
+        Invalid verdicts settle FAILED; the successful ordinal settles SETTLED
+        before returning its verdict. This survives a crash before layer recording
+        and also interprets legacy layers that did not record an intent id.
+        Missing or ambiguous execution identity is never proof of a prompt version.
+        """
+
+        settled = []
+        for ordinal in range(1, MAX_CRITIC_ATTEMPTS + 1):
+            intent = self.store.get_intent_for_subject(f"{attempt_id}:critic:{ordinal}")
+            if intent is not None and intent.state == "SETTLED":
+                settled.append(intent)
+        if len(settled) != 1:
+            return {}
+        intent = settled[0]
+        version = intent.config.get("prompt_version")
+        if (
+            intent.kind != "critic"
+            or intent.mission_id != mission_id
+            or intent.config.get("attempt_id") != attempt_id
+            or not isinstance(version, str)
+            or not version
+        ):
+            return {}
+        return {"critic_intent_id": intent.intent_id, "verifier_version": version}
+
     def _human_inputs(
         self, result_id: str, task: Task
     ) -> tuple[dict[str, Any] | None, dict[str, LayerResult] | None, bool]:
@@ -2275,9 +2312,31 @@ class Orchestrator:
                 "principal": request.get("decided_by"),
                 "request_id": request["request_id"],
             }
+            stored = self.store.get_result(result_id)
+            provenance = (
+                self._critic_provenance(task.mission_id, stored.envelope.attempt_id)
+                if stored is not None
+                and stored.envelope.task_id == task.id
+                and stored.envelope.mission_id == task.mission_id
+                else {}
+            )
+            rows = []
+            for row in self.store.list_verifications(result_id):
+                if row["layer"] == "critic_review":
+                    detail = row.get("detail") or {}
+                    if (
+                        not provenance
+                        or detail.get("verifier_version") != provenance["verifier_version"]
+                        or (
+                            "critic_intent_id" in detail
+                            and detail["critic_intent_id"] != provenance["critic_intent_id"]
+                        )
+                    ):
+                        continue
+                rows.append(row)
             reuse = reusable_layers(
-                self.store.list_verifications(result_id),
-                versions={"critic_review": self._template(CRITIC, task.mission_id).prompt_version},
+                rows,
+                versions={"critic_review": provenance["verifier_version"]} if provenance else {},
                 default_version=VERIFIER_VERSION,
             )
         escalated_before = any(
@@ -2588,6 +2647,7 @@ class Orchestrator:
                 rejections=self._change_rejections(mission.id, trigger),
                 deployed_layers=self._deployed,
                 budget_floor=self._budget_floor(mission.id),
+                domain=self.commit.domain_for(mission.id),
             )
         except ContextRejected as error:
             self._note(f"task {task.id}: manager package refused ({error}); management postponed")
@@ -2600,9 +2660,10 @@ class Orchestrator:
                 f"task {task.id}: manager pool {unavailable.profile_id!r} unavailable; management postponed"
             )
             return None
+        template = self._template(MANAGER, mission.id)
         config = AgentConfig(
             name=f"manager-{rounds + 1}",
-            instructions=self._template(MANAGER, mission.id).instructions,
+            instructions=template.instructions,
             model_profile_ref=decision.profile_id,
             tool_names=(),
             limits=AgentLimits(
@@ -2624,7 +2685,7 @@ class Orchestrator:
                 "agent_config": config.to_json(),
                 "message": message,
                 "context_version": package.context_version,
-                "prompt_version": self._template(MANAGER, mission.id).prompt_version,
+                "prompt_version": template.prompt_version,
                 "task_id": task.id,
                 "trigger": trigger,
                 "result_id": result_id,
@@ -2845,6 +2906,7 @@ class Orchestrator:
                 workspace_files=copy.list_files(),
                 knowledge=self._knowledge_or_unavailable(mission, task),
                 visibility="critic" if task is not None and task.kind == "conflict" else "verifier",
+                domain=self.commit.domain_for(mission.id),
             )
         except ContextRejected as error:
             raise ContractError(f"critic package refused: {error}") from error
@@ -2859,11 +2921,12 @@ class Orchestrator:
                 raise ContractError(
                     f"critic runtime profile {unavailable.profile_id!r} unavailable"
                 ) from unavailable
+            template = self._template(CRITIC, mission.id)
             config = AgentConfig(
                 name=f"critic-{ordinal}",
-                instructions=self._template(CRITIC, mission.id).instructions,
+                instructions=template.instructions,
                 model_profile_ref=decision.profile_id,
-                tool_names=self._template(CRITIC, mission.id).tool_names,
+                tool_names=template.tool_names,
                 limits=AgentLimits(
                     max_model_calls_per_turn=12,
                     max_tool_calls_per_turn=24,
@@ -2884,7 +2947,7 @@ class Orchestrator:
                     "message": message,
                     "attempt_id": view_id,
                     "context_version": package.context_version,
-                    "prompt_version": self._template(CRITIC, mission.id).prompt_version,
+                    "prompt_version": template.prompt_version,
                     "untrusted_sources": untrusted,
                     **self._service_config(decision),
                 },
@@ -3231,7 +3294,7 @@ class Orchestrator:
             self._note(f"task {task.id} stopped: artifact conflict ({error})")
             return True
         bound = self.policy_for(mission.id)  # step 9 (plan D9-4'): the Mission's own version
-        role = template_for(role_for_task(task), bound["prompt_versions"])  # D5-9: approach
+        role = self._template(role_for_task(task), mission.id)  # D5-9: approach
         untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
         try:
             knowledge = self._gather_knowledge(mission, task, all_tasks)
@@ -3318,6 +3381,7 @@ class Orchestrator:
                 knowledge=knowledge,
                 untrusted_sources=untrusted,
                 role=role.name,
+                domain=self.commit.domain_for(mission.id),
             )
         except ContextRejected as error:
             self.commit.stop_task(
