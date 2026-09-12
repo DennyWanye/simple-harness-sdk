@@ -1373,6 +1373,45 @@ class Store:
         ).fetchone()
         return None if row is None else dict(_loads(row[0]))
 
+    # ---------------------------------------------------------- domains (P3.3 D1)
+
+    def bind_mission_domain(
+        self, mission_id: str, *, domain_id: str, domain_version: str, snapshot: Mapping[str, Any]
+    ) -> bool:
+        """Freeze this Mission's domain profile.  The snapshot is a copy of the profile's
+        content: a later change to the registry never moves a running Mission."""
+
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO mission_domains(mission_id,domain_id,domain_version,json,bound_at)"
+                " VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING",
+                (
+                    str(mission_id),
+                    str(domain_id),
+                    str(domain_version),
+                    canonical_json(dict(snapshot)),
+                    self.now,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def get_mission_domain(self, mission_id: str) -> dict[str, Any] | None:
+        if not self.has_table("mission_domains"):
+            return None  # a library from before schema v8
+        row = self._connection.execute(
+            "SELECT domain_id,domain_version,json,bound_at FROM mission_domains WHERE mission_id = ?",
+            (mission_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "mission_id": mission_id,
+            "domain_id": row[0],
+            "domain_version": row[1],
+            "json": dict(_loads(row[2])),
+            "bound_at": row[3],
+        }
+
     def list_mission_policies(self, version_id: str | None = None) -> list[dict[str, Any]]:
         if not self.has_table("mission_policies"):
             return []
@@ -1771,6 +1810,7 @@ class Store:
             else [],
             "waiting_on": self.waiting_on(mission_id) if self.has_table("approvals") else [],
             "mission_policy": self.get_mission_policy(mission_id),  # step 9 (plan D9-3')
+            "mission_domain": self.get_mission_domain(mission_id),  # P3.3 (plan v3 D1/D9)
             "event_count": self.count_events(mission_id),
         }
 

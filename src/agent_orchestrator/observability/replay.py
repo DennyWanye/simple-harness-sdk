@@ -32,7 +32,7 @@ REPLAY_VERSION = "replay-v1"
 # plan D8-2': the formal state; everything else (budgets, intents, leases, heartbeats,
 # allocation scores, backpressure) is explicitly out of scope
 FORMAL_FIELDS: dict[str, tuple[str, ...]] = {
-    "mission": ("status", "stop_reason", "policy_version_id"),
+    "mission": ("status", "stop_reason", "policy_version_id", "domain_id"),
     "task": ("status", "accepted_result_id"),
     "attempt": ("status",),
     "result": ("verification_state", "verdict"),
@@ -44,7 +44,9 @@ FORMAL_FIELDS: dict[str, tuple[str, ...]] = {
 }
 # fields an older library does not record: expected only where the library has them
 # (step 9, plan D9-3': the policy binding is formal state from schema v6 on)
-OPTIONAL_FIELDS = frozenset({("mission", "policy_version_id")})
+# P3.3 (plan v3 D9): a library from before domain binding has the mission row but not the
+# field — the same shape as the step-9 policy binding
+OPTIONAL_FIELDS = frozenset({("mission", "policy_version_id"), ("mission", "domain_id")})
 # events that carry no formal state (known, deliberately not projected)
 NO_FORMAL_EFFECT = frozenset(
     {
@@ -190,6 +192,8 @@ class Projection:
             self._set("mission", mission, status="CREATED", stop_reason=None)
             if p.get("policy_version_id"):  # step 9 (plan D9-3'): bound at creation
                 self._set("mission", mission, policy_version_id=p["policy_version_id"])
+            if p.get("domain_id"):  # P3.3 (plan v3 D1): frozen at creation, same shape
+                self._set("mission", mission, domain_id=p["domain_id"])
         elif kind == "MissionPlanning":
             self._need("mission", mission, "mission_created_missing", event)
             self._set("mission", mission, status="PLANNING")
@@ -490,6 +494,11 @@ def formal_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, dict[str, dic
                 **(
                     {"policy_version_id": snapshot["mission_policy"]["version_id"]}
                     if (snapshot.get("mission_policy") or {}).get("source") not in (None, "legacy")
+                    else {}
+                ),
+                **(
+                    {"domain_id": snapshot["mission_domain"]["domain_id"]}
+                    if snapshot.get("mission_domain")
                     else {}
                 ),
             }

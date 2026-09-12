@@ -126,7 +126,7 @@ DomainProfileV1
 
 ### D3 准则评估记录、attribution 的三层收口（A01、A03、A06）
 
-**评估记录** `CriterionAssessmentV1`（新表 `criterion_assessments`，schema v8），字段按用户计划原文。它是**审阅载体，不是新的 Task 终态**，Task 状态机一个字不改。
+**评估记录** `CriterionAssessmentV1`（新表 `criterion_assessments`），字段按用户计划原文。它是**审阅载体，不是新的 Task 终态**，Task 状态机一个字不改。
 
 **传递通道**（accept 只收到 PASS 的层，且 accept 时验证副本已不在手上）：adapter 跑在 verification 阶段，解析结果与 verdict 作为 `LayerResult.detail` 经 `record_verification_layer` 落 `verifications.detail_json`；accept 事务用 `list_verifications` 读回、重放出 `criterion_assessments` 行。FAIL 时 accept 不跑，评估只存在于 `verifications` 行里——失败码的断言落在 `detail_json` 上。挂起恢复时评估随 detail 一起复用，不重跑。
 注意 `verifications` 是 `UNIQUE(result_id, layer)`（`schema.py:142`），**一个 layer 只有一行**：多条准则的评估打包进同一个 `detail_json`，而 `display_block` 全量入库有体积风险 → 只存 `display_block` 的引用坐标 + 截断后的文本（上限写死），完整文本由界面按坐标从 CAS 现取。
@@ -210,9 +210,9 @@ DomainProfileV1
 
 | 切片 | 内容 | 覆盖 |
 |---|---|---|
-| A | 领域画像（含替换默认政策、系统模板、角色模板与 context 文案）、**五处**闸门、`mission_domains` 与 facade、schema v8、D9 的事件与回放（含 `formal_from_snapshot` / `Store.snapshot`）、**`check_arbitration` 抽象与 `_open_conflict` 部署闸门抽象一并前移** | A07；A05 的前置 |
-| B | `sources` 表与三个 facade 命令（幂等键/授权/审批/发布目录不相交）、来源进 CAS、protected 扩成 `Path | bytes` 并按来源根判定、`SourceCitation` 契约与 `CONTRACT_SCHEMA_VERSION` bump、EvidenceResolver 七个失败码 | A02、A06 一半 |
-| C | 评估记录的产出与传递、`grade_claim` v2、**attribution 三层收口**（系统构造 key、消费层标记、压制通道收口）、`code-v1` legacy 分支 | A03、A01、A06 另一半 |
+| A | 领域画像（含替换默认政策、系统模板、角色模板与 context 文案）、**五处**闸门、`mission_domains` 与 facade、**schema v8**、D9 的事件与回放（含 `formal_from_snapshot` / `Store.snapshot`）、**`check_arbitration` 抽象与 `_open_conflict` 部署闸门抽象一并前移** | A07；A05 的前置 |
+| B | **schema v9** `sources` 表与三个 facade 命令（幂等键/授权/审批/发布目录不相交）、来源进 CAS、protected 扩成 `Path | bytes` 并按来源根判定、`SourceCitation` 契约与 `CONTRACT_SCHEMA_VERSION` bump、EvidenceResolver 七个失败码 | A02、A06 一半 |
+| C | **schema v10** `criterion_assessments`、评估记录的产出与传递、`grade_claim` v2、**attribution 三层收口**（系统构造 key、消费层标记、压制通道收口）、`code-v1` legacy 分支 | A03、A01、A06 另一半 |
 | D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT、人工升级与挂起恢复 | A04 |
 | E | 冲突范围加注、文档领域人工裁决、知识 `source_versions` 与 `KnowledgeIndex.stale`、检索排除 | A05、A08 |
 | F | 全量回归、wheel 干净环境验证 | A07 后半 |
@@ -228,7 +228,7 @@ DomainProfileV1
 | **真实模型写不出合规 citation**（第 2 轮 A P1-B 的可行性反面）：表格单元格与冒号句（`：` 不是终符）只能整行整引，而 P3.3 的场景恰以表格与冒号句为主；模型的省力反应是**改结论去迁就可引的句子**，比引用失败更糟 | 结构单元（列表项/表格行/标题行/段落）算作完整单元，覆盖表格与冒号句；citation schema 随画像注入 Worker 输入包；切片 G 先用真实文档做一次可行性 spike，不合格就回头调文法而不是调结论 |
 | 引文比对被误解成语义相似 | §3 与 D2 写死；结构测试钉住不做 NFKC |
 | 文档领域禁 `pytest:` 挡住混合 Mission | 领域按 Mission 冻结；混合场景 → 遗留 F-P33-4 |
-| schema v8 迁移碰真实库 | 备份优先、已 ≥v8 no-op、真实库副本干跑 |
+| schema 迁移碰真实库 | 迁移是**追加式**的，一个切片一版（v8 领域绑定 / v9 来源 / v10 评估记录），不攒成一次大改；备份优先、已 ≥ 目标版本 no-op、真实库副本干跑 |
 | `verifications.detail_json` 体积（`UNIQUE(result_id, layer)`，一个 layer 一行） | 只存坐标 + 截断文本，完整文本按坐标从 CAS 现取 |
 | 新表/新事件进回放的投影漏项 | D9 逐个定性；切片 A 先跑回放测试；复核阶段用 pytest 插件扫全部 Mission |
 | `evaluation.py:216-228` 在 `critic` ablation 下禁自由文本准则，文档领域永远跑不了该策略 | 切片 G 不安排 critic ablation 的对照评测，如实说明 |

@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, replace
 from typing import Any
 
+from ..governance.domains import DomainProfileV1, check_against_domain, resolve_domain
 from ..contracts import Budget, ContractError, Mission
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, VERIFICATION_LAYERS
 from ..planning.manager import inherit_limits, system_reserve_tokens
@@ -284,6 +285,7 @@ def validate_graph(
     deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
     task_floor: TaskBudgetFloor | None = None,
     candidates: int = 1,
+    domain: DomainProfileV1 | None = None,
 ) -> ValidatedGraph:
     if not proposal.tasks:
         raise GraphRejected("empty", "a task graph needs at least one task")
@@ -307,7 +309,18 @@ def validate_graph(
         depth[key] = 1 + max((depth[d] for d in proposal.edges()[key]), default=0)
     if depth and max(depth.values()) > MAX_GRAPH_DEPTH:
         raise GraphRejected("depth", f"graph depth {max(depth.values())} > {MAX_GRAPH_DEPTH}")
+    profile = domain if domain is not None else resolve_domain(None)
     for node in proposal.tasks:
+        # P3.3 (D1) gate 1 of 5: the Mission's frozen domain decides which criteria
+        # grammar and which layers a proposed Task may use
+        problems = check_against_domain(
+            profile,
+            key=node.key,
+            success_criteria=node.success_criteria,
+            verification_policy=node.verification_policy,
+        )
+        if problems:
+            raise GraphRejected("domain", "; ".join(problems))
         if not node.goal.strip():
             raise GraphRejected("contract", f"{node.key}: goal is blank")
         if not node.rationale.strip():

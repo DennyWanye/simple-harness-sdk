@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..governance.domains import CODE_DOMAIN, DOMAINS
 from ..contracts import Budget, ContractError, Event, Mission
 from ..orchestrator.commit_service import CommitService, MissionSpec
 from ..runtime.tool_gateway import TOOL_NAMES
@@ -42,6 +43,10 @@ def validate_spec(spec: MissionSpec, *, available_tools: Sequence[str] = TOOL_NA
     for path in spec.workspace_seed:
         if path.startswith("/") or ".." in path.split("/"):
             raise MissionRequestError(f"workspace_seed path escapes the workspace: {path}")
+    if spec.domain not in DOMAINS:  # P3.3 (D1): refused here, not silently defaulted
+        raise MissionRequestError(
+            f"unknown domain profile {spec.domain!r} (this deployment offers {sorted(DOMAINS)})"
+        )
 
 
 def spec_from_request(
@@ -90,6 +95,7 @@ def spec_from_request(
             untrusted_sources=tuple(untrusted),
             synthesis=None if synthesis is None else dict(synthesis),
             conflict_reserve_tokens=reserve,
+            domain=str(request.get("domain", CODE_DOMAIN)),
         )
     except (ContractError, TypeError, ValueError) as error:
         raise MissionRequestError(str(error)) from error

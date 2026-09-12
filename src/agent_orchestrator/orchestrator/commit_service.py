@@ -53,6 +53,7 @@ from ..graph.changes import (
     node_budget,
     validate_change,
 )
+from ..governance.domains import CODE_DOMAIN, DomainProfileV1, check_against_domain, resolve_domain
 from ..graph.task_graph import GraphRejected, TaskBudgetFloor, TaskGraphProposal, validate_graph
 from ..memory.claims import grade_claim
 from ..memory.summaries import refresh_summaries
@@ -106,6 +107,7 @@ class MissionSpec:
     untrusted_sources: tuple[str, ...] = ()  # step 4 (D4-12): path prefixes of external content
     synthesis: Mapping[str, Any] | None = None  # step 4 (D4-8): fixed synthesis Task template
     conflict_reserve_tokens: int = 0  # step 4 (D4-20): tokens set aside for Conflict Tasks
+    domain: str = CODE_DOMAIN  # P3.3 (D1): the domain profile this Mission freezes
 
     def to_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -126,6 +128,10 @@ class MissionSpec:
             data["synthesis"] = dict(self.synthesis)
         if self.conflict_reserve_tokens:
             data["conflict_reserve_tokens"] = self.conflict_reserve_tokens
+        if self.domain != CODE_DOMAIN:
+            # A07: the default must not change ``spec_hash`` — a Host that re-sends the same
+            # request after upgrading would otherwise get a MissionConflict
+            data["domain"] = self.domain
         return data
 
 
@@ -521,6 +527,10 @@ class CommitService(
         """Idempotent on (tenant_id, idempotency_key); a different spec is a conflict."""
 
         spec_hash = sha256_hex(spec.to_json())
+        try:  # P3.3 (D1): an unknown domain is refused before anything is written
+            domain = resolve_domain(spec.domain)
+        except KeyError as error:
+            raise CommitRejected(f"unknown domain profile {spec.domain!r}") from error
         with self._store.transaction():
             found = self._store.find_mission(spec.tenant_id, spec.idempotency_key)
             if found is not None:
@@ -590,6 +600,12 @@ class CommitService(
                 default_params=policy_defaults,
                 pin=policy_pin,
             )
+            self._store.bind_mission_domain(
+                mission_id,
+                domain_id=domain.id,
+                domain_version=domain.version,
+                snapshot=domain.to_json(),
+            )
             self._emit(
                 "MissionCreated",
                 mission_id,
@@ -599,6 +615,7 @@ class CommitService(
                     "budget": spec.budget.to_json(),
                     "spec_hash": spec_hash,
                     "policy_version_id": binding["version_id"],
+                    "domain_id": domain.id,
                 },
                 actor_type="user",
                 actor_id=spec.tenant_id,
@@ -764,11 +781,41 @@ class CommitService(
             self._emit("MissionActivated", mission_id, key=mission_id, payload={"task_id": task_id})
             return task, receipt
 
+    def domain_for(self, mission_id: str) -> DomainProfileV1:
+        """The frozen domain profile of this Mission; ``code-v1`` for anything created
+        before domain binding existed (plan D1, A07)."""
+
+        binding = self._store.get_mission_domain(mission_id)
+        return resolve_domain(None if binding is None else str(binding["domain_id"]))
+
+    def _check_system_template(self, domain: DomainProfileV1, task: Task) -> None:
+        """A Task the *system* writes (a conflict or synthesis template) against the
+        Mission's domain.  These two go straight to ``insert_task`` and so bypass both
+        graph gates; without this they are the hole the domain cannot see."""
+
+        problems = check_against_domain(
+            domain,
+            key=f"system template {task.kind}",
+            success_criteria=task.success_criteria,
+            verification_policy=task.verification_policy,
+        )
+        if problems:
+            raise CommitRejected("domain: " + "; ".join(problems))
+
     def _check_task_proposal(self, mission: Mission, proposal: TaskProposal) -> None:
         """§24 step 3: relation to the root goal, tools, success criteria, budget legality."""
 
         if not proposal.success_criteria:
             raise CommitRejected("task proposal has no success criteria")
+        # P3.3 (D1) gate 3 of 5: a single Task proposal / the Manager's ``add_task``
+        problems = check_against_domain(
+            self.domain_for(mission.id),
+            key="task proposal",
+            success_criteria=proposal.success_criteria,
+            verification_policy=proposal.verification_policy,
+        )
+        if problems:
+            raise CommitRejected("domain: " + "; ".join(problems))
         if not proposal.rationale.strip():
             raise CommitRejected("task proposal cannot explain its relation to the Mission (§19.5)")
         extra_tools = set(proposal.allowed_tools) - set(mission.allowed_tools)
@@ -861,6 +908,7 @@ class CommitService(
                 deployed_layers=self._deployed_layers,
                 task_floor=self._task_floor,
                 candidates=self._candidates(mission.id),
+                domain=self.domain_for(mission.id),
             )
             key_to_id = {
                 key: ids.task_id(mission_id, ordinal)
@@ -921,7 +969,15 @@ class CommitService(
                     template=template,
                     leaves=[key_to_id[key] for key in graph.order if key in set(graph.leaves)],
                     now=self._store.now,
-                    default_policy=default_change_policy(self._deployed_layers),
+                    default_policy=tuple(
+                        layer
+                        for layer in self.domain_for(mission_id).synthesis_default_policy
+                        if layer in self._deployed_layers
+                    )
+                    or default_change_policy(self._deployed_layers),
+                )
+                self._check_system_template(  # P3.3 (D1) gate 5 of 5
+                    self.domain_for(mission_id), synthesis
                 )
                 self._store.insert_task(synthesis, ordinal=len(tasks) + 1)
                 self._ledger.open_account(
@@ -1104,6 +1160,7 @@ class CommitService(
                 deployed_layers=self._deployed_layers,
                 task_floor=self._task_floor,
                 candidates=self._candidates(mission.id),
+                domain=self.domain_for(mission.id),
             )
             by_id = {task.id: task for task in tasks}
             new_version = current + 1
@@ -1732,11 +1789,20 @@ class CommitService(
         deferred_reason = None
         if not self._conflict_tasks:
             deferred_reason = "knowledge_sharing_disabled"
-        elif "code_test" not in self._deployed_layers:
-            # host support 0.9.8: a Conflict Task settles on a probe test run on this
-            # machine; without local code execution an unexecuted probe would stand as
-            # evidence, so the dispute stays DISPUTED and the conflict waits
-            deferred_reason = "local_code_execution_disabled"
+        elif self.domain_for(mission.id).conflict_template.decides_with not in (
+            self._deployed_layers
+        ):
+            # host support 0.9.8: a Conflict Task settles on whatever its domain says
+            # decides a dispute — a probe test in the code domain, a person in the
+            # document domain.  If *that* layer is not deployed here, an unexecuted check
+            # would stand as evidence, so the dispute stays DISPUTED and the conflict
+            # waits.  P3.3 (review round 2 B P0-3): this used to name ``code_test``
+            # literally, which deferred every conflict in a deployment that runs no tests.
+            deferred_reason = (
+                "local_code_execution_disabled"
+                if self.domain_for(mission.id).conflict_template.decides_with == "code_test"
+                else "arbitration_layer_undeployed"
+            )
         elif per_task <= 0:
             deferred_reason = "no_reserve"
         elif remaining <= 0:
@@ -1762,6 +1828,7 @@ class CommitService(
             return
         tokens = min(remaining, per_task)
         tasks = self._store.list_tasks(mission.id)
+        domain = self.domain_for(mission.id)
         task = conflict_task(
             mission,
             task_id=ids.task_id(mission.id, len(tasks) + 1),
@@ -1770,7 +1837,12 @@ class CommitService(
             conflict_id=conflict_id,
             tokens=tokens,
             now=self._store.now,
+            template=domain.conflict_template,
         )
+        # P3.3 (D1) gate 4 of 5: the system's own template goes through the same check as
+        # anything a model proposes — a template the domain would refuse is a bug here,
+        # not something to discover four slices later as a Task that never completes
+        self._check_system_template(domain, task)
         try:  # P0-1: an accept transaction never rolls back on a budget problem (D4-20)
             self._ledger.open_account(
                 account_id=task_account(task.id),

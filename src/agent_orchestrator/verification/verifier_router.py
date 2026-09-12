@@ -71,10 +71,12 @@ class VerifierRouter:
         test_timeout: float = 120.0,
         local_code_execution: bool = True,
         executor: Any = None,
+        domain: Any = None,
     ) -> None:
         self._test_timeout = test_timeout
         self._local_code_execution = local_code_execution  # host support 0.9.8
         self._executor = executor  # P3.2 D2: what code_test runs through
+        self._domain = domain  # P3.3 D1: the Mission's frozen domain profile
 
     async def verify(
         self,
@@ -181,6 +183,7 @@ class VerifierRouter:
                     require_synthesis_knowledge=require_synthesis_knowledge,
                     extra_problems=action_problems or (),
                     local_code_execution=self._local_code_execution,
+                    domain=self._domain,
                 )
             elif layer == "critic_review":
                 try:

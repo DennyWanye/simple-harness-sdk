@@ -22,6 +22,7 @@ from typing import Any
 
 from ..artifacts.paths import under_prefix
 from ..artifacts.workspace import Workspace, sha256_file
+from ..governance.domains import CODE_PROFILE, DomainProfileV1
 from ..contracts import Artifact, ResultEnvelope, Task
 from ..memory.verified_knowledge import KnowledgeIndex
 from ..runtime.tool_gateway import run_pytest
@@ -68,11 +69,21 @@ def check_used_knowledge(used_knowledge: Sequence[str], index: KnowledgeIndex) -
     return index.check(used_knowledge)
 
 
-def check_arbitration(envelope: ResultEnvelope, task: Task) -> list[str]:
-    """D4-7: an ``arbitration:<key>`` criterion demands exactly one claim on that key,
-    backed by an external check (a ``pytest:`` evidence item) — an opinion is not a
-    resolution."""
+def check_arbitration(
+    envelope: ResultEnvelope, task: Task, *, domain: DomainProfileV1 | None = None
+) -> list[str]:
+    """D4-7: an ``arbitration:<key>`` criterion demands exactly one claim on that key —
+    an opinion is not a resolution.
 
+    P3.3 (plan v3 D1/D6): *what* backs it is the domain's business.  The code domain is
+    unchanged: a ``pytest:`` probe run under ``arbitration/<key>/``.  A domain whose
+    template settles disputes with a person (``decides_with == "human_review"``) demands
+    no such evidence — requiring a citation kind the domain forbids would leave every
+    conflict Task permanently unfinishable.
+    """
+
+    profile = domain if domain is not None else CODE_PROFILE
+    external = profile.conflict_template.decides_with
     problems: list[str] = []
     for criterion in task.success_criteria:
         if not criterion.startswith("arbitration:"):
@@ -83,6 +94,9 @@ def check_arbitration(envelope: ResultEnvelope, task: Task) -> list[str]:
             problems.append(
                 f"arbitration of {key!r} needs exactly one claim on that key (got {len(matching)})"
             )
+            continue
+        if external == "human_review":
+            # the sixth layer is the external check here; nothing to demand of the citation
             continue
         evidence = matching[0].evidence or envelope.evidence
         probes = [item for item in evidence if item.startswith("pytest:")]
@@ -112,6 +126,7 @@ def rule_check(
     require_synthesis_knowledge: bool = True,
     extra_problems: Sequence[str] = (),
     local_code_execution: bool = True,
+    domain: DomainProfileV1 | None = None,
 ) -> LayerResult:
     problems: list[str] = [
         f"protected seed file rewritten by the Worker: {path}" for path in tampered
@@ -123,7 +138,7 @@ def rule_check(
         problems.append(
             "a synthesis result must cite the Verified Knowledge it combined (used_knowledge)"
         )
-    problems.extend(check_arbitration(envelope, task))
+    problems.extend(check_arbitration(envelope, task, domain=domain))
     by_path = {artifact.path: artifact for artifact in artifacts}
     if envelope.outcome.value != "candidate":
         problems.append(f"outcome is {envelope.outcome}, not a candidate")

@@ -430,6 +430,20 @@ CREATE TABLE workspaces (
 CREATE INDEX workspaces_mission_idx ON workspaces(mission_id, state)
 """
 
+# P3.3 (plan v3 D1): the domain profile a Mission is frozen to, the same way
+# ``mission_policies`` freezes its policy version.  The json column is a copy of the
+# profile's content, not a pointer at the current registry: replay reads the copy.
+DDL_V8 = """
+CREATE TABLE mission_domains (
+ mission_id TEXT PRIMARY KEY REFERENCES missions(mission_id),
+ domain_id TEXT NOT NULL,
+ domain_version TEXT NOT NULL,
+ json TEXT NOT NULL,
+ bound_at REAL NOT NULL
+) STRICT;
+CREATE INDEX mission_domains_domain_idx ON mission_domains(domain_id)
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
@@ -438,6 +452,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(5, "orchestrator-step07", DDL_V5),
     Migration(6, "orchestrator-step09", DDL_V6),
     Migration(7, "orchestrator-p32", DDL_V7),
+    Migration(8, "orchestrator-p33-domains", DDL_V8),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -457,6 +472,7 @@ __all__ = (
     "DDL_V5",
     "DDL_V6",
     "DDL_V7",
+    "DDL_V8",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

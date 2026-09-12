@@ -53,6 +53,7 @@ OPEN_FIELDS = frozenset(
         "synthesis",
         "conflict_reserve_tokens",
         "workspace_seed",
+        "domain",  # P3.3 (D1): which domain profile this Mission freezes
     }
 )
 CLOSED_FIELDS = {

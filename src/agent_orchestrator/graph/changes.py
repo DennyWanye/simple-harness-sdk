@@ -22,6 +22,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..governance.domains import DomainProfileV1, check_against_domain, resolve_domain
 from ..contracts import Budget, ContractError, Mission, Task, TaskStatus
 from ..contracts.models import (
     STEP2_IMPLEMENTED_LAYERS,
@@ -306,6 +307,7 @@ def validate_change(
     deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
     task_floor: TaskBudgetFloor | None = None,
     candidates: int = 1,
+    domain: DomainProfileV1 | None = None,
 ) -> ValidatedChange:
     """Graph Manager checks for one change proposal against the current formal graph.
     ``deployed_layers`` (host support 0.9.8) is what this deployment can run: an
@@ -513,7 +515,17 @@ def validate_change(
                     f"{node.key} and {other} are independent but both declare outputs {shared}",
                 )
     # ---- contracts of the new nodes
+    profile = domain if domain is not None else resolve_domain(None)
     for node in nodes:
+        # P3.3 (D1) gate 2 of 5: a Manager may not widen the Mission's domain
+        problems = check_against_domain(
+            profile,
+            key=node.key,
+            success_criteria=node.success_criteria,
+            verification_policy=node.verification_policy,
+        )
+        if problems:
+            raise GraphChangeRejected("domain", "; ".join(problems))
         if not node.goal.strip() or not node.success_criteria:
             raise GraphChangeRejected(
                 "contract", f"{node.key}: goal and success_criteria are required (§6.3)"

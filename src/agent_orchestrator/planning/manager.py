@@ -46,9 +46,20 @@ def conflict_task(
     conflict_id: str,
     tokens: int,
     now: float,
+    template: Any = None,
 ) -> Task:
-    """The Conflict Task record (committed BLOCKED, unblocked in the same transaction)."""
+    """The Conflict Task record (committed BLOCKED, unblocked in the same transaction).
 
+    P3.3 (D1): the criteria and the policy come from the Mission's domain profile.  The
+    code domain's template is the pair this function used to hard-code; a domain that
+    runs no tests asks for no probe and settles the dispute with a person instead — a
+    hard-coded ``pytest:`` criterion there would build a Task nobody can ever complete.
+    """
+
+    if template is None:  # a caller from before domain binding: the code domain's template
+        from ..governance.domains import CODE_PROFILE  # noqa: PLC0415 - avoids a cycle
+
+        template = CODE_PROFILE.conflict_template
     directory = arbitration_dir(key)
     sources = sorted({str(side["source_task"]) for side in sides})
     max_attempts = CONFLICT_MAX_ATTEMPTS
@@ -60,13 +71,20 @@ def conflict_task(
         parent_task_ids=(),
         dependency_ids=tuple(sources),
         kind="conflict",
-        goal=f"{ARBITRATION_PREFIX}: 仲裁主题 {key} — 双方结论相反，运行外部检查后提交结论",
+        goal=(
+            f"{ARBITRATION_PREFIX}: 仲裁主题 {key} — 双方结论相反，"
+            + (
+                "运行外部检查后提交结论"
+                if template.decides_with != "human_review"
+                else "整理双方证据与适用范围，交由人工裁决"
+            )
+        ),
         rationale=(
             f"§14.4 冲突处理：{len(sides)} 条 Claim 对 {key} 得出相反结论；"
             "不投票，由 Arbiter 做外部验证并经独立 Critic 复核后 Commit"
         ),
-        success_criteria=(f"arbitration:{key}", f"pytest:{directory}/test_probe.py"),
-        verification_policy=CONFLICT_POLICY,
+        success_criteria=template.criteria_for(key=key, directory=directory),
+        verification_policy=template.policy,
         allowed_tools=mission.allowed_tools,
         budget=inherit_limits(Budget(max_tokens=tokens, max_attempts=max_attempts), mission.budget),
         priority=10.0,  # a dispute about a delivered fact is resolved before anything else
