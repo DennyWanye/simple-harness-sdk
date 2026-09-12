@@ -159,6 +159,7 @@ def rank_knowledge(
     tasks_by_id: Mapping[str, Task],
     limit: int = DEFAULT_LIMIT,
     query_text: str | None = None,
+    stale: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> RetrievalResult:
     """Deterministic ranking of one Mission's knowledge for ``task`` (D4-9)."""
 
@@ -171,14 +172,17 @@ def rank_knowledge(
         if r.status == "SUPERSEDED"
     ]
     superseded_ids = [str(item["id"]) for item in superseded]
-    live = [r for r in own if r.status == "VERIFIED"]
+    stale_dropped = {
+        r.id: [dict(reason) for reason in stale[r.id]] for r in own if stale and stale.get(r.id)
+    }
+    live = [r for r in own if r.status == "VERIFIED" and r.id not in stale_dropped]
     if not live:
         return RetrievalResult(
             RETRIEVAL_VERSION,
             "ok",
             (),
             tuple(superseded),
-            {"superseded": superseded_ids},
+            {"superseded": superseded_ids, **({"stale": stale_dropped} if stale_dropped else {})},
             considered,
             limit=limit,
         )
@@ -245,6 +249,7 @@ def rank_knowledge(
             "duplicate_of": duplicate_of,
             "superseded": superseded_ids,
             "over_limit": truncated,
+            **({"stale": stale_dropped} if stale_dropped else {}),
         },
         considered,
         limit=limit,

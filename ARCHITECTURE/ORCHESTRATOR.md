@@ -2,6 +2,8 @@
 
 最后更新：2026-09-12。
 
+E 候选已通过 P33 与旧人工审核 638 passed /21.01秒、mypy92文件及修改Python Ruff；独立审查闭环，待干净源码完整编排回归。来源失效按当前消费派生；文档冲突使用绑定实际结果的人工仲裁；历史等级与receipt不改。F/G、wheel、Host与真实flash仍未完成。
+
 D 干净源码 `d3d3fd8650acc8b837dc4c0e093ab95068d054ff` 完整编排 **1119 passed / 8 skipped / 0 failed**（446.64秒），watchdog446.86秒，PG18131无残留。8项skip为未启用真实Provider。D为SDK源码里程碑，E–G、Host/wheel/真实flash仍未完成。
 DOC_PROFILE v3、契约schema3；旧历史不迁改。当前生产链路新增有限接受、人工恢复、预算前限额与Mission固定分母确定性判定。见P33 journal §2.4。
 
@@ -37,3 +39,11 @@ C 已完成 SDK 评估/分级链路；干净源码 `963b090` 编排全量 **979 
 
 
 测试、提交身份、独立审查及本地证据索引见 [切片 A/B 记录](../plans/2026-09-12-phase3/p33/journal.md)。总体进度和接续顺序以 [Phase3 HANDOFF](../plans/2026-09-12-phase3/HANDOFF.md) 为准。
+
+## E 当前候选生产链路
+
+- 新文档接受在同事务检查实际直接引用的当前来源；撤销/替换形成 stale_source，存储故障 ERROR，历史确定性 PASS 和已接受结果保留。
+- Knowledge source_versions 递归合并真实引用与 used_knowledge，保留同路径多版本；旧记录按实际已接受评估推导，unknown/cycle/坏来源不能洗成空依据。
+- KnowledgeIndex.stale 独立于旧 check；检索排序前排除失效知识，当前摘要隐藏相关历史结论且保留诊断，不回写历史。
+- 文档冲突侧注明来源版本和评估范围；人工请求绑定真实非人工检查、产物、当前全部成员与版本。第三成员使旧请求失效；contextual/keep/unresolved 不提升知识等级。
+- 硬检查失败不进入预算耗尽的旧仲裁捷径；旧版普通审核批准恢复时重入新仲裁，旧拒绝仍有效，code 行为保留。

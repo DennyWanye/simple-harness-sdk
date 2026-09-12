@@ -1605,11 +1605,33 @@ class Orchestrator:
         try:
             records = self.store.list_knowledge(mission.id)
             claims = self.store.list_mission_claims(mission.id)
-            summaries = build_summaries(self.store, mission.id)
+            document = self.commit.domain_for(mission.id).id == "doc-research-v1"
+            stale = KnowledgeIndex.load(self.store, mission.id).stale() if document else None
+            if stale and any(
+                issue.get("code") == "ERROR" for issues in stale.values() for issue in issues
+            ):
+                raise RetrievalUnavailable("source dependency index could not be read")
+            summaries = build_summaries(self.store, mission.id, stale=stale)
+            disputes = disputed_claims(claims, mission_id=mission.id)
+            if document:
+                for conflict in self.store.list_conflicts(mission.id):
+                    if conflict["state"] != "RESOLVED_BY_HUMAN":
+                        continue
+                    for item in disputes:
+                        if item["claim_id"] in conflict["claim_ids"]:
+                            item["human_arbitration"] = {
+                                "conflict_id": conflict["conflict_id"],
+                                "resolution": dict(conflict.get("resolution") or {}),
+                                "marker": "人工裁决仅适用于本争议及其条件，不提升证据等级",
+                            }
         except (StoreBusy, OSError, ValueError) as error:  # index unreadable / not ready
             raise RetrievalUnavailable(str(error)) from error
         ranked = rank_knowledge(
-            task, records, tasks_by_id=tasks_by_id, limit=self._config.max_knowledge_items
+            task,
+            records,
+            tasks_by_id=tasks_by_id,
+            limit=self._config.max_knowledge_items,
+            stale=stale,
         )
         by_id = {record.id: record for record in records}
         from ..context.compression import GLOBAL_BRANCH, branch_of
@@ -1618,7 +1640,7 @@ class Orchestrator:
         return KnowledgeContext(
             retrieval=ranked,
             verified=tuple(knowledge_view(by_id[item.id], item) for item in ranked.items),
-            disputed=tuple(disputed_claims(claims, mission_id=mission.id)),
+            disputed=tuple(disputes),
             candidates=tuple(
                 candidate_claims(
                     claims,
@@ -2555,6 +2577,10 @@ class Orchestrator:
                 versions={"critic_review": provenance["verifier_version"]} if provenance else {},
                 default_version=VERIFIER_VERSION,
             )
+            if request["state"] == "GRANTED" and self.commit._is_document_conflict(task):
+                # A legacy ordinary approval cannot resolve a document conflict.
+                # Reuse valid checks, then request the bound arbitration on resume.
+                human = None
         escalated_before = any(
             r["kind"] == "review"
             and r.get("reason") == "needs_human"
@@ -3793,7 +3819,11 @@ class Orchestrator:
                     f"mission {mission.id} stopped: {reason} ({error.dimension}, mission pool)"
                 )
             else:
-                if task.kind == "conflict" and reason is MissionStopReason.MAX_ATTEMPTS_REACHED:
+                if (
+                    task.kind == "conflict"
+                    and reason is MissionStopReason.MAX_ATTEMPTS_REACHED
+                    and self.commit.domain_for(mission.id).id != "doc-research-v1"
+                ):
                     return self._arbitrate_conflict(mission, task, detail)  # D7-8' ①
                 self.commit.stop_task(task.id, stop_reason=reason, detail=detail)
                 self._note(f"task {task.id} stopped: {reason} ({error.dimension})")
@@ -3933,13 +3963,10 @@ class Orchestrator:
             except Exception as error:  # noqa: BLE001
                 test_runs[criterion] = {"passed": False, "error": str(error), "stdout": ""}
         judge_ablated = "critic" in self._config.ablations  # step 8 (D8-7'): no judge Critic
-        needs_critic = (
-            not judge_ablated
-            and any(
-                not c.startswith(("pytest:", "file:", ACTION_PREFIX))
-                and (document_coverage is None or c.startswith("arbitration:"))
-                for c in mission.success_criteria
-            )
+        needs_critic = not judge_ablated and any(
+            not c.startswith(("pytest:", "file:", ACTION_PREFIX))
+            and (document_coverage is None or c.startswith("arbitration:"))
+            for c in mission.success_criteria
         )
         critic: CriticVerdict | None = None
         reused_critic = False

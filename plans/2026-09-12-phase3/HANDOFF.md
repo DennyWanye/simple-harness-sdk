@@ -51,7 +51,7 @@
 | B | schema v9 `sources` 表与三个 facade 命令、来源进 CAS、protected 扩成 `Path\|bytes`、`SourceCitation` 契约、EvidenceResolver 七个失败码 | ✅ SDK 源码验证完成（`fb58bf1`），独立审查闭环；867 passed / 8 skipped |
 | C | schema v10 `criterion_assessments`、评估记录传递、`grade_claim` v2、attribution 记录/消费/压制通道（Host 交付层仍 G） | ✅ SDK 源码验证完成（`963b090`）；979 passed / 8 skipped，475.47 秒 |
 | D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | ✅ SDK源码验证完成（`d3d3fd8`）；1119 passed /8 skipped，446.64秒 |
-| E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | 未开始 |
+| E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | 候选定向638通过、独立审查闭环，待干净全量 |
 | F | 全量回归、wheel 干净环境验证 | 未开始 |
 | G | Host 钉版、接线、系统渲染结论区、真实 flash 原生验收 | 未开始 |
 

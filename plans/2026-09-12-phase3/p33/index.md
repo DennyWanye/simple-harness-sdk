@@ -8,4 +8,4 @@
 - [D 执行细化](slice-d-readiness.md)与[独立审查](reports/code-review-d.md)
 - [接续入口](../HANDOFF.md)
 
-下一步E：来源失效与冲突人工裁决。真实模型只用deepseek-flash与专用key；本轮尚未跑真实Provider或原生UI。
+E候选定向638通过且独立审查闭环，待干净完整回归。下一步F：整仓/wheel验证。真实模型只用deepseek-flash与专用key；本轮尚未跑真实Provider或原生UI。

@@ -64,6 +64,11 @@ from ..graph.changes import (
 )
 from ..graph.task_graph import GraphRejected, TaskBudgetFloor, TaskGraphProposal, validate_graph
 from ..memory.claims import grade_claim, system_attribution
+from ..memory.source_dependencies import (
+    merge_source_versions,
+    source_current_issues,
+    source_dependencies_for,
+)
 from ..memory.summaries import refresh_summaries
 from ..memory.verified_knowledge import KnowledgeIndex, KnowledgeRecord
 from ..observability.lineage import lineage
@@ -1599,6 +1604,8 @@ class CommitService(
         *,
         verifier_results: Sequence[Mapping[str, Any]],
         assessments: Sequence[CriterionAssessmentV1] = (),
+        source_dependencies: Mapping[str, tuple[dict[str, tuple[str, ...]], list[dict[str, Any]]]]
+        | None = None,
     ) -> list[dict[str, Any]]:
         """D4-2/D4-3/D4-4/D4-5 inside the accept transaction: grade every claim of the
         accepted result from the verification that ran, project the VERIFIED ones into
@@ -1645,6 +1652,23 @@ class CommitService(
                     verifier_results=layers,
                     artifact_paths=artifact_paths,
                     untrusted_prefixes=untrusted,
+                )
+            versions: dict[str, tuple[str, ...]] | None = None
+            if document:
+                if source_dependencies is None or claim.id not in source_dependencies:
+                    raise CommitRejected(
+                        "document projection requires precomputed source provenance"
+                    )
+                versions, issues = source_dependencies[claim.id]
+                grade = replace(
+                    grade,
+                    basis={
+                        **dict(grade.basis),
+                        "source_versions": {
+                            path: list(hashes) for path, hashes in versions.items()
+                        },
+                        **({"source_provenance_issues": issues} if issues else {}),
+                    },
                 )
             attribution = system_attribution(grade.basis) if document else None
             reserved_key = (
@@ -1778,6 +1802,7 @@ class CommitService(
                     created_at=self._store.now,
                     supersedes=supersedes,
                     evidence_trust=grade.evidence_trust,
+                    source_versions=versions,
                 )
                 self._store.upsert_knowledge(record)
                 self._emit(
@@ -1871,14 +1896,68 @@ class CommitService(
             None,
         )
         if existing is not None:
+            added = claim.id not in existing["claim_ids"]
             if claim.id not in existing["claim_ids"]:
                 existing = {**existing, "claim_ids": [*existing["claim_ids"], claim.id]}
                 self._store.upsert_conflict(existing)
             self._store.upsert_claim(
                 next_claim(self._require_claim(claim.id), conflict_id=str(existing["conflict_id"]))
             )
+            if self.domain_for(mission.id).id == DOC_DOMAIN:
+                self._store.upsert_conflict(
+                    {
+                        **existing,
+                        "sides": self._document_conflict_sides(existing["claim_ids"]),
+                        "version": int(existing.get("version", 1)) + (1 if added else 0),
+                    }
+                )
+                if added:
+                    self._cancel_document_arbitrations(
+                        str(existing["conflict_id"]), reason="conflict_scope_changed", resume=True
+                    )
             return
         self._open_conflict(mission, contradiction, opened_by=stored.envelope.id)
+
+    def _document_conflict_sides(self, claim_ids: Sequence[str]) -> list[dict[str, Any]]:
+        """Historical evidence/conditions annotate a dispute; they never exempt it."""
+        sides = []
+        for claim_id in claim_ids:
+            claim = self._require_claim(claim_id)
+            basis = claim.confidence_metadata.get("basis", {})
+            refs = list(basis.get("evidence_refs", ())) if isinstance(basis, Mapping) else []
+            rows = [
+                row
+                for row in self._store.list_criterion_assessments(
+                    claim.mission_id, result_id=claim.result_id
+                )
+                if row["claim_id"] == claim.id
+            ]
+            versions = merge_source_versions(
+                basis.get("source_versions", {}) if isinstance(basis, Mapping) else {},
+                *(
+                    {str(ref["target"]): (str(ref["source_version"]),)}
+                    for ref in refs
+                    if ref.get("status") == "resolved"
+                ),
+            )
+            sides.append(
+                {
+                    "claim_id": claim.id,
+                    "claim_version": claim.version,
+                    "stance": claim.stance,
+                    "content": claim.content,
+                    "evidence": list(claim.evidence),
+                    "source_task": claim.source_task,
+                    "status": str(claim.status),
+                    "source_versions": {path: list(hashes) for path, hashes in versions.items()},
+                    "checked_scope": [row["checked_scope"] for row in rows] or [{"kind": "global"}],
+                    "evidence_refs": refs,
+                    "assessment_revisions": {
+                        row["receipt_id"]: row["claim_revision"] for row in rows
+                    },
+                }
+            )
+        return sides
 
     def _open_conflict(
         self, mission: Mission, contradiction: Contradiction, *, opened_by: str
@@ -1887,7 +1966,7 @@ class CommitService(
         report = dict(mission.final_report or {})
         ordinal = len(self._store.list_conflicts(mission.id)) + 1
         conflict_id = f"{mission.id}:conflict-{ordinal}"
-        sides = [
+        sides: list[dict[str, Any]] = [
             {
                 "claim_id": side.id,
                 "stance": side.stance,
@@ -1898,6 +1977,8 @@ class CommitService(
             }
             for side in (contradiction.other, contradiction.claim)
         ]
+        if self.domain_for(mission.id).id == DOC_DOMAIN:
+            sides = self._document_conflict_sides([side["claim_id"] for side in sides])
         remaining = int(report.get("conflict_reserve_remaining") or 0)
         per_task = int(report.get("conflict_reserve_tokens") or 0)
         record: dict[str, Any] = {
@@ -3403,6 +3484,10 @@ class CommitService(
             mission = self._require_mission(stored.envelope.mission_id)
             assessments: tuple[CriterionAssessmentV1, ...] = ()
             domain = self.domain_for(mission.id)
+            if self._is_document_conflict(task):
+                raise CommitRejected(
+                    "document conflict requires its dedicated human arbitration; ordinary acceptance is unavailable"
+                )
             if domain.id == DOC_DOMAIN:
                 assessments = self._validated_criterion_assessments(stored, task, attempt)
                 if domain.version == "3":
@@ -3462,6 +3547,38 @@ class CommitService(
                     for row in self._store.list_verifications(result_id)
                     if row["status"] == "PASS"
                 )
+                citations = tuple(
+                    citation
+                    for proposal in stored.envelope.claims
+                    for citation in proposal.citations
+                )
+                if citations:
+                    current_issues = (
+                        [{"code": "ERROR", "reason": "source_artifact_store_unavailable"}]
+                        if self._source_artifact_store is None
+                        else source_current_issues(
+                            self._store, mission.id, citations, self._source_artifact_store
+                        )
+                    )
+                    if current_issues:
+                        failure = LayerResult(
+                            "rule_check",
+                            "ERROR"
+                            if any(issue["code"] == "ERROR" for issue in current_issues)
+                            else "FAIL",
+                            "source currentness changed before acceptance",
+                            {
+                                "reason": "source_unavailable"
+                                if any(issue["code"] == "ERROR" for issue in current_issues)
+                                else "stale_source",
+                                "source_current_issues": current_issues,
+                            },
+                        )
+                        # Keep the valid frozen rule receipt; this is a separate live
+                        # acceptance check, recorded by VerificationFailed/failure detail.
+                        return self.fail_result(
+                            result_id, failures=(failure.to_json(),), owner=owner
+                        )
             stale = KnowledgeIndex.load(self._store, mission.id).check(
                 stored.envelope.used_knowledge
             )
@@ -3503,6 +3620,41 @@ class CommitService(
             )
             if rejection is not None:  # D7-2'': re-checked on the accepted bytes, in the Commit
                 return self.fail_result(result_id, failures=[rejection], owner=owner)
+            source_dependencies = None
+            if domain.id == DOC_DOMAIN:
+                # Resolve every dependency before ANY new knowledge is projected. A
+                # sibling claim of this result cannot become its own input mid-loop.
+                source_dependencies = {
+                    ids.claim_id(result_id, ordinal): source_dependencies_for(
+                        self._store,
+                        mission_id=mission.id,
+                        evidence_refs=[
+                            ref
+                            for assessment in assessments
+                            if assessment.claim_id == ids.claim_id(result_id, ordinal)
+                            for ref in assessment.to_json()["evidence_refs"]
+                        ],
+                        used_knowledge=stored.envelope.used_knowledge,
+                    )
+                    for ordinal, _ in enumerate(stored.envelope.claims, 1)
+                }
+                errors = [
+                    issue
+                    for _, issues in source_dependencies.values()
+                    for issue in issues
+                    if issue["code"] == "ERROR"
+                ]
+                if errors:
+                    failure = LayerResult(
+                        "rule_check",
+                        "ERROR",
+                        "source provenance unavailable",
+                        {
+                            "reason": "source_provenance_unavailable",
+                            "issues": errors,
+                        },
+                    )
+                    return self.fail_result(result_id, failures=(failure.to_json(),), owner=owner)
             if task.status is TaskStatus.ACTIVE:
                 verifying = next_task(task, TaskStatus.VERIFYING)
                 self._store.update_task(verifying, expected_version=task.version)
@@ -3522,6 +3674,7 @@ class CommitService(
                 stored,
                 verifier_results=verifier_results,
                 assessments=assessments,
+                source_dependencies=source_dependencies,
             )
             self._store.update_attempt(
                 next_attempt(attempt, AttemptStatus.COMPLETED), expected_version=attempt.version

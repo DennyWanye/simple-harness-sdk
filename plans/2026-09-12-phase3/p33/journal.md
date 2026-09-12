@@ -269,3 +269,43 @@ D18:04–18:51约47分钟，含实现、审查、定向验证和本轮完整回�
 
 - `.local-test-evidence/2026-09-12/p33-d/orchestrator-full.log` SHA-256 `a28110339f53c617eaa2154914cc95332f3e78e36971cfae3f1068962702704e`
 - `.local-test-evidence/2026-09-12/p33-d/orchestrator-full.json` SHA-256 `1d30f55d02056b5dcf838c88cdd9a68b51f3179da0524fab95f902df2b46eafa`
+
+### D推送与E启动（18:53）
+
+fc43d6f提交后P33 542 passed /8.72秒（watchdog8.90秒），PG23067无残留，发送secret模式计数0。main已推送、与origin/main 0/0。D合计约49分钟。E独立挑战及先行oracle见slice-e-readiness，18:53正式启动。
+
+## 2.5 切片 E 实施中
+
+18:53启动，执行细化与先行oracle见slice-e-readiness.md；原始AC不改。主统一pytest，Kepler负责接受/人工写侧，Ohm负责来源依赖/检索，主负责实际runtime与摘要/context。
+
+- 首条实际SDK反例：两个文档分支与实际synthesis均完成，但综合Knowledge没有source_versions并集，1 failed /0.57秒（lineage-runtime-red.log）。此流程实际读来源、写产物、调用确定性Critic，不是原生/真实Provider。
+- 实际冲突流程反例：两有来源支持的反stance声明触发ConflictTask，Arbiter读两源/写报告/Critic通过，但只生成review而非arbitration；1 failed /0.50秒（arbitration-runtime-red.log，确切运行时间以日志为准）。旧的直接topic读取KeyError改为显式kind/topic比较，不改预期。
+- source_commits初次11失败是fixture task_contract tuple无法JSON化，单列fixture-red（source-commits-red.log）。修列表后source+仲裁组合18 failed /15 passed /1.01秒：新接受未拦旧源、CAS故障未ERROR、缺来源并集/争议scope、普通review路径及成员变更等真实反例（commits-arbitration-red.log）。
+- 新helper首次缺module属于dependency red，不算行为证明。实现后来源依赖+摘要+原step04检索/context **48 passed /5.67秒**（dependencies-first.log）。先前summary-legacy的rank.stale TypeError发生于新接口未接完，已被此组合绿集覆盖。
+- 摘要只读过滤：knowledge及sources.knowledge排除stale，自身产出或真实used_knowledge命中的Task历史正文改为固定失效提醒，uncertainty保留ID/reasons并重算hash；无stale旧hash不变。consumer摘要先真实1失败/0.22秒，修后两项0.21秒；独立Ohm ACCEPT。_gather将ERROR转RetrievalUnavailable，并在已人工解决争议的context附上限定范围marker。
+
+E仍未完成，接受/人工事务整合与独立审查、干净完整回归、文档推送尚待；无新wheel/Host/Provider调用。
+
+### E 定向验证与审查收口（19:30）
+
+实际来源接受+综合runtime13 passed /1.02秒；人工事务+runtime初批28 passed /2.60秒；初次P33/旧人工636 passed /19.03秒。之后新增两项旧review恢复，最终638 passed /21.01秒。上述重叠，不相加作为覆盖数量。
+
+- 非人工两次FAIL后的耗尽仲裁实际red 1failed/3deselected0.68秒，修后1passed/3deselected0.65秒。此前测试漏传attempt history导致结果身份错误，修fixture后才得到有效行为反例。
+- 旧普通审核批准恢复实际red 1failed/1passed/4deselected0.94秒；先前两次owner不同导致_verify返回False属于fixture问题。固定同owner并真实关库重开后，证明批准分支没有生成仲裁。修复只清除docConflict旧GRANTED的human PASS，保留有效非人工reuse和REJECTED语义。最终runtime6+旧human16合计22 passed /10.39秒。
+- 两位独立审查最终ACCEPT，详见reports/code-review-e.md。mypy92 sourcefiles、修改Python Ruff通过。KnowledgeIndex.check与legacy grade函数源码比对基线不变。
+- E仍待干净源码完整编排回归；无新wheel/Host/真实模型。
+
+| 本地证据（p33-e/） | SHA-256 |
+|---|---|
+| `lineage-runtime-red.log` | `b69d8a73135b8e4943b45914763362ff93e2ad690a5946a2743e3c36b549e5a2` |
+| `arbitration-runtime-red.log` | `d33d61544ff838a61470c936420e643f829444a348f411a1d58a369d228e1c03` |
+| `commits-arbitration-red.log` | `e3ff08290d18691dfe6cc40f3ddadea09127fd4ccd7dd65f7d54e10ee5f220ea` |
+| `dependencies-first.log` | `24742798d653224971ad7305d00af3563f2796da1f85262174f1533c9e954bb1` |
+| `source-integration-first.log` | `0f1d2b885e58686f6084c885e65e1a59dfab432d03d5e21977463979800f7e84` |
+| `arbitration-integration-first.log` | `cd77064ae311b926a4a915148d01b95928fb49e3e86216e8f93d476edefb7856` |
+| `arbitration-exhaustion-red.log` | `1a44108673c5f0b8313fa37f8dbfe822a4ad0ae470b678ef874371075f7e047f` |
+| `arbitration-exhaustion-green.log` | `671b0f74ab85aeaa379bef77b729329e9a9220b17f1f595b7fada0dccebf08df` |
+| `legacy-review-red.log` | `f3a71fb0c8d857dd4a106c2ad50439d0e55eedd2a43d11e90c727b31306c9fc9` |
+| `legacy-review-green.log` | `6cb33b51d06070a7de87bf4c97308b3a8a37da18a309411266a058e24f0341c8` |
+| `p33-final.log` | `c490ddf6ebd03fa857046bc0eaa0538296ef313bdb7f00884b21d3b09a328415` |
+| `mypy-final.log` | `4ceb57b647f65ad9bc4a2ac12b1f1d95323ae55da4304fb3e5014cf75bf56502` |
