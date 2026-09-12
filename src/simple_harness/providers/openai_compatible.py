@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -60,6 +60,24 @@ def openai_chat_request_payload(request: ProviderRequest, *, model: str) -> dict
     consults a client nor sends a request; the HTTP adapter uses the same serializer.
     """
     return OpenAICompatibleProvider._payload_for_model(request, model)
+
+
+class _ProtocolErrorWithUsage(ProviderProtocolError):
+    """A rejected response can still contain independently valid billed usage."""
+
+    __slots__ = ("detail",)
+
+    def __init__(self, usage: ProviderUsage, cause: ProviderProtocolError) -> None:
+        super().__init__(private_cause=cause)
+        self.detail = {
+            "usage": {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "total_tokens": usage.total_tokens,
+                "cache_tokens": usage.cache_tokens,
+                "reasoning_tokens": usage.reasoning_tokens,
+            }
+        }
 
 
 class OpenAICompatibleProvider:
@@ -260,6 +278,29 @@ class OpenAICompatibleProvider:
         payload: Any,
         response: httpx.Response,
     ) -> ProviderResponse:
+        try:
+            return self._parse_response_payload(request, payload, response)
+        except ProviderProtocolError as error:
+            # Parsing a malformed tool call must not turn a known billed response
+            # into unknown spend. Never infer usage from text, caps or estimates.
+            try:
+                usage = (
+                    self._parse_usage(payload.get("usage"))
+                    if isinstance(payload, Mapping)
+                    else None
+                )
+            except ProviderProtocolError:
+                usage = None
+            if usage is not None:
+                raise _ProtocolErrorWithUsage(usage, error) from None
+            raise
+
+    def _parse_response_payload(
+        self,
+        request: ProviderRequest,
+        payload: Any,
+        response: httpx.Response,
+    ) -> ProviderResponse:
         if not isinstance(payload, Mapping):
             raise ProviderProtocolError()
         choices = payload.get("choices")
@@ -358,9 +399,9 @@ class OpenAICompatibleProvider:
                 else None
             )
             return ProviderUsage(
-                prompt,
-                completion,
-                total,
+                cast(int, prompt),
+                cast(int, completion),
+                cast(int, total),
                 cache_tokens=cache_tokens,
                 reasoning_tokens=reasoning_tokens,
             )

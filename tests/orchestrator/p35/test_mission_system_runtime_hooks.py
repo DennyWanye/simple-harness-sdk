@@ -220,17 +220,31 @@ def test_priced_system_tail_protects_actual_double_rounding_and_output_retry(tmp
                 response = replace(response, finish_reason="length")
             return response
 
+    verified_inputs = []
     provider = ActualEmptyRetry(
         {
             "worker": [
                 ("workspace_write_file", {"path": "a.md", "content": "input"}),
-                envelope_step(summary="input", artifacts=["a.md"], claims=["input"]),
+                envelope_step(
+                    summary="input",
+                    artifacts=["a.md"],
+                    claims=["input"],
+                    override=lambda body: {
+                        **body,
+                        "evidence": ["a.md", "pytest:tests/test_input.py"],
+                    },
+                ),
             ],
             "synthesizer": [
                 "",  # actual length response; SDK retries within the same durable call cap
                 ("workspace_read_file", {"path": "a.md"}),
                 ("workspace_write_file", {"path": "s.md", "content": "combined"}),
-                envelope_step(summary="combined", artifacts=["s.md"], claims=["combined"]),
+                envelope_step(
+                    summary="combined",
+                    artifacts=["s.md"],
+                    claims=["combined"],
+                    override=lambda body: {**body, "used_knowledge": list(verified_inputs)},
+                ),
             ],
             "critic": [
                 ("workspace_read_file", {"path": "s.md"}),
@@ -252,6 +266,14 @@ def test_priced_system_tail_protects_actual_double_rounding_and_output_retry(tmp
         async with Orchestrator(config, provider, provider_token_estimator=Counter(1000)) as orch:
             mission = await orch.submit_mission(
                 spec(
+                    success_criteria=("file:s.md",),
+                    workspace_seed={
+                        "tests/test_input.py": (
+                            "from pathlib import Path\n\n"
+                            "def test_actual_input():\n"
+                            "    assert Path('a.md').read_text() == 'input'\n"
+                        )
+                    },
                     budget=Budget(max_tokens=200000, max_cost_micros=100, max_attempts=12),
                     synthesis={
                         "goal": "Combine input",
@@ -277,6 +299,8 @@ def test_priced_system_tail_protects_actual_double_rounding_and_output_retry(tmp
                         "tasks": [
                             node(
                                 "A",
+                                success_criteria=["file:a.md", "pytest:tests/test_input.py"],
+                                verification_policy=["format_check", "rule_check", "code_test"],
                                 budget={
                                     "max_tokens": 20000,
                                     "max_cost_micros": 20,
@@ -314,7 +338,16 @@ def test_priced_system_tail_protects_actual_double_rounding_and_output_retry(tmp
                 assert orch.store.get_task(task.id).status is TaskStatus.COMPLETED
                 return attempt
 
-            await drive(tasks[0])
+            work_attempt = await drive(tasks[0])
+            work_result = orch.store.find_result_for_attempt(work_attempt.id)
+            rows = orch.store.list_verifications(work_result.envelope.id)
+            assert any(r["layer"] == "code_test" and r["status"] == "PASS" for r in rows)
+            verified_inputs.extend(
+                record.id
+                for record in orch.store.list_knowledge(mission.id)
+                if record.source_task == tasks[0].id and str(record.status) == "VERIFIED"
+            )
+            assert len(verified_inputs) == 1
             # Another genuine public service reservation owns all unprotected
             # Mission money. The tested C/Critic cannot borrow it via guard.grow.
             account = orch.commit.ledger.account("budget:" + mission.id)

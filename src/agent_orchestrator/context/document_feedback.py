@@ -36,6 +36,10 @@ _SCALARS = frozenset(
         "budget_tokens",
         "required_over_budget",
         "source_kind",
+        "target",
+        "source_version",
+        "start_line",
+        "end_line",
     }
 )
 _LISTS = frozenset({"hard_failures", "problems", "reasons", "claim_ids"})
@@ -51,6 +55,10 @@ _NESTED = frozenset(
         "missing",
         "provided",
         "structural_result",
+        "citations",
+        "resolution",
+        "ref",
+        "locator",
     }
 )
 
@@ -81,6 +89,9 @@ def document_repair_feedback(value: Mapping[str, Any]) -> dict[str, Any]:
             "Use original current criterion IDs and source versions. Missing limitations "
             "identify each required claim/criterion pair; provide its actual evidence gap. "
             "Do not remove required criterion bindings or turn an inference into a quotation. "
+            "Citation diagnostics identify the original claim, citation index, source version "
+            "and line range. For quote_not_whole_unit, re-read and quote the complete source "
+            "unit including its conditions; preserve literal punctuation and quotation marks. "
             "Read registered source files again when needed; a prior FAIL is not evidence."
         ),
     }

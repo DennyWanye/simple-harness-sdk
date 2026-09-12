@@ -32,6 +32,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from simple_harness.agents import AgentConfig, AgentLimits, AgentTurnState
+from simple_harness.execution.provider_admission import ProviderAdmissionDenied
+
+from .accounting_recovery import import_late_accounting
 
 if TYPE_CHECKING:
     from ..runtime.provider_budget_guard import ProviderBudgetGuard
@@ -336,7 +339,20 @@ class Orchestrator:
             self._config, profiles=self._profiles, default_profile=self._default_profile,
             provider_admission=self._provider_admission,
         )
-        await self._assembled.__aenter__()
+        # SDK startup itself reconciles grants. Consume already durable late
+        # receipts before it can raise on an actual overrun; no runtime is started
+        # by this accounting-only pass. Tool counts also come from durable rows.
+        self._commit.tool_calls_for = self._executed_tool_calls
+        import_late_accounting(self)
+        try:
+            await self._assembled.__aenter__()
+        except ProviderAdmissionDenied as error:
+            if error.detail.get("reason_code") == "bound_overrun":
+                # A receipt may appear during startup reconciliation, after the
+                # first scan. Pay its original actual cost even when SDK startup
+                # has failed; do not pretend that failed runtime has started.
+                import_late_accounting(self)
+            raise
         # P3.2 D3: artifacts recorded before 0.10 move into the content-addressed store
         # (or are marked unavailable); execution copies a crash left behind are removed
         workspaces = self._assembled.workspaces
@@ -346,7 +362,6 @@ class Orchestrator:
         workspaces.sweep_exec_copies()
         self.cleanup_workspaces()  # P3.2 D4: finished Missions past their retention
         self._bridge = self._assembled.pool(self._default_profile).bridge
-        self._commit.tool_calls_for = self._executed_tool_calls  # D6-8
         self._assembled.gateway.on_rejected = self._audit_tool_rejection  # D6-7
         self._assembled.gateway.on_executed = self._record_tool_call  # review P1-3
         self._assembled.gateway.executed_counter = self.store.count_tool_calls
@@ -1056,7 +1071,15 @@ class Orchestrator:
             self._reimport_unsettled(mission)
             self._check_interpreter(mission)  # step 9 (plan D9-4')
         for pool in self.assembled.pools.values():  # D6-5': each pool recovers only its own library
-            await pool.bridge.recover()
+            try:
+                await pool.bridge.recover()
+            except ProviderAdmissionDenied as error:
+                if error.detail.get("reason_code") != "bound_overrun":
+                    raise
+                # SDK/guard have committed the actual overrun. Import its original
+                # cost before leaving recovery; new admission remains fail-closed.
+                self._note(f"recovered actual provider overrun: {error}")
+        import_late_accounting(self)
 
     async def run(self, *, max_cycles: int = 10_000, until_idle: bool = True) -> None:
         """Drive the loop until idle.  ``max_cycles`` bounds *progressing* cycles (work
@@ -1155,7 +1178,7 @@ class Orchestrator:
             return False
 
     async def _cycle_inner(self) -> bool:
-        progressed = False
+        progressed = import_late_accounting(self)
         for mission in self._active_missions():
             if mission.status is MissionStatus.CREATED:
                 await self._start_planning(mission)
@@ -2223,6 +2246,10 @@ class Orchestrator:
                 if reservation is None or reservation["state"] == "SETTLED":
                     continue
                 intent = self.store.get_intent_for_subject(attempt.id)
+                if intent is not None and intent.config.get("provider_admission_fingerprint"):
+                    # Guarded subjects use the all-Mission, original-binding
+                    # accounting scanner after SDK recovery and on every cycle.
+                    continue
                 if intent is not None and intent.agent_id is not None:
                     try:
                         self._import_usage(intent)

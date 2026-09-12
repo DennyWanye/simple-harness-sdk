@@ -5,6 +5,7 @@ from dataclasses import replace
 from graph_helpers7 import drive_to_running, graph_service, node
 
 from agent_orchestrator.context.context_builder import build_worker_package
+from agent_orchestrator.context.document_feedback import document_repair_feedback
 from agent_orchestrator.contracts.models import sha256_hex
 from agent_orchestrator.governance.domains import CODE_PROFILE, DOC_PROFILE, DOC_PROFILE_V5
 from agent_orchestrator.runtime.model_router import classify_turn_error
@@ -68,3 +69,34 @@ def test_required_context_failure_is_not_provider_health_or_model_quality():
         classify_turn_error({"error": {"error_code": "context_required_content_too_large"}})
         == "runtime_context_limit"
     )
+
+
+def test_citation_repair_retains_failed_unit_identity_without_source_body():
+    source = "HUGE_SOURCE_BODY " * 20000
+    record = {
+        "detail": {
+            "hard_failures": ["citation_not_resolved"],
+            "citations": [{
+                "claim_id": "result-original:claim-4", "citation_index": 2,
+                "resolution": {
+                    "status": "quote_not_whole_unit",
+                    "target": "sources/original.md", "source_version": "a" * 64,
+                    "ref": {"path": "sources/original.md", "version": "a" * 64,
+                            "start_line": 17, "end_line": 20, "quote": source},
+                    "display_block": {"preview": source},
+                },
+            }],
+        },
+    }
+    projected = document_repair_feedback(record)
+    [citation] = projected["diagnostic"]["detail"]["citations"]
+    assert citation["claim_id"] == "result-original:claim-4"
+    assert citation["citation_index"] == 2
+    assert citation["resolution"] == {
+        "status": "quote_not_whole_unit", "target": "sources/original.md",
+        "source_version": "a" * 64,
+        "ref": {"path": "sources/original.md", "version": "a" * 64,
+                "start_line": 17, "end_line": 20},
+    }
+    assert "HUGE_SOURCE_BODY" not in str(projected)
+    assert projected["record_sha256"] == sha256_hex(record)
