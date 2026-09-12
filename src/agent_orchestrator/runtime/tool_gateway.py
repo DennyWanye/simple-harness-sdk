@@ -77,6 +77,7 @@ class WorkspaceBinding:
     max_tool_calls: int | None = None  # step 6 (D6-7 ⑤ / D6-8): the reserved tool-call cap
     protected: tuple[str, ...] = ()  # step 6 (D6-6): read-only upstream inputs of this Attempt
     denied_prefixes: tuple[str, ...] = ()  # step 6 (D6-7): the deployment's denied paths
+    protected_prefixes: tuple[str, ...] = ()  # Source directories: readable, never writable.
 
 
 def is_untrusted(path: str, prefixes: tuple[str, ...]) -> bool:
@@ -315,10 +316,17 @@ class WorkspaceToolGateway:
                         stage="policy",
                         message=f"{path} is denied by the deployment policy",
                     )
-                if call.name == "workspace_write_file" and canonical.casefold() in {
-                    _canonical(p).casefold()
-                    for p in binding.protected  # case-insensitive FS
-                }:
+                if call.name == "workspace_write_file" and (
+                    canonical.casefold()
+                    in {
+                        _canonical(p).casefold()
+                        for p in binding.protected  # case-insensitive FS
+                    }
+                    or _under(
+                        canonical.casefold(),
+                        tuple(p.casefold() for p in binding.protected_prefixes),
+                    )
+                ):
                     return self._reject(
                         call,
                         record,
@@ -358,7 +366,10 @@ class WorkspaceToolGateway:
                     "path": arguments["path"],
                     "content": workspace.read_text(arguments["path"]),
                 }
-                if is_untrusted(str(arguments["path"]), binding.untrusted_sources):
+                if is_untrusted(str(arguments["path"]), binding.untrusted_sources) or _under(
+                    _canonical(str(arguments["path"])).casefold(),
+                    tuple(p.casefold() for p in binding.protected_prefixes),
+                ):
                     value["trust"] = "untrusted_external"
                     value["notice"] = UNTRUSTED_NOTICE
                     record["trust"] = "untrusted_external"

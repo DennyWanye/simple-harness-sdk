@@ -37,6 +37,7 @@ from ..governance.permissions import Principal
 from ..observability.secrets import find_secrets
 from ..orchestrator.action_commits import ActionCommitError
 from ..orchestrator.commit_service import MissionConflict
+from ..orchestrator.source_commits import SourceCommitError
 from ..storage.store import StoreError
 from .approvals import ApprovalApi, ApprovalRequestError
 from .missions import MissionRequestError
@@ -101,6 +102,7 @@ class MissionControlV1:
             raise ValueError("a tenant is required")
         self._orchestrator = orchestrator
         self._tenant = str(tenant_id)
+        self._principal = principal
         self._approvals = ApprovalApi(
             orchestrator.commit, principal, deployment=orchestrator.config.deployment_policy
         )
@@ -159,6 +161,50 @@ class MissionControlV1:
             "status": str(mission.status),
             "facade": FACADE_VERSION,
         }
+
+    def register_source(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        return self._source_command("register", command)
+
+    def supersede_source(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        return self._source_command("supersede", command)
+
+    def revoke_source(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        return self._source_command("revoke", command)
+
+    def _source_command(self, operation: str, command: Mapping[str, Any]) -> dict[str, Any]:
+        required = {"mission_id", "path", "idempotency_key"}
+        if operation != "revoke":
+            required.update({"content", "kind"})
+        else:
+            required.add("reason")
+        if operation != "register":
+            required.add("expected_version_hash")
+        if not isinstance(command, Mapping) or set(command) != required:
+            raise FacadeError(
+                "invalid_request", f"source command requires exactly {sorted(required)}"
+            )
+        if any(not isinstance(command[name], str) for name in required):
+            raise FacadeError("invalid_request", "source command fields must be strings")
+        self._mission(command["mission_id"])
+        # A reopened Mission uses today's physical publication roots. Only the
+        # Orchestrator knows these; the low-level CommitService does not guess them.
+        try:
+            self._orchestrator.validate_source_storage(command["mission_id"])
+            method = getattr(self._orchestrator.commit, f"{operation}_source")
+            extra = (
+                {}
+                if operation == "register"
+                else {"deployment": self._orchestrator.config.deployment_policy}
+            )
+            return dict(
+                method(**dict(command), tenant_id=self._tenant, principal=self._principal, **extra)
+            )
+        except SourceCommitError as error:
+            raise FacadeError(error.code, str(error)) from error
+        except ContractError as error:
+            raise FacadeError("invalid_request", str(error)) from error
+        except StoreError as error:
+            raise FacadeError("refused", str(error)) from error
 
     @staticmethod
     def _strict(command: Mapping[str, Any]) -> dict[str, Any]:
@@ -296,6 +342,8 @@ class MissionControlV1:
             raise FacadeError("not_found", NOT_FOUND)
         self._mission(request.get("mission_id"))
         try:
+            if request["kind"] == "source_change" and decision == "approve":
+                self._orchestrator.validate_source_storage(str(request["mission_id"]))
             if decision == "approve":
                 result = self._approvals.approve(request_id, nonce=nonce)
             elif decision == "reject":

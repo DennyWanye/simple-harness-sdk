@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..contracts import Artifact, ids
+from .paths import under_prefix
 from .store import ArtifactStore, ArtifactStoreError, read_nofollow, read_verified
 
 
@@ -94,7 +95,9 @@ def _copy_tree(source: Path, target: Path) -> None:
         raise _symlink_refusal(links)
 
 
-def _source_bytes(source: Path, label: str) -> bytes:
+def _source_bytes(source: Path | bytes, label: str) -> bytes:
+    if isinstance(source, bytes):
+        return source
     try:
         return read_nofollow(Path(source))
     except ArtifactStoreError as error:
@@ -150,6 +153,8 @@ class Workspace:
         return target
 
     def write_bytes(self, relative: str, data: bytes) -> Path:
+        if not self.writable:
+            raise WorkspaceError("workspace is read-only")
         target = self.resolve(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
@@ -238,7 +243,8 @@ class WorkspaceManager:
         *,
         seed: Mapping[str, str],
         previous: Path | None = None,
-        inputs: Mapping[str, Path] | None = None,
+        inputs: Mapping[str, Path | bytes] | None = None,
+        replace_input_roots: Sequence[str] = (),
     ) -> Workspace:
         """Fresh writable workspace; seeded from the Mission files, the upstream
         inputs (path → accepted artifact file, D3-7') and the previous Attempt's tree
@@ -253,7 +259,27 @@ class WorkspaceManager:
             if previous is not None and previous.is_dir():
                 _copy_tree(previous, root)
             workspace = self._workspace(root, attempt_id, True)
+            folded_roots = tuple(p.casefold() for p in replace_input_roots)
+            if folded_roots:
+                # Only a fresh clone reaches here. Remove inherited source trees
+                # before inputs are installed, including file/directory transitions.
+                for directory, names, filenames in os.walk(root):
+                    for name in list(names):
+                        target = Path(directory) / name
+                        if under_prefix(
+                            target.relative_to(root).as_posix().casefold(), folded_roots
+                        ):
+                            shutil.rmtree(target)
+                            names.remove(name)
+                    for name in filenames:
+                        target = Path(directory) / name
+                        if under_prefix(
+                            target.relative_to(root).as_posix().casefold(), folded_roots
+                        ):
+                            target.unlink()
             for relative, content in seed.items():
+                if under_prefix(relative.casefold(), folded_roots):
+                    continue
                 if not (workspace.root / relative).exists():
                     workspace.write_text(relative, content)
             for relative, source in (inputs or {}).items():
@@ -296,7 +322,7 @@ class WorkspaceManager:
         self,
         attempt_id: str,
         *,
-        protected: Mapping[str, str] | None = None,
+        protected: Mapping[str, str | Path | bytes] | None = None,
         seed: Mapping[str, str] | None = None,
         inputs: Mapping[str, Path | bytes] | None = None,
         artifacts: Sequence[Artifact] | None = None,
@@ -338,8 +364,15 @@ class WorkspaceManager:
                 shutil.rmtree(target, ignore_errors=True)
                 raise
         copy = self._workspace(target, attempt_id, True)
-        for relative, content in (protected or {}).items():
-            copy.write_text(relative, content)
+        try:
+            for relative, protected_content in (protected or {}).items():
+                if isinstance(protected_content, str):
+                    copy.write_text(relative, protected_content)
+                else:
+                    copy.write_bytes(relative, _source_bytes(protected_content, relative))
+        except WorkspaceError:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
         return copy
 
     def exec_copy(self, attempt_id: str) -> Workspace:
@@ -386,18 +419,25 @@ class WorkspaceManager:
                     removed.append(entry.name)
         return sorted(removed)
 
-    def tampered_protected(self, attempt_id: str, protected: Mapping[str, str]) -> list[str]:
-        """Protected seed paths whose content in the Worker's tree differs from the seed."""
+    def tampered_protected(
+        self, attempt_id: str, protected: Mapping[str, str | Path | bytes]
+    ) -> list[str]:
+        """Compare legacy text seeds as before, source material by its exact bytes."""
 
         workspace = self.get(attempt_id, writable=False)
         tampered = []
         for relative, content in protected.items():
+            expected = content if isinstance(content, str) else _source_bytes(content, relative)
             try:
-                current = workspace.read_text(relative)
+                current = (
+                    workspace.read_text(relative)
+                    if isinstance(content, str)
+                    else _source_bytes(workspace.resolve(relative), relative)
+                )
             except WorkspaceError:
                 tampered.append(relative)
                 continue
-            if current != content:
+            if current != expected:
                 tampered.append(relative)
         return tampered
 

@@ -2,8 +2,9 @@
 
 ## Agent 编排 Phase3 当前状态
 
-P3.1/P3.2 已交付；P3.3 切片 A 已完成 SDK 源码验证，B–G 仍待实施；P3.4/P3.5 未开始。
-当前源码 `1eaa91f` 的编排全量 **651 passed / 8 skipped / 0 failed**；8 个真实 Provider 用例未启用。
+P3.1/P3.2 已交付；P3.3 切片 A 已完成 SDK 源码验证，B 来源与解析已实现、全量验收待完成；C–G、P3.4/P3.5 未完成。
+切片 A 源码 `1eaa91f` 的编排全量 **651 passed / 8 skipped / 0 failed**；8 个真实 Provider 用例未启用。
+切片 B 定向回归 288 passed；尚未运行本片干净提交全量。
 本次未换 Host wheel、未做新的原生或真实模型验收；Host `04350956` 仍钉 SDK 0.10.0。
 生产链路与边界见 [ORCHESTRATOR.md](ORCHESTRATOR.md)，接续与证据见
 [Phase3 HANDOFF](../plans/2026-09-12-phase3/HANDOFF.md)。本机未新增 worktree。

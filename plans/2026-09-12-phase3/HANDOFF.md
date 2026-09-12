@@ -19,7 +19,7 @@
 | Phase3 **P3.1** 真实 App Mission 控制闭环 | ✅ SHIPPED |
 | Phase3 **P3.1 遗留修复** | ✅ SHIPPED（SDK 0.9.11） |
 | Phase3 **P3.2** 隔离执行与真实受控交付 | ✅ SHIPPED（SDK 0.10.0，SDK `48e441a`，Host `04350956`） |
-| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A 已完成；下一步 B** |
+| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A 已完成；B 实施与审查中** |
 | Phase3 P3.4 / P3.5 | 未开始 |
 
 用户的总指示（原话）："先修复，然后开始P3.2 到 P3.5，文件提交"。所以 P3.3 做完继续 P3.4、P3.5。
@@ -48,7 +48,7 @@
 | 切片 | 内容 | 状态 |
 |---|---|---|
 | A | 领域画像、**五处**闸门、`mission_domains` 与 facade、schema v8、D9 事件与回放、仲裁路径的两处 pytest 硬编码 | ✅ SDK 源码验证完成（`1eaa91f`），见 §3–4 |
-| B | schema v9 `sources` 表与三个 facade 命令、来源进 CAS、protected 扩成 `Path\|bytes`、`SourceCitation` 契约、EvidenceResolver 七个失败码 | 接口与技术边界已核对，待实施 |
+| B | schema v9 `sources` 表与三个 facade 命令、来源进 CAS、protected 扩成 `Path\|bytes`、`SourceCitation` 契约、EvidenceResolver 七个失败码 | 代码与定向测试已补齐；独立审查修复与干净全量待完成 |
 | C | schema v10 `criterion_assessments`、评估记录传递、`grade_claim` v2、**attribution 三层收口** | 未开始 |
 | D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | 未开始 |
 | E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | 未开始 |

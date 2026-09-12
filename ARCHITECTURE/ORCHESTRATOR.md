@@ -2,7 +2,7 @@
 
 最后更新：2026-09-12。
 
-当前发布基线为 SDK 0.10.0（P3.2）；P3.3 切片 A 的源码已补齐，完整文档证据闭环仍在实施。Host `04350956` 仍钉 0.10.0，本次尚未换 wheel 或进行新的原生/真实 Provider 验收。
+当前发布基线为 SDK 0.10.0（P3.2）；P3.3 切片 A 已完成源码验证，B 来源与解析已实现，B 干净提交全量待完成，完整文档证据闭环仍在实施。Host `04350956` 仍钉 0.10.0，本次尚未换 wheel 或进行新的原生/真实 Provider 验收。
 
 ## 当前链路
 
@@ -15,6 +15,15 @@
 
 ## 状态与边界
 
-编排 schema 为 v8（mission_domains）。来源登记/schema v9、SourceCitation、解析器、准则评估、文档分级、证据不足出口、失效传播及 Host 系统结论区尚待 B–G。领域文案和 Task 准则校验不等于这些后续能力已经完成。
+编排 schema 为 v9（新增 sources）；契约 schema 为 2（SourceCitation）。空 citations 不写入旧信封，旧 code 契约保持兼容；携带新字段的信封会被旧严格 SDK 拒绝，Host 尚未切换本轮源码。
+
+- 来源通过 Host/人 facade 登记到 CAS；权威原文在 CAS，SQLite/事件记录版本与元数据。supersede/revoke 复用既有审批/decision 事务，绑定旧 head revision 和新版本，重放幂等、ABA 和坏 CAS 拒绝；失效审批仍可拒绝，但绑定不可伪造。
+- Worker 和 Planner 意图冻结 source_versions/source_roots；任务 Critic 复用 Attempt 的冻结值。重开库不以当前 registry 重建旧意图；新 repair 去除已撤销来源、保留普通草稿。来源副本仅在新树构建时物化，ACTIVE 树的篡改证据保留到收集/验证。
+- 来源根始终只读（包括新文件、大小写别名），文件工具读回带外部不可信标记；登记路径排除文件祖先和共享目录的 Unicode/大小写别名冲突。修改来源的实际结果收集以 protected_path_rewritten 拒绝；验证副本和 Resolver 从原始 CAS bytes 读取。
+- EvidenceResolver 按租户/Mission/精确版本和根范围读取 CAS；越权/不存在/根外返回同一 not_found；七种失败码按固定顺序判断。NFC/空白折叠、全文唯一与完整结构单元决定 locator；display_block 保留父标题和原文块坐标，预览限制 2048 字符，完整内容需后续 UI 按坐标读取。
+- 创建/导入和每次发布 handoff 使用同一个物理根相交判据（symlink、NFC、casefold）。全库只要存在文档来源领域，任何 Mission 的 file_publish 都不得写入共享 CAS/workspaces；guard 在预算预留/outbox 写入前的事务内运行。已有 receipt 仍可对账，纯 code 库保留旧行为。
+
+本轮尚不具备完整文档 VERIFIED 闭环：准则评估、文档分级、证据不足出口、失效传播及 Host 系统结论区仍待 C–G。Resolver resolved 只证明原文归属，不能单独升级知识等级。
+
 
 测试、提交身份、独立审查及本地证据索引见 [切片 A 记录](../plans/2026-09-12-phase3/p33/journal.md)。总体进度和接续顺序以 [Phase3 HANDOFF](../plans/2026-09-12-phase3/HANDOFF.md) 为准。

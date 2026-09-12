@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..contracts import ContractError, MissionStatus
@@ -218,6 +218,12 @@ class ActionCommitsMixin:
     if TYPE_CHECKING:
         _store: Store
         _ledger: BudgetLedger
+
+        def _validate_source_binding(self, request: Mapping[str, Any]) -> None: ...
+
+        def _validate_source_approval(self, request: Mapping[str, Any]) -> None: ...
+
+        def _apply_source_approval(self, request: dict[str, Any], principal: Principal) -> None: ...
 
         def _settle_subject(
             self,
@@ -590,14 +596,14 @@ class ActionCommitsMixin:
         if not nonce.strip():
             raise ActionCommitError("a decision needs a nonce")
         pre = self._store.get_approval(request_id)
-        if pre is not None and pre["kind"] == "action":
+        if pre is not None and pre["kind"] in {"action", "source_change"}:
             # review P2-3: an expiry is committed on its own, never rolled back with a refusal
             self.expire_approvals(str(pre["mission_id"]))
         with self._store.transaction():
             request = self._store.get_approval(request_id)
             if request is None:
                 raise ActionCommitError(f"unknown approval request {request_id}")
-            if request["kind"] != "action":  # reviews and arbitrations have their own entry
+            if request["kind"] not in {"action", "source_change"}:
                 raise ActionCommitError(f"{request_id} is a {request['kind']} request")
             receipt = decision_receipt_hash(
                 request_id=request_id,
@@ -610,16 +616,30 @@ class ActionCommitsMixin:
             if receipt in known:
                 return request, receipt  # the same receipt replayed: counted once, never twice
             mission = self._store.get_mission(str(request["mission_id"]))
-            if mission is None or mission.status is not MissionStatus.ACTIVE:
+            if mission is None or (
+                request["kind"] == "action" and mission.status is not MissionStatus.ACTIVE
+            ):
                 raise ActionCommitError(f"mission {request['mission_id']} is not ACTIVE")  # D7-4'
+            source_rejection = request["kind"] == "source_change" and decision == "reject"
             if (
                 request["state"] == "PENDING"
+                and not source_rejection
                 and request.get("expires_at") is not None
                 and self._store.now >= float(request["expires_at"])
             ):
                 raise ActionCommitError(f"approval {request_id} expired")
-            if request["state"] != "PENDING":
+            if request["state"] != "PENDING" and not (
+                source_rejection
+                and request["state"] == "EXPIRED"
+                and request.get("consumed_at") is None
+            ):
                 raise ActionCommitError(f"approval {request_id} is {request['state']}")
+            if request["kind"] == "source_change":
+                # Applying a grant needs a current head and readable CAS. A human may
+                # still dismiss an invalidated request, but never a tampered binding.
+                self._validate_source_binding(request)
+                if decision == "grant":
+                    self._validate_source_approval(request)
             if (
                 decision == "grant"
                 and request.get("distinct_principals", True)
@@ -689,6 +709,8 @@ class ActionCommitsMixin:
             )
             if request["state"] == "GRANTED" and request["kind"] == "action":
                 self._set_action_state(action_key, "APPROVED", approved_at=self._store.now)
+            elif request["state"] == "GRANTED" and request["kind"] == "source_change":
+                self._apply_source_approval(request, principal)
             return request, receipt
 
     def revoke_approval(
@@ -761,6 +783,8 @@ class ActionCommitsMixin:
         expired = []
         with self._store.transaction():
             for request in self._store.list_approvals(mission_id, "PENDING", "GRANTED"):
+                if request["kind"] == "source_change" and request.get("consumed_at") is not None:
+                    continue  # source mutation already committed with the grant
                 if request.get("expires_at") is None or self._store.now < float(
                     request["expires_at"]
                 ):
@@ -783,6 +807,7 @@ class ActionCommitsMixin:
         connectors: Mapping[str, Any],
         deployment: DeploymentPolicy,
         rehandoff: bool = False,
+        deployment_guard: Callable[[Mapping[str, Any]], str | None] | None = None,
     ) -> tuple[dict[str, Any] | None, str | None]:
         """The outbox step of a real action, in one transaction: re-check everything the
         approval was bound to, reserve the budget, then write HANDED_OFF with the owner, a
@@ -798,6 +823,11 @@ class ActionCommitsMixin:
             reason = self._handoff_refusal(
                 action, connectors=connectors, deployment=deployment, rehandoff=rehandoff
             )
+            # The executor knows physical deployment roots. Check them against the
+            # same registry snapshot as this handoff, before charging or writing the
+            # outbox; use the ordinary refusal/reconciliation path below.
+            if reason is None and deployment_guard is not None:
+                reason = deployment_guard(action)
             subject = f"action:{action_key}"
             if reason is None:
                 spec = connectors[str(action["connector"])].operations[str(action["operation"])]

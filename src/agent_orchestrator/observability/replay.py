@@ -41,6 +41,7 @@ FORMAL_FIELDS: dict[str, tuple[str, ...]] = {
     "action": ("state", "receipt_hash"),
     "approval": ("state",),
     "override": ("present",),
+    "source": ("version_hash", "superseded_by", "revoked"),
 }
 # fields an older library does not record: expected only where the library has them
 # (step 9, plan D9-3': the policy binding is formal state from schema v6 on)
@@ -341,6 +342,12 @@ class Projection:
                 if action_state == "SUCCEEDED":
                     fields["receipt_hash"] = p.get("receipt_hash")
                 self._set("action", p.get("action_key"), **fields)
+        elif kind in {"SourceRegistered", "SourceSuperseded", "SourceRevoked"}:
+            for source in p.get("sources", []):
+                key = source_key(source)
+                self._set(
+                    "source", key, **{field: source[field] for field in FORMAL_FIELDS["source"]}
+                )
         elif kind == "ApprovalRequested":
             request_id = str(p.get("request_id"))
             request_kind = str(p.get("kind") or "action")
@@ -482,6 +489,16 @@ class Projection:
 
 
 # ------------------------------------------------------------------ the library's own view
+def source_key(source: Mapping[str, Any]) -> str:
+    """One formal object per Mission/path/hash; JSON avoids delimiter collisions."""
+
+    return json.dumps(
+        [source["mission_id"], source["path"], source["version_hash"]],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 def formal_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
     """The same field set, read from ``Store.snapshot`` (the comparison baseline)."""
 
@@ -539,6 +556,10 @@ def formal_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, dict[str, dic
         },
         "override": {
             str(o["override_id"]): {"present": True} for o in snapshot.get("human_overrides", [])
+        },
+        "source": {
+            source_key(s): {field: s[field] for field in FORMAL_FIELDS["source"]}
+            for s in snapshot.get("sources", [])
         },
     }
 

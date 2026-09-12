@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from ..artifacts.store import ArtifactStore
 from ..artifacts.versioning import next_versions
 from ..contracts import (
     TERMINAL_ATTEMPT,
@@ -74,6 +75,7 @@ from ..verification.conflicts import Contradiction, find_contradiction
 from .action_commits import ActionCommitsMixin
 from .human_commits import HumanCommitsMixin
 from .policy_commits import PolicyCommitsMixin
+from .source_commits import SourceCommitsMixin
 from .state_machine import next_attempt, next_claim, next_mission, next_task
 
 SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
@@ -211,7 +213,7 @@ def task_account(task_id: str) -> str:
 
 
 class CommitService(
-    ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin
+    ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin, SourceCommitsMixin
 ):  # step 7: the action ledger + approvals half; step 9: the policy registry half
     def __init__(
         self,
@@ -222,8 +224,12 @@ class CommitService(
         deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
         task_floor: TaskBudgetFloor | None = None,
         candidates_for: Callable[[str], int] | None = None,
+        artifact_store: ArtifactStore | None = None,
     ) -> None:
         self._store = store
+        self._source_artifact_store = artifact_store
+        if self._source_artifact_store is None and str(store.path) != ":memory:":
+            self._source_artifact_store = ArtifactStore(store.path.parent / "artifacts")
         # P3.1 fix F-ORCH-1: the Task budget floor the Graph Manager applies — only the
         # Orchestrator injects one (None = no floor, every earlier construction unchanged);
         # ``candidates_for`` gives a Mission's candidates per Task from its bound policy
@@ -2716,6 +2722,26 @@ class CommitService(
         )
         return settled
 
+    def check_result_evidence(self, mission_id: str, envelope: ResultEnvelope) -> None:
+        """P33-08/09: refuse disallowed evidence kinds before result admission.
+
+        This is a domain vocabulary gate, not proof that a reference resolves. Code
+        evidence retains its legacy semantics (D2); source/knowledge validation is
+        still performed by the verifier. Inspect all claims and the envelope, even
+        when claim-local evidence would otherwise override the envelope's evidence.
+        """
+
+        domain = self.domain_for(mission_id)
+        if domain.id == CODE_DOMAIN:
+            return
+        references = [*envelope.evidence, *(ref for claim in envelope.claims for ref in claim.evidence)]
+        kinds = tuple(sorted({ref.partition(":")[0] if ":" in ref else "file" for ref in references}))
+        problems = check_against_domain(
+            domain, key="result evidence", success_criteria=(), evidence_kinds=kinds
+        )
+        if problems:
+            raise CommitRejected("result_evidence_kind_not_allowed: " + "; ".join(problems))
+
     def record_result(
         self,
         attempt_id: str,
@@ -2744,6 +2770,7 @@ class CommitService(
                 raise CommitRejected("result identity does not match the Attempt")
             if attempt.turn_id != turn_id:
                 raise CommitRejected("result turn differs from the Attempt's bound turn")
+            self.check_result_evidence(attempt.mission_id, envelope)
             stored = StoredResult(
                 envelope=envelope,
                 turn_id=turn_id,

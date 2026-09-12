@@ -1658,6 +1658,60 @@ class Store:
         ).fetchall()
         return [Artifact.from_json(_loads(row[0])) for row in rows]
 
+    # --------------------------------------------------------------- sources
+    def get_source(
+        self, mission_id: str, path: str, version_hash: str | None = None
+    ) -> dict[str, Any] | None:
+        """An exact historical version, or the active version when hash is omitted."""
+
+        if not self.has_table("sources"):
+            return None
+        sql = "SELECT * FROM sources WHERE mission_id = ? AND path = ?"
+        args: list[Any] = [mission_id, path]
+        if version_hash is None:
+            sql += " AND superseded_by IS NULL AND revoked = 0"
+        else:
+            sql += " AND version_hash = ?"
+            args.append(version_hash)
+        row = self._connection.execute(sql, args).fetchone()
+        return None if row is None else {**dict(row), "revoked": bool(row["revoked"])}
+
+    def list_sources(self, mission_id: str, active_only: bool = False) -> list[dict[str, Any]]:
+        if not self.has_table("sources"):
+            return []
+        sql = "SELECT * FROM sources WHERE mission_id = ?"
+        if active_only:
+            sql += " AND superseded_by IS NULL AND revoked = 0"
+        rows = self._connection.execute(sql + " ORDER BY path, version_hash", (mission_id,))
+        return [{**dict(row), "revoked": bool(row["revoked"])} for row in rows]
+
+    def put_source(self, record: Mapping[str, Any]) -> None:
+        """CommitService-only lifecycle write; source bytes never enter SQLite."""
+
+        fields = (
+            "mission_id",
+            "tenant_id",
+            "path",
+            "version_hash",
+            "kind",
+            "trust",
+            "registered_at",
+            "superseded_by",
+            "revoked",
+            "revision",
+        )
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO sources(mission_id,tenant_id,path,version_hash,kind,trust,"
+                "registered_at,superseded_by,revoked,revision) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(mission_id,path,version_hash) DO UPDATE SET "
+                "superseded_by=excluded.superseded_by, revoked=excluded.revoked, "
+                "revision=excluded.revision",
+                tuple(
+                    int(record[field]) if field == "revoked" else record[field] for field in fields
+                ),
+            )
+
     # --------------------------------------------------------------- receipts
     def get_receipt(self, commit_id: str) -> Mapping[str, Any] | None:
         row = self._connection.execute(
@@ -1811,6 +1865,7 @@ class Store:
             "waiting_on": self.waiting_on(mission_id) if self.has_table("approvals") else [],
             "mission_policy": self.get_mission_policy(mission_id),  # step 9 (plan D9-3')
             "mission_domain": self.get_mission_domain(mission_id),  # P3.3 (plan v3 D1/D9)
+            "sources": self.list_sources(mission_id) if self.has_table("sources") else [],
             "event_count": self.count_events(mission_id),
         }
 

@@ -27,7 +27,7 @@ from .state_machines import (
     TaskStatus,
 )
 
-CONTRACT_SCHEMA_VERSION = 1
+CONTRACT_SCHEMA_VERSION = 2
 MAX_TEXT = 20_000
 MAX_LIST = 256
 
@@ -558,6 +558,49 @@ CLAIM_STANCES = ("affirms", "refutes")
 
 
 @dataclass(frozen=True, slots=True)
+class SourceCitation:
+    """A proposed quotation, never a model-controlled verification result.
+
+    Integer range validity belongs to the resolver, which knows the source length.
+    """
+
+    path: str
+    version: str
+    start_line: int
+    end_line: int
+    quote: str
+
+    def __post_init__(self) -> None:
+        for name in ("path", "version", "quote"):
+            _text(getattr(self, name), f"citation.{name}", allow_blank=name == "quote")
+        for name in ("start_line", "end_line"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ContractError(f"citation.{name} must be an integer")
+
+    def to_json(self) -> dict[str, Any]:
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
+    @classmethod
+    def from_json(cls, value: object) -> SourceCitation:
+        data = _object(value, "citation")
+        required = {f.name for f in fields(cls)}
+        if unknown := set(data) - required:
+            raise ContractError(f"citation has unknown fields: {sorted(unknown)}")
+        if missing := required - set(data):
+            raise ContractError(f"citation has missing fields: {sorted(missing)}")
+        return cls(**data)
+
+
+def _citation_items(value: object) -> tuple[Any, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ContractError("claim.citations must be an array")
+    if len(value) > MAX_LIST:
+        raise ContractError(f"claim.citations exceeds {MAX_LIST} items")
+    return tuple(value)
+
+
+@dataclass(frozen=True, slots=True)
 class ClaimProposal:
     """A claim as it appears inside a Result Envelope (§13 ``claims[]``).
 
@@ -577,6 +620,7 @@ class ClaimProposal:
     stance: str = "affirms"
     supersedes: str | None = None
     contradicts: tuple[str, ...] = ()
+    citations: tuple[SourceCitation, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "content", _text(self.content, "claim.content"))
@@ -600,9 +644,13 @@ class ClaimProposal:
                 self, "supersedes", _text(self.supersedes, "claim.supersedes", limit=512)
             )
         object.__setattr__(self, "contradicts", _texts(self.contradicts, "claim.contradicts"))
+        citations = _citation_items(self.citations)
+        if any(not isinstance(item, SourceCitation) for item in citations):
+            raise ContractError("claim.citations must contain SourceCitation objects")
+        object.__setattr__(self, "citations", citations)
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        result = {
             "content": self.content,
             "confidence": self.confidence,
             "status": str(self.status),
@@ -613,6 +661,10 @@ class ClaimProposal:
             "supersedes": self.supersedes,
             "contradicts": list(self.contradicts),
         }
+        # Preserve canonical v1 envelope bytes and hashes when no citations exist.
+        if self.citations:
+            result["citations"] = [item.to_json() for item in self.citations]
+        return result
 
     @classmethod
     def from_json(cls, value: object) -> ClaimProposal:
@@ -627,6 +679,7 @@ class ClaimProposal:
             "stance",
             "supersedes",
             "contradicts",
+            "citations",
         }
         if unknown:
             raise ContractError(f"claim has unknown fields: {sorted(unknown)}")
@@ -640,6 +693,10 @@ class ClaimProposal:
             stance=data.get("stance", "affirms") or "affirms",
             supersedes=data.get("supersedes"),
             contradicts=tuple(data.get("contradicts", ()) or ()),
+            citations=tuple(
+                SourceCitation.from_json(item)
+                for item in _citation_items(data.get("citations", ()))
+            ),
         )
 
 
@@ -1000,6 +1057,7 @@ __all__ = (
     "Event",
     "Mission",
     "ResultEnvelope",
+    "SourceCitation",
     "Task",
     "jsonable",
     "sha256_hex",

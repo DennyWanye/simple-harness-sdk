@@ -444,6 +444,27 @@ CREATE TABLE mission_domains (
 CREATE INDEX mission_domains_domain_idx ON mission_domains(domain_id)
 """
 
+# P3.3 D2/D7: immutable byte identity, mutable lifecycle metadata per historical
+# version. revision fences ABA (A -> B -> A) while claims keep their original hash.
+DDL_V9 = """
+CREATE TABLE sources (
+ mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ tenant_id TEXT NOT NULL,
+ path TEXT NOT NULL,
+ version_hash TEXT NOT NULL CHECK(length(version_hash) = 64),
+ kind TEXT NOT NULL,
+ trust TEXT NOT NULL CHECK(trust = 'untrusted_external'),
+ registered_at REAL NOT NULL,
+ superseded_by TEXT,
+ revoked INTEGER NOT NULL CHECK(revoked IN (0,1)),
+ revision INTEGER NOT NULL CHECK(revision >= 1),
+ PRIMARY KEY(mission_id, path, version_hash)
+) STRICT;
+CREATE UNIQUE INDEX sources_active_idx ON sources(mission_id, path)
+ WHERE superseded_by IS NULL AND revoked = 0;
+CREATE INDEX sources_mission_idx ON sources(mission_id, path, version_hash)
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
@@ -453,6 +474,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(6, "orchestrator-step09", DDL_V6),
     Migration(7, "orchestrator-p32", DDL_V7),
     Migration(8, "orchestrator-p33-domains", DDL_V8),
+    Migration(9, "orchestrator-p33-sources", DDL_V9),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -473,6 +495,7 @@ __all__ = (
     "DDL_V6",
     "DDL_V7",
     "DDL_V8",
+    "DDL_V9",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

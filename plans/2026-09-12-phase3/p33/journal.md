@@ -2,7 +2,7 @@
 
 ## 0. 交接（冷会话先读这一节）
 
-- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A 已完成（SDK 源码）；下一步 B**。
+- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A 已完成（SDK 源码）；B 实施与独立审查中**。
 - **中心断言**：文档领域的 VERIFIED 只意味着「这份文件的这个版本的这几行里，逐字写着这句话」，且要在记录层 / 消费层 / 交付层三层同时成立。详见 `plan.md` §0。
 - **切片顺序**：A 领域画像与五处闸门 → B 来源与证据解析 → C 评估记录与分级 → D adapter 与证据不足出口 → E 冲突与失效 → F 回归与 wheel → G Host 与原生验收。
 - **每切片完成即跑 `tests/orchestrator` 全量**（不等切片 F），并同步更新本文件。
@@ -126,3 +126,24 @@ schema 迁移**追加式**推进，一个切片一版：v8 `mission_domains`（�
 真实测试凭据已在 Host 主仓 ignored `.env` 的 `DEEPSEEKER_APIKEY` 字段找到，只注入进程；模型固定 `deepseek-flash`。本节没有声称执行了真实模型调用。
 
 片状态：A SOURCE_VERIFIED；整体 P3.3 IN_PROGRESS。沿用整体 journal，不制造片级发布 receipt。
+
+## 2.2 切片 B 实施中
+
+schema v9、来源三个 Host 命令、CAS 原文、SourceCitation v2 契约、EvidenceResolver、Worker/Planner/任务 Critic 冻结来源 map 已接入。
+运行时按来源根保护写入，verification copy 从登记原始 bytes 重建；新 repair 去除已撤销来源，ACTIVE 树保留篡改证据。
+文档结果的 pytest/tool-run evidence 在 CommitService 拒绝；实际收集入口把拒绝落为 ResultRejected，不能令调度器因异常退出。
+
+独立审查 Ohm（未自审 resolver）发现 3 P1/2 P2：撤销资料继承、大小写读路径丢信任标记、重启已审批发布绕过隔离、失效审批无法拒绝、来源路径别名/祖先冲突。
+前两项已修；发布 handoff 与来源审批/路径修复进行中。源码定向 PASS 不代表 B 完成；待修复审查、干净提交编排全量与交接回写。
+
+### B 审查修复与提交前验证
+
+- 来源审查 3 P1/2 P2 已修：new repair 不继承 revoked 原文；work/verify 大小写读取仍带 trust；全库发布 handoff 前的事务内隔离；reject 保留 binding 完整性但不要求当前 head/CAS；路径逐组件 NFC/casefold 冲突检查。
+- 额外保留 ACTIVE 来源篡改证据；发布根大小写别名同样检查。
+- Resolver 独立审查发现四处 P1，10 个 oracle 初跑 7 failed/3 passed；修复列表内缩进标题、表格后标题、单列表格、引号内句终符后通过。主审第五处 ATX 含管道符标题被单列表吞掉，新增反例先红再绿，独立复核通过。未把无空行 setext 表格行另算缺陷。
+- Source 最终 74 条 + Resolver 56 条已通过；发布 guard 19 条已通过。P33 提交前全定向 **288 passed / 5.72s**（precommit.log）；mypy **87 源文件通过**；本次 22 个 Python 文件 Ruff 通过。首次全目录 Ruff 的 5 项是未改的历史文件 import 顺序，不扩大本次修改。
+- 本片新增与修改源码将先提交为 clean HEAD，再跑一次完整 tests/orchestrator（P33-36）；B 尚未终态，不据此发布 wheel或声称真实模型通过。
+
+- 收尾审查补 P2：来源撤销后的文件↔目录替换被旧 clone 挡住。改为仅新树在安装 inputs 前清理来源根；ACTIVE 树不动。真实 facade/register/revoke/Attempt/reopen 控制三参数通过。初跑 2 个拓扑错误是产品 red，另一个 markdown context 被误当 JSON 是测试夹具错误，分开记录。
+- 最后定向 **300 passed / 8.13s**（`tests/orchestrator/p33` + `p32/test_p32_workspace_registry.py` + `step02/test_workspace_and_gateway.py`，final-smoke.log），其中 P33 290 条。
+- Kepler 对发布 guard 和 main 根接线给出独立 ACCEPT；Ohm 对恢复、信任标记、Source 审批/路径及 Resolver 五处 P1 给出指定范围 ACCEPT，最后拓扑 P2 修复亦获追加 ACCEPT，无剩余 B 审查问题。

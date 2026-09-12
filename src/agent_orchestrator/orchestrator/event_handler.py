@@ -33,7 +33,7 @@ from typing import Any
 
 from simple_harness.agents import AgentConfig, AgentLimits, AgentTurnState
 
-from ..artifacts.store import ArtifactStoreError, backfill, read_verified
+from ..artifacts.store import ArtifactStoreError, backfill, read_nofollow, read_verified
 from ..artifacts.versioning import (
     ArtifactConflict,
     UpstreamInput,
@@ -87,7 +87,7 @@ from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
 from ..planning.manager import terminal_task
 from ..planning.planner import parse_task_graph_proposal
-from ..runtime.actions import ActionExecutor
+from ..runtime.actions import ActionExecutor, publication_overlaps_storage
 from ..runtime.agent_worker import AgentBridge, Liveness, user_message_json
 from ..runtime.assembly import (
     AssembledOrchestratorRuntime,
@@ -323,7 +323,14 @@ class Orchestrator:
         self._assembled.gateway.executed_counter = self.store.count_tool_calls
         self._pressure = self._commit.backpressure_state()
         self._actions = ActionExecutor(  # D7-5: the only caller of connectors
-            self._commit, self._connectors, self._config.deployment_policy, owner=self._owner
+            self._commit,
+            self._connectors,
+            self._config.deployment_policy,
+            owner=self._owner,
+            source_storage_roots=(
+                self.assembled.workspaces.artifact_store.root,
+                self.assembled.workspaces.root,
+            ),
         )
         return self
 
@@ -436,7 +443,8 @@ class Orchestrator:
 
     def _template(self, template: Any, mission_id: str) -> Any:
         return template_for_domain(
-            template, self.commit.domain_for(mission_id),
+            template,
+            self.commit.domain_for(mission_id),
             self.policy_for(mission_id)["prompt_versions"],
         )
 
@@ -833,6 +841,7 @@ class Orchestrator:
 
     def _check_mission_door(self, spec: MissionSpec) -> None:
         self._check_action_criteria(spec.success_criteria)
+        self._check_source_publish_roots(spec)
         if not self._config.deployment_policy.local_code_execution:
             tests = [c for c in spec.success_criteria if c.startswith("pytest:")]
             template = dict(spec.synthesis or {})  # review round 1 P2-5: refused up front
@@ -846,6 +855,40 @@ class Orchestrator:
                 )
         if spec.synthesis is not None:
             self._check_synthesis_template(spec)
+
+    def _check_source_publish_roots(self, spec: MissionSpec) -> None:
+        """A publisher cannot write the actual source CAS or its workspace mounts.
+
+        Domain roots are logical paths, so compare physical deployment roots here.
+        This is a write-boundary check, not a claim about the origin of user text.
+        """
+        from ..governance.domains import resolve_domain
+
+        if not resolve_domain(spec.domain).source_roots:
+            return
+        self._ensure_source_storage_disjoint()
+
+    def validate_source_storage(self, mission_id: str) -> None:
+        """Recheck physical storage when an existing Mission imports source material."""
+        if self.commit.domain_for(mission_id).source_roots:
+            self._ensure_source_storage_disjoint()
+
+    def _ensure_source_storage_disjoint(self) -> None:
+        protected = (
+            self.assembled.workspaces.artifact_store.root.resolve(),
+            self.assembled.workspaces.root.resolve(),
+        )
+        for name, connector in self._connectors.items():
+            if (
+                name != "file_publish"
+                or name not in self._config.deployment_policy.enabled_connectors
+            ):
+                continue
+            root = getattr(connector, "root", None)
+            if not isinstance(root, (str, Path)):
+                raise ContractError("source_publish_root_unavailable")
+            if publication_overlaps_storage(root, protected):
+                raise ContractError("source_publish_root_overlap")
 
     def _check_synthesis_template(self, spec: MissionSpec) -> None:
         """Review round 2 P1-A: a synthesis template is a Task contract written by the
@@ -1175,9 +1218,11 @@ class Orchestrator:
         mission = self.store.get_mission(mission_id)
         assert mission is not None
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
+        source_binding = self._active_source_binding(mission_id)
         package = build_planner_package(
             mission,
-            workspace_files=sorted(seed),
+            workspace_files=sorted(set(seed) | set(source_binding.get("source_versions", {}))),
+            source_versions=source_binding.get("source_versions"),
             attempt_ordinal=ordinal,
             rejected=self._planning_rejections(mission_id) if ordinal > 1 else (),
             deployed_layers=self._deployed,
@@ -1214,6 +1259,7 @@ class Orchestrator:
                 "prompt_version": template.prompt_version,
                 "base_version": mission.version,
                 "ordinal": ordinal,
+                **source_binding,
                 **self._service_config(decision),
             },
             reservation=self._reservation(self._config.planner_reserve_tokens, decision.profile_id),
@@ -1303,6 +1349,52 @@ class Orchestrator:
         raw = [] if intent is None else list(intent.config.get("inputs", []))
         return [UpstreamInput.from_json(item) for item in raw]
 
+    def _active_source_binding(self, mission_id: str) -> dict[str, Any]:
+        domain = self.commit.domain_for(mission_id)
+        if not domain.source_roots:
+            return {}
+        return {
+            "source_versions": {
+                row["path"]: row["version_hash"]
+                for row in self.store.list_sources(mission_id, active_only=True)
+            },
+            "source_roots": list(domain.source_roots),
+        }
+
+    def _frozen_source_binding(self, attempt: Attempt) -> dict[str, Any]:
+        intent = self.store.get_intent_for_subject(attempt.id)
+        if intent is None or "source_versions" not in intent.config:
+            return {}  # Legacy intents never acquire today's source registry.
+        return {
+            "source_versions": dict(intent.config["source_versions"]),
+            "source_roots": list(intent.config.get("source_roots", ())),
+        }
+
+    def _source_files(self, attempt: Attempt) -> dict[str, bytes]:
+        from ..verification.evidence_resolver import EvidenceResolver
+
+        binding = self._frozen_source_binding(attempt)
+        versions = binding.get("source_versions", {})
+        if not versions:
+            return {}
+        self.validate_source_storage(attempt.mission_id)
+        mission = self.store.get_mission(attempt.mission_id)
+        assert mission is not None
+        resolver = EvidenceResolver(self.store, self.assembled.workspaces.artifact_store)
+        files: dict[str, bytes] = {}
+        for path, version in versions.items():
+            source = resolver.read_source(
+                tenant_id=mission.tenant_id,
+                mission_id=mission.id,
+                path=path,
+                version=version,
+                source_roots=binding["source_roots"],
+            )
+            if source.status != "resolved" or source.data is None:
+                raise ArtifactConflict(f"frozen source {path} is {source.status}")
+            files[path] = source.data
+        return files
+
     def _bind_workspace(self, attempt: Attempt) -> None:
         mission = self.store.get_mission(attempt.mission_id)
         assert mission is not None
@@ -1310,7 +1402,7 @@ class Orchestrator:
         previous = None
         if attempt.retry_of is not None:
             previous = self.assembled.workspaces.root / attempt.retry_of
-        inputs: dict[str, Path] = {}
+        inputs: dict[str, Path | bytes] = {}
         for item in self._upstream_inputs(attempt):
             artifact = self.store.get_artifact(item.artifact_id)
             try:  # P3.2 D3: the stored bytes, hash re-checked, never through a symlink
@@ -1322,6 +1414,14 @@ class Orchestrator:
                     f"upstream artifact {item.artifact_id} ({item.path}) is missing or changed"
                 ) from error
             inputs[item.path] = Path(artifact.storage_uri)
+        binding = self._frozen_source_binding(attempt)
+        source_roots = binding.get("source_roots", ())
+        inputs = {
+            path: value
+            for path, value in inputs.items()
+            if not _under_source_root(path, source_roots)
+        }
+        inputs.update(self._source_files(attempt))
         task = self.store.get_task(attempt.task_id)
         # P3.2 D4 (review round 2 P2-4): a rebind — recover() and every dispatch — is
         # checked against the registered identity, never the directory's content
@@ -1330,6 +1430,7 @@ class Orchestrator:
                 "seed": {path: sha256_hex_text(content) for path, content in seed.items()},
                 "inputs": {item.path: item.content_hash for item in self._upstream_inputs(attempt)},
                 "previous": attempt.retry_of,
+                **self._frozen_source_binding(attempt),
             }
         )
         detail = {
@@ -1377,7 +1478,11 @@ class Orchestrator:
             )
         try:
             workspace = self.assembled.workspaces.create(
-                attempt.id, seed=seed, previous=previous, inputs=inputs
+                attempt.id,
+                seed=seed,
+                previous=previous,
+                inputs=inputs,
+                replace_input_roots=source_roots,
             )
         except WorkspaceError as error:  # P3.2 D3: e.g. a symlink in the previous tree
             raise ArtifactConflict(str(error)) from error
@@ -1385,7 +1490,16 @@ class Orchestrator:
             self.store.set_workspace_state(attempt.id, "ACTIVE")
         if task is not None:
             for path, content in self._protected_files(mission, task, attempt).items():
-                if (
+                if isinstance(content, bytes):
+                    if not building:
+                        continue  # Preserve ACTIVE-tree tamper evidence across recovery.
+                    try:
+                        current = read_nofollow(workspace.root / path)
+                    except ArtifactStoreError:
+                        current = None
+                    if current != content:
+                        workspace.write_bytes(path, content)
+                elif (
                     workspace.read_text(path) != content
                     if (workspace.root / path).is_file()
                     else True
@@ -1439,6 +1553,7 @@ class Orchestrator:
                 files[item.path] = read_verified(artifact)
             except ArtifactStoreError as error:
                 raise WorkspaceError(f"upstream input unreadable: {error}") from error
+        files.update(self._source_files(attempt))
         return files
 
     def _bind_agent(self, agent_id: str, config: Mapping[str, Any]) -> None:
@@ -1453,6 +1568,7 @@ class Orchestrator:
                 tuple(str(p) for p in config.get("untrusted_sources", ())),
                 max_tool_calls=None if cap is None else int(cap),
                 protected=self._read_only_inputs(str(config["attempt_id"])),
+                protected_prefixes=tuple(config.get("source_roots", ())),
                 denied_prefixes=self._config.deployment_policy.denied_path_prefixes,
             ),
         )
@@ -1466,6 +1582,7 @@ class Orchestrator:
                 False,
                 tuple(t for t in CRITIC_TOOLS if t in self._config.deployment_policy.allowed_tools),
                 tuple(str(p) for p in config.get("untrusted_sources", ())),
+                protected_prefixes=tuple(config.get("source_roots", ())),
                 denied_prefixes=self._config.deployment_policy.denied_path_prefixes,
             ),
         )
@@ -1924,11 +2041,16 @@ class Orchestrator:
         text = "" if result.public_output is None else str(result.public_output.content)
         try:
             envelope, client_result_id = self._parse_envelope(text, attempt, turn_id=result.turn_id)
-        except ContractError as error:
+            self.commit.check_result_evidence(attempt.mission_id, envelope)
+        except (ContractError, CommitRejected) as error:
             self.commit.reject_result(
                 attempt.id,
                 turn_id=result.turn_id,
-                reason="envelope_invalid",
+                reason=(
+                    "result_evidence_kind_not_allowed"
+                    if isinstance(error, CommitRejected)
+                    else "envelope_invalid"
+                ),
                 detail={"error": str(error), "output_head": text[:400]},
             )
             self._settle_intent(intent, "FAILED")
@@ -1966,8 +2088,20 @@ class Orchestrator:
             versions=next_versions(self.store.list_mission_artifacts(attempt.mission_id)),
         )
         known = {artifact.path for artifact in artifacts}
+        source_roots = tuple(self._frozen_source_binding(attempt).get("source_roots", ()))
+        source_hashes = {
+            path: sha256_hex_text(content) for path, content in self._source_files(attempt).items()
+        }
+        # Check the physical snapshot first: case aliases in a reported path must not
+        # hide a changed source behind a generic missing-artifact diagnostic.
+        source_rewritten = {
+            artifact.path
+            for artifact in artifacts
+            if _under_source_root(artifact.path, source_roots)
+            and artifact.content_hash != source_hashes.get(artifact.path)
+        }
         missing = [path for path in envelope.artifacts if path not in known]
-        if missing:
+        if missing and not source_rewritten:
             self.commit.reject_result(
                 attempt.id,
                 turn_id=result.turn_id,
@@ -1997,9 +2131,12 @@ class Orchestrator:
         listed = set(envelope.artifacts)
         by_path = {artifact.path: artifact for artifact in artifacts}
         rewritten = sorted(
-            path
-            for path in listed
-            if path in guarded and by_path[path].content_hash != guarded[path]
+            source_rewritten
+            | {
+                path
+                for path in listed & known
+                if path in guarded and by_path[path].content_hash != guarded[path]
+            }
         )
         if rewritten:  # P1-6: a protected path is never registered as produced work
             self.commit.reject_result(
@@ -2481,12 +2618,14 @@ class Orchestrator:
                 protected[path] = content
         return protected
 
-    def _protected_files(self, mission: Mission, task: Task, attempt: Attempt) -> dict[str, str]:
+    def _protected_files(
+        self, mission: Mission, task: Task, attempt: Attempt
+    ) -> dict[str, str | bytes]:
         """Protected seed files plus every upstream input the Task did not declare as
         one of its ``outputs`` (D3-7': a downstream Worker may not silently rewrite what
         its dependencies delivered; rewriting an undeclared path needs a new Task)."""
 
-        protected = self._protected_seed(mission, task)
+        protected: dict[str, str | bytes] = dict(self._protected_seed(mission, task))
         declared = set(task.outputs)
         for item in self._upstream_inputs(attempt):
             if item.path in declared:  # the Task declared it will rewrite this path
@@ -2504,6 +2643,9 @@ class Orchestrator:
                 protected[item.path] = raw.decode("utf-8")
             except UnicodeDecodeError as error:
                 raise ArtifactConflict(f"upstream artifact {item.path} is not text") from error
+        # Source registration never grants a Worker permission to change source bytes,
+        # even when it declares that path as an output.
+        protected.update(self._source_files(attempt))
         return protected
 
     # ------------------------------------------------------- management (step 5)
@@ -2892,7 +3034,13 @@ class Orchestrator:
         attempt_id: str | None = None,
     ) -> CriticVerdict:
         copy = self.assembled.workspaces.verification_view(view_id)
+        source_attempt = None if attempt_id is None else self.store.get_attempt(attempt_id)
+        source_binding = (
+            {} if source_attempt is None else self._frozen_source_binding(source_attempt)
+        )
         untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
+        if source_binding:
+            untrusted = sorted(set(untrusted) | set(source_binding.get("source_versions", {})))
         try:
             package = build_critic_package(
                 mission,
@@ -2907,6 +3055,7 @@ class Orchestrator:
                 knowledge=self._knowledge_or_unavailable(mission, task),
                 visibility="critic" if task is not None and task.kind == "conflict" else "verifier",
                 domain=self.commit.domain_for(mission.id),
+                source_versions=source_binding.get("source_versions"),
             )
         except ContextRejected as error:
             raise ContractError(f"critic package refused: {error}") from error
@@ -2949,6 +3098,7 @@ class Orchestrator:
                     "context_version": package.context_version,
                     "prompt_version": template.prompt_version,
                     "untrusted_sources": untrusted,
+                    **source_binding,
                     **self._service_config(decision),
                 },
                 reservation=self._reservation(
@@ -3352,12 +3502,26 @@ class Orchestrator:
             feedback=tuple(feedback),
         )
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
-        previous_files = sorted({*seed, *(item.path for item in inputs)})
+        source_binding = self._active_source_binding(mission.id)
+        source_versions = source_binding.get("source_versions")
+        source_paths = set(source_versions or {})
+        if source_binding:
+            untrusted = sorted(set(untrusted) | source_paths)
+        previous_files = sorted({*seed, *(item.path for item in inputs), *source_paths})
         if previous is not None:
             try:
-                previous_files = self.assembled.workspaces.get(previous.id).list_files()
+                previous_files = sorted(
+                    set(self.assembled.workspaces.get(previous.id).list_files()) | source_paths
+                )
             except Exception:  # noqa: BLE001
                 pass
+        if source_binding:
+            previous_files = [
+                path
+                for path in previous_files
+                if path in source_paths
+                or not _under_source_root(path, source_binding["source_roots"])
+            ]
         try:
             package = build_worker_package(
                 mission,
@@ -3382,6 +3546,7 @@ class Orchestrator:
                 untrusted_sources=untrusted,
                 role=role.name,
                 domain=self.commit.domain_for(mission.id),
+                source_versions=source_versions,
             )
         except ContextRejected as error:
             self.commit.stop_task(
@@ -3479,6 +3644,7 @@ class Orchestrator:
                     "retrieval_status": knowledge.retrieval.status,
                     "context_builder_version": CONTEXT_BUILDER_VERSION,
                     "untrusted_sources": untrusted,
+                    **source_binding,
                     "allocation": dict(
                         allocation or {}
                     ),  # D5-8': the §29.3 score it was granted on
@@ -3848,10 +4014,20 @@ class Orchestrator:
         self._note(f"mission {mission.id} judged: {judged.status} ({judged.stop_reason})")
 
 
-def sha256_hex_text(content: str) -> str:
+def _under_source_root(path: str, roots: Sequence[str]) -> bool:
+    return any(
+        path.casefold() == root.rstrip("/").casefold()
+        or path.casefold().startswith(root.rstrip("/").casefold() + "/")
+        for root in roots
+    )
+
+
+def sha256_hex_text(content: str | bytes) -> str:
     import hashlib
 
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        content if isinstance(content, bytes) else content.encode("utf-8")
+    ).hexdigest()
 
 
 __all__ = ("FAULT_POINTS", "InjectedCrash", "Orchestrator")

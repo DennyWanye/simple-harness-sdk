@@ -15,7 +15,9 @@ idempotency key and only a CONFIRMED_NOT_STARTED answer allows one more hand-off
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import unicodedata
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .connectors import ConnectorRejected, Receipt
@@ -42,6 +44,30 @@ def lookup_verdict(connector: Any, found: Receipt | None) -> str:
     return "CONFIRMED_NOT_STARTED"
 
 
+def publication_overlaps_storage(
+    publish_root: Path | str, storage_roots: Sequence[Path | str]
+) -> bool:
+    """Physical root overlap, including symlinks and case/Unicode filename aliases.
+
+    ``resolve`` follows existing parent symlinks but does not canonicalize filename
+    case on macOS. Compare whole normalized path segments, never string prefixes.
+    The conservative alias rule also protects deployments moving between filesystems.
+    """
+
+    def parts(path: Path | str) -> tuple[str, ...]:
+        return tuple(
+            unicodedata.normalize("NFC", part).casefold() for part in Path(path).resolve().parts
+        )
+
+    publisher = parts(publish_root)
+    for root in storage_roots:
+        protected = parts(root)
+        shared = min(len(publisher), len(protected))
+        if publisher[:shared] == protected[:shared]:
+            return True
+    return False
+
+
 class ActionExecutor:
     def __init__(
         self,
@@ -51,11 +77,17 @@ class ActionExecutor:
         *,
         owner: str,
         lease_seconds: float | None = None,
+        source_storage_roots: Sequence[Path | str] | None = None,
     ) -> None:
         self._commit = commit
         self._connectors = dict(connectors)
         self._deployment = deployment
         self._owner = owner
+        # The assembly supplies the actual CAS/workspace roots. A custom/embedded
+        # deployment must not silently guess their location from the SQLite filename.
+        self._source_storage_roots = (
+            None if source_storage_roots is None else tuple(source_storage_roots)
+        )
         self._timeout = float(deployment.connector_timeout_seconds)
         # the lease outlives the call's timeout: a live hand-off is never reconciled early
         self._lease = float(lease_seconds) if lease_seconds is not None else 2 * self._timeout + 5.0
@@ -73,6 +105,32 @@ class ActionExecutor:
 
         return self._commit.store.list_actions(mission_id, "APPROVED", "PROPOSED")
 
+    def _source_publish_refusal(self, action: Mapping[str, Any]) -> str | None:
+        """Run inside begin_handoff's transaction, before reservation/outbox writes.
+
+        The protected storage is shared by the whole library, including other tenants,
+        completed Missions and revoked historical sources. Do not cache a negative
+        result: source/domain registration can happen after this executor was built.
+        """
+        if action["connector"] != "file_publish":
+            return None
+        store = self._commit.store
+        has_sources = any(
+            self._commit.domain_for(mission.id).source_roots
+            or store.list_sources(mission.id, active_only=False)
+            for mission in store.list_missions()
+        )
+        if not has_sources:
+            return None  # The pure code library retains its existing publishing behavior.
+        root = getattr(self._connectors.get("file_publish"), "root", None)
+        if not isinstance(root, (str, Path)) or not self._source_storage_roots:
+            return "source_publish_root_unavailable"
+        try:
+            overlaps = publication_overlaps_storage(root, self._source_storage_roots)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return "source_publish_root_unavailable"
+        return "source_publish_root_overlap" if overlaps else None
+
     async def hand_off(self, action_key: str, *, rehandoff: bool = False) -> dict[str, Any] | None:
         action, _reason = self._commit.begin_handoff(
             action_key,
@@ -81,6 +139,7 @@ class ActionExecutor:
             connectors=self._connectors,
             deployment=self._deployment,
             rehandoff=rehandoff,
+            deployment_guard=self._source_publish_refusal,
         )
         if action is None:
             self.last_refusal[action_key] = _reason or ""
@@ -171,4 +230,4 @@ class ActionExecutor:
         return settled
 
 
-__all__ = ("ActionExecutor", "lookup_verdict")
+__all__ = ("ActionExecutor", "lookup_verdict", "publication_overlaps_storage")

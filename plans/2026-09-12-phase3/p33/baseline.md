@@ -49,3 +49,18 @@
 3. step03 vanished-executor 测试假定 after_submit 后原 B 没消费脚本，实际 SDK 关闭期间可以推进队列。原 B 消费了 write 而新 B 只剩后续步骤，所以 CAS 忠实登记 stub。为该 case 增加 provider hold 与零调用断言；保留 LOST→COMPLETED、A 不重跑和最终调用次数，生产恢复代码不改。
 
 后两条在隔离导入 `a4aae8c` 原源码时均复现（`baseline-red-check.log`，**2 failed / 1.87 s**）；不冒称本轮引入，也不把它们塞进原机“整仓 73”红集。修复的 16 条配置场景加这两条原失败：**18 passed / 7.01 s**，`regression-repair.log`。仍需修复后干净提交的编排全量。
+
+## 切片 B 开工基线与 oracle
+
+起点 SDK `9a4d986`（A 源码全量 `1eaa91f`：651 passed / 8 skipped；A 文档提交后 P33 74 passed）。
+B 主代理负责 CAS 来源的运行时冻结、工作区保护和集成；Kepler 负责来源命令/存储/审批；Ohm 负责 citation 契约/确定性解析。
+共享 main 分文件工作，无 worktree、无 stash；仅主代理串行 pytest。oracle 先写入各 `test_p33_source*.py`、`test_p33_citations.py`、`test_p33_evidence_resolver.py`。
+
+- 来源命令：Host/人身份和租户隔离；同键重放、冲突拒绝；更替/撤销走原审批事务；旧 head/revision 与 CAS 同时校验；保留历史、ABA 不冒用旧授权，三个来源事件回放与快照相等。
+- Resolver：唯一入口按登记版本读取 CAS，七种失败码按固定优先级；越权/不存在/根外逐字段同一 not_found；全文唯一、NFC 空白折叠、完整句/段落/列表/表格/标题，系统收紧坐标并保留完整块索引。
+- Runtime：新 Attempt 冻结当前来源 map；旧 Attempt/重启不变；审批改版本后仅新任务看到新版；撤销后新 repair 保留草稿但不得继承旧来源。
+- 来源根只读，包括新文件和大小写别名；真实 SDK 工具拒写；绕工具改写并报 artifact 在 collection 拒绝，解析仍读取 CAS。ACTIVE 重绑定不得抹掉篡改证据。
+- 字节保护不经 512KB 文本工具限额或换行转换；旧 code-v1 不加来源字段、不改提示/上下文/准则语义。新 citation 会令旧严格 SDK 拒绝，契约 schema 明确升至 2。
+
+原始证据在 `.local-test-evidence/2026-09-12/p33-b-resume/`，未入 Git。初始开发失败与误红均保留：workspace 4 fail/1 pass→5 pass；冻结 map 1 fail→1 pass；目录 prefix 2 fail/1 pass，首修大小写仍失败，最终 3 pass；撤销继承与 ACTIVE 重绑定各 1 fail→1 pass；trust work/verify 2 fail→green。来源命令首次 35 pass；contract/resolver/runtime/workspace 首批 88 pass。
+结果 evidence gate 首次 14 fail 为 fixture 缺 allowed_tools，不冒称产品缺陷；修 fixture 后与 runtime 合计 29 pass。阶段性 P33 核心 218 pass/5.44s，仍不是 B 最终全量或真实 Provider/原生验收。
