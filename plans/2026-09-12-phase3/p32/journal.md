@@ -2,20 +2,70 @@
 
 ## 0. handoff（每次提交时更新）
 
-- 2026-09-12（最新）：
-  - 计划经过两轮评审，现在是第 3 版（处置见 §1 与 §1b）。切片顺序改为 B → C → A → D → E → F → G。
-  - **切片 B（R13）已完成**，见 §2.3。
-  - **切片 C 已完成**：第一部分见 §2.4（`a18e785`）；第二部分见 §2.5，工作区登记（`3da2958`）。
-  - **切片 A 已实现**，见 §2.6：沙箱执行端口、seatbelt 与 ProcessOnly 两个适配器、8 项探针、4 个调用点接线、`code_execution` 三种取值。
-    - 切片 A 自己的测试加上受影响的旧测试，76 条全部通过；
-    - 正在跑 `tests/orchestrator` 全量回归，通过后提交。
-  - 下一步：切片 D（发布连接器、权威查询语义、补偿），要先按计划第 3 版 D6 写测试草稿。
-- 接手须知：
-  - 沙箱实验只在 scratchpad 或 `/private/tmp` 里做，做完删除；
-  - 同一时间只跑一个 pytest；
-  - 真实模型只用 deepseek-flash；
-  - 本机没有 docker，seatbelt 可用；
-  - `RLIMIT_NPROC` 按整个 uid 计数，**不要用**，设低了会让宿主自己 fork 失败。
+**写于 2026-09-12 07:55。P3.2 的 7 个切片里，B/C/A/D/E/F 已交付并推送；只剩切片 G（真实模型的原生验收）。**
+
+### 现在在哪
+
+| 项 | 值 |
+|---|---|
+| SDK | `main` = `6b82791`，版本 **0.10.0 / agent_orchestrator 0.10.0**，已推送 |
+| Host | `main` = `0f1af2b0`，已钉 SDK 0.10.0，已推送 |
+| 交付用的 wheel | 源提交 `3eb43fb`，`SOURCE_DATE_EPOCH=1789168350`，sha256 `9c07fac4b3b919b2003a380d321f974824818475ca8b3cf9570ba0e00042d06c` |
+| 评审 | 计划两轮（均 READY_WITH_CHANGES）、代码一轮（SHIP_WITH_FIXES）——**全部处置完毕**，见 §1、§1b、§4 |
+
+### 测试基线（重跑时拿它对照）
+
+| 范围 | 结果 |
+|---|---|
+| SDK `tests/orchestrator` | 577 passed / 8 skipped / 0 failed |
+| SDK `tests/orchestrator/p32` | 125 passed |
+| SDK 全量 `tests`（加 `--continue-on-collection-errors`） | 58 failed / 2613 passed / 18 errors。**58 与基线同数且不在本轮范围**；errors 多出的 3 条是 `simple_harness_memory` 缺包的既有收集错误，差额来源见 §3.1 |
+| SDK wheel 干净环境 | 844 passed / 1 failed（0.9.9 起的 execution 迁移既有失败） |
+| Host 后端 `tests/orchestration` | 110 passed |
+| Host 前端 | 773 passed，`npm run typecheck` 干净 |
+| mypy | 118 个源文件无问题 |
+
+### 下一步：切片 G（P32-16 原生验收）
+
+**硬前提**：`tauri-app/src-tauri/target/debug/bundle/macos/` 下**没有** Host 提交 `0f1af2b0` 的验收 bundle，必须先构建（耗时长，放后台）。没有它，原生验收无法开始。
+
+要做的事，按顺序：
+
+1. 构建 `SimpleHarness Agent Verify 0f1af2b0p18120.app`；
+2. 照 `.local-test-evidence/2026-09-12/native-ui-0910/launch.sh` 写一份 `launch-p32.sh`，改三处：
+   - bundle 名用本轮 sha；
+   - `--installed-target` 换成 `.local-test-evidence/2026-09-12/installed-h0100-s0313`（0.10.0 的那份，旧的是 `installed-h0910-s0313`）；
+   - 复制完用户数据之后，向副本的 `config.toml` 注入 `[orchestration] publish_dir = ".../p32-publish/reports"`——**不注入就不会启用发布连接器，主场景走不到**；副本每次启动都会被覆盖，所以只能在脚本里注入，不能手改副本；
+3. 照 `drive_scenario.sh` 写 `drive_p32.sh`：目标改为"写一份周报并发布到授权目录"，成功条件是 `file:…` 加 `action:file_publish.publish:…`；批准后校验目录里真的出现文件、回读 hash 与界面显示一致；
+4. 另跑一轮带 `pytest:` 成功条件的 Mission，证明它在沙箱里执行，并附探针证据（部署清单的 `features.sandbox`）；
+5. 收证据 → 写 §5 终态 → 更新 Host `ARCHITECTURE/PROJECT_STATUS.md` → 提交推送。
+
+**已经就绪、不用再找的材料**：
+
+- 发布目录：`.local-test-evidence/2026-09-12/p32-publish/reports`，硬链接已探测可用；
+- 凭证：`.local-test-evidence/2026-09-07/credentials/deepseek.env`，变量名 `BASEURL` / `APIKEY`（`launch.sh` 已经会读它，密钥不落文件、经环境变量进后端）；
+- flash 的 32000 上下文窗口：`launch.sh` 会自动写进副本的 `model_overrides.toml`；
+- 库内证据读取器：`ha12_verify.py <mode-dir> [--health]`，只读、对 `sk-` 脱敏；P3.2 需要补两项断言（发布回执的路径与回读 hash、CAS 目录存在）。
+
+### 接手须知
+
+- 沙箱实验只在 scratchpad 或 `/private/tmp` 里做，做完删除；
+- 同一时间只跑一个 pytest；
+- 真实模型只用 deepseek-flash，绝不用 deepseek-v4-pro；
+- 本机没有 docker，seatbelt 可用；`sandbox_check` 经 ctypes 调用，`SANDBOX_CHECK_NO_REPORT` 在本机是 `0x40000000`；
+- `RLIMIT_NPROC` 按整个 uid 计数，**不要用**，设低了会让宿主自己 fork 失败；
+- 退出原生 App 后立刻重启会撞上端口 18120 的 TIME_WAIT，要等端口可绑定再启动；
+- WebView 要先激活，内容才进入 AX 树；
+- 绝不打印或提交 API 密钥；提交前扫 `\bsk-[A-Za-z0-9_-]{20,}`，只打印计数。
+
+### 本轮登记、尚未修的（不要当成遗漏）
+
+1. **宿主崩溃后，逃出去的沙箱进程认不出来**——金丝雀随执行目录一起删除，重启时没有线索可扫。这是最重要的一条，见 §4.3 第 1 项；
+2. CPU 是每进程限额，不是整次执行的总量（`effective_limits` 已标 `scope: process`）；
+3. `run_pytest(executor=None)` 等同 process_only，而不是 off；
+4. 每次启动 `backfill` 会全表读一次 artifact 行；
+5. 面向使用者的文档落点：Host 的 `ARCHITECTURE/AGENT_ORCHESTRATION.md` 已写明沙箱边界；SDK 侧仍只在 plan 与 CHANGELOG 里；
+6. 残余风险：ProcessOnly 的 `run.seen` 有 pid 复用误杀的可能（Host 不使用该模式）。
 
 ## 1. 计划评审处置
 
