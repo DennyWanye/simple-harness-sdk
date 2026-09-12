@@ -194,3 +194,15 @@ schema v9、来源三个 Host 命令、CAS 原文、SourceCitation v2 契约、E
 测试夹具错误与产品反例分开：最初 context/消费测试的 helper 返回值或字段名误用、缺必填构造字段不算产品 red；commits 首跑在并行实施中碰未接完参数不算原始缺陷。artifact_hash 篡改最初用 upsert 被 DO NOTHING 忽略，已先断言真实读回变化再验证。A 闸门 4 的旧 caller PASS 前置换为实际来源/producer/record，全部事务回滚 oracle 保留。B 撤销控制改为撤销真正被冲突一方引用的来源，Conflict/Task/Claim/Knowledge 不变与 replay 原断言保留；两个 fixture 增强已独立审查。
 
 当前 C 已实现，干净提交全量仍待运行，未换 wheel、未进行 Host/真实 Provider 验收。来源失效、证据不足与系统报告的剩余义务分别留 E/D/G。
+
+### C 首次干净全量与兼容修复（17:52）
+
+源码 `673837d1834a81d7d70bdc6bcf5ab011a2aad9bf` 首次完整编排早停：637 passed / 1 skipped / 1 failed，177.07 秒（watchdog 177.34 秒）。`step02/test_recovery_matrix.py::test_s2_03_replays_do_not_duplicate` 在已接受 code 结果再次记录摘要时被新不可变保护拒绝。这是 C 的真实旧代码兼容回归，不改旧测试预期。
+
+修复：仅文档领域执行新增 accepted record/fail 历史保护；原 code 重放接口保持原行为。原失败用例与文档接受/回放套件 29 passed，1.62 秒；mypy 89 files 和 Ruff 通过。修复后仍须干净提交完整回归，不将首次 637 条计为完整通过。
+
+- `.local-test-evidence/2026-09-12/p33-c/orchestrator-full.log` SHA-256 `15a0b19b989376bc25f95db47257ec2dba339ba8ad9b53c4bb1cf8f707fd0dd3`
+
+- `.local-test-evidence/2026-09-12/p33-c/orchestrator-full.json` SHA-256 `59a1736d9b95c6a70027c1b766c3ed739150398da3a8f00608b69ffcd17b5985`
+
+- `.local-test-evidence/2026-09-12/p33-c/replay-fix.log` SHA-256 `684efba1f9aaac09d99a7375d09fe508a34a39ebcd82e4de4633185531f68d07`

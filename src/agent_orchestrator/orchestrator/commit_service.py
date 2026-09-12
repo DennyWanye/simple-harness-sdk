@@ -3154,7 +3154,11 @@ class CommitService(
     ) -> None:
         with self._store.transaction():
             stored = self._require_result(result_id)
-            if stored.verification_state == "DONE" and stored.verdict == "PASS":
+            if (
+                stored.verification_state == "DONE"
+                and stored.verdict == "PASS"
+                and self.domain_for(stored.envelope.mission_id).id == DOC_DOMAIN
+            ):
                 known = next(
                     (
                         row
@@ -3511,7 +3515,11 @@ class CommitService(
             stored = self._require_result(result_id)
             if stored.verification_state == "DONE" and stored.verdict == "FAIL":
                 return self._require_task(stored.envelope.task_id)
-            if stored.verification_state == "DONE" and stored.verdict == "PASS":
+            if (
+                stored.verification_state == "DONE"
+                and stored.verdict == "PASS"
+                and self.domain_for(stored.envelope.mission_id).id == DOC_DOMAIN
+            ):
                 raise CommitRejected("accepted result verification history is immutable")
             attempt = self._require_attempt(stored.envelope.attempt_id)
             self._require_lease(attempt, owner)
