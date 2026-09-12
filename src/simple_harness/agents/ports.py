@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+from simple_harness.execution.provider_admission import ProviderAdmissionPort
 from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 from simple_harness.runtime.ports import (
     AuthorizationPort,
@@ -81,9 +82,20 @@ class AgentRuntimePorts:
     # Waiters are served FIFO, so N Agents take turns instead of starving.
     max_concurrent_model_calls: int | None = None
     max_concurrent_tool_calls: int | None = None
+    provider_admission: ProviderAdmissionPort | None = None
     clock: Callable[[], float] = time.time
 
     def __post_init__(self) -> None:
+        if self.provider_admission is not None:
+            if self.policies.pricing_mode != "unpriced_local" and not getattr(
+                self.provider_admission, "supports_priced_budgets", False
+            ):
+                raise ValueError("provider admission does not support priced shared budgets")
+            for name in ("acquire", "handoff", "observe", "recover"):
+                if not callable(getattr(self.provider_admission, name, None)):
+                    raise TypeError(f"provider_admission must implement {name}")
+            if not self.provider_admission.fingerprint:
+                raise ValueError("provider_admission requires a stable fingerprint")
         if not callable(getattr(self.provider, "invoke", None)):
             raise TypeError("provider must implement invoke")
         if not callable(getattr(self.authorization, "request_authorization", None)) and not (

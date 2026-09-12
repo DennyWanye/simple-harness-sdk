@@ -1,14 +1,17 @@
-最后更新：2026-09-13 00:40 CST：P3.3 G源码修复最终兼容874项通过/35.70秒，覆盖新分页、Critic真实输出证明、取消半期续租、丢submit回执冷恢复、超时单intent与迟到300tokens完整结算；94文件mypy与改动Ruff通过。N1 v2/v3真实失败保留，下一步N1v4实际UI重验，尚不称G完成；安装包/P3.6暂停。详见 [P3.3 journal](../plans/2026-09-12-phase3/p33/journal.md)。
-
 最后更新：2026-09-13。
 
-## 9 月 13 日当前状态
+**Current source state, 2026-09-13 02:08 CST: P3.3 G / P3.4 / P3.5 remain in progress.** Integration run g-source-integration-v8: 989 passed, 2 outdated profile-fixture assertions failed, 40.34s (wrapper40.80s). Only the fixture was corrected: g-profile-compat-v9 passed all20 controls in0.02s (wrapper0.23s), preserving exact historical v3/v4/v5 and rejecting unknown v7. The integration includes all18 role-context and all18 provider-admission/recovery controls; the earlier cold-owner failure is closed (focused3 PASS/0.44s and integration). Changed Python Ruff and104-source-file mypy pass. Explicit unpriced profiles have shared token/slot admission, exact owner/epoch recovery, held UNKNOWN cost and actual late usage; priced admission is explicitly refused until monetary accounting is implemented. Future Critic/synthesis tail reservation, full P3.4 selection/fragment reuse, P3.5 load/backup and N1 native acceptance remain open. N1 v4b remains a real failed run; original sources, goal, criteria and400k cap are unchanged. Packaging, release and P3.6 remain paused.
 
-**P3.3/G 进行中；workspace 读工具分页仅完成源码局部验证，N1 真实重验尚待。** 主 runner `g-reading-lifecycle-v2`：39 passed / 0 skipped（分页 34 + lease 5），pytest 1.15 秒、wrapper 1.41 秒。实际 Context 的 UpperBound/Tiktoken 两种 tokenizer 控制均通过，逐页有界返回、原文重拼/hash 与权限检查断言保留。运行来自 `a5c8fca` 上的工作树，不能归为干净提交全量或旧 wheel 验证；[证据、命令与实现边界](ORCHESTRATOR.md#9-月-13-日当前状态分页局部验证通过g-进行中)。
-
-源码 Tauri dev UI 为用户批准的当前载体；真实 deepseek-flash 的续读、任务预算与 N1 业务结果仍须重验，原业务 AC 不变。冻结安装包验收单独暂缓，不推进打包/发布/P3.6。以下旧提交、制品、安装及画像版本叙述保留为历史证据，不表示当前 N1/G 已完成。
+[生产链路与边界](ORCHESTRATOR.md)；[精确命令、首跑失败和本机证据](../plans/2026-09-12-phase3/p33/journal.md#planning-role-local-20260913)。
 
 ## 历史版本验证记录
+
+### 9月13日前序局部验证（历史）
+
+大页/context组合 `g-doc6-large-pages-v1` 97 passed / 0 skipped，5.88秒（wrapper6.15）；官方本地tokenizer/provider wire组合另26 passed / 0 skipped，2.51秒（wrapper2.73）。前者覆盖新8192字符/32KiB及实际tokenizer双重上限、匹配ContextPolicy和冻结恢复，后者没有真实模型调用；均不证明累计预算guard或N1业务通过。大页core后续已获Ohm限定ACCEPT。[原命令与证据](../plans/2026-09-12-phase3/p33/journal.md#大页与匹配context配置局部验证2026-09-13)。
+
+00:40阶段源码兼容874项通过/35.70秒，94文件mypy与改动Ruff通过；更早 `g-reading-lifecycle-v2` 为39 passed /0 skipped（旧分页34＋lease5），1.15秒（wrapper1.41）。这些是对应工作树和旧2000B分页阶段的历史证据，不覆盖后续改动或N1真实重验。
+
 
 G SDK源码验证里程碑（21:18 CST）：干净提交a5c8fca659be8b491d4d0f3f3f5536a5e711ce48完整编排1302 passed /8 skipped /0 failed，487.75秒（runner488.09秒），PG50040已查无残留。8项真实Provider未启用；G整体未完成。0.11.1可复现候选wheel49137655…、306包文件与709个sdist源码输入逐字匹配；Host安装组合/原生flash继续验收。
 
@@ -18,7 +21,7 @@ F 验证完成（保留既有红集）：干净源码 `5bcca08fe666b8e20524206b7
 
 E 干净源码 `cf40b8ec86a2f307d0f8b8f89cf7f0166e5de121` 完整编排 **1199 passed /8 skipped /0 failed**（481.36秒），watchdog481.63秒，PG25036无残留。8项skip为未启用真实Provider。A–E完成SDK源码验证；F/G、wheel、Host与真实flash仍未完成。
 
-## Agent 编排 Phase3 当前状态
+## Agent 编排 Phase3 历史阶段状态
 
 D 干净源码 `d3d3fd8650acc8b837dc4c0e093ab95068d054ff` 完整编排 **1119 passed / 8 skipped / 0 failed**（446.64秒），watchdog446.86秒，PG18131无残留。8项skip为未启用真实Provider。D为SDK源码里程碑，E–G、Host/wheel/真实flash仍未完成。
 DOC_PROFILE v3、契约schema3；旧历史不迁改。当前生产链路新增有限接受、人工恢复、预算前限额与Mission固定分母确定性判定。见P33 journal §2.4。

@@ -1,10 +1,28 @@
-最后更新：2026-09-13 00:40 CST：P3.3 G源码修复最终兼容874项通过/35.70秒，覆盖新分页、Critic真实输出证明、取消半期续租、丢submit回执冷恢复、超时单intent与迟到300tokens完整结算；94文件mypy与改动Ruff通过。N1 v2/v3真实失败保留，下一步N1v4实际UI重验，尚不称G完成；安装包/P3.6暂停。详见 [P3.3 journal](../plans/2026-09-12-phase3/p33/journal.md)。
-
 # Agent 编排框架
 
 最后更新：2026-09-13。
 
-## 9 月 13 日当前状态：分页局部验证通过，G 进行中
+**Current source state, 2026-09-13 02:08 CST: P3.3 G / P3.4 / P3.5 remain in progress.** Integration run g-source-integration-v8: 989 passed, 2 outdated profile-fixture assertions failed, 40.34s (wrapper40.80s). Only the fixture was corrected: g-profile-compat-v9 passed all20 controls in0.02s (wrapper0.23s), preserving exact historical v3/v4/v5 and rejecting unknown v7. The integration includes all18 role-context and all18 provider-admission/recovery controls; the earlier cold-owner failure is closed (focused3 PASS/0.44s and integration). Changed Python Ruff and104-source-file mypy pass. Explicit unpriced profiles have shared token/slot admission, exact owner/epoch recovery, held UNKNOWN cost and actual late usage; priced admission is explicitly refused until monetary accounting is implemented. Future Critic/synthesis tail reservation, full P3.4 selection/fragment reuse, P3.5 load/backup and N1 native acceptance remain open. N1 v4b remains a real failed run; original sources, goal, criteria and400k cap are unchanged. Packaging, release and P3.6 remain paused.
+
+## 本轮生产链路与验证边界
+
+新显式 RuntimeProfile 通过 `context_policy`/`tokenizer` 接入 AgentRuntimePorts；同一 `workspace_read_file` 默认最多8192 Unicode字符、完整响应最多32KiB，并满足实际 `count_message(tokenizer, TOOL Message)` 的单结果上限。默认新配置单结果16384 tokens、总输入32768、render slack为0；旧None profile保留原2048-token/2000B行为。公开只读 `resolve_profile_context_policy(config, *, profile_id='default', tokenizer=None)` 解析新旧池，原子不可覆盖的 `execution.db.context.json` 和intent的 `runtime_context` 共同冻结身份。未提供counter明确使用UpperBound，不冒称flash精确计数。这不是提高用户累计预算。
+
+source_workload 从真实CAS读取并冻结来源hash、bytes、字符/行数和读取规模，Planner只接收规模元数据、不inline正文；坏CAS拒绝。doc6新Planner/Manager v3强调连贯任务与完整提交schema；旧已冻结profile/prompt不原版改写。55项组合通过只证明这些源码边界与既有Critic/提交控制，不证明新规划在真实flash任务中成功。
+
+`role-visibility-v1` 为新搜索角色筛选完整条目，总计最多6项/12KiB，版本进入package hash。Explorer看候选/反证，Exploiter看正式记录与原适用范围，Connector看范围/血缘，FailureAnalyst区分真实REJECTED和失败Result中的原状态Claim；doc失败保持UNDER_REVIEW，不伪造REJECTED。正式VERIFIED来源归属保留status/trust/checked_scope，不改成UNVERIFIED，也不证明世界事实。直接与继承来源合并检查，stale/unknown排除正文、ERROR显式不可用；历史反馈不重新混入来源正文。Worker/Synthesizer/Critic原路径保持，新投影仅Worker新Attempt显式启用，Simplifier声明Worker别名，旧持久intent不重建。18项包含实际SDK Provider请求的软件对照；真实模型质量、完整恢复/整体兼容和P34后续fragment/COMPARE另验。
+
+[本轮命令、日志hash与失败分类](../plans/2026-09-12-phase3/p33/journal.md#planning-role-local-20260913)。
+
+## 历史版本验证记录
+
+### 9月13日前序局部验证（历史）
+
+大页/context组合 `g-doc6-large-pages-v1` 97 passed / 0 skipped，5.88秒（wrapper6.15）；官方本地tokenizer/provider wire组合另26 passed / 0 skipped，2.51秒（wrapper2.73）。前者覆盖新8192字符/32KiB及实际tokenizer双重上限、匹配ContextPolicy和冻结恢复，后者没有真实模型调用；均不证明累计预算guard或N1业务通过。大页core后续已获Ohm限定ACCEPT。[原命令与证据](../plans/2026-09-12-phase3/p33/journal.md#大页与匹配context配置局部验证2026-09-13)。
+
+00:40阶段源码兼容874项通过/35.70秒，94文件mypy与改动Ruff通过；更早 `g-reading-lifecycle-v2` 为39 passed /0 skipped（旧分页34＋lease5），1.15秒（wrapper1.41）。这些是对应工作树和旧2000B分页阶段的历史证据，不覆盖后续改动或N1真实重验。
+
+### 旧2000B分页局部验证
 
 `workspace_read_file` 已提供有界字符分页：`offset` 按 Unicode codepoint 计数，`max_chars` 为 1–4096；续读携带同一原始 bytes 的 `expected_sha256`，文件变化拒绝。分页保留原始 CRLF/Unicode，返回 `next_offset`、行边界与原始 SHA-256；小结果保持原形状。完整 ToolResult（含来源不可信提示）序列化上限为 2000 UTF-8 bytes，每页仍经过身份、权限、只读与预算检查。本次分页不变更已冻结的 doc5/promptv2 字节。
 
@@ -12,9 +30,8 @@
 
 命令：`.venv/bin/python -m pytest tests/orchestrator/p33/test_g_workspace_paging.py tests/orchestrator/p33/test_g_critic_lease_lifecycle.py -q`。运行基于 `a5c8fca659be8b491d4d0f3f3f5536a5e711ce48` 上的工作树（`working_tree=true`），不是该干净提交或旧安装包的验证。[原始日志](../.local-test-evidence/2026-09-12/p33-g/g-reading-lifecycle-v2.log) SHA-256：`caaa5bdb0fd9a6f22b214c2ea432b8a7dcaaf06928d48b46a1725470207a92d8`；[runner 记录](../.local-test-evidence/2026-09-12/p33-g/g-reading-lifecycle-v2.json)保存调用参数与工作树 diff hash。原始证据仅本机 ignored 保存。
 
-**N1 真实重验尚待，P3.3/G 继续进行中。** 当前经用户批准的验收载体是源码 Tauri dev UI；需重新验证真实 deepseek-flash 能续读完整来源并在任务预算内完成业务。上述局部控不证明 N1 或 G 完成，不降低原业务 AC。冻结安装包验收单独暂缓，不推进打包、发布或 P3.6。以下旧提交、制品及安装记录仅是对应历史版本的证据，不替代当前工作树与 N1 的真实重验结论。
+### 更早切片与制品记录
 
-## 历史版本验证记录
 
 G SDK源码验证里程碑（21:18 CST）：干净提交a5c8fca659be8b491d4d0f3f3f5536a5e711ce48完整编排1302 passed /8 skipped /0 failed，487.75秒（runner488.09秒），PG50040已查无残留。8项真实Provider未启用；G整体未完成。0.11.1可复现候选wheel49137655…、306包文件与709个sdist源码输入逐字匹配；Host安装组合/原生flash继续验收。
 

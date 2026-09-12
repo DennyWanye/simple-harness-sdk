@@ -53,6 +53,15 @@ def _plain_mapping(value: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     return {key: _json_value(item) for key, item in value.items()}
 
 
+def openai_chat_request_payload(request: ProviderRequest, *, model: str) -> dict[str, Any]:
+    """The exact credential-free body used by the chat adapter, also for admission.
+
+    Callers must first restore durable assistant tool calls. This function neither
+    consults a client nor sends a request; the HTTP adapter uses the same serializer.
+    """
+    return OpenAICompatibleProvider._payload_for_model(request, model)
+
+
 class OpenAICompatibleProvider:
     """Perform one OpenAI-compatible chat-completions request per invocation."""
 
@@ -163,9 +172,15 @@ class OpenAICompatibleProvider:
         return self._parse_response(request, payload, response)
 
     def _request_payload(self, request: ProviderRequest) -> dict[str, Any]:
+        return openai_chat_request_payload(request, model=self._target.model)
+
+    @staticmethod
+    def _payload_for_model(request: ProviderRequest, model: str) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "model": self._target.model,
-            "messages": [self._message_payload(message) for message in request.messages],
+            "model": model,
+            "messages": [
+                OpenAICompatibleProvider._message_payload(message) for message in request.messages
+            ],
         }
         if request.tools:
             payload["tools"] = [

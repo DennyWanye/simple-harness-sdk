@@ -310,6 +310,7 @@ class KnowledgeContext:
     global_summary: Mapping[str, Any] | None = None
     summary_status: Mapping[str, Any] = field(default_factory=lambda: {"status": "ok"})
     raw_refs: Mapping[str, Any] | None = None  # §11 layer 1: references only (P2-11)
+    role_materials: Mapping[str, Any] | None = None  # bounded new-role projection only
 
     @classmethod
     def unavailable(cls, reason: str, *, status: str = "unavailable") -> KnowledgeContext:

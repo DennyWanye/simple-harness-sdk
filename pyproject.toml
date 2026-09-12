@@ -26,6 +26,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+deepseek-tokenizer = ["deepseek-recipe==0.1.1"]
 testing = [
   "pytest>=8.3,<9",
 ]

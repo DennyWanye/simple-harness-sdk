@@ -10,6 +10,7 @@ import hashlib
 import logging
 import time
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -36,6 +37,7 @@ from simple_harness.providers import (
     ProviderRequestRejectedError,
     ProviderResponse,
     ProviderServerError,
+    ProviderUsage,
 )
 from simple_harness.providers.base import (
     ProviderContinuationCapability,
@@ -49,6 +51,7 @@ from .budget import (
     FrozenPriceEstimator,
     budget_policy_fingerprint,
 )
+from .provider_admission import ProviderAdmissionPort
 from .provider_invocations import (
     ProviderInvocationRecord,
     ProviderInvocationState,
@@ -104,6 +107,7 @@ class ProviderInvocationUnitOfWork(Protocol):
         *,
         expected_version: int,
         fault: Callable[[str], None] | None = None,
+        require_expired_runtime_lease: bool = False,
     ) -> ProviderInvocationRecord: ...
 
     def list_incomplete_provider_invocations(
@@ -235,9 +239,14 @@ class ProviderInvocationCoordinator:
         estimator: FrozenPriceEstimator | None = None,
         resolver: ProviderBindingResolver | None = None,
         context_use_authority=None,
+        provider_admission: ProviderAdmissionPort | None = None,
+        request_preparer: Callable[[ProviderRequest], ProviderRequest] | None = None,
         clock=time.time,
     ) -> None:
         self._uow = uow
+        self._provider_admission = provider_admission
+        self._request_preparer = request_preparer
+        self._active_provider_calls: set[str] = set()
         if resolver is None:
             if provider is None or budget_policy is None:
                 raise TypeError("provider and budget_policy are required without resolver")
@@ -544,100 +553,153 @@ class ProviderInvocationCoordinator:
             )
         if record.state is ProviderInvocationState.HANDED_OFF:
             raise ProviderInvocationConflictError()
-        try:
-            handed_off = self._uow.hand_off_provider_invocation(
-                record.invocation_id,
-                expected_version=record.version,
-                handed_off_at=self._clock(),
+        wire_request = (
+            request if self._request_preparer is None else self._request_preparer(request)
+        )
+        ticket = None
+        if self._provider_admission is not None:
+            ticket = await self._provider_admission.acquire(
+                request=wire_request,
+                record=record,
+                cancel=cancel,
+                uow=self._uow,
                 execution_lease=execution_lease,
-                workflow_lease=workflow_lease,
             )
-        except ValueError as exc:
-            current = self._uow.read_provider_invocation(record.invocation_id)
-            if current is not None and current.state is ProviderInvocationState.HANDED_OFF:
-                raise ProviderInvocationConflictError() from exc
-            raise
-        self._emit_attempt(handed_off, outcome=Outcome.STARTED)
+        active_here = False
+        try:
+            if record.invocation_id in self._active_provider_calls:
+                raise ProviderInvocationConflictError()
+            self._active_provider_calls.add(record.invocation_id)
+            active_here = True
+            try:
+                with (
+                    self._provider_admission.handoff(ticket, request=wire_request, cancel=cancel)
+                    if self._provider_admission is not None and ticket is not None
+                    else nullcontext()
+                ):
+                    handed_off = self._uow.hand_off_provider_invocation(
+                        record.invocation_id,
+                        expected_version=record.version,
+                        handed_off_at=self._clock(),
+                        execution_lease=execution_lease,
+                        workflow_lease=workflow_lease,
+                    )
+            except ValueError as exc:
+                current = self._uow.read_provider_invocation(record.invocation_id)
+                if current is not None and current.state is ProviderInvocationState.HANDED_OFF:
+                    raise ProviderInvocationConflictError() from exc
+                raise
+            self._emit_attempt(handed_off, outcome=Outcome.STARTED)
 
-        try:
-            response = await binding.provider.invoke(request, cancel=cancel)
-        except _DEFINITE_PROVIDER_FAILURES as exc:
-            failed = handed_off.settle_failed(
-                error_code=str(exc.code),
-                at=self._clock(),
-                expected_version=handed_off.version,
-            )
-            self._uow.settle_provider_invocation(failed, expected_version=handed_off.version)
-            self._emit_attempt(failed, outcome=Outcome.FAILED, error_code=str(exc.code))
-            raise
-        except (ProviderCancelledError, asyncio.CancelledError) as exc:
-            unknown = await self._settle_unknown(handed_off, "provider_cancelled_after_handoff")
-            raise ProviderInvocationUnknownError(unknown) from exc
-        except BaseException as exc:
-            unknown = await self._settle_unknown(handed_off, "provider_error_after_handoff")
-            raise ProviderInvocationUnknownError(unknown) from exc
-
-        charge = self._response_charge(response, handed_off.budget_charge, binding=binding)
-        usage_json = {
-            "usage": (
-                None
-                if response.usage is None
-                else {
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens,
-                    "total_tokens": response.usage.total_tokens,
-                    "cache_tokens": response.usage.cache_tokens,
-                    "reasoning_tokens": response.usage.reasoning_tokens,
-                }
-            ),
-            "budget": charge.to_json(),
-        }
-        try:
-            durable_response = provider_response_json(
-                response, capability=binding.continuation_capability
-            )
-        except ValueError as exc:
-            failed = handed_off.settle_failed(
-                error_code="provider_response_not_durable",
-                at=self._clock(),
-                expected_version=handed_off.version,
-            )
-            self._uow.settle_provider_invocation(failed, expected_version=handed_off.version)
-            self._emit_attempt(
-                failed, outcome=Outcome.FAILED, error_code="provider_response_not_durable"
-            )
-            raise ProviderProtocolError(private_cause=exc) from exc
-        succeeded = handed_off.settle_succeeded(
-            response_json=durable_response,
-            usage_json=usage_json,
-            budget_charge=charge,
-            at=self._clock(),
-            expected_version=handed_off.version,
-        )
-        try:
-            self._uow.settle_provider_invocation(succeeded, expected_version=handed_off.version)
-        except BaseException as exc:
-            current = self._uow.read_provider_invocation(record.invocation_id)
-            if current is not None and current.state is ProviderInvocationState.SUCCEEDED:
-                return provider_response_from_json(
-                    thaw_json(cast(FrozenJsonValue, current.response_json)),
-                    expected_capability=binding.continuation_capability,
+            try:
+                response = await binding.provider.invoke(wire_request, cancel=cancel)
+            except _DEFINITE_PROVIDER_FAILURES as exc:
+                failed = handed_off.settle_failed(
+                    error_code=str(exc.code),
+                    at=self._clock(),
+                    expected_version=handed_off.version,
                 )
-            if current is not None and current.state is ProviderInvocationState.HANDED_OFF:
-                await self._settle_unknown(current, "provider_settlement_commit_unknown")
-            current = self._uow.read_provider_invocation(record.invocation_id)
-            raise ProviderInvocationUnknownError(current) from exc
-        logger.info(
-            "provider.invoked",
-            extra={
-                "model": response.model,
-                "input_tokens": (response.usage.input_tokens if response.usage else None),
-                "output_tokens": (response.usage.output_tokens if response.usage else None),
-                "total_tokens": (response.usage.total_tokens if response.usage else None),
-            },
-        )
-        self._emit_attempt(succeeded, outcome=Outcome.SUCCEEDED)
-        return response
+                # A real empty/length response is a terminal billed call. Preserve
+                # its observed usage for the next admission and eventual import.
+                detail = getattr(exc, "detail", None)
+                observed = detail.get("usage") if isinstance(detail, Mapping) else None
+                if isinstance(observed, Mapping):
+                    usage = ProviderUsage(
+                        input_tokens=observed["input_tokens"],
+                        output_tokens=observed["output_tokens"],
+                        total_tokens=observed["total_tokens"],
+                        reasoning_tokens=observed.get("reasoning_tokens"),
+                    )
+                    failed_charge = (
+                        binding.estimator.charge_usage(usage)
+                        if binding.estimator is not None
+                        else BudgetCharge.unknown()
+                    )
+                    failed = replace(
+                        failed,
+                        usage_json={"usage": dict(observed), "budget": failed_charge.to_json()},
+                        budget_charge=failed_charge,
+                    )
+                self._uow.settle_provider_invocation(failed, expected_version=handed_off.version)
+                self._emit_attempt(failed, outcome=Outcome.FAILED, error_code=str(exc.code))
+                raise
+            except (ProviderCancelledError, asyncio.CancelledError) as exc:
+                unknown = await self._settle_unknown(handed_off, "provider_cancelled_after_handoff")
+                raise ProviderInvocationUnknownError(unknown) from exc
+            except BaseException as exc:
+                unknown = await self._settle_unknown(handed_off, "provider_error_after_handoff")
+                raise ProviderInvocationUnknownError(unknown) from exc
+
+            charge = self._response_charge(response, handed_off.budget_charge, binding=binding)
+            usage_json = {
+                "usage": (
+                    None
+                    if response.usage is None
+                    else {
+                        "input_tokens": response.usage.input_tokens,
+                        "output_tokens": response.usage.output_tokens,
+                        "total_tokens": response.usage.total_tokens,
+                        "cache_tokens": response.usage.cache_tokens,
+                        "reasoning_tokens": response.usage.reasoning_tokens,
+                    }
+                ),
+                "budget": charge.to_json(),
+            }
+            try:
+                durable_response = provider_response_json(
+                    response, capability=binding.continuation_capability
+                )
+            except ValueError as exc:
+                failed = handed_off.settle_failed(
+                    error_code="provider_response_not_durable",
+                    at=self._clock(),
+                    expected_version=handed_off.version,
+                )
+                failed = replace(failed, usage_json=usage_json, budget_charge=charge)
+                self._uow.settle_provider_invocation(failed, expected_version=handed_off.version)
+                self._emit_attempt(
+                    failed, outcome=Outcome.FAILED, error_code="provider_response_not_durable"
+                )
+                raise ProviderProtocolError(private_cause=exc) from exc
+            succeeded = handed_off.settle_succeeded(
+                response_json=durable_response,
+                usage_json=usage_json,
+                budget_charge=charge,
+                at=self._clock(),
+                expected_version=handed_off.version,
+            )
+            try:
+                self._uow.settle_provider_invocation(succeeded, expected_version=handed_off.version)
+            except BaseException as exc:
+                current = self._uow.read_provider_invocation(record.invocation_id)
+                if current is not None and current.state is ProviderInvocationState.SUCCEEDED:
+                    return provider_response_from_json(
+                        thaw_json(cast(FrozenJsonValue, current.response_json)),
+                        expected_capability=binding.continuation_capability,
+                    )
+                if current is not None and current.state is ProviderInvocationState.HANDED_OFF:
+                    await self._settle_unknown(current, "provider_settlement_commit_unknown")
+                current = self._uow.read_provider_invocation(record.invocation_id)
+                raise ProviderInvocationUnknownError(current) from exc
+            logger.info(
+                "provider.invoked",
+                extra={
+                    "model": response.model,
+                    "input_tokens": (response.usage.input_tokens if response.usage else None),
+                    "output_tokens": (response.usage.output_tokens if response.usage else None),
+                    "total_tokens": (response.usage.total_tokens if response.usage else None),
+                },
+            )
+            self._emit_attempt(succeeded, outcome=Outcome.SUCCEEDED)
+            return response
+        finally:
+            if active_here:
+                self._active_provider_calls.discard(record.invocation_id)
+            if ticket is not None and self._provider_admission is not None:
+                self._provider_admission.observe(
+                    ticket,
+                    record=self._uow.read_provider_invocation(record.invocation_id),
+                )
 
     def _response_charge(
         self,
@@ -668,26 +730,39 @@ class ProviderInvocationCoordinator:
     async def _settle_unknown(
         self, handed_off: ProviderInvocationRecord, error_code: str
     ) -> ProviderInvocationRecord:
-        logger.warning("reconcile.unknown_settled", extra={"error_code": error_code})
         unknown = handed_off.settle_unknown(
             error_code=error_code,
             at=self._clock(),
             expected_version=handed_off.version,
         )
         try:
-            self._uow.settle_provider_invocation(unknown, expected_version=handed_off.version)
+            if error_code == "recovered_after_handoff" and callable(
+                getattr(self._uow, "read_provider_runtime_lease", None)
+            ):
+                current = self._uow.settle_provider_invocation(
+                    unknown,
+                    expected_version=handed_off.version,
+                    require_expired_runtime_lease=True,
+                )
+            else:
+                current = self._uow.settle_provider_invocation(
+                    unknown, expected_version=handed_off.version
+                )
+            if current.state is ProviderInvocationState.HANDED_OFF:
+                return current
         except ValueError:
-            current = self._uow.read_provider_invocation(handed_off.invocation_id)
-            if current is None or current.state not in {
+            observed = self._uow.read_provider_invocation(handed_off.invocation_id)
+            if observed is None or observed.state not in {
                 ProviderInvocationState.UNKNOWN,
                 ProviderInvocationState.SUCCEEDED,
                 ProviderInvocationState.FAILED,
             }:
                 raise
-        current = self._uow.read_provider_invocation(handed_off.invocation_id)
-        assert current is not None
-        self._emit_attempt(current, outcome=Outcome.DEGRADED, error_code=error_code)
-        return current
+        observed = self._uow.read_provider_invocation(handed_off.invocation_id)
+        assert observed is not None
+        logger.warning("reconcile.unknown_settled", extra={"error_code": error_code})
+        self._emit_attempt(observed, outcome=Outcome.DEGRADED, error_code=error_code)
+        return observed
 
     async def reconcile_incomplete(
         self, *, provider_reconciliation: ProviderReconciliationPort | None = None
@@ -696,6 +771,8 @@ class ProviderInvocationCoordinator:
 
         settled = 0
         for record in self._uow.list_incomplete_provider_invocations():
+            if record.invocation_id in self._active_provider_calls:
+                continue
             if record.state is ProviderInvocationState.CLAIMED:
                 continue
             if record.state is ProviderInvocationState.HANDED_OFF:
@@ -703,6 +780,8 @@ class ProviderInvocationCoordinator:
                 current = self._uow.read_provider_invocation(record.invocation_id)
                 assert current is not None
                 record = current
+                if record.state is not ProviderInvocationState.UNKNOWN:
+                    continue  # live canonical lease, or another owner already settled it
                 settled += 1
             if provider_reconciliation is None:
                 continue
@@ -766,6 +845,8 @@ class ProviderInvocationCoordinator:
                     now=self._clock(),
                 )
             settled += 1
+        if self._provider_admission is not None:
+            self._provider_admission.recover(self._uow)
         return settled
 
     def _response_charge_for_record(

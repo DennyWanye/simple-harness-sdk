@@ -147,18 +147,26 @@ class AgentProviderWire:
     """Consumer ``ProviderPort`` decorator used by ``assemble_runtime``."""
 
     def __init__(  # type: ignore[no-untyped-def]
-        self, inner, database, *, request_guard=None, max_concurrent: int | None = None
+        self,
+        inner,
+        database,
+        *,
+        request_guard=None,
+        max_concurrent: int | None = None,
+        requests_prepared: bool = False,
     ) -> None:
         self._inner = inner
         self._database = database
         self._guard = request_guard
+        self._requests_prepared = requests_prepared
         self._semaphore = None if max_concurrent is None else asyncio.Semaphore(max_concurrent)
         self.fallback_total = 0
         self.last_request: ProviderRequest | None = None
         self.in_flight = 0
         self.max_in_flight = 0
 
-    async def invoke(self, request: ProviderRequest, *, cancel) -> ProviderResponse:  # type: ignore[no-untyped-def]
+    def prepare_request(self, request: ProviderRequest) -> ProviderRequest:
+        """Freeze the actual wire copy before admission and physical handoff."""
         run_id = run_id_from_request(request.request_id.value)
         wire_request = request
         if run_id is not None and any(m.role is MessageRole.TOOL for m in request.messages):
@@ -166,11 +174,15 @@ class AgentProviderWire:
             messages, fallbacks = restore_tool_calls(request.messages, groups)
             self.fallback_total += fallbacks
             wire_request = replace(request, messages=messages)
-        self.last_request = wire_request
         if self._guard is not None and run_id is not None:
             # Final re-count of the rendered request (BA13); over budget is refused
             # before the call as a definite failure (BA16).
             self._guard.check(wire_request, run_id=run_id)
+        return wire_request
+
+    async def invoke(self, request: ProviderRequest, *, cancel) -> ProviderResponse:  # type: ignore[no-untyped-def]
+        wire_request = request if self._requests_prepared else self.prepare_request(request)
+        self.last_request = wire_request
         if self._semaphore is None:
             response = await self._invoke_counted(wire_request, cancel=cancel)
         else:

@@ -2,6 +2,8 @@
 
 ## 0. 交接（冷会话先读这一节）
 
+- **2026-09-13 最新接续**：source_workload/doc6 planning-v3/fullschema组合55 PASS；A01角色18 unique已覆盖PASS（首15＋CAS权限夹具修正后重3），整体兼容待跑。v1误命令55 deselected及角色首3 PermissionError日志保留，不计产品行为red或通过证据。大页core与角色必要投影已获限定独审；预算15通过＋1 cold恢复失败尚未全绿。N1 v4b真实预算耗尽失败、原目标/来源/400k预算不变；干净commit独立源码checkout＋attested venv的UI重验尚待。P3.3 G、P34整体均未完成，安装包/发布/P3.6暂停。[本轮局部记录](#planning-role-local-20260913)；下列早期当前位置按历史版本理解。
+
 - **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**A–E完成SDK源码验证，F候选验证完成并保留既有红集；G进行中。G源码a5c8fca完整编排1302 passed /8 skipped，0.11.1已安装到Host；原生真实模型验收未完成。** 后续记录按时间追加，早期数字只代表当时切片。
 - **中心断言**：文档领域的 VERIFIED 只意味着「这份文件的这个版本的这几行里，逐字写着这句话」，且要在记录层 / 消费层 / 交付层三层同时成立。详见 `plan.md` §0。
 - **切片顺序**：A 领域画像与五处闸门 → B 来源与证据解析 → C 评估记录与分级 → D adapter 与证据不足出口 → E 冲突与失效 → F 回归与 wheel → G Host 与原生验收。
@@ -488,3 +490,66 @@ renew_lease同事务检查Mission/Task/Attempt终态与owner，Critic使用半�
 - `g-p33-compat-v7.log` SHA-256 `92786afb86193f8b977f42fabf56850eff0b1b1f6af686ebd681101dd271aa2b`。
 
 接续：提交当前源码修复，冻结新SDK source attestation，以原始来源/目标/默认预算从真实Tauri UI重跑N1v4，继续全文引用、报告价值及冷恢复。G仍进行中；N2–N6/O4未验，P34/P35未实施完成，P36/打包暂停。
+
+
+### 大页与匹配Context配置局部验证（2026-09-13）
+
+触发为真实源码UI N1 v4b：Worker1完整读取135行，但18,367 bytes/10,098字符来源被分成17页。只读execution.db核实其20次Provider调用全部Context `dropped_ranges=[]`，无rehandoff重试；累计208240输入＋16540输出＝224780 tokens，超过该Task的90000预算。小页可见性成功不等于多轮读取成本可承受；既有真实失败与原预算保留，不缩目标或来源。
+
+经批准只推进P34A中此次必要的context/tokenizer接线：RuntimeProfile显式 `context_policy`/`tokenizer` → assembly实际ports → gateway逐页真实计数，8192字符/32KiB与单Tool token上限同时成立；原文、SHA、CRLF、行边界、trust notice和每页权限检查不变。默认新工作配置 `max_tool_result_tokens=16384`、`max_input_tokens=32768`、`render_slack_tokens=0`。旧None配置保留原schema/2000B行为，公开只读resolver区分已有旧池/新池并核显式counter；新context身份由不可覆盖的配置sidecar与真实intent共同绑定，恢复前拒绝静默换配置。大页本身不改变doc/prompt版本；同批doc6/accept由独立工作范围覆盖。
+
+先行新文件 `tests/orchestrator/p33/test_g_large_read_context.py` 15项oracle，主统一执行组合：
+
+```sh
+.venv/bin/python -m pytest tests/orchestrator/p33/test_g_doc6_citation_prompts.py tests/orchestrator/p33/test_g_doc5_accept_critic.py tests/orchestrator/p33/test_g_large_read_context.py tests/orchestrator/p33/test_g_workspace_paging.py tests/orchestrator/p33/test_g_critic_lease_lifecycle.py -q --maxfail=5
+```
+
+`g-doc6-large-pages-v1`：**97 passed / 0 skipped，5.88秒（wrapper6.15）**，构成为大页15＋legacy分页34＋lease5＋doc6/accept43。运行身份为 `e34668935c13eeb168d8eeba067b5378a3312f45` 上工作树，tracked diff SHA-256 `7d59af9d6198d7e3c4ec301b93c917aa2055ac51f78edcb0f862c0b4da60d60e`；不是干净HEAD全量。实际assembly/AgentContext＋脚本Provider测试证明完整测试来源在两三次读取后逐字重拼、无preview、双重边界及恢复身份成立，不能宣称真实flash质量/费用通过。[日志](../../../.local-test-evidence/2026-09-12/p33-g/g-doc6-large-pages-v1.log) SHA-256 `9852554a667c2b063fdee167c6167386ad8d2a58b297cbd4152889614250ae3c`；[runner](../../../.local-test-evidence/2026-09-12/p33-g/g-doc6-large-pages-v1.json)。
+
+官方本地counter独立组合命令：`DEEPSEEK_TOKENIZER_PATH=<已锁定的本机官方tokenizer文件> .venv/bin/python -m pytest tests/orchestrator/p33/test_g_deepseek_counter.py tests/conformance/test_provider_contract.py tests/agents/test_provider_wire.py -q --maxfail=3`。`g-official-tokenizer-v2`：**26 passed / 0 skipped，2.51秒（wrapper2.73）**，同HEAD工作树、另一diff SHA-256 `60cb2266e106266f801b45179b8af504ee629cb772b6e2aeb2a08c8bcc893965`。覆盖官方文件身份、计数、实际HTTP请求体本地transport与wire兼容；无外部模型调用。未配置时的UpperBound仍明确标识，不能将其冒称flash精确计数。官方counter也不能独自担保服务端隐含推理或UNKNOWN费用上界。[日志](../../../.local-test-evidence/2026-09-12/p33-g/g-official-tokenizer-v2.log) SHA-256 `761a336a087d168eb539e4dd324100177af16299d4801b14205fa1ebfd59d573`；[runner](../../../.local-test-evidence/2026-09-12/p33-g/g-official-tokenizer-v2.json)。原始证据仅本机ignored保存。
+
+当前交接：大页core冻结供Ohm独审；Halley继续共享累计预算/slot guard，预留的ports/fingerprint接缝不算guard通过证据。N1新的真实源码Tauri UI价值验收尚待；不增加用户400k预算。P34角色/context完整矩阵、检索选择、局部失败复用与COMPARE未由本次证明；P3.3 G、P34整体仍进行中，原AC不改，安装包/发布/P3.6暂停。本次文档核实没有执行pytest或修改生产。
+
+
+<a id="planning-role-local-20260913"></a>
+### 来源规模、doc6规划与A01角色局部控制（2026-09-13）
+
+本次是主runner串行执行后的限定文档回写，不新增测试运行。三个有效run均由runner标记 `working_tree=true`，source HEAD为 `e34668935c13eeb168d8eeba067b5378a3312f45`；不是该干净提交的整套验收。runner的tracked diff SHA-256均为 `5dbb954b7c66ee6f2ef043659790cc013a9d72d00c327cadd6ab98add21122b9`，此字段不包含新增untracked测试文件，不能单独充当全部测试输入身份。各原始log/json保留于本机ignored evidence，原始失败不删除。
+
+| Run | 实际结果 | pytest / wrapper秒 | 分类 |
+|---|---|---|---|
+| `g-planning-workload-v1` | 55 deselected，exit 5 | 0.37 / 0.62 | 误命令，零用例执行，不是PASS |
+| `g-planning-workload-v2` | 55 PASS | 1.32 / 1.57 | source_workload、doc6 planning-v3、完整提交schema及Critic控制组合 |
+| `p34-role-context-v1` | 15 PASS / 3 FAIL | 0.68 / 1.07 | 三项均在CAS故障注入写入时PermissionError；未走到产品ERROR断言 |
+| `p34-role-cas-v2` | 3 PASS / 15 deselected | 0.15 / 0.61 | 仅将测试临时CAS chmod(0o600)，读回损坏bytes后验证原ERROR oracle；生产未改 |
+
+A01合计 **18 unique已覆盖PASS**，不是一次18项完整重跑；剩余整体兼容待主runner。源码及相应四个继承来源oracle已获Ohm限定ACCEPT。角色原状态、来源信任及checked_scope保留；直接current A不能掩盖继承B撤销/CAS ERROR；候选/失败不因上下文成为事实或SYSTEM指令。真实SDK Provider请求中的角色差异、目标/准则保持、完整条目限额、普通消费者隔离已有软件证据；不宣称真实模型抗注入、规划质量、native/UI或整个P34通过。旧intent控制仅证明组包/检索不改持久记录，不冒充完整冷重开业务验收。
+
+可直接执行的等价pytest命令（主runner的args另见对应json；误命令v1不作有效命令）：
+
+```sh
+.venv/bin/python -m pytest -q tests/orchestrator/p33/test_g_source_workload.py tests/orchestrator/p33/test_g_doc6_citation_prompts.py tests/orchestrator/p33/test_g_document_submission_contract.py tests/orchestrator/p33/test_g_doc5_critic_gate.py
+.venv/bin/python -m pytest -q tests/orchestrator/p34/test_role_context_runtime.py
+.venv/bin/python -m pytest -q tests/orchestrator/p34/test_role_context_runtime.py -k cas
+```
+
+来源规模链路为真实CAS → hash/bytes/字符与行数/读取scale → Planner冻结输入，不inline正文；doc6 Planner/Manager新v3与完整schema控制不改旧已冻结prompt/profile。角色实现文件为 `context/role_visibility.py`、`context/context_builder.py` Worker区域、`context/retrieval.py` 可选字段、`orchestrator/event_handler.py` gather/新Attempt单点开启；测试为 `tests/orchestrator/p34/test_role_context_runtime.py` 与复用夹具 `conftest.py`。源代码路径均相对 `src/agent_orchestrator/`。
+
+本机证据索引与SHA-256：
+
+- [workload误命令日志](../../../.local-test-evidence/2026-09-12/p33-g/g-planning-workload-v1.log)：`b40bca5b5568f90aa973eca0b6a2b256e00d8c405ff315803c45d9084a05456c`；[runner](../../../.local-test-evidence/2026-09-12/p33-g/g-planning-workload-v1.json)。
+- [workload有效组合日志](../../../.local-test-evidence/2026-09-12/p33-g/g-planning-workload-v2.log)：`708c95675a07bc7a7b4333c239df98867761a53c2f26ed572df9c93107a2d508`；[runner](../../../.local-test-evidence/2026-09-12/p33-g/g-planning-workload-v2.json)。
+- [角色首跑日志](../../../.local-test-evidence/2026-09-12/p33-g/p34-role-context-v1.log)：`4d399e958f594166f67fe274413a03f7cd7cd42374587b7dadc4837c6912440f`；[runner](../../../.local-test-evidence/2026-09-12/p33-g/p34-role-context-v1.json)。
+- [CAS夹具修正后日志](../../../.local-test-evidence/2026-09-12/p33-g/p34-role-cas-v2.log)：`23f866fcfa94b35b8688e046d02d9772850928d97e8226042fc6122e8620bdab`；[runner](../../../.local-test-evidence/2026-09-12/p33-g/p34-role-cas-v2.json)。
+
+未完成边界：主报告预算15项通过、1项cold恢复失败交Halley处理，当前不宣称预算全绿。N1 v4b真实失败保持；新方案仍须以原目标、原来源、400k预算在实际源码Tauri UI中重验。下一运行载体拟固定为干净commit的ignored独立checkout＋attested editable venv，不能把准备快照算作真实业务通过。fragment/COMPARE仍只读设计；P3.3 G、P34、P35整体未完成，安装包/发布/P3.6暂停。本次仅改ARCH3和本journal，未改业务/测试、未pytest、未commit。
+
+## Source integration and recovery, 2026-09-13 02:08 CST
+
+**Current source state, 2026-09-13 02:08 CST: P3.3 G / P3.4 / P3.5 remain in progress.** Integration run g-source-integration-v8: 989 passed, 2 outdated profile-fixture assertions failed, 40.34s (wrapper40.80s). Only the fixture was corrected: g-profile-compat-v9 passed all20 controls in0.02s (wrapper0.23s), preserving exact historical v3/v4/v5 and rejecting unknown v7. The integration includes all18 role-context and all18 provider-admission/recovery controls; the earlier cold-owner failure is closed (focused3 PASS/0.44s and integration). Changed Python Ruff and104-source-file mypy pass. Explicit unpriced profiles have shared token/slot admission, exact owner/epoch recovery, held UNKNOWN cost and actual late usage; priced admission is explicitly refused until monetary accounting is implemented. Future Critic/synthesis tail reservation, full P3.4 selection/fragment reuse, P3.5 load/backup and N1 native acceptance remain open. N1 v4b remains a real failed run; original sources, goal, criteria and400k cap are unchanged. Packaging, release and P3.6 remain paused.
+
+Integration command: `DEEPSEEK_TOKENIZER_PATH=<pinned local tokenizer> python -m pytest -q tests/orchestrator/p33 tests/orchestrator/p34 tests/orchestrator/p35 tests/orchestrator/step02/test_workspace_and_gateway.py tests/orchestrator/step02/test_recovery_matrix.py tests/conformance/test_provider_contract.py tests/agents/test_provider_wire.py tests/agents/test_context_journal.py --maxfail=10`. Focused profile command: `python -m pytest -q tests/orchestrator/p33/test_p33_g_profile.py`. Original failed logs remain local; no UI or model success is inferred from these tests.
+
+- `.local-test-evidence/2026-09-12/p33-g/g-source-integration-v8.log`: SHA-256 `9f25a56d9046f30dc2c8381a7e60c8c22bf33c9ff9678ff08fb1d7a88641bca1`.
+- `.local-test-evidence/2026-09-12/p33-g/g-profile-compat-v9.log`: SHA-256 `2293f65e6203b27ee8d501e60813d051cf5d7fbe19140591e2efd2379942a9b8`.
+- `.local-test-evidence/2026-09-12/p33-g/p35-cold-owner-v4.log`: SHA-256 `3a75cdc9908b3a2bc2fc2c788afa5fe7624c777b6d68d869d817d96e1a51725e`.

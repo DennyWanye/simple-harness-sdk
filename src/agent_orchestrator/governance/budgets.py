@@ -321,7 +321,12 @@ class BudgetLedger:
             "SELECT COUNT(*) FROM imported_usage WHERE subject_id = ? AND unknown = 1",
             (subject_id,),
         ).fetchone()
-        return int(row[0]) > 0
+        held = self._store.connection.execute(
+            "SELECT 1 FROM provider_token_grants WHERE subject_id=?"
+            " AND state IN ('RESERVED','HANDED_OFF','UNKNOWN') LIMIT 1",
+            (subject_id,),
+        ).fetchone()
+        return int(row[0]) > 0 or held is not None
 
     # ----------------------------------------------------------------- settle
     def settle(self, *, subject_id: str, tool_calls: int = 0) -> dict[str, Any]:

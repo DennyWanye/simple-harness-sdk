@@ -30,12 +30,13 @@ WEAK = ("format_check", "rule_check")
 REVIEWED = (*WEAK, "critic_review")
 
 
-@pytest.fixture(params=["doc3", "doc4", "doc5", "code"])
+@pytest.fixture(params=["doc3", "doc4", "doc5", "doc6", "code"])
 def frozen_service(request, tmp_path, monkeypatch):
     profile = {
         "doc3": domains.DOC_PROFILE_V3,
         "doc4": domains.DOC_PROFILE_V4,
-        "doc5": domains.DOC_PROFILE,
+        "doc5": domains.DOC_PROFILE_V5,
+        "doc6": domains.DOC_PROFILE,
         "code": domains.CODE_PROFILE,
     }[request.param]
     path = tmp_path / "orchestrator.db"
@@ -58,8 +59,9 @@ def frozen_service(request, tmp_path, monkeypatch):
         planning = service.begin_planning(mission.id)
     with closing(Store.open(path, clock=lambda: 1_000.0)) as reopened:
         service = CommitService(reopened, deployed_layers=frozenset(REVIEWED))
+        assert domains.resolve_domain(domains.DOC_DOMAIN).version == "6"
         assert service.domain_for(mission.id).to_json() == profile.to_json()
-        yield service, planning, request.param == "doc5"
+        yield service, planning, request.param in {"doc5", "doc6"}
 
 
 def _node(key, policy):
@@ -93,6 +95,7 @@ def _state(service, mission_id):
 
 @pytest.mark.parametrize("entry", ["graph", "patch", "single"])
 def test_frozen_task_submission_requires_critic_only_for_doc5(frozen_service, entry):
+    """Doc5's original floor also applies to doc6; older frozen profiles stay weak."""
     service, planning, strict = frozen_service
     parent = None
     if entry == "patch":
@@ -162,19 +165,27 @@ def test_frozen_task_submission_requires_critic_only_for_doc5(frozen_service, en
     assert len(created) == 1 and receipt
 
 
-def test_doc5_empty_single_policy_cannot_bypass_the_floor(tmp_path):
+@pytest.mark.parametrize("version", ["5", "6"])
+def test_doc5_empty_single_policy_cannot_bypass_the_floor(tmp_path, monkeypatch, version):
     with closing(Store.open(tmp_path / "empty.db")) as store:
         service = CommitService(store, deployed_layers=frozenset(REVIEWED))
-        mission, _ = service.create_mission(
-            MissionSpec(
-                goal="核对报告质量",
-                success_criteria=("file:report.md",),
-                tenant_id="doc5-empty",
-                idempotency_key="empty",
-                domain=domains.DOC_DOMAIN,
-                budget=Budget(max_tokens=100_000, max_attempts=12),
+        with monkeypatch.context() as patch:
+            if version == "5":
+                patch.setattr(domains, "DOMAINS", {
+                    **domains.DOMAINS, domains.DOC_DOMAIN: domains.DOC_PROFILE_V5,
+                })
+            mission, _ = service.create_mission(
+                MissionSpec(
+                    goal="核对报告质量",
+                    success_criteria=("file:report.md",),
+                    tenant_id="doc5-empty",
+                    idempotency_key="empty",
+                    domain=domains.DOC_DOMAIN,
+                    budget=Budget(max_tokens=100_000, max_attempts=12),
+                )
             )
-        )
+        assert domains.resolve_domain(domains.DOC_DOMAIN).version == "6"
+        assert service.domain_for(mission.id).version == version
         planning = service.begin_planning(mission.id)
         proposal = TaskProposal(
             goal="核对报告质量",
@@ -200,8 +211,12 @@ def test_doc5_empty_single_policy_cannot_bypass_the_floor(tmp_path):
 
 
 @pytest.mark.parametrize("role", ["planner", "manager"])
-def test_doc5_planning_prompts_require_actual_critic_policy(role):
-    current = template_for_domain(ROLES[role], domains.DOC_PROFILE, {})
+@pytest.mark.parametrize("version", ["5", "6"])
+def test_doc5_planning_prompts_require_actual_critic_policy(role, version):
+    profile = domains.DOC_PROFILE_V5 if version == "5" else domains.DOC_PROFILE
+    current = template_for_domain(ROLES[role], profile, {})
+    prompt_version = "2" if version == "5" else "3"
+    assert current.prompt_version == f"{role}-doc-research-v{prompt_version}"
     assert "每个文档 Task 的 verification_policy 必须包含 critic_review" in current.instructions
     for profile in (domains.DOC_PROFILE_V3, domains.DOC_PROFILE_V4):
         old = template_for_domain(ROLES[role], profile, {})
@@ -210,7 +225,9 @@ def test_doc5_planning_prompts_require_actual_critic_policy(role):
 
 
 def test_doc5_declares_quality_floor_without_changing_published_profiles():
-    assert domains.DOC_PROFILE.version == "5"
+    assert domains.DOC_PROFILE_V5.version == "5"
+    assert domains.DOC_PROFILE_V5.planner_floor == REVIEWED
+    assert domains.DOC_PROFILE.version == "6"
     assert domains.DOC_PROFILE.planner_floor == REVIEWED
     assert domains.DOC_PROFILE_V3.planner_floor == domains.DOC_PROFILE_V4.planner_floor == WEAK
     assert domains.CODE_PROFILE.planner_floor == ()

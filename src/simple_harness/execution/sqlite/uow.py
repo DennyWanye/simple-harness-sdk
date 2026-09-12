@@ -7364,6 +7364,20 @@ class SqliteExecutionUnitOfWork:
             ).rowcount
             if changed != 1:
                 raise UnitOfWorkConflict("provider invocation handoff CAS failed")
+            assert current is not None
+            self._insert_event(
+                connection,
+                event_id=f"provider-handoff:{invocation_id}:{current.handoff_attempt + 1}",
+                run_id=execution_lease.run_id,
+                kind="provider.handoff_authority.v1",
+                payload={
+                    "invocation_id": invocation_id,
+                    "handoff_ordinal": current.handoff_attempt + 1,
+                    "owner_id": execution_lease.owner_id,
+                    "lease_epoch": execution_lease.epoch,
+                },
+                now=handed_off_at,
+            )
             self._audit_operation_head(connection, "provider", invocation_id, handed_off_at)
         result = self.read_provider_invocation(invocation_id)
         assert result is not None
@@ -7375,6 +7389,7 @@ class SqliteExecutionUnitOfWork:
         *,
         expected_version: int,
         fault: FaultHook | None = None,
+        require_expired_runtime_lease: bool = False,
     ) -> ProviderInvocationRecord:
         if record.state not in {
             ProviderInvocationState.SUCCEEDED,
@@ -7391,6 +7406,48 @@ class SqliteExecutionUnitOfWork:
             None if record.usage_json is None else canonical_json(_thaw_json(record.usage_json))
         )
         with self.database.transaction() as connection:
+            if require_expired_runtime_lease:
+                if (
+                    record.state is not ProviderInvocationState.UNKNOWN
+                    or record.error_code != "recovered_after_handoff"
+                ):
+                    raise ValueError("lease-guarded recovery requires an abandoned handoff")
+                assert record.settled_at is not None
+                lease = connection.execute(
+                    "SELECT owner_id,epoch,expires_at FROM workflow_leases"
+                    " WHERE run_id=? AND namespace='runtime.kernel'",
+                    (record.run_id.value,),
+                ).fetchone()
+                fact = connection.execute(
+                    "SELECT payload_json FROM run_events WHERE run_id=? AND event_id=?"
+                    " AND kind='provider.handoff_authority.v1'",
+                    (
+                        record.run_id.value,
+                        f"provider-handoff:{record.invocation_id}:{record.handoff_attempt}",
+                    ),
+                ).fetchone()
+                authority = None if fact is None else json.loads(fact[0])
+                same_handoff_owner = authority is None or (
+                    lease is not None
+                    and authority["owner_id"] == lease["owner_id"]
+                    and authority["lease_epoch"] == lease["epoch"]
+                )
+                if (
+                    lease is not None
+                    and float(lease["expires_at"]) > record.settled_at
+                    and same_handoff_owner
+                ):
+                    # The lease read and refusal share the settlement transaction:
+                    # a concurrent renewal cannot race a read-then-UNKNOWN write.
+                    # Legacy handoffs without an authority fact conservatively
+                    # remain held while any runtime lease is live.
+                    current = connection.execute(
+                        "SELECT * FROM provider_invocations WHERE invocation_id=?",
+                        (record.invocation_id,),
+                    ).fetchone()
+                    if current is None:
+                        raise UnitOfWorkNotFound(record.invocation_id)
+                    return _provider_invocation_record(current)
             changed = connection.execute(
                 """
                 UPDATE provider_invocations
@@ -7668,7 +7725,8 @@ class SqliteExecutionUnitOfWork:
         """
 
         rows = self.database.connection.execute(
-            "SELECT * FROM provider_invocations WHERE run_id = ? ORDER BY claimed_at, invocation_id",
+            "SELECT * FROM provider_invocations WHERE run_id = ?"
+            " ORDER BY claimed_at, invocation_id",
             (run_id.value,),
         ).fetchall()
         return tuple(_provider_invocation_record(row) for row in rows)
@@ -7769,6 +7827,25 @@ class SqliteExecutionUnitOfWork:
             (session_id, request_id),
         ).fetchone()
         return None if row is None else _run_record(row)
+
+    def read_provider_runtime_lease(self, run_id: str) -> ExecutionLease | None:
+        """Current canonical Run lease for admission/recovery; grants never renew it."""
+        row = self.database.connection.execute(
+            "SELECT owner_id,epoch,expires_at FROM workflow_leases"
+            " WHERE run_id=? AND namespace='runtime.kernel'",
+            (run_id,),
+        ).fetchone()
+        return (
+            None
+            if row is None
+            else ExecutionLease(
+                run_id,
+                "runtime.kernel",
+                str(row["owner_id"]),
+                int(row["epoch"]),
+                float(row["expires_at"]),
+            )
+        )
 
     def _require_runtime_lease(
         self,

@@ -43,6 +43,7 @@ OLD = {
 )
 def test_current_document_prompt_example_is_a_real_valid_literal_claim(role):
     selected = template_for_domain(ROLES[role], domains.DOC_PROFILE, {})
+    assert selected.prompt_version == f"{role}-doc-research-v3"
     match = re.search(r"<claim_example>\s*(.*?)\s*</claim_example>", selected.instructions, re.S)
     assert match, "the actual document prompt lacks an unambiguous claim wire example"
     raw = json.loads(match[1])
@@ -67,14 +68,28 @@ def test_old_document_prompt_and_v4_snapshot_remain_exact():
     assert domains.requires_mission_source_binding(restored)
 
 
-def test_new_document_dispatch_freezes_example_and_keeps_code_template(tmp_path):
+@pytest.mark.parametrize("version", ["5", "6"])
+def test_new_document_dispatch_freezes_example_and_keeps_code_template(
+    tmp_path, monkeypatch, version
+):
     async def case():
         async with Orchestrator(
             OrchestratorConfig(evidence_root=tmp_path), RoleScriptedProvider({})
         ) as orch:
-            mission = await orch.submit_mission(spec(domain=domains.DOC_DOMAIN))
+            # Historical doc5 is frozen at real creation only; later dispatch
+            # runs under today's registry. The doc6 case uses the actual default.
+            with monkeypatch.context() as patch:
+                if version == "5":
+                    patch.setattr(domains, "DOMAINS", {
+                        **domains.DOMAINS, domains.DOC_DOMAIN: domains.DOC_PROFILE_V5,
+                    })
+                mission = await orch.submit_mission(spec(domain=domains.DOC_DOMAIN))
+            assert domains.resolve_domain(domains.DOC_DOMAIN).version == "6"
             planning = orch.commit.begin_planning(mission.id)
             planner = await orch._create_planner_intent(mission.id, ordinal=1)
+            assert planner.config["prompt_version"] == (
+                "planner-doc-research-v2" if version == "5" else "planner-doc-research-v3"
+            )
             assert "自然语言的报告质量要求" in planner.config["agent_config"]["instructions"]
             tasks, _ = orch.commit.commit_task_graph(
                 mission.id,
@@ -98,10 +113,13 @@ def test_new_document_dispatch_freezes_example_and_keeps_code_template(tmp_path)
             assert (
                 intent.config["prompt_version"]
                 == attempt.prompt_version
-                == "worker-doc-research-v2"
+                == ("worker-doc-research-v2" if version == "5" else "worker-doc-research-v3")
             )
             frozen = orch.commit.domain_for(mission.id)
-            assert frozen.version == "5"
+            assert frozen.version == version
+            for role in frozen.role_templates:
+                prompt_version = "2" if version == "5" or role == "critic" else "3"
+                assert frozen.role_templates[role] == f"{role}-doc-research-v{prompt_version}"
             assert domains.requires_mission_source_binding(frozen)
             code = await orch.submit_mission(spec(idempotency_key="code-control"))
             assert orch._template(ROLES["worker"], code.id) == ROLES["worker"]
@@ -111,6 +129,7 @@ def test_new_document_dispatch_freezes_example_and_keeps_code_template(tmp_path)
 
 def test_current_document_critic_uses_exact_read_paths_without_result_authority():
     template = template_for_domain(ROLES["critic"], domains.DOC_PROFILE, {})
+    assert template.prompt_version == "critic-doc-research-v2"
     assert "不支持 #L、:行号、?lines=" in template.instructions
     assert template.tool_names == ("workspace_read_file", "workspace_list")
     assert "<claim_example>" not in template.instructions

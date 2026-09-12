@@ -16,9 +16,15 @@ the physical route (S6-03), never the label.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from hashlib import sha256
+from typing import Any, cast
+
+from simple_harness.agents.context.budget import ContextPolicy
+from simple_harness.agents.context.tokenizer import TokenizerPort, UpperBoundTokenizer
+from simple_harness.contracts import JsonValue, canonical_json
 
 from ..contracts import Attempt
 
@@ -57,19 +63,58 @@ class RuntimeProfile:
     default_max_output_tokens: int | None = None
     max_output_tokens_ceiling: int | None = None
     provider_kind: str = "fixtures"
+    context_policy: ContextPolicy | None = None  # None preserves the legacy pool verbatim.
+    tokenizer: TokenizerPort | None = field(default=None, repr=False, compare=False)
+    _context_json: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.profile_id or not self.model:
             raise ValueError("a runtime profile needs a profile_id and a model")
         if not callable(getattr(self.provider, "invoke", None)):
             raise TypeError(f"profile {self.profile_id}: provider must implement invoke")
+        if self.context_policy is None:
+            if self.tokenizer is not None:
+                raise ValueError("tokenizer requires an explicit context_policy")
+            return
+        if not isinstance(self.context_policy, ContextPolicy):
+            raise TypeError("context_policy must use ContextPolicy")
+        tokenizer = self.tokenizer if self.tokenizer is not None else UpperBoundTokenizer()
+        if (not callable(getattr(tokenizer, "count_text", None))
+                or not isinstance(getattr(tokenizer, "fingerprint", None), str)
+                or not tokenizer.fingerprint):
+            raise TypeError("tokenizer must implement count_text and a nonempty fingerprint")
+        object.__setattr__(self, "tokenizer", tokenizer)
+        from .tool_gateway import LARGE_READ_PAGE_BYTES, read_tool_schemas
+
+        snapshot: dict[str, Any] = {
+            "schema": 1, "model": self.model,
+            "policy": self.context_policy.to_json(),
+            "tokenizer_fingerprint": tokenizer.fingerprint,
+            "read_page_bytes": LARGE_READ_PAGE_BYTES, "read_max_chars": 8192,
+            "tool_schema_hash": sha256(
+                canonical_json(cast(JsonValue, read_tool_schemas(large=True))).encode("utf-8")
+            ).hexdigest(),
+        }
+        snapshot["fingerprint"] = sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        object.__setattr__(self, "_context_json", canonical_json(snapshot))
+
+    def context_snapshot(self) -> dict[str, Any] | None:
+        """Detached public identity, with no provider/credentials or mutable ports."""
+
+        if self._context_json is None:
+            return None
+        snapshot = json.loads(self._context_json)
+        if (self.tokenizer is None
+                or self.tokenizer.fingerprint != snapshot["tokenizer_fingerprint"]):
+            raise ValueError("context identity changed: tokenizer fingerprint")
+        return snapshot
 
     @property
     def unpriced(self) -> bool:
         return self.price_table is None
 
     def to_json(self) -> dict[str, Any]:  # never the provider object (no credentials leak)
-        return {
+        result: dict[str, Any] = {
             "profile_id": self.profile_id,
             "model": self.model,
             "tier": self.tier,
@@ -78,6 +123,10 @@ class RuntimeProfile:
             "default_max_output_tokens": self.default_max_output_tokens,
             "max_output_tokens_ceiling": self.max_output_tokens_ceiling,
         }
+        snapshot = self.context_snapshot()
+        if snapshot is not None:
+            result["runtime_context"] = snapshot
+        return result
 
 
 @dataclass(frozen=True, slots=True)

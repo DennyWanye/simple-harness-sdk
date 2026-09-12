@@ -108,12 +108,17 @@ class ConflictTemplateV1:
 
 def supports_document_assessments(domain: DomainProfileV1) -> bool:
     """Only registered successors share the assessment-v2 contract."""
-    return domain.id == DOC_DOMAIN and domain.version in {"3", "4", "5"}
+    return domain.id == DOC_DOMAIN and domain.version in {"3", "4", "5", "6"}
 
 
 def requires_mission_source_binding(domain: DomainProfileV1) -> bool:
     """Successor Missions recheck current sources and bind the independent judge tree."""
-    return domain.id == DOC_DOMAIN and domain.version in {"4", "5"}
+    return domain.id == DOC_DOMAIN and domain.version in {"4", "5", "6"}
+
+
+def requires_document_critic_proof(domain: DomainProfileV1) -> bool:
+    """Doc5 and its registered successor require the same executed Critic proof."""
+    return domain.id == DOC_DOMAIN and domain.version in {"5", "6"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,12 +295,24 @@ DOC_PROFILE_V3 = DomainProfileV1(
 
 # Frozen v3 remains replayable; new Missions immediately use the successor gates.
 DOC_PROFILE_V4 = replace(DOC_PROFILE_V3, version="4")
-DOC_PROFILE = replace(
+DOC_PROFILE_V5 = replace(
     DOC_PROFILE_V4,
     version="5",
     planner_floor=("format_check", "rule_check", "critic_review"),
     role_templates={role: f"{role}-doc-research-v2" for role in DOC_ROLE_TEMPLATES_V1},
 )
+DOC_PROFILE_V6 = replace(
+    DOC_PROFILE_V5,
+    version="6",
+    role_templates={
+        **DOC_PROFILE_V5.role_templates,
+        **{role: f"{role}-doc-research-v3" for role in (
+            "worker", "arbiter", "synthesizer", "explorer", "exploiter", "simplifier",
+            "connector", "failure_analyst", "planner", "manager",
+        )},
+    },
+)
+DOC_PROFILE = DOC_PROFILE_V6
 
 DOMAINS: Mapping[str, DomainProfileV1] = MappingProxyType(
     {CODE_DOMAIN: CODE_PROFILE, DOC_DOMAIN: DOC_PROFILE}
@@ -340,7 +357,7 @@ def check_against_domain(
     # of the single-Task gate that supplied an empty policy. Older frozen domains
     # retain their original optional-policy checking semantics.
     strict_policy = (
-        domain.id == DOC_DOMAIN and domain.version == "5" and verification_policy is not None
+        requires_document_critic_proof(domain) and verification_policy is not None
     )
     if missing and (policy or strict_policy):
         problems.append(
@@ -371,8 +388,12 @@ __all__ = (
     "DOC_DOMAIN",
     "DOC_PROFILE",
     "DOC_PROFILE_V3",
+    "DOC_PROFILE_V4",
+    "DOC_PROFILE_V5",
+    "DOC_PROFILE_V6",
     "supports_document_assessments",
     "requires_mission_source_binding",
+    "requires_document_critic_proof",
     "DOMAIN_SCHEMA_VERSION",
     "DOMAINS",
     "EVIDENCE_KINDS",

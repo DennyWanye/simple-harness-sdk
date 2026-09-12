@@ -57,6 +57,7 @@ from ..governance.domains import (
     DOC_DOMAIN,
     DomainProfileV1,
     check_against_domain,
+    requires_document_critic_proof,
     requires_mission_source_binding,
     resolve_domain,
     supports_document_assessments,
@@ -3538,7 +3539,7 @@ class CommitService(
             )
             domain = self.domain_for(intent.mission_id)
             if (
-                domain.id != DOC_DOMAIN or domain.version != "5"
+                not requires_document_critic_proof(domain)
                 or intent.kind != "critic" or intent.state not in {"SUBMITTED", "SETTLED"}
                 or stored is None or stored.envelope.mission_id != intent.mission_id
                 or not intent.subject_id.startswith(f"{attempt_id}:critic:")
@@ -3736,7 +3737,7 @@ class CommitService(
                         return self.fail_result(result_id, failures=hard_failures, owner=owner)
                 if supports_document_assessments(domain):
                     rows = self._store.list_verifications(result_id)
-                    if domain.version == "5":
+                    if requires_document_critic_proof(domain):
                         self._require_doc5_critic_pass(stored, task, attempt, domain, rows)
                     self._require_document_human_pass(stored, task, rows)
                     conflicts = document_uncertainty_conflicts(

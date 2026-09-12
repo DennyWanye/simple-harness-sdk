@@ -110,11 +110,20 @@ class AgentBridge:
         except Exception:  # noqa: BLE001 - unknown turn
             return Liveness(False, None, False, None, None, False)
         state = AgentTurnState(snapshot.state)
+        admission = self._runtime.ports.provider_admission
+        waiting = admission is not None and admission.waiting_for_slot(
+            agent_id=agent_id,
+            turn_id=turn_id,
+        )
         return Liveness(
             exists=True,
             state=str(state),
-            blocked=bool(snapshot.blocked),
-            blocker=None if snapshot.blocker is None else dict(snapshot.blocker),
+            blocked=bool(snapshot.blocked) or waiting,
+            blocker=(
+                {"kind": "provider_slot_wait", "billable": False}
+                if waiting
+                else (None if snapshot.blocker is None else dict(snapshot.blocker))
+            ),
             progress=snapshot.provider_turn_ordinal_to,
             settled=state in {AgentTurnState.COMMITTED, AgentTurnState.FAILED},
         )
@@ -124,8 +133,21 @@ class AgentBridge:
 
         facts = []
         for record in self._runtime.uow.list_provider_invocations(RunId(agent_id)):
+            if str(record.state) not in {"succeeded", "failed"}:
+                # CLAIMED is not a call; provisional/UNKNOWN is not a final 0.
+                # Inserting it here would occupy the append-only usage identity
+                # and permanently lose a later reconciled charge.
+                continue
             usage = record.usage_json if isinstance(record.usage_json, Mapping) else {}
             tokens = usage.get("usage") if isinstance(usage, Mapping) else None
+            if self._runtime.ports.provider_admission is not None and (
+                not isinstance(tokens, Mapping)
+                or not isinstance(tokens.get("input_tokens"), int)
+                or not isinstance(tokens.get("output_tokens"), int)
+            ):
+                # Terminal transport failure without usage is not evidence of
+                # zero charge. The admission grant remains UNKNOWN instead.
+                continue
             input_tokens = int((tokens or {}).get("input_tokens") or 0)
             output_tokens = int((tokens or {}).get("output_tokens") or 0)
             charge = record.budget_charge
@@ -153,7 +175,10 @@ class AgentBridge:
         return models
 
     def has_unknown_charge(self, *, agent_id: str) -> bool:
-        return bool(self._runtime.uow.read_provider_budget(RunId(agent_id)).has_unknown_charge)
+        records = self._runtime.uow.list_provider_invocations(RunId(agent_id))
+        return any(str(record.state) in {"handed_off", "unknown"} for record in records) or bool(
+            self._runtime.uow.read_provider_budget(RunId(agent_id)).has_unknown_charge
+        )
 
     async def recover(self) -> None:
         await self._runtime.recover_pending_turns()

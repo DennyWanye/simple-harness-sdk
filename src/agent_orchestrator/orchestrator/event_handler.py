@@ -29,9 +29,12 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from simple_harness.agents import AgentConfig, AgentLimits, AgentTurnState
+
+if TYPE_CHECKING:
+    from ..runtime.provider_budget_guard import ProviderBudgetGuard
 
 from ..artifacts.store import ArtifactStoreError, backfill, read_nofollow, read_verified
 from ..artifacts.versioning import (
@@ -80,7 +83,7 @@ from ..contracts.models import jsonable, sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetError, BudgetExhausted
 from ..governance.domains import (
-    DOC_DOMAIN,
+    requires_document_critic_proof,
     requires_mission_source_binding,
     supports_document_assessments,
 )
@@ -224,12 +227,15 @@ class Orchestrator:
         connectors: Mapping[str, Any] | None = None,
         provider_kind: str | None = None,
         policy_pin: Mapping[str, Any] | None = None,
+        provider_token_estimator=None,
     ) -> None:
         # D3-10': ``owner`` is this instance's identity for orchestration leases *and* for
         # the SDK runtime (``owner_id``); the SDK ``owner_scope`` is one constant for all.
         self._owner = owner or f"orchestrator-{os.getpid()}"
         self._config = replace(config, owner_id=self._owner)
         self._provider = provider
+        self._provider_token_estimator = provider_token_estimator
+        self._provider_admission: ProviderBudgetGuard | None = None
         # D6-4' / D6-5': one provider == the single ``default`` profile (every earlier
         # step's path); several profiles == several execution pools routed by rules
         if profiles is None:
@@ -241,6 +247,10 @@ class Orchestrator:
                 )
             }
         self._profiles: dict[str, RuntimeProfile] = dict(profiles)
+        if provider_token_estimator is not None and any(
+            profile.price_table is not None for profile in self._profiles.values()
+        ):
+            raise ValueError("priced profiles are not supported by the token admission guard")
         default_profile = (
             routing.default
             if routing is not None
@@ -313,9 +323,17 @@ class Orchestrator:
             task_floor=self._task_floor,
             candidates_for=self._candidates_for,
         )
+        if self._provider_token_estimator is not None:
+            from ..runtime.provider_budget_guard import ProviderBudgetGuard
+
+            self._provider_admission = ProviderBudgetGuard(
+                self._commit, owner=self._owner, estimator=self._provider_token_estimator,
+                max_slots=self._config.max_concurrent_model_calls,
+            )
         self._open_policy_library()  # step 9 (plan D9-3'): role, seed, drift
         self._assembled = assemble_orchestrator_runtime(
-            self._config, profiles=self._profiles, default_profile=self._default_profile
+            self._config, profiles=self._profiles, default_profile=self._default_profile,
+            provider_admission=self._provider_admission,
         )
         await self._assembled.__aenter__()
         # P3.2 D3: artifacts recorded before 0.10 move into the content-addressed store
@@ -727,11 +745,30 @@ class Orchestrator:
         )
 
     def _service_config(self, decision: RoutingDecision) -> dict[str, Any]:
-        return {
+        config: dict[str, Any] = {
             "runtime_profile_id": decision.profile_id,
             "model": decision.model,
             "routing": decision.to_json(),
         }
+        snapshot = self._profiles[decision.profile_id].context_snapshot()
+        if snapshot is not None:
+            config["runtime_context"] = snapshot
+        admission = getattr(self, "_provider_admission", None)
+        if admission is not None:
+            config["provider_admission_fingerprint"] = admission.fingerprint
+        return config
+
+    def _context_profile_for(self, config: Mapping[str, Any]) -> RuntimeProfile:
+        profile_id = str(config.get("runtime_profile_id") or self._default_profile)
+        profile = self.assembled.pool(profile_id).profile
+        if config.get("runtime_context") != profile.context_snapshot():
+            raise ContractError("context identity differs from the frozen dispatch intent")
+        admission = getattr(self, "_provider_admission", None)
+        if config.get("provider_admission_fingerprint") != (
+            None if admission is None else admission.fingerprint
+        ):
+            raise ContractError("provider admission identity differs from the frozen dispatch intent")
+        return profile
 
     def _note_turn_health(self, intent: DispatchIntent, result) -> str:  # type: ignore[no-untyped-def]
         """D6-5' / review P1-8: a committed turn closes the profile's failure streak; a
@@ -1282,6 +1319,23 @@ class Orchestrator:
         assert mission is not None
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
         source_binding = self._active_source_binding(mission_id)
+        domain = self.commit.domain_for(mission_id)
+        workload = None
+        if domain.id == "doc-research-v1" and domain.version == "6":
+            from ..context.source_workload import source_workload
+
+            try:
+                workload = source_workload(
+                    store=self.store,
+                    artifacts=self.assembled.workspaces.artifact_store,
+                    mission=mission,
+                    domain=domain,
+                    versions=source_binding.get("source_versions", {}),
+                    profiles=self._profiles,
+                    config=self._config,
+                )
+            except (ValueError, OSError) as error:
+                raise ContextRejected("registered source workload could not be verified") from error
         package = build_planner_package(
             mission,
             workspace_files=sorted(set(seed) | set(source_binding.get("source_versions", {}))),
@@ -1290,7 +1344,8 @@ class Orchestrator:
             rejected=self._planning_rejections(mission_id) if ordinal > 1 else (),
             deployed_layers=self._deployed,
             budget_floor=self._budget_floor(mission_id),
-            domain=self.commit.domain_for(mission_id),
+            domain=domain,
+            workload=workload,
         )
         decision = self._route_service("planner", mission_id)
         template = self._template(PLANNER, mission_id)
@@ -1342,6 +1397,7 @@ class Orchestrator:
 
         if self._pool_missing(intent):
             return False
+        self._context_profile_for(intent.config)
         if intent.kind == "critic" and self._critic_subject_stopped(intent):
             return await self._collect_stopped_critic(intent)
         self._validate_mission_judge_intent(intent)
@@ -1626,6 +1682,7 @@ class Orchestrator:
 
     def _bind_agent(self, agent_id: str, config: Mapping[str, Any]) -> None:
         cap = config.get("max_tool_calls")
+        context_profile = self._context_profile_for(config)
         self.assembled.gateway.bind(
             agent_id,
             WorkspaceBinding(
@@ -1638,6 +1695,8 @@ class Orchestrator:
                 protected=self._read_only_inputs(str(config["attempt_id"])),
                 protected_prefixes=tuple(config.get("source_roots", ())),
                 denied_prefixes=self._config.deployment_policy.denied_path_prefixes,
+                context_policy=context_profile.context_policy,
+                tokenizer=context_profile.tokenizer,
             ),
         )
 
@@ -1672,6 +1731,7 @@ class Orchestrator:
         ensure_mission_tree(self.store, mission, domain, self.assembled.workspaces, intent.config)
 
     def _bind_critic(self, agent_id: str, config: Mapping[str, Any]) -> None:
+        context_profile = self._context_profile_for(config)
         self.assembled.gateway.bind(
             agent_id,
             WorkspaceBinding(
@@ -1682,12 +1742,15 @@ class Orchestrator:
                 tuple(str(p) for p in config.get("untrusted_sources", ())),
                 protected_prefixes=tuple(config.get("source_roots", ())),
                 denied_prefixes=self._config.deployment_policy.denied_path_prefixes,
+                context_policy=context_profile.context_policy,
+                tokenizer=context_profile.tokenizer,
             ),
         )
 
     # ------------------------------------------------------------ knowledge (step 4)
     def _gather_knowledge(
-        self, mission: Mission, task: Task, tasks_by_id: Mapping[str, Task]
+        self, mission: Mission, task: Task, tasks_by_id: Mapping[str, Task],
+        *, search_visibility: bool = False,
     ) -> KnowledgeContext:
         """§10 items 4/5/7 for one Task: ranked Verified Knowledge (read back in full),
         the disputed claims (marked), the candidate / rejected claims for the templates
@@ -1735,9 +1798,26 @@ class Orchestrator:
         from ..context.compression import GLOBAL_BRANCH, branch_of
 
         branch = branch_of(task, tasks_by_id)
+        from ..context.role_visibility import SEARCH_ROLES, build_role_materials
+
+        role_materials = None
+        visible_records = [by_id[item.id] for item in ranked.items]
+        search_role = role_for_task(task).name
+        if search_visibility and search_role in SEARCH_ROLES:
+            role_materials = build_role_materials(
+                self.store, task=task, role=search_role, claims=claims, records=visible_records,
+                artifact_store=self.assembled.workspaces.artifact_store, document=document,
+            )
+            visible_ids = {
+                item["id"] for values in role_materials["sections"].values()
+                for item in values if "id" in item
+            }
+            visible_records = [record for record in visible_records if record.id in visible_ids]
+        scored = {item.id: item for item in ranked.items}
         return KnowledgeContext(
             retrieval=ranked,
-            verified=tuple(knowledge_view(by_id[item.id], item) for item in ranked.items),
+            verified=tuple(knowledge_view(record, scored[record.id]) for record in visible_records),
+            role_materials=role_materials,
             disputed=tuple(disputes),
             candidates=tuple(
                 candidate_claims(
@@ -3431,7 +3511,7 @@ class Orchestrator:
                 self._settle_service_if_known(subject, mission.id, task_id)
                 continue
             domain = self.commit.domain_for(mission.id)
-            if task is not None and domain.id == DOC_DOMAIN and domain.version == "5":
+            if task is not None and requires_document_critic_proof(domain):
                 # The actual SDK COMMITTED output, not the mutable layer row, is
                 # the durable verdict authority. Receipt + settlement are atomic.
                 assert result is not None
@@ -3750,7 +3830,9 @@ class Orchestrator:
         role = self._template(role_for_task(task), mission.id)  # D5-9: approach
         untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
         try:
-            knowledge = self._gather_knowledge(mission, task, all_tasks)
+            knowledge = self._gather_knowledge(
+                mission, task, all_tasks, search_visibility=True
+            )
         except RetrievalUnavailable as error:
             # S4-07 / D4-11': never "no knowledge" — degrade explicitly or block visibly
             count = self.commit.record_retrieval_unavailable(

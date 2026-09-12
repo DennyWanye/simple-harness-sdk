@@ -132,6 +132,7 @@ def register_document_templates() -> None:
         )
     )
     _register_document_submission_v2()
+    _register_document_submission_v3()
 
 
 def _register_document_submission_v2() -> None:
@@ -219,3 +220,90 @@ def _register_document_submission_v2() -> None:
         register_template(
             replace(previous, prompt_version=f"{name}-doc-research-v2", instructions=instructions)
         )
+
+
+def _register_document_submission_v3() -> None:
+    """Candidate v3 citation/planning guidance; published v2 stays immutable."""
+    from .role_templates import TEMPLATE_VERSIONS, register_template
+
+    example = {
+        "content": "据现有来源，方案 A 的离线使用受限；断网恢复能力仍需另行核查。",
+        "confidence": 0.7,
+        "type": "statement",
+        "evidence": [],
+        "citations": [{
+            "path": "sources/example.md",
+            "version": "a" * 64,
+            "start_line": 1,
+            "end_line": 3,
+            "quote": "方案 A 不支持离线。",
+        }],
+    }
+    guidance = (
+        "\n来源支持与定位补充（字段示例，不是本任务的证据）：\n"
+        "statement 表达分析推论，content 不必等于 quote，但应保留实际支持该推论的来源 citations；"
+        "quote 仍须逐字精确、全文唯一且为完整句子或完整结构单元，保留否定、前提和限制。"
+        "引用支持不等于证明推论为真，statement 最高 SUPPORTED；不得自报 VERIFIED。"
+        "关联 cite/free 内容准则的 claim 不能只填 criterion_ids 而没有 citations；"
+        "自身生成的 notes/报告不能代替来源 citations，evidence 产物路径也不能代替。"
+        "不能删除必要的准则关联来绕过缺证检查；若来源不支持，明确保留缺口，"
+        "按 doc_assessment 提交有实际来源支持的候选及完整 limitations，"
+        "由系统判断是否可接受不确定性；没有引用不会因填写 limitations 自动通过。\n"
+        "<statement_claim_example>" + json.dumps(example, ensure_ascii=False)
+        + "</statement_claim_example>\n"
+        "此示例假设读取页为1–3行，其中第2行为‘方案 A 不支持离线。’，"
+        "第3行为‘本段未说明断网恢复能力。’。示例路径、hash、文本及行号必须替换为实际值；"
+        "criterion_ids/mission_criterion_ids 如需填写，仍只能取当前准则目录中的真实ID，"
+        "示例不提供可照抄的准则ID。\n"
+        "可以使用覆盖引文的整页 start_line/end_line 作为 citation 的提示范围，"
+        "无需手算页内逐行偏移；系统在全文唯一匹配和完整单元检查后收紧为真实 locator。"
+        "范围不能超出文件，不能用范围弥补不存在、重复或截掉条件的 quote。"
+        "若完整引文跨页，先按 next_offset 与同一 expected_sha256 续读，"
+        "确认连续页面的原始bytes hash一致并拼接完整引文，再使用覆盖它的起止行范围。"
+        "starts_mid_line/ends_mid_line 表示页切在行中，不能把单页片段当作完整行。"
+    )
+    for name in (
+        "worker", "arbiter", "synthesizer", "explorer", "exploiter", "simplifier",
+        "connector", "failure_analyst",
+    ):
+        previous = TEMPLATE_VERSIONS[name][f"{name}-doc-research-v2"]
+        register_template(replace(
+            previous, prompt_version=f"{name}-doc-research-v3",
+            instructions=previous.instructions + guidance,
+        ))
+
+    planning = (
+        "\n完整目标与拆分成本（规划及重规划通用规则）：\n"
+        "小而完整的目标优先由一个 Task 完成，前提是它能在上下文和剩余预算内完成与验收。"
+        "单 Task 方案保留原 Mission 的全部 success_criteria，不改写或删除必要准则，"
+        "并在 goal 中保留完整交付要求；每个文档 Task 的 verification_policy 必须包含 critic_review，"
+        "保留 format_check/rule_check 和独立 Critic，不能把 Worker 自评当作审阅。\n"
+        "拆分须说明各 Task 如何独立验收，以及输入工作集分离带来的工作集收益；"
+        "不能仅按文件数量拆节点，也不能为了并行而让多个 Task 重复制作同一完整报告。"
+        "有关联的来源比较、证据核对和结论通常应作为一个完整小目标考虑。"
+        "确有独立大工作或单 Task 超出上下文/预算时可以拆分，不能机械强制一个 Task。"
+        "在已有 rationale 中说明拆分理由、依赖与准则覆盖，不新增协议字段。"
+        "拆分后所有子任务及必要的最终交付须覆盖原 Mission 全部准则，"
+        "独立子任务只承担相关准则，不把全部准则机械复制给每个子任务；"
+        "最终仍由系统按完整 Mission 准则判定，局部通过不代表总体完成。\n"
+        "比较单 Task 与拆分方案时，计算每个 Worker 的读取、写入、最终提交，"
+        "每个 Critic 的独立来源/产物读取和审阅，以及重复输入、工具往返累积上下文、"
+        "必要的最终合成及其验证费用，并为允许的返工保留余量。"
+        "并行可能缩短耗时，但不自动减少 token 总成本。"
+        "来源字节数不是计费 token 数；给出的预算下限或首轮预留不是实际总成本保证。"
+        "只能使用输入中实际提供的来源规模、运行限制与成本估算；缺失项标为未知，"
+        "不得编造页数、token 单价或角色成本，不把未知成本当零。"
+        "所有 Task 分配须满足 budget_for_tasks 和原 Mission 总预算，"
+        "必要合成与系统预留按输入预算边界计入，不重复分配已预留额度。"
+        "若没有可行分配，应如实说明预算或上下文缺口，按既有协议处理；"
+        "不能以删减准则、取消 Critic、抬高原 Mission 预算或预填成功结论使计划看似可行。\n"
+        "Manager 重规划也按上述规则核算剩余预算和新增工作；"
+        "保留已接受结果及其真实依赖，仅在缺口需要时追加任务，"
+        "不得因调整拆分而重写已冻结 intent 或把尚未验证的产物当作已完成。"
+    )
+    for name in ("planner", "manager"):
+        previous = TEMPLATE_VERSIONS[name][f"{name}-doc-research-v2"]
+        register_template(replace(
+            previous, prompt_version=f"{name}-doc-research-v3",
+            instructions=previous.instructions + planning,
+        ))

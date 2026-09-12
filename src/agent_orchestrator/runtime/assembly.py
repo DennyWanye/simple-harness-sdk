@@ -13,14 +13,22 @@ Attempt is its own Run, acts as the per-Attempt hard limit.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import sqlite3
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from simple_harness.agents import build_agent_runtime
+from simple_harness.agents.context.budget import ContextPolicy
+from simple_harness.agents.context.tokenizer import TokenizerPort, UpperBoundTokenizer
 from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
 from simple_harness.agents.runtime import AgentRuntime
+from simple_harness.contracts import canonical_json
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
 from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 
@@ -30,7 +38,7 @@ from ..governance.policies import DeploymentPolicy
 from ..scheduling.backpressure import BackpressureLimits
 from .agent_worker import AgentBridge
 from .model_router import DEFAULT_PROFILE, RuntimeProfile
-from .tool_gateway import TOOL_NAMES, TOOL_SCHEMAS, WorkspaceToolGateway
+from .tool_gateway import TOOL_NAMES, WorkspaceToolGateway, read_tool_schemas
 
 CONSUMER_PRICING_KEY = "consumer"
 OWNER_SCOPE = "agent-orchestrator"  # D3-10': one scope shared by every orchestrator instance
@@ -181,11 +189,12 @@ class OrchestratorConfig:
                 "lease_seconds must be at least twice sdk_lease_ttl_seconds (D3-10': an "
                 "orchestration lease may only be taken over after the SDK Run lease lapsed)"
             )
-        # D3-4': the model-call semaphore must admit every open candidate or the
-        # waiting turns look stalled
-        needed = self.max_concurrency * self.candidates_per_task
-        if self.max_concurrent_model_calls < needed:
-            object.__setattr__(self, "max_concurrent_model_calls", needed)
+        # Physical capacity is a deployment limit, independent of logical candidate
+        # count. Provider admission reports slot waiting explicitly to liveness.
+        if (isinstance(self.max_concurrent_model_calls, bool)
+                or not isinstance(self.max_concurrent_model_calls, int)
+                or self.max_concurrent_model_calls < 1):
+            raise ValueError("max_concurrent_model_calls must be a positive integer")
 
     @property
     def unpriced(self) -> bool:
@@ -342,6 +351,118 @@ def execution_db_for(config: OrchestratorConfig, profile_id: str) -> Path:
     return config.evidence_root / f"execution-{profile_id}.db"
 
 
+def _context_identity_path(database: Path) -> Path:
+    return database.with_name(database.name + ".context.json")
+
+
+def _read_context_identity(database: Path) -> dict[str, Any] | None:
+    path = _context_identity_path(database)
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or value.get("schema") != 1:
+            raise ValueError("unsupported context identity schema")
+        body = {key: item for key, item in value.items() if key != "fingerprint"}
+        if value.get("fingerprint") != sha256(canonical_json(body).encode("utf-8")).hexdigest():
+            raise ValueError("context identity fingerprint mismatch")
+        return value
+    except (OSError, ValueError) as error:
+        raise ValueError(f"context identity unreadable: {path.name}") from error
+
+
+def resolve_profile_context_policy(
+    config: OrchestratorConfig, *, profile_id: str = DEFAULT_PROFILE,
+    tokenizer: TokenizerPort | None = None,
+) -> ContextPolicy | None:
+    """Read-only Host choice: old pools stay legacy, fresh pools enable bounded reads.
+
+    The default is the explicitly named fallback tokenizer. A custom tokenizer
+    implementation must be supplied by the deployment owner; a fingerprint is
+    an identity, not executable configuration. Existing legacy pools return None
+    and must also keep their legacy (None) tokenizer port.
+    """
+
+    database = execution_db_for(config, profile_id)
+    frozen = _read_context_identity(database)
+    if frozen is not None:
+        counter = tokenizer if tokenizer is not None else UpperBoundTokenizer()
+        if frozen.get("tokenizer_fingerprint") != counter.fingerprint:
+            raise ValueError("context identity requires the matching explicitly configured tokenizer")
+        try:
+            return ContextPolicy(**frozen["policy"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("context identity has an invalid policy") from error
+    if database.exists():
+        return None
+    return ContextPolicy(max_tool_result_tokens=16384, render_slack_tokens=0)
+
+
+def _bind_context_identity(database: Path, profile: RuntimeProfile) -> None:
+    """Bind before starting SDK recovery, including the pre-first-request crash gap.
+
+    The sidecar is immutable configuration, not a new execution/approval ledger.
+    An existing library without this identity is legacy; only an explicit fresh
+    execution pool may acquire a new profile. Nothing migrates old requests.
+    """
+
+    wanted = profile.context_snapshot()
+    frozen = _read_context_identity(database)
+    if frozen is not None:
+        if frozen != wanted:
+            raise ValueError("context identity differs from the existing execution pool")
+        return
+    if wanted is None:
+        return
+    if database.exists():
+        # Refuse even a library with an Agent but no context selections yet.
+        # Empty pre-created SQLite files are not proof of a new profile either.
+        raise ValueError("context identity missing on legacy execution pool; use its legacy profile")
+    database.parent.mkdir(parents=True, exist_ok=True)
+    path = _context_identity_path(database)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=database.parent,
+                                         prefix=".context-", delete=False) as stream:
+            temporary = stream.name
+            stream.write(canonical_json(wanted))
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)  # atomic create-if-absent; never overwrite another owner
+        except FileExistsError:
+            if _read_context_identity(database) != wanted:
+                raise ValueError("context identity concurrently bound to another profile") from None
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+
+
+def _check_intent_contexts(
+    config: OrchestratorConfig, profile: RuntimeProfile, provider_admission: Any = None,
+) -> None:
+    """The frozen intent also detects a missing/incorrect sidecar before SDK recovery."""
+
+    database = config.orchestrator_db
+    if not database.exists():
+        return
+    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+        if not connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dispatch_intents'"
+        ).fetchone():
+            return
+        for (encoded,) in connection.execute("SELECT config_json FROM dispatch_intents"):
+            frozen = json.loads(encoded)
+            if str(frozen.get("runtime_profile_id") or DEFAULT_PROFILE) == profile.profile_id:
+                if frozen.get("runtime_context") != profile.context_snapshot():
+                    raise ValueError("context identity differs from a persisted dispatch intent")
+                admission_fingerprint = (
+                    None if provider_admission is None else provider_admission.fingerprint
+                )
+                if frozen.get("provider_admission_fingerprint") != admission_fingerprint:
+                    raise ValueError("provider admission identity differs from a persisted intent")
+
+
 def _policies_for(config: OrchestratorConfig, profile: RuntimeProfile) -> ConsumerRuntimePolicies:
     table = profile.price_table
     if table is None:
@@ -361,6 +482,7 @@ def assemble_orchestrator_runtime(
     *,
     profiles: Mapping[str, RuntimeProfile] | None = None,
     default_profile: str | None = None,
+    provider_admission: Any = None,
 ) -> AssembledOrchestratorRuntime:
     """One pool per runtime profile (D6-5').  ``provider`` alone is the single-profile
     path every earlier step used: the ``default`` profile with ``config.model`` and
@@ -397,6 +519,8 @@ def assemble_orchestrator_runtime(
         if profile_id != profile.profile_id:
             raise ValueError(f"profile key {profile_id!r} != profile_id {profile.profile_id!r}")
         database = execution_db_for(config, profile_id)
+        _check_intent_contexts(config, profile, provider_admission)
+        _bind_context_identity(database, profile)
         default_out = profile.default_max_output_tokens or config.default_max_output_tokens
         ceiling = profile.max_output_tokens_ceiling or config.max_output_tokens_ceiling
         ports = AgentRuntimePorts(
@@ -405,7 +529,9 @@ def assemble_orchestrator_runtime(
             database_path=str(database),
             tool_executor=gateway,
             tool_names=TOOL_NAMES,
-            tool_schemas=dict(TOOL_SCHEMAS),
+            tool_schemas=read_tool_schemas(large=profile.context_policy is not None),
+            context_policy=profile.context_policy or ContextPolicy(),
+            tokenizer=profile.tokenizer,
             model=profile.model,
             owner_id=config.owner_id,
             lease_ttl_seconds=float(config.sdk_lease_ttl_seconds or 30.0),
@@ -415,6 +541,7 @@ def assemble_orchestrator_runtime(
             empty_response_retries=config.empty_response_retries,
             max_concurrent_model_calls=config.max_concurrent_model_calls,
             max_concurrent_tool_calls=config.max_concurrency,
+            **({"provider_admission": provider_admission} if provider_admission is not None else {}),
         )
         runtime = build_agent_runtime(ports, owner_scope=OWNER_SCOPE)
         pools[profile_id] = RuntimePool(
@@ -441,4 +568,5 @@ __all__ = (
     "RuntimePool",
     "assemble_orchestrator_runtime",
     "execution_db_for",
+    "resolve_profile_context_policy",
 )

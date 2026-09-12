@@ -481,6 +481,38 @@ CREATE TABLE criterion_assessments (
 CREATE INDEX criterion_assessments_result_idx ON criterion_assessments(mission_id, result_id)
 """
 
+DDL_V11 = """
+CREATE TABLE provider_token_grants (
+ invocation_id TEXT NOT NULL,
+ handoff_ordinal INTEGER NOT NULL CHECK(handoff_ordinal>0),
+ mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ subject_id TEXT NOT NULL REFERENCES budget_reservations(subject_id),
+ agent_id TEXT NOT NULL,
+ turn_id TEXT NOT NULL,
+ intent_id TEXT NOT NULL REFERENCES dispatch_intents(intent_id),
+ owner TEXT NOT NULL,
+ sdk_owner TEXT NOT NULL,
+ sdk_epoch INTEGER NOT NULL,
+ fingerprint TEXT NOT NULL,
+ request_hash TEXT NOT NULL,
+ wire_hash TEXT NOT NULL,
+ public_input_upper INTEGER NOT NULL CHECK(public_input_upper>=0),
+ prior_output_upper INTEGER NOT NULL CHECK(prior_output_upper>=0),
+ output_ceiling INTEGER NOT NULL CHECK(output_ceiling>0),
+ total_upper INTEGER NOT NULL CHECK(total_upper>=output_ceiling),
+ state TEXT NOT NULL CHECK(state IN
+  ('RESERVED','HANDED_OFF','UNKNOWN','SETTLED','RELEASED','OVERRUN')),
+ actual_tokens INTEGER CHECK(actual_tokens>=0),
+ actual_output_tokens INTEGER CHECK(actual_output_tokens>=0),
+ version INTEGER NOT NULL DEFAULT 1,
+ created_at REAL NOT NULL,
+ updated_at REAL NOT NULL,
+ PRIMARY KEY(invocation_id,handoff_ordinal)
+) STRICT;
+CREATE INDEX provider_token_grants_subject_idx ON provider_token_grants(subject_id,state);
+CREATE INDEX provider_token_grants_slots_idx ON provider_token_grants(state);
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
@@ -492,6 +524,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(8, "orchestrator-p33-domains", DDL_V8),
     Migration(9, "orchestrator-p33-sources", DDL_V9),
     Migration(10, "orchestrator-p33-assessments", DDL_V10),
+    Migration(11, "orchestrator-p35-provider-admission", DDL_V11),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -514,6 +547,7 @@ __all__ = (
     "DDL_V8",
     "DDL_V9",
     "DDL_V10",
+    "DDL_V11",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

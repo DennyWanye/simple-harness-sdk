@@ -324,6 +324,17 @@ wheels = [
 ]
 
 [[package]]
+name = "deepseek-recipe"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ea/e9/8b9dedbcd3aaabac393cd08c99a1c0f0670ea6493ac727fc2857bb4f88dd/deepseek_recipe-0.1.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:cadb53a202960fc5d381f52a9c30afb0e44d7eaaa22197e851c09789bf65b83e", size = 8295918, upload-time = "2026-09-10T09:27:58.374Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/79/a41fe43c0c658b0277947a22cb7cea922cdda1b7a9cc03fb39e6af5ec17f/deepseek_recipe-0.1.1-cp310-abi3-macosx_11_0_x86_64.whl", hash = "sha256:b6d9c52dead2d550f1487d74b999e40692b8633e9be5f41eb5be7bff47ba3717", size = 8885802, upload-time = "2026-09-10T14:06:24.494Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/b1/248eb99f7e659a43c5eff9fe42b773ce927607e5b5c058ecf1649be8d034/deepseek_recipe-0.1.1-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:5a5b1fec4e5663d97527370227fda418495f21c6ff73e95663624e906a35c25b", size = 9928176, upload-time = "2026-09-11T11:26:08.514Z" },
+    { url = "https://files.pythonhosted.org/packages/45/87/8be03c8cc4f86ac27577b20466c40ad5a77c1fd1d3d4a438bd0120d0cbae/deepseek_recipe-0.1.1-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:7818802935becc76ac9b81af6b4a1e5390ec65355cecefd1fd4790f51845c1c5", size = 11367229, upload-time = "2026-09-10T13:33:15.132Z" },
+]
+
+[[package]]
 name = "docutils"
 version = "0.23"
 source = { registry = "https://pypi.org/simple" }
@@ -1031,6 +1042,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+deepseek-tokenizer = [
+    { name = "deepseek-recipe" },
+]
 testing = [
     { name = "pytest" },
 ]
@@ -1047,10 +1061,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "deepseek-recipe", marker = "extra == 'deepseek-tokenizer'", specifier = "==0.1.1" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.3,<9" },
 ]
-provides-extras = ["testing"]
+provides-extras = ["deepseek-tokenizer", "testing"]
 
 [package.metadata.requires-dev]
 dev = [

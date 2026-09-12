@@ -176,7 +176,10 @@ def assemble_runtime(
         ports.provider,
         database,
         request_guard=guard,
-        max_concurrent=ports.max_concurrent_model_calls,
+        max_concurrent=(
+            ports.max_concurrent_model_calls if ports.provider_admission is None else None
+        ),
+        requests_prepared=ports.provider_admission is not None,
     )
     provider_adapter = _ConsumerProviderAdapter(wire, ports.model)
     # The consumer provider adapter reports pricing_key "consumer"; the estimator must match.
@@ -188,6 +191,8 @@ def assemble_runtime(
         budget_policy=budget_policy,
         estimator=estimator,
         context_use_authority=None,
+        provider_admission=ports.provider_admission,
+        request_preparer=wire.prepare_request if ports.provider_admission is not None else None,
         clock=ports.clock,
     )
 
