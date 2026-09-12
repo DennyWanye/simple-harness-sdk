@@ -64,3 +64,8 @@ B 主代理负责 CAS 来源的运行时冻结、工作区保护和集成；Kepl
 
 原始证据在 `.local-test-evidence/2026-09-12/p33-b-resume/`，未入 Git。初始开发失败与误红均保留：workspace 4 fail/1 pass→5 pass；冻结 map 1 fail→1 pass；目录 prefix 2 fail/1 pass，首修大小写仍失败，最终 3 pass；撤销继承与 ACTIVE 重绑定各 1 fail→1 pass；trust work/verify 2 fail→green。来源命令首次 35 pass；contract/resolver/runtime/workspace 首批 88 pass。
 结果 evidence gate 首次 14 fail 为 fixture 缺 allowed_tools，不冒称产品缺陷；修 fixture 后与 runtime 合计 29 pass。阶段性 P33 核心 218 pass/5.44s，仍不是 B 最终全量或真实 Provider/原生验收。
+
+## F本机重新核对（2026-09-12）
+
+F 验证完成（保留既有红集）：干净源码 `5bcca08fe666b8e20524206b76ce2afbba63db4d` 整仓3241 passed /60 failed /18 errors /13 skipped（547.16秒）；与同依赖旧源码a4aae8c的78项红集按kind+nodeid完全相同，新增0。0.11.0安装验证1402 passed /11 skipped /1既有迁移失败（506.99秒）；304包文件逐字匹配，258实际加载模块均来自安装包且哈希一致。F不是整仓全绿或新正式发布；G、Host与真实flash仍未完成。
+原73只有历史汇总；本次通过真实a4aae8c归档、相同依赖环境复跑当前全部红项建立可复核集合。详见journal§2.6，不用相同数量代替集合相等。

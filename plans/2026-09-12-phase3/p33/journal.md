@@ -344,6 +344,35 @@ E18:53–19:38约45分钟，含8分01.36秒完整测试。定向、独立审查�
 - `.local-test-evidence/2026-09-12/p33-f/current-reds.json` SHA-256 `f7d67de856690a171bb1ec3e2302d1a40edb257f4a61e6d3424d145f6da0c1db`
 - `.local-test-evidence/2026-09-12/p33-f/baseline-identity.json` SHA-256 `c900a2a27920304fdf2449e1959b932875f1604787735aac0cba400b2c991326`
 - `.local-test-evidence/2026-09-12/p33-f/baseline-red.log` SHA-256 `fca8573adaa8325e096f55b95bda36a18c678c8829041a71d6717f8fc2bde5a3`
-- `.local-test-evidence/2026-09-12/p33-f/baseline-red.xml` SHA-256 `bc92048f6753ee63c5b2a31938f41b36882f67a4299d7d0b2b5603aa6622ae66`
+- 原首轮 `.local-test-evidence/2026-09-12/p33-f/baseline-red.xml` 已被第二轮runner覆盖，以下旧哈希仅存历史、不作为可用证据；首轮证明使用完整baseline-red.log/JSON。原 SHA-256 `bc92048f6753ee63c5b2a31938f41b36882f67a4299d7d0b2b5603aa6622ae66`
 - `.local-test-evidence/2026-09-12/p33-f/baseline-red.json` SHA-256 `c2cd59a5dffd46466e62c403e64c250ebcf3a59d2953f3225ef286af5680f87f`
 - `.local-test-evidence/2026-09-12/p33-f/environment-and-version.log` SHA-256 `ba10dc734c4d2953c982e6573d246054da7f50bb31be9971a6f176fe3d7eb076`
+
+### F最终验证（20:17）
+
+F 验证完成（保留既有红集）：干净源码 `5bcca08fe666b8e20524206b76ce2afbba63db4d` 整仓3241 passed /60 failed /18 errors /13 skipped（547.16秒）；与同依赖旧源码a4aae8c的78项红集按kind+nodeid完全相同，新增0。0.11.0安装验证1402 passed /11 skipped /1既有迁移失败（506.99秒）；304包文件逐字匹配，258实际加载模块均来自安装包且哈希一致。F不是整仓全绿或新正式发布；G、Host与真实flash仍未完成。
+
+- 新旧源码相同测试依赖下红集精确相等，red-comparison.json双向差集为空。raw78比原机73多2条同样在a4aae8c的runtime Memory断言及3条缺Memory SDK收集错误，差额未隐藏。
+- baseline补依赖后复跑98项：60failed /20passed /18errors /7.44秒，PG36326无残留。原21控制通过，tiktoken还使原test_context_journal整个模块开始收集，新增12通过；因此final为3241而非仅3229。
+- final完整pytest547.16秒（watchdog547.59），PG36349无残留。安装组合506.99秒（watchdog507.50），PG41614无残留；唯一红assert10==7与baseline逐字原因相同。两轮全量测试时间546.07+547.16秒，重叠覆盖不相加计数。
+- 可复现wheel757d6fb1…，source5bcca08，SOURCE_DATE_EPOCH=0。twine、依赖兼容、304包文件bytes、258实际module来源/hash检查通过。静态制品独立审查确认sdist698预期输入匹配。没有tag/publish/newHost/真实模型。
+- 证据修正：第二次baseline runner复用了XML固定路径，第一XML已被覆盖。首轮完整log、JSON、原始红集与import identity均保留；第二XML存为baseline-after-dependency.xml，correction.json明确此事，后续runner已按label分离XML/temp。不得引用首轮已不存在的XML作为实物证明。
+- 本片总计待推送后记录；G准备期间与F测试重叠，不另加耗时。
+
+- `.local-test-evidence/2026-09-12/p33-f/repository-final.log` SHA-256 `2323f27910a99526d193ca432cf926a4c2636c5b12911c28b7458cc58d4b9709`
+- `.local-test-evidence/2026-09-12/p33-f/repository-final.xml` SHA-256 `546eefcf265171fc4ae5b0f18e240e7c0f175fe039cfc404ebf3ff110a9f9f35`
+- `.local-test-evidence/2026-09-12/p33-f/repository-final.json` SHA-256 `7c1523f48ac41d3c5d942aa26eae9481013e82d0ae5572666ad39d56f5d869ec`
+- `.local-test-evidence/2026-09-12/p33-f/red-comparison.json` SHA-256 `3c76bbb92d2c5bf1bb73ccb520349b427b90dfb921249223b04771aeabf4860a`
+- `.local-test-evidence/2026-09-12/p33-f/baseline-after-dependency.log` SHA-256 `5336b2866e44e0eba097ae3bb1f8fbfd9c24f0af7d8281bf4ba7f74d7df053ef`
+- `.local-test-evidence/2026-09-12/p33-f/baseline-after-dependency.xml` SHA-256 `edee503c03b70694dec274b03f5ed0f4c8f9eb186d430b84db2aa819f9e1586b`
+- `.local-test-evidence/2026-09-12/p33-f/baseline-after-dependency.json` SHA-256 `a7dc34002da5d87305c0d046ec8f27259e70fdc2d61a1358d23909f54099eaea`
+- `.local-test-evidence/2026-09-12/p33-f/baseline-xml-correction.json` SHA-256 `ea745bcd29346b53cdd12ea62b028533a467bc13d840401a5dc5c846580c0894`
+- `.local-test-evidence/2026-09-12/p33-f/build.log` SHA-256 `0bcf5cb54fd26e3b3654c5c24846ee681508c3509c4e71066729d69b95157dbd`
+- `.local-test-evidence/2026-09-12/p33-f/candidate/candidate-manifest.json` SHA-256 `20fc0e86bb06fe807eb7a853a0b4b2d95449a01fb8efbf6764ca6d48c38b4c74`
+- `.local-test-evidence/2026-09-12/p33-f/twine.log` SHA-256 `3d2aeaf0e398fdece2c508467c1ff9c12a036a7956aa935cbd603150a28cd769`
+- `.local-test-evidence/2026-09-12/p33-f/installed-preflight.json` SHA-256 `372cc8d97fed7447e0b3324b940d7540cb726c8299e1ace64e6a501312163ab6`
+- `.local-test-evidence/2026-09-12/p33-f/installed-full.log` SHA-256 `6f47c42b8314a3076c616cfe19ee4bffebffec48161a610e4cd75a6d7fb5db6e`
+- `.local-test-evidence/2026-09-12/p33-f/installed-full.xml` SHA-256 `6bd111d939fcfb5ec66f823cd923f38201af35855d089e6cbb8eb4b775b0f3cc`
+- `.local-test-evidence/2026-09-12/p33-f/installed-full.json` SHA-256 `a14dd2cebebb12cc75ac2a29d0ed5fa714e4d885130f14efd86defad37213d89`
+- `.local-test-evidence/2026-09-12/p33-f/installed-origins.json` SHA-256 `1d7153c4dbacda1af4f0cf72d0fc1fca5fd88965e43e7feda96fd4d504144e35`
+- `.local-test-evidence/2026-09-12/p33-f/installed-process-check.json` SHA-256 `af2488be5442025f8dcdb397177f0e01d9115a90b41b2405530f5e31008b0842`

@@ -19,7 +19,7 @@
 | Phase3 **P3.1** 真实 App Mission 控制闭环 | ✅ SHIPPED |
 | Phase3 **P3.1 遗留修复** | ✅ SHIPPED（SDK 0.9.11） |
 | Phase3 **P3.2** 隔离执行与真实受控交付 | ✅ SHIPPED（SDK 0.10.0，SDK `48e441a`，Host `04350956`） |
-| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A–E 已完成 SDK 源码验证；E 全量1199 passed /8 skipped，F/G未完成** |
+| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A–E 已完成 SDK 源码验证；E 全量1199 passed /8 skipped；F候选0.11.0验证完成（既有红集保留），G未完成** |
 | Phase3 P3.4 / P3.5 | 未开始 |
 
 用户的总指示（原话）："先修复，然后开始P3.2 到 P3.5，文件提交"。所以 P3.3 做完继续 P3.4、P3.5。
@@ -52,7 +52,7 @@
 | C | schema v10 `criterion_assessments`、评估记录传递、`grade_claim` v2、attribution 记录/消费/压制通道（Host 交付层仍 G） | ✅ SDK 源码验证完成（`963b090`）；979 passed / 8 skipped，475.47 秒 |
 | D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | ✅ SDK源码验证完成（`d3d3fd8`）；1119 passed /8 skipped，446.64秒 |
 | E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | ✅ SDK源码验证完成（cf40b8e）；1199 passed /8 skipped，481.36秒 |
-| F | 全量回归、wheel 干净环境验证 | 未开始 |
+| F | 全量回归、wheel 干净环境验证 | ✅ 候选0.11.0完成验证；无新增回归，既有失败保留，见journal§2.6 |
 | G | Host 钉版、接线、系统渲染结论区、真实 flash 原生验收 | 未开始 |
 
 **每个切片完成即跑 `tests/orchestrator` 全量**，不等切片 F。
@@ -165,3 +165,9 @@ E只读挑战已完成：直接citation新接受检查与stale used_knowledge分
 
 E 干净源码 `cf40b8ec86a2f307d0f8b8f89cf7f0166e5de121` 完整编排 **1199 passed /8 skipped /0 failed**（481.36秒），watchdog481.63秒，PG25036无残留。8项skip为未启用真实Provider。A–E完成SDK源码验证；F/G、wheel、Host与真实flash仍未完成。
 E从18:53开始，完成后继续F整仓红集逐nodeid核对和0.11.0安装验证。G仍需SDK判定树挂源/原子来源创建/引用读取，必须按最终源码重建制品，不能沿用A–E wheel身份。
+
+### F最新接续（20:17）
+
+F 验证完成（保留既有红集）：干净源码 `5bcca08fe666b8e20524206b76ce2afbba63db4d` 整仓3241 passed /60 failed /18 errors /13 skipped（547.16秒）；与同依赖旧源码a4aae8c的78项红集按kind+nodeid完全相同，新增0。0.11.0安装验证1402 passed /11 skipped /1既有迁移失败（506.99秒）；304包文件逐字匹配，258实际加载模块均来自安装包且哈希一致。F不是整仓全绿或新正式发布；G、Host与真实flash仍未完成。
+
+wheel SHA-256 `757d6fb195187bebf393b37482ee308587007e4f198aa4a36132901c35f8a96e`，本机p33-f/candidate。Host仍04350956/SDK0.10.0。G需SDK原子创建与citation_read、DOC_PROFILE v4 successor的Mission源目录/当前消费/恢复、Host系统报告和来源操作，以及最终制品与真实原生flash。G只读准备在本机p33-f/g-preparation.md；尚未实施，不把F wheel称作G最终制品。

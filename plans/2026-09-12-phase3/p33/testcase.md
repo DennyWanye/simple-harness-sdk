@@ -65,3 +65,14 @@ E源码完整回归通过；F 整仓/wheel、G Host/真实 flash 原生验收仍
 | 33/34/35a/35b/41/44：范围、人工绑定、第三成员、重复决定、不升级知识 | test_p33_doc_arbitration.py、test_p33_doc_arbitration_runtime.py | 定向PASS；实际三种裁决、硬失败耗尽、旧批准/拒绝关库恢复 |
 
 P33与旧人工审核合计638 passed /21.01秒，不累计重叠批次。cf40b8e完整编排1199 passed /8 skipped（481.36秒）；非真实Provider或原生UI证明。
+
+## 切片 F
+
+| 门 | 实测结论 | 边界 |
+|---|---|---|
+| 19/21/36及A07整仓回归 | 5bcca08：3241通过、60失败、18错误、13跳过；78红与同依赖旧源码逐nodeid相等 | 不是raw红集⊆原机73；2条旧runtime Memory断言、3条Memory缺包收集差额已解释 |
+| 版本快照 | 先5真实新增失败，current snapshot仅改version；相关21项通过 | 导出列表与历史snapshots不变 |
+| wheel/sdist | 两次构建字节相等；304包文件、698预期sdist输入与冻结提交匹配 | candidate，未创建tag或发布 |
+| 干净安装 | 1402通过、11跳过、1旧迁移失败；258加载模块全部安装来源/hash匹配 | 旧失败assert10==7在baseline同因；无真实Provider/native |
+
+原始AC22等整体兑现审计及G20/45/46仍须随G完成，不把F制品验证扩大为P3.3整体完成。
