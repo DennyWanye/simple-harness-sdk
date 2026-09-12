@@ -2,7 +2,7 @@
 
 ## 0. 交接（冷会话先读这一节）
 
-- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A 已完成（SDK 源码）；B 实施与独立审查中**。
+- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A、B 已完成（SDK 源码）；下一步 C**。
 - **中心断言**：文档领域的 VERIFIED 只意味着「这份文件的这个版本的这几行里，逐字写着这句话」，且要在记录层 / 消费层 / 交付层三层同时成立。详见 `plan.md` §0。
 - **切片顺序**：A 领域画像与五处闸门 → B 来源与证据解析 → C 评估记录与分级 → D adapter 与证据不足出口 → E 冲突与失效 → F 回归与 wheel → G Host 与原生验收。
 - **每切片完成即跑 `tests/orchestrator` 全量**（不等切片 F），并同步更新本文件。
@@ -147,3 +147,20 @@ schema v9、来源三个 Host 命令、CAS 原文、SourceCitation v2 契约、E
 - 收尾审查补 P2：来源撤销后的文件↔目录替换被旧 clone 挡住。改为仅新树在安装 inputs 前清理来源根；ACTIVE 树不动。真实 facade/register/revoke/Attempt/reopen 控制三参数通过。初跑 2 个拓扑错误是产品 red，另一个 markdown context 被误当 JSON 是测试夹具错误，分开记录。
 - 最后定向 **300 passed / 8.13s**（`tests/orchestrator/p33` + `p32/test_p32_workspace_registry.py` + `step02/test_workspace_and_gateway.py`，final-smoke.log），其中 P33 290 条。
 - Kepler 对发布 guard 和 main 根接线给出独立 ACCEPT；Ohm 对恢复、信任标记、Source 审批/路径及 Resolver 五处 P1 给出指定范围 ACCEPT，最后拓扑 P2 修复亦获追加 ACCEPT，无剩余 B 审查问题。
+
+### B 干净源码验收完成
+
+- 源码 `fb58bf1c6e5ad92bb7e64791e24c786282684058`，运行前后 Git clean；完整 `tests/orchestrator -q -x --basetemp .local-test-evidence/2026-09-12/p33-b-full`：**867 passed / 8 skipped / 0 failed，488.39 s**。外层看门狗耗时 488.71 s，进程组 531 已退出且无遗留进程。
+- 8 个 skip 均为现有 `--run-real-provider` 用例；本片未换 wheel、未启动 Host、未做真实 Provider/UI 验收。C–G 继续，P3.3 整体不宣称完成。
+- 最终定向：P33（290）+ p32 workspace registry + step02 workspace/gateway，共 **300 passed / 8.13 s**；mypy 87 文件、改动 Python Ruff、diff check 通过。独立累计审查见 `reports/code-review-b.md`，无剩余 P1/P2。
+- 原始证据永久 ignored；以下路径相对仓库根，只有摘要与哈希进入 Git。
+
+| 本地证据 | SHA-256 |
+|---|---|
+| `.local-test-evidence/2026-09-12/p33-b-resume/orchestrator-full.log` | `d7605cf9cfab9eb3607374522355c22d6096c2aca7c6b6556f189a1142af4b5d` |
+| `.local-test-evidence/2026-09-12/p33-b-resume/orchestrator-full.json` | `cca8560947a030ea696abdffc99f1cbe457575dbfa4d188b75bc9a939e8031b3` |
+| `.local-test-evidence/2026-09-12/p33-b-resume/final-smoke.log` | `2c4c78fc43f5ca085917150454988a6a46f74eaa5c863f92dc69c1d6c059574c` |
+| `.local-test-evidence/2026-09-12/p33-b-resume/topology-red.log` | `a453e016f001f4dc02e5a7e116823da051bb997089dcbce4e9a5fde5ea2003d6` |
+| `.local-test-evidence/2026-09-12/p33-b-resume/topology-green.log` | `cc188d2ce92a6ec8f290de37a2d0707283d220cd55b48b198cd8ea3f2ac42de3` |
+
+计时：此前开发未逐项计时，不以测试时间代替开发总耗时。2026-09-12 17:09 +08:00 恢复执行 B 文档/推送收尾；后续按阶段记录起止。

@@ -19,7 +19,7 @@
 | Phase3 **P3.1** 真实 App Mission 控制闭环 | ✅ SHIPPED |
 | Phase3 **P3.1 遗留修复** | ✅ SHIPPED（SDK 0.9.11） |
 | Phase3 **P3.2** 隔离执行与真实受控交付 | ✅ SHIPPED（SDK 0.10.0，SDK `48e441a`，Host `04350956`） |
-| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A 已完成；B 实施与审查中** |
+| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A、B 已完成 SDK 源码验证；下一步 C** |
 | Phase3 P3.4 / P3.5 | 未开始 |
 
 用户的总指示（原话）："先修复，然后开始P3.2 到 P3.5，文件提交"。所以 P3.3 做完继续 P3.4、P3.5。
@@ -48,7 +48,7 @@
 | 切片 | 内容 | 状态 |
 |---|---|---|
 | A | 领域画像、**五处**闸门、`mission_domains` 与 facade、schema v8、D9 事件与回放、仲裁路径的两处 pytest 硬编码 | ✅ SDK 源码验证完成（`1eaa91f`），见 §3–4 |
-| B | schema v9 `sources` 表与三个 facade 命令、来源进 CAS、protected 扩成 `Path\|bytes`、`SourceCitation` 契约、EvidenceResolver 七个失败码 | 代码与定向测试已补齐；独立审查修复与干净全量待完成 |
+| B | schema v9 `sources` 表与三个 facade 命令、来源进 CAS、protected 扩成 `Path\|bytes`、`SourceCitation` 契约、EvidenceResolver 七个失败码 | ✅ SDK 源码验证完成（`fb58bf1`），独立审查闭环；867 passed / 8 skipped |
 | C | schema v10 `criterion_assessments`、评估记录传递、`grade_claim` v2、**attribution 三层收口** | 未开始 |
 | D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | 未开始 |
 | E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | 未开始 |
@@ -59,7 +59,7 @@
 
 ---
 
-## 3. 切片 A 已完成，下一步 B
+## 3. 切片 A、B 已完成，下一步 C
 
 ### 3.1 已完成（代码已提交）
 
@@ -84,7 +84,7 @@
 - 全量暴露的 pytest 上级配置问题已修；消失执行器 fixture 加显式 gate，生产恢复逻辑未改。首次失败及原源码对照详见 `p33/baseline.md`。
 - 提交：`fdc9c91`（冻结角色和 Critic 来源）、`1eaa91f`（pytest 配置边界及回归修正）。架构事实源见 `ARCHITECTURE/ORCHESTRATOR.md`。
 
-### 3.3 B 开工接口与边界（实现待做）
+### 3.3 B 已实现的接口与边界
 
 - Store：`get_source(mission_id, path, version_hash=None)`；指定 hash 读历史版本，不指定读有效版本。`list_sources(mission_id, active_only=False)` 返回确定顺序。
 - resolver 接收系统冻结的 tenant/Mission/source_versions/source_roots；精确登记版本缺失统一 not_found，已登记但不在冻结集才 stale_source。CAS 共用取数口，不能改读工作区或当前 head。
@@ -95,6 +95,9 @@
 ---
 
 ## 4. 当前测试状态
+
+- ✅ **B 干净提交 `fb58bf1c6e5ad92bb7e64791e24c786282684058`：编排全量 867 passed / 8 skipped / 0 failed，488.39 s**；专项 300 passed / 8.13 s。8 个 skip 均为未启用的真实 Provider 门。审查无剩余 P1/P2；测试进程组 531 已退出，无遗留子进程。
+- B 证据和 SHA-256 索引见 `p33/journal.md` §2.2；下面 A 的 651 项是历史切片基线。C 处于方案准备，P3.3 整体及 wheel、Host/真实模型仍未验收。
 
 - ✅ **干净提交 `1eaa91f67b93eacaa7f5862a595421bb20d828a9`：编排全量 651 passed / 8 skipped / 0 failed，490.43 s**。8 个 skip 均要求 `--run-real-provider`，不冒称真实模型验收。
 - ✅ 定向 P3.3 最初 58 passed；之后 16 条配置边界场景加两条原失败 18 passed；类型检查 85 文件、改动范围 Ruff、diff-check 均通过。最终全量包含全部新控制。
