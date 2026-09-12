@@ -48,8 +48,10 @@ def test_published_profiles_and_prompt_bytes_are_unchanged():
             rows[role] = {"instructions": template.instructions, "tools": list(template.tool_names)}
         assert sha256_hex(rows) == digest
     assert sha256_hex({
-        role: {"instructions": p.instructions, "version": p.prompt_version,
-               "tools": list(p.tool_names)} for role, p in ROLES.items()
+        role: {"instructions": frozen.instructions, "version": frozen.prompt_version,
+               "tools": list(frozen.tool_names)}
+        for role, current in ROLES.items()
+        for frozen in [TEMPLATE_VERSIONS["manager"]["manager-v2"] if role == "manager" else current]
     }) == "933152b55f45fedd091514b55fad338e2316bcd05cd874c66ca048a15286a397"
 
 
@@ -77,7 +79,7 @@ def test_result_roles_offer_real_statement_support_and_page_range(role):
 
 @pytest.mark.parametrize("role", ("planner", "manager"))
 def test_doc6_planning_prefers_complete_goals_and_accounts_for_split_cost(role):
-    selected = template_for_domain(ROLES[role], domains.DOC_PROFILE, {})
+    selected = template_for_domain(ROLES[role], domains.DOC_PROFILE_V6, {})
     previous = TEMPLATE_VERSIONS[role][f"{role}-doc-research-v2"]
     assert selected.prompt_version == f"{role}-doc-research-v3"
     assert selected.instructions.startswith(previous.instructions)
@@ -98,8 +100,8 @@ def test_doc6_planning_prefers_complete_goals_and_accounts_for_split_cost(role):
 
 
 def test_doc6_keeps_all_capabilities_and_changes_only_successor_role_bindings():
-    old, new = domains.DOC_PROFILE_V5, domains.DOC_PROFILE
-    assert new.version == "6" and domains.resolve_domain(domains.DOC_DOMAIN) == new
+    old, new = domains.DOC_PROFILE_V5, domains.DOC_PROFILE_V6
+    assert new.version == "6" and domains.resolve_domain(domains.DOC_DOMAIN).version == "7"
     expected = old.to_json()
     expected["version"] = "6"
     expected["role_templates"].update({

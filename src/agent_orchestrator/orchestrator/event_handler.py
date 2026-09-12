@@ -26,6 +26,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -51,10 +52,17 @@ from ..artifacts.workspace import WorkspaceError
 from ..context.context_builder import (
     CONTEXT_BUILDER_VERSION,
     ContextRejected,
+    assert_no_secrets,
     build_critic_package,
     build_manager_package,
     build_planner_package,
     build_worker_package,
+)
+from ..context.manager_fragments import (
+    consumer_fragment_context,
+    manager_fragment_origin,
+    manager_validated_fragment,
+    validate_manager_fragment_choice,
 )
 from ..context.retrieval import (
     KnowledgeContext,
@@ -73,6 +81,7 @@ from ..contracts import (
     AttemptStatus,
     ClaimStatus,
     ContractError,
+    FragmentValidationDecisionV1,
     Mission,
     MissionStatus,
     MissionStopReason,
@@ -93,10 +102,11 @@ from ..governance.domains import (
 from ..governance.permissions import Principal
 from ..governance.policies import action_decision, deployed_layers, effective_tools
 from ..governance.promotion import diff_params, interpreter_versions, resolve_params
-from ..graph.changes import ChangeLimits, TaskGraphChange
+from ..graph.changes import ChangeLimits, GraphChangeRejected, TaskGraphChange
 from ..graph.task_graph import TaskBudgetFloor
 from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
+from ..planning.fragments import _task_contract
 from ..planning.manager import terminal_task
 from ..planning.planner import parse_task_graph_proposal
 from ..runtime.actions import ActionExecutor, publication_overlaps_storage
@@ -105,6 +115,14 @@ from ..runtime.assembly import (
     AssembledOrchestratorRuntime,
     OrchestratorConfig,
     assemble_orchestrator_runtime,
+)
+from ..runtime.first_request_budget import (
+    FirstRequestBudget,
+    FirstRequestBudgetUnknown,
+    ProviderInputCap,
+    actual_output_ceiling,
+    first_request_budget,
+    frozen_provider_input_cap,
 )
 from ..runtime.model_router import (
     DEFAULT_PROFILE,
@@ -118,6 +136,7 @@ from ..runtime.model_router import (
 from ..runtime.output_blocks import BlockError, extract_block, outside_text
 from ..runtime.role_templates import (
     CRITIC,
+    FRAGMENT_VALIDATION_DECISION_TAG,
     GRAPH_CHANGE_PROPOSAL_TAG,
     MANAGER,
     PLANNER,
@@ -130,6 +149,7 @@ from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding,
 from ..scheduling.allocator import OPEN_ATTEMPT_STATES, allocate
 from ..scheduling.backpressure import BackpressureState, Observation
 from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy
+from ..verification.assessments import task_contract_revision
 from ..verification.critics import CriticVerdict, parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
 from ..verification.human_review import (
@@ -173,6 +193,8 @@ FAULT_POINTS = (
     "after_task_completed",  # step 3 (accept committed, release / next cycle not yet run)
     "retrieval_unavailable",  # step 4 (S4-07): the knowledge index cannot be read
     "before_graph_change",  # step 5: a Manager's proposal parsed, not yet committed
+    "after_fragment_commit",  # P34: graph/receipt durable, Manager intent not settled
+    "after_validated_fragment_graph_commit",  # P34: C retarget durable, Manager intent not settled
 )
 MAX_CRITIC_ATTEMPTS = 2
 SYSTEM_CRITIC_MODEL_CALLS = 12
@@ -314,69 +336,87 @@ class Orchestrator:
     # ------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Orchestrator:
         self._store = Store.open(self._config.orchestrator_db)
-        self._task_floor = self._budget_floor_rule()  # P3.1 fix F-ORCH-1
-        self._commit = CommitService(
-            self._store,
-            conflict_tasks=self._config.knowledge_sharing,
-            global_budget=self._config.global_budget,
-            deployed_layers=self._deployed,
-            task_floor=self._task_floor,
-            candidates_for=self._candidates_for,
-            system_tail_factory=self._mission_system_tail_plan,
-        )
-        if self._provider_token_estimator is not None:
-            from ..runtime.provider_budget_guard import ProviderBudgetGuard
-
-            self._provider_admission = ProviderBudgetGuard(
-                self._commit, owner=self._owner, estimator=self._provider_token_estimator,
-                max_slots=self._config.max_concurrent_model_calls,
-                price_tables={key: (profile.price_table.estimator()
-                                    if profile.price_table is not None else None)
-                              for key, profile in self._profiles.items()},
-            )
-        self._open_policy_library()  # step 9 (plan D9-3'): role, seed, drift
-        self._assembled = assemble_orchestrator_runtime(
-            self._config, profiles=self._profiles, default_profile=self._default_profile,
-            provider_admission=self._provider_admission,
-        )
-        # SDK startup itself reconciles grants. Consume already durable late
-        # receipts before it can raise on an actual overrun; no runtime is started
-        # by this accounting-only pass. Tool counts also come from durable rows.
-        self._commit.tool_calls_for = self._executed_tool_calls
-        import_late_accounting(self)
         try:
-            await self._assembled.__aenter__()
-        except ProviderAdmissionDenied as error:
-            if error.detail.get("reason_code") == "bound_overrun":
-                # A receipt may appear during startup reconciliation, after the
-                # first scan. Pay its original actual cost even when SDK startup
-                # has failed; do not pretend that failed runtime has started.
-                import_late_accounting(self)
+            self._task_floor = self._budget_floor_rule()  # P3.1 fix F-ORCH-1
+            self._commit = CommitService(
+                self._store,
+                conflict_tasks=self._config.knowledge_sharing,
+                global_budget=self._config.global_budget,
+                deployed_layers=self._deployed,
+                task_floor=self._task_floor,
+                candidates_for=self._candidates_for,
+                system_tail_factory=self._mission_system_tail_plan,
+            )
+            if self._provider_token_estimator is not None:
+                from ..runtime.provider_budget_guard import ProviderBudgetGuard
+
+                self._provider_admission = ProviderBudgetGuard(
+                    self._commit, owner=self._owner, estimator=self._provider_token_estimator,
+                    max_slots=self._config.max_concurrent_model_calls,
+                    profile_slots=(
+                        {key: min(profile.max_concurrent_model_calls or self._config.max_concurrent_model_calls,
+                                  self._config.max_concurrent_model_calls)
+                         for key, profile in self._profiles.items()}
+                        if any(profile.max_concurrent_model_calls is not None
+                               for profile in self._profiles.values()) else None
+                    ),
+                    price_tables={key: (profile.price_table.estimator()
+                                        if profile.price_table is not None else None)
+                                  for key, profile in self._profiles.items()},
+                )
+            self._open_policy_library()  # step 9 (plan D9-3'): role, seed, drift
+            self._assembled = assemble_orchestrator_runtime(
+                self._config, profiles=self._profiles, default_profile=self._default_profile,
+                provider_admission=self._provider_admission,
+            )
+            # SDK startup itself reconciles grants. Consume already durable late
+            # receipts before it can raise on an actual overrun; no runtime is started
+            # by this accounting-only pass. Tool counts also come from durable rows.
+            self._commit.tool_calls_for = self._executed_tool_calls
+            import_late_accounting(self)
+            # Reconcile orphan execution identities before any runtime can resume tools.
+            workspaces = self._assembled.workspaces
+            await asyncio.to_thread(workspaces.sweep_exec_copies)
+            try:
+                await self._assembled.__aenter__()
+            except ProviderAdmissionDenied as error:
+                if error.detail.get("reason_code") == "bound_overrun":
+                    # A receipt may appear during startup reconciliation, after the
+                    # first scan. Pay its original actual cost even when SDK startup
+                    # has failed; do not pretend that failed runtime has started.
+                    import_late_accounting(self)
+                raise
+            # P3.2 D3: artifacts recorded before 0.10 move into the content-addressed store
+            # (or are marked unavailable); execution copies a crash left behind are removed
+            workspaces = self._assembled.workspaces
+            changes = backfill(self._store.list_all_artifacts(), workspaces.artifact_store)
+            if changes:
+                self._store.update_artifact_storage(changes)
+            self.cleanup_workspaces()  # P3.2 D4: finished Missions past their retention
+            self._bridge = self._assembled.pool(self._default_profile).bridge
+            self._assembled.gateway.on_rejected = self._audit_tool_rejection  # D6-7
+            self._assembled.gateway.on_executed = self._record_tool_call  # review P1-3
+            self._assembled.gateway.executed_counter = self.store.count_tool_calls
+            self._pressure = self._commit.backpressure_state()
+            self._actions = ActionExecutor(  # D7-5: the only caller of connectors
+                self._commit,
+                self._connectors,
+                self._config.deployment_policy,
+                owner=self._owner,
+                source_storage_roots=(
+                    self.assembled.workspaces.artifact_store.root,
+                    self.assembled.workspaces.root,
+                ),
+            )
+            return self
+        except BaseException as error:
+            # Enter failures do not trigger async-with's exit. Preserve the startup
+            # error (including cleanup reports) even if resource shutdown also fails.
+            try:
+                await self.__aexit__(type(error), error, error.__traceback__)
+            except BaseException as cleanup_error:
+                error.add_note(f"Startup resource cleanup failed: {type(cleanup_error).__name__}")
             raise
-        # P3.2 D3: artifacts recorded before 0.10 move into the content-addressed store
-        # (or are marked unavailable); execution copies a crash left behind are removed
-        workspaces = self._assembled.workspaces
-        changes = backfill(self._store.list_all_artifacts(), workspaces.artifact_store)
-        if changes:
-            self._store.update_artifact_storage(changes)
-        workspaces.sweep_exec_copies()
-        self.cleanup_workspaces()  # P3.2 D4: finished Missions past their retention
-        self._bridge = self._assembled.pool(self._default_profile).bridge
-        self._assembled.gateway.on_rejected = self._audit_tool_rejection  # D6-7
-        self._assembled.gateway.on_executed = self._record_tool_call  # review P1-3
-        self._assembled.gateway.executed_counter = self.store.count_tool_calls
-        self._pressure = self._commit.backpressure_state()
-        self._actions = ActionExecutor(  # D7-5: the only caller of connectors
-            self._commit,
-            self._connectors,
-            self._config.deployment_policy,
-            owner=self._owner,
-            source_storage_roots=(
-                self.assembled.workspaces.artifact_store.root,
-                self.assembled.workspaces.root,
-            ),
-        )
-        return self
 
     # ------------------------------------------------------------ policies (step 9)
     def _config_policy(self) -> dict[str, Any]:
@@ -705,10 +745,14 @@ class Orchestrator:
             with contextlib.suppress(BaseException):
                 await task
         self._verifying.clear()
-        if self._assembled is not None:
-            await self._assembled.__aexit__(*exc_info)
-        if self._store is not None:
-            self._store.close()
+        try:
+            if self._assembled is not None:
+                await self._assembled.__aexit__(*exc_info)
+        finally:
+            self._assembled = None
+            store, self._store = self._store, None
+            if store is not None:
+                store.close()
 
     @property
     def store(self) -> Store:
@@ -773,6 +817,25 @@ class Orchestrator:
         if admission is not None:
             config["provider_admission_fingerprint"] = admission.fingerprint
         return config
+
+    def _first_critic_budget(self, decision: RoutingDecision) -> FirstRequestBudget | FirstRequestBudgetUnknown:
+        profile = self._profiles[decision.profile_id]
+        guard = self._provider_admission
+        cap = frozen_provider_input_cap(
+            profile_id=decision.profile_id, model=decision.model,
+            runtime_context=profile.context_snapshot(),
+            estimator_fingerprint=(None if guard is None else guard.estimator.fingerprint),
+        )
+        return first_request_budget(
+            provider_input_cap=cap,
+            output_ceiling=actual_output_ceiling(
+                profile_default_max_output_tokens=profile.default_max_output_tokens,
+                profile_max_output_tokens_ceiling=profile.max_output_tokens_ceiling,
+                config_default_max_output_tokens=self._config.default_max_output_tokens,
+                config_max_output_tokens_ceiling=self._config.max_output_tokens_ceiling,
+            ),
+            guard_input_cap_protocol=(None if guard is None else getattr(guard, "input_cap_protocol", None)),
+        )
 
     def _context_profile_for(self, config: Mapping[str, Any]) -> RuntimeProfile:
         profile_id = str(config.get("runtime_profile_id") or self._default_profile)
@@ -1346,7 +1409,7 @@ class Orchestrator:
         source_binding = self._active_source_binding(mission_id)
         domain = self.commit.domain_for(mission_id)
         workload = None
-        if domain.id == "doc-research-v1" and domain.version == "6":
+        if domain.id == "doc-research-v1" and domain.version in {"6", "7"}:
             from ..context.source_workload import source_workload
 
             try:
@@ -1427,6 +1490,16 @@ class Orchestrator:
         return Reservation(tokens, system_cost_upper(tokens,
             rate=max(table.input_micros_per_million_tokens, table.output_micros_per_million_tokens),
             physical_calls=calls))
+
+    def _first_critic_reservation(self, budget: FirstRequestBudget, profile_id: str) -> Reservation:
+        table = self._profiles[profile_id].price_table
+        if table is None:
+            return Reservation(budget.minimum_tokens, 0)
+        input_tokens = budget.provider_input_cap.max_input_tokens
+        output_tokens = budget.output_ceiling
+        cost = ((input_tokens * table.input_micros_per_million_tokens + 999_999) // 1_000_000
+                + (output_tokens * table.output_micros_per_million_tokens + 999_999) // 1_000_000)
+        return Reservation(budget.minimum_tokens, cost)
 
     def _mission_system_tail_plan(self, mission: Mission, purpose: str, *, agent_config=None,
                                   critic=False, critic_ordinal=None):
@@ -1644,6 +1717,35 @@ class Orchestrator:
     def _bind_workspace(self, attempt: Attempt) -> None:
         mission = self.store.get_mission(attempt.mission_id)
         assert mission is not None
+        frozen_intent = self.store.get_intent_for_subject(attempt.id)
+        frozen_fragment = (
+            None if frozen_intent is None
+            else frozen_intent.config.get("validated_fragment_input")
+        )
+        if frozen_fragment is not None:
+            try:
+                from ..planning.fragments import current_task_revision
+
+                consumer = self.store.get_task(attempt.task_id)
+                if consumer is None or not isinstance(frozen_fragment, Mapping):
+                    raise ContractError("validated fragment consumer intent unavailable")
+                revision = current_task_revision(self.store, consumer)
+                current_fragment = self.commit.fragment_input(
+                    str(frozen_fragment["fragment_id"]),
+                    consumer_task_revision_id=revision.revision_id,
+                )
+                current_bound = {
+                    key: item for key, item in current_fragment.items()
+                    if key != "consumer_task_revision_id"
+                }
+                frozen_bound = {
+                    key: item for key, item in frozen_fragment.items()
+                    if key != "consumer_task_revision_id"
+                }
+                if current_bound != frozen_bound:
+                    raise ContractError("validated fragment frozen consumer provenance changed")
+            except (ContractError, KeyError, TypeError) as error:
+                raise ArtifactConflict(f"validated fragment consumer binding: {error}") from error
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
         previous = None
         if attempt.retry_of is not None:
@@ -1745,10 +1847,10 @@ class Orchestrator:
                     if not building:
                         continue  # Preserve ACTIVE-tree tamper evidence across recovery.
                     try:
-                        current = read_nofollow(workspace.root / path)
+                        current_bytes = read_nofollow(workspace.root / path)
                     except ArtifactStoreError:
-                        current = None
-                    if current != content:
+                        current_bytes = None
+                    if current_bytes != content:
                         workspace.write_bytes(path, content)
                 elif (
                     workspace.read_text(path) != content
@@ -2894,14 +2996,36 @@ class Orchestrator:
             )
             manager_after = int(self.policy_for(mission.id)["manager_after_failures"])
             if can_retry and failures >= manager_after:
-                # D5-6: repeated verification failures are a stall signal (§19.2)
-                await self._request_management(
-                    mission,
-                    task,
-                    trigger=f"failures:{task.id}:{failures}",
-                    result_id=result_id,
-                    attempt_id=attempt.id,
+                # An admitted fragment consumer has already used a Manager round
+                # to replace A with F. Exhausting that separate governance budget
+                # must not erase its own still-funded verification retry.
+                fragment_parent = any(
+                    parent is not None and "fragment_validation" in parent.context
+                    for parent in (
+                        self.store.get_task(parent_id) for parent_id in task.dependency_ids
+                    )
                 )
+                frozen_attempt = self.store.get_intent_for_subject(attempt.id)
+                fragment_retry = (
+                    fragment_parent
+                    and frozen_attempt is not None
+                    and isinstance(
+                        frozen_attempt.config.get("validated_fragment_input"), Mapping
+                    )
+                    and self._manager_rounds(mission.id)
+                    >= int(self.policy_for(mission.id)["max_manager_rounds"])
+                )
+                if fragment_retry:
+                    self._note(f"task {task.id}: retrying accepted fragment under original budget")
+                else:
+                    # D5-6: repeated verification failures are a stall signal (§19.2)
+                    await self._request_management(
+                        mission,
+                        task,
+                        trigger=f"failures:{task.id}:{failures}",
+                        result_id=result_id,
+                        attempt_id=attempt.id,
+                    )
         return True
 
     def _critic_provenance(self, mission_id: str, attempt_id: str) -> dict[str, str]:
@@ -3166,15 +3290,100 @@ class Orchestrator:
 
     # ------------------------------------------------------- management (step 5)
     def _tasks_under_management(self, mission_id: str) -> set[str]:
-        return {
-            str(intent.config.get("task_id"))
-            for intent in self.store.list_intents(
-                "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+        held: set[str] = set()
+        for intent in self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"):
+            if intent.kind != "manager" or intent.mission_id != mission_id:
+                continue
+            if intent.config.get("task_id"):
+                held.add(str(intent.config["task_id"]))
+            validated = intent.config.get("validated_fragment")
+            if isinstance(validated, Mapping) and validated.get("origin_task_id"):
+                held.add(str(validated["origin_task_id"]))
+        return held
+
+    def _eligible_validated_fragment_consumers(
+        self, summary: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Freeze only unstarted C[A,B] fully covered by accepted F's projection."""
+        if summary.get("available") is not True:
+            return []
+        receipt = self.store.get_receipt(str(summary["projection_receipt_id"]))
+        if not isinstance(receipt, Mapping):
+            return []
+        try:
+            allowed = set(
+                receipt["projection"]["origin_revision"]["execution_constraints"]["allowed_tools"]
             )
-            if intent.kind == "manager"
-            and intent.mission_id == mission_id
-            and intent.config.get("task_id")
-        }
+            mapping = tuple(summary["criterion_mapping"])
+            if not mapping:
+                return []
+            origin_id = str(summary["origin_task_id"])
+            validation_id = str(summary["validation_task_id"])
+            all_tasks = {item.id: item for item in self.store.list_tasks(receipt["mission_id"])}
+        except (KeyError, TypeError):
+            return []
+        eligible = []
+        for task in all_tasks.values():
+            if (
+                task.kind != "work"
+                or task.status is not TaskStatus.BLOCKED
+                or self.store.list_attempts(task.id)
+                or len(task.dependency_ids) != 2
+                or origin_id not in task.dependency_ids
+                or not all(
+                    {item["origin_text"], item["text"]} & set(task.success_criteria)
+                    for item in mapping
+                )
+                or not set(task.allowed_tools) <= allowed
+            ):
+                continue
+            preserved = next(dep for dep in task.dependency_ids if dep != origin_id)
+            other = all_tasks.get(preserved)
+            if (
+                other is None
+                or other.kind != "work"
+                or preserved == validation_id
+                or {origin_id, validation_id}
+                & {item.id for item in ancestors(preserved, all_tasks)}
+            ):
+                continue
+            eligible.append({
+                "task_id": task.id,
+                "old_dependencies": list(task.dependency_ids),
+                "preserved_dependency_id": preserved,
+                "task_version": task.version,
+                "contract_revision": task_contract_revision(_task_contract(task)),
+            })
+        return eligible
+
+    async def _request_accepted_fragment_management(self, mission: Mission) -> bool:
+        """Recoverable trigger after F acceptance; old management triggers are unchanged."""
+        if mission.status is not MissionStatus.ACTIVE or not self._config.dynamic_graph:
+            return False
+        if self._manager_rounds(mission.id) >= int(self.policy_for(mission.id)["max_manager_rounds"]):
+            return False
+        for row in self.store.list_fragment_validations(mission.id):
+            validation = self.store.get_task(row["validation_task_id"])
+            if validation is None or validation.status is not TaskStatus.COMPLETED:
+                continue
+            summary = manager_validated_fragment(self.store, self.commit, validation.id)
+            if not self._eligible_validated_fragment_consumers(summary):
+                continue
+            trigger = f"validated_fragment:{summary['fragment_id']}:{summary['validation_result_id']}"
+            subject = f"{mission.id}:manager:{trigger}"
+            if self.store.get_intent_for_subject(subject) is not None:
+                continue
+            accepted_result = self.store.get_result(summary["validation_result_id"])
+            if accepted_result is None:
+                continue
+            created = await self._request_management(
+                mission, validation, trigger=trigger,
+                result_id=summary["validation_result_id"],
+                attempt_id=accepted_result.envelope.attempt_id,
+            )
+            if created is not None:
+                return True
+        return False
 
     def _manager_rounds(self, mission_id: str) -> int:
         return sum(1 for e in self.store.list_events(mission_id) if e.type == "ManagementRequested")
@@ -3223,6 +3432,17 @@ class Orchestrator:
     ) -> DispatchIntent | None:
         """One durable, deduplicated management decision per trigger (D5-6 / S5-07)."""
 
+        current_mission = self.store.get_mission(mission.id)
+        current_task = self.store.get_task(task.id)
+        completed_proposal = (
+            current_task is not None
+            and current_task.status is TaskStatus.COMPLETED
+            and trigger.startswith(("proposed:", "validated_fragment:"))
+        )
+        if (current_mission is None or current_mission.status in TERMINAL_MISSION
+                or current_task is None
+                or (current_task.status in TERMINAL_TASK and not completed_proposal)):
+            return None
         if self.commit.selection_policy_for(task.id) is not None:
             return None  # candidate failure stays in its bounded round, with original cost
         if not self._config.dynamic_graph:  # D5-15: the layer's kill switch
@@ -3278,6 +3498,23 @@ class Orchestrator:
                     "risks": list(stored.envelope.risks),
                 }
             )
+        fragment_origin = (
+            manager_fragment_origin(self.store, self.commit._source_cas(), result_id)
+            if result_id else {"available": False, "reason": "no_result"}
+        )
+        validated_fragment = None
+        if trigger.startswith("validated_fragment:"):
+            validated_fragment = manager_validated_fragment(self.store, self.commit, task.id)
+            if (
+                validated_fragment.get("available") is not True
+                or validated_fragment["validation_result_id"] != result_id
+                or trigger != f"validated_fragment:{validated_fragment['fragment_id']}:{result_id}"
+            ):
+                return None
+            eligible = self._eligible_validated_fragment_consumers(validated_fragment)
+            if not eligible:
+                return None
+            validated_fragment = {**validated_fragment, "eligible_consumers": eligible}
         limits = {
             "max_graph_depth": self._config.max_graph_depth,
             "max_proposals_per_agent": self._config.max_proposals_per_agent,
@@ -3308,6 +3545,8 @@ class Orchestrator:
                 deployed_layers=self._deployed,
                 budget_floor=self._budget_floor(mission.id),
                 domain=self.commit.domain_for(mission.id),
+                fragment_origin=fragment_origin,
+                validated_fragment=validated_fragment,
             )
         except ContextRejected as error:
             self._note(f"task {task.id}: manager package refused ({error}); management postponed")
@@ -3352,6 +3591,8 @@ class Orchestrator:
                 "attempt_id": attempt_id,
                 "graph_version": int(report.get("graph_version") or 1),
                 "no_progress_count": no_progress,
+                "fragment_origin": fragment_origin,
+                **({"validated_fragment": validated_fragment} if validated_fragment else {}),
                 **self._service_config(decision),
             },
             reservation=self._reservation(self._config.manager_reserve_tokens, decision.profile_id),
@@ -3381,6 +3622,85 @@ class Orchestrator:
         )
         await self._enforce_no_progress(mission, task)
 
+    def _validate_validated_fragment_change(
+        self, intent: DispatchIntent, change: TaskGraphChange
+    ) -> Mapping[str, Any]:
+        """One frozen F plus one independent branch may feed an unstarted BLOCKED C."""
+        frozen = intent.config.get("validated_fragment")
+        if not isinstance(frozen, Mapping) or frozen.get("available") is not True:
+            raise ContractError("validated fragment Manager intent has no frozen acceptance")
+        if change.base_graph_version != intent.config.get("graph_version"):
+            raise ContractError("validated fragment Manager graph base changed")
+        change_id = ids.commit_id(
+            {"kind": "graph_change", "mission_id": intent.mission_id,
+             "proposal": change.proposal_hash}, change.base_graph_version,
+        )
+        known = self.store.get_receipt(change_id)
+        if known is not None:
+            source = known.get("source", {})
+            if (source.get("intent_id") != intent.intent_id
+                    or source.get("fragment_id") != frozen["fragment_id"]
+                    or source.get("validation_result_id") != frozen["validation_result_id"]):
+                raise ContractError("validated fragment graph receipt has different provenance")
+            return frozen
+        current = manager_validated_fragment(
+            self.store, self.commit, str(frozen["validation_task_id"])
+        )
+        for key in ("fragment_id", "projection_receipt_id", "validation_task_id",
+                    "validation_result_id", "material_refs", "criterion_mapping"):
+            if current.get(key) != frozen.get(key):
+                raise ContractError("validated fragment acceptance or material changed")
+        retargets = [op for op in change.operations if op.op == "retarget_dependencies"]
+        cancels = [op for op in change.operations if op.op == "cancel_task"]
+        if len(retargets) != 1 or len(cancels) > 1 or len(change.operations) != len(retargets) + len(cancels):
+            raise ContractError("validated fragment permits one blocked consumer retarget and origin cancel")
+        frozen_tasks = {item["task_id"]: item for item in frozen["tasks"]}
+        eligible = {item["task_id"]: item for item in frozen.get("eligible_consumers", ())}
+        consumer_id = str(retargets[0].args["task_id"])
+        consumer = self.store.get_task(consumer_id)
+        old = frozen_tasks.get(consumer_id)
+        choice = eligible.get(consumer_id)
+        if (choice is None or old is None or old["status"] != "BLOCKED" or old["attempts"] != 0
+                or consumer is None or consumer.kind != "work"
+                or consumer.status is not TaskStatus.BLOCKED
+                or self.store.list_attempts(consumer_id)
+                or list(consumer.dependency_ids) != old["dependencies"]
+                or list(consumer.dependency_ids) != choice["old_dependencies"]
+                or consumer.version != choice["task_version"]
+                or task_contract_revision(_task_contract(consumer)) != choice["contract_revision"]):
+            raise ContractError("validated fragment consumer is stale or has started")
+        if not all(
+            {item["origin_text"], item["text"]} & set(consumer.success_criteria)
+            for item in frozen["criterion_mapping"]
+        ):
+            raise ContractError("validated fragment does not cover every mapped criterion")
+        receipt = self.store.get_receipt(str(frozen["projection_receipt_id"]))
+        if not isinstance(receipt, Mapping):
+            raise ContractError("validated fragment projection receipt unavailable")
+        allowed = set(receipt["projection"]["origin_revision"]["execution_constraints"]["allowed_tools"])
+        if not set(consumer.allowed_tools) <= allowed:
+            raise ContractError("validated fragment scope does not cover consumer")
+        dependencies = tuple(str(item) for item in retargets[0].args["dependencies"])
+        validation_id = str(frozen["validation_task_id"])
+        other_id = str(choice["preserved_dependency_id"])
+        if (
+            len(dependencies) != 2
+            or set(dependencies) != {validation_id, other_id}
+            or set(choice["old_dependencies"]) != {str(frozen["origin_task_id"]), other_id}
+        ):
+            raise ContractError("validated fragment must replace only origin A with F")
+        other = self.store.get_task(other_id)
+        all_tasks = {item.id: item for item in self.store.list_tasks(intent.mission_id)}
+        if (other_id not in frozen_tasks
+                or other is None or other.kind != "work"
+                or other_id in {consumer_id, frozen["origin_task_id"]}
+                or {str(frozen["origin_task_id"]), validation_id}
+                & {item.id for item in ancestors(other_id, all_tasks)}):
+            raise ContractError("validated fragment second branch is not independent")
+        if cancels and cancels[0].args["task_id"] != frozen["origin_task_id"]:
+            raise ContractError("validated fragment can cancel only its original Task")
+        return frozen
+
     async def _enforce_no_progress(self, mission: Mission, task: Task) -> bool:
         task = self.store.get_task(task.id) or task
         if task.status in TERMINAL_TASK:
@@ -3409,6 +3729,17 @@ class Orchestrator:
         self._import_usage(intent)
         task_id = str(intent.config.get("task_id"))
         trigger = str(intent.config.get("trigger"))
+        current_task = self.store.get_task(task_id)
+        completed_proposal = (
+            current_task is not None
+            and current_task.status is TaskStatus.COMPLETED
+            and trigger.startswith(("proposed:", "validated_fragment:"))
+        )
+        if (mission.status in TERMINAL_MISSION or current_task is None
+                or (current_task.status in TERMINAL_TASK and not completed_proposal)):
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            return
         text = "" if result.public_output is None else str(result.public_output.content)
         echoed = self.bridge_for(intent).echoed_models(agent_id=intent.agent_id or "")
         if echoed and echoed != {self._expected_model(intent)}:
@@ -3421,25 +3752,44 @@ class Orchestrator:
             )
             await self._release_mission(mission.id)
             return
+        fragment_decision = None
         try:
             if result.state is not AgentTurnState.COMMITTED:
                 raise ContractError(f"manager turn failed: {jsonable(result.error or {})}")
-            raw = extract_block(text, GRAPH_CHANGE_PROPOSAL_TAG)
-            raw = {
-                **{
-                    k: v
-                    for k, v in raw.items()
-                    if k in {"base_graph_version", "rationale", "operations"}
-                },
-                "basis": {  # the system fills the basis; a model may not forge it
-                    "trigger": trigger,
-                    "result_id": intent.config.get("result_id"),
-                    "attempt_id": intent.config.get("attempt_id"),
-                    "task_id": task_id,
-                },
-            }
-            self._refuse_policy_ops(mission.id, task_id, raw.get("operations"))  # D9-10'
-            change = TaskGraphChange.from_json(raw)
+            has_fragment = re.search(
+                rf"<\s*/?\s*{FRAGMENT_VALIDATION_DECISION_TAG}\b", text
+            ) is not None
+            has_graph = re.search(
+                rf"<\s*/?\s*{GRAPH_CHANGE_PROPOSAL_TAG}\b", text
+            ) is not None
+            if has_fragment and has_graph:
+                raise ContractError("Manager cannot mix fragment and graph decisions")
+            if has_fragment:
+                fragment_decision = FragmentValidationDecisionV1.from_json(
+                    extract_block(text, FRAGMENT_VALIDATION_DECISION_TAG)
+                )
+                if fragment_decision.base_graph_version != intent.config.get("graph_version"):
+                    raise ContractError("fragment base graph differs from Manager intent")
+                validate_manager_fragment_choice(
+                    fragment_decision.proposal, intent.config.get("fragment_origin")
+                )
+            else:
+                raw = extract_block(text, GRAPH_CHANGE_PROPOSAL_TAG)
+                raw = {
+                    **{
+                        k: v
+                        for k, v in raw.items()
+                        if k in {"base_graph_version", "rationale", "operations"}
+                    },
+                    "basis": {  # the system fills the basis; a model may not forge it
+                        "trigger": trigger,
+                        "result_id": intent.config.get("result_id"),
+                        "attempt_id": intent.config.get("attempt_id"),
+                        "task_id": task_id,
+                    },
+                }
+                self._refuse_policy_ops(mission.id, task_id, raw.get("operations"))  # D9-10'
+                change = TaskGraphChange.from_json(raw)
         except (ContractError, BlockError) as error:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
@@ -3458,6 +3808,53 @@ class Orchestrator:
             admit_new_tasks=not self._pressure.is_raised,  # §18.5 "禁止新任务继续分裂" (D6-3 ③)
         )
         no_progress = int(intent.config.get("no_progress_count", 0))
+        if fragment_decision is not None:
+            try:
+                receipt = self.commit.commit_fragment_validation(
+                    fragment_decision.proposal,
+                    command_id=intent.intent_id,
+                    base_graph_version=fragment_decision.base_graph_version,
+                    source={
+                        "intent_id": intent.intent_id,
+                        "agent_id": intent.agent_id,
+                        "turn_id": result.turn_id,
+                    },
+                    limits=limits,
+                )
+            except (ContractError, CommitRejected, GraphChangeRejected, BudgetError) as error:
+                self.commit.record_management_decided(
+                    mission.id, task_id=task_id, trigger=trigger,
+                    decision="rejected", detail={"error": str(error), "kind": "fragment_validation"},
+                )
+                self._settle_intent(intent, "SETTLED")
+                self._settle_service_if_known(intent.subject_id, mission.id)
+                await self._enforce_no_progress(mission, task)
+                return
+            self._fault("after_fragment_commit", "manager")
+            self.commit.record_management_decided(
+                mission.id, task_id=task_id, trigger=trigger,
+                decision="fragment_validation",
+                detail={
+                    "fragment_id": receipt["fragment_id"],
+                    "validation_task_id": receipt["validation_task_id"],
+                    "graph_change_id": receipt["graph_change_id"],
+                },
+            )
+            self._settle_intent(intent, "SETTLED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            return
+        validated = None
+        if trigger.startswith("validated_fragment:"):
+            try:
+                validated = self._validate_validated_fragment_change(intent, change)
+            except ContractError as error:
+                self.commit.record_management_decided(
+                    mission.id, task_id=task_id, trigger=trigger,
+                    decision="rejected", detail={"error": str(error), "kind": "validated_fragment"},
+                )
+                self._settle_intent(intent, "SETTLED")
+                self._settle_service_if_known(intent.subject_id, mission.id)
+                return
         if not change.operations or all(op.op == "set_priority" for op in change.operations):
             # priority-only (or empty) proposals are "keep" (S5-02); validation happens inside
             # the Commit transaction, so the test is on the operations themselves
@@ -3491,8 +3888,12 @@ class Orchestrator:
                     "intent_id": intent.intent_id,
                     "agent_id": intent.agent_id,
                     "turn_id": result.turn_id,
+                    **({"fragment_id": validated["fragment_id"],
+                        "validation_result_id": validated["validation_result_id"]}
+                       if validated is not None else {}),
                 },
                 limits=limits,
+                allow_rebase=validated is None,
             )
         except CommitRejected as error:
             self._settle_intent(intent, "SETTLED")
@@ -3506,7 +3907,7 @@ class Orchestrator:
                 detail={"error": str(error)},
             )
             retry = 0 if ":retry-" not in trigger else int(trigger.rsplit("-", 1)[1])
-            if retry < 1:  # D5-10 / S5-08: once more, with the rejection in the package
+            if validated is None and retry < 1:  # D5-10 / S5-08: old retry semantics
                 await self._request_management(
                     mission,
                     task,
@@ -3514,9 +3915,11 @@ class Orchestrator:
                     result_id=intent.config.get("result_id"),
                     attempt_id=intent.config.get("attempt_id"),
                 )
-            else:
+            elif validated is None:
                 await self._enforce_no_progress(mission, task)
             return
+        if validated is not None:
+            self._fault("after_validated_fragment_graph_commit", "manager")
         self._settle_intent(intent, "SETTLED")
         self._settle_service_if_known(intent.subject_id, mission.id)
         self.commit.record_management_decided(
@@ -3636,6 +4039,45 @@ class Orchestrator:
                     ),
                 )
                 message = user_message_json(package.text)
+                first_cap = None
+                first_output_ceiling = None
+                first_reservation = None
+                first_unknown = None
+                critic_tokens = self._config.critic_reserve_tokens
+                if ordinal == 1 and attempt_id is not None and task_id is not None:
+                    worker_intent = self.store.get_intent_for_subject(attempt_id)
+                    if worker_intent is None:
+                        raise ContractError("FIRST Critic has no original Worker intent")
+                    frozen_first = worker_intent.config.get("first_critic_budget")
+                    if frozen_first is not None:
+                        if not isinstance(frozen_first, Mapping):
+                            raise ContractError("frozen FIRST Critic budget is malformed")
+                        try:
+                            first_cap = ProviderInputCap.from_json(frozen_first.get("provider_input_cap"))
+                        except (TypeError, ValueError) as error:
+                            raise ContractError("frozen FIRST Critic input cap is malformed") from error
+                        actual_first = self._first_critic_budget(decision)
+                        if (not isinstance(actual_first, FirstRequestBudget)
+                                or actual_first.provider_input_cap != first_cap
+                                or frozen_first.get("output_ceiling") != actual_first.output_ceiling
+                                or frozen_first.get("minimum_tokens") != actual_first.minimum_tokens
+                                or frozen_first.get("cost_micros") != self._first_critic_reservation(
+                                    actual_first, decision.profile_id).cost_micros):
+                            raise ContractError("FIRST Critic route or cap differs from protected tail")
+                        first_reservation = self._first_critic_reservation(actual_first, decision.profile_id)
+                        first_output_ceiling = actual_first.output_ceiling
+                    else:
+                        first_unknown = worker_intent.config.get(
+                            "first_critic_budget_unknown", "original_intent_has_no_first_cap"
+                        )
+                first_fields: dict[str, Any] = {}
+                if first_cap is not None:
+                    assert first_reservation is not None
+                    first_fields = {
+                        "provider_input_cap": first_cap.to_json(),
+                        "provider_output_ceiling": first_output_ceiling,
+                        "provider_first_cost_micros": first_reservation.cost_micros,
+                    }
                 intent = self.commit.create_service_intent(
                     kind="critic",
                     subject_id=subject,
@@ -3653,12 +4095,15 @@ class Orchestrator:
                         **source_binding,
                         "untrusted_sources": untrusted,
                         **self._service_config(decision),
+                        **first_fields,
+                        **({"first_critic_budget_unknown": first_unknown}
+                           if first_unknown is not None else {}),
                     },
-                    reservation=(self._system_reservation(
-                        self._config.critic_reserve_tokens, decision.profile_id,
-                        SYSTEM_CRITIC_MODEL_CALLS,
-                    ) if task_id is not None and self.commit.system_task_hold(task_id) is not None
-                    else self._reservation(self._config.critic_reserve_tokens, decision.profile_id)),
+                    reservation=(first_reservation if first_reservation is not None else
+                                 self._system_reservation(
+                                     critic_tokens, decision.profile_id, SYSTEM_CRITIC_MODEL_CALLS,
+                                 ) if task_id is not None and self.commit.system_task_hold(task_id) is not None
+                                 else self._reservation(critic_tokens, decision.profile_id)),
                     task_id=task_id,
                     attempt_id=attempt_id,
                 )
@@ -3971,6 +4416,8 @@ class Orchestrator:
         tasks = self.store.list_tasks(mission.id)
         if not tasks or mission.status is not MissionStatus.ACTIVE:
             return False
+        if await self._request_accepted_fragment_management(mission):
+            return True
         if any(t.paused and t.pause_reason == "provider_admission:usage_unresolved" for t in tasks):
             # Read the SDK's actual reconciliation records before importing and
             # settling; elapsed time and a new owner are not evidence of zero cost.
@@ -4098,6 +4545,23 @@ class Orchestrator:
         allocation: Mapping[str, Any] | None = None,
         selection_decision: Mapping[str, Any] | None = None,
     ) -> bool:
+        # A Worker already in flight can produce another pending verification.
+        # Account for that obligation before creating more work, across Missions.
+        active_missions = {item.id for item in self._active_missions()}
+        pending_verification = sum(
+            stored.envelope.mission_id in active_missions
+            and not self.commit.candidate_is_waiting(stored.envelope.id)
+            for stored in self.store.list_results_by_verification("PENDING", "RUNNING")
+        )
+        potential_results = sum(
+            attempt.mission_id in active_missions
+            and self.store.find_result_for_attempt(attempt.id) is None
+            for attempt in self.store.list_attempts_by_status(
+                "PENDING", "CLAIMED", "RUNNING", "SUBMITTED", "VERIFYING"
+            )
+        )
+        if pending_verification + potential_results >= self._config.max_pending_verifications:
+            return False
         # a repair follows the last *failed* Attempt; a parallel candidate follows nobody
         previous = next(
             (a for a in reversed(attempts) if a.status in TERMINAL_ATTEMPT and a.failure), None
@@ -4141,6 +4605,37 @@ class Orchestrator:
             await self._release_mission(mission.id)
             self._note(f"task {task.id} stopped: artifact conflict ({error})")
             return True
+        validated_input = None
+        validated_context = None
+        fragment_parents = [
+            parent for parent in upstream_tasks
+            if parent.id in task.dependency_ids and "fragment_validation" in parent.context
+        ]
+        if fragment_parents:
+            try:
+                if len(fragment_parents) != 1:
+                    raise ContractError("consumer has multiple direct fragment validations")
+                fragment_id = fragment_parents[0].context["fragment_validation"]["fragment_id"]
+                validated_input = self.commit.fragment_input(
+                    fragment_id,
+                    **({"retry_consumer_task_id": task.id} if attempts
+                       else {"ready_consumer_task_id": task.id}),
+                )
+                actual = {(item.artifact_id, item.path, item.content_hash) for item in inputs}
+                if not validated_input["material_refs"] or any(
+                    (item["artifact_id"], item["path"], item["content_hash"]) not in actual
+                    for item in validated_input["material_refs"]
+                ):
+                    raise ContractError("validated fragment material is absent from actual inputs")
+                validated_context = consumer_fragment_context(validated_input)
+                assert_no_secrets(validated_input)
+            except (ContractError, ContextRejected) as error:
+                self.commit.stop_task(
+                    task.id, stop_reason=MissionStopReason.CONTEXT_REJECTED,
+                    detail={"error": str(error)[:300]},
+                )
+                await self._release_mission(mission.id)
+                return True
         bound = self.policy_for(mission.id)  # step 9 (plan D9-4'): the Mission's own version
         role = self._template(role_for_task(task), mission.id)  # D5-9: approach
         if selection_decision is not None:
@@ -4286,6 +4781,11 @@ class Orchestrator:
             package = _seal({**dict(package.package), "fragment_scope": {
                 **dict(fragment_context), "data_not_instruction": True,
             }})
+        if validated_context is not None:
+            from ..context.context_builder import _seal
+            package = _seal({**dict(package.package), "validated_fragment_input": {
+                **validated_context, "data_not_instruction": True,
+            }})
         selection = self.commit.selection_round(task.id)
         remaining_selection = (self._config.turn_deadline_seconds if selection is None else
                                selection["deadline_at"] - self.store.now)
@@ -4330,15 +4830,28 @@ class Orchestrator:
         message = user_message_json(package.text)
         tokens = self._config.attempt_reserve_tokens
         critic_tail = None
+        first_critic_binding: dict[str, Any] = {}
         if "critic_review" in task.verification_policy and selection_decision is None:
             try:
                 critic_decision = self._route_service("critic", mission.id)
             except RoutingUnavailable as unavailable:
                 self._note(f"task {task.id}: Critic profile {unavailable.profile_id} unavailable")
                 return False
-            critic_tail = self._reservation(
-                self._config.critic_reserve_tokens, critic_decision.profile_id
-            )
+            first = self._first_critic_budget(critic_decision)
+            if isinstance(first, FirstRequestBudget):
+                first_reservation = self._first_critic_reservation(first, critic_decision.profile_id)
+                first_critic_binding = {"first_critic_budget": {
+                    "provider_input_cap": first.provider_input_cap.to_json(),
+                    "output_ceiling": first.output_ceiling,
+                    "minimum_tokens": first.minimum_tokens,
+                    "cost_micros": first_reservation.cost_micros,
+                }}
+                critic_tail = first_reservation
+            else:
+                first_critic_binding = {"first_critic_budget_unknown": first.reason}
+                critic_tail = self._reservation(
+                    self._config.critic_reserve_tokens, critic_decision.profile_id
+                )
         if system_hold is not None:
             # The original Task hold already protects both roles. Do not create
             # another FIRST Critic reservation against its fully reserved cap.
@@ -4355,11 +4868,9 @@ class Orchestrator:
             with self.store.transaction():
                 remaining = self.commit.ledger.account(task_account(task.id)).remaining_tokens()
             if remaining is not None:
-                critic_share = (
-                    self._config.critic_reserve_tokens
-                    if "critic_review" in task.verification_policy
-                    else 0
-                )
+                critic_share = (critic_tail.tokens if critic_tail is not None else
+                                self._config.critic_reserve_tokens
+                                if "critic_review" in task.verification_policy else 0)
                 head_room = remaining - critic_share  # keep the Critic's own share free
                 if 0 < head_room < tokens:
                     tokens = head_room
@@ -4375,7 +4886,9 @@ class Orchestrator:
             allowance = None if held is None else self.commit.ledger.reservation(held["subject_id"])
             if allowance is None:
                 raise ContractError("system Task has no original protected allowance")
-            critic_share = self._config.critic_reserve_tokens if "critic_review" in task.verification_policy else 0
+            frozen_first = first_critic_binding.get("first_critic_budget")
+            critic_share = (frozen_first["minimum_tokens"] if frozen_first is not None else
+                            self._config.critic_reserve_tokens if "critic_review" in task.verification_policy else 0)
             room = allowance["reserved_tokens"] - critic_share
             if allowance["state"] == "SETTLED" or room <= 0:
                 self.commit.stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
@@ -4383,6 +4896,22 @@ class Orchestrator:
                 await self._release_mission(mission.id)
                 return True
             tokens = min(tokens, room)
+            if frozen_first is not None:
+                cost_room = allowance["reserved_cost_micros"] - frozen_first["cost_micros"]
+                if cost_room < 0:
+                    self.commit.stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+                                          detail={"reason": "system_first_critic_cost_insufficient", "dimension": "cost_micros"})
+                    await self._release_mission(mission.id)
+                    return True
+                while tokens > 0 and self._system_reservation(
+                    tokens, decision.profile_id, config.limits.max_model_calls_per_turn
+                ).cost_micros > cost_room:
+                    tokens //= 2
+                if tokens <= 0:
+                    self.commit.stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+                                          detail={"reason": "system_first_critic_cost_insufficient", "dimension": "cost_micros"})
+                    await self._release_mission(mission.id)
+                    return True
             if self._tool_calls_limited(mission, task):
                 tool_cap = min(tool_cap, allowance["reserved_tool_calls"])
                 config = replace(config, limits=replace(config.limits, max_tool_calls_per_turn=tool_cap))
@@ -4416,11 +4945,14 @@ class Orchestrator:
                     "policy_version_id": self.policy_version_of(mission.id),
                     "task_version": task.version,
                     "role": role.name,
+                    **first_critic_binding,
                     "knowledge": knowledge.frozen_ids,  # D4-10: what this Attempt saw
                     "retrieval_version": knowledge.retrieval.version,
                     "retrieval_status": knowledge.retrieval.status,
                     "context_builder_version": CONTEXT_BUILDER_VERSION,
                     "untrusted_sources": untrusted,
+                    **({"validated_fragment_input": validated_input}
+                       if validated_input is not None else {}),
                     **source_binding,
                     "allocation": dict(
                         allocation or {}

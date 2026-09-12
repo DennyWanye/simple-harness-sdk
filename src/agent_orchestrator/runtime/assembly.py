@@ -539,7 +539,10 @@ def assemble_orchestrator_runtime(
             default_max_output_tokens=default_out,
             max_output_tokens_ceiling=max(ceiling, default_out),
             empty_response_retries=config.empty_response_retries,
-            max_concurrent_model_calls=config.max_concurrent_model_calls,
+            max_concurrent_model_calls=min(
+                config.max_concurrent_model_calls,
+                profile.max_concurrent_model_calls or config.max_concurrent_model_calls,
+            ),
             max_concurrent_tool_calls=config.max_concurrency,
             **({"provider_admission": provider_admission} if provider_admission is not None else {}),
         )

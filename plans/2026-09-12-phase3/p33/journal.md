@@ -705,3 +705,17 @@ N1v8 failure summary: Host .local-test-evidence/2026-09-13/p33-g/source-ui-n1-v8
 **原生边界与恢复检查点 — 2026-09-13 05:40 CST：** 新冻结 SDK c8e2541 / Host b7dc4c64 综合1127 PASS/75.26s。N1v9真模型正式交付及同源冷恢复已核对；新Host显示修复在受控原生来源指令用例验证。N4来源指令归属、错误逐字引用、矛盾证据三例原生UI符合预期，独立原始证据保存在Host `.local-test-evidence/2026-09-13/p33-g/source-ui-n4-*-v10/`。实际OS SIGKILL后两库冷恢复2 PASS/9.59s：成功结果零重复Worker、独立Critic读产物；UNKNOWN保持原token/cost占用。仅覆盖该两边界，不覆盖完整Mission或P32逃逸进程恢复。FIRST新保护虽18PASS/0.91s，独立审查仍有系统hold丢cap和priced分别取整2项P1，修复中。P33剩余N6/active管理/O4、P34综合价值场景及P35其余门槛保持OPEN，不打包/P36/推送。
 
 OSkill selector：`tests/orchestrator/p35/test_process_kill_recovery.py`；raw `.local-test-evidence/2026-09-12/p33-g/g-process-kill-astra-v3.{json,log}`，wrapper9.87s。Terra初稿及三轮返工保留：v1两项importFAIL0.65s；v2 marker45sFAIL/第二case无壁钟上限，主线程139.62s中止；Astra重做合法envelope/真实分库/硬超时后首次实测2PASS。新启动器SO_REUSEADDR只允许TIME_WAIT重绑定，仍拒绝live监听，定向20PASS/0.11s。所有新证据不入Git。
+
+## Source checkpoint 2026-09-13 07:59 CST
+
+**最后更新：2026-09-13 07:59 CST — 当前源码综合回归。** 综合文档/P34/P35与受影响旧恢复、Manager、路由和启动检查1147 PASS/113.92s（runner114.42s），151文件mypy通过；随后仅移除未使用import及格式化测试，ruff通过。前批1144PASS/2FAIL的文档日志体积回归已修复，未删负例。A03复合压力控制1PASS/1.61s：实际RAISED阻断fresh Worker，Arbiter使用原conflict pool的HELD额度，公开人工仲裁后独立Synthesis/Critic完成、队列最终NORMAL；知识ID仅来自实际Provider请求。Terra独审限定接受；该用例明确使用历史doc4，不证明原20k预留全部转移或S首次调用时已经NORMAL。当前doc7由Host独立场景覆盖，原生仲裁及整体Phase3剩余价值/压力UI仍OPEN；不打包/P36/推送。
+
+- `g-checkpoint-integration-v28` receipt SHA-256 `595cb69b19f0120dff96ae6b22786e9aad3fa8ed683d01aac7b659ded7307edc`.
+- `g-checkpoint-integration-v29` receipt SHA-256 `3f5086d1bb5d1124ed45e01bfed33bacd9725b55d9b1bd3605e62c2c86dc2988`.
+- `g-crossbranch-review-v8` receipt SHA-256 `35f893470778406f9649d642b731d83893b7de18a6b5d1c4deed1f34f309c3c5`.
+- `g-crossbranch-oracle-v9` receipt SHA-256 `fefb26a94c87536f2139cbc813aa54e3aeefaed457c6c957442a33ae6312f939`.
+- `g-crossbranch-oracle-v10` receipt SHA-256 `aaf5dae24df7bae1b73644b89851b5aca19f3961798a45885515a52e4c603d36`.
+- `g-fragment-doc-context-v1` receipt SHA-256 `8c22177f0b7424db20921b0fb410f0357fd8d575824721cb5647b28971439ba7`.
+- `g-pressure-priority-v1` receipt SHA-256 `d6643affcd0e8e13ff7d9485b3278646e666023a49a694bbad033f440a2a5157`.
+- `g-pressure-priority-v2` receipt SHA-256 `076dc65a6747761cc486f42faa2957f780a9f469bc680dfaa70dee8b11da5de8`.
+- `g-pressure-priority-v3` receipt SHA-256 `fba14160f0e8cb3a3c4f3dab1fd7da2dc0e114713f3a4cc5726805b8b60f5711`.

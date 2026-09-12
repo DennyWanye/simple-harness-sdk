@@ -197,8 +197,9 @@ SYNTHESIZER = RoleTemplate(
     ),
 )
 
-MANAGER_VERSION = "manager-v2"  # host support 0.9.8: layers from the package
+MANAGER_VERSION = "manager-v3"
 GRAPH_CHANGE_PROPOSAL_TAG = "graph_change_proposal"
+FRAGMENT_VALIDATION_DECISION_TAG = "fragment_validation_decision"
 
 MANAGER_V1 = RoleTemplate(
     name="manager",
@@ -222,14 +223,37 @@ MANAGER_V1 = RoleTemplate(
 )
 
 # host support 0.9.8: an add_task may only name deployed layers; manager-v1 stays registered
-MANAGER = _revise(
+MANAGER_V2 = _revise(
     MANAGER_V1,
-    MANAGER_VERSION,
+    "manager-v2",
     (
         "空提案会被系统当作放弃。\n",
         "空提案会被系统当作放弃。add_task 的 verification_policy 只能从输入 deployed_verification_layers 列出的层中选择"
         "（省略时由系统按部署补默认）；不含 code_test 时不要写 pytest: 条件。\n",
     ),
+)
+MANAGER = _revise(
+    MANAGER_V2,
+    MANAGER_VERSION,
+    (
+        "最终回答必须只包含一个 <graph_change_proposal>…</graph_change_proposal> 块",
+        "最终回答只能包含一个 <graph_change_proposal>…</graph_change_proposal> 块，"
+        "或在 fragment_validation.available=true 时包含一个 "
+        "<fragment_validation_decision>…</fragment_validation_decision> 块；不可混用",
+    ),
+)
+MANAGER = RoleTemplate(
+    name=MANAGER.name,
+    prompt_version=MANAGER.prompt_version,
+    tool_names=MANAGER.tool_names,
+    instructions=MANAGER.instructions
+    + "\n片段决策严格 JSON：{\"schema_version\":1,\"base_graph_version\":输入 graph_version,"
+    "\"proposal\":{\"schema_version\":1,\"origin\":输入 fragment_validation.origin,"
+    "\"criterion_ids\":[输入 criteria 的完整 id],"
+    "\"claim_refs\":[{\"claim_id\":str,\"claim_revision\":int}],"
+    "\"material_refs\":[artifact 的 kind/artifact_id/content_hash/byte_start/"
+    "byte_end_exclusive 或 citation 的 kind/receipt_id/citation_index],"
+    "\"rationale\":str}}。只能从输入冻结目录选，不能声明 PASS；新验证 Task 仍需独立执行。"
 )
 
 
@@ -326,6 +350,7 @@ def register_template(template: RoleTemplate) -> None:
 # whose ACTIVE policy was seeded with them keeps running on the same words
 register_template(PLANNER_V3)
 register_template(MANAGER_V1)
+register_template(MANAGER_V2)
 
 
 def registered_versions() -> dict[str, frozenset[str]]:
@@ -371,6 +396,7 @@ __all__ = (
     "EXPLORER",
     "FAILURE_ANALYST",
     "GRAPH_CHANGE_PROPOSAL_TAG",
+    "FRAGMENT_VALIDATION_DECISION_TAG",
     "MANAGER",
     "MANAGER_VERSION",
     "ROLE_MIX_START",

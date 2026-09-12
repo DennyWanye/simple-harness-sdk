@@ -1,5 +1,8 @@
 # Agent 编排框架 · 交接（Phase3 进行中）
 
+**最后更新：2026-09-13 07:59 CST — 当前源码综合回归。** 综合文档/P34/P35与受影响旧恢复、Manager、路由和启动检查1147 PASS/113.92s（runner114.42s），151文件mypy通过；随后仅移除未使用import及格式化测试，ruff通过。前批1144PASS/2FAIL的文档日志体积回归已修复，未删负例。A03复合压力控制1PASS/1.61s：实际RAISED阻断fresh Worker，Arbiter使用原conflict pool的HELD额度，公开人工仲裁后独立Synthesis/Critic完成、队列最终NORMAL；知识ID仅来自实际Provider请求。Terra独审限定接受；该用例明确使用历史doc4，不证明原20k预留全部转移或S首次调用时已经NORMAL。当前doc7由Host独立场景覆盖，原生仲裁及整体Phase3剩余价值/压力UI仍OPEN；不打包/P36/推送。
+
+
 ## 当前接续：2026-09-13 07:40 CST
 
 以下当前记录覆盖后文00:35等历史快照。Host本地HEAD `6ce08c14`，SDK在`d1947b5`后继续工作树开发；不能把未提交生产改动当冻结版本。用户暂停打包、发布、P3.6和推送；源码Tauri UI验收。主会话固定GPT-6 Astra/high；最多3子代理，Luna/Terra/Sol/Astra按任务复杂度选择，记录模型、缓存区分用量、耗时、返工和主验结果。

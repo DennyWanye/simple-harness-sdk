@@ -14,8 +14,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..governance.domains import CODE_DOMAIN, DOMAINS
 from ..contracts import Budget, ContractError, Event, Mission
+from ..governance.domains import CODE_DOMAIN, DOMAINS
 from ..orchestrator.commit_service import CommitService, MissionSpec
 from ..runtime.tool_gateway import TOOL_NAMES
 
@@ -76,7 +76,9 @@ def spec_from_request(
     if isinstance(reserve, bool) or not isinstance(reserve, int) or reserve < 0:
         raise MissionRequestError("conflict_reserve_tokens must be a non-negative integer")
     search_policy = request.get("search_policy_version_id")
-    if search_policy is not None and (not isinstance(search_policy, str) or not search_policy.strip()):
+    if search_policy is not None and (
+        not isinstance(search_policy, str) or not search_policy.strip()
+    ):
         raise MissionRequestError("search_policy_version_id must be a nonempty registry reference")
     synthesis = request.get("synthesis")
     if synthesis is not None and not isinstance(synthesis, Mapping):

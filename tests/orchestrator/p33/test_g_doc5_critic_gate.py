@@ -36,7 +36,7 @@ def frozen_service(request, tmp_path, monkeypatch):
         "doc3": domains.DOC_PROFILE_V3,
         "doc4": domains.DOC_PROFILE_V4,
         "doc5": domains.DOC_PROFILE_V5,
-        "doc6": domains.DOC_PROFILE,
+        "doc6": domains.DOC_PROFILE_V6,
         "code": domains.CODE_PROFILE,
     }[request.param]
     path = tmp_path / "orchestrator.db"
@@ -59,7 +59,7 @@ def frozen_service(request, tmp_path, monkeypatch):
         planning = service.begin_planning(mission.id)
     with closing(Store.open(path, clock=lambda: 1_000.0)) as reopened:
         service = CommitService(reopened, deployed_layers=frozenset(REVIEWED))
-        assert domains.resolve_domain(domains.DOC_DOMAIN).version == "6"
+        assert domains.resolve_domain(domains.DOC_DOMAIN).version == "7"
         assert service.domain_for(mission.id).to_json() == profile.to_json()
         yield service, planning, request.param in {"doc5", "doc6"}
 
@@ -165,14 +165,16 @@ def test_frozen_task_submission_requires_critic_only_for_doc5(frozen_service, en
     assert len(created) == 1 and receipt
 
 
-@pytest.mark.parametrize("version", ["5", "6"])
+@pytest.mark.parametrize("version", ["5", "6", "7"])
 def test_doc5_empty_single_policy_cannot_bypass_the_floor(tmp_path, monkeypatch, version):
     with closing(Store.open(tmp_path / "empty.db")) as store:
         service = CommitService(store, deployed_layers=frozenset(REVIEWED))
         with monkeypatch.context() as patch:
-            if version == "5":
+            if version in {"5", "6"}:
                 patch.setattr(domains, "DOMAINS", {
-                    **domains.DOMAINS, domains.DOC_DOMAIN: domains.DOC_PROFILE_V5,
+                    **domains.DOMAINS,
+                    domains.DOC_DOMAIN: {"5": domains.DOC_PROFILE_V5,
+                                         "6": domains.DOC_PROFILE_V6}[version],
                 })
             mission, _ = service.create_mission(
                 MissionSpec(
@@ -184,7 +186,7 @@ def test_doc5_empty_single_policy_cannot_bypass_the_floor(tmp_path, monkeypatch,
                     budget=Budget(max_tokens=100_000, max_attempts=12),
                 )
             )
-        assert domains.resolve_domain(domains.DOC_DOMAIN).version == "6"
+        assert domains.resolve_domain(domains.DOC_DOMAIN).version == "7"
         assert service.domain_for(mission.id).version == version
         planning = service.begin_planning(mission.id)
         proposal = TaskProposal(
@@ -213,7 +215,7 @@ def test_doc5_empty_single_policy_cannot_bypass_the_floor(tmp_path, monkeypatch,
 @pytest.mark.parametrize("role", ["planner", "manager"])
 @pytest.mark.parametrize("version", ["5", "6"])
 def test_doc5_planning_prompts_require_actual_critic_policy(role, version):
-    profile = domains.DOC_PROFILE_V5 if version == "5" else domains.DOC_PROFILE
+    profile = domains.DOC_PROFILE_V5 if version == "5" else domains.DOC_PROFILE_V6
     current = template_for_domain(ROLES[role], profile, {})
     prompt_version = "2" if version == "5" else "3"
     assert current.prompt_version == f"{role}-doc-research-v{prompt_version}"
@@ -227,7 +229,8 @@ def test_doc5_planning_prompts_require_actual_critic_policy(role, version):
 def test_doc5_declares_quality_floor_without_changing_published_profiles():
     assert domains.DOC_PROFILE_V5.version == "5"
     assert domains.DOC_PROFILE_V5.planner_floor == REVIEWED
-    assert domains.DOC_PROFILE.version == "6"
+    assert domains.DOC_PROFILE_V6.version == "6"
+    assert domains.DOC_PROFILE.version == "7"
     assert domains.DOC_PROFILE.planner_floor == REVIEWED
     assert domains.DOC_PROFILE_V3.planner_floor == domains.DOC_PROFILE_V4.planner_floor == WEAK
     assert domains.CODE_PROFILE.planner_floor == ()

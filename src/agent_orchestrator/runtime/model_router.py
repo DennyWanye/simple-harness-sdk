@@ -65,9 +65,15 @@ class RuntimeProfile:
     provider_kind: str = "fixtures"
     context_policy: ContextPolicy | None = None  # None preserves the legacy pool verbatim.
     tokenizer: TokenizerPort | None = field(default=None, repr=False, compare=False)
+    max_concurrent_model_calls: int | None = None
     _context_json: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.max_concurrent_model_calls is not None and (
+            type(self.max_concurrent_model_calls) is not int
+            or self.max_concurrent_model_calls < 1
+        ):
+            raise ValueError("profile model concurrency must be a positive integer")
         if not self.profile_id or not self.model:
             raise ValueError("a runtime profile needs a profile_id and a model")
         if not callable(getattr(self.provider, "invoke", None)):
@@ -124,6 +130,8 @@ class RuntimeProfile:
             "max_output_tokens_ceiling": self.max_output_tokens_ceiling,
         }
         snapshot = self.context_snapshot()
+        if self.max_concurrent_model_calls is not None:
+            result["max_concurrent_model_calls"] = self.max_concurrent_model_calls
         if snapshot is not None:
             result["runtime_context"] = snapshot
         return result

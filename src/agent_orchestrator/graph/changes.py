@@ -22,7 +22,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..governance.domains import DomainProfileV1, check_against_domain, resolve_domain
 from ..contracts import Budget, ContractError, Mission, Task, TaskStatus
 from ..contracts.models import (
     STEP2_IMPLEMENTED_LAYERS,
@@ -31,6 +30,7 @@ from ..contracts.models import (
     default_change_policy,
     sha256_hex,
 )
+from ..governance.domains import DomainProfileV1, check_against_domain, resolve_domain
 from ..planning.manager import inherit_limits, system_reserve_tokens
 from .deduplicator import find_duplicates
 from .dependency_checker import DependencyError, check_dependencies

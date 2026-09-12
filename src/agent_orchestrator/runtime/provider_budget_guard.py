@@ -11,6 +11,7 @@ both its allowance and slot until actual SDK reconciliation, never a TTL guess.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -32,6 +33,14 @@ from simple_harness.execution.provider_invocations import provider_request_finge
 from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK
 from ..governance.budgets import BudgetError, BudgetExhausted
 from ..governance.provider_prices import ProviderPrice
+from .first_request_budget import (
+    INPUT_CAP_PROTOCOL,
+    FirstRequestBudgetUnknown,
+    FirstRequestInputCapExceeded,
+    ProviderInputCap,
+    enforce_final_wire_input_cap,
+    frozen_provider_input_cap,
+)
 
 HELD = ("RESERVED", "HANDED_OFF", "UNKNOWN")
 
@@ -128,6 +137,7 @@ class ProviderBudgetCommitAdapter:
 
 class ProviderBudgetGuard:
     supports_priced_budgets = True
+    input_cap_protocol = INPUT_CAP_PROTOCOL
 
     def __init__(
         self,
@@ -139,6 +149,7 @@ class ProviderBudgetGuard:
         poll_seconds: float = 0.01,
         priced: bool = False,
         price_tables: Mapping[str, FrozenPriceEstimator | None] | None = None,
+        profile_slots: Mapping[str, int] | None = None,
     ) -> None:
         if type(priced) is not bool:
             raise ValueError("priced must be an explicit boolean")
@@ -161,6 +172,17 @@ class ProviderBudgetGuard:
         if type(getattr(estimator, "requires_prior_output_reserve", None)) is not bool:
             raise ValueError("estimator must declare its prior-output protocol")
         self.max_slots = _tokens(max_slots, "physical slots", positive=True)
+        self.profile_slots = (
+            None if profile_slots is None else MappingProxyType(dict(profile_slots))
+        )
+        if self.profile_slots is not None and (
+            not self.profile_slots
+            or any(
+                not isinstance(key, str) or not key or type(value) is not int or value < 1
+                for key, value in self.profile_slots.items()
+            )
+        ):
+            raise ValueError("profile physical slots require named positive integer limits")
         if not 0 < poll_seconds <= 1:
             raise ValueError("provider admission polling must be in (0,1]")
         self.estimator = estimator
@@ -173,6 +195,11 @@ class ProviderBudgetGuard:
                         "protocol": estimator.bound_protocol,
                         "prior_output": estimator.requires_prior_output_reserve,
                         "max_slots": max_slots,
+                        **(
+                            {"profile_slots": dict(self.profile_slots)}
+                            if self.profile_slots is not None
+                            else {}
+                        ),
                         "version": 2,
                         "requires_price": priced,
                         "prices": None
@@ -239,6 +266,8 @@ class ProviderBudgetGuard:
         if binding is None or turn is None or binding.agent_id != turn.agent_id:
             raise _deny("provider admission requires a live SDK Agent turn")
         profile = binding.config_json.get("model_profile_ref")
+        if self.profile_slots is not None and profile not in self.profile_slots:
+            raise _deny("provider profile has no declared physical slot limit")
         if self.price_tables is not None and profile not in self.price_tables:
             raise _deny("provider profile has no declared price contract")
         expected_price = None if self.price_tables is None else self.price_tables[profile]
@@ -295,8 +324,97 @@ class ProviderBudgetGuard:
                 intent, reservation = self.adapter.authority(
                     agent_id=binding.agent_id, turn_id=turn.turn_id
                 )
+                if (
+                    self.profile_slots is not None
+                    and intent.config.get("runtime_profile_id") != profile
+                ):
+                    raise _deny("provider slot profile differs from original dispatch identity")
                 if uow.read_agent_turn_cancel(turn.turn_id) is not None:
                     raise _deny("SDK turn cancelled before admission", reason_code="cancelled")
+                if intent.kind == "critic" and isinstance(intent.config.get("attempt_id"), str):
+                    attempt_id = intent.config["attempt_id"]
+                    if intent.subject_id == f"{attempt_id}:critic:1":
+                        worker = self.store.get_intent_for_subject(attempt_id)
+                        frozen_first = (
+                            None if worker is None else worker.config.get("first_critic_budget")
+                        )
+                        if frozen_first is not None and (
+                            not isinstance(frozen_first, Mapping)
+                            or intent.config.get("provider_input_cap")
+                            != frozen_first.get("provider_input_cap")
+                            or intent.config.get("provider_output_ceiling")
+                            != frozen_first.get("output_ceiling")
+                            or intent.config.get("provider_first_cost_micros")
+                            != frozen_first.get("cost_micros")
+                        ):
+                            raise _deny(
+                                "FIRST Critic cap differs from original protected tail",
+                                reason_code="input_cap_identity",
+                            )
+                frozen_cap = intent.config.get("provider_input_cap")
+                if frozen_cap is not None:
+                    try:
+                        cap = ProviderInputCap.from_json(frozen_cap)
+                    except (TypeError, ValueError) as exc:
+                        raise _deny(
+                            "invalid frozen provider input cap", reason_code="input_cap_identity"
+                        ) from exc
+                    if (
+                        intent.kind != "critic"
+                        or binding.config_json.get("model_profile_ref") != cap.profile_id
+                        or intent.config.get("runtime_profile_id") != cap.profile_id
+                        or intent.config.get("model") != cap.model
+                        or cap.estimator_fingerprint != self.estimator.fingerprint
+                    ):
+                        raise _deny(
+                            "provider input cap identity differs from frozen intent",
+                            reason_code="input_cap_identity",
+                        )
+                    expected_cap = frozen_provider_input_cap(
+                        profile_id=cap.profile_id,
+                        model=cap.model,
+                        runtime_context=intent.config.get("runtime_context"),
+                        estimator_fingerprint=self.estimator.fingerprint,
+                    )
+                    if isinstance(expected_cap, FirstRequestBudgetUnknown) or expected_cap != cap:
+                        raise _deny(
+                            "provider input cap differs from frozen context",
+                            reason_code="input_cap_identity",
+                        )
+                    ceiling = intent.config.get("provider_output_ceiling")
+                    if type(ceiling) is not int or ceiling < 1 or output > ceiling:
+                        raise _deny(
+                            "provider output exceeds frozen FIRST Critic ceiling",
+                            reason_code="input_cap_identity",
+                        )
+                    expected_cost = (
+                        0 if price is None else price.cost(cap.max_input_tokens, ceiling)
+                    )
+                    if intent.config.get("provider_first_cost_micros") != expected_cost:
+                        raise _deny(
+                            "FIRST Critic cost differs from frozen provider price",
+                            reason_code="input_cap_identity",
+                        )
+                    if public_input < 1:
+                        raise _deny(
+                            "provider estimator returned no input count",
+                            reason_code="estimator_unavailable",
+                        )
+                    # The frozen FIRST floor covers input_budget(), not the context
+                    # renderer's optional slack. Refuse slack before any handoff.
+                    try:
+                        enforce_final_wire_input_cap(
+                            provider_input_cap=cap, actual_input_tokens=public_input
+                        )
+                    except FirstRequestInputCapExceeded as exc:
+                        raise _deny(
+                            "final provider wire input exceeds its frozen cap",
+                            reason_code="provider_input_cap_exceeded",
+                            request_tokens=public_input,
+                            remaining=cap.max_input_tokens,
+                            mission_id=intent.mission_id,
+                            subject_id=intent.subject_id,
+                        ) from exc
                 prior_output = 0
                 for previous in uow.list_provider_invocations(record.run_id):
                     previous = uow.read_effective_provider_invocation(previous.invocation_id)
@@ -369,7 +487,29 @@ class ProviderBudgetGuard:
                     "SELECT COUNT(*) FROM provider_token_grants"
                     " WHERE state IN ('RESERVED','HANDED_OFF','UNKNOWN')"
                 ).fetchone()[0]
-                if active < self.max_slots:
+                profile_available = True
+                if self.profile_slots is not None:
+                    # Count durable grants in the shared orchestration transaction:
+                    # separate SDK pools cannot each acquire a copy of this allowance.
+                    held = self.store.connection.execute(
+                        "SELECT i.config_json FROM provider_token_grants g "
+                        "LEFT JOIN dispatch_intents i ON i.intent_id=g.intent_id "
+                        "WHERE g.state IN ('RESERVED','HANDED_OFF','UNKNOWN')"
+                    ).fetchall()
+                    held_profiles = []
+                    for existing in held:
+                        config = json.loads(existing[0]) if existing[0] else {}
+                        held_profile = config.get("runtime_profile_id")
+                        agent_profile = (config.get("agent_config") or {}).get("model_profile_ref")
+                        if held_profile not in self.profile_slots or agent_profile != held_profile:
+                            raise _deny(
+                                "held provider grant has no confirmed profile identity",
+                                reason_code="profile_identity_unknown",
+                            )
+                        held_profiles.append(held_profile)
+                    own_active = held_profiles.count(profile)
+                    profile_available = own_active < self.profile_slots[profile]
+                if active < self.max_slots and profile_available:
                     spent = self.store.connection.execute(
                         "SELECT COALESCE(SUM(CASE WHEN actual_tokens IS NOT NULL THEN actual_tokens"
                         " ELSE total_upper END),0) FROM provider_token_grants"

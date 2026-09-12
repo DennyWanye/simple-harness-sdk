@@ -76,15 +76,17 @@ def test_new_document_dispatch_freezes_example_and_keeps_code_template(
         async with Orchestrator(
             OrchestratorConfig(evidence_root=tmp_path), RoleScriptedProvider({})
         ) as orch:
-            # Historical doc5 is frozen at real creation only; later dispatch
-            # runs under today's registry. The doc6 case uses the actual default.
+            # Historical doc5/doc6 are frozen at real creation only; later
+            # dispatch runs under today's registry.
             with monkeypatch.context() as patch:
-                if version == "5":
-                    patch.setattr(domains, "DOMAINS", {
-                        **domains.DOMAINS, domains.DOC_DOMAIN: domains.DOC_PROFILE_V5,
-                    })
+                profile = domains.DOC_PROFILE_V5 if version == "5" else domains.DOC_PROFILE_V6
+                patch.setattr(
+                    domains,
+                    "DOMAINS",
+                    {**domains.DOMAINS, domains.DOC_DOMAIN: profile},
+                )
                 mission = await orch.submit_mission(spec(domain=domains.DOC_DOMAIN))
-            assert domains.resolve_domain(domains.DOC_DOMAIN).version == "6"
+            assert domains.resolve_domain(domains.DOC_DOMAIN).version == "7"
             planning = orch.commit.begin_planning(mission.id)
             planner = await orch._create_planner_intent(mission.id, ordinal=1)
             assert planner.config["prompt_version"] == (

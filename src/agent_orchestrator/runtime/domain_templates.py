@@ -133,6 +133,7 @@ def register_document_templates() -> None:
     )
     _register_document_submission_v2()
     _register_document_submission_v3()
+    _register_document_fragment_manager_v4()
 
 
 def _register_document_submission_v2() -> None:
@@ -307,3 +308,25 @@ def _register_document_submission_v3() -> None:
             previous, prompt_version=f"{name}-doc-research-v3",
             instructions=previous.instructions + planning,
         ))
+
+
+def _register_document_fragment_manager_v4() -> None:
+    """New Missions can choose fragment validation; v1-v3 stay byte-for-byte frozen."""
+    from .role_templates import TEMPLATE_VERSIONS, _revise, register_template
+
+    previous = TEMPLATE_VERSIONS["manager"]["manager-doc-research-v3"]
+    code_fragment = TEMPLATE_VERSIONS["manager"]["manager-v3"]
+    guidance = "\n片段决策严格 JSON：" + code_fragment.instructions.split(
+        "\n片段决策严格 JSON：", 1
+    )[1]
+    manager = _revise(
+        previous,
+        "manager-doc-research-v4",
+        (
+            "最终回答必须只包含一个 <graph_change_proposal>…</graph_change_proposal> 块",
+            "最终回答只能包含一个 <graph_change_proposal>…</graph_change_proposal> 块，"
+            "或在 fragment_validation.available=true 时包含一个 "
+            "<fragment_validation_decision>…</fragment_validation_decision> 块；不可混用",
+        ),
+    )
+    register_template(replace(manager, instructions=manager.instructions + guidance))

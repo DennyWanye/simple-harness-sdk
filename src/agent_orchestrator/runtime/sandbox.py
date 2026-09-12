@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import fcntl
 import hashlib
 import json
 import os
@@ -162,27 +163,40 @@ class _Proc:
     zombie: bool
 
 
-def _process_table() -> list[_Proc]:
+def _process_table(*, strict: bool = False, timeout: float = 10) -> list[_Proc]:
     try:
-        out = subprocess.run(
+        completed = subprocess.run(
             [PS, "-A", "-o", "pid=,ppid=,uid=,rss=,stat="],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=timeout,
             check=False,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
+        )
+        if strict and completed.returncode != 0:
+            raise SandboxUnavailable("process inventory failed")
+        out = completed.stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        if strict:
+            raise SandboxUnavailable("process inventory unavailable") from error
         return []
     table = []
     for line in out.splitlines():
         parts = line.split()
+        if not parts:
+            continue
         if len(parts) < 5:
+            if strict:
+                raise SandboxUnavailable("process inventory contains an incomplete row")
             continue
         try:
             pid, ppid, uid, rss = (int(value) for value in parts[:4])
             table.append(_Proc(pid, ppid, uid, rss, parts[4][:1] == "Z"))
-        except ValueError:
+        except ValueError as error:
+            if strict:
+                raise SandboxUnavailable("process inventory contains an invalid row") from error
             continue
+    if strict and not any(proc.pid == os.getpid() for proc in table):
+        raise SandboxUnavailable("process inventory incomplete")
     return table
 
 
@@ -283,6 +297,9 @@ class _Executor:
         self, command: Sequence[str], *, cwd: str, spec: SandboxSpec
     ) -> ExecutionReceipt:
         run = _Run.start(self._exec_root, Path(cwd).resolve())
+        safe_to_delete = False
+        if self.isolated:
+            run.register(self.kind, self.environment_digest)
         env = {
             "PATH": DEFAULT_PATH,
             "HOME": str(run.scratch),
@@ -329,18 +346,20 @@ class _Executor:
                         limit = "rss"
                         break
             except asyncio.CancelledError:
-                await asyncio.shield(asyncio.to_thread(self._reap, run, root_alive=True))
+                residual = await asyncio.shield(asyncio.to_thread(self._reap, run, root_alive=True))
+                safe_to_delete = not residual
                 raise
             # code review round 1 P1-5: once ``process.wait()`` has returned, the child is
             # reaped and its pid may already belong to someone else — never signal it then
             residual = await asyncio.to_thread(self._reap, run, root_alive=not waiter.done())
+            safe_to_delete = not residual
             returncode = await waiter
             try:
                 await asyncio.wait_for(reader, timeout=2.0)
             except TimeoutError:  # a survivor still holds the pipe: keep what was read
                 reader.cancel()
         finally:
-            run.close()
+            run.close(clean=safe_to_delete)
         if limit is None and returncode == -signal.SIGXCPU:
             limit = "cpu"
         output, truncated = tail.text()
@@ -401,6 +420,9 @@ class _Run:
     root_pid: int | None = None
     seen: set[int] = field(default_factory=set)
     table: list[_Proc] = field(default_factory=list)
+    index: Path | None = None
+    owner_fd: int | None = None
+    identity: dict[str, Any] | None = None
 
     @property
     def canary(self) -> Path:
@@ -412,6 +434,7 @@ class _Run:
 
     @classmethod
     def start(cls, exec_root: Path, cwd: Path) -> _Run:
+        exec_root = exec_root.resolve()
         exec_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         execution_id = uuid.uuid4().hex
         scratch = exec_root / execution_id
@@ -422,13 +445,231 @@ class _Run:
         (marks / "decoy").write_text("decoy", encoding="utf-8")
         return cls(execution_id, cwd, scratch, marks, pwd.getpwuid(os.getuid()).pw_name)
 
-    def close(self) -> None:
-        shutil.rmtree(self.scratch, ignore_errors=True)
-        shutil.rmtree(self.marks, ignore_errors=True)
+    def register(self, kind: str, environment_digest: str) -> None:
+        # Outside cwd/scratch: sandbox children cannot erase their recovery identity.
+        registry = self.cwd.parent / SANDBOX_RUNS
+        registry.mkdir(mode=0o700, exist_ok=True)
+        self.index = registry / f"{self.execution_id}.run.json"
+        self.owner_fd = os.open(self.marks / "owner.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(self.owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        body = {
+            "schema_version": 1,
+            "execution_id": self.execution_id,
+            "kind": kind,
+            "uid": os.getuid(),
+            "cwd": str(self.cwd),
+            "scratch": str(self.scratch),
+            "marks": str(self.marks),
+            "environment_digest": environment_digest,
+            "source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        }
+        self.identity = {**body, "identity_sha256": _digest(body)}
+        try:
+            _durable_json(self.marks / "identity.json", self.identity)
+            _durable_json(self.index, self.identity)
+        except BaseException:
+            os.close(self.owner_fd)
+            self.owner_fd = None
+            raise
+
+    def close(self, *, clean: bool = True) -> None:
+        try:
+            if clean:
+                if self.index is not None and self.identity is not None:
+                    _finish_sandbox_cleanup(self.index, self.identity, mode="live")
+                else:
+                    shutil.rmtree(self.scratch, ignore_errors=True)
+                    shutil.rmtree(self.marks, ignore_errors=True)
+            # An uncertain/error run deliberately retains marks, identity and cwd.
+        finally:
+            if self.owner_fd is not None:
+                os.close(self.owner_fd)
+                self.owner_fd = None
 
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+# Durable discovery lives beside execution copies, never in a child's writable tree.
+SANDBOX_RUNS = ".sandbox-runs"
+
+
+def _durable_json(path: Path, body: Mapping[str, Any]) -> None:
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(body, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _cleanup_receipt(index: Path) -> Path:
+    return index.with_name(index.name.replace(".run.json", ".cleanup.json"))
+
+
+def _record_cleanup(index: Path, receipt: dict[str, Any]) -> None:
+    # Keep previous failed/uncertain attempts when a later cold retry succeeds.
+    history = index.with_name(index.stem + "." + uuid.uuid4().hex + ".cleanup.json")
+    _durable_json(history, receipt)
+    _durable_json(_cleanup_receipt(index), receipt)
+
+
+def _finish_sandbox_cleanup(index: Path, identity: dict[str, Any], *, mode: str) -> dict[str, Any]:
+    receipt = {"status": "reaped", "mode": mode, "identity": identity, "residual_pids": []}
+    # Commit proof first: a crash during directory deletion can resume this exact cleanup.
+    _record_cleanup(index, receipt)
+    for key in ("scratch", "marks"):
+        target = Path(identity[key])
+        try:
+            shutil.rmtree(target)
+        except FileNotFoundError:
+            pass  # another cleanup may have completed the same durable proof
+    index.unlink(missing_ok=True)
+    return receipt
+
+
+def _sandbox_members(run: _Run, *, uid_only: bool = True, timeout: float = 2) -> set[int]:
+    check = _sandbox_check()
+    run.table = _process_table(strict=True, timeout=timeout)
+    members = set()
+    for proc in run.table:
+        if proc.zombie or proc.pid == os.getpid() or (uid_only and proc.uid != os.getuid()):
+            continue
+        allowed, denied = check(proc.pid, str(run.canary)), check(proc.pid, str(run.decoy))
+        if allowed == 0 and denied == 1:
+            members.add(proc.pid)
+        elif allowed not in (0, 1) or denied not in (0, 1):
+            try:
+                os.kill(proc.pid, 0)
+            except ProcessLookupError:
+                continue  # exited between ps and sandbox_check
+            raise SandboxUnavailable("sandbox identity query unavailable")
+    return members
+
+
+def pending_workspace_executions(root: Path, cwd: Path) -> bool:
+    """Deletion must not erase a still-live or unclassified execution's only copy."""
+    for index in (root / SANDBOX_RUNS).glob("*.run.json"):
+        try:
+            identity = json.loads(index.read_text())
+            if not isinstance(identity, dict):
+                return True
+            body = {key: value for key, value in identity.items() if key != "identity_sha256"}
+            if _digest(body) != identity.get("identity_sha256"):
+                return True
+            if identity["cwd"] == str(cwd.resolve()):
+                return True
+        except (OSError, ValueError, KeyError, TypeError):
+            return True  # cannot assign the damaged identity safely; retain copies
+    return False
+
+
+def recover_workspace_executions(
+    root: Path,
+    *,
+    kill: Callable[[int], None] | None = None,
+    max_sweeps: int = 6,
+    timeout_seconds: float = 5,
+) -> list[dict[str, Any]]:
+    """Cold seatbelt cleanup, with no PID/parent-tree authority from the dead host.
+
+    Each active executor holds a non-inherited flock. Only an orphan can be claimed;
+    every signal is based on the original canary/decoy sandbox identity. Failed scans
+    or surviving members retain the identity and copy, with an explicit receipt.
+    """
+    reports: list[dict[str, Any]] = []
+    root = root.resolve()
+    for index in sorted((root / SANDBOX_RUNS).glob("*.run.json")):
+        descriptor = None
+        identity: dict[str, Any] = {}
+        residual: set[int] = set()
+        try:
+            identity = json.loads(index.read_text())
+            if not isinstance(identity, dict):
+                raise ValueError("invalid sandbox recovery record")
+            body = {key: value for key, value in identity.items() if key != "identity_sha256"}
+            execution_id = identity["execution_id"]
+            cwd, scratch, marks = (Path(identity[key]) for key in ("cwd", "scratch", "marks"))
+            if (
+                identity["schema_version"] != 1
+                or identity["kind"] != "seatbelt"
+                or identity["uid"] != os.getuid()
+                or _digest(body) != identity["identity_sha256"]
+                or index.name != f"{execution_id}.run.json"
+                or cwd.parent != root
+                or scratch.name != execution_id
+                or marks != scratch.with_name(execution_id + ".marks")
+                or any(path.is_symlink() for path in (index, cwd, scratch, marks))
+            ):
+                raise ValueError("invalid sandbox recovery identity")
+            prior_paths = [
+                _cleanup_receipt(index),
+                *index.parent.glob(index.stem + ".*.cleanup.json"),
+            ]
+            reaped = False
+            for prior_path in prior_paths:
+                if prior_path.exists():
+                    prior = json.loads(prior_path.read_text())
+                    if prior.get("status") == "reaped" and prior.get("identity") == identity:
+                        reaped = True
+                        break
+            if reaped:
+                reports.append(_finish_sandbox_cleanup(index, identity, mode="resume_cleanup"))
+                continue
+            descriptor = os.open(marks / "owner.lock", os.O_RDWR | os.O_NOFOLLOW)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                reports.append({"status": "active", "identity": identity, "residual_pids": []})
+                continue
+            if json.loads((marks / "identity.json").read_text()) != identity:
+                raise ValueError("sandbox recovery identity differs from original marks")
+            if not all((marks / name).is_file() for name in ("canary", "decoy")):
+                raise ValueError("original sandbox identity marks are missing")
+            run = _Run(execution_id, cwd, scratch, marks, pwd.getpwuid(os.getuid()).pw_name)
+            deadline = time.monotonic() + timeout_seconds
+            for sweep in range(max_sweeps + 1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("sandbox cleanup deadline exceeded")
+                residual = _sandbox_members(run, timeout=min(2, remaining))
+                if not residual:
+                    reports.append(_finish_sandbox_cleanup(index, identity, mode="cold"))
+                    break
+                if sweep == max_sweeps:
+                    report = {
+                        "status": "residual",
+                        "identity": identity,
+                        "residual_pids": sorted(residual),
+                    }
+                    _record_cleanup(index, report)
+                    reports.append(report)
+                    break
+                check = _sandbox_check()
+                for pid in residual:
+                    # Recheck immediately before signalling: never trust a recycled PID.
+                    if check(pid, str(run.canary)) == 0 and check(pid, str(run.decoy)) == 1:
+                        (kill or _sigkill)(pid)
+                time.sleep(0.05)
+        except (OSError, ValueError, KeyError, TypeError, SandboxUnavailable) as error:
+            report = {
+                "status": "unknown",
+                "identity": identity,
+                "residual_pids": sorted(residual),
+                "reason": type(error).__name__,
+            }
+            _record_cleanup(index, report)
+            reports.append(report)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+    return reports
 
 
 # ------------------------------------------------------------------ process only
@@ -612,15 +853,7 @@ class SeatbeltExecutor(_Executor):
         return [SANDBOX_EXEC, "-p", profile, *command]
 
     def _identified(self, run: _Run, *, uid_only: bool = True) -> set[int]:
-        check = _sandbox_check()
-        run.table = _process_table()
-        members = set()
-        for proc in run.table:
-            if proc.zombie or proc.pid == os.getpid() or (uid_only and proc.uid != os.getuid()):
-                continue
-            if check(proc.pid, str(run.canary)) == 0 and check(proc.pid, str(run.decoy)) == 1:
-                members.add(proc.pid)
-        return members
+        return _sandbox_members(run, uid_only=uid_only)
 
     def _members(self, run: _Run) -> set[int]:
         return self._identified(run)

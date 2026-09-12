@@ -7,6 +7,7 @@ Every accepted doc Task executes its own Critic; no PASS row is fabricated.
 """
 
 import asyncio
+import hashlib
 import json
 
 import pytest
@@ -58,6 +59,24 @@ def test_failed_origin_actual_independent_verification_and_downstream_scope(tmp_
                 assert consumed["material_refs"][0]["path"] == path
                 assert consumed["material_refs"][0]["original_path"] == "good.md"
                 assert [item["path"] for item in consumed["material_refs"]] == [path]
+                actual_context = package_of(request)["validated_fragment_input"]
+                from agent_orchestrator.contracts.models import canonical_json
+
+                assert len(canonical_json(actual_context).encode("utf-8")) <= 16_384
+                assert len(canonical_json(consumed).encode("utf-8")) > 16_384
+                for original, shown in zip(
+                    consumed["claims"], actual_context["claims"], strict=True
+                ):
+                    assert "verifier_results" not in shown
+                    assert original["verifier_results"]
+                    assert shown["content"] == original["content"]
+                    assert shown["confidence_metadata"] == original["confidence_metadata"]
+                    assert (
+                        shown["verifier_results_sha256"]
+                        == hashlib.sha256(
+                            canonical_json(original["verifier_results"]).encode("utf-8")
+                        ).hexdigest()
+                    )
                 # Accepted Claim revisions legitimately differ from their original
                 # proposals, but the original real Critic proof is still mandatory.
                 proof_id = "critic-verdict:" + proof["detail"]["critic_intent_id"]

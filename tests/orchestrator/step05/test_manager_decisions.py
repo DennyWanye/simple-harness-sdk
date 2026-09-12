@@ -290,8 +290,17 @@ def test_s5_07_requesting_management_twice_for_one_trigger_creates_one_intent(tm
             mission = await orchestrator.submit_mission(
                 spec("s5-07", success_criteria=("file:analysis.md",))
             )
-            await orchestrator.run()
             store = orchestrator.store
+
+            async def reach_active_task():
+                while not store.list_tasks(mission.id):
+                    await orchestrator._cycle()
+                    await asyncio.sleep(0)
+
+            # Management is a live-Mission operation. Completing the whole run
+            # first tests terminal rejection, not deduplication of a live trigger.
+            await asyncio.wait_for(reach_active_task(), 5)
+            assert store.get_mission(mission.id).status is MissionStatus.ACTIVE
             task = store.list_tasks(mission.id)[0]
             first = await orchestrator._request_management(
                 store.get_mission(mission.id),

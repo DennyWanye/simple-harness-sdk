@@ -8,7 +8,14 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..artifacts.store import ArtifactStoreError, read_verified
-from ..contracts import ClaimStatus, ContractError, MissionStatus, TaskStatus
+from ..contracts import (
+    TERMINAL_ATTEMPT,
+    AttemptStatus,
+    ClaimStatus,
+    ContractError,
+    MissionStatus,
+    TaskStatus,
+)
 from ..contracts.assessments import CriterionAssessmentV1, thaw_json
 from ..contracts.fragments import FragmentProposalV1, ScopeProjectionV1
 from ..contracts.models import canonical_json, sha256_hex
@@ -58,6 +65,7 @@ class FragmentCommitsMixin:
         command_id: str,
         base_graph_version: int,
         source: Mapping[str, Any],
+        limits: ChangeLimits | None = None,
     ) -> Mapping[str, Any]:
         proposal = _proposal(proposal)
         if not isinstance(command_id, str) or not command_id.strip() or not source:
@@ -67,13 +75,49 @@ class FragmentCommitsMixin:
         command_key = "fragment-command-" + sha256_hex(
             {"mission": proposal.origin["mission_id"], "command": command_id}
         )
-        command_hash = sha256_hex(_command_body(proposal))
+        legacy_command_hash = sha256_hex(_command_body(proposal))
+        command_hash = sha256_hex(
+            {
+                "proposal": _command_body(proposal),
+                "base_graph_version": base_graph_version,
+                "source": dict(source),
+            }
+        )
         with self._store.transaction() as connection:
             known = self._store.get_receipt(command_key)
             if known is not None:
-                if known["proposal_hash"] != command_hash:
-                    raise ContractError("fragment command identity reused with different proposal")
-                return known["receipt"]
+                if known["proposal_hash"] == command_hash:
+                    return known["receipt"]
+                # Earlier receipts hashed only the normalized proposal. They did
+                # persist command base/mission, but not the command's own source
+                # when a second command reused an existing projection. Preserve
+                # exact legacy replay without pretending that source was bound.
+                row = connection.execute(
+                    "SELECT kind,subject_id,base_version,proposal_hash FROM commit_receipts "
+                    "WHERE commit_id=?",
+                    (command_key,),
+                ).fetchone()
+                old_receipt = known.get("receipt")
+                old_proposal = (
+                    old_receipt.get("proposal") if isinstance(old_receipt, Mapping) else None
+                )
+                if (
+                    known["proposal_hash"] == legacy_command_hash
+                    and row is not None
+                    and row["kind"] == "fragment_command"
+                    and row["subject_id"] == proposal.origin["mission_id"]
+                    and row["base_version"] == base_graph_version
+                    and row["proposal_hash"] == legacy_command_hash
+                    and isinstance(old_receipt, Mapping)
+                    and old_receipt.get("mission_id") == proposal.origin["mission_id"]
+                    and isinstance(old_proposal, Mapping)
+                    and _command_body(_proposal(old_proposal))
+                    == _command_body(proposal)
+                    and self._store.get_receipt(old_receipt.get("projection_receipt_id", ""))
+                    is not None
+                ):
+                    return old_receipt
+                raise ContractError("fragment command identity reused with different proposal")
             projection = project_fragment(self._store, self._source_cas(), proposal)
             row = connection.execute(
                 "SELECT projection_receipt_id FROM fragment_validations WHERE fragment_id=?",
@@ -138,7 +182,7 @@ class FragmentCommitsMixin:
                     mission.id,
                     change,
                     source={**dict(source), "fragment_id": projection.fragment_id},
-                    limits=ChangeLimits(),
+                    limits=limits if limits is not None else ChangeLimits(),
                     allow_rebase=False,
                 )
                 if len(created) != 1:
@@ -361,35 +405,84 @@ class FragmentCommitsMixin:
         }
 
     def fragment_input(
-        self: Any, fragment_id: str, *, consumer_task_revision_id: str
+        self: Any,
+        fragment_id: str,
+        *,
+        consumer_task_revision_id: str | None = None,
+        ready_consumer_task_id: str | None = None,
+        retry_consumer_task_id: str | None = None,
     ) -> Mapping[str, Any]:
         """New consumption only, after actual independent verification and acceptance.
 
         A file-existence assessment supplies material, never a semantic Claim.
         Claim/receipt references come only from the new validation result.
+        ``ready_consumer_task_id`` is the first, unstarted admission. A retry
+        requires failed historical Attempts with the same frozen consumption
+        identity; both paths are rechecked with the new Attempt revision.
         """
         with self._store.read_view():
             receipt = self._fragment_receipt(fragment_id)
             mission = self._require_mission(receipt["mission_id"])
             if mission.status is not MissionStatus.ACTIVE:
                 raise ContractError("fragment new consumption requires an active Mission")
-            consumers = []
-            for candidate in self._store.list_tasks(mission.id):
-                if candidate.status not in {
-                    TaskStatus.READY,
-                    TaskStatus.ACTIVE,
-                    TaskStatus.VERIFYING,
-                }:
-                    continue
-                try:
-                    revision = current_task_revision(self._store, candidate)
-                except ContractError:
-                    continue
-                if revision.revision_id == consumer_task_revision_id:
-                    consumers.append((candidate, revision))
-            if len(consumers) != 1:
-                raise ContractError("fragment consumer revision is absent, stale, or foreign")
-            consumer, consumer_revision = consumers[0]
+            if sum(value is not None for value in (
+                consumer_task_revision_id, ready_consumer_task_id, retry_consumer_task_id
+            )) != 1:
+                raise ContractError("fragment consumer needs exactly one frozen identity")
+            retry_history: list[Mapping[str, Any]] = []
+            if ready_consumer_task_id is not None:
+                consumer = self._require_task(ready_consumer_task_id)
+                if (
+                    consumer.mission_id != mission.id
+                    or consumer.status is not TaskStatus.READY
+                    or self._store.list_attempts(consumer.id)
+                ):
+                    raise ContractError("fragment consumer is not an unstarted READY Task")
+                consumer_revision = None
+            elif retry_consumer_task_id is not None:
+                consumer = self._require_task(retry_consumer_task_id)
+                prior_attempts = self._store.list_attempts(consumer.id)
+                if (
+                    consumer.mission_id != mission.id
+                    or consumer.status not in {TaskStatus.READY, TaskStatus.ACTIVE}
+                    or consumer.accepted_result_id is not None
+                    or not prior_attempts
+                    or any(
+                        attempt.status not in TERMINAL_ATTEMPT
+                        or attempt.status is AttemptStatus.COMPLETED
+                        or not attempt.failure
+                        for attempt in prior_attempts
+                    )
+                ):
+                    raise ContractError("fragment consumer has no eligible failed retry")
+                for prior in prior_attempts:
+                    intent = self._store.get_intent_for_subject(prior.id)
+                    frozen = (
+                        None if intent is None
+                        else intent.config.get("validated_fragment_input")
+                    )
+                    if not isinstance(frozen, Mapping):
+                        raise ContractError("fragment retry lost its frozen first admission")
+                    retry_history.append(frozen)
+                consumer_revision = None
+            else:
+                consumers = []
+                for candidate in self._store.list_tasks(mission.id):
+                    if candidate.status not in {
+                        TaskStatus.READY,
+                        TaskStatus.ACTIVE,
+                        TaskStatus.VERIFYING,
+                    }:
+                        continue
+                    try:
+                        revision = current_task_revision(self._store, candidate)
+                    except ContractError:
+                        continue
+                    if revision.revision_id == consumer_task_revision_id:
+                        consumers.append((candidate, revision))
+                if len(consumers) != 1:
+                    raise ContractError("fragment consumer revision is absent, stale, or foreign")
+                consumer, consumer_revision = consumers[0]
             if not all(
                 {item["origin_text"], item["text"]} & set(consumer.success_criteria)
                 for item in receipt["criterion_mapping"]
@@ -398,6 +491,8 @@ class FragmentCommitsMixin:
             ):
                 raise ContractError("fragment scope or permissions do not cover consumer")
             task = self._require_task(receipt["validation_task_id"])
+            if task.id not in consumer.dependency_ids:
+                raise ContractError("fragment validation is not a consumer dependency")
             self.fragment_validation_binding(task.id)
             self.fragment_validation_inputs(task.id)
             stored = (
@@ -467,17 +562,42 @@ class FragmentCommitsMixin:
             ]
             if semantic_ids - {claim["id"] for claim in claims}:
                 raise ContractError("fragment assessed claim is no longer eligible")
-            return {
+            binding = {
                 "kind": "validated_fragment",
                 "fragment_id": fragment_id,
                 "validation_result_id": stored.envelope.id,
                 "projection_receipt_id": receipt["projection_receipt_id"],
-                "consumer_task_revision_id": consumer_revision.revision_id,
+                "consumer_task_revision_id": (
+                    None if consumer_revision is None else consumer_revision.revision_id
+                ),
+                "consumer_task_contract_revision": task_contract_revision(_task_contract(consumer)),
+                "consumer_task_version": (
+                    consumer.version
+                    if consumer_revision is None
+                    else consumer_revision.observed_task_version
+                ),
+                "consumer_dependency_ids": list(consumer.dependency_ids),
                 "material_refs": materials,
                 "criterion_mapping": receipt["criterion_mapping"],
                 "claims": claims,
                 "assessment_receipts": [row.to_json() for row in assessments],
             }
+            if retry_history:
+                # Task/Attempt versions legitimately advance. Every material,
+                # dependency, contract and accepted-result identity must not.
+                stable = {
+                    key: value for key, value in binding.items()
+                    if key not in {"consumer_task_revision_id", "consumer_task_version"}
+                }
+                if any(
+                    {
+                        key: value for key, value in frozen.items()
+                        if key not in {"consumer_task_revision_id", "consumer_task_version"}
+                    } != stable
+                    for frozen in retry_history
+                ):
+                    raise ContractError("fragment retry consumption identity changed")
+            return binding
 
     def list_fragments(self: Any, mission_id: str) -> list[Mapping[str, Any]]:
         """Historical projection; does not imply current eligibility or new PASS."""

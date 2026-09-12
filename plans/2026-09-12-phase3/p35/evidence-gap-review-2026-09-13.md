@@ -1,5 +1,8 @@
 # P3.5 原八项 AC：证据与最小剩余工作
 
+**最后更新：2026-09-13 07:59 CST — 当前源码综合回归。** 综合文档/P34/P35与受影响旧恢复、Manager、路由和启动检查1147 PASS/113.92s（runner114.42s），151文件mypy通过；随后仅移除未使用import及格式化测试，ruff通过。前批1144PASS/2FAIL的文档日志体积回归已修复，未删负例。A03复合压力控制1PASS/1.61s：实际RAISED阻断fresh Worker，Arbiter使用原conflict pool的HELD额度，公开人工仲裁后独立Synthesis/Critic完成、队列最终NORMAL；知识ID仅来自实际Provider请求。Terra独审限定接受；该用例明确使用历史doc4，不证明原20k预留全部转移或S首次调用时已经NORMAL。当前doc7由Host独立场景覆盖，原生仲裁及整体Phase3剩余价值/压力UI仍OPEN；不打包/P36/推送。
+
+
 **07:40更新：下表为早期缺口审查历史，不是当前未实现清单。** A01多profile6PASS、A02Mission期限1PASS、A03容量1PASS、A05实际OSkill2PASS、A07Context冷恢复与新输入2PASS、A08正式offline helper20PASS及实际外部效果cold/backup1PASS已新增；对应精确时长和索引见当前ARCHITECTURE/ORCHESTRATOR.md。A03复合优先级、A06原生控制面及最终全量仍OPEN。
 
 2026-09-13；只读代码/证据复核，未运行测试、进程、模型或 UI。仅新增本文，不改 core/tests。原 AC 来自 Host `plans/taskSys2/agent-orchestrator-phase3-plan.zh-CN.md` §7、§11；不缩减原要求，不涉及 P3.6。

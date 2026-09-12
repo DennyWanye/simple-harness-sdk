@@ -551,6 +551,8 @@ def build_manager_package(
     deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
     budget_floor: Mapping[str, int] | None = None,
     domain: DomainProfileV1 = CODE_PROFILE,
+    fragment_origin: Mapping[str, Any] | None = None,
+    validated_fragment: Mapping[str, Any] | None = None,
 ) -> TaskPackage:
     """What the Manager sees (D5-6): the trigger, the Verifier's feedback, the affected
     subgraph with its statuses and attempt counts, the graph version it must base its
@@ -591,6 +593,20 @@ def build_manager_package(
         "output_contract": "<graph_change_proposal>{json}</graph_change_proposal>",
         "package_version": PACKAGE_VERSION,
     }
+    if fragment_origin is not None:
+        package["fragment_validation"] = dict(fragment_origin)
+        if fragment_origin.get("available") is True:
+            package["output_contract"] = (
+                "<graph_change_proposal>{json}</graph_change_proposal> OR "
+                "<fragment_validation_decision>{json}</fragment_validation_decision>"
+            )
+    if validated_fragment is not None:
+        package["validated_fragment"] = dict(validated_fragment)
+        package["validated_fragment_rule"] = (
+            "仅对 validated_fragment.tasks 中未启动的 BLOCKED 普通 Task 提交 "
+            "retarget_dependencies；新依赖必须包含已验收的 validation_task_id 和另一独立分支。"
+            "可取消原失败 Task，不能改变已完成验证、扩大原准则或声称 consumer/Synthesis 已通过。"
+        )
     _domain_section(package, domain, mission)
     assert_no_secrets(package)
     return _seal(package)

@@ -112,6 +112,29 @@ class FragmentProposalV1:
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentValidationDecisionV1:
+    base_graph_version: int
+    proposal: FragmentProposalV1
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ContractError("unsupported fragment decision schema")
+        _integer(self.base_graph_version, 1)
+        if not isinstance(self.proposal, FragmentProposalV1):
+            raise ContractError("fragment decision requires a proposal")
+
+    @classmethod
+    def from_json(cls, value: Any) -> FragmentValidationDecisionV1:
+        body = _object(value, {"schema_version", "base_graph_version", "proposal"}, "decision")
+        return cls(
+            base_graph_version=body["base_graph_version"],
+            proposal=FragmentProposalV1.from_json(body["proposal"]),
+            schema_version=body["schema_version"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TaskRevisionV1:
     mission_id: str
     task_id: str

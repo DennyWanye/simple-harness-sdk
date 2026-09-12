@@ -18,9 +18,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, replace
 from typing import Any
 
-from ..governance.domains import DomainProfileV1, check_against_domain, resolve_domain
 from ..contracts import Budget, ContractError, Mission
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, VERIFICATION_LAYERS
+from ..governance.domains import DomainProfileV1, check_against_domain, resolve_domain
 from ..planning.manager import inherit_limits, system_reserve_tokens
 from .deduplicator import find_duplicates
 from .dependency_checker import DependencyError, check_dependencies, roots_and_leaves

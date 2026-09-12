@@ -14,7 +14,8 @@ from agent_orchestrator.governance import domains
 def test_g_successor_preserves_v3_and_v4_canonical_snapshots():
     frozen = json.loads(Path(__file__).with_name("doc-profile-v3.json").read_text())
     assert domains.DOC_PROFILE_V3.to_json() == frozen
-    assert domains.DOC_PROFILE.version == "6"
+    assert domains.DOC_PROFILE_V6.version == "6"
+    assert domains.DOC_PROFILE.version == "7"
     assert domains.resolve_domain(domains.DOC_DOMAIN) == domains.DOC_PROFILE
     expected = {**frozen, "version": "4"}
     assert domains.DOC_PROFILE_V4.to_json() == expected
@@ -25,12 +26,21 @@ def test_g_successor_preserves_v3_and_v4_canonical_snapshots():
         "role_templates": {role: f"{role}-doc-research-v2" for role in frozen["role_templates"]},
     }
     assert domains.DOC_PROFILE_V5.to_json() == expected_v5
-    assert domains.DOC_PROFILE.to_json() == {
+    expected_v6 = {
         **expected_v5,
         "version": "6",
         "role_templates": {
             role: f"{role}-doc-research-v{'2' if role == 'critic' else '3'}"
             for role in frozen["role_templates"]
+        },
+    }
+    assert domains.DOC_PROFILE_V6.to_json() == expected_v6
+    assert domains.DOC_PROFILE.to_json() == {
+        **expected_v6,
+        "version": "7",
+        "role_templates": {
+            **expected_v6["role_templates"],
+            "manager": "manager-doc-research-v4",
         },
     }
 
@@ -44,7 +54,8 @@ def test_g_successor_preserves_v3_and_v4_canonical_snapshots():
         ("4", True, True, False),
         ("5", True, True, True),
         ("6", True, True, True),
-        ("7", False, False, False),
+        ("7", True, True, True),
+        ("8", False, False, False),
     ],
 )
 def test_g_capability_boundary_is_explicit(version, assess, binding, critic_proof):

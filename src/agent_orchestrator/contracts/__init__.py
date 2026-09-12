@@ -5,7 +5,12 @@
 
 from . import ids
 from .assessments import ASSESSMENT_SCHEMA_VERSION, CriterionAssessmentV1
-from .fragments import FragmentProposalV1, ScopeProjectionV1, TaskRevisionV1
+from .fragments import (
+    FragmentProposalV1,
+    FragmentValidationDecisionV1,
+    ScopeProjectionV1,
+    TaskRevisionV1,
+)
 from .models import (
     CONTRACT_SCHEMA_VERSION,
     STEP2_IMPLEMENTED_LAYERS,
@@ -61,6 +66,7 @@ __all__ = (
     "ContractError",
     "Event",
     "FragmentProposalV1",
+    "FragmentValidationDecisionV1",
     "LimitationV1",
     "IllegalTransition",
     "Mission",

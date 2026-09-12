@@ -40,6 +40,17 @@ class WorkspaceError(ValueError):
     pass
 
 
+class WorkspaceCleanupIncomplete(WorkspaceError):
+    """Startup found unclassified or surviving sandbox processes; evidence is retained."""
+
+    def __init__(self, reports: Sequence[Mapping[str, object]]) -> None:
+        self.reports = tuple(reports)
+        super().__init__(
+            "sandbox cleanup incomplete; execution copies and marks retained: "
+            + ", ".join(str(report.get("status")) for report in reports)
+        )
+
+
 MAX_FILE_BYTES = 512 * 1024
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git"}
 EXEC_COPY_MARK = "-exec-"
@@ -235,6 +246,7 @@ class Workspace:
 
 class WorkspaceManager:
     def __init__(self, root: Path, *, artifact_store: ArtifactStore | None = None) -> None:
+        self.last_sandbox_cleanup: tuple[dict, ...] = ()
         self._root = Path(root)
         self._store = (
             artifact_store
@@ -410,6 +422,10 @@ class WorkspaceManager:
         target = self._root / name
         if not name or name in {".", ".."} or "/" in name or target.parent != self._root:
             raise WorkspaceError(f"not a workspace name: {name!r}")
+        from ..runtime.sandbox import pending_workspace_executions
+
+        if pending_workspace_executions(self._root, target):
+            raise WorkspaceCleanupIncomplete(({"status": "pending", "cwd": str(target)},))
         if target.is_symlink():
             target.unlink()
         elif target.exists():
@@ -418,20 +434,39 @@ class WorkspaceManager:
     def discard(self, copy: Workspace) -> None:
         if EXEC_COPY_MARK not in copy.root.name or copy.root.parent != self._root:
             raise WorkspaceError(f"not an execution copy: {copy.root.name}")
+        from ..runtime.sandbox import pending_workspace_executions
+
+        if pending_workspace_executions(self._root, copy.root):
+            return  # preserve the copy without masking the executor's error receipt
         shutil.rmtree(copy.root, ignore_errors=True)
 
     def sweep_exec_copies(self, *, older_than: float = 3600.0) -> list[str]:
-        """Execution copies left by a crash; a copy younger than ``older_than`` seconds may
-        belong to another live instance and is left alone."""
+        """Reap cold sandbox identities before deleting their copies or marks.
 
+        A live owner's locked execution stays untouched, regardless of copy age.
+        Unknown/residual cleanup raises with its receipts, retaining all copies.
+        Legacy copies without durable identity keep the previous age-only policy.
+        """
+        from ..runtime.sandbox import pending_workspace_executions, recover_workspace_executions
+
+        reports = recover_workspace_executions(self._root)
+        self.last_sandbox_cleanup = tuple(reports)
+        unresolved = [report for report in reports if report["status"] in {"unknown", "residual"}]
+        if unresolved:
+            raise WorkspaceCleanupIncomplete(unresolved)
+        recovered = {
+            report["identity"]["cwd"] for report in reports if report["status"] == "reaped"
+        }
         removed: list[str] = []
         if not self._root.is_dir():
             return removed
         cutoff = time.time() - older_than
         for entry in self._root.iterdir():
             if EXEC_COPY_MARK in entry.name and entry.is_dir() and not entry.is_symlink():
-                if entry.stat().st_mtime < cutoff:
-                    shutil.rmtree(entry, ignore_errors=True)
+                if pending_workspace_executions(self._root, entry):
+                    continue
+                if str(entry.resolve()) in recovered or entry.stat().st_mtime < cutoff:
+                    shutil.rmtree(entry)
                     removed.append(entry.name)
         return sorted(removed)
 
