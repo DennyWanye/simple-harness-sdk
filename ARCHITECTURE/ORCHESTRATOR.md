@@ -15,7 +15,7 @@
 
 ## 状态与边界
 
-编排 schema 为 v9（新增 sources）；契约 schema 为 2（SourceCitation）。空 citations 不写入旧信封，旧 code 契约保持兼容；携带新字段的信封会被旧严格 SDK 拒绝，Host 尚未切换本轮源码。
+编排 schema 为 v10（新增 criterion_assessments；v9 为 sources）；契约 schema 为 2（SourceCitation）。空 citations 不写入旧信封，旧 code 契约保持兼容；携带新字段的信封会被旧严格 SDK 拒绝，Host 尚未切换本轮源码。
 
 - 来源通过 Host/人 facade 登记到 CAS；权威原文在 CAS，SQLite/事件记录版本与元数据。supersede/revoke 复用既有审批/decision 事务，绑定旧 head revision 和新版本，重放幂等、ABA 和坏 CAS 拒绝；失效审批仍可拒绝，但绑定不可伪造。
 - Worker 和 Planner 意图冻结 source_versions/source_roots；任务 Critic 复用 Attempt 的冻结值。重开库不以当前 registry 重建旧意图；新 repair 去除已撤销来源、保留普通草稿。来源副本仅在新树构建时物化，ACTIVE 树的篡改证据保留到收集/验证。
@@ -23,7 +23,14 @@
 - EvidenceResolver 按租户/Mission/精确版本和根范围读取 CAS；越权/不存在/根外返回同一 not_found；七种失败码按固定顺序判断。NFC/空白折叠、全文唯一与完整结构单元决定 locator；display_block 保留父标题和原文块坐标，预览限制 2048 字符，完整内容需后续 UI 按坐标读取。
 - 创建/导入和每次发布 handoff 使用同一个物理根相交判据（symlink、NFC、casefold）。全库只要存在文档来源领域，任何 Mission 的 file_publish 都不得写入共享 CAS/workspaces；guard 在预算预留/outbox 写入前的事务内运行。已有 receipt 仍可对账，纯 code 库保留旧行为。
 
-本轮尚不具备完整文档 VERIFIED 闭环：准则评估、文档分级、证据不足出口、失效传播及 Host 系统结论区仍待 C–G。Resolver resolved 只证明原文归属，不能单独升级知识等级。
+C 已实现 SDK 评估/分级链路，定向 445 passed / 1 skipped，干净全量待完成：
+
+- 评估由确定性 producer 经 verifications.detail 进入 accept；事务内复核冻结合同、claim revision、完整产物 hash 和来源绑定后，与 claim/knowledge 一起写入 schema 10 表。结构 verdict 与 claim assessment 分开，旧 accepted 历史不回填。
+- 来源归属 content/key/stance 由系统构造，完整引用+字面归属+确定性评估才能 VERIFIED；推论最多 SUPPORTED。原信封不改，失败的文档 claim 保持 UNDER_REVIEW/unsupported。
+- 下游知识显式标明原文归属不是世界事实/指令，排序不高于 SUPPORTED；同一行不同句不被 key 去重吞掉。显式争议和 supersedes 按等级与来源身份约束，模型不能占用 attribution: 系统命名空间。
+- 文档评估上下文独立版本进入新 intent hash，旧 prompt/intents/code context 不改。pending 旧规则缺评估会重跑，已完成 Critic 按实际 durable ordinal 复用。正式归属文本容纳合法长引用的系统包装，模型与 statement 输入上限不变。
+
+完整文档报告闭环仍未完成：证据不足出口、失效传播及 Host 系统结论区待 D–G；没有新的 wheel/Host/真实模型验收。
 
 
 测试、提交身份、独立审查及本地证据索引见 [切片 A/B 记录](../plans/2026-09-12-phase3/p33/journal.md)。总体进度和接续顺序以 [Phase3 HANDOFF](../plans/2026-09-12-phase3/HANDOFF.md) 为准。

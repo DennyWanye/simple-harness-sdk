@@ -1,3 +1,11 @@
+## 未发布 — P3.3 切片 C（SDK 源码，验收中）
+
+- 新增 schema 10 准则评估，绑定冻结合同/引用/claim revision/产物，accept 同事务落盘；旧 accepted 记录不回填。
+- 文档来源归属由系统构造，推论封顶 SUPPORTED；下游信任标记、保留键、同级显式争议及同身份 supersedes 已接通。
+- 旧规则评估重跑保留已完成 Critic 来源；完整长引文可在正式记录中带出处，模型输入上限不变。
+
+定向 P33 + step04 445 passed / 1 skipped；干净全量待完成。尚未发布新 wheel 或完成 D–G/Host/真实 Provider 验收。
+
 ## 未发布 — P3.3 切片 B（SDK 源码验证完成）
 
 来源登记进 CAS，来源更替与撤销复用审批并保留历史；任务意图冻结版本。

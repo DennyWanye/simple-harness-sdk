@@ -24,7 +24,9 @@ from typing import Any
 from ..artifacts.workspace import Workspace
 from ..contracts import Artifact, ContractError, Mission, ResultEnvelope, Task
 from ..contracts.models import VERIFICATION_LAYERS
+from ..governance.domains import CODE_PROFILE, DomainProfileV1
 from ..memory.verified_knowledge import KnowledgeIndex
+from .assessments import AssessmentBindingV1, citation_integrity, doc_rule_reusable
 from .critics import CriticVerdict
 from .deterministic_checks import (
     ERROR,
@@ -36,6 +38,7 @@ from .deterministic_checks import (
     format_check,
     rule_check,
 )
+from .evidence_resolver import EvidenceResolver
 from .human_review import NEEDS_HUMAN, SUSPENDED, human_layer
 
 CriticRunner = Callable[[str | None], Awaitable[CriticVerdict]]
@@ -97,7 +100,12 @@ class VerifierRouter:
         reuse: Mapping[str, LayerResult] | None = None,
         needs_human_allowed: bool = True,
         ablated: frozenset[str] = frozenset(),
+        domain: DomainProfileV1 | None = None,
+        assessment_binding: AssessmentBindingV1 | None = None,
+        evidence_resolver: EvidenceResolver | None = None,
     ) -> Verdict:
+        actual_domain = domain if domain is not None else self._domain
+        document = actual_domain is not None and actual_domain.id != CODE_PROFILE.id
         required = set(task.verification_policy)
         if action_problems is not None:  # D7-2'': a result carrying actions/ is always rule-checked
             required.add("rule_check")
@@ -165,7 +173,12 @@ class VerifierRouter:
                     LayerResult(layer, NOT_REQUIRED, "not in the Task verification policy", {})
                 )
                 continue
-            if reuse is not None and layer in reuse:  # D7-8': resume reuses what already passed
+            reusable = reuse is not None and layer in reuse
+            if reusable and reuse is not None and document and layer == "rule_check":
+                reusable = assessment_binding is not None and doc_rule_reusable(
+                    reuse[layer], binding=assessment_binding
+                )
+            if reusable and reuse is not None:  # D7-8': resume reuses what actually passed
                 result = reuse[layer]
                 if layer == "critic_review":
                     critic = CriticVerdict.from_json(result.detail)
@@ -183,8 +196,31 @@ class VerifierRouter:
                     require_synthesis_knowledge=require_synthesis_knowledge,
                     extra_problems=action_problems or (),
                     local_code_execution=self._local_code_execution,
-                    domain=self._domain,
+                    domain=actual_domain,
                 )
+                if document:
+                    if assessment_binding is None or evidence_resolver is None:
+                        result = LayerResult(
+                            layer,
+                            ERROR,
+                            "document assessment binding/resolver unavailable",
+                            {
+                                **dict(result.detail),
+                                "assessment_error": "missing_binding_or_resolver",
+                            },
+                        )
+                    else:
+                        try:
+                            result = citation_integrity(
+                                binding=assessment_binding,
+                                envelope=envelope,
+                                resolver=evidence_resolver,
+                                structural_result=result,
+                            )
+                        except ContractError as error:
+                            result = LayerResult(
+                                layer, ERROR, str(error), {"assessment_error": str(error)}
+                            )
             elif layer == "critic_review":
                 try:
                     critic = await run_critic(test_output)

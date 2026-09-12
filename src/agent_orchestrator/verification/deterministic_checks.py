@@ -22,8 +22,8 @@ from typing import Any
 
 from ..artifacts.paths import under_prefix
 from ..artifacts.workspace import Workspace, sha256_file
-from ..governance.domains import CODE_PROFILE, DomainProfileV1
 from ..contracts import Artifact, ResultEnvelope, Task
+from ..governance.domains import CODE_PROFILE, DomainProfileV1
 from ..memory.verified_knowledge import KnowledgeIndex
 from ..runtime.tool_gateway import run_pytest
 
@@ -160,7 +160,12 @@ def rule_check(
             problems.append(f"artifact {reference!r} hash differs from the recorded artifact")
     if not envelope.claims:
         problems.append("no claims were submitted")
-    if envelope.claims and not envelope.evidence:
+    document_citations = (
+        domain is not None
+        and domain.id == "doc-research-v1"
+        and all(claim.citations for claim in envelope.claims)
+    )
+    if envelope.claims and not envelope.evidence and not document_citations:
         problems.append("claims cite no evidence")
     for criterion in task.success_criteria:
         if criterion.startswith("file:"):

@@ -4,6 +4,7 @@
 """Serialisation contracts (§26) and state machines (§25)."""
 
 from . import ids
+from .assessments import ASSESSMENT_SCHEMA_VERSION, CriterionAssessmentV1
 from .models import (
     CONTRACT_SCHEMA_VERSION,
     STEP2_IMPLEMENTED_LAYERS,
@@ -40,6 +41,8 @@ from .state_machines import (
 )
 
 __all__ = (
+    "ASSESSMENT_SCHEMA_VERSION",
+    "CriterionAssessmentV1",
     "CONTRACT_SCHEMA_VERSION",
     "STEP2_IMPLEMENTED_LAYERS",
     "TERMINAL_ATTEMPT",

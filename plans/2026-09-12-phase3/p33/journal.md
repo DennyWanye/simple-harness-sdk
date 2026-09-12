@@ -2,7 +2,7 @@
 
 ## 0. 交接（冷会话先读这一节）
 
-- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A、B 已完成（SDK 源码）；下一步 C**。
+- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A、B 已完成（SDK 源码）；C 已实现，独立审查与干净全量验收收尾中**。
 - **中心断言**：文档领域的 VERIFIED 只意味着「这份文件的这个版本的这几行里，逐字写着这句话」，且要在记录层 / 消费层 / 交付层三层同时成立。详见 `plan.md` §0。
 - **切片顺序**：A 领域画像与五处闸门 → B 来源与证据解析 → C 评估记录与分级 → D adapter 与证据不足出口 → E 冲突与失效 → F 回归与 wheel → G Host 与原生验收。
 - **每切片完成即跑 `tests/orchestrator` 全量**（不等切片 F），并同步更新本文件。
@@ -164,3 +164,33 @@ schema v9、来源三个 Host 命令、CAS 原文、SourceCitation v2 契约、E
 | `.local-test-evidence/2026-09-12/p33-b-resume/topology-green.log` | `cc188d2ce92a6ec8f290de37a2d0707283d220cd55b48b198cd8ea3f2ac42de3` |
 
 计时：此前开发未逐项计时，不以测试时间代替开发总耗时。2026-09-12 17:09 +08:00 恢复执行 B 文档/推送收尾；后续按阶段记录起止。
+
+## 2.3 切片 C：评估记录与文档分级
+
+2026-09-12 17:14 +08:00 开始；17:42 核心实现、主要审查与定向回归约 28 分钟。B 本轮 17:09–17:14 收尾约 5 分钟：文档提交 `a26e6a5` 已推送，提交后 P33 290 passed / 5.48 s，远程 0 ahead / 0 behind。
+
+- 开工前完成两位独立挑战并冻结细化/oracle：[slice-c-readiness.md](slice-c-readiness.md)。沿用同一 P3.3 整体 run，不缩原 MUST、不生成片 receipt；D–G 未完成。
+- schema 10 追加 criterion_assessments；实际 SDK dispatch→CAS resolver→rule detail→record→accept 同事务写 assessment/claim/knowledge。binding 校验冻结 Task 语义、当前 claim revision、全部产物 hash、tenant/Mission/Attempt/result 与来源集合；caller PASS 不可替代记录。
+- 结构准则单列完整 criterion_verdicts，不制造空 claim assessment，不为文档结论晋级。cite 仅证明来源引用，free 仅接受字面绑定；全部提交引用均需解析。
+- 文档 VERIFIED 仅限 content 与完整引文字面相等的来源归属；系统构造 content/key/stance，保存原信封。statement 封顶 SUPPORTED。来源声明的下游标记、排序及同一行不同句去重边界接通；显式压制和 supersedes 检查同级证据/来源身份。
+- 模型不能占用 attribution: 系统 key；无支持的 explicit contradicts 被记为拒绝。长引文系统 wrapper 超 20k 的真实 accept 失败已修：仅正式归属记录容纳完整 path/quote/locator；模型输入与 statement 原上限不动，原文不截断。
+- pending 旧规则 PASS 无评估时从冻结来源真重跑；旧 Critic 的 SETTLED intent/ordinal/prompt 正确复用。DONE/PASS 历史只允许相同重放，不重分级/回填。评估不进入正式回放；VerificationLayerRecorded 仍只发摘要，完整 detail 持久化在 verifications。
+- 候选动作结构检查要求存在通过既有 handler 的匹配候选，scope 仅 schema/deployment/charter，非动作已执行。
+
+### C 已执行的门与首次失败
+
+| 门/反例 | 当前结果 | 本地证据（相对 `.local-test-evidence/2026-09-12/p33-c/`） |
+|---|---|---|
+| 文档 context 独立版本、原 code context 保留 | 首次缺 doc_assessment KeyError；接线后通过 | context-red-verified.log、first-combined.log |
+| 评估/helper/grade/context/消费组合 | 71 passed / 0.29 s | first-combined.log |
+| 实际 SDK 引用/推论/缺引用/一好一坏/保留 key/动作范围 | 9 passed / 0.75 s | runtime-value.log |
+| 长合法引文 | accept 先报 claim.content exceeds 20000；修复后通过，另补关库重开与原上限反例 3 passed / 0.38 s | long-quote-red.log、long-quote-green.log、long-quote-reopen.log |
+| 旧 Critic 与人工恢复 | 原控制 2 passed；加真实来源与旧规则重跑后 2 passed / 0.95 s | recovery-baseline.log、recovery-integrated.log |
+| side artifact + 精确结构 scope | 首次 4 failed / 3 passed；修复后随累计集通过 | side-scope-red.log、p33-third.log |
+| P33 累计与旧 fixture | 第一轮 286 passed 后缺规则记录；第二轮 393 passed 后共享 helper 的显式 CAS 未透传；第三轮 399 passed / 6.18 s | p33-first.log、p33-second.log、p33-third.log |
+| P33 + step04 最终定向 | **445 passed / 1 skipped / 24.95 s**；真实 Provider 门未启用 | cheap-final.log |
+| 类型/静态 | mypy 89 源文件通过；主改动 Ruff 通过；legacy grade 函数 AST 与 a26e6a5 一致（仅重命名） | mypy-first.log；可复核 git show/AST 对照 |
+
+测试夹具错误与产品反例分开：最初 context/消费测试的 helper 返回值或字段名误用、缺必填构造字段不算产品 red；commits 首跑在并行实施中碰未接完参数不算原始缺陷。artifact_hash 篡改最初用 upsert 被 DO NOTHING 忽略，已先断言真实读回变化再验证。A 闸门 4 的旧 caller PASS 前置换为实际来源/producer/record，全部事务回滚 oracle 保留。B 撤销控制改为撤销真正被冲突一方引用的来源，Conflict/Task/Claim/Knowledge 不变与 replay 原断言保留；两个 fixture 增强已独立审查。
+
+当前 C 已实现，干净提交全量仍待运行，未换 wheel、未进行 Host/真实 Provider 验收。来源失效、证据不足与系统报告的剩余义务分别留 E/D/G。

@@ -28,6 +28,19 @@
 
 干净源码 `fb58bf1`：完整编排 867 passed / 8 skipped / 0 failed（488.39 s）；专项 P33 + workspace registry + step02 workspace/gateway 共 300 passed（8.13 s）。失败反例、审查闭环、命令与证据 SHA-256 见 journal；8 个真实 Provider skip 不计为真实模型验收。
 
+## 切片 C
+
+| 断言与步骤 | 回归入口（tests/orchestrator/p33） | 结果与边界 |
+|---|---|---|
+| 不可变完整评估、真实合同/claim/产物绑定、全部引用与精确 scope | test_p33_assessments.py | PASS；不采用模型自报 verdict |
+| 接受同事务入库、篡改拒绝、回滚、重放和重开 | test_p33_assessment_commits.py | PASS；旧 accepted 历史不重分级 |
+| attribution/statement 分级、系统 key、显式攻击与 supersedes | test_p33_document_grading.py；test_p33_assessment_commits.py | PASS；来源归因不等于世界事实 |
+| 实际 SDK runtime、action 候选、最长合法引用接受及重开 | test_p33_document_runtime.py | PASS；确定性 Provider，非真实模型 |
+| Context 准则目录、来源提醒、召回降权与精确引用去重 | test_p33_doc_context.py；test_p33_doc_consumption.py | PASS；旧 code 分级函数体保持不变 |
+| citation-only 文档证据入口与 Critic 恢复 | test_p33_citation_evidence_gate.py；test_p33_critic_provenance.py | PASS；真实评估前置，复用原 Critic ordinal |
+
+P33 + step04：445 passed / 1 skipped，24.95 秒；长引用重开及上限 3 passed，0.38 秒。独立累计审查 ACCEPT；干净提交全量待完成。
+
 ## 后续门
 
-C 评估与 attribution、D 证据不足、E 失效和冲突、F 整仓/wheel、G Host/真实 flash 原生验收仍未完成。A/B 的 PASS 不能扩大为 P3.3 完成。
+C 完整回归、D 证据不足、E 失效和冲突、F 整仓/wheel、G Host/真实 flash 原生验收仍未完成。A/B/C 定向的 PASS 不能扩大为 P3.3 完成。

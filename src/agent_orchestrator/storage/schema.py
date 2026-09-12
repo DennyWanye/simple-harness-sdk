@@ -465,6 +465,22 @@ CREATE UNIQUE INDEX sources_active_idx ON sources(mission_id, path)
 CREATE INDEX sources_mission_idx ON sources(mission_id, path, version_hash)
 """
 
+# P3.3 C: accepted claim assessments are immutable review records, not new formal
+# Mission state. Failed evaluations remain in verifications.detail_json.
+DDL_V10 = """
+CREATE TABLE criterion_assessments (
+ receipt_id TEXT PRIMARY KEY,
+ mission_id TEXT NOT NULL REFERENCES missions(mission_id),
+ task_id TEXT NOT NULL REFERENCES tasks(task_id),
+ result_id TEXT NOT NULL REFERENCES results(result_id),
+ claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+ criterion_id TEXT NOT NULL,
+ json TEXT NOT NULL,
+ created_at REAL NOT NULL
+) STRICT;
+CREATE INDEX criterion_assessments_result_idx ON criterion_assessments(mission_id, result_id)
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
@@ -475,6 +491,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(7, "orchestrator-p32", DDL_V7),
     Migration(8, "orchestrator-p33-domains", DDL_V8),
     Migration(9, "orchestrator-p33-sources", DDL_V9),
+    Migration(10, "orchestrator-p33-assessments", DDL_V10),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -496,6 +513,7 @@ __all__ = (
     "DDL_V7",
     "DDL_V8",
     "DDL_V9",
+    "DDL_V10",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

@@ -14,10 +14,15 @@ taken: **detection is not a vote**.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ..contracts import Claim, ClaimStatus
+from ..memory.claims import system_attribution
+
+if TYPE_CHECKING:
+    from ..governance.domains import DomainProfileV1
 
 CONFLICTABLE = frozenset(
     {ClaimStatus.VERIFIED, ClaimStatus.SUPPORTED, ClaimStatus.UNDER_REVIEW, ClaimStatus.DISPUTED}
@@ -36,7 +41,32 @@ class Contradiction:
         return self.other.status is ClaimStatus.VERIFIED
 
 
-def find_contradiction(claim: Claim, existing: Sequence[Claim]) -> Contradiction | None:
+def supported_contradiction(claim: Claim, other: Claim) -> bool:
+    """Document explicit claims cannot suppress stronger or unrelated evidence."""
+    ranks = {ClaimStatus.UNDER_REVIEW: 0, ClaimStatus.SUPPORTED: 1, ClaimStatus.VERIFIED: 2}
+    if claim.status not in {ClaimStatus.SUPPORTED, ClaimStatus.VERIFIED}:
+        return False
+    if ranks[claim.status] < ranks.get(other.status, 2):
+        return False
+    basis = claim.confidence_metadata.get("basis", {})
+    if not isinstance(basis, Mapping) or basis.get("system_domain") != "doc-research-v1":
+        return False
+    if basis.get("adapter") != "citation_integrity@v1" or not basis.get("assessment_receipts"):
+        return False
+    attribution = system_attribution(basis)
+    if attribution is not None:
+        other_basis = other.confidence_metadata.get("basis", {})
+        return (
+            isinstance(other_basis, Mapping)
+            and system_attribution(other_basis) is not None
+            and claim.key == other.key
+        )
+    return basis.get("grade") == "supported"
+
+
+def find_contradiction(
+    claim: Claim, existing: Sequence[Claim], *, domain: DomainProfileV1 | None = None
+) -> Contradiction | None:
     """The first existing claim ``claim`` contradicts (deterministic order: by id)."""
 
     for other in sorted(existing, key=lambda item: item.id):
@@ -44,7 +74,11 @@ def find_contradiction(claim: Claim, existing: Sequence[Claim]) -> Contradiction
             continue
         if other.status not in CONFLICTABLE or other.source_task == claim.source_task:
             continue
-        if other.id in claim.contradicts:
+        if other.id in claim.contradicts and (
+            domain is None
+            or domain.id != "doc-research-v1"
+            or supported_contradiction(claim, other)
+        ):
             return Contradiction(
                 claim, other, other.key or claim.key or f"claim:{other.id}", "explicit"
             )
@@ -53,4 +87,4 @@ def find_contradiction(claim: Claim, existing: Sequence[Claim]) -> Contradiction
     return None
 
 
-__all__ = ("CONFLICTABLE", "Contradiction", "find_contradiction")
+__all__ = ("CONFLICTABLE", "Contradiction", "find_contradiction", "supported_contradiction")

@@ -22,7 +22,8 @@ Oracle（测试实现前写定）：
 
 四条都断言 domain + doc-research-v1 + pytest 的明确错误，不以任意异常当通过；
 全部前置状态由公共 commit 入口产生，不直接写数据库，不单独调用共同 checker。
-这里只验证 commit 边界；PASS 层是测试输入，不宣称真实 verifier / Provider 已运行。
+这里只验证 commit 边界；C 接续后规则层来自真实 CAS/producer/record。
+其他 PASS 层仍为测试输入，不宣称真实 Provider 已运行。
 """
 
 from __future__ import annotations
@@ -31,18 +32,21 @@ from dataclasses import replace
 
 import pytest
 
+from agent_orchestrator.artifacts.store import ArtifactStore
+from agent_orchestrator.artifacts.workspace import WorkspaceManager
+from agent_orchestrator.context.context_builder import _task_contract
 from agent_orchestrator.contracts import (
-    Artifact,
     AttemptStatus,
     Budget,
     ClaimProposal,
     ClaimStatus,
     MissionStatus,
     ResultEnvelope,
+    SourceCitation,
     TaskStatus,
-    ids,
 )
 from agent_orchestrator.governance.domains import DOC_DOMAIN, DOC_PROFILE
+from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.graph.changes import TaskGraphChange
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
 from agent_orchestrator.orchestrator import commit_service as commit_module
@@ -54,6 +58,9 @@ from agent_orchestrator.orchestrator.commit_service import (
     TaskProposal,
 )
 from agent_orchestrator.storage.store import Store
+from agent_orchestrator.verification.assessments import assessment_binding_for, citation_integrity
+from agent_orchestrator.verification.deterministic_checks import rule_check
+from agent_orchestrator.verification.evidence_resolver import EvidenceResolver
 
 PYTEST_CRITERION = "pytest:tests/test_unrelated.py"
 DOC_POLICY = ("format_check", "rule_check", "critic_review")
@@ -213,8 +220,22 @@ def test_p33_09_gate3_single_task_proposal_rejects_pytest_without_activating_mis
     assert service.store.get_receipt(receipt["commit_id"]) == receipt
 
 
-def _document_result(service, task, *, stance):
-    """真实状态迁移到 VERIFYING；验证层结果由调用方作为 commit 输入提供。"""
+def _document_result(service, task, *, stance, cas=None):
+    """真实来源/规则层记录，保留原来冲突插入的事务回滚 oracle。"""
+    cas = cas or ArtifactStore(service.store.path.parent / "artifacts")
+    source_path = "sources/" + task.outputs[0].split("/")[-1]
+    quote = "资料仅记录方案 A 的部分条件。"
+    mission = service.store.get_mission(task.mission_id)
+    service.register_source(
+        mission_id=mission.id,
+        tenant_id=mission.tenant_id,
+        principal=Principal("importer"),
+        path=source_path,
+        content=quote + "\n",
+        kind="markdown",
+        idempotency_key=source_path,
+    )
+    source_version = service.store.get_source(mission.id, source_path)["version_hash"]
     attempt, intent = service.create_attempt(
         task.id,
         role="worker",
@@ -222,7 +243,13 @@ def _document_result(service, task, *, stance):
         prompt_version="worker-v2",
         context_version="p33-09",
         reservation=Reservation(tokens=4_000, cost_micros=0),
-        intent_config={"agent_config": {}, "message": "核对资料"},
+        intent_config={
+            "agent_config": {},
+            "task_contract": _task_contract(task),
+            "message": "核对资料",
+            "source_versions": {source_path: source_version},
+            "source_roots": ["sources/"],
+        },
         input_hash="p33-09",
     )
     turn = f"turn:{attempt.id}"
@@ -231,19 +258,10 @@ def _document_result(service, task, *, stance):
     service.record_agent_created(intent.intent_id, agent_id=agent, expected_turn_id=turn)
     service.record_submitted(intent.intent_id, receipt={"turn_id": turn, "seq": 1})
     path = task.outputs[0]
-    content_hash = "a" * 64
-    artifact = Artifact(
-        id=ids.artifact_id(attempt.id, path, content_hash),
-        mission_id=task.mission_id,
-        task_id=task.id,
-        attempt_id=attempt.id,
-        type="file",
-        path=path,
-        version=1,
-        content_hash=content_hash,
-        size_bytes=10,
-        produced_by=agent,
-    )
+    workspace = WorkspaceManager(
+        service.store.path.parent / "workspaces", artifact_store=cas
+    ).create(attempt.id, seed={path: "资料核对分析。\n"})
+    [artifact] = workspace.snapshot(mission_id=mission.id, task_id=task.id, produced_by=agent)
     envelope = ResultEnvelope(
         id=f"result:{attempt.id}",
         mission_id=task.mission_id,
@@ -259,6 +277,7 @@ def _document_result(service, task, *, stance):
                 key="document.option_a",
                 stance=stance,
                 evidence=(f"artifact:{path}",),
+                citations=(SourceCitation(source_path, source_version, 1, 1, quote),),
             ),
         ),
         evidence=(f"artifact:{path}",),
@@ -270,18 +289,42 @@ def _document_result(service, task, *, stance):
     service.record_result(
         attempt.id, envelope=envelope, turn_id=turn, artifacts=(artifact,), usage_refs=()
     )
-    return service.start_verification(envelope.id)
+    stored = service.start_verification(envelope.id)
+    binding = assessment_binding_for(
+        service.store,
+        task=service.store.get_task(task.id),
+        attempt=service.store.get_attempt(attempt.id),
+        envelope=envelope,
+        artifacts=(artifact,),
+    )
+    structural = rule_check(
+        envelope, task, artifacts=(artifact,), verification_copy=workspace, domain=DOC_PROFILE
+    )
+    layer = citation_integrity(
+        binding=binding,
+        envelope=envelope,
+        resolver=EvidenceResolver(service.store, cas),
+        structural_result=structural,
+    )
+    assert layer.status == "PASS"
+    service.record_verification_layer(
+        envelope.id, layer=layer.layer, status=layer.status, detail=layer.detail
+    )
+    return stored
 
 
 def test_p33_09_gate4_conflict_insert_rejects_pytest_and_rolls_back_accept(service, monkeypatch):
     planning = _planning(service, conflict_reserve_tokens=20_000)
-    (task_a, task_b), _ = _graph(service, planning, _node("A"), _node("B"))
+    nodes = [_node("A"), _node("B")]
+    for key, node in zip(("A", "B"), nodes, strict=True):
+        node["success_criteria"].append(f"cite:sources/{key}.md")
+    (task_a, task_b), _ = _graph(service, planning, *nodes)
     first = _document_result(service, task_a, stance="affirms")
     assert service.accept_result(first.envelope.id, verifier_results=DOC_PASSES).status is (
         TaskStatus.COMPLETED
     )
     first_claim = service.store.list_claims(first.envelope.id)[0]
-    assert first_claim.status is ClaimStatus.SUPPORTED  # 合法 artifact 证据，无 pytest。
+    assert first_claim.status is ClaimStatus.SUPPORTED  # 引用已核验，但推论只能 SUPPORTED。
     second = _document_result(service, task_b, stance="refutes")
     assert second.verification_state == "RUNNING" and second.verdict is None
     assert service.store.list_conflicts(planning.id) == []

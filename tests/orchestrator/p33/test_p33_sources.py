@@ -641,9 +641,12 @@ def test_revocation_does_not_close_a_real_conflict_task_or_rewrite_claims(env):
     e.api = MissionControlV1(
         e.host, tenant_id=e.mission.tenant_id, principal=Principal("person-one")
     )
-    tasks, _ = _graph(e.commit, e.mission, _node("A"), _node("B"))
+    nodes = [_node("A"), _node("B")]
+    for key, node in zip(("A", "B"), nodes, strict=True):
+        node["success_criteria"].append(f"cite:sources/{key}.md")
+    tasks, _ = _graph(e.commit, e.mission, *nodes)
     for task, stance in zip(tasks, ("affirms", "refutes"), strict=True):
-        result = _document_result(e.commit, task, stance=stance)
+        result = _document_result(e.commit, task, stance=stance, cas=e.cas)
         e.commit.accept_result(result.envelope.id, verifier_results=DOC_PASSES)
     [conflict] = e.store.list_conflicts(e.mission.id)
     assert conflict["state"] == "OPEN"
@@ -651,8 +654,21 @@ def test_revocation_does_not_close_a_real_conflict_task_or_rewrite_claims(env):
     assert conflict_task.kind == "conflict" and conflict_task.status is TaskStatus.READY
     claims = e.store.list_mission_claims(e.mission.id)
     knowledge = e.store.list_knowledge(e.mission.id)
-    _register(e)
-    _approve(e, _revoke(e))
+    # Revoke the actual cited source of one side, not an unrelated newly added file.
+    source_path = "sources/A.md"
+    source = e.store.get_source(e.mission.id, source_path)
+    _approve(
+        e,
+        e.api.revoke_source(
+            {
+                "mission_id": e.mission.id,
+                "path": source_path,
+                "expected_version_hash": source["version_hash"],
+                "reason": "来源已撤回",
+                "idempotency_key": "revoke-conflict-source",
+            }
+        ),
+    )
     assert e.store.list_conflicts(e.mission.id) == [conflict]
     assert e.store.get_task(conflict_task.id) == conflict_task
     assert e.store.list_mission_claims(e.mission.id) == claims

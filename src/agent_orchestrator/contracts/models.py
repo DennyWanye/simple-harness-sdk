@@ -29,6 +29,9 @@ from .state_machines import (
 
 CONTRACT_SCHEMA_VERSION = 2
 MAX_TEXT = 20_000
+# Persisted source attributions wrap a bounded quote and path with a system locator.
+# Model-submitted ClaimProposal and SourceCitation retain MAX_TEXT independently.
+MAX_ATTRIBUTION_TEXT = 2 * MAX_TEXT + 512
 MAX_LIST = 256
 
 VERIFICATION_LAYERS = (
@@ -852,7 +855,15 @@ class Claim:
     def __post_init__(self) -> None:
         for name in ("id", "source_task", "source_attempt", "mission_id", "result_id"):
             object.__setattr__(self, name, _text(getattr(self, name), f"claim.{name}", limit=512))
-        object.__setattr__(self, "content", _text(self.content, "claim.content"))
+        object.__setattr__(
+            self,
+            "content",
+            _text(
+                self.content,
+                "claim.content",
+                limit=MAX_ATTRIBUTION_TEXT if self.type == "attribution" else MAX_TEXT,
+            ),
+        )
         object.__setattr__(self, "type", _text(self.type, "claim.type", limit=64))
         object.__setattr__(self, "status", _enum(ClaimStatus, self.status, "claim.status"))
         object.__setattr__(self, "evidence", _texts(self.evidence, "claim.evidence"))

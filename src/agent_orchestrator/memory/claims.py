@@ -19,12 +19,18 @@ Evidence reference grammar (data, parsed leniently): ``pytest:<path>``, ``file:<
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..artifacts.paths import normalise_workspace_path, under_prefix
-from ..contracts import ClaimStatus
+from ..contracts import ClaimProposal, ClaimStatus
+from ..contracts.models import canonical_json, sha256_hex
+
+if TYPE_CHECKING:
+    from ..contracts.assessments import CriterionAssessmentV1
+    from ..governance.domains import DomainProfileV1
 
 TRUST_TRUSTED = "trusted"
 TRUST_UNTRUSTED = "untrusted_external"
@@ -146,6 +152,28 @@ def grade_claim(
     verifier_results: Sequence[Mapping[str, Any]],
     artifact_paths: Sequence[str],
     untrusted_prefixes: Sequence[str],
+    domain: DomainProfileV1 | None = None,
+    proposal: ClaimProposal | None = None,
+    assessments: Sequence[CriterionAssessmentV1] = (),
+) -> ClaimGrade:
+    if domain is not None and domain.id == "doc-research-v1":
+        return _grade_document(claim_id, proposal, assessments, verifier_results)
+    return _legacy_grade_claim(
+        claim_id,
+        evidence,
+        verifier_results=verifier_results,
+        artifact_paths=artifact_paths,
+        untrusted_prefixes=untrusted_prefixes,
+    )
+
+
+def _legacy_grade_claim(
+    claim_id: str,
+    evidence: Sequence[str],
+    *,
+    verifier_results: Sequence[Mapping[str, Any]],
+    artifact_paths: Sequence[str],
+    untrusted_prefixes: Sequence[str],
 ) -> ClaimGrade:
     ran = ran_test_targets(verifier_results)
     refs = tuple(
@@ -187,6 +215,135 @@ def grade_claim(
     )
 
 
+def normalise_quote(text: str) -> str:
+    """Same NFC/whitespace equivalence as citation resolution; never NFKC."""
+    return " ".join(unicodedata.normalize("NFC", text).split())
+
+
+def system_attribution(basis: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Only system grading provenance marks source material in downstream contexts.
+
+    Callers pass the system-owned verifier/basis, never the model's ``type``.
+    """
+    item = basis.get("attribution")
+    if (
+        basis.get("system_domain") == "doc-research-v1"
+        and basis.get("adapter") == "citation_integrity@v1"
+        and basis.get("grade") == "verified"
+        and isinstance(item, Mapping)
+        and item.get("source_trust") == TRUST_UNTRUSTED
+        and isinstance(item.get("identity"), (list, tuple))
+        and len(item["identity"]) == 5
+    ):
+        return item
+    return None
+
+
+def _grade_document(
+    claim_id: str,
+    proposal: ClaimProposal | None,
+    assessments: Sequence[CriterionAssessmentV1],
+    verifier_results: Sequence[Mapping[str, Any]],
+) -> ClaimGrade:
+    basis: dict[str, Any] = {
+        "layer": "rule_check",
+        "adapter": "citation_integrity@v1",
+        "system_domain": "doc-research-v1",
+        "grade": "unsupported",
+        "scope_limited_to_source": True,
+    }
+    rows = [a for a in assessments if a.claim_id == claim_id]
+    failures: list[str] = []
+    # Failure detail is diagnostic only. It cannot upgrade a claim. In particular,
+    # Critic text and a caller's alleged code_test PASS never enter document grading.
+    for layer in verifier_results:
+        if layer.get("layer") != "rule_check":
+            continue
+        detail = layer.get("detail", {})
+        if isinstance(detail, Mapping):
+            for entry in detail.get("evidence_resolutions", ()):
+                if isinstance(entry, Mapping) and entry.get("claim_id") == claim_id:
+                    resolution = entry.get("resolution", {})
+                    if isinstance(resolution, Mapping) and resolution.get("status") != "resolved":
+                        failures.append(str(resolution.get("status", "unresolved")))
+    if failures:
+        basis["failure_codes"] = sorted(set(failures))
+    if proposal is None or not proposal.citations or not rows:
+        basis["reason"] = "no validated citation assessment for this claim"
+        return ClaimGrade(claim_id, ClaimStatus.UNDER_REVIEW, basis, ())
+    claim_hash = sha256_hex(proposal.to_json())
+    if any(
+        a.verifier_adapter_id != "citation_integrity"
+        or a.version != "1"
+        or a.verdict != "PASS"
+        or a.provenance.get("producer") != "citation_integrity@v1"
+        or a.provenance.get("claim_hash") != claim_hash
+        for a in rows
+    ):
+        basis["reason"] = "assessment is not a deterministic PASS for this claim"
+        return ClaimGrade(claim_id, ClaimStatus.UNDER_REVIEW, basis, ())
+    expected = sorted(canonical_json(c.to_json()) for c in proposal.citations)
+    # Every linked criterion must have evaluated the complete citation set. Choosing
+    # one good reference from a partially failed set would launder the other quote.
+    for row in rows:
+        row_refs = row.to_json()["evidence_refs"]
+        if sorted(canonical_json(item.get("ref")) for item in row_refs) != expected or any(
+            item.get("status") != "resolved" for item in row_refs
+        ):
+            basis["reason"] = "citation set is incomplete or unresolved"
+            return ClaimGrade(claim_id, ClaimStatus.UNDER_REVIEW, basis, ())
+    resolved = sorted(rows[0].to_json()["evidence_refs"], key=lambda item: canonical_json(item))
+    refs = tuple(
+        EvidenceRef(
+            f"source:{item['ref']['path']}@{item['source_version']}",
+            "source",
+            str(item["ref"]["path"]),
+            TRUST_UNTRUSTED,
+        )
+        for item in resolved
+    )
+    basis["assessment_receipts"] = sorted(a.receipt_id for a in rows)
+    basis["evidence_refs"] = [dict(item) for item in resolved]
+    matching = [
+        item
+        for item in resolved
+        if normalise_quote(proposal.content) == normalise_quote(str(item["ref"]["quote"]))
+    ]
+    if not matching:
+        basis.update(grade="supported", type_downgraded=proposal.type == "attribution")
+        basis["reason"] = "citations resolve, but a statement is not a verified world fact"
+        return ClaimGrade(claim_id, ClaimStatus.SUPPORTED, basis, refs)
+    primary = min(
+        matching,
+        key=lambda item: (
+            str(item["source_version"]),
+            str(item["ref"]["path"]),
+            item["locator"]["start_line"],
+            item["locator"]["end_line"],
+            normalise_quote(str(item["ref"]["quote"])),
+        ),
+    )
+    path, version = str(primary["ref"]["path"]), str(primary["source_version"])
+    start, end = primary["locator"]["start_line"], primary["locator"]["end_line"]
+    quote = str(primary["ref"]["quote"])
+    key = f"attribution:{version}:{start}-{end}"
+    basis.update(
+        grade="verified",
+        type_downgraded=False,
+        key_downgraded=proposal.key != key,
+        attribution={
+            "content": f"《{path}》@{version[:8]} #L{start}-L{end} 记载：「{quote}」",
+            "key": key,
+            "stance": "affirms",
+            "type": "attribution",
+            "identity": [version, path, start, end, normalise_quote(quote)],
+            "primary": dict(primary),
+            "source_trust": TRUST_UNTRUSTED,
+        },
+    )
+    return ClaimGrade(claim_id, ClaimStatus.VERIFIED, basis, refs)
+
+
 __all__ = (
     "TRUST_TRUSTED",
     "TRUST_UNRESOLVED",
@@ -197,4 +354,6 @@ __all__ = (
     "grade_claim",
     "parse_evidence",
     "ran_test_targets",
+    "normalise_quote",
+    "system_attribution",
 )

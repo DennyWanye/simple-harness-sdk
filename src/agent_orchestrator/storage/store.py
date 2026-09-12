@@ -34,6 +34,7 @@ from ..contracts import (
     Attempt,
     Claim,
     ContractError,
+    CriterionAssessmentV1,
     Event,
     Mission,
     ResultEnvelope,
@@ -886,6 +887,67 @@ class Store:
             {"layer": row[0], "status": row[1], "detail": _loads(row[2]), "created_at": row[3]}
             for row in rows
         ]
+
+    def insert_criterion_assessment(
+        self,
+        *,
+        mission_id: str,
+        task_id: str,
+        result_id: str,
+        assessment: CriterionAssessmentV1,
+    ) -> bool:
+        """CommitService-only immutable insert; exact receipt replay changes nothing."""
+
+        payload = canonical_json(assessment.to_json())
+        with self.transaction() as connection:
+            known = connection.execute(
+                "SELECT mission_id, task_id, result_id, json FROM criterion_assessments WHERE receipt_id = ?",
+                (assessment.receipt_id,),
+            ).fetchone()
+            if known is not None:
+                if tuple(known) != (mission_id, task_id, result_id, payload):
+                    raise StoreConflict("assessment receipt has a different binding or body")
+                return False
+            claim = self.get_claim(assessment.claim_id)
+            result = self.get_result(result_id)
+            if (
+                claim is None
+                or (claim.mission_id, claim.source_task, claim.result_id)
+                != (mission_id, task_id, result_id)
+                or claim.version != assessment.claim_revision
+                or assessment.output_ref != result_id
+                or result is None
+                or result.verification_state == "DONE"
+            ):
+                raise StoreConflict("assessment does not bind a pending result's current claim")
+            connection.execute(
+                "INSERT INTO criterion_assessments(receipt_id,mission_id,task_id,result_id,claim_id,criterion_id,json,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    assessment.receipt_id,
+                    mission_id,
+                    task_id,
+                    result_id,
+                    assessment.claim_id,
+                    assessment.criterion_id,
+                    payload,
+                    self.now,
+                ),
+            )
+            return True
+
+    def list_criterion_assessments(
+        self, mission_id: str, *, result_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        if not self.has_table("criterion_assessments"):
+            return []
+        query = "SELECT json FROM criterion_assessments WHERE mission_id = ?"
+        args: tuple[str, ...] = (mission_id,)
+        if result_id is not None:
+            query += " AND result_id = ?"
+            args += (result_id,)
+        rows = self._connection.execute(query + " ORDER BY receipt_id", args).fetchall()
+        return [_loads(row[0]) for row in rows]
 
     # ------------------------------------------------------------------ claims
     def upsert_claim(self, claim: Claim) -> None:
@@ -1866,6 +1928,7 @@ class Store:
             "mission_policy": self.get_mission_policy(mission_id),  # step 9 (plan D9-3')
             "mission_domain": self.get_mission_domain(mission_id),  # P3.3 (plan v3 D1/D9)
             "sources": self.list_sources(mission_id) if self.has_table("sources") else [],
+            "criterion_assessments": self.list_criterion_assessments(mission_id),
             "event_count": self.count_events(mission_id),
         }
 

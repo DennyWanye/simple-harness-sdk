@@ -20,7 +20,7 @@ from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 from ..contracts import ClaimStatus, ContractError
-from ..contracts.models import _object, _text, _texts
+from ..contracts.models import MAX_ATTRIBUTION_TEXT, MAX_TEXT, _object, _text, _texts
 
 if TYPE_CHECKING:
     from ..storage.store import Store
@@ -67,7 +67,15 @@ class KnowledgeRecord:
             object.__setattr__(
                 self, name, _text(getattr(self, name), f"knowledge.{name}", limit=512)
             )
-        object.__setattr__(self, "content", _text(self.content, "knowledge.content"))
+        object.__setattr__(
+            self,
+            "content",
+            _text(
+                self.content,
+                "knowledge.content",
+                limit=MAX_ATTRIBUTION_TEXT if self.type == "attribution" else MAX_TEXT,
+            ),
+        )
         if self.status not in KNOWLEDGE_STATES:
             raise ContractError(f"knowledge.status must be one of {list(KNOWLEDGE_STATES)}")
         object.__setattr__(self, "verifier", _object(self.verifier, "knowledge.verifier"))

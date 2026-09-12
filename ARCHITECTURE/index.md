@@ -2,7 +2,7 @@
 
 ## Agent 编排 Phase3 当前状态
 
-P3.1/P3.2 已交付；P3.3 切片 A、B 已完成 SDK 源码验证；C–G、P3.4/P3.5 未完成。
+P3.1/P3.2 已交付；P3.3 切片 A、B 已完成 SDK 源码验证；C 评估与分级已实现、定向 445 passed / 1 skipped，干净提交全量待完成；D–G、P3.4/P3.5 未完成。
 切片 A 源码 `1eaa91f` 的编排全量 **651 passed / 8 skipped / 0 failed**；8 个真实 Provider 用例未启用。
 切片 B 干净源码 `fb58bf1`：编排全量 **867 passed / 8 skipped / 0 failed**（488.39 s），定向 300 passed；独立审查无剩余 P1/P2。8 个真实 Provider 用例未启用。
 本次未换 Host wheel、未做新的原生或真实模型验收；Host `04350956` 仍钉 SDK 0.10.0。

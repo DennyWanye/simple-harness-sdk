@@ -29,6 +29,7 @@ from ..contracts import (
     Claim,
     ClaimStatus,
     ContractError,
+    CriterionAssessmentV1,
     Event,
     Mission,
     MissionStatus,
@@ -46,7 +47,13 @@ from ..contracts.models import (
     sha256_hex,
 )
 from ..governance.budgets import AccountSnapshot, BudgetError, BudgetLedger, UsageFact
-from ..governance.domains import CODE_DOMAIN, DomainProfileV1, check_against_domain, resolve_domain
+from ..governance.domains import (
+    CODE_DOMAIN,
+    DOC_DOMAIN,
+    DomainProfileV1,
+    check_against_domain,
+    resolve_domain,
+)
 from ..governance.policies import DeploymentPolicy
 from ..graph.changes import (
     ChangeLimits,
@@ -56,7 +63,7 @@ from ..graph.changes import (
     validate_change,
 )
 from ..graph.task_graph import GraphRejected, TaskBudgetFloor, TaskGraphProposal, validate_graph
-from ..memory.claims import grade_claim
+from ..memory.claims import grade_claim, system_attribution
 from ..memory.summaries import refresh_summaries
 from ..memory.verified_knowledge import KnowledgeIndex, KnowledgeRecord
 from ..observability.lineage import lineage
@@ -71,7 +78,9 @@ from ..scheduling.backpressure import (
     evaluate,
 )
 from ..storage.store import DispatchIntent, Store, StoredResult, StoreError
-from ..verification.conflicts import Contradiction, find_contradiction
+from ..verification.assessments import assessment_binding_for, validated_assessments
+from ..verification.conflicts import Contradiction, find_contradiction, supported_contradiction
+from ..verification.deterministic_checks import LayerResult
 from .action_commits import ActionCommitsMixin
 from .human_commits import HumanCommitsMixin
 from .policy_commits import PolicyCommitsMixin
@@ -1563,6 +1572,7 @@ class CommitService(
         stored: StoredResult,
         *,
         verifier_results: Sequence[Mapping[str, Any]],
+        assessments: Sequence[CriterionAssessmentV1] = (),
     ) -> list[dict[str, Any]]:
         """D4-2/D4-3/D4-4/D4-5 inside the accept transaction: grade every claim of the
         accepted result from the verification that ran, project the VERIFIED ones into
@@ -1570,6 +1580,12 @@ class CommitService(
         ``used_knowledge`` and apply an explicit, legal supersession."""
 
         envelope = stored.envelope
+        domain = self.domain_for(mission.id)
+        document = domain.id == DOC_DOMAIN
+        proposals = {
+            ids.claim_id(envelope.id, index): proposal
+            for index, proposal in enumerate(envelope.claims, 1)
+        }
         untrusted = [str(p) for p in (mission.final_report or {}).get("untrusted_sources", [])]
         artifact_paths = [
             artifact.path
@@ -1585,13 +1601,34 @@ class CommitService(
             if other.result_id != envelope.id and self._accepted_result(other.result_id)
         ]
         for claim in self._store.list_claims(envelope.id):
-            grade = grade_claim(
-                claim.id,
-                claim.evidence,
-                verifier_results=layers,
-                artifact_paths=artifact_paths,
-                untrusted_prefixes=untrusted,
+            if document:
+                grade = grade_claim(
+                    claim.id,
+                    claim.evidence,
+                    verifier_results=layers,
+                    artifact_paths=artifact_paths,
+                    untrusted_prefixes=untrusted,
+                    domain=domain,
+                    proposal=proposals.get(claim.id),
+                    assessments=assessments,
+                )
+            else:
+                grade = grade_claim(
+                    claim.id,
+                    claim.evidence,
+                    verifier_results=layers,
+                    artifact_paths=artifact_paths,
+                    untrusted_prefixes=untrusted,
+                )
+            attribution = system_attribution(grade.basis) if document else None
+            reserved_key = (
+                document
+                and attribution is None
+                and claim.key is not None
+                and claim.key.startswith("attribution:")
             )
+            if reserved_key:
+                grade = replace(grade, basis={**dict(grade.basis), "key_downgraded": True})
             metadata = {
                 **dict(claim.confidence_metadata),
                 "grade": str(grade.status).lower()
@@ -1600,10 +1637,41 @@ class CommitService(
                 "basis": dict(grade.basis),
                 "evidence_trust": list(grade.evidence_trust),
             }
+            if document:
+                # System attribution precedes every conflict/supersession decision.
+                # replace preserves the persisted revision until next_claim commits it.
+                claim = replace(claim, type="statement")
+                if reserved_key:
+                    claim = replace(claim, key=None)
+                    metadata["key_downgraded"] = True
+                if attribution is not None:
+                    claim = replace(
+                        claim,
+                        content=str(attribution["content"]),
+                        key=str(attribution["key"]),
+                        stance=str(attribution["stance"]),
+                        type="attribution",
+                    )
+                candidate = replace(claim, status=grade.status, confidence_metadata=metadata)
+                targets = {other.id: other for other in existing_claims}
+                rejected = [
+                    reference
+                    for reference in claim.contradicts
+                    if reference not in targets
+                    or not supported_contradiction(candidate, targets[reference])
+                ]
+                metadata["contradicts_rejected"] = rejected
+                claim = replace(
+                    claim,
+                    contradicts=tuple(
+                        reference for reference in claim.contradicts if reference not in rejected
+                    ),
+                )
             supersedes: str | None = None
             proposed = claim.confidence_metadata.get("proposed_supersedes")
             if proposed is not None:
                 target = self._store.get_knowledge(str(proposed))
+                target_attribution = system_attribution(target.verifier) if target else None
                 if grade.status is not ClaimStatus.VERIFIED:
                     metadata["supersedes_rejected"] = (
                         f"only a VERIFIED claim may supersede knowledge (graded {grade.status})"
@@ -1613,6 +1681,16 @@ class CommitService(
                 ):
                     metadata["supersedes_rejected"] = (
                         f"{proposed!r} is not VERIFIED knowledge of this Mission"
+                    )
+                elif claim.key is None or claim.key != target.key:
+                    metadata["supersedes_rejected"] = "supersession requires the same key"
+                elif (attribution is not None or target_attribution is not None) and (
+                    attribution is None
+                    or target_attribution is None
+                    or list(attribution["identity"]) != list(target_attribution["identity"])
+                ):
+                    metadata["supersedes_rejected"] = (
+                        "attribution supersession requires the same source identity"
                     )
                 else:
                     supersedes = target.id
@@ -1626,7 +1704,14 @@ class CommitService(
             if task.kind != "conflict":
                 # D4-6': conflict precedes grading — a contested claim is capped at
                 # DISPUTED and never projected, whatever its own evidence says
-                contradiction = find_contradiction(claim, existing_claims)
+                if document:
+                    contradiction = find_contradiction(
+                        replace(claim, status=grade.status, confidence_metadata=metadata),
+                        existing_claims,
+                        domain=domain,
+                    )
+                else:
+                    contradiction = find_contradiction(claim, existing_claims)
                 if contradiction is not None:
                     target_status = ClaimStatus.DISPUTED
                     metadata["grade_before_dispute"] = metadata["grade"]
@@ -2734,8 +2819,13 @@ class CommitService(
         domain = self.domain_for(mission_id)
         if domain.id == CODE_DOMAIN:
             return
-        references = [*envelope.evidence, *(ref for claim in envelope.claims for ref in claim.evidence)]
-        kinds = tuple(sorted({ref.partition(":")[0] if ":" in ref else "file" for ref in references}))
+        references = [
+            *envelope.evidence,
+            *(ref for claim in envelope.claims for ref in claim.evidence),
+        ]
+        kinds = tuple(
+            sorted({ref.partition(":")[0] if ":" in ref else "file" for ref in references})
+        )
         problems = check_against_domain(
             domain, key="result evidence", success_criteria=(), evidence_kinds=kinds
         )
@@ -3064,6 +3154,22 @@ class CommitService(
     ) -> None:
         with self._store.transaction():
             stored = self._require_result(result_id)
+            if stored.verification_state == "DONE" and stored.verdict == "PASS":
+                known = next(
+                    (
+                        row
+                        for row in self._store.list_verifications(result_id)
+                        if row["layer"] == layer
+                    ),
+                    None,
+                )
+                if (
+                    known is not None
+                    and known["status"] == status
+                    and sha256_hex(known["detail"]) == sha256_hex(dict(detail))
+                ):
+                    return
+                raise CommitRejected("accepted result verification history is immutable")
             self._store.upsert_verification(
                 result_id=result_id,
                 attempt_id=stored.envelope.attempt_id,
@@ -3084,6 +3190,47 @@ class CommitService(
                     "verifier_version": detail.get("verifier_version"),
                 },
             )
+
+    def _validated_criterion_assessments(
+        self, stored: StoredResult, task: Task, attempt: Attempt
+    ) -> tuple[CriterionAssessmentV1, ...]:
+        """Read the real rule row and recheck its frozen binding inside accept."""
+
+        row = next(
+            (
+                row
+                for row in self._store.list_verifications(stored.envelope.id)
+                if row["layer"] == "rule_check"
+            ),
+            None,
+        )
+        if row is None:
+            raise CommitRejected("doc assessment requires a recorded rule_check layer")
+        artifacts = []
+        for artifact_id in stored.artifacts:
+            artifact = self._store.get_artifact(artifact_id)
+            if artifact is None:
+                raise CommitRejected("assessment artifact is unavailable")
+            artifacts.append(artifact)
+        try:
+            binding = assessment_binding_for(
+                self._store,
+                task=task,
+                attempt=attempt,
+                envelope=stored.envelope,
+                artifacts=artifacts,
+            )
+            return validated_assessments(
+                LayerResult(
+                    str(row["layer"]),
+                    str(row["status"]),
+                    str(row["detail"].get("summary", "")),
+                    row["detail"],
+                ),
+                binding=binding,
+            )
+        except ContractError as error:
+            raise CommitRejected(f"doc assessment rejected: {error}") from error
 
     def accept_result(
         self,
@@ -3107,6 +3254,21 @@ class CommitService(
             self._require_lease(attempt, owner)
             task = self._require_task(stored.envelope.task_id)
             mission = self._require_mission(stored.envelope.mission_id)
+            assessments: tuple[CriterionAssessmentV1, ...] = ()
+            if self.domain_for(mission.id).id == DOC_DOMAIN:
+                assessments = self._validated_criterion_assessments(stored, task, attempt)
+                # The caller's PASS list remains the legacy code API, never the doc
+                # assessment authority or an opportunity to invent audited layers.
+                verifier_results = tuple(
+                    LayerResult(
+                        row["layer"],
+                        row["status"],
+                        str(row["detail"].get("summary", "")),
+                        row["detail"],
+                    ).to_json()
+                    for row in self._store.list_verifications(result_id)
+                    if row["status"] == "PASS"
+                )
             stale = KnowledgeIndex.load(self._store, mission.id).check(
                 stored.envelope.used_knowledge
             )
@@ -3152,9 +3314,21 @@ class CommitService(
                 verifying = next_task(task, TaskStatus.VERIFYING)
                 self._store.update_task(verifying, expected_version=task.version)
                 task = verifying
+            for assessment in assessments:
+                self._store.insert_criterion_assessment(
+                    mission_id=mission.id,
+                    task_id=task.id,
+                    result_id=result_id,
+                    assessment=assessment,
+                )
             self._store.set_result_verification(result_id, state="DONE", verdict="PASS")
             grading = self._grade_and_project(
-                mission, task, attempt, stored, verifier_results=verifier_results
+                mission,
+                task,
+                attempt,
+                stored,
+                verifier_results=verifier_results,
+                assessments=assessments,
             )
             self._store.update_attempt(
                 next_attempt(attempt, AttemptStatus.COMPLETED), expected_version=attempt.version
@@ -3331,19 +3505,67 @@ class CommitService(
         failures: Sequence[Mapping[str, Any]],
         owner: str | None = None,
     ) -> Task:
-        """FAIL: claims → REJECTED, Attempt → RETRY_WAIT, Task VERIFYING → ACTIVE (retry decision is separate)."""
+        """FAIL: doc claims stay unsupported; code claims are rejected. Retry is separate."""
 
         with self._store.transaction():
             stored = self._require_result(result_id)
             if stored.verification_state == "DONE" and stored.verdict == "FAIL":
                 return self._require_task(stored.envelope.task_id)
+            if stored.verification_state == "DONE" and stored.verdict == "PASS":
+                raise CommitRejected("accepted result verification history is immutable")
             attempt = self._require_attempt(stored.envelope.attempt_id)
             self._require_lease(attempt, owner)
             task = self._require_task(stored.envelope.task_id)
+            domain = self.domain_for(task.mission_id)
+            document = domain.id == DOC_DOMAIN
+            proposals = {
+                ids.claim_id(result_id, index): proposal
+                for index, proposal in enumerate(stored.envelope.claims, 1)
+            }
+            recorded = tuple(self._store.list_verifications(result_id))
             self._store.set_result_verification(result_id, state="DONE", verdict="FAIL")
             for artifact_id in stored.artifacts:  # P3.1 fix F-ORCH-3: judged, and not accepted
                 self._store.update_artifact_verification(artifact_id, "REJECTED")
             for claim in self._store.list_claims(result_id):
+                if document:
+                    grade = grade_claim(
+                        claim.id,
+                        claim.evidence,
+                        verifier_results=recorded,
+                        artifact_paths=(),
+                        untrusted_prefixes=(),
+                        domain=domain,
+                        proposal=proposals.get(claim.id),
+                        assessments=(),
+                    )
+                    basis = {
+                        **dict(grade.basis),
+                        "verification_failures": [
+                            dict(item) for item in recorded if item["status"] != "PASS"
+                        ],
+                    }
+                    reserved_key = claim.key is not None and claim.key.startswith("attribution:")
+                    if reserved_key:
+                        basis["key_downgraded"] = True
+                    self._store.upsert_claim(
+                        next_claim(
+                            replace(
+                                claim, type="statement", key=None if reserved_key else claim.key
+                            ),
+                            ClaimStatus.UNDER_REVIEW
+                            if claim.status is not ClaimStatus.UNDER_REVIEW
+                            else None,
+                            verifier_results=tuple(dict(item) for item in failures),
+                            confidence_metadata={
+                                **dict(claim.confidence_metadata),
+                                "grade": "unsupported",
+                                "basis": basis,
+                                "evidence_trust": list(grade.evidence_trust),
+                                **({"key_downgraded": True} if reserved_key else {}),
+                            },
+                        )
+                    )
+                    continue
                 self._store.upsert_claim(
                     next_claim(
                         claim,

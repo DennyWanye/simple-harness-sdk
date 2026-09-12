@@ -20,8 +20,10 @@ from fixtures_provider import RoleScriptedProvider, envelope_step, graph_proposa
 from graph_helpers7 import node, spec
 from helpers_step07 import ALICE
 
+from agent_orchestrator.api.facade import MissionControlV1
 from agent_orchestrator.contracts import TaskStatus
 from agent_orchestrator.governance.domains import DOC_DOMAIN
+from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
 from agent_orchestrator.runtime.role_templates import CRITIC
@@ -32,6 +34,30 @@ from agent_orchestrator.storage.store import InjectedCrash
 def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
     tmp_path, monkeypatch, failed_first, needs_human
 ):
+    source_path = "sources/reference.md"
+    source_quote = "资料记载甲方案不支持离线。"
+    source_version = ""
+
+    def with_citation(body):
+        return {
+            **body,
+            "claims": [
+                {
+                    "content": source_quote,
+                    "confidence": 0.8,
+                    "citations": [
+                        {
+                            "path": source_path,
+                            "version": source_version,
+                            "start_line": 1,
+                            "end_line": 1,
+                            "quote": source_quote,
+                        }
+                    ],
+                }
+            ],
+        }
+
     def verdict(request):
         body = {
             "verdict": "PASS",
@@ -52,8 +78,12 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
                         node(
                             "A",
                             tokens=60_000,
+                            success_criteria=["file:a.md", "cite:" + source_path],
                             verification_policy=[
-                                "format_check", "rule_check", "critic_review", "human_review"
+                                "format_check",
+                                "rule_check",
+                                "critic_review",
+                                "human_review",
                             ],
                         )
                     ]
@@ -62,7 +92,10 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
             "worker": [
                 ("workspace_write_file", {"path": "a.md", "content": "# 核对记录\n"}),
                 envelope_step(
-                    summary="已写记录", artifacts=["a.md"], claims=["a.md 已写入核对记录"]
+                    summary="已写记录",
+                    artifacts=["a.md"],
+                    claims=[source_quote],
+                    override=with_citation,
                 ),
             ],
             "critic": (["malformed critic verdict"] if failed_first else []) + [verdict],
@@ -84,6 +117,7 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
             ) from error
 
     async def case():
+        nonlocal source_version
         async with Orchestrator(config, provider, owner="p33-provenance") as first:
             with monkeypatch.context() as patch:
                 bind = first.store.bind_mission_domain
@@ -101,6 +135,20 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
                 mission = await first.submit_mission(
                     spec("critic-provenance", domain=DOC_DOMAIN, success_criteria=("file:a.md",))
                 )
+
+            api = MissionControlV1(
+                first, tenant_id=mission.tenant_id, principal=Principal("importer")
+            )
+            api.register_source(
+                {
+                    "mission_id": mission.id,
+                    "path": source_path,
+                    "content": source_quote + "\n",
+                    "kind": "markdown",
+                    "idempotency_key": "source",
+                }
+            )
+            source_version = first.store.get_source(mission.id, source_path)["version_hash"]
 
             # 模拟升级前已创建的 code Critic；失败 ordinal 故意使用不同版本，
             # 防止回归仅固定读取 :critic:1 而误通过。
@@ -196,7 +244,8 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
                 intent = lookup(subject)
                 return (
                     replace(intent, state="FAILED")
-                    if intent is not None and intent.intent_id == successful.intent_id else intent
+                    if intent is not None and intent.intent_id == successful.intent_id
+                    else intent
                 )
 
             with monkeypatch.context() as patch:
@@ -208,6 +257,15 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
             async def must_reuse(*args, **kwargs):
                 raise AssertionError("人工恢复不得重新调用已完成的 Critic")
 
+            # C05: a pending legacy rule PASS has no assessment. It must be really
+            # rerun from the frozen source, while the settled Critic remains reusable.
+            second.store.upsert_verification(
+                result_id=result_id,
+                attempt_id=attempt.id,
+                layer="rule_check",
+                status="PASS",
+                detail={"summary": "legacy rule PASS", "verifier_version": "verifier-v1"},
+            )
             with monkeypatch.context() as patch:
                 patch.setattr(second, "_run_critic", must_reuse)
                 assert await second._verify(result_id)
@@ -215,9 +273,18 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
             assert provider.by_role["critic"] == critic_calls
             assert second.store.get_intent(successful.intent_id).to_json() == frozen_intent
             [recorded] = [
-                row for row in second.store.list_verifications(result_id)
+                row
+                for row in second.store.list_verifications(result_id)
                 if row["layer"] == "critic_review"
             ]
             assert recorded["detail"]["verifier_version"] == "critic-v2"
+            [rule] = [
+                row
+                for row in second.store.list_verifications(result_id)
+                if row["layer"] == "rule_check"
+            ]
+            assert rule["detail"]["criterion_assessments"]
+            [knowledge] = second.store.list_knowledge(mission.id)
+            assert knowledge.key == f"attribution:{source_version}:1-1"
 
     asyncio.run(case())

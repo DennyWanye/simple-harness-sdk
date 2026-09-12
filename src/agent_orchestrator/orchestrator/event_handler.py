@@ -2283,6 +2283,36 @@ class Orchestrator:
 
         action_problems = self._action_problems(mission, task, artifacts, copy)
         human, reuse, escalation_left = self._human_inputs(result_id, task)
+        domain = self.commit.domain_for(mission.id)
+        assessment_binding = None
+        evidence_resolver = None
+        if domain.id == "doc-research-v1":
+            from ..verification.assessments import assessment_binding_for
+            from ..verification.evidence_resolver import EvidenceResolver
+
+            try:
+                assessment_binding = assessment_binding_for(
+                    self.store,
+                    task=task,
+                    attempt=attempt,
+                    envelope=stored.envelope,
+                    artifacts=artifacts,
+                )
+            except ContractError as error:
+                # A frozen contract cannot be reconstructed from today's Task or source
+                # registry. Persist a real failure; never fabricate a reusable PASS.
+                failure = LayerResult(
+                    "rule_check",
+                    "FAIL",
+                    "document assessment binding invalid",
+                    {"reason": "assessment_binding_invalid", "error": str(error)},
+                )
+                await recorder(failure)
+                self.commit.fail_result(result_id, failures=[failure.to_json()], owner=self._owner)
+                return True
+            evidence_resolver = EvidenceResolver(
+                self.store, self.assembled.workspaces.artifact_store
+            )
         verdict = await self._router.verify(
             mission=mission,
             task=task,
@@ -2299,6 +2329,9 @@ class Orchestrator:
             human=human,
             reuse=reuse,
             needs_human_allowed=escalation_left,
+            domain=domain,
+            assessment_binding=assessment_binding,
+            evidence_resolver=evidence_resolver,
             ablated=frozenset({"critic_review"})
             if "critic" in self._config.ablations
             else frozenset(),
@@ -2565,26 +2598,38 @@ class Orchestrator:
         deployment policy, the Mission's action scope and the Task's declared outputs —
         whatever the Task's verification policy says.  ``None`` = no candidate at all."""
 
+        from .action_commits import allowed_actions
+
         paths = [artifact.path for artifact in artifacts if is_action_path(artifact.path)]
-        if not paths:
+        criteria = (
+            [c for c in task.success_criteria if c.startswith("action:")]
+            if self.commit.domain_for(mission.id).id == "doc-research-v1"
+            else []
+        )
+        if not paths and not criteria:
             return None
         problems: list[str] = []
+        checked: set[tuple[str, str, str]] = set()
         for path in paths:
             if path not in task.outputs:
                 problems.append(f"action candidate {path} is not a declared output of this Task")
                 continue
             try:
                 candidate = json.loads(copy.resolve(path).read_text(encoding="utf-8"))
-                check_candidate(
+                candidate, _ = check_candidate(
                     candidate,
                     criteria=mission.success_criteria,
                     connectors=self._connectors,
                     deployment=self._config.deployment_policy,
                 )
+                checked.add((candidate["connector"], candidate["operation"], candidate["target"]))
             except CandidateRejected as error:
                 problems.append(f"action candidate {path} rejected ({error.reason}): {error}")
             except Exception as error:  # noqa: BLE001 - unreadable or not JSON
                 problems.append(f"action candidate {path} unreadable: {error}")
+        for criterion in criteria:
+            if not allowed_actions([criterion], self._connectors).intersection(checked):
+                problems.append(f"action criterion {criterion!r} has no checked matching candidate")
         return problems
 
     def _hold_lease(self, attempt_id: str) -> Attempt:
