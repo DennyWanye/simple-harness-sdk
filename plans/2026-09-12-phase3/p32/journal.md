@@ -351,6 +351,62 @@ P32-12 的 wheel 一项到此满足：三轮验证里前两轮暴露的问题都
 - **已补**：P1-1 与 P1-2 的回归（`test_p32_publish_regressions.py`）；非隔离回执的措辞断言；半行账本。
 - **未补，登记**：P32-7 的"候选 → accept 绑定 → 审批 → 交接 → link → 回读"完整链路仍然没有一条测试串起来（三段各自有测）。这条链路会在切片 G 的原生验收里真实走一遍（真实模型 + 真实发布目录），届时作为该验收的证据；如果原生验收发现问题，再回头补 SDK 层的端到端测试。
 
-## 5. 遗留
+## 5. 切片 G：真实模型的原生验收（P32-16）
 
+2026-09-12。bundle `SimpleHarness Agent Verify 0f1af2b0p18120`（Host 提交 `0f1af2b0`），真实用户数据副本，模型 **deepseek-flash**，端口 18120。
+
+### 5.1 部署事实（App 启动即写进部署清单）
+
+| 项 | 值 |
+|---|---|
+| 沙箱探针 | **8/8 全过**（read_home、read_other_temp、write_outside、network、signal_host、daemon_reaped、output_truncated、cpu_killed），`disjoint: true` |
+| `code_execution` | **sandboxed**（探针通过才会是它；Host 永不用 process_only） |
+| `allowed_tools` | 三个工作区工具 + `run_tests`（随 sandboxed 开放） |
+| 发布授权 | `enabled_connectors: ['file_publish']`，`publish.enabled: true`，root 指向授权目录 |
+| 版本 / schema | 0.10.0 / 0.10.0；编排库 schema 7 |
+
+这就是 **P32-13 与 P32-14 的原生证据**：模式由探针决定、发布目录由人授权且硬链接可用。
+
+### 5.2 发布流程（P32-16 前半场）：**PASS**
+
+真实模型建 Mission（成功条件 `file:WEEKLY.md` + `action:file_publish.publish:reports/weekly.md`）→ 写出周报与动作候选 → 验证通过 → 界面出现审批卡 → 批准 → 发布。
+
+- **批准前**，审批卡显示 **"已生成，未发布"**，授权目录里空无一物 —— P32-15 的原生证据；
+- **批准后**，动作 `action-f5def2dea9fff826:v1` 为 SUCCEEDED，Mission 以 `verification_passed` 完成；
+- **四处哈希完全一致**（`aa46aeea…69ef7b`）：
+  1. 落盘文件 `<授权根>/reports/weekly.562f89434c1e.v1.md`（307 字节，`st_nlink=1`，临时文件已在挂链后删除）；
+  2. 回执里回读得到的 `content_hash`；
+  3. 候选参数里**由系统绑定**的 `content_hash`（模型只写了 `artifact_path: WEEKLY.md`，没有也不能写哈希）；
+  4. 内容寻址库里的文件名，即产物地址本身。
+
+  这正是 P32-7 要的"回执、账本、CAS 三处一致"，外加 D6 的候选绑定。
+
+### 5.3 沙箱内执行（P32-16 后半场）：**PASS**
+
+第二个 Mission 的成功条件是 `pytest:tests/test_adder.py`——这条在 `off` 部署下会在门口被拒，这次被接受，本身就说明探针通过了。
+
+模型写了 `adder.py` 与 `tests/test_adder.py`，`code_test` 层 **PASS**，回执是：
+
+```
+kind=seatbelt  isolated=True  status=ok  tree_killed=True  residual_pids=[]
+network={'value': 'none', 'enforcement': 'hard'}
+cpu_seconds={'value': 120, 'enforcement': 'hard', 'scope': 'process'}
+stdout: 2 passed in 0.00s
+```
+
+Mission 以 `verification_passed` 完成。
+
+### 5.4 过程中遇到的两个问题（都不是产品缺陷，但都记下来）
+
+1. **第一次发布流程失败（`no_progress`）**。模型两次写出的动作候选都不合 schema：先缺 `connector`/`operation`/`reason`，后又多出未知字段 `action`；两次都被 rule_check 挡下——**校验本身工作正常**。根因在验收脚本：我的目标文本只说了"写动作候选、用 `artifact_path` 指明产物"，**从没告诉模型候选的字段格式**。P3.1 那轮的动作场景用的是脚本化 provider，模型不需要自己拼格式，所以这个缺口没暴露过。把确切 schema 写进目标后一次通过。
+   - 留给产品的问题（记为 followup，不在本轮改）：真实模型要写动作候选时，系统并没有把候选 schema 放进它的输入包；现在靠 Mission 目标里的人工说明兜住。
+2. **启动器不读用户数据副本里的 `config.toml`**。它从仓库根配置合成一份写进运行目录，并让 `DESKPET_CONFIG` 指向那份，所以注入到副本里的发布目录授权被忽略。给 `scripts/native/launch_native_candidate.py` 加了通用的 `--config-extra`（把额外 TOML 表合并进运行配置），测试授权因此不必污染被 git 跟踪的产品默认配置。
+
+### 5.5 验收脚本（都在 Host 的 `.local-test-evidence/2026-09-12/native-p32/`，该目录不入库）
+
+- `launch-p32.sh <prod|scenario> <sha> [--keep]`：复制真实数据、写 flash 的 provider 与 32000 窗口、生成 `config-extra.toml`（发布目录授权）、用 0.10.0 的 installed target 启动；
+- `drive_p32.sh <sha>`：发布流程，含批准前后的界面取证与四处哈希核对；
+- `drive_p32_pytest.sh <sha>`：沙箱内执行，直接从 `verifications` 表取 `code_test` 的回执。
+
+## 6. 遗留
 （待填）
