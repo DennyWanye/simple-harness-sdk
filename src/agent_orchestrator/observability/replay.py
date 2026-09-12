@@ -216,7 +216,12 @@ class Projection:
             self._set("mission", mission, status="CANCELLED", stop_reason="cancelled")
         # ---------------------------------------------------------- Task
         elif kind == "TaskCommitted":
-            status = "BLOCKED" if p.get("dependencies") else "READY"
+            dependencies = p.get("dependencies") or ()
+            ready = all(
+                self.objects["task"].get(str(dependency), {}).get("status") == "COMPLETED"
+                for dependency in dependencies
+            )
+            status = "READY" if ready else "BLOCKED"
             self._set("task", task_id, status=status, accepted_result_id=None)
         elif kind == "TaskUnblocked":
             self._need("task", task_id, "task_committed_missing", event)

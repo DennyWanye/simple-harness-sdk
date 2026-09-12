@@ -27,6 +27,12 @@ from agent_orchestrator.contracts import (
 from agent_orchestrator.contracts.fragments import FragmentProposalV1
 from agent_orchestrator.graph.changes import TaskGraphChange
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
+from agent_orchestrator.observability.replay import (
+    Projection,
+    compare,
+    events_from_store,
+    formal_from_snapshot,
+)
 from agent_orchestrator.orchestrator.commit_service import (
     CommitRejected,
     CommitService,
@@ -474,6 +480,14 @@ def test_consumer_requires_accepted_validation_and_does_not_promote_file_claims(
     assert s.store.get_result(s.envelope.id).verdict == "FAIL"
     with pytest.raises(ContractError, match="consumer"):
         s.commit.fragment_input(receipt["fragment_id"], consumer_task_revision_id="0" * 64)
+    # A dynamically added consumer of an already completed dependency starts
+    # READY and becomes ACTIVE on its first attempt. Historical replay must
+    # derive the same state without needing a synthetic TaskUnblocked event.
+    projection = Projection().feed(events_from_store(s.store, s.mission.id))
+    projection.check_structure()
+    comparison = compare(projection.formal(), formal_from_snapshot(s.store.snapshot(s.mission.id)))
+    assert not projection.unknown and not projection.gaps
+    assert comparison["consistent"] and not comparison["not_covered"]
 
 
 def test_command_collision_and_stale_graph_are_atomic(scene):

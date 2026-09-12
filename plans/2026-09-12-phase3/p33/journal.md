@@ -691,3 +691,10 @@ Controlled native raw evidence: Host `.local-test-evidence/2026-09-13/p33-g/sour
 N1v8 failure summary: Host .local-test-evidence/2026-09-13/p33-g/source-ui-n1-v8/failure-summary.json SHA-256 `56e4cca4aef75dc4d992f7782cd49daddd642913a0716fff5987144fb6bceac6`; owned PG39303 exited, remaining children zero. No formal accepted report.
 
 独立审查：Terra medium 单次只读审查本次 kernel/live-progress/native-active-revoke diff，未发现 P0/P1。保留在途 Provider lease-loss 与真实 OS kill 后续验证，不据现有测试泛化全部恢复路径；源码检查点提交，整体仍 OPEN。
+
+
+## 2026-09-13 05:25 — N1v9 与真实回放缺口修复
+
+**源码与原生 UI 检查点 — 2026-09-13 05:25 CST：** N1v9 原始两文档、400000/12 原目标在 SDK c9a1f183 / Host 45c09756 源码环境完成：220.968s，正式 REPORT f6b192a3…f905、6 条 VERIFIED 逐字引用（两来源、完整表格行、完整限定单元），242431 tokens 已结算/预留0，13 次 Provider handoff。真实 UI 读报告、引用并冷启动重读，调用仍13/无重复；文档区“尚未判定”投影缺陷已修复，后端13 PASS/0.06s、前端25 PASS/0.912s及typecheck通过，新 UI 待验。动态新增已完成依赖的 Task 回放修复42 PASS/36.16s，原 v14 #14 历史43事件全覆盖/无差异；Python3.12空AST字段兼容35 PASS/0.29s，保持原生产基线。总体P33/P34/P35仍OPEN；进程kill测试仍在修复，FIRST请求保护仅helper7 PASS未集成；不打包/P36/推送。
+
+测试命令：`tests/orchestrator/p34/test_fragment_scope.py tests/orchestrator/p34/test_search_replay.py tests/orchestrator/step08/test_replay.py` 42 PASS；新增完整fragment事件流回放断言先红1FAIL，再修复TaskCommitted按此前依赖状态推导READY/BLOCKED。原始v14库只读重放证据 `.local-test-evidence/2026-09-12/p33-g/replay-v14-gap14-repaired.json` SHA256 `acf7819fe5afa18d30ca4d14e3cc983fb37f372d9bf1518725eda25935a6b138`。独立Luna审查无P0/P1。v18冻结检查点1126 PASS/1 AST兼容FAIL/93.85s；修复仅剔除空type_params表示、原hash保留，Python3.12定向35PASS/0.29s。首次green命令误写不存在的p33/test_replay.py，未执行测试，证据保留。

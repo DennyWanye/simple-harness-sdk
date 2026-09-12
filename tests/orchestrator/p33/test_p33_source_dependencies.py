@@ -21,11 +21,6 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-from agent_orchestrator.memory.source_dependencies import (
-    merge_source_versions,
-    source_current_issues,
-    source_dependencies_for,
-)
 
 from agent_orchestrator.artifacts.store import ArtifactStore
 from agent_orchestrator.context.retrieval import rank_knowledge
@@ -41,6 +36,11 @@ from agent_orchestrator.contracts import (
 from agent_orchestrator.contracts.models import canonical_json
 from agent_orchestrator.governance.domains import CODE_PROFILE, DOC_PROFILE
 from agent_orchestrator.memory.claims import grade_claim, system_attribution
+from agent_orchestrator.memory.source_dependencies import (
+    merge_source_versions,
+    source_current_issues,
+    source_dependencies_for,
+)
 from agent_orchestrator.memory.verified_knowledge import KnowledgeIndex, KnowledgeRecord
 from agent_orchestrator.verification.assessments import (
     assessment_binding_for,
@@ -495,7 +495,13 @@ def test_stale_filter_runs_before_ranking_limit_and_does_not_change_check(scene)
 
 def test_legacy_check_ast_and_default_retrieval_bytes_are_unchanged(scene):
     parsed = ast.parse(textwrap.dedent(inspect.getsource(KnowledgeIndex.check)))
-    actual = hashlib.sha256(ast.dump(parsed.body[0], include_attributes=False).encode()).hexdigest()
+    frozen_node = copy.deepcopy(parsed.body[0])
+    # Python 3.12 adds an empty FunctionDef.type_params field to ast.dump().
+    if getattr(frozen_node, "type_params", None) == []:
+        frozen_node._fields = tuple(
+            field for field in frozen_node._fields if field != "type_params"
+        )
+    actual = hashlib.sha256(ast.dump(frozen_node, include_attributes=False).encode()).hexdigest()
     assert actual == BASELINE_CHECK_AST
     item = scene.record("old", scene.source())
     task = scene.repo.tasks[item.source_task]
