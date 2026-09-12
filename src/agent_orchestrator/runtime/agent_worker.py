@@ -33,7 +33,7 @@ class Liveness:
     state: str | None
     blocked: bool
     blocker: Mapping[str, Any] | None
-    progress: int | None  # provider_turn_ordinal_to
+    progress: int | None  # durable Provider progress, including an open turn
     settled: bool
 
     @property
@@ -115,6 +115,16 @@ class AgentBridge:
             agent_id=agent_id,
             turn_id=turn_id,
         )
+        progress = snapshot.provider_turn_ordinal_to
+        if state is AgentTurnState.RUNNING:
+            # The turn's ordinal_to is written only at settlement. While it is
+            # open, use the executor's durable checkpoint, never a polling tick
+            # or lease heartbeat: an unchanged checkpoint must still stall.
+            checkpoint = self._runtime.uow.read_react_checkpoint(agent.run_id)
+            if checkpoint is not None and isinstance(checkpoint.checkpoint, Mapping):
+                reserved = checkpoint.checkpoint.get("provider_turns_reserved_total")
+                if type(reserved) is int and reserved >= 0:
+                    progress = reserved
         return Liveness(
             exists=True,
             state=str(state),
@@ -124,7 +134,7 @@ class AgentBridge:
                 if waiting
                 else (None if snapshot.blocker is None else dict(snapshot.blocker))
             ),
-            progress=snapshot.provider_turn_ordinal_to,
+            progress=progress,
             settled=state in {AgentTurnState.COMMITTED, AgentTurnState.FAILED},
         )
 

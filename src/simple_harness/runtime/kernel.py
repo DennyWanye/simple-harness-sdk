@@ -1635,6 +1635,10 @@ class Runtime:
         self._fences: dict[str, RunFenceLease] = {}
         self._cancels: dict[str, CancelToken] = {}
         self._heartbeats: dict[str, asyncio.Task[None]] = {}
+        # A lost epoch owns its driver cancellation/join until cleanup finishes.
+        # A concurrent wake must not install authority that the old heartbeat
+        # would then remove by run_id.
+        self._retiring_leases: set[str] = set()
         self._pending_wakes: set[str] = set()
         # BaseAgent driver exceptions re-wake the Run a bounded number of times per
         # process (review K1); the counter resets when a drive returns normally.
@@ -2844,6 +2848,9 @@ class Runtime:
         return activated
 
     async def _wake_continuation(self, run_id: str) -> None:
+        if run_id in self._retiring_leases:
+            self._pending_wakes.add(run_id)
+            return
         if run_id not in self._leases:
             try:
                 await self._activate(run_id)
@@ -2872,6 +2879,9 @@ class Runtime:
         self._schedule(run_id)
 
     async def _activate(self, run_id: str) -> RunRecord:
+        if run_id in self._retiring_leases:
+            raise UnitOfWorkConflict("previous runtime epoch is still retiring")
+        previous_lease = self._leases.get(run_id)
         run, lease = self._uow.claim_runtime_activation(
             run_id=run_id,
             owner_id=self._ports.owner_id,
@@ -2882,7 +2892,18 @@ class Runtime:
         self._leases[run_id] = lease
         fence = await self._uow.acquire(RunId(run_id), lease, now=self._now())
         self._fences[run_id] = fence
-        self._cancels.setdefault(run_id, CancelToken())
+        if (
+            previous_lease is None
+            or previous_lease.epoch != lease.epoch
+            or previous_lease.owner_id != lease.owner_id
+            or run_id not in self._cancels
+        ):
+            # Cancellation due to lease loss belongs to that epoch, not to the
+            # durable AgentTurn. A real user cancellation still fences recovery.
+            token = CancelToken()
+            if run.state is RunState.CANCEL_REQUESTED:
+                token.cancel()
+            self._cancels[run_id] = token
         heartbeat = self._heartbeats.get(run_id)
         if heartbeat is None or heartbeat.done():
             self._heartbeats[run_id] = asyncio.create_task(
@@ -2907,12 +2928,44 @@ class Runtime:
                         lease_ttl_seconds=self._ports.lease_ttl_seconds,
                     )
                 except UnitOfWorkConflict:
+                    self._retiring_leases.add(run_id)
                     token = self._cancels.get(run_id)
-                    if token is not None:
-                        token.cancel()
-                    await self._live.cancel(run_id)
-                    self._leases.pop(run_id, None)
-                    self._workflow_spawn_ready_activations.pop(run_id, None)
+                    fence = self._fences.get(run_id)
+                    try:
+                        if token is not None:
+                            token.cancel()
+                        await self._live.cancel(run_id)
+                        current = self._leases.get(run_id)
+                        same_epoch = current is not None and (
+                            current.owner_id == lease.owner_id and current.epoch == lease.epoch
+                        )
+                        if current is None or same_epoch:
+                            # The old driver may already have released its lease.
+                            # Never remove authority installed by a different epoch.
+                            if same_epoch:
+                                self._leases.pop(run_id, None)
+                            if self._cancels.get(run_id) is token:
+                                self._cancels.pop(run_id, None)
+                            if self._fences.get(run_id) is fence:
+                                self._fences.pop(run_id, None)
+                            self._workflow_spawn_ready_activations.pop(run_id, None)
+                            self._workflow_start_dispatches.pop(run_id, None)
+                            self._workflow_recovery_work.pop(run_id, None)
+                        if fence is not None:
+                            try:
+                                # SDK release is fenced by the original fence epoch.
+                                await self._uow.release(fence)
+                            except UnitOfWorkConflict:
+                                pass
+                    finally:
+                        if self._heartbeats.get(run_id) is asyncio.current_task():
+                            self._heartbeats.pop(run_id, None)
+                        self._retiring_leases.discard(run_id)
+                    current_run = self._uow.read_run(run_id)
+                    if not self._closing and current_run is not None and current_run.state in {
+                        RunState.RUNNING, RunState.WAITING, RunState.CANCEL_REQUESTED,
+                    }:
+                        self._pending_wakes.add(run_id)
                     return
                 self._leases[run_id] = renewed
                 ready = self._workflow_spawn_ready_activations.get(run_id)
@@ -2932,9 +2985,30 @@ class Runtime:
             return
 
     def _schedule(self, run_id: str) -> None:
+        current = self._uow.read_run(run_id)
+        if current is not None and current.state in {
+            RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED,
+        }:
+            self._pending_wakes.discard(run_id)
+            return
+        if run_id in self._retiring_leases or run_id not in self._leases:
+            # A submit/reschedule can finish waiting for the old driver before
+            # its heartbeat finishes retiring. Defer instead of starting a
+            # driver with absent or soon-to-be-removed authority.
+            if not self._closing:
+                self._pending_wakes.add(run_id)
+            return
         self._live.schedule(run_id, self._drive(run_id))
 
     async def _drive(self, run_id: str) -> None:
+        # Recovery or a cancel command can terminalize after this drive was
+        # scheduled but before it starts. Its released fence is not a driver
+        # failure, and the stale queued wake must not revive the terminal Run.
+        current = self._uow.read_run(run_id)
+        if current is not None and current.state in {
+            RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED,
+        }:
+            return
         continuation_claim: ContinuationRecord | None = None
         try:
             from simple_harness.execution.runtime_audit import runtime_operation
@@ -3767,13 +3841,13 @@ class Runtime:
         heartbeat = self._heartbeats.pop(run_id, None)
         if heartbeat is not None and heartbeat is not asyncio.current_task():
             heartbeat.cancel()
+        self._cancels.pop(run_id, None)
         if lease is None:
             return
         try:
             self._uow.release_runtime_lease(lease, now=self._now())
         except UnitOfWorkConflict:
             pass
-        self._cancels.pop(run_id, None)
 
     def _drop_local_authority(self, run_id: str) -> None:
         self._leases.pop(run_id, None)

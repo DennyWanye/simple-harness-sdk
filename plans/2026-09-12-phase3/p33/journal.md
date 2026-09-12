@@ -673,3 +673,21 @@ Controlled native raw evidence: Host `.local-test-evidence/2026-09-13/p33-g/sour
 `g-checkpoint-integration-v14.log` SHA-256 `e578859fedf850bce1bf5bd6d84128b80b745e9ffcd478c2eed415fd7f20d99c`.
 
 `g-recovery-stall-v15.log` SHA-256 `6de81b2c3ba4378803b3f919aea51778c87f8f6a46b555e57b266023156fd61a`.
+## 2026-09-13 文档回写：P35局部证据与N1v8边界
+
+本条只记录已读取的实际 JSON 及现有 UI 失败证据；P33N1/P34/P35 仍 OPEN，P36/打包暂停。以已提交 SDK `e4da042` 为基线的未提交工作树上的 `p35-offline-backup-v3` 为 20 PASS、pytest 17.29s、wrapper 18.22s；`p35-sticky-cancel-green-v2` 为 10 PASS、pytest 23.14s、wrapper 23.59s（sticky2 + 既有 recovery matrix8）。JSON SHA-256 分别为 `8ba722cde7035584d8858699fcfb890e55b87b4bdc68df83cc130c00f522b900`、`8962f3e03cff4b00046ab73571691cd4c8daa609019c5c4989cd3a44e99ee247`；对应 raw log SHA-256 为 `d0b0beffe2a8eca0d62c52866d03b7196d831ec0b70a2a68c3902b155068f22a`、`880ccd16f54f107064907f187c08b51a204edcac2d1a46abb833e9eb402f6473`。原始证据相对索引：`仓库根/.local-test-evidence/2026-09-12/p33-g/p35-offline-backup-v3.{json,log}`、`仓库根/.local-test-evidence/2026-09-12/p33-g/p35-sticky-cancel-green-v2.{json,log}`。不据此宣称完整恢复/备份 UI或OSkill通过。
+
+
+## 2026-09-13 04:49 CST：持续 Provider 进度修复与来源撤销控制
+
+**当前源码检查点 — 2026-09-13 04:49 CST：** P35 离线备份 20 PASS/17.29s；租约丢失恢复及取消 10 PASS/23.14s，受影响取消/恢复/租约回归 44 PASS/6.68s。N1v8 真模型仍失败：18 次实际调用、378113 tokens 已结算、当前预留 0；已定位 RUNNING 时终态 ordinal_to 为空造成 180s 错误超时。改读 SDK 持久进度的定向检查 8 PASS/8.98s，保持真正停滞超时控制；Host 六类文档场景及启动器 28 PASS/12.74s。上述为以 SDK e4da042 / Host 985e403 为基线的未提交修复证据；新原生 UI 待验，P33N1/P34/P35 整体 OPEN，不打包、不执行 P36、不推送。
+
+- g-live-progress-red-v1: FAIL: 1 / 1.97s; original false AttemptTimedOut; SDK repo .local-test-evidence/2026-09-12/p33-g/g-live-progress-red-v1.log SHA-256 `8bc8b9da90b074816cd0bac6331b9a3443658a657f153146b1127ad22179664c`.
+- g-live-progress-green-v2: 1 FAIL / 7 PASS / 10.18s; duplicate fixture tool requests reached no-progress termination; SDK repo .local-test-evidence/2026-09-12/p33-g/g-live-progress-green-v2.log SHA-256 `a39cd35aefac0aa128ff4b889811ee22d04e65197959627fbbb0d6b013d75a7d`.
+- g-live-progress-green-v3: 8 PASS / 8.98s; ordinary paced Worker retains one Attempt and stalled control remains enforced; SDK repo .local-test-evidence/2026-09-12/p33-g/g-live-progress-green-v3.log SHA-256 `8a7c7a96a4658b3c17f522d2ced2ee2fc3ca51364085bb3f0e45d2279ffe1639`.
+- g-recovery-impact-v16: 44 PASS / 6.68s; SDK repo .local-test-evidence/2026-09-12/p33-g/g-recovery-impact-v16.log SHA-256 `695a634a7f1efcb54057461837664bb1ce625dc9e23ea6e127b556b956d347e2`.
+- g-native-six-cases-v4: 28 PASS / 12.74s; SDK repo .local-test-evidence/2026-09-12/p33-g/g-native-six-cases-v4.log SHA-256 `449ffa826f008e03c7b54e91bfff0d9cdd8e5bb8a7cdd5e95791af02d6adb79a`.
+
+N1v8 failure summary: Host .local-test-evidence/2026-09-13/p33-g/source-ui-n1-v8/failure-summary.json SHA-256 `56e4cca4aef75dc4d992f7782cd49daddd642913a0716fff5987144fb6bceac6`; owned PG39303 exited, remaining children zero. No formal accepted report.
+
+独立审查：Terra medium 单次只读审查本次 kernel/live-progress/native-active-revoke diff，未发现 P0/P1。保留在途 Provider lease-loss 与真实 OS kill 后续验证，不据现有测试泛化全部恢复路径；源码检查点提交，整体仍 OPEN。
