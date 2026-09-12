@@ -403,6 +403,9 @@ def test_real_tokenizer_keeps_every_request_within_budget(tmp_path):
 
 
 def test_unknown_resume_reuses_the_frozen_request_without_a_new_selection(tmp_path):
+    from dataclasses import replace
+
+    from simple_harness.providers import ProviderUsage
     from simple_harness.providers.errors import ProviderTransportError
     from simple_harness.providers.reconciliation import (
         ProviderReconciliationObservation,
@@ -420,8 +423,18 @@ def test_unknown_resume_reuses_the_frozen_request_without_a_new_selection(tmp_pa
                 ProviderReconciliationState.CONFIRMED_NOT_STARTED, f"e:{invocation.invocation_id}"
             )
 
+    class RecallProbe:
+        def __init__(self):
+            self.prepared = []
+
+        async def prewarm(self, query):
+            self.prepared.append(query)
+
+        def __call__(self, *_args):
+            return ()
+
     async def case():
-        provider = ScriptedProvider(["恢复后的回答"])
+        provider = ScriptedProvider(["恢复后的回答", "新输入的回答"])
         original = provider.invoke
         state = {"failed": False}
 
@@ -429,7 +442,12 @@ def test_unknown_resume_reuses_the_frozen_request_without_a_new_selection(tmp_pa
             if not state["failed"]:
                 state["failed"] = True
                 raise ProviderTransportError()
-            return await original(request, cancel=cancel)
+            # Successful fixture replies report usage so the next input tests
+            # Context revision handling rather than missing-usage cost guards.
+            return replace(
+                await original(request, cancel=cancel),
+                usage=ProviderUsage(input_tokens=10, output_tokens=10, total_tokens=20),
+            )
 
         provider.invoke = once  # type: ignore[method-assign]
         policies = ConsumerRuntimePolicies(
@@ -441,6 +459,8 @@ def test_unknown_resume_reuses_the_frozen_request_without_a_new_selection(tmp_pa
             runtime_reconciliation=_DefaultRuntimeReconciliation(),
         )
         async with build_agent_runtime(_ports(tmp_path, provider, policies=policies)) as runtime:
+            recall = RecallProbe()
+            runtime.kernel._ports.context._recall = recall
             agent = await runtime.create(_config(), creation_key="resume")
             receipt = await agent.submit("问", input_id="i1")
             for _ in range(100):
@@ -452,6 +472,7 @@ def test_unknown_resume_reuses_the_frozen_request_without_a_new_selection(tmp_pa
                 "SELECT selection_id FROM base_agent_context_selections_v1 WHERE agent_id=?",
                 agent.agent_id,
             )
+            assert recall.prepared == ["问"]
             await runtime.kernel.reconcile()
             result = await agent.wait_turn(receipt.turn_id, timeout=5)
             assert result.state is AgentTurnState.COMMITTED
@@ -462,6 +483,11 @@ def test_unknown_resume_reuses_the_frozen_request_without_a_new_selection(tmp_pa
             )
             assert after == before  # no re-selection for the same frozen request (§7.4)
             assert provider.calls == 1
+            assert recall.prepared == ["问"]  # no extra embedding for the frozen request
+            next_turn = await agent.ask("下一问", input_id="i2", timeout=5)
+            assert next_turn.state is AgentTurnState.COMMITTED
+            assert recall.prepared == ["问", "下一问"]  # a new revision still prepares recall
+            assert provider.calls == 2
 
     asyncio.run(case())
 

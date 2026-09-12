@@ -177,6 +177,12 @@ class JournalContextPort:
         prewarm = getattr(self._recall, "prewarm", None)
         if prewarm is None:
             return
+        bound = self._uow.latest_agent_context_selection(run_id.value)
+        highwater = self._uow.agent_journal_highwater(run_id.value)
+        if bound is not None and bound.revision == highwater and bound.provider_request_id:
+            # Like load(), resuming an already frozen revision must not redo
+            # recall work, including potentially external query embedding.
+            return
         current = self._uow.latest_agent_journal_record(run_id.value, kind="user_input")
         if current is not None:
             await prewarm(_text_of(current))

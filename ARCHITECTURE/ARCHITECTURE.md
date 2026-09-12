@@ -1,3 +1,5 @@
+**Last updated: 2026-09-13 07:17 CST — frozen Context recovery avoids prewarm.** JournalContextPort.prepare now applies the same bound-selection/current-journal-revision check as load: a frozen resume does not repeat query pre-embedding, while a genuinely new input still prepares recall. Decisive actual OS rotation/SIGKILL/cold recovery and same-Agent new-input control:2 PASS/6.29s (`g-frozen-prewarm-green-v3`); independent Astra review limited ACCEPT. Before the fix, cold recovery measured Provider0/prewarm2/search0; after it, no new Provider/prewarm/search and all frozen journal/selection/request identities plus UNKNOWN holds remain. Successful fixture replies explicitly report their synthetic usage so the next-input assertion is not blocked by unrelated missing-usage accounting. Related Journal/SessionMemory/untrusted-recall/role-Context/actual-cold regression:46 PASS/12.27s (`g-context-affected-v4`, runner12.79s). No whole P35 or new-native completion claim.
+
 最后更新：2026-09-12。
 
 ## Agent 编排 Phase3 当前状态
