@@ -2,7 +2,7 @@
 
 ## 0. 交接（冷会话先读这一节）
 
-- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A、B、C 已完成（SDK 源码）；C 全量 979 passed / 8 skipped / 0 failed；下一步 D**。
+- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A–E 已完成（SDK源码）；E cf40b8e全量1199 passed /8 skipped /0failed；下一步F**。
 - **中心断言**：文档领域的 VERIFIED 只意味着「这份文件的这个版本的这几行里，逐字写着这句话」，且要在记录层 / 消费层 / 交付层三层同时成立。详见 `plan.md` §0。
 - **切片顺序**：A 领域画像与五处闸门 → B 来源与证据解析 → C 评估记录与分级 → D adapter 与证据不足出口 → E 冲突与失效 → F 回归与 wheel → G Host 与原生验收。
 - **每切片完成即跑 `tests/orchestrator` 全量**（不等切片 F），并同步更新本文件。
@@ -309,3 +309,15 @@ E仍未完成，接受/人工事务整合与独立审查、干净完整回归、
 | `legacy-review-green.log` | `6cb33b51d06070a7de87bf4c97308b3a8a37da18a309411266a058e24f0341c8` |
 | `p33-final.log` | `c490ddf6ebd03fa857046bc0eaa0538296ef313bdb7f00884b21d3b09a328415` |
 | `mypy-final.log` | `4ceb57b647f65ad9bc4a2ac12b1f1d95323ae55da4304fb3e5014cf75bf56502` |
+
+### E干净完整回归完成（19:38）
+
+E 干净源码 `cf40b8ec86a2f307d0f8b8f89cf7f0166e5de121` 完整编排 **1199 passed /8 skipped /0 failed**（481.36秒），watchdog481.63秒，PG25036无残留。8项skip为未启用真实Provider。A–E完成SDK源码验证；F/G、wheel、Host与真实flash仍未完成。
+
+E18:53–19:38约45分钟，含8分01.36秒完整测试。定向、独立审查、类型静态及架构回写完成；待文档提交后短冒烟与推送。尚未开始F正式计时；此前F/G只读准备与E重叠，不另加总。
+
+- `.local-test-evidence/2026-09-12/p33-e/orchestrator-full.log` SHA-256 `f941d3ab742f639c6220c2e55a863b255dbd77226ee21f5450ac403c4efbcef3`
+
+- `.local-test-evidence/2026-09-12/p33-e/orchestrator-full.json` SHA-256 `de67e2ed23db0412439ace70983c0ba720bc5a34853f52ef18916db7aaa0a207`
+
+- `.local-test-evidence/2026-09-12/p33-e/process-check.json` SHA-256 `ff62e4a8f66af0e87b279755f146dad42c68c73a58358b99eb3f6c9476243062`

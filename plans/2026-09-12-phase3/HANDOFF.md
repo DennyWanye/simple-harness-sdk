@@ -19,7 +19,7 @@
 | Phase3 **P3.1** 真实 App Mission 控制闭环 | ✅ SHIPPED |
 | Phase3 **P3.1 遗留修复** | ✅ SHIPPED（SDK 0.9.11） |
 | Phase3 **P3.2** 隔离执行与真实受控交付 | ✅ SHIPPED（SDK 0.10.0，SDK `48e441a`，Host `04350956`） |
-| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A–D 已完成 SDK 源码验证；D 全量1119 passed /8 skipped，E–G未完成** |
+| Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A–E 已完成 SDK 源码验证；E 全量1199 passed /8 skipped，F/G未完成** |
 | Phase3 P3.4 / P3.5 | 未开始 |
 
 用户的总指示（原话）："先修复，然后开始P3.2 到 P3.5，文件提交"。所以 P3.3 做完继续 P3.4、P3.5。
@@ -51,7 +51,7 @@
 | B | schema v9 `sources` 表与三个 facade 命令、来源进 CAS、protected 扩成 `Path\|bytes`、`SourceCitation` 契约、EvidenceResolver 七个失败码 | ✅ SDK 源码验证完成（`fb58bf1`），独立审查闭环；867 passed / 8 skipped |
 | C | schema v10 `criterion_assessments`、评估记录传递、`grade_claim` v2、attribution 记录/消费/压制通道（Host 交付层仍 G） | ✅ SDK 源码验证完成（`963b090`）；979 passed / 8 skipped，475.47 秒 |
 | D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | ✅ SDK源码验证完成（`d3d3fd8`）；1119 passed /8 skipped，446.64秒 |
-| E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | 候选定向638通过、独立审查闭环，待干净全量 |
+| E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | ✅ SDK源码验证完成（cf40b8e）；1199 passed /8 skipped，481.36秒 |
 | F | 全量回归、wheel 干净环境验证 | 未开始 |
 | G | Host 钉版、接线、系统渲染结论区、真实 flash 原生验收 | 未开始 |
 
@@ -160,3 +160,8 @@
 D 干净源码 `d3d3fd8650acc8b837dc4c0e093ab95068d054ff` 完整编排 **1119 passed / 8 skipped / 0 failed**（446.64秒），watchdog446.86秒，PG18131无残留。8项skip为未启用真实Provider。D为SDK源码里程碑，E–G、Host/wheel/真实flash仍未完成。
 
 E只读挑战已完成：直接citation新接受检查与stale used_knowledge分离；Knowledge来源依赖用同路径多版本并集；普通review不可代替doc冲突仲裁；已有HumanOverride/ConflictResolvedByHuman可承载contextual裁决，不升级Claim。开始E前写slice-e-readiness并保留全部原AC。
+
+### E最新接续（19:38）
+
+E 干净源码 `cf40b8ec86a2f307d0f8b8f89cf7f0166e5de121` 完整编排 **1199 passed /8 skipped /0 failed**（481.36秒），watchdog481.63秒，PG25036无残留。8项skip为未启用真实Provider。A–E完成SDK源码验证；F/G、wheel、Host与真实flash仍未完成。
+E从18:53开始，完成后继续F整仓红集逐nodeid核对和0.11.0安装验证。G仍需SDK判定树挂源/原子来源创建/引用读取，必须按最终源码重建制品，不能沿用A–E wheel身份。

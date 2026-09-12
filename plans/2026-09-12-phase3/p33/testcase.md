@@ -54,7 +54,7 @@ P33 + step04：445 passed / 1 skipped，24.95 秒；长引用重开及上限 3 p
 
 ## 后续门
 
-E 候选通过定向验证、待干净完整回归；F 整仓/wheel、G Host/真实 flash 原生验收仍未完成。A/B/C/D 源码的 PASS 不能扩大为 P3.3 完成。
+E源码完整回归通过；F 整仓/wheel、G Host/真实 flash 原生验收仍未完成。A/B/C/D 源码的 PASS 不能扩大为 P3.3 完成。
 
 ## 切片 E
 
@@ -64,4 +64,4 @@ E 候选通过定向验证、待干净完整回归；F 整仓/wheel、G Host/真
 | 24/25：两分支与实际综合Task，来源替换/撤销后下游排除 | test_p33_source_lineage_runtime.py、test_p33_source_summary.py | 定向PASS；runtime两场、摘要两项单元控制 |
 | 33/34/35a/35b/41/44：范围、人工绑定、第三成员、重复决定、不升级知识 | test_p33_doc_arbitration.py、test_p33_doc_arbitration_runtime.py | 定向PASS；实际三种裁决、硬失败耗尽、旧批准/拒绝关库恢复 |
 
-P33与旧人工审核合计638 passed /21.01秒，不累计重叠批次。完整编排待冻结；非真实Provider或原生UI证明。
+P33与旧人工审核合计638 passed /21.01秒，不累计重叠批次。cf40b8e完整编排1199 passed /8 skipped（481.36秒）；非真实Provider或原生UI证明。

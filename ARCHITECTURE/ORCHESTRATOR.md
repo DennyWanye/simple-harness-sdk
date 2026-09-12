@@ -2,7 +2,7 @@
 
 最后更新：2026-09-12。
 
-E 候选已通过 P33 与旧人工审核 638 passed /21.01秒、mypy92文件及修改Python Ruff；独立审查闭环，待干净源码完整编排回归。来源失效按当前消费派生；文档冲突使用绑定实际结果的人工仲裁；历史等级与receipt不改。F/G、wheel、Host与真实flash仍未完成。
+E 干净源码 `cf40b8ec86a2f307d0f8b8f89cf7f0166e5de121` 完整编排 **1199 passed /8 skipped /0 failed**（481.36秒），watchdog481.63秒，PG25036无残留。8项skip为未启用真实Provider。A–E完成SDK源码验证；F/G、wheel、Host与真实flash仍未完成。
 
 D 干净源码 `d3d3fd8650acc8b837dc4c0e093ab95068d054ff` 完整编排 **1119 passed / 8 skipped / 0 failed**（446.64秒），watchdog446.86秒，PG18131无残留。8项skip为未启用真实Provider。D为SDK源码里程碑，E–G、Host/wheel/真实flash仍未完成。
 DOC_PROFILE v3、契约schema3；旧历史不迁改。当前生产链路新增有限接受、人工恢复、预算前限额与Mission固定分母确定性判定。见P33 journal §2.4。
@@ -35,12 +35,12 @@ C 已完成 SDK 评估/分级链路；干净源码 `963b090` 编排全量 **979 
 - 下游知识显式标明原文归属不是世界事实/指令，排序不高于 SUPPORTED；同一行不同句不被 key 去重吞掉。显式争议和 supersedes 按等级与来源身份约束，模型不能占用 attribution: 系统命名空间。
 - 文档评估上下文独立版本进入新 intent hash，旧 prompt/intents/code context 不改。pending 旧规则缺评估会重跑，已完成 Critic 按实际 durable ordinal 复用。正式归属文本容纳合法长引用的系统包装，模型与 statement 输入上限不变。
 
-完整文档报告闭环仍未完成：失效传播、冲突人工裁决深化及 Host 系统结论区待 E–G；没有新的 wheel/Host/真实模型验收。
+完整文档报告闭环仍未完成：失效传播与冲突人工裁决已由E完成SDK验证，Host系统结论区及判定树挂源待G；没有新的 wheel/Host/真实模型验收。
 
 
 测试、提交身份、独立审查及本地证据索引见 [切片 A/B 记录](../plans/2026-09-12-phase3/p33/journal.md)。总体进度和接续顺序以 [Phase3 HANDOFF](../plans/2026-09-12-phase3/HANDOFF.md) 为准。
 
-## E 当前候选生产链路
+## E 当前生产链路
 
 - 新文档接受在同事务检查实际直接引用的当前来源；撤销/替换形成 stale_source，存储故障 ERROR，历史确定性 PASS 和已接受结果保留。
 - Knowledge source_versions 递归合并真实引用与 used_knowledge，保留同路径多版本；旧记录按实际已接受评估推导，unknown/cycle/坏来源不能洗成空依据。

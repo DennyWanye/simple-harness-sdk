@@ -56,3 +56,5 @@ human suspend专用接口由Kepler复用suspend_verification内部doc分流，�
 完成门：定向红绿、实际SDK运行/重开、独立累计审查、mypy/Ruff/legacy AST、干净HEAD完整编排、架构与交接回写、提交推送。不是P3.3整体完成。
 
 接口最终锁名：issue.code=stale_source|unknown_source_provenance|ERROR；verifier非空issues字段source_provenance_issues。ERROR传到context时为RetrievalUnavailable。Ohm独立认可摘要只读过滤：自身产出或真实used依赖命中stale才替换历史摘要，不影响无关联Task/无stale旧hash。
+
+E 干净源码 `cf40b8ec86a2f307d0f8b8f89cf7f0166e5de121` 完整编排 **1199 passed /8 skipped /0 failed**（481.36秒），watchdog481.63秒，PG25036无残留。8项skip为未启用真实Provider。A–E完成SDK源码验证；F/G、wheel、Host与真实flash仍未完成。
