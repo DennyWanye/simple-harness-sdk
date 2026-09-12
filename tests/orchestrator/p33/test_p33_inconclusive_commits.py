@@ -8,6 +8,8 @@ Full limitations accept immediately; only missing limitations on an otherwise so
 INCONCLUSIVE consumes the bounded rework allowance. Human permission must bind the
 same result. Mission coverage uses the original catalogue and is reread in the stop
 transaction. No hand-authored assessment PASS/receipt and no alternate state machine.
+Direct-accept fixtures default to published DOC4, with explicit older-profile controls;
+they do not prove DOC5 Critic execution or change the current deployment default.
 """
 
 from __future__ import annotations
@@ -32,7 +34,13 @@ from agent_orchestrator.contracts import (
     TaskStatus,
     ids,
 )
-from agent_orchestrator.governance.domains import CODE_DOMAIN, DOC_DOMAIN, DOC_PROFILE
+from agent_orchestrator.governance import domains
+from agent_orchestrator.governance.domains import (
+    CODE_DOMAIN,
+    CODE_PROFILE,
+    DOC_DOMAIN,
+    DOC_PROFILE_V4,
+)
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
 from agent_orchestrator.observability.replay import (
@@ -41,6 +49,7 @@ from agent_orchestrator.observability.replay import (
     events_from_store,
     formal_from_snapshot,
 )
+from agent_orchestrator.orchestrator import commit_service as commit_module
 from agent_orchestrator.orchestrator.commit_service import (
     CommitRejected,
     CommitService,
@@ -76,8 +85,9 @@ def contract_for(task):
 
 
 @pytest.fixture
-def scenes(tmp_path):
+def scenes(tmp_path, monkeypatch):
     opened = []
+    resolve_domain = commit_module.resolve_domain
 
     def make(
         *,
@@ -88,32 +98,39 @@ def scenes(tmp_path):
         domain=DOC_DOMAIN,
         profile=None,
     ):
+        selected = profile if profile is not None else (
+            CODE_PROFILE if domain == CODE_DOMAIN else DOC_PROFILE_V4
+        )
+        assert selected.id == domain
         root = tmp_path / str(len(opened))
         root.mkdir()
         store = Store.open(root / "orchestrator.db", clock=lambda: 1_000.0)
         opened.append(store)
         cas = ArtifactStore(root / "artifacts")
         commit = CommitService(
-            store, artifact_store=cas, deployed_layers=frozenset(DOC_PROFILE.runs_layers)
+            store, artifact_store=cas, deployed_layers=frozenset(DOC_PROFILE_V4.runs_layers)
         )
-        mission, _ = commit.create_mission(
-            MissionSpec(
-                goal="来源完整但结论仍不确定",
-                success_criteria=mission_criteria,
-                tenant_id="tenant",
-                idempotency_key="d-oracle",
-                domain=domain,
-                budget=Budget(max_tokens=200_000, max_attempts=20),
+        # Freeze through creation so the domain row AND creation event agree.
+        # Later source/dispatch/accept operations see the restored current registry.
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                commit_module,
+                "resolve_domain",
+                lambda domain_id: selected if domain_id == domain else resolve_domain(domain_id),
             )
-        )
-        if profile is not None:
-            # Explicit deployment-history boundary fixture: replace the newly bound
-            # profile before any Task/Attempt exists, never migrate an old intent.
-            with store.transaction() as connection:
-                connection.execute(
-                    "UPDATE mission_domains SET domain_version=?, json=? WHERE mission_id=?",
-                    (profile.version, json.dumps(profile.to_json()), mission.id),
+            mission, _ = commit.create_mission(
+                MissionSpec(
+                    goal="来源完整但结论仍不确定",
+                    success_criteria=mission_criteria,
+                    tenant_id="tenant",
+                    idempotency_key="d-oracle",
+                    domain=domain,
+                    budget=Budget(max_tokens=200_000, max_attempts=20),
                 )
+            )
+        assert commit_module.resolve_domain is resolve_domain
+        assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+        assert commit.domain_for(mission.id).to_json() == selected.to_json()
         version = cas.put_bytes((QUOTE + "\n").encode())
         if domain == DOC_DOMAIN:
             commit.register_source(
@@ -471,7 +488,7 @@ def test_conflicting_dispatch_freeze_rejected_before_budget_or_intent(
 
 @pytest.mark.parametrize("version", ["code", "1", "2"])
 def test_legacy_dispatch_does_not_backfill_new_freeze_fields(scenes, version):
-    profile = None if version == "code" else replace(DOC_PROFILE, version=version, adapters={})
+    profile = None if version == "code" else replace(DOC_PROFILE_V4, version=version, adapters={})
     s = scenes(domain=CODE_DOMAIN if version == "code" else DOC_DOMAIN, profile=profile)
     _, intent = dispatch(s)
     assert not {"check_spec_ids", "mission_contract_revision", "mission_criteria"} & set(

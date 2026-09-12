@@ -25,7 +25,8 @@ from agent_orchestrator.runtime.connectors_publish import FilePublishConnector
 
 
 def test_source_versions_are_visible_in_the_sealed_document_context(tmp_path):
-    from graph_helpers7 import drive_to_running, graph_service
+    from doc5_helpers import graph_service
+    from graph_helpers7 import drive_to_running
 
     from agent_orchestrator.context.context_builder import build_worker_package
 
@@ -128,7 +129,7 @@ def test_source_storage_validation_uses_current_deployment_after_reopen(tmp_path
 
 @pytest.mark.parametrize("topology", ["removed", "file_to_dir", "dir_to_file"])
 def test_dispatch_freezes_source_versions_and_restart_remounts_the_same_bytes(tmp_path, topology):
-    from graph_helpers7 import node
+    from doc5_helpers import node
 
     from agent_orchestrator.api.facade import MissionControlV1
     from agent_orchestrator.governance.permissions import Principal
@@ -281,8 +282,8 @@ def test_changed_source_artifact_is_rejected_at_the_real_collection_boundary(
     attack_path,
     forbidden_evidence,
 ):
+    from doc5_helpers import node
     from fixtures_provider import envelope_step
-    from graph_helpers7 import node
 
     from agent_orchestrator.api.facade import MissionControlV1
     from agent_orchestrator.contracts import SourceCitation

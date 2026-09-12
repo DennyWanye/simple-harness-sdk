@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
-"""Actual runtime owner change: one frozen root intent and one reserved judgment.
+"""Frozen doc4 runtime owner change: one root intent and one reserved judgment.
 Worker and Critic use the real SDK, SQLite and workspace tool gateway; model scripted.
+Only Mission creation uses the published profile; recovery runs under today's registry.
 """
 
 import asyncio
@@ -14,6 +15,7 @@ from graph_helpers7 import node, spec
 
 from agent_orchestrator.api.facade import MissionControlV1
 from agent_orchestrator.contracts import ContractError, MissionStatus, TaskStatus
+from agent_orchestrator.governance import domains
 from agent_orchestrator.governance.domains import DOC_DOMAIN
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
@@ -35,7 +37,7 @@ from agent_orchestrator.runtime.assembly import OrchestratorConfig
     ],
 )
 def test_g_root_judge_reopen_uses_original_view_and_one_intent(
-    tmp_path, missing_tree, stage, damage
+    tmp_path, missing_tree, stage, damage, monkeypatch
 ):
     path, quote = "sources/a.md", "甲方案需保留前提。"
     version = ""
@@ -93,9 +95,15 @@ def test_g_root_judge_reopen_uses_original_view_and_one_intent(
         nonlocal version
         config = OrchestratorConfig(evidence_root=tmp_path, max_concurrency=1)
         async with Orchestrator(config, provider, owner="original") as orch:
-            mission = await orch.submit_mission(
-                spec(domain=DOC_DOMAIN, success_criteria=("arbitration:topic",))
-            )
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    domains, "DOMAINS", {**domains.DOMAINS, DOC_DOMAIN: domains.DOC_PROFILE_V4}
+                )
+                mission = await orch.submit_mission(
+                    spec(domain=DOC_DOMAIN, success_criteria=("arbitration:topic",))
+                )
+            assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+            assert orch.commit.domain_for(mission.id).to_json() == domains.DOC_PROFILE_V4.to_json()
             api = MissionControlV1(orch, tenant_id=mission.tenant_id, principal=Principal("human"))
             api.register_source(
                 dict(
@@ -210,6 +218,10 @@ def test_g_root_judge_reopen_uses_original_view_and_one_intent(
                         (json.dumps(damaged), frozen.intent_id),
                     )
         async with Orchestrator(config, provider, owner="resumed") as resumed:
+            assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+            assert (
+                resumed.commit.domain_for(mission.id).to_json() == domains.DOC_PROFILE_V4.to_json()
+            )
             assert resumed._owner != old_owner
             if damage:
                 with pytest.raises(ContractError):

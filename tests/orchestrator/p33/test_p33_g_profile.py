@@ -11,13 +11,19 @@ import pytest
 from agent_orchestrator.governance import domains
 
 
-def test_g_default_is_v4_but_v3_canonical_snapshot_is_unchanged():
+def test_g_successor_preserves_v3_and_v4_canonical_snapshots():
     frozen = json.loads(Path(__file__).with_name("doc-profile-v3.json").read_text())
     assert domains.DOC_PROFILE_V3.to_json() == frozen
-    assert domains.DOC_PROFILE.version == "4"
+    assert domains.DOC_PROFILE.version == "5"
     assert domains.resolve_domain(domains.DOC_DOMAIN) == domains.DOC_PROFILE
     expected = {**frozen, "version": "4"}
-    assert domains.DOC_PROFILE.to_json() == expected
+    assert domains.DOC_PROFILE_V4.to_json() == expected
+    assert domains.DOC_PROFILE.to_json() == {
+        **expected,
+        "version": "5",
+        "planner_floor": ["format_check", "rule_check", "critic_review"],
+        "role_templates": {role: f"{role}-doc-research-v2" for role in frozen["role_templates"]},
+    }
 
 
 @pytest.mark.parametrize(
@@ -27,7 +33,8 @@ def test_g_default_is_v4_but_v3_canonical_snapshot_is_unchanged():
         ("2", False, False),
         ("3", True, False),
         ("4", True, True),
-        ("5", False, False),
+        ("5", True, True),
+        ("6", False, False),
     ],
 )
 def test_g_capability_boundary_is_explicit(version, assess, binding):
@@ -38,7 +45,7 @@ def test_g_capability_boundary_is_explicit(version, assess, binding):
     assert not domains.requires_mission_source_binding(replace(profile, id=domains.CODE_DOMAIN))
 
 
-@pytest.mark.parametrize("version", ["3", "4"])
+@pytest.mark.parametrize("version", ["3", "4", "5"])
 @pytest.mark.parametrize(
     "change",
     [

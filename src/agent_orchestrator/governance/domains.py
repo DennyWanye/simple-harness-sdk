@@ -107,13 +107,13 @@ class ConflictTemplateV1:
 
 
 def supports_document_assessments(domain: DomainProfileV1) -> bool:
-    """Only the two registered profiles share the assessment-v2 contract."""
-    return domain.id == DOC_DOMAIN and domain.version in {"3", "4"}
+    """Only registered successors share the assessment-v2 contract."""
+    return domain.id == DOC_DOMAIN and domain.version in {"3", "4", "5"}
 
 
 def requires_mission_source_binding(domain: DomainProfileV1) -> bool:
     """Successor Missions recheck current sources and bind the independent judge tree."""
-    return domain.id == DOC_DOMAIN and domain.version == "4"
+    return domain.id == DOC_DOMAIN and domain.version in {"4", "5"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,7 +289,13 @@ DOC_PROFILE_V3 = DomainProfileV1(
 )
 
 # Frozen v3 remains replayable; new Missions immediately use the successor gates.
-DOC_PROFILE = replace(DOC_PROFILE_V3, version="4")
+DOC_PROFILE_V4 = replace(DOC_PROFILE_V3, version="4")
+DOC_PROFILE = replace(
+    DOC_PROFILE_V4,
+    version="5",
+    planner_floor=("format_check", "rule_check", "critic_review"),
+    role_templates={role: f"{role}-doc-research-v2" for role in DOC_ROLE_TEMPLATES_V1},
+)
 
 DOMAINS: Mapping[str, DomainProfileV1] = MappingProxyType(
     {CODE_DOMAIN: CODE_PROFILE, DOC_DOMAIN: DOC_PROFILE}
@@ -309,7 +315,7 @@ def check_against_domain(
     *,
     key: str,
     success_criteria: Sequence[str],
-    verification_policy: Sequence[str] = (),
+    verification_policy: Sequence[str] | None = None,
     evidence_kinds: Sequence[str] = (),
 ) -> list[str]:
     """Problems with one proposed Task under ``domain`` — the single check the five gate
@@ -324,12 +330,19 @@ def check_against_domain(
                 f"{key}: criterion {criterion!r} uses {kind!r}, which the {domain.id} domain "
                 f"does not allow (allowed: {sorted(domain.criterion_kinds)})"
             )
-    policy = tuple(verification_policy)
+    policy = tuple(verification_policy or ())
     unknown = [layer for layer in policy if layer not in VERIFICATION_LAYERS]
     if unknown:
         problems.append(f"{key}: unknown verification layers {sorted(unknown)}")
     missing = [layer for layer in domain.planner_floor if layer not in policy]
-    if policy and missing:
+    # Doc5 moves report-quality requirements into the goal for an independent
+    # Critic. Every new Task must actually request that layer, including callers
+    # of the single-Task gate that supplied an empty policy. Older frozen domains
+    # retain their original optional-policy checking semantics.
+    strict_policy = (
+        domain.id == DOC_DOMAIN and domain.version == "5" and verification_policy is not None
+    )
+    if missing and (policy or strict_policy):
         problems.append(
             f"{key}: verification policy is below the {domain.id} floor, missing {sorted(missing)}"
         )

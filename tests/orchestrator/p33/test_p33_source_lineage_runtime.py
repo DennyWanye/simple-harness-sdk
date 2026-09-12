@@ -1,4 +1,8 @@
-"""E03/E04/E09: actual document branches and synthesis, then source invalidation."""
+"""E03/E04/E09: frozen doc4 branches and synthesis, then source invalidation.
+
+Keep the published Worker policy and actual synthesis Critic; only Mission
+creation uses doc4, while all execution observes the restored current registry.
+"""
 
 import asyncio
 import json
@@ -9,6 +13,7 @@ from graph_helpers7 import node, spec
 
 from agent_orchestrator.api.facade import MissionControlV1
 from agent_orchestrator.contracts import TaskStatus
+from agent_orchestrator.governance import domains
 from agent_orchestrator.governance.domains import DOC_DOMAIN
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
@@ -17,7 +22,9 @@ from agent_orchestrator.runtime.assembly import OrchestratorConfig
 
 
 @pytest.mark.parametrize("change", ["revoke", "supersede"])
-def test_real_synthesis_inherits_upstream_sources_and_context_excludes_stale(tmp_path, change):
+def test_real_synthesis_inherits_upstream_sources_and_context_excludes_stale(
+    tmp_path, change, monkeypatch
+):
     versions = {}
     upstream = []
     source = {key: (f"sources/{key}.md", f"资料 {key} 记载了独立的测试条件。") for key in "abs"}
@@ -70,18 +77,24 @@ def test_real_synthesis_inherits_upstream_sources_and_context_excludes_stale(tmp
     async def case():
         config = OrchestratorConfig(evidence_root=tmp_path, max_concurrency=1)
         async with Orchestrator(config, provider) as orch:
-            mission = await orch.submit_mission(
-                spec(
-                    domain=DOC_DOMAIN,
-                    success_criteria=("file:s.md",),
-                    synthesis={
-                        "goal": "组合两份资料",
-                        "success_criteria": ["file:s.md", "cite:sources/s.md"],
-                        "outputs": ["s.md"],
-                        "budget": {"max_tokens": 30000, "max_attempts": 2},
-                    },
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    domains, "DOMAINS", {**domains.DOMAINS, DOC_DOMAIN: domains.DOC_PROFILE_V4}
                 )
-            )
+                mission = await orch.submit_mission(
+                    spec(
+                        domain=DOC_DOMAIN,
+                        success_criteria=("file:s.md",),
+                        synthesis={
+                            "goal": "组合两份资料",
+                            "success_criteria": ["file:s.md", "cite:sources/s.md"],
+                            "outputs": ["s.md"],
+                            "budget": {"max_tokens": 30000, "max_attempts": 2},
+                        },
+                    )
+                )
+            assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+            assert orch.commit.domain_for(mission.id).to_json() == domains.DOC_PROFILE_V4.to_json()
             api = MissionControlV1(orch, tenant_id=mission.tenant_id, principal=Principal("person"))
             for key, (path, quote) in source.items():
                 api.register_source(

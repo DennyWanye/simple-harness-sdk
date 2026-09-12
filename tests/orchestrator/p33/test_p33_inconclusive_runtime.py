@@ -1,4 +1,9 @@
-"""D07/D08: real dispatch, CAS, verification, acceptance and Mission judgment."""
+"""D07/D08 on frozen doc4: dispatch, CAS, acceptance and Mission judgment.
+
+These are the published deterministic/coverage-human and root-arbitration
+contracts, not doc5's new mandatory Task Critic. Creation alone binds doc4;
+all execution and recovery use the current registry with the old frozen Mission.
+"""
 
 import asyncio
 import json
@@ -9,6 +14,7 @@ from graph_helpers7 import node, spec
 
 from agent_orchestrator.api.facade import MissionControlV1
 from agent_orchestrator.contracts import MissionStatus, TaskStatus
+from agent_orchestrator.governance import domains
 from agent_orchestrator.governance.domains import DOC_DOMAIN
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
@@ -28,7 +34,7 @@ from agent_orchestrator.storage.store import Store
     ],
 )
 def test_mission_uncertainty_uses_original_denominator_before_judge(
-    tmp_path, total, uncertain, extra, expected, root_arbitration
+    tmp_path, total, uncertain, extra, expected, root_arbitration, monkeypatch
 ):
     from agent_orchestrator.verification.assessments import (
         criterion_id,
@@ -117,12 +123,18 @@ def test_mission_uncertainty_uses_original_denominator_before_judge(
         nonlocal version, task_ids, mission_ids
         config = OrchestratorConfig(evidence_root=tmp_path, max_concurrency=1)
         async with Orchestrator(config, provider) as orch:
-            mission = await orch.submit_mission(
-                spec(
-                    domain=DOC_DOMAIN,
-                    success_criteria=("arbitration:topic",) if root_arbitration else criteria,
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    domains, "DOMAINS", {**domains.DOMAINS, DOC_DOMAIN: domains.DOC_PROFILE_V4}
                 )
-            )
+                mission = await orch.submit_mission(
+                    spec(
+                        domain=DOC_DOMAIN,
+                        success_criteria=("arbitration:topic",) if root_arbitration else criteria,
+                    )
+                )
+            assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+            assert orch.commit.domain_for(mission.id).to_json() == domains.DOC_PROFILE_V4.to_json()
             api = MissionControlV1(orch, tenant_id=mission.tenant_id, principal=Principal("human"))
             api.register_source(
                 {
@@ -207,6 +219,8 @@ def test_mission_uncertainty_uses_original_denominator_before_judge(
             domain = orch.commit.domain_for(mid)
         reopened = Store.open_readonly(database)
         try:
+            assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+            assert reopened.get_mission_domain(mid)["json"] == domains.DOC_PROFILE_V4.to_json()
             assert reopened.get_mission(mid).to_json() == original
             assert (
                 mission_coverage(reopened, reopened.get_mission(mid), domain)["hash"]
@@ -271,9 +285,15 @@ def test_adapter_human_review_survives_actual_runtime_close_and_reopen(
     async def run():
         nonlocal version, candidate_id
         async with Orchestrator(config, provider, owner="d-human") as first:
-            mission = await first.submit_mission(
-                spec(domain=DOC_DOMAIN, success_criteria=("file:report.md",))
-            )
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    domains, "DOMAINS", {**domains.DOMAINS, DOC_DOMAIN: domains.DOC_PROFILE_V4}
+                )
+                mission = await first.submit_mission(
+                    spec(domain=DOC_DOMAIN, success_criteria=("file:report.md",))
+                )
+            assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+            assert first.commit.domain_for(mission.id).to_json() == domains.DOC_PROFILE_V4.to_json()
             api = MissionControlV1(first, tenant_id=mission.tenant_id, principal=Principal("human"))
             api.register_source(
                 {
@@ -357,6 +377,10 @@ def test_adapter_human_review_survives_actual_runtime_close_and_reopen(
             assert provider.by_role == {"worker": 3}
         idle_provider = RoleScriptedProvider({})
         async with Orchestrator(config, idle_provider, owner="d-human") as second:
+            assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+            assert (
+                second.commit.domain_for(mission.id).to_json() == domains.DOC_PROFILE_V4.to_json()
+            )
             await asyncio.wait_for(second.run(), 15)
             assert second.store.get_result(rid).verification_state == "SUSPENDED"
             assert second.store.get_task(task.id).status is TaskStatus.VERIFYING
@@ -389,7 +413,9 @@ def test_adapter_human_review_survives_actual_runtime_close_and_reopen(
     asyncio.run(run())
 
 
-def test_actual_runtime_stops_missing_limitations_after_one_rework_without_manager(tmp_path):
+def test_actual_runtime_stops_missing_limitations_after_one_rework_without_manager(
+    tmp_path, monkeypatch
+):
     from agent_orchestrator.verification.assessments import criterion_id, task_contract_revision
 
     path, quote, version, candidate = "sources/a.md", "现有资料尚未验证生产效果。", "", ""
@@ -429,9 +455,15 @@ def test_actual_runtime_stops_missing_limitations_after_one_rework_without_manag
         nonlocal version, candidate
         config = OrchestratorConfig(evidence_root=tmp_path, max_concurrency=1)
         async with Orchestrator(config, provider) as orch:
-            mission = await orch.submit_mission(
-                spec(domain=DOC_DOMAIN, success_criteria=("file:report.md",))
-            )
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    domains, "DOMAINS", {**domains.DOMAINS, DOC_DOMAIN: domains.DOC_PROFILE_V4}
+                )
+                mission = await orch.submit_mission(
+                    spec(domain=DOC_DOMAIN, success_criteria=("file:report.md",))
+                )
+            assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+            assert orch.commit.domain_for(mission.id).to_json() == domains.DOC_PROFILE_V4.to_json()
             api = MissionControlV1(orch, tenant_id=mission.tenant_id, principal=Principal("human"))
             api.register_source(
                 {

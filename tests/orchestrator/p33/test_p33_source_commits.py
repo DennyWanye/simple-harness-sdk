@@ -8,6 +8,8 @@ Direct old citations fail; unused changes and inherited stale knowledge do not.
 Accepted historical rows never change on source replacement or acceptance replay.
 Projection inherits every upstream version, including two hashes of the same path.
 The companion arbitration suite reuses these real graph/result/CAS drivers.
+E01/02 direct-Commit oracles freeze published DOC4 and do not prove DOC5 Critic.
+Only Mission creation selects that historical profile; the current default stays on.
 """
 
 from __future__ import annotations
@@ -33,7 +35,13 @@ from agent_orchestrator.contracts import (
     ids,
 )
 from agent_orchestrator.contracts.models import canonical_json
-from agent_orchestrator.governance.domains import CODE_DOMAIN, CODE_PROFILE, DOC_DOMAIN, DOC_PROFILE
+from agent_orchestrator.governance import domains
+from agent_orchestrator.governance.domains import (
+    CODE_DOMAIN,
+    CODE_PROFILE,
+    DOC_DOMAIN,
+    DOC_PROFILE_V4,
+)
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.governance.policies import DeploymentPolicy
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
@@ -44,6 +52,7 @@ from agent_orchestrator.observability.replay import (
     events_from_store,
     formal_from_snapshot,
 )
+from agent_orchestrator.orchestrator import commit_service as commit_module
 from agent_orchestrator.orchestrator.commit_service import CommitService, MissionSpec, Reservation
 from agent_orchestrator.storage.store import Store
 from agent_orchestrator.verification.assessments import assessment_binding_for, citation_integrity
@@ -82,8 +91,9 @@ def attach(s, store):
 
 
 @pytest.fixture
-def e_scenes(tmp_path):
+def e_scenes(tmp_path, monkeypatch):
     opened = []
+    resolve_domain = commit_module.resolve_domain
 
     def make(
         *,
@@ -91,7 +101,12 @@ def e_scenes(tmp_path):
         sources=None,
         domain=DOC_DOMAIN,
         mission_criteria=("file:REPORT.md",),
+        profile=None,
     ):
+        selected = profile if profile is not None else (
+            CODE_PROFILE if domain == CODE_DOMAIN else DOC_PROFILE_V4
+        )
+        assert selected.id == domain
         root = tmp_path / str(len(opened))
         root.mkdir()
         store = Store.open(root / "orchestrator.db", clock=lambda: 1000.0)
@@ -100,21 +115,34 @@ def e_scenes(tmp_path):
             SimpleNamespace(
                 root=root,
                 cas=ArtifactStore(root / "artifacts"),
-                profile=CODE_PROFILE if domain == CODE_DOMAIN else DOC_PROFILE,
+                profile=selected,
             ),
             store,
         )
-        mission, _ = s.commit.create_mission(
-            MissionSpec(
-                goal="来源与争议的实际提交",
-                success_criteria=mission_criteria,
-                tenant_id="tenant",
-                idempotency_key="e-oracle",
-                domain=domain,
-                budget=Budget(max_tokens=120_000, max_attempts=40),
-                conflict_reserve_tokens=15_000,
+        # Persist the real published profile through the public creation transaction.
+        # Source operations, graph admission, accept and reopen use its frozen value.
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                commit_module,
+                "resolve_domain",
+                lambda domain_id: (
+                    selected if domain_id == domain else resolve_domain(domain_id)
+                ),
             )
-        )
+            mission, _ = s.commit.create_mission(
+                MissionSpec(
+                    goal="来源与争议的实际提交",
+                    success_criteria=mission_criteria,
+                    tenant_id="tenant",
+                    idempotency_key="e-oracle",
+                    domain=domain,
+                    budget=Budget(max_tokens=120_000, max_attempts=40),
+                    conflict_reserve_tokens=15_000,
+                )
+            )
+        assert commit_module.resolve_domain is resolve_domain
+        assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+        assert s.commit.domain_for(mission.id).to_json() == s.profile.to_json()
         s.mission = mission
         if domain == DOC_DOMAIN:
             for path, content in (sources or {PATH: TEXT}).items():

@@ -36,7 +36,12 @@ import pytest
 from agent_orchestrator.api.facade import FacadeError, MissionControlV1
 from agent_orchestrator.artifacts.store import ArtifactStore
 from agent_orchestrator.contracts import ContractError, TaskStatus
-from agent_orchestrator.governance.domains import CODE_DOMAIN, DOC_DOMAIN, DOC_PROFILE
+from agent_orchestrator.governance.domains import (
+    CODE_DOMAIN,
+    DOC_DOMAIN,
+    DOC_PROFILE,
+    DOC_PROFILE_V4,
+)
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.governance.policies import DeploymentPolicy
 from agent_orchestrator.observability.replay import (
@@ -629,7 +634,6 @@ def test_facade_rechecks_physical_storage_on_new_commands_and_pending_approval(e
 
 def test_revocation_does_not_close_a_real_conflict_task_or_rewrite_claims(env):
     from test_p33_remaining_domain_gates import (
-        DOC_PASSES,
         _document_result,
         _graph,
         _node,
@@ -637,7 +641,9 @@ def test_revocation_does_not_close_a_real_conflict_task_or_rewrite_claims(env):
     )
 
     e = env
-    e.mission = _planning(e.commit, conflict_reserve_tokens=20_000)
+    # Preserve the historical V4 conflict/revocation oracle only for this Mission;
+    # the env fixture and all other source commands still use the current domain.
+    e.mission = _planning(e.commit, profile=DOC_PROFILE_V4, conflict_reserve_tokens=20_000)
     e.api = MissionControlV1(
         e.host, tenant_id=e.mission.tenant_id, principal=Principal("person-one")
     )
@@ -647,7 +653,7 @@ def test_revocation_does_not_close_a_real_conflict_task_or_rewrite_claims(env):
     tasks, _ = _graph(e.commit, e.mission, *nodes)
     for task, stance in zip(tasks, ("affirms", "refutes"), strict=True):
         result = _document_result(e.commit, task, stance=stance, cas=e.cas)
-        e.commit.accept_result(result.envelope.id, verifier_results=DOC_PASSES)
+        e.commit.accept_result(result.envelope.id, verifier_results=())
     [conflict] = e.store.list_conflicts(e.mission.id)
     assert conflict["state"] == "OPEN"
     conflict_task = e.store.get_task(conflict["task_id"])

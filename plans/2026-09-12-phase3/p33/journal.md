@@ -2,7 +2,7 @@
 
 ## 0. 交接（冷会话先读这一节）
 
-- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**切片 A–E 已完成（SDK源码）；E cf40b8e全量1199 passed /8 skipped /0failed；下一步F**。
+- **当前位置**：计划第 3 版已定稿（两轮各两位独立评审，四份原文在 `reports/`，处置表在 `plan.md` §7）。**A–E完成SDK源码验证，F候选验证完成并保留既有红集；G进行中。G源码a5c8fca完整编排1302 passed /8 skipped，0.11.1已安装到Host；原生真实模型验收未完成。** 后续记录按时间追加，早期数字只代表当时切片。
 - **中心断言**：文档领域的 VERIFIED 只意味着「这份文件的这个版本的这几行里，逐字写着这句话」，且要在记录层 / 消费层 / 交付层三层同时成立。详见 `plan.md` §0。
 - **切片顺序**：A 领域画像与五处闸门 → B 来源与证据解析 → C 评估记录与分级 → D adapter 与证据不足出口 → E 冲突与失效 → F 回归与 wheel → G Host 与原生验收。
 - **每切片完成即跑 `tests/orchestrator` 全量**（不等切片 F），并同步更新本文件。
@@ -393,3 +393,98 @@ Host第一次源码overlay检查21 passed/6 failed，6项均由实际SDK版本/�
 - `.local-test-evidence/2026-09-12/p33-g/g-recovery-v5.log` SHA-256 `a5610c529fb985a2253d57b07b153f3e34867601fbd9f84b6bf1d6ed583680ab`
 - `.local-test-evidence/2026-09-12/p33-g/g-action-v1.log` SHA-256 `36628d9288a7053a36fef344f7d77295a6fb21e8ab5726fbbb262ff5e21f2dc0`
 - `.local-test-evidence/2026-09-12/p33-g/host-source-g-first.log` SHA-256 `5dc1df2f7d2b207940a6d3b3cb9b5e3794a3a51100f491ea1b54ae52cde232f8`
+
+
+### G源码全回归与候选（21:18）
+
+G SDK源码验证里程碑（21:18 CST）：干净提交a5c8fca659be8b491d4d0f3f3f5536a5e711ce48完整编排1302 passed /8 skipped /0 failed，487.75秒（runner488.09秒），PG50040已查无残留。8项真实Provider未启用；G整体未完成。0.11.1可复现候选wheel49137655…、306包文件与709个sdist源码输入逐字匹配；Host安装组合/原生flash继续验收。
+
+构建检查首轮将Hatch自动包含的tracked .gitignore列成unexpected，首份JSON保留；第二轮加入该真实输入并逐字对照提交，709个输入无缺失/额外/差异。未修改制品来迎合检查。Host换包时pip确认此前实际Harness0.7.2/Service0.3.12，已分别安装新候选0.11.1和仓库原钉0.3.13。uv lock联网解析仅SDK版本变化及现有marker规范化，415包，--check --offline通过；Service版本计划未更改。
+
+- `.local-test-evidence/2026-09-12/p33-g/g-orchestrator-clean-v1.log` SHA-256 `1dd021b0818f79027b1316a2fa7a6e9901ca45c4582da42756daba85333cccd9`
+- `.local-test-evidence/2026-09-12/p33-g/g-orchestrator-clean-v1.xml` SHA-256 `e2bfc26f87b509635a6d29101f2fe56f5d53a2e67b33ab629973a5c5cf8f175b`
+- `.local-test-evidence/2026-09-12/p33-g/g-orchestrator-clean-v1.json` SHA-256 `1231c87db876648b13efe897a566c6394dac5312324d7f058cfe64b09d1712a4`
+- `.local-test-evidence/2026-09-12/p33-g/build.log` SHA-256 `4dcc81e56cfe10cad5688864d77c9f465945647c1f6a8007d1069a8976217f1e`
+- `.local-test-evidence/2026-09-12/p33-g/twine.log` SHA-256 `b0dc0ef053dc6f4afed5a50afd7a27437473caf3fe5f5ebc1831541259a36ce9`
+- `.local-test-evidence/2026-09-12/p33-g/wheel-source-check.json` SHA-256 `6d138784d739140b3e32e4204e86d859367691d5656200ca9807817e5a4f99e1`
+- `.local-test-evidence/2026-09-12/p33-g/sdist-source-check-v2.json` SHA-256 `3fbd5a4b4e86f339a3efeae580bab555b31c6a8dcc72ea5d0ce8b56ae9d3604e`
+- `.local-test-evidence/2026-09-12/p33-g/candidate/candidate-manifest.json` SHA-256 `bef6dae40cdd8ebcaa91c065aeabb210342124c766231b9bc41fd2b5916529de`
+
+
+### G补证与macOS冻结进展（21:47 CST）
+
+截至21:47，G从20:25起约82分钟，仍未完成。SDK生产源保持a5c8fca/候选0.11.1；新增审计测试不冒充已含在原sdist。
+
+- O1/O2：两次真实dispatch冻结不同来源版本，互换producer/accept顺序，并验证旧规则真实历史源码边界。首轮8 passed/1 failed为测试在accept后重取已被系统投影的Claim绑定；改为原intent/既有记录比较，没有改生产守卫。第二轮9 passed/0.33秒，主审通过。历史claims.py夹具直接取a4aae8c23a2b72b9f2b07c62986fc7dd39f36cdf，逐字SHA校验，保留许可证。
+- O3/O5：真实SDK dispatch/读取/验证/接受下的来源指令及代码证据边界，共6 passed/1.80秒。第一次因O5使用Host asyncio标记而SDK strict markers不认，收集失败；改为SDK既有同步test+asyncio.run，无插件/依赖/生产改动。O3/O5各获Kepler独立限定ACCEPT。O3 Provider脚本固定，不证明真实模型抗注入；O5真实code_test产出VERIFIED目标，再在同Mission测试专用领域视图下攻击，不宣称混合领域产品API。
+- Host本地提交c3d4e2277c00de200f0310121b805574f7b5c368；PyInstaller成功115.661秒，峰值RSS1868384KiB，无残留PG。包内Host身份2227个跟踪输入、hash27efd77d86700113cafeb3101d1b2e3d6c239c142c19ebc68fb3b714a4bc2dfa，构建前后clean一致。实际浏览器原件SHA、driver pin与许可证核验通过。Tauri .app编译进行中，尚未真实启动或调用deepseek-flash。
+- 主检查PG62241/65798/64417/61421/61507均无残留。尚未推送G。O4全Mission回放补证与N1–N6原生门仍待完成。
+
+本机原始证据（永久ignored）：
+- `.local-test-evidence/2026-09-12/p33-g/g-audit-order-structure-v1.log` SHA-256 `793a645dc4f9204c93e071a62760fd87bb73474421b9bfcdfa65a48b0acd654a`
+- `.local-test-evidence/2026-09-12/p33-g/g-audit-order-structure-v2.log` SHA-256 `fd2e2043c6a07a60ee8300927e2cbcdb6cc31aeab89b93213a6ebd666e9141fd`
+- `.local-test-evidence/2026-09-12/p33-g/g-audit-order-structure-v2.json` SHA-256 `b76c53085a857687ee40882f24e6d778e21ad0b86e380304e3af9dce2ba82841`
+- `.local-test-evidence/2026-09-12/p33-g/g-audit-injection-code-v1.log` SHA-256 `356fa7ecd8957289e65c41020d1b7eaf82ade4ccbb4afba1f187f661bda05dcc`
+- `.local-test-evidence/2026-09-12/p33-g/g-audit-injection-code-v2.log` SHA-256 `7bb3787c7439df055d80fa26a51a92a407f518041961696d4653630ec941d88a`
+- `.local-test-evidence/2026-09-12/p33-g/g-audit-injection-code-v2.json` SHA-256 `ad1641893f50f718b249b882f1d400f42debc281b48eb9dafb16d68b81d97552`
+
+
+### G原生启动暴露包装缺陷（22:14 CST）
+
+Host原生安装包已实际启动两版，两次都失败，未发出本次真实deepseek-flash任务请求。第一版c3d4e227缺SDK公开延迟导入workspace_binding_protocol，dfb3c7dc修复并在第二次实际启动越过；第二次workflow稳定manifest编译需handler源码，c41bfc14补齐product/SDK workflow源，未削弱SDK getsource/fingerprint。两处各主审+Kepler独立限定ACCEPT，干净Host c41bfc14组合7 passed/1.29秒；第三版PyInstaller正在构建。原生失败界面、实际Bundled日志和资源退出状态见Host plans/2026-09-12-phase3-host-g/journal.md，退出return0不等于验收通过。
+
+O4扫描插件仍在便宜门：首轮4 passed/4 failed；加入deployment scope/discovery后13 passed/5 failed，clean场景gate仍OPEN，正在诊断。全局PolicySeeded必须按部署scope检查并保留raw事件；所有Mission含子进程持久库，已有并发读、WAL和只读不迁移控制。尚未进行带插件的完整扫描，不用原1302绿或单demo回放冒充O4已关闭。
+
+计时：20:25–22:14 G已用约109分钟，C/D/E/F及B收尾可核实191分钟，P3.3累计至少300分钟；A/B未记录的开发时间不补猜。G未完成，P3.4/P3.5未开始。
+
+
+### 源码真实 N1 失败与契约修复中（23:28 CST）
+
+本轮 source-ui-n1-v2 使用 Host 28c94cdc 的源码 backend、当次编译的 Tauri debug UI、原安装 SDK a5c8fca/0.11.1。实际点击创建文档 Mission `mission-ee86ae060f8376e8`，通过文件选择器登记真实 ARCHITECTURE/AGENT_ORCHESTRATION.md 与 Host acceptance.md（逻辑名 HOST_ACCEPTANCE.md），要求比较原生 verify 与冻结安装验证边界，四条逐字依据、完整表格行及冒号限定单元，不降低原 N1 判据。
+
+结果 **FAIL**。9 次真实 deepseek-flash Provider invocation：8 succeeded、1 failed。Worker A 三次把 #L、:行号、?lines= 当作文件路径，工具真实拒绝；输出把引用对象放入 `claim.evidence[]`，真实 parser 以 `claim.evidence[] must be a string` 拒绝。A 已消耗94642/100000 tokens，剩5358不足下一次20000预留，Mission budget_exhausted；不等于整个400000 Mission预算已花完。没有合格正式报告/Claim；HTTP成功与 UI启动不构成价值验收。
+
+源码运行持续978.064秒，峰值组RSS772256KiB；菜单Quit后return0、PG86187 remaining=[]，失败证据保留。此时正常退出只是资源回收成功。SDK正修文档prompt v2/profile5：字符串evidence与结构化citations分离、逐字归属范例、明确文件读取路径、不修改旧v1或doc3/4冻结合同。首轮新控9 fail/1 pass；修后定向65 passed/1.42秒。独立审查指出文档质量goal可能没有Critic，正在补新版提交门；这65项不是该门完成证据，更不是模型改善证明。Host另准备明确标识的SDK源码开发模式，保留正式wheel身份验证，不构建发布包。
+
+本机证据：
+- Host `.local-test-evidence/2026-09-12/p33-g/source-ui-n1-v2/native.log` SHA-256 `d2c0fc79d090d158879ea85033ba632d7ff9448d689999723dca802330f3b227`
+- Host `.local-test-evidence/2026-09-12/p33-g/source-ui-n1-v2/sources.json` SHA-256 `5485ffee38581c359aa59466b6bbd5312e56f9e7c6551c9edfd776501dc49c76`
+- Host `.local-test-evidence/2026-09-12/p33-g/source-ui-resource-v2/resource.json` SHA-256 `4ce1f9fb9fa2a881768650aef6e92590796c8f795624ac677c061f218ec1e77e`
+- SDK `.local-test-evidence/2026-09-12/p33-g/g-document-contract-green-v2.{log,json}`：65 passed/1.42秒，wrapper1.74秒，dirty a5c8fca。
+
+计时：23:01恢复执行至23:28已用27分钟；22:38–23:01范围讨论单列。G自20:25累计执行约160分钟（扣除23分钟讨论），P3.3已记录执行至少351分钟；未知A/B前段仍不补猜。P3.3 G未完成，P3.4仅准备就绪草案，P3.5未实施。
+
+
+### 源码 N1 v3 与长结果/取消缺口（2026-09-13 00:20 CST）
+
+源码身份接线已实际冷启动：Host d0c1ee4c clean、SDK a5c8fca 加当次未提交源码，307 个生产输入的聚合 SHA-256 `3851d2fc850c63d452f07cbe68876e25cb98bd7d12b76cf3f8efb09b894f4bc4`。manifest 为 editable-source / source_verified=true / installed_wheel_verified=false，Service 仍原 pin。真实 CUA 点击创建 Mission `mission-e2b63b91a02fde89`，文档 profile5；两份原始来源哈希仍 ad147a635d9292533bd440efbb12471beeba55b4e1df1637b514f93c2f28db8e / 505b4a72650cae886530ac980aeabd227eb76f0bbf80d2f091f88008c65d99f2，目标、三条条件与默认400000/12预算不变。Planner真实给三个Task均配format/rule/Critic；A/B/C预算120000/120000/160000。
+
+业务验收 **FAIL**，Mission 通过 UI **CANCELLED**，不是自然预算耗尽：首Worker已提交可解析信封，format/rule通过并实际进入Critic；但workspace_read_file全量结果经SDK Context超过2048tokens后只投递1024字符预览，编排未提供可用续读。模型重复读取仍只见开头1–8行，明确说无法查看后文表格；四条完整关键依据/报告价值门未过，故主取消，保留现场后修读取链。没有把局限说明或局部rule PASS当完整报告验收通过。实际13次deepseek-flash invocation：9 succeeded、2 failed、2在退出时仍handed_off；后两项不伪称已结算。
+
+另发现2342条HeartbeatReceived，其中2340条verifying，最高单秒20条；MissionCancelled seq2059后仍319条。候选因果链是Critic每0.05秒等待poll调用_hold_lease无节流、renew_lease无终态拒绝。正在补同事务终态/owner检查和半租期续租控制；未通过新控制前不标完成。
+
+正常菜单Quit后PG94878无残留：源码载体运行701.909秒、峰值622560KiB，return0。此时防熄屏PID83049仍在，不修改永久电源设置。Host本机证据根 `.local-test-evidence/2026-09-13/p33-g/source-ui-n1-v3/`，`failure-summary.json` SHA-256 `d4b99385e79ae7a1c31b63dc9efb87ed2ffc038c22870f03c91c277e69c11685`；索引含log/manifest/数据库及存在的WAL/SHM哈希。源码结果不代表安装包通过；N2–N6/O4仍OPEN。
+
+测试记录分层：doc5实际Critic输出证明/原子settlement gate最终`g-doc5-proof-v3`71 passed/4.07秒（wrapper4.32），独审限定ACCEPT；历史fixture显式冻结旧版本，不把新默认回退。完整P33兼容回归`g-p33-compat-v5`819 passed/22.71秒（wrapper23.02），这发生于分页/续租新修复之前，不能作为后续变更已验。失败诊断v1–v4与原始setup失败均保留。所有原始测试证据仅本机ignored目录，后续新修复/真实UI仍需独立重验。
+
+计时：从23:01恢复功能执行至00:20为79分钟；22:38–23:01的23分钟范围讨论另计。G已记录执行约212分钟（20:25–00:20扣讨论），P3.3先前191分钟加G为至少403分钟；未知A/B前段不补猜，不累计并行代理耗时。P3.3 G进行中；P3.4/P3.5仅设计准备，未实施完成；P3.6和打包暂停。
+
+
+### 文档读取与Critic生命周期修复闭环（2026-09-13 00:40 CST）
+
+实际N1v3时间线只读核对：Critic1 00:13:14.205提交，00:14:21.293第四调用handed_off；Mission于00:15:01.885取消；00:15:14.237外层120秒超时将Critic1记FAILED，00:15:14.264第二个Critic仍新调用（取消后12.379秒）。两旧SDKturn退出时仍running，无最终result，不猜测远端费用。
+
+修复默认等待继承SDK同一turn_deadline_seconds（当前900秒），显式值仍须正且不超过该期限。只有已结束但输出不合法的Critic才允许后继ordinal；尚未回答的超时调用请求取消、保持SUBMITTED等待真实结果/费用，不新建重试。每ordinal与dispatch前核当前终态；取消后旧服务turn不再绑定工具/续租，正常cycle及冷恢复负责精确收集原agent/turn。仅owner变化不当作全局取消。AGENT_CREATED可能已submit但丢回执，cascade保留该Critic身份和预留，不能当0费用提前结账；查询无实际turn的对照才关闭。
+
+renew_lease同事务检查Mission/Task/Attempt终态与owner，Critic使用半租期节流，不在每0.05秒poll写新版本/事件，实际progress变化仍更新。workspace_read_file添加可选Unicode offset/max_chars/expected_sha256，长文件自动有界分页；原始UTF8 bytes SHA、CRLF、超长行片段标记和每页权限/预算保留，完整ToolResult含信任notice与调用身份不超过2000bytes。旧小结果shape及旧profile/prompt字节保留。真正AgentRuntime/JournalContextPort的UpperBound及Tiktoken配置均看得到完整页而非递归preview；这不是flash质量已通过。
+
+验证：`g-reading-lifecycle-v2`39 passed/1.15秒（分页34+生命周期5）；第二批`g-critic-recovery-v1`4 passed/1 failed/0.75秒暴露真实漏账：未结束调用的0 tokens先占append-only usage_ref，迟到真实150被丢，账本150而SDK300。修复顺序为先判未结束timeout并保留预留，只有结果终结后导入；不放宽300断言、不把未知记0。`g-critic-recovery-v2`10 passed/1.39秒；最终`g-p33-compat-v7`874 passed/35.70秒（wrapper36），包括整P33、旧workspace与recovery矩阵，新增断言reservation.settled_tokens=300。mypy94文件、改动范围Ruff、git diff --check通过。第二批cold是关闭SQLite/Runtime后新实例恢复，不冒称OS进程kill。其他role/恢复入口的非final usage风险列P35待审，不以本片推导全局账务均已证明。
+
+原始日志均在SDK `.local-test-evidence/2026-09-12/p33-g/`，失败保留：
+- `g-doc5-proof-v3.log` SHA-256 `69930d16c49b18f782e13297768f1c618d81cac234c3c2fc0c5a6892257d77b4`。
+- `g-reading-lifecycle-v2.log` SHA-256 `caaa5bdb0fd9a6f22b214c2ea432b8a7dcaaf06928d48b46a1725470207a92d8`。
+- `g-critic-recovery-v1.log` SHA-256 `d28bccff27a6576404aa8759d676a40ab8668534faccff6a95b057ce734c2618`。
+- `g-critic-recovery-v2.log` SHA-256 `4f0181424be1752d25438de95cf7a63d195fb2b510fcfd877bce608527c9fbb4`。
+- `g-p33-compat-v7.log` SHA-256 `92786afb86193f8b977f42fabf56850eff0b1b1f6af686ebd681101dd271aa2b`。
+
+接续：提交当前源码修复，冻结新SDK source attestation，以原始来源/目标/默认预算从真实Tauri UI重跑N1v4，继续全文引用、报告价值及冷恢复。G仍进行中；N2–N6/O4未验，P34/P35未实施完成，P36/打包暂停。

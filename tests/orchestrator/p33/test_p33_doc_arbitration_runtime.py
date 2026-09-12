@@ -1,4 +1,8 @@
-"""E05/E06/E07: real document conflict reaches a human on its first attempt."""
+"""E05/E06/E07 on frozen doc4: the first conflict attempt reaches a human.
+
+The current registry is restored before execution/recovery; the historical
+Worker policy and real Arbiter/Critic call-count oracles remain unchanged.
+"""
 
 import asyncio
 
@@ -8,6 +12,7 @@ from graph_helpers7 import node, spec
 
 from agent_orchestrator.api.facade import MissionControlV1
 from agent_orchestrator.contracts import TaskStatus
+from agent_orchestrator.governance import domains
 from agent_orchestrator.governance.domains import DOC_DOMAIN
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
@@ -117,13 +122,19 @@ def test_document_conflict_first_human_wait_reopens_and_rules_without_upgrading(
     async def case():
         config = OrchestratorConfig(evidence_root=tmp_path, max_concurrency=1)
         async with Orchestrator(config, provider, owner="e-human") as first:
-            mission = await first.submit_mission(
-                spec(
-                    domain=DOC_DOMAIN,
-                    success_criteria=("file:b.md",),
-                    conflict_reserve_tokens=20000,
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    domains, "DOMAINS", {**domains.DOMAINS, DOC_DOMAIN: domains.DOC_PROFILE_V4}
                 )
-            )
+                mission = await first.submit_mission(
+                    spec(
+                        domain=DOC_DOMAIN,
+                        success_criteria=("file:b.md",),
+                        conflict_reserve_tokens=20000,
+                    )
+                )
+            assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+            assert first.commit.domain_for(mission.id).to_json() == domains.DOC_PROFILE_V4.to_json()
             api = MissionControlV1(first, tenant_id=mission.tenant_id, principal=Principal("human"))
             for key, quote in quotes.items():
                 api.register_source(
@@ -204,6 +215,10 @@ def test_document_conflict_first_human_wait_reopens_and_rules_without_upgrading(
             assert provider.by_role == {"worker": 6, "arbiter": 4, "critic": 1}
         idle = RoleScriptedProvider({})
         async with Orchestrator(config, idle, owner="e-human") as second:
+            assert domains.resolve_domain(DOC_DOMAIN) is domains.DOC_PROFILE
+            assert (
+                second.commit.domain_for(mission.id).to_json() == domains.DOC_PROFILE_V4.to_json()
+            )
             if ruling.startswith("legacy_"):
                 await second.recover()
                 assert await asyncio.wait_for(second._verify(rid), 15)

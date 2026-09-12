@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 
-from graph_helpers7 import graph_service
+from doc5_helpers import graph_service
 from test_p33_doc_consumption import record
 
 from agent_orchestrator.governance.domains import DOC_DOMAIN

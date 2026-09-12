@@ -8,8 +8,9 @@ import asyncio
 from dataclasses import replace
 
 import pytest
-from fixtures_provider import RoleScriptedProvider, envelope_step
-from graph_helpers7 import node, spec
+from doc5_helpers import node
+from fixtures_provider import RoleScriptedProvider, critic_step, envelope_step
+from graph_helpers7 import spec
 
 from agent_orchestrator.api.facade import MissionControlV1
 from agent_orchestrator.context.retrieval import knowledge_view
@@ -68,6 +69,10 @@ def test_real_sdk_document_grading_pipeline(tmp_path, case_name, expected):
 
     provider = RoleScriptedProvider(
         {
+            "critic": [
+                ("workspace_read_file", {"path": "report.md"}),
+                critic_step(verdict="PASS", criteria_met=True),
+            ],
             "worker": [
                 ("workspace_read_file", {"path": path}),
                 (
@@ -77,7 +82,7 @@ def test_real_sdk_document_grading_pipeline(tmp_path, case_name, expected):
                 envelope_step(
                     summary="已写分析", artifacts=["report.md"], claims=[quote], override=cited
                 ),
-            ]
+            ],
         }
     )
 
@@ -163,7 +168,9 @@ def test_real_sdk_document_grading_pipeline(tmp_path, case_name, expected):
                     if case_name == "reserved_key":
                         assert claim.key is None
                         assert claim.confidence_metadata["key_downgraded"] is True
-            assert provider.by_role == {"worker": 3}
+            assert provider.by_role == (
+                {"worker": 3} if expected == "UNDER_REVIEW" else {"worker": 3, "critic": 2}
+            )
             database = orch.store.path
         if case_name == "long_quote":
             reopened = Store.open_readonly(database)

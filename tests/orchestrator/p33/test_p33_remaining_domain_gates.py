@@ -23,7 +23,8 @@ Oracle（测试实现前写定）：
 四条都断言 domain + doc-research-v1 + pytest 的明确错误，不以任意异常当通过；
 全部前置状态由公共 commit 入口产生，不直接写数据库，不单独调用共同 checker。
 这里只验证 commit 边界；C 接续后规则层来自真实 CAS/producer/record。
-其他 PASS 层仍为测试输入，不宣称真实 Provider 已运行。
+闸门4显式保留真实创建并冻结的V4直接提交语义；其余三个闸门仍使用当前域。
+accept只消费真实记录的规则层，不添加调用者PASS，也不宣称真实Critic已运行。
 """
 
 from __future__ import annotations
@@ -45,7 +46,8 @@ from agent_orchestrator.contracts import (
     SourceCitation,
     TaskStatus,
 )
-from agent_orchestrator.governance.domains import DOC_DOMAIN, DOC_PROFILE
+from agent_orchestrator.governance import domains
+from agent_orchestrator.governance.domains import DOC_DOMAIN, DOC_PROFILE, DOC_PROFILE_V4
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.graph.changes import TaskGraphChange
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
@@ -64,7 +66,6 @@ from agent_orchestrator.verification.evidence_resolver import EvidenceResolver
 
 PYTEST_CRITERION = "pytest:tests/test_unrelated.py"
 DOC_POLICY = ("format_check", "rule_check", "critic_review")
-DOC_PASSES = tuple({"layer": layer, "status": "PASS", "detail": {}} for layer in DOC_POLICY)
 
 
 @pytest.fixture
@@ -77,18 +78,27 @@ def service(tmp_path):
         store.close()
 
 
-def _planning(service, **overrides):
-    mission, _ = service.create_mission(
-        MissionSpec(
-            goal="比较资料并形成报告",
-            success_criteria=("file:REPORT.md",),
-            tenant_id="p33-remaining-gates",
-            idempotency_key="doc-mission",
-            domain=DOC_DOMAIN,
-            budget=Budget(max_tokens=100_000, max_attempts=12),
-            **overrides,
+def _planning(service, *, profile=None, **overrides):
+    current = domains.resolve_domain(DOC_DOMAIN)
+    # Opt-in historical deployment only while the real create transaction freezes
+    # the Mission. Never patch the stored snapshot or subsequent domain lookup.
+    with pytest.MonkeyPatch.context() as patch:
+        if profile is not None:
+            assert profile.id == DOC_DOMAIN
+            patch.setattr(domains, "DOMAINS", {**domains.DOMAINS, DOC_DOMAIN: profile})
+        mission, _ = service.create_mission(
+            MissionSpec(
+                goal="比较资料并形成报告",
+                success_criteria=("file:REPORT.md",),
+                tenant_id="p33-remaining-gates",
+                idempotency_key="doc-mission",
+                domain=DOC_DOMAIN,
+                budget=Budget(max_tokens=100_000, max_attempts=12),
+                **overrides,
+            )
         )
-    )
+    assert domains.resolve_domain(DOC_DOMAIN) is current
+    assert service.domain_for(mission.id).to_json() == (profile or current).to_json()
     planning = service.begin_planning(mission.id)
     assert planning.status is MissionStatus.PLANNING
     assert service.store.get_mission_domain(mission.id)["domain_id"] == DOC_DOMAIN
@@ -226,6 +236,7 @@ def _document_result(service, task, *, stance, cas=None):
     source_path = "sources/" + task.outputs[0].split("/")[-1]
     quote = "资料仅记录方案 A 的部分条件。"
     mission = service.store.get_mission(task.mission_id)
+    frozen = service.domain_for(mission.id)
     service.register_source(
         mission_id=mission.id,
         tenant_id=mission.tenant_id,
@@ -240,7 +251,7 @@ def _document_result(service, task, *, stance, cas=None):
         task.id,
         role="worker",
         model="fixture-model",
-        prompt_version="worker-v2",
+        prompt_version=frozen.role_templates["worker"],
         context_version="p33-09",
         reservation=Reservation(tokens=4_000, cost_micros=0),
         intent_config={
@@ -298,7 +309,7 @@ def _document_result(service, task, *, stance, cas=None):
         artifacts=(artifact,),
     )
     structural = rule_check(
-        envelope, task, artifacts=(artifact,), verification_copy=workspace, domain=DOC_PROFILE
+        envelope, task, artifacts=(artifact,), verification_copy=workspace, domain=frozen
     )
     layer = citation_integrity(
         binding=binding,
@@ -314,13 +325,15 @@ def _document_result(service, task, *, stance, cas=None):
 
 
 def test_p33_09_gate4_conflict_insert_rejects_pytest_and_rolls_back_accept(service, monkeypatch):
-    planning = _planning(service, conflict_reserve_tokens=20_000)
+    # This oracle isolates the historical conflict-insert transaction. Current
+    # doc5 acceptance requires actual Critic execution, covered by its runtime suite.
+    planning = _planning(service, profile=DOC_PROFILE_V4, conflict_reserve_tokens=20_000)
     nodes = [_node("A"), _node("B")]
     for key, node in zip(("A", "B"), nodes, strict=True):
         node["success_criteria"].append(f"cite:sources/{key}.md")
     (task_a, task_b), _ = _graph(service, planning, *nodes)
     first = _document_result(service, task_a, stance="affirms")
-    assert service.accept_result(first.envelope.id, verifier_results=DOC_PASSES).status is (
+    assert service.accept_result(first.envelope.id, verifier_results=()).status is (
         TaskStatus.COMPLETED
     )
     first_claim = service.store.list_claims(first.envelope.id)[0]
@@ -341,12 +354,12 @@ def test_p33_09_gate4_conflict_insert_rejects_pytest_and_rolls_back_accept(servi
     with monkeypatch.context() as patch:
         patch.setattr(commit_module, "conflict_task", poisoned_factory)
         with pytest.raises(CommitRejected) as error:
-            service.accept_result(second.envelope.id, verifier_results=DOC_PASSES)
+            service.accept_result(second.envelope.id, verifier_results=())
 
     _assert_domain_rejection(error, "system template conflict")
     assert len(generated) == 1  # 真正走到系统模板，不能提前 DEFERRED 或在其他校验失败。
     assert generated[0].kind == "conflict"
-    assert generated[0].verification_policy == DOC_PROFILE.conflict_template.policy
+    assert generated[0].verification_policy == DOC_PROFILE_V4.conflict_template.policy
     assert _state(service, planning.id) == before
     assert service.store.iter_events(planning.id) == events_before
     assert service.store.get_claim(first_claim.id) == first_claim
@@ -355,7 +368,7 @@ def test_p33_09_gate4_conflict_insert_rejects_pytest_and_rolls_back_accept(servi
     assert service.store.get_result(second.envelope.id) == second
     assert service.store.list_conflicts(planning.id) == []
 
-    completed = service.accept_result(second.envelope.id, verifier_results=DOC_PASSES)
+    completed = service.accept_result(second.envelope.id, verifier_results=())
     assert completed.status is TaskStatus.COMPLETED
     conflicts = service.store.list_conflicts(planning.id)
     assert len(conflicts) == 1 and conflicts[0]["state"] == "OPEN"

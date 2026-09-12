@@ -3,10 +3,16 @@
 from dataclasses import replace
 
 import pytest
-from graph_helpers7 import drive_to_running, graph_service
+from doc5_helpers import graph_service
+from graph_helpers7 import drive_to_running
 
 from agent_orchestrator.context.context_builder import build_worker_package
-from agent_orchestrator.governance.domains import CODE_PROFILE, DOC_DOMAIN, DOC_PROFILE
+from agent_orchestrator.governance.domains import (
+    CODE_PROFILE,
+    DOC_DOMAIN,
+    DOC_PROFILE,
+    DOC_PROFILE_V4,
+)
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -21,7 +27,7 @@ def test_doc_worker_gets_citation_schema_and_frozen_criterion_catalog(tmp_path, 
         previous_attempts=[],
         verifier_feedback=[],
         workspace_files=[],
-        domain=replace(DOC_PROFILE, version="2", adapters={}) if legacy else DOC_PROFILE,
+        domain=replace(DOC_PROFILE_V4, version="2", adapters={}) if legacy else DOC_PROFILE,
         source_versions={},
     )
     contract = package.package["doc_assessment"]

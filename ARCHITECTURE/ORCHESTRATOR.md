@@ -1,6 +1,22 @@
+最后更新：2026-09-13 00:40 CST：P3.3 G源码修复最终兼容874项通过/35.70秒，覆盖新分页、Critic真实输出证明、取消半期续租、丢submit回执冷恢复、超时单intent与迟到300tokens完整结算；94文件mypy与改动Ruff通过。N1 v2/v3真实失败保留，下一步N1v4实际UI重验，尚不称G完成；安装包/P3.6暂停。详见 [P3.3 journal](../plans/2026-09-12-phase3/p33/journal.md)。
+
 # Agent 编排框架
 
-最后更新：2026-09-12。
+最后更新：2026-09-13。
+
+## 9 月 13 日当前状态：分页局部验证通过，G 进行中
+
+`workspace_read_file` 已提供有界字符分页：`offset` 按 Unicode codepoint 计数，`max_chars` 为 1–4096；续读携带同一原始 bytes 的 `expected_sha256`，文件变化拒绝。分页保留原始 CRLF/Unicode，返回 `next_offset`、行边界与原始 SHA-256；小结果保持原形状。完整 ToolResult（含来源不可信提示）序列化上限为 2000 UTF-8 bytes，每页仍经过身份、权限、只读与预算检查。本次分页不变更已冻结的 doc5/promptv2 字节。
+
+主 runner 的 `g-reading-lifecycle-v2` 为 **39 passed / 0 skipped**：分页 34 项、Critic lease 生命周期 5 项，pytest 1.15 秒、wrapper 1.41 秒。已只读核对参数数目与关键断言：真实 gateway 页重拼原文及 hash、完整表格/长行、变更文件与权限拒绝；实际 AgentContextPort 在 UpperBoundTokenizer 与 TiktokenTokenizer 下均保留可见 TOOL 页，未走 `value_preview`，journal 无替代全文记录。此为脚本 Provider 的软件链路证据，不是模型质量验证。
+
+命令：`.venv/bin/python -m pytest tests/orchestrator/p33/test_g_workspace_paging.py tests/orchestrator/p33/test_g_critic_lease_lifecycle.py -q`。运行基于 `a5c8fca659be8b491d4d0f3f3f5536a5e711ce48` 上的工作树（`working_tree=true`），不是该干净提交或旧安装包的验证。[原始日志](../.local-test-evidence/2026-09-12/p33-g/g-reading-lifecycle-v2.log) SHA-256：`caaa5bdb0fd9a6f22b214c2ea432b8a7dcaaf06928d48b46a1725470207a92d8`；[runner 记录](../.local-test-evidence/2026-09-12/p33-g/g-reading-lifecycle-v2.json)保存调用参数与工作树 diff hash。原始证据仅本机 ignored 保存。
+
+**N1 真实重验尚待，P3.3/G 继续进行中。** 当前经用户批准的验收载体是源码 Tauri dev UI；需重新验证真实 deepseek-flash 能续读完整来源并在任务预算内完成业务。上述局部控不证明 N1 或 G 完成，不降低原业务 AC。冻结安装包验收单独暂缓，不推进打包、发布或 P3.6。以下旧提交、制品及安装记录仅是对应历史版本的证据，不替代当前工作树与 N1 的真实重验结论。
+
+## 历史版本验证记录
+
+G SDK源码验证里程碑（21:18 CST）：干净提交a5c8fca659be8b491d4d0f3f3f5536a5e711ce48完整编排1302 passed /8 skipped /0 failed，487.75秒（runner488.09秒），PG50040已查无残留。8项真实Provider未启用；G整体未完成。0.11.1可复现候选wheel49137655…、306包文件与709个sdist源码输入逐字匹配；Host安装组合/原生flash继续验收。
 
 G进行中（21:09 CST）：SDK默认文档画像v4、原子创建、历史引用全文分页、Mission判定树恢复和每次发布前来源复查已实现；两个SDK范围独立审查均限定ACCEPT。串行定向744 passed /17.44秒，非完整回归。Host后端/UI已实现但尚未安装新wheel验收；前端86 passed、typecheck通过。0.11.1只是候选版本，完整编排、制品、原生deepseek-flash及46项最终审计仍待做。
 

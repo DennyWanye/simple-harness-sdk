@@ -13,14 +13,19 @@ Orchestrator, the API and the recovery path do.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from hashlib import sha256
 from typing import Any
+
+from simple_harness.agents import AgentTurnResult, AgentTurnState
 
 from ..artifacts.store import ArtifactStore
 from ..artifacts.versioning import next_versions
 from ..contracts import (
     TERMINAL_ATTEMPT,
+    TERMINAL_MISSION,
     TERMINAL_TASK,
     Artifact,
     Attempt,
@@ -91,6 +96,7 @@ from ..verification.assessments import (
     inconclusive_retryable,
     mission_contract_revision,
     mission_criterion_catalog,
+    task_contract_revision,
     validated_assessments,
 )
 from ..verification.conflicts import (
@@ -99,6 +105,7 @@ from ..verification.conflicts import (
     find_contradiction,
     supported_contradiction,
 )
+from ..verification.critics import parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
 from ..verification.human_review import review_request_id
 from ..verification.mission_coverage import mission_coverage
@@ -2426,6 +2433,11 @@ class CommitService(
         for intent in self._store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED"):
             if intent.mission_id != mission_id:
                 continue
+            if intent.kind == "critic" and intent.state == "AGENT_CREATED":
+                # The SDK submit may already have happened before its receipt
+                # reached this database. Only the exact-turn collector can know
+                # whether there is a real invocation/cost; do not settle as zero.
+                continue
             self._settle_intent(intent, "FAILED")
             reservation = self._ledger.reservation(intent.subject_id)
             if reservation is not None and reservation["state"] != "SETTLED":
@@ -2854,12 +2866,28 @@ class CommitService(
             return updated
 
     def renew_lease(
-        self, attempt_id: str, *, owner: str, lease_seconds: float, liveness: Mapping[str, Any]
+        self,
+        attempt_id: str,
+        *,
+        owner: str,
+        lease_seconds: float,
+        liveness: Mapping[str, Any],
+        minimum_remaining_seconds: float = 0.0,
     ) -> Attempt:
         """HeartbeatReceived (§16.2): renew only on evidence the executor is alive (D6')."""
 
+        if not 0 <= minimum_remaining_seconds <= lease_seconds:
+            raise ValueError("minimum remaining lease must be within the lease duration")
         with self._store.transaction():
             attempt = self._require_attempt(attempt_id)
+            task = self._require_task(attempt.task_id)
+            mission = self._require_mission(attempt.mission_id)
+            if (
+                attempt.status in TERMINAL_ATTEMPT
+                or task.status in TERMINAL_TASK
+                or mission.status in TERMINAL_MISSION
+            ):
+                raise CommitRejected("a terminal Attempt, Task or Mission cannot renew its lease")
             if attempt.lease_owner not in (None, owner):
                 # §17.6: a lapsed lease may be taken over; a live one may not.
                 if (
@@ -2870,6 +2898,18 @@ class CommitService(
             expires = self._store.now + lease_seconds
             progress = liveness.get("progress")
             marker = None if progress is None else int(progress)
+            # Critic polling is much more frequent than lease renewal. Keep its
+            # authority check in this transaction, but do not rewrite history on
+            # every poll when the same owner still has ample time and no progress.
+            if (
+                minimum_remaining_seconds > 0
+                and attempt.lease_owner == owner
+                and attempt.lease_expires_at is not None
+                and attempt.lease_expires_at - self._store.now > minimum_remaining_seconds
+                and marker == attempt.progress_marker
+                and attempt.progress_at is not None
+            ):
+                return attempt
             progress_at = attempt.progress_at
             if marker != attempt.progress_marker or progress_at is None:
                 progress_at = self._store.now
@@ -3461,6 +3501,196 @@ class CommitService(
         ):
             raise CommitRejected("document acceptance requires the actual same-result human PASS")
 
+    @staticmethod
+    def _critic_verdict_binding(intent: DispatchIntent, stored: StoredResult) -> dict[str, Any]:
+        return {
+            "schema": 1,
+            "kind": "critic_verdict",
+            "intent_id": intent.intent_id,
+            "mission_id": stored.envelope.mission_id,
+            "task_id": stored.envelope.task_id,
+            "attempt_id": stored.envelope.attempt_id,
+            "result_id": stored.envelope.id,
+            "input_hash": intent.input_hash,
+            "agent_id": intent.agent_id,
+            "turn_id": intent.expected_turn_id,
+            "prompt_version": intent.config.get("prompt_version"),
+        }
+
+    def settle_critic_verdict(
+        self, intent_id: str, *, result: AgentTurnResult,
+    ) -> DispatchIntent:
+        """Freeze the actual SDK verdict and settle its doc5 intent atomically.
+
+        Trusted runtime calls this with the COMMITTED result read from AgentBridge,
+        never with a Worker/caller-supplied PASS or parsed verification row. The
+        existing receipt is append-only per intent, including genuine FAIL and
+        NEEDS_HUMAN. This is not a defense against rewriting the entire SQL store
+        or a malicious runtime fabricating SDK results.
+        """
+
+        with self._store.transaction():
+            intent = self._require_intent(intent_id)
+            attempt_id = intent.config.get("attempt_id")
+            stored = (
+                self._store.find_result_for_attempt(attempt_id)
+                if isinstance(attempt_id, str) else None
+            )
+            domain = self.domain_for(intent.mission_id)
+            if (
+                domain.id != DOC_DOMAIN or domain.version != "5"
+                or intent.kind != "critic" or intent.state not in {"SUBMITTED", "SETTLED"}
+                or stored is None or stored.envelope.mission_id != intent.mission_id
+                or not intent.subject_id.startswith(f"{attempt_id}:critic:")
+                or result.state is not AgentTurnState.COMMITTED
+                or result.agent_id != intent.agent_id or result.turn_id != intent.expected_turn_id
+                or not intent.receipt
+                or intent.receipt.get("agent_id") != result.agent_id
+                or intent.receipt.get("turn_id") != result.turn_id
+                or intent.receipt.get("seq") != result.seq
+                or sha256_hex(intent.config.get("message")) != intent.input_hash
+                or result.public_output is None
+            ):
+                raise CommitRejected("Critic proof requires its actual committed SDK result")
+            assert stored is not None and result.public_output is not None
+            text = str(result.public_output.content)
+            parsed = parse_critic_verdict(
+                text, expected_criteria=self._require_mission(intent.mission_id).success_criteria,
+            )
+            proof = {
+                **self._critic_verdict_binding(intent, stored),
+                "output_hash": sha256(text.encode("utf-8")).hexdigest(),
+                "verdict": parsed.to_json(),
+            }
+            key = "critic-verdict:" + intent.intent_id
+            existing = self._store.get_receipt(key)
+            if existing is not None:
+                if existing != proof:
+                    raise CommitRejected("Critic verdict proof is immutable for this intent")
+            else:
+                self._store.insert_receipt(
+                    commit_id=key, kind="critic_verdict", subject_id=intent.intent_id,
+                    base_version=None, proposal_hash=sha256_hex(proof), receipt=proof,
+                )
+            return self._settle_intent(intent, "SETTLED")
+
+    def _require_doc5_critic_pass(
+        self, stored: StoredResult, task: Task, attempt: Attempt,
+        domain: DomainProfileV1, rows: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """A doc5 floor requires the executed Critic, not just a policy or PASS row.
+
+        The durable dispatch proof binds its settled turn and frozen review input
+        to this attempt's result. Human escalation is checked separately by the
+        existing same-result approval gate; it never substitutes for this proof.
+        """
+
+        def refuse() -> None:
+            raise CommitRejected("doc5 acceptance requires the actual same-result Critic proof")
+
+        row = next((item for item in rows if item["layer"] == "critic_review"), None)
+        if row is None or row["status"] not in {"PASS", "NEEDS_HUMAN"}:
+            refuse()
+        assert row is not None
+        detail = row["detail"]
+        intent_id = detail.get("critic_intent_id")
+        intent = self._store.get_intent(intent_id) if isinstance(intent_id, str) else None
+        if intent is None:
+            refuse()
+        assert intent is not None
+        prefix = f"{attempt.id}:critic:"
+        ordinal = intent.subject_id.removeprefix(prefix)
+        result_for_attempt = self._store.find_result_for_attempt(attempt.id)
+        if (
+            intent.kind != "critic"
+            or intent.state != "SETTLED"
+            or intent.mission_id != task.mission_id
+            or not intent.subject_id.startswith(prefix)
+            or not ordinal.isdecimal() or int(ordinal) < 1
+            or intent.creation_key != intent.subject_id
+            or intent.intent_id != ids.intent_id("critic", intent.subject_id)
+            or not intent.agent_id or not intent.expected_turn_id
+            or not intent.receipt
+            or intent.receipt.get("turn_id") != intent.expected_turn_id
+            or intent.receipt.get("agent_id") != intent.agent_id
+            or intent.config.get("attempt_id") != attempt.id
+            or intent.config.get("prompt_version") != detail.get("verifier_version")
+            or detail.get("verifier_version") != domain.role_templates.get("critic")
+            or result_for_attempt is None
+            or result_for_attempt.envelope.id != stored.envelope.id
+        ):
+            refuse()
+        # More than one settled review for the same attempt is ambiguous; do not
+        # pick whichever row happens to say PASS. Failed parsing ordinals remain OK.
+        settled = [
+            item for item in self._store.list_intents("SETTLED")
+            if item.kind == "critic" and item.subject_id.startswith(prefix)
+        ]
+        if len(settled) != 1 or settled[0].intent_id != intent.intent_id:
+            refuse()
+        proof = self._store.get_receipt("critic-verdict:" + intent.intent_id)
+        if proof is None or any(
+            proof.get(key) != value
+            for key, value in self._critic_verdict_binding(intent, stored).items()
+        ):
+            refuse()
+        assert proof is not None
+        try:
+            message = intent.config.get("message")
+            if not isinstance(message, Mapping) or sha256_hex(message) != intent.input_hash:
+                refuse()
+            assert isinstance(message, Mapping)
+            text = message.get("content")
+            if not isinstance(text, str):
+                refuse()
+            assert isinstance(text, str)
+
+            def section(name: str) -> Any:
+                pieces = text.split(f"\n\n## {name}\n")
+                if len(pieces) != 2:
+                    refuse()
+                return json.loads(pieces[1].split("\n\n## ", 1)[0])
+
+            binding = self._assessment_binding(stored, task, attempt)
+            if (
+                task_contract_revision(section("task_contract")) != binding.task_contract_revision
+                or section("mission_success_criteria") != list(
+                    self._require_mission(task.mission_id).success_criteria
+                )
+                or dict(intent.config.get("source_versions", {})) != dict(binding.source_versions)
+                or tuple(intent.config.get("source_roots", ())) != binding.source_roots
+            ):
+                refuse()
+            artifacts: list[dict[str, Any]] = []
+            for artifact_id in stored.artifacts:
+                artifact = self._store.get_artifact(artifact_id)
+                if artifact is None:
+                    refuse()
+                assert artifact is not None
+                artifacts.append({
+                    "path": artifact.path, "content_hash": artifact.content_hash,
+                    "size_bytes": artifact.size_bytes,
+                })
+            if sorted(section("submitted_artifacts"), key=lambda item: item["path"]) != sorted(
+                artifacts, key=lambda item: item["path"]
+            ):
+                refuse()
+            if f"\n\n## attempt_id\n{attempt.id}\n\n" not in text:
+                refuse()
+            verdict = parse_critic_verdict(
+                "<critic_verdict>" + json.dumps(dict(detail), ensure_ascii=False)
+                + "</critic_verdict>",
+                expected_criteria=self._require_mission(task.mission_id).success_criteria,
+            )
+            if not verdict.passed or (row["status"] == "NEEDS_HUMAN") != verdict.needs_human:
+                refuse()
+            if verdict.to_json() != proof.get("verdict"):
+                refuse()
+        except (ContractError, TypeError, ValueError, KeyError) as error:
+            raise CommitRejected(
+                "doc5 acceptance requires the actual same-result Critic proof"
+            ) from error
+
     def accept_result(
         self,
         result_id: str,
@@ -3506,6 +3736,8 @@ class CommitService(
                         return self.fail_result(result_id, failures=hard_failures, owner=owner)
                 if supports_document_assessments(domain):
                     rows = self._store.list_verifications(result_id)
+                    if domain.version == "5":
+                        self._require_doc5_critic_pass(stored, task, attempt, domain, rows)
                     self._require_document_human_pass(stored, task, rows)
                     conflicts = document_uncertainty_conflicts(
                         self._store,

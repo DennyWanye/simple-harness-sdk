@@ -79,7 +79,11 @@ from ..contracts import (
 from ..contracts.models import jsonable, sha256_hex
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetError, BudgetExhausted
-from ..governance.domains import requires_mission_source_binding, supports_document_assessments
+from ..governance.domains import (
+    DOC_DOMAIN,
+    requires_mission_source_binding,
+    supports_document_assessments,
+)
 from ..governance.permissions import Principal
 from ..governance.policies import action_decision, deployed_layers, effective_tools
 from ..governance.promotion import diff_params, interpreter_versions, resolve_params
@@ -214,7 +218,7 @@ class Orchestrator:
         *,
         owner: str | None = None,
         poll_interval: float = 0.05,
-        critic_wait_seconds: float = 120.0,
+        critic_wait_seconds: float | None = None,
         profiles: Mapping[str, RuntimeProfile] | None = None,
         routing: RoutingRules | None = None,
         connectors: Mapping[str, Any] | None = None,
@@ -253,7 +257,11 @@ class Orchestrator:
         # review P0-1: a Planner whose pool is cooling down waits too: mission_id → (since, ordinal)
         self._deferred_planning: dict[str, tuple[float, int]] = {}
         self._poll = poll_interval
-        self._critic_wait = critic_wait_seconds
+        self._critic_wait = (
+            config.turn_deadline_seconds if critic_wait_seconds is None else critic_wait_seconds
+        )
+        if not 0 < self._critic_wait <= config.turn_deadline_seconds:
+            raise ValueError("Critic wait must be positive and within the SDK turn deadline")
         self._store: Store | None = None
         self._commit: CommitService | None = None
         self._assembled: AssembledOrchestratorRuntime | None = None
@@ -980,6 +988,10 @@ class Orchestrator:
                     self._bind_workspace(attempt)
                     self._bind_agent(intent.agent_id, intent.config)
             elif intent.kind == "critic":
+                if self._critic_subject_stopped(intent):
+                    self.assembled.gateway.unbind(intent.agent_id)
+                    await self._cancel_turn(intent)
+                    continue
                 try:
                     self._validate_mission_judge_intent(intent)
                 except ContractError as error:
@@ -1081,8 +1093,12 @@ class Orchestrator:
         if self._deferred or self._deferred_planning:  # D6-5': bounded, not idle
             return True
         return any(
-            intent.kind != "critic" and self.profile_of(intent) in self.assembled.pools
-            for intent in self.store.list_intents("SUBMITTED")
+            (
+                (intent.kind != "critic" and intent.state == "SUBMITTED")
+                or (intent.kind == "critic" and self._critic_subject_stopped(intent))
+            )
+            and self.profile_of(intent) in self.assembled.pools
+            for intent in self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED")
         )  # review P1-4: a turn bound to a pool this process does not run is not ours to wait for
 
     async def _cycle(self) -> bool:
@@ -1110,12 +1126,18 @@ class Orchestrator:
             progressed = True
         active = {mission.id for mission in self._active_missions()}
         for intent in self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED"):
+            if intent.kind == "critic" and self._critic_subject_stopped(intent):
+                if await self._collect_stopped_critic(intent):
+                    progressed = True
+                continue
             if intent.mission_id not in active:
                 continue
             if await self._dispatch(intent):
                 progressed = True
         for intent in self.store.list_intents("SUBMITTED"):
             if intent.kind == "critic":
+                if self._critic_subject_stopped(intent) and await self._collect_after_stop(intent):
+                    progressed = True
                 continue  # critics are collected inline by the critic runner
             if intent.mission_id not in active:
                 if await self._collect_after_stop(intent):
@@ -1320,6 +1342,8 @@ class Orchestrator:
 
         if self._pool_missing(intent):
             return False
+        if intent.kind == "critic" and self._critic_subject_stopped(intent):
+            return await self._collect_stopped_critic(intent)
         self._validate_mission_judge_intent(intent)
         claimed = self.commit.claim_intent(
             intent.intent_id, owner=self._owner, lease_seconds=self._config.lease_seconds
@@ -1364,6 +1388,8 @@ class Orchestrator:
         if claimed.state == "AGENT_CREATED":
             assert claimed.agent_id is not None
             if claimed.kind == "critic":
+                if self._critic_subject_stopped(claimed):
+                    return await self._collect_stopped_critic(claimed)
                 self._bind_critic(claimed.agent_id, config)
             elif claimed.kind == "attempt":
                 self._bind_agent(claimed.agent_id, config)
@@ -1768,6 +1794,28 @@ class Orchestrator:
             await self._collect_manager(intent, result)
         return True
 
+    def _critic_subject_stopped(self, intent: DispatchIntent) -> bool:
+        """Terminal ownership is global; a merely changed lease owner is not a stop."""
+
+        mission = self.store.get_mission(intent.mission_id)
+        if mission is None or mission.status in TERMINAL_MISSION:
+            return True
+        attempt_id = intent.config.get("attempt_id")
+        attempt = self.store.get_attempt(attempt_id) if isinstance(attempt_id, str) else None
+        if attempt is None:  # Mission judge has a view id, not a worker Attempt.
+            return False
+        task = self.store.get_task(attempt.task_id)
+        return attempt.status in TERMINAL_ATTEMPT or task is None or task.status in TERMINAL_TASK
+
+    async def _collect_stopped_critic(self, intent: DispatchIntent) -> bool:
+        # AGENT_CREATED can already have a real SDK turn after a lost submit
+        # receipt. Inspect that exact turn; never submit again merely to find it.
+        if intent.agent_id is not None and intent.expected_turn_id is not None:
+            return await self._collect_after_stop(intent)
+        self._settle_intent(intent, "FAILED")
+        self._settle_service_if_known(intent.subject_id, intent.mission_id)
+        return True
+
     async def _collect_after_stop(self, intent: DispatchIntent) -> bool:
         """A turn still running for a terminal Mission (D3-6'): import its usage when
         it settles, keep a committed late result as history, settle the reservation
@@ -1790,7 +1838,14 @@ class Orchestrator:
                 )
             )
         if result is None and liveness.alive:
-            await self._release_attempt(intent.subject_id, cancel=True)
+            if intent.kind == "attempt":
+                await self._release_attempt(intent.subject_id, cancel=True)
+            else:
+                self.assembled.gateway.unbind(intent.agent_id)
+                key = f"service:{intent.subject_id}:cancel"
+                if key not in self._released:
+                    self._released.add(key)
+                    await self._cancel_turn(intent)
             return False
         self._import_usage(intent)
         if intent.kind == "attempt":
@@ -2783,6 +2838,7 @@ class Orchestrator:
             owner=self._owner,
             lease_seconds=self._config.lease_seconds,
             liveness={"progress": attempt.progress_marker, "phase": "verifying"},
+            minimum_remaining_seconds=self._config.lease_seconds / 2,
         )
 
     def _protected_seed(self, mission: Mission, task: Task) -> dict[str, str]:
@@ -3222,6 +3278,16 @@ class Orchestrator:
         task_id = None if task is None else task.id
         last_error: ContractError | None = None
         for ordinal in range(1, MAX_CRITIC_ATTEMPTS + 1):
+            current_mission = self.store.get_mission(mission.id)
+            current_task = None if task_id is None else self.store.get_task(task_id)
+            current_attempt = None if attempt_id is None else self.store.get_attempt(attempt_id)
+            if (
+                current_mission is None
+                or current_mission.status in TERMINAL_MISSION
+                or (current_task is not None and current_task.status in TERMINAL_TASK)
+                or (current_attempt is not None and current_attempt.status in TERMINAL_ATTEMPT)
+            ):
+                raise CommitRejected("Critic subject stopped before dispatch")
             subject = f"{subject_prefix}:{ordinal}"
             intent = self.store.get_intent_for_subject(subject)
             if intent is not None:
@@ -3323,6 +3389,11 @@ class Orchestrator:
             assert intent.agent_id and intent.expected_turn_id
             result = None
             while self.store.now < deadline:
+                if self._critic_subject_stopped(intent):
+                    # The cycle's after-stop collector owns cancellation and cost
+                    # settlement from here, including after a process restart.
+                    await self._collect_after_stop(intent)
+                    raise CommitRejected("Critic subject stopped during verification")
                 result = await self.bridge_for(intent).result(
                     agent_id=intent.agent_id, turn_id=intent.expected_turn_id
                 )
@@ -3331,11 +3402,21 @@ class Orchestrator:
                 if attempt_id is not None:
                     self._hold_lease(attempt_id)  # P1-3: keep the lease while the Critic thinks
                 await asyncio.sleep(self._poll)
+            if self._critic_subject_stopped(intent):
+                await self._collect_after_stop(intent)
+                raise CommitRejected("Critic subject stopped before verdict collection")
+            if result is None:
+                # An unanswered SDK turn is not a malformed *completed* verdict.
+                # Keep SUBMITTED for after-stop collection, request cooperative
+                # cancellation and fail this verification without a new ordinal.
+                # Do not freeze a running invocation's provisional zero usage
+                # into the append-only imported_usage ledger.
+                self.assembled.gateway.unbind(intent.agent_id)
+                await self._cancel_turn(intent)
+                raise ContractError("critic did not answer within the wait window")
             self._import_usage(intent)
             self.assembled.gateway.unbind(intent.agent_id)
             try:
-                if result is None:
-                    raise ContractError("critic did not answer within the wait window")
                 self._note_turn_health(intent, result)  # review P2-2: Critic turns count too
                 echoed = self.bridge_for(intent).echoed_models(agent_id=intent.agent_id)
                 if echoed and echoed != {self._expected_model(intent)}:
@@ -3349,7 +3430,14 @@ class Orchestrator:
                 self._settle_intent(intent, "FAILED")
                 self._settle_service_if_known(subject, mission.id, task_id)
                 continue
-            self._settle_intent(intent, "SETTLED")
+            domain = self.commit.domain_for(mission.id)
+            if task is not None and domain.id == DOC_DOMAIN and domain.version == "5":
+                # The actual SDK COMMITTED output, not the mutable layer row, is
+                # the durable verdict authority. Receipt + settlement are atomic.
+                assert result is not None
+                self.commit.settle_critic_verdict(intent.intent_id, result=result)
+            else:
+                self._settle_intent(intent, "SETTLED")
             self._settle_service_if_known(subject, mission.id, task_id)
             return verdict
         assert last_error is not None

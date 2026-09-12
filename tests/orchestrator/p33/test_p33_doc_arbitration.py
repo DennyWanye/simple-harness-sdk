@@ -9,6 +9,7 @@ Only one arbitration may exist for its frozen scope; no ordinary review can acce
 the Task. Real facade keep/contextual/unresolved rulings preserve the original
 claim grades and never mint knowledge. Membership changes invalidate old consent;
 source revocation alone cannot erase a historical dispute. All decisions replay.
+These direct-accept fixtures freeze published DOC4; they do not prove DOC5 Critic.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from test_p33_source_commits import (
 from agent_orchestrator.api.facade import FacadeError, MissionControlV1
 from agent_orchestrator.contracts import AttemptStatus, ClaimStatus, MissionStatus, TaskStatus, ids
 from agent_orchestrator.contracts.models import canonical_json
+from agent_orchestrator.governance import domains
 from agent_orchestrator.governance.domains import CODE_DOMAIN
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.orchestrator.action_commits import ActionCommitError
@@ -45,6 +47,8 @@ KEY = "world.applicability"
 SECOND = "sources/b.md"
 THIRD = "sources/c.md"
 SOURCES = {PATH: TEXT, SECOND: "乙条件下禁止使用。\n", THIRD: "丙条件下尚待核实。\n"}
+
+
 e_scenes = source_scenes
 
 
@@ -262,6 +266,10 @@ def test_e07_real_ruling_after_reopen_is_idempotent_and_never_promotes_claims(e_
     reopened = Store.open(s.store.path)
     try:
         restored = attach(s, reopened)
+        assert domains.resolve_domain(domains.DOC_DOMAIN) is domains.DOC_PROFILE
+        assert (
+            restored.commit.domain_for(s.mission.id).to_json() == domains.DOC_PROFILE_V4.to_json()
+        )
         value = "keep:" + conflict["claim_ids"][0] if ruling == "keep" else ruling
         arbitrate(restored, request, value)
         assert members(restored, conflict) == before_members

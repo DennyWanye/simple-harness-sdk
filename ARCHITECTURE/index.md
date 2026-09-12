@@ -1,4 +1,16 @@
-最后更新：2026-09-12。
+最后更新：2026-09-13 00:40 CST：P3.3 G源码修复最终兼容874项通过/35.70秒，覆盖新分页、Critic真实输出证明、取消半期续租、丢submit回执冷恢复、超时单intent与迟到300tokens完整结算；94文件mypy与改动Ruff通过。N1 v2/v3真实失败保留，下一步N1v4实际UI重验，尚不称G完成；安装包/P3.6暂停。详见 [P3.3 journal](../plans/2026-09-12-phase3/p33/journal.md)。
+
+最后更新：2026-09-13。
+
+## 9 月 13 日当前状态
+
+**P3.3/G 进行中；N1 真实重验尚待。** workspace 读工具有界分页的源码局部控已通过：主 runner `g-reading-lifecycle-v2` 为 39 passed / 0 skipped（分页 34 + Critic lease 5），pytest 1.15 秒、wrapper 1.41 秒。实际 Context 两种 tokenizer 未触发预览替代，原文重拼/hash、分页权限与预算控制断言均保留；这是工作树软件链路验证，不是实际模型或干净提交全量验收。[生产边界、精确命令与本机证据](ORCHESTRATOR.md#9-月-13-日当前状态分页局部验证通过g-进行中)。
+
+用户批准以源码 Tauri dev UI 承载当前业务验收；真实 deepseek-flash 的完整续读、预算与 N1 业务结果需重验，原业务 AC 保持。冻结安装包验收另行暂缓，不推进打包/发布/P3.6。下列旧提交、制品及安装记录仅为各历史版本证据，不替代当前工作树验证，也不证明 N1/G 完成。
+
+## 历史版本验证记录
+
+G SDK源码验证里程碑（21:18 CST）：干净提交a5c8fca659be8b491d4d0f3f3f5536a5e711ce48完整编排1302 passed /8 skipped /0 failed，487.75秒（runner488.09秒），PG50040已查无残留。8项真实Provider未启用；G整体未完成。0.11.1可复现候选wheel49137655…、306包文件与709个sdist源码输入逐字匹配；Host安装组合/原生flash继续验收。
 
 G进行中（21:09 CST）：SDK默认文档画像v4、原子创建、历史引用全文分页、Mission判定树恢复和每次发布前来源复查已实现；两个SDK范围独立审查均限定ACCEPT。串行定向744 passed /17.44秒，非完整回归。Host后端/UI已实现但尚未安装新wheel验收；前端86 passed、typecheck通过。0.11.1只是候选版本，完整编排、制品、原生deepseek-flash及46项最终审计仍待做。
 

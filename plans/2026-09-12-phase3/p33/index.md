@@ -1,6 +1,8 @@
 # P3.3 非代码 Mission 与证据闭环
 
-最后更新：2026-09-12。A–E 已完成 SDK 源码验证；E 完整编排1199 passed /8 skipped（481.36秒）。F候选制品验证完成（既有红集保留），G未完成，P3.3整体仍在实施。
+最后更新：2026-09-12。
+
+G SDK源码验证里程碑（21:18 CST）：干净提交a5c8fca659be8b491d4d0f3f3f5536a5e711ce48完整编排1302 passed /8 skipped /0 failed，487.75秒（runner488.09秒），PG50040已查无残留。8项真实Provider未启用；G整体未完成。0.11.1可复现候选wheel49137655…、306包文件与709个sdist源码输入逐字匹配；Host安装组合/原生flash继续验收。A–E 已完成 SDK 源码验证；E 完整编排1199 passed /8 skipped（481.36秒）。F候选制品验证完成（既有红集保留），G未完成，P3.3整体仍在实施。
 
 - [定稿计划](plan.md)与[原始验收](acceptance.md)
 - [执行记录与证据索引](journal.md)

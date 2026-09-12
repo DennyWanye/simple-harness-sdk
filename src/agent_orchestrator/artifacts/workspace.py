@@ -140,6 +140,22 @@ class Workspace:
             raise WorkspaceError(f"file too large to read: {relative}")
         return target.read_text(encoding="utf-8")
 
+    def read_bytes(self, relative: str) -> bytes:
+        """Bounded original bytes for hash-bound reads; never normalize newlines."""
+
+        target = self.resolve(relative)
+        try:
+            if not target.is_file():
+                raise WorkspaceError(f"no such file: {relative}")
+            if target.stat().st_size > MAX_FILE_BYTES:
+                raise WorkspaceError(f"file too large to read: {relative}")
+            data = read_nofollow(target)
+            if len(data) > MAX_FILE_BYTES:
+                raise WorkspaceError(f"file too large to read: {relative}")
+            return data
+        except (OSError, ArtifactStoreError) as error:
+            raise WorkspaceError(f"cannot read file {relative}: {error}") from error
+
     def write_text(self, relative: str, content: str) -> Path:
         if not self.writable:
             raise WorkspaceError("workspace is read-only")

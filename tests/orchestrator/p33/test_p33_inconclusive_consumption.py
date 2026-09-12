@@ -3,7 +3,8 @@
 from dataclasses import replace
 
 import pytest
-from graph_helpers7 import drive_to_running, graph_service
+from doc5_helpers import graph_service
+from graph_helpers7 import drive_to_running
 from test_p33_document_grading import assessment, citation, grade
 
 from agent_orchestrator.context.context_builder import build_worker_package
@@ -55,7 +56,11 @@ def test_an_unrelated_claims_inconclusive_record_is_not_uncertainty_evidence():
 
 
 def test_new_doc_package_explains_candidates_and_original_mission_catalog(tmp_path):
+    # Current context contract: request the actual doc5 floor, without pretending
+    # this package-only unit test executed a Critic or accepted a result.
     service, mission, tasks = graph_service(tmp_path, domain=DOC_DOMAIN)
+    frozen = service.domain_for(mission.id)
+    assert frozen.to_json() == DOC_PROFILE.to_json()
     task = tasks["A"]
     attempt = drive_to_running(service, task)
     package = build_worker_package(
@@ -65,7 +70,7 @@ def test_new_doc_package_explains_candidates_and_original_mission_catalog(tmp_pa
         previous_attempts=[],
         verifier_feedback=[],
         workspace_files=[],
-        domain=DOC_PROFILE,
+        domain=frozen,
         source_versions={},
     )
     detail = package.package["doc_assessment"]

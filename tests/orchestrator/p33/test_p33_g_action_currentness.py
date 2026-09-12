@@ -19,16 +19,19 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-import test_p33_source_commits as source_helpers
 from helpers_step07 import ENABLED, candidate
 from test_p33_source_commits import PATH, TEXT, accept, change_source, historical, submit, verify
 from test_p33_source_commits import e_scenes as source_scenes
 
 from agent_orchestrator.api.facade import MissionControlV1
 from agent_orchestrator.contracts import MissionStatus, TaskStatus
-from agent_orchestrator.governance.domains import CODE_DOMAIN, DOC_DOMAIN, DOC_PROFILE_V3
+from agent_orchestrator.governance.domains import (
+    CODE_DOMAIN,
+    DOC_DOMAIN,
+    DOC_PROFILE_V3,
+    DOC_PROFILE_V4,
+)
 from agent_orchestrator.governance.permissions import Principal
-from agent_orchestrator.orchestrator import commit_service
 from agent_orchestrator.orchestrator.commit_service import MissionSpec
 from agent_orchestrator.runtime.actions import ActionExecutor
 from agent_orchestrator.runtime.connectors import TestConfigService
@@ -55,23 +58,13 @@ class GatedConfigService(TestConfigService):
         return super().execute(operation, target, params, idempotency_key=idempotency_key)
 
 
-def scene(e_scenes, monkeypatch, profile):
+def scene(e_scenes, profile):
     domain = CODE_DOMAIN if profile == "code" else DOC_DOMAIN
     criteria = (("file:REPORT.md",) if profile == "code" else (TEXT.strip(),)) + ACTION_CRITERIA
     # Bind the actual old profile at Mission creation, before any Task/Attempt;
     # never rewrite an existing intent, assessment or accepted historical record.
-    with monkeypatch.context() as patch:
-        if profile == "v3":
-            original = commit_service.resolve_domain
-            patch.setattr(
-                commit_service,
-                "resolve_domain",
-                lambda identifier: (
-                    DOC_PROFILE_V3 if identifier == DOC_DOMAIN else original(identifier)
-                ),
-            )
-            patch.setattr(source_helpers, "DOC_PROFILE", DOC_PROFILE_V3)
-        s = e_scenes(paths=(PATH,), domain=domain, mission_criteria=criteria)
+    selected = {"v3": DOC_PROFILE_V3, "v4": DOC_PROFILE_V4}.get(profile)
+    s = e_scenes(paths=(PATH,), domain=domain, mission_criteria=criteria, profile=selected)
     assert s.commit.domain_for(s.mission.id).version == ("1" if profile == "code" else profile[1:])
     e = submit(s)
     verdict = verify(e)  # real router; only the model Critic's response is scripted
@@ -105,9 +98,9 @@ def scene(e_scenes, monkeypatch, profile):
 
 @pytest.mark.parametrize("profile", ["v4", "v3", "code"])
 def test_second_real_action_rechecks_source_after_first_execute_await(
-    e_scenes, monkeypatch, profile
+    e_scenes, profile
 ):
-    s, e, source = scene(e_scenes, monkeypatch, profile)
+    s, e, source = scene(e_scenes, profile)
     connector = GatedConfigService(s.root / "effects.json")
     connectors = {"test_config": connector}
     host = SimpleNamespace(

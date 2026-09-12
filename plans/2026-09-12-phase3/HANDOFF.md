@@ -1,16 +1,20 @@
 # Agent 编排框架 · 交接（Phase3 进行中）
 
-- 日期：2026-09-12
+- 日期：2026-09-13
 - 上一份交接（`plans/2026-09-11-agent-orchestrator/HANDOFF.md`，停在第 2–9 步收官）已删除，本文件取代它。
 - 仓库与分支：
   - SDK `simple-harness-sdk`，`main`（本文件所在仓库）
-  - Host `simple_harness`，`main` = `04350956`，**HEAD仍为P3.2基线；G后端/UI工作区有未提交改动，候选wheel尚未更新**
+  - Host `simple_harness`，`main` = `e690bdcf`；源码后端/UI及显式SDK源码身份已提交，本机G功能仍在验收。远程是否已推送须实际核对。
 - 长期规则：专业术语先查 Host `plans/taskSys2/agent-orchestration-theory/` 的定义再写代码；真实模型只用 `deepseek-flash`（**绝不**用 deepseek-v4-pro）；记录与回复一律中文；技术取舍交独立评审子代理裁决并记录；测试先行；回归红集 ⊆ 基线 73；每切片提交推送并同步更新本文件；不用 `git stash`；同一时间只跑一个 pytest。
 - 安全：绝不打印或提交 API 密钥。本机真实测试从 Host 主仓 ignored `.env` 的 `DEEPSEEKER_APIKEY` 注入进程；该字段已确认存在。旧机 `.local-test-evidence/2026-09-07/credentials/deepseek.env` 本机不存在，不要据此判断无 key。模型固定 `deepseek-flash`，endpoint 按真实测试配置核实，密钥不复制到配置或证据。提交前扫 `\bsk-[A-Za-z0-9_-]{20,}` **只打印计数**。
 
 ---
 
-当前接续：G进行中（21:09 CST）：SDK默认文档画像v4、原子创建、历史引用全文分页、Mission判定树恢复和每次发布前来源复查已实现；两个SDK范围独立审查均限定ACCEPT。串行定向744 passed /17.44秒，非完整回归。Host后端/UI已实现但尚未安装新wheel验收；前端86 passed、typecheck通过。0.11.1只是候选版本，完整编排、制品、原生deepseek-flash及46项最终审计仍待做。
+**当前决定**：继续完成P3.1–P3.5功能；P3.6不在本次范围，暂停打包/发布，直接源码Tauri UI验收。主防熄屏进程仍在。实际真实模型固定deepseek-flash，不把受控Provider或源码载体当安装包通过。
+
+**2026-09-13 00:35 CST接续**：P3.3 G仍未完成。Host e690bdcf；SDK基于a5c8fca的未提交修复使用显式editable-source加载，原0.11.1 wheel保留，不重新构建。新doc profile5/角色prompt v2强制真实Critic审阅并绑定实际SDK输出proof，旧doc3/4与v1 prompt保留。N1两次真实任务均未通过：v2因Claim字段错误和Task预算耗尽FAIL；v3因长文件只给Context预览无法读全，主在UI取消，现场保留。v3还暴露Critic每秒约20条心跳、取消/120秒外层超时后孤立调用等缺口。
+
+分页工具（原文hash绑定、Unicode偏移、保留CRLF、每页权限与完整ToolResult<=2000bytes）、续租同事务终态检查/半期节流、Critic取消后结果费用收集已实现。首批39项通过/1.15秒；全P33加旧workspace/recovery矩阵869项通过/34.79秒；94源码文件mypy通过。最后发现的AGENT_CREATED丢submit回执取消窗口及超时控制正补独立冷恢复测试，因此869不能替代该后续增量。通过后重新冻结SDK身份，继续N1原始资料、实际UI引用/报告及冷重开，再完成N2–N6/O4。当前具体证据和时间在p33/journal.md及Host G journal，不以早期总PASS数冒充G完成。
 
 ## 1. 整体进度
 
@@ -22,7 +26,7 @@
 | Phase3 **P3.1 遗留修复** | ✅ SHIPPED（SDK 0.9.11） |
 | Phase3 **P3.2** 隔离执行与真实受控交付 | ✅ SHIPPED（SDK 0.10.0，SDK `48e441a`，Host `04350956`） |
 | Phase3 **P3.3** 非代码 Mission 与证据闭环 | 🔨 **进行中——计划第 3 版已定稿，切片 A–E 已完成 SDK 源码验证；E 全量1199 passed /8 skipped；F候选0.11.0验证完成（既有红集保留），G未完成** |
-| Phase3 P3.4 / P3.5 | 未开始 |
+| Phase3 P3.4 / P3.5 | 仅设计准备草案，未实施、未验收 |
 
 用户的总指示（原话）："先修复，然后开始P3.2 到 P3.5，文件提交"。所以 P3.3 做完继续 P3.4、P3.5。
 
@@ -55,7 +59,7 @@
 | D | adapter 常量表、三个文档 adapter、**层状态上的硬约束**、INCONCLUSIVE 七条边界、结构化 `limitations`、Mission 级 INSUFFICIENT | ✅ SDK源码验证完成（`d3d3fd8`）；1119 passed /8 skipped，446.64秒 |
 | E | 冲突范围加注、文档领域人工裁决、`KnowledgeIndex.stale`、检索排除 | ✅ SDK源码验证完成（cf40b8e）；1199 passed /8 skipped，481.36秒 |
 | F | 全量回归、wheel 干净环境验证 | ✅ 候选0.11.0完成验证；无新增回归，既有失败保留，见journal§2.6 |
-| G | Host 钉版、接线、系统渲染结论区、真实 flash 原生验收 | 进行中：SDK与Host接线实现，定向744通过；wheel与原生待验 |
+| G | Host 钉版、接线、系统渲染结论区、真实 flash 原生验收 | 进行中：SDK a5c8fca全量1302 passed /8 skipped；0.11.1精确安装921 passed /3 skipped；Host本地c41bfc14、定向49通过、两版冻结构建通过；原生先后发现SDK延迟导入与workflow源码缺包，均已修并7项专项通过，第三版构建中。真实模型文档任务与完整原生验收未完成，G尚未推送 |
 
 **每个切片完成即跑 `tests/orchestrator` 全量**，不等切片 F。
 

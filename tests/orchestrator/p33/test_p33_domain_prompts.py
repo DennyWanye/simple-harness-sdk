@@ -14,8 +14,9 @@ import asyncio
 from dataclasses import replace
 
 import pytest
+from doc5_helpers import graph_service, node
 from fixtures_provider import RoleScriptedProvider
-from graph_helpers7 import drive_to_running, graph_service, node, spec
+from graph_helpers7 import drive_to_running, spec
 
 from agent_orchestrator.context.context_builder import build_planner_package, build_worker_package
 from agent_orchestrator.governance import domains
@@ -26,7 +27,7 @@ from agent_orchestrator.runtime.role_templates import ROLES, template_for_domain
 
 
 def test_legacy_domain_snapshot_missing_fields_has_fixed_compatibility():
-    legacy = domains.DOC_PROFILE.to_json()
+    legacy = domains.DOC_PROFILE_V4.to_json()
     legacy["version"] = "1"
     legacy.pop("role_templates")
     legacy.pop("context_wording")
@@ -83,7 +84,11 @@ def test_planner_domain_exposes_only_deployed_domain_layers(tmp_path):
         domain=domains.DOC_PROFILE,
     ).package
     assert package["deployed_verification_layers"] == ["format_check", "rule_check"]
-    assert package["domain"]["verification_floor"] == ["format_check", "rule_check"]
+    assert package["domain"]["verification_floor"] == [
+        "format_check",
+        "rule_check",
+        "critic_review",
+    ]
     assert "pytest" not in package["domain"]["criterion_kinds"]
 
 
@@ -126,7 +131,8 @@ def test_published_document_prompts_do_not_follow_future_code_defaults(monkeypat
         for name, template in ROLES.items()
     }
     monkeypatch.setattr(
-        role_templates, "WORKER",
+        role_templates,
+        "WORKER",
         replace(role_templates.WORKER, prompt_version="worker-future", instructions="future"),
     )
     register_document_templates()
@@ -197,6 +203,9 @@ def test_document_runtime_freezes_its_actual_prompt_and_context(tmp_path):
             assert "run_tests" not in intent.config["agent_config"]["tool_names"]
             assert "来源原文" in str(intent.config["message"])
             assert intent.config["prompt_version"] == attempt.prompt_version
-            assert domains.DOC_DOMAIN in attempt.prompt_version
+            assert (
+                attempt.prompt_version
+                == orch.commit.domain_for(mission.id).role_templates["worker"]
+            )
 
     asyncio.run(case())
