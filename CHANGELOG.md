@@ -1,3 +1,7 @@
+## 0.11.0 candidate — P3.3 A–E（验证中，未发布）
+
+领域、引用、准则评估、证据不足出口、来源失效与文档人工仲裁的SDK候选；F整仓/安装验证进行中，G文档报告交付仍待完成。
+
 ## 未发布 — P3.3 切片 E 源码里程碑
 
 E 干净源码 `cf40b8ec86a2f307d0f8b8f89cf7f0166e5de121` 完整编排 **1199 passed /8 skipped /0 failed**（481.36秒），watchdog481.63秒，PG25036无残留。8项skip为未启用真实Provider。A–E完成SDK源码验证；F/G、wheel、Host与真实flash仍未完成。
