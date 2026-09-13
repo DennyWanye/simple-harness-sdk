@@ -555,6 +555,9 @@ class ProviderBudgetGuard:
                     "SELECT COUNT(*) FROM provider_token_grants"
                     " WHERE state IN ('RESERVED','HANDED_OFF','UNKNOWN')"
                 ).fetchone()[0]
+                from .legacy_provider_slots import held_legacy_slots
+
+                active += held_legacy_slots(self.store)
                 profile_available = True
                 if self.profile_slots is not None:
                     # Count durable grants in the shared orchestration transaction:
@@ -575,7 +578,9 @@ class ProviderBudgetGuard:
                                 reason_code="profile_identity_unknown",
                             )
                         held_profiles.append(held_profile)
-                    own_active = held_profiles.count(profile)
+                    own_active = (
+                        held_profiles.count(profile) + held_legacy_slots(self.store, profile)
+                    )
                     profile_available = own_active < self.profile_slots[profile]
                 if active < self.max_slots and profile_available:
                     spent = self.store.connection.execute(

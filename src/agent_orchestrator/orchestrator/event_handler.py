@@ -277,7 +277,7 @@ class Orchestrator:
         self._provider_token_estimator = provider_token_estimator
         self._provider_admission: ProviderBudgetGuard | None = None
         self._provider_token_estimators = provider_token_estimators
-        self._provider_admissions: dict[str, ProviderBudgetGuard] | None = None
+        self._provider_admissions: dict[str, ProviderBudgetGuard | None] | None = None
         # D6-4' / D6-5': one provider == the single ``default`` profile (every earlier
         # step's path); several profiles == several execution pools routed by rules
         if profiles is None:
@@ -292,9 +292,15 @@ class Orchestrator:
         if provider_token_estimators is not None and (
             provider_token_estimator is not None
             or set(provider_token_estimators) != set(self._profiles)
-            or any(value is None for value in provider_token_estimators.values())
         ):
             raise ValueError("per-pool token estimators must explicitly cover every profile")
+        if provider_token_estimators is not None:
+            from ..runtime.legacy_provider_slots import profile_has_frozen_admission
+
+            for key, estimator in provider_token_estimators.items():
+                if (estimator is None and self._profiles[key].context_policy is not None
+                        and profile_has_frozen_admission(config, key) is not False):
+                    raise ValueError("a new context pool requires its own token estimator")
         default_profile = (
             routing.default
             if routing is not None
@@ -350,7 +356,7 @@ class Orchestrator:
         )
         self._policy_pin = None if policy_pin is None else dict(policy_pin)
         self._policies: dict[str, dict[str, Any]] = {}
-        self._routers: dict[tuple[str, str | None], ModelRouter] = {}
+        self._routers: dict[tuple[str, str | None, str | None], ModelRouter] = {}
         self._route_drops: dict[str, dict[str, str]] = {}
         self._route_noted: set[str] = set()
 
@@ -395,7 +401,7 @@ class Orchestrator:
                           for key, profile in self._profiles.items()}
                          if any(p.max_concurrent_model_calls is not None for p in self._profiles.values()) else None)
                 self._provider_admissions = {
-                    key: ProviderBudgetGuard(
+                    key: None if self._provider_token_estimators[key] is None else ProviderBudgetGuard(
                         self._commit, owner=self._owner, estimator=self._provider_token_estimators[key],
                         max_slots=self._config.max_concurrent_model_calls, profile_slots=slots,
                         price_tables={key: (profile.price_table.estimator()
@@ -403,13 +409,42 @@ class Orchestrator:
                     ) for key, profile in self._profiles.items()
                 }
                 self._provider_admission = self._provider_admissions[self._default_profile]
+            local_admissions = {}
+            if self._provider_admissions is None and self.store.has_table("legacy_provider_slots_v1"):
+                # Once activated, a later deployment cannot silently return an
+                # old pool to process-local slots by omitting the estimator map.
+                self._provider_admissions = {
+                    key: self._provider_admission for key in self._profiles
+                }
+            if self._provider_admissions is not None and any(
+                admission is None for admission in self._provider_admissions.values()
+            ):
+                from ..runtime.legacy_provider_slots import LegacyProviderSlots, create_slot_table
+
+                create_slot_table(self.store)
+                local_admissions = {
+                    key: LegacyProviderSlots(
+                        self.store, profile_id=key,
+                        max_slots=self._config.max_concurrent_model_calls,
+                        profile_slots=min(profile.max_concurrent_model_calls
+                                          or self._config.max_concurrent_model_calls,
+                                          self._config.max_concurrent_model_calls),
+                        fence=self._provider_handoff_fence,
+                    ) for key, profile in self._profiles.items()
+                    if self._provider_admissions[key] is None
+                }
             self._open_policy_library()  # step 9 (plan D9-3'): role, seed, drift
             self._assembled = assemble_orchestrator_runtime(
                 self._config, profiles=self._profiles, default_profile=self._default_profile,
                 provider_admission=(self._provider_admission if self._provider_admissions is None else None),
                 provider_admissions=self._provider_admissions,
+                local_provider_admissions=local_admissions,
                 provider_handoff_fence=self._provider_handoff_fence,
             )
+            # Before ANY pool may resume, import every old physical handoff.
+            # This does not change the external admission identity of old intents.
+            for key, admission in local_admissions.items():
+                admission.recover(self._assembled.pool(key).runtime.uow)
             # SDK startup itself reconciles grants. Consume already durable late
             # receipts before it can raise on an actual overrun; no runtime is started
             # by this accounting-only pass. Tool counts also come from durable rows.
@@ -645,6 +680,30 @@ class Orchestrator:
             self.policy_for(mission_id)["prompt_versions"],
         )
 
+    def _frozen_default_route(self, mission_id: str) -> str | None:
+        """Recover an existing Mission's default from its original dispatch facts.
+
+        Policy params freeze by-task-kind routing, not the deployment default.
+        Only an explicit default decision proves that default; a role override,
+        escalation or fallback must never be mistaken for it. No intent is edited.
+        """
+        defaults = set()
+        for (encoded,) in self.store.connection.execute(
+            "SELECT config_json FROM dispatch_intents WHERE mission_id=?", (mission_id,),
+        ):
+            frozen = json.loads(encoded)
+            decision = frozen.get("routing") or {}
+            if decision.get("reason") != "default":
+                continue
+            target = frozen.get("runtime_profile_id") or DEFAULT_PROFILE
+            if (decision.get("profile_id") != target
+                    or (frozen.get("agent_config") or {}).get("model_profile_ref") != target):
+                raise ContractError("frozen default routing identities differ")
+            defaults.add(target)
+        if len(defaults) > 1:
+            raise ContractError("Mission has conflicting frozen default routes")
+        return next(iter(defaults)) if defaults else None
+
     def _router_for(self, mission_id: str) -> ModelRouter:
         """One router per policy version: the deployment's rules with the version's
         routing items on top; an item naming a profile this deployment lacks falls back
@@ -652,7 +711,8 @@ class Orchestrator:
 
         version_id = self.policy_version_of(mission_id) or ""
         selected = self._selected_profile(mission_id)
-        cache_key = (version_id, selected)
+        frozen_default = None if selected is not None else self._frozen_default_route(mission_id)
+        cache_key = (version_id, selected, frozen_default)
         router = self._routers.get(cache_key)
         if router is not None:
             if selected is None:
@@ -672,6 +732,10 @@ class Orchestrator:
             return router
         routing = dict(self.policy_for(mission_id).get("routing") or {})
         base = self._model_router.rules
+        if frozen_default is not None:
+            if frozen_default not in self._profiles:
+                raise ContractError(f"frozen default profile {frozen_default!r} is not configured")
+            base = replace(base, default=frozen_default)
         by_kind = dict(base.by_task_kind)
         dropped: dict[str, str] = {}
         for kind, target in dict(routing.get("by_task_kind") or {}).items():
@@ -971,7 +1035,7 @@ class Orchestrator:
         )
 
     def _context_profile_for(self, config: Mapping[str, Any]) -> RuntimeProfile:
-        profile_id = str(config.get("runtime_profile_id") or self._default_profile)
+        profile_id = str(config.get("runtime_profile_id") or DEFAULT_PROFILE)
         profile = self.assembled.pool(profile_id).profile
         if config.get("runtime_context") != profile.context_snapshot():
             raise ContractError("context identity differs from the frozen dispatch intent")
@@ -1004,7 +1068,7 @@ class Orchestrator:
         return kind
 
     def profile_of(self, intent: DispatchIntent) -> str:
-        return str(intent.config.get("runtime_profile_id") or self._default_profile)
+        return str(intent.config.get("runtime_profile_id") or DEFAULT_PROFILE)
 
     def bridge_for(self, intent: DispatchIntent) -> AgentBridge:
         """The pool an intent is bound to (D6-5'): an intent bound to a profile this
@@ -5072,6 +5136,8 @@ class Orchestrator:
                 or not _under_source_root(path, source_binding["source_roots"])
             ]
         try:
+            from ..runtime.action_schema import worker_action_contract
+
             package = build_worker_package(
                 mission,
                 task,
@@ -5096,6 +5162,15 @@ class Orchestrator:
                 role=role.name,
                 domain=self.commit.domain_for(mission.id),
                 source_versions=source_versions,
+                action_candidate_contract=(
+                    worker_action_contract(
+                        mission_criteria=mission.success_criteria,
+                        task_criteria=task.success_criteria,
+                        task_outputs=task.outputs,
+                        connectors=self._connectors,
+                        deployment=self._config.deployment_policy,
+                    )
+                ),
             )
         except ContextRejected as error:
             self.commit.stop_task(

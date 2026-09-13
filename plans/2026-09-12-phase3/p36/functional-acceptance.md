@@ -24,3 +24,20 @@ tests/orchestrator/p36/test_functional_acceptance.py::test_p36_a08_support_evide
 Parent run `g-p36-support-report-v1` first stopped at collection with `ModuleNotFoundError: helpers_step06`. P36 now follows the P34/P35 local-conftest pattern: `tests/orchestrator/p36/conftest.py` exposes the existing `step06` fixture-builder directory; no fixture code was copied. Static review confirms the test calls the existing fixture Mission -> public `write_evidence()` path, supplies `test_report` as its persisted mapping schema expects, and asserts the documented `redactions` receipt shape. The expected next result is fixture behavior, not a production/provider failure; a remaining failure would indicate either the evidence-writer redaction contract or the established fixture execution path. No timing claim is made here; tool metrics are authoritative. Files changed: `tests/orchestrator/p36/conftest.py`; `tests/orchestrator/p36/test_functional_acceptance.py`; `plans/2026-09-12-phase3/p36/functional-acceptance.md`.
 
 Parent verification update2026-09-14: g-p36-support-report-v2 passed the new public test-report canary control plus five context controls (6PASS0.50s/runner0.96s); original collection failure retained. SDK adjacent g-long-context-sdk-integration-v1 also included the P36 control. This does not close all P36 or the unauthorised-history boundary.
+
+## Host diagnostics completes the support-entry boundary (2026-09-14)
+
+The earlier sidecar's unauthorised-history paragraph describes generic learning APIs, not the original P3.6-A08 support export requirement. Host now authorizes the selected Mission via MissionControl.snapshot before any report read and rejects history/destination/tenant overrides. Existing Host tests prove foreign and missing IDs return identicalnot_found with no report read; separate canaries prove unrelated Mission/workspace text absent. Thus this support-entry requirement has direct evidence, without adding authorisation to unrelated learning APIs.
+
+| Original target | Current evidence and boundary | Remaining |
+|---|---|---|
+| A01 same-bound real tasks | P34 v11 samecontract643dc6c2…; both failures retained and delivery separated; v12 on frozenSDK6fb5c50 strict FAIL; both deliveries but C fallback, 167 calls / 1622330 tokens. See p34/v12-real-pair-review.md. Real doc/code/controlled scenarios remain distinct. | Final comparative record; no statistical superiority or Phase2 binary claim |
+| A02 replay no execution | step08/test_replay.py formal/no-runtime/not_covered controls; Host actualfacade + nativev33 read/export/cold, selected durable hashes unchanged | Final cumulative |
+| A03 attribution/cost | step06/test_observability.py result/version/nonwinningrole cost; Host report includes actualTask/Attempt/context/runtime/verifier/cost; failednative600tokens retained | Final cumulative |
+| A04 evaluation isolation | Existing listed step08/09 public evaluation tests | Final cumulative |
+| A05 insufficient no promotion | Existing step09 insufficient and fullpromotionworkflow controls | Final cumulative |
+| A06 frozen policy/rollback | Existing step09 binding/promotion/rollback controls | Final cumulative |
+| A07 artifact/installer cumulative | Explicitly deferred by user; source-native results don't close it | Deferred packaging/installer scope |
+| A08 selected secret-safe support | SDK test-reportcanary; Hosttest_diagnostics_contract.py/test_mission_diagnostics.py; nativev33current source | Supportslice complete; final support/release-scope audit, release deferred |
+
+SDKdc2f156 currentmechanisms g-p36-sdk-mechanisms-v1:164PASS3realopt-inSKIP214.27s/214.58s; skips notpassed. Hostd093f55c native/cold source snapshotv33:8205B stable support hash5baf9a5e…,4controlledcalls/0rehandoff, failedMission34events/600tokens; fulldetails Host plans/2026-09-12-phase3-host-g/p36-diagnostics-plan.md, case-summary SHA256223fc5e785295d5d226f66ba8ffcef1a11ce0b428a6c94ab7524ed7086210de7. OverallPhase3 stillOPEN.

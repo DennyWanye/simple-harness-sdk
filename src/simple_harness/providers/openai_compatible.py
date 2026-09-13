@@ -62,14 +62,30 @@ def openai_chat_request_payload(request: ProviderRequest, *, model: str) -> dict
     return OpenAICompatibleProvider._payload_for_model(request, model)
 
 
+_DIAGNOSTIC_FINISH_REASONS = frozenset(
+    {"content_filter", "function_call", "length", "stop", "tool_calls"}
+)
+
+
+class _ToolCallParseError(ProviderProtocolError):
+    """Private marker for a rejected tool-call shape without retaining its payload."""
+
+    __slots__ = ()
+
+
 class _ProtocolErrorWithUsage(ProviderProtocolError):
     """A rejected response can still contain independently valid billed usage."""
 
     __slots__ = ("detail",)
 
-    def __init__(self, usage: ProviderUsage, cause: ProviderProtocolError) -> None:
+    def __init__(
+        self,
+        usage: ProviderUsage,
+        cause: ProviderProtocolError,
+        finish_reason: str | None,
+    ) -> None:
         super().__init__(private_cause=cause)
-        self.detail = {
+        self.detail: dict[str, JsonValue] = {
             "usage": {
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
@@ -78,6 +94,10 @@ class _ProtocolErrorWithUsage(ProviderProtocolError):
                 "reasoning_tokens": usage.reasoning_tokens,
             }
         }
+        if finish_reason is not None:
+            self.detail["finish_reason"] = finish_reason
+        if isinstance(cause, _ToolCallParseError):
+            self.detail["parse_stage"] = "tool_parse"
 
 
 class OpenAICompatibleProvider:
@@ -292,8 +312,31 @@ class OpenAICompatibleProvider:
             except ProviderProtocolError:
                 usage = None
             if usage is not None:
-                raise _ProtocolErrorWithUsage(usage, error) from None
+                raise _ProtocolErrorWithUsage(
+                    usage,
+                    error,
+                    self._diagnostic_finish_reason(payload),
+                ) from None
             raise
+
+    @staticmethod
+    def _diagnostic_finish_reason(payload: Any) -> str | None:
+        """Return only a recognized finish reason from the rejected response."""
+        if not isinstance(payload, Mapping):
+            return None
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return None
+        choice = choices[0]
+        if not isinstance(choice, Mapping):
+            return None
+        finish_reason = choice.get("finish_reason")
+        if (
+            isinstance(finish_reason, str)
+            and finish_reason in _DIAGNOSTIC_FINISH_REASONS
+        ):
+            return finish_reason
+        return None
 
     def _parse_response_payload(
         self,
@@ -343,26 +386,26 @@ class OpenAICompatibleProvider:
         if raw_calls is None:
             return ()
         if not isinstance(raw_calls, list):
-            raise ProviderProtocolError()
+            raise _ToolCallParseError()
         parsed: list[ProviderToolCall] = []
         for raw_call in raw_calls:
             if not isinstance(raw_call, Mapping) or raw_call.get("type") != "function":
-                raise ProviderProtocolError()
+                raise _ToolCallParseError()
             raw_id = raw_call.get("id")
             function = raw_call.get("function")
             if not isinstance(raw_id, str) or not raw_id or not isinstance(function, Mapping):
-                raise ProviderProtocolError()
+                raise _ToolCallParseError()
             name = function.get("name")
             arguments = function.get("arguments")
             if not isinstance(name, str) or not name:
-                raise ProviderProtocolError()
+                raise _ToolCallParseError()
             if isinstance(arguments, str):
                 try:
                     arguments = json.loads(arguments)
                 except (TypeError, ValueError, json.JSONDecodeError):
-                    raise ProviderProtocolError() from None
+                    raise _ToolCallParseError() from None
             if not isinstance(arguments, Mapping):
-                raise ProviderProtocolError()
+                raise _ToolCallParseError()
             try:
                 normalized = _plain_mapping(arguments)
                 validate_json_value(normalized)
@@ -370,7 +413,7 @@ class OpenAICompatibleProvider:
                     ProviderToolCall(call_id=CallId(raw_id), name=name, arguments=normalized)
                 )
             except (TypeError, ValueError):
-                raise ProviderProtocolError() from None
+                raise _ToolCallParseError() from None
         return tuple(parsed)
 
     @staticmethod

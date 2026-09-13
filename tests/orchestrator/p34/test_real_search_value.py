@@ -434,7 +434,10 @@ class _ObservedProvider:
                 {"role": str(m.role), "content": str(m.content), "call_id": str(m.call_id)}
                 for m in request.messages
             ]),
+            # Adapter exceptions and SDK wire rejection are different boundaries.
+            # An empty parsed response may be rejected/recovered by AgentProviderWire.
             "usage": None, "error_type": None,
+            "response_empty": None, "response_finish_reason": None,
         }
         self.calls.append(row)
         for message in request.messages:
@@ -514,6 +517,7 @@ class _ObservedProvider:
                         "output_tokens": usage.output_tokens,
                         "total_tokens": usage.total_tokens,
                         "cache_tokens": usage.cache_tokens,
+                        "reasoning_tokens": usage.reasoning_tokens,
                     }
             raise
         if response.usage is not None:
@@ -522,8 +526,13 @@ class _ObservedProvider:
                 "output_tokens": response.usage.output_tokens,
                 "total_tokens": response.usage.total_tokens,
                 "cache_tokens": response.usage.cache_tokens,
+                "reasoning_tokens": response.usage.reasoning_tokens,
             }
         row["response_model"] = response.model
+        from simple_harness.agents.wire import _is_empty_final
+
+        row["response_empty"] = _is_empty_final(response)
+        row["response_finish_reason"] = response.finish_reason
         for call in response.tool_calls:
             if call.name == "workspace_read_file":
                 self.read_calls[(attempt, str(call.call_id))] = call.arguments.get("path")

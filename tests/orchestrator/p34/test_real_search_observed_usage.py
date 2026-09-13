@@ -51,3 +51,38 @@ def test_malformed_tool_response_keeps_known_usage_and_never_turns_into_success(
             assert "fake-test-secret" not in str(observer.calls)
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("content,finish,empty", [
+    ("", "length", True), ("   ", "stop", True), ("done", "stop", False),
+])
+def test_empty_parsed_response_is_visible_without_fabricating_adapter_exception(
+    content, finish, empty,
+):
+    """The old observer's error_type=None alone missed a real SDK empty-response failure."""
+    async def exercise():
+        payload = {"model": "fixture", "choices": [{"finish_reason": finish,
+            "message": {"role": "assistant", "content": content}}],
+            "usage": {"prompt_tokens": 4929, "completion_tokens": 8192,
+                "total_tokens": 13121,
+                "completion_tokens_details": {"reasoning_tokens": 8192}}}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json=payload),
+        )) as client:
+            observer = _ObservedProvider(OpenAICompatibleProvider(
+                client, "https://fixture.invalid", "fixture", Secret("fake-test-secret"),
+            ))
+            request = ProviderRequest(RequestId("empty-observation"), (
+                Message(MessageRole.USER, '## attempt\n{"attempt_id":"A"}'),
+            ))
+            response = await observer.invoke(request, cancel=CancelToken())
+            assert response.message.content == content  # observer does not repair or reject it
+            row, = observer.calls
+            assert row["error_type"] is None  # no exception at the provider-adapter boundary
+            assert row["response_empty"] is empty
+            assert row["response_finish_reason"] == finish
+            assert row["usage"]["reasoning_tokens"] == 8192
+            assert row["usage"]["total_tokens"] == 13121
+            assert "fake-test-secret" not in repr(row)
+
+    asyncio.run(exercise())

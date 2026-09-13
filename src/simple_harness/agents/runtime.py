@@ -178,6 +178,8 @@ def assemble_runtime(
     tokenizer = ports.tokenizer or UpperBoundTokenizer()
     guard = RequestGuard(uow, tokenizer=tokenizer, policy=ports.context_policy, clock=ports.clock)
     admission = ports.provider_admission
+    if admission is None:
+        admission = ports.local_provider_admission
     if admission is None and ports.provider_handoff_fence is not None:
         admission = LocalProviderAdmission(
             ports.max_concurrent_model_calls, ports.provider_handoff_fence

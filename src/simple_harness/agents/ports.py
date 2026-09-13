@@ -10,7 +10,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from simple_harness.execution.provider_admission import ProviderAdmissionPort, ProviderHandoffFence
+from simple_harness.execution.provider_admission import (
+    LocalProviderAdmission,
+    ProviderAdmissionPort,
+    ProviderHandoffFence,
+)
 from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 from simple_harness.runtime.ports import (
     AuthorizationPort,
@@ -86,8 +90,18 @@ class AgentRuntimePorts:
     clock: Callable[[], float] = time.time
     # Lifecycle-only admission for callers without a token/budget admission port.
     provider_handoff_fence: ProviderHandoffFence | None = None
+    # Deployment-only local slot accounting; never external token authority.
+    local_provider_admission: LocalProviderAdmission | None = None
 
     def __post_init__(self) -> None:
+        if self.local_provider_admission is not None:
+            if self.provider_admission is not None:
+                raise ValueError("local and external provider admission are mutually exclusive")
+            if (
+                not isinstance(self.local_provider_admission, LocalProviderAdmission)
+                or self.local_provider_admission.fingerprint != LocalProviderAdmission.fingerprint
+            ):
+                raise ValueError("local provider admission must retain the SDK local identity")
         if self.provider_admission is not None:
             if self.policies.pricing_mode != "unpriced_local" and not getattr(
                 self.provider_admission, "supports_priced_budgets", False

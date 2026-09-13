@@ -267,6 +267,7 @@ def build_worker_package(
     role: str = "worker",
     domain: DomainProfileV1 = CODE_PROFILE,
     source_versions: Mapping[str, str] | None = None,
+    action_candidate_contract: Mapping[str, Any] | None = None,
 ) -> TaskPackage:
     """Worker / Synthesizer / Arbiter packages share this shape; ``role`` selects the
     visibility template (worker → worker, synthesizer → synthesizer, arbiter → arbiter)."""
@@ -310,6 +311,8 @@ def build_worker_package(
         },
         "output_contract": "<result_envelope>{json}</result_envelope>",  # §10 item 11
     }
+    if action_candidate_contract is not None:
+        package["action_candidate_contract"] = dict(action_candidate_contract)
     if role in SEARCH_ROLES:
         # Do not inline the old unbounded all-Mission lists for these new roles.
         for name in (

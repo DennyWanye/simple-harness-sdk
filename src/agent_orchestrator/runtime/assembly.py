@@ -486,6 +486,7 @@ def assemble_orchestrator_runtime(
     default_profile: str | None = None,
     provider_admission: Any = None,
     provider_admissions: Mapping[str, Any] | None = None,
+    local_provider_admissions: Mapping[str, Any] | None = None,
     provider_handoff_fence: ProviderHandoffFence | None = None,
 ) -> AssembledOrchestratorRuntime:
     """One pool per runtime profile (D6-5').  ``provider`` alone is the single-profile
@@ -523,6 +524,8 @@ def assemble_orchestrator_runtime(
         provider_admission is not None or set(provider_admissions) != set(profiles)
     ):
         raise ValueError("per-pool admissions must cover exactly the configured profiles")
+    if local_provider_admissions is not None and not set(local_provider_admissions) <= set(profiles):
+        raise ValueError("local admissions name an unconfigured profile")
     for profile_id, profile in profiles.items():
         if profile_id != profile.profile_id:
             raise ValueError(f"profile key {profile_id!r} != profile_id {profile.profile_id!r}")
@@ -555,6 +558,7 @@ def assemble_orchestrator_runtime(
             max_concurrent_tool_calls=config.max_concurrency,
             **({"provider_admission": admission} if admission is not None else {}),
             provider_handoff_fence=provider_handoff_fence,
+            local_provider_admission=(local_provider_admissions or {}).get(profile_id),
         )
         runtime = build_agent_runtime(ports, owner_scope=OWNER_SCOPE)
         pools[profile_id] = RuntimePool(
