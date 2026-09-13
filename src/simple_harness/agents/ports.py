@@ -66,8 +66,9 @@ class AgentRuntimePorts:
     # Every BaseAgent request carries max_output_tokens so the budget reservation is
     # an estimated upper bound instead of UNKNOWN (which would refuse the next turn).
     default_max_output_tokens: int = 4096
-    # F-BA-1: an empty answer with finish_reason=length (reasoning ate the cap) is
-    # retried with a doubled cap, up to this many times and this ceiling.
+    # A confirmed length-limited empty answer or malformed tool response with known
+    # usage may double its cap, within this shared retry count and ceiling. Retain
+    # the historical field name for caller compatibility; other errors do not retry.
     empty_response_retries: int = 2
     max_output_tokens_ceiling: int = 8192
     # Batch creation caps (BA02/BA04): checked before any write.

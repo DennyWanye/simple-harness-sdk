@@ -1,3 +1,5 @@
+**最后更新：2026-09-14 CST — 明确length的工具解析失败支持有界输出增长。** 仅有效usage、tool_parse、finish_reason=length复用原8K→16K→32K/次数上限；每次新请求新identity/准入，旧失败/费用保留，不执行残缺参数。缺原因/未知usage/其他协议错误不重试。原码4FAIL7PASS后，Agent相关205PASS（3真实opt-in未跑、2tokenizer后继补齐），最终28PASS7.72秒含期限/次数/取消/冷库和真实priced guard；ruff/mypy通过。修复前编排1970PASS9SKIP643.26秒单列，不冒称后继默认全绿。正常旧PLANNING原生点、最新源码UI及P34严格对照仍待。[证据与边界](../plans/2026-09-12-phase3/p34/tool-length-recovery.md)。
+
 **最后更新：2026-09-14 CST — LC2真旧库原生接入、新256K/512K共存及冷读通过限定验收。** 旧6360c205库由新Host2eee204e/SDKc19bbd0接入；原四Provider完整记录及旧冻结input/config不变，旧任务沿default继续；新任务各用256K/512K。21真实调用65595tokens，含父任务512K预算不足失败2879，后继默认预算交付。5Mission/25记录冷读hash保持，零新调用；不冒称原生并发压力。原生353.520/冷94.208秒正常退出。P34严格对照/最终累计仍OPEN，无打包发布。[证据与边界](../plans/2026-09-12-phase3/p34/legacy-native-v36.md)。
 
 **最后更新：2026-09-14 CST — 原生v36发布/复核理由与冷读切片通过。** Host2eee204e/SDKc19bbd0，真实DeepSeek14调用40392tokens，审批后本地发布正确绑定内容；复核理由直接进入重试，实际文件修订后接受。同源码冷启动两任务/选定持久表/发布文件hash一致，零新调用/重复发布。生命周期662.777+49.152秒，退出无残留。P32其余AC、LC2共存原生、P34严格对照及最终累计仍OPEN；无打包发布。 [证据与边界](../plans/2026-09-12-phase3/p32/native-v36-review.md)。

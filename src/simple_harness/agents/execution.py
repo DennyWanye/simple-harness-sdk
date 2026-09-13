@@ -513,16 +513,24 @@ class AgentExecutionDriver:
                         code = str(getattr(error, "code", "provider_rejected"))
                     detail = getattr(error, "detail", None)
                     if (
-                        code == "provider_empty_response"
-                        and isinstance(detail, Mapping)
+                        isinstance(detail, Mapping)
                         and detail.get("finish_reason") == "length"
+                        and (
+                            code == "provider_empty_response"
+                            or (
+                                code == "provider_protocol_error"
+                                and detail.get("parse_stage") == "tool_parse"
+                                and isinstance(detail.get("usage"), Mapping)
+                            )
+                        )
                         and attempt < self._empty_response_retries
                         and output_cap is not None
                         and output_cap < self._max_output_tokens_ceiling
                     ):
-                        # F-BA-1: the model spent its whole output cap on reasoning and returned
-                        # no text.  Escalate the cap and issue a fresh provider turn within the
-                        # same AgentTurn; the failed invocation stays settled in the ledger.
+                        # Confirmed output exhaustion: reasoning-only final or a truncated
+                        # tool response with independently validated usage. Never repair the
+                        # rejected JSON or execute its partial calls. The larger request has
+                        # a new provider-turn identity; the original failure stays settled.
                         self._settle_failed_turn(invocation, run_id)
                         attempt += 1
                         output_cap = min(output_cap * 2, self._max_output_tokens_ceiling)
@@ -625,7 +633,7 @@ class AgentExecutionDriver:
             provider_turn_ordinal_from=ordinal_from,
             provider_turn_ordinal_to=result.termination.provider_turns_reserved_total,
         )
-        payload: dict[str, JsonValue] = {
+        result_payload: dict[str, JsonValue] = {
             "response_present": True,
             "finish_reason": getattr(response, "finish_reason", None),
             "base_agent_stage": "result_pending",
@@ -633,10 +641,10 @@ class AgentExecutionDriver:
         if escalations:
             # F-BA-1 diagnostics also on success (review E2); the outcome itself stays
             # byte-identical to the companion staged inside the loop's final CAS.
-            payload["output_cap_escalations"] = cast(
+            result_payload["output_cap_escalations"] = cast(
                 JsonValue, thaw_json(freeze_json(list(escalations)))
             )
-        return DriverResult(RunState.WAITING, payload, agent_turn_outcome=outcome)
+        return DriverResult(RunState.WAITING, result_payload, agent_turn_outcome=outcome)
 
     def _stage_companion(self, invocation: DriverInvocation, turn_id: str):  # type: ignore[no-untyped-def]
         """BA31: stage the committed turn result inside the loop's final checkpoint CAS.
