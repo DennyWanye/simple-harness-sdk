@@ -783,3 +783,11 @@ g-completed-fragment-negatives-v1: receipt SHA256 `02f449b92c0f17f575b6280cc292a
 **最后更新：2026-09-13 13:27 CST — 角色按合同执行与及时提交。** 新code默认worker-v3/synthesizer-v3按当前Task合同和实际暴露工具执行，复用仍完整可见且未改变的文件，相关代码/数据/配置/环境不变才复用本Attempt已通过测试，完成outputs及必要验证后提交envelope。旧v2、五个variant-v1及doc派生保持字节；66个历史模板/9个domain canonical核对通过，既有doc6聚合显式选择旧worker/synth版本，原hash不变。新实际SDK请求/部署工具交集/综合错误产物仍被独立code_test拒绝4PASS3.84秒；兼容及policy回归83PASS1可选tokenizer未配置SKIP/12.91秒，g-prompt-efficiency-compat-v2；mypy117/ruff PASS。本次不改预算、工具权限、独立Critic或验收oracle，未做receipt精简。真实pairv4已证B无权限run_tests及4次同字节重读，S代码未改时重复测试；两者已写文件却未提交候选，按原预算正确拒绝。新指令是否改善真实行为尚待原固定FIRST/COMPARE下一组，不预先声明节省或P34完成。P33/P35全量中两项运行失败根因仍在核对；不打包/P36/推送。
 
 下一真实pair固定保留原2M/24总预算、A/B/C/S合同预算、种子材料、8K输出default/ceiling、32K输入、相同oracle，各臂只运行一次；仅新默认worker3/synth3及已经修复的critic冻结能力改变。旧失败不删除、不重抽到成功。
+
+### 2026-09-13 13:40 CST - recovered observation copies and real pair v5
+
+**最后更新：2026-09-13 13:40 CST — 崩溃取证副本恢复。** full-v8 SIGKILL现场为rollback journal模式，存在有效hot journal；读取需要SQLite先恢复，原mode=ro会失败，普通WAL只读查询也会改写原SHM。取证helper现仅在所属子进程已退出后复制主DB与journal/WAL，在临时副本正常恢复查询，原件完整保留给实际cold owner。新DELETE/WAL实际进程SIGKILL双反例旧helper2FAIL0.35秒；修复后连同原两种SDK结果/UNKNOWN冷恢复4PASS9.79秒（runner10.03），g-recovery-observation-green-v2。新测试逐文件hash证明取证不改原DB/sidecar、临时副本清理，并让真正冷owner最后恢复原件。这是测试取证修复，未声称原生产冷恢复失败，也未预先恢复原件削弱边界。
+
+4ffad9e真实固定pairv5：FIRST293.774秒/547472 tokens，F/B/C完成，S已消费61673但下一请求30986超过保留Critic后的可用额度；COMPARE125.624秒/174535 tokens，B后续候选Critic下限40960而仅余28333，两臂均budget_exhausted，runner420.05秒。SDK `.local-test-evidence/2026-09-13/p34-real-search-value-9d74269f9f484f87b9fd75c08bd287b5/`，不声明节省、成功或优势。原实验预算未改，下一轮预算策略待用户偏好；并发收尾屏障复现与全量审计归因继续，P33/P34/P35累计仍OPEN。不打包/P36/推送。
+
+Parent delivery correction: first documentation writer failed stdin UTF-8 decoding before writing; code-only commit7d4e229 followed by this same-delivery architecture update and import-order fix. Tests4PASS9.79s were already complete; no further test execution was claimed.
