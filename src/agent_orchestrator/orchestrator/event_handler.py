@@ -36,6 +36,7 @@ from simple_harness.agents import AgentConfig, AgentLimits, AgentTurnState
 from simple_harness.execution.provider_admission import ProviderAdmissionDenied
 
 from .accounting_recovery import import_late_accounting
+from .fragment_commits import SelectionFragmentExpired
 
 if TYPE_CHECKING:
     from ..runtime.provider_budget_guard import ProviderBudgetGuard
@@ -3562,7 +3563,20 @@ class Orchestrator:
                 or (current_task.status in TERMINAL_TASK and not completed_proposal)):
             return None
         if self.commit.selection_policy_for(task.id) is not None:
-            return None  # candidate failure stays in its bounded round, with original cost
+            # Individual candidate failures stay inside their original round.
+            # Only its durable, non-deadline empty decision can request one
+            # independent fragment review; it never reopens candidate allocation.
+            selection = self.commit.selection_round(task.id)
+            empty_decision = (None if selection is None or not selection["decision_id"] else
+                              self.store.get_receipt(selection["decision_id"]))
+            if (selection is None or empty_decision is None or selection["state"] != "DECIDED"
+                    or trigger != f"selection_fragment:{selection['round_id']}"
+                    or empty_decision.get("action") != "stop"
+                    or empty_decision.get("selected_results")
+                    or empty_decision.get("reason") != "bounded_candidates_complete"
+                    or self.store.now >= selection["deadline_at"]
+                    or attempt_id not in selection["attempt_ids"]):
+                return None
         if not self._config.dynamic_graph:  # D5-15: the layer's kill switch
             self._note(f"dynamic graph disabled: no management for {task.id} ({trigger})")
             return None
@@ -3882,6 +3896,8 @@ class Orchestrator:
             ) is not None
             if has_fragment and has_graph:
                 raise ContractError("Manager cannot mix fragment and graph decisions")
+            if trigger.startswith("selection_fragment:") and not has_fragment:
+                raise ContractError("exhausted selection allows only independent fragment validation")
             if has_fragment:
                 fragment_decision = FragmentValidationDecisionV1.from_json(
                     extract_block(text, FRAGMENT_VALIDATION_DECISION_TAG)
@@ -3938,7 +3954,15 @@ class Orchestrator:
                         "turn_id": result.turn_id,
                     },
                     limits=limits,
+                    selection_round_id=(trigger.removeprefix("selection_fragment:")
+                                        if trigger.startswith("selection_fragment:") else None),
                 )
+            except SelectionFragmentExpired:
+                self._settle_intent(intent, "FAILED")
+                self._settle_service_if_known(intent.subject_id, mission.id)
+                self.commit.stop_selection(task_id, reason="selection_fragment_expired")
+                await self._release_mission(mission.id)
+                return
             except (ContractError, CommitRejected, GraphChangeRejected, BudgetError) as error:
                 self.commit.record_management_decided(
                     mission.id, task_id=task_id, trigger=trigger,
@@ -4472,6 +4496,62 @@ class Orchestrator:
                 return True
         return False
 
+    async def _selection_fragment_recovery(
+        self, mission: Mission, task: Task, selection: Mapping[str, Any],
+        decision: Mapping[str, Any],
+    ) -> bool | None:
+        """None means stop; False waits without claiming progress; True dispatched.
+
+        The original round remains DECIDED and retains its cost, deadline and
+        candidate cap. Only a separately accepted F and normal Manager graph
+        commit can replace a blocked downstream dependency and cancel this A.
+        """
+        if (not self._config.dynamic_graph
+                or decision.get("reason") != "bounded_candidates_complete"
+                or self.store.now >= selection["deadline_at"]):
+            return None
+        trigger = f"selection_fragment:{selection['round_id']}"
+        subject = f"{mission.id}:manager:{trigger}"
+        intent = self.store.get_intent_for_subject(subject)
+        if intent is None:
+            # Stable original candidate order; one opportunity for this round,
+            # never one Manager retry per failed candidate or per scheduler tick.
+            for attempt_id in selection["attempt_ids"]:
+                result = self.store.find_result_for_attempt(attempt_id)
+                if result is None or result.verdict != "FAIL":
+                    continue
+                catalog = manager_fragment_origin(
+                    self.store, self.commit._source_cas(), result.envelope.id,
+                )
+                if catalog.get("available") is not True:
+                    continue
+                try:
+                    requested = await self._request_management(
+                        mission, task, trigger=trigger, result_id=result.envelope.id,
+                        attempt_id=attempt_id,
+                    )
+                except BudgetExhausted as error:
+                    self.commit.stop_task(
+                        task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+                        detail={"reason": "selection_fragment_management_unfunded",
+                                "selection_round_id": selection["round_id"], "error": str(error)},
+                    )
+                    await self._release_mission(mission.id)
+                    return True
+                return True if requested is not None else None
+            return None
+        if intent.state in {"PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"}:
+            return False
+        if task.id in self._tasks_under_management(mission.id):
+            return False  # F accepted; its frozen downstream graph decision is in flight.
+        for receipt in self.store.list_fragment_validations(mission.id):
+            if receipt.get("origin", {}).get("result_id") != intent.config.get("result_id"):
+                continue
+            validation = self.store.get_task(receipt["validation_task_id"])
+            if validation is not None and validation.status not in TERMINAL_TASK:
+                return False
+        return None  # Invalid/no fragment, failed F, or rejected downstream patch: bounded stop.
+
     async def _drive_selection(self, mission: Mission, task: Task) -> bool:
         """Advance one bounded round; waiting candidates never impersonate running turns."""
         if task.status in TERMINAL_TASK or task.status is TaskStatus.BLOCKED or task.paused:
@@ -4524,6 +4604,9 @@ class Orchestrator:
         selection = self.commit.selection_round(task.id)
         assert selection is not None
         if decision["action"] == "stop":
+            recovery = await self._selection_fragment_recovery(mission, task, selection, decision)
+            if recovery is not None:
+                return recovery
             self.commit.stop_selection(task.id, reason="selection_no_eligible_complete_candidate")
             await self._release_mission(mission.id)
             return True
@@ -4612,7 +4695,9 @@ class Orchestrator:
         for search_task in compare_tasks:
             if await self._drive_selection(mission, search_task):
                 return True
-        tasks = [t for t in tasks if t not in compare_tasks or (
+        # Completed compare predecessors are still allocator dependency facts.
+        # Removing them here makes a READY downstream Task appear blocked forever.
+        tasks = [t for t in tasks if t.status in TERMINAL_TASK or t not in compare_tasks or (
             (selection := self.commit.selection_round(t.id)) is not None
             and selection["state"] == "COLLECTING"
             and len(selection["attempt_ids"]) < selection["policy"]["max_candidates"]
@@ -4759,7 +4844,9 @@ class Orchestrator:
                 fragment_id = fragment_parents[0].context["fragment_validation"]["fragment_id"]
                 validated_input = self.commit.fragment_input(
                     fragment_id,
-                    **({"retry_consumer_task_id": task.id} if attempts
+                    **({"selection_consumer_task_id": task.id}
+                       if attempts and self.commit.selection_policy_for(task.id) is not None else
+                       {"retry_consumer_task_id": task.id} if attempts
                        else {"ready_consumer_task_id": task.id}),
                 )
                 actual = {(item.artifact_id, item.path, item.content_hash) for item in inputs}

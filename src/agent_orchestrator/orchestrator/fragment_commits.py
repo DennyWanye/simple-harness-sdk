@@ -51,6 +51,10 @@ def _command_body(proposal: FragmentProposalV1) -> dict[str, Any]:
     return body
 
 
+class SelectionFragmentExpired(ContractError):
+    """The original empty selection round no longer admits a new fragment."""
+
+
 class FragmentCommitsMixin:
     def project_fragment(
         self: Any, proposal: FragmentProposalV1 | Mapping[str, Any]
@@ -66,6 +70,7 @@ class FragmentCommitsMixin:
         base_graph_version: int,
         source: Mapping[str, Any],
         limits: ChangeLimits | None = None,
+        selection_round_id: str | None = None,
     ) -> Mapping[str, Any]:
         proposal = _proposal(proposal)
         if not isinstance(command_id, str) or not command_id.strip() or not source:
@@ -83,6 +88,9 @@ class FragmentCommitsMixin:
                 "source": dict(source),
             }
         )
+        if selection_round_id is not None:
+            command_hash = sha256_hex({"command_hash": command_hash,
+                                       "selection_round_id": selection_round_id})
         with self._store.transaction() as connection:
             known = self._store.get_receipt(command_key)
             if known is not None:
@@ -102,7 +110,8 @@ class FragmentCommitsMixin:
                     old_receipt.get("proposal") if isinstance(old_receipt, Mapping) else None
                 )
                 if (
-                    known["proposal_hash"] == legacy_command_hash
+                    selection_round_id is None
+                    and known["proposal_hash"] == legacy_command_hash
                     and row is not None
                     and row["kind"] == "fragment_command"
                     and row["subject_id"] == proposal.origin["mission_id"]
@@ -118,6 +127,18 @@ class FragmentCommitsMixin:
                 ):
                     return old_receipt
                 raise ContractError("fragment command identity reused with different proposal")
+            if selection_round_id is not None:
+                round_ = self.selection_round(proposal.origin["task_id"])
+                decision = (None if round_ is None or not round_["decision_id"] else
+                            self._store.get_receipt(round_["decision_id"]))
+                if (round_ is None or round_["round_id"] != selection_round_id
+                        or round_["state"] != "DECIDED"
+                        or decision is None or decision.get("action") != "stop"
+                        or decision.get("reason") != "bounded_candidates_complete"
+                        or proposal.origin["attempt_id"] not in round_["attempt_ids"]
+                        or self._store.now >= round_["deadline_at"]):
+                    raise SelectionFragmentExpired("selection fragment round expired or changed")
+                self._selection_live(round_)
             projection = project_fragment(self._store, self._source_cas(), proposal)
             row = connection.execute(
                 "SELECT projection_receipt_id FROM fragment_validations WHERE fragment_id=?",
@@ -411,6 +432,7 @@ class FragmentCommitsMixin:
         consumer_task_revision_id: str | None = None,
         ready_consumer_task_id: str | None = None,
         retry_consumer_task_id: str | None = None,
+        selection_consumer_task_id: str | None = None,
     ) -> Mapping[str, Any]:
         """New consumption only, after actual independent verification and acceptance.
 
@@ -426,7 +448,8 @@ class FragmentCommitsMixin:
             if mission.status is not MissionStatus.ACTIVE:
                 raise ContractError("fragment new consumption requires an active Mission")
             if sum(value is not None for value in (
-                consumer_task_revision_id, ready_consumer_task_id, retry_consumer_task_id
+                consumer_task_revision_id, ready_consumer_task_id, retry_consumer_task_id,
+                selection_consumer_task_id,
             )) != 1:
                 raise ContractError("fragment consumer needs exactly one frozen identity")
             retry_history: list[Mapping[str, Any]] = []
@@ -438,6 +461,32 @@ class FragmentCommitsMixin:
                     or self._store.list_attempts(consumer.id)
                 ):
                     raise ContractError("fragment consumer is not an unstarted READY Task")
+                consumer_revision = None
+            elif selection_consumer_task_id is not None:
+                consumer = self._require_task(selection_consumer_task_id)
+                round_ = self.selection_round(consumer.id)
+                prior_attempts = self._store.list_attempts(consumer.id)
+                if (consumer.mission_id != mission.id
+                        or consumer.status not in {TaskStatus.READY, TaskStatus.ACTIVE,
+                                                   TaskStatus.VERIFYING}
+                        or consumer.accepted_result_id is not None or not prior_attempts
+                        or self.selection_policy_for(consumer.id) is None or round_ is None
+                        or round_["state"] not in {"COLLECTING", "DECIDED", "SYNTHESIZING"}
+                        or self._store.now >= round_["deadline_at"]
+                        or {a.id for a in prior_attempts} != (
+                            set(round_["attempt_ids"])
+                            | ({round_["synthesis_attempt_id"]}
+                               if round_["synthesis_attempt_id"] else set())
+                        )):
+                    raise ContractError("fragment consumer has no live original selection")
+                self._selection_live(round_)
+                for prior in prior_attempts:
+                    intent = self._store.get_intent_for_subject(prior.id)
+                    frozen = (None if intent is None else
+                              intent.config.get("validated_fragment_input"))
+                    if not isinstance(frozen, Mapping):
+                        raise ContractError("fragment selection lost its frozen first admission")
+                    retry_history.append(frozen)
                 consumer_revision = None
             elif retry_consumer_task_id is not None:
                 consumer = self._require_task(retry_consumer_task_id)

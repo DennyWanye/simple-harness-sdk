@@ -172,7 +172,7 @@ def test_manager_fragment_decision_uses_real_failed_result_and_rejects_bad_wire(
                 if item.kind == "manager"
             ]
             assert len(manager_intents) == 1
-            assert manager_intents[0].config["prompt_version"] == "manager-v3"
+            assert manager_intents[0].config["prompt_version"] == "manager-v4"
             assert (
                 "fragment_validation_decision"
                 in manager_intents[0].config["agent_config"]["instructions"]

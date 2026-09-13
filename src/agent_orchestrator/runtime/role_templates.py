@@ -244,7 +244,7 @@ SYNTHESIZER = _revise(
     ),
 )
 
-MANAGER_VERSION = "manager-v3"
+MANAGER_VERSION = "manager-v4"
 GRAPH_CHANGE_PROPOSAL_TAG = "graph_change_proposal"
 FRAGMENT_VALIDATION_DECISION_TAG = "fragment_validation_decision"
 
@@ -279,9 +279,9 @@ MANAGER_V2 = _revise(
         "（省略时由系统按部署补默认）；不含 code_test 时不要写 pytest: 条件。\n",
     ),
 )
-MANAGER = _revise(
+MANAGER_V3 = _revise(
     MANAGER_V2,
-    MANAGER_VERSION,
+    "manager-v3",
     (
         "最终回答必须只包含一个 <graph_change_proposal>…</graph_change_proposal> 块",
         "最终回答只能包含一个 <graph_change_proposal>…</graph_change_proposal> 块，"
@@ -289,11 +289,11 @@ MANAGER = _revise(
         "<fragment_validation_decision>…</fragment_validation_decision> 块；不可混用",
     ),
 )
-MANAGER = RoleTemplate(
-    name=MANAGER.name,
-    prompt_version=MANAGER.prompt_version,
-    tool_names=MANAGER.tool_names,
-    instructions=MANAGER.instructions
+MANAGER_V3 = RoleTemplate(
+    name=MANAGER_V3.name,
+    prompt_version=MANAGER_V3.prompt_version,
+    tool_names=MANAGER_V3.tool_names,
+    instructions=MANAGER_V3.instructions
     + "\n片段决策严格 JSON：{\"schema_version\":1,\"base_graph_version\":输入 graph_version,"
     "\"proposal\":{\"schema_version\":1,\"origin\":输入 fragment_validation.origin,"
     "\"criterion_ids\":[输入 criteria 的完整 id],"
@@ -301,6 +301,45 @@ MANAGER = RoleTemplate(
     "\"material_refs\":[artifact 的 kind/artifact_id/content_hash/byte_start/"
     "byte_end_exclusive 或 citation 的 kind/receipt_id/citation_index],"
     "\"rationale\":str}}。只能从输入冻结目录选，不能声明 PASS；新验证 Task 仍需独立执行。"
+)
+
+# The v4 default spells out the parser's tagged-union wire shape. Keep the examples
+# as JSON strings so tests parse the exact bytes a Manager receives in its system prompt.
+_MANAGER_V4_OPERATION_EXAMPLES = (
+    '{"op":"add_task","key":"follow_up","goal":"补足已验证的缺口","rationale":"该任务服务 Mission 根目标",'
+    '"dependencies":["existing-task-id"],"success_criteria":["file:follow_up.md"],'
+    '"verification_policy":["format_check","rule_check"],"allowed_tools":["workspace_write_file"],'
+    '"budget":{"max_tokens":1000,"max_attempts":1},"priority":1,"outputs":["follow_up.md"],'
+    '"parent_task_ids":["existing-task-id"],"role":"worker"}',
+    '{"op":"supersede_task","task_id":"active-task-id","replacement_key":"follow_up"}',
+    '{"op":"retarget_dependencies","task_id":"blocked-task-id","dependencies":["upstream-task-id"]}',
+    '{"op":"set_priority","task_id":"ready-task-id","priority":2}',
+    '{"op":"pause_task","task_id":"blocked-task-id","reason":"等待上游证据"}',
+    '{"op":"resume_task","task_id":"ready-task-id"}',
+    '{"op":"cancel_task","task_id":"active-task-id","reason":"该路线已无价值"}',
+    '{"op":"set_role","task_id":"ready-task-id","role":"simplifier"}',
+)
+_MANAGER_V4_WIRE_CONTRACT = (
+    "\n图变更 wire contract（选择 graph_change_proposal 时严格执行）：\n"
+    "块内顶层只能是 {\"base_graph_version\": 输入 graph_version, \"rationale\": str, \"operations\": [ … ]}；"
+    "不要输出 basis，系统会绑定 trigger/result/attempt/task。不得加入任何 wrapper 或额外字段，"
+    "包括 fragmentproposal、fragment_proposal、claim_refs_note 或自定义说明字段。\n"
+    "operations 的每项必须是一个扁平 JSON 对象，第一层用唯一判别字段 \"op\" 指定操作；"
+    "绝不能写 operationName{fields}，也不能写 {\"retarget_dependencies\":{…}}、{\"cancel_task\":{…}} 等嵌套包装。"
+    "add_task 的字段也必须直接平铺在同一对象，budget 是其唯一允许的嵌套对象；"
+    "只从输入 Task Contract、根目标、验证层、允许工具、剩余预算与 limits 取值，不能改写这些输入事实。\n"
+    "以下每行都是 operations 中一项可直接解析的 JSON 示例；替换示例值为本次输入的真实 id、key、预算和合同字段：\n"
+    + "\n".join(_MANAGER_V4_OPERATION_EXAMPLES)
+    + "\n当 trigger.trigger 以 selection_fragment: 开头时，只允许片段决策；"
+    "此时 graph_change_proposal 不被接受，不能重启候选或改写原选择轮次。"
+    + "\nfragment_validation.available=true 时若选择片段决策，仍只使用既有 fragment_validation_decision 的严格 schema；"
+    "不要混入 graph 字段、fragmentproposal、claim_refs_note 或其他额外字段。"
+)
+MANAGER = RoleTemplate(
+    name=MANAGER_V3.name,
+    prompt_version=MANAGER_VERSION,
+    tool_names=MANAGER_V3.tool_names,
+    instructions=MANAGER_V3.instructions + _MANAGER_V4_WIRE_CONTRACT,
 )
 
 
@@ -399,6 +438,7 @@ def register_template(template: RoleTemplate) -> None:
 register_template(PLANNER_V3)
 register_template(MANAGER_V1)
 register_template(MANAGER_V2)
+register_template(MANAGER_V3)
 register_template(CRITIC_V2)
 register_template(WORKER_V2)
 register_template(SYNTHESIZER_V2)

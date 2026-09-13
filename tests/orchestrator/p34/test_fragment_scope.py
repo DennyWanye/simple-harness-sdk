@@ -621,3 +621,31 @@ def test_source_currentness_is_separate_from_historical_receipt(e_scenes, damage
     with pytest.raises(ContractError, match="stale_source" if damage == "revoke" else "ERROR"):
         s.commit.project_fragment(proposal)
     assert s.store.get_result(e.envelope.id).to_json() == before
+
+
+def test_legacy_fragment_receipt_cannot_satisfy_a_selection_command(scene):
+    from agent_orchestrator.contracts.models import canonical_json, sha256_hex
+    from agent_orchestrator.orchestrator.fragment_commits import _command_body
+
+    s = scene
+    kwargs = dict(command_id="legacy-boundary", base_graph_version=1,
+                  source={"manager": "oracle"})
+    original = s.commit.commit_fragment_validation(s.proposal, **kwargs)
+    key = "fragment-command-" + sha256_hex(
+        {"mission": s.mission.id, "command": kwargs["command_id"]},
+    )
+    wrapper = s.store.get_receipt(key)
+    old_hash = sha256_hex(_command_body(s.proposal))
+    wrapper["proposal_hash"] = old_hash
+    with s.store.transaction() as connection:
+        connection.execute(
+            "UPDATE commit_receipts SET proposal_hash=?,receipt_json=? WHERE commit_id=?",
+            (old_hash, canonical_json(wrapper), key),
+        )
+    # Historical unbound recovery remains compatible; attaching a new round to
+    # the exact same command is a collision, even though F already exists.
+    assert s.commit.commit_fragment_validation(s.proposal, **kwargs) == original
+    events = len(s.store.list_events(s.mission.id))
+    with pytest.raises(ContractError, match="command identity"):
+        s.commit.commit_fragment_validation(s.proposal, selection_round_id="foreign", **kwargs)
+    assert len(s.store.list_events(s.mission.id)) == events
