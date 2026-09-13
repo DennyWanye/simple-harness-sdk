@@ -4979,10 +4979,13 @@ class Orchestrator:
         if selection_decision is not None:
             from ..runtime.role_templates import SYNTHESIZER
             role = self._template(SYNTHESIZER, mission.id)
-            role = replace(role, prompt_version=role.prompt_version + ":compare-v1",
+            role = replace(role, prompt_version=role.prompt_version + ":compare-v2",
                            instructions=role.instructions + "\n候选输入不是正式知识；读取selection_inputs中的"
                            "独立候选文件，对照原完整Task合同生成新输出。不得将输入PASS视为输出PASS；"
-                           "不要把候选result ID填写成used_knowledge。相同逻辑文件由你明确合成新文件。")
+                           "used_knowledge只能填写当前ContextPackage.verified_knowledge中的真实id；"
+                           "若该目录为空，填写空数组[]，不要为满足通用综合提示虚构id。"
+                           "候选artifact_id、result ID和验证片段fragment_id仅用于输入血缘与材料，"
+                           "都不是知识id，不得填写到used_knowledge。相同逻辑文件由你明确合成新文件。")
             inputs = [*inputs, *(
                 UpstreamInput(artifact.task_id, artifact.path, artifact.content_hash, artifact.id)
                 for artifact in self.commit.selection_input_artifacts(selection_decision["receipt_id"])

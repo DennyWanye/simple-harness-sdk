@@ -10,6 +10,8 @@ Before real calls: pure controls assert original-v2 and all existing profile exp
 
 One pair (FIRST then COMPARE even if FIRST fails) constitutes the run. A failure leads to diagnosis and retained FAIL, not retries to select a favorable sample. Record wall time, calls, known/unknown/cache-separated tokens and all failed attempts. Synthetic admission/evaluation approval controls remain labelled fixture. No superiority claim from one pair.
 
-VERDICT: NOT_RUN. New code and independent review pending; current-source native256/512 short Missions already passed separately, not proof of this comparison.
+VERDICT: FAIL (v11 executed). Both Missions delivered but strict FIRST physical-error and COMPARE synth requirements failed; see v11-real-pair-review.md. Original contract retained; scoped repair/revalidation pending.
 
 Implementation/review checkpoint: parent review corrected the output reserve to32768 and explicitly binds Mission/runtime to deepseek-context-256k-v1 so the actual selected-profile floor matches Host; runtime metadata/hash and correct budget-source path added to new export only. New actual startup + public approved-policy creation proves294912 first/critic floor. Initial19PASS/1new-test schema-shapeFAIL0.33s, corrected20PASS0.30s, route integration25PASS0.53s; final pure21PASS0.37s/runner0.75s. Original hash controls retained. Test-local changes only; production unchanged since dab3d44. Paid pair still NOT_RUN at checkpoint.
+
+Execution supersedes the historical NOT_RUN checkpoint above: v11 result and full evidence hash are in v11-real-pair-review.md.

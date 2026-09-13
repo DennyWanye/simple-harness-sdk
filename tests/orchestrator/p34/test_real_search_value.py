@@ -415,6 +415,7 @@ class _ObservedProvider:
         self.calls = []
         self.read_calls = {}
         self.reads = []
+        self._read_pages = []  # raw bytes stay in memory; persisted summaries have hashes only
         self.writes = []
 
     @property
@@ -448,12 +449,48 @@ class _ObservedProvider:
             value = payload.get("value", {}) if isinstance(payload, dict) else {}
             if not isinstance(payload, dict) or payload.get("outcome") != "succeeded":
                 continue
-            if isinstance(value, dict) and isinstance(value.get("content"), str):
-                self.reads.append({
-                    "attempt_id": attempt, "path": self.read_calls[key],
-                    "content_hash": hashlib.sha256(value["content"].encode()).hexdigest(),
-                    "full": value.get("offset", 0) == 0 and value.get("next_offset") is None,
-                })
+            if not isinstance(value, dict) or not isinstance(value.get("content"), str):
+                continue
+            path = self.read_calls[key]
+            if value.get("path") != path:
+                continue
+            content = value["content"]
+            if "page_schema" in value:
+                if value["page_schema"] != "workspace-read-v1":
+                    continue
+                offset, end, total = (value.get("offset"), value.get("next_offset"),
+                                      value.get("total_chars"))
+                digest = value.get("sha256")
+                if (
+                    type(offset) is not int or offset < 0
+                    or type(total) is not int or total < 0
+                    or (end is not None and (type(end) is not int or end <= offset))
+                    or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                ):
+                    continue
+                actual_end = offset + len(content)
+                if (
+                    actual_end > total
+                    or (end is not None and (end != actual_end or end >= total))
+                    or (end is None and actual_end != total)
+                ):
+                    continue
+            elif any(
+                field in value for field in ("offset", "next_offset", "sha256", "total_chars")
+            ):
+                continue  # no partial page masquerading as a legacy full read
+            else:
+                offset, end, total = 0, None, len(content)
+                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            page = (offset, offset + len(content), content)
+            self._read_pages.append((attempt, path, digest, total, page))
+            self.reads.append({
+                "attempt_id": attempt, "path": path,
+                "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "sha256": digest, "offset": offset, "next_offset": end,
+                "total_chars": total,
+                "full": offset == 0 and end is None,
+            })
         try:
             response = await self.inner.invoke(request, cancel=cancel)
         except BaseException as error:
@@ -498,11 +535,29 @@ class _ObservedProvider:
         return response
 
     def saw_bytes(self, attempt_id, path, content_hash):
-        return any(
-            row["attempt_id"] == attempt_id and row["path"] == path
-            and row["full"] and row["content_hash"] == content_hash
-            for row in self.reads
-        )
+        pages = [
+            (total, page) for attempt, read_path, digest, total, page in self._read_pages
+            if attempt == attempt_id and read_path == path and digest == content_hash
+        ]
+        if not pages or len({total for total, _ in pages}) != 1:
+            return False
+        # Repeated messages and matching overlaps are harmless; conflicting
+        # overlapping bytes cannot support a complete observation.
+        cursor = 0
+        chunks = []
+        for start, end, content in sorted(page for _, page in pages):
+            if start > cursor or end != start + len(content):
+                return False
+            prefix = "".join(chunks)
+            overlap = min(end, cursor) - start
+            if prefix[start:start + overlap] != content[:overlap]:
+                return False
+            if end > cursor:
+                chunks.append(content[overlap:])
+                cursor = end
+        if cursor != pages[0][0]:
+            return False
+        return hashlib.sha256("".join(chunks).encode("utf-8")).hexdigest() == content_hash
 
 
 def _assert_verified(store, task):
