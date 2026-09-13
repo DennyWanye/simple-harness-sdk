@@ -1,0 +1,13 @@
+# 正常旧PLANNING恢复、详情换行与代码真测失败
+
+最后更新：2026-09-14 CST。源码 Host c2851591 / SDK2957ed7 / snapshot-v37。
+
+旧SDK6360c205以正常_start_planning路径停在PLANNING，旧frozen input/config均保持；唯一Planner intent正常SETTLED，不再有上一轮夹具CREATED/base_version偏差。旧任务19次真实调用112418tokens，保留两次内容验证失败，第三Worker产物正式交付。原73B NOTES与新报告均通过原生及冷读打开，新报告hash dfcb5d3ab16e5245eae10092dccd85a0206793faf8f429804912ad2453a7b44a，完整hash在界面正确换行。
+
+代码用例 mission-933ec42fe59b82de 在UI提交原生pytest与人审目标：实际Worker执行了测试，但Critic收到test_output=None，因为Router把critic_review排在code_test之前；反复拒绝触发图修复，父任务在UI取消。43真实调用172374tokens，最终预留0。不能计为代码/待复核冷恢复PASS。另发现共享模型槽等待被Host泛化为UNKNOWN，错误显示崩溃接管。这两个故障分别修复后再测，不修改本轮历史。
+
+本轮总62真实调用284792tokens，旧夹具4受控调用600另计；66记录全部succeeded/0rehandoff。冷前后选定持久表（含tool_calls/tool_catalog_snapshots）、任务状态及调用记录完全一致，无新增调用。新旧两份报告实际冷读；原代码失败/取消保持。原生337.913秒、冷68.045秒（生命周期，含人工等待），均正常退出无残留。
+
+父任务准备开销：首次参数用相对路径被预检拒绝，改绝对路径后成功；首次before-new-host捕获误用系统SQLite失败，所以不宣称旧四条完整记录升级前后hash证明，本轮只证明冻结input/config、原artifact、恢复后完整冷读记录。此前v36已有独立原四条完整记录保持证据。
+
+原始证据Host ignored `.local-test-evidence/2026-09-13/p33-g/source-ui-legacy-code-v37/`。case-summary.json SHA256 bb7b42e75b426e723aecfcd194e5fb8fa85759d0366106a9129ef8842307cc12；before-cold c63c4891e873bbc33304139bc5ee216b5906e863c43dc9cece7fc0a39d7b0f78，after-cold b84b475414334cee67f4678a49ae5e29d13256e442659a07a6b34c39adcb2754。P34严格对照/整体验收仍OPEN，打包安装器暂缓。

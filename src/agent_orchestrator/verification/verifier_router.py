@@ -5,7 +5,7 @@
 """Verifier Router (§14.1, ORCH §12.4, plan D9/D23).
 
 The Task Contract's ``verification_policy`` names the layers that *must* run.
-Layers run in the §14.1 order (format → rule → critic → test); the first required
+Layers are recorded in the §14.1 order (format → rule → critic → test); the first required
 layer that FAILs or ERRORs short-circuits the rest (D23).  Layers the policy did
 not request are recorded as ``NOT_REQUIRED`` — never as PASS.  A layer that was
 requested but could not run (e.g. the Critic's verdict was unreadable) is
@@ -13,6 +13,9 @@ requested but could not run (e.g. the Critic's verdict was unreadable) is
 
 The Critic layer is executed by a callback supplied by the orchestrator (it needs
 a dispatch intent, budget and the Agent bridge); everything else is local.
+When both Critic and code_test are required, code_test executes after the deterministic
+gates and before Critic so its independent output can be reviewed. Its result is
+recorded at the existing code_test position.
 """
 
 from __future__ import annotations
@@ -126,6 +129,7 @@ class VerifierRouter:
         critic: CriticVerdict | None = None
         short_at: str | None = None
         test_output: str | None = None
+        prepared_code_test: LayerResult | None = None
         escalated = False  # any required verifier can ask for a person
         suspended = False
 
@@ -137,6 +141,13 @@ class VerifierRouter:
         for layer in VERIFICATION_LAYERS:
             if layer == "human_review" and escalated:
                 required.add("human_review")  # needs_human forces the sixth layer (D7-8')
+            # Preserve the actual execution evidence even when the later Critic
+            # rejects content. A test that already ran must never become SKIPPED.
+            if layer == "code_test" and prepared_code_test is not None:
+                await record(prepared_code_test)
+                if short_at is None and prepared_code_test.status in {FAIL, ERROR}:
+                    short_at = layer
+                continue
             if short_at is not None:
                 await record(
                     LayerResult(
@@ -221,39 +232,64 @@ class VerifierRouter:
                                 layer, ERROR, str(error), {"assessment_error": str(error)}
                             )
             elif layer == "critic_review":
-                try:
-                    critic = await run_critic(test_output)
-                    result = LayerResult(
-                        layer,
-                        PASS if critic.passed else FAIL,
-                        "critic found no blocker"
-                        if critic.passed
-                        else "critic found a blocker: "
-                        + "; ".join(
-                            str(f.get("detail"))
-                            for f in critic.findings
-                            if f.get("severity") == "blocker"
-                        ),
-                        critic.to_json(),
+                # The recorded layer order is a durable contract. Execute the required
+                # test here, after format/rule passed, but record it in its usual slot.
+                # Only the verifier's run (or a durable reused layer) supplies stdout;
+                # the Worker's claimed run_tests output is never an input here.
+                if "code_test" in required and self._local_code_execution:
+                    if reuse is not None and "code_test" in reuse:
+                        prepared_code_test = reuse["code_test"]
+                    else:
+                        prepared_code_test = await code_test(
+                            task,
+                            verification_copy=verification_copy,
+                            timeout=self._test_timeout,
+                            executor=self._executor,
+                        )
+                    runs = prepared_code_test.detail.get("runs", [])
+                    test_output = "\n".join(
+                        str(run.get("stdout", "")) for run in runs if isinstance(run, Mapping)
                     )
-                    if critic.passed and critic.needs_human:  # D7-8': not a PASS, not a FAIL
-                        if needs_human_allowed:
-                            result = LayerResult(
-                                layer,
-                                NEEDS_HUMAN,
-                                "the Critic cannot reliably judge; a person decides",
-                                critic.to_json(),
-                            )
-                            escalated = True
-                        else:
-                            result = LayerResult(
-                                layer,
-                                FAIL,
-                                "the Critic asked for a person again; one escalation per Task",
-                                critic.to_json(),
-                            )
-                except ContractError as error:
-                    result = LayerResult(layer, ERROR, f"critic verdict unusable: {error}", {})
+                if prepared_code_test is not None and prepared_code_test.status != PASS:
+                    # A failing required deterministic check needs no model judgment.
+                    # The failure is recorded in the code_test slot below.
+                    result = LayerResult(
+                        layer, "SKIPPED", "code_test failed before critic review", {}
+                    )
+                else:
+                    try:
+                        critic = await run_critic(test_output)
+                        result = LayerResult(
+                            layer,
+                            PASS if critic.passed else FAIL,
+                            "critic found no blocker"
+                            if critic.passed
+                            else "critic found a blocker: "
+                            + "; ".join(
+                                str(f.get("detail"))
+                                for f in critic.findings
+                                if f.get("severity") == "blocker"
+                            ),
+                            critic.to_json(),
+                        )
+                        if critic.passed and critic.needs_human:  # D7-8': not a PASS, not a FAIL
+                            if needs_human_allowed:
+                                result = LayerResult(
+                                    layer,
+                                    NEEDS_HUMAN,
+                                    "the Critic cannot reliably judge; a person decides",
+                                    critic.to_json(),
+                                )
+                                escalated = True
+                            else:
+                                result = LayerResult(
+                                    layer,
+                                    FAIL,
+                                    "the Critic asked for a person again; one escalation per Task",
+                                    critic.to_json(),
+                                )
+                    except ContractError as error:
+                        result = LayerResult(layer, ERROR, f"critic verdict unusable: {error}", {})
             elif layer == "code_test" and not self._local_code_execution:
                 # host support 0.9.8: a Task from before the switch still asks for the layer;
                 # it cannot run here, which is an ERROR — never a PASS or NOT_REQUIRED
@@ -266,15 +302,11 @@ class VerifierRouter:
             elif layer == "code_test":
                 # step 3 (D3-9'): Mission-level pytest targets are judged on the
                 # integrated tree, not against one Task's partial workspace
-                result = await code_test(
+                result = prepared_code_test or await code_test(
                     task,
                     verification_copy=verification_copy,
                     timeout=self._test_timeout,
                     executor=self._executor,
-                )
-                runs = result.detail.get("runs", [])
-                test_output = "\n".join(
-                    str(r.get("stdout", "")) for r in runs if isinstance(r, Mapping)
                 )
             elif layer == "human_review":  # step 7 (D7-8'): the sixth layer
                 result = human_layer(human)

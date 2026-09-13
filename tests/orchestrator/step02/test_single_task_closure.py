@@ -116,7 +116,7 @@ def test_s2_01_and_s2_02_repair_then_pass(tmp_path):
             first = store.find_result_for_attempt(attempts[0].id)
             assert first.verdict == "FAIL"
             layers = {v["layer"]: v["status"] for v in store.list_verifications(first.envelope.id)}
-            assert layers["code_test"] == "FAIL" and layers["critic_review"] == "PASS"
+            assert layers["code_test"] == "FAIL" and layers["critic_review"] == "SKIPPED"
             second = store.find_result_for_attempt(attempts[1].id)
             assert second.verdict == "PASS"
             assert task.accepted_result_id == second.envelope.id
@@ -142,27 +142,31 @@ def test_s2_01_and_s2_02_repair_then_pass(tmp_path):
             ):
                 assert expected in types, expected
             assert types.count("AttemptStarted") == 2 and types.count("BudgetReserved") >= 4
-            # both attempts, the planner and both critics settled against the Mission
+            # Both attempts and the planner settle; only the passing test needs a Critic.
             with store.transaction():
                 report = orchestrator.commit.ledger.costs_report(mission.id)
             settled = {r["subject_id"]: r["state"] for r in report["reservations"]}
             assert all(state == "SETTLED" for state in settled.values()), settled
             paid = {f"{mission.id}:planner:1"}
             for attempt in attempts:
-                paid.update({attempt.id, f"{attempt.id}:critic:1"})
+                paid.add(attempt.id)
+            paid.add(f"{attempts[1].id}:critic:1")
             tails = {f"tail:first-critic:{attempt.id}" for attempt in attempts}
             assert set(settled) == paid | tails
-            assert len(paid) == 5  # planner + 2 attempts + 2 critics
-            # Transferred FIRST Critic allowances are durable zero-usage rows,
-            # not two additional provider calls or charges.
+            assert len(paid) == 4  # planner + 2 attempts + only the second Critic
+            # The unused first Critic hold settles at zero; only the second
+            # hold transfers into a real Critic reservation.
             for row in report["reservations"]:
                 if row["subject_id"] in tails:
-                    assert row["reserved_tokens"] == row["settled_tokens"] == 0
+                    assert row["settled_tokens"] == 0
+                    assert row["reserved_tokens"] == (
+                        6000 if row["subject_id"] == f"tail:first-critic:{attempts[0].id}" else 0
+                    )
             mission_account = next(a for a in report["accounts"] if a["scope"] == "mission")
             assert mission_account["reserved_tokens"] == 0 and mission_account["settled_tokens"] > 0
-            assert mission_account["unpriced_settlements"] == 5
+            assert mission_account["unpriced_settlements"] == 4
             # deterministic provider never saw the planner twice
-            assert provider.by_role == {"planner": 1, "worker": 10, "critic": 2}
+            assert provider.by_role == {"planner": 1, "worker": 10, "critic": 1}
 
     asyncio.run(case())
 
