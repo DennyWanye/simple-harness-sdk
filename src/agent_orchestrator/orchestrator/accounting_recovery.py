@@ -68,8 +68,12 @@ def _facts(commit, bridge, intent, reservation):
     if task_id is not None:
         task = store.get_task(task_id)
         _require(task is not None and task.mission_id == intent.mission_id, "Task")
-    _require(reservation["account_id"] == "budget:" + (task_id or intent.mission_id),
-             "original account")
+    # Manager is funded by the Mission; task_id names its historical evidence
+    # scope, not the account charged by create_service_intent.
+    account_subject = intent.mission_id if intent.kind == "manager" else (
+        task_id or intent.mission_id
+    )
+    _require(reservation["account_id"] == "budget:" + account_subject, "original account")
     terminal = str(turn.phase) in {"committed", "failed"}
     complete = terminal
     facts = []

@@ -731,19 +731,26 @@ def _admission_identity(profile, counter, *, grants):
     }
 
 
-async def _arm(root, provider, *, compare, base_url, tokenizer_path):
-    mode = "COMPARE_THEN_SYNTHESIZE" if compare else "FIRST_VERIFIED"
-    directory = root / mode
-    config = OrchestratorConfig(
+def _search_runtime_config(directory):
+    """Bound output escalation to the Host ceiling within unchanged Task budgets."""
+    return OrchestratorConfig(
         evidence_root=directory, model=MODEL, max_concurrency=1,
         max_concurrent_model_calls=1, candidates_per_task=2,
-        default_max_output_tokens=8192, max_output_tokens_ceiling=32768,
+        default_max_output_tokens=8192, max_output_tokens_ceiling=8192,
         test_timeout_seconds=120, turn_deadline_seconds=900, lease_seconds=120,
         stall_seconds=300, attempt_reserve_tokens=60_000, critic_reserve_tokens=30_000,
         manager_reserve_tokens=30_000, max_planning_attempts=3,
         manager_after_failures=1, max_manager_rounds=4, max_graph_depth=6,
     )
-    report = {"mode": mode, "gate": "FAIL", "checks": {}, "error_type": None}
+
+
+async def _arm(root, provider, *, compare, base_url, tokenizer_path):
+    mode = "COMPARE_THEN_SYNTHESIZE" if compare else "FIRST_VERIFIED"
+    directory = root / mode
+    config = _search_runtime_config(directory)
+    report = {"mode": mode, "gate": "FAIL", "checks": {}, "error_type": None,
+              "default_max_output_tokens": config.default_max_output_tokens,
+              "max_output_tokens_ceiling": config.max_output_tokens_ceiling}
     start = time.monotonic()
     mission = None
     runtime = _official_runtime_options(

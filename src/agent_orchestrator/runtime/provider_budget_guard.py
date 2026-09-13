@@ -103,6 +103,24 @@ class ProviderBudgetCommitAdapter:
                 raise _deny("provider Attempt is terminal")
             task_id = attempt.task_id
             lease = attempt
+        elif intent.kind == "manager":
+            # Manager owns a separate Mission-funded service turn. Its Attempt
+            # reference is historical evidence (often RETRY_WAIT), not the live
+            # parent authority required by a Critic. Resolve exact durable IDs;
+            # never infer ownership from the composite subject's spelling.
+            if not isinstance(task_id, str) or not task_id:
+                raise _deny("provider Manager has no explicit Task identity")
+            evidence_attempt_id = intent.config.get("attempt_id")
+            if evidence_attempt_id is not None:
+                if not isinstance(evidence_attempt_id, str) or not evidence_attempt_id:
+                    raise _deny("provider Manager Attempt reference is invalid")
+                evidence_attempt = self.store.get_attempt(evidence_attempt_id)
+                if (
+                    evidence_attempt is None
+                    or evidence_attempt.mission_id != mission.id
+                    or evidence_attempt.task_id != task_id
+                ):
+                    raise _deny("provider Manager Attempt differs from its Task or Mission")
         elif intent.config.get("attempt_id"):
             parent_attempt = self.store.get_attempt(str(intent.config["attempt_id"]))
             if parent_attempt is not None:

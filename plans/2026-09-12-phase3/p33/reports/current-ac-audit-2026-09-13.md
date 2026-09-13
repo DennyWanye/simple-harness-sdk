@@ -1,3 +1,5 @@
+**11:48当前关联：** f6115ed全量/缺依赖补跑已关联原47断言的100个唯一selector，SDK证据current-ac-association-v1.json SHA256c89a5f2612669a388204cd31fc3604632152e0cba4f7145d0a400329f744dd94。原生O4后继v3：30DB/36Mission/66观察，0差异/错误/额外调用，.713s，Hostreplay-all-native-v3.json SHA2566dc569a8e9140340cbe4f7b7cf7e4d9ea1c3ee5b23184191bcc0eff4d4ad7519。下文M/UNKNOWN是先前审计快照，映射已关联；Manager两处新修后最终全量尚待，暂不宣布累计门结束。
+
 **当前补充 — 2026-09-13 11:05 CST：** P34原固定FIRST/COMPARE真实deepseek-flash两臂分别283.621s/79.057s、550469/108311 tokens，均budget_exhausted；Mission总额未耗尽，子Task额度不足。账本与Provider用量一致，无重复计费证据。测试原配置没有provider token grants，不能代表Host已接入的逐请求准入。现已保持原任务/材料/2M总预算与A/B限额不变，接入同一固定官方tokenizer的Context与Provider estimator，明确记录ZERO_GRANTS/UNKNOWN/EXERCISED；纯配置7PASS/.22s、ruff通过，未重跑付费组。原两次失败完整保留：SDK .local-test-evidence/2026-09-13/p34-real-search-value-8dc3876aadb546e0baa9148a0095122e/。P34价值门仍OPEN。
 
 # P3.3 当前逐项 AC 证据审计（更正版，2026-09-13）

@@ -8,7 +8,13 @@ import os
 from pathlib import Path
 
 import pytest
-from test_real_search_value import MODEL, _admission_identity, _official_runtime_options
+from test_real_search_value import (
+    DOCS_BUDGET,
+    MODEL,
+    _admission_identity,
+    _official_runtime_options,
+    _search_runtime_config,
+)
 
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
 from agent_orchestrator.runtime.deepseek_tokens import TOKENIZER_SHA256
@@ -83,3 +89,17 @@ def test_official_profile_uses_one_pinned_counter_for_context_and_admission(tmp_
     assert identity["estimator_fingerprint"] == counter.fingerprint
     assert identity["provider_grants"] == 0  # construction alone is not a paid-path claim
     assert not (tmp_path / "evidence").exists()
+
+
+def test_search_output_ceiling_fits_fixed_task_verification_reserve(tmp_path):
+    # Regression from paid pair v2: 32K context + 32K output required 65536,
+    # but 240K Task - 120K synthesis - 60K Worker leaves only 60K.
+    # Match the Host 8K output ceiling; never add Task or Mission budget.
+    config = _search_runtime_config(tmp_path / "evidence")
+    defaults = OrchestratorConfig(evidence_root=tmp_path / "defaults")
+    assert config.max_output_tokens_ceiling == defaults.max_output_tokens_ceiling
+    assert config.default_max_output_tokens <= config.max_output_tokens_ceiling
+    remaining = DOCS_BUDGET.max_tokens - 120_000 - config.attempt_reserve_tokens
+    assert 32768 + 32768 > remaining
+    assert 32768 + config.max_output_tokens_ceiling < remaining
+    assert DOCS_BUDGET.max_tokens == 240_000
