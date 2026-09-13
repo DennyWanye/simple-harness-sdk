@@ -491,10 +491,10 @@ def _assert_passing_tests(store, result, targets):
         _assert_pytest_summary(run["stdout"], {"passed": expected_passes[run["target"]]})
 
 
-def _assert_failed_audit(store, result):
+def _assert_failed_audit(store, result, *, audit_budget=AUDIT_BUDGET):
     task = store.get_task(result.envelope.task_id)
     assert task.goal == AUDIT_GOAL and task.success_criteria == AUDIT_CRITERIA
-    assert task.budget == AUDIT_BUDGET and tuple(task.outputs) == ("analysis.md",)
+    assert task.budget == audit_budget and tuple(task.outputs) == ("analysis.md",)
     assert set(task.verification_policy) == {
         "format_check", "rule_check", "code_test", "critic_review",
     }
@@ -556,7 +556,7 @@ def _assert_value(orch, provider, mission_id, compare, budget_profile="original-
         result = store.find_result_for_attempt(attempt.id)
         if result is not None and result.verdict == "FAIL":
             try:
-                _assert_failed_audit(store, result)
+                _assert_failed_audit(store, result, audit_budget=audit_budget)
             except AssertionError as error:
                 # An imperfect earlier analysis remains a failure. Only an actual
                 # independently checked partial success can be this gate's origin.
@@ -685,7 +685,7 @@ def _assert_value(orch, provider, mission_id, compare, budget_profile="original-
         )
         assert origin is not None, "fragment origin not bound to actual Manager input"
         failed = store.get_result(origin["result_id"])
-        _assert_failed_audit(store, failed)
+        _assert_failed_audit(store, failed, audit_budget=audit_budget)
         assert failed.envelope.id in failed_audits, (
             "F must come from the real failed baseline audit"
         )
