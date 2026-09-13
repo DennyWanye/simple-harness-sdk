@@ -57,6 +57,7 @@ import os
 import posixpath
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,6 +80,7 @@ from agent_orchestrator.runtime.assembly import OrchestratorConfig, resolve_prof
 from agent_orchestrator.runtime.deepseek_tokens import TOKENIZER_SHA256, DeepSeekV41TokenEstimator
 from agent_orchestrator.runtime.model_router import RuntimeProfile
 from agent_orchestrator.testing.fixtures import RECORDER_SEED, RECORDER_SPEC, package_of, role_of
+from simple_harness.providers import ProviderUsage
 
 pytestmark = pytest.mark.real_provider
 
@@ -253,6 +255,10 @@ def _experiment_budgets(budget_profile):
         return (Budget(max_tokens=320_000, max_attempts=4),
                 Budget(max_tokens=480_000, max_attempts=3),
                 Budget(max_tokens=240_000, max_attempts=2))
+    if budget_profile == "audit480-docs480-s240-v5":
+        return (Budget(max_tokens=480_000, max_attempts=4),
+                Budget(max_tokens=480_000, max_attempts=3),
+                Budget(max_tokens=240_000, max_attempts=2))
     raise ValueError("unknown P34 budget profile")
 
 
@@ -394,6 +400,26 @@ class _ObservedProvider:
             response = await self.inner.invoke(request, cancel=cancel)
         except BaseException as error:
             row["error_type"] = type(error).__name__  # never store exception text/URL/key
+            detail = getattr(error, "detail", None)
+            observed = detail.get("usage") if isinstance(detail, Mapping) else None
+            if isinstance(observed, Mapping):
+                try:
+                    usage = ProviderUsage(
+                        input_tokens=observed["input_tokens"],
+                        output_tokens=observed["output_tokens"],
+                        total_tokens=observed["total_tokens"],
+                        cache_tokens=observed.get("cache_tokens"),
+                        reasoning_tokens=observed.get("reasoning_tokens"),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    pass  # no inferred usage; preserve the original failure
+                else:
+                    row["usage"] = {
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                        "total_tokens": usage.total_tokens,
+                        "cache_tokens": usage.cache_tokens,
+                    }
             raise
         if response.usage is not None:
             row["usage"] = {

@@ -39,7 +39,7 @@ def test_legacy_default_remains_exact_and_rejects_larger_budget():
 
 
 @pytest.mark.parametrize("profile", ["original-v2", "docs480-s240-v3",
-                                     "audit320-docs480-s240-v4"])
+                                     "audit320-docs480-s240-v4", "audit480-docs480-s240-v5"])
 def test_each_declared_audit_budget_accepts_exact_and_rejects_drift(profile):
     budget, _, _ = _experiment_budgets(profile)
     _assert_failed_audit(*evidence(budget), audit_budget=budget)

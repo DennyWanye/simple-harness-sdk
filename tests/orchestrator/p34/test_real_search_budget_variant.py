@@ -60,3 +60,23 @@ def test_audit_headroom_variant_preserves_the_preceding_experiment():
     )
     assert normalized == preceding
     assert native_ui_materials("docs480-s240-v3") == preceding
+
+
+def test_audit_two_candidate_headroom_preserves_all_other_frozen_inputs():
+    preceding = native_ui_materials("audit320-docs480-s240-v4")
+    assert preceding["contract_hash"] == (
+        "b81272cdbf3620579b38ebffd86aad0ffbd4d58a19871a37aadfc7d7bcb4c2f2"
+    )
+    revised = native_ui_materials("audit480-docs480-s240-v5")
+    assert revised["audit_budget"]["max_tokens"] == 480_000
+    assert revised["mission_spec"]["budget"]["max_tokens"] == 2_000_000
+    normalized = deepcopy(revised)
+    for key in ("scenario", "contract_hash"):
+        normalized[key] = preceding[key]
+    normalized["mission_spec"]["idempotency_key"] = preceding["mission_spec"]["idempotency_key"]
+    normalized["audit_budget"]["max_tokens"] = 320_000
+    normalized["mission_spec"]["goal"] = revised["mission_spec"]["goal"].replace(
+        "预算480000 tokens/4 attempts", "预算320000 tokens/4 attempts",
+    )
+    assert normalized == preceding
+    assert native_ui_materials("audit320-docs480-s240-v4") == preceding
