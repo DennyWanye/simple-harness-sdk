@@ -71,11 +71,12 @@ def test_s8_07_a_changed_version_constant_is_listed_with_its_module(tmp_path, mo
     import agent_orchestrator.runtime.role_templates as templates
 
     before = policy_snapshot(_config(tmp_path))
+    changed_worker_version = before["role_templates"]["worker"] + "-test-next"
     monkeypatch.setattr(retrieval, "RETRIEVAL_VERSION", "retrieval-v2")  # a new build of the code
     monkeypatch.setitem(
         templates.ROLES,
         "worker",
-        dataclasses.replace(templates.ROLES["worker"], prompt_version="worker-v3"),
+        dataclasses.replace(templates.ROLES["worker"], prompt_version=changed_worker_version),
     )
     after = policy_snapshot(_config(tmp_path))
     diff = {d["key"]: d for d in snapshot_diff(before, after)}
@@ -85,7 +86,8 @@ def test_s8_07_a_changed_version_constant_is_listed_with_its_module(tmp_path, mo
         "b": "retrieval-v2",
         "source": "agent_orchestrator.context.retrieval.RETRIEVAL_VERSION",
     }
-    assert diff["role_templates.worker"]["b"] == "worker-v3"
+    assert diff["role_templates.worker"]["a"] == before["role_templates"]["worker"]
+    assert diff["role_templates.worker"]["b"] == changed_worker_version
     assert diff["role_templates.worker"]["source"].startswith(
         "agent_orchestrator.runtime.role_templates.ROLES"
     )
@@ -101,6 +103,8 @@ def test_an_unclassified_field_is_refused(tmp_path):
 
 
 def test_the_demo_evidence_carries_the_snapshot_and_no_drift(tmp_path, capsys):
+    from agent_orchestrator.runtime.role_templates import WORKER
+
     evidence = Path(tmp_path) / "s2"
     assert (
         main(
@@ -127,4 +131,4 @@ def test_the_demo_evidence_carries_the_snapshot_and_no_drift(tmp_path, capsys):
         and written["start_hash"] == baseline["policy_snapshot"]["hash"] == written["end_hash"]
     )
     assert written["snapshot"]["provider"]["class"] == "RoleScriptedProvider"
-    assert written["snapshot"]["role_templates"]["worker"] == "worker-v2"
+    assert written["snapshot"]["role_templates"]["worker"] == WORKER.prompt_version
