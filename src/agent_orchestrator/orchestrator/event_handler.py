@@ -3990,6 +3990,8 @@ class Orchestrator:
         attempt_id: str | None = None,
         mission_source_binding: Mapping[str, Any] | None = None,
     ) -> CriticVerdict:
+        from ..verification.critics import critic_schema_retry_feedback
+
         task_id = None if task is None else task.id
         last_error: ContractError | None = None
         for ordinal in range(1, MAX_CRITIC_ATTEMPTS + 1):
@@ -4008,6 +4010,7 @@ class Orchestrator:
             if intent is not None:
                 self._validate_mission_judge_intent(intent)
             else:
+                template = self._template(CRITIC, mission.id)
                 copy = self.assembled.workspaces.verification_view(view_id)
                 source_attempt = None if attempt_id is None else self.store.get_attempt(attempt_id)
                 source_binding = (
@@ -4045,6 +4048,11 @@ class Orchestrator:
                         domain=self.commit.domain_for(mission.id),
                         source_versions=source_binding.get("source_versions"),
                         mission_source_catalog=source_binding.get("mission_source_catalog"),
+                        feedback=(
+                            critic_schema_retry_feedback(last_error)
+                            if template.prompt_version == CRITIC.prompt_version
+                            else ()
+                        ),
                     )
                 except ContextRejected as error:
                     raise ContractError(f"critic package refused: {error}") from error
@@ -4061,7 +4069,6 @@ class Orchestrator:
                                        else selection_deadline - self.store.now)
                 if remaining_selection <= 0:
                     raise ContractError("selection deadline elapsed before Critic")
-                template = self._template(CRITIC, mission.id)
                 config = AgentConfig(
                     name=f"critic-{ordinal}",
                     instructions=template.instructions,

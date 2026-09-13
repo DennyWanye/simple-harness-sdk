@@ -26,7 +26,7 @@ from agent_orchestrator.governance.domains import DOC_DOMAIN
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
-from agent_orchestrator.runtime.role_templates import CRITIC
+from agent_orchestrator.runtime.role_templates import CRITIC, CRITIC_V2
 from agent_orchestrator.storage.store import InjectedCrash
 
 
@@ -59,13 +59,15 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
         }
 
     def verdict(request):
+        package = package_of(request)
+        assert "feedback" not in package
         body = {
             "verdict": "PASS",
             "findings": [],
             "needs_human": needs_human,
             "mission_criteria": [
                 {"criterion": c, "met": True, "reason": "确定性资料核对"}
-                for c in package_of(request)["mission_success_criteria"]
+                for c in package["mission_success_criteria"]
             ],
         }
         return "<critic_verdict>" + json.dumps(body, ensure_ascii=False) + "</critic_verdict>"
@@ -161,7 +163,7 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
                 if template.name == "critic":
                     critic_selections += 1
                     if not (failed_first and critic_selections == 1):
-                        return CRITIC
+                        return CRITIC_V2
                 return original_template(template, mission_id)
 
             settle = first._settle_intent
@@ -186,7 +188,7 @@ def test_old_critic_intent_restart_records_and_reuses_actual_ordinal(
             )
             assert successful.state == "SETTLED"
             assert successful.config["prompt_version"] == "critic-v2"
-            assert successful.config["agent_config"]["instructions"] == CRITIC.instructions
+            assert successful.config["agent_config"]["instructions"] == CRITIC_V2.instructions
             assert not any(
                 row["layer"] == "critic_review" for row in first.store.list_verifications(result_id)
             )

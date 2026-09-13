@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 PLANNER_VERSION = "planner-v4"  # host support 0.9.8: layers from the package
 WORKER_VERSION = "worker-v2"
-CRITIC_VERSION = "critic-v2"
+CRITIC_VERSION = "critic-v3"
 ARBITER_VERSION = "arbiter-v2"
 SYNTHESIZER_VERSION = "synthesizer-v2"
 
@@ -133,9 +133,9 @@ WORKER = RoleTemplate(
     ),
 )
 
-CRITIC = RoleTemplate(
+CRITIC_V2 = RoleTemplate(
     name="critic",
-    prompt_version=CRITIC_VERSION,
+    prompt_version="critic-v2",
     tool_names=("workspace_read_file", "workspace_list"),
     instructions=(
         "[role:critic]\n"
@@ -148,6 +148,16 @@ CRITIC = RoleTemplate(
         '  {"verdict": "PASS" | "FAIL", "findings": [{"severity": "blocker"|"major"|"minor", "detail": str}],\n'
         '   "mission_criteria": [{"criterion": str, "met": bool, "reason": str}]}\n'
         "verdict 为 FAIL 当且仅当存在 blocker 级发现。块外不要输出任何文字。"
+    ),
+)
+CRITIC = _revise(
+    CRITIC_V2,
+    CRITIC_VERSION,
+    (
+        "同时对 Mission 的每条成功条件给出你的判断（met: true/false），但只有测试与规则检查是最终依据。\n",
+        "同时对 Mission 的每条成功条件给出你的判断（met: true/false），但只有测试与规则检查是最终依据。\n"
+        "mission_criteria 的 criterion 只取 mission_success_criteria，逐项原文复制，数量和顺序必须完全一致；"
+        "task_contract.success_criteria 是本 Task 的条件，不得混入 mission_criteria；Task 问题写入 findings。\n",
     ),
 )
 
@@ -351,6 +361,7 @@ def register_template(template: RoleTemplate) -> None:
 register_template(PLANNER_V3)
 register_template(MANAGER_V1)
 register_template(MANAGER_V2)
+register_template(CRITIC_V2)
 
 
 def registered_versions() -> dict[str, frozenset[str]]:
@@ -412,6 +423,7 @@ __all__ = (
     "TASK_GRAPH_PROPOSAL_TAG",
     "TASK_ROLE_BY_KIND",
     "CRITIC",
+    "CRITIC_V2",
     "CRITIC_VERDICT_TAG",
     "CRITIC_VERSION",
     "PLANNER",

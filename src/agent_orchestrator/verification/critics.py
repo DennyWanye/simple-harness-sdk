@@ -20,6 +20,8 @@ from ..contracts import ContractError
 from ..runtime.output_blocks import BlockError, extract_block
 from ..runtime.role_templates import CRITIC_VERDICT_TAG
 
+_MISSION_CRITERIA_MISMATCH = "critic mission_criteria must cover the Mission criteria in order"
+
 
 @dataclass(frozen=True, slots=True)
 class CriticVerdict:
@@ -77,7 +79,7 @@ def parse_critic_verdict(text: str, *, expected_criteria: Sequence[str]) -> Crit
         raise ContractError("critic mission_criteria must be a list of objects")
     seen = [str(item.get("criterion")) for item in criteria]
     if seen != list(expected_criteria):
-        raise ContractError("critic mission_criteria must cover the Mission criteria in order")
+        raise ContractError(_MISSION_CRITERIA_MISMATCH)
     for item in criteria:
         if not isinstance(item.get("met"), bool):
             raise ContractError("critic mission_criteria[].met must be boolean")
@@ -93,4 +95,16 @@ def parse_critic_verdict(text: str, *, expected_criteria: Sequence[str]) -> Crit
     )
 
 
-__all__ = ("CriticVerdict", "parse_critic_verdict")
+def critic_schema_retry_feedback(error: ContractError | None) -> tuple[dict[str, str], ...]:
+    """Only an allowlisted parser error enters a new Critic's feedback."""
+    if error is None or str(error) != _MISSION_CRITERIA_MISMATCH:
+        return ()
+    return ({
+        "reason_code": "mission_criteria_mismatch",
+        "expected_source": "mission_success_criteria",
+        "excluded_source": "task_contract.success_criteria",
+        "required_order": "exact",
+    },)
+
+
+__all__ = ("CriticVerdict", "critic_schema_retry_feedback", "parse_critic_verdict")

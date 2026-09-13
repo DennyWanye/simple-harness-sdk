@@ -4,7 +4,8 @@
 
 CommitService owns semantic revision/round/owner validation and must call these
 ports inside its transaction, together with the actual Task/Attempt/intent write.
-Transfers never accept an existing subject, and never touch its unknown usage.
+Initial transfers never accept an existing subject. Growth can only extend an
+original same-account allocation, without moving any subject's unknown usage.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import json
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from hashlib import sha256
 from typing import Any
 
 from simple_harness.contracts import canonical_json
@@ -338,6 +340,90 @@ class TailBudgetLedger:
             (hold_id, transfer_id, request, canonical_json(receipt), self.store.now),
         )
         return receipt
+
+    def grow_tail_allocation(
+        self, hold_id: str, subject_id: str, *, task_revision: str,
+        tokens: int, cost_micros: int, minimum: TailReserve,
+    ) -> None:
+        """Move only a request's deficit to its original live Worker reservation.
+
+        Both subjects belong to the same account, so ancestor balances, Attempt
+        counts and usage remain unchanged. Preflight both dimensions before any
+        write, including when a caller catches a refusal inside its transaction.
+        """
+        self._transaction_required()
+        TailReserve(tokens, cost_micros)
+        hold = self.store.connection.execute(
+            "SELECT * FROM budget_tail_holds WHERE hold_id=?", (hold_id,),
+        ).fetchone()
+        if (hold is None or hold["state"] != "HELD"
+                or hold["task_revision"] != task_revision
+                or hold["purpose"] not in {"synthesis", "conflict"}):
+            raise BudgetError("system growth requires its original live Task hold")
+        self._account(hold["account_id"], hold["mission_id"])
+        source = self.ledger.reservation(hold["subject_id"])
+        target = self.ledger.reservation(subject_id)
+        if (source is None or target is None
+                or source["state"] != "RESERVED" or target["state"] != "RESERVED"
+                or target["account_id"] != hold["account_id"]
+                or target["mission_id"] != hold["mission_id"]
+                or subject_id == hold["subject_id"]):
+            raise BudgetError("system growth destination is not its original live reservation")
+        original = self.store.connection.execute(
+            "SELECT request_json FROM budget_tail_transfers WHERE hold_id=? AND transfer_id=?",
+            (hold_id, subject_id),
+        ).fetchone()
+        allocations = [] if original is None else json.loads(original[0])["allocations"]
+        if not any(
+            a["subject_id"] == subject_id and a["account_id"] == hold["account_id"]
+            and a["role"] == hold["purpose"] and a["counts_attempt"] is True
+            for a in allocations
+        ):
+            raise BudgetError("system growth has no original Worker transfer receipt")
+        if (self.ledger.has_unknown_usage(subject_id)
+                or self.ledger.has_unknown_usage(hold["subject_id"])
+                or self.ledger.usage_for(hold["subject_id"])[0]):
+            raise BudgetError("system growth cannot move unresolved or spent allowance")
+        targets = {
+            "tokens": max(tokens, target["reserved_tokens"]),
+            "cost_micros": max(cost_micros, target["reserved_cost_micros"]),
+        }
+        amounts = {key: value - target["reserved_" + key] for key, value in targets.items()}
+        if not any(amounts.values()):
+            return
+        for dimension, amount in amounts.items():
+            room = max(0, source["reserved_" + dimension] - getattr(minimum, dimension))
+            if amount > room:
+                raise BudgetExhausted(hold["account_id"], dimension, amount, room)
+        for account in self.ledger._chain(hold["account_id"]):
+            for dimension in amounts:
+                remaining = getattr(account, "remaining_" + dimension)()
+                if remaining is not None and remaining < 0:
+                    raise BudgetExhausted(account.account_id, dimension, 0, remaining)
+        transfer_id = f"growth:{hold_id}:{subject_id}:{targets['tokens']}:{targets['cost_micros']}"
+        request: dict[str, Any] = dict(
+            hold_id=hold_id, transfer_id=transfer_id, task_revision=task_revision,
+            growth={"subject_id": subject_id, **amounts}, targets=targets,
+            minimum=asdict(minimum),
+        )
+        # Absolute targets make a replay a no-op above; receipts are append-only.
+        if self.store.get_receipt(transfer_id) is not None:
+            raise BudgetError("system growth receipt conflicts with current reservation")
+        self.store.connection.execute(
+            "UPDATE budget_reservations SET reserved_tokens=reserved_tokens-?,"
+            "reserved_cost_micros=reserved_cost_micros-?,updated_at=? WHERE subject_id=?",
+            (amounts["tokens"], amounts["cost_micros"], self.store.now, hold["subject_id"]),
+        )
+        self.store.connection.execute(
+            "UPDATE budget_reservations SET reserved_tokens=?,reserved_cost_micros=?,"
+            "updated_at=? WHERE subject_id=?",
+            (targets["tokens"], targets["cost_micros"], self.store.now, subject_id),
+        )
+        encoded = canonical_json(request)
+        self.store.insert_receipt(
+            commit_id=transfer_id, kind="system_worker_growth", subject_id=subject_id,
+            base_version=None, proposal_hash=sha256(encoded.encode()).hexdigest(), receipt=request,
+        )
 
     def release_tail(self, hold_id: str, *, task_revision: str, reason: str) -> dict[str, Any]:
         self._transaction_required()

@@ -184,6 +184,18 @@ class ProviderBudgetCommitAdapter:
         return intent, reservation
 
     def grow(self, reservation, *, required: int, required_cost_micros: int = 0) -> None:
+        if (required <= reservation["reserved_tokens"]
+                and required_cost_micros <= reservation["reserved_cost_micros"]):
+            return
+        try:
+            if self.commit.grow_system_worker_allowance(
+                reservation["subject_id"], tokens=required, cost_micros=required_cost_micros,
+            ):
+                return
+        except BudgetExhausted:
+            raise
+        except BudgetError as exc:
+            raise _deny(str(exc)) from exc
         self.commit.ledger.grow(
             subject_id=reservation["subject_id"],
             tokens=required,

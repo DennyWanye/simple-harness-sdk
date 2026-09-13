@@ -760,3 +760,14 @@ Real pairv3 (SDK e8342fd, original materials and budgets, official deepseek-flas
 g-completed-fragment-green-v1: receipt SHA256 `2b0e6888a23c85280b32f58882405b19ebd5bf3f94a699ef54fcc10a48295f71`
 g-completed-fragment-integration-v2: receipt SHA256 `a3ca85af805ae10e9eb5a1fd93f87e1e437b668613c9540e09372f90a9eb5a0a`
 g-completed-fragment-negatives-v1: receipt SHA256 `02f449b92c0f17f575b6280cc292a43abcc959358ba87b3ed7d0d086fd2cb062`
+
+**最后更新：2026-09-13 12:59 CST — 系统Worker原额度增长与Critic结构反馈。** 真实FIRST smoke（4ba53f4）两次Manager/片段F/独立B/修复C均完成，最终S因名义60K Worker预留无法动用原120K系统hold剩余额度而失败（330.401秒/452199tokens）；原失败保留。新逐请求增长仅从同Task原hold按差额原子转入，保留各活跃候选的冻结Critic token/费用最低额；初始分派和背压不变，UNKNOWN不增长/返还，实际已知结算仅一次返还未用额度。初版全量转移Worker room被独审指出并发/背压风险后撤回，不交付。当前预算65PASS/5.49s，含实际SDK请求、费用、兄弟候选、UNKNOWN和返还控制；独立Sol审查无确定P1/P2。Critic默认升v3，v2及文档历史字节保留；mission_criteria仅允许原Mission条件，结构错误仅向下一独立v3 service给出白名单反馈，严格解析/两次费用不变。真实COMPARE此前一次错误混入Task条件导致额外22205tokens复核；新冷热/历史模板81PASS/3.77s，Astra独审无P1/P2。测试初稿空claims触发rule_check而非Critic、超时2FAIL，以及旧canonical聚合误引用新默认模板的1FAIL均保留；修复夹具与显式旧critic-v2映射，原hash未改。Mypy117/ruff通过；新已提交态真实对照与最终全量待，整体未完成，不打包/P36/推送。
+
+- g-p34-real-first-manager-v1: receipt SHA256 `df3111b54fd44e19ccb66171f940663e2166f408ee36d0949d0094cef9c67051`
+- g-completed-fragment-committed-v3: receipt SHA256 `f6a850303b92d245c5e5635ad5bf63c5e82b9e07de6bd9297bb53a7d14349b23`
+- g-system-worker-room-red-v1: receipt SHA256 `59195b59680d95554dda8e0eeeb3c3c02377685630421a72a76d4451a0bd42fc`
+- g-system-worker-room-green-v2: receipt SHA256 `c94c26ff0aa3cf29a39436eca72431dd603acd795e47fa6c7fa4925361f2bc5a`
+- g-critic-feedback-system-growth-v1: receipt SHA256 `4ae823b55209a5947ae534ac568023a1dcbfaf05c14712d350dddb14c51130a2`
+- g-system-growth-budget-integration-v2: receipt SHA256 `38cf3cd0156fd595bbf833cb4fc1944d59f4c9755cd104cda44110c043d6bf0a`
+- g-critic-feedback-regression-v2: receipt SHA256 `f1027907d3ad9635b3a172b9e046431883e3e6614c6d7c35a3764dd9b10e561e`
+- g-critic-feedback-regression-v3: receipt SHA256 `6b8e35a9e0a21bb13161d5fa9db00f5b92031705f303b1e90dd70bc9bde9d59a`

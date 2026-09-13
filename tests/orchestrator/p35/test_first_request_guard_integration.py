@@ -285,7 +285,10 @@ def test_production_first_critic_route_drift_refuses_without_extra_handoff(tmp_p
 
 
 @pytest.mark.parametrize("allowance", [40_000, 100_000])
-def test_system_hold_partitions_first_critic_before_synthesis_worker(tmp_path, allowance):
+@pytest.mark.parametrize("worker_input", [1000, 20_000])
+def test_system_hold_partitions_first_critic_before_synthesis_worker(
+    tmp_path, allowance, worker_input
+):
     async def exercise():
         provider = _production_first_provider(task_tokens=100_000)
         # Create real VERIFIED input via an executable assertion, rather than
@@ -343,7 +346,7 @@ def test_system_hold_partitions_first_critic_before_synthesis_worker(tmp_path, a
         async with Orchestrator(
             config,
             profiles={"default": _context_profile(provider)},
-            provider_token_estimator=Counter(1000),
+            provider_token_estimator=Counter(worker_input),
         ) as orch:
             mission = await orch.submit_mission(
                 spec(

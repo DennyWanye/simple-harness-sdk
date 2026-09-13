@@ -48,5 +48,5 @@ P3.6 用户这次没有点名，不在本轮范围。
 | P3.1 遗留修复 | ✅ **SHIPPED**（2026-09-12）：代码评审第 1 轮已处置，只补了测试、改了文档；全量回归红集等于基线；wheel 0.9.11 已在干净环境验证；Host 已改钉 | `e182696`（计划）、`a84e2a4`（0.9.11 / 0.9.4）；Host `64930ad3` |
 | P3.2 | ✅ **SHIPPED**（2026-09-12）：两轮计划评审 + 七个切片 + 一轮代码评审（5 P1 全修）+ 三轮 wheel 验证；SDK 0.10.0 已钉进 Host；真实 deepseek-flash 原生验收两场全过（发布四处哈希一致、沙箱 pytest 回执 tree_killed/residual 空）；遗留 F-P32-1..7 在 `p32/journal.md` §6 | `48e441a`（SDK 终态）、Host `04350956` |
 | P3.3 | A–F完成；G原始资料doc9真实模型/原生UI/质量/冷读、N2–N6及人审恢复均已有验收；30数据库36Mission回放零差异。剩余修复后全量与46行AC结果关联，累计OPEN | SDK826c0e1；详细证据见HANDOFF和current-ac-audit |
-| P3.4 | 动态修复/局部复用/候选组合/Context代码已有控制；FIRST原生A→F+B→C→S及冷读PASS。批准COMPARE原生交付及冷读已PASS；真实价值门仍失败，已完成片段后的Manager续接修复回归中 | 见HANDOFF当前接续 |
-| P3.5 | 物理槽/取消、typed预算、SIGKILL/UNKNOWN、正式备份恢复已有证据；剩余原生压力阈值、长Context轮转及累计回归 | 见p35/current-remaining-2026-09-13.md |
+| P3.4 | 动态修复/局部复用/候选组合/Context代码已有控制；FIRST原生A→F+B→C→S及冷读PASS。批准COMPARE原生交付及冷读已PASS，新文案v25复验PASS；Manager续接已修并经真实FIRST越过，系统尾部增长与Critic反馈修复待新真实对照 | 见HANDOFF当前接续 |
+| P3.5 | 物理槽/取消、typed预算、SIGKILL/UNKNOWN、正式备份恢复已有证据；原生压力阈值v24、长Context轮转/冷读v23已PASS；系统原预留增长修复及累计回归待最终确认 | 见p35/current-remaining-2026-09-13.md |

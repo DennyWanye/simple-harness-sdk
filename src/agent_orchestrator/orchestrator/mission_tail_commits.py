@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from ..contracts import TERMINAL_MISSION, TERMINAL_TASK
+from simple_harness.contracts import canonical_json
+
+from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK
 from ..governance.budgets import BudgetError
 from ..governance.mission_system_tail import MissionSystemTailLedger
-from ..governance.tail_budget import TailReserve
+from ..governance.tail_budget import TailBudgetLedger, TailReserve
 from ..planning.candidate_selection import selection_revision
 from ..verification.assessments import mission_contract_revision
 
@@ -146,6 +148,65 @@ class MissionTailCommitsMixin:
                 row["pool_id"], mission_revision=row["mission_revision"], reason="mission_terminal"
             )
 
+    def grow_system_worker_allowance(self, subject_id, *, tokens, cost_micros):
+        """Request-time growth only; dispatch shares and physical slots stay intact."""
+        if not self._store.connection.in_transaction:
+            raise BudgetError("system growth requires the provider admission transaction")
+        attempt = self._store.get_attempt(subject_id)
+        if attempt is None:
+            return False  # Services, including Critic, cannot borrow the Worker share.
+        row = self.system_task_hold(attempt.task_id)
+        if row is None:
+            return False
+        task = self._require_task(attempt.task_id)
+        intent = self._store.get_intent_for_subject(subject_id)
+        if (attempt.status in TERMINAL_ATTEMPT or intent is None
+                or intent.kind != "attempt" or intent.mission_id != task.mission_id
+                or intent.state not in {"AGENT_CREATED", "SUBMITTED"}
+                or self._system_tail_factory is None):
+            raise BudgetError("system growth requires the actual live Worker intent")
+        plan = self._system_tail_factory(
+            self._require_mission(task.mission_id), task.kind,
+            agent_config=intent.config.get("agent_config"),
+        )
+        if plan is None:
+            raise BudgetError("system growth runtime binding is unavailable")
+        _, binding = plan
+        if (row["binding_json"] != canonical_json(binding.to_json())
+                or binding.worker.profile_id != intent.config.get("runtime_profile_id")
+                or binding.worker.model != attempt.model):
+            raise BudgetError("system growth routing or price differs from its frozen hold")
+        floor_tokens = floor_cost = 0
+        if binding.critic is not None:
+            # Each live candidate still owes its own first Critic. Already
+            # transferred Critic reservations are outside the remaining hold.
+            for candidate in self._store.list_attempts(task.id):
+                if candidate.status in TERMINAL_ATTEMPT:
+                    continue
+                critic_subject = f"{candidate.id}:critic:1"
+                transferred = self._store.connection.execute(
+                    "SELECT 1 FROM budget_tail_transfers WHERE hold_id=? AND transfer_id=?",
+                    (row["hold_id"], critic_subject),
+                ).fetchone()
+                if transferred is not None:
+                    continue
+                worker = self._store.get_intent_for_subject(candidate.id)
+                first = None if worker is None else worker.config.get("first_critic_budget")
+                if (not isinstance(first, Mapping)
+                        or type(first.get("minimum_tokens")) is not int
+                        or first["minimum_tokens"] <= 0
+                        or type(first.get("cost_micros")) is not int
+                        or first["cost_micros"] < 0):
+                    raise BudgetError("system growth requires the frozen first Critic minimum")
+                floor_tokens += first["minimum_tokens"]
+                floor_cost += first["cost_micros"]
+        TailBudgetLedger(self._ledger).grow_tail_allocation(
+            row["hold_id"], subject_id, task_revision=selection_revision(self._store, task),
+            tokens=tokens, cost_micros=cost_micros,
+            minimum=TailReserve(floor_tokens, floor_cost),
+        )
+        return True
+
     def _return_system_unused_allowance(self, settled):
         """Return only unused original transfers after a FIRST known settlement.
 
@@ -177,6 +238,17 @@ class MissionTailCommitsMixin:
             for a in json.loads(transfer[0])["allocations"]
             if a["subject_id"] == settled["subject_id"]
         )
+        allocation = dict(allocation)
+        for transfer in self._store.connection.execute(
+            "SELECT receipt_json FROM commit_receipts WHERE kind='system_worker_growth' "
+            "AND subject_id=?", (settled["subject_id"],),
+        ):
+            receipt = json.loads(transfer[0])
+            growth = receipt.get("growth")
+            if (receipt.get("hold_id") == row["hold_id"] and growth is not None
+                    and growth["subject_id"] == settled["subject_id"]):
+                for dimension in ("tokens", "cost_micros"):
+                    allocation[dimension] += growth[dimension]
         amounts = {}
         chain = self._ledger._chain(settled["account_id"])
         for dimension in ("tokens", "cost_micros", "tool_calls"):
