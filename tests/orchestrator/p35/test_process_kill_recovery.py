@@ -12,9 +12,11 @@ import asyncio
 import json
 import os
 import signal
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -77,12 +79,22 @@ def _cleanup(child):
 
 
 def _rows(path, query, args=()):
-    # Read live WAL as well as main DB; immutable=1 would silently omit WAL facts.
-    connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-    try:
-        return connection.execute(query, args).fetchall()
-    finally:
-        connection.close()
+    # Only called after the owning process has exited. A hot rollback journal
+    # requires recovery even for SELECT; let SQLite recover an evidence copy,
+    # leaving the original DB and sidecars untouched for the actual cold owner.
+    # Copy WAL too; immutable=1 or copying only the main file would lose facts.
+    with tempfile.TemporaryDirectory(prefix="sqlite-observation-", dir=path.parent) as directory:
+        copied = Path(directory) / path.name
+        shutil.copyfile(path, copied)
+        for suffix in ("-journal", "-wal"):
+            sidecar = Path(str(path) + suffix)
+            if sidecar.is_file():
+                shutil.copyfile(sidecar, Path(str(copied) + suffix))
+        connection = sqlite3.connect(copied)
+        try:
+            return connection.execute(query, args).fetchall()
+        finally:
+            connection.close()
 
 
 def _sdk_rows(root, profile="default"):
