@@ -8,12 +8,13 @@ Deterministic local Provider only; none of these cases executes a publish connec
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 import pytest
-from fixtures_provider import RoleScriptedProvider, envelope_step, package_of
+from fixtures_provider import RoleScriptedProvider, envelope_step, graph_proposal_step, package_of
 from graph_helpers7 import change, node, spec
 
-from agent_orchestrator.contracts import Artifact
+from agent_orchestrator.contracts import Artifact, ContractError
 from agent_orchestrator.governance.policies import DeploymentPolicy
 from agent_orchestrator.graph.task_graph import TaskGraphProposal
 from agent_orchestrator.orchestrator.action_commits import (
@@ -26,7 +27,7 @@ from agent_orchestrator.runtime.action_schema import worker_action_contract
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
 from agent_orchestrator.runtime.connectors import TestConfigService
 from agent_orchestrator.runtime.connectors_publish import FilePublishConnector
-from simple_harness.contracts import MessageRole
+from simple_harness.contracts import MessageRole, canonical_json
 
 ACTION = "action:file_publish.publish:weekly/report.md"
 ENABLED = DeploymentPolicy(enabled_connectors=("file_publish",))
@@ -111,7 +112,7 @@ def test_actual_worker_provider_input_has_only_relevant_declared_schema(
                 assert "action_candidate_contract" not in intent.config["message"]
                 return
             contract = body["action_candidate_contract"]
-            assert contract["version"] == "action-candidate-context-v1"
+            assert contract["version"] == "action-candidate-context-v2"
             assert contract["output_files"] == ["actions/publish.json"]
             assert contract["required_fields"] == [
                 "connector", "operation", "target", "params", "reason",
@@ -119,7 +120,7 @@ def test_actual_worker_provider_input_has_only_relevant_declared_schema(
             assert contract["additional_fields"] is False
             assert contract["operations"] == [{
                 "connector": "file_publish", "operation": "publish",
-                "target": "weekly/report.md", "level": "L2",
+                "target": "weekly/report.md", "level": "L2", "required_approvals": 1,
                 "required_model_params": ["artifact_path"],
                 "system_bound_artifact_fields": [
                     "artifact_id", "content_hash", "size", "storage_uri",
@@ -128,6 +129,74 @@ def test_actual_worker_provider_input_has_only_relevant_declared_schema(
             assert str(publisher.root) not in str(contract)
             assert str(publisher.ledger_path) not in str(contract)
             assert "ledger" not in str(contract)
+
+    asyncio.run(case())
+
+
+@pytest.mark.parametrize("has_action,enabled", [(True, True), (False, True), (True, False)])
+def test_planner_wire_receives_source_destination_and_approval_semantics(
+    tmp_path, has_action, enabled,
+):
+    async def case():
+        provider = RoleScriptedProvider({"planner": [graph_proposal_step([node("A")])]})
+        publisher = _connector(tmp_path)
+        config = OrchestratorConfig(
+            evidence_root=tmp_path / "evidence",
+            deployment_policy=ENABLED if enabled else DeploymentPolicy(),
+        )
+        async with Orchestrator(config, provider, connectors={"file_publish": publisher}) as orch:
+            mission_spec = spec(
+                key="planner-action-wire", goal="Publish report.md to weekly/report.md",
+                success_criteria=("file:report.md", ACTION) if has_action else ("file:report.md",),
+            )
+            if has_action and not enabled:
+                with pytest.raises(ContractError, match="connector_not_enabled"):
+                    await orch.submit_mission(mission_spec)
+                assert provider.calls == 0
+                return
+            mission = await orch.submit_mission(mission_spec)
+            orch.commit.begin_planning(mission.id)
+            intent = await orch._create_planner_intent(mission.id, ordinal=1)
+            assert await orch._dispatch(intent)
+            intent = orch.store.get_intent(intent.intent_id)
+
+            async def completed():
+                while await orch.bridge_for(intent).result(
+                    agent_id=intent.agent_id, turn_id=intent.expected_turn_id,
+                ) is None:
+                    await asyncio.sleep(0.01)
+
+            await asyncio.wait_for(completed(), timeout=5)
+            assert provider.calls == 1
+            request = provider.requests[0]
+            package = package_of(request)
+            if not (has_action and enabled):
+                assert "action_candidate_contract" not in package
+                # Recorded by the genuine immutable SDK9f70e00 before Planner
+                # projection existed; zero Provider calls to capture the baseline.
+                message_hash = hashlib.sha256(
+                    canonical_json(intent.config["message"]).encode()
+                ).hexdigest()
+                assert message_hash == (
+                    "3c9ec1513b5cf20e4f73bb09484cfd08a9c00e2018fd053f73bf72e820955c54"
+                )
+                assert intent.config["context_version"] == "ctx-bab541af2be016ec"
+                return
+            contract = package["action_candidate_contract"]
+            assert contract["version"] == "action-candidate-context-v2"
+            assert contract["candidate_output_pattern"] == "actions/*.json"
+            assert "output_files" not in contract  # Planner must choose actual Task outputs.
+            assert contract["operations"][0]["target"] == "weekly/report.md"
+            assert contract["operations"][0]["required_model_params"] == ["artifact_path"]
+            assert contract["operations"][0]["required_approvals"] == 1
+            assert "target is an external destination" in contract["planning_notice"]
+            assert "after Result acceptance" in contract["planning_notice"]
+            assert "not the candidate JSON" in contract["notice"]
+            assert str(publisher.root) not in str(contract)
+            assert str(publisher.ledger_path) not in str(contract)
+            assert all("action_candidate_contract" not in str(m.content)
+                       for m in request.messages if m.role is MessageRole.SYSTEM)
+            assert intent.config["message"]  # Actual frozen request, not a synthetic helper call.
 
     asyncio.run(case())
 
@@ -212,7 +281,7 @@ def test_another_deployed_descriptor_supplies_its_own_required_params(tmp_path):
     assert contract is not None
     assert contract["operations"] == [{
         "connector": "test_config", "operation": "set", "target": "mode",
-        "level": "L2", "required_model_params": ["value"],
+        "level": "L2", "required_approvals": 1, "required_model_params": ["value"],
     }]
     assert "delete" not in str(contract)  # deployed descriptor is wider than Task scope
     assert str(connector.path) not in str(contract)

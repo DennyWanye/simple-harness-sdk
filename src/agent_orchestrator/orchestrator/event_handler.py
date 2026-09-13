@@ -1599,6 +1599,8 @@ class Orchestrator:
         ]
 
     async def _create_planner_intent(self, mission_id: str, *, ordinal: int) -> DispatchIntent:
+        from ..runtime.action_schema import planner_action_contract
+
         mission = self.store.get_mission(mission_id)
         assert mission is not None
         seed = dict((mission.final_report or {}).get("workspace_seed", {}))
@@ -1630,6 +1632,11 @@ class Orchestrator:
             budget_floor=self._budget_floor(mission_id),
             domain=domain,
             workload=workload,
+            action_candidate_contract=planner_action_contract(
+                mission_criteria=mission.success_criteria,
+                connectors=self._connectors,
+                deployment=self._config.deployment_policy,
+            ),
         )
         decision = self._route_service("planner", mission_id)
         template = self._template(PLANNER, mission_id)

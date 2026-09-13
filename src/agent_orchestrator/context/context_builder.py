@@ -398,6 +398,7 @@ def build_planner_package(
     domain: DomainProfileV1 = CODE_PROFILE,
     source_versions: Mapping[str, str] | None = None,
     workload: Mapping[str, Any] | None = None,
+    action_candidate_contract: Mapping[str, Any] | None = None,
 ) -> TaskPackage:
     package: dict[str, Any] = {
         "role": "planner",
@@ -433,6 +434,8 @@ def build_planner_package(
         "output_contract": "<task_graph_proposal>{json}</task_graph_proposal>",
         "package_version": PACKAGE_VERSION,
     }
+    if action_candidate_contract is not None:
+        package["action_candidate_contract"] = dict(action_candidate_contract)
     _domain_section(package, domain, mission)
     _source_section(package, domain, source_versions)
     if workload is not None:
