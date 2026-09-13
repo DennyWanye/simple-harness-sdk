@@ -282,6 +282,37 @@ def test_tail_attempt_protection_and_failed_transfer_leave_all_chains_unchanged(
                     task_revision="revision",
                 )
                 assert all(v[2:] == (3, 0) for v in balances(commit, account).values())
+                tables = (
+                    "budget_accounts", "budget_reservations",
+                    "budget_tail_holds", "budget_tail_transfers",
+                )
+                before_exhausted = {
+                    table: [tuple(row) for row in commit.store.connection.execute(
+                        f"SELECT * FROM {table} ORDER BY 1"
+                    )]
+                    for table in tables
+                }
+                # The hold still has money, but its sole Attempt is consumed.
+                # Refusing a second transfer must preserve typed exhaustion and
+                # write nothing even when caught inside the caller transaction.
+                with pytest.raises(BudgetExhausted) as exhausted:
+                    tails.transfer_selection_reserve(
+                        "round", "D",
+                        [TailAllocation("D", account, "synthesis", 1, 1,
+                                        counts_attempt=True)],
+                        task_revision="revision",
+                    )
+                assert (
+                    exhausted.value.account_id, exhausted.value.dimension,
+                    exhausted.value.requested, exhausted.value.remaining,
+                ) == (account, "attempts", 1, 0)
+                assert commit.ledger.reservation("D") is None
+                assert {
+                    table: [tuple(row) for row in commit.store.connection.execute(
+                        f"SELECT * FROM {table} ORDER BY 1"
+                    )]
+                    for table in tables
+                } == before_exhausted
                 with pytest.raises(BudgetExhausted, match="attempts"):
                     commit.ledger.reserve(
                         account_id=account,

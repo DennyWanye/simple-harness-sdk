@@ -1120,6 +1120,10 @@ class Orchestrator:
         for intent in self.store.list_intents("AGENT_CREATED", "SUBMITTED"):
             if intent.agent_id is None:
                 continue
+            if self._pool_missing(intent):
+                # The frozen turn belongs to another runtime pool. Leave its
+                # workspace and SDK turn untouched for that pool to recover.
+                continue
             if intent.kind == "attempt":
                 attempt = self.store.get_attempt(intent.subject_id)
                 if attempt is not None:
@@ -4716,7 +4720,6 @@ class Orchestrator:
             )
         except RoutingUnavailable as unavailable:
             return await self._defer_for_profile(mission, task, unavailable)
-        self._deferred.pop(task.id, None)
         placeholder = Attempt(
             id=ids.attempt_id(task.id, len(attempts) + 1),
             task_id=task.id,
@@ -4866,8 +4869,7 @@ class Orchestrator:
             try:
                 critic_decision = self._route_service("critic", mission.id)
             except RoutingUnavailable as unavailable:
-                self._note(f"task {task.id}: Critic profile {unavailable.profile_id} unavailable")
-                return False
+                return await self._defer_for_profile(mission, task, unavailable)
             first = self._first_critic_budget(critic_decision)
             if isinstance(first, FirstRequestBudget):
                 first_reservation = self._first_critic_reservation(first, critic_decision.profile_id)
@@ -4883,6 +4885,7 @@ class Orchestrator:
                 critic_tail = self._reservation(
                     self._config.critic_reserve_tokens, critic_decision.profile_id
                 )
+        self._deferred.pop(task.id, None)
         if system_hold is not None:
             # The original Task hold already protects both roles. Do not create
             # another FIRST Critic reservation against its fully reserved cap.

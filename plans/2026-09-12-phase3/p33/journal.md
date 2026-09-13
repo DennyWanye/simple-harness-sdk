@@ -1,3 +1,5 @@
+**最后更新：2026-09-13 10:33 CST — 全量回归发现的恢复与预算分类修复。** 全量 g-doc9-orchestrator-full-v5 为1746 PASS/5 FAIL/12 SKIP，623.89s，未通过。缺失冻结runtime pool时，恢复跳过绑定并保留原SUBMITTED turn；必需Critic冷却时进入有界等待，Worker可路由不再重置Critic等待起点；保护尾部的Attempt额度耗尽改用BudgetExhausted(attempts)，让冲突任务按原合同转人工，避免误报runtime_unavailable。策略结构断言区分搜索角色读取与Mission绑定的模板选择。五个受影响文件组56 PASS/20.03s（runner20.32s），包含原5失败、健康Critic拒绝对照和预算四表不变检查；mypy117源文件与ruff通过。源码测试已通过，新全量与该修复的原生UI仍待；P33/P34/P35整体OPEN，不打包/P36/推送。证据在SDK .local-test-evidence/2026-09-12/p33-g/g-full-regression-five-fixes-v1.*。
+
 # P3.3 非代码 Mission 与证据闭环 · 记录
 
 ## 0. 交接（冷会话先读这一节）

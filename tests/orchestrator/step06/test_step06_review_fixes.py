@@ -30,6 +30,7 @@ from agent_orchestrator.testing.fixtures import (
     UnavailableProvider,
     _recorder_task,
     _write_files_then,
+    critic_step,
     demo_dynamic_dag_provider,
     graph_proposal_step,
 )
@@ -101,6 +102,9 @@ def test_p0_1_a_down_planner_pool_waits_bounded_and_never_crashes_the_loop(tmp_p
 
 
 def test_p0_1_a_down_critic_pool_makes_the_layer_an_error_never_a_pass_and_never_crashes(tmp_path):
+    # FIRST admission now requires the Critic route before another Worker starts.
+    # After the first actual ERROR, wait boundedly for that pool; do not spend
+    # two more Worker Attempts while the mandatory Critic is known unavailable.
     task = _doc("A", policy=("format_check", "rule_check", "critic_review"))
     down = UnavailableProvider(model="fixture-down")
     small = demo_dynamic_dag_provider(
@@ -118,6 +122,7 @@ def test_p0_1_a_down_critic_pool_makes_the_layer_an_error_never_a_pass_and_never
                 tmp_path,
                 profile_failure_threshold=1,
                 profile_cooldown_seconds=30.0,
+                profile_wait_seconds=0.4,
                 manager_after_failures=10,
             ),
             profiles=profiles,
@@ -130,10 +135,14 @@ def test_p0_1_a_down_critic_pool_makes_the_layer_an_error_never_a_pass_and_never
             store = orchestrator.store
             final = store.get_mission(mission.id)
             assert (
-                final.status is MissionStatus.FAILED and final.stop_reason == "max_attempts_reached"
+                final.status is MissionStatus.FAILED and final.stop_reason == "runtime_unavailable"
             ), orchestrator.progress_log
+            assert final.final_report["detail"]["profile_id"] == "large"
+            assert final.final_report["detail"]["waited_seconds"] >= 0.4
+            assert not orchestrator._deferred
             attempts = store.list_attempts(store.list_tasks(mission.id)[0].id)
-            assert len(attempts) == 3
+            assert len(attempts) == 1
+            assert attempts[0].status is AttemptStatus.RETRY_WAIT
             for attempt in attempts:
                 layers = {
                     v["layer"]: v
@@ -144,6 +153,40 @@ def test_p0_1_a_down_critic_pool_makes_the_layer_an_error_never_a_pass_and_never
                 assert layers["critic_review"]["status"] == "ERROR"
             assert store.count_events(mission.id, "VerificationPassed") == 0
             assert down.calls == 1  # the Critic's pool tripped on its first failure (review P2-2)
+
+    asyncio.run(case())
+
+
+def test_a_healthy_critic_rejection_still_exhausts_worker_attempts(tmp_path):
+    task = _doc("A", policy=("format_check", "rule_check", "critic_review"))
+    provider = demo_dynamic_dag_provider(
+        tasks=[task],
+        per_attempt={"A": [_doc_script("A")] * 3},
+        critic_steps=[critic_step(verdict="FAIL", criteria_met=False,
+                                  blocker="required content missing")] * 3,
+    )
+
+    async def case():
+        async with Orchestrator(
+            config(tmp_path, manager_after_failures=10), provider
+        ) as orchestrator:
+            mission = await orchestrator.submit_mission(
+                spec("healthy-critic-reject", success_criteria=("file:A.md",))
+            )
+            await asyncio.wait_for(orchestrator.run(), 60)
+            store = orchestrator.store
+            final = store.get_mission(mission.id)
+            assert (final.status is MissionStatus.FAILED
+                    and final.stop_reason == "max_attempts_reached"), orchestrator.progress_log
+            attempts = store.list_attempts(store.list_tasks(mission.id)[0].id)
+            assert len(attempts) == 3
+            assert provider.by_role["critic"] == 3
+            for attempt in attempts:
+                result = store.find_result_for_attempt(attempt.id)
+                layers = {v["layer"]: v for v in store.list_verifications(result.envelope.id)}
+                assert layers["critic_review"]["status"] == "FAIL"
+            assert store.count_events(mission.id, "VerificationPassed") == 0
+            assert not events_of(store, mission.id, "RuntimeProfileUnavailable")
 
     asyncio.run(case())
 

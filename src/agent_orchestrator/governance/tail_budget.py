@@ -243,7 +243,12 @@ class TailBudgetLedger:
         }
         attempts = sum(int(a.counts_attempt) for a in ordered)
         if attempts > hold["remaining_attempts"]:
-            raise BudgetError("tail transfer exceeds its protected Attempt count")
+            # Consuming a held Attempt uses the same typed exhaustion contract
+            # as ordinary admission. In particular, a spent conflict allowance
+            # must reach human arbitration, not a runtime-binding failure.
+            raise BudgetExhausted(
+                hold["account_id"], "attempts", attempts, hold["remaining_attempts"]
+            )
         for dimension, amount in totals.items():
             if amount > reserve["reserved_" + dimension]:
                 raise BudgetExhausted(
