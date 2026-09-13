@@ -1,3 +1,5 @@
+**最后更新：2026-09-13 14:22 CST — P3.3/P3.5 功能范围累计验收完成。** 干净SDK f25a4de完整编排1826PASS/0FAIL/9真实Provider默认SKIP，pytest626.58秒、runner627.15秒，g-current-orchestrator-full-v10；父唯一pytest进程组已退出无残留。P33原46行/47断言/100selector已关联，本轮均非跳过；current-ac-association-v4.json SHA256 bbf8088f0f5eb279a14e86b4f6f98f12460db9e4d001feb4305ebb8a830d90f4。原始回放1265DB/1400数据库Mission身份/7670观察仍raw OPEN：116finding全归因（50负向、66直接状态/历史夹具），944诊断逐项保留（917canonical target在完成的扫描根、14原快照与搬移副本双hash一致、9负向、4非Mission SQLite夹具）；没有整测试豁免或宣称raw unknown为空。检查点间未观察删除文件及完整execution回放仍属范围限制。后继原生34DB/46Mission/80观察独立PASS零差异/错误/额外调用，0.847秒，Host replay-all-native-v5.json SHA256133846607875ee93355545f949cd461a378b25070bf5174f4cc71230f5050997。snapshot-v26含最新ed42919生产代码，COMPARE原生新建交付及冷读通过，18调用/0rehandoff/40journal/18selection/94Mission事件不变，生命周期178.704/90.287秒；部署层仅预期PolicyConfigDrift，ACTIVE未变。P35原8项均已有决定性软件/原生证据并关联此全量，8/8完成；P33按已批准源码载体范围完成，未声称安装包验收。P34固定真实pair v5两臂仍budget_exhausted，完整交付/收益门OPEN；默认FIRST不变，B240K→480K/S120K→240K且总2M不变的新对照提议待用户选择，不改旧失败实验。整体Phase3未完成，不打包/P36/推送。
+
 # Agent 编排 Phase3 · 执行纲要（SDK 侧）
 
 - 日期：2026-09-12 起
@@ -47,6 +49,6 @@ P3.6 用户这次没有点名，不在本轮范围。
 |---|---|---|
 | P3.1 遗留修复 | ✅ **SHIPPED**（2026-09-12）：代码评审第 1 轮已处置，只补了测试、改了文档；全量回归红集等于基线；wheel 0.9.11 已在干净环境验证；Host 已改钉 | `e182696`（计划）、`a84e2a4`（0.9.11 / 0.9.4）；Host `64930ad3` |
 | P3.2 | ✅ **SHIPPED**（2026-09-12）：两轮计划评审 + 七个切片 + 一轮代码评审（5 P1 全修）+ 三轮 wheel 验证；SDK 0.10.0 已钉进 Host；真实 deepseek-flash 原生验收两场全过（发布四处哈希一致、沙箱 pytest 回执 tree_killed/residual 空）；遗留 F-P32-1..7 在 `p32/journal.md` §6 | `48e441a`（SDK 终态）、Host `04350956` |
-| P3.3 | A–F完成；G原始资料doc9真实模型/原生UI/质量/冷读、N2–N6及人审恢复均已有验收；30数据库36Mission回放零差异。剩余修复后全量与46行AC结果关联，累计OPEN | SDK826c0e1；详细证据见HANDOFF和current-ac-audit |
-| P3.4 | 动态修复/局部复用/候选组合/Context代码已有控制；FIRST原生A→F+B→C→S及冷读PASS。批准COMPARE原生交付及冷读已PASS，新文案v25复验PASS；Manager续接已修并经真实FIRST越过，系统尾部增长与Critic反馈修复待新真实对照 | 见HANDOFF当前接续 |
-| P3.5 | 物理槽/取消、typed预算、SIGKILL/UNKNOWN、正式备份恢复已有证据；原生压力阈值v24、长Context轮转/冷读v23已PASS；系统原预留增长修复及累计回归待最终确认 | 见p35/current-remaining-2026-09-13.md |
+| P3.3 | Approved source-native functional acceptance complete:46 rows/47 original assertions/100 selectors associated;1826PASS full suite; raw negative diagnostics retained and individually adjudicated;34DB/46Mission native replay PASS. Packaging deferred. | f25a4de; current-ac-audit-2026-09-13.md |
+| P3.4 | Controlled FIRST/COMPARE native delivery and cold recovery PASS, including latest production v26. Fixed real deepseek-flash pair v5 still budget_exhausted in both arms; no successful pair or measured advantage. Revised sub-budget comparison proposal awaits user preference; simple FIRST remains default. | 4ffad9e real pair v5; ed42919 native v26 |
+| P3.5 | 8/8 functional and approved source-native acceptance complete; original pressure/Context/kill/backup controls and subsequent budget/late-Verifier fixes associated with final green full suite. | f25a4de; p35/current-remaining-2026-09-13.md |
