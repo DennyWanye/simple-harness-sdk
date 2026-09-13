@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Opt-in P34 *strict* real-provider experiment, not a deterministic regression.
 
-Main may run (with SH_BASEURL/SH_APIKEY securely injected and SH_MODEL=deepseek-flash):
+Main may run (with SH_BASEURL/SH_APIKEY securely injected, SH_MODEL=deepseek-flash,
+and SH_TOKENIZER_PATH set to the pinned official V4.1 tokenizer):
     pytest --run-real-provider tests/orchestrator/p34/test_real_search_value.py -q
 
 Exactly one FIRST run followed by one COMPARE run, even if FIRST fails. No reroll,
@@ -16,8 +17,9 @@ FIRST need not demonstrate fragment reuse or candidate synthesis; both arms audi
 ``native_ui_materials()`` exports the identical charter, seed files and budgets;
 it does not call a provider or resolve credentials. The runner/Host must provision
 those files and the public policy binding through their normal input surfaces.
-This SDK run does NOT prove native UI, exact flash tokenization, priced cost,
-cold replay, or general model superiority. Default tokenizer is conservative.
+This SDK run does NOT prove native UI, priced cost, cold replay, or general model
+superiority. Its official DeepSeek profile uses the pinned V4.1 counter for
+both context and per-request budget admission, as in the Host source runtime.
 
 The immutable legacy implementation fails its baseline conformance suite for a
 message containing spaces. A audits that actual implementation and submits its
@@ -40,7 +42,8 @@ suite). F's PASS does not certify baseline conformance or a projected pytest cla
 No test/config is rewritten, skipped, xfailed, or given a canned analysis to pass.
 The oracle requires A's nonzero baseline exit and a passing analysis run in actual
 Verifier evidence, preserving that failed result after reuse. Main reviews before
-any paid invocation; this authored scenario has not been executed.
+any paid invocation; the original unguarded pair failed and remains archived.
+The corrected production-profile pair has not yet been executed.
 """
 
 from __future__ import annotations
@@ -56,6 +59,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from textwrap import dedent
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
@@ -69,13 +73,15 @@ from agent_orchestrator.observability.secrets import redact_text
 from agent_orchestrator.orchestrator.commit_service import MissionSpec, mission_account
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
 from agent_orchestrator.planning.candidate_selection import candidate_path
-from agent_orchestrator.runtime.assembly import OrchestratorConfig
+from agent_orchestrator.runtime.assembly import OrchestratorConfig, resolve_profile_context_policy
+from agent_orchestrator.runtime.deepseek_tokens import TOKENIZER_SHA256, DeepSeekV41TokenEstimator
 from agent_orchestrator.runtime.model_router import RuntimeProfile
 from agent_orchestrator.testing.fixtures import RECORDER_SEED, RECORDER_SPEC, package_of, role_of
 
 pytestmark = pytest.mark.real_provider
 
 MODEL = "deepseek-flash"
+OFFICIAL_HOST = "api.deepseek.com"
 MISSION_BUDGET = Budget(max_tokens=2_000_000, max_attempts=24)
 CONSUMER_BUDGET = Budget(max_tokens=400_000, max_attempts=4)
 WALL_SECONDS_PER_ARM = 1800
@@ -683,7 +689,49 @@ def _dump(path, value):
     path.write_text(body + "\n", encoding="utf-8")
 
 
-async def _arm(root, provider, *, compare):
+def _official_runtime_options(config, provider, *, base_url, model, tokenizer_path):
+    """Mirror Host source profile wiring without importing Host or reading a key."""
+    parsed = urlparse(base_url)
+    if (parsed.scheme != "https" or parsed.hostname != OFFICIAL_HOST
+            or parsed.username is not None or parsed.password is not None):
+        raise ValueError("P34 requires the official HTTPS DeepSeek endpoint")
+    if model != MODEL:
+        raise ValueError("P34 requires deepseek-flash")
+    if not tokenizer_path or not Path(tokenizer_path).is_absolute():
+        raise ValueError("P34 requires absolute SH_TOKENIZER_PATH")
+    path = Path(tokenizer_path)
+    if not path.is_file():
+        raise ValueError("P34 SH_TOKENIZER_PATH file is missing")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != TOKENIZER_SHA256:
+        raise ValueError("P34 tokenizer SHA-256 differs from pinned V4.1 bytes")
+    counter = DeepSeekV41TokenEstimator(path, model=model)
+    policy = resolve_profile_context_policy(config, tokenizer=counter)
+    if policy is None:
+        raise RuntimeError("P34 requires a fresh source runtime context pool")
+    profile = RuntimeProfile(
+        "default", provider, model, price_table=config.price_table,
+        provider_kind="env", context_policy=policy, tokenizer=counter,
+    )
+    return {"profiles": {"default": profile}, "provider_token_estimator": counter}
+
+
+def _admission_identity(profile, counter, *, grants):
+    snapshot = profile.context_snapshot()
+    assert snapshot is not None and profile.tokenizer is counter
+    return {
+        "endpoint_host": OFFICIAL_HOST, "model": profile.model,
+        "tokenizer_sha256": TOKENIZER_SHA256,
+        "estimator_fingerprint": counter.fingerprint,
+        "estimator_bound_protocol": counter.bound_protocol,
+        "requires_prior_output_reserve": counter.requires_prior_output_reserve,
+        "runtime_context_fingerprint": snapshot["fingerprint"],
+        "runtime_context_tokenizer_fingerprint": snapshot["tokenizer_fingerprint"],
+        "provider_grants": grants,
+        "state": "EXERCISED" if grants > 0 else "ZERO_GRANTS",
+    }
+
+
+async def _arm(root, provider, *, compare, base_url, tokenizer_path):
     mode = "COMPARE_THEN_SYNTHESIZE" if compare else "FIRST_VERIFIED"
     directory = root / mode
     config = OrchestratorConfig(
@@ -698,9 +746,15 @@ async def _arm(root, provider, *, compare):
     report = {"mode": mode, "gate": "FAIL", "checks": {}, "error_type": None}
     start = time.monotonic()
     mission = None
-    profile = RuntimeProfile("default", provider, MODEL, provider_kind="openai-compatible")
-    async with Orchestrator(config, provider, profiles={"default": profile},
-                            critic_wait_seconds=900) as orch:
+    runtime = _official_runtime_options(
+        config, provider, base_url=base_url, model=MODEL, tokenizer_path=tokenizer_path,
+    )
+    profile = runtime["profiles"]["default"]
+    counter = runtime["provider_token_estimator"]
+    async with Orchestrator(
+        config, provider, profiles=runtime["profiles"],
+        provider_token_estimator=counter, critic_wait_seconds=900,
+    ) as orch:
         # Both arms install the same fixture-approved active policy. Only the
         # explicit Mission search binding differs; default FIRST stays untouched.
         version = _approve_fixture_policy(orch)
@@ -711,6 +765,9 @@ async def _arm(root, provider, *, compare):
             mission = await orch.submit_mission(spec)
             await asyncio.wait_for(orch.run(), WALL_SECONDS_PER_ARM)
             report["checks"] = _assert_value(orch, provider, mission.id, compare)
+            assert orch.store.connection.execute(
+                "SELECT COUNT(*) FROM provider_token_grants"
+            ).fetchone()[0] > 0, "production provider admission recorded no grants"
             report["gate"] = "PASS"
         except Exception as error:
             report["error_type"] = type(error).__name__
@@ -718,6 +775,10 @@ async def _arm(root, provider, *, compare):
             if isinstance(error, AssertionError):
                 report["assertion"] = str(error)
         finally:
+            grants = orch.store.connection.execute(
+                "SELECT COUNT(*) FROM provider_token_grants"
+            ).fetchone()[0]
+            report["runtime_admission"] = _admission_identity(profile, counter, grants=grants)
             report["elapsed_seconds"] = time.monotonic() - start
             report["provider_calls"] = provider.calls
             report["successful_reads"] = provider.reads
@@ -751,6 +812,7 @@ def test_real_first_vs_approved_compare_search_value():
     assert os.environ.get("SH_BASEURL") and os.environ.get("SH_APIKEY"), (
         "missing SH_* provider configuration"
     )
+    assert os.environ.get("SH_TOKENIZER_PATH"), "set SH_TOKENIZER_PATH explicitly"
     import httpx
     from real_provider_config import RealProviderConfig
 
@@ -773,17 +835,24 @@ def test_real_first_vs_approved_compare_search_value():
                     actual = OpenAICompatibleProvider(
                         client, real.base_url, real.model, Secret(real.api_key), timeout=300.0,
                     )
-                    report = await _arm(root, _ObservedProvider(actual), compare=compare)
+                    report = await _arm(
+                        root, _ObservedProvider(actual), compare=compare,
+                        base_url=real.base_url, tokenizer_path=os.environ["SH_TOKENIZER_PATH"],
+                    )
             except Exception as error:
                 # Startup/export/cleanup errors also cannot erase a failed arm or
                 # prevent the one predeclared comparison; never retry either arm.
                 report = {"mode": mode, "gate": "FAIL", "reported_tokens": 0,
-                          "error_type": type(error).__name__, "usage_known": False}
+                          "error_type": type(error).__name__, "usage_known": False,
+                          "runtime_admission": {
+                              "state": "UNKNOWN", "provider_grants": None,
+                          }}
                 _dump(root / (mode + "-runner-failure.json"), report)
             reports.append(report)
         return reports
 
     reports = asyncio.run(paired())
+    admission = [r["runtime_admission"] for r in reports]
     # Do not infer superiority from node count or a successful mechanism trace.
     summary = {
         "arms": reports, "same_contract_hash": native_ui_materials()["contract_hash"],
@@ -794,6 +863,12 @@ def test_real_first_vs_approved_compare_search_value():
                        for c in r.get("provider_calls", [])) for r in reports) else None
         ),
         "native_ui": "NOT_RUN", "exact_tokenizer": "NOT_PROVEN", "priced_cost": "UNPRICED",
+        "runtime_admission": admission,
+        "production_admission_status": (
+            "UNKNOWN" if any(a["state"] == "UNKNOWN" for a in admission)
+            else "ZERO_GRANTS" if any(a["provider_grants"] == 0 for a in admission)
+            else "EXERCISED_BOTH"
+        ),
     }
     _dump(root / "comparison.json", summary)
     assert all(r["gate"] == "PASS" for r in reports), (
