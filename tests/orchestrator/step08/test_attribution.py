@@ -190,9 +190,10 @@ def test_s8_01_a_failed_mission_has_no_success_path_and_every_token_is_explorati
     assert report["success_path"] is False and report["final_products"] == []
     assert [a["exploration_reason"] for a in report["attempts"]] == ["attempt_retry_wait"] * 2
     assert report["cost"]["success_path"]["tokens"] == 0
-    assert {"critic"} <= {
-        k for a in report["attempts"] for k in (["critic"] if a["verification"]["tokens"] else [])
-    }
+    # Failed deterministic pytest prevents both Critic calls. Attribution must
+    # report their actual zero cost, while retaining all failed Worker spending.
+    assert all(a["verification"]["tokens"] == 0 for a in report["attempts"])
+    assert provider.by_role.get("critic", 0) == 0
     _reconciles(report)
 
 
