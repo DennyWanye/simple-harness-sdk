@@ -27,9 +27,10 @@ analysis for verification; it must not repair the audit subject. Failure is a
 property of the supplied baseline, not a request to make the model get it wrong.
 Manager decisions and successful repair remain real model work, not guarantees.
 Missing behavior FAILS the COMPARE gate; no retries to select a fortunate run.
-The paired budget is the existing real_dynamic_dag_closure's 2,000,000/24,
-not the smaller 300,000/16 scripted recorder demo budget. It is frozen before
-either run; this is not the separate Host original-document N1 experiment.
+The original-v2 paired budget is the existing real_dynamic_dag_closure's
+2,000,000/24, not the smaller 300,000/16 scripted recorder demo budget.
+Each chosen profile is frozen before either run; this is not the separate
+Host original-document N1 experiment.
 
 Public fragment projection refuses a file output plus a pytest criterion because
 it cannot relocate arbitrary test code. We do NOT project a pytest criterion.
@@ -80,6 +81,7 @@ from agent_orchestrator.runtime.assembly import OrchestratorConfig, resolve_prof
 from agent_orchestrator.runtime.deepseek_tokens import TOKENIZER_SHA256, DeepSeekV41TokenEstimator
 from agent_orchestrator.runtime.model_router import RuntimeProfile
 from agent_orchestrator.testing.fixtures import RECORDER_SEED, RECORDER_SPEC, package_of, role_of
+from simple_harness.agents.context.budget import ContextPolicy
 from simple_harness.providers import ProviderUsage
 
 pytestmark = pytest.mark.real_provider
@@ -263,20 +265,39 @@ def _experiment_budgets(budget_profile):
         return (Budget(max_tokens=400_000, max_attempts=4),
                 Budget(max_tokens=480_000, max_attempts=3),
                 Budget(max_tokens=240_000, max_attempts=2))
+    if budget_profile == "context256-8m-out32k-v7":
+        return (Budget(max_tokens=1_400_000, max_attempts=4),
+                Budget(max_tokens=1_600_000, max_attempts=3),
+                Budget(max_tokens=1_200_000, max_attempts=2))
     raise ValueError("unknown P34 budget profile")
 
 
+def _mission_budget(budget_profile):
+    _experiment_budgets(budget_profile)
+    return (Budget(max_tokens=8_000_000, max_attempts=24)
+            if budget_profile == "context256-8m-out32k-v7" else MISSION_BUDGET)
+
+
+def _consumer_budget(budget_profile):
+    _experiment_budgets(budget_profile)
+    return (Budget(max_tokens=1_600_000, max_attempts=4)
+            if budget_profile == "context256-8m-out32k-v7" else CONSUMER_BUDGET)
+
+
 def _preflight_budget_profile(budget_profile):
-    """Reject future real runs whose declared worst case exceeds Mission 2M."""
+    """Reject future real runs whose declared A/F/B/C/S total exceeds Mission."""
     audit_budget, docs_budget, synthesis_budget = _experiment_budgets(budget_profile)
-    base_tasks = audit_budget.max_tokens + docs_budget.max_tokens + CONSUMER_BUDGET.max_tokens
+    mission_budget = _mission_budget(budget_profile)
+    base_tasks = audit_budget.max_tokens + docs_budget.max_tokens + _consumer_budget(
+        budget_profile,
+    ).max_tokens
     materialized_synthesis = synthesis_budget.max_tokens
     required_independent_fragment = audit_budget.max_tokens  # F inherits A's budget.
     total = base_tasks + materialized_synthesis + required_independent_fragment
-    if total > MISSION_BUDGET.max_tokens:
+    if total > mission_budget.max_tokens:
         raise ValueError(
             f"P34 {budget_profile} future real runs reject static budget total "
-            f"{total:,} > Mission {MISSION_BUDGET.max_tokens:,} "
+            f"{total:,} > Mission {mission_budget.max_tokens:,} "
             "(base tasks + materialized S + required independent F)"
         )
     return total
@@ -284,15 +305,22 @@ def _preflight_budget_profile(budget_profile):
 
 def mission_spec(budget_profile="original-v2"):
     audit_budget, docs_budget, synthesis_budget = _experiment_budgets(budget_profile)
+    consumer_budget = _consumer_budget(budget_profile)
     goal = GOAL.replace(
         "预算240000 tokens/3 attempts", f"预算{docs_budget.max_tokens} tokens/3 attempts",
     ).replace(
         "预算240000 tokens/4 attempts", f"预算{audit_budget.max_tokens} tokens/4 attempts",
     )
+    if budget_profile == "context256-8m-out32k-v7":
+        goal = goal.replace("预算400000 tokens/4 attempts",
+                            f"预算{consumer_budget.max_tokens} tokens/4 attempts")
     return MissionSpec(
         goal=goal, success_criteria=CRITERIA, tenant_id="real-p34",
         idempotency_key=("real-search-value-v2" if budget_profile == "original-v2"
-                         else "real-search-value-" + budget_profile), budget=MISSION_BUDGET,
+                         else "real-search-value-" + budget_profile),
+        budget=_mission_budget(budget_profile),
+        runtime_profile_id=("deepseek-context-256k-v1"
+                            if budget_profile == "context256-8m-out32k-v7" else None),
         workspace_seed=dict(MATERIALS), allowed_tools=tuple(RECORDER_SPEC["allowed_tools"]),
         synthesis={
             "goal": SYNTHESIS_GOAL, "success_criteria": list(CRITERIA),
@@ -308,7 +336,7 @@ def native_ui_materials(budget_profile="original-v2"):
     """Pure text/data export: no file writes, credential reads, or model calls."""
     spec = mission_spec(budget_profile).to_json()
     audit_budget, docs_budget, _ = _experiment_budgets(budget_profile)
-    return {
+    exported = {
         "scenario": ("p34-real-search-value-v2" if budget_profile == "original-v2"
                      else "p34-real-search-value-" + budget_profile), "mission_spec": spec,
         "contract_hash": sha256_hex(spec), "compare_policy": selection_policy(),
@@ -319,7 +347,7 @@ def native_ui_materials(budget_profile="original-v2"):
         "audit_goal": AUDIT_GOAL, "audit_criteria": list(AUDIT_CRITERIA),
         "audit_budget": audit_budget.to_json(), "docs_budget": docs_budget.to_json(),
         "consumer_goal": CONSUMER_GOAL, "consumer_criteria": list(CONSUMER_CRITERIA),
-        "consumer_budget": CONSUMER_BUDGET.to_json(),
+        "consumer_budget": _consumer_budget(budget_profile).to_json(),
         "shared_reservations": {
             "attempt_tokens": 60_000, "critic_tokens": 30_000,
             "manager_tokens": 30_000,
@@ -337,6 +365,16 @@ def native_ui_materials(budget_profile="original-v2"):
         },
         "limits": "Baseline failure is deterministic; model repair/patch/reuse are not guaranteed.",
     }
+    if budget_profile == "context256-8m-out32k-v7":
+        exported["budget_source"] = "plans/2026-09-12-phase3/p34/context256-pair-contract.md"
+        exported["runtime_contract"] = {
+            "model": MODEL, "max_input_tokens": 262144,
+            "default_max_output_tokens": 8192, "max_output_tokens_ceiling": 32768,
+            "tokenizer_sha256": TOKENIZER_SHA256,
+            "host_context_profile_id": "deepseek-context-256k-v1",
+        }
+        exported["runtime_contract_hash"] = sha256_hex(exported["runtime_contract"])
+    return exported
 
 
 def _approve_fixture_policy(orch):
@@ -569,10 +607,11 @@ def _assert_value(orch, provider, mission_id, compare, budget_profile="original-
         budget_profile,
     ).goal, "Mission contract drift"
     budget = orch.commit.ledger.account(mission_account(mission_id))
-    assert budget.limits == MISSION_BUDGET, "Mission budget was changed"
-    assert 0 < budget.settled_tokens <= MISSION_BUDGET.max_tokens
+    mission_budget = _mission_budget(budget_profile)
+    assert budget.limits == mission_budget, "Mission budget was changed"
+    assert 0 < budget.settled_tokens <= mission_budget.max_tokens
     assert budget.reserved_tokens == 0, "unknown or outstanding usage cannot be called complete"
-    assert budget.attempts_created <= MISSION_BUDGET.max_attempts
+    assert budget.attempts_created <= mission_budget.max_attempts
     assert provider.calls and all(c["usage"] is not None for c in provider.calls), "unknown usage"
     assert not any(c["error_type"] for c in provider.calls), "physical provider error retained"
     for write in provider.writes:
@@ -619,7 +658,7 @@ def _assert_value(orch, provider, mission_id, compare, budget_profile="original-
     assert len(consumers) == 1, "Planner did not preserve the single shared C task"
     consumer = consumers[0]
     assert consumer.success_criteria == CONSUMER_CRITERIA
-    assert consumer.budget == CONSUMER_BUDGET
+    assert consumer.budget == _consumer_budget(budget_profile)
     assert set(consumer.verification_policy) == {
         "format_check", "rule_check", "code_test", "critic_review",
     }, "C's verification contract was weakened"
@@ -699,6 +738,7 @@ def _assert_value(orch, provider, mission_id, compare, budget_profile="original-
         if validation.id not in consumer.dependency_ids:
             continue
         f = _assert_verified(store, validation)
+        assert validation.budget == audit_budget, "F must inherit the selected A budget"
         assert set(validation.verification_policy) == set(audits[0].verification_policy)
         assert [m["origin_text"] for m in receipt["criterion_mapping"]] == ["file:analysis.md"]
         assert not any(c.startswith("pytest:") for c in validation.success_criteria)
@@ -766,7 +806,8 @@ def _dump(path, value):
     path.write_text(body + "\n", encoding="utf-8")
 
 
-def _official_runtime_options(config, provider, *, base_url, model, tokenizer_path):
+def _official_runtime_options(config, provider, *, base_url, model, tokenizer_path,
+                              budget_profile="original-v2"):
     """Mirror Host source profile wiring without importing Host or reading a key."""
     parsed = urlparse(base_url)
     if (parsed.scheme != "https" or parsed.hostname != OFFICIAL_HOST
@@ -782,14 +823,26 @@ def _official_runtime_options(config, provider, *, base_url, model, tokenizer_pa
     if hashlib.sha256(path.read_bytes()).hexdigest() != TOKENIZER_SHA256:
         raise ValueError("P34 tokenizer SHA-256 differs from pinned V4.1 bytes")
     counter = DeepSeekV41TokenEstimator(path, model=model)
-    policy = resolve_profile_context_policy(config, tokenizer=counter)
+    _experiment_budgets(budget_profile)
+    long_context = budget_profile == "context256-8m-out32k-v7"
+    profile_id = "deepseek-context-256k-v1" if long_context else "default"
+    fresh_policy = (ContextPolicy(max_input_tokens=262_144, output_reserve=32_768,
+                                  max_tool_result_tokens=16_384, render_slack_tokens=0)
+                    if long_context else None)
+    policy = resolve_profile_context_policy(
+        config, profile_id=profile_id, tokenizer=counter, fresh_policy=fresh_policy,
+    )
     if policy is None:
         raise RuntimeError("P34 requires a fresh source runtime context pool")
+    if long_context and policy != fresh_policy:
+        raise ValueError("P34 context256 requires its matching fresh context identity")
     profile = RuntimeProfile(
-        "default", provider, model, price_table=config.price_table,
+        profile_id, provider, model, price_table=config.price_table,
         provider_kind="env", context_policy=policy, tokenizer=counter,
+        default_max_output_tokens=8192 if long_context else None,
+        max_output_tokens_ceiling=32768 if long_context else None,
     )
-    return {"profiles": {"default": profile}, "provider_token_estimator": counter}
+    return {"profiles": {profile_id: profile}, "provider_token_estimator": counter}
 
 
 def _admission_identity(profile, counter, *, grants):
@@ -808,12 +861,15 @@ def _admission_identity(profile, counter, *, grants):
     }
 
 
-def _search_runtime_config(directory):
-    """Pin this P34 pair to 8K default/ceiling; leave Mission/Task budgets unchanged."""
+def _search_runtime_config(directory, budget_profile="original-v2"):
+    """Pin the chosen pair's output cap without changing historical profiles."""
+    _experiment_budgets(budget_profile)
     return OrchestratorConfig(
         evidence_root=directory, model=MODEL, max_concurrency=1,
         max_concurrent_model_calls=1, candidates_per_task=2,
-        default_max_output_tokens=8192, max_output_tokens_ceiling=8192,
+        default_max_output_tokens=8192,
+        max_output_tokens_ceiling=(32768 if budget_profile == "context256-8m-out32k-v7"
+                                   else 8192),
         test_timeout_seconds=120, turn_deadline_seconds=900, lease_seconds=120,
         stall_seconds=300, attempt_reserve_tokens=60_000, critic_reserve_tokens=30_000,
         manager_reserve_tokens=30_000, max_planning_attempts=3,
@@ -826,7 +882,7 @@ async def _arm(root, provider, *, compare, base_url, tokenizer_path,
     _preflight_budget_profile(budget_profile)
     mode = "COMPARE_THEN_SYNTHESIZE" if compare else "FIRST_VERIFIED"
     directory = root / mode
-    config = _search_runtime_config(directory)
+    config = _search_runtime_config(directory, budget_profile)
     report = {"mode": mode, "gate": "FAIL", "checks": {}, "error_type": None,
               "budget_profile": budget_profile,
               "default_max_output_tokens": config.default_max_output_tokens,
@@ -835,8 +891,9 @@ async def _arm(root, provider, *, compare, base_url, tokenizer_path,
     mission = None
     runtime = _official_runtime_options(
         config, provider, base_url=base_url, model=MODEL, tokenizer_path=tokenizer_path,
+        budget_profile=budget_profile,
     )
-    profile = runtime["profiles"]["default"]
+    profile = next(iter(runtime["profiles"].values()))
     counter = runtime["provider_token_estimator"]
     async with Orchestrator(
         config, provider, profiles=runtime["profiles"],

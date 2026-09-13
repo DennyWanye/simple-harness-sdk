@@ -108,3 +108,66 @@ def test_audit400_profile_changes_only_the_declared_audit_budget_and_identity():
         "预算400000 tokens/4 attempts", "预算480000 tokens/4 attempts", 1,
     )
     assert normalized == preceding
+
+
+def test_context256_pair_preserves_materials_oracle_and_prior_exports():
+    preceding = native_ui_materials("audit400-docs480-s240-v6")
+    original = native_ui_materials()
+    revised = native_ui_materials("context256-8m-out32k-v7")
+    spec = revised["mission_spec"]
+    assert spec["budget"] == Budget(max_tokens=8_000_000, max_attempts=24).to_json()
+    assert spec["runtime_profile_id"] == "deepseek-context-256k-v1"
+    assert revised["audit_budget"] == Budget(max_tokens=1_400_000, max_attempts=4).to_json()
+    assert revised["docs_budget"] == Budget(max_tokens=1_600_000, max_attempts=3).to_json()
+    assert revised["consumer_budget"] == Budget(
+        max_tokens=1_600_000, max_attempts=4,
+    ).to_json()
+    assert spec["synthesis"]["budget"] == {
+        "max_tokens": 1_200_000, "max_attempts": 2,
+    }
+    assert "预算1400000 tokens/4 attempts" in spec["goal"]
+    assert "预算1600000 tokens/3 attempts" in spec["goal"]
+    assert "预算1600000 tokens/4 attempts" in spec["goal"]
+    assert revised["material_sha256"] == original["material_sha256"]
+    assert revised["mission_spec"]["success_criteria"] == original["mission_spec"][
+        "success_criteria"
+    ]
+    assert revised["compare_policy"] == original["compare_policy"]
+    assert revised["test_scopes"] == original["test_scopes"]
+    assert revised["audit_criteria"] == original["audit_criteria"]
+    assert revised["consumer_criteria"] == original["consumer_criteria"]
+    assert revised["runtime_contract"]["max_input_tokens"] == 262144
+    assert revised["runtime_contract"]["max_output_tokens_ceiling"] == 32768
+    assert revised["runtime_contract"]["host_context_profile_id"] == "deepseek-context-256k-v1"
+    assert revised["budget_source"].endswith("context256-pair-contract.md")
+    assert revised["contract_hash"] != preceding["contract_hash"]
+    assert revised["scenario"] != preceding["scenario"]
+    assert spec["idempotency_key"] != preceding["mission_spec"]["idempotency_key"]
+    normalized = deepcopy(revised)
+    normalized.pop("runtime_contract")
+    normalized.pop("runtime_contract_hash")
+    normalized["mission_spec"].pop("runtime_profile_id")
+    normalized["budget_source"] = preceding["budget_source"]
+    normalized["scenario"] = preceding["scenario"]
+    normalized["contract_hash"] = preceding["contract_hash"]
+    normalized["mission_spec"]["idempotency_key"] = preceding["mission_spec"][
+        "idempotency_key"
+    ]
+    normalized["mission_spec"]["budget"] = preceding["mission_spec"]["budget"]
+    normalized["audit_budget"] = preceding["audit_budget"]
+    normalized["docs_budget"] = preceding["docs_budget"]
+    normalized["consumer_budget"] = preceding["consumer_budget"]
+    normalized["mission_spec"]["synthesis"]["budget"] = preceding["mission_spec"][
+        "synthesis"
+    ]["budget"]
+    normalized["mission_spec"]["goal"] = spec["goal"].replace(
+        "预算1400000 tokens/4 attempts", "预算400000 tokens/4 attempts",
+    ).replace(
+        "预算1600000 tokens/3 attempts", "预算480000 tokens/3 attempts",
+    ).replace(
+        "预算1600000 tokens/4 attempts", "预算400000 tokens/4 attempts",
+    )
+    assert normalized == preceding
+    assert native_ui_materials("audit400-docs480-s240-v6") == preceding
+    assert native_ui_materials() == original
+    assert native_ui_materials("context256-8m-out32k-v7") == revised
