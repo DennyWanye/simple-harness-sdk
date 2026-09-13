@@ -791,3 +791,8 @@ g-completed-fragment-negatives-v1: receipt SHA256 `02f449b92c0f17f575b6280cc292a
 4ffad9e真实固定pairv5：FIRST293.774秒/547472 tokens，F/B/C完成，S已消费61673但下一请求30986超过保留Critic后的可用额度；COMPARE125.624秒/174535 tokens，B后续候选Critic下限40960而仅余28333，两臂均budget_exhausted，runner420.05秒。SDK `.local-test-evidence/2026-09-13/p34-real-search-value-9d74269f9f484f87b9fd75c08bd287b5/`，不声明节省、成功或优势。原实验预算未改，下一轮预算策略待用户偏好；并发收尾屏障复现与全量审计归因继续，P33/P34/P35累计仍OPEN。不打包/P36/推送。
 
 Parent delivery correction: first documentation writer failed stdin UTF-8 decoding before writing; code-only commit7d4e229 followed by this same-delivery architecture update and import-order fix. Tests4PASS9.79s were already complete; no further test execution was claimed.
+
+### 2026-09-13 13:46 CST - accepted sibling verifier completion
+
+**最后更新：2026-09-13 13:46 CST — 合法败选验证器收尾。** 新屏障用真实SDK双候选和实际code_test固定胜选先正式接受、败选后返回：旧代码3FAIL2.84秒，分别暴露终态续租拒绝及错误清理丢失胜选完成进展。现仅在recorder续租被拒且持久记录证明合法同Task胜选已接受、败选因sibling_accepted被SUPERSEDED、原Result为superseded时，结束该过期验证器；其他验证异常不吞掉。完成任务表成为唯一消费点，移除重复错误callback，仅移除正在抛出的错误，保留成功兄弟进展。新3项与原隔离2项共5PASS4.50秒；恢复/多调度/多Mission/Critic邻接31PASS42.91秒（runner43.24），g-late-verifier-recovery-integration-v3；mypy117/ruff PASS。正常屏障最终Mission完成、胜选产物独立判定通过、9次SDK请求/1350结算/0预留，再次run不增加调用、事件或预算；RuntimeError和无关CommitRejected仍可见。原full-v8具体交错未被记录，不把新屏障证据追认为原日志事实。下一全套回归待执行；P33/P34/P35累计仍OPEN，不打包/P36/推送。
+

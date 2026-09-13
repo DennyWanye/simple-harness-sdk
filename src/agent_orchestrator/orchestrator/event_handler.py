@@ -239,6 +239,10 @@ def _provider_kind(
     return "real" if "real" in kinds else "unknown"
 
 
+class _AcceptedSiblingSupersededVerification(Exception):
+    """Only the recorder's rejected lease may signal this obsolete verifier."""
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -315,7 +319,6 @@ class Orchestrator:
         self.cancel_receipts: list[dict[str, Any]] = []
         self._rotation = 0  # D6-1: round-robin start across active Missions
         self._verifying: dict[str, asyncio.Task[bool]] = {}  # D6-9': bounded verification set
-        self._verification_error: BaseException | None = None  # a crash inside a verification task
         self._pressure = BackpressureState()  # D6-2: the current backpressure signal
         self._connectors: dict[str, Any] = dict(
             connectors or {}
@@ -1207,28 +1210,15 @@ class Orchestrator:
     def _active_missions(self) -> list[Mission]:
         return [m for m in self.store.list_missions() if m.status not in TERMINAL_MISSION]
 
-    def _note_verification_done(self, task: asyncio.Task[bool]) -> None:
-        if task.cancelled():
-            return
-        error = task.exception()
-        if error is not None and self._verification_error is None:
-            self._verification_error = error
-
     def _raise_if_verification_crashed(self) -> None:
-        # look at the tasks themselves: a done-callback is only scheduled *after* the loop
-        # resumed us, so a crash that happened during our last yield would otherwise be
-        # seen one phase too late (step-3 fault-point tests)
-        error = self._verification_error
+        # The task table is the sole completion owner. Do not discard successful
+        # siblings or report an error again from a delayed done callback.
         for result_id, task in list(self._verifying.items()):
-            if task.done() and not task.cancelled() and task.exception() is not None:
-                error = error or task.exception()
-                del self._verifying[result_id]
-        if error is not None:
-            self._verification_error = None
-            for result_id, task in list(self._verifying.items()):
-                if task.done():
+            if task.done() and not task.cancelled():
+                error = task.exception()
+                if error is not None:
                     del self._verifying[result_id]
-            raise error
+                    raise error
 
     def _has_inflight(self) -> bool:
         """A submitted turn counts as in flight until it is collected — also for a
@@ -1311,7 +1301,6 @@ class Orchestrator:
             if len(self._verifying) >= self._config.verifier_workers:
                 break
             task = asyncio.create_task(self._verify(stored.envelope.id))
-            task.add_done_callback(self._note_verification_done)
             self._verifying[stored.envelope.id] = task
             await asyncio.sleep(0)  # let the verification reach its first Commit before deciding
         self._raise_if_verification_crashed()
@@ -2752,6 +2741,48 @@ class Orchestrator:
         return envelope, client_result_id
 
     # ---------------------------------------------------------------- verify
+    def _verification_superseded_by_accepted_sibling(self, result_id: str) -> bool:
+        """Read the durable accept transaction; never settle or change a verdict."""
+        losing = self.store.get_result(result_id)
+        if losing is None:
+            return False
+        envelope = losing.envelope
+        attempt = self.store.get_attempt(envelope.attempt_id)
+        task = self.store.get_task(envelope.task_id)
+        if (
+            attempt is None
+            or task is None
+            or attempt.status is not AttemptStatus.SUPERSEDED
+            or (attempt.failure or {}).get("reason") != "sibling_accepted"
+            or attempt.task_id != task.id
+            or attempt.mission_id != envelope.mission_id
+            or task.mission_id != envelope.mission_id
+            or task.status is not TaskStatus.COMPLETED
+            or not task.accepted_result_id
+            or task.accepted_result_id == result_id
+            or losing.verification_state != "REJECTED"
+            or losing.verdict != "superseded"
+        ):
+            return False
+        accepted = self.store.get_result(task.accepted_result_id)
+        if (
+            accepted is None
+            or accepted.verification_state != "DONE"
+            or accepted.verdict != "PASS"
+            or accepted.envelope.task_id != task.id
+            or accepted.envelope.mission_id != task.mission_id
+            or accepted.envelope.attempt_id == attempt.id
+            or set(accepted.artifacts) != set(task.accepted_artifacts)
+        ):
+            return False
+        winner = self.store.get_attempt(accepted.envelope.attempt_id)
+        return (
+            winner is not None
+            and winner.status is AttemptStatus.COMPLETED
+            and winner.task_id == task.id
+            and winner.mission_id == task.mission_id
+        )
+
     async def _verify(self, result_id: str) -> bool:
         stored = self.store.get_result(result_id)
         assert stored is not None
@@ -2794,7 +2825,12 @@ class Orchestrator:
         )
 
         async def recorder(layer: LayerResult) -> None:
-            self._hold_lease(attempt.id)  # P1-3: a lost lease aborts the verification
+            try:
+                self._hold_lease(attempt.id)  # P1-3: a lost lease aborts verification
+            except CommitRejected:
+                if self._verification_superseded_by_accepted_sibling(result_id):
+                    raise _AcceptedSiblingSupersededVerification from None
+                raise
             detail = {"summary": layer.summary, **dict(layer.detail)}
             if layer.layer == "critic_review":
                 # A recovered intent may still contain an older prompt than the
@@ -2863,29 +2899,33 @@ class Orchestrator:
             evidence_resolver = EvidenceResolver(
                 self.store, self.assembled.workspaces.artifact_store
             )
-        verdict = await self._router.verify(
-            mission=mission,
-            task=task,
-            envelope=stored.envelope,
-            artifacts=artifacts,
-            verification_copy=copy,
-            client_result_id=self._client_ids.get(result_id),
-            run_critic=run_critic,
-            recorder=recorder,
-            tampered=tampered,
-            knowledge=KnowledgeIndex.load(self.store, mission.id),
-            require_synthesis_knowledge=self._config.knowledge_sharing,
-            action_problems=action_problems,
-            human=human,
-            reuse=reuse,
-            needs_human_allowed=escalation_left,
-            domain=domain,
-            assessment_binding=assessment_binding,
-            evidence_resolver=evidence_resolver,
-            ablated=frozenset({"critic_review"})
-            if "critic" in self._config.ablations
-            else frozenset(),
-        )
+        try:
+            verdict = await self._router.verify(
+                mission=mission,
+                task=task,
+                envelope=stored.envelope,
+                artifacts=artifacts,
+                verification_copy=copy,
+                client_result_id=self._client_ids.get(result_id),
+                run_critic=run_critic,
+                recorder=recorder,
+                tampered=tampered,
+                knowledge=KnowledgeIndex.load(self.store, mission.id),
+                require_synthesis_knowledge=self._config.knowledge_sharing,
+                action_problems=action_problems,
+                human=human,
+                reuse=reuse,
+                needs_human_allowed=escalation_left,
+                domain=domain,
+                assessment_binding=assessment_binding,
+                evidence_resolver=evidence_resolver,
+                ablated=frozenset({"critic_review"})
+                if "critic" in self._config.ablations
+                else frozenset(),
+            )
+        except _AcceptedSiblingSupersededVerification:
+            self._note(f"result {result_id}: obsolete verifier after sibling acceptance")
+            return True
         if supports_document_assessments(domain) and assessment_binding is not None:
             from ..verification.assessments import validated_assessments
             from ..verification.conflicts import document_uncertainty_conflicts
