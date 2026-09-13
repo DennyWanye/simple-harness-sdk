@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from hashlib import sha256
 
 from simple_harness.contracts import canonical_json
 
 from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK
-from ..governance.budgets import BudgetError
+from ..governance.budgets import BudgetError, BudgetExhausted
 from ..governance.mission_system_tail import MissionSystemTailLedger
 from ..governance.tail_budget import TailBudgetLedger, TailReserve
 from ..planning.candidate_selection import selection_revision
@@ -154,7 +155,9 @@ class MissionTailCommitsMixin:
             raise BudgetError("system growth requires the provider admission transaction")
         attempt = self._store.get_attempt(subject_id)
         if attempt is None:
-            return False  # Services, including Critic, cannot borrow the Worker share.
+            return self._grow_system_critic_allowance(
+                subject_id, tokens=tokens, cost_micros=cost_micros,
+            )
         row = self.system_task_hold(attempt.task_id)
         if row is None:
             return False
@@ -207,6 +210,131 @@ class MissionTailCommitsMixin:
         )
         return True
 
+    def _grow_system_critic_allowance(self, subject_id, *, tokens, cost_micros):
+        """Move only this live Critic's deficit from its original same-Task hold."""
+        if not self._store.connection.in_transaction:
+            raise BudgetError("system Critic growth requires the admission transaction")
+        TailReserve(tokens, cost_micros)
+        intent = self._store.get_intent_for_subject(subject_id)
+        if intent is None or intent.kind != "critic":
+            return False
+        attempt_id = intent.config.get("attempt_id")
+        attempt = self._store.get_attempt(attempt_id) if isinstance(attempt_id, str) else None
+        if attempt is None:
+            raise BudgetError("system Critic growth requires its actual Attempt")
+        self._protected_critic_subject(attempt.id, subject_id)
+        row = self.system_task_hold(attempt.task_id)
+        if row is None:
+            return False  # Ordinary Critic accounts retain the existing ledger path.
+        revision = self.protected_tail_revision(attempt.task_id)
+        task = self._protected_tail_task(attempt.task_id, revision)
+        self._protected_attempt(task.id, attempt.id, allow_next=False)
+        if (intent.mission_id != task.mission_id
+                or intent.state not in {"AGENT_CREATED", "SUBMITTED"}
+                or self._system_tail_factory is None):
+            raise BudgetError("system Critic growth requires its live frozen intent")
+        plan = self._system_tail_factory(
+            self._require_mission(task.mission_id), task.kind,
+            agent_config=intent.config.get("agent_config"), critic=True,
+            critic_ordinal=int(subject_id.rsplit(":", 1)[-1]),
+        )
+        if plan is None:
+            raise BudgetError("system Critic growth runtime binding is unavailable")
+        _, binding = plan
+        if (row["binding_json"] != canonical_json(binding.to_json())
+                or binding.critic is None
+                or binding.critic.profile_id != intent.config.get("runtime_profile_id")
+                or binding.critic.model != intent.config.get("model")):
+            raise BudgetError("system Critic growth routing or price differs from its hold")
+        hold = self.protected_tail_hold(row["hold_id"])
+        if (hold is None or hold["state"] != "HELD" or hold["task_revision"] != revision
+                or hold["account_id"] != f"budget:{task.id}"
+                or hold["mission_id"] != task.mission_id or hold["purpose"] != task.kind):
+            raise BudgetError("system Critic growth requires its original live Task hold")
+        source = self._ledger.reservation(hold["subject_id"])
+        target = self._ledger.reservation(subject_id)
+        if (source is None or target is None
+                or source["state"] != "RESERVED" or target["state"] != "RESERVED"
+                or any(r["account_id"] != hold["account_id"]
+                       or r["mission_id"] != task.mission_id for r in (source, target))):
+            raise BudgetError("system Critic growth reservation is foreign or not live")
+        original = self._store.connection.execute(
+            "SELECT request_json FROM budget_tail_transfers WHERE hold_id=? AND transfer_id=?",
+            (row["hold_id"], subject_id),
+        ).fetchone()
+        allocations = [] if original is None else json.loads(original[0])["allocations"]
+        if not any(a["subject_id"] == subject_id and a["account_id"] == hold["account_id"]
+                   and a["role"] == "critic" and a["counts_attempt"] is False
+                   for a in allocations):
+            raise BudgetError("system Critic growth has no original transfer receipt")
+        if (self._ledger.has_unknown_usage(subject_id)
+                or self._ledger.has_unknown_usage(hold["subject_id"])
+                or self._ledger.usage_for(hold["subject_id"])[0]):
+            raise BudgetError("system Critic growth cannot move unresolved or spent allowance")
+        # Already transferred Critic reservations are outside the hold. Every
+        # other live candidate still keeps its original frozen first-Critic floor.
+        floor_tokens = floor_cost = 0
+        for candidate in self._store.list_attempts(task.id):
+            if candidate.status in TERMINAL_ATTEMPT:
+                continue
+            transferred = self._store.connection.execute(
+                "SELECT 1 FROM budget_tail_transfers WHERE hold_id=? AND transfer_id=?",
+                (row["hold_id"], f"{candidate.id}:critic:1"),
+            ).fetchone()
+            if transferred is not None:
+                continue
+            worker = self._store.get_intent_for_subject(candidate.id)
+            first = None if worker is None else worker.config.get("first_critic_budget")
+            if (not isinstance(first, Mapping)
+                    or type(first.get("minimum_tokens")) is not int or first["minimum_tokens"] <= 0
+                    or type(first.get("cost_micros")) is not int or first["cost_micros"] < 0):
+                raise BudgetError("system Critic growth requires frozen sibling Critic minima")
+            floor_tokens += first["minimum_tokens"]
+            floor_cost += first["cost_micros"]
+        minimum = {"tokens": floor_tokens, "cost_micros": floor_cost}
+        targets = {"tokens": max(tokens, target["reserved_tokens"]),
+                   "cost_micros": max(cost_micros, target["reserved_cost_micros"])}
+        amounts = {key: value - target["reserved_" + key] for key, value in targets.items()}
+        if not any(amounts.values()):
+            return True
+        # Preflight both dimensions and all ancestors before writing, even when
+        # the caller catches the refusal inside its admission transaction.
+        for dimension, amount in amounts.items():
+            room = max(0, source["reserved_" + dimension] - minimum[dimension])
+            if amount > room:
+                raise BudgetExhausted(hold["account_id"], dimension, amount, room)
+        for account in self._ledger._chain(hold["account_id"]):
+            for dimension in amounts:
+                remaining = getattr(account, "remaining_" + dimension)()
+                if remaining is not None and remaining < 0:
+                    raise BudgetExhausted(account.account_id, dimension, 0, remaining)
+        transfer_id = (
+            f"critic-growth:{row['hold_id']}:{subject_id}:"
+            f"{targets['tokens']}:{targets['cost_micros']}"
+        )
+        receipt = dict(
+            hold_id=row["hold_id"], task_revision=revision, transfer_id=transfer_id,
+            growth={"subject_id": subject_id, **amounts}, targets=targets, minimum=minimum,
+        )
+        if self._store.get_receipt(transfer_id) is not None:
+            raise BudgetError("system Critic growth receipt conflicts with current reservation")
+        self._store.connection.execute(
+            "UPDATE budget_reservations SET reserved_tokens=reserved_tokens-?,"
+            "reserved_cost_micros=reserved_cost_micros-?,updated_at=? WHERE subject_id=?",
+            (amounts["tokens"], amounts["cost_micros"], self._store.now, hold["subject_id"]),
+        )
+        self._store.connection.execute(
+            "UPDATE budget_reservations SET reserved_tokens=?,reserved_cost_micros=?,"
+            "updated_at=? WHERE subject_id=?",
+            (targets["tokens"], targets["cost_micros"], self._store.now, subject_id),
+        )
+        self._store.insert_receipt(
+            commit_id=transfer_id, kind="system_critic_growth", subject_id=subject_id,
+            base_version=None, proposal_hash=sha256(canonical_json(receipt).encode()).hexdigest(),
+            receipt=receipt,
+        )
+        return True
+
     def _return_system_unused_allowance(self, settled):
         """Return only unused original transfers after a FIRST known settlement.
 
@@ -240,7 +368,8 @@ class MissionTailCommitsMixin:
         )
         allocation = dict(allocation)
         for transfer in self._store.connection.execute(
-            "SELECT receipt_json FROM commit_receipts WHERE kind='system_worker_growth' "
+            "SELECT receipt_json FROM commit_receipts WHERE kind IN "
+            "('system_worker_growth','system_critic_growth') "
             "AND subject_id=?", (settled["subject_id"],),
         ):
             receipt = json.loads(transfer[0])

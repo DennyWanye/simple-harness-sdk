@@ -39,3 +39,24 @@ def test_new_experiment_changes_only_declared_sub_budgets_and_identity():
 def test_unknown_budget_profile_is_rejected_before_any_provider_configuration():
     with pytest.raises(ValueError, match="unknown P34 budget profile"):
         native_ui_materials("unapproved")
+
+
+def test_audit_headroom_variant_preserves_the_preceding_experiment():
+    preceding = native_ui_materials("docs480-s240-v3")
+    assert preceding["contract_hash"] == (
+        "c572b501aa4e3624945f53d4014446cd7da8966654bd0950ee3be59f3796fc36"
+    )
+    revised = native_ui_materials("audit320-docs480-s240-v4")
+    assert revised["audit_budget"]["max_tokens"] == 320_000
+    assert revised["mission_spec"]["budget"]["max_tokens"] == 2_000_000
+    assert revised["contract_hash"] != preceding["contract_hash"]
+    normalized = deepcopy(revised)
+    for key in ("scenario", "contract_hash"):
+        normalized[key] = preceding[key]
+    normalized["mission_spec"]["idempotency_key"] = preceding["mission_spec"]["idempotency_key"]
+    normalized["audit_budget"]["max_tokens"] = 240_000
+    normalized["mission_spec"]["goal"] = revised["mission_spec"]["goal"].replace(
+        "预算320000 tokens/4 attempts", "预算240000 tokens/4 attempts",
+    )
+    assert normalized == preceding
+    assert native_ui_materials("docs480-s240-v3") == preceding

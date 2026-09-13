@@ -44,7 +44,7 @@ The oracle requires A's nonzero baseline exit and a passing analysis run in actu
 Verifier evidence, preserving that failed result after reuse. Main reviews before
 any paid invocation; the original unguarded pair failed and remains archived.
 Original production-profile failures remain archived. SH_P34_BUDGET_PROFILE may
-select the separately approved docs480-s240-v3 experiment; the original-v2
+select a separately recorded budget experiment; the original-v2
 contract remains the default and its criteria/materials/oracle remain unchanged.
 """
 
@@ -244,23 +244,29 @@ def selection_policy():
 
 def _experiment_budgets(budget_profile):
     if budget_profile == "original-v2":
-        return DOCS_BUDGET, Budget(max_tokens=120_000, max_attempts=2)
+        return AUDIT_BUDGET, DOCS_BUDGET, Budget(max_tokens=120_000, max_attempts=2)
     if budget_profile == "docs480-s240-v3":
-        return Budget(max_tokens=480_000, max_attempts=3), Budget(
+        return AUDIT_BUDGET, Budget(max_tokens=480_000, max_attempts=3), Budget(
             max_tokens=240_000, max_attempts=2,
         )
+    if budget_profile == "audit320-docs480-s240-v4":
+        return (Budget(max_tokens=320_000, max_attempts=4),
+                Budget(max_tokens=480_000, max_attempts=3),
+                Budget(max_tokens=240_000, max_attempts=2))
     raise ValueError("unknown P34 budget profile")
 
 
 def mission_spec(budget_profile="original-v2"):
-    docs_budget, synthesis_budget = _experiment_budgets(budget_profile)
+    audit_budget, docs_budget, synthesis_budget = _experiment_budgets(budget_profile)
     goal = GOAL.replace(
         "预算240000 tokens/3 attempts", f"预算{docs_budget.max_tokens} tokens/3 attempts",
+    ).replace(
+        "预算240000 tokens/4 attempts", f"预算{audit_budget.max_tokens} tokens/4 attempts",
     )
     return MissionSpec(
         goal=goal, success_criteria=CRITERIA, tenant_id="real-p34",
         idempotency_key=("real-search-value-v2" if budget_profile == "original-v2"
-                         else "real-search-value-docs480-s240-v3"), budget=MISSION_BUDGET,
+                         else "real-search-value-" + budget_profile), budget=MISSION_BUDGET,
         workspace_seed=dict(MATERIALS), allowed_tools=tuple(RECORDER_SPEC["allowed_tools"]),
         synthesis={
             "goal": SYNTHESIS_GOAL, "success_criteria": list(CRITERIA),
@@ -275,17 +281,17 @@ def mission_spec(budget_profile="original-v2"):
 def native_ui_materials(budget_profile="original-v2"):
     """Pure text/data export: no file writes, credential reads, or model calls."""
     spec = mission_spec(budget_profile).to_json()
-    docs_budget, _ = _experiment_budgets(budget_profile)
+    audit_budget, docs_budget, _ = _experiment_budgets(budget_profile)
     return {
         "scenario": ("p34-real-search-value-v2" if budget_profile == "original-v2"
-                     else "p34-real-search-value-docs480-s240-v3"), "mission_spec": spec,
+                     else "p34-real-search-value-" + budget_profile), "mission_spec": spec,
         "contract_hash": sha256_hex(spec), "compare_policy": selection_policy(),
         "material_sha256": {
             path: hashlib.sha256(content.encode()).hexdigest()
             for path, content in MATERIALS.items()
         },
         "audit_goal": AUDIT_GOAL, "audit_criteria": list(AUDIT_CRITERIA),
-        "audit_budget": AUDIT_BUDGET.to_json(), "docs_budget": docs_budget.to_json(),
+        "audit_budget": audit_budget.to_json(), "docs_budget": docs_budget.to_json(),
         "consumer_goal": CONSUMER_GOAL, "consumer_criteria": list(CONSUMER_CRITERIA),
         "consumer_budget": CONSUMER_BUDGET.to_json(),
         "shared_reservations": {
@@ -542,6 +548,8 @@ def _assert_value(orch, provider, mission_id, compare, budget_profile="original-
                 )
     audits = [task for task in tasks if task.goal == AUDIT_GOAL]
     assert len(audits) == 1, "the immutable baseline audit must run in each arm"
+    audit_budget, docs_budget, synthesis_budget = _experiment_budgets(budget_profile)
+    assert audits[0].budget == audit_budget, "audit budget drift"
     failed_audits = []
     other_audit_failures = []
     for attempt in store.list_attempts(audits[0].id):
@@ -557,7 +565,6 @@ def _assert_value(orch, provider, mission_id, compare, budget_profile="original-
                 failed_audits.append(result.envelope.id)
     assert failed_audits, "no verified failing baseline audit with valid analysis"
     b = [t for t in tasks if t.goal == "B：独立文档检查"]
-    docs_budget, synthesis_budget = _experiment_budgets(budget_profile)
     assert len(b) == 1 and b[0].budget == docs_budget
     assert tuple(b[0].success_criteria) == ("file:DOCS.md",)
     assert set(b[0].verification_policy) == {"format_check", "rule_check", "critic_review"}

@@ -243,6 +243,14 @@ class _AcceptedSiblingSupersededVerification(Exception):
     """Only the recorder's rejected lease may signal this obsolete verifier."""
 
 
+class _CriticAdmissionFailure(ContractError):
+    """An SDK admission failure, not a malformed completed Critic verdict."""
+
+    def __init__(self, error):
+        super().__init__("critic provider admission denied")
+        self.error = jsonable(error)
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -2824,6 +2832,8 @@ class Orchestrator:
             detail={"artifacts": sorted(a.id for a in artifacts), "protected": sorted(protected)},
         )
 
+        critic_admission_failure: _CriticAdmissionFailure | None = None
+
         async def recorder(layer: LayerResult) -> None:
             try:
                 self._hold_lease(attempt.id)  # P1-3: a lost lease aborts verification
@@ -2833,6 +2843,8 @@ class Orchestrator:
                 raise
             detail = {"summary": layer.summary, **dict(layer.detail)}
             if layer.layer == "critic_review":
+                if critic_admission_failure is not None:
+                    detail["error"] = critic_admission_failure.error
                 # A recovered intent may still contain an older prompt than the
                 # domain now selects. Attribute only a completed Critic verdict,
                 # including a reused layer, to its durable execution ordinal.
@@ -2852,6 +2864,7 @@ class Orchestrator:
                 self._fault("after_layer_pass", "attempt")
 
         async def run_critic(test_output: str | None) -> CriticVerdict:
+            nonlocal critic_admission_failure
             try:
                 return await self._run_critic(
                     mission,
@@ -2863,6 +2876,9 @@ class Orchestrator:
                     test_output=test_output,
                     attempt_id=attempt.id,
                 )
+            except _CriticAdmissionFailure as error:
+                critic_admission_failure = error
+                raise
             except BudgetExhausted as error:
                 # a required layer that could not run is an ERROR, never a PASS (ORCH §12.4)
                 raise ContractError(f"critic could not be funded: {error}") from error
@@ -2925,6 +2941,33 @@ class Orchestrator:
             )
         except _AcceptedSiblingSupersededVerification:
             self._note(f"result {result_id}: obsolete verifier after sibling acceptance")
+            return True
+        if critic_admission_failure is not None:
+            admission_detail_error = critic_admission_failure.error
+            admission = admission_detail_error["detail"]
+            reason = admission.get("reason_code")
+            admission_failures = [
+                {**item, "detail": {**dict(item.get("detail", {})), "error": admission_detail_error}}
+                if item.get("layer") == "critic_review" else item
+                for item in verdict.failures
+            ]
+            # Commit rejection and its terminal budget/configuration handling
+            # atomically: recovery must never see a redo-eligible intermediate.
+            with self.store.transaction():
+                self.commit.fail_result(result_id, failures=admission_failures, owner=self._owner)
+                if reason == "cancelled":
+                    self.commit.cancel_mission(mission.id)
+                else:
+                    stop = (MissionStopReason.BUDGET_EXHAUSTED
+                            if reason in {"budget_exhausted", "deadline"}
+                            else MissionStopReason.RUNTIME_UNAVAILABLE)
+                    self.commit.stop_task(task.id, stop_reason=stop, detail={
+                        "source_kind": "provider_admission", "retryable": False,
+                        "admission": admission, "result_id": result_id,
+                        **({"dimension": "runtime"} if reason == "deadline" else {}),
+                    })
+            await self._release_mission(mission.id)
+            self._note(f"task {task.id}: Critic admission denied ({reason}) -> stopped")
             return True
         if supports_document_assessments(domain) and assessment_binding is not None:
             from ..verification.assessments import validated_assessments
@@ -4229,6 +4272,24 @@ class Orchestrator:
                 raise ContractError("critic did not answer within the wait window")
             self._import_usage(intent)
             self.assembled.gateway.unbind(intent.agent_id)
+            critic_turn_error = result.error
+            critic_admission_detail = (
+                critic_turn_error.get("detail") if isinstance(critic_turn_error, Mapping) else None
+            )
+            if (result.state is not AgentTurnState.COMMITTED
+                    and isinstance(critic_turn_error, Mapping)
+                    and critic_turn_error.get("error_code") == "provider_admission_denied"
+                    and critic_turn_error.get("source_kind") == "provider_admission"
+                    and critic_turn_error.get("retryable") is False
+                    and isinstance(critic_admission_detail, Mapping)
+                    and type(critic_admission_detail.get("schema_version")) is int
+                    and critic_admission_detail["schema_version"] == 1):
+                self._note_turn_health(intent, result)
+                self._settle_intent(intent, "FAILED")
+                self._settle_service_if_known(subject, mission.id, task_id)
+                # Outside the schema-retry catch below. A cold collector reads
+                # the same SDK failure and takes the same non-retry path.
+                raise _CriticAdmissionFailure(critic_turn_error)
             try:
                 self._note_turn_health(intent, result)  # review P2-2: Critic turns count too
                 echoed = self.bridge_for(intent).echoed_models(agent_id=intent.agent_id)
