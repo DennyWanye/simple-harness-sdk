@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from simple_harness.execution.provider_admission import ProviderAdmissionPort
+from simple_harness.execution.provider_admission import ProviderAdmissionPort, ProviderHandoffFence
 from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 from simple_harness.runtime.ports import (
     AuthorizationPort,
@@ -84,6 +84,8 @@ class AgentRuntimePorts:
     max_concurrent_tool_calls: int | None = None
     provider_admission: ProviderAdmissionPort | None = None
     clock: Callable[[], float] = time.time
+    # Lifecycle-only admission for callers without a token/budget admission port.
+    provider_handoff_fence: ProviderHandoffFence | None = None
 
     def __post_init__(self) -> None:
         if self.provider_admission is not None:

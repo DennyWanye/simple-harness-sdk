@@ -32,6 +32,10 @@ from simple_harness.execution.base_agent import BASE_AGENT_API_MODE, AgentBindin
 from simple_harness.execution.budget import FrozenPriceEstimator
 from simple_harness.execution.delivery import DeliveryDispatcher
 from simple_harness.execution.dispatch import ProviderInvocationCoordinator
+from simple_harness.execution.provider_admission import (
+    LocalProviderAdmission,
+    ProviderAdmissionPort,
+)
 from simple_harness.execution.sqlite import Database
 from simple_harness.execution.sqlite.base_agent.turns import (
     AgentInstanceCapExceeded as InstanceCapConflict,
@@ -113,6 +117,7 @@ class AssembledRuntime:
     context: object = None
     retriever: object = None
     indexer: object = None
+    provider_admission: ProviderAdmissionPort | None = None
 
 
 def assemble_runtime(
@@ -172,14 +177,19 @@ def assemble_runtime(
     )
     tokenizer = ports.tokenizer or UpperBoundTokenizer()
     guard = RequestGuard(uow, tokenizer=tokenizer, policy=ports.context_policy, clock=ports.clock)
+    admission = ports.provider_admission
+    if admission is None and ports.provider_handoff_fence is not None:
+        admission = LocalProviderAdmission(
+            ports.max_concurrent_model_calls, ports.provider_handoff_fence
+        )
     wire = AgentProviderWire(
         ports.provider,
         database,
         request_guard=guard,
         max_concurrent=(
-            ports.max_concurrent_model_calls if ports.provider_admission is None else None
+            ports.max_concurrent_model_calls if admission is None else None
         ),
-        requests_prepared=ports.provider_admission is not None,
+        requests_prepared=admission is not None,
     )
     provider_adapter = _ConsumerProviderAdapter(wire, ports.model)
     # The consumer provider adapter reports pricing_key "consumer"; the estimator must match.
@@ -191,8 +201,8 @@ def assemble_runtime(
         budget_policy=budget_policy,
         estimator=estimator,
         context_use_authority=None,
-        provider_admission=ports.provider_admission,
-        request_preparer=wire.prepare_request if ports.provider_admission is not None else None,
+        provider_admission=admission,
+        request_preparer=wire.prepare_request if admission is not None else None,
         clock=ports.clock,
     )
 
@@ -287,6 +297,7 @@ def assemble_runtime(
         context,
         retriever,
         indexer,
+        provider_admission=admission,
     )
 
 
@@ -441,6 +452,16 @@ class AgentRuntime:
     @property
     def ports(self) -> AgentRuntimePorts:
         return self._ports
+
+    @property
+    def effective_provider_admission(self) -> ProviderAdmissionPort | None:
+        """The coordinator's actual admission, including lifecycle-only local slots.
+
+        Keep caller ports unchanged: consumers also use the configured budget
+        admission port to distinguish legacy usage/accounting semantics.
+        """
+        admission = self._assembled.provider_admission
+        return self._ports.provider_admission if admission is None else admission
 
     @property
     def owner_scope(self) -> str:

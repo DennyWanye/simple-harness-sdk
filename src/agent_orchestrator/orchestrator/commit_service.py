@@ -2992,7 +2992,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
 
         if not 0 <= minimum_remaining_seconds <= lease_seconds:
             raise ValueError("minimum remaining lease must be within the lease duration")
-        with self._store.transaction():
+        with self._store.transaction() as connection:
             attempt = self._require_attempt(attempt_id)
             task = self._require_task(attempt.task_id)
             mission = self._require_mission(attempt.mission_id)
@@ -3012,6 +3012,22 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             expires = self._store.now + lease_seconds
             progress = liveness.get("progress")
             marker = None if progress is None else int(progress)
+            # Persist blocker transitions even between lease renewals. The last
+            # real observation survives reopening the Store; polling is not SDK
+            # progress, and time spent blocked must not age the next stall window.
+            blocker_changed = resumed = False
+            if liveness.get("state") == str(AgentTurnState.RUNNING):
+                previous = connection.execute(
+                    "SELECT payload_json FROM events WHERE mission_id = ? "
+                    "AND attempt_id = ? AND type = 'HeartbeatReceived' "
+                    "ORDER BY seq DESC LIMIT 1",
+                    (attempt.mission_id, attempt.id),
+                ).fetchone()
+                prior = {} if previous is None else json.loads(previous[0]).get("liveness", {})
+                was_blocked = prior.get("blocked") is True
+                blocked = liveness.get("blocked") is True
+                blocker_changed = was_blocked != blocked
+                resumed = was_blocked and not blocked
             # Critic polling is much more frequent than lease renewal. Keep its
             # authority check in this transaction, but do not rewrite history on
             # every poll when the same owner still has ample time and no progress.
@@ -3022,10 +3038,11 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 and attempt.lease_expires_at - self._store.now > minimum_remaining_seconds
                 and marker == attempt.progress_marker
                 and attempt.progress_at is not None
+                and not blocker_changed
             ):
                 return attempt
             progress_at = attempt.progress_at
-            if marker != attempt.progress_marker or progress_at is None:
+            if marker != attempt.progress_marker or progress_at is None or resumed:
                 progress_at = self._store.now
             updated = next_attempt(
                 attempt,
@@ -3038,7 +3055,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             self._emit(
                 "HeartbeatReceived",
                 attempt.mission_id,
-                key=f"{attempt_id}:{int(expires * 1000)}",
+                key=f"{attempt_id}:{int(expires * 1000)}:{updated.version}",
                 task_id=attempt.task_id,
                 attempt_id=attempt_id,
                 payload={"owner": owner, "lease_expires_at": expires, "liveness": dict(liveness)},

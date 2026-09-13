@@ -110,7 +110,7 @@ class AgentBridge:
         except Exception:  # noqa: BLE001 - unknown turn
             return Liveness(False, None, False, None, None, False)
         state = AgentTurnState(snapshot.state)
-        admission = self._runtime.ports.provider_admission
+        admission = self._runtime.effective_provider_admission
         waiting = admission is not None and admission.waiting_for_slot(
             agent_id=agent_id,
             turn_id=turn_id,

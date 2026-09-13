@@ -30,6 +30,7 @@ from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
 from simple_harness.agents.runtime import AgentRuntime
 from simple_harness.contracts import canonical_json
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
+from simple_harness.execution.provider_admission import ProviderHandoffFence
 from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 
 from ..artifacts.workspace import WorkspaceManager
@@ -483,6 +484,7 @@ def assemble_orchestrator_runtime(
     profiles: Mapping[str, RuntimeProfile] | None = None,
     default_profile: str | None = None,
     provider_admission: Any = None,
+    provider_handoff_fence: ProviderHandoffFence | None = None,
 ) -> AssembledOrchestratorRuntime:
     """One pool per runtime profile (D6-5').  ``provider`` alone is the single-profile
     path every earlier step used: the ``default`` profile with ``config.model`` and
@@ -545,6 +547,7 @@ def assemble_orchestrator_runtime(
             ),
             max_concurrent_tool_calls=config.max_concurrency,
             **({"provider_admission": provider_admission} if provider_admission is not None else {}),
+            provider_handoff_fence=provider_handoff_fence,
         )
         runtime = build_agent_runtime(ports, owner_scope=OWNER_SCOPE)
         pools[profile_id] = RuntimePool(

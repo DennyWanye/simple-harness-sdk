@@ -368,6 +368,7 @@ class Orchestrator:
             self._assembled = assemble_orchestrator_runtime(
                 self._config, profiles=self._profiles, default_profile=self._default_profile,
                 provider_admission=self._provider_admission,
+                provider_handoff_fence=self._provider_handoff_fence,
             )
             # SDK startup itself reconciles grants. Consume already durable late
             # receipts before it can raise on an actual overrun; no runtime is started
@@ -417,6 +418,27 @@ class Orchestrator:
             except BaseException as cleanup_error:
                 error.add_note(f"Startup resource cleanup failed: {type(cleanup_error).__name__}")
             raise
+
+    @contextlib.contextmanager
+    def _provider_handoff_fence(self, agent_id: str, turn_id: str):
+        """Fence legacy local-slot handoff with the same Store as public cancel.
+
+        No estimator is required for lifecycle authority. Submitted service turns
+        remain collectible after cancellation, but cannot start another request.
+        """
+        with self.store.transaction():
+            rows = self.store.connection.execute(
+                "SELECT intent_id FROM dispatch_intents WHERE agent_id=? AND expected_turn_id=?",
+                (agent_id, turn_id),
+            ).fetchall()
+            if len(rows) != 1:
+                raise ProviderAdmissionDenied(public_message="Provider has no unique dispatch intent.")
+            intent = self.store.get_intent(rows[0][0])
+            mission = None if intent is None else self.store.get_mission(intent.mission_id)
+            if (intent is None or mission is None or mission.status in TERMINAL_MISSION
+                    or intent.state not in {"AGENT_CREATED", "SUBMITTED"}):
+                raise ProviderAdmissionDenied(public_message="Provider subject Mission or intent stopped.")
+            yield
 
     # ------------------------------------------------------------ policies (step 9)
     def _config_policy(self) -> dict[str, Any]:
@@ -2228,20 +2250,18 @@ class Orchestrator:
             return True
         now = self.store.now
         if liveness.alive:
-            due = (
-                attempt.lease_expires_at is None
-                or now >= attempt.lease_expires_at - self._config.lease_seconds / 2
-            )
-            if due:
-                try:
-                    attempt = self.commit.renew_lease(
-                        attempt.id,
-                        owner=self._owner,
-                        lease_seconds=self._config.lease_seconds,
-                        liveness=liveness.to_json(),
-                    )
-                except CommitRejected:
-                    return False  # another live owner; not ours yet (review P1-2)
+            try:
+                # The commit deduplicates unchanged observations, but persists
+                # blocker exits before testing their newly started stall window.
+                attempt = self.commit.renew_lease(
+                    attempt.id,
+                    owner=self._owner,
+                    lease_seconds=self._config.lease_seconds,
+                    liveness=liveness.to_json(),
+                    minimum_remaining_seconds=self._config.lease_seconds / 2,
+                )
+            except CommitRejected:
+                return False  # another live owner; not ours yet (review P1-2)
             running = liveness.state == str(AgentTurnState.RUNNING)
             if running and not liveness.blocked and attempt.progress_at is not None:
                 # D3-4': only a *running* turn is timed; queued / semaphore-waiting ones are not
