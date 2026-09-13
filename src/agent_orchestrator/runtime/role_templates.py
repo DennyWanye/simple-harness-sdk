@@ -28,10 +28,10 @@ if TYPE_CHECKING:
     from ..governance.domains import DomainProfileV1
 
 PLANNER_VERSION = "planner-v4"  # host support 0.9.8: layers from the package
-WORKER_VERSION = "worker-v2"
+WORKER_VERSION = "worker-v3"
 CRITIC_VERSION = "critic-v3"
 ARBITER_VERSION = "arbiter-v2"
-SYNTHESIZER_VERSION = "synthesizer-v2"
+SYNTHESIZER_VERSION = "synthesizer-v3"
 
 TASK_PROPOSAL_TAG = "task_proposal"
 TASK_GRAPH_PROPOSAL_TAG = "task_graph_proposal"
@@ -104,9 +104,9 @@ PLANNER = _revise(
     ),
 )
 
-WORKER = RoleTemplate(
+WORKER_V2 = RoleTemplate(
     name="worker",
-    prompt_version=WORKER_VERSION,
+    prompt_version="worker-v2",
     tool_names=("workspace_read_file", "workspace_write_file", "workspace_list", "run_tests"),
     instructions=(
         "[role:worker]\n"
@@ -130,6 +130,29 @@ WORKER = RoleTemplate(
         "claims 的 status 只能是 PROPOSED（默认，不用写）；只有系统按验证结果决定它是否成为知识。"
         "一个 Claim 只有引用了你实际运行并通过的 pytest 目标才可能被判 VERIFIED。\n"
         "artifacts 里的路径必须是工作区里真实存在的文件。块外不要输出任何文字。"
+    ),
+)
+
+# Shared only by the new code defaults; old code, variants and document versions
+# retain their original bytes and explicit historical registry bindings.
+_TASK_EXECUTION_DISCIPLINE = (
+    "执行范围以当前 Task Contract 的 goal / success_criteria / outputs 为准；Mission 的约束仍须遵守，"
+    "但不因此接管其他 Task 的工作或把其他 Task 的测试列为本任务必做。\n"
+    "工具名称说明不是授权；只调用本次请求实际暴露的工具 schema，并遵守 Task 与部署权限交集。"
+    "未暴露的工具（包括 run_tests）不得调用；如必要验证不可执行，如实说明限制，不声称已通过。\n"
+    "按任务需要读取文件、编辑产物；允许在调试过程中及时运行与当前改动相关的必要测试，不必等所有文件写完。"
+    "已有完整读取、当前上下文仍保留且内容未改变的文件应直接复用；内容缺页、已不在上下文或发生变化时再补读。\n"
+    "本次 Attempt 已实际通过的同一测试，仅在测试目标及其依赖的代码、数据、配置等输入字节均未改变且执行环境相同时可复用；"
+    "若相关输入已改变或无法确认未变，应重新运行。失败时定位和修复再验证，不得把未通过说成通过。\n"
+    "当前 outputs 和必要验证完成后及时提交 result_envelope；不要仅为确认存在而再次列目录、读相同文件或重复已有效通过的测试。"
+    "这些执行期证据不能替代系统对候选产物的独立验收；系统仍必须运行合同要求的验收。\n"
+)
+WORKER = _revise(
+    WORKER_V2,
+    WORKER_VERSION,
+    (
+        "工作方式：先 workspace_list 和读需要的文件，再写代码，然后用 run_tests 验证；测试没通过就修改再跑。\n",
+        _TASK_EXECUTION_DISCIPLINE,
     ),
 )
 
@@ -184,9 +207,9 @@ ARBITER = RoleTemplate(
     ),
 )
 
-SYNTHESIZER = RoleTemplate(
+SYNTHESIZER_V2 = RoleTemplate(
     name="synthesizer",
-    prompt_version=SYNTHESIZER_VERSION,
+    prompt_version="synthesizer-v2",
     tool_names=("workspace_read_file", "workspace_write_file", "workspace_list", "run_tests"),
     instructions=(
         "[role:synthesizer]\n"
@@ -204,6 +227,20 @@ SYNTHESIZER = RoleTemplate(
         '   "evidence": [str], "artifacts": [你写的文件路径], "proposed_tasks": [], "used_knowledge": [知识 id],\n'
         '   "risks": [str], "cost": {"tool_calls": int}}\n'
         "used_knowledge 必须列出你实际依据的全部知识 id（不能为空）；artifacts 列出你写的文件。块外不要输出任何文字。"
+    ),
+)
+
+SYNTHESIZER = _revise(
+    SYNTHESIZER_V2,
+    SYNTHESIZER_VERSION,
+    (
+        "产物写入 Task Contract 声明的 outputs；写完用 run_tests 运行任务要求的测试；综合产物必须再次通过验收，"
+        "来源都通过不代表你的合成通过。\n",
+        "产物写入 Task Contract 声明的 outputs；优先读取直接依赖的实际交付物和验证知识，"
+        "仅为当前任务所需的判断再追索其他支线材料。\n"
+        + _TASK_EXECUTION_DISCIPLINE
+        + "综合产物必须再次通过系统独立验收；来源都通过不代表你的合成通过，"
+        "源分支的测试不能冒充针对新综合产物的测试。\n",
     ),
 )
 
@@ -268,11 +305,12 @@ MANAGER = RoleTemplate(
 
 
 def _variant(name: str, version: str, bias: str) -> RoleTemplate:
+    # Published variant-v1 and their document descendants stay on worker-v2.
     return RoleTemplate(
         name=name,
         prompt_version=version,
-        tool_names=WORKER.tool_names,
-        instructions=WORKER.instructions.replace("[role:worker]", f"[role:{name}]", 1)
+        tool_names=WORKER_V2.tool_names,
+        instructions=WORKER_V2.instructions.replace("[role:worker]", f"[role:{name}]", 1)
         + "\n搜索偏置："
         + bias,
     )
@@ -362,6 +400,8 @@ register_template(PLANNER_V3)
 register_template(MANAGER_V1)
 register_template(MANAGER_V2)
 register_template(CRITIC_V2)
+register_template(WORKER_V2)
+register_template(SYNTHESIZER_V2)
 
 
 def registered_versions() -> dict[str, frozenset[str]]:
@@ -420,6 +460,7 @@ __all__ = (
     "role_for_task",
     "SYNTHESIZER",
     "SYNTHESIZER_VERSION",
+    "SYNTHESIZER_V2",
     "TASK_GRAPH_PROPOSAL_TAG",
     "TASK_ROLE_BY_KIND",
     "CRITIC",
@@ -433,5 +474,6 @@ __all__ = (
     "TASK_PROPOSAL_TAG",
     "WORKER",
     "WORKER_VERSION",
+    "WORKER_V2",
     "RoleTemplate",
 )

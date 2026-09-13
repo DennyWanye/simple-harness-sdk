@@ -53,7 +53,7 @@ def test_published_profiles_and_prompt_bytes_are_unchanged():
         for role, current in ROLES.items()
         for frozen in [
             TEMPLATE_VERSIONS[role][f"{role}-v2"]
-            if role in {"manager", "critic"} else current
+            if role in {"manager", "critic", "worker", "synthesizer"} else current
         ]
     }) == "933152b55f45fedd091514b55fad338e2316bcd05cd874c66ca048a15286a397"
 

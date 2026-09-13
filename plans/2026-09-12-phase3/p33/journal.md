@@ -777,3 +777,9 @@ g-completed-fragment-negatives-v1: receipt SHA256 `02f449b92c0f17f575b6280cc292a
 **最后更新：2026-09-13 13:23 CST — Critic冻结版本反馈修复与完整回归实际结果。** SDK33b25b5完整编排回归1814PASS/3FAIL/9真实Provider默认SKIP，pytest623.29秒/runner623.81秒；g-current-orchestrator-full-v8，源码干净。失败：P35 SIGKILL读实时WAL时readonly错误、step06双候选结束仍ACTIVE、step09禁止以当前默认prompt_version决策的结构检查。第三项已修：schema反馈能力绑定显式冻结critic-v3，旧/未知版本无反馈，不随将来默认变动；critic/policy/provenance15PASS8.39秒、ruff PASS，g-critic-frozen-policy-v1。前两项无audit2PASS6.14秒、带audit2PASS6.04秒，保留full失败并继续根因诊断，不凭重跑判定无缺陷。全量O4原始OPEN：1259DB/1394Mission/8090观察，206finding/938store errors，负向fixture及覆盖诊断正在逐项归因，不能称rawPASS。另独立原生全扫33DB/45Mission/78观察PASS零差异/零额外调用，0.781秒，Hostreplay-all-native-v4.json SHA2565d17f7df6d9b4903c4908d0e2b508bb3b9b1ccc6b07c09a8b0a05d9d37ce7b33。P33/P34/P35累计仍OPEN；不打包/P36/推送。
 
 首次full-v7命令漏载pytest插件，0.26秒usage错误，未执行测试；v8已显式`-p tests.orchestrator.p33_replay_audit`。失败记录保留，未修改测试断言求绿。
+
+### 2026-09-13 13:27 CST — prompt successors and fixed pair registration
+
+**最后更新：2026-09-13 13:27 CST — 角色按合同执行与及时提交。** 新code默认worker-v3/synthesizer-v3按当前Task合同和实际暴露工具执行，复用仍完整可见且未改变的文件，相关代码/数据/配置/环境不变才复用本Attempt已通过测试，完成outputs及必要验证后提交envelope。旧v2、五个variant-v1及doc派生保持字节；66个历史模板/9个domain canonical核对通过，既有doc6聚合显式选择旧worker/synth版本，原hash不变。新实际SDK请求/部署工具交集/综合错误产物仍被独立code_test拒绝4PASS3.84秒；兼容及policy回归83PASS1可选tokenizer未配置SKIP/12.91秒，g-prompt-efficiency-compat-v2；mypy117/ruff PASS。本次不改预算、工具权限、独立Critic或验收oracle，未做receipt精简。真实pairv4已证B无权限run_tests及4次同字节重读，S代码未改时重复测试；两者已写文件却未提交候选，按原预算正确拒绝。新指令是否改善真实行为尚待原固定FIRST/COMPARE下一组，不预先声明节省或P34完成。P33/P35全量中两项运行失败根因仍在核对；不打包/P36/推送。
+
+下一真实pair固定保留原2M/24总预算、A/B/C/S合同预算、种子材料、8K输出default/ceiling、32K输入、相同oracle，各臂只运行一次；仅新默认worker3/synth3及已经修复的critic冻结能力改变。旧失败不删除、不重抽到成功。

@@ -732,7 +732,7 @@ def _admission_identity(profile, counter, *, grants):
 
 
 def _search_runtime_config(directory):
-    """Bound output escalation to the Host ceiling within unchanged Task budgets."""
+    """Pin this P34 pair to 8K default/ceiling; leave Mission/Task budgets unchanged."""
     return OrchestratorConfig(
         evidence_root=directory, model=MODEL, max_concurrency=1,
         max_concurrent_model_calls=1, candidates_per_task=2,
