@@ -1409,7 +1409,7 @@ class Orchestrator:
         source_binding = self._active_source_binding(mission_id)
         domain = self.commit.domain_for(mission_id)
         workload = None
-        if domain.id == "doc-research-v1" and domain.version in {"6", "7", "8"}:
+        if domain.id == "doc-research-v1" and domain.version in {"6", "7", "8", "9"}:
             from ..context.source_workload import source_workload
 
             try:
@@ -2701,6 +2701,17 @@ class Orchestrator:
         raw.pop("id", None)
         raw.pop("result_id", None)
         raw.setdefault("mission_id", attempt.mission_id)
+        domain = self.commit.domain_for(attempt.mission_id)
+        if domain.id == "doc-research-v1" and domain.version == "9":
+            from ..verification.document_refs import expand_document_claim_refs
+
+            intent = self.store.get_intent_for_subject(attempt.id)
+            mission = self.store.get_mission(attempt.mission_id)
+            if (intent is None or mission is None or intent.kind != "attempt"
+                    or intent.mission_id != attempt.mission_id
+                    or intent.subject_id != attempt.id):
+                raise ContractError("document refs require the original Attempt intent")
+            raw = expand_document_claim_refs(raw, intent_config=intent.config, mission=mission)
         provisional = ResultEnvelope.from_json({**raw, "id": "result-provisional"})
         if provisional.attempt_id != attempt.id or provisional.task_id != attempt.task_id:
             raise ContractError(

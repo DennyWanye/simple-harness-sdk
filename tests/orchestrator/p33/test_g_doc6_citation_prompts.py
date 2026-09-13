@@ -58,7 +58,7 @@ def test_published_profiles_and_prompt_bytes_are_unchanged():
 @pytest.mark.parametrize("role", RESULT_ROLES)
 def test_result_roles_offer_real_statement_support_and_page_range(role):
     selected = template_for_domain(ROLES[role], domains.DOC_PROFILE, {})
-    assert selected.prompt_version == f"{role}-doc-research-v4"
+    assert selected.prompt_version == f"{role}-doc-research-v5"
     old = TEMPLATE_VERSIONS[role][f"{role}-doc-research-v2"]
     assert selected.instructions.startswith(old.instructions)
     assert selected.tool_names == old.tool_names
@@ -101,7 +101,7 @@ def test_doc6_planning_prefers_complete_goals_and_accounts_for_split_cost(role):
 
 def test_doc6_keeps_all_capabilities_and_changes_only_successor_role_bindings():
     old, new = domains.DOC_PROFILE_V5, domains.DOC_PROFILE_V6
-    assert new.version == "6" and domains.resolve_domain(domains.DOC_DOMAIN).version == "8"
+    assert new.version == "6" and domains.resolve_domain(domains.DOC_DOMAIN).version == "9"
     expected = old.to_json()
     expected["version"] = "6"
     expected["role_templates"].update({

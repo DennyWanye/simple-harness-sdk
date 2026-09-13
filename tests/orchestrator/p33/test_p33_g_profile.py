@@ -41,7 +41,7 @@ def test_g_successor_preserves_v3_and_v4_canonical_snapshots():
     frozen = json.loads(Path(__file__).with_name("doc-profile-v3.json").read_text())
     assert domains.DOC_PROFILE_V3.to_json() == frozen
     assert domains.DOC_PROFILE_V6.version == "6"
-    assert domains.DOC_PROFILE.version == "8"
+    assert domains.DOC_PROFILE.version == "9"
     assert domains.resolve_domain(domains.DOC_DOMAIN) == domains.DOC_PROFILE
     expected = {**frozen, "version": "4"}
     assert domains.DOC_PROFILE_V4.to_json() == expected
@@ -82,7 +82,8 @@ def test_g_successor_preserves_v3_and_v4_canonical_snapshots():
         ("6", True, True, True),
         ("7", True, True, True),
         ("8", True, True, True),
-        ("9", False, False, False),
+        ("9", True, True, True),
+        ("10", False, False, False),
     ],
 )
 def test_g_capability_boundary_is_explicit(version, assess, binding, critic_proof):
@@ -115,3 +116,11 @@ def test_g_capability_boundary_is_explicit(version, assess, binding, critic_proo
 def test_g_v3_v4_reject_same_malformed_completion_contract(version, change):
     with pytest.raises(ValueError):
         replace(getattr(domains, f"DOC_PROFILE_V{version}"), **change)
+
+
+def test_doc9_preserves_frozen_doc8_profile():
+    canonical = json.dumps(domains.DOC_PROFILE_V8.to_json(), sort_keys=True,
+                           separators=(",", ":"), ensure_ascii=False).encode()
+    assert hashlib.sha256(canonical).hexdigest() == (
+        "4a38110eeb434a7842201d4f7b6ebe0ab9c4957122bbedccefc272f9e908b76c"
+    )

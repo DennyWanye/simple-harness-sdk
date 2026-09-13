@@ -135,6 +135,40 @@ def register_document_templates() -> None:
     _register_document_submission_v3()
     _register_document_fragment_manager_v4()
     _register_document_scope_review()
+    _register_document_ordinal_refs()
+
+
+def _register_document_ordinal_refs() -> None:
+    from .role_templates import TEMPLATE_VERSIONS, register_template
+
+    refs = (
+        "\n当前文档版本支持严格的准则序号引用，优先使用它避免抄写长哈希："
+        "claim.criterion_refs:[1,2] 取 doc_assessment.criteria 的 ordinal；"
+        "claim.mission_criterion_refs:[1] 取 doc_assessment.mission_criteria 的 ordinal。"
+        "两个目录的序号各自独立，不可混用。序号必须是目录里实际存在的不重复正整数。"
+        "同一 claim 的 criterion_refs 与 criterion_ids 互斥，"
+        "mission_criterion_refs 与 mission_criterion_ids 互斥；不使用的一种字段不要写。"
+        "系统仅把明确序号还原为冻结的完整ID，不替你选择证据、不改变准则、不修补错误哈希。"
+        "保留所有必要关联与实际 citations；不要为缩短提交而省略必要条件。"
+    )
+    review = (
+        "\n写否定结论前先查来源开头的最新说明和历史更新段落，而不是只找支持自己的旧表格。"
+        "例如来源新段写‘新版构建成功但首次启动失败’，旧段写‘安装版尚未验证’："
+        "可分别报告这两项有时间与对象限定的记载；不可写‘来源没有任何构建或启动记录’。"
+        "该例仅解释核查方法，不是本任务来源，不能复制成报告事实。"
+        "没有足够依据排除全部反例时，停止提出全来源缺失结论；"
+        "改为精确引用来源中明确记载的缺口，并保留其他阶段的实际记录及不确定性。"
+    )
+    for role in (
+        "worker", "arbiter", "synthesizer", "explorer", "exploiter", "simplifier",
+        "connector", "failure_analyst",
+    ):
+        previous = TEMPLATE_VERSIONS[role][f"{role}-doc-research-v4"]
+        register_template(replace(previous, prompt_version=f"{role}-doc-research-v5",
+                                  instructions=previous.instructions + refs + review))
+    previous = TEMPLATE_VERSIONS["critic"]["critic-doc-research-v3"]
+    register_template(replace(previous, prompt_version="critic-doc-research-v4",
+                              instructions=previous.instructions + review))
 
 
 def _register_document_submission_v2() -> None:
