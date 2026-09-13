@@ -277,3 +277,14 @@ def test_failed_invocation_still_counts_toward_turn_model_limit(tmp_path):
     assert result.state is AgentTurnState.FAILED
     assert caps == [8192]
     assert records[0].usage_json["usage"]["total_tokens"] == 8292
+
+
+def test_non_length_tool_reason_survives_failed_turn_and_cold_read(tmp_path):
+    result, caps, records, _ = asyncio.run(exercise(tmp_path, reason="tool_calls"))
+    assert result.state is AgentTurnState.FAILED
+    assert caps == [8192]
+    assert result.error["detail"]["finish_reason"] == "tool_calls"
+    assert result.error["detail"]["parse_stage"] == "tool_parse"
+    assert result.error["detail"]["tool_parse_reason"] == "arguments_json"
+    assert records[0].usage_json["usage"]["total_tokens"] == 8292
+    assert records[0].rehandoff_count == 0

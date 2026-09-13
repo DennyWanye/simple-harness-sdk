@@ -1,5 +1,9 @@
 {
   "simple_harness.providers": [
+    "ProviderAccountingIdentity",
+    "ProviderAccountingObservation",
+    "ProviderAccountingPort",
+    "ProviderAccountingState",
     "CancelToken",
     "OpenAICompatibleProvider",
     "Provider",

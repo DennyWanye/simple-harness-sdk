@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-14 CST. Scope: source functionality and macOS native UI; packaging/installer deferred by the user. Current production Host18ff5d24 / SDK7f926b2, immutable native snapshot-v39. Later commits only record evidence/tests.
 
-**45 SOURCE PASS / 1 OPEN / 2 DEFERRED.** Of the46 currently requested source criteria,45 have evidence closure. The original48 remain the denominator when including the two deferred artifact criteria. This is not whole-Phase3 completion. The strict real P34 pair remains OPEN, with previous failures retained.
+**45 SOURCE PASS / 1 OPEN / 2 DEFERRED.** Of the46 currently requested source criteria,45 have evidence closure. The original48 remain the denominator when including the two deferred artifact criteria. This is not whole-Phase3 completion. The strict real P34 pair remains OPEN: v13 COMPARE PASS, FIRST delivery retained one physical tool-parse error. Pair157calls1543084tokens/880.20s; see ../p34/v13-real-pair-review.md. Diagnostics-only successor67PASS1.90s has not been substituted for v39 native evidence. Previous failures retained.
 
 SDK full run:2129PASS/22FAIL/13SKIP653.78s. All22 initial failures and the tiktoken module skip closed by affected86PASS30.80s in the dependency-complete environment, identical production source. Twelve explicit real Provider/embedding opt-ins are not PASS. Host307PASS248.67s; three wheel-RECORD checks deferred and one default real_provider marker deselected. Current native-v39 independently proves code/actual Critic evidence/pending human cold recovery. Native-v36 publication and v37 genuine old PLANNING recovery retain scoped evidence.
 

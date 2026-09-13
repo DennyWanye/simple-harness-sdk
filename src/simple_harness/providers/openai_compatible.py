@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
+from enum import StrEnum
 from typing import Any, cast
 from urllib.parse import urlsplit
 
@@ -67,10 +68,25 @@ _DIAGNOSTIC_FINISH_REASONS = frozenset(
 )
 
 
+class _ToolParseReason(StrEnum):
+    SHAPE = "shape"
+    TYPE = "type"
+    ID = "id"
+    FUNCTION = "function"
+    NAME = "name"
+    ARGUMENTS_JSON = "arguments_json"
+    ARGUMENTS_NON_OBJECT = "arguments_non_object"
+    NORMALIZATION = "normalization"
+
+
 class _ToolCallParseError(ProviderProtocolError):
     """Private marker for a rejected tool-call shape without retaining its payload."""
 
-    __slots__ = ()
+    __slots__ = ("reason",)
+
+    def __init__(self, reason: _ToolParseReason) -> None:
+        super().__init__()
+        self.reason = reason
 
 
 class _ProtocolErrorWithUsage(ProviderProtocolError):
@@ -98,6 +114,7 @@ class _ProtocolErrorWithUsage(ProviderProtocolError):
             self.detail["finish_reason"] = finish_reason
         if isinstance(cause, _ToolCallParseError):
             self.detail["parse_stage"] = "tool_parse"
+            self.detail["tool_parse_reason"] = cause.reason.value
 
 
 class OpenAICompatibleProvider:
@@ -386,34 +403,43 @@ class OpenAICompatibleProvider:
         if raw_calls is None:
             return ()
         if not isinstance(raw_calls, list):
-            raise _ToolCallParseError()
+            raise _ToolCallParseError(_ToolParseReason.SHAPE)
         parsed: list[ProviderToolCall] = []
         for raw_call in raw_calls:
-            if not isinstance(raw_call, Mapping) or raw_call.get("type") != "function":
-                raise _ToolCallParseError()
+            if not isinstance(raw_call, Mapping):
+                raise _ToolCallParseError(_ToolParseReason.SHAPE)
+            if raw_call.get("type") != "function":
+                raise _ToolCallParseError(_ToolParseReason.TYPE)
             raw_id = raw_call.get("id")
             function = raw_call.get("function")
-            if not isinstance(raw_id, str) or not raw_id or not isinstance(function, Mapping):
-                raise _ToolCallParseError()
+            if not isinstance(raw_id, str) or not raw_id:
+                raise _ToolCallParseError(_ToolParseReason.ID)
+            if not isinstance(function, Mapping):
+                raise _ToolCallParseError(_ToolParseReason.FUNCTION)
             name = function.get("name")
             arguments = function.get("arguments")
             if not isinstance(name, str) or not name:
-                raise _ToolCallParseError()
+                raise _ToolCallParseError(_ToolParseReason.NAME)
             if isinstance(arguments, str):
                 try:
                     arguments = json.loads(arguments)
                 except (TypeError, ValueError, json.JSONDecodeError):
-                    raise _ToolCallParseError() from None
+                    raise _ToolCallParseError(_ToolParseReason.ARGUMENTS_JSON) from None
             if not isinstance(arguments, Mapping):
-                raise _ToolCallParseError()
+                raise _ToolCallParseError(_ToolParseReason.ARGUMENTS_NON_OBJECT)
             try:
                 normalized = _plain_mapping(arguments)
                 validate_json_value(normalized)
-                parsed.append(
-                    ProviderToolCall(call_id=CallId(raw_id), name=name, arguments=normalized)
-                )
             except (TypeError, ValueError):
-                raise _ToolCallParseError() from None
+                raise _ToolCallParseError(_ToolParseReason.NORMALIZATION) from None
+            try:
+                call_id = CallId(raw_id)
+            except (TypeError, ValueError):
+                raise _ToolCallParseError(_ToolParseReason.ID) from None
+            try:
+                parsed.append(ProviderToolCall(call_id=call_id, name=name, arguments=normalized))
+            except (TypeError, ValueError):
+                raise _ToolCallParseError(_ToolParseReason.NAME) from None
         return tuple(parsed)
 
     @staticmethod
