@@ -30,7 +30,7 @@ from simple_harness.execution.provider_admission import (
 )
 from simple_harness.execution.provider_invocations import provider_request_fingerprint
 
-from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK
+from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK, TaskStatus
 from ..governance.budgets import BudgetError, BudgetExhausted
 from ..governance.provider_prices import ProviderPrice
 from .first_request_budget import (
@@ -79,6 +79,37 @@ class ProviderBudgetCommitAdapter:
         self.store = commit.store
         self.owner = owner
         self.fingerprint = fingerprint
+
+    def _accepted_fragment_manager(self, intent, task) -> bool:
+        # A verified fragment completes before Manager can reconnect consumers.
+        # This completed Task is evidence, not Manager's live service authority.
+        # Require the original projection and accepted Result, never just a label.
+        summary = intent.config.get("validated_fragment")
+        if (
+            intent.kind != "manager"
+            or task.status is not TaskStatus.COMPLETED
+            or not isinstance(summary, Mapping)
+            or summary.get("available") is not True
+            or summary.get("validation_task_id") != task.id
+            or not task.accepted_result_id
+            or summary.get("validation_result_id") != task.accepted_result_id
+            or intent.config.get("result_id") != task.accepted_result_id
+        ):
+            return False
+        result = self.store.get_result(task.accepted_result_id)
+        if (
+            result is None
+            or result.verdict != "PASS"
+            or result.verification_state != "DONE"
+            or result.envelope.attempt_id != intent.config.get("attempt_id")
+        ):
+            return False
+        return any(
+            receipt.get("validation_task_id") == task.id
+            and receipt.get("fragment_id") == summary.get("fragment_id")
+            and receipt.get("projection_receipt_id") == summary.get("projection_receipt_id")
+            for receipt in self.store.list_fragment_validations(intent.mission_id)
+        )
 
     def authority(self, *, agent_id: str, turn_id: str):
         rows = self.store.connection.execute(
@@ -129,7 +160,14 @@ class ProviderBudgetCommitAdapter:
                 task_id = parent_attempt.task_id
         if task_id:
             task = self.store.get_task(str(task_id))
-            if task is None or task.mission_id != mission.id or task.status in TERMINAL_TASK:
+            if (
+                task is None
+                or task.mission_id != mission.id
+                or (
+                    task.status in TERMINAL_TASK
+                    and not self._accepted_fragment_manager(intent, task)
+                )
+            ):
                 raise _deny("provider Task is terminal or differs from Mission")
         # Service intent leases govern pre-submit claiming, not an ongoing SDK
         # turn. SUBMITTED service authority additionally uses the SDK Run lease

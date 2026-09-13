@@ -14,8 +14,20 @@ from agent_orchestrator.contracts import AttemptStatus, Budget, MissionStatus, T
 from agent_orchestrator.orchestrator.commit_service import task_account
 from agent_orchestrator.orchestrator.event_handler import InjectedCrash, Orchestrator
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
+from agent_orchestrator.runtime.model_router import RuntimeProfile
+from agent_orchestrator.testing.fixtures import MODEL
 
 
+class Counter:
+    fingerprint = "fragment-fixture-count-v1"
+    bound_protocol = "fixture-text-only-v1"
+    requires_prior_output_reserve = True
+
+    def estimate_input_tokens(self, request):
+        return 1000
+
+
+@pytest.mark.parametrize("guarded", [False, True])
 @pytest.mark.parametrize(
     "case,crash_point",
     [
@@ -31,7 +43,7 @@ from agent_orchestrator.runtime.assembly import OrchestratorConfig
     ],
 )
 def test_accepted_fragment_retargets_blocked_consumer_and_synthesis_reads_new_result(
-    tmp_path, case, crash_point
+    tmp_path, case, crash_point, guarded
 ):
     reads: list[tuple[str, str]] = []
     manager_packages: list[dict] = []
@@ -341,6 +353,16 @@ def test_accepted_fragment_retargets_blocked_consumer_and_synthesis_reads_new_re
         max_manager_rounds=2,
         lease_seconds=0.3,
     )
+    runtime = (
+        {
+            "profiles": {"default": RuntimeProfile(
+                "default", provider, MODEL,
+                default_max_output_tokens=1000, max_output_tokens_ceiling=1000,
+            )},
+            "provider_token_estimator": Counter(),
+        }
+        if guarded else {}
+    )
 
     def assert_finished(orch, mission):
         assert len(manager_packages) == 2  # replay does not call Manager again
@@ -427,7 +449,7 @@ def test_accepted_fragment_retargets_blocked_consumer_and_synthesis_reads_new_re
         assert orch.store.get_mission(mission.id).status is not MissionStatus.COMPLETED
 
     async def exercise():
-        async with Orchestrator(config, provider, owner="crossbranch-first") as first:
+        async with Orchestrator(config, provider, owner="crossbranch-first", **runtime) as first:
             active_orch.append(first)
             mission = await first.submit_mission(
                 spec(
@@ -462,7 +484,9 @@ def test_accepted_fragment_retargets_blocked_consumer_and_synthesis_reads_new_re
                     assert_rejected(first, mission)
         if crash_point is not None:
             await asyncio.sleep(0.35)
-            async with Orchestrator(config, provider, owner="crossbranch-second") as second:
+            async with Orchestrator(
+                config, provider, owner="crossbranch-second", **runtime
+            ) as second:
                 await asyncio.wait_for(second.run(), 20)
                 assert_finished(second, mission)
 
