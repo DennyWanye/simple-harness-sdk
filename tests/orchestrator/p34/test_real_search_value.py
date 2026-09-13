@@ -43,7 +43,9 @@ No test/config is rewritten, skipped, xfailed, or given a canned analysis to pas
 The oracle requires A's nonzero baseline exit and a passing analysis run in actual
 Verifier evidence, preserving that failed result after reuse. Main reviews before
 any paid invocation; the original unguarded pair failed and remains archived.
-The corrected production-profile pair has not yet been executed.
+Original production-profile failures remain archived. SH_P34_BUDGET_PROFILE may
+select the separately approved docs480-s240-v3 experiment; the original-v2
+contract remains the default and its criteria/materials/oracle remain unchanged.
 """
 
 from __future__ import annotations
@@ -240,32 +242,50 @@ def selection_policy():
     }
 
 
-def mission_spec():
+def _experiment_budgets(budget_profile):
+    if budget_profile == "original-v2":
+        return DOCS_BUDGET, Budget(max_tokens=120_000, max_attempts=2)
+    if budget_profile == "docs480-s240-v3":
+        return Budget(max_tokens=480_000, max_attempts=3), Budget(
+            max_tokens=240_000, max_attempts=2,
+        )
+    raise ValueError("unknown P34 budget profile")
+
+
+def mission_spec(budget_profile="original-v2"):
+    docs_budget, synthesis_budget = _experiment_budgets(budget_profile)
+    goal = GOAL.replace(
+        "预算240000 tokens/3 attempts", f"预算{docs_budget.max_tokens} tokens/3 attempts",
+    )
     return MissionSpec(
-        goal=GOAL, success_criteria=CRITERIA, tenant_id="real-p34",
-        idempotency_key="real-search-value-v2", budget=MISSION_BUDGET,
+        goal=goal, success_criteria=CRITERIA, tenant_id="real-p34",
+        idempotency_key=("real-search-value-v2" if budget_profile == "original-v2"
+                         else "real-search-value-docs480-s240-v3"), budget=MISSION_BUDGET,
         workspace_seed=dict(MATERIALS), allowed_tools=tuple(RECORDER_SPEC["allowed_tools"]),
         synthesis={
             "goal": SYNTHESIS_GOAL, "success_criteria": list(CRITERIA),
             "verification_policy": ["format_check", "rule_check", "code_test", "critic_review"],
             "outputs": ["FINAL.md"],
-            "budget": {"max_tokens": 120_000, "max_attempts": 2},
+            "budget": {"max_tokens": synthesis_budget.max_tokens,
+                       "max_attempts": synthesis_budget.max_attempts},
         },
     )
 
 
-def native_ui_materials():
+def native_ui_materials(budget_profile="original-v2"):
     """Pure text/data export: no file writes, credential reads, or model calls."""
-    spec = mission_spec().to_json()
+    spec = mission_spec(budget_profile).to_json()
+    docs_budget, _ = _experiment_budgets(budget_profile)
     return {
-        "scenario": "p34-real-search-value-v2", "mission_spec": spec,
+        "scenario": ("p34-real-search-value-v2" if budget_profile == "original-v2"
+                     else "p34-real-search-value-docs480-s240-v3"), "mission_spec": spec,
         "contract_hash": sha256_hex(spec), "compare_policy": selection_policy(),
         "material_sha256": {
             path: hashlib.sha256(content.encode()).hexdigest()
             for path, content in MATERIALS.items()
         },
         "audit_goal": AUDIT_GOAL, "audit_criteria": list(AUDIT_CRITERIA),
-        "audit_budget": AUDIT_BUDGET.to_json(), "docs_budget": DOCS_BUDGET.to_json(),
+        "audit_budget": AUDIT_BUDGET.to_json(), "docs_budget": docs_budget.to_json(),
         "consumer_goal": CONSUMER_GOAL, "consumer_criteria": list(CONSUMER_CRITERIA),
         "consumer_budget": CONSUMER_BUDGET.to_json(),
         "shared_reservations": {
@@ -489,11 +509,13 @@ def _assert_failed_audit(store, result):
     _assert_pytest_summary(baseline["stdout"], {"failed": 1, "passed": 1})
 
 
-def _assert_value(orch, provider, mission_id, compare):
+def _assert_value(orch, provider, mission_id, compare, budget_profile="original-v2"):
     store = orch.store
     final = store.get_mission(mission_id)
     assert final.status is MissionStatus.COMPLETED, "Mission did not complete"
-    assert final.success_criteria == CRITERIA and final.goal == GOAL, "Mission contract drift"
+    assert final.success_criteria == CRITERIA and final.goal == mission_spec(
+        budget_profile,
+    ).goal, "Mission contract drift"
     budget = orch.commit.ledger.account(mission_account(mission_id))
     assert budget.limits == MISSION_BUDGET, "Mission budget was changed"
     assert 0 < budget.settled_tokens <= MISSION_BUDGET.max_tokens
@@ -535,7 +557,8 @@ def _assert_value(orch, provider, mission_id, compare):
                 failed_audits.append(result.envelope.id)
     assert failed_audits, "no verified failing baseline audit with valid analysis"
     b = [t for t in tasks if t.goal == "B：独立文档检查"]
-    assert len(b) == 1 and b[0].budget == DOCS_BUDGET
+    docs_budget, synthesis_budget = _experiment_budgets(budget_profile)
+    assert len(b) == 1 and b[0].budget == docs_budget
     assert tuple(b[0].success_criteria) == ("file:DOCS.md",)
     assert set(b[0].verification_policy) == {"format_check", "rule_check", "critic_review"}
     _assert_verified(store, b[0])
@@ -557,6 +580,7 @@ def _assert_value(orch, provider, mission_id, compare):
         assert tuple(package["task_contract"]["success_criteria"]) == CONSUMER_CRITERIA
     syntheses = [t for t in tasks if t.kind == "synthesis" and t.goal == SYNTHESIS_GOAL]
     assert len(syntheses) == 1, "actual final synthesis S missing"
+    assert syntheses[0].budget == synthesis_budget, "final synthesis budget drift"
     s = _assert_verified(store, syntheses[0])
     _assert_passing_tests(store, s, ("tests/test_recorder.py",))
     assert s.envelope.attempt_id != c.envelope.attempt_id
@@ -744,11 +768,13 @@ def _search_runtime_config(directory):
     )
 
 
-async def _arm(root, provider, *, compare, base_url, tokenizer_path):
+async def _arm(root, provider, *, compare, base_url, tokenizer_path,
+               budget_profile="original-v2"):
     mode = "COMPARE_THEN_SYNTHESIZE" if compare else "FIRST_VERIFIED"
     directory = root / mode
     config = _search_runtime_config(directory)
     report = {"mode": mode, "gate": "FAIL", "checks": {}, "error_type": None,
+              "budget_profile": budget_profile,
               "default_max_output_tokens": config.default_max_output_tokens,
               "max_output_tokens_ceiling": config.max_output_tokens_ceiling}
     start = time.monotonic()
@@ -765,13 +791,13 @@ async def _arm(root, provider, *, compare, base_url, tokenizer_path):
         # Both arms install the same fixture-approved active policy. Only the
         # explicit Mission search binding differs; default FIRST stays untouched.
         version = _approve_fixture_policy(orch)
-        spec = mission_spec()
+        spec = mission_spec(budget_profile)
         if compare:
             spec = replace(spec, search_policy_version_id=version)
         try:
             mission = await orch.submit_mission(spec)
             await asyncio.wait_for(orch.run(), WALL_SECONDS_PER_ARM)
-            report["checks"] = _assert_value(orch, provider, mission.id, compare)
+            report["checks"] = _assert_value(orch, provider, mission.id, compare, budget_profile)
             assert orch.store.connection.execute(
                 "SELECT COUNT(*) FROM provider_token_grants"
             ).fetchone()[0] > 0, "production provider admission recorded no grants"
@@ -803,7 +829,8 @@ async def _arm(root, provider, *, compare, base_url, tokenizer_path):
                 )
                 write_evidence(
                     directory=directory / "evidence", store=orch.store, commit=orch.commit,
-                    mission_id=mission.id, baseline={"materials": native_ui_materials(),
+                    mission_id=mission.id, baseline={
+                        "materials": native_ui_materials(budget_profile),
                         "spec": spec.to_json(), "config": config.to_json()},
                     workspaces_root=config.workspaces_root, test_report=report,
                 )
@@ -815,6 +842,8 @@ async def _arm(root, provider, *, compare, base_url, tokenizer_path):
 def test_real_first_vs_approved_compare_search_value():
     # pytest's existing --run-real-provider marker gates collection. No fallback
     # to Host .env: main must explicitly inject the existing SH_* environment.
+    budget_profile = os.environ.get("SH_P34_BUDGET_PROFILE", "original-v2")
+    materials = native_ui_materials(budget_profile)  # validate before credentials or calls
     assert os.environ.get("SH_MODEL") == MODEL, "set SH_MODEL=deepseek-flash explicitly"
     assert os.environ.get("SH_BASEURL") and os.environ.get("SH_APIKEY"), (
         "missing SH_* provider configuration"
@@ -831,7 +860,7 @@ def test_real_first_vs_approved_compare_search_value():
         "p34-real-search-value-" + uuid4().hex
     )
     root.mkdir(parents=True, exist_ok=False)
-    _dump(root / "native-ui-materials.json", native_ui_materials())
+    _dump(root / "native-ui-materials.json", materials)
 
     async def paired():
         reports = []
@@ -845,6 +874,7 @@ def test_real_first_vs_approved_compare_search_value():
                     report = await _arm(
                         root, _ObservedProvider(actual), compare=compare,
                         base_url=real.base_url, tokenizer_path=os.environ["SH_TOKENIZER_PATH"],
+                        budget_profile=budget_profile,
                     )
             except Exception as error:
                 # Startup/export/cleanup errors also cannot erase a failed arm or
@@ -862,7 +892,8 @@ def test_real_first_vs_approved_compare_search_value():
     admission = [r["runtime_admission"] for r in reports]
     # Do not infer superiority from node count or a successful mechanism trace.
     summary = {
-        "arms": reports, "same_contract_hash": native_ui_materials()["contract_hash"],
+        "arms": reports, "same_contract_hash": materials["contract_hash"],
+        "budget_profile": budget_profile,
         "model_quality_benefit": "NOT_PROVEN: one pair is not a superiority evaluation",
         "token_delta_compare_minus_first": (
             reports[1]["reported_tokens"] - reports[0]["reported_tokens"]
