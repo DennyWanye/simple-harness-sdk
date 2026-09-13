@@ -82,7 +82,8 @@ class Load:
         return Provider()
 
 
-def test_global_two_and_profile_one_limits_compose_across_real_runtime_pools(tmp_path):
+@pytest.mark.parametrize("per_pool", [False, True])
+def test_global_two_and_profile_one_limits_compose_across_real_runtime_pools(tmp_path, per_pool):
     async def exercise():
         load = Load()
         profiles = {
@@ -105,7 +106,8 @@ def test_global_two_and_profile_one_limits_compose_across_real_runtime_pools(tmp
             config,
             profiles=profiles,
             routing=RoutingRules("workers", by_role={"critic": "critics"}),
-            provider_token_estimator=Counter(1000),
+            **({"provider_token_estimators": {key: Counter(1000) for key in profiles}}
+               if per_pool else {"provider_token_estimator": Counter(1000)}),
             poll_interval=0.002,
         ) as orch:
             missions = {}
@@ -145,7 +147,7 @@ def test_global_two_and_profile_one_limits_compose_across_real_runtime_pools(tmp
                         for i in orch.store.list_intents("SUBMITTED")
                         if i.mission_id == mission.id
                         and i.kind == "attempt"
-                        and orch._provider_admission.waiting_for_slot(
+                        and orch._admission_for(orch.profile_of(i)).waiting_for_slot(
                             agent_id=i.agent_id, turn_id=i.expected_turn_id
                         )
                     ),

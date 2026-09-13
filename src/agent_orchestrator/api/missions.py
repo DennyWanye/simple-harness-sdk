@@ -47,6 +47,10 @@ def validate_spec(spec: MissionSpec, *, available_tools: Sequence[str] = TOOL_NA
         raise MissionRequestError(
             f"unknown domain profile {spec.domain!r} (this deployment offers {sorted(DOMAINS)})"
         )
+    if spec.runtime_profile_id is not None and (
+        not isinstance(spec.runtime_profile_id, str) or not spec.runtime_profile_id.strip()
+    ):
+        raise MissionRequestError("runtime_profile_id must be a nonempty profile reference")
 
 
 def spec_from_request(
@@ -80,6 +84,11 @@ def spec_from_request(
         not isinstance(search_policy, str) or not search_policy.strip()
     ):
         raise MissionRequestError("search_policy_version_id must be a nonempty registry reference")
+    runtime_profile = request.get("runtime_profile_id")
+    if runtime_profile is not None and (
+        not isinstance(runtime_profile, str) or not runtime_profile.strip()
+    ):
+        raise MissionRequestError("runtime_profile_id must be a nonempty profile reference")
     synthesis = request.get("synthesis")
     if synthesis is not None and not isinstance(synthesis, Mapping):
         raise MissionRequestError("synthesis must be an object (a fixed synthesis Task template)")
@@ -102,6 +111,7 @@ def spec_from_request(
             conflict_reserve_tokens=reserve,
             domain=str(request.get("domain", CODE_DOMAIN)),
             search_policy_version_id=search_policy,
+            runtime_profile_id=runtime_profile,
         )
     except (ContractError, TypeError, ValueError) as error:
         raise MissionRequestError(str(error)) from error

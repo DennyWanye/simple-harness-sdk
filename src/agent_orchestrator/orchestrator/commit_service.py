@@ -165,6 +165,7 @@ class MissionSpec:
     conflict_reserve_tokens: int = 0  # step 4 (D4-20): tokens set aside for Conflict Tasks
     domain: str = CODE_DOMAIN  # P3.3 (D1): the domain profile this Mission freezes
     search_policy_version_id: str | None = None
+    runtime_profile_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -191,6 +192,8 @@ class MissionSpec:
             # A07: the default must not change ``spec_hash`` — a Host that re-sends the same
             # request after upgrading would otherwise get a MissionConflict
             data["domain"] = self.domain
+        if self.runtime_profile_id is not None:
+            data["runtime_profile_id"] = self.runtime_profile_id
         return data
 
 
@@ -283,9 +286,13 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         candidates_for: Callable[[str], int] | None = None,
         artifact_store: ArtifactStore | None = None,
         system_tail_factory: Callable[..., Any] | None = None,
+        mission_profile_validator: Callable[[str, Mapping[str, Any]], None] | None = None,
+        task_floor_for: Callable[[str], TaskBudgetFloor] | None = None,
     ) -> None:
         self._store = store
         self._system_tail_factory = system_tail_factory
+        self._mission_profile_validator = mission_profile_validator
+        self._task_floor_for = task_floor_for
         self._source_artifact_store = artifact_store
         if self._source_artifact_store is None and str(store.path) != ":memory:":
             self._source_artifact_store = ArtifactStore(store.path.parent / "artifacts")
@@ -311,6 +318,9 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         if self._candidates_for is None:
             return 1
         return max(1, int(self._candidates_for(mission_id)))
+
+    def _floor_for_mission(self, mission_id: str) -> TaskBudgetFloor | None:
+        return self._task_floor if self._task_floor_for is None else self._task_floor_for(mission_id)
 
     # ----------------------------------------------------------- backpressure
     def backpressure_state(self) -> BackpressureState:
@@ -591,6 +601,10 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
     ) -> tuple[Mission, bool]:
         """Idempotent on (tenant_id, idempotency_key); a different spec is a conflict."""
 
+        if spec.runtime_profile_id is not None and (
+            not isinstance(spec.runtime_profile_id, str) or not spec.runtime_profile_id.strip()
+        ):
+            raise CommitRejected("runtime_profile_id must be a nonempty profile reference")
         spec_hash = sha256_hex(spec.to_json())
         try:  # P3.3 (D1): an unknown domain is refused before anything is written
             domain = resolve_domain(spec.domain)
@@ -632,6 +646,9 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     "untrusted_sources": list(spec.untrusted_sources),
                     "conflict_reserve_tokens": int(spec.conflict_reserve_tokens),
                     "conflict_reserve_remaining": int(spec.conflict_reserve_tokens),
+                    **({} if spec.runtime_profile_id is None else {
+                        "runtime_profile_id": spec.runtime_profile_id,
+                    }),
                     **({} if spec.synthesis is None else {"synthesis": dict(spec.synthesis)}),
                 },
             )
@@ -665,6 +682,16 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 default_params=policy_defaults,
                 pin=policy_pin,
             )
+            if spec.runtime_profile_id is not None:
+                if self._mission_profile_validator is None:
+                    raise CommitRejected("runtime profile selection requires an Orchestrator binding")
+                version = self._store.get_policy_version(str(binding["version_id"]))
+                if version is None:
+                    raise CommitRejected("bound policy version is unavailable")
+                self._mission_profile_validator(
+                    spec.runtime_profile_id,
+                    dict(version.get("params") or policy_defaults or {}),
+                )
             if spec.search_policy_version_id is not None:
                 self.bind_search_policy(mission_id, spec.search_policy_version_id)
             self._store.bind_mission_domain(
@@ -1013,7 +1040,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 mission,
                 proposal,
                 deployed_layers=self._deployed_layers,
-                task_floor=self._task_floor,
+                task_floor=self._floor_for_mission(mission_id),
                 candidates=self._candidates(mission.id),
                 domain=self.domain_for(mission.id),
             )
@@ -1266,7 +1293,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 proposals_by_attempt=proposals_by_attempt,
                 committed_tokens_by_task=committed,
                 deployed_layers=self._deployed_layers,
-                task_floor=self._task_floor,
+                task_floor=self._floor_for_mission(mission.id),
                 candidates=self._candidates(mission.id),
                 domain=self.domain_for(mission.id),
             )

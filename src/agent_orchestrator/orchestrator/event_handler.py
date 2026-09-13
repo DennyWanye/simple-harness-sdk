@@ -267,6 +267,7 @@ class Orchestrator:
         provider_kind: str | None = None,
         policy_pin: Mapping[str, Any] | None = None,
         provider_token_estimator=None,
+        provider_token_estimators: Mapping[str, Any] | None = None,
     ) -> None:
         # D3-10': ``owner`` is this instance's identity for orchestration leases *and* for
         # the SDK runtime (``owner_id``); the SDK ``owner_scope`` is one constant for all.
@@ -275,6 +276,8 @@ class Orchestrator:
         self._provider = provider
         self._provider_token_estimator = provider_token_estimator
         self._provider_admission: ProviderBudgetGuard | None = None
+        self._provider_token_estimators = provider_token_estimators
+        self._provider_admissions: dict[str, ProviderBudgetGuard] | None = None
         # D6-4' / D6-5': one provider == the single ``default`` profile (every earlier
         # step's path); several profiles == several execution pools routed by rules
         if profiles is None:
@@ -286,6 +289,12 @@ class Orchestrator:
                 )
             }
         self._profiles: dict[str, RuntimeProfile] = dict(profiles)
+        if provider_token_estimators is not None and (
+            provider_token_estimator is not None
+            or set(provider_token_estimators) != set(self._profiles)
+            or any(value is None for value in provider_token_estimators.values())
+        ):
+            raise ValueError("per-pool token estimators must explicitly cover every profile")
         default_profile = (
             routing.default
             if routing is not None
@@ -341,7 +350,7 @@ class Orchestrator:
         )
         self._policy_pin = None if policy_pin is None else dict(policy_pin)
         self._policies: dict[str, dict[str, Any]] = {}
-        self._routers: dict[str, ModelRouter] = {}
+        self._routers: dict[tuple[str, str | None], ModelRouter] = {}
         self._route_drops: dict[str, dict[str, str]] = {}
         self._route_noted: set[str] = set()
 
@@ -358,6 +367,8 @@ class Orchestrator:
                 task_floor=self._task_floor,
                 candidates_for=self._candidates_for,
                 system_tail_factory=self._mission_system_tail_plan,
+                mission_profile_validator=self._validate_mission_profile,
+                task_floor_for=self._task_floor_for_mission,
             )
             if self._provider_token_estimator is not None:
                 from ..runtime.provider_budget_guard import ProviderBudgetGuard
@@ -376,10 +387,27 @@ class Orchestrator:
                                         if profile.price_table is not None else None)
                                   for key, profile in self._profiles.items()},
                 )
+            if self._provider_token_estimators is not None:
+                from ..runtime.provider_budget_guard import ProviderBudgetGuard
+
+                slots = ({key: min(profile.max_concurrent_model_calls or self._config.max_concurrent_model_calls,
+                                   self._config.max_concurrent_model_calls)
+                          for key, profile in self._profiles.items()}
+                         if any(p.max_concurrent_model_calls is not None for p in self._profiles.values()) else None)
+                self._provider_admissions = {
+                    key: ProviderBudgetGuard(
+                        self._commit, owner=self._owner, estimator=self._provider_token_estimators[key],
+                        max_slots=self._config.max_concurrent_model_calls, profile_slots=slots,
+                        price_tables={key: (profile.price_table.estimator()
+                                            if profile.price_table is not None else None)},
+                    ) for key, profile in self._profiles.items()
+                }
+                self._provider_admission = self._provider_admissions[self._default_profile]
             self._open_policy_library()  # step 9 (plan D9-3'): role, seed, drift
             self._assembled = assemble_orchestrator_runtime(
                 self._config, profiles=self._profiles, default_profile=self._default_profile,
-                provider_admission=self._provider_admission,
+                provider_admission=(self._provider_admission if self._provider_admissions is None else None),
+                provider_admissions=self._provider_admissions,
                 provider_handoff_fence=self._provider_handoff_fence,
             )
             # SDK startup itself reconciles grants. Consume already durable late
@@ -523,6 +551,31 @@ class Orchestrator:
             base = max(outputs)
         return TaskBudgetFloor(base=int(base), critic=int(self._config.critic_reserve_tokens))
 
+    def _selected_profile(self, mission_id: str) -> str | None:
+        mission = self.store.get_mission(mission_id)
+        if mission is None:
+            return None
+        selected = (mission.final_report or {}).get("runtime_profile_id")
+        return selected if isinstance(selected, str) and selected else None
+
+    def _task_floor_for_mission(self, mission_id: str) -> TaskBudgetFloor:
+        selected = self._selected_profile(mission_id)
+        if selected is None:
+            return self._task_floor
+        profile = self._profiles.get(selected)
+        if profile is None:
+            raise ContractError(f"Mission runtime profile {selected!r} is not configured")
+        policy = profile.context_policy
+        if policy is None:
+            return self._task_floor
+        first_tokens = policy.input_budget() + actual_output_ceiling(
+            profile_default_max_output_tokens=profile.default_max_output_tokens,
+            profile_max_output_tokens_ceiling=profile.max_output_tokens_ceiling,
+            config_default_max_output_tokens=self._config.default_max_output_tokens,
+            config_max_output_tokens_ceiling=self._config.max_output_tokens_ceiling,
+        )
+        return TaskBudgetFloor(base=first_tokens, critic=first_tokens)
+
     def _candidates_for(self, mission_id: str) -> int:
         """Candidates per Task from the policy ``mission_id`` is bound to (plan review P1-2)."""
 
@@ -533,9 +586,10 @@ class Orchestrator:
         """What the Planner / Manager is told a Task must at least hold."""
 
         candidates = self._candidates_for(mission_id)
+        floor = self._task_floor_for_mission(mission_id)
         return {
-            "min_task_tokens": self._task_floor.floor_for((), candidates),
-            "min_task_tokens_with_critic_review": self._task_floor.floor_for(
+            "min_task_tokens": floor.floor_for((), candidates),
+            "min_task_tokens_with_critic_review": floor.floor_for(
                 ("critic_review",), candidates
             ),
         }
@@ -559,6 +613,31 @@ class Orchestrator:
             self._policies[version_id] = cached
         return cached
 
+    def _validate_mission_profile(self, selected: str, params: Mapping[str, Any]) -> None:
+        """Creation-transaction guard: a selected pool cannot mask a policy route."""
+        from ..api.missions import MissionRequestError
+
+        if selected not in self._profiles:
+            raise MissionRequestError(f"runtime profile {selected!r} is not configured")
+        base = self._model_router.rules
+        policy_routing = dict(params.get("routing") or {})
+        routes = {
+            **{f"role:{key}": value for key, value in base.by_role.items()},
+            **{f"task_kind:{key}": value for key, value in base.by_task_kind.items()},
+            **{f"task_kind:{key}": value for key, value in
+               dict(policy_routing.get("by_task_kind") or {}).items()},
+        }
+        conflict = next((name for name, target in routes.items() if target != selected), None)
+        if conflict is not None:
+            raise MissionRequestError(
+                f"runtime profile {selected!r} conflicts with policy route {conflict}"
+            )
+        for name, overrides in (("escalate", base.escalate), ("fallback", base.fallback)):
+            if selected in overrides and overrides[selected] != selected:
+                raise MissionRequestError(
+                    f"runtime profile {selected!r} conflicts with {name} route"
+                )
+
     def _template(self, template: Any, mission_id: str) -> Any:
         return template_for_domain(
             template,
@@ -572,9 +651,24 @@ class Orchestrator:
         to the deployment's rule, on record (plan D9-4')."""
 
         version_id = self.policy_version_of(mission_id) or ""
-        router = self._routers.get(version_id)
+        selected = self._selected_profile(mission_id)
+        cache_key = (version_id, selected)
+        router = self._routers.get(cache_key)
         if router is not None:
-            self._note_route_drops(mission_id, version_id)
+            if selected is None:
+                self._note_route_drops(mission_id, version_id)
+            return router
+        if selected is not None:
+            # All roles, including Planner/Critic/system tasks, use the Mission's
+            # persisted choice. No fallback or escalation may leave that pool.
+            from ..api.missions import MissionRequestError
+
+            try:
+                self._validate_mission_profile(selected, self.policy_for(mission_id))
+            except MissionRequestError as error:
+                raise ContractError(f"bound Mission runtime route unavailable: {error}") from error
+            router = ModelRouter(self._profiles, RoutingRules(default=selected))
+            self._routers[cache_key] = router
             return router
         routing = dict(self.policy_for(mission_id).get("routing") or {})
         base = self._model_router.rules
@@ -595,7 +689,7 @@ class Orchestrator:
             ),
         )
         router = ModelRouter(self._profiles, rules)
-        self._routers[version_id] = router
+        self._routers[cache_key] = router
         return router
 
     def _note_route_drops(self, mission_id: str, version_id: str) -> None:
@@ -838,6 +932,11 @@ class Orchestrator:
             now=self.store.now,
         )
 
+    def _admission_for(self, profile_id: str) -> ProviderBudgetGuard | None:
+        if self._provider_admissions is not None:
+            return self._provider_admissions[profile_id]
+        return self._provider_admission
+
     def _service_config(self, decision: RoutingDecision) -> dict[str, Any]:
         config: dict[str, Any] = {
             "runtime_profile_id": decision.profile_id,
@@ -847,14 +946,14 @@ class Orchestrator:
         snapshot = self._profiles[decision.profile_id].context_snapshot()
         if snapshot is not None:
             config["runtime_context"] = snapshot
-        admission = getattr(self, "_provider_admission", None)
+        admission = self._admission_for(decision.profile_id)
         if admission is not None:
             config["provider_admission_fingerprint"] = admission.fingerprint
         return config
 
     def _first_critic_budget(self, decision: RoutingDecision) -> FirstRequestBudget | FirstRequestBudgetUnknown:
         profile = self._profiles[decision.profile_id]
-        guard = self._provider_admission
+        guard = self._admission_for(decision.profile_id)
         cap = frozen_provider_input_cap(
             profile_id=decision.profile_id, model=decision.model,
             runtime_context=profile.context_snapshot(),
@@ -876,7 +975,7 @@ class Orchestrator:
         profile = self.assembled.pool(profile_id).profile
         if config.get("runtime_context") != profile.context_snapshot():
             raise ContractError("context identity differs from the frozen dispatch intent")
-        admission = getattr(self, "_provider_admission", None)
+        admission = self._admission_for(profile_id)
         if config.get("provider_admission_fingerprint") != (
             None if admission is None else admission.fingerprint
         ):
@@ -1027,6 +1126,15 @@ class Orchestrator:
         )
 
     def _check_mission_door(self, spec: MissionSpec) -> None:
+        if spec.runtime_profile_id is not None:
+            from ..api.missions import MissionRequestError
+
+            if (not isinstance(spec.runtime_profile_id, str)
+                    or not spec.runtime_profile_id.strip()
+                    or spec.runtime_profile_id not in self._profiles):
+                raise MissionRequestError(
+                    f"runtime profile {spec.runtime_profile_id!r} is not configured"
+                )
         self._check_action_criteria(spec.success_criteria)
         self._check_source_publish_roots(spec)
         if not self._config.deployment_policy.local_code_execution:
@@ -4647,7 +4755,9 @@ class Orchestrator:
             # settling; elapsed time and a new owner are not evidence of zero cost.
             if self._provider_admission is not None:
                 for pool in self.assembled.pools.values():
-                    self._provider_admission.recover(pool.bridge.runtime.uow)
+                    guard = self._admission_for(pool.profile.profile_id)
+                    if guard is not None:
+                        guard.recover(pool.bridge.runtime.uow)
             self._reimport_unsettled(mission)
             resumed = any(self.commit.resume_admission_usage(t.id) for t in tasks
                           if t.paused and t.pause_reason == "provider_admission:usage_unresolved")

@@ -375,6 +375,7 @@ def _read_context_identity(database: Path) -> dict[str, Any] | None:
 def resolve_profile_context_policy(
     config: OrchestratorConfig, *, profile_id: str = DEFAULT_PROFILE,
     tokenizer: TokenizerPort | None = None,
+    fresh_policy: ContextPolicy | None = None,
 ) -> ContextPolicy | None:
     """Read-only Host choice: old pools stay legacy, fresh pools enable bounded reads.
 
@@ -396,7 +397,7 @@ def resolve_profile_context_policy(
             raise ValueError("context identity has an invalid policy") from error
     if database.exists():
         return None
-    return ContextPolicy(max_tool_result_tokens=16384, render_slack_tokens=0)
+    return fresh_policy or ContextPolicy(max_tool_result_tokens=16384, render_slack_tokens=0)
 
 
 def _bind_context_identity(database: Path, profile: RuntimeProfile) -> None:
@@ -484,6 +485,7 @@ def assemble_orchestrator_runtime(
     profiles: Mapping[str, RuntimeProfile] | None = None,
     default_profile: str | None = None,
     provider_admission: Any = None,
+    provider_admissions: Mapping[str, Any] | None = None,
     provider_handoff_fence: ProviderHandoffFence | None = None,
 ) -> AssembledOrchestratorRuntime:
     """One pool per runtime profile (D6-5').  ``provider`` alone is the single-profile
@@ -517,11 +519,16 @@ def assemble_orchestrator_runtime(
         executor=executor,
     )
     pools: dict[str, RuntimePool] = {}
+    if provider_admissions is not None and (
+        provider_admission is not None or set(provider_admissions) != set(profiles)
+    ):
+        raise ValueError("per-pool admissions must cover exactly the configured profiles")
     for profile_id, profile in profiles.items():
         if profile_id != profile.profile_id:
             raise ValueError(f"profile key {profile_id!r} != profile_id {profile.profile_id!r}")
         database = execution_db_for(config, profile_id)
-        _check_intent_contexts(config, profile, provider_admission)
+        admission = provider_admission if provider_admissions is None else provider_admissions[profile_id]
+        _check_intent_contexts(config, profile, admission)
         _bind_context_identity(database, profile)
         default_out = profile.default_max_output_tokens or config.default_max_output_tokens
         ceiling = profile.max_output_tokens_ceiling or config.max_output_tokens_ceiling
@@ -546,7 +553,7 @@ def assemble_orchestrator_runtime(
                 profile.max_concurrent_model_calls or config.max_concurrent_model_calls,
             ),
             max_concurrent_tool_calls=config.max_concurrency,
-            **({"provider_admission": provider_admission} if provider_admission is not None else {}),
+            **({"provider_admission": admission} if admission is not None else {}),
             provider_handoff_fence=provider_handoff_fence,
         )
         runtime = build_agent_runtime(ports, owner_scope=OWNER_SCOPE)
