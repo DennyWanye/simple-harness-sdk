@@ -4048,10 +4048,8 @@ class Orchestrator:
                         domain=self.commit.domain_for(mission.id),
                         source_versions=source_binding.get("source_versions"),
                         mission_source_catalog=source_binding.get("mission_source_catalog"),
-                        feedback=(
-                            critic_schema_retry_feedback(last_error)
-                            if template.prompt_version == CRITIC.prompt_version
-                            else ()
+                        feedback=critic_schema_retry_feedback(
+                            last_error, prompt_version=template.prompt_version
                         ),
                     )
                 except ContextRejected as error:

@@ -60,6 +60,10 @@ def test_critic_v2_bytes_and_strict_mission_schema_remain_frozen():
             expected_criteria=MISSION_CRITERIA,
         )
     assert list(critic_schema_retry_feedback(rejected.value)) == SCHEMA_FEEDBACK
+    for frozen_version in ("critic-v2", "doc-critic-v9", "critic-future"):
+        assert critic_schema_retry_feedback(
+            rejected.value, prompt_version=frozen_version
+        ) == ()
     assert critic_schema_retry_feedback(ContractError("unrelated runtime error")) == ()
     assert parse_critic_verdict(
         _verdict(list(MISSION_CRITERIA)), expected_criteria=MISSION_CRITERIA

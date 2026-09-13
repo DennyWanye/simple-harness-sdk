@@ -771,3 +771,9 @@ g-completed-fragment-negatives-v1: receipt SHA256 `02f449b92c0f17f575b6280cc292a
 - g-system-growth-budget-integration-v2: receipt SHA256 `38cf3cd0156fd595bbf833cb4fc1944d59f4c9755cd104cda44110c043d6bf0a`
 - g-critic-feedback-regression-v2: receipt SHA256 `f1027907d3ad9635b3a172b9e046431883e3e6614c6d7c35a3764dd9b10e561e`
 - g-critic-feedback-regression-v3: receipt SHA256 `6b8e35a9e0a21bb13161d5fa9db00f5b92031705f303b1e90dd70bc9bde9d59a`
+
+### 2026-09-13 13:23 CST — full-v8 and frozen Critic policy
+
+**最后更新：2026-09-13 13:23 CST — Critic冻结版本反馈修复与完整回归实际结果。** SDK33b25b5完整编排回归1814PASS/3FAIL/9真实Provider默认SKIP，pytest623.29秒/runner623.81秒；g-current-orchestrator-full-v8，源码干净。失败：P35 SIGKILL读实时WAL时readonly错误、step06双候选结束仍ACTIVE、step09禁止以当前默认prompt_version决策的结构检查。第三项已修：schema反馈能力绑定显式冻结critic-v3，旧/未知版本无反馈，不随将来默认变动；critic/policy/provenance15PASS8.39秒、ruff PASS，g-critic-frozen-policy-v1。前两项无audit2PASS6.14秒、带audit2PASS6.04秒，保留full失败并继续根因诊断，不凭重跑判定无缺陷。全量O4原始OPEN：1259DB/1394Mission/8090观察，206finding/938store errors，负向fixture及覆盖诊断正在逐项归因，不能称rawPASS。另独立原生全扫33DB/45Mission/78观察PASS零差异/零额外调用，0.781秒，Hostreplay-all-native-v4.json SHA2565d17f7df6d9b4903c4908d0e2b508bb3b9b1ccc6b07c09a8b0a05d9d37ce7b33。P33/P34/P35累计仍OPEN；不打包/P36/推送。
+
+首次full-v7命令漏载pytest插件，0.26秒usage错误，未执行测试；v8已显式`-p tests.orchestrator.p33_replay_audit`。失败记录保留，未修改测试断言求绿。

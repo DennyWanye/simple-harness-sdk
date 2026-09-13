@@ -95,9 +95,15 @@ def parse_critic_verdict(text: str, *, expected_criteria: Sequence[str]) -> Crit
     )
 
 
-def critic_schema_retry_feedback(error: ContractError | None) -> tuple[dict[str, str], ...]:
-    """Only an allowlisted parser error enters a new Critic's feedback."""
-    if error is None or str(error) != _MISSION_CRITERIA_MISMATCH:
+def critic_schema_retry_feedback(
+    error: ContractError | None, *, prompt_version: str = "critic-v3"
+) -> tuple[dict[str, str], ...]:
+    """Feedback is a frozen-version capability, independent of the current default."""
+    if (
+        prompt_version != "critic-v3"
+        or error is None
+        or str(error) != _MISSION_CRITERIA_MISMATCH
+    ):
         return ()
     return ({
         "reason_code": "mission_criteria_mismatch",
