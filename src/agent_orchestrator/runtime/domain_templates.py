@@ -134,6 +134,7 @@ def register_document_templates() -> None:
     _register_document_submission_v2()
     _register_document_submission_v3()
     _register_document_fragment_manager_v4()
+    _register_document_scope_review()
 
 
 def _register_document_submission_v2() -> None:
@@ -330,3 +331,42 @@ def _register_document_fragment_manager_v4() -> None:
         ),
     )
     register_template(replace(manager, instructions=manager.instructions + guidance))
+
+
+def _register_document_scope_review() -> None:
+    """Publish successor guidance after a real full-source negative-claim miss.
+
+    This improves instructions, not the authority of a model verdict. Old prompts
+    and all citation/independent-review gates remain intact.
+    """
+    from .role_templates import TEMPLATE_VERSIONS, register_template
+
+    scope = (
+        "\n来源范围与历史记录核对：不能从几段引文没有提到某事实，推导整份或全部来源都没有该记录。"
+        "‘没有记录’‘从未验证’‘只有某标签’等排他或全称结论，必须检查其声称覆盖的完整来源；"
+        "若未完整检查，只能限定为已查阅范围内尚未找到，不能把检索遗漏写成资料缺口。"
+        "同一来源可能同时保留最新说明和旧阶段结论，必须区分时间、对象和验证层级；"
+        "构建成功、首次启动失败、安装完成、功能验收通过是不同事实，不能互相替代或被一条旧状态抹去。"
+        "分析与 limitations 也须对照反例，标为分析并不豁免来源一致性；"
+        "无法消解的新旧记录应明确并列其原文范围与局限。"
+    )
+    for role in (
+        "worker", "arbiter", "synthesizer", "explorer", "exploiter", "simplifier",
+        "connector", "failure_analyst",
+    ):
+        previous = TEMPLATE_VERSIONS[role][f"{role}-doc-research-v3"]
+        register_template(replace(
+            previous, prompt_version=f"{role}-doc-research-v4",
+            instructions=previous.instructions + scope,
+        ))
+    previous = TEMPLATE_VERSIONS["critic"]["critic-doc-research-v2"]
+    register_template(replace(
+        previous, prompt_version="critic-doc-research-v3",
+        instructions=previous.instructions + scope + (
+            "\n独立审阅须核对报告的分析、缺口和下一步依据，不只核对逐字引文。"
+            "按 next_offset/expected_sha256 续读声称覆盖的来源，主动寻找与报告结论相反的记录。"
+            "若报告的核心比较或缺口结论与已登记来源中的实际记录冲突，或把局部引文外推为全来源缺失，"
+            "这是影响 Task 目标的 blocker，应给 FAIL 并定位报告段落和来源反例；"
+            "不能因为引用本身有效、文件存在或措辞是‘分析’而给 PASS。"
+        ),
+    ))

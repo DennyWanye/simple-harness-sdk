@@ -108,17 +108,17 @@ class ConflictTemplateV1:
 
 def supports_document_assessments(domain: DomainProfileV1) -> bool:
     """Only registered successors share the assessment-v2 contract."""
-    return domain.id == DOC_DOMAIN and domain.version in {"3", "4", "5", "6", "7"}
+    return domain.id == DOC_DOMAIN and domain.version in {"3", "4", "5", "6", "7", "8"}
 
 
 def requires_mission_source_binding(domain: DomainProfileV1) -> bool:
     """Successor Missions recheck current sources and bind the independent judge tree."""
-    return domain.id == DOC_DOMAIN and domain.version in {"4", "5", "6", "7"}
+    return domain.id == DOC_DOMAIN and domain.version in {"4", "5", "6", "7", "8"}
 
 
 def requires_document_critic_proof(domain: DomainProfileV1) -> bool:
     """Doc5 and its registered successor require the same executed Critic proof."""
-    return domain.id == DOC_DOMAIN and domain.version in {"5", "6", "7"}
+    return domain.id == DOC_DOMAIN and domain.version in {"5", "6", "7", "8"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,7 +320,19 @@ DOC_PROFILE_V7 = replace(
         "manager": "manager-doc-research-v4",
     },
 )
-DOC_PROFILE = DOC_PROFILE_V7
+DOC_PROFILE_V8 = replace(
+    DOC_PROFILE_V7,
+    version="8",
+    role_templates={
+        **DOC_PROFILE_V7.role_templates,
+        **{role: f"{role}-doc-research-v4" for role in (
+            "worker", "arbiter", "synthesizer", "explorer", "exploiter", "simplifier",
+            "connector", "failure_analyst",
+        )},
+        "critic": "critic-doc-research-v3",
+    },
+)
+DOC_PROFILE = DOC_PROFILE_V8
 
 DOMAINS: Mapping[str, DomainProfileV1] = MappingProxyType(
     {CODE_DOMAIN: CODE_PROFILE, DOC_DOMAIN: DOC_PROFILE}
@@ -400,6 +412,7 @@ __all__ = (
     "DOC_PROFILE_V5",
     "DOC_PROFILE_V6",
     "DOC_PROFILE_V7",
+    "DOC_PROFILE_V8",
     "supports_document_assessments",
     "requires_mission_source_binding",
     "requires_document_critic_proof",

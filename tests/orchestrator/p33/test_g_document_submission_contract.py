@@ -43,7 +43,7 @@ OLD = {
 )
 def test_current_document_prompt_example_is_a_real_valid_literal_claim(role):
     selected = template_for_domain(ROLES[role], domains.DOC_PROFILE, {})
-    assert selected.prompt_version == f"{role}-doc-research-v3"
+    assert selected.prompt_version == f"{role}-doc-research-v4"
     match = re.search(r"<claim_example>\s*(.*?)\s*</claim_example>", selected.instructions, re.S)
     assert match, "the actual document prompt lacks an unambiguous claim wire example"
     raw = json.loads(match[1])
@@ -86,7 +86,7 @@ def test_new_document_dispatch_freezes_example_and_keeps_code_template(
                     {**domains.DOMAINS, domains.DOC_DOMAIN: profile},
                 )
                 mission = await orch.submit_mission(spec(domain=domains.DOC_DOMAIN))
-            assert domains.resolve_domain(domains.DOC_DOMAIN).version == "7"
+            assert domains.resolve_domain(domains.DOC_DOMAIN).version == "8"
             planning = orch.commit.begin_planning(mission.id)
             planner = await orch._create_planner_intent(mission.id, ordinal=1)
             assert planner.config["prompt_version"] == (
@@ -131,7 +131,7 @@ def test_new_document_dispatch_freezes_example_and_keeps_code_template(
 
 def test_current_document_critic_uses_exact_read_paths_without_result_authority():
     template = template_for_domain(ROLES["critic"], domains.DOC_PROFILE, {})
-    assert template.prompt_version == "critic-doc-research-v2"
+    assert template.prompt_version == "critic-doc-research-v3"
     assert "不支持 #L、:行号、?lines=" in template.instructions
     assert template.tool_names == ("workspace_read_file", "workspace_list")
     assert "<claim_example>" not in template.instructions

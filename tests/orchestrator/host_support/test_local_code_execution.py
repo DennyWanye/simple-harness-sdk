@@ -133,13 +133,13 @@ def test_off_drops_code_test_and_refuses_run_tests_as_a_contradiction():
 # ------------------------------------------------------------------ SA-3
 def test_templates_offer_only_the_deployed_layers_and_keep_the_old_versions():
     assert PLANNER.prompt_version == "planner-v4"
-    assert MANAGER.prompt_version == "manager-v2"
+    assert MANAGER.prompt_version == "manager-v3"
     for template in (PLANNER, MANAGER):
         assert "deployed_verification_layers" in template.instructions
         assert "format_check / rule_check / critic_review / code_test" not in template.instructions
     # a library whose ACTIVE policy was seeded with the older prompts keeps working
     assert {"planner-v3", "planner-v4"} <= set(TEMPLATE_VERSIONS["planner"])
-    assert {"manager-v1", "manager-v2"} <= set(TEMPLATE_VERSIONS["manager"])
+    assert {"manager-v1", "manager-v2", "manager-v3"} <= set(TEMPLATE_VERSIONS["manager"])
 
 
 def test_system_default_policies_follow_the_deployment():

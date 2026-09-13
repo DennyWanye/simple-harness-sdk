@@ -58,7 +58,7 @@ def test_published_profiles_and_prompt_bytes_are_unchanged():
 @pytest.mark.parametrize("role", RESULT_ROLES)
 def test_result_roles_offer_real_statement_support_and_page_range(role):
     selected = template_for_domain(ROLES[role], domains.DOC_PROFILE, {})
-    assert selected.prompt_version == f"{role}-doc-research-v3"
+    assert selected.prompt_version == f"{role}-doc-research-v4"
     old = TEMPLATE_VERSIONS[role][f"{role}-doc-research-v2"]
     assert selected.instructions.startswith(old.instructions)
     assert selected.tool_names == old.tool_names
@@ -101,7 +101,7 @@ def test_doc6_planning_prefers_complete_goals_and_accounts_for_split_cost(role):
 
 def test_doc6_keeps_all_capabilities_and_changes_only_successor_role_bindings():
     old, new = domains.DOC_PROFILE_V5, domains.DOC_PROFILE_V6
-    assert new.version == "6" and domains.resolve_domain(domains.DOC_DOMAIN).version == "7"
+    assert new.version == "6" and domains.resolve_domain(domains.DOC_DOMAIN).version == "8"
     expected = old.to_json()
     expected["version"] = "6"
     expected["role_templates"].update({
@@ -154,13 +154,13 @@ def test_statement_example_page_range_resolves_but_wrong_line_and_partial_quote_
     )
 
 
-@pytest.mark.parametrize("version", ["5", "6"])
+@pytest.mark.parametrize("version", ["5", "6", "7", "8"])
 @pytest.mark.parametrize("human", [False, True])
 def test_actual_worker_and_critic_intents_keep_frozen_versions_across_reopen(
     tmp_path, monkeypatch, version, human
 ):
     async def run():
-        profile = domains.DOC_PROFILE_V5 if version == "5" else domains.DOC_PROFILE
+        profile = getattr(domains, f"DOC_PROFILE_V{version}")
         config = OrchestratorConfig(evidence_root=tmp_path)
         provider = _provider(human=human)
         async with Orchestrator(config, provider, owner="doc6-proof") as first:
@@ -169,9 +169,13 @@ def test_actual_worker_and_critic_intents_keep_frozen_versions_across_reopen(
             )
             worker = first.store.get_intent_for_subject(stored.envelope.attempt_id)
             assert worker.config["prompt_version"] == (
-                "worker-doc-research-v2" if version == "5" else "worker-doc-research-v3"
+                "worker-doc-research-v2" if version == "5" else (
+                    "worker-doc-research-v4" if version == "8" else "worker-doc-research-v3"
+                )
             )
-            assert critic.config["prompt_version"] == "critic-doc-research-v2"
+            assert critic.config["prompt_version"] == (
+                "critic-doc-research-v3" if version == "8" else "critic-doc-research-v2"
+            )
             intents = [worker.to_json(), critic.to_json()]
             proof = first.store.get_receipt("critic-verdict:" + critic.intent_id)
             assert proof is not None
@@ -189,10 +193,10 @@ def test_actual_worker_and_critic_intents_keep_frozen_versions_across_reopen(
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("version", ["5", "6"])
+@pytest.mark.parametrize("version", ["5", "6", "7", "8"])
 def test_actual_failed_critic_cannot_be_replaced_by_caller_pass(tmp_path, monkeypatch, version):
     async def run():
-        profile = domains.DOC_PROFILE_V5 if version == "5" else domains.DOC_PROFILE
+        profile = getattr(domains, f"DOC_PROFILE_V{version}")
         async with Orchestrator(
             OrchestratorConfig(evidence_root=tmp_path), _provider(critic_fail=True),
         ) as orch:

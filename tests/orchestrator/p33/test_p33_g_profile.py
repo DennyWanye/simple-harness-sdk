@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """G frozen-profile compatibility oracles, authored before the default switch."""
 
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -11,11 +12,36 @@ import pytest
 from agent_orchestrator.governance import domains
 
 
+def test_doc8_scope_review_keeps_published_doc7_and_prompt_bytes():
+    from agent_orchestrator.runtime.role_templates import TEMPLATE_VERSIONS
+
+    canonical = json.dumps(domains.DOC_PROFILE_V7.to_json(), sort_keys=True,
+                           separators=(",", ":"), ensure_ascii=False).encode()
+    assert hashlib.sha256(canonical).hexdigest() == (
+        "0d4468a4f32bf3e85242fb57dcb2386ee402849ca79140633772dc8174ea1736"
+    )
+    for role, version, digest in (
+        ("worker", "3", "aa9dd98b9dc1ce6d8d3a0622d1c9ab19c8c58717119a5ca4c9a714c0f1e6bf0b"),
+        ("critic", "2", "bf5dcf81f3007dbc46292b4fb64f18059822a10e61d9a25abe4dfa64ee940859"),
+    ):
+        old = TEMPLATE_VERSIONS[role][f"{role}-doc-research-v{version}"]
+        assert hashlib.sha256(old.instructions.encode()).hexdigest() == digest
+        new = TEMPLATE_VERSIONS[role][domains.DOC_PROFILE.role_templates[role]]
+        assert new.tool_names == old.tool_names
+        assert new.instructions.startswith(old.instructions)
+    old_data = domains.DOC_PROFILE_V7.to_json()
+    new_data = domains.DOC_PROFILE.to_json()
+    for key in ("version", "role_templates"):
+        old_data.pop(key)
+        new_data.pop(key)
+    assert old_data == new_data
+
+
 def test_g_successor_preserves_v3_and_v4_canonical_snapshots():
     frozen = json.loads(Path(__file__).with_name("doc-profile-v3.json").read_text())
     assert domains.DOC_PROFILE_V3.to_json() == frozen
     assert domains.DOC_PROFILE_V6.version == "6"
-    assert domains.DOC_PROFILE.version == "7"
+    assert domains.DOC_PROFILE.version == "8"
     assert domains.resolve_domain(domains.DOC_DOMAIN) == domains.DOC_PROFILE
     expected = {**frozen, "version": "4"}
     assert domains.DOC_PROFILE_V4.to_json() == expected
@@ -35,7 +61,7 @@ def test_g_successor_preserves_v3_and_v4_canonical_snapshots():
         },
     }
     assert domains.DOC_PROFILE_V6.to_json() == expected_v6
-    assert domains.DOC_PROFILE.to_json() == {
+    assert domains.DOC_PROFILE_V7.to_json() == {
         **expected_v6,
         "version": "7",
         "role_templates": {
@@ -55,7 +81,8 @@ def test_g_successor_preserves_v3_and_v4_canonical_snapshots():
         ("5", True, True, True),
         ("6", True, True, True),
         ("7", True, True, True),
-        ("8", False, False, False),
+        ("8", True, True, True),
+        ("9", False, False, False),
     ],
 )
 def test_g_capability_boundary_is_explicit(version, assess, binding, critic_proof):

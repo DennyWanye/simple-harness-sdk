@@ -719,3 +719,10 @@ OSkill selector：`tests/orchestrator/p35/test_process_kill_recovery.py`；raw `
 - `g-pressure-priority-v1` receipt SHA-256 `d6643affcd0e8e13ff7d9485b3278646e666023a49a694bbad033f440a2a5157`.
 - `g-pressure-priority-v2` receipt SHA-256 `076dc65a6747761cc486f42faa2957f780a9f469bc680dfaa70dee8b11da5de8`.
 - `g-pressure-priority-v3` receipt SHA-256 `fba14160f0e8cb3a3c4f3dab1fd7da2dc0e114713f3a4cc5726805b8b60f5711`.
+
+
+## Doc8 scope review and legacy full-suite controls (2026-09-13 08:51 CST)
+
+Doc8 result-role v4 / Critic v3 guidance preserves doc1-7 canonical bytes, actual source/Critic proof and code behavior;84PASS2.24s including actual frozen doc5-8 intents across reopen. Independent Astra review noP1/P2. RealN1v14 runtime/citation/cold PASS but manualanalysisFAIL from overbroad no-build-records claim; sameoriginal400000/12 recheck remainsOPEN.
+
+Fullorchestrator g-doc8-orchestrator-full-v3 interrupted499.90s:1487PASS2FAIL5opt-in skips. Oldstep06 globalfirst-fourCritic failures exhausted a Task script intoUNKNOWN; fixed to eachTaskfirstAttemptFAIL/secondPASS, retaining pressure assertions andadding20s deadline. Two oldassertions nowcheckcurrentManager3 witholdregisteredversions and exactlyfivepaid subjects plus two transferredzero-usageFIRSTCriticholds. Affected16PASS9.33s;ruffPASS/mypy151PASS. Fullrerun remainsrequired.

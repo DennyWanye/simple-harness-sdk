@@ -1409,7 +1409,7 @@ class Orchestrator:
         source_binding = self._active_source_binding(mission_id)
         domain = self.commit.domain_for(mission_id)
         workload = None
-        if domain.id == "doc-research-v1" and domain.version in {"6", "7"}:
+        if domain.id == "doc-research-v1" and domain.version in {"6", "7", "8"}:
             from ..context.source_workload import source_workload
 
             try:

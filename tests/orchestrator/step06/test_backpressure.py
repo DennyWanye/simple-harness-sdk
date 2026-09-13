@@ -37,6 +37,7 @@ from agent_orchestrator.testing.fixtures import (
     critic_step,
     demo_dynamic_dag_provider,
     graph_change_step,
+    package_of,
 )
 
 
@@ -62,14 +63,20 @@ def _doc_script(key):
 def test_s6_02_a_slow_verifier_raises_backpressure_and_work_resumes_after_it_clears(tmp_path):
     keys = ["P1", "P2", "P3", "P4"]
     tasks = [_doc_task(k, 4.0 - i) for i, k in enumerate(keys)]
+    def per_attempt_critic(request):
+        # Each Task fails once, regardless of the bounded scheduler's order.
+        # Global first-four responses could fail P1 twice and exhaust its script.
+        first = package_of(request)["attempt_id"].endswith(":attempt-1")
+        return critic_step(
+            verdict="FAIL" if first else "PASS", criteria_met=not first,
+            blocker="再检查" if first else None,
+        )(request)
+
     provider = demo_dynamic_dag_provider(
         tasks=tasks,
         scripts={k: [] for k in keys},
         per_attempt={k: [_doc_script(k), _doc_script(k)] for k in keys},
-        # the first round of critics fails every result (so retries are wanted while the
-        # queue is backed up); the second round passes
-        critic_steps=[critic_step(verdict="FAIL", criteria_met=False, blocker="再检查")] * 4
-        + [critic_step(verdict="PASS", criteria_met=True)] * 4,
+        critic_steps=[per_attempt_critic] * 8,
         critic_delay_seconds=0.25,
         manager_steps=[graph_change_step([])] * 8,
     )
@@ -95,7 +102,7 @@ def test_s6_02_a_slow_verifier_raises_backpressure_and_work_resumes_after_it_cle
                     budget=Budget(max_tokens=600_000, max_attempts=32),
                 )
             )
-            await orchestrator.run()
+            await asyncio.wait_for(orchestrator.run(), 20)
             store = orchestrator.store
             final = store.get_mission(mission.id)
             assert final.status is MissionStatus.COMPLETED, orchestrator.progress_log

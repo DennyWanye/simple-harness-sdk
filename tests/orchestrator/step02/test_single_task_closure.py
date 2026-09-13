@@ -147,7 +147,17 @@ def test_s2_01_and_s2_02_repair_then_pass(tmp_path):
                 report = orchestrator.commit.ledger.costs_report(mission.id)
             settled = {r["subject_id"]: r["state"] for r in report["reservations"]}
             assert all(state == "SETTLED" for state in settled.values()), settled
-            assert len(settled) == 5  # planner + 2 attempts + 2 critics
+            paid = {f"{mission.id}:planner:1"}
+            for attempt in attempts:
+                paid.update({attempt.id, f"{attempt.id}:critic:1"})
+            tails = {f"tail:first-critic:{attempt.id}" for attempt in attempts}
+            assert set(settled) == paid | tails
+            assert len(paid) == 5  # planner + 2 attempts + 2 critics
+            # Transferred FIRST Critic allowances are durable zero-usage rows,
+            # not two additional provider calls or charges.
+            for row in report["reservations"]:
+                if row["subject_id"] in tails:
+                    assert row["reserved_tokens"] == row["settled_tokens"] == 0
             mission_account = next(a for a in report["accounts"] if a["scope"] == "mission")
             assert mission_account["reserved_tokens"] == 0 and mission_account["settled_tokens"] > 0
             assert mission_account["unpriced_settlements"] == 5

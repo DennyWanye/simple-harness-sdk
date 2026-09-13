@@ -1,3 +1,7 @@
+**Last updated: 2026-09-13 08:51 CST - document scope review successor.**
+
+New document Missions bind profile8: result roles use v4 guidance and Critic v3; Planner/Manager and code-domain behavior remain unchanged. Full-source negative/absence claims and old/new status records require scope-aware analysis; core contradictions should block report acceptance. This is model guidance, not deterministic truth proof. Published doc1-7 bytes, tools, source binding, citation integrity and actual Critic proof stay intact. Main84PASS2.24s includes frozen doc5-8 Worker/Critic identities across reopen and hashed doc7/old prompts; independent Astra review found no P1/P2. Native real N1v14 formally passed but manual report quality failed on an overbroad absence claim; original400000/12 recheck remains OPEN.
+
 # Agent 编排框架 · 交接（Phase3 进行中）
 
 **最后更新：2026-09-13 07:59 CST — 当前源码综合回归。** 综合文档/P34/P35与受影响旧恢复、Manager、路由和启动检查1147 PASS/113.92s（runner114.42s），151文件mypy通过；随后仅移除未使用import及格式化测试，ruff通过。前批1144PASS/2FAIL的文档日志体积回归已修复，未删负例。A03复合压力控制1PASS/1.61s：实际RAISED阻断fresh Worker，Arbiter使用原conflict pool的HELD额度，公开人工仲裁后独立Synthesis/Critic完成、队列最终NORMAL；知识ID仅来自实际Provider请求。Terra独审限定接受；该用例明确使用历史doc4，不证明原20k预留全部转移或S首次调用时已经NORMAL。当前doc7由Host独立场景覆盖，原生仲裁及整体Phase3剩余价值/压力UI仍OPEN；不打包/P36/推送。
