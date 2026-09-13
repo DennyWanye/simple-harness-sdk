@@ -259,7 +259,27 @@ def _experiment_budgets(budget_profile):
         return (Budget(max_tokens=480_000, max_attempts=4),
                 Budget(max_tokens=480_000, max_attempts=3),
                 Budget(max_tokens=240_000, max_attempts=2))
+    if budget_profile == "audit400-docs480-s240-v6":
+        return (Budget(max_tokens=400_000, max_attempts=4),
+                Budget(max_tokens=480_000, max_attempts=3),
+                Budget(max_tokens=240_000, max_attempts=2))
     raise ValueError("unknown P34 budget profile")
+
+
+def _preflight_budget_profile(budget_profile):
+    """Reject future real runs whose declared worst case exceeds Mission 2M."""
+    audit_budget, docs_budget, synthesis_budget = _experiment_budgets(budget_profile)
+    base_tasks = audit_budget.max_tokens + docs_budget.max_tokens + CONSUMER_BUDGET.max_tokens
+    materialized_synthesis = synthesis_budget.max_tokens
+    required_independent_fragment = audit_budget.max_tokens  # F inherits A's budget.
+    total = base_tasks + materialized_synthesis + required_independent_fragment
+    if total > MISSION_BUDGET.max_tokens:
+        raise ValueError(
+            f"P34 {budget_profile} future real runs reject static budget total "
+            f"{total:,} > Mission {MISSION_BUDGET.max_tokens:,} "
+            "(base tasks + materialized S + required independent F)"
+        )
+    return total
 
 
 def mission_spec(budget_profile="original-v2"):
@@ -803,6 +823,7 @@ def _search_runtime_config(directory):
 
 async def _arm(root, provider, *, compare, base_url, tokenizer_path,
                budget_profile="original-v2"):
+    _preflight_budget_profile(budget_profile)
     mode = "COMPARE_THEN_SYNTHESIZE" if compare else "FIRST_VERIFIED"
     directory = root / mode
     config = _search_runtime_config(directory)
@@ -876,6 +897,7 @@ def test_real_first_vs_approved_compare_search_value():
     # pytest's existing --run-real-provider marker gates collection. No fallback
     # to Host .env: main must explicitly inject the existing SH_* environment.
     budget_profile = os.environ.get("SH_P34_BUDGET_PROFILE", "original-v2")
+    _preflight_budget_profile(budget_profile)  # reject before Provider configuration or invocation
     materials = native_ui_materials(budget_profile)  # validate before credentials or calls
     assert os.environ.get("SH_MODEL") == MODEL, "set SH_MODEL=deepseek-flash explicitly"
     assert os.environ.get("SH_BASEURL") and os.environ.get("SH_APIKEY"), (

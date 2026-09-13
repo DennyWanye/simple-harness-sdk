@@ -5,6 +5,8 @@ from copy import deepcopy
 import pytest
 from test_real_search_value import native_ui_materials
 
+from agent_orchestrator.contracts import Budget
+
 
 def test_legacy_contract_is_byte_equivalent_to_the_archived_paid_pair():
     assert native_ui_materials()["contract_hash"] == (
@@ -68,6 +70,9 @@ def test_audit_two_candidate_headroom_preserves_all_other_frozen_inputs():
         "b81272cdbf3620579b38ebffd86aad0ffbd4d58a19871a37aadfc7d7bcb4c2f2"
     )
     revised = native_ui_materials("audit480-docs480-s240-v5")
+    assert revised["contract_hash"] == (
+        "0ef5bc3c8d3af2ef58a12a8aa148e365015a003001274c8da2956b8ecd19edf3"
+    )
     assert revised["audit_budget"]["max_tokens"] == 480_000
     assert revised["mission_spec"]["budget"]["max_tokens"] == 2_000_000
     normalized = deepcopy(revised)
@@ -80,3 +85,26 @@ def test_audit_two_candidate_headroom_preserves_all_other_frozen_inputs():
     )
     assert normalized == preceding
     assert native_ui_materials("audit320-docs480-s240-v4") == preceding
+
+
+def test_audit400_profile_changes_only_the_declared_audit_budget_and_identity():
+    preceding = native_ui_materials("audit480-docs480-s240-v5")
+    revised = native_ui_materials("audit400-docs480-s240-v6")
+    assert revised["audit_budget"] == Budget(max_tokens=400_000, max_attempts=4).to_json()
+    assert revised["docs_budget"] == Budget(max_tokens=480_000, max_attempts=3).to_json()
+    assert revised["consumer_budget"] == Budget(max_tokens=400_000, max_attempts=4).to_json()
+    assert revised["mission_spec"]["budget"] == Budget(
+        max_tokens=2_000_000, max_attempts=24,
+    ).to_json()
+    assert revised["mission_spec"]["synthesis"]["budget"] == {
+        "max_tokens": 240_000, "max_attempts": 2,
+    }
+    normalized = deepcopy(revised)
+    for key in ("scenario", "contract_hash"):
+        normalized[key] = preceding[key]
+    normalized["mission_spec"]["idempotency_key"] = preceding["mission_spec"]["idempotency_key"]
+    normalized["audit_budget"]["max_tokens"] = 480_000
+    normalized["mission_spec"]["goal"] = revised["mission_spec"]["goal"].replace(
+        "预算400000 tokens/4 attempts", "预算480000 tokens/4 attempts", 1,
+    )
+    assert normalized == preceding

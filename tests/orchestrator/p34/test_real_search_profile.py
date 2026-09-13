@@ -13,6 +13,7 @@ from test_real_search_value import (
     MODEL,
     _admission_identity,
     _official_runtime_options,
+    _preflight_budget_profile,
     _search_runtime_config,
 )
 
@@ -103,3 +104,18 @@ def test_search_output_ceiling_fits_fixed_task_verification_reserve(tmp_path):
     assert 32768 + 32768 > remaining
     assert 32768 + config.max_output_tokens_ceiling < remaining
     assert DOCS_BUDGET.max_tokens == 240_000
+
+
+def test_real_pair_budget_preflight_rejects_historical_overcommit_before_provider_use():
+    assert _preflight_budget_profile("audit400-docs480-s240-v6") == 1_920_000
+    with pytest.raises(ValueError, match=r"audit480-docs480-s240-v5.*2,080,000.*2,000,000"):
+        _preflight_budget_profile("audit480-docs480-s240-v5")
+
+
+def test_overcommitted_profile_stops_actual_pair_entry_before_credentials(monkeypatch):
+    import test_real_search_value as real
+
+    monkeypatch.setenv("SH_P34_BUDGET_PROFILE", "audit480-docs480-s240-v5")
+    monkeypatch.delenv("SH_APIKEY", raising=False)
+    with pytest.raises(ValueError, match="2,080,000"):
+        real.test_real_first_vs_approved_compare_search_value()

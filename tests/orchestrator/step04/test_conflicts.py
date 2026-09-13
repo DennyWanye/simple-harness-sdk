@@ -357,3 +357,41 @@ def test_s4_03_opposite_claims_are_arbitrated_by_an_external_check(tmp_path):
             )
 
     asyncio.run(case())
+
+
+def test_materialized_conflict_leaves_only_its_remaining_reserve_in_dynamic_budget(tmp_path):
+    import pytest
+    from knowledge_helpers import node
+
+    from agent_orchestrator.graph.changes import TaskGraphChange
+    from agent_orchestrator.orchestrator.commit_service import CommitRejected
+
+    service, mission, (task_a, _), *_ = _dispute(tmp_path)
+    current = service.store.get_mission(mission.id)
+    assert current.final_report["conflict_reserve_remaining"] == 0
+    conflict = next(t for t in service.store.list_tasks(mission.id) if t.kind == "conflict")
+    assert conflict.budget.max_tokens == 20_000
+    # Real accept commits materialized A20K+B20K+conflict20K from100K Mission.
+    def proposal(tokens):
+        body = node("F", budget={"max_tokens": tokens, "max_attempts": 3})
+        return TaskGraphChange.from_json({
+            "base_graph_version": current.final_report["graph_version"],
+            "basis": {"trigger": "test"}, "rationale": "check independent evidence",
+            "operations": [{"op": "add_task", **body, "parent_task_ids": [task_a.id]}],
+        })
+
+    with pytest.raises(CommitRejected, match="budget"):
+        service.commit_graph_change(mission.id, proposal(40_001), source={})
+    created, receipt = service.commit_graph_change(mission.id, proposal(40_000), source={})
+    assert created[0].budget.max_tokens == 40_000
+    assert service.store.get_mission(mission.id).final_report["conflict_reserve_remaining"] == 0
+    assert len([t for t in service.store.list_tasks(mission.id) if t.kind == "conflict"]) == 1
+    from agent_orchestrator.orchestrator.commit_service import CommitService
+    from agent_orchestrator.storage.store import Store
+
+    service.store.close()
+    cold = CommitService(Store.open(tmp_path / "orchestrator.db"))
+    again, replay = cold.commit_graph_change(mission.id, proposal(40_000), source={})
+    assert replay == receipt and again[0].id == created[0].id
+    assert len(cold.store.list_tasks(mission.id)) == 4
+    cold.store.close()

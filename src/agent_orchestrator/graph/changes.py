@@ -57,6 +57,28 @@ class GraphChangeRejected(ValueError):
         self.detail = detail
 
 
+def _unmaterialized_system_reserve(mission: Mission, tasks: Sequence[Task]) -> int:
+    """Dynamic admission counts system Tasks in commitments, only their residue here.
+
+    Initial Planner admission still uses the complete fixed reserve. Conflict creation
+    atomically transfers an allocation into a Task and reduces its remaining reserve;
+    cancelled Tasks retain their original allocation here, so unused budget is returned
+    only by the normal settled/in-flight commitment calculation, never a second time.
+    """
+    report = mission.final_report or {}
+    original_conflict = int(report.get("conflict_reserve_tokens") or 0)
+    remaining = report.get("conflict_reserve_remaining", original_conflict)
+    if type(remaining) is not int or not 0 <= remaining <= original_conflict:
+        raise GraphChangeRejected("budget", "invalid remaining conflict reserve")
+    allocated = sum(int(t.budget.max_tokens or 0) for t in tasks if t.kind == "conflict")
+    if "conflict_reserve_remaining" in report and remaining + allocated != original_conflict:
+        raise GraphChangeRejected("budget", "conflict allocations and remaining reserve disagree")
+    synthesis = system_reserve_tokens(mission) - original_conflict
+    if any(t.kind == "synthesis" for t in tasks):
+        synthesis = 0
+    return synthesis + remaining
+
+
 @dataclass(frozen=True, slots=True)
 class ChangeLimits:
     max_graph_depth: int = 6
@@ -585,7 +607,7 @@ def validate_change(
                 committed += int(committed_tokens_by_task.get(task.id, 0))
             else:
                 committed += int(task.budget.max_tokens or 0)
-        reserve = system_reserve_tokens(mission)
+        reserve = _unmaterialized_system_reserve(mission, tasks)
         # a superseded/cancelled task's unused allocation returns to the pool once its
         # reservations settle; settled + in-flight reserved stay committed
         remaining = pool - reserve - committed
