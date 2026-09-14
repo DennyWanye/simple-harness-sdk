@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 
 import pytest
 from fixtures_provider import RoleScriptedProvider, envelope_step, graph_proposal_step, package_of
@@ -172,15 +173,27 @@ def test_planner_wire_receives_source_destination_and_approval_semantics(
             package = package_of(request)
             if not (has_action and enabled):
                 assert "action_candidate_contract" not in package
-                # Recorded by the genuine immutable SDK9f70e00 before Planner
-                # projection existed; zero Provider calls to capture the baseline.
+                # Generic lifetime-budget semantics now reach code Planners too.
+                # Preserve the original SDK9f70e00 baseline after removing only
+                # that deliberate new section; action projection remains absent.
+                assert package["budget_allocation_semantics"]["kind"] == (
+                    "permitted_ceiling_not_expected_spend"
+                )
+                historical_message = dict(intent.config["message"])
+                historical_message["content"] = re.sub(
+                    r"\n\n## budget_allocation_semantics\n.*?(?=\n\n## |\Z)",
+                    "", historical_message["content"], flags=re.DOTALL,
+                )
+                assert hashlib.sha256(canonical_json(historical_message).encode()).hexdigest() == (
+                    "3c9ec1513b5cf20e4f73bb09484cfd08a9c00e2018fd053f73bf72e820955c54"
+                )
                 message_hash = hashlib.sha256(
                     canonical_json(intent.config["message"]).encode()
                 ).hexdigest()
                 assert message_hash == (
-                    "3c9ec1513b5cf20e4f73bb09484cfd08a9c00e2018fd053f73bf72e820955c54"
+                    "c5017c6420bf3677a1fbd52d45a49378e32a22b21e618b7df3f61eceacc202f5"
                 )
-                assert intent.config["context_version"] == "ctx-bab541af2be016ec"
+                assert intent.config["context_version"] == "ctx-c4042b6c85b13dbd"
                 return
             contract = package["action_candidate_contract"]
             assert contract["version"] == "action-candidate-context-v2"

@@ -452,28 +452,35 @@ def build_planner_package(
                 "This changes neither the Mission requirements nor the Critic quality bar."
             ),
         }
-        package["budget_allocation_semantics"] = {
-            "kind": "permitted_ceiling_not_expected_spend",
-            "task_tokens": (
-                "Task max_tokens is a hard cumulative ceiling across all Worker turns, "
-                "retries and independent verification. It is not an expected-cost estimate. "
-                "Allocate the available budget_for_tasks across the proposed Tasks; "
-                "unallocated tokens cannot be borrowed by a running Task. A single complete "
-                "Task should receive the available Task pool, keeping the stated system "
-                "reserve outside it. This allocation does not spend or reserve tokens itself."
-            ),
-            "task_attempts": (
-                "Task max_attempts is a ceiling within the original Mission attempt limit, "
-                "not a target. Keep enough allowance for a corrected result; creating a "
-                "replacement Task never resets attempts already consumed by the Mission."
-            ),
-            "request_admission": (
-                "Each physical model request must fit current input, retained prior output "
-                "and its maximum output allowance. Source token counts exclude these "
-                "other costs. Budget for complete-source reading and independent Critic "
-                "review, not only the final report length."
-            ),
-        }
+    # Lifetime budget semantics apply to every domain, even without source workload.
+    package["budget_allocation_semantics"] = {
+        "kind": "permitted_ceiling_not_expected_spend",
+        "task_tokens": (
+            "Task max_tokens is a hard cumulative ceiling across all Worker turns, "
+            "retries and independent verification. It is not an expected-cost estimate. "
+            "Allocate the available budget_for_tasks across the proposed Tasks; "
+            "unallocated tokens cannot be borrowed by a running Task. A single complete "
+            "Task should receive the available Task pool, keeping the stated system "
+            "reserve outside it. This allocation does not spend or reserve tokens itself."
+        ),
+        "reservation_floor": (
+            "min_task_tokens and min_task_tokens_with_critic_review are first-request "
+            "admission floors, not a recommended lifetime budget or a context window cap. "
+            "Multi-step API discovery, history rereads, retries and verification consume "
+            "the cumulative Task allowance across repeated physical requests."
+        ),
+        "task_attempts": (
+            "Task max_attempts is a ceiling within the original Mission attempt limit, "
+            "not a target. Keep enough allowance for a corrected result; creating a "
+            "replacement Task never resets attempts already consumed by the Mission."
+        ),
+        "request_admission": (
+            "Each physical model request must fit current input, retained prior output "
+            "and its maximum output allowance. Source token counts exclude these "
+            "other costs. Budget for complete-source reading and independent Critic "
+            "review, not only the final report length."
+        ),
+    }
     assert_no_secrets(package)  # step 6 (review P2-10): the Planner sees no credential either
     return _seal(package)
 

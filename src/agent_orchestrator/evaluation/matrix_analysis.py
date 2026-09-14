@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from hashlib import sha256
 from itertools import combinations
 from math import isfinite
+from random import Random
 from statistics import fmean
 from typing import Any, cast
 
@@ -26,6 +27,10 @@ _COST_PAIRING_INCOMPLETE = (
     "utility pairing may be complete, but every arm needs complete actual usage "
     "and known counters before a paired cost comparison is available"
 )
+_BOOTSTRAP_METHOD = "task-block-bootstrap-percentile-linear-v1"
+_MIN_BOOTSTRAP_SAMPLES = 100
+_MAX_BOOTSTRAP_SAMPLES = 100_000
+_MAX_BOOTSTRAP_SEED = 2**64 - 1
 
 
 def _mapping(value: object, name: str) -> Mapping[str, Any]:
@@ -193,6 +198,68 @@ def _measurement(values: list[float]) -> dict[str, float | int | None]:
     }
 
 
+def _bootstrap_analysis_identity(
+    *,
+    matrix_identity_sha256: str,
+    samples: int | None,
+    seed: int,
+    confidence_level: float,
+) -> dict[str, Any] | None:
+    if samples is None:
+        return None
+    if type(samples) is not int or not _MIN_BOOTSTRAP_SAMPLES <= samples <= _MAX_BOOTSTRAP_SAMPLES:
+        raise ValueError(
+            f"bootstrap_samples must be an integer from {_MIN_BOOTSTRAP_SAMPLES} "
+            f"through {_MAX_BOOTSTRAP_SAMPLES}"
+        )
+    if type(seed) is not int or not 0 <= seed <= _MAX_BOOTSTRAP_SEED:
+        raise ValueError(f"bootstrap_seed must be an integer from 0 through {_MAX_BOOTSTRAP_SEED}")
+    if (
+        isinstance(confidence_level, bool)
+        or not isinstance(confidence_level, (int, float))
+        or not isfinite(confidence_level)
+        or not 0.5 <= confidence_level < 1.0
+    ):
+        raise ValueError("confidence_level must be finite and in [0.5, 1.0)")
+    return {
+        "matrix_identity_sha256": matrix_identity_sha256,
+        "uncertainty_method": _BOOTSTRAP_METHOD,
+        "analysis_unit": "task",
+        "bootstrap_samples": samples,
+        "bootstrap_seed": seed,
+        "confidence_level": float(confidence_level),
+    }
+
+
+def _linear_percentile(values: list[float], probability: float) -> float:
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * probability
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + fraction * (ordered[upper] - ordered[lower])
+
+
+def _task_block_bootstrap_interval(
+    task_paired_deltas: Mapping[str, float],
+    *,
+    samples: int,
+    seed: int,
+    confidence_level: float,
+) -> dict[str, float]:
+    """Resample whole task means; repetitions have already been averaged within task."""
+    deltas = tuple(task_paired_deltas.values())
+    generator = Random(seed)
+    estimates = [
+        fmean(deltas[generator.randrange(len(deltas))] for _ in deltas) for _ in range(samples)
+    ]
+    tail = (1.0 - confidence_level) / 2.0
+    return {
+        "lower": _linear_percentile(estimates, tail),
+        "upper": _linear_percentile(estimates, 1.0 - tail),
+    }
+
+
 def _arm_summary(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     matrices = [
         _mapping(row["matrix"], "receipt.runs[].matrix")
@@ -262,8 +329,7 @@ def _arm_summary(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
             if matrix is not None
         ),
         "usage_complete": all(
-            matrix is not None and _usage_is_complete(matrix)
-            for matrix in matrices
+            matrix is not None and _usage_is_complete(matrix) for matrix in matrices
         ),
         "token_lower_bounds": {name: _measurement(values) for name, values in token_values.items()},
         "cached_tokens": _measurement(cache) if cache_available else None,
@@ -277,12 +343,16 @@ def analyze_frozen_matrix(
     identity: Mapping[str, Any],
     *,
     task_families: Mapping[str, str] | None = None,
+    bootstrap_samples: int | None = None,
+    bootstrap_seed: int = 0,
+    confidence_level: float = 0.95,
 ) -> dict[str, Any]:
     """Return deterministic, descriptive task-level results for one frozen matrix.
 
     ``identity`` is the adjacent ``appworld-matrix.json`` document.  Optional
     ``task_families`` lets callers aggregate task deltas without inventing a
-    family from a task identifier.
+    family from a task identifier.  Setting ``bootstrap_samples`` adds a
+    reproducible percentile interval by resampling whole task means.
     """
     frozen = _mapping(receipt, "receipt")
     manifest = _manifest(frozen)
@@ -291,6 +361,14 @@ def analyze_frozen_matrix(
     if frozen.get("matrix_identity") != identity:
         raise ValueError("receipt source/profile/config identity mismatch")
     identity_sha256 = _matrix_identity_sha256(full_identity)
+    analysis_identity = _bootstrap_analysis_identity(
+        matrix_identity_sha256=identity_sha256,
+        samples=bootstrap_samples,
+        seed=bootstrap_seed,
+        confidence_level=confidence_level,
+    )
+    if analysis_identity is not None and len(manifest.task_ids) < 2:
+        raise ValueError("task-block bootstrap requires at least 2 independent tasks")
     rows = _validate_runs(frozen, manifest)
     if task_families is not None and set(task_families) != set(manifest.task_ids):
         raise ValueError("task_families must name every frozen task exactly once")
@@ -377,7 +455,45 @@ def analyze_frozen_matrix(
                     family: fmean(values) for family, values in sorted(family_deltas.items())
                 },
             }
-    return {
+        if analysis_identity is not None:
+            for comparison in pairs.values():
+                comparison["task_bootstrap_percentile_interval"] = _task_block_bootstrap_interval(
+                    comparison["task_paired_deltas"],
+                    samples=analysis_identity["bootstrap_samples"],
+                    seed=analysis_identity["bootstrap_seed"],
+                    confidence_level=analysis_identity["confidence_level"],
+                )
+    paired: dict[str, Any] = {
+        # ``confirmed`` remains the existing utility/success comparison gate.
+        # Complete scoring is meaningful even when a separate cost observation
+        # is unavailable; callers must not turn that into a priced comparison.
+        "confirmed": utility_complete,
+        "utility_confirmed": utility_complete,
+        "incomplete_units": incomplete,
+        "reason": None
+        if utility_complete
+        else "all arms must be terminal and scored for every task/repetition",
+        "comparisons": pairs,
+        "cost_pairing": {
+            "confirmed": cost_complete,
+            "reason": None if cost_complete else _COST_PAIRING_INCOMPLETE,
+        },
+    }
+    if analysis_identity is not None:
+        paired["uncertainty"] = {
+            "confirmed": utility_complete,
+            "reason": (
+                None
+                if utility_complete
+                else "complete utility pairing is required for bootstrap intervals"
+            ),
+            "small_sample_caveat": (
+                f"Only {len(manifest.task_ids)} independent tasks are resampled; repetitions "
+                "are averaged within task and do not increase the independent-unit count. "
+                "The interval is descriptive, does not establish benefit, and provides no p-value."
+            ),
+        }
+    report = {
         "schema_version": 1,
         "identity": {
             "manifest_sha256": manifest.fingerprint,
@@ -394,27 +510,11 @@ def analyze_frozen_matrix(
             "analysis_unit": "task",
         },
         "arms": {arm: _arm_summary(by_arm[arm]) for arm in ARMS},
-        "paired": {
-            # ``confirmed`` remains the existing utility/success comparison gate.
-            # Complete scoring is meaningful even when a separate cost observation
-            # is unavailable; callers must not turn that into a priced comparison.
-            "confirmed": utility_complete,
-            "utility_confirmed": utility_complete,
-            "incomplete_units": incomplete,
-            "reason": None
-            if utility_complete
-            else "all arms must be terminal and scored for every task/repetition",
-            "comparisons": pairs,
-            "cost_pairing": {
-                "confirmed": cost_complete,
-                "reason": (
-                    None
-                    if cost_complete
-                    else _COST_PAIRING_INCOMPLETE
-                ),
-            },
-        },
+        "paired": paired,
     }
+    if analysis_identity is not None:
+        report["analysis_identity"] = analysis_identity
+    return report
 
 
 __all__ = ("analyze_frozen_matrix",)

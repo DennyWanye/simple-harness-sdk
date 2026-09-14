@@ -95,6 +95,17 @@ def frozen(*, tasks=("alpha", "beta"), repetitions=1):
     return receipt, identity
 
 
+def set_valid(receipt, *, arm, task, repetition, value):
+    row = next(
+        row
+        for row in receipt["runs"]
+        if row["run"]["arm"] == arm
+        and row["run"]["task_id"] == task
+        and row["run"]["repetition"] == repetition
+    )
+    row["matrix"]["valid_success"] = value
+
+
 def test_small_matrix_is_exact_task_paired_descriptive_report():
     receipt, identity = frozen()
     report = analyze_frozen_matrix(receipt, identity, task_families={"alpha": "a", "beta": "b"})
@@ -124,10 +135,138 @@ def test_12_task_96_run_shape_is_aggregated_at_12_tasks():
     receipt, identity = frozen(
         tasks=tuple(f"task-{index:02d}" for index in range(12)), repetitions=2
     )
-    report = analyze_frozen_matrix(receipt, identity)
+    report = analyze_frozen_matrix(receipt, identity, bootstrap_samples=100, bootstrap_seed=7)
     assert report["design"]["planned_runs"] == 96
     assert report["design"]["task_count"] == 12
     assert report["paired"]["comparisons"]["S-R"]["task_count"] == 12
+    assert "Only 12 independent tasks" in report["paired"]["uncertainty"]["small_sample_caveat"]
+
+
+def test_default_report_does_not_add_optional_bootstrap_fields():
+    receipt, identity = frozen()
+    report = analyze_frozen_matrix(receipt, identity)
+    assert "analysis_identity" not in report
+    assert "uncertainty" not in report["paired"]
+    assert all(
+        "task_bootstrap_percentile_interval" not in comparison
+        for comparison in report["paired"]["comparisons"].values()
+    )
+
+
+def test_bootstrap_resamples_three_task_means_not_six_repetition_episodes():
+    tasks = ("positive", "zero-a", "zero-b")
+    receipt, identity = frozen(tasks=tasks, repetitions=2)
+    for row in receipt["runs"]:
+        row["matrix"]["valid_success"] = False
+    for repetition in range(2):
+        set_valid(receipt, arm="S", task="positive", repetition=repetition, value=True)
+
+    report = analyze_frozen_matrix(
+        receipt,
+        identity,
+        bootstrap_samples=2_000,
+        bootstrap_seed=47,
+        confidence_level=0.8,
+    )
+    comparison = report["paired"]["comparisons"]["S-R"]
+    assert comparison["task_paired_deltas"] == {"positive": 1.0, "zero-a": 0.0, "zero-b": 0.0}
+    assert comparison["task_bootstrap_percentile_interval"] == {
+        "lower": 0.0,
+        "upper": pytest.approx(2 / 3),
+    }
+    assert report["analysis_identity"] == {
+        "matrix_identity_sha256": report["identity"]["matrix_identity_sha256"],
+        "uncertainty_method": "task-block-bootstrap-percentile-linear-v1",
+        "analysis_unit": "task",
+        "bootstrap_samples": 2_000,
+        "bootstrap_seed": 47,
+        "confidence_level": 0.8,
+    }
+    assert "Only 3 independent tasks" in report["paired"]["uncertainty"]["small_sample_caveat"]
+
+
+def test_bootstrap_is_seeded_deterministic_and_preserves_left_minus_right_sign():
+    tasks = ("positive", "zero-a", "zero-b")
+    positive, identity = frozen(tasks=tasks, repetitions=2)
+    for row in positive["runs"]:
+        row["matrix"]["valid_success"] = False
+    for repetition in range(2):
+        set_valid(positive, arm="S", task="positive", repetition=repetition, value=True)
+    negative = deepcopy(positive)
+    for repetition in range(2):
+        set_valid(negative, arm="S", task="positive", repetition=repetition, value=False)
+        set_valid(negative, arm="R", task="positive", repetition=repetition, value=True)
+
+    kwargs = {"bootstrap_samples": 2_000, "bootstrap_seed": 91, "confidence_level": 0.8}
+    first = analyze_frozen_matrix(positive, identity, **kwargs)
+    second = analyze_frozen_matrix(positive, identity, **kwargs)
+    reversed_report = analyze_frozen_matrix(negative, identity, **kwargs)
+    positive_pair = first["paired"]["comparisons"]["S-R"]
+    negative_pair = reversed_report["paired"]["comparisons"]["S-R"]
+    assert first == second
+    assert positive_pair["mean_task_paired_delta"] == pytest.approx(1 / 3)
+    assert negative_pair["mean_task_paired_delta"] == pytest.approx(-1 / 3)
+    assert negative_pair["task_bootstrap_percentile_interval"] == {
+        "lower": -positive_pair["task_bootstrap_percentile_interval"]["upper"],
+        "upper": -positive_pair["task_bootstrap_percentile_interval"]["lower"],
+    }
+
+
+def test_incomplete_utility_pairs_never_yield_bootstrap_intervals():
+    receipt, identity = frozen(tasks=("alpha", "beta"), repetitions=2)
+    receipt["runs"][0].pop("matrix")
+    report = analyze_frozen_matrix(receipt, identity, bootstrap_samples=100, bootstrap_seed=5)
+    assert report["paired"]["comparisons"] == {}
+    assert report["paired"]["uncertainty"] == {
+        "confirmed": False,
+        "reason": "complete utility pairing is required for bootstrap intervals",
+        "small_sample_caveat": (
+            "Only 2 independent tasks are resampled; repetitions are averaged within task and "
+            "do not increase the independent-unit count. The interval is descriptive, does not "
+            "establish benefit, and provides no p-value."
+        ),
+    }
+
+
+def test_unknown_cost_does_not_suppress_complete_utility_bootstrap():
+    receipt, identity = frozen(tasks=("alpha", "beta"), repetitions=2)
+    receipt["runs"][0]["matrix"]["usage"].update(
+        unknown_usage_calls=1, actual_tokens_complete=False
+    )
+    report = analyze_frozen_matrix(receipt, identity, bootstrap_samples=100, bootstrap_seed=5)
+    assert report["paired"]["utility_confirmed"] is True
+    assert report["paired"]["uncertainty"]["confirmed"] is True
+    assert report["paired"]["comparisons"]["S-R"]["task_bootstrap_percentile_interval"]
+    assert report["paired"]["cost_pairing"]["confirmed"] is False
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"bootstrap_samples": True},
+        {"bootstrap_samples": 99},
+        {"bootstrap_samples": 100_001},
+        {"bootstrap_samples": 100.0},
+        {"bootstrap_samples": 100, "bootstrap_seed": True},
+        {"bootstrap_samples": 100, "bootstrap_seed": -1},
+        {"bootstrap_samples": 100, "bootstrap_seed": 2**64},
+        {"bootstrap_samples": 100, "confidence_level": True},
+        {"bootstrap_samples": 100, "confidence_level": float("nan")},
+        {"bootstrap_samples": 100, "confidence_level": float("inf")},
+        {"bootstrap_samples": 100, "confidence_level": 0.49},
+        {"bootstrap_samples": 100, "confidence_level": 1.0},
+    ],
+)
+def test_bootstrap_parameters_are_bounded_finite_and_reject_bool_integers(kwargs):
+    receipt, identity = frozen()
+    with pytest.raises(ValueError):
+        analyze_frozen_matrix(receipt, identity, **kwargs)
+
+
+def test_bootstrap_requires_at_least_two_independent_tasks():
+    receipt, identity = frozen(tasks=("only",), repetitions=2)
+    with pytest.raises(ValueError, match="at least 2 independent tasks"):
+        analyze_frozen_matrix(receipt, identity, bootstrap_samples=100)
 
 
 def test_official_success_with_runtime_failure_is_not_valid_or_false_completion():
@@ -261,9 +400,10 @@ def test_report_identity_hashes_the_entire_canonical_matrix_identity():
     canonical = json.dumps(
         identity, sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":")
     )
-    assert report["identity"]["matrix_identity_sha256"] == sha256(
-        canonical.encode("utf-8")
-    ).hexdigest()
+    assert (
+        report["identity"]["matrix_identity_sha256"]
+        == sha256(canonical.encode("utf-8")).hexdigest()
+    )
 
 
 @pytest.mark.parametrize("cached", [float("nan"), float("inf"), 11])
