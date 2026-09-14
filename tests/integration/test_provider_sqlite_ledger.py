@@ -65,23 +65,23 @@ def _create_run(uow: SqliteExecutionUnitOfWork):
     )[1]
 
 
-def _lease(uow: SqliteExecutionUnitOfWork):
+def _lease(uow: SqliteExecutionUnitOfWork, *, now=2.0):
     return uow.claim_runtime_activation(
         run_id="run-1",
         owner_id="provider-test",
         namespace="runtime.kernel",
-        now=2.0,
+        now=now,
         lease_ttl_seconds=100.0,
     )[1]
 
 
-def _coordinator(uow, provider, *, output_rate=2_000_000, hard_cap=50_000):
+def _coordinator(uow, provider, *, output_rate=2_000_000, hard_cap=50_000, now=10.0):
     return ProviderInvocationCoordinator(
         uow=uow,
         provider=provider,
         budget_policy=BudgetPolicy(hard_cap_micros=hard_cap),
         estimator=_estimator(output_rate=output_rate),
-        clock=lambda: 10.0,
+        clock=lambda: now,
     )
 
 
@@ -213,7 +213,12 @@ def test_sqlite_recovery_marks_handoff_unknown_and_hard_cap_is_atomic(
     with Database.open(path) as reopened:
         uow = SqliteExecutionUnitOfWork(reopened)
         provider = RecordingProvider()
-        settled = asyncio.run(_coordinator(uow, provider).reconcile_incomplete())
+        # Reopening a connection does not expire the live runtime lease (until 102).
+        assert asyncio.run(_coordinator(uow, provider).reconcile_incomplete()) == 0
+        assert uow.read_provider_invocation(record.invocation_id).state is (
+            ProviderInvocationState.HANDED_OFF
+        )
+        settled = asyncio.run(_coordinator(uow, provider, now=103.0).reconcile_incomplete())
         assert settled == 1
         assert uow.read_provider_invocation(record.invocation_id).state is (
             ProviderInvocationState.UNKNOWN
@@ -222,11 +227,11 @@ def test_sqlite_recovery_marks_handoff_unknown_and_hard_cap_is_atomic(
             (ProviderInvocationUnknownError, BudgetExceededError, BudgetUnknownError)
         ):
             asyncio.run(
-                _coordinator(uow, provider, hard_cap=1).invoke(
+                _coordinator(uow, provider, hard_cap=1, now=104.0).invoke(
                     RunId("run-1"),
                     _request("provider-request-2"),
                     cancel=CancelToken(),
-                    execution_lease=_lease(uow),
+                    execution_lease=_lease(uow, now=103.0),
                 )
             )
         assert provider.calls == 0
