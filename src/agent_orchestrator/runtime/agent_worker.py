@@ -115,6 +115,9 @@ class AgentBridge:
             agent_id=agent_id,
             turn_id=turn_id,
         )
+        capacity = getattr(self._runtime.ports.provider, "deployment_capacity", None)
+        if capacity is not None:
+            waiting = waiting or capacity.waiting(f"{agent.run_id}:provider-turn:")
         progress = snapshot.provider_turn_ordinal_to
         if state is AgentTurnState.RUNNING:
             # The turn's ordinal_to is written only at settlement. While it is

@@ -564,6 +564,24 @@ class ProviderInvocationCoordinator:
         wire_request = (
             request if self._request_preparer is None else self._request_preparer(request)
         )
+        capacity = getattr(binding.provider, "deployment_capacity", None)
+        if capacity is not None:
+            capacity.recover(self._uow)
+        async with (
+            capacity.guard(wire_request, cancel=cancel,
+                           key=capacity.record_key(self._uow, record))
+            if capacity is not None else nullcontext(None)
+        ) as capacity_handle:
+            return await self._invoke_physical(
+                record, binding, wire_request, cancel=cancel,
+                execution_lease=execution_lease, workflow_lease=workflow_lease,
+                capacity_handle=capacity_handle,
+            )
+
+    async def _invoke_physical(
+        self, record, binding, wire_request, *, cancel, execution_lease,
+        workflow_lease, capacity_handle=None,
+    ) -> ProviderResponse:
         ticket = None
         if self._provider_admission is not None:
             ticket = await self._provider_admission.acquire(
@@ -585,6 +603,8 @@ class ProviderInvocationCoordinator:
                     if self._provider_admission is not None and ticket is not None
                     else nullcontext()
                 ):
+                    if capacity_handle is not None:
+                        capacity_handle.handoff()
                     handed_off = self._uow.hand_off_provider_invocation(
                         record.invocation_id,
                         expected_version=record.version,
@@ -703,6 +723,15 @@ class ProviderInvocationCoordinator:
         finally:
             if active_here:
                 self._active_provider_calls.discard(record.invocation_id)
+            if capacity_handle is not None:
+                current = self._uow.read_provider_invocation(record.invocation_id)
+                if (current is not None and current.state is ProviderInvocationState.CLAIMED
+                        and current.handoff_attempt == record.handoff_attempt):
+                    # The SDK handoff transaction did not commit; transport was not entered.
+                    capacity_handle.known_terminal = True
+                elif (current is not None and current.state is ProviderInvocationState.FAILED
+                      and current.error_code == "provider_admission_denied"):
+                    capacity_handle.known_terminal = True
             if ticket is not None and self._provider_admission is not None:
                 self._provider_admission.observe(
                     ticket,
@@ -872,6 +901,10 @@ class ProviderInvocationCoordinator:
                 settled += 1
         if self._provider_admission is not None:
             self._provider_admission.recover(self._uow)
+        if self._legacy_binding is not None:
+            capacity = getattr(self._legacy_binding.provider, "deployment_capacity", None)
+            if capacity is not None:
+                capacity.recover(self._uow)
         return settled
 
     def _response_charge_for_record(

@@ -284,6 +284,10 @@ class MeteredProvider:
         handoff = [False]
         started = time.monotonic()
         try:
+            capacity = getattr(self.provider, "deployment_capacity", None)
+            if capacity is not None:
+                async with capacity.guard(request, cancel=cancel):
+                    return await self._invoke(request, cancel=cancel, handoff=handoff)
             return await self._invoke(request, cancel=cancel, handoff=handoff)
         except (Exception, asyncio.CancelledError) as error:
             if not handoff[0]:

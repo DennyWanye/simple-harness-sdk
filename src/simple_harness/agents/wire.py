@@ -165,6 +165,10 @@ class AgentProviderWire:
         self.in_flight = 0
         self.max_in_flight = 0
 
+    @property
+    def deployment_capacity(self):
+        return getattr(self._inner, "deployment_capacity", None)
+
     def prepare_request(self, request: ProviderRequest) -> ProviderRequest:
         """Freeze the actual wire copy before admission and physical handoff."""
         run_id = run_id_from_request(request.request_id.value)

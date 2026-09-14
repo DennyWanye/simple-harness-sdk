@@ -226,6 +226,10 @@ class _ConsumerProviderAdapter:
             adapter_key="consumer-adapter",
         )
 
+    @property
+    def deployment_capacity(self):
+        return getattr(self._port, "deployment_capacity", None)
+
     async def invoke(
         self,
         request: ProviderRequest,
