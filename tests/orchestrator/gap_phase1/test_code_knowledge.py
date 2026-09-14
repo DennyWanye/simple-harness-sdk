@@ -47,7 +47,10 @@ def test_k02_dangling_reference_does_not_support_a_claim(tmp_path, reference):
 
 def test_new_missions_freeze_strict_code_grading(tmp_path):
     service, mission, _ = two_branch_service(tmp_path)
-    assert service.domain_for(mission.id).version == "3"
+    domain = service.domain_for(mission.id)
+    assert domain.version == "4"
+    assert domain.completion_rules["claim_grading"] == "scoped-observation-v2"
+    assert domain.completion_rules["result_envelope_contract"] == "candidate-json-v1"
 
 
 @pytest.mark.asyncio

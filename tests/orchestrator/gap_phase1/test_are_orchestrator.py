@@ -399,10 +399,10 @@ def test_two_turns_share_loop_asyncclient_and_cumulative_budget(tmp_path, call_l
         )
 
 
-def test_distinct_domain_and_existing_code_v3_identity():
+def test_distinct_domain_and_current_code_identity():
     assert resolve_domain("are-v1") is ARE_PROFILE
     assert handler_for(ARE_PROFILE).name == "are"
-    assert resolve_domain("code-v1").version == "3"
+    assert resolve_domain("code-v1").version == "4"
     for name, role in ROLES.items():
         assert template_for_domain(role, ARE_PROFILE, {}).prompt_version == f"{name}-are-v1"
         assert (

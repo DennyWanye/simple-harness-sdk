@@ -1,3 +1,5 @@
+最后更新：2026-09-15 02:44 CST。code profile v4生产3e2792f：原分页/时间例外两个失败题自然复验均VERIFIED（16调用139927tokens/290.623秒），旧失败保留。完整v9为2275PASS32SKIP1旧版本断言FAIL，后继28PASS及官方ARE50PASS，无生产再改；当前源码UI v54冷恢复实点通过，0新调用。累计261本地调用5430502已知tokens下限/1早先未知，Flash0。N1–N8/A96B96仍OPEN，无打包。 当前明细及四张表见[结果封套后继](RESULT-CONTRACT-FOLLOWUP.md)；下方为历史检查点。
+
 # testPhase1 源码交接
 
 01:36接续：最新增量为AppWorld v3有效知识刷新与评测额度终止适配；69定向PASS，真实v3失败保留，新v4/全量v8/原生后继仍待。具体状态以 BUDGET-ANALYSIS-FOLLOWUP.md 最新条目为准。下方eeeba33仅为前一生产检查点。
