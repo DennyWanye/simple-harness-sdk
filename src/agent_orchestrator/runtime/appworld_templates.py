@@ -63,3 +63,18 @@ def register_appworld_templates() -> None:
                 tool_names=tools,
             )
         )
+        if name not in {"planner", "manager", "critic"}:
+            # Preserve v1 for frozen Missions. The result parser owns versioning;
+            # schema_version was never a legal ResultEnvelope field.
+            anchor = '{"schema_version":1,"task_id":'
+            if anchor not in instructions:
+                raise RuntimeError("AppWorld result example revision anchor is missing")
+            register_template(
+                RoleTemplate(
+                    name=name,
+                    prompt_version=f"{name}-appworld-v2",
+                    instructions=instructions.replace(anchor, '{"task_id":', 1)
+                    + "不要增加schema_version等额外字段；模板版本由系统冻结，不是结果字段。",
+                    tool_names=tools,
+                )
+            )

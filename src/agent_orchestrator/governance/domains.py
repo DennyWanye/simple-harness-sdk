@@ -357,7 +357,7 @@ DOC_PROFILE_V9 = replace(
 )
 DOC_PROFILE = DOC_PROFILE_V9
 
-APPWORLD_PROFILE = DomainProfileV1(
+APPWORLD_PROFILE_V1 = DomainProfileV1(
     id=APPWORLD_DOMAIN, version="1",
     allowed_input_kinds=("text/*", "application/json"), allowed_artifact_kinds=("text/*",),
     allowed_evidence_kinds=("file", "artifact", "tool-run", "knowledge"),
@@ -376,6 +376,18 @@ APPWORLD_PROFILE = DomainProfileV1(
         "planner", "manager", "worker", "critic", "arbiter", "synthesizer",
         "explorer", "exploiter", "simplifier", "connector", "failure_analyst",
     )},
+)
+
+APPWORLD_PROFILE = replace(
+    APPWORLD_PROFILE_V1,
+    version="2",
+    role_templates={
+        **APPWORLD_PROFILE_V1.role_templates,
+        **{role: f"{role}-appworld-v2" for role in (
+            "worker", "arbiter", "synthesizer", "explorer", "exploiter", "simplifier",
+            "connector", "failure_analyst",
+        )},
+    },
 )
 
 DOMAINS: Mapping[str, DomainProfileV1] = MappingProxyType(

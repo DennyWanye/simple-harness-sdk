@@ -1,5 +1,6 @@
 """The actual AppWorld driver must plan against its 256K execution profile."""
 
+import json
 import re
 from types import SimpleNamespace
 
@@ -12,7 +13,6 @@ from agent_orchestrator.storage.store import Store
 from agent_orchestrator.testing.fixtures import (
     RoleScriptedProvider,
     critic_step,
-    envelope_step,
     graph_proposal_step,
     package_of,
 )
@@ -47,13 +47,24 @@ async def test_undersized_plan_is_repaired_before_worker_and_critic_run(tmp_path
             "budget": {"max_tokens": tokens, "max_attempts": 1},
         }])
 
+    def published_envelope(request):
+        prompt = request.messages[0].content
+        example, _ = json.JSONDecoder().raw_decode(prompt[prompt.index('{"'):])
+        package = package_of(request)
+        example.update(
+            task_id=package["task_contract"]["task_id"],
+            attempt_id=package["attempt"]["attempt_id"],
+            summary="Observed completion", artifacts=["REPORT.md"],
+            evidence=["file:REPORT.md"], cost={"tool_calls": 2},
+        )
+        return "<result_envelope>" + json.dumps(example) + "</result_envelope>"
+
     provider = RoleScriptedProvider({
         "planner": [proposal(250_000), proposal(800_000)],
         "worker": [
             ("appworld_execute", {"code": "public_operation()"}),
             ("workspace_write_file", {"path": "REPORT.md", "content": "Observed completion"}),
-            envelope_step(summary="Observed completion", artifacts=["REPORT.md"],
-                          claims=["Observed completion"]),
+            published_envelope,
         ],
         "critic": [critic_step(verdict="PASS", criteria_met=True)],
     })
