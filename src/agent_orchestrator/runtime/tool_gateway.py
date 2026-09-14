@@ -588,6 +588,7 @@ class WorkspaceToolGateway:
                 message=f"this Attempt may execute at most {binding.max_tool_calls} tool calls",
             )
         # 5. execute
+        appworld_started = False
         try:
             if call.name == "workspace_read_file":
                 untrusted = is_untrusted(
@@ -628,6 +629,7 @@ class WorkspaceToolGateway:
                         or binding.mission_id != self._appworld_mission_id):
                     raise WorkspaceError("AppWorld execution is unavailable for this binding")
                 async with self._appworld_lock:
+                    appworld_started = True
                     pending = asyncio.create_task(
                         asyncio.to_thread(self._appworld_execute, arguments["code"])
                     )
@@ -688,7 +690,20 @@ class WorkspaceToolGateway:
                     stage="permission",
                     message=call.name,
                 )
+        except asyncio.CancelledError:
+            # A shielded physical call may have settled, but the SDK caller did
+            # not receive a result. Its effect remains UNKNOWN, never success.
+            record["outcome"] = "unknown"
+            record["stage"] = "execute"
+            raise
         except (WorkspaceError, KeyError, TypeError) as error:
+            if appworld_started:
+                # A callback exception belongs to the SDK effect path, even if
+                # it happens to share a type with a workspace refusal.
+                record["outcome"] = "failed"
+                record["stage"] = "execute"
+                record["error_code"] = "appworld_callback_error"
+                raise
             return self._reject(
                 call,
                 record,
@@ -697,6 +712,13 @@ class WorkspaceToolGateway:
                 stage="execute",
                 message=str(error),
             )
+        except Exception:  # noqa: BLE001 - audit unexpected failures without changing SDK propagation
+            record["outcome"] = "failed"
+            record["stage"] = "execute"
+            record["error_code"] = (
+                "appworld_callback_error" if appworld_started else "unexpected_execution_error"
+            )
+            raise
         # 6. record
         record["outcome"] = "succeeded"
         if self.on_executed is not None:

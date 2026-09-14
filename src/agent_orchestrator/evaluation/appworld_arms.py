@@ -28,6 +28,8 @@ from .appworld import AppWorldEpisode
 from .experiment import ExperimentBudget
 
 TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list", "appworld_execute")
+SELF_SELECTION_PROTOCOL_VERSION = "appworld-r-self-selection-v1"
+SELF_SELECTION_MAX_CHARS = 16_384
 PUBLIC_GUIDANCE = (
     "Operate the user's AppWorld task through appworld_execute(code). The Python shell and "
     "application state persist. Use print to observe results. Discover public APIs with "
@@ -160,8 +162,10 @@ async def _single_identity(
                 receipt = await agent.submit(
                     f"Select the best of your {repeats} candidates "
                     "using only your own observations. "
-                    'Do not call tools. Output exactly JSON {"selected_candidate":N}, where N is a '
-                    f"1-based integer from 1 to {repeats}. "
+                    "Do not call tools. You may explain your choice before one selection envelope, "
+                    "but output exactly one JSON object with no other JSON objects: "
+                    '{"protocol_version":"appworld-r-self-selection-v1","selected_candidate":N}, '
+                    f"where N is a 1-based integer from 1 to {repeats}. "
                     "Do not invent hidden evaluation results.",
                     input_id="self-selection",
                 )
@@ -170,10 +174,7 @@ async def _single_identity(
                 (root / "turns.json").write_text(json.dumps(results, ensure_ascii=False, indent=2))
                 if choice.public_output is None:
                     raise ValueError("self-selection has no output")
-                decoded = json.loads(choice.public_output.content)
-                selected = decoded.get("selected_candidate")
-                if type(selected) is not int or not 1 <= selected <= repeats:
-                    raise ValueError("invalid self-selected candidate")
+                selected = _parse_self_selection(choice.public_output.content, repeats)
                 episode.restore(candidates[selected - 1])
             return {
                 "arm": arm,
@@ -185,6 +186,43 @@ async def _single_identity(
             }
     finally:
         (root / "gateway.json").write_text(json.dumps(gateway.calls, ensure_ascii=False, indent=2))
+
+
+def _parse_self_selection(content: str, repeats: int) -> int:
+    """Accept one versioned selection envelope, optionally after prose.
+
+    A response can contain an explanation prefix, but more than one JSON object
+    is ambiguous.  The envelope is closed so an older or expanded protocol
+    cannot silently change which candidate is restored.
+    """
+    if not isinstance(content, str) or len(content) > SELF_SELECTION_MAX_CHARS:
+        raise ValueError("self-selection output must be bounded text")
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate self-selection field")
+            result[key] = value
+        return result
+
+    start = content.find("{")
+    if start < 0:
+        raise ValueError("self-selection requires exactly one JSON envelope")
+    try:
+        envelope, end = json.JSONDecoder(object_pairs_hook=unique_object).raw_decode(content, start)
+    except (json.JSONDecodeError, RecursionError) as error:
+        raise ValueError("invalid self-selection JSON envelope") from error
+    if content[end:].strip() not in {"", "```"}:
+        raise ValueError("self-selection requires exactly one final JSON envelope")
+    if set(envelope) != {"protocol_version", "selected_candidate"}:
+        raise ValueError("invalid self-selection envelope fields")
+    if envelope["protocol_version"] != SELF_SELECTION_PROTOCOL_VERSION:
+        raise ValueError("unsupported self-selection protocol version")
+    selected = envelope["selected_candidate"]
+    if type(selected) is not int or not 1 <= selected <= repeats:
+        raise ValueError("invalid self-selected candidate")
+    return selected
 
 
 async def _orchestrated(
@@ -239,6 +277,7 @@ async def _orchestrated(
                     max_runtime_seconds=int(budget.seconds),
                 ),
                 domain="appworld-v1",
+                runtime_profile_id=profile.profile_id,
             )
         )
         try:

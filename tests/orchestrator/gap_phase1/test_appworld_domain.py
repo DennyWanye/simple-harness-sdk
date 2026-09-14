@@ -2,14 +2,146 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
+from threading import Event
 
 import pytest
 
+from agent_orchestrator.artifacts.workspace import WorkspaceManager
 from agent_orchestrator.contracts import ContractError
 from agent_orchestrator.governance.domains import APPWORLD_PROFILE, CODE_PROFILE, DOC_PROFILE
 from agent_orchestrator.runtime.role_templates import ROLES, template_for_domain
+from agent_orchestrator.runtime.tool_gateway import WorkspaceBinding, WorkspaceToolGateway
 from agent_orchestrator.verification.domain_handlers import handler_for
+from simple_harness.contracts import CallId, RequestId, RunId
+from simple_harness.tools import (
+    CancellationToken,
+    FunctionTool,
+    ToolCall,
+    ToolContext,
+    ToolOutcome,
+    ToolRegistry,
+    ToolSpec,
+)
+
+
+def _gateway(tmp_path, callback):
+    manager = WorkspaceManager(tmp_path)
+    manager.create("attempt", seed={})
+    gateway = WorkspaceToolGateway(manager, appworld_execute=callback)
+    gateway.bind_appworld("mission")
+    gateway.bind(
+        "run",
+        WorkspaceBinding(
+            "attempt", "work", True, ("appworld_execute",), mission_id="mission"
+        ),
+    )
+    call = ToolCall(CallId("call"), "appworld_execute", {"code": "invoke"})
+    return gateway, call
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [ValueError, RuntimeError, TypeError])
+async def test_appworld_callback_exception_is_failed_without_leaking_message(
+    tmp_path, error_type
+):
+    secret = "key_live_private_value"
+    failure = error_type(secret)
+    invocations = []
+
+    def callback(code):
+        invocations.append(code)
+        raise failure
+
+    gateway, call = _gateway(tmp_path, callback)
+    executed = []
+    gateway.on_executed = lambda run_id, record: executed.append(record)
+    with pytest.raises(error_type) as caught:
+        await gateway.execute(call, {"run_id": "run"})
+    assert caught.value is failure
+    assert invocations == ["invoke"]
+    assert executed == []
+    assert gateway.executed_calls("run") == 0
+    assert gateway.calls[0]["outcome"] == "failed"
+    assert gateway.calls[0]["stage"] == "execute"
+    assert gateway.calls[0]["error_code"] == "appworld_callback_error"
+    assert secret not in repr(gateway.calls)
+
+
+@pytest.mark.asyncio
+async def test_appworld_gateway_failure_settles_as_failed_at_sdk_boundary(tmp_path):
+    def callback(_code):
+        raise RuntimeError("key_live_private_value")
+
+    gateway, call = _gateway(tmp_path, callback)
+
+    async def handler(arguments, context):
+        return await gateway.execute(
+            ToolCall(context.call_id, "appworld_execute", arguments),
+            {"run_id": context.run_id.value},
+        )
+
+    registry = ToolRegistry([
+        FunctionTool(
+            ToolSpec(
+                "appworld_execute",
+                "Execute in AppWorld.",
+                {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                    "additionalProperties": False,
+                },
+            ),
+            handler,
+        )
+    ])
+    result = await registry.invoke(
+        call, ToolContext(RunId("run"), RequestId("request"), CancellationToken())
+    )
+    assert result.outcome is ToolOutcome.FAILED
+    assert result.error_code == "tool_handler_failed"
+    assert "key_live_private_value" not in repr(result)
+    assert gateway.calls[0]["outcome"] == "failed"
+    assert "key_live_private_value" not in repr(gateway.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("physical_fails", [False, True])
+async def test_appworld_cancel_audits_unknown_after_physical_settlement(tmp_path, physical_fails):
+    entered, release, settled = Event(), Event(), Event()
+    invocations = []
+
+    def callback(code):
+        invocations.append(code)
+        entered.set()
+        try:
+            assert release.wait(3)
+            if physical_fails:
+                raise RuntimeError("key_live_private_value")
+            return {"output": "done"}
+        finally:
+            settled.set()
+
+    gateway, call = _gateway(tmp_path, callback)
+    executed = []
+    gateway.on_executed = lambda run_id, record: executed.append(record)
+    task = asyncio.create_task(gateway.execute(call, {"run_id": "run"}))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()  # shield settlement still owns the physical call
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert settled.is_set() and invocations == ["invoke"]
+    assert gateway.calls[0]["outcome"] == "unknown"
+    assert gateway.calls[0]["stage"] == "execute"
+    assert "key_live_private_value" not in repr(gateway.calls)
+    assert executed == [] and gateway.executed_calls("run") == 0
 
 
 def test_appworld_capability_snapshot_is_stable_and_does_not_serialize_callback(tmp_path):

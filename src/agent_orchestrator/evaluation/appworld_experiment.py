@@ -271,14 +271,23 @@ async def run_appworld_pilot(
                 official_success = official.get("success") if isinstance(official, dict) else None
                 if type(official_success) is not bool:
                     official_success = None
+                runtime_success = _runtime_success(outcome)
+                valid_success = (
+                    error is None
+                    and finalize_error is None
+                    and not fatal
+                    and runtime_success is True
+                    and official_success is True
+                )
                 record["pilot"] = {
                     "executor_returned": error is None,
-                    "runtime_success": _runtime_success(outcome),
+                    "runtime_success": runtime_success,
                     "runtime_error": type(error).__name__ if error is not None else None,
                     "finalization_error": (
                         type(finalize_error).__name__ if finalize_error is not None else None
                     ),
                     "official_success": official_success,
+                    "valid_success": valid_success,
                     "official_result": official,
                     "arm_result": outcome,
                     "usage": {
@@ -309,10 +318,7 @@ async def run_appworld_pilot(
                 # The runner receives the settled lower bound even on failure;
                 # unknown use stays explicit in the pilot receipt and stops admission.
                 return ExecutionResult(
-                    error is None
-                    and finalize_error is None
-                    and not fatal
-                    and _runtime_success(outcome) is not False,
+                    valid_success,
                     meter.counters,
                 )
 

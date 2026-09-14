@@ -51,7 +51,8 @@ class Provider:
             self.steps += [
                 ("appworld_execute", {"code": "2"}),
                 "second done",
-                '{"selected_candidate":1}',
+                'I prefer candidate 1 because its observed result was correct. '
+                '{"protocol_version":"appworld-r-self-selection-v1","selected_candidate":1}',
             ]
         self.requests = []
 
@@ -108,6 +109,49 @@ async def test_base_agent_arms_execute_real_gateway_and_r_reuses_same_identity(t
                 == 1
             )
     assert world.evaluations == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "selection",
+    [
+        'x' * 16385,
+        '{"protocol_version":"appworld-r-self-selection-v1","selected_candidate":1,"selected_candidate":2}',
+        '{broken} {"protocol_version":"appworld-r-self-selection-v1","selected_candidate":1}',
+        '{"selected_candidate":1}',
+        '{"protocol_version":"appworld-r-self-selection-v2","selected_candidate":1}',
+        '{"protocol_version":"appworld-r-self-selection-v1","selected_candidate":true}',
+        '{"protocol_version":"appworld-r-self-selection-v1","selected_candidate":3}',
+        '{"protocol_version":"appworld-r-self-selection-v1","selected_candidate":1} '
+        '{"protocol_version":"appworld-r-self-selection-v1","selected_candidate":2}',
+    ],
+)
+async def test_r_self_selection_rejects_unversioned_invalid_or_ambiguous_envelopes(
+    tmp_path, selection
+):
+    world = World()
+    provider = Provider("R")
+    provider.steps[-1] = selection
+    with AppWorldEpisode(
+        AppWorldConfig("task", "experiment"), world_factory=lambda **_: world
+    ) as episode:
+        with pytest.raises(ValueError, match="self-selection|candidate|protocol"):
+            await execute_arm(
+                "R",
+                episode,
+                ArmRuntime(
+                    provider,
+                    "agent-model",
+                    UpperBoundTokenizer(),
+                    ContextPolicy(),
+                    ExperimentBudget(100000, 100000, 200000, 30, 20),
+                    default_output_tokens=1024,
+                    maximum_output_tokens=8192,
+                ),
+                tmp_path / "R-invalid",
+            )
+    # Invalid output never restores another candidate as an implicit selection.
+    assert world.value == 2
 
 
 @pytest.mark.asyncio

@@ -160,9 +160,10 @@ async def test_fixed_matrix_shared_meter_host_score_and_resume(tmp_path):
     assert len({world.config["experiment_name"] for world in worlds}) == 16
     assert {arm for _, arm, _ in seen} == set(ARMS)
     assert all(world.saved == 2 and world.evaluated == world.closed == 1 for world in worlds)
-    assert all(r["status"] == "success" for r in result["runs"])
+    assert all(r["status"] == "failure" for r in result["runs"])
     assert all(r["pilot"]["runtime_success"] is True for r in result["runs"])
     assert all(r["pilot"]["official_success"] is False for r in result["runs"])
+    assert all(r["pilot"]["valid_success"] is False for r in result["runs"])
     assert all(r["pilot"]["usage"]["known_counters"]["calls"] == 1 for r in result["runs"])
     assert await run_appworld_pilot(config(), evidence_root=tmp_path, **params) == result
     assert len(worlds) == 16
@@ -369,6 +370,24 @@ async def test_failed_mission_return_is_not_successful_runtime(tmp_path):
     assert all(r["status"] == "failure" for r in result["runs"])
     assert all(r["pilot"]["executor_returned"] for r in result["runs"])
     assert all(r["pilot"]["runtime_success"] is False for r in result["runs"])
+
+
+@pytest.mark.asyncio
+async def test_official_success_is_recorded_but_cannot_validate_failed_driver(tmp_path):
+    worlds, providers = [], []
+
+    async def execute(arm, episode, *args):
+        worlds[-1].evaluate = lambda: SimpleNamespace(to_dict=lambda: {"success": True})
+        raise ValueError("R self-selection envelope rejected")
+
+    result = await run_appworld_pilot(
+        config(), evidence_root=tmp_path, **inputs(worlds, providers, execute)
+    )
+    assert all(r["status"] == "failure" for r in result["runs"])
+    assert all(r["pilot"]["official_success"] is True for r in result["runs"])
+    assert all(r["pilot"]["executor_returned"] is False for r in result["runs"])
+    assert all(r["pilot"]["runtime_success"] is None for r in result["runs"])
+    assert all(r["pilot"]["valid_success"] is False for r in result["runs"])
 
 
 @pytest.mark.asyncio
