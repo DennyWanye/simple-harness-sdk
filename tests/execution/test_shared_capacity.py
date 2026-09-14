@@ -207,7 +207,7 @@ def test_enqueue_replay_and_strict_arguments_never_reissue_terminal_key(tmp_path
 def test_reused_pid_does_not_inherit_old_process_capacity(tmp_path, monkeypatch, phase):
     from simple_harness.execution import shared_capacity as module
 
-    monkeypatch.setattr(module, "_process_started", lambda pid: 100.0)
+    monkeypatch.setattr(module, "_process_identity", lambda pid: "identity-100")
     ledger = CapacityLedger(tmp_path / "capacity.db", pool_id="p", max_slots=1, max_tokens=10)
     ticket = ledger.enqueue("old", weight=10, owner="old-process", pid=os.getpid())
     if phase != "WAITING":
@@ -215,7 +215,41 @@ def test_reused_pid_does_not_inherit_old_process_capacity(tmp_path, monkeypatch,
     if phase == "HANDED_OFF":
         ledger.mark_handed_off(ticket)
     # Same numeric PID, but the kernel reports a different process start identity.
-    monkeypatch.setattr(module, "_process_started", lambda pid: 200.0)
+    monkeypatch.setattr(module, "_process_identity", lambda pid: "identity-200")
     row = ledger.snapshot().rows[0]
     assert row.state == ("UNKNOWN" if phase == "HANDED_OFF" else "RELEASED")
     assert ledger.snapshot().held_slots == (1 if phase == "HANDED_OFF" else 0)
+
+
+@pytest.mark.parametrize("phase", ["WAITING", "RESERVED", "HANDED_OFF"])
+def test_wall_clock_adjustment_does_not_evict_live_owner(tmp_path, monkeypatch, phase):
+    import psutil
+
+    from simple_harness.execution import shared_capacity as module
+
+    ledger = CapacityLedger(tmp_path / "capacity.db", pool_id="p", max_slots=1, max_tokens=10)
+    ticket = ledger.enqueue("live", weight=10, owner="live", pid=os.getpid())
+    if phase != "WAITING":
+        assert ledger.try_acquire(ticket)
+    if phase == "HANDED_OFF":
+        ledger.mark_handed_off(ticket)
+    real_create_time = psutil.Process.create_time
+    monkeypatch.setattr(psutil.Process, "create_time", lambda self: real_create_time(self) + 120)
+    assert ledger.snapshot().rows[0].state == phase
+    assert module._process_identity(os.getpid()) is not None
+
+
+def test_legacy_wall_clock_identity_is_never_compared_with_stable_identity(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "capacity.db"
+    ledger = CapacityLedger(path, pool_id="p", max_slots=1, max_tokens=10)
+    ticket = ledger.enqueue("legacy", weight=10, owner="old", pid=os.getpid())
+    assert ledger.try_acquire(ticket)
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE shared_capacity_entries ADD COLUMN process_started REAL")
+        connection.execute(
+            "UPDATE shared_capacity_entries SET process_identity=NULL, process_started=1.0"
+        )
+    reopened = CapacityLedger(path, pool_id="p", max_slots=1, max_tokens=10)
+    assert reopened.snapshot().rows[0].state == "RESERVED"

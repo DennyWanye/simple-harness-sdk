@@ -9,6 +9,7 @@ import importlib
 import os
 import secrets
 import sqlite3
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -88,13 +89,21 @@ def _pid_alive(pid: int) -> bool:
     return True  # includes conservative PID-reuse handling
 
 
-def _process_started(pid: int) -> float | None:
+def _process_identity(pid: int) -> str | None:
     try:
         psutil = importlib.import_module("psutil")
     except ImportError as error:
         raise RuntimeError("shared capacity requires the SDK local-capacity extra") from error
+    if tuple(psutil.version_info) < (7, 2, 2):
+        raise RuntimeError("shared capacity requires psutil >= 7.2.2")
+    if sys.platform not in {"darwin", "linux", "win32"}:
+        return None  # no stable identity attested on other platforms
     try:
-        return float(psutil.Process(pid).create_time())
+        # psutil's public process hash combines PID with its stable process
+        # identity (monotonic kernel creation time on macOS/Linux). In contrast,
+        # create_time() is wall-clock adjusted and can differ across processes
+        # after NTP updates. A hash collision only retains capacity conservatively.
+        return f"psutil-process-v1:{hash(psutil.Process(pid))}"
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return None  # lack of process identity never proves an active PID dead
 
@@ -169,9 +178,9 @@ class CapacityLedger:
                     "ALTER TABLE shared_capacity_entries ADD COLUMN evidence_ref TEXT "
                     "CHECK(evidence_ref IS NULL OR length(evidence_ref) > 0)"
                 )
-            if "process_started" not in columns:
+            if "process_identity" not in columns:
                 connection.execute(
-                    "ALTER TABLE shared_capacity_entries ADD COLUMN process_started REAL"
+                    "ALTER TABLE shared_capacity_entries ADD COLUMN process_identity TEXT"
                 )
             row = connection.execute(
                 "SELECT max_slots, max_tokens FROM shared_capacity_pools WHERE pool_id = ?",
@@ -192,17 +201,17 @@ class CapacityLedger:
 
     def _recover_dead(self, connection: sqlite3.Connection) -> None:
         rows = connection.execute(
-            """SELECT sequence, pid, state, process_started FROM shared_capacity_entries
+            """SELECT sequence, pid, state, process_identity FROM shared_capacity_entries
                WHERE pool_id = ? AND state IN ('WAITING','RESERVED','HANDED_OFF')""",
             (self.pool_id,),
         ).fetchall()
         for row in rows:
             if _pid_alive(row["pid"]):
-                current = _process_started(row["pid"])
+                current = _process_identity(row["pid"])
                 if (
-                    row["process_started"] is None
+                    row["process_identity"] is None
                     or current is None
-                    or current == row["process_started"]
+                    or current == row["process_identity"]
                 ):
                     continue
             state = "UNKNOWN" if row["state"] == "HANDED_OFF" else "RELEASED"
@@ -248,8 +257,8 @@ class CapacityLedger:
                 (self.pool_id, key, owner, epoch, pid, weight),
             )
             connection.execute(
-                "UPDATE shared_capacity_entries SET process_started=? WHERE pool_id=? AND key=?",
-                (_process_started(pid), self.pool_id, key),
+                "UPDATE shared_capacity_entries SET process_identity=? WHERE pool_id=? AND key=?",
+                (_process_identity(pid), self.pool_id, key),
             )
             return CapacityTicket(self.pool_id, key, owner, epoch, weight)
 
