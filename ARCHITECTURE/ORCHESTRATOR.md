@@ -1,3 +1,5 @@
+最后更新：2026-09-15。修复 Mission 最终 Critic 预算增长误要求 Task Attempt：旧源复现FAIL，新关联47PASS；最终原生复验待，前一完整2308PASS/32条件SKIP属于8b5cbc1。N1–N8仍OPEN。见 plans/2026-09-14-gap-phase1/SHARED-CAPACITY.md。
+
 最后更新：2026-09-15 06:27 CST。N1固定物理响应截止与response_wait接入：27定向PASS，旧桥反例FAIL。原生v57前台成功/物理重叠2路但后台180秒误判停滞，旧测试已取消，保留在途账；新完整与原生待验，N1–N8仍OPEN。 [证据](../plans/2026-09-14-gap-phase1/SHARED-CAPACITY.md)。
 
 最后更新：2026-09-15 06:01 CST。共享容量账本采用稳定进程identity，避免校时误释放；SDK local-capacity要求psutil>=7.2.2。旧源3反例FAIL，新25定向PASS/1.85秒；完整及真实多进程后继仍待验。前一完整2302PASS只对应c6b1643。详见 [N1](../plans/2026-09-14-gap-phase1/SHARED-CAPACITY.md)。

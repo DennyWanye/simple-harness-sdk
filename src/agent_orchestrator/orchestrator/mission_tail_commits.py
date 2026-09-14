@@ -221,6 +221,23 @@ class MissionTailCommitsMixin:
         attempt_id = intent.config.get("attempt_id")
         attempt = self._store.get_attempt(attempt_id) if isinstance(attempt_id, str) else None
         if attempt is None:
+            # Final Mission review has a verification-view ID, not a Worker
+            # Attempt. Its own Mission reservation grows through the ordinary
+            # ledger; it must never enter a Task's protected-tail transfer.
+            prefix = f"{intent.mission_id}:judge:"
+            ordinal = intent.subject_id.removeprefix(prefix)
+            reservation = self._ledger.reservation(subject_id)
+            if (
+                intent.subject_id.startswith(prefix)
+                and ordinal.isascii() and ordinal.isdecimal() and int(ordinal) > 0
+                and intent.config.get("task_id") is None
+                and isinstance(attempt_id, str) and bool(attempt_id)
+                and reservation is not None
+                and reservation["mission_id"] == intent.mission_id
+                and reservation["account_id"] == f"budget:{intent.mission_id}"
+                and reservation["state"] == "RESERVED"
+            ):
+                return False
             raise BudgetError("system Critic growth requires its actual Attempt")
         self._protected_critic_subject(attempt.id, subject_id)
         row = self.system_task_hold(attempt.task_id)

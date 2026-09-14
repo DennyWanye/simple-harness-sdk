@@ -33,3 +33,10 @@ SQLite FIFO/短事务保存WAITING、RESERVED、HANDED_OFF、UNKNOWN和终态；
 2026-09-15 06:27 CST：前台真实3540tokens/2.565秒成功且与Mission实际两路重叠，但后台非流式模型响应超过180秒被误报executor_stalled，已记录失败并取消后续尝试；在途用量保留，未宣称UI通过。容量包装现在对实际物理await设置固定600秒截止，AgentBridge仅在该活跃有界await期间标记provider_response_wait（billable=true），不伪造progress。队列仍为非计费slot wait，截止/取消清除活跃标记；未知物理结果仍占容量。新27定向PASS/2.58秒（实际Orchestrator慢响应越过短stall及超时UNKNOWN保留），旧liveness桥反例FAIL；当前完整/原生重跑待验。上一e80cfa8完整2306PASS/32条件SKIP/713.40秒只覆盖上一源码。
 
 额外旧SDK出站/预算/恢复78PASS/3.58秒；一条历史测试时钟未使租约过期，c60bf518也FAIL，补足有效租约不抢占和过期后恢复两阶段。两项额外Memory互操作测试因环境缺少兼容simple_harness_memory未收集，不算通过。
+
+
+### 2026-09-15 最终 Mission 评审预算修复
+
+本地源码 UI v58 不再出现停滞误杀：Task COMPLETED、code_test 实跑 83 PASS、三产物 VERIFIED；Mission 仍 FAILED，最终 Critic 在出站前被拒绝（已知0调用）。原因是 Mission 自身预留从6000扩到实际请求9894时，误进入系统 Task Critic 的保护额度路径，要求不存在的 Attempt。限定合法 Mission judge、同 Mission 账户且无 Task 归属时回到普通预算账本；总预算不变，其他 Task/外来账户仍拒绝。旧源码决定性1 FAIL；新关联47 PASS/5.05秒。当前生产完整编排及原生复验待；前一8b5cbc1范围2308 PASS/32条件SKIP/668.54秒，620源码测试hash无变化。
+
+Host本机证据索引：`.local-test-evidence/2026-09-15/shared-capacity/judge-growth-old.log`、`judge-growth-v2.log`、`native-wave-a-context-v58/failed-judge-audit.json`。v58八次物理调用50661已知tokens、1前置拒绝、0未知新增、0抢占、容量归零；Mission阶段463.944秒。不得把已验证Task计作Mission交付。N1–N8仍OPEN。
