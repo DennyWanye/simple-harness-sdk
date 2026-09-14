@@ -254,7 +254,7 @@ def test_print_forgery_wrong_response_and_external_service_change_cannot_promote
 def test_host_receipt_cannot_cross_code_v3_or_are_domain(tmp_path, independent_episode,
                                                          domain):
     episode, _, _ = independent_episode
-    assert resolve_domain(CODE_DOMAIN).version == "3"
+    assert resolve_domain(CODE_DOMAIN).version == "4"
     assert resolve_domain(ARE_DOMAIN).version == "1"
     service = CommitService(Store.open(tmp_path / f"{domain}.db"))
     mission, _ = service.create_mission(MissionSpec(

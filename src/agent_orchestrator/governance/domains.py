@@ -272,10 +272,21 @@ CODE_PROFILE_V2 = replace(
 
 # New Missions distinguish evidence actually used from rejected historical mentions.
 # Frozen v2 profiles and prompts remain byte-identical for recovery.
-CODE_PROFILE = replace(
+CODE_PROFILE_V3 = replace(
     CODE_PROFILE_V2,
     version="3",
     role_templates={role: f"{role}-code-observation-v3" for role in CODE_PROFILE_V2.role_templates},
+)
+
+# A concrete candidate envelope replaces the ambiguous {json} placeholder only
+# for new Missions. Stored v1-v3 domain profiles keep their original wire text.
+CODE_PROFILE = replace(
+    CODE_PROFILE_V3,
+    version="4",
+    completion_rules={
+        **CODE_PROFILE_V3.completion_rules,
+        "result_envelope_contract": "candidate-json-v1",
+    },
 )
 
 DOC_PROFILE_V3 = DomainProfileV1(

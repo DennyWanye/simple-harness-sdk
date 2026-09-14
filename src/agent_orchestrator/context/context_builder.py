@@ -40,6 +40,7 @@ from .. import __version__ as PACKAGE_VERSION
 from ..contracts import Attempt, Mission, Task
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, sha256_hex
 from ..governance.domains import (
+    CODE_DOMAIN,
     CODE_PROFILE,
     DOC_DOMAIN,
     DomainProfileV1,
@@ -253,6 +254,38 @@ def _task_contract(task: Task) -> dict[str, Any]:
     }
 
 
+def _result_output_contract(task: Task, attempt: Attempt, domain: DomainProfileV1) -> str:
+    if (domain.id != CODE_DOMAIN or domain.completion_rules.get(
+        "result_envelope_contract"
+    ) != "candidate-json-v1"):
+        return "<result_envelope>{json}</result_envelope>"
+    example: dict[str, Any] = {
+        "task_id": task.id,
+        "attempt_id": attempt.id,
+        "outcome": "candidate",
+        "summary": "Describe only work actually completed in this attempt.",
+        "claims": [],
+        "evidence": list(task.outputs),
+        "artifacts": list(task.outputs),
+        "proposed_tasks": [],
+        "used_knowledge": [],
+        "risks": [],
+        "cost": {"tool_calls": 0},
+    }
+    return (
+        "<result_envelope>" + canonical_json(example) + "</result_envelope>\n"
+        "This is a valid JSON example bound to your actual task_id and attempt_id. "
+        "Keep those identities; replace summary, claims, evidence, artifacts, used_knowledge, "
+        "risks and cost with the actual result. Only list files that exist and evidence "
+        "actually obtained. For rule_check, supply at least one checkable claim with its actual "
+        "evidence; the empty claims array in this shape example is not a complete submission. "
+        "A JSON deliverable file is separate from this final envelope. "
+        "The envelope is one flat object: never wrap it in a json field or emit a placeholder. "
+        "Use valid JSON escaping for quotes and newlines. Submission remains a candidate "
+        "for independent verification; this example does not grant success or verified status."
+    )
+
+
 def build_worker_package(
     mission: Mission,
     task: Task,
@@ -309,7 +342,7 @@ def build_worker_package(
             "reserved": attempt.budget_reserved.to_json(),
             "task": task.budget.to_json(),
         },
-        "output_contract": "<result_envelope>{json}</result_envelope>",  # §10 item 11
+        "output_contract": _result_output_contract(task, attempt, domain),  # §10 item 11
     }
     if action_candidate_contract is not None:
         package["action_candidate_contract"] = dict(action_candidate_contract)

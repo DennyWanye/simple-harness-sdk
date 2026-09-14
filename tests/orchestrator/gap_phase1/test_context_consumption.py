@@ -370,7 +370,7 @@ def test_v3_usage_guidance_preserves_frozen_v2_profile_and_prompt():
     )
     assert old.prompt_version == "worker-code-observation-v2"
     current = template_for_domain(ROLES["worker"], CODE_PROFILE, {})
-    assert CODE_PROFILE.version == "3"
+    assert CODE_PROFILE.version == "4"
     assert current.prompt_version == "worker-code-observation-v3"
     assert "提及但明确排除" in current.instructions
     assert "你引用过的知识 id 必须写进" not in current.instructions
