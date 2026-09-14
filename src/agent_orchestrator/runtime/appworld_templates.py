@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def register_appworld_templates() -> None:
-    from .role_templates import ROLES, RoleTemplate, register_template
+    from .role_templates import ROLES, TEMPLATE_VERSIONS, RoleTemplate, register_template
 
     common = (
         "本Mission操作一个AppWorld模拟世界。所有Worker共享同一世界与Python变量，"
@@ -76,5 +76,27 @@ def register_appworld_templates() -> None:
                     instructions=instructions.replace(anchor, '{"task_id":', 1)
                     + "不要增加schema_version等额外字段；模板版本由系统冻结，不是结果字段。",
                     tool_names=tools,
+                )
+            )
+
+            previous = TEMPLATE_VERSIONS[name][f"{name}-appworld-v2"]
+            register_template(
+                RoleTemplate(
+                    name=name,
+                    prompt_version=f"{name}-appworld-v3",
+                    instructions=previous.instructions.replace(
+                        "used_knowledge只填写当前上下文提供的ID。",
+                        "used_knowledge只填写实际支撑本次结论且当前仍有效的知识ID。",
+                    ) + (
+                        "\n知识有效性：外部世界变化后，初始上下文中的知识可能已经SUPERSEDED。"
+                        "若曾使用知识，在提交结果前调用knowledge_list核对当前有效目录；"
+                        "需要原文时调用knowledge_read，并按expected_sha256/next_offset续读。"
+                        "工具没有暴露或无法核实有效性时，不得把旧ID当作当前有效依据。"
+                        "不要把SUPERSEDED、REJECTED、DISPUTED或过期知识写进used_knowledge；"
+                        "可在summary/risks说明旧依据被排除，必要时通过公开API重新核实当前业务状态。"
+                        "重新观察的API输出不能自行晋级为可信知识；不要编造或恢复旧知识ID。"
+                        "仅为范围化任务/姓名生成的知识不能证明支付、通知或任意业务事实。"
+                    ),
+                    tool_names=(*previous.tool_names, "knowledge_list", "knowledge_read"),
                 )
             )

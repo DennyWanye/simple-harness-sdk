@@ -1,3 +1,5 @@
+最后更新：2026-09-15 01:36 CST。N2 v3真实失败保留：40调用874997tokens/1752.676秒、陈旧知识被拒绝、0有效复用。新AppWorld默认v3只读知识刷新和出站前额度终止适配定向69PASS/8.49秒，旧源决定性2FAIL；完整v8、新本地v4及新原生验收仍待。N1–N8/正式A96B96仍OPEN，Flash0、无打包。 [证据与边界](../plans/2026-09-14-gap-phase1/BUDGET-ANALYSIS-FOLLOWUP.md)。
+
 最后更新：2026-09-15 01:07 CST。最新生产源码已完成全量v7：2259PASS/32条件SKIP/1历史hash断言FAIL（657.44秒）；仅测试断言按有意新增预算语义更新并保留旧内容hash，后继52PASS/0.71秒，无生产再改、未再全量重跑。原生v52冷恢复实点通过；N2 v3第一Task验证中，N1–N8和正式A/B96仍OPEN，Flash0、无打包。 [明细](../plans/2026-09-14-gap-phase1/BUDGET-ANALYSIS-FOLLOWUP.md)。
 
 最后更新：2026-09-15 00:55 CST。最新N2/N7源码UI v52实点冷恢复/产物/回放/支持报告通过，5调用/4工具效果/42事件不变，0新模型调用；新完整回归v7与N2 v3仍运行。提示接线和离线分析相邻87PASS；N1–N8/正式矩阵仍OPEN、Flash0、无打包。 [本轮证据](../plans/2026-09-14-gap-phase1/BUDGET-ANALYSIS-FOLLOWUP.md)。

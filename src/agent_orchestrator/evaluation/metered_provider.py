@@ -18,6 +18,10 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
+from simple_harness.execution.provider_admission import (
+    ProviderAdmissionDenied,
+    ProviderAdmissionFailure,
+)
 from simple_harness.providers import (
     Provider,
     ProviderRequest,
@@ -55,6 +59,19 @@ class RunWindowDenied(ExperimentBudgetExhausted):
     """A local window refusal before physical handoff has known zero usage."""
 
     error_code = "run_window_denied"
+
+
+class _ExperimentBudgetAdmissionDenied(ExperimentBudgetExhausted, ProviderAdmissionDenied):
+    """Canonical terminal admission while preserving evaluation exception catches."""
+
+    error_code = "provider_admission_denied"
+
+    def __init__(self, original: ExperimentBudgetExhausted) -> None:
+        ProviderAdmissionDenied.__init__(
+            self,
+            public_message=original.public_message,
+            admission_detail=ProviderAdmissionFailure(reason_code="budget_exhausted"),
+        )
 
 
 class UnknownProviderUsage(RuntimeError):
@@ -283,6 +300,10 @@ class MeteredProvider:
                     "seconds": time.monotonic() - started,
                 })
                 self._publish()
+                if isinstance(error, ExperimentBudgetExhausted) and not isinstance(
+                    error, RunWindowDenied
+                ):
+                    raise _ExperimentBudgetAdmissionDenied(error) from error
             raise
 
     async def _invoke(

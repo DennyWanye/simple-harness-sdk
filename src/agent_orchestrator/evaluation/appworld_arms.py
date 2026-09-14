@@ -30,10 +30,11 @@ from .appworld_knowledge import AppWorldKnowledgeBridge
 from .experiment import ExperimentBudget
 
 TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list", "appworld_execute")
+HOST_KNOWLEDGE_TOOLS = (*TOOLS, "knowledge_list", "knowledge_read")
 SELF_SELECTION_PROTOCOL_VERSION = "appworld-r-self-selection-v1"
 HOST_KNOWLEDGE_EXECUTOR_IDS = MappingProxyType({
-    "D": "appworld-d-host-public-knowledge-v2",
-    "F": "appworld-f-host-public-knowledge-v2",
+    "D": "appworld-d-host-public-knowledge-v3",
+    "F": "appworld-f-host-public-knowledge-v3",
 })
 SELF_SELECTION_MAX_CHARS = 16_384
 PUBLIC_GUIDANCE = (
@@ -239,6 +240,7 @@ async def _orchestrated(
     arm: str, episode: AppWorldEpisode, config: ArmRuntime, root: Path
 ) -> dict[str, Any]:
     budget = config.budget
+    tools = HOST_KNOWLEDGE_TOOLS if config.knowledge_protocol is not None else TOOLS
     # D and F both use real Planner/Worker/Critic roles. D freezes its initial
     # graph; F enables normal graph management. All role overhead uses one meter.
     cfg = OrchestratorConfig(
@@ -258,7 +260,7 @@ async def _orchestrated(
         planner_reserve_tokens=min(50000, budget.total_tokens // 5),
         critic_reserve_tokens=min(50000, budget.total_tokens // 5),
         appworld_execute=episode.agent.execute,
-        deployment_policy=DeploymentPolicy(allowed_tools=TOOLS, local_code_execution=False),
+        deployment_policy=DeploymentPolicy(allowed_tools=tools, local_code_execution=False),
     )
     profile = RuntimeProfile(
         "default",
@@ -280,7 +282,7 @@ async def _orchestrated(
                 success_criteria=("file:REPORT.md",),
                 tenant_id="appworld-evaluation",
                 idempotency_key=episode.config.experiment_name,
-                allowed_tools=TOOLS,
+                allowed_tools=tools,
                 budget=Budget(
                     max_tokens=budget.total_tokens,
                     max_attempts=12,

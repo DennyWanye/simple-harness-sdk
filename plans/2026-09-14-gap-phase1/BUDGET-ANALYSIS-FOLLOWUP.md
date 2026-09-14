@@ -52,3 +52,26 @@ N2 v3第一Task已进入VERIFYING，后继2Task依赖阻塞；真实终态、知
 |2026-09-15/gap-two-wave/core-regression-v7-source-audit.json|152a6f4eca4112b6410d509de621663c6303ca3b54d256ffd159414fc3ce1976|
 |2026-09-15/gap-two-wave/hash-followup.log|e5fa25de4203d527715b5d7125370a5f5b5fc2965d790bb67ea8f73a066ce60a|
 |2026-09-15/gap-two-wave/planner-hash-migration-audit.json|19c2dbe9a33e487873d758e826e9d10692b673af458b69fc60c60fd7954fbd82|
+
+## 01:36 N2真实失败驱动的知识刷新与停止修复
+
+本地v3在1752.676秒结束：40次物理调用、874997 tokens、0未知，50工具效果成功；官方utility为False，Mission FAILED/max_attempts_reached，3Task分别COMPLETED/FAILED/BLOCKED。Planner本次分配2M/1M/1M，是单次行为观察，不作因果收益结论。第一Task通过后产生1条独立公共API观察知识，世界变化后被SUPERSEDED。16个真实请求带旧ID，其中3个在撤回前、13个在撤回后；ID出现不能证明当前有效消费。下游陈旧引用被rule_check拒绝，KnowledgeUsed=0。该知识仅覆盖任务/姓名范围，不证明支付和通知事实。
+
+40调用耗尽后另有3次本地拒绝，没有发送给模型；SDK43调用记录=40实际调用+3已知零出站。旧适配错误地把拒绝算普通失败，最终多次尝试耗尽。新MeteredProvider只把出站前ExperimentBudgetExhausted映射到既有ProviderAdmissionDenied/budget_exhausted合同，保留原异常catch；真正已出站超额仍保留实际用量，RunWindowDenied不在本次改动范围。旧冻结源码新测试2FAIL/1PASS（0.39秒），实际Orchestrator复现3次尝试；新测试证实1次终止、0额外调用。
+
+AppWorld默认profile升v3，八个结果角色新增知识当前有效性说明；N2 D/F执行器显式开放只读knowledge_list/knowledge_read，S/R及旧非N2执行器外部工具集合不扩展。旧v1/v2模板原样保留。新增真实core工具链负控：世界变化→旧ID不可读→当前目录为空→排除旧ID提交→Task通过，但复用仍计0。此前四个测试夹具错误（条件断言和非N2权限集合）保留，不算产品缺陷证据。
+
+父级组合69PASS/8.49秒，ruff及四源码mypy通过；含世界状态、伪造/跨源/陈旧引用、实际编排停止、已出站计费和时段区别。完整v8已开始，仅此范围不能提前记全量通过。原生v52仍运行，属于eeeba33源码；本次新增源码尚未完成原生验收。
+
+独立v4本地校准已通过零调用dry-run并启动，359源码文件冻结；任务530b157_1/F/seed100/Qwen256K/1物理槽+1UI预留保持，总4M/40调用/1800秒不变。改动为知识工具/提示与拒绝适配，不能作单变量因果实验；前v1/v2/v3失败全部保留，不加入正式96次。终态未出。
+
+截至v3结束，两轮后续累计172次物理调用、4053356已知tokens下限、1个早先未知；不含运行中v4。Flash仍0。N1–N8整体与正式A96/B96仍OPEN，无打包。工程时间没有独立计时，以上为测试/模型耗时。
+
+|证据相对Host .local-test-evidence/索引|SHA-256|
+|---|---|
+|2026-09-14/gap-two-wave/appworld-n2-local-v3/parent-audit.json|7494d6ab2e76a3b35b64fd0486bd204d4f42c0431c4d109cdf52150f6399cfcc|
+|2026-09-15/gap-two-wave/appworld-n2-local-v3-process/resource.json|5d19df352f492d409a87cff0238b0f6bd22eed7f3a52ab75e6b54126dfa4e2ac|
+|2026-09-15/gap-two-wave/meter-terminal-old.log|461d81f030242f965fd725de46bf22a8a46d3a1e16413934b0edbf7ce8fdcc0d|
+|2026-09-15/gap-two-wave/appworld-v3-combined.log|c130731203b143743f1bf0df943869a9fc23c316c3390f28c858b58787c5a4f1|
+|2026-09-15/gap-two-wave/n2-source-v4.json|86fd30955120d1089f97880861bc4a30b3d16b8d1bbd745e9c66029223fd489f|
+|2026-09-15/gap-two-wave/n2-v4-protocol.json|4b7336a23c0eeb46e8f23d1d3434d20c6a14d484929b42d1cc703b9a99d7bbe5|

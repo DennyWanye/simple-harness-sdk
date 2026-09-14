@@ -388,7 +388,7 @@ APPWORLD_PROFILE_V1 = DomainProfileV1(
     )},
 )
 
-APPWORLD_PROFILE = replace(
+APPWORLD_PROFILE_V2 = replace(
     APPWORLD_PROFILE_V1,
     version="2",
     role_templates={
@@ -399,6 +399,19 @@ APPWORLD_PROFILE = replace(
         )},
     },
 )
+
+APPWORLD_PROFILE_V3 = replace(
+    APPWORLD_PROFILE_V2,
+    version="3",
+    role_templates={
+        **APPWORLD_PROFILE_V2.role_templates,
+        **{role: f"{role}-appworld-v3" for role in (
+            "worker", "arbiter", "synthesizer", "explorer", "exploiter", "simplifier",
+            "connector", "failure_analyst",
+        )},
+    },
+)
+APPWORLD_PROFILE = APPWORLD_PROFILE_V3
 
 AGENTDOJO_PROFILE = DomainProfileV1(
     id=AGENTDOJO_DOMAIN, version="1",

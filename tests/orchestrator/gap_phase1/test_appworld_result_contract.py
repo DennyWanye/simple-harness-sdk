@@ -8,6 +8,7 @@ from agent_orchestrator.contracts import ContractError, ResultEnvelope
 from agent_orchestrator.governance.domains import (
     APPWORLD_PROFILE,
     APPWORLD_PROFILE_V1,
+    APPWORLD_PROFILE_V2,
     DomainProfileV1,
     resolve_domain,
 )
@@ -29,14 +30,20 @@ def test_published_appworld_result_example_passes_strict_ingress(role):
 
 
 def test_new_default_and_frozen_legacy_keep_distinct_contract_versions():
-    assert resolve_domain("appworld-v1").version == "2"
+    assert resolve_domain("appworld-v1").version == "3"
     restored = DomainProfileV1.from_json(APPWORLD_PROFILE_V1.to_json())
     assert restored.version == "1"
     for role in RESULT_ROLES:
         legacy = template_for_domain(ROLES[role], restored, {})
         current = template_for_domain(ROLES[role], APPWORLD_PROFILE, {})
         assert legacy.prompt_version == f"{role}-appworld-v1"
-        assert current.prompt_version == f"{role}-appworld-v2"
+        assert current.prompt_version == f"{role}-appworld-v3"
+        assert {"knowledge_list", "knowledge_read"} <= set(current.tool_names)
+        assert "SUPERSEDED" in current.instructions
+        previous = template_for_domain(ROLES[role], APPWORLD_PROFILE_V2, {})
+        assert previous.prompt_version == f"{role}-appworld-v2"
+        assert "knowledge_list" not in previous.tool_names
+        assert "used_knowledge只填写当前上下文提供的ID。" in previous.instructions
         example, _ = json.JSONDecoder().raw_decode(
             legacy.instructions[legacy.instructions.index('{"'):]
         )

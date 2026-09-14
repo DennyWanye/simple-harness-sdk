@@ -301,7 +301,8 @@ def test_local_world_receipt_without_independent_identity_is_not_promotable(tmp_
 
 @pytest.mark.parametrize("arm", ["D", "F"])
 @pytest.mark.parametrize(
-    "change_at", [None, "before_context", "identity_failure", "before_accept", "before_read"],
+    "change_at", [None, "before_context", "identity_failure", "before_accept",
+                  "before_read", "refresh_then_drop"],
 )
 def test_official_d_f_arms_use_observation_in_second_task_context(
     tmp_path, independent_episode, monkeypatch, arm, change_at,
@@ -356,14 +357,14 @@ def test_official_d_f_arms_use_observation_in_second_task_context(
         def estimate_input_tokens(self, request):
             return 1000
 
-    def node(key, dependencies, output):
+    def node(key, dependencies, output, *, knowledge_enabled=True):
         return {
             "key": key, "goal": f"Check public task status in {key}",
             "rationale": "The next Task uses a current public observation",
             "dependencies": dependencies, "success_criteria": [f"file:{output}"],
             "verification_policy": ["format_check", "rule_check", "critic_review"],
-            "allowed_tools": ["workspace_read_file", "workspace_write_file",
-                              "workspace_list", "appworld_execute"],
+            "allowed_tools": list(arms_module.HOST_KNOWLEDGE_TOOLS
+                                  if knowledge_enabled else arms_module.TOOLS),
             "outputs": [output],
             "budget": {"max_tokens": 600_000, "max_attempts": 1},
         }
@@ -381,34 +382,53 @@ def test_official_d_f_arms_use_observation_in_second_task_context(
             evidence=[f"file:{output}"], cost={"tool_calls": 1},
             used_knowledge=[item["id"] for item in package.get("verified_knowledge", [])],
         )
-        if change_at and output == "REPORT.md":
+        if change_at and output == "REPORT.md" and change_at != "refresh_then_drop":
             # Even when omitted from the prompt, an Agent can guess/replay an old ID.
             example["used_knowledge"] = [observed["id"]]
+        if change_at == "refresh_then_drop" and output == "REPORT.md":
+            example["used_knowledge"] = []
         return "<result_envelope>" + json.dumps(example) + "</result_envelope>"
 
     def start_b(request):
+        if change_at == "refresh_then_drop":
+            assert client.post("/execute").status_code == 200
+            return ("knowledge_read", {"id": observed["id"]})
         if change_at == "before_read":
             old_id = observed["id"]
             assert old_id in [k["id"] for k in package_of(request)["verified_knowledge"]]
             assert client.post("/execute").status_code == 200
             mission_id = observed["mission_id"]
             # Invoke the actual reader bound to this running Orchestrator's gateway.
-            # Frozen AppWorld v2 roles do not expose these tools to the Agent.
+            # Direct-reader boundary remains a separate control from actual-tool refresh.
             with pytest.raises(ValueError, match="not current"):
                 bound["reader"](mission_id, "knowledge_read", {"id": old_id})
             assert bound["reader"](mission_id, "knowledge_list", {})["items"] == []
             bound["read_checked"] = True
         return ("workspace_write_file", {"path": "REPORT.md", "content": "public task observed"})
 
-    def fixed_provider():
+    def list_after_stale_read(request):
+        assert "not current" in str(request.messages[-1].content)
+        return ("knowledge_list", {})
+
+    def report_after_fresh_list(request):
+        assert '"items":[]' in str(request.messages[-1].content).replace(" ", "")
+        bound["actual_refresh_checked"] = True
+        return ("workspace_write_file", {
+            "path": "REPORT.md", "content": "old observation excluded",
+        })
+
+    def fixed_provider(*, knowledge_enabled=True):
         return RoleScriptedProvider({
             "planner": [graph_proposal_step([
-                node("A", [], "A.md"), node("B", ["A"], "REPORT.md"),
+                node("A", [], "A.md", knowledge_enabled=knowledge_enabled),
+                node("B", ["A"], "REPORT.md", knowledge_enabled=knowledge_enabled),
             ])],
             "worker": [
                 ("workspace_write_file", {"path": "A.md", "content": "public task observed"}),
                 result_envelope,
                 start_b,
+                *([list_after_stale_read, report_after_fresh_list]
+                  if change_at == "refresh_then_drop" else []),
                 result_envelope,
             ],
             "critic": [critic_step(verdict="PASS", criteria_met=True),
@@ -416,7 +436,7 @@ def test_official_d_f_arms_use_observation_in_second_task_context(
         })
 
     provider = fixed_provider()
-    assert resolve_domain(APPWORLD_DOMAIN).version == "2"
+    assert resolve_domain(APPWORLD_DOMAIN).version == "3"
     root = tmp_path / f"official-{arm}"
     result = asyncio.run(execute_arm(arm, episode, ArmRuntime(
         provider, "agent-model", Counter(),
@@ -425,7 +445,7 @@ def test_official_d_f_arms_use_observation_in_second_task_context(
         ExperimentBudget(1_600_000, 131_072, 1_600_000, 60, 30),
         knowledge_protocol=HOST_KNOWLEDGE_EXECUTOR_IDS[arm],
     ), root))
-    if change_at:
+    if change_at and change_at != "refresh_then_drop":
         b_requests = [request for request in provider.requests
                       if role_of(request) == "worker" and
                       package_of(request)["task_contract"]["success_criteria"]
@@ -458,7 +478,11 @@ def test_official_d_f_arms_use_observation_in_second_task_context(
     assert result["knowledge_protocol"] == HOST_KNOWLEDGE_EXECUTOR_IDS[arm]
     assert result["host_observations_committed"] == 2
     assert result["host_observation_errors"] == 0
-    assert result["knowledge_reuse_events"] >= 1
+    if change_at == "refresh_then_drop":
+        assert bound.get("actual_refresh_checked") is True
+        assert result["knowledge_reuse_events"] == 0
+    else:
+        assert result["knowledge_reuse_events"] >= 1
     store = Store.open(root / "orchestrator" / "orchestrator.db")
     try:
         tasks = store.list_tasks(result["mission_id"])
@@ -471,16 +495,22 @@ def test_official_d_f_arms_use_observation_in_second_task_context(
         offered = store.get_intent_for_subject(store.list_attempts(b.id)[0].id).config["knowledge"]
         assert first[0].id in [item["id"] for item in offered]
         used = store.get_result(b.accepted_result_id).envelope.used_knowledge
-        assert first[0].id in used
-        assert b.id in store.get_knowledge(first[0].id).used_by
+        if change_at == "refresh_then_drop":
+            assert used == ()
+            assert b.id not in store.get_knowledge(first[0].id).used_by
+        else:
+            assert first[0].id in used
+            assert b.id in store.get_knowledge(first[0].id).used_by
         assert store.count_events(result["mission_id"], "HostObservationUnavailable") == 0
     finally:
         store.close()
     assert len(calls) >= 2  # after both accepted Tasks, never from agent print
 
-    # The same frozen AppWorld v2 role templates and deterministic runtime keep
-    # the old executor behavior when its manifest has no N2 protocol identity.
-    old_provider = fixed_provider()
+    if change_at == "refresh_then_drop":
+        return
+    # An executor without N2 identity retains the original external tool set
+    # and no Host knowledge bridge, even under the new default domain profile.
+    old_provider = fixed_provider(knowledge_enabled=False)
     old_root = tmp_path / f"old-{arm}"
     old = asyncio.run(execute_arm(arm, episode, ArmRuntime(
         old_provider, "agent-model", Counter(),
