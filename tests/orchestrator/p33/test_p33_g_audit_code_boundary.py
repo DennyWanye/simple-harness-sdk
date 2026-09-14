@@ -138,6 +138,11 @@ def _submit(scene, task, proposal, *, path, content):
 def test_real_code_verified_target_survives_same_mission_document_attribution_attack(
     tmp_path, monkeypatch
 ):
+    # Replay the pre-v2 semantic world-claim contract. New scoped observations
+    # are independently covered by gap_phase1/test_code_knowledge.py.
+    from agent_orchestrator.governance import domains
+    monkeypatch.setattr(domains, "DOMAINS", {**domains.DOMAINS,
+                                           domains.CODE_DOMAIN: domains.CODE_PROFILE_V1})
     store = Store.open(tmp_path / "orchestrator.db", clock=lambda: 1000.0)
     cas = ArtifactStore(tmp_path / "artifacts")
     commit = CommitService(

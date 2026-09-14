@@ -52,7 +52,8 @@ def test_source_marker_trust_cap_and_same_line_sentence_preservation(tmp_path):
         record("k1", mission.id, "甲方案不支持离线。"),
         record("k2", mission.id, "乙方案支持离线。"),
     ]
-    result = rank_knowledge(tasks["A"], records, tasks_by_id={t.id: t for t in tasks.values()})
+    result = rank_knowledge(tasks["A"], records, query_text="离线",
+                            tasks_by_id={t.id: t for t in tasks.values()})
     assert len(result.items) == 2
     for item in result.items:
         assert item.parts["trust"] <= TRUST["SUPPORTED"]

@@ -1220,6 +1220,15 @@ class Store:
             )
             return cursor.rowcount == 1
 
+    def get_tool_call(self, call_key: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT call_key,subject_id,mission_id,tool,outcome FROM tool_calls WHERE call_key = ?",
+            (call_key,),
+        ).fetchone()
+        return None if row is None else dict(zip(
+            ("call_key", "subject_id", "mission_id", "tool", "outcome"), row, strict=True
+        ))
+
     def count_tool_calls(self, subject_id: str, *, outcome: str = "succeeded") -> int:
         row = self._connection.execute(
             "SELECT COUNT(*) FROM tool_calls WHERE subject_id = ? AND outcome = ?",

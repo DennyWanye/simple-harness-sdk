@@ -65,7 +65,7 @@ def scene(e_scenes, profile):
     # never rewrite an existing intent, assessment or accepted historical record.
     selected = {"v3": DOC_PROFILE_V3, "v4": DOC_PROFILE_V4}.get(profile)
     s = e_scenes(paths=(PATH,), domain=domain, mission_criteria=criteria, profile=selected)
-    assert s.commit.domain_for(s.mission.id).version == ("1" if profile == "code" else profile[1:])
+    assert s.commit.domain_for(s.mission.id).version == ("2" if profile == "code" else profile[1:])
     e = submit(s)
     verdict = verify(e)  # real router; only the model Critic's response is scripted
     assert verdict.passed, verdict.to_json()

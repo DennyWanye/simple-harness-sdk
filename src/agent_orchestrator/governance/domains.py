@@ -31,6 +31,7 @@ DOMAIN_SCHEMA_VERSION = 1
 
 CODE_DOMAIN = "code-v1"
 DOC_DOMAIN = "doc-research-v1"
+APPWORLD_DOMAIN = "appworld-v1"
 # Missions that predate domain binding (plan D1; the same idea as ``policy-legacy``).
 # It is the code domain itself, not a second id for the same behaviour (review A P2-1).
 LEGACY_DOMAIN = CODE_DOMAIN
@@ -236,7 +237,7 @@ class DomainProfileV1:
         return result
 
 
-CODE_PROFILE = DomainProfileV1(
+CODE_PROFILE_V1 = DomainProfileV1(
     id=CODE_DOMAIN,
     version="1",
     allowed_input_kinds=("text/*", "application/octet-stream"),
@@ -255,6 +256,16 @@ CODE_PROFILE = DomainProfileV1(
     ),
     synthesis_default_policy=("format_check", "rule_check", "code_test"),
     external_check="code_test",
+)
+
+CODE_PROFILE = replace(
+    CODE_PROFILE_V1,
+    version="2",
+    completion_rules={"claim_grading": "scoped-observation-v2"},
+    role_templates={role: f"{role}-code-observation-v2" for role in (
+        "worker", "explorer", "exploiter", "simplifier", "connector", "failure_analyst",
+        "arbiter", "synthesizer",
+    )},
 )
 
 DOC_PROFILE_V3 = DomainProfileV1(
@@ -346,8 +357,29 @@ DOC_PROFILE_V9 = replace(
 )
 DOC_PROFILE = DOC_PROFILE_V9
 
+APPWORLD_PROFILE = DomainProfileV1(
+    id=APPWORLD_DOMAIN, version="1",
+    allowed_input_kinds=("text/*", "application/json"), allowed_artifact_kinds=("text/*",),
+    allowed_evidence_kinds=("file", "artifact", "tool-run", "knowledge"),
+    criterion_kinds=("file", "free", "arbitration"),
+    runs_layers=("format_check", "rule_check", "critic_review", "human_review"),
+    planner_floor=("format_check", "rule_check"),
+    default_policy=("format_check", "rule_check", "critic_review"),
+    conflict_template=ConflictTemplateV1(
+        policy=("format_check", "rule_check", "human_review"),
+        decides_with="human_review", probe=None,
+    ),
+    synthesis_default_policy=("format_check", "rule_check", "critic_review"),
+    external_check="appworld-saved-world-after-stop",
+    completion_rules={"claim_grading": "scoped-observation-v2", "handler": "appworld-v1"},
+    role_templates={role: f"{role}-appworld-v1" for role in (
+        "planner", "manager", "worker", "critic", "arbiter", "synthesizer",
+        "explorer", "exploiter", "simplifier", "connector", "failure_analyst",
+    )},
+)
+
 DOMAINS: Mapping[str, DomainProfileV1] = MappingProxyType(
-    {CODE_DOMAIN: CODE_PROFILE, DOC_DOMAIN: DOC_PROFILE}
+    {CODE_DOMAIN: CODE_PROFILE, DOC_DOMAIN: DOC_PROFILE, APPWORLD_DOMAIN: APPWORLD_PROFILE}
 )
 
 
@@ -355,7 +387,7 @@ def resolve_domain(domain_id: str | None) -> DomainProfileV1:
     """The profile for ``domain_id``; ``None`` is a Mission from before domain binding."""
 
     if domain_id is None:
-        return DOMAINS[LEGACY_DOMAIN]
+        return CODE_PROFILE_V1
     return DOMAINS[domain_id]
 
 

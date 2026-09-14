@@ -35,7 +35,7 @@ def test_published_profiles_and_prompt_bytes_are_unchanged():
     assert sha256_hex(domains.DOC_PROFILE_V5.to_json()) == (
         "a2c0bdc7d58fdd4e95d760819f49e494e918e84f87a3b439beaa404cbf298597"
     )
-    assert sha256_hex(domains.CODE_PROFILE.to_json()) == (
+    assert sha256_hex(domains.CODE_PROFILE_V1.to_json()) == (
         "fbcefdba9801b4ec5dbd62adaafbd8490a63fe1240617c5271b1d7a73b901061"
     )
     for version, digest in (

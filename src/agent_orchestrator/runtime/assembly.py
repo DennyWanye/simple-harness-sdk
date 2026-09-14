@@ -17,8 +17,8 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -115,6 +115,11 @@ class OrchestratorConfig:
     on_retrieval_failure: str = "block"  # step 4 (D4-11'): block | degrade
     max_retrieval_failures: int = 3
     max_knowledge_items: int = 12
+    # Live episode capability. Its identity/data/budgets belong in the external
+    # experiment manifest; a Mission alone cannot manufacture this capability.
+    appworld_execute: Callable[[str], Mapping[str, Any]] | None = field(
+        default=None, repr=False, compare=False
+    )
     # step 5 (D5-2 / D5-6 / D5-7 / D5-8 / D5-15)
     dynamic_graph: bool = True  # False: no Manager decisions; non-candidate outcomes just retry
     max_graph_depth: int = 6
@@ -518,6 +523,7 @@ def assemble_orchestrator_runtime(
         test_timeout=config.test_timeout_seconds,
         local_code_execution=config.deployment_policy.local_code_execution,
         executor=executor,
+        appworld_execute=config.appworld_execute,
     )
     pools: dict[str, RuntimePool] = {}
     if provider_admissions is not None and (
@@ -547,7 +553,7 @@ def assemble_orchestrator_runtime(
             model=profile.model,
             owner_id=config.owner_id,
             lease_ttl_seconds=float(config.sdk_lease_ttl_seconds or 30.0),
-            policies=_policies_for(config, profile),
+            policies=replace(_policies_for(config, profile), tool_reconciliation=gateway),
             default_max_output_tokens=default_out,
             max_output_tokens_ceiling=max(ceiling, default_out),
             empty_response_retries=config.empty_response_retries,

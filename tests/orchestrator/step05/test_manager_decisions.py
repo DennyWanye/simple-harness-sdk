@@ -14,9 +14,11 @@ import asyncio
 from pathlib import Path
 
 from agent_orchestrator.contracts import AttemptStatus, Budget, MissionStatus, TaskStatus
+from agent_orchestrator.governance import domains
 from agent_orchestrator.orchestrator.commit_service import MissionSpec
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
+from agent_orchestrator.runtime.role_templates import ROLES, template_for_domain
 from agent_orchestrator.testing.fixtures import (
     RECORDER_SEED,
     RECORDER_SPEC,
@@ -182,9 +184,11 @@ def test_s5_02_a_change_of_role_continues_the_task_with_the_new_approach(tmp_pat
                 AttemptStatus.RETRY_WAIT,
                 AttemptStatus.COMPLETED,
             ]
-            assert (
-                attempts[2].role == "simplifier" and attempts[2].prompt_version == "simplifier-v1"
-            )
+            selected = template_for_domain(ROLES["simplifier"], domains.CODE_PROFILE, {})
+            assert attempts[2].role == "simplifier"
+            assert attempts[2].prompt_version == selected.prompt_version == "simplifier-code-observation-v2"
+            assert "pytest通过不证明任意自然语言主张" in selected.instructions
+            assert {"knowledge_list", "knowledge_read"} <= set(selected.tool_names)
             assert store.get_intent_for_subject(attempts[2].id).config["role"] == "simplifier"
             assert any(
                 e.type == "TaskRoleChanged" and e.payload["role"] == "simplifier"

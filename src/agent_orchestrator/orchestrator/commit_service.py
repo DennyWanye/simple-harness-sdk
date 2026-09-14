@@ -1708,6 +1708,40 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             if artifact is not None
         ]
         layers = [dict(item) for item in verifier_results]
+        strict_code = domain.completion_rules.get("claim_grading") == "scoped-observation-v2"
+        # Only runtime-recorded verification is evidence in the new code profile.
+        # Caller-supplied acceptance summaries are not execution receipts.
+        if strict_code:
+            layers = [dict(item) for item in self._store.list_verifications(envelope.id)]
+        observations = []
+        grading_layers = layers
+        if strict_code:
+            from ..memory.code_observations import scoped_test_observations
+
+            artifacts = [self._store.get_artifact(item) for item in stored.artifacts]
+            observations = scoped_test_observations(
+                envelope, [a for a in artifacts if a is not None], layers, self._store.now, task
+            )
+            grading_layers = [{"layer": "code_test", "detail": {"runs": [
+                {"target": record.verifier["target"], "passed": True}
+                for _, record in observations
+            ]}}]
+        resolved_refs: set[str] = set()
+        if strict_code:
+            for proposal in envelope.claims:
+                for ref in proposal.evidence or envelope.evidence:
+                    if ref.startswith("knowledge:"):
+                        record = self._store.get_knowledge(ref.removeprefix("knowledge:"))
+                        if (record is not None and record.id in envelope.used_knowledge
+                                and record.mission_id == mission.id and record.status == "VERIFIED"
+                                and record.superseded_by is None
+                                and self._accepted_result(record.source_result)):
+                            resolved_refs.add(ref)
+                    elif ref.startswith("tool-run:"):
+                        run = self._store.get_tool_call(ref.removeprefix("tool-run:"))
+                        if (run is not None and run["mission_id"] == mission.id
+                                and run["subject_id"] == attempt.id and run["outcome"] == "succeeded"):
+                            resolved_refs.add(ref)
         report: list[dict[str, Any]] = []
         existing_claims = [
             other
@@ -1730,9 +1764,12 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 grade = grade_claim(
                     claim.id,
                     claim.evidence,
-                    verifier_results=layers,
+                    verifier_results=grading_layers,
                     artifact_paths=artifact_paths,
                     untrusted_prefixes=untrusted,
+                    domain=domain,
+                    proposal=proposals.get(claim.id),
+                    resolved_refs=frozenset(resolved_refs),
                 )
             versions: dict[str, tuple[str, ...]] | None = None
             if document:
@@ -1904,6 +1941,15 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     self._supersede_knowledge(supersedes, by=record.id)
                 if task.kind == "conflict" and record.key == task.context.get("key"):
                     self._resolve_conflict(mission, task, record)
+        if strict_code:
+            for observation, record in observations:
+                self._store.upsert_claim(observation)
+                self._store.upsert_knowledge(record)
+                report.append({"claim_id": observation.id, "status": "VERIFIED", "key": None})
+                self._emit("KnowledgeCommitted", mission.id, key=record.id,
+                           task_id=task.id, attempt_id=attempt.id,
+                           payload={"knowledge_id": record.id, "verifier": dict(record.verifier),
+                                    "system_observation": True})
         for reference in envelope.used_knowledge:
             used = self._store.get_knowledge(reference)
             if used is None or used.mission_id != mission.id or used.status != "VERIFIED":
@@ -3591,7 +3637,9 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             if (
                 stored.verification_state == "DONE"
                 and stored.verdict == "PASS"
-                and self.domain_for(stored.envelope.mission_id).id == DOC_DOMAIN
+                and (self.domain_for(stored.envelope.mission_id).id == DOC_DOMAIN
+                     or self.domain_for(stored.envelope.mission_id).completion_rules.get(
+                         "claim_grading") == "scoped-observation-v2")
             ):
                 known = next(
                     (

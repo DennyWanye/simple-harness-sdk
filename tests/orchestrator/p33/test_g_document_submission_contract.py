@@ -124,7 +124,11 @@ def test_new_document_dispatch_freezes_example_and_keeps_code_template(
                 assert frozen.role_templates[role] == f"{role}-doc-research-v{prompt_version}"
             assert domains.requires_mission_source_binding(frozen)
             code = await orch.submit_mission(spec(idempotency_key="code-control"))
-            assert orch._template(ROLES["worker"], code.id) == ROLES["worker"]
+            selected = orch._template(ROLES["worker"], code.id)
+            assert selected == template_for_domain(ROLES["worker"], domains.CODE_PROFILE, {})
+            assert selected.prompt_version == "worker-code-observation-v2"
+            assert "pytest通过不证明任意自然语言主张" in selected.instructions
+            assert {"knowledge_list", "knowledge_read"} <= set(selected.tool_names)
 
     asyncio.run(case())
 

@@ -17,6 +17,7 @@ from fixtures_provider import RoleScriptedProvider, critic_step, proposal_step
 
 from agent_orchestrator.__main__ import main
 from agent_orchestrator.contracts import Budget, MissionStatus
+from agent_orchestrator.governance import domains
 from agent_orchestrator.observability.replay import library_copy
 from agent_orchestrator.observability.traces import attribution
 from agent_orchestrator.orchestrator.commit_service import MissionSpec
@@ -78,6 +79,16 @@ def _reconciles(report):
     )  # never 0
 
 
+def _use_legacy_code_profile(monkeypatch):
+    """Keep the published conflict-resolution demonstration on its v1 contract."""
+
+    monkeypatch.setattr(
+        domains,
+        "DOMAINS",
+        {**domains.DOMAINS, domains.CODE_DOMAIN: domains.CODE_PROFILE_V1},
+    )
+
+
 # ------------------------------------------------------------------ S8-01
 def test_s8_01_a_static_dag_names_who_made_every_final_product(tmp_path, capsys):
     evidence, mission_id = _demo(tmp_path, "static-dag")
@@ -111,7 +122,8 @@ def test_s8_01_a_static_dag_names_who_made_every_final_product(tmp_path, capsys)
     assert written["cost"]["total"] == report["cost"]["total"]
 
 
-def test_s8_01_knowledge_and_a_settled_conflict_are_on_the_path(tmp_path, capsys):
+def test_s8_01_knowledge_and_a_settled_conflict_are_on_the_path(tmp_path, capsys, monkeypatch):
+    _use_legacy_code_profile(monkeypatch)
     evidence, mission_id = _demo(tmp_path, "knowledge-sharing")
     capsys.readouterr()
     report, _snapshot = _read(evidence, mission_id)
@@ -224,7 +236,10 @@ def test_s8_05_a_missing_record_is_a_break_never_a_bridge(tmp_path, capsys):
 
 
 # ------------------------------------------------------------------ code review round 1
-def test_review_p1_1_a_refuted_claim_on_the_path_is_flagged_and_kept(tmp_path, capsys):
+def test_review_p1_1_a_refuted_claim_on_the_path_is_flagged_and_kept(
+    tmp_path, capsys, monkeypatch
+):
+    _use_legacy_code_profile(monkeypatch)
     evidence, mission_id = _demo(tmp_path, "knowledge-sharing")
     capsys.readouterr()
     report, _snapshot = _read(evidence, mission_id)

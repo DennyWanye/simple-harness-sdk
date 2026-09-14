@@ -88,6 +88,20 @@ def parse_evidence(
     return EvidenceRef(raw, kind, target, TRUST_UNRESOLVED)
 
 
+def _parse_scoped_evidence(
+    raw: str, *, artifact_paths: Sequence[str], untrusted_prefixes: Sequence[str],
+    ran_targets: Mapping[str, bool], resolved_refs: frozenset[str],
+) -> EvidenceRef:
+    ref = parse_evidence(raw, artifact_paths=artifact_paths,
+                         untrusted_prefixes=untrusted_prefixes, ran_targets=ran_targets)
+    if ref.trust == TRUST_TRUSTED and (
+        (ref.kind == "pytest" and covering_target(ref.target, ran_targets) is None)
+        or (ref.kind in {"tool-run", "knowledge"} and raw.strip() not in resolved_refs)
+    ):
+        return EvidenceRef(ref.raw, ref.kind, ref.target, TRUST_UNRESOLVED)
+    return ref
+
+
 def _is_untrusted(path: str, prefixes: Sequence[str]) -> bool:
     return under_prefix(path, tuple(prefixes))
 
@@ -155,9 +169,39 @@ def grade_claim(
     domain: DomainProfileV1 | None = None,
     proposal: ClaimProposal | None = None,
     assessments: Sequence[CriterionAssessmentV1] = (),
+    resolved_refs: frozenset[str] = frozenset(),
 ) -> ClaimGrade:
     if domain is not None and domain.id == "doc-research-v1":
         return _grade_document(claim_id, proposal, assessments, verifier_results)
+    if (
+        domain is not None
+        and domain.completion_rules.get("claim_grading") == "scoped-observation-v2"
+    ):
+        ran = ran_test_targets(verifier_results)
+        refs = tuple(
+            _parse_scoped_evidence(
+                item,
+                artifact_paths=artifact_paths,
+                untrusted_prefixes=untrusted_prefixes,
+                ran_targets=ran,
+                resolved_refs=resolved_refs,
+            )
+            for item in evidence
+        )
+        supported = any(ref.trust == TRUST_TRUSTED for ref in refs)
+        return ClaimGrade(
+            claim_id,
+            ClaimStatus.SUPPORTED if supported else ClaimStatus.UNDER_REVIEW,
+            {
+                "layer": "grading",
+                "grade": "supported" if supported else "unsupported",
+                "system_domain": domain.id,
+                "grading_version": domain.version,
+                "reason": "References support provenance, not arbitrary semantic entailment; "
+                "only system-generated scoped observations are VERIFIED.",
+            },
+            refs,
+        )
     return _legacy_grade_claim(
         claim_id,
         evidence,

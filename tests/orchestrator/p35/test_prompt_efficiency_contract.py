@@ -72,7 +72,10 @@ def test_every_published_prompt_and_domain_keeps_33b25b5_canonical():
             "tool_names": list(template.tool_names),
         }) == expected["canonical_sha256"], key
     for name, expected in BASELINE["domain_profiles"].items():
-        profile = getattr(domains, name)
+        # The 33b25b5 receipt predates the code-v2 default.  Keep its byte
+        # assertion on the published v1 snapshot rather than pinning new
+        # Missions back to that historical profile.
+        profile = domains.CODE_PROFILE_V1 if name == "CODE_PROFILE" else getattr(domains, name)
         assert _digest(profile.to_json()) == expected, name
         for role, version in profile.role_templates.items():
             # A new code default must never override an explicitly frozen domain.
@@ -89,7 +92,12 @@ def test_every_published_prompt_and_domain_keeps_33b25b5_canonical():
 
 
 def _assert_request_binding(orch, provider, role, expected_tools):
-    template = {"worker": WORKER, "synthesizer": SYNTHESIZER}[role]
+    template = template_for_domain(
+        {"worker": WORKER, "synthesizer": SYNTHESIZER}[role], domains.CODE_PROFILE, {}
+    )
+    assert template.prompt_version == f"{role}-code-observation-v2"
+    assert "不能推出任意业务性质或其他版本仍然正确" in template.instructions
+    assert {"knowledge_list", "knowledge_read"} <= set(template.tool_names)
     requests = [request for request in provider.requests if role_of(request) == role]
     assert requests
     for request in requests:

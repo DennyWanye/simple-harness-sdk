@@ -359,7 +359,7 @@ def test_system_hold_partitions_first_critic_before_synthesis_worker(
                         )
                     },
                     synthesis={
-                        "goal": "Combine the actual file",
+                        "goal": "Combine the actual file using pytest:tests/test_input.py",
                         "success_criteria": ["file:s.md"],
                         "outputs": ["s.md"],
                         "verification_policy": ["format_check", "rule_check", "critic_review"],

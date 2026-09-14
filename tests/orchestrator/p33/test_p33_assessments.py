@@ -435,7 +435,7 @@ def test_missing_frozen_sources_never_acquires_current_registry(scene):
 
 
 def test_router_reruns_legacy_doc_rule_but_reuses_complete_receipt(scene, monkeypatch):
-    import agent_orchestrator.verification.verifier_router as module
+    import agent_orchestrator.verification.domain_handlers as module
 
     env, bound = scene.bind()
     calls = []
@@ -475,7 +475,7 @@ def test_router_reruns_legacy_doc_rule_but_reuses_complete_receipt(scene, monkey
 
 
 def test_router_per_call_domain_does_not_mutate_shared_default(scene, monkeypatch):
-    import agent_orchestrator.verification.verifier_router as module
+    import agent_orchestrator.verification.domain_handlers as module
 
     env, bound = scene.bind()
     calls = []

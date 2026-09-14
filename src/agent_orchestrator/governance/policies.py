@@ -202,6 +202,9 @@ SNAPSHOT_FIELDS: dict[str, str] = {
     "workspace_retention_seconds": "excluded: workspace housekeeping, not a behaviour parameter",
     # P3.2 (plan D2): a runtime object; its environment_digest enters every receipt
     "sandbox_executor": "excluded: a runtime object (its digest is in every execution receipt)",
+    "appworld_execute": (
+        "capability: callback presence only; environment frozen in experiment manifest"
+    ),
     **{
         name: "include"
         for name in (
@@ -348,6 +351,10 @@ def policy_snapshot(
         for name in sorted(fields)
         if SNAPSHOT_FIELDS.get(name) == "include"
     }
+    # Never serialize a callback's repr (object addresses are unstable and bound
+    # objects can carry credentials). Availability still changes admission.
+    if "appworld_execute" in fields:
+        configuration["appworld_execute"] = getattr(config, "appworld_execute") is not None
     for name in configuration:
         sources[f"config.{name}"] = f"OrchestratorConfig.{name}"
     body: dict[str, Any] = {

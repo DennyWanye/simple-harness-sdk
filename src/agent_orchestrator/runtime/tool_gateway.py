@@ -17,6 +17,7 @@ was isolated at all — no network, no reading outside a whitelist — is what t
 
 from __future__ import annotations
 
+import asyncio
 import posixpath
 import re
 from bisect import bisect_right
@@ -86,6 +87,31 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             }
         },
         "additionalProperties": False,
+    },
+    "appworld_execute": {
+        "type": "object",
+        "description": "Execute Python in the episode's shared AppWorld shell; state persists.",
+        "properties": {"code": {"type": "string"}},
+        "required": ["code"], "additionalProperties": False,
+    },
+    "knowledge_list": {
+        "type": "object",
+        "description": (
+            "List current Mission knowledge; previews omit conditions. Read originals before using."
+        ),
+        "properties": {"offset": {"type": "integer", "minimum": 0},
+                       "limit": {"type": "integer", "minimum": 1, "maximum": 5},
+                       "expected_sha256": {"type": "string"}}, "additionalProperties": False,
+    },
+    "knowledge_read": {
+        "type": "object",
+        "description": (
+            "Read original current knowledge by ID with provenance. "
+            "Follow next_offset with expected_sha256."
+        ),
+        "properties": {"id": {"type": "string"}, "offset": {"type": "integer", "minimum": 0},
+                       "expected_sha256": {"type": "string"}},
+        "required": ["id"], "additionalProperties": False,
     },
 }
 TOOL_NAMES = tuple(TOOL_SCHEMAS)
@@ -222,6 +248,7 @@ class WorkspaceBinding:
     protected_prefixes: tuple[str, ...] = ()  # Source directories: readable, never writable.
     context_policy: ContextPolicy | None = None
     tokenizer: TokenizerPort | None = None
+    mission_id: str | None = None
 
 
 def is_untrusted(path: str, prefixes: tuple[str, ...]) -> bool:
@@ -343,12 +370,19 @@ class WorkspaceToolGateway:
         test_timeout: float = 120.0,
         local_code_execution: bool = True,
         executor: SandboxExecutorPort | None = None,
+        appworld_execute: Callable[[str], Mapping[str, Any]] | None = None,
     ) -> None:
         self._workspaces = workspaces
         self._bindings: dict[str, WorkspaceBinding] = {}
         self._test_timeout = test_timeout
         self._local_code_execution = local_code_execution  # host support 0.9.8
         self.executor = executor  # P3.2 D2: what run_tests runs through (None = process only)
+        self._appworld_execute = appworld_execute
+        self._appworld_lock = asyncio.Lock()
+        self._appworld_mission_id: str | None = None
+        self.knowledge_reader: (
+            Callable[[str, str, Mapping[str, Any]], Mapping[str, Any]] | None
+        ) = None
         self.calls: list[dict[str, Any]] = []
         # step 6 (§21.1 last step): every refusal is reported to the orchestrator, which
         # writes it to the Mission's timeline through the Commit Service
@@ -357,9 +391,59 @@ class WorkspaceToolGateway:
         # per-Attempt cap is checked against that durable count (it survives a restart)
         self.on_executed: Callable[[str, Mapping[str, Any]], None] | None = None
         self.executed_counter: Callable[[str], int] | None = None
+        self.executed_lookup: Callable[[str], Mapping[str, Any] | None] | None = None
 
     def bind(self, run_id: str, binding: WorkspaceBinding) -> None:
         self._bindings[run_id] = binding
+
+    async def observe(self, effect):  # type: ignore[no-untyped-def]
+        """Reconcile a lost write result from durable Host identity AND exact bytes.
+
+        This never re-executes tools. Reads, tests and external world mutations
+        cannot be reconstructed from a current file and remain UNKNOWN.
+        """
+        from simple_harness.tools.reconciliation import (
+            ReconciliationObservation,
+            ReconciliationState,
+        )
+
+        unknown = ReconciliationObservation(
+            ReconciliationState.STILL_UNKNOWN, "workspace-write:proof-unavailable"
+        )
+        if effect.tool_name != "workspace_write_file" or self.executed_lookup is None:
+            return unknown
+        key = f"{effect.run_id.value}:{effect.call_id.value}"
+        proof = self.executed_lookup(key)
+        if (proof is None or proof.get("outcome") != "succeeded"
+                or proof.get("tool") != effect.tool_name
+                or proof.get("agent_id") != effect.run_id.value):
+            return unknown
+        arguments = effect.arguments
+        if not isinstance(arguments, Mapping):
+            return unknown
+        path, content = arguments.get("path"), arguments.get("content")
+        if not isinstance(path, str) or not isinstance(content, str):
+            return unknown
+        try:
+            workspace = self._workspaces.get(str(proof["subject_id"]), writable=False)
+            actual = workspace.read_bytes(path)
+        except (WorkspaceError, OSError, KeyError):
+            return unknown
+        expected = content.encode("utf-8")
+        if actual != expected:
+            return unknown
+        return ReconciliationObservation(
+            ReconciliationState.COMPLETED,
+            f"workspace-write:{key}:{sha256(actual).hexdigest()}",
+            ToolResult.succeeded(effect.call_id, {"path": path, "bytes": len(expected)}),
+        )
+
+    def bind_appworld(self, mission_id: str) -> None:
+        if self._appworld_execute is None:
+            raise WorkspaceError("AppWorld environment is not deployed")
+        if self._appworld_mission_id not in {None, mission_id}:
+            raise WorkspaceError("An AppWorld episode cannot be shared across Missions")
+        self._appworld_mission_id = mission_id
 
     def unbind(self, run_id: str) -> None:
         self._bindings.pop(run_id, None)
@@ -531,6 +615,38 @@ class WorkspaceToolGateway:
                 if binding.denied_prefixes:
                     files = [f for f in files if not _under(_canonical(f), binding.denied_prefixes)]
                 value = {"files": files}
+            elif call.name in {"knowledge_list", "knowledge_read"}:
+                if self.knowledge_reader is None or binding.mission_id is None:
+                    raise WorkspaceError("knowledge tools are unavailable for this binding")
+                try:
+                    value = self.knowledge_reader(binding.mission_id, call.name, arguments)
+                except ValueError as error:
+                    raise WorkspaceError(str(error)) from error
+            elif call.name == "appworld_execute":
+                if (not binding.writable or binding.view != "work"
+                        or self._appworld_execute is None or binding.mission_id is None
+                        or binding.mission_id != self._appworld_mission_id):
+                    raise WorkspaceError("AppWorld execution is unavailable for this binding")
+                async with self._appworld_lock:
+                    pending = asyncio.create_task(
+                        asyncio.to_thread(self._appworld_execute, arguments["code"])
+                    )
+                    try:
+                        value = await asyncio.shield(pending)
+                    except asyncio.CancelledError:
+                        # Cancelling to_thread does not stop its physical call.
+                        # Keep the world lock until that call settles, then let
+                        # the SDK retain its interrupted effect as UNKNOWN.
+                        while not pending.done():
+                            try:
+                                await asyncio.shield(pending)
+                            except asyncio.CancelledError:
+                                continue
+                            except Exception:
+                                break
+                        if not pending.cancelled():
+                            pending.exception()  # Retrieve an error; retain cancellation semantics.
+                        raise
             elif call.name == "run_tests":
                 if not self._local_code_execution:  # host support 0.9.8: defence in depth
                     return self._reject(

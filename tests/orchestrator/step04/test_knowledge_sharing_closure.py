@@ -104,7 +104,7 @@ def test_s4_01_s4_03_s4_05_s4_08_knowledge_sharing_closure(tmp_path):
             offered = {item["id"]: item["version"] for item in b_intent.config["knowledge"]}
             assert offered == {c.id: 1 for c in a_claims.values()}
             assert (
-                b_intent.config["retrieval_version"] == "retrieval-v1"
+                b_intent.config["retrieval_version"] == "retrieval-v3-evidence-relevance"
                 and b_intent.config["role"] == "worker"
             )
             assert empty_input.id in str(b_intent.config["message"]["content"])

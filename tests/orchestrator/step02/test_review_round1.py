@@ -117,7 +117,11 @@ def test_p1_stalled_executor_times_out_and_is_retried(tmp_path):
 
     async def case():
         async with Orchestrator(
-            config(tmp_path, lease_seconds=0.2, stall_seconds=0.3), provider, poll_interval=0.02
+            # The retry executes real isolated pytest. A 300ms stall window
+            # also timed out that healthy subprocess at progress marker 4.
+            # Keep the intentional no-progress call bounded inside the existing
+            # five-second deadline while allowing normal test process startup.
+            config(tmp_path, lease_seconds=0.2, stall_seconds=2.0), provider, poll_interval=0.02
         ) as orchestrator:
             mission = await orchestrator.submit_mission(spec("m-stall"))
             # let planning finish, then stall the worker's first model call

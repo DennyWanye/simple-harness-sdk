@@ -28,8 +28,12 @@ from ..contracts.models import canonical_json
 from ..memory.claims import system_attribution
 from ..memory.verified_knowledge import KnowledgeRecord
 
-RETRIEVAL_VERSION = "retrieval-v1"
-WEIGHTS = {"relevance": 3.0, "trust": 2.0, "proximity": 1.0, "recency": 0.5, "reuse": 0.5}
+RETRIEVAL_VERSION = "retrieval-v3-evidence-relevance"
+WEIGHTS = {
+    "relevance": 3.0, "trust": 2.0, "proximity": 1.0, "recency": 0.5, "reuse": 0.5,
+    # An explicit reference outranks the maximum ordinary score (7.0).
+    "exact_reference": 8.0,
+}
 # Only Verified Knowledge is ranked in this build (plan §6.1 / review P2-6): the trust
 # factor is constant for it and is kept as a weighted term so a later build that ranks
 # candidate claims for explorer/critic templates changes RETRIEVAL_VERSION, not the shape.
@@ -163,7 +167,9 @@ def rank_knowledge(
 ) -> RetrievalResult:
     """Deterministic ranking of one Mission's knowledge for ``task`` (D4-9)."""
 
-    query = tokens(query_text or " ".join((task.goal, *task.success_criteria, task.rationale)))
+    query_raw = query_text or " ".join((task.goal, *task.success_criteria, task.rationale))
+    query = tokens(query_raw)
+    reference = query_raw.strip()
     own = [r for r in records if r.mission_id == task.mission_id]  # permission pre-filter
     considered = len(own)
     superseded: list[dict[str, Any]] = [
@@ -190,6 +196,7 @@ def rank_knowledge(
     oldest = min(r.created_at for r in live)
     span = max(newest - oldest, 1e-9)
     scored: list[Scored] = []
+    unrelated: list[str] = []
     for record in live:
         parts = {
             "relevance": relevance(query, " ".join((record.content, record.key or ""))),
@@ -202,6 +209,14 @@ def rank_knowledge(
             "recency": (record.created_at - oldest) / span if newest > oldest else 1.0,
             "reuse": min(len(record.used_by), 3) / 3.0,
         }
+        # Match the complete, case-sensitive identity or evidence reference. Do
+        # not tokenize paths: shared directories/basenames are not exact hits.
+        # This runs after Mission, status and stale filtering and before dedup.
+        if reference and (reference == record.id or reference in record.evidence):
+            parts["exact_reference"] = 1.0
+        if parts["relevance"] == 0 and "exact_reference" not in parts:
+            unrelated.append(record.id)
+            continue
         score = sum(WEIGHTS[name] * value for name, value in parts.items())
         scored.append(
             Scored(
@@ -249,9 +264,11 @@ def rank_knowledge(
             "duplicate_of": duplicate_of,
             "superseded": superseded_ids,
             "over_limit": truncated,
+            "no_relevance": unrelated,
             **({"stale": stale_dropped} if stale_dropped else {}),
         },
         considered,
+        reason="no_relevant_match_use_knowledge_catalog" if not kept else None,
         limit=limit,
     )
 

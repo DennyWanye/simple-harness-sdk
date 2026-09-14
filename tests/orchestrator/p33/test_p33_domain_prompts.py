@@ -36,10 +36,10 @@ def test_legacy_domain_snapshot_missing_fields_has_fixed_compatibility():
     assert interpreted.context_wording == domains.DOC_CONTEXT_WORDING_V1
     legacy["role_templates"] = {}
     assert domains.DomainProfileV1.from_json(legacy).role_templates == {}
-    old_code = domains.CODE_PROFILE.to_json()
+    old_code = domains.CODE_PROFILE_V1.to_json()
     old_code.pop("role_templates")
     old_code.pop("context_wording")
-    assert domains.DomainProfileV1.from_json(old_code) == domains.CODE_PROFILE
+    assert domains.DomainProfileV1.from_json(old_code) == domains.CODE_PROFILE_V1
 
 
 def test_frozen_domain_override_is_strict_and_precedes_policy():
@@ -110,14 +110,23 @@ def test_doc_prompt_uses_document_rules_and_preserves_role_identity(tmp_path, ro
     asyncio.run(case())
 
 
-def test_code_prompt_defaults_are_unchanged(tmp_path):
+def test_new_code_prompt_defaults_are_scope_safe(tmp_path):
     async def case():
         async with Orchestrator(
             OrchestratorConfig(evidence_root=tmp_path), RoleScriptedProvider({})
         ) as orch:
             mission = await orch.submit_mission(spec())
-            for template in ROLES.values():
-                assert orch._template(template, mission.id) == template
+            assert orch.commit.domain_for(mission.id) == domains.CODE_PROFILE
+            for role, template in ROLES.items():
+                selected = orch._template(template, mission.id)
+                expected = template_for_domain(template, domains.CODE_PROFILE, {})
+                assert selected == expected
+                if role in domains.CODE_PROFILE.role_templates:
+                    assert selected.prompt_version == f"{role}-code-observation-v2"
+                    assert "不能推出任意业务性质或其他版本仍然正确" in selected.instructions
+                    assert {"knowledge_list", "knowledge_read"} <= set(selected.tool_names)
+                else:
+                    assert selected is template
 
     asyncio.run(case())
 

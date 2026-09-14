@@ -40,7 +40,7 @@ from test_p33_source_commits import e_scenes as source_scenes
 
 from agent_orchestrator.contracts import ClaimStatus, SourceCitation, TaskStatus, ids
 from agent_orchestrator.contracts.models import canonical_json
-from agent_orchestrator.governance.domains import CODE_PROFILE
+from agent_orchestrator.governance.domains import CODE_PROFILE_V1
 from agent_orchestrator.memory import claims
 from agent_orchestrator.orchestrator.commit_service import CommitRejected
 from agent_orchestrator.verification import adapters, assessments
@@ -219,7 +219,7 @@ def test_o2_public_code_dispatch_matches_executable_historical_function(monkeypa
                 untrusted_prefixes=["sources/"],
             )
             expected = canonical_json(module.grade_claim("claim", evidence, **kwargs).to_json())
-            for domain in (None, CODE_PROFILE):
+            for domain in (None, CODE_PROFILE_V1):
                 assert (
                     canonical_json(
                         claims.grade_claim("claim", evidence, domain=domain, **kwargs).to_json()
@@ -270,6 +270,7 @@ def test_o2_all_verifier_row_readers_exclude_critic_before_accessing_payload():
         [
             ("grade_claim", "_grade_document"),
             ("grade_claim", "_legacy_grade_claim"),
+            ("grade_claim", "ran_test_targets"),
             ("_legacy_grade_claim", "ran_test_targets"),
         ]
     )

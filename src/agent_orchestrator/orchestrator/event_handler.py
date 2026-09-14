@@ -441,6 +441,7 @@ class Orchestrator:
                 local_provider_admissions=local_admissions,
                 provider_handoff_fence=self._provider_handoff_fence,
             )
+            self._assembled.gateway.executed_lookup = self._executed_tool_proof
             # Before ANY pool may resume, import every old physical handoff.
             # This does not change the external admission identity of old intents.
             for key, admission in local_admissions.items():
@@ -453,6 +454,20 @@ class Orchestrator:
             # Reconcile orphan execution identities before any runtime can resume tools.
             workspaces = self._assembled.workspaces
             await asyncio.to_thread(workspaces.sweep_exec_copies)
+            # SDK __aenter__ can reconcile an UNKNOWN tool and immediately run
+            # its successor. Install Host bindings and durable accounting first.
+            self._assembled.gateway.on_rejected = self._audit_tool_rejection
+            self._assembled.gateway.on_executed = self._record_tool_call
+            from ..context.knowledge_tools import read_knowledge_tool
+
+            self._assembled.gateway.knowledge_reader = (
+                lambda mission_id, tool, args: read_knowledge_tool(self.store, mission_id, tool, args)
+            )
+            self._assembled.gateway.executed_counter = self.store.count_tool_calls
+            changes = backfill(self._store.list_all_artifacts(), workspaces.artifact_store)
+            if changes:
+                self._store.update_artifact_storage(changes)
+            self._bind_startup_tools()
             try:
                 await self._assembled.__aenter__()
             except ProviderAdmissionDenied as error:
@@ -465,14 +480,8 @@ class Orchestrator:
             # P3.2 D3: artifacts recorded before 0.10 move into the content-addressed store
             # (or are marked unavailable); execution copies a crash left behind are removed
             workspaces = self._assembled.workspaces
-            changes = backfill(self._store.list_all_artifacts(), workspaces.artifact_store)
-            if changes:
-                self._store.update_artifact_storage(changes)
             self.cleanup_workspaces()  # P3.2 D4: finished Missions past their retention
             self._bridge = self._assembled.pool(self._default_profile).bridge
-            self._assembled.gateway.on_rejected = self._audit_tool_rejection  # D6-7
-            self._assembled.gateway.on_executed = self._record_tool_call  # review P1-3
-            self._assembled.gateway.executed_counter = self.store.count_tool_calls
             self._pressure = self._commit.backpressure_state()
             self._actions = ActionExecutor(  # D7-5: the only caller of connectors
                 self._commit,
@@ -888,6 +897,15 @@ class Orchestrator:
             tool=str(record.get("tool")),
         )
 
+    def _executed_tool_proof(self, call_key: str) -> Mapping[str, Any] | None:
+        record = self.store.get_tool_call(call_key)
+        if record is None:
+            return None
+        attempt = self.store.get_attempt(record["subject_id"])
+        if attempt is None or attempt.mission_id != record["mission_id"]:
+            return None
+        return {**record, "agent_id": attempt.agent_id}
+
     def _read_only_inputs(self, attempt_id: str) -> tuple[str, ...]:
         """D6-6: the upstream inputs this Attempt may read but not rewrite (the Task did
         not declare them as ``outputs``); seed files keep the step-2 tamper detection."""
@@ -1190,6 +1208,8 @@ class Orchestrator:
         )
 
     def _check_mission_door(self, spec: MissionSpec) -> None:
+        if spec.domain == "appworld-v1" and self._config.appworld_execute is None:
+            raise ContractError("AppWorld Mission requires a bound episode environment")
         if spec.runtime_profile_id is not None:
             from ..api.missions import MissionRequestError
 
@@ -1294,6 +1314,45 @@ class Orchestrator:
             )
             if decision.refused is not None:
                 raise ContractError(f"action criterion {criterion!r} refused: {decision.refused}")
+
+    def _bind_startup_tools(self) -> None:
+        """Reconstruct frozen tool authority before SDK automatic recovery starts."""
+        for intent in self.store.list_intents("AGENT_CREATED", "SUBMITTED"):
+            if intent.agent_id is None or self._pool_missing(intent):
+                continue
+            if intent.kind == "attempt":
+                attempt = self.store.get_attempt(intent.subject_id)
+                if attempt is not None and attempt.status not in TERMINAL_ATTEMPT:
+                    self._bind_workspace(attempt)
+                    self._bind_agent(intent.agent_id, intent.config)
+            elif intent.kind == "critic" and not self._critic_subject_stopped(intent):
+                if intent.state == "AGENT_CREATED":
+                    # A created Agent is not necessarily a submitted SDK turn.
+                    # With no durable turn there is nothing startup can resume;
+                    # recover() retains its cancel + Mission FAILED semantics for
+                    # invalid source authority. A crash after submit still leaves
+                    # a durable turn even if Host has not recorded SUBMITTED.
+                    uow = self.bridge_for(intent).runtime.uow
+                    turn = uow.read_agent_turn_by_input(intent.agent_id, intent.input_id)
+                    if turn is None and intent.expected_turn_id is not None:
+                        turn = uow.read_agent_turn(intent.expected_turn_id)
+                    if turn is None:
+                        if any(
+                            row.phase not in {AgentTurnState.COMMITTED, AgentTurnState.FAILED}
+                            for row in uow.list_agent_turns(intent.agent_id)
+                        ):
+                            raise ContractError("Critic SDK turn identity differs from frozen intent")
+                        continue
+                    if (
+                        turn.agent_id != intent.agent_id
+                        or turn.input_id != intent.input_id
+                        or turn.turn_id != intent.expected_turn_id
+                    ):
+                        raise ContractError("Critic SDK turn differs from frozen intent")
+                # A submitted SDK turn can resume during __aenter__: validate
+                # before granting it tools, never rebind an invalid source tree.
+                self._validate_mission_judge_intent(intent)
+                self._bind_critic(intent.agent_id, intent.config)
 
     async def recover(self) -> None:
         """§16.4 recovery (D3-6'): rebind the workspaces of in-flight turns, let the
@@ -2116,6 +2175,11 @@ class Orchestrator:
     def _bind_agent(self, agent_id: str, config: Mapping[str, Any]) -> None:
         cap = config.get("max_tool_calls")
         context_profile = self._context_profile_for(config)
+        attempt = self.store.get_attempt(str(config["attempt_id"]))
+        if attempt is None:
+            raise ContractError("Cannot bind an unknown Attempt")
+        if self.commit.domain_for(attempt.mission_id).id == "appworld-v1":
+            self.assembled.gateway.bind_appworld(attempt.mission_id)
         self.assembled.gateway.bind(
             agent_id,
             WorkspaceBinding(
@@ -2125,6 +2189,7 @@ class Orchestrator:
                 tuple(config.get("allowed_tools", WORKER_TOOLS)),
                 tuple(str(p) for p in config.get("untrusted_sources", ())),
                 max_tool_calls=None if cap is None else int(cap),
+                mission_id=attempt.mission_id,
                 protected=self._read_only_inputs(str(config["attempt_id"])),
                 protected_prefixes=tuple(config.get("source_roots", ())),
                 denied_prefixes=self._config.deployment_policy.denied_path_prefixes,

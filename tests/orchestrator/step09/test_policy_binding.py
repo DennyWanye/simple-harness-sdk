@@ -361,6 +361,7 @@ def test_review_p1_1_a_mission_older_than_policy_binding_still_replays_completel
 
 
 def test_review_p2_10_a_policy_switches_the_prompt_version_at_run_time(tmp_path):
+    from agent_orchestrator.governance.domains import CODE_PROFILE
     from agent_orchestrator.runtime.role_templates import (
         TEMPLATE_VERSIONS,
         WORKER,
@@ -387,9 +388,15 @@ def test_review_p2_10_a_policy_switches_the_prompt_version_at_run_time(tmp_path)
                 mission = await orch.submit_mission(_spec("prompt-switch"))
                 await orch.run()
                 [attempt] = _only_attempt(store, mission.id)
-                assert attempt.prompt_version == "worker-v2-drill"  # the bound version's template
+                # The current v2 code domain freezes its scope-safe worker prompt ahead
+                # of the policy's generic prompt selection.
+                assert attempt.prompt_version == CODE_PROFILE.role_templates["worker"]
                 assert (
                     store.get_intent_for_subject(attempt.id).config["prompt_version"]
+                    == CODE_PROFILE.role_templates["worker"]
+                )
+                assert (
+                    store.get_policy_version(promoted["version_id"])["params"]["prompt_versions"]["worker"]
                     == "worker-v2-drill"
                 )
                 assert orch.policy_version_of(mission.id) == promoted["version_id"]

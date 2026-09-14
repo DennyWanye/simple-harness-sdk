@@ -23,6 +23,7 @@ from fixtures_provider import RoleScriptedProvider, critic_step, proposal_step
 
 from agent_orchestrator.__main__ import main
 from agent_orchestrator.contracts import Budget, MissionStatus
+from agent_orchestrator.governance import domains
 from agent_orchestrator.observability.replay import (
     Projection,
     compare,
@@ -99,11 +100,25 @@ def _config(tmp_path, **overrides):
     )
 
 
+def _use_legacy_code_profile(monkeypatch):
+    """Keep historical conflict events on the profile that produced them."""
+
+    monkeypatch.setattr(
+        domains,
+        "DOMAINS",
+        {**domains.DOMAINS, domains.CODE_DOMAIN: domains.CODE_PROFILE_V1},
+    )
+
+
 # ------------------------------------------------------------------ S8-02
 @pytest.mark.parametrize(
     "scenario", ["static-dag", "knowledge-sharing", "dynamic-dag", "approval-action"]
 )
-def test_s8_02_replay_rebuilds_the_whole_formal_state_of_every_demo(tmp_path, capsys, scenario):
+def test_s8_02_replay_rebuilds_the_whole_formal_state_of_every_demo(
+    tmp_path, capsys, scenario, monkeypatch
+):
+    if scenario == "knowledge-sharing":
+        _use_legacy_code_profile(monkeypatch)
     code, evidence, mission_id = _demo(tmp_path, scenario)
     capsys.readouterr()
     assert code == 0
@@ -443,8 +458,10 @@ def test_s8_02_a_review_that_waits_and_then_passes_replays_at_both_moments(tmp_p
     ],
 )
 def test_review_p1_2_a_dropped_outcome_is_a_gap_with_or_without_the_library(
-    tmp_path, capsys, scenario, dropped, rule
+    tmp_path, capsys, scenario, dropped, rule, monkeypatch
 ):
+    if scenario == "knowledge-sharing":
+        _use_legacy_code_profile(monkeypatch)
     _code, evidence, mission_id = _demo(tmp_path, scenario)
     capsys.readouterr()
     lines = (evidence / "events.jsonl").read_text(encoding="utf-8").splitlines()

@@ -28,7 +28,12 @@ def test_s8_07_every_configuration_field_is_classified(tmp_path):
     names = {f.name for f in dataclasses.fields(OrchestratorConfig)}
     assert names == set(SNAPSHOT_FIELDS), sorted(names ^ set(SNAPSHOT_FIELDS))
     snapshot = policy_snapshot(_config(tmp_path))
-    assert set(snapshot["config"]) == {n for n, c in SNAPSHOT_FIELDS.items() if c == "include"}
+    assert set(snapshot["config"]) == {
+        *(n for n, c in SNAPSHOT_FIELDS.items() if c == "include"),
+        "appworld_execute",
+    }
+    # A callback itself is not serializable, but its presence changes admission.
+    assert snapshot["config"]["appworld_execute"] is False
     # P3.2 (plan D4): workspace housekeeping is left out on purpose — it never changes how a
     # Mission is planned, run or verified
     assert set(snapshot["excluded"]) == {
@@ -36,6 +41,7 @@ def test_s8_07_every_configuration_field_is_classified(tmp_path):
         "owner_id",
         "workspace_retention_seconds",
         "sandbox_executor",  # P3.2 (plan D2): a runtime object, digest in every receipt
+        "appworld_execute",  # capability availability is the serialized config value above
     }
 
 
@@ -82,7 +88,7 @@ def test_s8_07_a_changed_version_constant_is_listed_with_its_module(tmp_path, mo
     diff = {d["key"]: d for d in snapshot_diff(before, after)}
     assert diff["versions.retrieval"] == {
         "key": "versions.retrieval",
-        "a": "retrieval-v1",
+        "a": before["versions"]["retrieval"],
         "b": "retrieval-v2",
         "source": "agent_orchestrator.context.retrieval.RETRIEVAL_VERSION",
     }

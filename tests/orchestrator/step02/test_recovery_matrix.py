@@ -178,8 +178,10 @@ def test_s2_03_replays_do_not_duplicate(tmp_path):
                 {a.id for a in store.list_artifacts(attempt.id)}
             )
             # same verification layer recorded twice → one row, one event
+            original = next(v for v in store.list_verifications(stored.envelope.id)
+                            if v["layer"] == "code_test")
             commit.record_verification_layer(
-                stored.envelope.id, layer="code_test", status="PASS", detail={"summary": "again"}
+                stored.envelope.id, layer="code_test", status="PASS", detail=original["detail"]
             )
             assert (
                 len(

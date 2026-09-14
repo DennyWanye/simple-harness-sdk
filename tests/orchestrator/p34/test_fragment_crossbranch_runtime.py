@@ -272,9 +272,10 @@ def test_accepted_fragment_retargets_blocked_consumer_and_synthesis_reads_new_re
         verified_consumer = [
             item["id"]
             for item in package["verified_knowledge"]
-            if item.get("content") == "C incorporated accepted F and independent B"
+            if item.get("type") == "test_observation"
+            and "tests/test_consumer.py" in item.get("content", "")
         ]
-        assert len(verified_consumer) == 1
+        assert len(verified_consumer) == 1  # scoped execution observation, not free-form entailment
 
         def cite_consumer(body):
             body["used_knowledge"] = verified_consumer
@@ -457,7 +458,7 @@ def test_accepted_fragment_retargets_blocked_consumer_and_synthesis_reads_new_re
                     success_criteria=("file:final.md",),
                     budget=Budget(max_tokens=450_000, max_attempts=20),
                     synthesis={
-                        "goal": "independently synthesize consumer C",
+                        "goal": "independently synthesize consumer C using pytest:tests/test_consumer.py",
                         "success_criteria": ["file:final.md"],
                         "verification_policy": ["format_check", "rule_check"],
                         "budget": {"max_tokens": 30_000, "max_attempts": 2},

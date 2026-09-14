@@ -10,7 +10,7 @@ import pytest
 
 from agent_orchestrator.contracts import ClaimProposal, ClaimStatus, ContractError, SourceCitation
 from agent_orchestrator.contracts.models import sha256_hex
-from agent_orchestrator.governance.domains import CODE_PROFILE, DOC_PROFILE
+from agent_orchestrator.governance.domains import CODE_PROFILE_V1, DOC_PROFILE
 from agent_orchestrator.memory.claims import grade_claim
 
 
@@ -162,7 +162,7 @@ def test_code_legacy_inputs_keep_the_same_results(evidence, expected):
     )
     default = grade_claim("c", evidence, **kwargs)
     explicit = grade_claim(
-        "c", evidence, domain=CODE_PROFILE, proposal=ClaimProposal("x", 1), assessments=(), **kwargs
+        "c", evidence, domain=CODE_PROFILE_V1, proposal=ClaimProposal("x", 1), assessments=(), **kwargs
     )
     assert default.to_json() == explicit.to_json()
     assert str(default.status) == expected

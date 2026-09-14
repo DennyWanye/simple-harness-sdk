@@ -27,7 +27,7 @@ from typing import Any
 from ..artifacts.workspace import Workspace
 from ..contracts import Artifact, ContractError, Mission, ResultEnvelope, Task
 from ..contracts.models import VERIFICATION_LAYERS
-from ..governance.domains import CODE_PROFILE, DomainProfileV1, supports_document_assessments
+from ..governance.domains import DomainProfileV1, supports_document_assessments
 from ..memory.verified_knowledge import KnowledgeIndex
 from .assessments import AssessmentBindingV1, citation_integrity, doc_rule_reusable
 from .critics import CriticVerdict
@@ -39,8 +39,8 @@ from .deterministic_checks import (
     LayerResult,
     code_test,
     format_check,
-    rule_check,
 )
+from .domain_handlers import handler_for
 from .evidence_resolver import EvidenceResolver
 from .human_review import NEEDS_HUMAN, SUSPENDED, human_layer
 
@@ -108,7 +108,8 @@ class VerifierRouter:
         evidence_resolver: EvidenceResolver | None = None,
     ) -> Verdict:
         actual_domain = domain if domain is not None else self._domain
-        document = actual_domain is not None and actual_domain.id != CODE_PROFILE.id
+        handler = handler_for(actual_domain)
+        document = handler.document_assessments
         required = set(task.verification_policy)
         if action_problems is not None:  # D7-2'': a result carrying actions/ is always rule-checked
             required.add("rule_check")
@@ -196,7 +197,7 @@ class VerifierRouter:
             elif layer == "format_check":
                 result = format_check(envelope, client_result_id=client_result_id)
             elif layer == "rule_check":
-                result = rule_check(
+                result = handler.rules(
                     envelope,
                     task,
                     artifacts=artifacts,
@@ -245,6 +246,8 @@ class VerifierRouter:
                             verification_copy=verification_copy,
                             timeout=self._test_timeout,
                             executor=self._executor,
+                            result_id=envelope.id,
+                            artifacts=artifacts,
                         )
                     runs = prepared_code_test.detail.get("runs", [])
                     test_output = "\n".join(
@@ -307,6 +310,8 @@ class VerifierRouter:
                     verification_copy=verification_copy,
                     timeout=self._test_timeout,
                     executor=self._executor,
+                    result_id=envelope.id,
+                    artifacts=artifacts,
                 )
             elif layer == "human_review":  # step 7 (D7-8'): the sixth layer
                 result = human_layer(human)

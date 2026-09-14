@@ -27,7 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 deepseek-tokenizer = ["deepseek-recipe==0.1.1"]
-hf-tokenizer = ["transformers>=4.57,<6", "tokenizers>=0.22,<1"]
+hf-tokenizer = ["transformers>=4.57,<6", "tokenizers>=0.22,<1", "jinja2>=3.1,<4"]
 testing = [
   "pytest>=8.3,<9",
 ]

@@ -624,7 +624,7 @@ def test_external_cas_failure_after_integrity_is_error(scene, monkeypatch):
 
 
 def test_needs_human_receipt_is_reusable_but_router_still_requires_actual_human(scene, monkeypatch):
-    import agent_orchestrator.verification.verifier_router as router_module
+    import agent_orchestrator.verification.domain_handlers as router_module
 
     env, bound = scene.prepare()
     with monkeypatch.context() as patch:

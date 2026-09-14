@@ -1388,6 +1388,7 @@ deepseek-tokenizer = [
     { name = "deepseek-recipe" },
 ]
 hf-tokenizer = [
+    { name = "jinja2" },
     { name = "tokenizers" },
     { name = "transformers" },
 ]
@@ -1409,6 +1410,7 @@ dev = [
 requires-dist = [
     { name = "deepseek-recipe", marker = "extra == 'deepseek-tokenizer'", specifier = "==0.1.1" },
     { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "jinja2", marker = "extra == 'hf-tokenizer'", specifier = ">=3.1,<4" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.3,<9" },
     { name = "tokenizers", marker = "extra == 'hf-tokenizer'", specifier = ">=0.22,<1" },
     { name = "transformers", marker = "extra == 'hf-tokenizer'", specifier = ">=4.57,<6" },
