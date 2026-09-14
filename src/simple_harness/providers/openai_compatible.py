@@ -9,6 +9,7 @@ import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
+from ipaddress import ip_address, ip_network
 from typing import Any, cast
 from urllib.parse import urlsplit
 
@@ -147,6 +148,7 @@ class OpenAICompatibleProvider:
         provider_id: str | None = None,
         pricing_key: str | None = None,
         tool_schema_mode: str = LEGACY_TOOL_SCHEMA_MODE,
+        allow_private_http: bool = False,
     ) -> None:
         if not isinstance(client, httpx.AsyncClient):
             raise TypeError("client must be an httpx.AsyncClient")
@@ -161,7 +163,18 @@ class OpenAICompatibleProvider:
             raise ValueError("base_url must not contain a query or fragment")
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("base_url must not contain credentials")
-        if parsed.scheme == "http" and hostname not in {
+        if type(allow_private_http) is not bool:
+            raise TypeError("allow_private_http must be a boolean")
+        private_http = False
+        if allow_private_http and hostname is not None:
+            try:
+                address = ip_address(hostname)
+                private_http = any(address in ip_network(network) for network in (
+                    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+                ))
+            except ValueError:
+                pass
+        if parsed.scheme == "http" and not private_http and hostname not in {
             "127.0.0.1",
             "localhost",
             "::1",

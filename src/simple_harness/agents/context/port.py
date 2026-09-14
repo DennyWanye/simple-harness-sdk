@@ -486,6 +486,12 @@ class RequestGuard:
         self.last_request_tokens: int | None = None
 
     def count(self, request: ProviderRequest) -> int:
+        exact = getattr(self._tokenizer, "count_request_tokens", None)
+        if callable(exact):
+            tokens = exact(request)
+            if type(tokens) is not int or tokens < 0:
+                raise ValueError("rendered request counter must return nonnegative tokens")
+            return tokens
         return sum(count_message(self._tokenizer, m) for m in request.messages) + count_tools(
             self._tokenizer, tuple(request.tools)
         )
