@@ -61,3 +61,53 @@ async def test_direct_meter_and_capacity_provider_do_not_double_reserve(tmp_path
     assert physical.calls == meter.counters.calls == 1
     assert len(ledger.snapshot().rows) == 1
     assert ledger.snapshot().held_slots == 0
+
+
+def test_bounded_response_wait_survives_short_executor_stall_threshold(tmp_path, monkeypatch):
+    contract = importlib.import_module("test_result_output_contract")
+    ledger = CapacityLedger(tmp_path / "capacity.db", pool_id="local", max_slots=2, max_tokens=100)
+    cap = DeploymentCapacity(ledger, estimate=lambda request: 60, call_seconds=2)
+    original = contract.RoleScriptedProvider
+    original_config = contract.OrchestratorConfig
+
+    class SlowResponse(original):
+        async def invoke(self, *args, **kwargs):
+            await asyncio.sleep(0.12)
+            return await super().invoke(*args, **kwargs)
+
+    monkeypatch.setattr(
+        contract, "RoleScriptedProvider",
+        lambda *a, **kw: CapacityProvider(SlowResponse(*a, **kw), cap)
+    )
+    monkeypatch.setattr(
+        contract, "OrchestratorConfig", lambda **kw: original_config(**kw, stall_seconds=0.02)
+    )
+    contract.test_actual_provider_gets_valid_example_but_missing_file_still_fails(
+        tmp_path / "sdk", True, True, True
+    )
+    assert len(ledger.snapshot().rows) == 3
+    assert all(row.state == "SETTLED" for row in ledger.snapshot().rows)
+    assert not cap.response_waiting("")
+
+
+@pytest.mark.asyncio
+async def test_response_deadline_is_bounded_and_unknown_capacity_stays_held(tmp_path):
+    ledger = CapacityLedger(tmp_path / "capacity.db", pool_id="local", max_slots=1, max_tokens=100)
+    cap = DeploymentCapacity(ledger, estimate=lambda request: 60, call_seconds=0.1)
+    entered = asyncio.Event()
+
+    class HungProvider:
+        async def invoke(self, request, *, cancel):
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(
+        CapacityProvider(HungProvider(), cap).invoke(request("hung"), cancel=CancelToken())
+    )
+    await entered.wait()
+    assert cap.response_waiting("hung") and not cap.waiting("hung")
+    with pytest.raises(TimeoutError):
+        await task
+    assert not cap.response_waiting("hung")
+    assert ledger.snapshot().rows[0].state == "UNKNOWN"
+    assert ledger.snapshot().held_slots == 1

@@ -58,9 +58,14 @@ class DeploymentCapacity:
         *,
         estimate: Callable[[ProviderRequest], int],
         wait_seconds: float = 900.0,
+        call_seconds: float = 600.0,
     ) -> None:
         if not callable(estimate) or not 0 < wait_seconds <= 3600:
             raise ValueError("capacity requires a bound estimator and bounded wait")
+        if type(call_seconds) not in (int, float) or not 0 < call_seconds <= 3600:
+            raise ValueError("capacity requires a bounded physical call deadline")
+        self.call_seconds = call_seconds
+        self._response_waits: dict[str, tuple[str, float]] = {}
         self.ledger = ledger
         self.estimate = estimate
         self.wait_seconds = wait_seconds
@@ -132,6 +137,14 @@ class DeploymentCapacity:
             if known:
                 proof = f"sdk:{namespace}:{record.invocation_id}:{ordinal}:{record.version}"
                 self.ledger.reconcile(row.key, evidence_ref=proof)
+
+    def response_waiting(self, request_prefix: str) -> bool:
+        """A live physical await with a fixed deadline, never ledger-only liveness."""
+        now = time.monotonic()
+        return any(
+            key.startswith(request_prefix) and now < deadline
+            for key, deadline in self._response_waits.values()
+        )
 
     def waiting(self, request_prefix: str) -> bool:
         return any(key.startswith(request_prefix) for key in self._waiting)
@@ -206,13 +219,20 @@ class CapacityProvider:
             if cancel.is_cancelled:
                 raise asyncio.CancelledError()
             handle.handoff()
+            waits = self.deployment_capacity._response_waits
+            waits[handle.ticket.epoch] = (
+                request.request_id.value, time.monotonic() + self.deployment_capacity.call_seconds
+            )
             try:
-                response = await self.provider.invoke(request, cancel=cancel)
+                async with asyncio.timeout(self.deployment_capacity.call_seconds):
+                    response = await self.provider.invoke(request, cancel=cancel)
             except ProviderError as error:
                 detail = getattr(error, "detail", None)
                 if isinstance(detail, Mapping) and _known_usage(detail.get("usage")):
                     handle.known_terminal = True
                 raise
+            finally:
+                waits.pop(handle.ticket.epoch, None)
             usage = response.usage
             if usage is not None and _known_usage(
                 {

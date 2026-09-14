@@ -116,7 +116,9 @@ class AgentBridge:
             turn_id=turn_id,
         )
         capacity = getattr(self._runtime.ports.provider, "deployment_capacity", None)
+        response_waiting = False
         if capacity is not None:
+            response_waiting = capacity.response_waiting(f"{agent.run_id}:provider-turn:")
             waiting = waiting or capacity.waiting(f"{agent.run_id}:provider-turn:")
         progress = snapshot.provider_turn_ordinal_to
         if state is AgentTurnState.RUNNING:
@@ -131,11 +133,13 @@ class AgentBridge:
         return Liveness(
             exists=True,
             state=str(state),
-            blocked=bool(snapshot.blocked) or waiting,
+            blocked=bool(snapshot.blocked) or waiting or response_waiting,
             blocker=(
                 {"kind": "provider_slot_wait", "billable": False}
                 if waiting
-                else (None if snapshot.blocker is None else dict(snapshot.blocker))
+                else ({"kind": "provider_response_wait", "billable": True, "bounded": True}
+                      if response_waiting
+                      else (None if snapshot.blocker is None else dict(snapshot.blocker)))
             ),
             progress=progress,
             settled=state in {AgentTurnState.COMMITTED, AgentTurnState.FAILED},

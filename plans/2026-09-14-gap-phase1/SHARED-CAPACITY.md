@@ -27,3 +27,9 @@ SQLite FIFO/短事务保存WAITING、RESERVED、HANDED_OFF、UNKNOWN和终态；
 最后更新：2026-09-15 06:01 CST。N1真实三进程v1为FAIL：两次物理调用321104tokens、0新增抢占，第三路前置排队被错误释放（已知0出站）。系统校时影响psutil.create_time造成身份误判，旧源3反例FAIL；改为psutil稳定process hash（>=7.2.2），新25PASS/1.85秒，完整及实机后继待验。N1–N8仍OPEN，Flash0。
 
 稳定身份使用psutil公开Process hash；macOS/Linux由内核单调创建身份组成，Windows使用创建身份。unsupported平台/旧缺identity记录保守保持，只在PID确定不存在时按原状态恢复；新列process_identity与旧process_started分开，禁止跨算法比较。散列碰撞只会保守保留，不会误释放。真实v1原始结果不改写；第三路无usage是出站前拒绝，不是物理调用未知，修正审计另存parent-audit.json。
+
+## 原生v57发现的响应等待误判
+
+2026-09-15 06:27 CST：前台真实3540tokens/2.565秒成功且与Mission实际两路重叠，但后台非流式模型响应超过180秒被误报executor_stalled，已记录失败并取消后续尝试；在途用量保留，未宣称UI通过。容量包装现在对实际物理await设置固定600秒截止，AgentBridge仅在该活跃有界await期间标记provider_response_wait（billable=true），不伪造progress。队列仍为非计费slot wait，截止/取消清除活跃标记；未知物理结果仍占容量。新27定向PASS/2.58秒（实际Orchestrator慢响应越过短stall及超时UNKNOWN保留），旧liveness桥反例FAIL；当前完整/原生重跑待验。上一e80cfa8完整2306PASS/32条件SKIP/713.40秒只覆盖上一源码。
+
+额外旧SDK出站/预算/恢复78PASS/3.58秒；一条历史测试时钟未使租约过期，c60bf518也FAIL，补足有效租约不抢占和过期后恢复两阶段。两项额外Memory互操作测试因环境缺少兼容simple_harness_memory未收集，不算通过。

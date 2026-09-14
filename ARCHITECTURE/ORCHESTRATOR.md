@@ -1,3 +1,7 @@
+最后更新：2026-09-15 06:27 CST。N1固定物理响应截止与response_wait接入：27定向PASS，旧桥反例FAIL。原生v57前台成功/物理重叠2路但后台180秒误判停滞，旧测试已取消，保留在途账；新完整与原生待验，N1–N8仍OPEN。 [证据](../plans/2026-09-14-gap-phase1/SHARED-CAPACITY.md)。
+
+最后更新：2026-09-15 06:01 CST。共享容量账本采用稳定进程identity，避免校时误释放；SDK local-capacity要求psutil>=7.2.2。旧源3反例FAIL，新25定向PASS/1.85秒；完整及真实多进程后继仍待验。前一完整2302PASS只对应c6b1643。详见 [N1](../plans/2026-09-14-gap-phase1/SHARED-CAPACITY.md)。
+
 最后更新：2026-09-15 05:40 CST。N1同机共享2槽/393216容量接纳实现，SDK40定向PASS、Host15PASS；重复绑定与PID复用问题已修复，未知出站保留。完整回归/真实多进程/当前源码UI仍待；N1–N8/正式A96B96仍OPEN、Flash0，无打包。 [当前范围](../plans/2026-09-14-gap-phase1/SHARED-CAPACITY.md)。
 
 最后更新：2026-09-15 02:44 CST。code profile v4生产3e2792f：原分页/时间例外两个失败题自然复验均VERIFIED（16调用139927tokens/290.623秒），旧失败保留。完整v9为2275PASS32SKIP1旧版本断言FAIL，后继28PASS及官方ARE50PASS，无生产再改；当前源码UI v54冷恢复实点通过，0新调用。累计261本地调用5430502已知tokens下限/1早先未知，Flash0。N1–N8/A96B96仍OPEN，无打包。 [最新证据与边界](../plans/2026-09-14-gap-phase1/RESULT-CONTRACT-FOLLOWUP.md)。

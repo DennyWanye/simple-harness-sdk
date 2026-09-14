@@ -1,3 +1,5 @@
+最后更新：2026-09-15 06:27 CST。N1固定物理响应截止与response_wait接入：27定向PASS，旧桥反例FAIL。原生v57前台成功/物理重叠2路但后台180秒误判停滞，旧测试已取消，保留在途账；新完整与原生待验，N1–N8仍OPEN。 [证据](../plans/2026-09-14-gap-phase1/SHARED-CAPACITY.md)。
+
 最后更新：2026-09-15 06:01 CST。N1真实三进程v1为FAIL：两次物理调用321104tokens、0新增抢占，第三路前置排队被错误释放（已知0出站）。系统校时影响psutil.create_time造成身份误判，旧源3反例FAIL；改为psutil稳定process hash（>=7.2.2），新25PASS/1.85秒，完整及实机后继待验。N1–N8仍OPEN，Flash0。
 
 最后更新：2026-09-15 05:40 CST。N1同机共享2槽/393216容量接纳实现，SDK40定向PASS、Host15PASS；重复绑定与PID复用问题已修复，未知出站保留。完整回归/真实多进程/当前源码UI仍待；N1–N8/正式A96B96仍OPEN、Flash0，无打包。 [当前范围](../plans/2026-09-14-gap-phase1/SHARED-CAPACITY.md)。
