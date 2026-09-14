@@ -14,7 +14,7 @@ frozen into the dispatch intent; the Tool Gateway enforces it again on every cal
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS
@@ -29,6 +29,8 @@ class DeploymentPolicy:
     """What this deployment allows at all (the fourth side of the intersection)."""
 
     allowed_tools: tuple[str, ...] = TOOL_NAMES
+    agentdojo_tools: tuple[str, ...] = field(default=(), kw_only=True)
+    are_tools: tuple[str, ...] = field(default=(), kw_only=True)
     denied_path_prefixes: tuple[str, ...] = ()  # workspace paths no Agent may read or write
     # step 7 (D7-3): real actions — which connectors this deployment enables, the highest
     # level it will run at all, per-operation level overrides (only ever *raise* a level),
@@ -56,7 +58,14 @@ class DeploymentPolicy:
     code_execution: str | None = None
 
     def __post_init__(self) -> None:
-        unknown = set(self.allowed_tools) - set(TOOL_NAMES)
+        if set(self.agentdojo_tools) & set(TOOL_NAMES):
+            raise ValueError("AgentDojo tools cannot replace SDK tools")
+        if set(self.are_tools) & (set(TOOL_NAMES) | set(self.agentdojo_tools)):
+            raise ValueError("ARE tools cannot replace SDK or AgentDojo tools")
+        unknown = (
+            set(self.allowed_tools) - set(TOOL_NAMES)
+            - set(self.agentdojo_tools) - set(self.are_tools)
+        )
         if unknown:
             raise ValueError(f"deployment policy names unknown tools: {sorted(unknown)}")
         mode = self.code_execution
@@ -78,6 +87,8 @@ class DeploymentPolicy:
     def to_json(self) -> dict[str, Any]:
         return {
             "allowed_tools": list(self.allowed_tools),
+            **({"agentdojo_tools": list(self.agentdojo_tools)} if self.agentdojo_tools else {}),
+            **({"are_tools": list(self.are_tools)} if self.are_tools else {}),
             "denied_path_prefixes": list(self.denied_path_prefixes),
             "enabled_connectors": list(self.enabled_connectors),
             "max_action_level": self.max_action_level,
@@ -205,6 +216,10 @@ SNAPSHOT_FIELDS: dict[str, str] = {
     "appworld_execute": (
         "capability: callback presence only; environment frozen in experiment manifest"
     ),
+    "are_invoke": "capability: callback presence; no environment serialization",
+    "are_tool_schemas": "capability: public schemas frozen only when deployed",
+    "agentdojo_invoke": "capability: callback presence; no environment serialization",
+    "agentdojo_tool_schemas": "capability: public schemas frozen only when deployed",
     **{
         name: "include"
         for name in (
@@ -355,12 +370,27 @@ def policy_snapshot(
     # objects can carry credentials). Availability still changes admission.
     if "appworld_execute" in fields:
         configuration["appworld_execute"] = getattr(config, "appworld_execute") is not None
+    if (getattr(config, "agentdojo_invoke", None) is not None
+            or getattr(config, "agentdojo_tool_schemas", None)):
+        configuration["agentdojo_invoke"] = getattr(config, "agentdojo_invoke", None) is not None
+        configuration["agentdojo_tool_schemas"] = getattr(config, "agentdojo_tool_schemas")
+    if (getattr(config, "are_invoke", None) is not None
+            or getattr(config, "are_tool_schemas", None)):
+        configuration["are_invoke"] = getattr(config, "are_invoke", None) is not None
+        configuration["are_tool_schemas"] = getattr(config, "are_tool_schemas")
     for name in configuration:
         sources[f"config.{name}"] = f"OrchestratorConfig.{name}"
     body: dict[str, Any] = {
         "version": SNAPSHOT_VERSION,
         "config": configuration,
-        "excluded": {n: r for n, r in sorted(SNAPSHOT_FIELDS.items()) if r != "include"},
+        "excluded": {
+            n: r for n, r in sorted(SNAPSHOT_FIELDS.items())
+            if r != "include" and (
+                n not in {
+                    "agentdojo_invoke", "agentdojo_tool_schemas", "are_invoke", "are_tool_schemas"
+                } or n in configuration
+            )
+        },
         "versions": versions,
         "role_templates": roles,
         "profiles": {k: _plain(v) for k, v in sorted((profiles or {}).items())},

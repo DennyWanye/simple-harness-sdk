@@ -461,7 +461,10 @@ class Orchestrator:
             from ..context.knowledge_tools import read_knowledge_tool
 
             self._assembled.gateway.knowledge_reader = (
-                lambda mission_id, tool, args: read_knowledge_tool(self.store, mission_id, tool, args)
+                lambda mission_id, tool, args: read_knowledge_tool(
+                    self.store, mission_id, tool, args,
+                    sync_currentness=self.commit.sync_host_knowledge,
+                )
             )
             self._assembled.gateway.executed_counter = self.store.count_tool_calls
             changes = backfill(self._store.list_all_artifacts(), workspaces.artifact_store)
@@ -1208,6 +1211,36 @@ class Orchestrator:
         )
 
     def _check_mission_door(self, spec: MissionSpec) -> None:
+        dojo_tools = set(self._config.agentdojo_tool_schemas)
+        if spec.domain == "agentdojo-v1":
+            if self._config.agentdojo_invoke is None:
+                raise ContractError("AgentDojo Mission requires a bound episode environment")
+            if dojo_tools != set(self._config.deployment_policy.agentdojo_tools):
+                raise ContractError("AgentDojo schemas must match deployed tool names")
+            if self._config.deployment_policy.local_code_execution:
+                raise ContractError("AgentDojo must disable local code execution")
+            if set(spec.allowed_tools) - dojo_tools - {
+                "workspace_read_file", "workspace_write_file", "workspace_list",
+                "knowledge_list", "knowledge_read",
+            }:
+                raise ContractError("AgentDojo Mission names an unavailable tool")
+        elif set(spec.allowed_tools) & dojo_tools:
+            raise ContractError("AgentDojo tools require the AgentDojo domain")
+        are_tools = set(self._config.are_tool_schemas)
+        if spec.domain == "are-v1":
+            if self._config.are_invoke is None:
+                raise ContractError("ARE Mission requires a bound episode environment")
+            if are_tools != set(self._config.deployment_policy.are_tools):
+                raise ContractError("ARE schemas must match deployed tool names")
+            if self._config.deployment_policy.local_code_execution:
+                raise ContractError("ARE must disable local code execution")
+            if set(spec.allowed_tools) - are_tools - {
+                "workspace_read_file", "workspace_write_file", "workspace_list",
+                "knowledge_list", "knowledge_read",
+            }:
+                raise ContractError("ARE Mission names an unavailable tool")
+        elif set(spec.allowed_tools) & are_tools:
+            raise ContractError("ARE tools require the ARE domain")
         if spec.domain == "appworld-v1" and self._config.appworld_execute is None:
             raise ContractError("AppWorld Mission requires a bound episode environment")
         if spec.runtime_profile_id is not None:
@@ -2180,6 +2213,10 @@ class Orchestrator:
             raise ContractError("Cannot bind an unknown Attempt")
         if self.commit.domain_for(attempt.mission_id).id == "appworld-v1":
             self.assembled.gateway.bind_appworld(attempt.mission_id)
+        if self.commit.domain_for(attempt.mission_id).id == "agentdojo-v1":
+            self.assembled.gateway.bind_agentdojo(attempt.mission_id)
+        if self.commit.domain_for(attempt.mission_id).id == "are-v1":
+            self.assembled.gateway.bind_are(attempt.mission_id)
         self.assembled.gateway.bind(
             agent_id,
             WorkspaceBinding(
@@ -2262,6 +2299,7 @@ class Orchestrator:
         except InjectedCrash as error:
             raise RetrievalUnavailable(str(error)) from error
         try:
+            self.commit.sync_host_knowledge(mission.id)
             records = self.store.list_knowledge(mission.id)
             claims = self.store.list_mission_claims(mission.id)
             document = self.commit.domain_for(mission.id).id == "doc-research-v1"
@@ -5282,7 +5320,13 @@ class Orchestrator:
         allowed = effective_tools(
             mission_tools=mission.allowed_tools,
             task_tools=task.allowed_tools,
-            role_tools=role.tool_names,
+            role_tools=(
+                (*role.tool_names, *self._config.agentdojo_tool_schemas)
+                if self.commit.domain_for(mission.id).id == "agentdojo-v1"
+                else (*role.tool_names, *self._config.are_tool_schemas)
+                if self.commit.domain_for(mission.id).id == "are-v1"
+                else role.tool_names
+            ),
             deployment=self._config.deployment_policy,
         )
         # D6-8: the Attempt's tool-call cap = the deployment's per-turn cap, narrowed by the

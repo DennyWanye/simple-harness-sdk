@@ -122,7 +122,7 @@ def test_new_code_prompt_defaults_are_scope_safe(tmp_path):
                 expected = template_for_domain(template, domains.CODE_PROFILE, {})
                 assert selected == expected
                 if role in domains.CODE_PROFILE.role_templates:
-                    assert selected.prompt_version == f"{role}-code-observation-v2"
+                    assert selected.prompt_version == f"{role}-code-observation-v3"
                     assert "不能推出任意业务性质或其他版本仍然正确" in selected.instructions
                     assert {"knowledge_list", "knowledge_read"} <= set(selected.tool_names)
                 else:

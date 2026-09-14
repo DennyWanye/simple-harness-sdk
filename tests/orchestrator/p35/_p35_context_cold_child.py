@@ -26,6 +26,7 @@ import os
 import signal
 import sqlite3
 import sys
+import time
 import traceback
 from contextlib import closing
 from dataclasses import asdict
@@ -74,6 +75,24 @@ def write_marker(path, body):
         json.dump(body, stream, ensure_ascii=False, sort_keys=True)
         stream.flush()
         os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def write_progress(marker, phase, *, provider_calls=0):
+    path = marker.with_suffix(".progress.json")
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "monotonic": time.monotonic(),
+                "phase": phase,
+                "pid": os.getpid(),
+                "provider_calls": provider_calls,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     os.replace(temporary, path)
 
 
@@ -222,7 +241,7 @@ def observe_retrieval(*, trace=False):
 
 
 class ContextProvider(RoleScriptedProvider):
-    def __init__(self, *, cold=False):
+    def __init__(self, *, cold=False, marker=None):
         super().__init__(
             {
                 "worker": [
@@ -231,7 +250,12 @@ class ContextProvider(RoleScriptedProvider):
             }
         )
         self.cold = cold
+        self.marker = marker
         self.entered = asyncio.Event()
+
+    def report(self, phase):
+        if self.marker is not None:
+            write_progress(self.marker, phase, provider_calls=len(self.requests))
 
     async def invoke(self, request, *, cancel):
         if self.cold:
@@ -241,10 +265,13 @@ class ContextProvider(RoleScriptedProvider):
         if len(self.requests) == READS:
             self.requests.append(request)
             self.by_role["worker"] += 1
+            self.report("provider_blocked")
             self.entered.set()
             await asyncio.Event().wait()  # no response, usage, exception or graceful exit
             raise AssertionError("unreachable")
-        return await super().invoke(request, cancel=cancel)
+        response = await super().invoke(request, cancel=cancel)
+        self.report("provider_completed")
+        return response
 
 
 def orchestrator(root, provider):
@@ -275,8 +302,9 @@ def orchestrator(root, provider):
 
 
 async def warm(root, marker):
+    write_progress(marker, "runtime_started")
     retrieval = observe_retrieval()
-    provider = ContextProvider()
+    provider = ContextProvider(marker=marker)
     orch = orchestrator(root, provider)
     await orch.__aenter__()  # parent SIGKILL is the only normal termination
     mission = await orch.submit_mission(
@@ -495,10 +523,9 @@ async def cold(root, original, result_path):
     )
 
 
-async def main():
-    mode, root, marker, output = sys.argv[1:]
+async def main(mode, root, marker, output):
     if mode == "warm":
-        await asyncio.wait_for(warm(Path(root), Path(marker)), STAGE_SECONDS)
+        await warm(Path(root), Path(marker))
         await asyncio.Event().wait()
     else:
         assert mode == "cold"
@@ -506,7 +533,10 @@ async def main():
 
 
 if __name__ == "__main__":
+    mode, root, marker, output = sys.argv[1:]
+    if mode == "warm":
+        write_progress(Path(marker), "child_ready")
     # Independent OS wall timeout also covers synchronous SQLite/Context work.
     signal.signal(signal.SIGALRM, lambda *_: os._exit(124))
     signal.alarm(CHILD_SECONDS)
-    asyncio.run(main())
+    asyncio.run(main(mode, root, marker, output))

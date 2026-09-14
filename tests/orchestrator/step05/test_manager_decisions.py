@@ -186,7 +186,7 @@ def test_s5_02_a_change_of_role_continues_the_task_with_the_new_approach(tmp_pat
             ]
             selected = template_for_domain(ROLES["simplifier"], domains.CODE_PROFILE, {})
             assert attempts[2].role == "simplifier"
-            assert attempts[2].prompt_version == selected.prompt_version == "simplifier-code-observation-v2"
+            assert attempts[2].prompt_version == selected.prompt_version == "simplifier-code-observation-v3"
             assert "pytest通过不证明任意自然语言主张" in selected.instructions
             assert {"knowledge_list", "knowledge_read"} <= set(selected.tool_names)
             assert store.get_intent_for_subject(attempts[2].id).config["role"] == "simplifier"

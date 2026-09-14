@@ -5,7 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from ..contracts import ContractError
-from ..governance.domains import APPWORLD_DOMAIN, CODE_DOMAIN, DOC_DOMAIN, DomainProfileV1
+from ..governance.domains import (
+    AGENTDOJO_DOMAIN,
+    APPWORLD_DOMAIN,
+    ARE_DOMAIN,
+    CODE_DOMAIN,
+    DOC_DOMAIN,
+    DomainProfileV1,
+)
 from .deterministic_checks import LayerResult, rule_check
 
 
@@ -43,10 +50,39 @@ class AppWorldHandler(CodeHandler):
         )
 
 
+class AgentDojoHandler(CodeHandler):
+    name = "agentdojo"
+
+    def rules(self, *args: Any, **kwargs: Any) -> LayerResult:
+        kwargs["require_synthesis_knowledge"] = False
+        kwargs["local_code_execution"] = False
+        result = rule_check(*args, **kwargs)
+        return LayerResult(result.layer, result.status, result.summary, {
+            **dict(result.detail), "handler": self.name,
+            "benchmark_success": "external_evaluation_pending",
+        })
+
+
+
+class AREHandler(CodeHandler):
+    name = "are"
+
+    def rules(self, *args: Any, **kwargs: Any) -> LayerResult:
+        kwargs["require_synthesis_knowledge"] = False
+        kwargs["local_code_execution"] = False
+        result = rule_check(*args, **kwargs)
+        return LayerResult(result.layer, result.status, result.summary, {
+            **dict(result.detail), "handler": self.name,
+            "benchmark_success": "external_evaluation_pending",
+        })
+
+
 _HANDLERS = {
     CODE_DOMAIN: CodeHandler(),
     DOC_DOMAIN: DocumentHandler(),
     APPWORLD_DOMAIN: AppWorldHandler(),
+    AGENTDOJO_DOMAIN: AgentDojoHandler(),
+    ARE_DOMAIN: AREHandler(),
 }
 
 

@@ -11,6 +11,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from simple_harness.agents import AgentConfig, AgentLimits, build_agent_runtime
@@ -25,10 +26,15 @@ from ..runtime.assembly import OrchestratorConfig
 from ..runtime.model_router import RuntimeProfile
 from ..runtime.tool_gateway import WorkspaceBinding, WorkspaceToolGateway, read_tool_schemas
 from .appworld import AppWorldEpisode
+from .appworld_knowledge import AppWorldKnowledgeBridge
 from .experiment import ExperimentBudget
 
 TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list", "appworld_execute")
 SELF_SELECTION_PROTOCOL_VERSION = "appworld-r-self-selection-v1"
+HOST_KNOWLEDGE_EXECUTOR_IDS = MappingProxyType({
+    "D": "appworld-d-host-public-knowledge-v2",
+    "F": "appworld-f-host-public-knowledge-v2",
+})
 SELF_SELECTION_MAX_CHARS = 16_384
 PUBLIC_GUIDANCE = (
     "Operate the user's AppWorld task through appworld_execute(code). The Python shell and "
@@ -57,6 +63,7 @@ class ArmRuntime:
     default_output_tokens: int = 8192
     maximum_output_tokens: int = 32768
     repetitions: int = 2
+    knowledge_protocol: str | None = None
 
 
 async def execute_arm(
@@ -64,6 +71,9 @@ async def execute_arm(
 ) -> dict[str, Any]:
     if arm not in {"S", "R", "D", "F"}:
         raise ValueError("arm must be S/R/D/F")
+    if (runtime.knowledge_protocol is not None
+            and runtime.knowledge_protocol != HOST_KNOWLEDGE_EXECUTOR_IDS.get(arm)):
+        raise ValueError("Host knowledge protocol requires its new D/F executor identity")
     if root.exists():
         raise FileExistsError("arm evidence must be fresh; never replace a failed episode")
     root.mkdir(parents=True)
@@ -280,17 +290,25 @@ async def _orchestrated(
                 runtime_profile_id=profile.profile_id,
             )
         )
+        bridge = None
+        if config.knowledge_protocol is not None:
+            bridge = AppWorldKnowledgeBridge(orch.commit, mission.id, episode)
+            bridge.install_auto_observation()
         try:
             async with asyncio.timeout(budget.seconds):
                 await orch.run()
         finally:
-            (root / "gateway.json").write_text(
-                json.dumps(orch.assembled.gateway.calls, ensure_ascii=False, indent=2)
-            )
+            try:
+                (root / "gateway.json").write_text(
+                    json.dumps(orch.assembled.gateway.calls, ensure_ascii=False, indent=2)
+                )
+            finally:
+                if bridge is not None:
+                    bridge.close()
         current = orch.store.get_mission(mission.id)
         assert current is not None
         tasks = orch.store.list_tasks(mission.id)
-        return {
+        result = {
             "arm": arm,
             "mission_id": mission.id,
             "mission_status": str(current.status),
@@ -299,3 +317,15 @@ async def _orchestrated(
             "tool_calls": len(orch.assembled.gateway.calls),
             "dynamic_graph": arm == "F",
         }
+        if config.knowledge_protocol is not None:
+            result["knowledge_protocol"] = config.knowledge_protocol
+            result["host_observations_committed"] = orch.store.count_events(
+                mission.id, "KnowledgeCommitted"
+            )
+            result["host_observation_errors"] = orch.store.count_events(
+                mission.id, "HostObservationUnavailable"
+            )
+            result["knowledge_reuse_events"] = orch.store.count_events(
+                mission.id, "KnowledgeUsed"
+            )
+        return result

@@ -1,5 +1,7 @@
 # 后续评测：Qwen3.8 256K → 闲时 Flash 512K
 
+**执行更新（21:25 CST）：** 已按用户指示开始；当前局部通过、两路抢占和剩余门槛见[执行记录](TWO-WAVE-EXECUTION.md)。以下原计划的“未开始”描述保留为冻结前检查点。
+
 最后更新：2026-09-14 20:55 CST。状态：用户要求的分轮策略与难度评估已记录；本文件是待执行协议，不代表新增实现、两路验收或新模型测试已完成。本次新增模型调用0，未改共享DGX配置、Host并发或源码UI进程。
 
 对应原提案：agent-orchestrator-gap-review-testPhase1-2026-09-14.zh-CN.md；剩余范围为N1–N8，不局限于上一轮T0–T6。Host完整工作分组见 testPhase1-remaining-roadmap-2026-09-14.md。SDK副本位于 plans/2026-09-14-gap-phase1/TWO-WAVE-EVALUATION.md，两份协议正文同步。

@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from fixtures_provider import RoleScriptedProvider, critic_step, proposal_step
+from fixtures_provider import RoleScriptedProvider, critic_step, envelope_step, proposal_step
 
 from agent_orchestrator.__main__ import main
 from agent_orchestrator.contracts import Budget, MissionStatus
@@ -503,14 +503,22 @@ def test_review_p1_2_passed_without_completed_is_a_gap(tmp_path, capsys):
 
 
 # ------------------------------------------------------------------ code re-review (round 2)
-def test_re_review_a_rejected_result_then_a_retry_replays_completely(tmp_path):
-    proposal = {**DEMO_PROPOSAL, "budget": {"max_tokens": 50_000, "max_attempts": 3}}
+@pytest.mark.parametrize("bad_output", ["missing_block", "risks_missing_quote_colon"])
+def test_re_review_a_rejected_result_then_a_retry_replays_completely(tmp_path, bad_output):
+    proposal = {**DEMO_PROPOSAL, "budget": {"max_tokens": 50_000, "max_attempts": 2}}
+    # Structural reproduction of the local N3 failure, not a stored model payload.
+    valid = envelope_step(summary="candidate", artifacts=["parse_kv.py"], claims=[])
+
+    def malformed(request):
+        if bad_output == "missing_block":
+            return "这不是一个信封，只是自然语言。"
+        return valid(request).replace('"risks": []', '"risks []')
     provider = RoleScriptedProvider(
         {
             "planner": [proposal_step(proposal)],
             "worker": [
                 ("workspace_write_file", {"path": "parse_kv.py", "content": DEMO_GOOD}),
-                "这不是一个信封，只是自然语言。",  # attempt 1: rejected (envelope_invalid)
+                malformed,  # attempt 1: rejected, never silently repaired
                 *demo_worker_script(DEMO_GOOD),
             ],
             "critic": [critic_step(verdict="PASS", criteria_met=True)],
@@ -524,9 +532,15 @@ def test_re_review_a_rejected_result_then_a_retry_replays_completely(tmp_path):
             store = orchestrator.store
             assert store.get_mission(mission.id).status is MissionStatus.COMPLETED
             assert store.count_events(mission.id, "ResultRejected") == 1
+            task = store.list_tasks(mission.id)[0]
+            attempts = store.list_attempts(task.id)
+            assert task.attempt_count == 2
+            assert attempts[0].failure["reason"] == "envelope_invalid"
+            assert store.find_result_for_attempt(attempts[0].id) is None
             return mission.id
 
     mission_id = asyncio.run(case())
+    calls_before_replay = provider.calls
     report = replay_mission(
         mission_id=mission_id, library=Path(tmp_path) / "evidence" / "orchestrator.db"
     )
@@ -534,6 +548,7 @@ def test_re_review_a_rejected_result_then_a_retry_replays_completely(tmp_path):
     assert comparison["mismatches"] == [] and comparison["coverage"] == 1.0, comparison
     assert report["gaps"] == []
     assert "RETRY_WAIT" in {a["status"] for a in report["formal_state"]["attempt"].values()}
+    assert provider.calls == calls_before_replay
 
 
 def test_re_review_a_created_attempt_makes_its_ready_task_active():

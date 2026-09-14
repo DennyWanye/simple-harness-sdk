@@ -27,6 +27,7 @@ from agent_orchestrator.api.facade import MissionControlV1
 from agent_orchestrator.contracts import MissionStatus, TaskStatus
 from agent_orchestrator.governance.domains import (
     CODE_DOMAIN,
+    CODE_PROFILE_V2,
     DOC_DOMAIN,
     DOC_PROFILE_V3,
     DOC_PROFILE_V4,
@@ -63,7 +64,7 @@ def scene(e_scenes, profile):
     criteria = (("file:REPORT.md",) if profile == "code" else (TEXT.strip(),)) + ACTION_CRITERIA
     # Bind the actual old profile at Mission creation, before any Task/Attempt;
     # never rewrite an existing intent, assessment or accepted historical record.
-    selected = {"v3": DOC_PROFILE_V3, "v4": DOC_PROFILE_V4}.get(profile)
+    selected = {"v3": DOC_PROFILE_V3, "v4": DOC_PROFILE_V4, "code": CODE_PROFILE_V2}[profile]
     s = e_scenes(paths=(PATH,), domain=domain, mission_criteria=criteria, profile=selected)
     assert s.commit.domain_for(s.mission.id).version == ("2" if profile == "code" else profile[1:])
     e = submit(s)

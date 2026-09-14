@@ -349,3 +349,28 @@ def test_k06_invalidated_basis_masks_accepted_consumer_without_rewriting_history
     )
     assert [record.to_json() for record in service.store.list_knowledge(mission.id)] == history
     assert build_summaries(service.store, mission.id, stale=stale) == fresh
+
+
+def test_v3_usage_guidance_preserves_frozen_v2_profile_and_prompt():
+    from hashlib import sha256
+
+    from agent_orchestrator.contracts.models import sha256_hex
+    from agent_orchestrator.governance.domains import CODE_PROFILE, CODE_PROFILE_V2, DomainProfileV1
+    from agent_orchestrator.runtime.role_templates import ROLES, template_for_domain
+
+    frozen = DomainProfileV1.from_json(CODE_PROFILE_V2.to_json())
+    assert (
+        sha256_hex(frozen.to_json())
+        == "ce2a010cf776fe2149d45f252c551f6b59c34003541ee5029b936e4f8d6305a5"
+    )
+    old = template_for_domain(ROLES["worker"], frozen, {})
+    assert (
+        sha256(old.instructions.encode()).hexdigest()
+        == "2acc1fde38b872e9819d132c0cf93d6b277d0336e95ea0862f9a8b016839c334"
+    )
+    assert old.prompt_version == "worker-code-observation-v2"
+    current = template_for_domain(ROLES["worker"], CODE_PROFILE, {})
+    assert CODE_PROFILE.version == "3"
+    assert current.prompt_version == "worker-code-observation-v3"
+    assert "提及但明确排除" in current.instructions
+    assert "你引用过的知识 id 必须写进" not in current.instructions

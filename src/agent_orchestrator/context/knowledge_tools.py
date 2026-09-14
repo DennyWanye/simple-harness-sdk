@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from hashlib import sha256
 from typing import Any
 
@@ -12,8 +12,11 @@ from .retrieval import knowledge_view
 
 
 def read_knowledge_tool(
-    store: Store, mission_id: str, tool: str, args: Mapping[str, Any]
+    store: Store, mission_id: str, tool: str, args: Mapping[str, Any],
+    *, sync_currentness: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    if sync_currentness is not None:
+        sync_currentness(mission_id)
     index = KnowledgeIndex.load(store, mission_id)
     stale = index.stale()
     if any(issue.get("code") == "ERROR" for issues in stale.values() for issue in issues):

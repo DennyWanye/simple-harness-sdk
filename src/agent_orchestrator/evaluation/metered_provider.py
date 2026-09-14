@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable, Mapping
+from collections import deque
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from typing import Any
 
 from simple_harness.providers import (
@@ -49,6 +51,12 @@ class ExperimentBudgetExhausted(ProviderRequestRejectedError):
         }
 
 
+class RunWindowDenied(ExperimentBudgetExhausted):
+    """A local window refusal before physical handoff has known zero usage."""
+
+    error_code = "run_window_denied"
+
+
 class UnknownProviderUsage(RuntimeError):
     """A physical call has no trustworthy actual token usage; admission stops."""
 
@@ -75,6 +83,8 @@ class MeteredProvider:
         *,
         estimate_input_tokens: Callable[[ProviderRequest], int],
         extra_input_reserve: Callable[[ProviderRequest], int] | None = None,
+        before_handoff: Callable[[float], None] | None = None,
+        max_inflight_tokens: int | None = None,
     ) -> None:
         target = provider.target
         if not isinstance(target, ProviderTarget) or (target.provider_id, target.model) != (
@@ -86,6 +96,12 @@ class MeteredProvider:
             raise TypeError("a bound request input estimator is required")
         if extra_input_reserve is not None and not callable(extra_input_reserve):
             raise TypeError("extra input reserve must be callable")
+        if before_handoff is not None and not callable(before_handoff):
+            raise TypeError("before_handoff must be callable")
+        if max_inflight_tokens is not None and (
+            type(max_inflight_tokens) is not int or max_inflight_tokens < 1
+        ):
+            raise ValueError("max_inflight_tokens must be a positive integer")
         if (
             getattr(
                 getattr(estimate_input_tokens, "__self__", None),
@@ -101,11 +117,18 @@ class MeteredProvider:
         self._report = context.report_usage
         self._estimate = estimate_input_tokens
         self._extra = extra_input_reserve
+        self._before_handoff = before_handoff
         self._slots = asyncio.Semaphore(context.manifest.physical_slots)
+        self._max_inflight_tokens = max_inflight_tokens
+        self._capacity_condition = asyncio.Condition()
+        self._capacity_waiters: deque[object] = deque()
+        self._capacity_reserved = self._capacity_active = 0
+        self._physical_slots = context.manifest.physical_slots
         self._deadline = time.monotonic() + self._budget.seconds
         self._input = self._output = self._calls = self._active = self._peak = 0
         self._reserved_input = self._reserved_output = 0
         self.observations: list[dict[str, Any]] = []
+        self.admission_denials: list[dict[str, Any]] = []
         self.unknown_usage_calls = 0
         self._closed = False
 
@@ -156,6 +179,62 @@ class MeteredProvider:
         ):
             raise ExperimentBudgetExhausted("experiment call/token allowance exhausted")
 
+    @asynccontextmanager
+    async def _physical_admission(self, weight: int, cancel: Any) -> AsyncIterator[None]:
+        capacity = self._max_inflight_tokens
+        if capacity is None:
+            async with self._slots:
+                yield
+            return
+        if weight > capacity:
+            raise ExperimentBudgetExhausted("request exceeds in-flight token capacity")
+
+        async def notify_cancellation() -> None:
+            await cancel.wait()
+            async with self._capacity_condition:
+                self._capacity_condition.notify_all()
+
+        watcher = asyncio.create_task(notify_cancellation())
+        try:
+            ticket = object()
+            async with self._capacity_condition:
+                self._capacity_waiters.append(ticket)
+                try:
+                    while True:
+                        if cancel.is_cancelled:
+                            raise asyncio.CancelledError()
+                        if self.unknown_usage_calls:
+                            raise UnknownProviderUsage(
+                                "unknown physical usage; run cannot continue"
+                            )
+                        if self._closed:
+                            raise ExperimentBudgetExhausted("meter closed after physical violation")
+                        if (
+                            self._capacity_waiters[0] is ticket
+                            and self._capacity_active < self._physical_slots
+                            and self._capacity_reserved + weight <= capacity
+                        ):
+                            self._capacity_waiters.popleft()
+                            self._capacity_active += 1
+                            self._capacity_reserved += weight
+                            self._capacity_condition.notify_all()
+                            break
+                        await self._capacity_condition.wait()
+                finally:
+                    if ticket in self._capacity_waiters:
+                        self._capacity_waiters.remove(ticket)
+                        self._capacity_condition.notify_all()
+            try:
+                yield
+            finally:
+                async with self._capacity_condition:
+                    self._capacity_active -= 1
+                    self._capacity_reserved -= weight
+                    self._capacity_condition.notify_all()
+        finally:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+
     def _settle(
         self, usage: ProviderUsage, row: dict[str, Any], input_reserve: int, output_reserve: int
     ) -> None:
@@ -185,6 +264,30 @@ class MeteredProvider:
             )
 
     async def invoke(self, request: ProviderRequest, *, cancel: Any) -> ProviderResponse:
+        handoff = [False]
+        started = time.monotonic()
+        try:
+            return await self._invoke(request, cancel=cancel, handoff=handoff)
+        except (Exception, asyncio.CancelledError) as error:
+            if not handoff[0]:
+                # Admission is auditable even when an Agent catches a local refusal.
+                # Keep it separate from physical observations/call ordinals.
+                self.admission_denials.append({
+                    "request_id": request.request_id.value,
+                    "status": "denied_before_handoff",
+                    "reason": type(error).__name__,
+                    "physical_calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "seconds": time.monotonic() - started,
+                })
+                self._publish()
+            raise
+
+    async def _invoke(
+        self, request: ProviderRequest, *, cancel: Any, handoff: list[bool]
+    ) -> ProviderResponse:
         if self.provider.target != self.target:
             self._closed = True
             raise ProviderIdentityMismatch("physical provider target changed")
@@ -199,13 +302,16 @@ class MeteredProvider:
         queued_at = time.monotonic()
         # All state changes below are synchronous on the runner's single event loop.
         async with asyncio.timeout_at(self._deadline):
-            async with self._slots:
+            async with self._physical_admission(input_reserve + output_reserve, cancel):
                 if self.provider.target != self.target:
                     self._closed = True
                     raise ProviderIdentityMismatch("physical provider target changed while queued")
                 self._admit(input_reserve, output_reserve)
                 if cancel.is_cancelled:
                     raise asyncio.CancelledError()
+                if self._before_handoff is not None:
+                    self._before_handoff(time.monotonic() - queued_at)
+                handoff[0] = True
                 self._calls += 1
                 self._active += 1
                 self._peak = max(self._peak, self._active)
@@ -274,5 +380,6 @@ __all__ = (
     "ExperimentBudgetExhausted",
     "MeteredProvider",
     "ProviderIdentityMismatch",
+    "RunWindowDenied",
     "UnknownProviderUsage",
 )

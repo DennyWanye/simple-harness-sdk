@@ -95,7 +95,7 @@ def _assert_request_binding(orch, provider, role, expected_tools):
     template = template_for_domain(
         {"worker": WORKER, "synthesizer": SYNTHESIZER}[role], domains.CODE_PROFILE, {}
     )
-    assert template.prompt_version == f"{role}-code-observation-v2"
+    assert template.prompt_version == f"{role}-code-observation-v3"
     assert "不能推出任意业务性质或其他版本仍然正确" in template.instructions
     assert {"knowledge_list", "knowledge_read"} <= set(template.tool_names)
     requests = [request for request in provider.requests if role_of(request) == role]

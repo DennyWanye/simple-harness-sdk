@@ -120,6 +120,14 @@ class OrchestratorConfig:
     appworld_execute: Callable[[str], Mapping[str, Any]] | None = field(
         default=None, repr=False, compare=False
     )
+    agentdojo_invoke: Callable[[str, Mapping[str, Any], str], Mapping[str, Any]] | None = field(
+        default=None, repr=False, compare=False, kw_only=True
+    )
+    agentdojo_tool_schemas: Mapping[str, dict[str, Any]] = field(default_factory=dict, kw_only=True)
+    are_invoke: Callable[[str, Mapping[str, Any], str], Mapping[str, Any]] | None = field(
+        default=None, repr=False, compare=False, kw_only=True
+    )
+    are_tool_schemas: Mapping[str, dict[str, Any]] = field(default_factory=dict, kw_only=True)
     # step 5 (D5-2 / D5-6 / D5-7 / D5-8 / D5-15)
     dynamic_graph: bool = True  # False: no Manager decisions; non-candidate outcomes just retry
     max_graph_depth: int = 6
@@ -524,6 +532,10 @@ def assemble_orchestrator_runtime(
         local_code_execution=config.deployment_policy.local_code_execution,
         executor=executor,
         appworld_execute=config.appworld_execute,
+        agentdojo_invoke=config.agentdojo_invoke,
+        agentdojo_tool_schemas=config.agentdojo_tool_schemas,
+        are_invoke=config.are_invoke,
+        are_tool_schemas=config.are_tool_schemas,
     )
     pools: dict[str, RuntimePool] = {}
     if provider_admissions is not None and (
@@ -546,8 +558,9 @@ def assemble_orchestrator_runtime(
             authorization=AllowAllAuthorization(),
             database_path=str(database),
             tool_executor=gateway,
-            tool_names=TOOL_NAMES,
-            tool_schemas=read_tool_schemas(large=profile.context_policy is not None),
+            tool_names=(*TOOL_NAMES, *config.agentdojo_tool_schemas, *config.are_tool_schemas),
+            tool_schemas={**read_tool_schemas(large=profile.context_policy is not None),
+                          **config.agentdojo_tool_schemas, **config.are_tool_schemas},
             context_policy=profile.context_policy or ContextPolicy(),
             tokenizer=profile.tokenizer,
             model=profile.model,

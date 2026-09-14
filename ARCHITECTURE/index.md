@@ -1,3 +1,17 @@
+最后更新：2026-09-15 00:37 CST。最新完整编排2240PASS/32条件SKIP/0FAIL，668.77秒，645源码/测试hash不变。N2本地第二次校准429.665秒因Task预算失败，17调用236536tokens/0未知，未碰1800秒时限；真实知识复用仍OPEN。最新源码UI v51冷恢复/回放/产物/支持报告实点通过并保持运行。N1–N8与正式A/B96仍OPEN，本轮Flash0、无打包。历史偶发停滞根因不因回归通过而宣称修复。
+
+最后更新：2026-09-15 00:09 CST。当前SDK源码UI v51冷恢复实点通过，旧Mission/Task/事件/5调用保持，3产物只重定位storage_uri且hash/VERIFIED不变，回放41事件差异0、支持报告9169bytes哈希核对，0新调用。首冷启动约102秒有未连接等待；并非全N8关闭。ARE真实动态硬判通过11调用58017tokens/275.301秒；N2官方复杂任务15分钟超时、1未知，30分钟同配置独立校准运行中。最新完整回归v5为2237PASS32SKIP1FAIL；冷恢复诊断父6PASS后v6运行中，原偶发停滞根因仍OPEN。N1–N8整体未关闭，Flash0，无打包。 [记录](../plans/2026-09-14-gap-phase1/TWO-WAVE-EXECUTION.md)。
+
+最后更新：2026-09-14 23:26 CST。源码UI v50 Mission已COMPLETED，实际code_test 10PASS，5次Qwen调用20708tokens/212.420616秒，3产物VERIFIED；Critic为NOT_REQUIRED。Host模型卡修复62c8ce10已push。此UI只覆盖固定N3 SDK，不覆盖后继N2/N6。最新SDK完整回归2236PASS/32SKIP/2FAIL659.01秒，失败正在定位；ARE硬判接线官方50PASS但真实动态校准尚未判分，完整Gaia2/judge仍OPEN。N1–N8仍未整体完成，0Flash、无打包。 [执行证据](../plans/2026-09-14-gap-phase1/TWO-WAVE-EXECUTION.md)。
+
+**最后更新：2026-09-14 22:55 CST。** 首组Qwen AgentDojo正常/注入对照官方utility均通过、攻击未成功；攻击20调用117984tokens/1046.198秒，真实Critic失败后第二attempt通过保留。新增known-zero拒绝审计/统计身份48PASS、结构化工具审计35PASS、ARE实际core32PASS；N2下游外部状态同步父审发现缺口返工。UI卡片固定GPT默认修复，13PASS＋实际源码页面正确显示本地Qwen/262144窗口，真实UI Mission仍待。N1–N8未整体关闭，0Flash，无打包。[范围与证据](../plans/2026-09-14-gap-phase1/TWO-WAVE-EXECUTION.md)。
+
+**最后更新：2026-09-14 22:31 CST — 两轮评测增量。** code profile默认v3修复有效知识引用提示并冻结旧v2；定向80PASS，真实本地知识分页/原文hash/VERIFIED产物通过18调用186793tokens/280.849秒。AgentDojo实际core正常校准官方utility和Mission通过7调用33945tokens/209.98秒；攻击配对运行中。独立AppWorld API观察父测17PASS/3.49秒，消费链仍在接线。先前完整编排2180PASS/21SKIP/900.33秒不覆盖所有后继代码。ARE桥接12PASS，动态core/judge仍待；原生v49只完成导航/256K表单检查。N1–N8均未整体关闭，0Flash，不打包。[四表、失败与范围](../plans/2026-09-14-gap-phase1/TWO-WAVE-EXECUTION.md)。
+
+**最后更新：2026-09-14 21:25 CST — 两轮后续开始执行。** Qwen256K单路/双路约21万实际输入规则与引用通过，但双路复核抢占+1，容量稳定性仍OPEN；在途token接纳正在实现。通用96次入口/困难语料/时段纯策略/执行来源回执完成局部验证，gap193PASS及回执后继53PASS、真实AppWorld来源检查通过；不将任意输出晋级可信API事实。AgentDojo官方接口5PASS，真实Orchestrator驱动仍待；Gaia2仅源码可行性核查。N1–N8均未整体关闭，0Flash调用、无本轮新UI验收或打包。[当前四表、时间与证据](../plans/2026-09-14-gap-phase1/TWO-WAVE-EXECUTION.md)。
+
+> 2026-09-14 21:42 两轮评测增量：在途加权接纳实测大输入串行226.644秒、小输入双路130.255秒，均0新增抢占；256K窗口未变。matrix源码身份绑定、未知用量/未评分和缓存计数父审通过；完整N1–N8、正式96次、跨客户端加权、Flash与本轮源码UI仍未验收。
+
 **最后更新：2026-09-14 20:10 CST — testPhase1后续修复与独立Flash16次回收完成。** 当前SDK功能5406fb5，完整编排2105PASS/20SKIP；256K四题S/R各3/4、D/F各4/4，有效14/16，648调用8760086tokens，runner2234.319秒。0未知用量/网关终态缺失/工具重下发，8个D/F终态预留0；知识复用和动态图收益未得到证明。旧本地9终态/7未执行/1未知保留。用户发现白屏已通过完整源码重启与实际点击恢复，原0残留仅指受管组；当前UI有意保持运行，独立评测服务已结束。 [完整结果、耗时和后续问题](../plans/2026-09-14-gap-phase1/FLASH-FINAL.md)。以下检查点保留原时点范围。
 
 **最后更新：2026-09-14 19:32 CST — 当前AppWorld契约v2源码验收通过，完整Flash对照进行中。** SDK5406fb5；最新完整编排2105PASS/20SKIP/0FAIL670.45秒（runner673.922秒），原生v48冷读12表/5产物/15调用核对、0新调用278.158秒，进程均清理。独立Flash400万/120调用校准四Task＋官方评分通过，实际44调用455861tokens/226.874秒；不对参数变更作单变量归因。新四题16次Flash块采用256K/400万/120调用，仍在运行；原本地9终态/7未执行/1未知完整保留，未混入后继得分。[最新证据与限制](../plans/2026-09-14-gap-phase1/FOLLOWUP.md)。

@@ -311,6 +311,35 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         # D6-8: the orchestrator installs the gateway's executed-call counter (subject → count)
         # so every settlement path books the tool-call fact without threading it through
         self.tool_calls_for: Callable[[str], int] | None = None
+        self._accepted_task_observers: list[Callable[[Task], None]] = []
+        self._host_knowledge_sync: dict[str, Callable[[], None]] = {}
+
+    def bind_host_knowledge_sync(self, mission_id: str, sync: Callable[[], None]) -> None:
+        """Bind a Host-owned currentness check; unbound Missions do no external IO.
+
+        The callback must revoke unverifiable projections before returning and
+        must not wait for an episode lock while acceptance holds a transaction.
+        This grants no claim-validation or knowledge-promotion authority.
+        """
+        if mission_id in self._host_knowledge_sync:
+            raise ValueError("Host knowledge currentness already bound")
+        self._host_knowledge_sync[mission_id] = sync
+
+    def unbind_host_knowledge_sync(self, mission_id: str, sync: Callable[[], None]) -> None:
+        if self._host_knowledge_sync.get(mission_id) == sync:
+            del self._host_knowledge_sync[mission_id]
+
+    def sync_host_knowledge(self, mission_id: str) -> None:
+        sync = self._host_knowledge_sync.get(mission_id)
+        if sync is not None:
+            sync()
+
+    def on_task_accepted(self, observer: Callable[[Task], None]) -> None:
+        """Host callback after an accepted Task's transaction is committed."""
+        self._accepted_task_observers.append(observer)
+
+    def off_task_accepted(self, observer: Callable[[Task], None]) -> None:
+        self._accepted_task_observers.remove(observer)
 
     def _candidates(self, mission_id: str) -> int:
         """Candidates per Task of ``mission_id``'s bound policy (1 when nobody told us)."""
@@ -1977,6 +2006,83 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         return (
             stored is not None and stored.verification_state == "DONE" and stored.verdict == "PASS"
         )
+
+    def promote_appworld_api_observation(
+        self, mission_id: str, *, task_id: str, result_id: str,
+        episode: Any, receipt: Any, response: Mapping[str, Any],
+    ) -> KnowledgeRecord:
+        """Host-only projection of a current independent public GET after Task acceptance."""
+        from ..evaluation.appworld import AppWorldEpisode
+        from ..evaluation.appworld_api_observations import AppWorldAPIReceipt
+        from ..evaluation.appworld_knowledge import make_appworld_knowledge
+        from ..governance.domains import APPWORLD_DOMAIN
+
+        if (type(episode) is not AppWorldEpisode or type(receipt) is not AppWorldAPIReceipt
+                or not isinstance(receipt.service_identity, str)
+                or not receipt.service_identity):
+            raise CommitRejected("independent AppWorld service receipt required")
+        with episode.current_api_observation(
+            receipt, app=receipt.app, api=receipt.api, response=response,
+        ):
+            with self._store.transaction():
+                mission = self._require_mission(mission_id)
+                if (self.domain_for(mission_id).id != APPWORLD_DOMAIN
+                        or mission.idempotency_key != episode.run_id
+                        or receipt.run_id != episode.run_id):
+                    raise CommitRejected("AppWorld observation requires its bound domain and run")
+                task = self._require_task(task_id)
+                stored = self._require_result(result_id)
+                if (task.mission_id != mission_id
+                        or task.status is not TaskStatus.COMPLETED
+                        or task.accepted_result_id != result_id
+                        or stored.envelope.mission_id != mission_id
+                        or stored.envelope.task_id != task_id
+                        or not self._accepted_result(result_id)):
+                    raise CommitRejected("AppWorld observation requires an accepted bound Task")
+                claim, record = make_appworld_knowledge(
+                    mission_id=mission_id, task_id=task_id,
+                    attempt_id=stored.envelope.attempt_id, result_id=result_id,
+                    receipt=receipt, response=response, now=self._store.now,
+                )
+                existing = self._store.get_knowledge(record.id)
+                if existing is not None:
+                    if existing.status != "VERIFIED" or existing.verifier != record.verifier:
+                        raise CommitRejected("AppWorld observation was revoked or changed")
+                    return existing
+                self._store.upsert_claim(claim)
+                self._store.upsert_knowledge(record)
+                self._emit(
+                    "KnowledgeCommitted", mission_id, key=record.id,
+                    task_id=task_id, attempt_id=record.source_attempt,
+                    payload={"knowledge_id": record.id, "verifier": dict(record.verifier),
+                             "system_observation": True},
+                )
+                refresh_summaries(self._store, mission_id)
+                return record
+
+    def expire_appworld_api_knowledge(
+        self, mission_id: str, *, episode_id: str, reason: str,
+        knowledge_ids: Sequence[str] | None = None,
+    ) -> tuple[str, ...]:
+        """Remove old world facts from the ordinary Verified Knowledge projection."""
+        from ..evaluation.appworld_knowledge import SYSTEM_PROPOSER
+
+        with self._store.transaction():
+            selected = None if knowledge_ids is None else set(knowledge_ids)
+            expired: list[str] = []
+            for record in self._store.list_knowledge(mission_id, status="VERIFIED"):
+                if (record.proposed_by != SYSTEM_PROPOSER
+                        or (selected is not None and record.id not in selected)
+                        or (reason != "host_bridge_reopened"
+                            and record.verifier.get("episode_id") != episode_id)):
+                    continue
+                self._supersede_knowledge(
+                    record.id, by=f"appworld-world:{reason}"
+                )
+                expired.append(record.id)
+            if expired:
+                refresh_summaries(self._store, mission_id)
+            return tuple(expired)
 
     def _dispute(
         self, mission: Mission, claim: Claim, contradiction: Contradiction, stored: StoredResult
@@ -4072,6 +4178,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     return self.fail_result(
                         result_id, failures=(failure.to_json(),), owner=owner
                     )
+        self.sync_host_knowledge(mission.id)
         stale = KnowledgeIndex.load(self._store, mission.id).check(
             stored.envelope.used_knowledge
         )
@@ -4173,8 +4280,21 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             stored = self._require_result(result_id)
             if self.selection_policy_for(stored.envelope.task_id) is not None:
                 raise CommitRejected("COMPARE requires the selected-result acceptance gate")
-            return self._accept_result(result_id, verifier_results=verifier_results, owner=owner,
-                                       connectors=connectors, deployment=deployment)
+            already_accepted = stored.verification_state == "DONE" and stored.verdict == "PASS"
+            completed = self._accept_result(result_id, verifier_results=verifier_results,
+                                            owner=owner, connectors=connectors,
+                                            deployment=deployment)
+        if not already_accepted and completed.status is TaskStatus.COMPLETED:
+            for observer in tuple(self._accepted_task_observers):
+                try:
+                    observer(completed)
+                except Exception as error:
+                    # An optional Host observation cannot undo accepted task work.
+                    self._emit("HostObservationUnavailable", completed.mission_id,
+                               key=f"{completed.id}:{type(error).__name__}",
+                               task_id=completed.id,
+                               payload={"reason": type(error).__name__})
+        return completed
 
     def _accept_result(
         self,
