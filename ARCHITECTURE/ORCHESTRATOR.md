@@ -1,4 +1,13 @@
-**最后更新：2026-09-14 15:33 CST — testPhase1功能闭环已验，16次效果矩阵仍执行。** 新code profile v2仅范围化system pytest观察可VERIFIED；Host默认knowledge_list/read。v45真实UI两依赖Task、原文消费、18项pytest/独立Critic/人工复核通过；15调用90994tokens，13表/15Provider行同目录冷恢复相同且0重调。最终SDK84b0a2e1/Host e0aed2aa修正启动前Critic恢复，196关联PASS34.79秒，覆盖全套2060PASS/18FAIL/20SKIP后的18项失败类别，不称单次全套全绿。v46复制数据重开12表/15调用相同，仅5产物存储路径迁移，500.158秒正常退出无残留。首题四臂R外部PASS，S错报完成，D/F任务级预算停止；16次矩阵仍冻结2f8eacfc，4/16结束。256K/物理1，无付费DeepSeek，无打包。 [当前证据与边界](../plans/2026-09-14-gap-phase1/README.md)。
+**最后更新：2026-09-14 16:47 CST — testPhase1测试执行完成，3项后续修复明确保留。** 功能源码全编排2079PASS/20SKIP/0FAIL，879.28秒；原生v45可信知识两Task/真实pytest/独立Critic/人工复核与冷恢复通过，v46复制数据重开通过，0重调。正式四臂16/16完成，282调用3076186tokens，5758.78秒；S有效3/4，R有效2/4（官方终态4/4，另2次自选JSON解析失败），D/F各0/4且均任务级预算停止。D/F无已观察知识复用/动态图收益；全部终态预留0、SDK工具重下发0，保留1工具失败/1拒绝及1网关outcome缺失。剩余Planner预算可行性、R选择协议、异常网关终态3项尚未修复。默认本地256K/物理1，DeepSeek0调用；不打包、不扩大96次。 [完整结果与证据](../plans/2026-09-14-gap-phase1/RESULTS.md)。
+
+## testPhase1 当前生产链路（2026-09-14）
+
+- 新code Mission默认冻结profile v2：`code_observations.py`将真实同Attempt、版本、artifact hash、工作区和pytest receipt建模为system test_observation；`CommitService`只对该范围晋级，自由文字Claim保持SUPPORTED；旧v1语义保留。
+- `knowledge_tools.py`提供当前Mission的目录与原文分页；精确ID/路径优先，过期/撤回内容不作为当前知识，无相关候选不凑数。摘要不能代替原文限定条件。
+- `domain_handlers.py`显式分派code/document/AppWorld。AppWorld必须由宿主绑定真实episode能力，独立官方评分不进入角色提示；不是把非code域一律当文档。
+- `evaluation/appworld_arms.py`为实际S/R BaseAgent与D/F Orchestrator；`appworld_experiment.py`冻结矩阵、全角色计量、失败保留与未知物理用量停止。R选择失败的官方遗留状态不能充当有效R闭环。
+- `Orchestrator.__aenter__`在SDK自动恢复前安装工具绑定、审计、reader和持久计数；Critic必须匹配真实SDK turn。workspace_write_file仅在持久同调用/内容/身份凭证匹配时确认已执行，不盲目重放。
+- 当前默认已经开启完成的新知识语义和读取能力。预算规划与实际261120-token首次Critic预留仍有错配；R输出协议和异常网关终态记录仍有待修项，详见本轮结果，不能以全套单测绿色替代这些真实失败。
 
 **最后更新：2026-09-14 13:15 CST — testPhase1仍在执行。** 新code profile v2默认范围化pytest观察，17项新正负控通过；知识原文分页/精确引用/撤回投影通过离线检查，真实本地中英消费5调用24405tokens/113.63秒通过。AppWorld第三领域及真实保存恢复/独立评分接通；首技术探针预算失败保留，5题校准进行中。S/R实际BaseAgent身份/自选控制及计量离线通过；D/F整体、16episodes、T6、最新原生UI仍待。不覆盖历史Phase3验收，不打包。 [边界与证据](../plans/2026-09-14-gap-phase1/README.md)。
 
