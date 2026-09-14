@@ -84,7 +84,7 @@ SDK a30639e43df087f95cb4d7667ff03658033113dd 已推送main，360项attestation�
 
 证据：Host .local-test-evidence/2026-09-15/gap-two-wave/native-wave-a-context-v53/parent-audit.json，SHA256 f6dff01f1cd329e10c33a256e0083fdc449be46f7181beb9820481d68831eef3。
 
-## 01:52 当前完整回归通过；N3运行器父审
+## 01:50 当前完整回归通过；N3运行器父审
 
 最新SDK a30639e完整编排回归2265PASS/32条件SKIP/0FAIL，pytest673.00秒、受管673.454秒，612源码/测试/配置hash逐项不变，0残留。条件SKIP保留，不宣称真实Provider用例由此通过；v7历史唯一hash断言失败及其52PASS后继不覆盖/改写。最新v53原生验收已通过；N2 v4仍在本地运行。
 
