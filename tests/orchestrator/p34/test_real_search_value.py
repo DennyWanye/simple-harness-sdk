@@ -499,6 +499,21 @@ class _ObservedProvider:
         except BaseException as error:
             row["error_type"] = type(error).__name__  # never store exception text/URL/key
             detail = getattr(error, "detail", None)
+            if isinstance(detail, Mapping):
+                allowed = {
+                    "finish_reason": {
+                        "stop", "length", "tool_calls", "function_call", "content_filter",
+                    },
+                    "parse_stage": {"tool_parse"},
+                    "tool_parse_reason": {
+                        "shape", "type", "id", "function", "name", "arguments_json",
+                        "arguments_non_object", "normalization",
+                    },
+                }
+                row["error_diagnostic"] = {
+                    key: detail[key] for key, values in allowed.items()
+                    if isinstance(detail.get(key), str) and detail[key] in values
+                }
             observed = detail.get("usage") if isinstance(detail, Mapping) else None
             if isinstance(observed, Mapping):
                 try:

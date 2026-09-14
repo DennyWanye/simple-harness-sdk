@@ -46,9 +46,39 @@ def test_malformed_tool_response_keeps_known_usage_and_never_turns_into_success(
             if usage is not None and usage["prompt_tokens"] >= 0:
                 assert recorded["total_tokens"] == 27592
                 assert recorded["input_tokens"] == 19400 and recorded["output_tokens"] == 8192
+                assert observer.calls[0]["error_diagnostic"] == {
+                    "finish_reason": "tool_calls", "parse_stage": "tool_parse",
+                    "tool_parse_reason": "arguments_json",
+                }
             else:
                 assert recorded is None
             assert "fake-test-secret" not in str(observer.calls)
+
+    asyncio.run(exercise())
+
+
+def test_failed_observer_only_keeps_finite_diagnostic_values():
+    class FailedProvider:
+        async def invoke(self, request, *, cancel):
+            error = ProviderProtocolError()
+            error.detail = {
+                "finish_reason": "private-provider-output",
+                "parse_stage": ["tool_parse"],
+                "tool_parse_reason": "arguments_json",
+                "raw_arguments": "private-provider-output",
+            }
+            raise error
+
+    async def exercise():
+        observer = _ObservedProvider(FailedProvider())
+        request = ProviderRequest(RequestId("safe-error-diagnostic"), (
+            Message(MessageRole.USER, "Check failure metadata."),
+        ))
+        with pytest.raises(ProviderProtocolError):
+            await observer.invoke(request, cancel=CancelToken())
+        assert observer.calls[0]["error_diagnostic"] == {"tool_parse_reason": "arguments_json"}
+        assert observer.calls[0]["usage"] is None
+        assert "private-provider-output" not in str(observer.calls)
 
     asyncio.run(exercise())
 
