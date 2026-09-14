@@ -75,3 +75,28 @@ AppWorld默认profile升v3，八个结果角色新增知识当前有效性说明
 |2026-09-15/gap-two-wave/appworld-v3-combined.log|c130731203b143743f1bf0df943869a9fc23c316c3390f28c858b58787c5a4f1|
 |2026-09-15/gap-two-wave/n2-source-v4.json|86fd30955120d1089f97880861bc4a30b3d16b8d1bbd745e9c66029223fd489f|
 |2026-09-15/gap-two-wave/n2-v4-protocol.json|4b7336a23c0eeb46e8f23d1d3434d20c6a14d484929b42d1cc703b9a99d7bbe5|
+
+## 01:41 最新源码原生v53冷恢复通过
+
+SDK a30639e43df087f95cb4d7667ff03658033113dd 已推送main，360项attestation中的359源码与N2 v4冻结源一致。父级真实点击旧Mission、源码产物、历史回放、生成本地支持报告均通过。旧79文件在v52受管组完全停止后逐项hash冷复制；1Mission/1Task/42事件/5Provider调用/4工具效果完全一致，3个VERIFIED产物只重定位storage_uri根且内容hash不变。回放41事件，未覆盖/差异/链缺口均0；支持报告9169bytes，SHA aee62dab1f9c06b0174a6d58003bf8b52d48dd9f393c647a114f47ce87ac5b6c。
+
+冷启动约两分钟等待身份/后端连接，随后正常显示；日志仍有可选model_provision HTTP451警告，不声称修复启动延迟或消除该警告。旧任务Critic=NOT_REQUIRED；此项是当前源码冷恢复/交互，不是新AppWorld业务UI或N8全覆盖。v53有意保持运行，防熄屏仍在，0新UI调用。完整v8和真实N2 v4待终态。
+
+证据：Host .local-test-evidence/2026-09-15/gap-two-wave/native-wave-a-context-v53/parent-audit.json，SHA256 f6dff01f1cd329e10c33a256e0083fdc449be46f7181beb9820481d68831eef3。
+
+## 01:52 当前完整回归通过；N3运行器父审
+
+最新SDK a30639e完整编排回归2265PASS/32条件SKIP/0FAIL，pytest673.00秒、受管673.454秒，612源码/测试/配置hash逐项不变，0残留。条件SKIP保留，不宣称真实Provider用例由此通过；v7历史唯一hash断言失败及其52PASS后继不覆盖/改写。最新v53原生验收已通过；N2 v4仍在本地运行。
+
+N3后继准备三个受控消费用例：精确ID/中英语义对照（基础控制）、当前与失效冲突、目录分页＋尾部遗漏条件。不会把它们合并宣称完整语义检索/摘要达标。Sol/medium原始helper只做零调用dry-run；父审修正LAN地址、分页只查末页的假阳性、KnowledgeRecord不支持REJECTED的夹具、累计输入误作单请求输入、失败返回码、未知用量跨case继续等问题。原始helper和最初离线夹具错误保留。
+
+父级实际core离线3个任务使用合成Provider故意不给envelope，全部正确FAILED，3个合成调用/0网络/0真实凭据；运行分支收尾与结果采集已验证。分页评分使用实际SDK只读knowledge响应，3正控＋10负控通过/0.194秒，拒绝缺中页、只读末页、伪造正文/源hash/catalog hash。冻结helper、359源码和独立JSON评分；目标256K配置，实际请求输入另计。真实调用尚未开始，待N2 v4释放本地模型槽后顺序运行，每case40调用/1200秒/3.6M上限，不付费回退。
+
+|证据相对Host .local-test-evidence/2026-09-15/gap-two-wave/|SHA-256|
+|---|---|
+|core-regression-v8/command.log|a09dbd5bc1510d31a1675e0946cfe150f09f9e85952ca7397a59b92a29be2f30|
+|core-regression-v8/resource.json|2c521dc6b6559c52a1a24724627a34012431c14016d7eb9145661c90cd27a1eb|
+|core-regression-v8-source-audit.json|7b272b325660cf117b8b205b5ee8276bd9ea8bec045fab5e6ebb9235cd7dab09|
+|n3-hard-protocol-v1.json|46ce5fdd1e1e98765127111b6aa14c1dc5f79ea2d1e831661f4bcfb31cb5c7c5|
+|n3-hard-prep/score-controls.json|1c39ff5148fec062975ea6b7233a88a3f11779975073dec51e441fdcab3e71bc|
+|n3-hard-prep/offline-parent-smoke-v2.log|885070730620c24778f2279f131dd43d2de27b15ccf2338432cca3023f9d8ddc|
