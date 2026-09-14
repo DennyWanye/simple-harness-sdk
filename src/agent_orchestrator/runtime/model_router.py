@@ -78,6 +78,17 @@ class RuntimeProfile:
             raise ValueError("a runtime profile needs a profile_id and a model")
         if not callable(getattr(self.provider, "invoke", None)):
             raise TypeError(f"profile {self.profile_id}: provider must implement invoke")
+        adapter_key = getattr(getattr(self.provider, "target", None), "adapter_key", None)
+        if adapter_key in {
+            "openai-compatible.chat-completions.v1",
+            "openai-compatible.chat-completions.deepseek-strict-v1",
+        }:
+            strict_provider = adapter_key.endswith(".deepseek-strict-v1")
+            strict_counter = (
+                getattr(self.tokenizer, "tool_schema_mode", "legacy") == "deepseek-strict-v1"
+            )
+            if strict_provider != strict_counter:
+                raise ValueError("provider and tokenizer tool schema modes must match")
         if self.context_policy is None:
             if self.tokenizer is not None:
                 raise ValueError("tokenizer requires an explicit context_policy")

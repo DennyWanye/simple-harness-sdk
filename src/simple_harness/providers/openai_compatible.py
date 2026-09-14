@@ -27,6 +27,11 @@ from .base import (
     ProviderUsage,
     Secret,
 )
+from .deepseek_strict import (
+    DEEPSEEK_STRICT_ADAPTER_KEY,
+    DEEPSEEK_STRICT_TOOL_SCHEMA_MODE,
+    compile_deepseek_strict_schema,
+)
 from .errors import (
     ProviderAuthenticationError,
     ProviderCancelledError,
@@ -39,6 +44,8 @@ from .errors import (
     ProviderTransportError,
 )
 from .redaction import SecretRedactor
+
+LEGACY_TOOL_SCHEMA_MODE = "legacy"
 
 
 def _json_value(value: Any) -> JsonValue:
@@ -54,13 +61,17 @@ def _plain_mapping(value: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     return {key: _json_value(item) for key, item in value.items()}
 
 
-def openai_chat_request_payload(request: ProviderRequest, *, model: str) -> dict[str, Any]:
+def openai_chat_request_payload(
+    request: ProviderRequest, *, model: str, tool_schema_mode: str = LEGACY_TOOL_SCHEMA_MODE
+) -> dict[str, Any]:
     """The exact credential-free body used by the chat adapter, also for admission.
 
     Callers must first restore durable assistant tool calls. This function neither
     consults a client nor sends a request; the HTTP adapter uses the same serializer.
     """
-    return OpenAICompatibleProvider._payload_for_model(request, model)
+    return OpenAICompatibleProvider._payload_for_model(
+        request, model, tool_schema_mode=tool_schema_mode
+    )
 
 
 _DIAGNOSTIC_FINISH_REASONS = frozenset(
@@ -120,7 +131,10 @@ class _ProtocolErrorWithUsage(ProviderProtocolError):
 class OpenAICompatibleProvider:
     """Perform one OpenAI-compatible chat-completions request per invocation."""
 
-    __slots__ = ("_client", "_endpoint", "_redactor", "_secret", "_target", "_timeout")
+    __slots__ = (
+        "_client", "_endpoint", "_redactor", "_secret", "_target", "_timeout",
+        "_tool_schema_mode",
+    )
 
     def __init__(
         self,
@@ -132,6 +146,7 @@ class OpenAICompatibleProvider:
         *,
         provider_id: str | None = None,
         pricing_key: str | None = None,
+        tool_schema_mode: str = LEGACY_TOOL_SCHEMA_MODE,
     ) -> None:
         if not isinstance(client, httpx.AsyncClient):
             raise TypeError("client must be an httpx.AsyncClient")
@@ -152,6 +167,18 @@ class OpenAICompatibleProvider:
             "::1",
         }:
             raise ValueError("non-loopback provider URLs must use HTTPS")
+        if tool_schema_mode not in (LEGACY_TOOL_SCHEMA_MODE, DEEPSEEK_STRICT_TOOL_SCHEMA_MODE):
+            raise ValueError("unsupported tool_schema_mode")
+        if (
+            tool_schema_mode == DEEPSEEK_STRICT_TOOL_SCHEMA_MODE
+            and base_url.rstrip("/") not in (
+                "https://api.deepseek.com/beta",
+                "https://api.deepseek.com/beta/chat/completions",
+            )
+        ):
+            raise ValueError(
+                "deepseek-strict-v1 requires the official HTTPS DeepSeek beta endpoint"
+            )
         if not model.strip():
             raise ValueError("model must not be blank")
         normalized = base_url.rstrip("/")
@@ -162,6 +189,7 @@ class OpenAICompatibleProvider:
         )
         self._client = client
         self._secret = secret
+        self._tool_schema_mode = tool_schema_mode
         if isinstance(timeout, bool) or (isinstance(timeout, (int, float)) and timeout <= 0):
             raise ValueError("timeout must be positive")
         self._timeout = timeout
@@ -171,7 +199,11 @@ class OpenAICompatibleProvider:
             model=model,
             pricing_key=pricing_key or model,
             endpoint_identity=self._endpoint,
-            adapter_key="openai-compatible.chat-completions.v1",
+            adapter_key=(
+                DEEPSEEK_STRICT_ADAPTER_KEY
+                if tool_schema_mode == DEEPSEEK_STRICT_TOOL_SCHEMA_MODE
+                else "openai-compatible.chat-completions.v1"
+            ),
         )
 
     @property
@@ -227,10 +259,16 @@ class OpenAICompatibleProvider:
         return self._parse_response(request, payload, response)
 
     def _request_payload(self, request: ProviderRequest) -> dict[str, Any]:
-        return openai_chat_request_payload(request, model=self._target.model)
+        return openai_chat_request_payload(
+            request, model=self._target.model, tool_schema_mode=self._tool_schema_mode
+        )
 
     @staticmethod
-    def _payload_for_model(request: ProviderRequest, model: str) -> dict[str, Any]:
+    def _payload_for_model(
+        request: ProviderRequest, model: str, *, tool_schema_mode: str = LEGACY_TOOL_SCHEMA_MODE
+    ) -> dict[str, Any]:
+        if tool_schema_mode not in (LEGACY_TOOL_SCHEMA_MODE, DEEPSEEK_STRICT_TOOL_SCHEMA_MODE):
+            raise ValueError("unsupported tool_schema_mode")
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -238,17 +276,33 @@ class OpenAICompatibleProvider:
             ],
         }
         if request.tools:
-            payload["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": _plain_mapping(tool.parameters),
-                    },
-                }
-                for tool in request.tools
-            ]
+            if tool_schema_mode == LEGACY_TOOL_SCHEMA_MODE:
+                payload["tools"] = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": _plain_mapping(tool.parameters),
+                        },
+                    }
+                    for tool in request.tools
+                ]
+            else:
+                payload["tools"] = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": compile_deepseek_strict_schema(
+                                _plain_mapping(tool.parameters)
+                            ),
+                            "strict": True,
+                        },
+                    }
+                    for tool in request.tools
+                ]
         if request.temperature is not None:
             payload["temperature"] = request.temperature
         if request.max_output_tokens is not None:

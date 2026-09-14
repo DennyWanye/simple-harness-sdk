@@ -47,6 +47,8 @@ any paid invocation; the original unguarded pair failed and remains archived.
 Original production-profile failures remain archived. SH_P34_BUDGET_PROFILE may
 select a separately recorded budget experiment; the original-v2
 contract remains the default and its criteria/materials/oracle remain unchanged.
+The prospective context256-8m-start32k-v8 profile starts at the existing 32K
+ceiling to probe output truncation; it does not reinterpret earlier parse errors.
 """
 
 from __future__ import annotations
@@ -106,6 +108,16 @@ CONSUMER_CRITERIA = (
 )
 SYNTHESIS_GOAL = "S：读取C实际产物与验证知识，综合最终交付说明FINAL.md"
 CRITERIA = (*tuple(RECORDER_SPEC["success_criteria"]), "file:FINAL.md")
+CONTEXT256_V7 = "context256-8m-out32k-v7"
+CONTEXT256_V8 = "context256-8m-start32k-v8"
+CONTEXT256_V9 = "context256-8m-strict32k-v9"
+CONTEXT256_PROFILES = (CONTEXT256_V7, CONTEXT256_V8, CONTEXT256_V9)
+CONTEXT256_START32 = (CONTEXT256_V8, CONTEXT256_V9)
+
+
+def _context_profile_id(budget_profile):
+    return ("deepseek-strict-context-256k-v1" if budget_profile == CONTEXT256_V9
+            else "deepseek-context-256k-v1")
 
 BASELINE_CODE = dedent('''\
     def parse_line(line: str) -> dict:
@@ -265,7 +277,7 @@ def _experiment_budgets(budget_profile):
         return (Budget(max_tokens=400_000, max_attempts=4),
                 Budget(max_tokens=480_000, max_attempts=3),
                 Budget(max_tokens=240_000, max_attempts=2))
-    if budget_profile == "context256-8m-out32k-v7":
+    if budget_profile in CONTEXT256_PROFILES:
         return (Budget(max_tokens=1_400_000, max_attempts=4),
                 Budget(max_tokens=1_600_000, max_attempts=3),
                 Budget(max_tokens=1_200_000, max_attempts=2))
@@ -275,13 +287,13 @@ def _experiment_budgets(budget_profile):
 def _mission_budget(budget_profile):
     _experiment_budgets(budget_profile)
     return (Budget(max_tokens=8_000_000, max_attempts=24)
-            if budget_profile == "context256-8m-out32k-v7" else MISSION_BUDGET)
+            if budget_profile in CONTEXT256_PROFILES else MISSION_BUDGET)
 
 
 def _consumer_budget(budget_profile):
     _experiment_budgets(budget_profile)
     return (Budget(max_tokens=1_600_000, max_attempts=4)
-            if budget_profile == "context256-8m-out32k-v7" else CONSUMER_BUDGET)
+            if budget_profile in CONTEXT256_PROFILES else CONSUMER_BUDGET)
 
 
 def _preflight_budget_profile(budget_profile):
@@ -311,7 +323,7 @@ def mission_spec(budget_profile="original-v2"):
     ).replace(
         "预算240000 tokens/4 attempts", f"预算{audit_budget.max_tokens} tokens/4 attempts",
     )
-    if budget_profile == "context256-8m-out32k-v7":
+    if budget_profile in CONTEXT256_PROFILES:
         goal = goal.replace("预算400000 tokens/4 attempts",
                             f"预算{consumer_budget.max_tokens} tokens/4 attempts")
     return MissionSpec(
@@ -319,8 +331,8 @@ def mission_spec(budget_profile="original-v2"):
         idempotency_key=("real-search-value-v2" if budget_profile == "original-v2"
                          else "real-search-value-" + budget_profile),
         budget=_mission_budget(budget_profile),
-        runtime_profile_id=("deepseek-context-256k-v1"
-                            if budget_profile == "context256-8m-out32k-v7" else None),
+        runtime_profile_id=(_context_profile_id(budget_profile)
+                            if budget_profile in CONTEXT256_PROFILES else None),
         workspace_seed=dict(MATERIALS), allowed_tools=tuple(RECORDER_SPEC["allowed_tools"]),
         synthesis={
             "goal": SYNTHESIS_GOAL, "success_criteria": list(CRITERIA),
@@ -365,14 +377,21 @@ def native_ui_materials(budget_profile="original-v2"):
         },
         "limits": "Baseline failure is deterministic; model repair/patch/reuse are not guaranteed.",
     }
-    if budget_profile == "context256-8m-out32k-v7":
+    if budget_profile in CONTEXT256_PROFILES:
         exported["budget_source"] = "plans/2026-09-12-phase3/p34/context256-pair-contract.md"
         exported["runtime_contract"] = {
             "model": MODEL, "max_input_tokens": 262144,
-            "default_max_output_tokens": 8192, "max_output_tokens_ceiling": 32768,
+            "default_max_output_tokens": (32768 if budget_profile in CONTEXT256_START32
+                                          else 8192),
+            "max_output_tokens_ceiling": 32768,
             "tokenizer_sha256": TOKENIZER_SHA256,
-            "host_context_profile_id": "deepseek-context-256k-v1",
+            "host_context_profile_id": _context_profile_id(budget_profile),
         }
+        if budget_profile == CONTEXT256_V9:
+            exported["runtime_contract"].update(
+                tool_schema_mode="deepseek-strict-v1",
+                endpoint="https://api.deepseek.com/beta/chat/completions",
+            )
         exported["runtime_contract_hash"] = sha256_hex(exported["runtime_contract"])
     return exported
 
@@ -901,10 +920,14 @@ def _official_runtime_options(config, provider, *, base_url, model, tokenizer_pa
         raise ValueError("P34 SH_TOKENIZER_PATH file is missing")
     if hashlib.sha256(path.read_bytes()).hexdigest() != TOKENIZER_SHA256:
         raise ValueError("P34 tokenizer SHA-256 differs from pinned V4.1 bytes")
-    counter = DeepSeekV41TokenEstimator(path, model=model)
     _experiment_budgets(budget_profile)
-    long_context = budget_profile == "context256-8m-out32k-v7"
-    profile_id = "deepseek-context-256k-v1" if long_context else "default"
+    strict = budget_profile == CONTEXT256_V9
+    if strict and parsed.path.rstrip("/") not in {"/beta", "/beta/chat/completions"}:
+        raise ValueError("P34 strict profile requires the explicit Beta endpoint")
+    counter = (DeepSeekV41TokenEstimator(path, model=model, tool_schema_mode="deepseek-strict-v1")
+               if strict else DeepSeekV41TokenEstimator(path, model=model))
+    long_context = budget_profile in CONTEXT256_PROFILES
+    profile_id = _context_profile_id(budget_profile) if long_context else "default"
     fresh_policy = (ContextPolicy(max_input_tokens=262_144, output_reserve=32_768,
                                   max_tool_result_tokens=16_384, render_slack_tokens=0)
                     if long_context else None)
@@ -918,7 +941,8 @@ def _official_runtime_options(config, provider, *, base_url, model, tokenizer_pa
     profile = RuntimeProfile(
         profile_id, provider, model, price_table=config.price_table,
         provider_kind="env", context_policy=policy, tokenizer=counter,
-        default_max_output_tokens=8192 if long_context else None,
+        default_max_output_tokens=(32768 if budget_profile in CONTEXT256_START32 else 8192)
+        if long_context else None,
         max_output_tokens_ceiling=32768 if long_context else None,
     )
     return {"profiles": {profile_id: profile}, "provider_token_estimator": counter}
@@ -946,8 +970,8 @@ def _search_runtime_config(directory, budget_profile="original-v2"):
     return OrchestratorConfig(
         evidence_root=directory, model=MODEL, max_concurrency=1,
         max_concurrent_model_calls=1, candidates_per_task=2,
-        default_max_output_tokens=8192,
-        max_output_tokens_ceiling=(32768 if budget_profile == "context256-8m-out32k-v7"
+        default_max_output_tokens=(32768 if budget_profile in CONTEXT256_START32 else 8192),
+        max_output_tokens_ceiling=(32768 if budget_profile in CONTEXT256_PROFILES
                                    else 8192),
         test_timeout_seconds=120, turn_deadline_seconds=900, lease_seconds=120,
         stall_seconds=300, attempt_reserve_tokens=60_000, critic_reserve_tokens=30_000,
@@ -1061,6 +1085,8 @@ def test_real_first_vs_approved_compare_search_value():
                 async with httpx.AsyncClient() as client:
                     actual = OpenAICompatibleProvider(
                         client, real.base_url, real.model, Secret(real.api_key), timeout=300.0,
+                        tool_schema_mode=("deepseek-strict-v1" if budget_profile == CONTEXT256_V9
+                                          else "legacy"),
                     )
                     report = await _arm(
                         root, _ObservedProvider(actual), compare=compare,
