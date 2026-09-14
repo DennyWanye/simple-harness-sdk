@@ -1,6 +1,6 @@
 # Explicit DeepSeek strict profile for P34
 
-Last updated: 2026-09-14 CST. Current source implementation validated in focused checks; committed recheck and fixed full pair remain pending. Original source acceptance45PASS/1OPEN/2packaging DEFERRED. No UI, installer or whole-Phase3 completion claim.
+Last updated: 2026-09-14 CST. Committed SDK ae8d37b validated by158PASS6.76s (runner7.26s); the fixed frozen v15 full pair passed both arms. Current source acceptance46PASS/0OPEN/2packaging DEFERRED; see [v15 result](v15-real-pair-review.md). No UI, installer or whole-Phase3 completion claim.
 
 The v14 failures distinguish insufficient initial output(length8192) from invalid JSON at normal tool_calls termination. An explicit new configuration combines the existing32768 output ceiling as its initial allowance with DeepSeek strict function schemas. Total Mission8M/24attempts, all Task budgets/goals/criteria/materials/deadlines, provider model deepseek-flash and256K context remain unchanged. Historical v7 and prospective v8 exports remain separate. No old failure is deleted or reclassified, and no new full pair is launched merely to retry v8.
 
@@ -35,6 +35,9 @@ Raw SDK .local-test-evidence/2026-09-14/p34-strict-probe/ and p34-tool-parse-pro
 | Canonical cold-body red test |1FAIL0.09s before property sorting; confirmed real implementation gap|
 | Canonical fix broad check |156PASS/2FAIL6.85s; two trailing-slash expectations still required rejection after intentional normalization|
 | Corrected endpoint controls |13PASS0.22s; trailing slash moved to positive normalization cases; nonofficial endpoints still refused|
+| Committed source regression |158PASS6.76s, runner7.26s; ae8d37b, working_tree=false; g-p34-strict-committed-v4|
 | Static |ruff all changed Python files, mypy four production files PASS|
 
-Precommit runner tracked-diff hashes exclude new untracked files; committed recheck is required before freezing the paid candidate. All failed checks retained. Hubble implemented adapter/compiler/tests; parent corrected unsupported minItems/maxItems/nullable handling, end-anchor semantics and canonical property ordering, integrated shared counting/profile isolation and fixed test-only Counter/URL expectations. No matched-task savings claim.
+Precommit runner tracked-diff hashes exclude new untracked files; the committed158PASS recheck closes this provenance gap before freezing source-snapshot-v41 for v15. All failed checks retained. Hubble implemented adapter/compiler/tests; parent corrected unsupported minItems/maxItems/nullable handling, end-anchor semantics and canonical property ordering, integrated shared counting/profile isolation and fixed test-only Counter/URL expectations. No matched-task savings claim.
+
+Final real acceptance: FIRST76calls645304tokens423.613seconds; COMPARE112calls1273253tokens605.314seconds. Both strictPASS, no physical errors/unknown usage/reserve/rehandoff; runner1029.73seconds,1PASS. Source336attested inputs unchanged; zero test process residuals. This is one SDK/API mechanism trace; explicit mode does not redirect Host legacy UI and does not prove statistical quality superiority.

@@ -1,6 +1,6 @@
 # P34 targeted diagnostic follow-up / v14
 
-Last updated: 2026-09-14 CST. Strict pair still OPEN before new execution. User requested completion of this remaining gate. No plan-test skills, no packaging.
+Last updated: 2026-09-14 CST. v14 finished: FIRST strictFAIL and COMPARE strictPASS; the paired gate remains OPEN at this checkpoint. User requested completion of this remaining gate. No plan-test skills, no packaging.
 
 Independent Sol/medium parser review found no confirmed unjustified rejection; CallId accepts printable ASCII1..255, so incompatible provider ID remains a possibility without original raw data. No relaxation or causal attribution.
 
@@ -10,7 +10,7 @@ Corrected probe uses AgentProviderWire.prepare_request with read-only original e
 
 The real-pair observer now records only finite finish_reason/parse_stage/tool_parse_reason on exceptions, in addition to existing valid usage and failure. No raw arguments/exception text or unrecognized values retained. HTTP malformed-JSON and privacy control plus adjacent pagination tests19PASS0.65s, runner1.12s, g-p34-error-observation-v14. First ruff found one line length, corrected before commit. No production change from a0ed26c. Existing strict oracle/materials/profile/budgets unchanged.
 
-Next: exactly one fixed-source complete pair v14, both arms retained even if FIRST fails. Purpose is current acceptance with precise failure diagnostics; it is not a claim of a stochastic-provider root-cause fix or a repeated-until-green loop. Historical v13 remains FAIL regardless of the result.
+Predeclared v14 execution: exactly one fixed-source complete pair, both arms retained even if FIRST fails. Purpose is current acceptance with precise failure diagnostics; it is not a claim of a stochastic-provider root-cause fix or a repeated-until-green loop. Historical v13 remains FAIL regardless of the result.
 
 
 ## Completed fixed pair v14
