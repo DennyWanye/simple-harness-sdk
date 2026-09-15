@@ -1,3 +1,5 @@
+最后更新：2026-09-15 23:27 CST。当前 AppWorld R 计量见 [R信封交接](HANDOFF-2026-09-15-r-envelope.md)。完整测试文档链在 Host `plans/taskSys2/HANDOFF-2026-09-15-r-envelope.md`。下方为历史检查点。
+
 最后更新：2026-09-15。Host374aa70a/SDKf122b8c：共享容量、长响应及最终Mission评审后继完成限定实机验收。v60独立评审正式交付60实跑PASS；v61亲自捕获列表/详情待验证→交付和冷恢复。累计335本地归属调用7157983已知tokens下限，1早先未知另列，Flash0。最新广回归2304PASS/32SKIP/6环境FAIL，关联兼容环境49PASS。N1–N8/正式A96B96仍OPEN，未打包。 详见[共享容量后继与四表](SHARED-CAPACITY.md)。
 
 最新接续（2026-09-15）：共享容量及实机后继见[SHARED-CAPACITY](SHARED-CAPACITY.md)，N2准确预算链已补入BUDGET-ANALYSIS-FOLLOWUP.md。SDK生产f122b8c；原生v59运行中，N1–N8和A96B96仍OPEN，Flash0。以下为历史检查点。
