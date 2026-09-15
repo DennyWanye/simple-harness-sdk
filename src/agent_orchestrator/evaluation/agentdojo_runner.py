@@ -43,10 +43,12 @@ from ..runtime.assembly import OrchestratorConfig
 from ..runtime.model_router import RuntimeProfile
 from ..runtime.tool_gateway import TOOL_NAMES
 from .agentdojo_bridge import AgentDojoToolPort
+from .agentdojo_knowledge import AgentDojoKnowledgeBridge, receipt_from_invoke
 from .experiment import ExecutionCounters, RunContext, _write
 from .metered_provider import MeteredProvider
 
 REPORT_TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list")
+KNOWLEDGE_TOOLS = ("knowledge_list", "knowledge_read")
 SCHEMA_ADAPTER_VERSION = "agentdojo-schema-adapter-v1"
 RUNTIME_TERMINATION_BOUNDARY = (
     "runner_thread_cannot_terminate_hung_runtime; host_owned_process_deadline_required"
@@ -358,7 +360,8 @@ class AgentDojoRunner:
         )
         self.meter = meter
         budget = self.context.manifest.budget
-        allowed = (*REPORT_TOOLS, *schemas)
+        allowed = (*REPORT_TOOLS, *KNOWLEDGE_TOOLS, *schemas)
+        bridge_holder: dict[str, AgentDojoKnowledgeBridge | None] = {"bridge": None}
 
         def invoke(name: str, arguments: Mapping[str, Any], call_id: str) -> Mapping[str, Any]:
             try:
@@ -368,8 +371,22 @@ class AgentDojoRunner:
             formatter = importlib.import_module("agentdojo.agent_pipeline.tool_execution")
             # ToolPort already appended the official FunctionCall/result using
             # the original runtime (including its injection hooks) and env.
+            formatted = formatter.tool_result_to_str(result)
             _write(self.root / "transcript.json", json.loads(_public_history(messages)))
-            return {"output": formatter.tool_result_to_str(result), "error": error}
+            bridge = bridge_holder["bridge"]
+            if bridge is not None:
+                bridge.note_returned(
+                    receipt_from_invoke(
+                        call_key=call_id,
+                        function=name,
+                        output=formatted,
+                        error=error,
+                        arguments=arguments,
+                        result=result,
+                        agentdojo_version=importlib.metadata.version("agentdojo"),
+                    )
+                )
+            return {"output": formatted, "error": error}
 
         cfg = OrchestratorConfig(
             evidence_root=self.root / "orchestrator",
@@ -437,6 +454,9 @@ class AgentDojoRunner:
                         runtime_profile_id=profile.profile_id,
                     )
                 )
+                bridge = AgentDojoKnowledgeBridge(orch.commit, mission.id)
+                bridge.install_auto_observation()
+                bridge_holder["bridge"] = bridge
                 try:
                     async with asyncio.timeout(budget.seconds):
                         await orch.run()
@@ -463,6 +483,9 @@ class AgentDojoRunner:
                             continue
                     drain.result()
                     raise
+                finally:
+                    bridge.close()
+                    bridge_holder["bridge"] = None
                 current = orch.store.get_mission(mission.id)
                 assert current is not None
                 self.last_result = {

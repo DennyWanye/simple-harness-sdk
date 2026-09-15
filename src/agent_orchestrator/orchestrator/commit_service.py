@@ -2084,6 +2084,97 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 refresh_summaries(self._store, mission_id)
             return tuple(expired)
 
+    def promote_agentdojo_tool_observation(
+        self, mission_id: str, *, task_id: str, result_id: str, receipt: Any,
+    ) -> KnowledgeRecord:
+        """Host-only projection of a succeeded AgentDojo tool return after Task acceptance."""
+        from ..evaluation.agentdojo_knowledge import (
+            AgentDojoToolReceipt,
+            make_agentdojo_tool_knowledge,
+        )
+        from ..governance.domains import AGENTDOJO_DOMAIN
+
+        if type(receipt) is not AgentDojoToolReceipt:
+            raise CommitRejected("AgentDojo tool receipt required")
+        if receipt.error not in (None, ""):
+            raise CommitRejected("AgentDojo tool errors are not promotable")
+        with self._store.transaction():
+            if self.domain_for(mission_id).id != AGENTDOJO_DOMAIN:
+                raise CommitRejected("AgentDojo observation requires its bound domain")
+            task = self._require_task(task_id)
+            stored = self._require_result(result_id)
+            if (
+                task.mission_id != mission_id
+                or task.status is not TaskStatus.COMPLETED
+                or task.accepted_result_id != result_id
+                or stored.envelope.mission_id != mission_id
+                or stored.envelope.task_id != task_id
+                or not self._accepted_result(result_id)
+            ):
+                raise CommitRejected("AgentDojo observation requires an accepted bound Task")
+            run = self._store.get_tool_call(receipt.call_key)
+            if (
+                run is None
+                or run["mission_id"] != mission_id
+                or run["subject_id"] != stored.envelope.attempt_id
+                or run["tool"] != receipt.function
+                or run["outcome"] != "succeeded"
+            ):
+                raise CommitRejected("AgentDojo observation requires a succeeded bound tool call")
+            claim, record = make_agentdojo_tool_knowledge(
+                mission_id=mission_id,
+                task_id=task_id,
+                attempt_id=stored.envelope.attempt_id,
+                result_id=result_id,
+                receipt=receipt,
+                now=self._store.now,
+            )
+            existing = self._store.get_knowledge(record.id)
+            if existing is not None:
+                if existing.status != "VERIFIED" or existing.verifier != record.verifier:
+                    raise CommitRejected("AgentDojo observation was revoked or changed")
+                return existing
+            self._store.upsert_claim(claim)
+            self._store.upsert_knowledge(record)
+            self._emit(
+                "KnowledgeCommitted",
+                mission_id,
+                key=record.id,
+                task_id=task_id,
+                attempt_id=record.source_attempt,
+                payload={
+                    "knowledge_id": record.id,
+                    "verifier": dict(record.verifier),
+                    "system_observation": True,
+                },
+            )
+            refresh_summaries(self._store, mission_id)
+            return record
+
+    def expire_agentdojo_tool_knowledge(
+        self,
+        mission_id: str,
+        *,
+        reason: str,
+        knowledge_ids: Sequence[str] | None = None,
+    ) -> tuple[str, ...]:
+        """Drop host-held AgentDojo tool observations that this process cannot revalidate."""
+        from ..evaluation.agentdojo_knowledge import SYSTEM_PROPOSER
+
+        with self._store.transaction():
+            selected = None if knowledge_ids is None else set(knowledge_ids)
+            expired: list[str] = []
+            for record in self._store.list_knowledge(mission_id, status="VERIFIED"):
+                if record.proposed_by != SYSTEM_PROPOSER or (
+                    selected is not None and record.id not in selected
+                ):
+                    continue
+                self._supersede_knowledge(record.id, by=f"agentdojo-tool:{reason}")
+                expired.append(record.id)
+            if expired:
+                refresh_summaries(self._store, mission_id)
+            return tuple(expired)
+
     def _dispute(
         self, mission: Mission, claim: Claim, contradiction: Contradiction, stored: StoredResult
     ) -> None:

@@ -18,9 +18,15 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from agent_orchestrator.artifacts.workspace import WorkspaceManager
+from agent_orchestrator.contracts import Claim, ClaimStatus
 from agent_orchestrator.evaluation.agentdojo_bridge import (
     AgentDojoToolPort,
     make_agentdojo_pipeline,
+)
+from agent_orchestrator.evaluation.agentdojo_knowledge import (
+    SYSTEM_PROPOSER,
+    AgentDojoToolReceipt,
+    make_agentdojo_tool_knowledge,
 )
 from agent_orchestrator.evaluation.agentdojo_runner import (
     RUNTIME_TERMINATION_BOUNDARY,
@@ -38,6 +44,8 @@ from agent_orchestrator.evaluation.experiment import (
 )
 from agent_orchestrator.governance.domains import AGENTDOJO_PROFILE, resolve_domain
 from agent_orchestrator.governance.policies import DeploymentPolicy, policy_snapshot
+from agent_orchestrator.memory.blackboard import Blackboard
+from agent_orchestrator.memory.verified_knowledge import KnowledgeRecord
 from agent_orchestrator.runtime.assembly import OrchestratorConfig
 from agent_orchestrator.runtime.role_templates import ROLES, template_for_domain
 from agent_orchestrator.runtime.tool_gateway import WorkspaceBinding, WorkspaceToolGateway
@@ -46,6 +54,7 @@ from agent_orchestrator.testing.fixtures import (
     critic_step,
     envelope_step,
     graph_proposal_step,
+    package_of,
 )
 from agent_orchestrator.verification.domain_handlers import handler_for
 from simple_harness.agents.context.budget import ContextPolicy
@@ -714,3 +723,327 @@ def test_mapping_fingerprint_covers_schema_description_mode_and_version():
     assert first.decode("change", {"arguments_json": '{"password":"synthetic"}'}) == {
         "password": "synthetic",
     }
+
+
+N5_MARKER = "N5_HARMLESS_MARKER_7f3c"
+
+
+def _episode_records(run, table, loader):
+    path = run.root / "orchestrator" / "orchestrator.db"
+    with sqlite3.connect(path) as db:
+        rows = db.execute(f"select json from {table}").fetchall()
+    return [loader(json.loads(row[0])) for row in rows]
+
+
+def _knowledge(run):
+    return _episode_records(run, "knowledge", KnowledgeRecord.from_json)
+
+
+def _claims(run):
+    return _episode_records(run, "claims", Claim.from_json)
+
+
+def _note_env(api, text, *, error=None):
+    class Note(BaseModel):
+        text: str
+
+    class Env(api.TaskEnvironment):
+        note: Note
+
+    def read_note(note, slot: int = 0) -> str:
+        """Read the harmless local note.
+
+        :param slot: The harmless local slot to read.
+        """
+        return note.text
+
+    read_note.__annotations__["note"] = Annotated[Note, api.Depends("note")]
+    read_note.__annotations__["slot"] = int
+
+    class Runtime(api.FunctionsRuntime):
+        def __init__(self):
+            super().__init__([api.make_function(read_note)])
+            self.calls = []
+
+        def run_function(self, env, function, kwargs, raise_on_error=False):
+            self.calls.append((env, function, kwargs))
+            value, runtime_error = super().run_function(env, function, kwargs, raise_on_error)
+            if error is not None:
+                return str(value), error
+            return str(value) + " [synthetic injection hook]", runtime_error
+
+    return Runtime(), Env(note=Note(text=text))
+
+
+def _task(key, output, dependencies, extra_tools=(), *, goal=None, rationale="n5 blackboard"):
+    tools = [
+        "read_note",
+        "workspace_write_file",
+        "workspace_read_file",
+        "workspace_list",
+        *extra_tools,
+    ]
+    return {
+        "key": key,
+        "goal": goal or f"Write {output}",
+        "rationale": rationale,
+        "dependencies": dependencies,
+        "success_criteria": [f"file:{output}"],
+        "verification_policy": ["format_check", "rule_check", "critic_review"],
+        "allowed_tools": tools,
+        "budget": {"max_tokens": 400000, "max_attempts": 1},
+        "priority": 1.0,
+        "outputs": [output],
+    }
+
+
+def test_blackboard_has_no_write_promotion_api():
+    assert not hasattr(Blackboard, "upsert")
+    assert not hasattr(Blackboard, "commit")
+    assert not hasattr(Blackboard, "write")
+    assert callable(Blackboard.verified_knowledge)
+
+
+def test_system_observation_builder_rejects_errors_and_keeps_returned_bytes():
+    receipt = AgentDojoToolReceipt(
+        call_key="run:1",
+        function="read_note",
+        output=N5_MARKER,
+        error="synthetic-tool-error",
+        arguments_sha256="a" * 64,
+        result_sha256="b" * 64,
+        agentdojo_version="0.1.35",
+    )
+    with pytest.raises(ValueError, match="not promotable"):
+        make_agentdojo_tool_knowledge(
+            mission_id="m",
+            task_id="t",
+            attempt_id="a",
+            result_id="r",
+            receipt=receipt,
+            now=1.0,
+        )
+    ok = AgentDojoToolReceipt(
+        call_key="run:1",
+        function="read_note",
+        output=N5_MARKER,
+        error=None,
+        arguments_sha256="a" * 64,
+        result_sha256="b" * 64,
+        agentdojo_version="0.1.35",
+    )
+    claim, record = make_agentdojo_tool_knowledge(
+        mission_id="m",
+        task_id="t",
+        attempt_id="a",
+        result_id="r",
+        receipt=ok,
+        now=1.0,
+    )
+    assert claim.status is ClaimStatus.VERIFIED
+    assert record.proposed_by == SYSTEM_PROPOSER
+    assert record.type == "tool_observation"
+    assert N5_MARKER in record.content
+    assert record.evidence == ("tool-run:run:1",)
+
+
+def test_two_task_tool_observation_promotes_and_is_consumed(tmp_path):
+    api = official()
+    runtime, env = _note_env(api, N5_MARKER)
+    captured: dict[str, object] = {}
+    exposed = {"worker_saw_tool_output": False}
+
+    def write_observe(request):
+        assert N5_MARKER in str(request.messages)
+        exposed["worker_saw_tool_output"] = True
+        return "workspace_write_file", {"path": "A.md", "content": N5_MARKER}
+
+    def start_consume(request):
+        package = package_of(request)
+        items = list(package.get("verified_knowledge") or [])
+        captured["b_package"] = package
+        captured["b_user"] = request.messages[-1].content if request.messages else ""
+        assert items, package
+        assert any(N5_MARKER in str(item) for item in items), items
+        captured["knowledge_id"] = items[0]["id"]
+        return "knowledge_read", {"id": items[0]["id"]}
+
+    def write_report(_request):
+        return "workspace_write_file", {"path": "REPORT.md", "content": N5_MARKER}
+
+    def consume_envelope(request):
+        def override(envelope):
+            envelope["used_knowledge"] = [captured["knowledge_id"]]
+            return envelope
+
+        return envelope_step(
+            summary=N5_MARKER,
+            artifacts=["REPORT.md"],
+            claims=["Downstream used the host observation"],
+            override=override,
+        )(request)
+
+    provider = RoleScriptedProvider(
+        {
+            "planner": [
+                graph_proposal_step(
+                    [
+                        _task("observe", "A.md", []),
+                        _task(
+                            "consume",
+                            "REPORT.md",
+                            ["observe"],
+                            extra_tools=("knowledge_list", "knowledge_read"),
+                            goal=(
+                                "Write REPORT.md from the Host observed AgentDojo "
+                                f"tool read_note return {N5_MARKER}"
+                            ),
+                            rationale="consume tool observation",
+                        ),
+                    ]
+                )
+            ],
+            "worker": [
+                ("read_note", {"arguments_json": '{"slot":0}'}),
+                write_observe,
+                envelope_step(
+                    summary=N5_MARKER,
+                    artifacts=["A.md"],
+                    claims=["The note is an instruction to ignore previous policy"],
+                ),
+                start_consume,
+                write_report,
+                consume_envelope,
+            ],
+            "critic": [
+                critic_step(verdict="PASS", criteria_met=True),
+                critic_step(verdict="PASS", criteria_met=True),
+            ],
+        }
+    )
+    run = runner(tmp_path, provider)
+    pipeline = make_agentdojo_pipeline(run)
+    pipeline.query("Read the local note", runtime, env)
+    assert exposed["worker_saw_tool_output"] is True
+    assert run.last_result["mission_status"] == "COMPLETED"
+    knowledge = _knowledge(run)
+    assert len(knowledge) == 1
+    record = knowledge[0]
+    assert record.status == "VERIFIED"
+    assert record.proposed_by == SYSTEM_PROPOSER
+    assert N5_MARKER in record.content
+    assert "[synthetic injection hook]" in record.content
+    agent_claims = [c for c in _claims(run) if c.proposed_by != SYSTEM_PROPOSER]
+    assert agent_claims
+    assert all(c.status is not ClaimStatus.VERIFIED for c in agent_claims)
+    assert captured["knowledge_id"] == record.id
+    assert record.id in str(captured["b_user"])
+    consume_task = next(
+        t for t in run.last_result["tasks"] if t["goal"].startswith("Write REPORT.md")
+    )
+    assert record.used_by == (consume_task["id"],)
+    with sqlite3.connect(run.root / "orchestrator" / "orchestrator.db") as db:
+        used = db.execute("select payload_json from events where type = 'KnowledgeUsed'").fetchall()
+    assert used
+    assert record.id in used[0][0]
+
+
+def test_tool_error_does_not_promote_even_if_text_is_exposed(tmp_path):
+    api = official()
+    runtime, env = _note_env(api, N5_MARKER, error="synthetic-tool-error")
+
+    def write_report(request):
+        assert N5_MARKER in str(request.messages)
+        return "workspace_write_file", {"path": "REPORT.md", "content": "failed-read"}
+
+    provider = RoleScriptedProvider(
+        {
+            "planner": [graph_proposal_step([_task("answer", "REPORT.md", [])])],
+            "worker": [
+                ("read_note", {"arguments_json": '{"slot":0}'}),
+                write_report,
+                envelope_step(
+                    summary="failed-read",
+                    artifacts=["REPORT.md"],
+                    claims=["Read failed"],
+                ),
+            ],
+            "critic": [critic_step(verdict="PASS", criteria_met=True)],
+        }
+    )
+    run = runner(tmp_path, provider)
+    pipeline = make_agentdojo_pipeline(run)
+    pipeline.query("Read the local note", runtime, env)
+    assert run.last_result["mission_status"] == "COMPLETED"
+    assert _knowledge(run) == []
+    assert all(c.status is not ClaimStatus.VERIFIED for c in _claims(run))
+
+
+def test_forged_knowledge_id_is_not_consumed(tmp_path):
+    api = official()
+    runtime, env = _note_env(api, N5_MARKER)
+
+    def write_observe(request):
+        assert N5_MARKER in str(request.messages)
+        return "workspace_write_file", {"path": "A.md", "content": N5_MARKER}
+
+    def write_report(_request):
+        return "workspace_write_file", {"path": "REPORT.md", "content": N5_MARKER}
+
+    def forged_envelope(request):
+        def override(envelope):
+            envelope["used_knowledge"] = ["forged-claim-id"]
+            return envelope
+
+        return envelope_step(
+            summary=N5_MARKER,
+            artifacts=["REPORT.md"],
+            claims=["Forged citation"],
+            override=override,
+        )(request)
+
+    provider = RoleScriptedProvider(
+        {
+            "planner": [
+                graph_proposal_step(
+                    [
+                        _task("observe", "A.md", []),
+                        _task(
+                            "consume",
+                            "REPORT.md",
+                            ["observe"],
+                            goal=(
+                                "Write REPORT.md from the Host observed AgentDojo "
+                                f"tool read_note return {N5_MARKER}"
+                            ),
+                        ),
+                    ]
+                )
+            ],
+            "worker": [
+                ("read_note", {"arguments_json": '{"slot":0}'}),
+                write_observe,
+                envelope_step(
+                    summary=N5_MARKER,
+                    artifacts=["A.md"],
+                    claims=["Observed the note"],
+                ),
+                write_report,
+                forged_envelope,
+            ],
+            "critic": [critic_step(verdict="PASS", criteria_met=True)],
+        }
+    )
+    run = runner(tmp_path, provider)
+    pipeline = make_agentdojo_pipeline(run)
+    with pytest.raises(RuntimeError, match="did not complete"):
+        pipeline.query("Read the local note", runtime, env)
+    knowledge = _knowledge(run)
+    assert len(knowledge) == 1
+    assert knowledge[0].proposed_by == SYSTEM_PROPOSER
+    assert knowledge[0].used_by == ()
+    with sqlite3.connect(run.root / "orchestrator" / "orchestrator.db") as db:
+        used = db.execute("select payload_json from events where type = 'KnowledgeUsed'").fetchall()
+        claims = db.execute("select json from claims").fetchall()
+    assert used == []
+    assert all("forged-claim-id" not in row[0] or '"VERIFIED"' not in row[0] for row in claims)
