@@ -100,3 +100,12 @@ N3后继准备三个受控消费用例：精确ID/中英语义对照（基础控
 |n3-hard-protocol-v1.json|46ce5fdd1e1e98765127111b6aa14c1dc5f79ea2d1e831661f4bcfb31cb5c7c5|
 |n3-hard-prep/score-controls.json|1c39ff5148fec062975ea6b7233a88a3f11779975073dec51e441fdcab3e71bc|
 |n3-hard-prep/offline-parent-smoke-v2.log|885070730620c24778f2279f131dd43d2de27b15ccf2338432cca3023f9d8ddc|
+
+
+### N2 v4 现有记录只读复核（2026-09-15，无新增模型调用）
+
+精确额度链已补齐：Planner为三Task分配1.2M/1.5M/1.3M。Task1实际903889 tokens；Worker当前预留910877、首个Critic受保护预留261120，所以当时可扩额度=1200000−910877−261120=28003。下一请求上界69977需要增量62989，被原Task额度合法拒绝；终态总Mission结算912645，预留归零。不是简单“实际消耗未达1.2M却误拒绝”，也没有提高总预算的理由。
+
+SDK实际工具：38次appworld_execute、workspace_list和workspace_write_file各1；知识表0条，没有独立knowledge_list/read调用，Python调用AST也没有知识读写。Task2/3未启动，因此尚无可复用知识或消费收益证据。发现多次交易/联系人探索，但仅凭调用次数不能认定重复调用都无必要。暂无已证实产品接线缺陷；保留模型/规划失败，不为获得PASS盲目重跑或放宽题目/预算。下一有价值门槛仍是可验证的知识产生与跨Task消费，A96/B96未开始。
+
+本地只读审计0.013秒（非工程时间），不执行保存的Python代码、无网络/模型调用。Host证据`.local-test-evidence/2026-09-15/shared-capacity/n2-v4-retrospective/summary.json`，SHA256 `d9d67e96c5e6732cad763c02f4a6760529626e95b52327c1e5e4a6efb1e9573d`。

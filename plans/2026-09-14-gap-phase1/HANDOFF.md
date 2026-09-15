@@ -1,3 +1,7 @@
+最后更新：2026-09-15。Host374aa70a/SDKf122b8c：共享容量、长响应及最终Mission评审后继完成限定实机验收。v60独立评审正式交付60实跑PASS；v61亲自捕获列表/详情待验证→交付和冷恢复。累计335本地归属调用7157983已知tokens下限，1早先未知另列，Flash0。最新广回归2304PASS/32SKIP/6环境FAIL，关联兼容环境49PASS。N1–N8/正式A96B96仍OPEN，未打包。 详见[共享容量后继与四表](SHARED-CAPACITY.md)。
+
+最新接续（2026-09-15）：共享容量及实机后继见[SHARED-CAPACITY](SHARED-CAPACITY.md)，N2准确预算链已补入BUDGET-ANALYSIS-FOLLOWUP.md。SDK生产f122b8c；原生v59运行中，N1–N8和A96B96仍OPEN，Flash0。以下为历史检查点。
+
 最后更新：2026-09-15 02:44 CST。code profile v4生产3e2792f：原分页/时间例外两个失败题自然复验均VERIFIED（16调用139927tokens/290.623秒），旧失败保留。完整v9为2275PASS32SKIP1旧版本断言FAIL，后继28PASS及官方ARE50PASS，无生产再改；当前源码UI v54冷恢复实点通过，0新调用。累计261本地调用5430502已知tokens下限/1早先未知，Flash0。N1–N8/A96B96仍OPEN，无打包。 当前明细及四张表见[结果封套后继](RESULT-CONTRACT-FOLLOWUP.md)；下方为历史检查点。
 
 # testPhase1 源码交接

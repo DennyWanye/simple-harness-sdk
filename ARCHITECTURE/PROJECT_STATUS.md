@@ -1,4 +1,4 @@
-最后更新：2026-09-15。修复 Mission 最终 Critic 预算增长误要求 Task Attempt：旧源复现FAIL，新关联47PASS；最终原生复验待，前一完整2308PASS/32条件SKIP属于8b5cbc1。N1–N8仍OPEN。见 plans/2026-09-14-gap-phase1/SHARED-CAPACITY.md。
+最后更新：2026-09-15。Host374aa70a/SDKf122b8c：共享容量、长响应及最终Mission评审后继完成限定实机验收。v60独立评审正式交付60实跑PASS；v61亲自捕获列表/详情待验证→交付和冷恢复。累计335本地归属调用7157983已知tokens下限，1早先未知另列，Flash0。最新广回归2304PASS/32SKIP/6环境FAIL，关联兼容环境49PASS。N1–N8/正式A96B96仍OPEN，未打包。
 
 最后更新：2026-09-15 06:27 CST。N1固定物理响应截止与response_wait接入：27定向PASS，旧桥反例FAIL。原生v57前台成功/物理重叠2路但后台180秒误判停滞，旧测试已取消，保留在途账；新完整与原生待验，N1–N8仍OPEN。 [证据](../plans/2026-09-14-gap-phase1/SHARED-CAPACITY.md)。
 
