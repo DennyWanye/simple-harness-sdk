@@ -166,6 +166,15 @@ async def _single_identity(
                 (root / "turns.json").write_text(json.dumps(results, ensure_ascii=False, indent=2))
             if arm == "R":
                 # Selection gets no new world actions, answers or evaluator feedback.
+                # An empty candidate set cannot produce a valid R closed loop; do not
+                # spend a selection turn that will only be admitted-denied.
+                if not any(turn.get("public_output") is not None for turn in results):
+                    error = results[-1].get("error") if results else None
+                    code = error.get("error_code") if isinstance(error, dict) else None
+                    raise ValueError(
+                        "self-selection skipped: no candidate output"
+                        + (f" ({code})" if code else "")
+                    )
                 gateway.bind(
                     agent.run_id,
                     WorkspaceBinding("single-agent", "work", False, (), mission_id="episode"),
@@ -184,7 +193,11 @@ async def _single_identity(
                 results.append(choice.to_json())
                 (root / "turns.json").write_text(json.dumps(results, ensure_ascii=False, indent=2))
                 if choice.public_output is None:
-                    raise ValueError("self-selection has no output")
+                    code = None if choice.error is None else choice.error.get("error_code")
+                    raise ValueError(
+                        "self-selection has no output"
+                        + (f" ({code})" if code else "")
+                    )
                 selected = _parse_self_selection(choice.public_output.content, repeats)
                 episode.restore(candidates[selected - 1])
             return {

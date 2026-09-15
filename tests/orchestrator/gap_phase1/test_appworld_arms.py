@@ -202,3 +202,86 @@ async def test_local_budget_refusal_finishes_base_agent_without_unknown_wait(tmp
         assert result["runtime_states"] == ["failed"]
         assert meter.counters.calls == 1 and meter.unknown_usage_calls == 0
         assert len(provider.requests) == 1
+
+
+def test_request_estimator_counts_tool_schemas():
+    from simple_harness.agents.context.tokenizer import (
+        UpperBoundTokenizer,
+        count_message,
+        estimate_provider_request,
+    )
+    from simple_harness.contracts import RequestId
+    from simple_harness.providers import ProviderRequest, ProviderToolSpec
+
+    tokenizer = UpperBoundTokenizer()
+    request = ProviderRequest(
+        RequestId("tools-bound"),
+        (Message(MessageRole.USER, "Operate the AppWorld task."),),
+        tools=(
+            ProviderToolSpec(
+                "appworld_execute",
+                "Run Python against the simulated apps.",
+                {"type": "object", "properties": {"code": {"type": "string"}}},
+            ),
+        ),
+    )
+    messages_only = sum(count_message(tokenizer, message) for message in request.messages)
+    bound = estimate_provider_request(tokenizer, request)
+    assert bound > messages_only
+
+
+@pytest.mark.asyncio
+async def test_r_skips_selection_when_reservation_overrun_clears_candidates(tmp_path):
+    from dataclasses import replace
+
+    from agent_orchestrator.evaluation.experiment import ArmSpec, ExperimentManifest, RunContext
+    from agent_orchestrator.evaluation.metered_provider import MeteredProvider
+    from simple_harness.providers import ProviderTarget
+
+    world = World()
+    provider = Provider("R")
+    provider.target = ProviderTarget("fake", "agent-model", "fake", "https://example.test", "v1")
+    budget = ExperimentBudget(100000, 10000, 110000, 8, 20)
+    manifest = ExperimentManifest(
+        "r-overrun",
+        "fake",
+        "agent-model",
+        budget,
+        ("task",),
+        1,
+        0,
+        1,
+        tuple(ArmSpec(a, a) for a in ("S", "R", "D", "F")),
+    )
+    meter = MeteredProvider(
+        provider,
+        RunContext(manifest, manifest.runs()[1], lambda _: None),
+        estimate_input_tokens=lambda _: 50,
+    )
+    with AppWorldEpisode(
+        AppWorldConfig("task", "r-overrun"), world_factory=lambda **_: world
+    ) as episode:
+        with pytest.raises(ValueError, match="self-selection skipped: no candidate output"):
+            await execute_arm(
+                "R",
+                episode,
+                ArmRuntime(
+                    meter,
+                    "agent-model",
+                    UpperBoundTokenizer(),
+                    ContextPolicy(),
+                    replace(budget, calls=8),
+                    default_output_tokens=1024,
+                    maximum_output_tokens=8192,
+                ),
+                tmp_path / "r-overrun",
+            )
+    assert meter.unknown_usage_calls == 0
+    assert not any(
+        getattr(request, "input_id", None) == "self-selection"
+        or "Select the best" in str(getattr(request, "messages", ()))
+        for request in provider.requests
+    )
+    turns = json.loads((tmp_path / "r-overrun" / "turns.json").read_text())
+    assert all(turn["public_output"] is None for turn in turns)
+    assert all("self-selection" not in turn["turn_id"] for turn in turns)

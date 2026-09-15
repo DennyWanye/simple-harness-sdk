@@ -17,7 +17,7 @@ from typing import Protocol, cast, runtime_checkable
 
 from simple_harness.contracts import FrozenJsonValue, JsonValue, canonical_json, thaw_json
 from simple_harness.contracts.messages import Message
-from simple_harness.providers import ProviderToolSpec
+from simple_harness.providers import ProviderRequest, ProviderToolSpec
 
 
 @runtime_checkable
@@ -60,6 +60,7 @@ class TiktokenTokenizer:
 # Per-message framing overhead used by chat templates (role markers, separators).
 MESSAGE_OVERHEAD_TOKENS = 4
 TOOL_OVERHEAD_TOKENS = 8
+REQUEST_OVERHEAD_TOKENS = 8
 
 
 def message_text(message: Message) -> str:
@@ -96,13 +97,30 @@ def count_tools(tokenizer: TokenizerPort, tools: tuple[ProviderToolSpec, ...]) -
     return total
 
 
+def estimate_provider_request(tokenizer: TokenizerPort, request: ProviderRequest) -> int:
+    """Upper-bound the serialized request, including tool schemas.
+
+    Message-only counters under-reserve AppWorld S/R first calls: the billed
+    input includes tools, and a shortfall closes the experiment meter.
+    """
+    if not isinstance(request, ProviderRequest):
+        raise TypeError("request must be a ProviderRequest")
+    total = REQUEST_OVERHEAD_TOKENS
+    for message in request.messages:
+        total += count_message(tokenizer, message)
+    total += count_tools(tokenizer, tuple(request.tools))
+    return total
+
+
 __all__ = (
     "MESSAGE_OVERHEAD_TOKENS",
+    "REQUEST_OVERHEAD_TOKENS",
     "TOOL_OVERHEAD_TOKENS",
     "TiktokenTokenizer",
     "TokenizerPort",
     "UpperBoundTokenizer",
     "count_message",
     "count_tools",
+    "estimate_provider_request",
     "message_text",
 )
