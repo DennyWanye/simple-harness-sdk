@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..contracts import Artifact, ids
+from .input_bindings import MaterialisationEntry
 from .paths import under_prefix
 from .store import ArtifactStore, ArtifactStoreError, read_nofollow, read_verified
 
@@ -186,6 +187,39 @@ class Workspace:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         return target
+
+    def materialise_manifest(
+        self,
+        entries: Sequence[MaterialisationEntry],
+        blobs: Mapping[str, bytes],
+    ) -> list[str]:
+        """P2.3b (§18.2): place exactly the controlled manifest entries, nothing else.
+
+        The old entry points are untouched; this one exists so the new mode has a
+        *narrow* way in.  It writes one file per :class:`MaterialisationEntry`, at
+        the target path the plan decided, with the bytes the caller verified — and
+        it refuses an entry whose bytes are absent rather than creating an empty
+        file, because a missing input is a refusal and not an empty one.
+
+        Every write still goes through :meth:`write_bytes`, so the read-only flag,
+        the symlink refusal and the escape check all still apply.
+        """
+
+        if not self.writable:
+            raise WorkspaceError("workspace is read-only")
+        written: list[str] = []
+        for entry in entries:
+            if not isinstance(entry, MaterialisationEntry):
+                raise WorkspaceError("materialise_manifest expects MaterialisationEntry values")
+            data = blobs.get(entry.target.path)
+            if data is None:
+                raise WorkspaceError(
+                    f"no verified bytes for manifest entry {entry.target.path!r}; "
+                    "a missing input is refused, never materialised as an empty file"
+                )
+            self.write_bytes(entry.target.path, data)
+            written.append(entry.target.path)
+        return sorted(written)
 
     def list_files(self) -> list[str]:
         return sorted(str(path.relative_to(self.root)) for path in self._walk())

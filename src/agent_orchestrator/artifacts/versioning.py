@@ -20,9 +20,27 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..contracts import Artifact, Task
+from ..contracts.evidence_state import ValidityWitness
+from ..contracts.htn import OccurrenceId, TaskSemanticBindingV1
+from ..contracts.models import ContractError
+from ..graph.projection_validation import require_topological_order
+from ..graph.task_network import TaskNetworkSnapshot
+from .input_bindings import (
+    AcceptedOutputsIndex,
+    InputManifest,
+    ResolutionPolicy,
+    ResolutionProblem,
+    ResolutionResult,
+    TargetRules,
+    materialise_plan,
+    resolve_declared_inputs,
+)
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .workspace import Workspace
 
 
 class ArtifactConflict(ValueError):
@@ -184,13 +202,195 @@ def next_versions(existing: Sequence[Artifact]) -> dict[str, int]:
     return versions
 
 
+# ======================================================================================
+# P2.3b: the hierarchical mode's path (§24.1 decisions 3, 4 and 11; TG §10.1-10.3)
+# ======================================================================================
+#
+# Everything above this line is the legacy mode and stays exactly as it was: §18.2 asks
+# for ``merge_accepted`` / ``collect_upstream_inputs`` / ``topological`` byte-for-byte
+# unchanged, and the suite hashes their source to hold that.  The diagnostic readers
+# (``observability/traces.py``, ``observability/evaluation.py``) keep calling those
+# three and therefore keep tolerating a damaged graph, which is the whole point of
+# decision 11: an operator's view of a broken Mission must still render.
+#
+# Below the line is the new mode, and it differs in three ways that are not details:
+#
+# 1. **Nothing is swept.**  A consumer starts from its resolved ``InputManifest`` and
+#    from nothing else.  An ORDER-only predecessor contributes no file however many
+#    artifacts it accepted — ORDER is a release condition, never a read permission
+#    (§24.1 decision 1).
+# 2. **A path collision is refused, not ranked.**  Two different hashes aimed at one
+#    target place raise :class:`ArtifactConflict`; "B is further down the topological
+#    order" is not a reason to pick B (TG §10.2).  The same hash at one place is one
+#    file two bindings agree on, which is not a conflict — the same rule the legacy
+#    merge already applied to exact paths, so decision 4's "do not relax the old
+#    protection before the new path is wired" holds.
+# 3. **A damaged projection stops the work.**  On this path an unorderable projection
+#    raises :class:`~..graph.projection_validation.GraphIntegrityError` rather than
+#    returning the healthy prefix, because the healthy prefix is a partial order and
+#    not a plan.
+
+
+def _require_orderable(network: TaskNetworkSnapshot | None) -> None:
+    """Refuse to execute or materialise against a projection that cannot be ordered."""
+
+    if network is None:
+        return
+    require_topological_order(network.execution_projection())
+
+
+def _refuse(problems: Sequence[ResolutionProblem]) -> ArtifactConflict:
+    """One conflict, with the candidates named.
+
+    TG §10.2 asks the caller to *choose, convert or synthesise* — which it cannot do
+    without knowing what the candidates were, so the artifact ids travel in the
+    message and not only in the structured problem.
+    """
+
+    return ArtifactConflict(
+        "; ".join(
+            f"{problem.kind!s}: {problem.detail}"
+            + (f" (candidates: {', '.join(problem.candidates)})" if problem.candidates else "")
+            for problem in problems
+        )
+    )
+
+
+def resolve_input_manifest(
+    consumer: TaskSemanticBindingV1,
+    network: TaskNetworkSnapshot,
+    accepted: AcceptedOutputsIndex,
+    *,
+    consumer_occurrence: OccurrenceId,
+    witnesses: Mapping[str, ValidityWitness],
+    policy: ResolutionPolicy,
+    check_topology: bool = True,
+) -> ResolutionResult:
+    """The new mode's answer to "what does this task read?" (TG §10.1).
+
+    The declared DATA requirements of ``consumer_occurrence`` — *only* those — are
+    resolved against the accepted outputs.  The requirement rows come from the
+    network, so a requirement aimed at another consumer is not silently absorbed:
+    :func:`~.input_bindings.resolve_declared_inputs` refuses it as
+    ``FOREIGN_REQUIREMENT``.
+
+    ``check_topology`` is True because this is the execution path.  A caller that is
+    only *explaining* a Mission passes False and gets whatever the damaged network
+    can still say, which is the diagnostic tolerance decision 11 preserves.
+    """
+
+    if not isinstance(network, TaskNetworkSnapshot):
+        raise ContractError("resolve_input_manifest expects a TaskNetworkSnapshot")
+    if check_topology:
+        _require_orderable(network)
+    requirements = [
+        item
+        for item in network.data_requirements
+        if item.consumer_occurrence == consumer_occurrence
+    ]
+    return resolve_declared_inputs(
+        consumer,
+        requirements,
+        accepted,
+        witnesses=witnesses,
+        policy=policy,
+        consumer_occurrence=consumer_occurrence,
+    )
+
+
+def manifest_upstream_inputs(
+    manifest: InputManifest,
+    target_rules: TargetRules,
+    *,
+    network: TaskNetworkSnapshot | None = None,
+) -> list[UpstreamInput]:
+    """The manifest as the dispatch-intent input set (one entry per target place).
+
+    Returned as :class:`UpstreamInput` on purpose: the recorded shape of "what this
+    Attempt was built on" does not change between the modes, only *how the set is
+    decided* does.  ``task_id`` therefore names the producer occurrence's task and
+    ``path`` the place in the consumer's namespace, so a later inspection reads the
+    same four fields whichever mode produced them.
+    """
+
+    _require_orderable(network)
+    plan = materialise_plan(manifest, target_rules)
+    if plan.problems:
+        raise _refuse(plan.problems)
+    producer_of = {binding.binding_id: binding.producer_task_ref for binding in manifest.bindings}
+    inputs: list[UpstreamInput] = []
+    for entry in plan.entries:
+        producer = next(
+            (str(producer_of[item]) for item in entry.binding_ids if item in producer_of),
+            "",
+        )
+        inputs.append(
+            UpstreamInput(
+                producer,
+                entry.target.path,
+                entry.content_hash,
+                entry.artifact_ids[0] if entry.artifact_ids else "",
+            )
+        )
+    return sorted(inputs, key=lambda item: item.path)
+
+
+def materialise_v2(
+    workspace: Workspace,
+    manifest: InputManifest,
+    artifacts_by_id: Mapping[str, Artifact],
+    *,
+    target_rules: TargetRules,
+    network: TaskNetworkSnapshot | None = None,
+) -> list[str]:
+    """Write exactly the manifest's entries into ``workspace`` and nothing else.
+
+    The bytes still come through :func:`~.store.read_verified` — hash re-checked,
+    never through a symlink — and the placement still goes through
+    :meth:`~.workspace.Workspace.materialise_manifest`, so the CAS and isolation
+    guarantees of the old path are unchanged.  What changed is the *set*.
+
+    **Not called from ``src`` yet — P2.3c wires it.**  P2.3b decides the *set* of
+    inputs (``manifest_upstream_inputs`` feeds the dispatch intent, which the
+    existing workspace binding then materialises through the old, unchanged path).
+    Moving the physical write onto this function means changing where a verification
+    copy and a protected file come from, and that belongs with the dispatch work
+    rather than beside it.
+    """
+
+    _require_orderable(network)
+    plan = materialise_plan(manifest, target_rules)
+    if plan.problems:
+        raise _refuse(plan.problems)
+    from .store import ArtifactStoreError, read_verified
+
+    blobs: dict[str, bytes] = {}
+    for entry in plan.entries:
+        artifact = artifacts_by_id.get(entry.artifact_ids[0] if entry.artifact_ids else "")
+        if artifact is None or artifact.content_hash != entry.content_hash:
+            raise ArtifactConflict(
+                f"manifest entry {entry.target.path!r} names artifact "
+                f"{entry.artifact_ids!r}, which is missing or changed"
+            )
+        try:
+            blobs[entry.target.path] = read_verified(artifact)
+        except ArtifactStoreError as error:
+            raise ArtifactConflict(
+                f"manifest entry {entry.target.path!r} is not readable: {error}"
+            ) from error
+    return workspace.materialise_manifest(plan.entries, blobs)
+
+
 __all__ = (
     "ArtifactConflict",
     "UpstreamInput",
     "ancestors",
     "topological",
     "collect_upstream_inputs",
+    "manifest_upstream_inputs",
     "materialise_inputs",
+    "materialise_v2",
     "merge_accepted",
     "next_versions",
+    "resolve_input_manifest",
 )

@@ -104,6 +104,7 @@ from ..governance.permissions import Principal
 from ..governance.policies import action_decision, deployed_layers, effective_tools
 from ..governance.promotion import diff_params, interpreter_versions, resolve_params
 from ..graph.changes import ChangeLimits, GraphChangeRejected, TaskGraphChange
+from ..graph.projection_validation import GraphIntegrityError
 from ..graph.task_graph import TaskBudgetFloor
 from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
@@ -134,12 +135,13 @@ from ..runtime.model_router import (
     RuntimeProfile,
     classify_turn_error,
 )
-from ..runtime.output_blocks import BlockError, extract_block, outside_text
+from ..runtime.output_blocks import BlockError, extract_block, outside_text, repair_hint
 from ..runtime.role_templates import (
     CRITIC,
     FRAGMENT_VALIDATION_DECISION_TAG,
     GRAPH_CHANGE_PROPOSAL_TAG,
     MANAGER,
+    PLAN_REVISION_PROPOSAL_TAG,
     PLANNER,
     RESULT_ENVELOPE_TAG,
     role_for_task,
@@ -180,6 +182,8 @@ from .commit_service import (
     mission_account,
     task_account,
 )
+from .hierarchical_dispatch import HierarchicalDispatch, is_hierarchical
+from .plan_commits import PlanPrincipal
 
 logger = logging.getLogger("agent_orchestrator")
 
@@ -273,6 +277,11 @@ class Orchestrator:
         # the SDK runtime (``owner_id``); the SDK ``owner_scope`` is one constant for all.
         self._owner = owner or f"orchestrator-{os.getpid()}"
         self._config = replace(config, owner_id=self._owner)
+        # P2.3b: the hierarchical assembly (§14 / §18.2 "only assemble and call").
+        # ``None`` until a deployment installs one, and consulted *only* for a Mission
+        # whose ``orchestration_semantics_version`` is hierarchical — so every legacy
+        # branch below is reached by exactly the code it was reached by before.
+        self._hierarchical: HierarchicalDispatch | None = None
         self._provider = provider
         self._provider_token_estimator = provider_token_estimator
         self._provider_admission: ProviderBudgetGuard | None = None
@@ -976,6 +985,65 @@ class Orchestrator:
     def commit(self) -> CommitService:
         assert self._commit is not None
         return self._commit
+
+    @property
+    def hierarchical(self) -> HierarchicalDispatch | None:
+        """The hierarchical assembly, or None when this deployment has not installed one."""
+
+        return self._hierarchical
+
+    def install_hierarchical(self, planning: Any = None, **kwargs: Any) -> HierarchicalDispatch:
+        """Install the new mode's assembly (P2.3b).
+
+        Installing it changes nothing for a legacy Mission: every branch that consults
+        it asks ``is_hierarchical(mission)`` first, which reads the Mission's own
+        ``orchestration_semantics_version`` and defaults to ``legacy`` (§18.5 rule 1).
+        """
+
+        self._hierarchical = HierarchicalDispatch(
+            self.store, self.commit, planning=planning, **kwargs
+        )
+        return self._hierarchical
+
+    def _new_mode(self, mission: Mission) -> HierarchicalDispatch | None:
+        """The assembly for this Mission, or None — the one place the mode is decided."""
+
+        if self._hierarchical is None or not is_hierarchical(mission):
+            return None
+        return self._hierarchical
+
+    async def _plan_integrity_stop(self, mission: Mission, error: GraphIntegrityError) -> None:
+        """Stop *this* Mission for a damaged plan and leave the run alone (§24.1 dec. 11).
+
+        ``GraphIntegrityError`` is a ``RuntimeError``, and ``_cycle`` only forgives
+        ``StoreBusy`` / ``CommitRejected`` / ``IllegalTransition`` — so an unguarded
+        one would end ``run()`` and take every *other* Mission in this process down
+        with it.  One Mission's corruption is one Mission's stop: the diagnosis is
+        recorded, the Mission fails with its open work cascaded, and the loop carries
+        on with the rest.
+        """
+
+        if self._hierarchical is not None:
+            self._hierarchical.record_integrity_failure(mission.id, error)
+        detail = {
+            "code": getattr(error, "code", "projection_not_orderable"),
+            "subjects": sorted(str(item) for item in error.remaining),
+            "cycle": [str(item) for item in error.cycle],
+            "diagnose": error.diagnose()[:600],
+        }
+        current = self.store.get_mission(mission.id)
+        status = mission.status if current is None else current.status
+        if status is MissionStatus.PLANNING:
+            self.commit.fail_planning(mission.id, reason="plan_integrity", detail=detail)
+        elif status is MissionStatus.ACTIVE:
+            self.commit.fail_mission(
+                mission.id, stop_reason=MissionStopReason.PLANNING_FAILED, detail=detail
+            )
+        else:  # already terminal, or not yet planning: the record is the whole answer
+            self._note(f"mission {mission.id}: plan integrity failure while {status!s}")
+            return
+        await self._release_mission(mission.id)
+        self._note(f"mission {mission.id} stopped: plan integrity ({detail['code']})")
 
     @property
     def connectors(self) -> Mapping[str, Any]:
@@ -2722,6 +2790,12 @@ class Orchestrator:
             )
             self._note(f"planner: model echo mismatch {sorted(echoed)} → mission stopped")
             return
+        # P2.3b: a hierarchical Mission's Planner speaks the typed contract (§18.3), so
+        # the reply goes to the assembly and the flat-DAG path below is not entered.
+        new_mode = self._new_mode(mission)
+        if new_mode is not None:
+            await self._collect_plan_hierarchical(intent, result, mission, text, new_mode)
+            return
         try:
             if result.state is not AgentTurnState.COMMITTED:
                 raise ContractError(f"planner turn failed: {dict(result.error or {})}")
@@ -2753,6 +2827,86 @@ class Orchestrator:
             return
         self._note(
             f"task graph committed: {[task.id for task in tasks]} (warnings={receipt.get('warnings')})"
+        )
+        self._settle_intent(intent, "SETTLED")
+        self._settle_service_if_known(intent.subject_id, mission.id)
+
+    async def _collect_plan_hierarchical(  # type: ignore[no-untyped-def]
+        self,
+        intent: DispatchIntent,
+        result,
+        mission: Mission,
+        text: str,
+        new_mode: HierarchicalDispatch,
+    ) -> None:
+        """P2.3b: the typed Planner reply → one plan revision, or one named refusal.
+
+        This method is assembly and nothing else: the parse, the compile, the bounded
+        recompilation and the commit all live in
+        :mod:`.hierarchical_dispatch`.  What belongs *here* is the part that is about
+        the dispatch intent — importing the usage, settling the turn and taking the
+        existing planning-rejection path when the round produced no revision, so a
+        hierarchical Mission fails visibly through the same door as a legacy one.
+        """
+
+        try:
+            if result.state is not AgentTurnState.COMMITTED:
+                raise ContractError(f"planner turn failed: {dict(result.error or {})}")
+            outcome = new_mode.apply_planner_reply(
+                mission.id,
+                text,
+                principal=PlanPrincipal(
+                    principal_id=intent.agent_id or self._owner,
+                    scope_id="mission",
+                    manager_epoch=new_mode.semantics().epoch(mission.id, "mission"),
+                ),
+                command_id=f"plan:{intent.intent_id}",
+                source={
+                    "intent_id": intent.intent_id,
+                    "agent_id": intent.agent_id,
+                    "turn_id": result.turn_id,
+                },
+            )
+        except GraphIntegrityError as error:
+            # Corruption is not a bad proposal: asking the Planner again cannot add a
+            # semantic binding, so this Mission stops instead of burning its attempts.
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            await self._plan_integrity_stop(mission, error)
+            return
+        except ContractError as error:
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            detail: dict[str, Any] = {"error": str(error)[:300]}
+            # §18.5 C8: a malformed block is repaired *within* the existing bounded
+            # ladder — the one instruction that says what was wrong travels in the
+            # durable rejection (which ``_planning_rejections`` feeds to the next
+            # proposal), and no extra request is opened to launder the failure.
+            cause = error.__cause__
+            if isinstance(cause, BlockError):
+                detail["repair_hint"] = repair_hint(cause, PLAN_REVISION_PROPOSAL_TAG)
+                detail["block_defect"] = cause.reason
+            await self._planning_rejected(intent, reason="proposal_unreadable", detail=detail)
+            return
+        if not outcome.committed:
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            await self._planning_rejected(
+                intent,
+                reason="plan_commit_refused",
+                detail={
+                    "proposal_id": outcome.proposal_id,
+                    "reason": outcome.last_reason,
+                    "attempts": outcome.attempts,
+                },
+            )
+            return
+        receipt = outcome.receipt
+        assert receipt is not None
+        new_mode.advance_compound_phases(mission.id)
+        self._note(
+            f"plan revision {receipt.new_plan_revision} committed for {mission.id} "
+            f"(attempts={outcome.attempts})"
         )
         self._settle_intent(intent, "SETTLED")
         self._settle_service_if_known(intent.subject_id, mission.id)
@@ -2990,6 +3144,15 @@ class Orchestrator:
         await self._release_attempt(attempt.id, cancel=False)
         self._client_ids[envelope.id] = client_result_id
         self._note(f"attempt {attempt.id}: result {envelope.id} submitted")
+        # P2.3b / TG §7: a child's result advances its parent compound's *typed* phase.
+        # It never creates an Attempt for the compound and never writes its Task row —
+        # the phase is a projection of typed state, recorded as an event.
+        new_mode = self._new_mode(mission)
+        if new_mode is not None:
+            try:
+                new_mode.advance_compound_phases(mission.id)
+            except GraphIntegrityError as error:
+                await self._plan_integrity_stop(mission, error)
 
     def _parse_envelope(
         self, text: str, attempt: Attempt, *, turn_id: str
@@ -4943,7 +5106,20 @@ class Orchestrator:
             if t.status is not TaskStatus.CANCELLED
             and not (t.paused and t.status in {TaskStatus.READY, TaskStatus.BLOCKED})
         ]
-        if live and all(task.status is TaskStatus.COMPLETED for task in live):
+        # P2.3b / TG §7: in the new mode "everything is done" is read from the
+        # projection and the Resolutions, never from a sweep of ``TaskStatus`` — and
+        # the root review does not run until every gating child has been accepted.
+        new_mode = self._new_mode(mission)
+        try:
+            settled = (
+                new_mode.root_review_ready(mission.id)
+                if new_mode is not None
+                else bool(live) and all(task.status is TaskStatus.COMPLETED for task in live)
+            )
+        except GraphIntegrityError as error:
+            await self._plan_integrity_stop(mission, error)
+            return True
+        if settled:
             current = self.store.get_mission(mission.id)  # not the cycle's stale snapshot
             if current is None or current.status is not MissionStatus.ACTIVE:
                 return False
@@ -5055,6 +5231,23 @@ class Orchestrator:
         allocation: Mapping[str, Any] | None = None,
         selection_decision: Mapping[str, Any] | None = None,
     ) -> bool:
+        # P2.3b / §18.5 rule 4: before anything else, a compound is refused here with
+        # NEEDS_REFINEMENT.  The gate is ``form`` from the semantic binding, not the
+        # status string and not the semantics version — ``TaskStatus.READY`` on a
+        # compound is a rebuildable display index and never a permission to dispatch.
+        new_mode = self._new_mode(mission)
+        if new_mode is not None:
+            try:
+                intercepted = new_mode.intercept_worker_dispatch(mission.id, task.id)
+            except GraphIntegrityError as error:
+                await self._plan_integrity_stop(mission, error)
+                return True
+            if intercepted is not None:
+                self._note(
+                    f"task {task.id} not dispatched: {intercepted.reason} "
+                    f"(occurrence {intercepted.occurrence_id})"
+                )
+                return False
         # A Worker already in flight can produce another pending verification.
         # Account for that obligation before creating more work, across Missions.
         active_missions = {item.id for item in self._active_missions()}
@@ -5100,12 +5293,21 @@ class Orchestrator:
                     f"(information, not a permission change): {event.payload.get('text')}"
                 )
         # D3-7': the Attempt starts from every ancestor's accepted artifacts
+        # P2.3b / §24.1 decision 4: in the new mode it starts from the resolved
+        # InputManifest instead, so an ORDER-only predecessor contributes nothing.
         all_tasks = {t.id: t for t in self.store.list_tasks(mission.id)}
         upstream_tasks = ancestors(task.id, all_tasks)
         try:
-            inputs = merge_accepted(
-                upstream_tasks, self._artifacts_by_task(upstream_tasks), tasks_by_id=all_tasks
+            inputs = (
+                new_mode.attempt_inputs(mission.id, task.id)
+                if new_mode is not None
+                else merge_accepted(
+                    upstream_tasks, self._artifacts_by_task(upstream_tasks), tasks_by_id=all_tasks
+                )
             )
+        except GraphIntegrityError as error:
+            await self._plan_integrity_stop(mission, error)
+            return True
         except ArtifactConflict as error:
             self.commit.stop_task(
                 task.id,
