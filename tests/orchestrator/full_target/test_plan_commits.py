@@ -1263,13 +1263,25 @@ def test_the_receipt_carries_the_intent_the_read_set_and_the_versions(tmp_path):
 
 
 def test_the_commit_dispatches_nothing(tmp_path):
-    """Registered, not dispatched: the scheduler is P2.3c's business."""
+    """Registered, not dispatched.
+
+    P2.3c part 2 changed what "registered" means — the commit now materialises one
+    ``Task`` row per occurrence, because a plan whose occurrences never reach the
+    ``tasks`` table can never be scheduled at all.  What it did **not** change is the
+    property this test is about: committing a plan creates no Attempt and no service
+    intent.  Deciding *which* row runs is the scheduler's, one cycle later, and it
+    still has to pass the readiness gate to do it.
+    """
 
     world = _world(tmp_path)
     receipt = world.commit()
     assert receipt.output_identity["pending_dispatch"]
     assert world.store.list_intents("PENDING", "CLAIMED", "RUNNING") == []
-    assert world.store.list_tasks(world.mission.id) == []
+    rows = world.store.list_tasks(world.mission.id)
+    assert {task.id for task in rows} == {
+        str(spec.task_id) for spec in world.command.network.occurrences
+    }
+    assert all(not world.store.list_attempts(task.id) for task in rows)
 
 
 # ================================================================== atomicity and concurrency

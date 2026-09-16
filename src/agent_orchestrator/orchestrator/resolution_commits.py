@@ -85,6 +85,7 @@ from ..verification.acceptance_rules import (
     acceptable,
 )
 from ._read_set import ReadSetChannelUnknown, SemanticReadSetChecker
+from .accepted_outputs import accepted_output_json, declared_ports_in_revision
 from .plan_commits import HIERARCHICAL_SEMANTICS, semantics_of
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -97,6 +98,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: bytes.
 ACCEPTANCE_COMMITTED = "AcceptanceCommitted"
 GOAL_RESOLUTION_COMMITTED = "GoalResolutionCommitted"
+#: P2.3c part 2: the library recorded how far one accepted output travelled (AER §6.1).
+DELIVERY_RECEIPT_RECORDED = "DeliveryReceiptRecorded"
 
 #: AER §6.1: "only the delivery stage the goal asked for completes the goal".  The
 #: order is how far the output actually travelled; ``FAILED`` is not a lesser stage
@@ -120,8 +123,10 @@ CLOSED_DUTY_LIFECYCLES: frozenset[ObligationLifecycle] = frozenset(
     {ObligationLifecycle.CANCELLED, ObligationLifecycle.SUPERSEDED}
 )
 
-#: How many events one replay lookup reads at a time.  See
-#: :meth:`ResolutionCommitsMixin._committed_event`.
+#: How many events one paged mission read takes at a time.  The replay lookup itself
+#: is a keyed read into migration 17's ``acceptance_commit_receipts`` since P2.3c part
+#: 2 (see :meth:`ResolutionCommitsMixin._replayed`); this stays as the page size for
+#: any caller that still has to walk a Mission's log.
 REPLAY_PAGE = 512
 
 
@@ -201,6 +206,16 @@ def _posture_json(posture: ExecutionPosture) -> dict[str, Any]:
     }
 
 
+def _declared_ports(
+    semantics: HtnStore, mission_id: str, revision: int, producer: Any
+) -> Mapping[str, Any]:
+    """The producer's declared output ports, read from the plan revision's own rows."""
+
+    return declared_ports_in_revision(
+        semantics.list_data_requirements(mission_id, revision), producer
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AcceptReviewCommand:
     """One request to accept **one contribution** (AER §6.1, §7).
@@ -225,6 +240,15 @@ class AcceptReviewCommand:
     read_set: SemanticReadSet
     accepted_at_ms: int
     artifact_refs: tuple[EvidenceRef, ...] = ()
+    #: P2.3c part 2b: which artifact this acceptance accepted at which **declared**
+    #: output port.  It is stated rather than derived because deriving it is the
+    #: all-ancestors sweep §24.1 decision 4 removed; it is checked against the plan's
+    #: own ``DataRequirement`` edges inside the transaction
+    #: (:func:`~.accepted_outputs.check_declared`), so a port nobody declared is a
+    #: refusal and not a row.  Empty is the ordinary case: a leaf whose output no
+    #: consumer reads feeds nothing, and an index entry for it would be a claim about
+    #: an edge the plan never drew.
+    outputs: tuple[Any, ...] = ()
     purpose: ReviewPurpose = ReviewPurpose.TASK_CONTENT
     semantic_review_required: bool = True
     policy_ref: str | None = None
@@ -278,6 +302,11 @@ class AcceptReviewCommand:
                 "posture": _posture_json(self.posture),
                 "read_set": self.read_set.to_json(),
                 "artifact_refs": [ref.to_json() for ref in self.artifact_refs],
+                # The outputs are part of the intent: two commands that accept the
+                # same review but index different artifacts are two different asks,
+                # and a replay must not hand back the first one's receipt for the
+                # second one's index (§17.4).
+                "outputs": [accepted_output_json(item) for item in self.outputs],
                 "purpose": str(self.purpose),
                 "semantic_review_required": self.semantic_review_required,
                 "policy_ref": self.policy_ref,
@@ -320,7 +349,13 @@ class CommitGoalResolutionCommand:
     #: delivery contract as well as the success formula (§6.3, AER §6.1).
     is_mission_root: bool = False
     required_delivery_stage: DeliveryStage | None = None
-    delivery_receipts: tuple[DeliveryReceipt, ...] = ()
+    #: The ids of the :class:`DeliveryReceipt` rows this root relies on.  P2.3c part 2
+    #: moved the receipts themselves out of the command and into the library
+    #: (migration 17's ``delivery_receipts``), because a receipt handed in on a command
+    #: is a *claim* about the world and "wrongly declared complete = 0" is precisely
+    #: the invariant that a claim may not stand in for a record.  The command names
+    #: which records it relies on; the content is re-read from the store.
+    delivery_receipts: tuple[str, ...] = ()
     issued_by: str = ""
     scope_id: str = "mission"
     source: Mapping[str, Any] = field(default_factory=dict)
@@ -350,7 +385,17 @@ class CommitGoalResolutionCommand:
             object.__setattr__(
                 self, "required_delivery_stage", DeliveryStage(str(self.required_delivery_stage))
             )
-        object.__setattr__(self, "delivery_receipts", tuple(self.delivery_receipts))
+        receipts: list[str] = []
+        for item in self.delivery_receipts:
+            if isinstance(item, DeliveryReceipt):
+                raise ContractError(
+                    "command.delivery_receipts carries receipt *ids*, not DeliveryReceipt "
+                    "objects: record the receipt with CommitService.record_delivery_receipt "
+                    "first, then name it here (AER §6.1 — a receipt is a claim until the "
+                    "library holds it)"
+                )
+            receipts.append(str(item))
+        object.__setattr__(self, "delivery_receipts", tuple(receipts))
 
     @property
     def account(self) -> str:
@@ -369,7 +414,17 @@ class CommitGoalResolutionCommand:
                 "independence": _facts_json(self.independence),
                 "posture": _posture_json(self.posture),
                 "read_set": self.read_set.to_json(),
-                "decided_at_ms": int(self.decided_at_ms),
+                # ``decided_at_ms`` is deliberately **not** hashed (review F12).  It is
+                # the moment the formula was evaluated at — the freshness clock handed
+                # to ``acceptable()`` and to the witness check — and unlike
+                # ``AcceptReviewCommand.accepted_at_ms`` it is not written into
+                # anything this command produces.  Hashing it made every re-offer of an
+                # unchanged root resolution a *different* intent under the same command
+                # id, so a single anomaly (a receipt recorded whose resolution a later
+                # read could not find) turned into a permanent
+                # ``COMMAND_PAYLOAD_CONFLICT`` and a Mission that could never complete.
+                # The intent is what the command would *do*; the clock is when it was
+                # asked.
                 "purpose": str(self.purpose),
                 "compound": (
                     None
@@ -391,7 +446,7 @@ class CommitGoalResolutionCommand:
                     if self.required_delivery_stage is None
                     else str(self.required_delivery_stage)
                 ),
-                "delivery_receipts": [receipt.to_json() for receipt in self.delivery_receipts],
+                "delivery_receipts": list(self.delivery_receipts),
                 "issued_by": self.issued_by,
                 "scope_id": self.scope_id,
             }
@@ -533,7 +588,7 @@ class ResolutionCommitsMixin:
         with self._store.transaction():
             mission = self._open_mission(command.mission_id)
             semantics = HtnStore(self._store)
-            replayed = self._replayed(command.mission_id, command.command_id, intent)
+            replayed = self._replayed(semantics, command.mission_id, command.command_id, intent)
             if replayed is not None:
                 self._require_kind(replayed, ACCEPTANCE_KIND)
                 return AcceptanceReceipt(
@@ -615,6 +670,7 @@ class ResolutionCommitsMixin:
                 semantics.insert_acceptance(acceptance)
             except StoreError as error:
                 raise ResolutionCommitRejected("ACCEPTANCE_CONFLICT", str(error)) from error
+            indexed = self._record_accepted_outputs(semantics, command, acceptance)
             payload = {
                 "command_id": command.command_id,
                 "acceptance_id": str(acceptance.acceptance_id),
@@ -631,6 +687,9 @@ class ResolutionCommitsMixin:
                 "intent_hash": intent,
                 "read_set_hash": content_hash_of(command.read_set.to_json()),
                 "artifact_refs": [ref.to_json() for ref in acceptance.artifact_refs],
+                "accepted_outputs": [
+                    {"port": item.output_port, "artifact_id": item.artifact_id} for item in indexed
+                ],
                 "source": dict(command.source),
             }
             payload["output_identity"] = {
@@ -652,8 +711,88 @@ class ResolutionCommitsMixin:
                 task_id=str(acceptance.task_id),
                 payload=payload,
             )
-            commit = _receipt_from_event(event.id, command.mission_id, payload)
+            commit = self._record_receipt(semantics, command.mission_id, event.id, payload)
             return AcceptanceReceipt(acceptance=acceptance, commit=commit, decision=decision)
+
+    def _record_accepted_outputs(
+        self,
+        semantics: HtnStore,
+        command: AcceptReviewCommand,
+        acceptance: Acceptance,
+    ) -> tuple[Any, ...]:
+        """Write the "which artifact, at which declared port" index (§24.1 decision 4).
+
+        Three things happen here and each is a refusal rather than a repair:
+
+        * the **producer occurrence is read**, never taken from the command.  It is
+          the occurrence of the accepted task in the *active* plan revision, so an
+          output cannot be filed under an occurrence the acceptance does not belong
+          to even if the caller spells one.
+        * the **port table is read from the plan's own data requirements**, and
+          :func:`~.accepted_outputs.check_against_ports` refuses a port the plan never
+          declared or a schema the edge does not carry.  An index entry exists only
+          where the plan drew an edge; anything else is a consumer binding to a
+          contract that does not exist.
+        * a stated output with **no active plan revision** to declare it is refused.
+          The alternative — writing it anyway — is an index row whose meaning depends
+          on a plan that will be committed later, which is the stale read ADR-13 is
+          about.
+
+        A command with no outputs writes nothing and asks nothing: a leaf whose
+        result no occurrence consumes has no declared port, and inventing an entry
+        for it is the ancestor sweep under a typed name.
+        """
+
+        from .accepted_outputs import check_against_ports
+
+        outputs = tuple(command.outputs)
+        if not outputs:
+            return ()
+        active = semantics.active_plan_revision(command.mission_id)
+        if active is None:
+            raise ResolutionCommitRejected(
+                "NO_PLAN_REVISION",
+                "the command states accepted outputs, and this Mission has no active plan "
+                "revision to declare a port in (§24.1 decision 4)",
+            )
+        revision = int(active.revision)
+        members = semantics.list_plan_memberships(command.mission_id, revision)
+        producer = next(
+            (spec.occurrence_id for spec in members if str(spec.task_id) == command.task_id), None
+        )
+        if producer is None:
+            raise ResolutionCommitRejected(
+                "OCCURRENCE_UNKNOWN",
+                f"task {command.task_id!r} is not a member of plan revision {revision}; an "
+                "accepted output is filed under the occurrence the plan holds, not under one "
+                "the command names",
+            )
+        try:
+            checked = check_against_ports(
+                _declared_ports(semantics, command.mission_id, revision, producer),
+                producer,
+                outputs,
+            )
+        except ContractError as error:
+            raise ResolutionCommitRejected("OUTPUT_NOT_DECLARED", str(error)) from error
+        for output in checked:
+            try:
+                semantics.insert_acceptance_output(
+                    command.mission_id,
+                    acceptance_id=str(acceptance.acceptance_id),
+                    output_port=output.output_port,
+                    artifact_id=output.artifact_id,
+                    producer_occurrence=str(output.producer_occurrence),
+                    producer_task_ref=str(output.producer_task_ref),
+                    producer_result_id=str(output.producer_result_id),
+                    support_revision=int(output.support_revision),
+                    content_hash=str(output.content_hash),
+                    source_revision=str(output.source_revision),
+                    document=accepted_output_json(output),
+                )
+            except StoreError as error:
+                raise ResolutionCommitRejected("OUTPUT_CONFLICT", str(error)) from error
+        return checked
 
     # ==================================================== commit_goal_resolution
     def commit_goal_resolution(
@@ -681,7 +820,7 @@ class ResolutionCommitsMixin:
         with self._store.transaction():
             mission = self._open_mission(command.mission_id)
             semantics = HtnStore(self._store)
-            replayed = self._replayed(command.mission_id, command.command_id, intent)
+            replayed = self._replayed(semantics, command.mission_id, command.command_id, intent)
             if replayed is not None:
                 self._require_kind(replayed, GOAL_RESOLUTION_KIND)
                 return GoalResolutionReceipt(
@@ -829,10 +968,98 @@ class ResolutionCommitsMixin:
                 task_id=resolution.goal_task_id,
                 payload=payload,
             )
-            commit = _receipt_from_event(event.id, command.mission_id, payload)
+            commit = self._record_receipt(semantics, command.mission_id, event.id, payload)
             return GoalResolutionReceipt(
                 resolution=resolution, commit=commit, account=satisfied, decision=decision
             )
+
+    # =============================================== record_delivery_receipt (AER §6.1)
+    def record_delivery_receipt(
+        self,
+        mission_id: str,
+        receipt: DeliveryReceipt,
+        *,
+        command_id: str,
+        source: Mapping[str, Any] | None = None,
+    ) -> DeliveryReceipt:
+        """Record how far one accepted output actually travelled.
+
+        This is the *only* way a :class:`DeliveryReceipt` becomes something a root
+        resolution may quote.  Before P2.3c part 2 the receipt rode in on the
+        ``commit_goal_resolution`` command, which meant the evidence that a Mission
+        really delivered was supplied by the same caller that wanted the Mission
+        declared complete.  AER §6.1 wants a record; migration 17 gives it a table;
+        this writes it.
+
+        The receipt is checked against the store before it is held: it names this
+        Mission, and the ``Acceptance`` it quotes has to exist (the foreign key says
+        so too) and belong to this Mission.  Whether that acceptance is still
+        **CURRENT** is deliberately *not* checked here and is re-checked where the
+        receipt is quoted (:meth:`_check_delivery` → :func:`require_valid_receipt`):
+        an acceptance that is current when the delivery happens can be superseded
+        afterwards, so the question that decides a Mission is "is it current *now,* at
+        the moment this root resolution is being formed", not "was it current when
+        somebody filed the paperwork".
+
+        Idempotent per ``command_id`` under the same §17.4 rule as the commit
+        receipts; the same id with a different receipt is a conflict, not a second
+        write.
+        """
+
+        if not isinstance(receipt, DeliveryReceipt):
+            raise ResolutionCommitRejected(
+                "BAD_COMMAND", "record_delivery_receipt expects a DeliveryReceipt"
+            )
+        intent = content_hash_of(receipt.to_json())
+        with self._store.transaction():
+            self._open_mission(mission_id)
+            semantics = HtnStore(self._store)
+            if receipt.mission_id != mission_id:
+                raise ResolutionCommitRejected(
+                    "DELIVERY_RECEIPT_INVALID",
+                    f"delivery receipt {receipt.receipt_id!r} belongs to mission "
+                    f"{receipt.mission_id!r}, not {mission_id!r}",
+                )
+            try:
+                acceptance = semantics.get_acceptance(str(receipt.acceptance_id))
+            except StoreError as error:
+                raise ResolutionCommitRejected(
+                    "DELIVERY_RECEIPT_INVALID",
+                    f"delivery receipt {receipt.receipt_id!r} quotes acceptance "
+                    f"{receipt.acceptance_id!s}, which is not stored ({error})",
+                ) from error
+            if acceptance.mission_id != mission_id:
+                raise ResolutionCommitRejected(
+                    "DELIVERY_RECEIPT_INVALID",
+                    f"delivery receipt {receipt.receipt_id!r} quotes an acceptance of mission "
+                    f"{acceptance.mission_id!r}",
+                )
+            try:
+                stored = semantics.record_delivery_receipt(
+                    mission_id, receipt, command_id=command_id, intent_hash=intent
+                )
+            except StoreError as error:
+                raise ResolutionCommitRejected(
+                    "COMMAND_PAYLOAD_CONFLICT",
+                    f"delivery receipt {receipt.receipt_id!r} conflicts with a stored "
+                    f"record ({error})",
+                ) from error
+            self._emit(
+                DELIVERY_RECEIPT_RECORDED,
+                mission_id,
+                key=f"{mission_id}:{DELIVERY_RECEIPT_RECORDED}:{command_id}",
+                payload={
+                    "command_id": command_id,
+                    "receipt_id": stored.receipt_id,
+                    "acceptance_id": str(stored.acceptance_id),
+                    "stage": str(stored.stage),
+                    "observed_at_ms": int(stored.observed_at_ms),
+                    "operation_id": stored.operation_id,
+                    "intent_hash": intent,
+                    "source": dict(source or {}),
+                },
+            )
+            return stored
 
     # ---------------------------------------------------------------- shared gates
     def _open_mission(self, mission_id: str) -> Mission:
@@ -854,65 +1081,75 @@ class ResolutionCommitsMixin:
             )
         return mission
 
-    def _replayed(self, mission_id: str, command_id: str, intent: str) -> CommandReceipt | None:
+    def _replayed(
+        self, semantics: HtnStore, mission_id: str, command_id: str, intent: str
+    ) -> CommandReceipt | None:
         """§17.4: the same command twice is one commit and one receipt.
 
-        The durable record is the event this command appended — see
-        :class:`CommandReceipt`.  A *different* intent under the same id is not a
-        replay: it is two commands wearing one name, and answering it with the
-        stored receipt would report work that was never done.
+        **One keyed read** into ``acceptance_commit_receipts`` (migration 17).  P2.3c
+        part 1 had to project the receipt out of the Mission's event log and page
+        through it, because ``plan_commit_receipts`` is plan-shaped — its CHECK
+        requires ``new_plan_revision > base_plan_revision`` and an acceptance produces
+        no plan revision — and ``storage/`` was not that slice's to change.  Part 2
+        owns storage, so the receipt is a row with ``(mission_id, command_id)`` as its
+        primary key and this lookup is an index hit.
+
+        A *different* intent under the same id is not a replay: it is two commands
+        wearing one name, and answering it with the stored receipt would report work
+        that was never done.  The store raises on that conflict at write time; this
+        read raises the same refusal before any check runs.
+
+        The event's ``idempotency_key`` (see :func:`command_event_key`) is still
+        derived from the command id, so ``Store.append_event`` remains the durable
+        backstop: even if every check ran twice, the second run could not append a
+        second event.  The table is the *addressable* record, not a replacement for it.
         """
 
-        found = self._committed_event(mission_id, command_id)
-        if found is None:
+        stored = semantics.find_acceptance_receipt(mission_id, command_id)
+        if stored is None:
             return None
-        payload = dict(found.payload)
-        stored_intent = str(payload.get("intent_hash"))
-        if stored_intent != intent:
+        if stored.intent_hash != intent:
             raise ResolutionCommitRejected(
                 "COMMAND_PAYLOAD_CONFLICT",
-                f"command {command_id!r} was applied with intent {stored_intent}, "
+                f"command {command_id!r} was applied with intent {stored.intent_hash}, "
                 f"and this delivery asks for {intent}",
             )
-        return _receipt_from_event(found.id, mission_id, payload)
+        return CommandReceipt(
+            command_id=stored.command_id,
+            mission_id=stored.mission_id,
+            kind=stored.kind,
+            subject_id=stored.subject_id,
+            intent_hash=stored.intent_hash,
+            read_set_hash=stored.read_set_hash,
+            event_id=stored.event_id,
+            output_identity=dict(stored.output_identity),
+            detail=dict(stored.detail),
+        )
 
-    def _committed_event(self, mission_id: str, command_id: str) -> Event | None:
-        """The accept-side event this command already appended, if there is one.
+    @staticmethod
+    def _record_receipt(
+        semantics: HtnStore, mission_id: str, event_id: str, payload: Mapping[str, Any]
+    ) -> CommandReceipt:
+        """Project the receipt out of what was just emitted and store it (§17.4).
 
-        The durable guarantee is the event's ``idempotency_key``, which
-        :meth:`_emit` derives from the **command id** (see :func:`command_event_key`):
-        ``Store.append_event`` returns the stored row for a key it already holds, so a
-        second delivery of one command cannot append twice whatever this lookup says.
-
-        The lookup itself is deliberately narrow rather than the full-mission scan the
-        P2.3c review flagged: ``count_events`` answers "this Mission has no accept-side
-        event at all" from an index, which is the common case and costs one row, and
-        only a Mission that does have some is paged.  There is no read-by-key on
-        ``Store`` and ``storage/`` is not this slice's to change; when the receipt
-        table lands (see the plan's wiring list) this becomes one keyed read.
+        The projection is the same one part 1 used, so the receipt a caller gets back
+        is byte-identical to the one a replay reads; what changed is that it is now
+        also a row, which is what makes the replay lookup a keyed read.
         """
 
-        keys = {
-            command_idempotency_key(mission_id, command_id, kind)
-            for kind in (ACCEPTANCE_COMMITTED, GOAL_RESOLUTION_COMMITTED)
-        }
-        if not any(
-            self._store.count_events(mission_id, kind)
-            for kind in (ACCEPTANCE_COMMITTED, GOAL_RESOLUTION_COMMITTED)
-        ):
-            return None
-        after = 0
-        while True:
-            page = self._store.list_events(mission_id, after_seq=after, limit=REPLAY_PAGE)
-            if not page:
-                return None
-            for event in page:
-                if event.idempotency_key in keys:
-                    return event
-            last = page[-1].seq
-            if last is None or len(page) < REPLAY_PAGE:
-                return None
-            after = int(last)
+        receipt = _receipt_from_event(event_id, mission_id, payload)
+        semantics.record_acceptance_receipt(
+            mission_id,
+            command_id=receipt.command_id,
+            kind=receipt.kind,
+            subject_id=receipt.subject_id,
+            intent_hash=receipt.intent_hash,
+            read_set_hash=receipt.read_set_hash,
+            event_id=receipt.event_id,
+            output_identity=receipt.output_identity,
+            detail=receipt.detail,
+        )
+        return receipt
 
     @staticmethod
     def _require_kind(receipt: CommandReceipt, kind: str) -> None:
@@ -1359,30 +1596,55 @@ class ResolutionCommitsMixin:
                 f"delivery contract {declared!r}, and the command names no required stage; "
                 "only the stage the goal asked for completes the goal (AER §6.1)",
             )
-        # Every presented receipt is re-read and checked — not scanned until one
-        # happens to fit.  The P2.3c review's mutant R9 survived precisely because an
-        # invalid receipt used to be *skipped*: a receipt quoting a STALE or REVOKED
-        # Acceptance, or one from another Mission, simply did not count and the
-        # command went on to look at the next one.  An invalid receipt is now a
-        # refusal of the whole command, because a caller presenting one is either
-        # confused about what it delivered or claiming something it cannot show.
-        allowed = _root_duty_closure(semantics, command)
+        # Every named receipt is **read from the library** and checked — not taken
+        # from the command, and not scanned until one happens to fit.
+        #
+        # Two review findings live in these few lines.  P2.3c part 1's mutant R9
+        # survived because an invalid receipt used to be *skipped*: a receipt quoting
+        # a STALE or REVOKED Acceptance, or one from another Mission, simply did not
+        # count and the command went on to the next one — so an invalid receipt is now
+        # a refusal of the whole command.  Part 2 closes the other half: the command
+        # carries ids, and a receipt this library never recorded is a claim about the
+        # world rather than a record of it.  Both halves serve one invariant, "wrongly
+        # declared complete = 0" (§21.5).
+        allowed = root_duty_closure(
+            semantics,
+            command.mission_id,
+            obligation_id=command.resolution.obligation_id,
+            method_instance_id=command.resolution.method_instance_id,
+        )
         reached: str | None = None
-        for receipt in command.delivery_receipts:
-            _require_valid_receipt(semantics, command, receipt, allowed)
+        stages: set[str] = set()
+        for receipt_id in command.delivery_receipts:
+            receipt = semantics.find_delivery_receipt(command.mission_id, receipt_id)
+            if receipt is None:
+                raise ResolutionCommitRejected(
+                    "DELIVERY_RECEIPT_INVALID",
+                    f"delivery receipt {receipt_id!r}: mission {command.mission_id} holds no "
+                    "such record; a receipt is a claim until the library recorded it "
+                    "(AER §6.1)",
+                )
+            require_valid_receipt(semantics, command.mission_id, receipt, allowed)
+            stages.add(str(receipt.stage))
             if reached is None and delivery_reached(receipt, required):
                 reached = receipt.receipt_id
         if reached is not None:
             return reached
         raise ResolutionCommitRejected(
             "DELIVERY_STAGE_NOT_REACHED",
-            f"delivery contract {declared!r} needs stage {required!s}; the presented receipts "
-            f"reached {sorted({str(item.stage) for item in command.delivery_receipts})}. A "
-            "Mission is not complete because a leaf finished (§6.3, §8.1)",
+            f"delivery contract {declared!r} needs stage {required!s}; the named receipts "
+            f"reached {sorted(stages)}. A Mission is not complete because a leaf finished "
+            "(§6.3, §8.1)",
         )
 
 
-def _root_duty_closure(semantics: HtnStore, command: CommitGoalResolutionCommand) -> frozenset[str]:
+def root_duty_closure(
+    semantics: HtnStore,
+    mission_id: str,
+    *,
+    obligation_id: str,
+    method_instance_id: str | None,
+) -> frozenset[str]:
     """The duties a Mission-root delivery receipt may legitimately quote.
 
     AER §6.3 is explicit that sending needs *the report* accepted, not the whole
@@ -1390,19 +1652,64 @@ def _root_duty_closure(semantics: HtnStore, command: CommitGoalResolutionCommand
     contribution rather than the root goal itself.  The closure is therefore the
     root duty plus the duties of the adopted method instance's child slots, and a
     receipt quoting anything else is describing some other work.
+
+    Public since P2.3c part 2c (review F5): the *trigger* has to choose which
+    receipts to name, and it chooses with this function rather than with a second
+    copy of the rule.
     """
 
-    duties = {command.resolution.obligation_id}
-    instance_id = command.resolution.method_instance_id
-    if instance_id is not None:
-        for child in semantics.list_child_occurrences(command.mission_id, str(instance_id)):
+    duties = {str(obligation_id)}
+    if method_instance_id is not None:
+        for child in semantics.list_child_occurrences(mission_id, str(method_instance_id)):
             duties.add(str(child.obligation_id))
     return frozenset(duties)
 
 
-def _require_valid_receipt(
+def eligible_root_receipts(
     semantics: HtnStore,
-    command: CommitGoalResolutionCommand,
+    mission_id: str,
+    *,
+    obligation_id: str,
+    method_instance_id: str | None,
+    required_stage: DeliveryStage | None,
+) -> tuple[str, ...]:
+    """The recorded receipts a root resolution command may name (review F5).
+
+    ``_check_delivery`` refuses the *whole command* when any named receipt fails
+    :func:`require_valid_receipt` — the right rule, and the reason a trigger must not
+    simply hand over every receipt the Mission ever recorded.  One receipt written for
+    a branch the plan later retired, or for an ``Acceptance`` that was afterwards
+    superseded, would then make the root resolution unformable for good, with the same
+    refusal replayed every cycle.  That is a liveness defect the trigger creates for
+    itself.
+
+    So the trigger asks here, and the answer is produced by running the accept side's
+    own predicate over what the store holds.  Nothing is relaxed: this is a *filter*,
+    and every receipt it returns is checked again inside the commit transaction, where
+    the plan may have moved since.
+    """
+
+    allowed = root_duty_closure(
+        semantics,
+        mission_id,
+        obligation_id=obligation_id,
+        method_instance_id=method_instance_id,
+    )
+    chosen: list[str] = []
+    for receipt in semantics.list_delivery_receipts(mission_id):
+        try:
+            require_valid_receipt(semantics, mission_id, receipt, allowed)
+        except ResolutionCommitRejected:
+            continue
+        if required_stage is not None and not delivery_reached(receipt, required_stage):
+            continue
+        chosen.append(str(receipt.receipt_id))
+    return tuple(chosen)
+
+
+def require_valid_receipt(
+    semantics: HtnStore,
+    mission_id: str,
     receipt: DeliveryReceipt,
     allowed_duties: frozenset[str],
 ) -> Acceptance:
@@ -1421,18 +1728,18 @@ def _require_valid_receipt(
             f"delivery receipt {receipt.receipt_id!r}: {detail}",
         )
 
-    if receipt.mission_id != command.mission_id:
-        raise refuse(f"it belongs to mission {receipt.mission_id!r}, not {command.mission_id!r}")
+    if receipt.mission_id != mission_id:
+        raise refuse(f"it belongs to mission {receipt.mission_id!r}, not {mission_id!r}")
     try:
         acceptance = semantics.get_acceptance(str(receipt.acceptance_id))
     except StoreError as error:
         raise refuse(
             f"it quotes acceptance {receipt.acceptance_id!s}, which is not stored ({error})"
         ) from error
-    if acceptance.mission_id != command.mission_id:
+    if acceptance.mission_id != mission_id:
         raise refuse(
             f"acceptance {acceptance.acceptance_id!s} belongs to mission "
-            f"{acceptance.mission_id!r}, not {command.mission_id!r}"
+            f"{acceptance.mission_id!r}, not {mission_id!r}"
         )
     if str(acceptance.obligation_id) not in allowed_duties:
         raise refuse(
@@ -1508,6 +1815,7 @@ __all__ = (
     "USABLE_ACCEPTANCE_VALIDITY",
     "AcceptReviewCommand",
     "AcceptanceReceipt",
+    "DELIVERY_RECEIPT_RECORDED",
     "CommandReceipt",
     "CommitGoalResolutionCommand",
     "GoalResolutionReceipt",
@@ -1517,4 +1825,7 @@ __all__ = (
     "command_event_key",
     "command_idempotency_key",
     "delivery_reached",
+    "eligible_root_receipts",
+    "require_valid_receipt",
+    "root_duty_closure",
 )

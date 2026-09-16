@@ -77,7 +77,9 @@ PLANNER_V3 = RoleTemplate(
 )
 
 
-PLANNER_HIERARCHICAL_VERSION = "planner-hierarchical-v1"
+PLANNER_HIERARCHICAL_V1_VERSION = "planner-hierarchical-v1"
+PLANNER_HIERARCHICAL_VERSION = "planner-hierarchical-v2"
+PLANNER_HIERARCHICAL_V3_VERSION = "planner-hierarchical-v3"
 
 # §18.5 C8 / §7.2: the hierarchical-mode Planner does not draw a DAG at all.  It
 # proposes *semantic operations* on the current plan and says what it read while
@@ -85,9 +87,9 @@ PLANNER_HIERARCHICAL_VERSION = "planner-hierarchical-v1"
 # checks them.  This is a new prompt version, registered beside the DAG Planner —
 # every earlier version keeps its words verbatim so a Mission pinned to one of them
 # is replayable (host support 0.9.8).
-PLANNER_HIERARCHICAL = RoleTemplate(
+PLANNER_HIERARCHICAL_V1 = RoleTemplate(
     name="planner",
-    prompt_version=PLANNER_HIERARCHICAL_VERSION,
+    prompt_version=PLANNER_HIERARCHICAL_V1_VERSION,
     tool_names=(),
     instructions=(
         "[role:planner]\n"
@@ -120,6 +122,7 @@ PLANNER_HIERARCHICAL = RoleTemplate(
         "块外不要输出任何文字。"
     ),
 )
+
 
 
 def _revise(template: RoleTemplate, version: str, *pairs: tuple[str, str]) -> RoleTemplate:
@@ -495,7 +498,93 @@ register_template(WORKER_V2)
 register_template(SYNTHESIZER_V2)
 # P2.3a (§18.5 C8): the hierarchical Planner is an *additional* version of the same
 # role, never a replacement — ``planner-v3`` / ``planner-v4`` keep their exact words.
+# P2.3c part 2b: the first real-model round on ``planner-hierarchical-v1`` came back
+# ``proposal_unreadable`` twice, and both times for a *shape* reason rather than a
+# content one: the block omitted ``schema_version`` / ``proposal_id`` /
+# ``trigger_refs`` / ``running_work_policy``, and the next round put
+# ``registry_status`` inside an operation.  That is what a bare schema line buys —
+# the model reads the field list as a description of the object rather than as a
+# requirement.  v2 changes nothing about *what* may be proposed: it states the four
+# mandatory fields as mandatory, says what to write in each when there is nothing to
+# say, forbids extra keys inside an operation, and shows one complete valid block.
+# v1 keeps its exact words and stays registered (§18.5 C8).
+PLANNER_HIERARCHICAL = _revise(
+    PLANNER_HIERARCHICAL_V1,
+    PLANNER_HIERARCHICAL_VERSION,
+    (
+        "块外不要输出任何文字。",
+        "这四个字段没有默认值，缺任何一个整块都会被判为不可读并作废："
+        "schema_version 固定写 1；proposal_id 你自己起一个本轮唯一的字符串；"
+        "trigger_refs 没有触发来源就写空数组 []；running_work_policy 没有在跑的工作就写 "
+        "retain_if_bindings_unchanged。\n"
+        "operations 里每个对象只允许出现上面列出的那几个键；多写任何一个键"
+        "（registry_status、status、author、priority 等）整块都会被拒绝。\n"
+        "read_set 只能引用这份输入里真的出现过的对象：method_library 里的方法"
+        "（kind 写 method，id/semantic_revision/content_hash 照抄 refine_method_ref）、"
+        "plan 里的目标（kind 写 task）。输入里没有给你任何观察 id，所以不要写 kind=fact "
+        "的条目——自己编一个 id 会让整次提交被判为 READ_SET_UNRESOLVED 而作废。\n"
+        "一个完整的合法例子，照这个形状写、把值换成你自己的：\n"
+        "<plan_revision_proposal>\n"
+        '{"schema_version":1,"proposal_id":"p-1","expected_plan_revision":0,'
+        '"trigger_refs":[],"read_set":[{"kind":"method","id":"code.fix-by-patch",'
+        '"semantic_revision":1,"content_hash":"照抄输入里给出的 content_hash"}],'
+        '"operations":[{"op":"refine","goal_id":"task-root","obligation_id":"obl-root",'
+        '"method_ref":{"id":"code.fix-by-patch","version":1,'
+        '"content_hash":"照抄输入里给出的 content_hash"},"bindings":{}}],'
+        '"rationale":"这个方法的前提已经被观察证实",'
+        '"running_work_policy":"retain_if_bindings_unchanged"}\n'
+        "</plan_revision_proposal>\n"
+        "块外不要输出任何文字。",
+    ),
+)
+
+# P2.3c part 2c: v2 told the model *not* to write a ``kind=fact`` read-set entry,
+# and it was right to at the time — the package carried no observation id, and a
+# model that is not shown an identifier can only invent one.  Part 2c gives the
+# package a ``facts`` section holding, for every observation this Mission recorded,
+# the exact read-set entry that cites it.  So the instruction is now the opposite of
+# the truth, and the smoke run that followed showed exactly that: the model wrote two
+# ``kind=fact`` entries whose ids were content hashes it had made up, and the commit
+# was refused ``READ_SET_UNRESOLVED``.  v3 replaces the prohibition with the rule that
+# matches the package: copy ``facts[].read_set_entry`` verbatim, or write none.
+# v1 and v2 keep their exact words and stay registered (§18.5 C8).
+PLANNER_HIERARCHICAL_V3 = _revise(
+    PLANNER_HIERARCHICAL,
+    PLANNER_HIERARCHICAL_V3_VERSION,
+    (
+        "read_set 只能引用这份输入里真的出现过的对象：method_library 里的方法"
+        "（kind 写 method，id/semantic_revision/content_hash 照抄 refine_method_ref）、"
+        "plan 里的目标（kind 写 task）。输入里没有给你任何观察 id，所以不要写 kind=fact "
+        "的条目——自己编一个 id 会让整次提交被判为 READ_SET_UNRESOLVED 而作废。\n",
+        "read_set 只能引用这份输入里真的出现过的对象，每一条都是照抄，不是自己拼："
+        "方法写 kind=method，id/semantic_revision/content_hash 照抄 method_library 里"
+        "那条的 refine_method_ref；目标写 kind=task；事实写 kind=fact，"
+        "整个对象照抄 facts 里那条的 read_set_entry（id 是 obsrec- 开头的观察 id，"
+        "不是 content_hash，也不是 proposition_key）。\n"
+        "facts 为空就一条 kind=fact 都不要写。任何一条 id 在这份输入里找不到，"
+        "整次提交都会被判为 READ_SET_UNRESOLVED 而作废。\n",
+    ),
+)
+
+register_template(PLANNER_HIERARCHICAL_V1)
 register_template(PLANNER_HIERARCHICAL)
+register_template(PLANNER_HIERARCHICAL_V3)
+
+#: Every registered prompt version that belongs to the *hierarchical* Planner.
+#: P2.3c part 2b: a deployment's frozen ``prompt_versions`` pins ``planner`` to a
+#: DAG-Planner version (``planner-v4``), and ``template_for`` honours that pin for
+#: any template of the same *role* — so the hierarchical branch was silently handed
+#: the legacy prompt while holding the hierarchical package, which is exactly the
+#: half-mode §18.5 rule 1 forbids and exactly what made the first real-model rounds
+#: come back ``proposal_unreadable``.  The mode picks from this set; a pin naming a
+#: version outside it is a pin for the other mode and does not apply here.
+HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
+    {
+        PLANNER_HIERARCHICAL_V1_VERSION,
+        PLANNER_HIERARCHICAL_VERSION,
+        PLANNER_HIERARCHICAL_V3_VERSION,
+    }
+)
 
 METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v1"
 
@@ -658,7 +747,12 @@ __all__ = (
     "METHOD_SYNTHESIZER",
     "METHOD_SYNTHESIZER_VERSION",
     "PLAN_REVISION_PROPOSAL_TAG",
+    "HIERARCHICAL_PLANNER_VERSIONS",
     "PLANNER_HIERARCHICAL",
+    "PLANNER_HIERARCHICAL_V1",
+    "PLANNER_HIERARCHICAL_V1_VERSION",
+    "PLANNER_HIERARCHICAL_V3",
+    "PLANNER_HIERARCHICAL_V3_VERSION",
     "PLANNER_HIERARCHICAL_VERSION",
     "TASK_ROLE_BY_KIND",
     "CRITIC",

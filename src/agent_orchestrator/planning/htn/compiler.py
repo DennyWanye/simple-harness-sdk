@@ -695,19 +695,41 @@ def _compile_coverage(
     by_slot: Mapping[str, SlotPlan],
     parent: TaskSemanticBindingV1,
 ) -> tuple[ObligationCoverage, ...]:
-    """§6.3: the parent criterion → child criterion map becomes a coverage claim.
+    """§6.3: the parent criterion → child criterion map becomes a coverage claim."""
+
+    return coverage_from_slots(
+        method,
+        {key: plan.bound_occurrence_id for key, plan in by_slot.items()},
+        obligation=parent.obligation_id,
+    )
+
+
+def coverage_from_slots(
+    method: MethodContract,
+    by_slot: Mapping[str, OccurrenceId],
+    *,
+    obligation: ObligationId,
+) -> tuple[ObligationCoverage, ...]:
+    """The coverage claims of one adopted method instance, from slot → occurrence.
 
     A link with no ``child_step`` is covered by the composition itself, which is
     the finalizer slot when the method declares one — a claim that has to land on
     a real occurrence, because coverage is what the root Resolution is checked
     against.
+
+    Public since P2.3c part 2c: ``obligation_coverage`` is **not** a persisted
+    column, so a network read back from the store has to re-derive it from the
+    adopted instances and their contracts.  Without that, the claims of round one
+    were gone by round two and a second refinement was refused with
+    ``root_coverage_gap`` — a plan deeper than one level could never be committed.
+    One implementation, two callers.
     """
 
     finalizer = by_slot.get(method.composition.finalizer_step or "")
     grouped: dict[str, list[OccurrenceId]] = {}
     for link in method.composition.criterion_links:
-        plan = by_slot.get(link.child_step or "") if link.child_step else finalizer
-        if plan is None:
+        bound = by_slot.get(link.child_step or "") if link.child_step else finalizer
+        if bound is None:
             raise CompilationRefused(
                 f"criterion {link.parent_criterion_id!r} is covered by "
                 + (
@@ -717,8 +739,8 @@ def _compile_coverage(
                 )
             )
         bucket = grouped.setdefault(link.parent_criterion_id, [])
-        if plan.bound_occurrence_id not in bucket:
-            bucket.append(plan.bound_occurrence_id)
+        if bound not in bucket:
+            bucket.append(bound)
     if not grouped:
         return ()
     covered_by: list[OccurrenceId] = []
@@ -730,7 +752,7 @@ def _compile_coverage(
                 covered_by.append(occurrence)
     return (
         ObligationCoverage(
-            obligation_id=parent.obligation_id,
+            obligation_id=obligation,
             criterion_ids=tuple(criteria),
             covered_by=tuple(covered_by),
         ),
@@ -1046,10 +1068,24 @@ def build_read_set(
 ) -> SemanticReadSet:
     """ADR-13: what this compilation actually read, beside the integer gate.
 
-    The precondition witnesses are listed as observation reads because that is what
-    they are: the compilation is only valid while the world still says what the
-    witnesses recorded, and an acceptance a slot reuses is a read too — otherwise a
-    retracted acceptance could be reused by a delta that never mentioned it.
+    A precondition witness is listed as an observation read **only when it names a
+    stored :class:`~...contracts.evidence_state.ValidityWitness`**, and an acceptance a
+    slot reuses is a read too — otherwise a retracted acceptance could be reused by a
+    delta that never mentioned it.
+
+    P2.3c part 2c: this used to list *every* precondition witness, with the
+    ``condition_digest`` as the read's id.  A condition digest is not a subject the
+    store holds — the FACT channel resolves an id as an observation record or as a
+    validity witness — so the read was unresolvable by construction, and once P2.3c
+    part 1's review unified the eleven channels, **every** refinement of a method with
+    preconditions was refused ``READ_SET_UNRESOLVED``.  That is the real-model smoke's
+    blocker, and it had nothing to do with what the Planner wrote.
+
+    Dropping those entries loses nothing: the digests are frozen on the
+    ``MethodInstanceDraft`` itself with the truth they were selected under, and §6.6
+    rule 3's ``recheck_method_instance`` is what compares them to the world later.  A
+    read-set entry is a promise that *this* store can re-check the subject, and a
+    promise it cannot keep is worse than no promise at all.
     """
 
     goal_reads = [
@@ -1071,11 +1107,12 @@ def build_read_set(
     observation_reads = [
         ReadItem(
             kind=ReadItemKind.FACT,
-            id=witness.condition_digest,
-            semantic_revision=0,
-            content_hash=witness.condition_digest,
+            id=str(witness.witness_ref.id),
+            semantic_revision=int(witness.witness_ref.revision),
+            content_hash=str(witness.witness_ref.content_hash),
         )
         for witness in draft.precondition_witnesses
+        if witness.witness_ref is not None
     ]
     acceptance_reads = [
         ReadItem(
@@ -1199,6 +1236,7 @@ __all__ = (
     "build_read_set",
     "compile_refinement",
     "compile_refinement_bundle",
+    "coverage_from_slots",
     "task_ref_of",
     "unbound_required_ports",
 )

@@ -50,42 +50,71 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..artifacts.input_bindings import (
+    AcceptedOutput,
     AcceptedOutputsIndex,
+    InputManifest,
+    ManifestNotFrozen,
     ResolutionPolicy,
     ResolutionResult,
     TargetRules,
 )
 from ..artifacts.versioning import UpstreamInput, manifest_upstream_inputs, resolve_input_manifest
 from ..contracts import TERMINAL_MISSION, ContractError, Event, TaskStatus, ids
-from ..contracts.evidence_state import ValidityWitness
+from ..contracts.evidence_state import (
+    Availability,
+    TruthValue,
+    Validity,
+    ValidityWitness,
+    WitnessDecision,
+    WitnessPurpose,
+)
 from ..contracts.htn import (
     MissionRef,
     ObligationId,
     OccurrenceId,
     OccurrenceSpec,
     PlanRevision,
+    ReadItem,
+    ReadItemKind,
     RefineOperation,
+    ScopeEpochRead,
+    SemanticReadSet,
     TaskForm,
     TaskRef,
     TaskSemanticBindingV1,
+    condition_digest,
 )
 from ..contracts.obligations import ObligationAccountView
-from ..contracts.semantic_base import content_hash_of
+from ..contracts.resolution import (
+    CriterionVerdict,
+    GoalResolution,
+    GoalResolutionId,
+    RequirementsRevision,
+    ResolutionCriterion,
+    ReviewPackage,
+    ReviewPurpose,
+    ReviewRecord,
+    ReviewVerdict,
+)
+from ..contracts.semantic_base import TypedRef, TypedRefKind, content_hash_of
 from ..graph.eligibility import (
     ActivePlanView,
+    EligiblePrimitiveTask,
     EvidenceView,
     ExecutionFrontier,
+    NotEligible,
     OccurrenceOutcome,
     PlanningFrontier,
     ReadinessReason,
     ReadinessReport,
     TaskView,
+    admit_for_dispatch,
     evaluate_readiness,
     legacy_ready_is_not_eligibility,
 )
 from ..graph.projection_validation import GraphIntegrityError, require_topological_order
 from ..graph.task_network import GATING_REQUIREDNESS, TaskNetworkSnapshot
-from ..planning.htn.applicability import assess_method
+from ..planning.htn.applicability import ApplicabilityStatus, assess_method
 from ..planning.htn.compiler import (
     RefinementCompilation,
     RootNetwork,
@@ -95,12 +124,20 @@ from ..planning.htn.grounding import ground_method
 from ..planning.planner import parse_method_proposal, parse_plan_proposal
 from ..storage.htn_store import HtnStore, PlanCommitReceipt
 from ..storage.obligation_store import ObligationStore
+from ..storage.store import StoreError
+from ..verification.acceptance_rules import CompoundFacts, ExecutionPosture, IndependenceFacts
+from .accepted_outputs import accepted_output_from_json
 from .plan_commits import (
     HIERARCHICAL_SEMANTICS,
     CommitPlanCommand,
     PlanCommitRejected,
     PlanPrincipal,
     semantics_of,
+)
+from .resolution_commits import (
+    CommitGoalResolutionCommand,
+    ResolutionCommitRejected,
+    ResolutionPrincipal,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -117,6 +154,41 @@ PLAN_COMMIT_REFUSED = "PlanCommitRefused"
 PLAN_INTEGRITY_FAILED = "PlanIntegrityFailed"
 DISPATCH_INTERCEPTED = "HierarchicalDispatchIntercepted"
 COMPOUND_PHASE_CHANGED = "CompoundPhaseChanged"
+#: P2.3c part 2: one occurrence was *not* dispatched this cycle, and the structured
+#: reason why.  A separate name from ``DISPATCH_INTERCEPTED`` because that one is the
+#: safety refusal of a compound and this one is the ordinary "not yet" of the readiness
+#: gate; an operator reading a Mission that is not moving has to be able to tell
+#: "the plan is wrong" from "the producer has not finished".
+DISPATCH_WITHHELD = "HierarchicalDispatchWithheld"
+#: P2.3c part 2: the Mission's root GoalResolution was offered and refused.  Recorded
+#: because "the Mission did not complete" is not a diagnosis — which rule refused it is.
+ROOT_RESOLUTION_REFUSED = "RootGoalResolutionRefused"
+#: P2.3c part 2c (review F1): a hierarchical Mission reached the scheduler on a
+#: deployment that never installed this assembly.  The gates live here and the
+#: occurrence rows are written by the Commit Service, so the two can be out of step;
+#: when they are, the Mission is refused rather than handed to the legacy allocator,
+#: and this is the record of the refusal.  One event per Mission — the condition is a
+#: deployment fact, so it does not change from cycle to cycle and repeating it every
+#: cycle would drown the log it is supposed to explain.
+ASSEMBLY_MISSING = "HierarchicalAssemblyMissing"
+#: P2.3c part 2c: the loop went idle while this Mission still had occurrences every
+#: gate withheld.  It is a *record*, not a verdict: the Mission is left exactly where
+#: it is (no status change, nothing cancelled), because "this process has nothing left
+#: to do" and "this Mission can never progress" are different statements and only the
+#: first one is known here — a demand admitted, an approval granted or an observation
+#: recorded from outside would make the very same plan runnable.  What it does end is
+#: the silence: the withheld reasons are written down where an operator reads them
+#: rather than left to be re-derived from a Mission that simply stopped moving.
+MISSION_STALLED = "HierarchicalMissionStalled"
+#: P2.3c part 2c: a licence could not be recorded because the consumer already holds a
+#: START row for this scope epoch and support revision.  It is a *storage* limit, not a
+#: judgement about the work — and it is recorded rather than swallowed, because the
+#: occurrence that needed the licence then waits for a reason nobody could otherwise see.
+WITNESS_KEY_TAKEN = "HierarchicalWitnessKeyTaken"
+#: P2.3c part 2c: one MethodSynthesizer round's outcome.  A refused proposal writes
+#: nothing to the registry and nothing to the plan, so without this event the only
+#: trace of the round would be its token cost.
+SYNTHESIS_ROUND_RECORDED = "MethodSynthesisRoundRecorded"
 
 #: How many times one Planner reply may be compiled in total.  Two means: compile,
 #: and if the commit was refused for a reason a fresh snapshot could fix, compile
@@ -147,6 +219,20 @@ RECOMPILABLE_REFUSALS: frozenset[str] = frozenset(
         "BOUND_REACHED",
         "BUDGET_INSUFFICIENT",
         "BUDGET_REQUIREMENT_MISMATCH",
+    }
+)
+
+#: P2.3c part 2c: the ``assess_method`` refusals a *different method* could route
+#: around, and therefore the only ones that make a MethodSynthesizer round the right
+#: repair (§7.3).  ``NEEDS_EVIDENCE`` and ``CONFLICT`` are deliberately absent: the
+#: first is answered by looking (:meth:`HierarchicalDispatch.run_evidence_round`) and
+#: the second by settling the contradiction, and synthesising a method while the
+#: question is open would be inventing a way past the check that is open.
+SYNTHESIS_WORTHY_REFUSALS: frozenset[Any] = frozenset(
+    {
+        ApplicabilityStatus.PRECONDITION_FALSE,
+        ApplicabilityStatus.CAPABILITY_UNAVAILABLE,
+        ApplicabilityStatus.TYPE_ERROR,
     }
 )
 
@@ -365,6 +451,114 @@ class DispatchInterception:
 
 
 @dataclass(frozen=True, slots=True)
+class RootResolutionInputs:
+    """The read facts one Mission-root ``GoalResolution`` command is built from.
+
+    ``reason`` non-empty means the facts are *not* complete and names which one is
+    missing.  A missing review anchor is reported rather than fabricated: the root
+    resolution is formed out of the success formula plus the final acceptance, so a
+    system that writes its own review package has decided the answer it was meant to
+    check (§6.3, §8.1, AER §6.1).
+    """
+
+    reason: str = ""
+    detail: str = ""
+    occurrence_id: str = ""
+    task_id: str = ""
+    obligation_id: str = ""
+    contract_revision: int = 1
+    method_instance_id: str | None = None
+    requirements: RequirementsRevision | None = None
+    package: ReviewPackage | None = None
+    record: ReviewRecord | None = None
+    witness_id: str = ""
+    contributions: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+    @property
+    def complete(self) -> bool:
+        return not self.reason
+
+
+@dataclass(frozen=True, slots=True)
+class RootResolutionOutcome:
+    """Whether the Mission's root resolution was formed this cycle, and why not."""
+
+    committed: bool
+    reason: str = ""
+    detail: str = ""
+    resolution_id: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "committed": self.committed,
+            "reason": self.reason,
+            "detail": self.detail,
+            "resolution_id": self.resolution_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchRefusal:
+    """Why one occurrence is not competing for a Worker this cycle.
+
+    The reason is a :class:`~..graph.eligibility.ReadinessReason` and the detail codes
+    are the gate's own, unmerged: "the producer has not finished" (``WAITING_DATA``),
+    "we could not ask" (``OBSERVER_UNAVAILABLE``) and "this compound still needs a
+    method" (``NEEDS_REFINEMENT``) call for three different repairs, and the scheduler
+    is the wrong place to collapse them into "not ready".
+    """
+
+    task_id: str
+    occurrence_id: str
+    reason: ReadinessReason
+    detail_codes: tuple[str, ...] = ()
+    detail: str = ""
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "occurrence_id": self.occurrence_id,
+            "reason": str(self.reason),
+            "detail_codes": list(self.detail_codes),
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchAdmissions:
+    """What :func:`~..scheduling.allocator.allocate_v2` is handed for one Mission.
+
+    Three maps and nothing else: the semantic binding of every Task row (its absence
+    is corruption, not a legacy fallback), the admissions
+    :func:`~..graph.eligibility.admit_for_dispatch` built for the occurrences that
+    passed every gate, and a named refusal for each one that did not.  Holding the
+    refusals beside the admissions is the point — a Mission that is not moving has to
+    be able to say why without anybody re-deriving it.
+    """
+
+    plan_revision: int
+    bindings: Mapping[str, TaskSemanticBindingV1] = field(default_factory=dict)
+    readiness: Mapping[str, EligiblePrimitiveTask] = field(default_factory=dict)
+    refusals: tuple[DispatchRefusal, ...] = ()
+
+    def admission_for(self, task_id: str) -> EligiblePrimitiveTask | None:
+        return self.readiness.get(task_id)
+
+    def refusal_for(self, task_id: str) -> DispatchRefusal | None:
+        for item in self.refusals:
+            if item.task_id == task_id:
+                return item
+        return None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "plan_revision": int(self.plan_revision),
+            "admitted": sorted(self.readiness),
+            "refusals": [item.to_json() for item in self.refusals],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class NetworkView:
     """One read of a Mission's plan: the snapshot plus what readiness said about it."""
 
@@ -374,6 +568,18 @@ class NetworkView:
     reports: Mapping[OccurrenceId, ReadinessReport]
     outcomes: Mapping[OccurrenceId, OccurrenceOutcome]
     resolved: frozenset[OccurrenceId] = frozenset()
+    #: The acceptance projection and the two witness key spaces this read judged the
+    #: plan against (review F8).  They used to be computed inside ``read()`` and
+    #: dropped on the floor, so ``admissions()`` read them a *second* time and the
+    #: readiness report it reported came from one snapshot while the manifest it
+    #: hashed came from another.  Carrying them makes the docstring's "one read" a
+    #: fact about the code rather than a claim about it.
+    accepted: AcceptedOutputsIndex | None = None
+    witnesses: Mapping[str, ValidityWitness] = field(default_factory=dict)
+    #: consumer task id → condition digest → the START-precondition licence this read
+    #: judged against (P2.3c part 2c; the sibling of ``licences`` on the DATA lane).
+    starts: Mapping[str, Mapping[str, ValidityWitness]] = field(default_factory=dict)
+    licences: Mapping[str, Mapping[str, ValidityWitness]] = field(default_factory=dict)
 
     @property
     def planning_frontier(self) -> PlanningFrontier:
@@ -385,6 +591,14 @@ class NetworkView:
 
     def report_for(self, occurrence: OccurrenceId) -> ReadinessReport:
         return self.reports[occurrence]
+
+
+def _typed(kind: TypedRefKind, identifier: str) -> TypedRef:
+    """A typed reference to something this library already holds by id."""
+
+    return TypedRef(
+        kind=kind, id=str(identifier), revision=1, content_hash=content_hash_of(str(identifier))
+    )
 
 
 class PlanningWorld(Protocol):
@@ -553,6 +767,12 @@ class HierarchicalDispatch:
                     spec.obligation_id for spec in occurrences if spec.occurrence_id in roots
                 )
             ),
+            # P2.3c part 2c: re-derived, because it is not a column.  See
+            # :func:`_stored_coverage` — round one's claims were simply absent from a
+            # network read back out of the store, so a *second* refinement round was
+            # refused with ``root_coverage_gap`` and no plan could ever go two levels
+            # deep.
+            obligation_coverage=_stored_coverage(semantics, instances, adopted, bindings),
         )
         return snapshot, (missing_bindings(mission_id, missing) if missing else None)
 
@@ -637,8 +857,28 @@ class HierarchicalDispatch:
             # no account is "no admitted demand", which is the selection gate's
             # NOT_SELECTED and not an implicit permission.
             obligation_accounts=self.obligation_accounts(mission_id, resolved),
+            # The epoch barrier the START-precondition gate compares against (§11.5 /
+            # I19).  Left empty — as it was — every recorded witness answered
+            # ``witness_epoch_unknown``: the view could not confirm the epoch it was
+            # taken at, so the one lane that reads ``scope_epochs`` could never open,
+            # whatever the deployment had observed.
+            scope_epochs=self.scope_epochs(mission_id),
             integrity_error=integrity,
         )
+
+    def scope_epochs(self, mission_id: str) -> dict[str, int]:
+        """The live validity epoch of every scope this Mission's witnesses name.
+
+        ``mission`` is always in it: it is the scope a witness takes by default and
+        the one the manager epoch belongs to, and a barrier that is missing reads as
+        "unknown", which refuses rather than allows.
+        """
+
+        semantics = self.semantics()
+        scopes = {"mission"} | {
+            str(witness.scope_id) for witness in semantics.list_validity_witnesses(mission_id)
+        }
+        return {scope: semantics.epoch(mission_id, scope) for scope in sorted(scopes)}
 
     def obligation_accounts(
         self, mission_id: str, network: TaskNetworkSnapshot
@@ -671,7 +911,10 @@ class HierarchicalDispatch:
         Everything the readiness gates read is fetched **once** here and passed down:
         the acceptance projection, the witnesses and the duty accounts are the same
         for every occurrence in one read, and re-deriving them per occurrence turned
-        one read of a plan into a quadratic number of store round-trips.
+        one read of a plan into a quadratic number of store round-trips.  They are also
+        *carried* on the returned view (review F8), so a caller that has to build the
+        same manifest again — ``admissions()`` — judges against this snapshot rather
+        than taking a second one.
         """
 
         network, integrity = self._read_network(mission_id)
@@ -682,7 +925,19 @@ class HierarchicalDispatch:
         resolved = self.resolved_occurrences(mission_id, network)
         witnesses = self.witnesses(mission_id, network)
         accepted = self.accepted_outputs(mission_id, network, outcomes=outcomes)
-        evidence = EvidenceView(witnesses=witnesses)
+        # Two different questions, two different key spaces: ``witnesses()`` answers
+        # "which condition was this witness taken for" (the START-precondition lane)
+        # and the input index answers "which acceptance did this consumer get a
+        # licence over" (the DATA lane, I19).  Feeding the precondition map to the
+        # resolver meant no key ever matched and every DATA consumer refused with
+        # ``WITNESS_MISSING`` whatever the deployment had accepted.
+        licences = self.input_witness_index(mission_id)
+        # The START-precondition lane is keyed by *consumer*, not by condition: two
+        # occurrences under one method inherit the same digest, and §11.5 says one
+        # consumer's permission is not another's.  The mission-wide map from the
+        # frozen ``witness_ref`` stays underneath it, so a deployment that recorded
+        # the link that way is still read.
+        starts = self.start_witness_index(mission_id)
         moment = int(self.store.now * 1000) if now_ms is None else int(now_ms)
         views: dict[OccurrenceId, TaskView] = {}
         reports: dict[OccurrenceId, ReadinessReport] = {}
@@ -693,9 +948,13 @@ class HierarchicalDispatch:
                 view,
                 plan,
                 outcomes,
-                evidence,
-                self.input_result(
-                    mission_id, network, spec, accepted=accepted, witnesses=witnesses
+                EvidenceView(witnesses={**witnesses, **starts.get(str(spec.task_id), {})}),
+                self.resolved_inputs(
+                    mission_id,
+                    network,
+                    spec,
+                    accepted=accepted,
+                    witnesses=licences.get(str(spec.task_id), {}),
                 ),
                 now_ms=moment,
             )
@@ -706,6 +965,10 @@ class HierarchicalDispatch:
             reports=reports,
             outcomes=outcomes,
             resolved=resolved,
+            accepted=accepted,
+            witnesses=witnesses,
+            licences=licences,
+            starts=starts,
         )
 
     def task_view(
@@ -838,9 +1101,439 @@ class HierarchicalDispatch:
             network,
             accepted if accepted is not None else self.accepted_outputs(mission_id, network),
             consumer_occurrence=spec.occurrence_id,
-            witnesses=self.witnesses(mission_id, network) if witnesses is None else witnesses,
-            policy=self.resolution_policy,
+            # P2.3c part 2b: the witnesses this lane needs are keyed by **acceptance
+            # id** and issued to *this* consumer (I19), which is a different question
+            # from ``witnesses()``'s "which condition was this witness taken for".
+            # Passing the precondition map here meant no key ever matched and every
+            # DATA consumer refused with ``WITNESS_MISSING`` whatever the deployment
+            # had recorded.
+            witnesses=(
+                self.input_witnesses(mission_id, str(spec.task_id))
+                if witnesses is None
+                else witnesses
+            ),
+            policy=self.resolution_policy_for(mission_id),
         )
+
+    def resolution_policy_for(self, mission_id: str, *, now_ms: int | None = None) -> Any:
+        """This deployment's resolution policy with the Mission's live epochs in it.
+
+        I19 is a *comparison*, and the policy this class is constructed with does not
+        know the scope epochs — so a policy left at its defaults would refuse every
+        binding with ``WITNESS_EPOCH_UNKNOWN``.  The epochs are read here rather than
+        cached on the dataclass, for the same reason nothing else on this class is
+        cached: a bumped epoch has to be visible to the very next read.
+
+        A policy the caller already filled in is left exactly as it is.
+        """
+
+        from dataclasses import replace as _replace
+
+        policy = self.resolution_policy
+        if policy.scope_epochs:
+            return policy
+        return _replace(
+            policy,
+            scope_epochs=self.scope_epochs(mission_id),
+            now_ms=int(self.store.now * 1000) if now_ms is None else int(now_ms),
+        )
+
+    #: The purpose a witness must carry to license *binding an accepted output* as an
+    #: input.  ``START`` because that is what the use is: starting this consumer's
+    #: work on that artifact.  An ``ACCEPT`` witness licensed the producer's
+    #: acceptance and is not transferable to the consumer (§11.5).
+    INPUT_WITNESS_PURPOSE = WitnessPurpose.START
+
+    def input_witness_index(self, mission_id: str) -> dict[str, dict[str, ValidityWitness]]:
+        """consumer task id → acceptance id → the START witness issued for it.
+
+        The link from a witness to the acceptance it covers is the witness's own
+        ``support_refs``: a witness that does not name what it was taken over could
+        be made to license anything, which is exactly what §11.5 says a witness is
+        not.  Witnesses for other consumers land under *their* task id rather than
+        being filtered later, because the resolver's consumer check would only be
+        able to report the last one it happened to see.
+
+        The whole index is built in one pass for the same reason ``read`` fetches
+        the acceptance projection once: the readiness gates ask this question for
+        every occurrence in the plan, and asking per occurrence turned one read of
+        the witness library into a quadratic number of store round-trips.
+        """
+
+        index: dict[str, dict[str, ValidityWitness]] = {}
+        for witness in self.semantics().list_validity_witnesses(mission_id):
+            if witness.purpose is not self.INPUT_WITNESS_PURPOSE:
+                continue
+            if witness.consumer_ref.kind is not TypedRefKind.TASK:
+                continue
+            for reference in witness.support_refs:
+                if reference.kind is TypedRefKind.ACCEPTANCE:
+                    index.setdefault(str(witness.consumer_ref.id), {})[str(reference.id)] = witness
+        return index
+
+    def input_witnesses(self, mission_id: str, task_id: str) -> dict[str, ValidityWitness]:
+        """acceptance id → the START witness issued to ``task_id`` for it."""
+
+        return self.input_witness_index(mission_id).get(str(task_id), {})
+
+    def issue_input_witnesses(
+        self,
+        mission_id: str,
+        network: TaskNetworkSnapshot,
+        *,
+        now_ms: int,
+        scope_id: str = "mission",
+    ) -> tuple[ValidityWitness, ...]:
+        """Re-read each accepted output a consumer depends on and record the licence.
+
+        This is the "recompute rather than reuse the old TRUE" half of I19 on the
+        DATA lane: for every declared edge whose producer has a recorded accepted
+        output, the acceptance is read *now* and a START witness is written for the
+        consumer, carrying the acceptance's own support revision.  An acceptance that
+        is no longer ``CURRENT`` produces an ``UNUSABLE`` witness rather than none, so
+        the refusal downstream says "this was revoked" and not "nobody looked".
+        """
+
+        semantics = self.semantics()
+        epoch = semantics.epoch(mission_id, scope_id)
+        issued: list[ValidityWitness] = []
+        for output in self._recorded_outputs(mission_id, network):
+            consumers = {
+                str(network.binding_for_occurrence(item.consumer_occurrence).task_id)
+                for item in network.data_requirements
+                if item.producer_occurrence == output.producer_occurrence
+                and item.output_port == output.output_port
+            }
+            for consumer in sorted(consumers):
+                acceptance = semantics.get_acceptance(str(output.acceptance_id))
+                usable = acceptance.validity is Validity.CURRENT
+                witness = ValidityWitness(
+                    witness_id="wit-in-"
+                    + content_hash_of({"c": consumer, "a": str(output.acceptance_id), "e": epoch})[
+                        :28
+                    ],
+                    consumer_ref=_typed(TypedRefKind.TASK, consumer),
+                    purpose=self.INPUT_WITNESS_PURPOSE,
+                    truth=TruthValue.TRUE if usable else TruthValue.FALSE,
+                    freshness=Validity.CURRENT if usable else acceptance.validity,
+                    availability=Availability.READABLE,
+                    # ``BLOCKED``, not ``UNAVAILABLE``: the acceptance was read and found
+                    # revoked or superseded, which is a different fact from "the
+                    # library could not be read".
+                    decision=WitnessDecision.USABLE if usable else WitnessDecision.BLOCKED,
+                    scope_id=scope_id,
+                    scope_epoch=epoch,
+                    support_revision=int(output.support_revision),
+                    as_of_ms=int(now_ms),
+                    support_refs=(_typed(TypedRefKind.ACCEPTANCE, str(output.acceptance_id)),),
+                )
+                stored = self._record_witness(mission_id, witness)
+                if stored is None:
+                    # The library already holds this consumer's START row for this
+                    # epoch and support revision, and it is not this one: the unique
+                    # index (mission, consumer, purpose, scope, epoch, support
+                    # revision) cannot hold two licences of different kinds at once.
+                    # Skipping is the honest answer — the consumer then reports
+                    # WAITING_DATA, which is true — and part 2c's journal raises the
+                    # index itself as a contract question.
+                    self._witness_key_taken(mission_id, witness)
+                    continue
+                issued.append(stored)
+        return tuple(issued)
+
+    def _record_witness(self, mission_id: str, witness: ValidityWitness) -> ValidityWitness | None:
+        """Store one witness, or answer what is already stored under its identity.
+
+        Three outcomes, none of them an exception for the caller to interpret: the
+        row is written; the very same row is already there (the same reading of the
+        same world, re-issued) and comes back; or the *key* is held by a different
+        licence and the answer is None.
+        """
+
+        try:
+            semantics = self.semantics()
+            semantics.insert_validity_witness(mission_id, witness)
+            return witness
+        except StoreError:
+            for held in self.semantics().list_validity_witnesses(mission_id):
+                if held.witness_id == witness.witness_id:
+                    return held
+            return None
+
+    def _witness_key_taken(self, mission_id: str, witness: ValidityWitness) -> None:
+        """Record, once, that a licence could not be stored beside another one."""
+
+        append_hierarchical_event(
+            self.store,
+            WITNESS_KEY_TAKEN,
+            mission_id,
+            key=f"{mission_id}:{witness.consumer_ref.id}:{witness.scope_epoch}:"
+            f"{witness.support_revision}",
+            task_id=str(witness.consumer_ref.id),
+            payload={
+                "consumer": str(witness.consumer_ref.id),
+                "purpose": str(witness.purpose),
+                "scope_id": witness.scope_id,
+                "scope_epoch": int(witness.scope_epoch),
+                "support_revision": int(witness.support_revision),
+                "reason_codes": list(witness.reason_codes),
+                "detail": (
+                    "the validity_witnesses unique index holds one START licence per "
+                    "consumer per scope epoch and support revision, and this consumer "
+                    "already has one of another kind; the licence was not stored and "
+                    "the occurrence stays withheld rather than running unlicensed"
+                ),
+            },
+        )
+
+    #: The reason code that records **which condition** a START-precondition witness
+    #: was taken for.  The DATA lane answers that question with ``support_refs`` (the
+    #: acceptance it covers); a condition is not a stored object and has no
+    #: :class:`TypedRefKind`, so the digest travels as a reason code instead — the
+    #: only alternative was guessing the link from the witness, which §11.5 calls
+    #: exactly the thing a witness must never allow.
+    CONDITION_REASON_PREFIX = "condition:"
+
+    def issue_start_witnesses(
+        self,
+        mission_id: str,
+        network: TaskNetworkSnapshot | None = None,
+        *,
+        now_ms: int | None = None,
+        scope_id: str = "mission",
+    ) -> tuple[ValidityWitness, ...]:
+        """Re-read every occurrence's START preconditions and record the licence.
+
+        P2.3c part 2c, found by the real-model smoke.  ``grounding.task_binding_for``
+        gives every primitive child the *parent method's* ``applicable_when`` as a
+        SELECT :class:`~..contracts.htn.PreconditionRef`, and TG §9 refuses to
+        dispatch an occurrence whose START precondition has no ``purpose=START``
+        :class:`ValidityWitness`.  Nothing issued one: ``issue_input_witnesses``
+        covers the DATA lane only and ``grounding`` deliberately leaves
+        ``witness_ref`` empty, so under a gated method every leaf sat in
+        ``WAITING_EVIDENCE`` / ``witness_missing`` for ever — the plan committed, the
+        duty was admitted, and no work was ever dispatched.
+
+        It is the same shape as the DATA lane and for the same reason (I19): the
+        conditions are **evaluated again now**, against the deployment's current
+        evidence snapshot, and the verdict is written down with the support revision
+        it was taken at.  A condition that no longer holds produces a ``BLOCKED``
+        witness rather than none, so the refusal downstream says "the world moved"
+        and not "nobody looked"; only an evaluation that
+        :func:`~..planning.htn.applicability.authorization_gate` admits — TRUE with
+        every leaf backed by a real observation or an authoritative denial (§6.6
+        rule 2) — is ``USABLE``.
+
+        One witness covers **all** of a consumer's START preconditions, and names
+        each of them in its reason codes.  That is what the library can hold: the
+        ``validity_witnesses`` unique index is (mission, consumer, purpose, scope,
+        epoch, support revision), so "this consumer may start, now, on this reading
+        of the world" is one row by construction, not one row per condition.  ALL
+        semantics make the combination honest — one UNKNOWN member is enough to
+        withhold the whole licence (§6.6 rule 1).
+        """
+
+        from ..planning.htn.applicability import (
+            all_truth,
+            authorization_gate,
+            evaluate_condition,
+        )
+
+        try:
+            world = self._world()
+        except ContractError:
+            # No PlanningWorld: the predicates and the evidence snapshot a condition is
+            # judged against do not exist here, so no licence may be issued.  Fail
+            # closed and say nothing new — the occurrences stay withheld with
+            # ``witness_missing``, and the deployment defect is already reported by
+            # ``HierarchicalAssemblyMissing`` / ``require_planning_world``.
+            return ()
+        semantics = self.semantics()
+        snapshot = world.snapshot()
+        network = self.network(mission_id) if network is None else network
+        epoch = semantics.epoch(mission_id, scope_id)
+        moment = int(self.store.now * 1000) if now_ms is None else int(now_ms)
+        forms = {spec.occurrence_id: spec.form for spec in network.occurrences}
+        issued: list[ValidityWitness] = []
+        for draft in sorted(network.method_instances, key=lambda item: str(item.instance_id)):
+            contract = world.registry.definition(draft.method_ref)
+            if contract is None:
+                # The method left the registry.  That is a recheck problem (§6.6 rule
+                # 3), not a licence this method may invent from the frozen verdict.
+                continue
+            by_digest = {condition_digest(item): item for item in contract.applicable_when}
+            if not by_digest:
+                continue
+            parameters = {binding.name: binding.value for binding in draft.grounded_parameters}
+            evaluations = {
+                digest: evaluate_condition(
+                    by_digest[digest],
+                    registry=world.predicates,
+                    snapshot=snapshot,
+                    parameters=parameters,
+                    now_ms=moment,
+                )
+                for digest in sorted(by_digest)
+            }
+            truth = all_truth(tuple(item.truth for item in evaluations.values()))
+            allowed = all(authorization_gate(item).allowed for item in evaluations.values())
+            support: list[TypedRef] = []
+            seen: set[tuple[str, str]] = set()
+            for digest in sorted(by_digest):
+                for reference in self._condition_support(
+                    by_digest[digest], parameters=parameters, world=world, snapshot=snapshot
+                ):
+                    key = (str(reference.kind), str(reference.id))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    support.append(reference)
+            reasons = tuple(
+                f"{self.CONDITION_REASON_PREFIX}{digest}" for digest in sorted(by_digest)
+            )
+            for child in sorted(draft.child_bindings, key=lambda item: str(item.occurrence_id)):
+                if forms.get(child.occurrence_id) is not TaskForm.PRIMITIVE:
+                    continue
+                consumer = str(network.binding_for_occurrence(child.occurrence_id).task_id)
+                witness = ValidityWitness(
+                    witness_id="wit-pre-"
+                    + content_hash_of(
+                        {
+                            "c": consumer,
+                            "e": epoch,
+                            "s": int(snapshot.support_revision),
+                            "p": str(scope_id),
+                        }
+                    )[:28],
+                    consumer_ref=_typed(TypedRefKind.TASK, consumer),
+                    purpose=WitnessPurpose.START,
+                    truth=truth,
+                    freshness=Validity.CURRENT,
+                    availability=Availability.READABLE,
+                    decision=(WitnessDecision.USABLE if allowed else WitnessDecision.BLOCKED),
+                    scope_id=scope_id,
+                    scope_epoch=epoch,
+                    support_revision=int(snapshot.support_revision),
+                    as_of_ms=moment,
+                    support_refs=tuple(support),
+                    reason_codes=reasons,
+                )
+                stored = self._record_witness(mission_id, witness)
+                if stored is None:
+                    self._witness_key_taken(mission_id, witness)
+                    continue
+                issued.append(stored)
+        return tuple(issued)
+
+    def _condition_support(
+        self,
+        condition: Any,
+        *,
+        parameters: Mapping[str, Any],
+        world: PlanningWorld,
+        snapshot: Any,
+    ) -> tuple[TypedRef, ...]:
+        """The observations the snapshot holds for this condition's own atoms.
+
+        A licence that named nothing could not be audited back to what was read; a
+        licence that named every observation of the Mission would say nothing about
+        *this* condition.  Only the atoms of this condition are followed, and only
+        as far as the snapshot already went — this method never observes.
+        """
+
+        from ..knowledge.predicates import proposition_key
+        from ..planning.htn.applicability import ground_value
+        from ..planning.htn.registry import iter_predicates
+
+        refs: list[TypedRef] = []
+        seen: set[tuple[str, str]] = set()
+        for atom in iter_predicates((condition,)):
+            signature = world.predicates.resolve(atom.predicate_ref)
+            if signature is None:
+                continue
+            errors: list[str] = []
+            arguments = {
+                name: ground_value(item, parameters, path="precondition", errors=errors)
+                for name, item in atom.arguments.items()
+            }
+            if errors or not world.predicates.check_arguments(signature, arguments).ok:
+                continue
+            entry = snapshot.lookup(proposition_key(signature, arguments))
+            if entry is None:
+                continue
+            for reference in entry.observation_refs:
+                key = (str(reference.kind), str(reference.id))
+                if key in seen:
+                    continue
+                seen.add(key)
+                refs.append(reference)
+        return tuple(refs)
+
+    def start_witness_index(self, mission_id: str) -> dict[str, dict[str, ValidityWitness]]:
+        """consumer task id → condition digest → the freshest START witness for it.
+
+        "Freshest" is the support revision the witness was taken at, then its clock:
+        re-issuing after new evidence must not leave the earlier verdict in play, and
+        a witness is keyed by what it concluded, so both rows exist in the library.
+        """
+
+        index: dict[str, dict[str, ValidityWitness]] = {}
+        for witness in self.semantics().list_validity_witnesses(mission_id):
+            if witness.purpose is not WitnessPurpose.START:
+                continue
+            if witness.consumer_ref.kind is not TypedRefKind.TASK:
+                continue
+            digests = [
+                code[len(self.CONDITION_REASON_PREFIX) :]
+                for code in witness.reason_codes
+                if code.startswith(self.CONDITION_REASON_PREFIX)
+            ]
+            for digest in digests:
+                held = index.setdefault(str(witness.consumer_ref.id), {}).get(digest)
+                if held is not None and (held.support_revision, held.as_of_ms) >= (
+                    witness.support_revision,
+                    witness.as_of_ms,
+                ):
+                    continue
+                index.setdefault(str(witness.consumer_ref.id), {})[digest] = witness
+        return index
+
+    def start_witnesses(self, mission_id: str, task_id: str) -> dict[str, ValidityWitness]:
+        """condition digest → the START witness issued to ``task_id`` for it."""
+
+        return self.start_witness_index(mission_id).get(str(task_id), {})
+
+    def resolved_inputs(
+        self,
+        mission_id: str,
+        network: TaskNetworkSnapshot,
+        spec: OccurrenceSpec,
+        *,
+        accepted: AcceptedOutputsIndex | None = None,
+        witnesses: Mapping[str, ValidityWitness] | None = None,
+    ) -> ResolutionResult:
+        """The DATA gate's input, never ``None`` (P2.3c part 2).
+
+        ``input_result`` answers ``None`` for an occurrence that declares no data
+        requirement, and :func:`~..graph.eligibility.evaluate_readiness` reads ``None``
+        as *"no input resolution was supplied"* — which is ``WAITING_DATA``.  That is
+        the right answer for a caller that forgot to resolve, and the wrong one for an
+        occurrence that has nothing to resolve: before this, every input-less leaf in
+        the plan sat in ``WAITING_DATA`` forever and nothing could ever be dispatched.
+
+        So an occurrence with no declared requirement gets an **empty frozen**
+        manifest rather than no manifest.  "This dispatch consumed nothing" is a
+        statement an ``Acceptance`` can quote and an ``input_manifest_hash`` can
+        cover; "nobody resolved the inputs" is not, and the two must not share a
+        representation.
+        """
+
+        result = self.input_result(
+            mission_id, network, spec, accepted=accepted, witnesses=witnesses
+        )
+        if result is not None:
+            return result
+        return ResolutionResult(manifest=InputManifest(consumer_task_ref=spec.task_id))
 
     def accepted_outputs(
         self,
@@ -869,23 +1562,40 @@ class HierarchicalDispatch:
         )
 
     def _recorded_outputs(self, mission_id: str, network: TaskNetworkSnapshot) -> Sequence[Any]:
-        """The accepted outputs the resolver may choose from — **P2.3c wires this**.
+        """The accepted outputs the resolver may choose from (P2.3c part 2).
 
-        Empty here, and deliberately so.  Building an
-        :class:`~..artifacts.input_bindings.AcceptedOutput` needs one fact nothing in
-        the store records yet: which artifact an Acceptance accepted *at which output
-        port*.  That index is written by the root-review / result path, which is
-        P2.3c's, and inventing it here (say, by taking the Attempt's artifacts and
-        guessing the port from the path) would be the ancestor sweep again wearing a
-        typed name.
+        Read from migration 17's ``acceptance_outputs``, which is the *recorded*
+        answer to "which artifact did this Acceptance accept, at which output port".
+        P2.3b returned nothing here and said why: nothing in the schema held that
+        fact, and taking the Attempt's artifacts and guessing the port from the path
+        would be the all-ancestors sweep §24.1 decision 4 removed, wearing a typed
+        name.
 
-        The consequence while it is empty is visible and safe rather than silent: a
-        consumer that declares a DATA port resolves to ``WAITING_DATA`` and is never
-        dispatched with no inputs.
+        The one writer is ``ResolutionCommitsMixin.accept_review`` (P2.3c part 2b),
+        and it writes inside its own transaction only what
+        :func:`.accepted_outputs.check_against_ports` passed — the same rule
+        :func:`.accepted_outputs.check_declared` applies to a whole network, read off
+        the committed ``DataRequirement`` rows instead of a rebuilt snapshot — so an
+        entry exists only where the plan drew an edge.  A static guard in the suite
+        keeps that the *only* writer.
+
+        Two rows are dropped rather than offered, for the same reason in two lanes:
+
+        * an occurrence this revision no longer contains — an accepted output of a
+          retired branch is history, and the resolver choosing from it would bind a
+          consumer to work the current plan does not do;
+        * an entry whose ``Acceptance`` is no longer CURRENT — ``list_acceptance_outputs``
+          joins ``acceptances`` and filters on validity (review F3), so a supersede or a
+          revoke stops feeding consumers at the read rather than after them.
         """
 
-        del mission_id, network
-        return ()
+        live = {str(spec.occurrence_id) for spec in network.occurrences}
+        outputs: list[AcceptedOutput] = []
+        for row in self.semantics().list_acceptance_outputs(mission_id):
+            if str(row.get("producer_occurrence")) not in live:
+                continue
+            outputs.append(accepted_output_from_json(row))
+        return tuple(outputs)
 
     # ------------------------------------------------------------------ the three reads
     def occurrences(self, mission_id: str) -> tuple[TaskView, ...]:
@@ -971,6 +1681,433 @@ class HierarchicalDispatch:
         return all(
             semantics.adopted_goal_resolution(mission_id, str(duty)) is not None
             for duty in sorted(required, key=str)
+        )
+
+    # --------------------------------------------------------- the root acceptance gate
+    def root_contributions(self, mission_id: str) -> dict[str, tuple[str, ...]]:
+        """Which occurrences of the adopted root method have a **CURRENT** Acceptance.
+
+        Read from the ``acceptances`` rows and not from the outcome projection.  They
+        usually agree, and where they do not the store is right: an Acceptance that was
+        superseded or revoked since the projection was computed is history, and a root
+        resolution quoting it would be declaring the Mission complete on the strength
+        of work nobody accepts any more (§21.5 "wrongly declared complete = 0").
+        """
+
+        semantics = self.semantics()
+        network = self.network(mission_id)
+        by_occurrence: dict[str, list[str]] = {}
+        for acceptance in semantics.list_acceptances(mission_id):
+            if acceptance.validity is not Validity.CURRENT:
+                continue
+            for spec in network.occurrences:
+                if str(spec.task_id) != str(acceptance.task_id):
+                    continue
+                if str(spec.obligation_id) != str(acceptance.obligation_id):
+                    continue
+                by_occurrence.setdefault(str(spec.occurrence_id), []).append(
+                    str(acceptance.acceptance_id)
+                )
+        return {key: tuple(sorted(value)) for key, value in by_occurrence.items()}
+
+    def root_resolution_inputs(self, mission_id: str) -> RootResolutionInputs:
+        """Everything the root ``commit_goal_resolution`` command is built from.
+
+        Every field is *read*, never invented.  The three that a deployment has to
+        have produced beforehand — the ``MISSION_FINAL`` review package, its official
+        record, and the ``purpose=ACCEPT`` witness — are reported as missing rather
+        than fabricated: a Mission root resolution is formed out of the success
+        formula plus the final acceptance (§6.3, §8.1), so a system that writes its
+        own review anchor has decided the answer it was supposed to check.
+        """
+
+        network = self.network(mission_id)
+        roots = network.root_occurrence_ids
+        if len(roots) != 1:
+            return RootResolutionInputs(
+                reason="ROOT_NOT_SINGULAR",
+                detail=(
+                    f"this plan revision has {len(roots)} root occurrence(s); a Mission root "
+                    "resolution is formed for one root goal and choosing among several would "
+                    "be this module inventing a root"
+                ),
+            )
+        root = roots[0]
+        spec = network.occurrence(root)
+        binding = network.binding_for_occurrence(root)
+        semantics = self.semantics()
+        existing = semantics.adopted_goal_resolution(mission_id, str(spec.obligation_id))
+        if existing is not None:
+            return RootResolutionInputs(
+                reason="ALREADY_RESOLVED",
+                detail=(
+                    f"duty {spec.obligation_id!s} is already resolved by {existing.resolution_id!s}"
+                ),
+                occurrence_id=str(root),
+            )
+        requirements = semantics.latest_requirements_revision(mission_id)
+        if requirements is None:
+            return RootResolutionInputs(
+                reason="REQUIREMENTS_MISSING",
+                detail="the Mission has no RequirementsRevision; there is nothing for the root "
+                "resolution to claim coverage of (§6.3)",
+                occurrence_id=str(root),
+            )
+        package = next(
+            (
+                item
+                for item in semantics.list_review_packages(
+                    mission_id, purpose=ReviewPurpose.MISSION_FINAL
+                )
+                if str(item.binding.subject_ref.id) == str(spec.task_id)
+                and str(item.binding.obligation_id) == str(spec.obligation_id)
+            ),
+            None,
+        )
+        if package is None:
+            return RootResolutionInputs(
+                reason="ROOT_REVIEW_PACKAGE_MISSING",
+                detail=(
+                    f"no MISSION_FINAL ReviewPackage is stored for task {spec.task_id!s}; the "
+                    "root review has not been cut, so there is nothing to resolve from"
+                ),
+                occurrence_id=str(root),
+            )
+        record = semantics.official_review_record(str(package.package_id))
+        if record is None:
+            return RootResolutionInputs(
+                reason="ROOT_REVIEW_RECORD_MISSING",
+                detail=(
+                    f"review package {package.package_id!s} has no official ReviewRecord; the "
+                    "final review has not concluded"
+                ),
+                occurrence_id=str(root),
+            )
+        witness = next(
+            (
+                item
+                for item in semantics.list_validity_witnesses(mission_id)
+                if item.purpose is WitnessPurpose.ACCEPT
+                and item.consumer_ref.kind is TypedRefKind.TASK
+                and item.consumer_ref.id == str(spec.task_id)
+            ),
+            None,
+        )
+        if witness is None:
+            return RootResolutionInputs(
+                reason="ROOT_WITNESS_MISSING",
+                detail=(
+                    f"no purpose=ACCEPT ValidityWitness is stored for task {spec.task_id!s}; a "
+                    "witness is not transferable and the commit consumes one (§11.5)"
+                ),
+                occurrence_id=str(root),
+            )
+        instance = network.adopted_instance_for(root)
+        contributions = self.root_contributions(mission_id)
+        return RootResolutionInputs(
+            reason="",
+            occurrence_id=str(root),
+            task_id=str(spec.task_id),
+            obligation_id=str(spec.obligation_id),
+            contract_revision=int(binding.contract_revision),
+            method_instance_id=None if instance is None else str(instance.instance_id),
+            requirements=requirements,
+            package=package,
+            record=record,
+            witness_id=str(witness.witness_id),
+            contributions=contributions,
+        )
+
+    def attempt_root_resolution(
+        self,
+        mission_id: str,
+        *,
+        principal: PlanPrincipal,
+        command_id: str,
+        resolution_id: str | None = None,
+        input_manifest_hash: str | None = None,
+        required_delivery_stage: Any = None,
+        delivery_receipt_ids: Sequence[str] = (),
+        source: Mapping[str, Any] | None = None,
+    ) -> RootResolutionOutcome:
+        """Form the Mission's root :class:`GoalResolution`, or say why not.
+
+        This is the only place a Mission's root resolution is proposed from, and it is
+        deliberately a *proposal*: every rule that decides whether it may be formed —
+        the adopted method, a valid Acceptance for every required child, coverage of
+        every root criterion, the delivery contract, the witness — lives in
+        ``ResolutionCommitsMixin.commit_goal_resolution`` and runs inside its
+        transaction.  What this method does is read the facts the command is made of
+        and hand them over; if it also decided, there would be two places that could
+        declare a Mission complete and §21.5's "wrongly declared complete = 0" would
+        depend on both of them agreeing.
+        """
+
+        self.require_hierarchical(mission_id)
+        if not self.root_review_ready(mission_id):
+            return RootResolutionOutcome(
+                committed=False,
+                reason="ROOT_REVIEW_NOT_READY",
+                detail="a gating child of the adopted root method has no accepted outcome yet",
+            )
+        inputs = self.root_resolution_inputs(mission_id)
+        if inputs.reason:
+            return RootResolutionOutcome(
+                committed=inputs.reason == "ALREADY_RESOLVED",
+                reason=inputs.reason,
+                detail=inputs.detail,
+            )
+        requirements = inputs.requirements
+        assert requirements is not None and inputs.package is not None
+        assert inputs.record is not None
+        manifest_hash = input_manifest_hash or inputs.package.binding.input_manifest_hash
+        resolution = GoalResolution(
+            resolution_id=GoalResolutionId(resolution_id or f"res-{inputs.occurrence_id}"),
+            mission_id=mission_id,
+            obligation_id=inputs.obligation_id,
+            goal_task_id=inputs.task_id,
+            requirements_version=int(requirements.revision),
+            contract_revision=int(inputs.contract_revision),
+            method_instance_id=inputs.method_instance_id,
+            input_manifest_hash=manifest_hash,
+            artifact_refs=(),
+            child_resolution_ids=(),
+            # Review F4: every verdict is **read from the official review record**, and
+            # a criterion the record did not judge is written ``UNKNOWN``.  Writing
+            # ``PASS`` for all of them — what this used to do — put an unevidenced
+            # assertion into a permanent record: the accept side only refuses a verdict
+            # that *contradicts* the record and a required criterion that is *missing*,
+            # so a criterion nobody reviewed and no rule quotes would have been stored
+            # as passed forever.  It is the same rule this command already follows for
+            # ``composition_obligation_passed``: restate the review, never overrule or
+            # extend it.  A required criterion the record left unjudged now shows up as
+            # UNKNOWN and the AER §6.2 formula answers for it, instead of the trigger
+            # answering on the reviewer's behalf.
+            criteria=_root_criteria(requirements, inputs.record),
+            review_receipt_id=str(inputs.record.record_id),
+            verdict=ReviewVerdict.ACCEPT,
+            validity=Validity.CURRENT,
+        )
+        command = CommitGoalResolutionCommand(
+            command_id=command_id,
+            mission_id=mission_id,
+            resolution=resolution,
+            package=inputs.package,
+            record=inputs.record,
+            requirements=requirements,
+            witness_id=inputs.witness_id,
+            # No defaults anywhere: an empty ``IndependenceFacts`` reads as "nobody
+            # produced this and the reviewer holds no rights", which is the most
+            # permissive world there is.  The deployment's review coordinator states
+            # the real ones; until it does, this hands over the empty facts and the
+            # acceptance rules refuse on them rather than being given a pass.
+            independence=IndependenceFacts(),
+            posture=ExecutionPosture(),
+            read_set=self.read_set_for_root(mission_id, inputs),
+            decided_at_ms=int(self.store.now * 1000),
+            purpose=ReviewPurpose.MISSION_FINAL,
+            # ``CompoundFacts`` is "the two things only the caller can know", and both
+            # are *read* here rather than asserted.  ``composition_obligation_passed``
+            # in particular: hard-coding ``True`` would be this trigger claiming, on
+            # the reviewer's behalf, that the composition held — which is precisely the
+            # shape "wrongly declared complete = 0" exists to forbid.  It is the
+            # official review record's own verdict.  (The *contributions* are never
+            # taken from the command either: ``commit_goal_resolution`` re-derives them
+            # from the store and refuses a mismatch with
+            # ``COMPOUND_FACTS_CONTRADICT_STORE``.)
+            compound=CompoundFacts(
+                selected_method_legal=inputs.method_instance_id is not None,
+                contributing_occurrence_ids=tuple(sorted(inputs.contributions)),
+                composition_obligation_passed=inputs.record.verdict is ReviewVerdict.ACCEPT,
+            ),
+            is_mission_root=True,
+            required_delivery_stage=required_delivery_stage,
+            delivery_receipts=tuple(str(item) for item in delivery_receipt_ids),
+            issued_by=principal.principal_id,
+            scope_id=principal.scope_id,
+            source=dict(source or {}),
+        )
+        # The accept side authenticates against its *own* principal type.  Two types
+        # rather than one shared "principal" because the two sides authorise different
+        # things: ``PlanPrincipal`` carries the manager epoch a plan commit is checked
+        # against, and passing it here would be refused as ``BAD_PRINCIPAL`` — which is
+        # exactly what it should be, since the caller would not have said whose accept
+        # authority it is claiming.
+        accepting = ResolutionPrincipal(
+            principal_id=principal.principal_id, scope_id=principal.scope_id
+        )
+        try:
+            receipt = self.commit.commit_goal_resolution(command, accepting)
+        except ResolutionCommitRejected as error:
+            self._append(
+                ROOT_RESOLUTION_REFUSED,
+                mission_id,
+                key=f"{mission_id}:{command_id}:{error.reason}",
+                task_id=inputs.task_id,
+                payload={
+                    "reason": error.reason,
+                    "detail": error.detail,
+                    "command_id": command_id,
+                    "occurrence_id": inputs.occurrence_id,
+                    "obligation_id": inputs.obligation_id,
+                },
+            )
+            return RootResolutionOutcome(committed=False, reason=error.reason, detail=error.detail)
+        return RootResolutionOutcome(
+            committed=True,
+            reason="",
+            resolution_id=str(receipt.resolution_id),
+            detail="",
+        )
+
+    def read_set_for_root(self, mission_id: str, inputs: RootResolutionInputs) -> SemanticReadSet:
+        """The semantic read-set the root commit is checked against.
+
+        It names what this proposal actually read: the root task's contract revision,
+        the requirements revision, the manager epoch and the mission scope epoch.  The
+        commit re-reads every one of them, so an epoch that moved between this read and
+        the transaction refuses the command — which is the point of recording it rather
+        than letting the commit assume nothing changed.
+        """
+
+        semantics = self.semantics()
+        binding = semantics.task_semantics_of(mission_id, inputs.task_id)
+        goal_reads: tuple[ReadItem, ...] = ()
+        if binding is not None:
+            goal_reads = (
+                ReadItem(
+                    kind=ReadItemKind.TASK,
+                    id=str(binding.task_id),
+                    semantic_revision=int(binding.contract_revision),
+                    content_hash=binding.contract_hash,
+                ),
+            )
+        assert inputs.requirements is not None
+        return SemanticReadSet(
+            requirements_revision=int(inputs.requirements.revision),
+            goal_revisions=goal_reads,
+            manager_epoch=semantics.epoch(mission_id, "mission"),
+            scope_epochs=(
+                ScopeEpochRead(
+                    scope_id="mission", validity_epoch=semantics.epoch(mission_id, "mission")
+                ),
+            ),
+        )
+
+    # ------------------------------------------------------- the admission transaction
+    def admissions(self, mission_id: str, *, now_ms: int | None = None) -> DispatchAdmissions:
+        """Run the readiness gate over the whole plan and admit what passed (TG §8.3).
+
+        This is the input :func:`~..scheduling.allocator.allocate_v2` takes, and it is
+        the answer to P2.3b's blocker (b): before P2.3c part 2 the event handler only
+        asked the *form* gate before creating an Attempt, so a DATA consumer whose
+        producer had not been accepted was dispatched with no inputs and ran anyway.
+        Now every occurrence goes through ``evaluate_readiness`` first and only a
+        ``READY_CANDIDATE`` reaches ``admit_for_dispatch``.
+
+        Three properties worth stating, because each is a way this could have been
+        written wrongly:
+
+        * **One read.**  ``self.read()`` fetches the acceptance projection, the
+          witnesses and the duty accounts once and every occurrence is judged against
+          that same snapshot, so the plan cannot move between two occurrences'
+          verdicts — and ``admit_for_dispatch``'s ``_same_origin`` check would refuse
+          the admission if it had.
+        * **A refusal is never an admission with a flag.**  An occurrence that is not
+          ready simply has no :class:`EligiblePrimitiveTask`; the allocator takes only
+          admissions, so there is no field a caller could misread as a permission.
+        * **``NotEligible`` at this point is fail-closed, not a retry.**  A report that
+          said ``READY_CANDIDATE`` and an admission that refuses it means the report
+          and the view disagree — a race or a caller bug — and the honest answer is to
+          withhold this occurrence with the refusal text, not to admit it anyway.
+        """
+
+        view = self.read(mission_id, now_ms=now_ms)
+        moment = int(self.store.now * 1000) if now_ms is None else int(now_ms)
+        network = view.network
+        # Review F8: taken from the view, not read again.  The acceptance projection and
+        # the DATA lane's licences (keyed by acceptance id per consumer — see ``read``
+        # for why the precondition map cannot answer that question) are what the
+        # readiness reports on this view were computed against, and hashing a manifest
+        # built from a *second* read would mean the report and the admission describe
+        # two different moments.
+        accepted = view.accepted
+        licences = view.licences
+        bindings: dict[str, TaskSemanticBindingV1] = {}
+        readiness: dict[str, EligiblePrimitiveTask] = {}
+        refusals: list[DispatchRefusal] = []
+        for spec in network.occurrences:
+            task_id = str(spec.task_id)
+            task_view = view.views[spec.occurrence_id]
+            if task_view.binding is not None:
+                bindings[task_id] = task_view.binding
+            report = view.reports[spec.occurrence_id]
+            if not report.ready:
+                refusals.append(
+                    DispatchRefusal(
+                        task_id=task_id,
+                        occurrence_id=str(spec.occurrence_id),
+                        reason=report.reason,
+                        detail_codes=report.detail_codes,
+                        detail="; ".join(detail.message for detail in report.details),
+                    )
+                )
+                continue
+            result = self.resolved_inputs(
+                mission_id,
+                network,
+                spec,
+                accepted=accepted,
+                witnesses=licences.get(task_id, {}),
+            )
+            manifest = (
+                result.manifest
+                if result.manifest is not None
+                else InputManifest(consumer_task_ref=spec.task_id)
+            )
+            try:
+                readiness[task_id] = admit_for_dispatch(
+                    report, task_view, view.plan, manifest, now_ms=moment
+                )
+            except (NotEligible, ManifestNotFrozen) as error:
+                refusals.append(
+                    DispatchRefusal(
+                        task_id=task_id,
+                        occurrence_id=str(spec.occurrence_id),
+                        reason=ReadinessReason.STALE_BINDING,
+                        detail_codes=("admission_refused",),
+                        detail=str(error),
+                    )
+                )
+        return DispatchAdmissions(
+            plan_revision=int(network.plan_revision),
+            bindings=bindings,
+            readiness=readiness,
+            refusals=tuple(refusals),
+        )
+
+    def record_withheld(self, mission_id: str, admissions: DispatchAdmissions) -> tuple[Event, ...]:
+        """Record every structured refusal once per (occurrence, revision, reason).
+
+        The idempotency key carries the plan revision *and* the reason, and
+        ``Store.append_event`` returns the stored row for a key it already holds — so
+        a Mission that waits ten cycles for a producer leaves one event rather than
+        ten, and a Mission whose reason *changes* leaves the new one beside it.  That
+        is the difference between a log an operator can read and a log that drowns the
+        one line that mattered.
+        """
+
+        return tuple(
+            self._append(
+                DISPATCH_WITHHELD,
+                mission_id,
+                key=(
+                    f"{mission_id}:{refusal.task_id}:{admissions.plan_revision}:{refusal.reason!s}"
+                ),
+                task_id=refusal.task_id,
+                payload={"plan_revision": int(admissions.plan_revision), **refusal.to_json()},
+            )
+            for refusal in admissions.refusals
         )
 
     # -------------------------------------------------------------- the dispatch gate
@@ -1110,6 +2247,340 @@ class HierarchicalDispatch:
         proposal = parse_method_proposal(text)
         return world.registry.admit(proposal, **kwargs)
 
+    # ------------------------------------------------------- the MethodSynthesizer
+    def synthesis_request(
+        self, mission_id: str, goal_task_id: str, *, domain: str | None = None
+    ) -> Any:
+        """The typed context one synthesis round is given (§7.3 source 4, §18.5 C8).
+
+        Built from the deployment's own declarations — the operators it really
+        registered, the capability table, and the four-axis report explaining why
+        each existing method for this goal type does not apply.  Nothing about the
+        Mission, the principal or any budget account is in it: which Mission this is
+        belongs to the *dispatch* that carries the request, never to the payload the
+        model reads.
+        """
+
+        from ..planning.htn.applicability import assess_method as _assess
+        from ..planning.htn.synthesis import build_request
+
+        world = self._world()
+        network = self.network(mission_id)
+        goal = network.binding_for_task(TaskRef(str(goal_task_id)))
+        reports: dict[str, Any] = {}
+        signature = goal.goal_signature
+        for reference in world.registry.method_refs():
+            contract = world.registry.definition(reference)
+            if contract is None or contract.goal_type_ref.id != signature.signature_id:
+                continue
+            reports[f"{contract.method_id}@{int(contract.method_version)}"] = _assess(
+                goal,
+                contract,
+                world.snapshot(),
+                world.capabilities(),
+                registry=world.predicates,
+            )
+        return build_request(
+            goal,
+            world.capabilities(),
+            world.registry,
+            catalog=world.catalog,
+            reports=reports,
+            mission_id=mission_id,
+            domain=domain,
+        )
+
+    def method_applicability(self, mission_id: str) -> tuple[Any, ...]:
+        """Why each registered method does not apply to each still-open goal.
+
+        Review F16: the hierarchical Planner package always passed ``reports=()``, so
+        the ``applicability`` section the package's own docstring calls load-bearing
+        was empty in every deployment — the Planner was told "no method fits" with no
+        axis and no reason, which is the exact state the section exists to replace.
+
+        Only *refused* verdicts are reported: an applicable method is already in
+        ``method_library`` and repeating it here as "nothing was wrong with this one"
+        would push the refusals out of the model's attention.
+        """
+
+        from ..planning.htn.planner_package import MethodApplicability
+
+        world = self._world()
+        network = self.network(mission_id)
+        snapshot = world.snapshot()
+        capabilities = world.capabilities()
+        entries: list[Any] = []
+        for spec in sorted(network.occurrences, key=lambda item: str(item.occurrence_id)):
+            if spec.form is not TaskForm.COMPOUND:
+                continue
+            if network.adopted_instance_for(spec.occurrence_id) is not None:
+                continue
+            goal = network.binding_for_occurrence(spec.occurrence_id)
+            signature = goal.goal_signature.signature_id
+            for reference in world.registry.method_refs():
+                contract = world.registry.definition(reference)
+                if contract is None or str(contract.goal_type_ref.id) != str(signature):
+                    continue
+                report = assess_method(
+                    goal, contract, snapshot, capabilities, registry=world.predicates
+                )
+                if report.applicable:
+                    continue
+                entries.append(
+                    MethodApplicability(
+                        goal_occurrence_id=str(spec.occurrence_id),
+                        goal_signature_id=str(signature),
+                        method_ref=contract.method_ref(),
+                        report=report,
+                    )
+                )
+        return tuple(entries)
+
+    def run_evidence_round(self, mission_id: str, *, now_ms: int | None = None) -> Any:
+        """Look at the UNKNOWN preconditions of every still-open goal, once.
+
+        P2.3c part 2c.  Part 2b built the round (``planning.htn.evidence_round``) and
+        left it for a deployment to call by hand, so in the real loop an UNKNOWN
+        precondition stayed UNKNOWN forever: the Planner was handed a package whose
+        methods all read ``NEEDS_EVIDENCE`` and no evidence was ever gathered.  ADR-07
+        is "look, do not guess", and nothing was looking.
+
+        What it does **not** do is dispatch an agent.  Every read goes through the
+        deployment's :class:`~..planning.htn.observation_pipeline.ObserverIndex`,
+        which is the one path that enforces §6.6 C28 (only a listed observer, only a
+        read-only type) on the way in; an observer that cannot answer produces
+        ``OBSERVER_UNAVAILABLE`` and **no record**, so a proposition never becomes
+        FALSE because nobody looked.
+
+        Which propositions are asked is the catalogue's decision, not this method's:
+        an atom is asked only when ``evidence_requests`` found a registered read-only
+        task type that declares it observes that predicate.  A deployment that
+        installed no observer index gets an empty round rather than an error — it has
+        simply not wired the evidence lane, which the readiness reports already say.
+        """
+
+        from ..planning.htn.evidence_round import (
+            EvidenceAsk,
+            EvidenceRoundResult,
+            asks_for_requests,
+            pending_asks,
+            run_round,
+        )
+        from ..planning.htn.refinement import evidence_requests, unknown_predicates
+
+        world = self._world()
+        index = getattr(world, "observer_index", None)
+        if index is None:
+            return EvidenceRoundResult()
+        network = self.network(mission_id)
+        snapshot = world.snapshot()
+        # Every proposition this Mission has already looked at.  An observation does
+        # **not** always settle the atom that motivated it — a non-authoritative
+        # negative on an OPEN predicate is still UNKNOWN (§6.6) — so ``pending_asks``
+        # keeps offering it, and the first real-model run of this round recorded the
+        # same proposition several hundred times in a few seconds until
+        # ``EvidenceEntry`` refused the snapshot.  Looking again is a decision for a
+        # later revision, not for the next cycle: a second identical read of an
+        # unchanged world produces the same answer at the cost of one more row.
+        looked_at = {
+            str(record.proposition_key) for record in self.semantics().list_observations(mission_id)
+        }
+        moment = int(self.store.now * 1000) if now_ms is None else int(now_ms)
+        asks: dict[str, EvidenceAsk] = {}
+        for spec in sorted(network.occurrences, key=lambda item: str(item.occurrence_id)):
+            if spec.form is not TaskForm.COMPOUND:
+                continue
+            if network.adopted_instance_for(spec.occurrence_id) is not None:
+                continue
+            goal = network.binding_for_occurrence(spec.occurrence_id)
+            parameters = dict(goal.typed_parameters)
+            for reference in world.registry.method_refs():
+                contract = world.registry.definition(reference)
+                if contract is None:
+                    continue
+                if str(contract.goal_type_ref.id) != str(goal.goal_signature.signature_id):
+                    continue
+                conditions = contract.applicable_when
+                unknowns = unknown_predicates(
+                    conditions,
+                    parameters=parameters,
+                    predicates=world.predicates,
+                    snapshot=snapshot,
+                    now_ms=moment,
+                )
+                if not unknowns:
+                    continue
+                requests = evidence_requests(
+                    unknowns,
+                    for_occurrence=spec.occurrence_id,
+                    obligation_id=spec.obligation_id,
+                    catalog=world.catalog,
+                    semantic_scope=goal.semantic_scope,
+                    contract_revision=int(goal.contract_revision),
+                )
+                candidates = pending_asks(
+                    conditions,
+                    parameters=parameters,
+                    registry=world.predicates,
+                    snapshot=snapshot,
+                    now_ms=moment,
+                )
+                for ask in asks_for_requests(requests, candidates):
+                    if ask.proposition_key in looked_at:
+                        continue
+                    asks.setdefault(ask.proposition_key, ask)
+        if not asks:
+            return EvidenceRoundResult()
+        return run_round(
+            index,
+            self.semantics(),
+            mission_id,
+            tuple(asks[key] for key in sorted(asks)),
+            now_ms=moment,
+        )
+
+    def goals_needing_method(self, mission_id: str) -> tuple[str, ...]:
+        """The open goals for which no registered method can *ever* apply as things are.
+
+        P2.3c part 2c: the judgment part 2b left open — "when is a compound missing a
+        method".  It is deliberately narrow, because a MethodSynthesizer round costs a
+        model call and admitting a synthesised method is the most consequential thing
+        a model does in this system (§7.3):
+
+        * a goal with **no** registered method for its signature qualifies;
+        * a goal whose every candidate is refused for something a *different method*
+          could route around — a capability this deployment does not have, arguments
+          that do not type-check, a precondition that is simply false here — qualifies;
+        * a goal that has at least one applicable method does **not**, and neither
+          does one whose candidates are ``NEEDS_EVIDENCE`` or ``CONFLICT``: the repair
+          there is to look (:meth:`run_evidence_round`) or to settle the contradiction,
+          and synthesising a method around an unanswered question would be inventing a
+          way past the very check that is unanswered.
+
+        Returned as *goal task ids* because that is what ``synthesis_request`` takes.
+        """
+
+        world = self._world()
+        network = self.network(mission_id)
+        refused: dict[str, list[Any]] = {}
+        for entry in self.method_applicability(mission_id):
+            refused.setdefault(str(entry.goal_occurrence_id), []).append(entry.report)
+        by_signature: dict[str, int] = {}
+        for reference in world.registry.method_refs():
+            definition = world.registry.definition(reference)
+            if definition is None:
+                continue
+            key = str(definition.goal_type_ref.id)
+            by_signature[key] = by_signature.get(key, 0) + 1
+        needing: list[str] = []
+        for spec in sorted(network.occurrences, key=lambda item: str(item.occurrence_id)):
+            if spec.form is not TaskForm.COMPOUND:
+                continue
+            if network.adopted_instance_for(spec.occurrence_id) is not None:
+                continue
+            goal = network.binding_for_occurrence(spec.occurrence_id)
+            candidates = by_signature.get(str(goal.goal_signature.signature_id), 0)
+            seen = refused.get(str(spec.occurrence_id), [])
+            if candidates and len(seen) < candidates:
+                continue  # at least one method applies; nothing to synthesise
+            if any(report.status not in SYNTHESIS_WORTHY_REFUSALS for report in seen):
+                continue  # the answer is "look" or "settle", not "invent"
+            needing.append(str(spec.task_id))
+        return tuple(needing)
+
+    def record_synthesis_outcome(
+        self,
+        mission_id: str,
+        *,
+        goal_task_id: str,
+        admitted: bool,
+        problems: Sequence[str] = (),
+        method_id: str = "",
+        verdict: str = "",
+        author: str = "",
+    ) -> Event:
+        """What one MethodSynthesizer round produced, recorded where it can be read.
+
+        A refused proposal leaves nothing in the registry and nothing on the plan, so
+        without this the only trace of a synthesis round would be its token cost.
+        Keyed by ``(mission, goal)``: one round per goal is what
+        :meth:`goals_needing_method` asks for, and a second event under the same key
+        would mean the bound was not held.
+        """
+
+        return self._append(
+            SYNTHESIS_ROUND_RECORDED,
+            mission_id,
+            key=f"{mission_id}:{goal_task_id}",
+            task_id=goal_task_id or None,
+            payload={
+                "goal_task_id": str(goal_task_id),
+                "admitted": bool(admitted),
+                "verdict": str(verdict),
+                "method_id": str(method_id),
+                "author": str(author),
+                "problems": [str(item) for item in problems][:12],
+            },
+        )
+
+    def synthesis_round_recorded(self, mission_id: str, goal_task_id: str) -> bool:
+        """Whether a MethodSynthesizer round for this goal has already been concluded.
+
+        Read from the event this assembly writes, not from a field on the plan: the
+        round produces nothing on the plan when it is refused, so the event *is* the
+        record that it happened.
+        """
+
+        key = f"{SYNTHESIS_ROUND_RECORDED}:{mission_id}:{goal_task_id}"
+        return any(event.idempotency_key == key for event in self.store.list_events(mission_id))
+
+    def apply_synthesizer_reply(
+        self, mission_id: str, text: str, *, policy: Any = None
+    ) -> AdmissionReceipt:
+        """``<method_proposal>`` from the synthesiser → §7.3, author fixed at MODEL.
+
+        The author is **not** a parameter here.  ``text`` reached this method from a
+        model, and presenting it as anything else would hand a model-authored
+        definition the registration rights of the registry service — which
+        ``MethodRegistration`` allows only at DRAFT precisely to stop that (§6.3,
+        §7.3).  ``admit_method_proposal`` stays available for a caller that genuinely
+        has a human- or tool-authored definition and says so.
+        """
+
+        from ..planning.htn.synthesis import MethodSynthesizer
+
+        world = self._world()
+        self.require_hierarchical(mission_id)
+        synthesizer = MethodSynthesizer(world.registry, world.catalog)
+        resolved = policy if policy is not None else self._admission_policy(mission_id)
+        return synthesizer.accept_response(text, policy=resolved)
+
+    def _admission_policy(self, mission_id: str) -> Any:
+        """The policy a synthesised method is decided against on this deployment.
+
+        A world that knows how to build its own policy is asked for it; anything else
+        gets one assembled from the four declaration stores plus the live capability
+        table, so a deployment cannot end up admitting a method against capabilities
+        nobody has.
+        """
+
+        world = self._world()
+        builder = getattr(world, "policy", None)
+        if callable(builder):
+            return builder(mission_id=mission_id)
+        from ..contracts.htn import MissionRef
+        from ..planning.htn.registry import AdmissionPolicy
+
+        return AdmissionPolicy(
+            policy_ref="deployment-policy",
+            policy_version=1,
+            mission_id=MissionRef(mission_id),
+            predicates=world.predicates,
+            task_types=world.catalog,
+            schemas=world.schemas,
+            capabilities=world.capabilities(),
+        )
+
     def apply_planner_reply(
         self,
         mission_id: str,
@@ -1192,6 +2663,15 @@ class HierarchicalDispatch:
             parent = network.binding_for_task(TaskRef(str(operation.goal_id)))
         except KeyError as error:
             raise missing_bindings(mission_id, [str(operation.goal_id)]) from error
+        # P2.3c part 2c: *which occurrence* of that goal is being refined.  A
+        # ``refine`` operation names a goal and a duty, and for the Mission root the
+        # occurrence id happens to equal the task id — so the draft's default
+        # (``goal_occurrence_id = goal_id``) was right by coincidence and every
+        # *child* compound was refused by the compiler with "the draft refines
+        # occurrence <task id>, which this network does not contain".  A plan deeper
+        # than one level could therefore never be committed at all, which is also why
+        # no test in this suite had ever run a second refinement round.
+        occurrence = _refined_occurrence(mission_id, network, operation)
         contract = (
             self.semantics()
             .get_method(operation.method_ref.id, int(operation.method_ref.version))
@@ -1211,6 +2691,8 @@ class HierarchicalDispatch:
             report,
             catalog=world.catalog,
             schemas=world.schemas,
+            plan_revision=network.plan_revision,
+            goal_occurrence_id=occurrence,
         )
         return compile_refinement_bundle(
             draft,
@@ -1285,6 +2767,16 @@ class HierarchicalDispatch:
         return manifest_upstream_inputs(result.manifest, rules, network=network)
 
     # ------------------------------------------------------------------------ plumbing
+    def require_planning_world(self) -> PlanningWorld:
+        """The deployment's declarations, or a visible refusal.
+
+        Public because the event handler needs the same answer when it builds the
+        hierarchical Planner's package: a deployment without a ``PlanningWorld`` must
+        fail here rather than quietly hand the model the legacy DAG package (§18.5).
+        """
+
+        return self._world()
+
     def _world(self) -> PlanningWorld:
         if self.planning is None:
             raise ContractError(
@@ -1309,6 +2801,16 @@ class HierarchicalDispatch:
                 "reason": last.reason,
                 "detail": last.detail,
                 "refusals": [item.to_json() for item in refusals],
+                # P2.3c part 2c: what the proposal actually named.  A
+                # ``READ_SET_UNRESOLVED`` that says "this store cannot re-check
+                # observation X" leaves the reader unable to tell an id the proposer
+                # invented from one the store lost — and that is the only question
+                # worth asking about that refusal.  Kind and id only: the revisions and
+                # hashes are the proposer's claims and belong to the proposal, not to
+                # the diagnosis.
+                "read_set_named": [
+                    {"kind": str(item.kind), "id": str(item.id)} for item in proposal.read_set
+                ],
                 # C19, stated in the record: nothing was replayed on the proposer's
                 # behalf, so a reader knows the proposal has to be re-authored.
                 "rebased": False,
@@ -1324,22 +2826,197 @@ class HierarchicalDispatch:
         payload: Mapping[str, Any],
         task_id: str | None = None,
     ) -> Event:
-        idempotency_key = f"{event_type}:{key}"
-        return self.store.append_event(
-            Event(
-                id=ids.event_id(idempotency_key),
-                type=event_type,
-                trace_id=ids.trace_id(mission_id),
-                mission_id=mission_id,
-                task_id=task_id,
-                attempt_id=None,
-                actor_type="system",
-                actor_id="orchestrator",
-                payload=dict(payload),
-                idempotency_key=idempotency_key,
-                created_at=self.store.now,
-            )
+        return append_hierarchical_event(
+            self.store, event_type, mission_id, key=key, payload=payload, task_id=task_id
         )
+
+
+def _stored_coverage(
+    semantics: HtnStore,
+    instances: Sequence[Any],
+    adopted: Sequence[Any],
+    bindings: Mapping[TaskRef, TaskSemanticBindingV1],
+) -> tuple[Any, ...]:
+    """The ``obligation_coverage`` claims of a plan read back from the store.
+
+    The claims are a *function* of the adopted method instances — each one's contract
+    says which parent criterion each slot covers, and the instance says which
+    occurrence each slot bound — so they are recomputed rather than stored twice.
+    :func:`~..planning.htn.compiler.coverage_from_slots` is that function, shared with
+    the compiler so a re-read plan and a freshly compiled one cannot disagree about
+    what covers what.
+
+    An instance whose method the registry no longer holds contributes nothing rather
+    than raising: the plan is still readable, and the coverage check will report the
+    gap in the language it is about.
+    """
+
+    from ..planning.htn.compiler import CompilationRefused, coverage_from_slots
+
+    chosen = {str(item) for item in adopted}
+    claims: list[Any] = []
+    for draft in instances:
+        if str(draft.instance_id) not in chosen:
+            continue
+        parent = bindings.get(TaskRef(str(draft.goal_id)))
+        if parent is None:
+            continue
+        try:
+            stored = semantics.get_method(
+                str(draft.method_ref.method_id), int(draft.method_ref.version)
+            )
+        except StoreError:
+            continue
+        by_slot = {str(child.slot_key): child.occurrence_id for child in draft.child_bindings}
+        try:
+            claims.extend(
+                coverage_from_slots(stored.contract, by_slot, obligation=parent.obligation_id)
+            )
+        except CompilationRefused:
+            continue
+    return tuple(claims)
+
+
+def _refined_occurrence(
+    mission_id: str, network: TaskNetworkSnapshot, operation: RefineOperation
+) -> OccurrenceId:
+    """Which occurrence a ``refine`` operation is about (P2.3c part 2c).
+
+    The proposal contract names a *goal* and a *duty*, not an occurrence — the model
+    is shown ``goal_id`` / ``obligation_id`` in the package's ``open_compound_goals``
+    and must quote them back.  The occurrence is therefore resolved here, from the
+    plan, and two situations are refusals rather than guesses:
+
+    * nothing in the plan matches that (goal, duty) pair — the proposal is about a
+      goal this revision does not carry;
+    * more than one still-open occurrence matches — TG §12 lets two slots share a
+      goal, and choosing one of them would be this module deciding which of the
+      Planner's two open goals it meant.
+
+    An occurrence that is already refined is skipped rather than matched, so a replay
+    of the same proposal is refused for the honest reason ("no open occurrence") and
+    not by silently re-refining the one that is adopted.
+    """
+
+    named = [
+        spec
+        for spec in network.occurrences
+        if str(spec.task_id) == str(operation.goal_id)
+        and str(spec.obligation_id) == str(operation.obligation_id)
+    ]
+    if not named:
+        raise missing_bindings(mission_id, [str(operation.goal_id)])
+    matches = [
+        spec
+        for spec in named
+        if spec.form is TaskForm.COMPOUND
+        and network.adopted_instance_for(spec.occurrence_id) is None
+    ]
+    if len(matches) == 1:
+        return matches[0].occurrence_id
+    if not matches:
+        # The goal is in the plan but every occurrence of it is already refined (or is
+        # primitive).  The occurrence is still handed over so the *compiler* refuses in
+        # its own vocabulary — "this occurrence is already refined", "this occurrence is
+        # primitive" — rather than this resolver inventing a second way to say no.
+        return named[0].occurrence_id
+    raise ContractError(
+        f"goal {operation.goal_id!r} on duty {operation.obligation_id!r} has "
+        f"{len(matches)} open occurrences in this plan revision; a refinement names one "
+        "of them and choosing here would be this module picking which goal the Planner "
+        "meant (TG §12)"
+    )
+
+
+def _root_criteria(requirements: Any, record: Any) -> tuple[ResolutionCriterion, ...]:
+    """The root resolution's criteria, restated from the review record (review F4).
+
+    The *set* of criteria is the requirements revision's — that is what the goal owes
+    — and each verdict is the record's own.  ``UNKNOWN`` where the reviewer said
+    nothing: it is the enum's word for "not judged", and it is the only honest thing a
+    trigger that decides nothing can write.
+    """
+
+    reviewed = {str(item.criterion_id): item.verdict for item in record.criteria}
+    return tuple(
+        ResolutionCriterion(
+            criterion_id=item.criterion_id,
+            verdict=reviewed.get(str(item.criterion_id), CriterionVerdict.UNKNOWN),
+        )
+        for item in requirements.criteria
+    )
+
+
+def append_hierarchical_event(
+    store: Store,
+    event_type: str,
+    mission_id: str,
+    *,
+    key: str,
+    payload: Mapping[str, Any],
+    task_id: str | None = None,
+) -> Event:
+    """Append one of this module's event types, keyed for idempotency.
+
+    A module function and not only a method because :data:`ASSEMBLY_MISSING` has to be
+    recordable by a caller that has *no* assembly — that is what the event says.
+    """
+
+    idempotency_key = f"{event_type}:{key}"
+    return store.append_event(
+        Event(
+            id=ids.event_id(idempotency_key),
+            type=event_type,
+            trace_id=ids.trace_id(mission_id),
+            mission_id=mission_id,
+            task_id=task_id,
+            attempt_id=None,
+            actor_type="system",
+            actor_id="orchestrator",
+            payload=dict(payload),
+            idempotency_key=idempotency_key,
+            created_at=store.now,
+        )
+    )
+
+
+def record_assembly_missing(store: Store, mission: Mission, *, at: str) -> Event:
+    """Refuse-and-record: this Mission runs hierarchically and the gates are not installed.
+
+    Review finding F1.  ``commit_plan_revision`` materialises occurrence rows through
+    the Commit Service while every dispatch gate — ``allocate_v2``'s admissions, the
+    TG §8.3 re-check, the root ``GoalResolution`` trigger — lives on this assembly and
+    is reached only through ``Orchestrator._hierarchical``.  Nothing couples the two,
+    so a deployment that writes hierarchical plans without calling
+    ``install_hierarchical`` used to hand those rows to the legacy ``allocate()``:
+    dispatch on the ``TaskStatus.READY`` string, a DATA consumer running before its
+    producer was accepted, and "every live Task is COMPLETED" standing in for a root
+    resolution.  That is the silent half-mode §18.5 rule 1 forbids — half the Mission
+    committed under the new rules and half of it scheduled under the old ones.
+
+    The answer is the same one ``require_planning_world`` already gives on the planning
+    side: refuse, and say so.  The Mission stays where it is, visibly not moving, with
+    one event naming the deployment defect — which is a Mission an operator can fix,
+    rather than one that quietly ran under rules nobody chose for it.
+    """
+
+    return append_hierarchical_event(
+        store,
+        ASSEMBLY_MISSING,
+        mission.id,
+        key=mission.id,
+        payload={
+            "semantics": semantics_of(mission),
+            "at": at,
+            "detail": (
+                "this Mission runs under hierarchical semantics and no HierarchicalDispatch "
+                "is installed on this Orchestrator; the readiness gate, the TG §8.3 dispatch "
+                "re-check and the root GoalResolution trigger all live on that assembly, so "
+                "nothing is dispatched and nothing is judged (§18.5 rule 1: a Mission does "
+                "not run half in each mode).  Call Orchestrator.install_hierarchical()."
+            ),
+        },
+    )
 
 
 def _is_refine(operation: object) -> bool:
@@ -1354,7 +3031,11 @@ def _is_refine(operation: object) -> bool:
 
 
 __all__ = (
+    "ASSEMBLY_MISSING",
+    "MISSION_STALLED",
+    "WITNESS_KEY_TAKEN",
     "COMPOUND_DISPLAY_STATUS",
+    "SYNTHESIS_ROUND_RECORDED",
     "COMPOUND_PHASE_CHANGED",
     "DEFAULT_COMPILE_ATTEMPTS",
     "DISPATCH_INTERCEPTED",
@@ -1369,8 +3050,11 @@ __all__ = (
     "PlanRefusal",
     "PlanRoundOutcome",
     "PlanningWorld",
+    "SYNTHESIS_WORTHY_REFUSALS",
+    "append_hierarchical_event",
     "is_hierarchical",
     "missing_bindings",
     "next_compound_phase",
+    "record_assembly_missing",
     "root_not_identified",
 )

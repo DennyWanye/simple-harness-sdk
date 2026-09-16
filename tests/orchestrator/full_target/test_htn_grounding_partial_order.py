@@ -704,11 +704,31 @@ def test_the_read_set_names_the_refined_goal() -> None:
     assert str(binding.task_id) in {item.id for item in bundle.delta.read_set.goal_revisions}
 
 
-def test_the_read_set_records_every_precondition_witness() -> None:
+def test_the_read_set_names_no_precondition_digest_as_a_fact(tmp_path=None) -> None:
+    """P2.3c part 2c: a condition digest is not a subject the store can re-check.
+
+    This used to assert the opposite — that every ``condition_digest`` appeared in the
+    FACT channel — and the channel's own resolver only ever resolves an id as an
+    observation record or a ``ValidityWitness``.  So the read-set carried an entry that
+    could not be honoured, and once the eleven channels were unified (P2.3c part 1
+    review, P0-1) every refinement of a method with preconditions was refused
+    ``READ_SET_UNRESOLVED`` — which is what stopped the real-model smoke run.
+
+    The freeze the digests provide is not lost: they live on the
+    ``MethodInstanceDraft`` with the truth they were selected under, and §6.6 rule 3's
+    ``recheck_method_instance`` is what compares them to the world.
+    """
+
+    del tmp_path
     _, _, draft, bundle = compiled(ready_env())
-    assert {item.id for item in bundle.delta.read_set.observation_revisions} == {
-        witness.condition_digest for witness in draft.precondition_witnesses
-    }
+    assert draft.precondition_witnesses, "the fixture's method does carry preconditions"
+    digests = {witness.condition_digest for witness in draft.precondition_witnesses}
+    named = {item.id for item in bundle.delta.read_set.observation_revisions}
+    assert named & digests == set()
+    # Every witness in this world is a frozen digest with no stored ValidityWitness, so
+    # the channel is empty rather than carrying an id nobody can look up.
+    assert all(witness.witness_ref is None for witness in draft.precondition_witnesses)
+    assert named == set()
 
 
 def test_the_budget_requirement_counts_the_new_primitives() -> None:

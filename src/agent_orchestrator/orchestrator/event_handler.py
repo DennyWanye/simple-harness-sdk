@@ -93,6 +93,7 @@ from ..contracts import (
     ids,
 )
 from ..contracts.models import jsonable, sha256_hex
+from ..contracts.resolution import DeliveryStage, ReviewAccount
 from ..contracts.state_machines import IllegalTransition
 from ..governance.budgets import BudgetError, BudgetExhausted
 from ..governance.domains import (
@@ -104,6 +105,7 @@ from ..governance.permissions import Principal
 from ..governance.policies import action_decision, deployed_layers, effective_tools
 from ..governance.promotion import diff_params, interpreter_versions, resolve_params
 from ..graph.changes import ChangeLimits, GraphChangeRejected, TaskGraphChange
+from ..graph.eligibility import EligiblePrimitiveTask
 from ..graph.projection_validation import GraphIntegrityError
 from ..graph.task_graph import TaskBudgetFloor
 from ..memory.summaries import build_summaries
@@ -143,15 +145,22 @@ from ..runtime.role_templates import (
     MANAGER,
     PLAN_REVISION_PROPOSAL_TAG,
     PLANNER,
+    PLANNER_HIERARCHICAL,
     RESULT_ENVELOPE_TAG,
     role_for_task,
     template_for_domain,
 )
 from ..runtime.sandbox import resolve_executor
 from ..runtime.tool_gateway import CRITIC_TOOLS, WORKER_TOOLS, WorkspaceBinding, run_pytest
-from ..scheduling.allocator import OPEN_ATTEMPT_STATES, allocate
+from ..scheduling.allocator import (
+    OPEN_ATTEMPT_STATES,
+    AllocationPlan,
+    AllocationPlanV2,
+    allocate,
+    allocate_v2,
+)
 from ..scheduling.backpressure import BackpressureState, Observation
-from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy
+from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy, StoreError
 from ..verification.assessments import task_contract_revision
 from ..verification.critics import CriticVerdict, parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
@@ -182,8 +191,16 @@ from .commit_service import (
     mission_account,
     task_account,
 )
-from .hierarchical_dispatch import HierarchicalDispatch, is_hierarchical
+from .hierarchical_dispatch import (
+    MISSION_STALLED,
+    DispatchAdmissions,
+    HierarchicalDispatch,
+    append_hierarchical_event,
+    is_hierarchical,
+    record_assembly_missing,
+)
 from .plan_commits import PlanPrincipal
+from .resolution_commits import eligible_root_receipts
 
 logger = logging.getLogger("agent_orchestrator")
 
@@ -1012,6 +1029,37 @@ class Orchestrator:
             return None
         return self._hierarchical
 
+    def _assembly_missing(self, mission: Mission, *, at: str) -> bool:
+        """Fail-closed: a hierarchical Mission with no assembly is not scheduled at all.
+
+        Review finding F1.  ``_new_mode`` answers None for two different situations —
+        "this Mission is legacy" and "this deployment never installed the assembly" —
+        and every caller used to treat both as "use the legacy path".  For a legacy
+        Mission that is right.  For a hierarchical one it is the silent half-mode
+        §18.5 rule 1 forbids: the plan was committed under the new rules (occurrence
+        rows, semantic bindings, DATA edges) and would then be dispatched under the
+        old ones, on the ``TaskStatus.READY`` string, with the readiness gate, the
+        TG §8.3 re-check and the root ``GoalResolution`` trigger all skipped.
+
+        So the two situations are separated here: this returns True only for the
+        second, records :data:`~.hierarchical_dispatch.ASSEMBLY_MISSING` once for the
+        Mission, and its callers do nothing rather than falling back.  There is no
+        auto-assembly to prefer over it: ``build_planning_world`` needs the
+        deployment's own facts (which domains, which worktree, which layers are
+        deployed, which observers) and an Orchestrator that guessed them would be
+        inventing the declarations the plan is admitted against.
+        """
+
+        if self._hierarchical is not None or not is_hierarchical(mission):
+            return False
+        record_assembly_missing(self.store, mission, at=at)
+        self._note(
+            f"mission {mission.id} runs under hierarchical semantics and this deployment "
+            f"installed no assembly; nothing is dispatched or judged at {at} "
+            "(§18.5 rule 1 — call install_hierarchical())"
+        )
+        return True
+
     async def _plan_integrity_stop(self, mission: Mission, error: GraphIntegrityError) -> None:
         """Stop *this* Mission for a damaged plan and leave the run alone (§24.1 dec. 11).
 
@@ -1544,8 +1592,89 @@ class Orchestrator:
                 if any(a["state"] != "UNKNOWN" for a in settled):
                     idle_rounds = 0
                     continue
+                await self._record_hierarchical_stall()
                 return
             await asyncio.sleep(self._poll)
+
+    async def _record_hierarchical_stall(self) -> None:
+        """A hierarchical Mission that idles with work left over says so, once.
+
+        P2.3c part 2c, found by the real-model smoke.  :meth:`run` returns when the
+        loop is genuinely idle — nothing dispatched this cycle, nothing in flight,
+        nothing deferred, no hand-off left to settle — and until now that left a
+        hierarchical Mission sitting at ``ACTIVE`` with occurrences every gate had
+        withheld and **nothing written down**: an operator saw a Mission that had
+        simply stopped moving and had to re-derive which gate was holding what.
+
+        The record is deliberately not a verdict.  The Mission keeps its status and
+        its rows: "this process has nothing left to do" is not "this Mission can
+        never progress" — a demand admitted (TG decision 9), an approval granted or
+        an observation recorded from outside makes the very same plan runnable, and
+        failing it here would throw away work over a judgement this method cannot
+        make.  Whether a stall should eventually *stop* the Mission is a lifecycle
+        decision for the contract owner, and part 2c's journal asks it as one.
+
+        A legacy Mission is none of its business (``_new_mode`` answers None), and a
+        Mission with an admissible occurrence is not stalled — it is between cycles.
+        """
+
+        for mission in self._active_missions():
+            if mission.status is not MissionStatus.ACTIVE:
+                continue
+            new_mode = self._new_mode(mission)
+            if new_mode is None:
+                continue
+            try:
+                admissions = new_mode.admissions(mission.id)
+            except (GraphIntegrityError, ContractError, StoreError) as error:
+                # An unreadable plan is already reported by the integrity path; it is
+                # not this method's finding and must not become a second verdict.
+                self._note(f"mission {mission.id}: stall check could not read the plan ({error})")
+                continue
+            rows = self.store.list_tasks(mission.id)
+            if any(task.status is TaskStatus.ACTIVE for task in rows):
+                # A row still running is not a stalled plan; the loop is waiting on it.
+                continue
+            if all(task.status in TERMINAL_TASK for task in rows):
+                # Nothing is left to dispatch because nothing is left: that Mission is
+                # finished or being judged, and this is not the method that says so.
+                continue
+            blocking = [item.to_json() for item in admissions.refusals]
+            # An occurrence that every readiness gate admitted and that still did not
+            # run is *also* part of the answer — the refusal then came from the
+            # allocator (budget, concurrency, attempt policy), not from the plan — so
+            # it is named here instead of being silently dropped from the record.
+            admitted = sorted(admissions.readiness)
+            if not blocking and not admitted:
+                continue
+            append_hierarchical_event(
+                self.store,
+                MISSION_STALLED,
+                mission.id,
+                # Keyed by the plan revision and the reasons, so one stall is recorded
+                # once however many times the loop is re-entered, and a *different*
+                # stall — another revision, or another gate — is a new record.
+                key=f"{mission.id}:{admissions.plan_revision}:"
+                + sha256_hex_text(
+                    "|".join(sorted(item["reason"] for item in blocking) + admitted)
+                )[:16],
+                payload={
+                    "code": "hierarchical_no_dispatchable_work",
+                    "plan_revision": int(admissions.plan_revision),
+                    # Every refusal, not a sample: the point is that nobody has to
+                    # re-derive which gate is holding which occurrence.
+                    "withheld": blocking[:32],
+                    "withheld_count": len(blocking),
+                    "admitted_not_dispatched": admitted[:32],
+                    "unfinished": sorted(
+                        task.id for task in rows if task.status not in TERMINAL_TASK
+                    )[:32],
+                },
+            )
+            self._note(
+                f"mission {mission.id}: the loop went idle with work left over "
+                f"({len(blocking)} withheld, {len(admitted)} admitted and not dispatched)"
+            )
 
     # ---------------------------------------------------------------- cycle
     def _active_missions(self) -> list[Mission]:
@@ -1599,6 +1728,15 @@ class Orchestrator:
 
     async def _cycle_inner(self) -> bool:
         progressed = import_late_accounting(self)
+        # P2.3c part 2c: before anything is planned, look at what is still unknown.
+        # It runs *first* because the Planner package is built out of the evidence
+        # snapshot: gathering after the intent was created would show the model the
+        # world as it was one round ago.
+        for mission in self._active_missions():
+            if self._gather_evidence(mission):
+                progressed = True
+            if await self._request_method_synthesis(mission):
+                progressed = True
         for mission in self._active_missions():
             if mission.status is MissionStatus.CREATED:
                 await self._start_planning(mission)
@@ -1657,6 +1795,68 @@ class Orchestrator:
                 progressed = True
         return progressed
 
+    def _gather_evidence(self, mission: Mission) -> bool:
+        """One read-only evidence round for a hierarchical Mission (P2.3c part 2c).
+
+        ``True`` only when something was actually **recorded**.  An observer that is
+        down returns nothing and the round is not progress — reporting it as progress
+        would turn an outage into a loop that never goes idle and never gives the
+        operator the quiet the ``OBSERVER_UNAVAILABLE`` record is supposed to stand out
+        against.
+
+        A deployment with no ``PlanningWorld`` is skipped rather than raised at: the
+        planning path already refuses visibly (``require_planning_world``), and a
+        Mission that cannot plan does not also need the loop to die here.
+        """
+
+        new_mode = self._new_mode(mission)
+        if new_mode is None or new_mode.planning is None:
+            return False
+        try:
+            result = new_mode.run_evidence_round(mission.id, now_ms=int(self.store.now * 1000))
+        except GraphIntegrityError:
+            # The plan is damaged; ``_decide`` is where that is diagnosed and stopped.
+            return False
+        recorded = tuple(result.recorded)
+        if recorded:
+            self._note(
+                f"mission {mission.id} evidence round recorded {len(recorded)} observation(s)"
+            )
+        return bool(recorded)
+
+    async def _request_method_synthesis(self, mission: Mission) -> bool:
+        """Ask for a method when an open goal has none that could ever apply.
+
+        P2.3c part 2c, the other half of part 2b's §8 item 5: the synthesiser's intent
+        and its reply were both wired and nothing decided *when* to ask.  The judgment
+        is :meth:`HierarchicalDispatch.goals_needing_method`, which is deliberately
+        narrow — a ``NEEDS_EVIDENCE`` goal is answered by looking, not by inventing a
+        method — and the bound is the intent's own creation key: ``ordinal=1`` for a
+        given goal means exactly one synthesis round per goal per Mission ever, which
+        is what keeps a goal nobody can serve from spending a model call each cycle.
+        """
+
+        new_mode = self._new_mode(mission)
+        if new_mode is None or new_mode.planning is None:
+            return False
+        if mission.status not in {MissionStatus.PLANNING, MissionStatus.ACTIVE}:
+            return False
+        try:
+            goals = new_mode.goals_needing_method(mission.id)
+        except (GraphIntegrityError, ContractError):
+            return False
+        progressed = False
+        for goal_task_id in goals:
+            if new_mode.synthesis_round_recorded(mission.id, goal_task_id):
+                continue
+            try:
+                await self._create_synthesizer_intent(mission.id, goal_task_id, ordinal=1)
+            except (ContractError, CommitRejected, BudgetError) as error:
+                self._note(f"method synthesis for {goal_task_id} not requested: {error}")
+                continue
+            progressed = True
+        return progressed
+
     # ------------------------------------------------------------- planning
     def _prune_deferred(self) -> None:
         """Review P0-2: a wait whose Task or Mission has ended is dropped, whoever ended it."""
@@ -1682,6 +1882,18 @@ class Orchestrator:
 
         try:
             await self._create_planner_intent(mission_id, ordinal=ordinal)
+        except GraphIntegrityError as error:
+            # P2.3c part 2: the hierarchical package is built from the plan, so a
+            # damaged plan is now noticed *before* a model call rather than after one.
+            # It is still one Mission's stop and not the run's: §24.1 decision 11, and
+            # ``GraphIntegrityError`` is a ``RuntimeError`` that ``_cycle`` does not
+            # forgive.  Corruption is not a bad proposal, so the Planner is not asked
+            # again — which is exactly what the damaged-plan witness asserts.
+            damaged = self.store.get_mission(mission_id)
+            if damaged is None:
+                raise
+            await self._plan_integrity_stop(damaged, error)
+            return False
         except RoutingUnavailable as unavailable:
             since = self._deferred_planning.get(mission_id, (self.store.now, ordinal))[0]
             self._deferred_planning[mission_id] = (since, ordinal)
@@ -1758,6 +1970,94 @@ class Orchestrator:
             if event.type in {"TaskGraphRejected", "PlanningRejected"}
         ]
 
+    def _hierarchical_planner_package(
+        self, new_mode: HierarchicalDispatch, mission: Mission, *, ordinal: int
+    ) -> Any:
+        """Seal the hierarchical Planner's package (P2.3c part 2).
+
+        The network is read through :meth:`HierarchicalDispatch.network`, the same
+        call ``compile_proposal`` makes, so the package describes exactly the plan the
+        commit will be checked against — and before the first revision exists that
+        call already answers with the *seed* network, because the Planner's first job
+        is to refine the root goal the Mission was opened for.  A damaged plan raises
+        rather than producing a package about a plan that is not readable.
+
+        A deployment without a ``PlanningWorld`` raises here too rather than falling
+        back to the legacy package: §18.5 forbids the silent half-mode, and a Planner
+        given the DAG package while the Commit Service expects a plan revision is
+        exactly that.
+        """
+
+        # ``_seal`` is private to the context builder and is reached anyway, on
+        # purpose: it renders the package *and* derives the context hash, and a second
+        # renderer here would be a second answer to "what did the model see".  The
+        # alternative — exporting a public alias — is a change to ``context/`` that
+        # buys nothing but a name.  Reaching for the private one is the smaller debt
+        # and is recorded in the journal as such.
+        from ..context.context_builder import _seal
+        from ..planning.htn.planner_package import hierarchical_planner_package
+
+        world = new_mode.require_planning_world()
+        network = new_mode.network(mission.id)
+        # ``registry`` / ``catalog`` / ``predicates`` are *attributes* on a
+        # ``PlanningWorld`` and ``capabilities`` / ``snapshot`` are calls — the same
+        # split ``compile_proposal`` reads them with.  Spelled the same way here so
+        # the package and the compiler cannot end up describing two different worlds.
+        snapshot = world.capabilities()
+        records = tuple(getattr(snapshot, "records", ()) or ())
+        package = hierarchical_planner_package(
+            mission,
+            network,
+            registry=world.registry,
+            capabilities=[
+                str(item.capability_id) for item in records if getattr(item, "available", False)
+            ],
+            unavailable_capabilities=[
+                str(item.capability_id)
+                for item in records
+                if not getattr(item, "available", False)
+            ],
+            # Review F16 / P2.3c part 2c: the four-axis report is computed and handed
+            # over instead of being declared and passed as ``()``.  ``facts`` is the
+            # other half of the same repair: the read-set entry for every observation
+            # this Mission recorded, so a Planner that cites a fact cites one the
+            # library holds (part 2b's smoke stopped at ``READ_SET_UNRESOLVED``
+            # because it had never been shown one).
+            reports=new_mode.method_applicability(mission.id),
+            observations=new_mode.semantics().list_observations(mission.id),
+            attempt_ordinal=ordinal,
+            rejected=self._planning_rejections(mission.id) if ordinal > 1 else (),
+        )
+        return _seal(package)
+
+    def _hierarchical_planner_template(self, mission_id: str) -> Any:
+        """The hierarchical Planner's prompt, chosen by the **mode** (§18.5 rule 1).
+
+        ``template_for`` honours a deployment's frozen ``prompt_versions`` pin for any
+        template of the same *role*, and every code-domain deployment pins ``planner``
+        to a DAG-Planner version.  So asking it for the hierarchical template returned
+        the legacy one: the model was told to draw a task graph while being handed the
+        hierarchical package, and every round came back ``proposal_unreadable`` —
+        P2.3b's blocker (c) again, one layer further in.
+
+        A pin is still honoured when it names a *hierarchical* version, which is how a
+        Mission stays replayable on the exact prompt it ran with.  A pin naming a
+        version outside that set belongs to the other mode and does not apply here.
+        """
+
+        from ..runtime.role_templates import (
+            HIERARCHICAL_PLANNER_VERSIONS,
+            PLANNER_HIERARCHICAL_V3,
+        )
+
+        candidate = self._template(PLANNER_HIERARCHICAL, mission_id)
+        if candidate.prompt_version in HIERARCHICAL_PLANNER_VERSIONS:
+            return candidate
+        # P2.3c part 2c: v3 is the one whose read-set rule matches the package the
+        # branch above builds (it carries a ``facts`` section; v2 tells the model there
+        # is none).  The prompt and the package are chosen together or not at all.
+        return PLANNER_HIERARCHICAL_V3
+
     async def _create_planner_intent(self, mission_id: str, *, ordinal: int) -> DispatchIntent:
         from ..runtime.action_schema import planner_action_contract
 
@@ -1782,24 +2082,37 @@ class Orchestrator:
                 )
             except (ValueError, OSError) as error:
                 raise ContextRejected("registered source workload could not be verified") from error
-        package = build_planner_package(
-            mission,
-            workspace_files=sorted(set(seed) | set(source_binding.get("source_versions", {}))),
-            source_versions=source_binding.get("source_versions"),
-            attempt_ordinal=ordinal,
-            rejected=self._planning_rejections(mission_id) if ordinal > 1 else (),
-            deployed_layers=self._deployed,
-            budget_floor=self._budget_floor(mission_id),
-            domain=domain,
-            workload=workload,
-            action_candidate_contract=planner_action_contract(
-                mission_criteria=mission.success_criteria,
-                connectors=self._connectors,
-                deployment=self._config.deployment_policy,
-            ),
-        )
+        # P2.3c part 2 (P2.3b blocker c): the prompt and the package are chosen by the
+        # Mission's *mode*, not independently.  A Planner asked for a
+        # <plan_revision_proposal> while being handed the DAG package has nothing to
+        # propose with — it cannot see the open goals, the registered methods or the
+        # plan revision it is answering against — which is why every round came back
+        # ``proposal_unreadable`` under a real model.  The legacy package is built by
+        # the same call it always was, with the same arguments, so its bytes and its
+        # context hash do not move (§18.5 rule 1).
+        new_mode = self._new_mode(mission)
+        if new_mode is not None:
+            package = self._hierarchical_planner_package(new_mode, mission, ordinal=ordinal)
+            template = self._hierarchical_planner_template(mission_id)
+        else:
+            package = build_planner_package(
+                mission,
+                workspace_files=sorted(set(seed) | set(source_binding.get("source_versions", {}))),
+                source_versions=source_binding.get("source_versions"),
+                attempt_ordinal=ordinal,
+                rejected=self._planning_rejections(mission_id) if ordinal > 1 else (),
+                deployed_layers=self._deployed,
+                budget_floor=self._budget_floor(mission_id),
+                domain=domain,
+                workload=workload,
+                action_candidate_contract=planner_action_contract(
+                    mission_criteria=mission.success_criteria,
+                    connectors=self._connectors,
+                    deployment=self._config.deployment_policy,
+                ),
+            )
+            template = self._template(PLANNER, mission_id)
         decision = self._route_service("planner", mission_id)
-        template = self._template(PLANNER, mission_id)
         config = AgentConfig(
             name=f"planner-{ordinal}",
             instructions=template.instructions,
@@ -1829,6 +2142,130 @@ class Orchestrator:
                 "base_version": mission.version,
                 "ordinal": ordinal,
                 **source_binding,
+                **self._service_config(decision),
+            },
+            reservation=self._reservation(self._config.planner_reserve_tokens, decision.profile_id),
+        )
+
+    def _accept_hierarchical_leaf(
+        self,
+        mission: Mission,
+        task: Any,
+        attempt: Any,
+        *,
+        result_id: str,
+        layers: Sequence[Any],
+    ) -> None:
+        """A verified primitive leaf → an ``Acceptance`` → the accepted-output index.
+
+        P2.3c part 2b (§13 item 2).  ``accept_result`` moves the *Task* to COMPLETED,
+        which is the legacy lifecycle and says nothing about AER: in the hierarchical
+        mode a contribution is accepted by ``accept_review`` out of the review anchors,
+        and only a recorded ``Acceptance`` lets a DATA consumer bind the producer's
+        artifact at a declared port.  Without this call ``acceptance_outputs`` stayed
+        empty and every consumer sat in ``WAITING_DATA`` forever.
+
+        Legacy Missions never reach here — ``_new_mode`` answers None — and a
+        compound is refused by the assembly rather than reviewed.  A refusal is
+        *recorded and does not undo the verification*: the verdict is a fact that
+        happened, and turning a refused acceptance into a failed result would throw
+        away a passing run because the accept-side gate said "not yet".
+        """
+
+        new_mode = self._new_mode(mission)
+        if new_mode is None:
+            return
+        from ..orchestrator.leaf_acceptance import LeafAcceptanceAssembly
+        from .resolution_commits import ResolutionCommitRejected
+
+        assembly = LeafAcceptanceAssembly(self.store, self.commit, dispatch=new_mode)
+        producers = tuple(
+            item for item in (getattr(attempt, "agent_id", None),) if isinstance(item, str) and item
+        )
+        try:
+            receipt = assembly.accept(
+                mission.id,
+                str(task.id),
+                result_id=str(result_id),
+                layers=layers,
+                artifacts=self.store.list_artifacts(attempt.id),
+                producer_agent_ids=producers,
+                reviewer_agent_id=f"critic:{attempt.id}",
+                now_ms=int(self.store.now * 1000),
+                command_id=f"accept:{result_id}",
+            )
+        except (ContractError, ResolutionCommitRejected, StoreError) as error:
+            self._note(f"task {task.id}: acceptance refused ({error})")
+            return
+        self._note(f"task {task.id}: acceptance {receipt.acceptance_id} recorded")
+
+    async def _create_synthesizer_intent(
+        self, mission_id: str, goal_task_id: str, *, ordinal: int
+    ) -> DispatchIntent:
+        """The MethodSynthesizer's own dispatch (§7.3 source 4, §18.5 C8, §13 v1.4).
+
+        A **new role**, not a new version of an existing one, and that shows in three
+        places rather than one:
+
+        * its own role template (``METHOD_SYNTHESIZER``), so it cannot masquerade as a
+          Task Critic;
+        * its own budget account — the Mission's planning account, which is the
+          ``mission_planning`` account of §13 v1.4 — so a synthesis round never lands
+          on the Task budget of whatever goal happened to need a method;
+        * its own typed context, ``synthesis.build_request``, which carries no
+          Mission id, no principal and no budget field at all.
+
+        The reply is admitted through
+        :meth:`HierarchicalDispatch.apply_synthesizer_reply`, where the author is
+        fixed at ``MODEL``.
+        """
+
+        from ..runtime.role_templates import METHOD_SYNTHESIZER
+
+        mission = self.store.get_mission(mission_id)
+        assert mission is not None
+        new_mode = self._new_mode(mission)
+        if new_mode is None:
+            raise ContractError(
+                "a MethodSynthesizer round belongs to a hierarchical Mission; a legacy "
+                "Mission has no method library to extend (§18.5 rule 1)"
+            )
+        request = new_mode.synthesis_request(mission_id, goal_task_id)
+        template = self._template(METHOD_SYNTHESIZER, mission_id)
+        decision = self._route_service("planner", mission_id)
+        config = AgentConfig(
+            name=f"method-synthesizer-{ordinal}",
+            instructions=template.instructions,
+            model_profile_ref=decision.profile_id,
+            tool_names=(),
+            limits=AgentLimits(
+                max_model_calls_per_turn=2,
+                max_tool_calls_per_turn=0,
+                turn_deadline_seconds=self._config.turn_deadline_seconds,
+            ),
+        )
+        message = user_message_json(json.dumps(request.to_json(), ensure_ascii=False))
+        subject = f"{mission_id}:synthesizer:{goal_task_id}:{ordinal}"
+        return self.commit.create_service_intent(
+            kind="plan",
+            subject_id=subject,
+            mission_id=mission_id,
+            # §13 v1.4: the cost lands on the Mission's planning account, never on the
+            # Task account of the goal that needed the method.
+            account_id=mission_account(mission_id),
+            creation_key=subject,
+            input_id="attempt-input",
+            input_hash=sha256_hex(message),
+            config={
+                "agent_config": config.to_json(),
+                "message": message,
+                "context_version": request.content_hash(),
+                "prompt_version": template.prompt_version,
+                "base_version": mission.version,
+                "ordinal": ordinal,
+                "role": "method_synthesizer",
+                "budget_account": str(ReviewAccount.MISSION_PLANNING),
+                "goal_task_id": str(goal_task_id),
                 **self._service_config(decision),
             },
             reservation=self._reservation(self._config.planner_reserve_tokens, decision.profile_id),
@@ -2790,6 +3227,16 @@ class Orchestrator:
             )
             self._note(f"planner: model echo mismatch {sorted(echoed)} → mission stopped")
             return
+        # P2.3c part 2c: a MethodSynthesizer round rides on the same ``plan`` intent
+        # kind and is *not* a plan-revision proposal — its reply is a
+        # ``<method_proposal>`` for the registry, not operations on this Mission's plan.
+        # Part 2b created the intent and admitted the reply but wired nothing between
+        # them, so a synthesis round's answer was collected as a plan proposal and
+        # refused as unreadable.  The role is read from the intent's own config, which
+        # is where ``_create_synthesizer_intent`` wrote it.
+        if str(intent.config.get("role", "")) == "method_synthesizer":
+            await self._collect_synthesizer(intent, result, mission, text)
+            return
         # P2.3b: a hierarchical Mission's Planner speaks the typed contract (§18.3), so
         # the reply goes to the assembly and the flat-DAG path below is not entered.
         new_mode = self._new_mode(mission)
@@ -2829,6 +3276,54 @@ class Orchestrator:
             f"task graph committed: {[task.id for task in tasks]} (warnings={receipt.get('warnings')})"
         )
         self._settle_intent(intent, "SETTLED")
+        self._settle_service_if_known(intent.subject_id, mission.id)
+
+    async def _collect_synthesizer(  # type: ignore[no-untyped-def]
+        self, intent: DispatchIntent, result, mission: Mission, text: str
+    ) -> None:
+        """A ``<method_proposal>`` reply → the registry's admission protocol (§7.3).
+
+        Assembly only: the parse, the four-axis admission decision and the author lock
+        all live in :meth:`HierarchicalDispatch.apply_synthesizer_reply`, whose
+        signature has no ``author`` parameter precisely so this call cannot present a
+        model-written definition as anything else.  A refused proposal is **not** a
+        planning failure: the Mission's plan is untouched, the registry simply did not
+        take the definition, and the reason is recorded so an operator can see whether
+        the model proposed something unsafe or something unimplementable.
+        """
+
+        from ..planning.htn.registry import RegistryAuthor
+
+        new_mode = self._new_mode(mission)
+        goal_task_id = str(intent.config.get("goal_task_id", ""))
+        if new_mode is None:
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            return
+        try:
+            if result.state is not AgentTurnState.COMMITTED:
+                raise ContractError(f"synthesizer turn failed: {dict(result.error or {})}")
+            receipt = new_mode.apply_synthesizer_reply(mission.id, text)
+            admitted = bool(receipt.admitted)
+            problems = tuple(f"{item.code!s}: {item.detail}" for item in receipt.problems)
+            method_ref = str(receipt.method_ref.method_id)
+            verdict = str(receipt.verdict)
+        except (ContractError, BlockError, StoreError) as error:
+            admitted, problems, method_ref, verdict = False, (str(error),), "", "UNREADABLE"
+        new_mode.record_synthesis_outcome(
+            mission.id,
+            goal_task_id=goal_task_id,
+            admitted=admitted,
+            problems=problems,
+            method_id=method_ref,
+            verdict=verdict,
+            author=str(RegistryAuthor.MODEL),
+        )
+        self._note(
+            f"method synthesis for {goal_task_id}: "
+            f"{'admitted' if admitted else 'refused'} ({'; '.join(problems)[:200]})"
+        )
+        self._settle_intent(intent, "SETTLED" if admitted else "FAILED")
         self._settle_service_if_known(intent.subject_id, mission.id)
 
     async def _collect_plan_hierarchical(  # type: ignore[no-untyped-def]
@@ -3497,6 +3992,9 @@ class Orchestrator:
         if accepted:
             self._fault("after_task_completed", "attempt")
             self._note(f"result {result_id} PASS → task {completed.id} COMPLETED")
+            self._accept_hierarchical_leaf(
+                mission, task, attempt, result_id=result_id, layers=verdict.layers
+            )
             for sibling in self.store.list_attempts(task.id):
                 if sibling.status is AttemptStatus.SUPERSEDED:
                     await self._release_attempt(sibling.id, cancel=True)
@@ -5082,6 +5580,10 @@ class Orchestrator:
         return True
 
     async def _decide(self, mission: Mission) -> bool:
+        # Review F1, before anything else: a hierarchical Mission on a deployment with
+        # no assembly is not scheduled, not judged and not handed to ``allocate()``.
+        if self._assembly_missing(mission, at="decide"):
+            return False
         tasks = self.store.list_tasks(mission.id)
         if not tasks or mission.status is not MissionStatus.ACTIVE:
             return False
@@ -5122,6 +5624,20 @@ class Orchestrator:
         if settled:
             current = self.store.get_mission(mission.id)  # not the cycle's stale snapshot
             if current is None or current.status is not MissionStatus.ACTIVE:
+                return False
+            if new_mode is not None and not await self._root_resolution_formed(current, new_mode):
+                # §21.5 hard invariant, "wrongly declared complete = 0": a hierarchical
+                # Mission reaches COMPLETED only *after* its root GoalResolution is
+                # formed, and that resolution is formed only by
+                # ``commit_goal_resolution`` — out of the success formula, the final
+                # acceptance and the delivery contract, never out of "every gating
+                # child was accepted" (which is what ``settled`` says) and never out of
+                # the Mission's own status string (§6.3, §8.1).  When it cannot be
+                # formed the Mission stays ACTIVE with the refusal recorded, which is a
+                # Mission that is visibly not finished rather than one wrongly declared
+                # finished.  ``False`` and not ``True``: nothing moved, so the loop goes
+                # idle instead of re-offering a resolution that is refused for the same
+                # reason forever.
                 return False
             try:
                 if any(c.startswith(ACTION_PREFIX) for c in current.success_criteria):
@@ -5166,24 +5682,92 @@ class Orchestrator:
         if pending:  # D5-6: no new Attempt while the Manager decides about the Task
             tasks = [t for t in tasks if t.id not in pending]
         bound = self.policy_for(mission.id)  # step 9 (plan D9-4'): the Mission's own version
-        plan = allocate(
-            tasks,
-            attempts,
-            concurrency_limit=min(int(bound["mission_concurrency"]), self._config.max_concurrency),
-            candidates_per_task=int(bound["candidates_per_task"]),
-            now=self.store.now,
-            aging_window_seconds=float(bound["aging_window_seconds"]),
-            mission_max_tokens=mission.budget.max_tokens,
-            pressure=self._pressure,  # D6-3: the gate outside the §29.3 formula
-            reduced_concurrency_ratio=self._config.reduced_concurrency_ratio,
-            exploration_slots=int(bound["exploration_slots"]),
-            weights=bound["allocator_weights"],
-            waiting_attempt_ids=self.commit.selection_waiting_ids(),
-            selection_task_ids=frozenset(t.id for t in compare_tasks),
-        )
+        # P2.3c part 2 / §18.5 constraint 4 / §24.1 decision 6: a hierarchical Mission
+        # allocates over *admissions*, never over the READY string.  P2.3b only had the
+        # form gate here, so a DATA consumer whose producer had not been accepted was
+        # dispatched with no inputs and ran anyway; ``allocate_v2`` takes only records
+        # ``admit_for_dispatch`` built out of a READY_CANDIDATE readiness report, so an
+        # occurrence waiting on data, evidence, an approval or a refinement is withheld
+        # with a named reason instead of quietly running.  The legacy entry is untouched
+        # and stays the entry for a Mission that has no semantic bindings.
+        admissions: DispatchAdmissions | None = None
+        # One name, two plan shapes: the legacy ``AllocationPlan`` grants ``Task``
+        # objects and ``AllocationPlanV2`` grants ``EligiblePrimitiveTask`` admissions.
+        # ``granted_ids`` is where the two meet, and it is a list of *ids* on purpose —
+        # the row is re-read inside the loop anyway, so carrying either object past
+        # this point would only invite one branch to read the other's fields.
+        plan: AllocationPlan | AllocationPlanV2
+        granted_ids: list[tuple[str, int]]
+        if new_mode is not None:
+            try:
+                # P2.3c part 2b: re-read every acceptance a declared DATA edge rests on
+                # and record the licence to bind it (I19: recompute rather than reuse
+                # the old TRUE).  It runs *before* the readiness read because the
+                # resolver looks the witness up by acceptance id; issuing it afterwards
+                # would leave the consumer in WAITING_DATA for one whole cycle after its
+                # producer was accepted.
+                new_mode.issue_input_witnesses(
+                    mission.id,
+                    new_mode.network(mission.id),
+                    now_ms=int(self.store.now * 1000),
+                )
+                # P2.3c part 2c: the same act on the START-precondition lane, and for
+                # the same reason.  A leaf under a gated method inherits its parent
+                # method's ``applicable_when`` as a SELECT precondition, and TG §9
+                # refuses to dispatch it without a purpose=START witness — which
+                # nothing issued, so the real-model smoke committed a plan and then
+                # withheld every leaf with ``witness_missing`` for ever.
+                new_mode.issue_start_witnesses(
+                    mission.id,
+                    new_mode.network(mission.id),
+                    now_ms=int(self.store.now * 1000),
+                )
+                admissions = new_mode.admissions(mission.id)
+            except GraphIntegrityError as error:
+                await self._plan_integrity_stop(mission, error)
+                return True
+            new_mode.record_withheld(mission.id, admissions)
+            plan = allocate_v2(
+                tasks,
+                attempts,
+                admissions.bindings,
+                admissions.readiness,
+                concurrency_limit=min(
+                    int(bound["mission_concurrency"]), self._config.max_concurrency
+                ),
+                candidates_per_task=int(bound["candidates_per_task"]),
+                now=self.store.now,
+                aging_window_seconds=float(bound["aging_window_seconds"]),
+                mission_max_tokens=mission.budget.max_tokens,
+                pressure=self._pressure,
+                reduced_concurrency_ratio=self._config.reduced_concurrency_ratio,
+                exploration_slots=int(bound["exploration_slots"]),
+                weights=bound["allocator_weights"],
+                waiting_attempt_ids=self.commit.selection_waiting_ids(),
+            )
+            granted_ids = [(str(item.task_id), n) for item, n in plan.grants]
+        else:
+            plan = allocate(
+                tasks,
+                attempts,
+                concurrency_limit=min(
+                    int(bound["mission_concurrency"]), self._config.max_concurrency
+                ),
+                candidates_per_task=int(bound["candidates_per_task"]),
+                now=self.store.now,
+                aging_window_seconds=float(bound["aging_window_seconds"]),
+                mission_max_tokens=mission.budget.max_tokens,
+                pressure=self._pressure,  # D6-3: the gate outside the §29.3 formula
+                reduced_concurrency_ratio=self._config.reduced_concurrency_ratio,
+                exploration_slots=int(bound["exploration_slots"]),
+                weights=bound["allocator_weights"],
+                waiting_attempt_ids=self.commit.selection_waiting_ids(),
+                selection_task_ids=frozenset(t.id for t in compare_tasks),
+            )
+            granted_ids = [(granted.id, candidate) for granted, candidate in plan.grants]
         progressed = False
-        for granted, _candidate in plan.grants:
-            current_task = self.store.get_task(granted.id)
+        for task_id, _candidate in granted_ids:
+            current_task = self.store.get_task(task_id)
             assert current_task is not None
             task = current_task
             if task.status in TERMINAL_TASK:
@@ -5193,6 +5777,7 @@ class Orchestrator:
                 mission,
                 task,
                 self.store.list_attempts(task.id),
+                admission=None if admissions is None else admissions.admission_for(task.id),
                 allocation=None
                 if score is None
                 else {
@@ -5210,6 +5795,66 @@ class Orchestrator:
             if current is None or current.status in TERMINAL_MISSION:
                 break
         return progressed
+
+    async def _root_resolution_formed(
+        self, mission: Mission, new_mode: HierarchicalDispatch
+    ) -> bool:
+        """Whether this Mission's root ``GoalResolution`` stands (P2.3c part 2).
+
+        Offers it once when it does not, and reports the refusal.  The decision itself
+        is entirely the Commit Service's — this is the trigger, not a second judge —
+        and the delivery contract is read from the Mission's requirements so the stage
+        a root must reach is the one the goal asked for rather than one this call
+        invented (AER §6.1).
+        """
+
+        semantics = new_mode.semantics()
+        try:
+            inputs = new_mode.root_resolution_inputs(mission.id)
+        except GraphIntegrityError as error:
+            await self._plan_integrity_stop(mission, error)
+            return False
+        if inputs.reason == "ALREADY_RESOLVED":
+            return True
+        required_stage = None
+        receipt_ids: tuple[str, ...] = ()
+        if inputs.requirements is not None and inputs.requirements.delivery_contract_ref:
+            # The goal declared a delivery contract, so the root is not resolved until
+            # a recorded DeliveryReceipt says the output travelled that far.  CONFIRMED
+            # is the strongest stage there is, and asking for less than the strongest
+            # would be this call relaxing the contract on the goal's behalf.
+            required_stage = DeliveryStage.CONFIRMED
+            # Review F5: only the receipts this root may legitimately quote.  Naming
+            # every receipt the Mission ever recorded meant a single one written for a
+            # retired branch — or for an Acceptance later superseded — refused the
+            # *whole* command (``DELIVERY_RECEIPT_INVALID``) for good.  The filter is
+            # the accept side's own predicate, asked before the command is built rather
+            # than written a second time here.
+            receipt_ids = eligible_root_receipts(
+                semantics,
+                mission.id,
+                obligation_id=inputs.obligation_id,
+                method_instance_id=inputs.method_instance_id,
+                required_stage=required_stage,
+            )
+        outcome = new_mode.attempt_root_resolution(
+            mission.id,
+            principal=PlanPrincipal(
+                principal_id=self._owner,
+                scope_id="mission",
+                manager_epoch=semantics.epoch(mission.id, "mission"),
+            ),
+            command_id=f"{mission.id}:root-resolution",
+            required_delivery_stage=required_stage,
+            delivery_receipt_ids=receipt_ids,
+            source={"trigger": "decide", "orchestrator": self._owner},
+        )
+        if not outcome.committed:
+            self._note(
+                f"mission {mission.id} root resolution not formed: "
+                f"{outcome.reason} ({outcome.detail[:200]})"
+            )
+        return outcome.committed
 
     def _artifacts_by_task(self, tasks: Sequence[Task]) -> dict[str, list[Artifact]]:
         by_task: dict[str, list[Artifact]] = {}
@@ -5230,7 +5875,13 @@ class Orchestrator:
         *,
         allocation: Mapping[str, Any] | None = None,
         selection_decision: Mapping[str, Any] | None = None,
+        admission: Any = None,
     ) -> bool:
+        # Review F1: every other caller of this entry (repair, selection, a manual
+        # drive) must be fail-closed too, or the refusal in ``_decide`` would only
+        # cover the common path.
+        if self._assembly_missing(mission, at="next_attempt"):
+            return False
         # P2.3b / §18.5 rule 4: before anything else, a compound is refused here with
         # NEEDS_REFINEMENT.  The gate is ``form`` from the semantic binding, not the
         # status string and not the semantics version — ``TaskStatus.READY`` on a
@@ -5246,6 +5897,30 @@ class Orchestrator:
                 self._note(
                     f"task {task.id} not dispatched: {intercepted.reason} "
                     f"(occurrence {intercepted.occurrence_id})"
+                )
+                return False
+            # P2.3c part 2 / TG §8.3: the dispatch transaction re-checks.  An
+            # ``EligiblePrimitiveTask`` is *not* a capability — it records that a
+            # controlled check passed at ``admitted_at_ms`` and grants nothing — so
+            # this entry refuses a Task that arrived without one, however it got here.
+            # ``_decide`` hands its admission down so the common path does not re-read
+            # the whole plan; every other caller (repair, selection, a manual drive)
+            # pays for the fresh read rather than skipping the gate.
+            if admission is None:
+                try:
+                    admission = new_mode.admissions(mission.id).admission_for(task.id)
+                except GraphIntegrityError as error:
+                    await self._plan_integrity_stop(mission, error)
+                    return True
+            # Review F11: ``isinstance`` and not a duck-typed ``gate_passed`` probe.
+            # ``EligiblePrimitiveTask.gate_passed`` is guarded by the admission token,
+            # but a structural test would let *any* object carrying a true attribute of
+            # that name through this door — which is exactly the "admission with a flag"
+            # shape ``admissions()`` is written to avoid.
+            if not isinstance(admission, EligiblePrimitiveTask) or not admission.gate_passed:
+                self._note(
+                    f"task {task.id} not dispatched: no admission from the readiness gate "
+                    "(§18.5 constraint 4)"
                 )
                 return False
         # A Worker already in flight can produce another pending verification.

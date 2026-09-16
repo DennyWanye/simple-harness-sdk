@@ -123,7 +123,7 @@ from agent_orchestrator.orchestrator.resolution_commits import (
 )
 from agent_orchestrator.storage.htn_store import HtnStore
 from agent_orchestrator.storage.obligation_store import ObligationStore
-from agent_orchestrator.storage.store import Store
+from agent_orchestrator.storage.store import Store, StoreError
 from agent_orchestrator.verification.acceptance_rules import (
     CompoundFacts,
     ExecutionPosture,
@@ -149,17 +149,56 @@ ROOT_CRITERION = "c-delivered"
 
 
 # ======================================================================================
-# The service under test: the mixin composed onto CommitService (not added to it yet)
+# The service under test: ``CommitService`` itself (P2.3c part 2 wired the mixin in)
 # ======================================================================================
 
+#: P2.3c part 1 composed ``ResolutionCommitsMixin`` onto ``CommitService`` here, in a
+#: local subclass, because adding it to the real base list was part 2's job and the
+#: P2.3b review was still in flight.  Part 2 did add it, so the alias now *is* the
+#: service — and the assertion below is what stops the alias from quietly becoming a
+#: second, divergent composition again.
+ResolutionService = CommitService
 
-class ResolutionService(ResolutionCommitsMixin, CommitService):
-    """``CommitService`` plus the accept-side mixin, for this slice only.
 
-    Adding ``ResolutionCommitsMixin`` to ``CommitService``'s own base list is the
-    second half of P2.3c; composing it here proves the mixin without changing the
-    class every other suite in the repository builds.
+def test_the_accept_side_is_wired_into_the_commit_service() -> None:
+    """The two entry points are on the deployment's one writing authority (§18.2)."""
+
+    assert issubclass(CommitService, ResolutionCommitsMixin)
+    assert CommitService.accept_review is ResolutionCommitsMixin.accept_review
+    assert CommitService.commit_goal_resolution is ResolutionCommitsMixin.commit_goal_resolution
+    assert CommitService.record_delivery_receipt is ResolutionCommitsMixin.record_delivery_receipt
+
+
+def test_the_accept_half_shares_no_private_name_with_anything_before_it_in_the_mro() -> None:
+    """No base on ``CommitService`` may silently take (or shadow) an accept-side helper.
+
+    P2.3c part 2c, review F10: this used to compare ``ResolutionCommitsMixin`` against
+    ``PlanCommitsMixin`` alone.  ``CommitService`` mixes in eleven other bases and
+    ``ResolutionCommitsMixin`` sits **last** in the MRO, so a name collision with any
+    one of them shadows the accept-side method just as completely — and the pair-wise
+    check would not see it.  The whole MRO is walked instead, which also means a base
+    added later is covered without anyone remembering to extend a list.
     """
+
+    from agent_orchestrator.orchestrator.commit_service import CommitService
+
+    def own(kind: type) -> set[str]:
+        return {name for name in vars(kind) if not name.startswith("__")}
+
+    accept_names = own(ResolutionCommitsMixin)
+    assert accept_names, "the accept half defines nothing; the guard would be vacuous"
+    bases = [
+        kind
+        for kind in CommitService.__mro__
+        if kind not in (object, CommitService, ResolutionCommitsMixin)
+    ]
+    assert len(bases) >= 10, f"the MRO shrank unexpectedly: {[k.__name__ for k in bases]}"
+    collisions = {
+        kind.__name__: sorted(own(kind) & accept_names)
+        for kind in bases
+        if own(kind) & accept_names
+    }
+    assert collisions == {}, collisions
 
 
 # ======================================================================================
@@ -379,6 +418,8 @@ class World:
     root_package: ReviewPackage
     root_record: ReviewRecord
     root_revision: RequirementsRevision
+    #: Receipt ids the library refused to hold — see :meth:`delivery`.
+    unrecorded: set[str] = dataclasses.field(default_factory=set)
 
     @property
     def store(self) -> Store:
@@ -519,11 +560,17 @@ class World:
         fields.update(overrides)
         return Acceptance(**fields)
 
-    def delivery(
+    def delivery_receipt(
         self, stage: DeliveryStage, *, acceptance_id: str = "acc-leaf-1"
     ) -> DeliveryReceipt:
+        """The receipt value, unrecorded.  ``delivery()`` is what puts it in the store."""
+
+        # The id carries the quoted acceptance whenever it is not the default one, so
+        # two receipts for the same stage but different acceptances are two records
+        # rather than one overwriting the other.
+        suffix = "" if acceptance_id == "acc-leaf-1" else f"-{acceptance_id}"
         return DeliveryReceipt(
-            receipt_id=f"dlv-{stage!s}".lower(),
+            receipt_id=f"dlv-{stage!s}{suffix}".lower(),
             mission_id=self.mission.id,
             acceptance_id=AcceptanceId(acceptance_id),
             stage=stage,
@@ -532,6 +579,26 @@ class World:
                 "op-1" if stage in {DeliveryStage.SENT, DeliveryStage.CONFIRMED} else None
             ),
         )
+
+    def delivery(self, stage: DeliveryStage, *, acceptance_id: str = "acc-leaf-1") -> str:
+        """Record one delivery receipt and return the **id** the command names.
+
+        P2.3c part 2 moved the receipt out of the command and into the library, so a
+        test that wants a root to be deliverable has to make the library hold the
+        record — which is the whole point of the change.  A receipt the library
+        refuses to hold (an acceptance nobody stored, another Mission's) is returned
+        as its id anyway: the gate then refuses it as "no such record", which is the
+        same "a receipt is a claim until the store agrees" answer one level earlier.
+        """
+
+        receipt = self.delivery_receipt(stage, acceptance_id=acceptance_id)
+        try:
+            self.service.record_delivery_receipt(
+                self.mission.id, receipt, command_id=f"cmd-dlv-{receipt.receipt_id}-{acceptance_id}"
+            )
+        except StoreError:
+            self.unrecorded.add(receipt.receipt_id)
+        return receipt.receipt_id
 
     def spare_record(self, name: str) -> ReviewRecordId:
         """A stored (non-official) review record id for a second acceptance.
@@ -1560,9 +1627,21 @@ def test_a_receipt_from_another_mission_is_invalid(tmp_path: Any) -> None:
     world = root_world(tmp_path)
     world.accept()
     foreign = dataclasses.replace(
-        world.delivery(DeliveryStage.CONFIRMED), mission_id="mission-elsewhere"
+        world.delivery_receipt(DeliveryStage.CONFIRMED), mission_id="mission-elsewhere"
     )
-    command = root_command(world, delivery_receipts=(foreign,))
+    foreign = dataclasses.replace(foreign, receipt_id="dlv-elsewhere")
+    # The library refuses to hold it at all, which is the same answer one step
+    # earlier: a receipt for another Mission is not this Mission's record.
+    assert (
+        refusal(
+            world.service.record_delivery_receipt,
+            world.mission.id,
+            foreign,
+            command_id="cmd-dlv-foreign",
+        )
+        == "DELIVERY_RECEIPT_INVALID"
+    )
+    command = root_command(world, delivery_receipts=(foreign.receipt_id,))
     assert refusal(world.resolve, command) == "DELIVERY_RECEIPT_INVALID"
 
 
@@ -1936,7 +2015,13 @@ def test_the_event_key_is_derived_from_the_command_id(world: World) -> None:
 def test_a_replay_lookup_does_not_read_the_whole_mission(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A Mission with no accept-side event is answered from the count, not a scan."""
+    """The replay lookup is a keyed read into migration 17, not a scan of the log.
+
+    P2.3c part 1 had to page the Mission's events because ``plan_commit_receipts`` is
+    plan-shaped and ``storage/`` was not its to change; it got the common case down to
+    one indexed ``count_events``.  Part 2 owns storage, so ``(mission_id, command_id)``
+    is a primary key and *neither* the first command nor its replay reads the log.
+    """
 
     calls: list[int] = []
     real = Store.list_events
@@ -1949,7 +2034,7 @@ def test_a_replay_lookup_does_not_read_the_whole_mission(
     world.accept()
     assert calls == []
     world.accept()
-    assert len(calls) == 1
+    assert calls == []
 
 
 def test_a_replay_of_the_wrong_kind_is_a_conflict(world: World) -> None:

@@ -81,11 +81,11 @@ from agent_orchestrator.planning.htn.registry import (
     TaskTypeSpec,
 )
 from agent_orchestrator.planning.htn.seed_methods import (
+    SEED_ROOT,
     SeedDomain,
     admit_domain,
     available_domains,
     install_domain,
-    load_domain,
     load_domain_path,
     seed_content_hash,
 )
@@ -155,6 +155,10 @@ class Env:
     registry: MethodRegistry = field(default_factory=MethodRegistry)
     capability_ids: list[str] = field(default_factory=list)
     domains: tuple[SeedDomain, ...] = ()
+    #: The real ``DeploymentPlanningWorld`` this Env was filled from, when it was
+    #: built by :func:`seed_env`.  A hand-built Env has none: it declares its own
+    #: types with no seed data at all, which is the case the fixture exists for.
+    world: Any = None
     _entries: dict[str, EvidenceEntry] = field(default_factory=dict)
 
     # -- declarations -------------------------------------------------------------
@@ -301,6 +305,10 @@ class Env:
         self,
         *,
         mission: str | None = None,
+        # The deployment assembly asks for a policy by ``mission_id``; accepting the
+        # spelling here keeps a hand-built Env usable wherever a real
+        # ``DeploymentPlanningWorld`` is.
+        mission_id: str | None = None,
         unavailable: Sequence[str] = (),
         known_capabilities: Sequence[str] | None = None,
         **overrides: Any,
@@ -313,7 +321,7 @@ class Env:
         return AdmissionPolicy(
             policy_ref="policy-1",
             policy_version=1,
-            mission_id=mission or self.mission,
+            mission_id=mission or mission_id or self.mission,
             predicates=self.predicates,
             task_types=self.catalog,
             schemas=self.schemas,
@@ -338,20 +346,48 @@ class Env:
 
 
 def seed_env(mission: str = MISSION, *, root: Path | None = None) -> Env:
-    """An :class:`Env` with the shipped seed domains installed and admitted."""
+    """An :class:`Env` with the shipped seed domains installed and admitted.
 
-    env = Env(mission=mission)
-    names = available_domains() if root is None else available_domains(root)
-    domains = tuple(
-        load_domain(name) if root is None else load_domain(name, root=root) for name in names
+    It **delegates** to the deployment assembly (P2.3c part 2b) rather than keeping
+    a second copy of "how a seed library becomes a PlanningWorld".  Before that
+    assembly existed the fixture was the only thing that knew, which is exactly why
+    a real deployment could not build one.  What the fixture still owns is the
+    *test* conveniences on top: ``register_type``, ``say``, ``admit``.
+
+    The capability table is forced to "every declared capability is available",
+    which is the fixture's own claim and not the assembly's: these suites decide
+    applicability from evidence, and a host without ``code_test`` deployed would
+    otherwise silently change every seed-domain expectation.  A test that wants the
+    derived table asks :func:`seed_world` for it.
+    """
+
+    world = seed_world(mission, root=root)
+    env = Env(
+        mission=mission,
+        schemas=world.schemas,
+        predicates=world.predicates,
+        catalog=world.catalog,
+        registry=world.registry,
+        capability_ids=list(world.capability_ids),
+        domains=world.domains,
     )
-    for domain in domains:
-        install_domain(domain, schemas=env.schemas, predicates=env.predicates, catalog=env.catalog)
-        env.register_capability(*domain.capability_ids)
-    env.domains = domains
-    for domain in domains:
-        admit_domain(domain, registry=env.registry, policy=env.policy())
+    env.world = world
     return env
+
+
+def seed_world(mission: str = MISSION, *, root: Path | None = None, **overrides: Any):
+    """The real :class:`DeploymentPlanningWorld` for the shipped seed domains."""
+
+    from agent_orchestrator.planning.htn.world import build_planning_world
+
+    directory = SEED_ROOT if root is None else Path(root)
+    fields: dict[str, Any] = {
+        "domains": available_domains(directory),
+        "root": directory,
+        "deployed_layers": ("code_test",),
+    }
+    fields.update(overrides)
+    return build_planning_world(mission, **fields)
 
 
 def add_domain(env: Env, path: Path) -> SeedDomain:
@@ -551,6 +587,7 @@ __all__ = (
     "ref",
     "root_network",
     "seed_env",
+    "seed_world",
     "step",
     "task_binding",
 )

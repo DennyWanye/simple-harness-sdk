@@ -92,7 +92,7 @@ from agent_orchestrator.contracts.resolution import (
     ReviewVerdict,
 )
 from agent_orchestrator.contracts.semantic_base import TypedRefKind
-from agent_orchestrator.storage import htn_schema, schema
+from agent_orchestrator.storage import acceptance_receipt_schema, htn_schema, schema
 from agent_orchestrator.storage.htn_store import HtnStore
 from agent_orchestrator.storage.store import Store, StoreConflict
 
@@ -194,12 +194,28 @@ MIGRATION_16_TABLES: tuple[str, ...] = (
     "plan_commit_receipts",
 )
 
+#: Migration 17 (P2.3c part 2) as shipped, pinned for the same reason as 16.  It is a
+#: *separate* migration and not an edit to 16: a library that already ran 16 has to be
+#: able to apply 17 on top of it, which a changed 16 would make impossible.
+MIGRATION_17_CHECKSUM = "ffb48ba4314a625adcba69e33e83bd8b06f921621282e16beb62c48da66531b1"
+MIGRATION_17_TABLES: tuple[str, ...] = (
+    "acceptance_commit_receipts",
+    "delivery_receipts",
+    "acceptance_outputs",
+)
+
+#: Every table the full-target migrations own.  The raw-SQL leak guard and the
+#: "storage is the only writer" checks iterate this, so a migration that adds a table
+#: without adding it here would ship an unguarded table.
+FULL_TARGET_TABLES: tuple[str, ...] = (*MIGRATION_16_TABLES, *MIGRATION_17_TABLES)
+
 #: The full-target tables are storage-owned.  Nothing outside ``storage/`` may name one
 #: in SQL of its own; the accessors on ``HtnStore`` / ``ObligationStore`` are the way in.
-#: The single entry below is a *known* debt, not a licence: P1.3's
-#: ``obligation_commits.py`` still carries one raw read of ``task_semantics``, for which
-#: ``HtnStore.task_semantics_of`` now exists.  Delete the entry when P1.3 switches; a
-#: leak anywhere else fails immediately, because the check is a subset test.
+#: The whitelist is **empty**, and that is the point: P1.3's raw read of
+#: ``task_semantics`` in ``obligation_commits.py`` went through
+#: ``HtnStore.task_semantics_of`` and the entry was deleted with it (P2.3c part 2c,
+#: review F18 — the comment used to still describe the debt).  Any leak fails
+#: immediately, because the check is a subset test against nothing.
 KNOWN_RAW_SQL_DEBT: frozenset[tuple[str, str]] = frozenset()
 SQL_ACCESS = ("FROM", "INTO", "UPDATE", "JOIN", "TABLE")
 
@@ -528,14 +544,23 @@ def planned(htn: HtnStore) -> HtnStore:
 # --------------------------------------------------------------------------------------
 
 
-def test_migration_sixteen_is_the_new_head() -> None:
-    assert schema.SCHEMA_VERSION == 16
-    assert schema.SCHEMA_NAME == "orchestrator-full-target-htn"
-    assert schema.MIGRATIONS[-1].ddl is htn_schema.DDL
+def test_migration_seventeen_is_the_new_head() -> None:
+    assert schema.SCHEMA_VERSION == 17
+    assert schema.SCHEMA_NAME == "orchestrator-full-target-acceptance-receipts"
+    assert schema.MIGRATIONS[-1].ddl is acceptance_receipt_schema.DDL
+
+
+def test_migration_sixteen_is_still_migration_sixteen() -> None:
+    """P2.3c part 2 adds 17; it does not move, rename or re-number 16."""
+
+    sixteen = schema.MIGRATIONS[15]
+    assert sixteen.version == 16
+    assert sixteen.name == "orchestrator-full-target-htn"
+    assert sixteen.ddl is htn_schema.DDL
 
 
 def test_the_fifteen_older_migrations_keep_their_checksums() -> None:
-    assert len(schema.MIGRATIONS) == 16
+    assert len(schema.MIGRATIONS) == 17
     for migration, expected in zip(schema.MIGRATIONS[:15], FROZEN_MIGRATIONS, strict=True):
         assert (migration.version, migration.name, migration.checksum) == expected
 
@@ -548,9 +573,27 @@ def test_migration_sixteen_is_pinned_to_its_checksum_and_table_list() -> None:
     report a schema mismatch, and this assertion is where that is noticed.
     """
 
-    assert schema.MIGRATIONS[-1].checksum == MIGRATION_16_CHECKSUM
+    assert schema.MIGRATIONS[15].checksum == MIGRATION_16_CHECKSUM
     assert htn_schema.TABLES == MIGRATION_16_TABLES
     assert len(set(htn_schema.TABLES)) == len(htn_schema.TABLES)
+
+
+def test_migration_seventeen_is_pinned_to_its_checksum_and_table_list() -> None:
+    """The same pin, one migration later: the accept-side receipts and output index."""
+
+    assert schema.MIGRATIONS[-1].checksum == MIGRATION_17_CHECKSUM
+    assert acceptance_receipt_schema.TABLES == MIGRATION_17_TABLES
+    assert len(set(FULL_TARGET_TABLES)) == len(FULL_TARGET_TABLES)
+
+
+def test_migration_seventeen_does_not_touch_a_migration_sixteen_table() -> None:
+    """Additive means additive: 17 creates three new tables and alters none of 16's."""
+
+    ddl = acceptance_receipt_schema.DDL
+    assert "ALTER TABLE" not in ddl.upper()
+    assert "DROP " not in ddl.upper()
+    for table in MIGRATION_16_TABLES:
+        assert f"CREATE TABLE {table}" not in ddl
 
 
 def test_the_declared_table_list_is_exactly_what_migration_sixteen_adds(
@@ -564,10 +607,27 @@ def test_the_declared_table_list_is_exactly_what_migration_sixteen_adds(
     older.close()
     monkeypatch.undo()
 
+    monkeypatch.setattr(schema, "MIGRATIONS", schema.MIGRATIONS[:16])
     newer = Store.open(tmp_path / "v16.db")
     after = _table_names(newer)
     newer.close()
+    monkeypatch.undo()
     assert after - before == set(htn_schema.TABLES)
+
+
+def test_the_declared_table_list_is_exactly_what_migration_seventeen_adds(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(schema, "MIGRATIONS", schema.MIGRATIONS[:16])
+    older = Store.open(tmp_path / "v16.db")
+    before = _table_names(older)
+    older.close()
+    monkeypatch.undo()
+
+    newer = Store.open(tmp_path / "v17.db")
+    after = _table_names(newer)
+    newer.close()
+    assert after - before == set(acceptance_receipt_schema.TABLES)
 
 
 def test_every_new_table_exists_and_is_strict(store: Store) -> None:
@@ -577,13 +637,13 @@ def test_every_new_table_exists_and_is_strict(store: Store) -> None:
             "SELECT name, sql FROM sqlite_master WHERE type='table'"
         )
     }
-    for table in htn_schema.TABLES:
+    for table in FULL_TARGET_TABLES:
         assert table in rows, table
         assert "STRICT" in rows[table], table
 
 
 def test_every_new_table_is_empty_in_a_fresh_library(store: Store) -> None:
-    for table in htn_schema.TABLES:
+    for table in FULL_TARGET_TABLES:
         count = store.connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # noqa: S608
         assert count == 0, table
 
@@ -602,7 +662,7 @@ def test_a_legacy_run_writes_nothing_into_the_new_tables(tmp_path) -> None:
     legacy = Store.open(tmp_path / "o.db")
     try:
         assert legacy.count_events("mission-1") == 1
-        for table in htn_schema.TABLES:
+        for table in FULL_TARGET_TABLES:
             count = legacy.connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # noqa: S608
             assert count == 0, table
     finally:
@@ -782,7 +842,7 @@ def test_no_module_outside_storage_writes_the_new_tables_in_sql() -> None:
         if relative.startswith("storage/"):
             continue
         text = path.read_text()
-        for table in htn_schema.TABLES:
+        for table in FULL_TARGET_TABLES:
             if _raw_sql_uses(text, table):
                 leaks.add((relative, table))
     assert leaks <= KNOWN_RAW_SQL_DEBT, sorted(leaks - KNOWN_RAW_SQL_DEBT)
@@ -794,7 +854,7 @@ def test_the_graph_and_knowledge_layers_never_name_a_new_table_in_sql() -> None:
     for prefix in ("graph/", "knowledge/", "planning/", "verification/", "scheduling/"):
         for path in sorted((SOURCE_ROOT / prefix.rstrip("/")).rglob("*.py")):
             text = path.read_text()
-            for table in htn_schema.TABLES:
+            for table in FULL_TARGET_TABLES:
                 assert not _raw_sql_uses(text, table), f"{path}: {table}"
 
 
@@ -845,11 +905,13 @@ def test_upgrading_a_copy_of_a_v15_library_keeps_every_old_row(
         after = {table: _dump(rehearsal, table) for table in sampled}
         assert after == before
         applied = _dump(rehearsal, "orch_schema_migrations")
-        assert [row[0] for row in applied] == list(range(1, 17))
-        assert applied[-1][1] == "orchestrator-full-target-htn"
+        assert [row[0] for row in applied] == list(range(1, 18))
+        assert applied[-1][1] == "orchestrator-full-target-acceptance-receipts"
         assert applied[-1][2] == schema.MIGRATIONS[-1].checksum
+        assert applied[-2][1] == "orchestrator-full-target-htn"
+        assert applied[-2][2] == MIGRATION_16_CHECKSUM
         assert applied[:15] == _dump(original, "orch_schema_migrations")[:15]
-        for table in htn_schema.TABLES:
+        for table in FULL_TARGET_TABLES:
             assert (
                 upgraded.connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0  # noqa: S608
             ), table
@@ -865,7 +927,7 @@ def test_the_upgrade_writes_a_backup_of_the_old_library(
     _open_at_version_fifteen(path, monkeypatch)
     upgraded = Store.open(path)
     upgraded.close()
-    backup = tmp_path / "v15.db.pre-schema-16.backup"
+    backup = tmp_path / "v15.db.pre-schema-17.backup"
     assert backup.is_file()
     assert [row[0] for row in _dump(backup, "orch_schema_migrations")] == list(range(1, 16))
     assert _dump(backup, "missions")

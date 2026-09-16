@@ -46,12 +46,13 @@ from typing import TYPE_CHECKING, Any
 
 from simple_harness.contracts import canonical_json
 
-from ..contracts import TERMINAL_MISSION, ContractError
+from ..contracts import TERMINAL_MISSION, Budget, ContractError, MissionStatus, TaskStatus
 from ..contracts.htn import (
     ContractRevision,
     DispatchGeneration,
     GraphStructureBudget,
     OccurrenceId,
+    OccurrenceSpec,
     ProposedPlanDelta,
     ReadItem,
     ReadItemKind,
@@ -63,25 +64,43 @@ from ..contracts.htn import (
     require_commit_ready,
 )
 from ..contracts.semantic_base import content_hash_of
+from ..governance.budgets import BudgetError
 from ..graph.projection_validation import (
     validate_execution_projection,
     validate_refinement_acyclic,
 )
 from ..graph.task_network import DEFAULT_PROJECTION_BUDGET, TaskNetworkSnapshot
 from ..planning.htn.compiler import BudgetRequirement, apply_obligation_openings
+from ..planning.manager import inherit_limits
 from ..storage.htn_store import HtnStore, PlanCommitReceipt
 from ..storage.obligation_store import ObligationStore
 from ..storage.store import StoreError
 from ._read_set import ReadSetChannelUnknown, SemanticReadSetChecker
+from .occurrence_tasks import (
+    COMPOUND_TOKENS,
+    MIN_TOKEN_SHARE,
+    Materialisation,
+    OccurrenceTask,
+    occurrence_task,
+    share_tokens,
+    task_pool_tokens,
+)
+from .state_machine import next_mission
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..contracts import Event, Mission
+    from ..governance.budgets import BudgetLedger
     from ..storage.store import Store
 
 #: The one event type this module appends.  It is *new*, which is the whole point:
 #: §18.5 rule 3 allows the hierarchical mode to add event types and forbids it to
 #: rewrite the bytes of an existing one.
 PLAN_REVISION_COMMITTED = "PlanRevisionCommitted"
+
+#: P2.3c part 2.  Appended once per commit that put occurrences on the board, so
+#: "which Task row is which occurrence" and the budget equation are durable facts
+#: rather than something a reader has to re-derive from three tables.
+OCCURRENCES_MATERIALISED = "PlanOccurrencesMaterialised"
 
 #: The server-side default, hard-coded (§18.5 rule 1).  A Mission is legacy unless
 #: its creator asked for the other one in so many words.
@@ -216,6 +235,8 @@ class PlanCommitsMixin:
 
     if TYPE_CHECKING:  # pragma: no cover - provided by CommitService
         _store: Store
+        _ledger: BudgetLedger
+        _deployed_layers: frozenset[str]
 
         def _emit(
             self,
@@ -934,6 +955,17 @@ class PlanCommitsMixin:
         # and half a new one being dispatchable, so the switch is never a second step.
         semantics.activate_plan_revision(command.mission_id, new_revision)
 
+        # P2.3c part 2: the occurrence → work bridge.  Same transaction as the
+        # revision it belongs to, because a plan whose occurrences are only half on
+        # the board is exactly the "half an old plan and half a new one" §9.4
+        # forbids.  Materialising is idempotent by construction — a row that exists
+        # is reused, never rewritten — so a crash between the revision and the next
+        # cycle cannot double-materialise or double-charge.
+        materialised = self._materialise_occurrences(
+            semantics, command, mission=mission, plan_revision=new_revision
+        )
+        activated = self._activate_for_work(mission, materialised)
+
         pending = _pending_dispatch(network, delta)
         payload = {
             "command_id": command.command_id,
@@ -959,6 +991,11 @@ class PlanCommitsMixin:
             # where it learns to read this.  Writing it here keeps the event and the
             # projection one call (§18.5) without this module dispatching anything.
             "pending_dispatch": pending,
+            # P2.3c part 2: what the scheduler may now see, and under which equation.
+            "materialised_tasks": list(materialised.created),
+            "reused_tasks": list(materialised.reused),
+            "budget_conservation": materialised.conservation(),
+            "mission_status": str((activated or mission).status),
             "source": dict(command.source),
         }
         self._emit(
@@ -991,9 +1028,215 @@ class PlanCommitsMixin:
                 "principal_scope_epoch": semantics.epoch(command.mission_id, command.scope_id),
                 "revoked_dispatch_generations": dict(sorted(revoked.items())),
                 "running_work_policy": str(command.running_work_policy),
+                "materialised_tasks": list(materialised.created),
+                "budget_conservation": materialised.conservation(),
                 "source": dict(command.source),
             },
         )
+
+    # --------------------------------------------- P2.3c: occurrences become work
+    def _materialise_occurrences(
+        self,
+        semantics: HtnStore,
+        command: CommitPlanCommand,
+        *,
+        mission: Mission,
+        plan_revision: int,
+    ) -> Materialisation:
+        """Give every occurrence of the new plan a ``Task`` row and an account.
+
+        The rules, in the order they matter:
+
+        1. **A row that already exists is reused, never rewritten.**  An occurrence
+           keeps its Task across revisions (the occurrence id *is* the task id in the
+           compiled network), and rewriting the row would throw away its attempts,
+           its accepted artefacts and its budget history — the very facts §9.4's
+           running-work reconciliation is about.  ``_revoke_running_work`` has
+           already withdrawn the execution right of anything this delta replaces.
+        2. **Every form gets a row; only a primitive gets a dispatchable one.**  See
+           :mod:`.occurrence_tasks` — a compound row is BLOCKED and is refused by the
+           form gate at three independent places.
+        3. **The budget is a share of what the Mission's task pool still has.**
+           ``open_account`` refuses limits that do not fit the parent, so a share is
+           computed rather than guessed, and every other dimension is inherited from
+           the Mission.  The dividend is the pool *minus what the existing rows
+           already hold* and the divisor counts the compounds nobody has refined yet,
+           so a later refinement round is still payable — see
+           :func:`.occurrence_tasks.share_tokens`.  A share that does not fit, or a
+           pool that cannot pay for the new primitives at all, is a refusal
+           (``BUDGET_INSUFFICIENT``), never a row with an account nobody can draw on.
+        """
+
+        network = command.network
+        pool = task_pool_tokens(mission)
+        requirements = semantics.latest_requirements_revision(command.mission_id)
+        existing: dict[str, int] = {}
+        reused: list[str] = []
+        pending: list[tuple[OccurrenceSpec, TaskSemanticBindingV1]] = []
+        stored = self._store.list_tasks(command.mission_id)
+        # What the Mission has already handed out — every row, not only the ones this
+        # network names: an occurrence a previous revision retired still holds the
+        # account it was opened with, and leaving it out of the equation would let the
+        # same tokens be granted twice.
+        committed = sum(int(task.budget.max_tokens or 0) for task in stored)
+        for spec in sorted(network.occurrences, key=lambda item: str(item.occurrence_id)):
+            task_id = str(spec.task_id)
+            current = self._store.get_task(task_id)
+            if current is not None:
+                reused.append(task_id)
+                if current.budget.max_tokens is not None:
+                    existing[task_id] = int(current.budget.max_tokens)
+                continue
+            binding = semantics.task_semantics_of(command.mission_id, task_id)
+            if binding is None:
+                # Unreachable through ``commit_plan_revision`` — ``_check_structure``
+                # refuses a membership with no binding first — but a materialiser that
+                # invented a meaning here would be the silent half-mode §18.5 forbids.
+                raise PlanCommitRejected(
+                    "MISSING_SEMANTIC_BINDING",
+                    f"occurrence {spec.occurrence_id!s} names task {task_id} which carries no "
+                    "TaskSemanticBindingV1; an occurrence is not materialised without its "
+                    "meaning (§18.5)",
+                )
+            pending.append((spec, binding))
+        funded_now = sum(1 for spec, _binding in pending if spec.form is TaskForm.PRIMITIVE)
+        # One share held back per compound that still owes a refinement — the ones
+        # already refined have their children on the board (or in ``pending``) and do
+        # not need a second reservation.
+        reserved = sum(
+            1
+            for spec in network.occurrences
+            if spec.form is TaskForm.COMPOUND
+            and network.adopted_instance_for(spec.occurrence_id) is None
+        )
+        available = None if pool is None else max(0, pool - committed)
+        share = share_tokens(available, funded_now, reserved)
+        if share is not None and funded_now and share < MIN_TOKEN_SHARE:
+            raise PlanCommitRejected(
+                "BUDGET_INSUFFICIENT",
+                f"the Mission's task pool has {available} tokens left and this revision needs "
+                f"to fund {funded_now} new primitive occurrence(s) while holding a share for "
+                f"{reserved} unrefined compound(s); a plan whose work cannot pay for anything "
+                "is refused, not opened with an account nobody can draw on (§21.5)",
+            )
+        built: list[OccurrenceTask] = []
+        ordinal = len(stored)
+        for spec, binding in pending:
+            ordinal += 1
+            tokens = COMPOUND_TOKENS if spec.form is TaskForm.COMPOUND else share
+            built.append(
+                occurrence_task(
+                    mission,
+                    spec,
+                    binding,
+                    plan_revision=plan_revision,
+                    budget=inherit_limits(
+                        Budget(max_tokens=tokens, max_attempts=mission.budget.max_attempts),
+                        mission.budget,
+                    ),
+                    ordinal=ordinal,
+                    deployed=frozenset(self._deployed_layers),
+                    requirements=requirements,
+                    now=self._store.now,
+                )
+            )
+        # The account *names* come from the host service, never spelled again here: a
+        # second copy of the ``budget:`` prefix is a silent way to open a Task account
+        # under a parent that does not exist, which ``open_account`` can only report as
+        # "unknown budget account".  ``selection_commits`` reaches for them the same way.
+        from .commit_service import mission_account, task_account
+
+        result = Materialisation(
+            tasks=tuple(built),
+            reused=tuple(reused),
+            pool_tokens=pool,
+            share_tokens=share,
+            committed_tokens=committed,
+            funded_now=funded_now,
+            reserved_subtrees=reserved,
+            existing=existing,
+        )
+        equation = result.conservation()
+        if not equation["holds"]:
+            # Checked before a single row is written: the refusal is about the plan,
+            # so it must not depend on the transaction being rolled back to be true.
+            raise PlanCommitRejected(
+                "BUDGET_INSUFFICIENT",
+                f"materialising the plan would grant {result.granted_tokens} tokens on top of "
+                f"the {committed} its rows already hold, out of a task pool of {pool}; a plan "
+                "is not committed by overdrawing the Mission (§21.5 budget conservation)",
+            )
+        for item in built:
+            self._store.insert_task(item.task, ordinal=item.ordinal)
+            try:
+                self._ledger.open_account(
+                    account_id=task_account(item.task.id),
+                    scope="task",
+                    parent_id=mission_account(command.mission_id),
+                    mission_id=command.mission_id,
+                    limits=item.task.budget,
+                )
+            except BudgetError as error:
+                raise PlanCommitRejected(
+                    "BUDGET_INSUFFICIENT",
+                    f"occurrence {item.occurrence_id} cannot be opened with "
+                    f"{item.task.budget.to_json()}: {error}",
+                ) from error
+            self._emit(
+                "TaskCommitted",
+                command.mission_id,
+                key=item.task.id,
+                task_id=item.task.id,
+                payload={
+                    "commit_id": command.command_id,
+                    "key": item.occurrence_id,
+                    "dependencies": [],
+                    "proposal": item.to_json(),
+                    "source": {
+                        **dict(command.source),
+                        "materialised_by": "plan_revision",
+                        "plan_revision": int(plan_revision),
+                    },
+                },
+            )
+        if built or reused:
+            self._emit(
+                OCCURRENCES_MATERIALISED,
+                command.mission_id,
+                key=f"{command.mission_id}:plan-{plan_revision}",
+                payload={
+                    "plan_revision": int(plan_revision),
+                    "command_id": command.command_id,
+                    **result.to_json(),
+                },
+            )
+        return result
+
+    def _activate_for_work(self, mission: Mission, materialised: Materialisation) -> Mission | None:
+        """PLANNING → ACTIVE, by the formal rule rather than by a test helper.
+
+        P2.3b's two guard tests had to call a ``_force_active`` helper because nothing
+        moved a hierarchical Mission out of PLANNING — ``commit_task_graph`` does that
+        for the legacy mode and it is never called here.  The rule is the same one:
+        a Mission becomes ACTIVE when there is committed work to do.  "Committed work"
+        is read from what this revision materialised, so a revision that put nothing
+        dispatchable on the board leaves the Mission in PLANNING, which is the true
+        statement about it.
+        """
+
+        if mission.status is not MissionStatus.PLANNING:
+            return None
+        if not any(item.dispatchable for item in materialised.tasks):
+            if not any(
+                (found := self._store.get_task(task_id)) is not None
+                and found.status is not TaskStatus.CANCELLED
+                and str(found.context.get("form", "")) == str(TaskForm.PRIMITIVE)
+                for task_id in materialised.reused
+            ):
+                return None
+        activated = next_mission(mission, MissionStatus.ACTIVE)
+        self._store.update_mission(activated, expected_version=mission.version)
+        return activated
 
     # ------------------------------------------------- the hierarchical graph gate
     def _require_semantic_bindings(
@@ -1137,6 +1380,7 @@ def canonical_payload(payload: Mapping[str, Any]) -> str:
 
 __all__ = (
     "HIERARCHICAL_SEMANTICS",
+    "OCCURRENCES_MATERIALISED",
     "LEGACY_SEMANTICS",
     "PLAN_REVISION_COMMITTED",
     "SEMANTICS_ALIASES",

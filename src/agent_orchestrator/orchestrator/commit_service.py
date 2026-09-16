@@ -45,7 +45,7 @@ from ..contracts import (
     TaskStatus,
     ids,
 )
-from ..contracts.htn import TaskSemanticBindingV1
+from ..contracts.htn import TaskForm, TaskSemanticBindingV1
 from ..contracts.models import (
     STEP2_IMPLEMENTED_LAYERS,
     default_change_policy,
@@ -127,9 +127,23 @@ from .plan_commits import (
 )
 from .policy_commits import PolicyCommitsMixin
 from .protected_tail_commits import ProtectedTailCommitsMixin
+from .resolution_commits import ResolutionCommitsMixin
 from .selection_commits import SelectionCommitsMixin
 from .source_commits import SourceCommitsMixin
 from .state_machine import next_attempt, next_claim, next_mission, next_task
+
+#: P2.3c part 2.  Appended when a Manager offers a legacy ``TaskGraphChange`` against a
+#: hierarchical Mission.  A new event type rather than ``TaskGraphChangeRejected``: the
+#: proposal was not *invalid*, it arrived at the wrong door, and a Manager reading its
+#: own rejections has to be able to tell "fix the proposal" from "use the other entry".
+HIERARCHICAL_GRAPH_CHANGE_REFUSED = "HierarchicalGraphChangeRefused"
+
+#: P2.3c part 2c (review F6).  Appended when ``judge_mission`` is asked to conclude a
+#: hierarchical Mission whose root duty carries no adopted ``GoalResolution``.  A new
+#: event type for the same reason as the one above: the judgment was not *wrong*, it
+#: was asked at a door that does not decide this — in this mode a Mission is completed
+#: out of its root resolution and never out of a sweep of Task statuses (§6.3, §8.1).
+HIERARCHICAL_JUDGMENT_REFUSED = "HierarchicalJudgmentRefused"
 
 SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
 
@@ -292,8 +306,8 @@ def task_account(task_id: str) -> str:
 
 class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCommitsMixin,
     ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin, SourceCommitsMixin, ObligationCommitsMixin,
-    PlanCommitsMixin,
-):  # step 7: the action ledger + approvals half; step 9: the policy registry half; P2.3a: the plan revision half
+    PlanCommitsMixin, ResolutionCommitsMixin,
+):  # step 7: the action ledger + approvals half; step 9: the policy registry half; P2.3a: the plan revision half; P2.3c: the accept half
     def __init__(
         self,
         store: Store,
@@ -1272,7 +1286,47 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         intervening changes affected, otherwise refused.  A repeated delivery of the
         same proposal on the same base returns the same receipt.  Validation failures
         write only ``TaskGraphChangeRejected`` and leave the formal graph untouched.
+
+        **A hierarchical Mission never gets this far** (P2.3c part 2).  The two paths
+        disagree about what a plan *is*: this one edits Task rows and bumps an integer
+        ``graph_version``, while the new mode's plan is a revision of a typed network
+        whose occurrences carry semantic bindings, memberships and adopted method
+        instances.  Letting a Manager edit the rows behind that network's back would
+        leave the two disagreeing with no way to tell which is the plan — the silent
+        half-mode §18.5 forbids — so the refusal is unconditional and names the door
+        that is open instead (a ``PlanRevisionProposal`` through
+        :meth:`commit_plan_revision`).  ADR-13 / C19 also forbid the ``allow_rebase``
+        replay for a new-mode proposal, which is a second reason this entry cannot be
+        the one a hierarchical Manager uses.
         """
+
+        mission = self._store.get_mission(mission_id)
+        if mission is not None and semantics_of(mission) == HIERARCHICAL_SEMANTICS:
+            detail = (
+                f"mission {mission_id} runs under the hierarchical semantics; its plan is a "
+                "typed network with semantic bindings and adopted method instances, and a "
+                "TaskGraphChange edits Task rows and the integer graph_version instead. "
+                "Propose a PlanRevisionProposal and commit it through commit_plan_revision "
+                "(§18.5 rule 2, ADR-13 / C19: a new-mode proposal is handed back to its "
+                "author, never replayed on its behalf)."
+            )
+            self._emit(
+                HIERARCHICAL_GRAPH_CHANGE_REFUSED,
+                mission_id,
+                key=(
+                    f"{mission_id}:{change.base_graph_version}:{change.proposal_hash[:12]}"
+                    f":{source.get('intent_id', '')}"
+                ),
+                payload={
+                    "reason": "SEMANTICS_IS_HIERARCHICAL",
+                    "detail": detail,
+                    "base_graph_version": change.base_graph_version,
+                    "operations": [op.to_json() for op in change.operations],
+                    "redirect": "commit_plan_revision",
+                    "source": dict(source),
+                },
+            )
+            raise CommitRejected(f"graph change rejected (SEMANTICS_IS_HIERARCHICAL): {detail}")
 
         limits = limits or ChangeLimits()
         try:
@@ -4664,6 +4718,17 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         while the Task stays COMPLETED.
         """
 
+        # P2.3c part 2c / review F6: the mode gate, in the same shape and the same
+        # place as ``commit_graph_change``'s — *before* the transaction, because the
+        # refusal appends an event and an event emitted inside a transaction that then
+        # raises is rolled back with it.  This entry is public and had no gate at all,
+        # so a hierarchical Mission whose plan happened to contain only primitives
+        # could be judged COMPLETED without its root ``GoalResolution`` ever being
+        # formed — the one thing §21.5's "wrongly declared complete = 0" turns on.
+        # What stopped it in practice was that a compound row is materialised BLOCKED
+        # and can never reach COMPLETED, which is a coincidence of the display status
+        # and not a rule.
+        self._require_root_resolution(mission_id)
         with self._store.transaction():
             mission = self._require_mission(mission_id)
             if mission.status in {MissionStatus.COMPLETED, MissionStatus.FAILED}:
@@ -4677,7 +4742,16 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     task.paused and task.status in {TaskStatus.READY, TaskStatus.BLOCKED}
                 )  # R4: a paused route is not required
             ]
-            if not tasks or any(task.status is not TaskStatus.COMPLETED for task in tasks):
+            # P2.3c part 2c / review F6, the second half: in the hierarchical mode the
+            # completeness of the work is read from the *Acceptances*, never from a
+            # sweep of ``TaskStatus`` (the first half, the root-resolution gate, ran
+            # before this transaction was opened so that its refusal event survives the
+            # refusal).  See :meth:`_require_accepted_work`.
+            network = self._judgment_network(mission)
+            if network is not None:
+                self._require_accepted_work(mission, network, tasks)
+                tasks = self._drop_compound_rows(network, tasks)
+            elif not tasks or any(task.status is not TaskStatus.COMPLETED for task in tasks):
                 raise CommitRejected("mission judgment requires every live Task to be COMPLETED")
             mutable_judgments = [dict(item) for item in judgments]
             judgments = mutable_judgments
@@ -4807,6 +4881,116 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 payload={"stop_reason": failed.stop_reason, "final_report": report},
             )
             return failed
+
+    def _judgment_network(self, mission: Mission) -> Any:
+        """The hierarchical plan ``judge_mission`` reads, or None for a legacy Mission."""
+
+        from .hierarchical_dispatch import HierarchicalDispatch, is_hierarchical
+
+        if not is_hierarchical(mission):
+            return None
+        return HierarchicalDispatch(self._store, self).network(mission.id)
+
+    def _drop_compound_rows(self, network: Any, tasks: Sequence[Task]) -> list[Task]:
+        """A compound row is never part of the judged set (review F6).
+
+        A compound is refined and never dispatched; it is materialised BLOCKED and can
+        never reach COMPLETED, so leaving it in made the *forward* path unreachable —
+        a root resolution could stand and the judgment would still refuse.  Its
+        conclusion is a Resolution, which :meth:`_require_root_resolution` checks.
+        (A GoalResolution for each *inner* compound is P3's: today only the root duty
+        is a ``required_obligation``, and inner compounds are concluded through their
+        children's Acceptances feeding the root review.)
+        """
+
+        compounds = {
+            str(spec.task_id) for spec in network.occurrences if spec.form is TaskForm.COMPOUND
+        }
+        return [task for task in tasks if task.id not in compounds]
+
+    def _require_accepted_work(self, mission: Mission, network: Any, tasks: Sequence[Task]) -> None:
+        """Every live primitive occurrence carries a CURRENT ``Acceptance`` (review F6).
+
+        The hierarchical mode's answer to "is the work done" is the Acceptance, not the
+        Task row: §18.5 makes the row a rebuildable display index, and nothing in this
+        mode ever writes ``COMPLETED`` onto it — ``accept_review`` writes an Acceptance.
+        Judging on the status string would therefore have refused forever (the rows stay
+        READY), and *relaxing* the check to "no status is checked" would have judged a
+        Mission whose leaves nobody accepted.  So the same question is asked of the
+        record that actually answers it.
+        """
+
+        from ..contracts.evidence_state import Validity
+        from ..storage.htn_store import HtnStore
+
+        semantics = HtnStore(self._store)
+        accepted = {
+            (str(item.task_id), str(item.obligation_id))
+            for item in semantics.list_acceptances(mission.id)
+            if item.validity is Validity.CURRENT
+        }
+        live = {task.id for task in tasks}
+        unaccepted = sorted(
+            str(spec.task_id)
+            for spec in network.occurrences
+            if spec.form is TaskForm.PRIMITIVE
+            and str(spec.task_id) in live
+            and (str(spec.task_id), str(spec.obligation_id)) not in accepted
+        )
+        if unaccepted:
+            raise CommitRejected(
+                "mission judgment requires a current Acceptance for every live primitive "
+                f"occurrence; {unaccepted} carry none (§18.5: in this mode the Task row is a "
+                "display index and the Acceptance is the record that the work was accepted)"
+            )
+
+    def _require_root_resolution(self, mission_id: str) -> None:
+        """A hierarchical Mission is completed out of its root resolution (review F6).
+
+        In this mode a Mission is complete because its root ``GoalResolution`` was
+        formed — out of the AER §6.2 formula, the final acceptance and the delivery
+        contract — and never because a sweep of Task statuses came back all-COMPLETED
+        (§6.3, §8.1).  ``Orchestrator._decide`` already refuses to call ``judge_mission``
+        before the resolution stands, but that entry is public and had no gate of its
+        own, so the invariant rested on one caller remembering.
+
+        A legacy Mission is untouched: the whole gate is behind ``is_hierarchical``.
+        """
+
+        from ..storage.htn_store import HtnStore
+
+        mission = self._store.get_mission(mission_id)
+        if mission is None:
+            return
+        network = self._judgment_network(mission)
+        if network is None:
+            return
+        semantics = HtnStore(self._store)
+        unresolved = sorted(
+            str(duty)
+            for duty in dict.fromkeys(network.required_obligations)
+            if semantics.adopted_goal_resolution(mission.id, str(duty)) is None
+        )
+        if unresolved:
+            detail = (
+                f"mission {mission.id} runs under the hierarchical semantics and its root "
+                f"duties {unresolved} carry no adopted GoalResolution; a Mission in this mode "
+                "is completed out of its root resolution, not out of a sweep of Task statuses "
+                "(§6.3, §8.1, §21.5 'wrongly declared complete = 0'). Offer the resolution "
+                "through commit_goal_resolution first."
+            )
+            self._emit(
+                HIERARCHICAL_JUDGMENT_REFUSED,
+                mission.id,
+                key=f"{mission.id}:{','.join(unresolved)}",
+                payload={
+                    "reason": "ROOT_RESOLUTION_MISSING",
+                    "detail": detail,
+                    "unresolved_obligations": unresolved,
+                    "redirect": "commit_goal_resolution",
+                },
+            )
+            raise CommitRejected(f"mission judgment refused (ROOT_RESOLUTION_MISSING): {detail}")
 
     def fail_result(
         self,

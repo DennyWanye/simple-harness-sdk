@@ -1326,7 +1326,33 @@ def test_the_mode_switch_defaults_to_legacy_for_a_mission_without_the_opt_in(tmp
 
 
 def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path):
-    """The five wiring sites all go through one predicate, not five spellings of it."""
+    """Every wiring site goes through one predicate, not several spellings of it.
+
+    P2.3b had four sites; P2.3c part 2 added the fifth, ``_create_planner_intent``,
+    which is where the *prompt* and the *package* are chosen together (blocker c: a
+    Planner asked for a plan-revision proposal while holding the DAG package).  Part
+    2b added two more: ``_create_synthesizer_intent`` (a MethodSynthesizer round is a
+    hierarchical-only role, and asking the mode there is what stops a legacy Mission
+    from being handed a method library it has no way to use) and
+    ``_accept_hierarchical_leaf`` (a verified leaf becomes an ``Acceptance`` only in
+    the new mode; in the legacy one ``accept_result`` is the whole lifecycle).  Part
+    2c added three more — ``_gather_evidence`` (the read-only evidence round),
+    ``_request_method_synthesis`` (deciding a goal has no method that could apply) and
+    ``_collect_synthesizer`` (admitting the reply) — each a hierarchical-only step
+    where asking the mode is what keeps it off a legacy Mission entirely.  The count
+    is asserted rather than the set, so adding an eleventh site is a deliberate act
+    that comes back here — which is the only way the "one predicate" property stays
+    true as the wiring grows.
+
+    ``_assembly_missing`` is deliberately **not** one of these sites (review F1): it
+    exists precisely because ``_new_mode`` answers None for two different worlds, and
+    it asks ``is_hierarchical`` directly to tell them apart.
+
+    Part 2c added an eleventh, ``_record_hierarchical_stall``: when the loop goes idle
+    with occurrences every gate withheld, it writes those refusals down — and asking
+    the mode there is what keeps the record off a legacy Mission, whose idleness is
+    the legacy scheduler's business and not this one's.
+    """
 
     del tmp_path
     import inspect
@@ -1334,7 +1360,7 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     from agent_orchestrator.orchestrator import event_handler
 
     source = inspect.getsource(event_handler)
-    assert source.count("self._new_mode(mission)") == 4
+    assert source.count("self._new_mode(mission)") == 11
     assert "is_hierarchical(mission)" in inspect.getsource(event_handler.Orchestrator._new_mode)
 
 

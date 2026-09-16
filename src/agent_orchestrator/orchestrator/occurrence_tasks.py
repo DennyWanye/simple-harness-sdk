@@ -1,0 +1,408 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
+"""P2.3c part 2: the bridge from a plan **occurrence** to a dispatchable ``Task`` row.
+
+P2.3b left the hierarchical mode unable to dispatch anything, and the reason was
+narrow: ``commit_plan_revision`` writes memberships, method instances and semantic
+bindings, but no legacy ``Task`` row.  ``Store.list_tasks`` therefore came back
+empty, the legacy allocator saw no work and ``_decide`` returned at ``if not
+tasks``.  This module is the missing half.
+
+Three decisions are load-bearing, and each one is a decision *not* to be clever:
+
+* **The Task contract is reused, not extended.**  An occurrence materialises an
+  ordinary ``kind="work"`` Task whose meaning already lives in ``task_semantics``
+  (§18.5: the semantic binding sits *beside* the Task, it does not replace it).
+  Nothing about the hierarchy is encoded in the Task row, which is why the row can
+  be rebuilt from the plan at any time.
+
+* **``dependencies`` stay empty.**  It is tempting to project ORDER constraints onto
+  ``Task.dependency_ids`` so the legacy allocator's READY arithmetic "just works".
+  That would be wrong twice: the legacy rule is *conjunctive* (every dependency
+  COMPLETED), so an OR method's alternatives would each block the other forever,
+  and an ORDER edge released by ``order_released`` under a non-default
+  ``ReleaseCondition`` is not the same fact as "the predecessor is COMPLETED".
+  Ordering in this mode is answered by ``evaluate_readiness`` over the typed
+  network, and encoding it in ``dependency_ids`` would put a second, disagreeing
+  answer in the database (§18.5 hard constraint 4, §24.1 decision 6).
+
+* **A compound gets a row too, and it is never dispatched.**  The row exists so a
+  compound is *visible* — listings, the Manager's read, the operator UI — and it is
+  refused at three independent gates: ``form=compound`` in
+  ``legacy_ready_is_not_eligibility`` (the allocator's ``evaluate_frontier_v2`` and
+  ``HierarchicalDispatch.intercept_worker_dispatch` both ask that one function), and
+  ``admit_for_dispatch`` which only builds an ``EligiblePrimitiveTask`` for a
+  primitive.  Its status is BLOCKED, never READY, so even a reader that mistakes the
+  display index for a permission finds the answer "no".
+
+The budget share is the other thing this module owns.  ``BudgetLedger.open_account``
+refuses a child whose limits do not fit its parent, so the share has to be computed
+rather than guessed: what is left of the Mission's task pool (its budget minus the
+system reserve, minus what the existing rows already hold) is divided over the
+occurrences this round funds *plus one share held back for every compound nobody has
+refined yet*, and every other dimension the Mission bounds is inherited.  See
+:func:`share_tokens` for why the divisor counts the unrefined compounds, and
+:meth:`Materialisation.conservation` for the equation the suite checks each round.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
+
+from ..contracts import Budget, Mission, Task, TaskStatus
+from ..contracts.htn import (
+    OccurrenceSpec,
+    Requiredness,
+    TaskForm,
+    TaskSemanticBindingV1,
+)
+from ..contracts.models import default_change_policy
+from ..contracts.resolution import RequirementsRevision
+from ..planning.manager import system_reserve_tokens
+
+#: ``Task.context`` keys this bridge writes.  Namespaced so nothing in the legacy
+#: path can collide with them, and readable so an operator can tell a materialised
+#: occurrence from a Planner-drawn Task without joining another table.
+CONTEXT_OCCURRENCE = "occurrence_id"
+CONTEXT_PLAN_REVISION = "plan_revision"
+CONTEXT_FORM = "form"
+CONTEXT_REQUIREDNESS = "requiredness"
+CONTEXT_MATERIALISED_BY = "materialised_by"
+
+#: What ``context[CONTEXT_MATERIALISED_BY]`` says.  A version string rather than a
+#: boolean: when the shape of a materialised row changes, a reader has to be able to
+#: tell which rule produced the row it is looking at.
+MATERIALISER = "occurrence-tasks-v1"
+
+#: The smallest token share a materialised *primitive* occurrence may be opened with.
+#: Zero is not "unbounded", it is "cannot pay for anything", and an account that can
+#: never reserve is a Task that can never run — so a pool that cannot give every new
+#: primitive this much is a refusal (``BUDGET_INSUFFICIENT``), never a row rounded
+#: down to an account nobody can draw on.
+MIN_TOKEN_SHARE = 1
+
+#: What a compound's account is opened with.  A compound is refined and never
+#: dispatched, so "may spend nothing" is the true statement about it rather than a
+#: rounding artefact — and it is what keeps the conservation sum from counting the
+#: same tokens twice, once for the compound and once for the children that will
+#: actually do its work.  (When P3 charges a COMPOSITION review to the parent
+#: compound's account — main plan §13, the purpose→account table — that review is
+#: funded by raising this deliberately, not by leaving dead weight here now.)
+COMPOUND_TOKENS = 0
+
+
+@dataclass(frozen=True, slots=True)
+class OccurrenceTask:
+    """One materialised occurrence: the row to insert plus the account to open."""
+
+    task: Task
+    occurrence_id: str
+    form: TaskForm
+    obligation_id: str
+    ordinal: int
+
+    @property
+    def dispatchable(self) -> bool:
+        """Whether a Worker may ever be given this row (never for a compound)."""
+
+        return self.form is TaskForm.PRIMITIVE
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task.id,
+            "occurrence_id": self.occurrence_id,
+            "obligation_id": self.obligation_id,
+            "form": str(self.form),
+            "status": str(self.task.status),
+            "max_tokens": self.task.budget.max_tokens,
+            "success_criteria": list(self.task.success_criteria),
+            "verification_policy": list(self.task.verification_policy),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Materialisation:
+    """What one plan revision put on the board, and the budget equation it used."""
+
+    tasks: tuple[OccurrenceTask, ...] = ()
+    reused: tuple[str, ...] = ()
+    pool_tokens: int | None = None
+    share_tokens: int | None = None
+    #: What the Mission's Task rows already hold, *before* this round — read from the
+    #: store, not from this network, because an occurrence retired by an earlier
+    #: revision still owns the tokens its account was opened with.
+    committed_tokens: int = 0
+    funded_now: int = 0
+    reserved_subtrees: int = 0
+    existing: Mapping[str, int] = field(default_factory=dict)
+
+    @property
+    def created(self) -> tuple[str, ...]:
+        return tuple(item.task.id for item in self.tasks)
+
+    @property
+    def granted_tokens(self) -> int:
+        """What *this* round handed out."""
+
+        return sum(item.task.budget.max_tokens or 0 for item in self.tasks)
+
+    def conservation(self) -> dict[str, Any]:
+        """§21.5 budget conservation, as the equation and not as a claim.
+
+        The equation is the legacy one, applied to the occurrence rows instead of to
+        a Planner's DAG (``graph/task_graph.py``: *sum of task max_tokens plus the
+        system reserve never exceeds the Mission*)::
+
+            committed_before + granted_now <= pool
+
+        where ``pool`` is the Mission's ceiling minus the system reserve.  Writing it
+        against what the *store* already holds rather than against this network is
+        the load-bearing part: a plan grows by refining compounds, so round two's
+        occurrences are funded out of what round one left, and an equation stated
+        over one network alone would re-spend the same pool every revision.
+
+        ``pool_tokens is None`` means the Mission declared no token ceiling, in which
+        case there is nothing to conserve and the equation is reported as holding
+        vacuously rather than silently skipped.
+        """
+
+        granted = self.granted_tokens
+        return {
+            "pool_tokens": self.pool_tokens,
+            "committed_tokens": self.committed_tokens,
+            "granted_tokens": granted,
+            "share_tokens": self.share_tokens,
+            "funded_now": self.funded_now,
+            "reserved_subtrees": self.reserved_subtrees,
+            "materialised": len(self.tasks),
+            "reused": list(self.reused),
+            # What the reused rows already hold, per row.  Reported rather than only
+            # summed, because "the pool is full" and "one occurrence is holding all of
+            # it" need different repairs and the sum cannot tell them apart.
+            "held_by_reused": {key: int(value) for key, value in sorted(self.existing.items())},
+            # Review F15: ``held_by_reused`` covers only the rows *this* network reuses,
+            # while ``committed_tokens`` counts every row the Mission has — including
+            # the ones a previous revision retired, which still hold their accounts.
+            # Reporting only the first made the event look like a decomposition of the
+            # second that did not add up.  This is the rest of it, so the account
+            # closes: ``held_by_reused`` + ``held_elsewhere`` == ``committed_tokens``.
+            "held_elsewhere": int(self.committed_tokens)
+            - sum(int(value) for value in self.existing.values()),
+            "holds": (
+                self.pool_tokens is None or self.committed_tokens + granted <= self.pool_tokens
+            ),
+        }
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "materialised_by": MATERIALISER,
+            "tasks": [item.to_json() for item in self.tasks],
+            "reused": list(self.reused),
+            "budget": self.conservation(),
+        }
+
+
+def task_pool_tokens(mission: Mission) -> int | None:
+    """The tokens a materialised plan may spend: the Mission's, minus the reserve.
+
+    The same quantity the DAG Planner is handed as ``budget_for_tasks`` (D4-20), read
+    through the same function, so the two modes cannot disagree about how big the
+    system reserve is.
+    """
+
+    ceiling = mission.budget.max_tokens
+    if ceiling is None:
+        return None
+    return max(0, int(ceiling) - system_reserve_tokens(mission))
+
+
+def share_tokens(available: int | None, funded_now: int, reserved_subtrees: int = 0) -> int | None:
+    """One new primitive occurrence's share of what the pool still has.
+
+    Two things make this different from "pool divided by the primitives of this
+    network", which is the obvious rule and the wrong one:
+
+    * **The divisor counts the compounds nobody has refined yet.**  A plan grows by
+      refining a compound into children, and those children have to be payable when
+      they arrive.  If every token were handed to the primitives of revision one,
+      revision two's children would be funded out of nothing and the refinement would
+      be refused for lack of budget — the plan would be shaped by the order the
+      Planner happened to expand it in.  So each unrefined compound reserves one
+      share for the subtree it still owes.
+    * **The dividend is what is *left*.**  ``available`` is the pool minus what the
+      Mission's existing rows already hold, so the equation in
+      :meth:`Materialisation.conservation` stays true across revisions instead of
+      being re-satisfied from scratch each time.
+
+    Floor division and not "distribute the remainder": the remainder stays on the
+    Mission account, where a Task that needs more than its share can still draw it
+    through the normal reserve path (``BudgetLedger.reserve`` charges the whole
+    chain).  Handing the remainder to whichever occurrence happens to sort first
+    would make the plan's budget depend on occurrence ids.
+    """
+
+    if available is None:
+        return None
+    slots = max(0, funded_now) + max(0, reserved_subtrees)
+    if slots <= 0:
+        return max(0, available)
+    return max(0, available) // slots
+
+
+def occurrence_criteria(
+    binding: TaskSemanticBindingV1, requirements: RequirementsRevision | None
+) -> tuple[str, ...]:
+    """The Task row's ``success_criteria``: the duty's criteria and their checks.
+
+    Two sources, and the second is the one that makes the row *checkable*: the
+    occurrence's ``requirement_refs`` name which criteria it owes, and the
+    Mission's ``RequirementsRevision`` says which checks each of those criteria
+    requires (``RequiredEvidencePolicy.required_check_ids``).  The legacy verifier
+    layers read strings with known prefixes (``pytest:``, ``file:``), so a criterion
+    whose required checks are written in that vocabulary is verified by the real
+    router rather than by an unread criterion id.
+
+    Criterion ids with no declared check still go on the row.  They are inert to the
+    deterministic layers and they are the record of *what this occurrence owes* —
+    dropping them would make the Task row disagree with the Acceptance that will
+    later quote them.
+    """
+
+    criteria: list[str] = []
+    declared: Mapping[str, tuple[str, ...]] = {}
+    if requirements is not None:
+        declared = {
+            item.criterion_id: tuple(item.required_evidence_policy.required_check_ids)
+            for item in requirements.criteria
+        }
+    for reference in binding.requirement_refs:
+        if reference not in criteria:
+            criteria.append(reference)
+        for check in declared.get(reference, ()):
+            if check not in criteria:
+                criteria.append(check)
+    if not criteria:
+        # ``Task.success_criteria`` may not be empty (§6.3: "完成条件不清").  An
+        # occurrence with no requirement at all has nothing a review could quote, so
+        # the goal signature's coverage criteria are the honest fallback — they are
+        # what the *type* says this goal owes.
+        criteria = [str(item) for item in binding.goal_signature.coverage_criteria]
+    return tuple(criteria)
+
+
+def occurrence_policy(
+    criteria: Sequence[str], deployed: frozenset[str], declared: Sequence[str] = ()
+) -> tuple[str, ...]:
+    """The verification layers one materialised occurrence runs.
+
+    ``declared`` wins when a deployment states one (narrowed to what it runs);
+    otherwise it is the system default narrowed the same way, plus ``code_test``
+    whenever a criterion actually names a ``pytest:`` target — a Task carrying a test
+    criterion that no layer runs is a criterion nobody checks.
+    """
+
+    chosen = tuple(layer for layer in declared if layer in deployed) or default_change_policy(
+        deployed
+    )
+    if any(str(item).startswith("pytest:") for item in criteria) and "code_test" in deployed:
+        if "code_test" not in chosen:
+            chosen = (*chosen, "code_test")
+    return chosen
+
+
+def occurrence_task(
+    mission: Mission,
+    spec: OccurrenceSpec,
+    binding: TaskSemanticBindingV1,
+    *,
+    plan_revision: int,
+    budget: Budget,
+    ordinal: int,
+    deployed: frozenset[str],
+    requirements: RequirementsRevision | None = None,
+    now: float = 0.0,
+    declared_policy: Sequence[str] = (),
+) -> OccurrenceTask:
+    """Build the Task row for one occurrence.  Pure: nothing is written here.
+
+    A primitive starts READY — "may compete", which in this mode is not a permission
+    because the v2 frontier takes only ``EligiblePrimitiveTask`` records.  A compound
+    starts BLOCKED, because a compound is refined and never dispatched, and BLOCKED
+    is the closest true statement the legacy vocabulary has.
+    """
+
+    primitive = binding.form is TaskForm.PRIMITIVE
+    criteria = occurrence_criteria(binding, requirements)
+    goal = binding.goal_signature.statement or f"satisfy {binding.goal_signature.signature_id}"
+    return OccurrenceTask(
+        task=Task(
+            id=str(spec.task_id),
+            mission_id=mission.id,
+            parent_task_ids=(),
+            # Deliberately empty — see the module docstring.  Ordering in this mode is
+            # the ORDER gate's answer over the typed network, not a second copy of it
+            # in a conjunctive legacy field.
+            dependency_ids=(),
+            goal=goal,
+            rationale=(
+                f"occurrence {spec.occurrence_id!s} of plan revision {int(plan_revision)}, "
+                f"serving duty {binding.obligation_id!s} through goal "
+                f"{binding.goal_signature.signature_id}"
+            ),
+            success_criteria=criteria,
+            verification_policy=occurrence_policy(criteria, deployed, declared_policy),
+            allowed_tools=mission.allowed_tools,
+            budget=budget,
+            priority=_priority(spec),
+            status=TaskStatus.READY if primitive else TaskStatus.BLOCKED,
+            version=1,
+            root_goal=mission.goal,
+            created_at=now,
+            ready_at=now if primitive else None,
+            kind="work",
+            context={
+                CONTEXT_OCCURRENCE: str(spec.occurrence_id),
+                CONTEXT_PLAN_REVISION: int(plan_revision),
+                CONTEXT_FORM: str(binding.form),
+                CONTEXT_REQUIREDNESS: str(spec.requiredness),
+                CONTEXT_MATERIALISED_BY: MATERIALISER,
+            },
+        ),
+        occurrence_id=str(spec.occurrence_id),
+        form=binding.form,
+        obligation_id=str(binding.obligation_id),
+        ordinal=int(ordinal),
+    )
+
+
+def _priority(spec: OccurrenceSpec) -> float:
+    """A required occurrence outranks an optional one; nothing finer is claimed.
+
+    The §29.3 score does the real ordering.  This is only the tie-break input the
+    Task contract asks for, and inventing a finer scale here would be a scheduling
+    policy hidden in a materialiser.
+    """
+
+    return 1.0 if spec.requiredness is Requiredness.REQUIRED else 0.5
+
+
+__all__ = (
+    "CONTEXT_FORM",
+    "CONTEXT_MATERIALISED_BY",
+    "CONTEXT_OCCURRENCE",
+    "CONTEXT_PLAN_REVISION",
+    "CONTEXT_REQUIREDNESS",
+    "COMPOUND_TOKENS",
+    "MATERIALISER",
+    "MIN_TOKEN_SHARE",
+    "Materialisation",
+    "OccurrenceTask",
+    "occurrence_criteria",
+    "occurrence_policy",
+    "occurrence_task",
+    "share_tokens",
+    "task_pool_tokens",
+)
