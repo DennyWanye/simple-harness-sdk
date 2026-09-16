@@ -1,0 +1,635 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:simpleharness:full-target:plan-revision-proposal-v1",
+  "title": "plan-revision-proposal-v1",
+  "description": "拟议内部结构Schema；不校验引用存在/归属/有效性/权限/语义覆盖，不授权任何动作。",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "mission_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "expected_plan_revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "trigger_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence_ref"
+      },
+      "minItems": 0
+    },
+    "read_set": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/read_item"
+      },
+      "minItems": 1
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/plan_operation"
+      },
+      "minItems": 1
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "running_work_policy": {
+      "enum": [
+        "retain_if_bindings_unchanged",
+        "request_stop_then_reconcile",
+        "explicit_per_subject_in_commit"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "proposal_id",
+    "mission_id",
+    "expected_plan_revision",
+    "trigger_refs",
+    "read_set",
+    "operations",
+    "rationale",
+    "running_work_policy"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "json": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/json"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/json"
+          }
+        }
+      ]
+    },
+    "versioned_ref": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "content_hash"
+      ],
+      "additionalProperties": false
+    },
+    "evidence_ref": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "observation",
+            "tool_receipt",
+            "artifact",
+            "knowledge",
+            "review",
+            "source",
+            "operation"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "revision",
+        "content_hash"
+      ],
+      "additionalProperties": false
+    },
+    "value": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "parameter"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "op",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "constant"
+            },
+            "value": {
+              "$ref": "#/$defs/json"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "output"
+            },
+            "step": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "port": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "op",
+            "step",
+            "port"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "object"
+            },
+            "fields": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/value"
+              }
+            }
+          },
+          "required": [
+            "op",
+            "fields"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "array"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/value"
+              },
+              "minItems": 0
+            }
+          },
+          "required": [
+            "op",
+            "items"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "condition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "predicate"
+            },
+            "predicate_ref": {
+              "$ref": "#/$defs/versioned_ref"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/value"
+              }
+            }
+          },
+          "required": [
+            "op",
+            "predicate_ref",
+            "arguments"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "all"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/condition"
+              },
+              "minItems": 0
+            }
+          },
+          "required": [
+            "op",
+            "items"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "any"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/condition"
+              },
+              "minItems": 0
+            }
+          },
+          "required": [
+            "op",
+            "items"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "not"
+            },
+            "item": {
+              "$ref": "#/$defs/condition"
+            }
+          },
+          "required": [
+            "op",
+            "item"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "constant"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "local_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "task_type_ref": {
+          "$ref": "#/$defs/versioned_ref"
+        },
+        "form": {
+          "enum": [
+            "compound",
+            "primitive"
+          ]
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/value"
+          }
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "minItems": 0
+        },
+        "obligation_relation": {
+          "enum": [
+            "refines_parent",
+            "independent_authorized"
+          ]
+        }
+      },
+      "required": [
+        "local_id",
+        "task_type_ref",
+        "form",
+        "arguments",
+        "required_capabilities",
+        "obligation_relation"
+      ],
+      "additionalProperties": false
+    },
+    "criterion_link": {
+      "type": "object",
+      "properties": {
+        "parent_criterion_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "child_step": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "child_criterion_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_requirement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        }
+      },
+      "required": [
+        "parent_criterion_id",
+        "child_step",
+        "child_criterion_id",
+        "evidence_requirement"
+      ],
+      "additionalProperties": false
+    },
+    "read_item": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "requirements",
+            "obligation",
+            "task",
+            "method",
+            "fact",
+            "acceptance",
+            "operation",
+            "authority",
+            "capability"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "semantic_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "semantic_revision",
+        "content_hash"
+      ],
+      "additionalProperties": false
+    },
+    "plan_operation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "refine"
+            },
+            "goal_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "obligation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "method_ref": {
+              "$ref": "#/$defs/versioned_ref"
+            },
+            "bindings": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/json"
+              }
+            }
+          },
+          "required": [
+            "op",
+            "goal_id",
+            "obligation_id",
+            "method_ref",
+            "bindings"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "retire_method"
+            },
+            "method_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20000
+            }
+          },
+          "required": [
+            "op",
+            "method_instance_id",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "bind_shared_goal"
+            },
+            "consumer_method_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "step": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "goal_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "resolution_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "op",
+            "consumer_method_instance_id",
+            "step",
+            "goal_id",
+            "resolution_id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "propose_successor"
+            },
+            "old_task_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "obligation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "goal_type_ref": {
+              "$ref": "#/$defs/versioned_ref"
+            },
+            "bindings": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/json"
+              }
+            }
+          },
+          "required": [
+            "op",
+            "old_task_id",
+            "obligation_id",
+            "goal_type_ref",
+            "bindings"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

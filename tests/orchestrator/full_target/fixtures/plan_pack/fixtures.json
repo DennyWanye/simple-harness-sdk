@@ -1,0 +1,824 @@
+[
+  {
+    "name": "method-contract-v1-valid",
+    "schema": "method-contract-v1.schema.json",
+    "expect_structure_valid": true,
+    "payload": {
+      "schema_version": 1,
+      "method_id": "compare-two-sources",
+      "method_version": 1,
+      "goal_type_ref": {
+        "id": "compare-sources",
+        "version": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "parameter_schema_ref": {
+        "id": "two-sources-parameters",
+        "version": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "output_schema_ref": {
+        "id": "comparison-output",
+        "version": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "applicable_when": [
+        {
+          "op": "predicate",
+          "predicate_ref": {
+            "id": "sources-readable",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "arguments": {
+            "source_ids": {
+              "op": "parameter",
+              "name": "source_ids"
+            }
+          }
+        }
+      ],
+      "exploration_assumptions": [],
+      "steps": [
+        {
+          "local_id": "extract",
+          "task_type_ref": {
+            "id": "extract-evidence",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "form": "primitive",
+          "arguments": {
+            "source_ids": {
+              "op": "parameter",
+              "name": "source_ids"
+            }
+          },
+          "required_capabilities": [
+            "sources.read"
+          ],
+          "obligation_relation": "refines_parent"
+        },
+        {
+          "local_id": "compare",
+          "task_type_ref": {
+            "id": "compare-evidence",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "form": "primitive",
+          "arguments": {
+            "evidence": {
+              "op": "output",
+              "step": "extract",
+              "port": "evidence"
+            }
+          },
+          "required_capabilities": [
+            "artifacts.write"
+          ],
+          "obligation_relation": "refines_parent"
+        }
+      ],
+      "ordering": [
+        {
+          "before": "extract",
+          "after": "compare"
+        }
+      ],
+      "required_capabilities": [
+        "sources.read",
+        "artifacts.write"
+      ],
+      "expected_effects": [],
+      "composition": {
+        "criterion_links": [
+          {
+            "parent_criterion_id": "compare-all",
+            "child_step": "compare",
+            "child_criterion_id": "complete-comparison",
+            "evidence_requirement": "覆盖指定源版本，缺依据的结论明确UNKNOWN"
+          }
+        ],
+        "outputs": {
+          "report": {
+            "op": "output",
+            "step": "compare",
+            "port": "report"
+          }
+        },
+        "finalizer_step": "compare",
+        "independent_review_required": true
+      },
+      "basis_refs": []
+    },
+    "note": "合成结构样本，引用未落库，不能执行或视为真实证据。"
+  },
+  {
+    "name": "method-contract-v1-unknown-field",
+    "schema": "method-contract-v1.schema.json",
+    "expect_structure_valid": false,
+    "payload": {
+      "schema_version": 1,
+      "method_id": "compare-two-sources",
+      "method_version": 1,
+      "goal_type_ref": {
+        "id": "compare-sources",
+        "version": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "parameter_schema_ref": {
+        "id": "two-sources-parameters",
+        "version": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "output_schema_ref": {
+        "id": "comparison-output",
+        "version": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "applicable_when": [
+        {
+          "op": "predicate",
+          "predicate_ref": {
+            "id": "sources-readable",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "arguments": {
+            "source_ids": {
+              "op": "parameter",
+              "name": "source_ids"
+            }
+          }
+        }
+      ],
+      "exploration_assumptions": [],
+      "steps": [
+        {
+          "local_id": "extract",
+          "task_type_ref": {
+            "id": "extract-evidence",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "form": "primitive",
+          "arguments": {
+            "source_ids": {
+              "op": "parameter",
+              "name": "source_ids"
+            }
+          },
+          "required_capabilities": [
+            "sources.read"
+          ],
+          "obligation_relation": "refines_parent"
+        },
+        {
+          "local_id": "compare",
+          "task_type_ref": {
+            "id": "compare-evidence",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "form": "primitive",
+          "arguments": {
+            "evidence": {
+              "op": "output",
+              "step": "extract",
+              "port": "evidence"
+            }
+          },
+          "required_capabilities": [
+            "artifacts.write"
+          ],
+          "obligation_relation": "refines_parent"
+        }
+      ],
+      "ordering": [
+        {
+          "before": "extract",
+          "after": "compare"
+        }
+      ],
+      "required_capabilities": [
+        "sources.read",
+        "artifacts.write"
+      ],
+      "expected_effects": [],
+      "composition": {
+        "criterion_links": [
+          {
+            "parent_criterion_id": "compare-all",
+            "child_step": "compare",
+            "child_criterion_id": "complete-comparison",
+            "evidence_requirement": "覆盖指定源版本，缺依据的结论明确UNKNOWN"
+          }
+        ],
+        "outputs": {
+          "report": {
+            "op": "output",
+            "step": "compare",
+            "port": "report"
+          }
+        },
+        "finalizer_step": "compare",
+        "independent_review_required": true
+      },
+      "basis_refs": [],
+      "unexpected_authority_override": true
+    }
+  },
+  {
+    "name": "method-contract-v1-string-version",
+    "schema": "method-contract-v1.schema.json",
+    "expect_structure_valid": false,
+    "payload": {
+      "schema_version": "1",
+      "method_id": "compare-two-sources",
+      "method_version": 1,
+      "goal_type_ref": {
+        "id": "compare-sources",
+        "version": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "parameter_schema_ref": {
+        "id": "two-sources-parameters",
+        "version": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "output_schema_ref": {
+        "id": "comparison-output",
+        "version": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "applicable_when": [
+        {
+          "op": "predicate",
+          "predicate_ref": {
+            "id": "sources-readable",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "arguments": {
+            "source_ids": {
+              "op": "parameter",
+              "name": "source_ids"
+            }
+          }
+        }
+      ],
+      "exploration_assumptions": [],
+      "steps": [
+        {
+          "local_id": "extract",
+          "task_type_ref": {
+            "id": "extract-evidence",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "form": "primitive",
+          "arguments": {
+            "source_ids": {
+              "op": "parameter",
+              "name": "source_ids"
+            }
+          },
+          "required_capabilities": [
+            "sources.read"
+          ],
+          "obligation_relation": "refines_parent"
+        },
+        {
+          "local_id": "compare",
+          "task_type_ref": {
+            "id": "compare-evidence",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "form": "primitive",
+          "arguments": {
+            "evidence": {
+              "op": "output",
+              "step": "extract",
+              "port": "evidence"
+            }
+          },
+          "required_capabilities": [
+            "artifacts.write"
+          ],
+          "obligation_relation": "refines_parent"
+        }
+      ],
+      "ordering": [
+        {
+          "before": "extract",
+          "after": "compare"
+        }
+      ],
+      "required_capabilities": [
+        "sources.read",
+        "artifacts.write"
+      ],
+      "expected_effects": [],
+      "composition": {
+        "criterion_links": [
+          {
+            "parent_criterion_id": "compare-all",
+            "child_step": "compare",
+            "child_criterion_id": "complete-comparison",
+            "evidence_requirement": "覆盖指定源版本，缺依据的结论明确UNKNOWN"
+          }
+        ],
+        "outputs": {
+          "report": {
+            "op": "output",
+            "step": "compare",
+            "port": "report"
+          }
+        },
+        "finalizer_step": "compare",
+        "independent_review_required": true
+      },
+      "basis_refs": []
+    }
+  },
+  {
+    "name": "execution-feedback-v1-valid",
+    "schema": "execution-feedback-v1.schema.json",
+    "expect_structure_valid": true,
+    "payload": {
+      "schema_version": 1,
+      "feedback_id": "fb-1",
+      "mission_id": "m-1",
+      "task_id": "t-1",
+      "attempt_id": "a-1",
+      "contract_revision": 1,
+      "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "outcome": "blocked",
+      "observations": [
+        {
+          "statement": "授权的来源接口暂时不能给出结果",
+          "evidence_refs": [
+            {
+              "kind": "tool_receipt",
+              "id": "receipt-1",
+              "revision": 1,
+              "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      ],
+      "diagnosis": {
+        "category": "missing_information",
+        "explanation": "当前缺少必要来源",
+        "uncertainty": "没有证据证明来源不存在"
+      },
+      "proposed_method_refs": [],
+      "artifact_refs": [],
+      "unresolved_operation_ids": [],
+      "cost_receipt_ids": [
+        "cost-1"
+      ]
+    },
+    "note": "合成结构样本，引用未落库，不能执行或视为真实证据。"
+  },
+  {
+    "name": "execution-feedback-v1-unknown-field",
+    "schema": "execution-feedback-v1.schema.json",
+    "expect_structure_valid": false,
+    "payload": {
+      "schema_version": 1,
+      "feedback_id": "fb-1",
+      "mission_id": "m-1",
+      "task_id": "t-1",
+      "attempt_id": "a-1",
+      "contract_revision": 1,
+      "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "outcome": "blocked",
+      "observations": [
+        {
+          "statement": "授权的来源接口暂时不能给出结果",
+          "evidence_refs": [
+            {
+              "kind": "tool_receipt",
+              "id": "receipt-1",
+              "revision": 1,
+              "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      ],
+      "diagnosis": {
+        "category": "missing_information",
+        "explanation": "当前缺少必要来源",
+        "uncertainty": "没有证据证明来源不存在"
+      },
+      "proposed_method_refs": [],
+      "artifact_refs": [],
+      "unresolved_operation_ids": [],
+      "cost_receipt_ids": [
+        "cost-1"
+      ],
+      "unexpected_authority_override": true
+    }
+  },
+  {
+    "name": "execution-feedback-v1-string-version",
+    "schema": "execution-feedback-v1.schema.json",
+    "expect_structure_valid": false,
+    "payload": {
+      "schema_version": "1",
+      "feedback_id": "fb-1",
+      "mission_id": "m-1",
+      "task_id": "t-1",
+      "attempt_id": "a-1",
+      "contract_revision": 1,
+      "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "outcome": "blocked",
+      "observations": [
+        {
+          "statement": "授权的来源接口暂时不能给出结果",
+          "evidence_refs": [
+            {
+              "kind": "tool_receipt",
+              "id": "receipt-1",
+              "revision": 1,
+              "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      ],
+      "diagnosis": {
+        "category": "missing_information",
+        "explanation": "当前缺少必要来源",
+        "uncertainty": "没有证据证明来源不存在"
+      },
+      "proposed_method_refs": [],
+      "artifact_refs": [],
+      "unresolved_operation_ids": [],
+      "cost_receipt_ids": [
+        "cost-1"
+      ]
+    }
+  },
+  {
+    "name": "plan-revision-proposal-v1-valid",
+    "schema": "plan-revision-proposal-v1.schema.json",
+    "expect_structure_valid": true,
+    "payload": {
+      "schema_version": 1,
+      "proposal_id": "p-1",
+      "mission_id": "m-1",
+      "expected_plan_revision": 2,
+      "trigger_refs": [
+        {
+          "kind": "observation",
+          "id": "fb-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "read_set": [
+        {
+          "kind": "obligation",
+          "id": "o-1",
+          "semantic_revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "operations": [
+        {
+          "op": "refine",
+          "goal_id": "t-1",
+          "obligation_id": "o-1",
+          "method_ref": {
+            "id": "compare-two-sources",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "bindings": {
+            "source_ids": [
+              "s-1",
+              "s-2"
+            ]
+          }
+        }
+      ],
+      "rationale": "根据已登记方法细化，保留原责任",
+      "running_work_policy": "retain_if_bindings_unchanged"
+    },
+    "note": "合成结构样本，引用未落库，不能执行或视为真实证据。"
+  },
+  {
+    "name": "plan-revision-proposal-v1-unknown-field",
+    "schema": "plan-revision-proposal-v1.schema.json",
+    "expect_structure_valid": false,
+    "payload": {
+      "schema_version": 1,
+      "proposal_id": "p-1",
+      "mission_id": "m-1",
+      "expected_plan_revision": 2,
+      "trigger_refs": [
+        {
+          "kind": "observation",
+          "id": "fb-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "read_set": [
+        {
+          "kind": "obligation",
+          "id": "o-1",
+          "semantic_revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "operations": [
+        {
+          "op": "refine",
+          "goal_id": "t-1",
+          "obligation_id": "o-1",
+          "method_ref": {
+            "id": "compare-two-sources",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "bindings": {
+            "source_ids": [
+              "s-1",
+              "s-2"
+            ]
+          }
+        }
+      ],
+      "rationale": "根据已登记方法细化，保留原责任",
+      "running_work_policy": "retain_if_bindings_unchanged",
+      "unexpected_authority_override": true
+    }
+  },
+  {
+    "name": "plan-revision-proposal-v1-string-version",
+    "schema": "plan-revision-proposal-v1.schema.json",
+    "expect_structure_valid": false,
+    "payload": {
+      "schema_version": "1",
+      "proposal_id": "p-1",
+      "mission_id": "m-1",
+      "expected_plan_revision": 2,
+      "trigger_refs": [
+        {
+          "kind": "observation",
+          "id": "fb-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "read_set": [
+        {
+          "kind": "obligation",
+          "id": "o-1",
+          "semantic_revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "operations": [
+        {
+          "op": "refine",
+          "goal_id": "t-1",
+          "obligation_id": "o-1",
+          "method_ref": {
+            "id": "compare-two-sources",
+            "version": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "bindings": {
+            "source_ids": [
+              "s-1",
+              "s-2"
+            ]
+          }
+        }
+      ],
+      "rationale": "根据已登记方法细化，保留原责任",
+      "running_work_policy": "retain_if_bindings_unchanged"
+    }
+  },
+  {
+    "name": "goal-resolution-v1-valid",
+    "schema": "goal-resolution-v1.schema.json",
+    "expect_structure_valid": true,
+    "payload": {
+      "schema_version": 1,
+      "resolution_id": "res-1",
+      "mission_id": "m-1",
+      "obligation_id": "o-1",
+      "goal_task_id": "t-1",
+      "requirements_version": 1,
+      "contract_revision": 1,
+      "method_instance_id": "mi-1",
+      "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "artifact_refs": [
+        {
+          "kind": "artifact",
+          "id": "report-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "child_resolution_ids": [
+        "res-sub-1"
+      ],
+      "criteria": [
+        {
+          "criterion_id": "compare-all",
+          "verdict": "PASS",
+          "evidence_refs": [
+            {
+              "kind": "review",
+              "id": "review-1",
+              "revision": 1,
+              "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "limitations": []
+        }
+      ],
+      "review_receipt_id": "review-1",
+      "verdict": "ACCEPT",
+      "validity": "CURRENT",
+      "justification_refs": [
+        {
+          "kind": "review",
+          "id": "review-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "note": "合成结构样本，引用未落库，不能执行或视为真实证据。"
+  },
+  {
+    "name": "goal-resolution-v1-unknown-field",
+    "schema": "goal-resolution-v1.schema.json",
+    "expect_structure_valid": false,
+    "payload": {
+      "schema_version": 1,
+      "resolution_id": "res-1",
+      "mission_id": "m-1",
+      "obligation_id": "o-1",
+      "goal_task_id": "t-1",
+      "requirements_version": 1,
+      "contract_revision": 1,
+      "method_instance_id": "mi-1",
+      "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "artifact_refs": [
+        {
+          "kind": "artifact",
+          "id": "report-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "child_resolution_ids": [
+        "res-sub-1"
+      ],
+      "criteria": [
+        {
+          "criterion_id": "compare-all",
+          "verdict": "PASS",
+          "evidence_refs": [
+            {
+              "kind": "review",
+              "id": "review-1",
+              "revision": 1,
+              "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "limitations": []
+        }
+      ],
+      "review_receipt_id": "review-1",
+      "verdict": "ACCEPT",
+      "validity": "CURRENT",
+      "justification_refs": [
+        {
+          "kind": "review",
+          "id": "review-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "unexpected_authority_override": true
+    }
+  },
+  {
+    "name": "goal-resolution-v1-string-version",
+    "schema": "goal-resolution-v1.schema.json",
+    "expect_structure_valid": false,
+    "payload": {
+      "schema_version": "1",
+      "resolution_id": "res-1",
+      "mission_id": "m-1",
+      "obligation_id": "o-1",
+      "goal_task_id": "t-1",
+      "requirements_version": 1,
+      "contract_revision": 1,
+      "method_instance_id": "mi-1",
+      "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "artifact_refs": [
+        {
+          "kind": "artifact",
+          "id": "report-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "child_resolution_ids": [
+        "res-sub-1"
+      ],
+      "criteria": [
+        {
+          "criterion_id": "compare-all",
+          "verdict": "PASS",
+          "evidence_refs": [
+            {
+              "kind": "review",
+              "id": "review-1",
+              "revision": 1,
+              "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "limitations": []
+        }
+      ],
+      "review_receipt_id": "review-1",
+      "verdict": "ACCEPT",
+      "validity": "CURRENT",
+      "justification_refs": [
+        {
+          "kind": "review",
+          "id": "review-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  },
+  {
+    "name": "resolution-structural-valid-semantic-invalid",
+    "schema": "goal-resolution-v1.schema.json",
+    "expect_structure_valid": true,
+    "expect_domain_acceptance": false,
+    "payload": {
+      "schema_version": 1,
+      "resolution_id": "res-1",
+      "mission_id": "m-1",
+      "obligation_id": "o-1",
+      "goal_task_id": "t-1",
+      "requirements_version": 1,
+      "contract_revision": 1,
+      "method_instance_id": "mi-1",
+      "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "artifact_refs": [
+        {
+          "kind": "artifact",
+          "id": "report-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "child_resolution_ids": [
+        "res-sub-1"
+      ],
+      "criteria": [
+        {
+          "criterion_id": "compare-all",
+          "verdict": "FAIL",
+          "evidence_refs": [
+            {
+              "kind": "review",
+              "id": "review-1",
+              "revision": 1,
+              "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "limitations": []
+        }
+      ],
+      "review_receipt_id": "review-1",
+      "verdict": "ACCEPT",
+      "validity": "CURRENT",
+      "justification_refs": [
+        {
+          "kind": "review",
+          "id": "review-1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "note": "结构校验应通过；正式域规则必须拒绝ACCEPT+必需criterion FAIL。本文未实现生产域校验器。"
+  }
+]

@@ -1,0 +1,7 @@
+; SPDX-FileCopyrightText: 2026 DennyWanye
+; SPDX-License-Identifier: Apache-2.0
+==>
+0 load crate depot
+root 9
+4 __top -> __top_method 5
+<==

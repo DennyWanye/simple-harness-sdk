@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:simpleharness:aer:review-record:1",
+  "title": "review-record",
+  "description": "拟议内部结构合同；不验证真实身份、语义、权限或执行效果；不替代既有消息版本。",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "package_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "purpose": {
+      "enum": [
+        "TASK_CONTENT",
+        "METHOD_PLAN",
+        "COMPOSITION",
+        "ACTION_PROPOSAL",
+        "OPERATION_OUTCOME",
+        "MISSION_FINAL"
+      ]
+    },
+    "binding": {
+      "type": "object",
+      "properties": {
+        "mission_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "obligation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "subject_ref": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "task",
+                "method",
+                "requirements",
+                "artifact",
+                "source",
+                "observation",
+                "review",
+                "acceptance",
+                "resolution",
+                "operation",
+                "tool_receipt",
+                "knowledge"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "content_hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "revision",
+            "content_hash"
+          ],
+          "additionalProperties": false
+        },
+        "requirements_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "input_manifest_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "policy_ref": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "task",
+                "method",
+                "requirements",
+                "artifact",
+                "source",
+                "observation",
+                "review",
+                "acceptance",
+                "resolution",
+                "operation",
+                "tool_receipt",
+                "knowledge"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "content_hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "revision",
+            "content_hash"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "mission_id",
+        "obligation_id",
+        "subject_ref",
+        "requirements_revision",
+        "input_manifest_hash",
+        "policy_ref"
+      ],
+      "additionalProperties": false
+    },
+    "reviewer_agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "reviewer_turn_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "evidence_manifest_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "criterion_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "verdict": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "UNKNOWN"
+            ]
+          },
+          "check_execution": {
+            "enum": [
+              "NOT_RUN",
+              "RUNNING",
+              "SUCCEEDED",
+              "ERROR",
+              "CANCELLED"
+            ]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "task",
+                    "method",
+                    "requirements",
+                    "artifact",
+                    "source",
+                    "observation",
+                    "review",
+                    "acceptance",
+                    "resolution",
+                    "operation",
+                    "tool_receipt",
+                    "knowledge"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "content_hash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "revision",
+                "content_hash"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 10000
+            },
+            "minItems": 0
+          }
+        },
+        "required": [
+          "criterion_id",
+          "verdict",
+          "check_execution",
+          "evidence_refs",
+          "limitations"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "verdict": {
+      "enum": [
+        "ACCEPT",
+        "REWORK",
+        "INCONCLUSIVE",
+        "REJECTED"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "record_id",
+    "package_id",
+    "purpose",
+    "binding",
+    "reviewer_agent_id",
+    "reviewer_turn_id",
+    "evidence_manifest_hash",
+    "criteria",
+    "verdict"
+  ],
+  "additionalProperties": false
+}

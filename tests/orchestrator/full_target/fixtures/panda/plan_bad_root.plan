@@ -1,0 +1,8 @@
+; SPDX-FileCopyrightText: 2026 DennyWanye
+; SPDX-License-Identifier: Apache-2.0
+; Every decomposition child exists, so only the root check can reject this.
+==>
+0 load crate depot
+root 7
+1 deliver crate depot dock -> m-deliver-direct 0
+<==

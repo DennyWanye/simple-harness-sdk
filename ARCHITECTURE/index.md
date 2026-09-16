@@ -1,3 +1,5 @@
+最后更新：2026-09-16 CST。FULL-TARGET-1.4 实施第一批提交：HTN 契约（contracts/htn、obligations、evidence_state、resolution、semantic_base）、四值谓词求值器（planning/htn/applicability）、验收纯规则（verification/acceptance_rules）、理由最小不动点（knowledge/justifications）、TaskNetwork 快照与投影验证（graph/task_network、projection_validation）、PANDA 后端适配（planning/htn/backends/panda）。全部纯内存/纯函数，未接线；旧模式零改动；新增 630 条测试，编排范围回归无新失败。计划来源与状态见 [交接](../plans/2026-09-16-full-target/HANDOFF.md)。
+
 最后更新：2026-09-15 23:27 CST。AppWorld R 选择计量：`f7432dc` 预估计入 tool schema；空候选跳过选择轮。完整叙事在 Host `plans/taskSys2/HANDOFF-2026-09-15-r-envelope.md`。[本仓指针](../plans/2026-09-14-gap-phase1/HANDOFF-2026-09-15-r-envelope.md)。
 
 最后更新：2026-09-15。Host374aa70a/SDKf122b8c：共享容量、长响应及最终Mission评审后继完成限定实机验收。v60独立评审正式交付60实跑PASS；v61亲自捕获列表/详情待验证→交付和冷恢复。累计335本地归属调用7157983已知tokens下限，1早先未知另列，Flash0。最新广回归2304PASS/32SKIP/6环境FAIL，关联兼容环境49PASS。N1–N8/正式A96B96仍OPEN，未打包。

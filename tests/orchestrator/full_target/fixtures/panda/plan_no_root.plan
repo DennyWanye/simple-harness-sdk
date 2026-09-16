@@ -1,0 +1,7 @@
+; SPDX-FileCopyrightText: 2026 DennyWanye
+; SPDX-License-Identifier: Apache-2.0
+; No root line at all: valid only in the explicit verification mode.
+==>
+0 load crate depot
+1 deliver crate depot dock -> m-deliver-direct 0
+<==

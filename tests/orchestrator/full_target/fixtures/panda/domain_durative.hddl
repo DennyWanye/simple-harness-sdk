@@ -1,0 +1,17 @@
+; SPDX-FileCopyrightText: 2026 DennyWanye
+; SPDX-License-Identifier: Apache-2.0
+(define (domain sh-durative)
+  (:requirements :strips :typing :hierarchy :durative-actions)
+  (:types location - object)
+  (:predicates (visited ?l - location))
+  (:task tour :parameters (?l - location))
+  (:method m-tour
+    :parameters (?l - location)
+    :task (tour ?l)
+    :subtasks (and (t1 (drive ?l))))
+  (:durative-action drive
+    :parameters (?l - location)
+    :duration (= ?duration 5)
+    :condition (at start (not (visited ?l)))
+    :effect (at end (visited ?l)))
+)

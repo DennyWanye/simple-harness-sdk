@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:simpleharness:aer:reconciliation-result:1",
+  "title": "reconciliation-result",
+  "description": "拟议内部结构合同；不验证真实身份、语义、权限或执行效果；不替代既有消息版本。",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "operation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "request_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "connector_namespace": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "outcome": {
+      "enum": [
+        "APPLIED",
+        "NOT_APPLIED_FINAL",
+        "PENDING",
+        "PARTIAL",
+        "UNKNOWN"
+      ]
+    },
+    "observed_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "task",
+              "method",
+              "requirements",
+              "artifact",
+              "source",
+              "observation",
+              "review",
+              "acceptance",
+              "resolution",
+              "operation",
+              "tool_receipt",
+              "knowledge"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "revision",
+          "content_hash"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "old_request_cannot_apply": {
+      "type": "boolean"
+    },
+    "query_completeness": {
+      "enum": [
+        "AUTHORITATIVE_WITH_SCOPE",
+        "BEST_EFFORT",
+        "UNKNOWN"
+      ]
+    },
+    "explanation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 10000
+    }
+  },
+  "required": [
+    "schema_version",
+    "record_id",
+    "operation_id",
+    "request_hash",
+    "connector_namespace",
+    "outcome",
+    "observed_at_ms",
+    "evidence_refs",
+    "old_request_cannot_apply",
+    "query_completeness",
+    "explanation"
+  ],
+  "additionalProperties": false
+}

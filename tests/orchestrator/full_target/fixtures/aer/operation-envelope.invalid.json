@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "operation_id": "op1",
+  "operation_occurrence_id": "send-approved-report-1",
+  "mission_id": "m1",
+  "obligation_id": "o-send",
+  "scope_id": "m1",
+  "connector_id": "test-delivery",
+  "connector_version": "1",
+  "operation_name": "enqueue",
+  "operation_kind": "EVENT_WRITE",
+  "target_ref": "test-recipient-1",
+  "expected_target_version": null,
+  "parameters_artifact_ref": {
+    "kind": "artifact",
+    "id": "params1",
+    "revision": 1,
+    "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "request_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "requirements_revision": 1,
+  "review_ref": {
+    "kind": "review",
+    "id": "review1",
+    "revision": 1,
+    "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "accepted_input_refs": [
+    {
+      "kind": "acceptance",
+      "id": "report1",
+      "revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "effect_contract_ref": {
+    "kind": "requirements",
+    "id": "delivery-contract1",
+    "revision": 1,
+    "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "model_says_approved": true
+}

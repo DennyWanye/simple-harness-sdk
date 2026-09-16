@@ -1,0 +1,17 @@
+; SPDX-FileCopyrightText: 2026 DennyWanye
+; SPDX-License-Identifier: Apache-2.0
+(define (domain sh-numeric)
+  (:requirements :strips :typing :hierarchy :numeric-fluents)
+  (:types location - object)
+  (:predicates (visited ?l - location))
+  (:functions (fuel) - number)
+  (:task tour :parameters (?l - location))
+  (:method m-tour
+    :parameters (?l - location)
+    :task (tour ?l)
+    :subtasks (and (t1 (drive ?l))))
+  (:action drive
+    :parameters (?l - location)
+    :precondition (>= (fuel) 1)
+    :effect (and (visited ?l) (decrease (fuel) 1)))
+)

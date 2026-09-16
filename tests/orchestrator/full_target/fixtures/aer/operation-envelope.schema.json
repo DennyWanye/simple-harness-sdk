@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:simpleharness:aer:operation-envelope:1",
+  "title": "operation-envelope",
+  "description": "拟议内部结构合同；不验证真实身份、语义、权限或执行效果；不替代既有消息版本。",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "operation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "operation_occurrence_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "mission_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "obligation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "scope_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "connector_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "connector_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "operation_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "operation_kind": {
+      "enum": [
+        "READ",
+        "STATE_WRITE",
+        "EVENT_WRITE",
+        "COMPENSATION"
+      ]
+    },
+    "target_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "expected_target_version": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "parameters_artifact_ref": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "task",
+            "method",
+            "requirements",
+            "artifact",
+            "source",
+            "observation",
+            "review",
+            "acceptance",
+            "resolution",
+            "operation",
+            "tool_receipt",
+            "knowledge"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "revision",
+        "content_hash"
+      ],
+      "additionalProperties": false
+    },
+    "request_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "requirements_revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "review_ref": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "task",
+            "method",
+            "requirements",
+            "artifact",
+            "source",
+            "observation",
+            "review",
+            "acceptance",
+            "resolution",
+            "operation",
+            "tool_receipt",
+            "knowledge"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "revision",
+        "content_hash"
+      ],
+      "additionalProperties": false
+    },
+    "accepted_input_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "task",
+              "method",
+              "requirements",
+              "artifact",
+              "source",
+              "observation",
+              "review",
+              "acceptance",
+              "resolution",
+              "operation",
+              "tool_receipt",
+              "knowledge"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "revision",
+          "content_hash"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "effect_contract_ref": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "task",
+            "method",
+            "requirements",
+            "artifact",
+            "source",
+            "observation",
+            "review",
+            "acceptance",
+            "resolution",
+            "operation",
+            "tool_receipt",
+            "knowledge"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "revision",
+        "content_hash"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "operation_id",
+    "operation_occurrence_id",
+    "mission_id",
+    "obligation_id",
+    "scope_id",
+    "connector_id",
+    "connector_version",
+    "operation_name",
+    "operation_kind",
+    "target_ref",
+    "expected_target_version",
+    "parameters_artifact_ref",
+    "request_hash",
+    "requirements_revision",
+    "review_ref",
+    "accepted_input_refs",
+    "effect_contract_ref"
+  ],
+  "additionalProperties": false
+}

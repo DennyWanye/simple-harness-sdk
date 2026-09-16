@@ -1,0 +1,49 @@
+; SPDX-FileCopyrightText: 2026 DennyWanye
+; SPDX-License-Identifier: Apache-2.0
+; Pure STRIPS + typing + hierarchy fragment with genuinely partially ordered methods.
+(define (domain sh-transport)
+  (:requirements :strips :typing :hierarchy :negative-preconditions :method-preconditions)
+  (:types location package - object)
+  (:predicates
+    (at ?p - package ?l - location)
+    (loaded ?p - package)
+    (visited ?l - location)
+  )
+
+  (:task deliver
+    :parameters (?p - package ?from - location ?to - location))
+  (:task survey
+    :parameters (?a - location ?b - location))
+
+  (:method m-deliver-direct
+    :parameters (?p - package ?from - location ?to - location)
+    :task (deliver ?p ?from ?to)
+    :precondition (at ?p ?from)
+    :subtasks (and
+      (t1 (load ?p ?from))
+      (t2 (unload ?p ?to)))
+    :ordering (and (< t1 t2)))
+
+  ; No :ordering at all: the two subtasks are genuinely unordered.
+  (:method m-survey-unordered
+    :parameters (?a - location ?b - location)
+    :task (survey ?a ?b)
+    :subtasks (and
+      (t1 (inspect ?a))
+      (t2 (inspect ?b))))
+
+  (:action load
+    :parameters (?p - package ?l - location)
+    :precondition (and (at ?p ?l) (not (loaded ?p)))
+    :effect (and (loaded ?p) (not (at ?p ?l))))
+
+  (:action unload
+    :parameters (?p - package ?l - location)
+    :precondition (loaded ?p)
+    :effect (and (at ?p ?l) (not (loaded ?p))))
+
+  (:action inspect
+    :parameters (?l - location)
+    :precondition (not (visited ?l))
+    :effect (visited ?l))
+)

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "record_id": "review-1",
+  "package_id": "package-1",
+  "purpose": "TASK_CONTENT",
+  "binding": {
+    "mission_id": "m1",
+    "obligation_id": "o1",
+    "subject_ref": {
+      "kind": "task",
+      "id": "t1",
+      "revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "requirements_revision": 1,
+    "input_manifest_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "policy_ref": {
+      "kind": "requirements",
+      "id": "policy1",
+      "revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "reviewer_agent_id": "independent-agent",
+  "reviewer_turn_id": "turn-2",
+  "evidence_manifest_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "criteria": [
+    {
+      "criterion_id": "r-1",
+      "verdict": "PASS",
+      "check_execution": "SUCCEEDED",
+      "evidence_refs": [
+        {
+          "kind": "tool_receipt",
+          "id": "test1",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "limitations": []
+    }
+  ],
+  "verdict": "ACCEPT",
+  "model_says_approved": true
+}

@@ -1,0 +1,16 @@
+; SPDX-FileCopyrightText: 2026 DennyWanye
+; SPDX-License-Identifier: Apache-2.0
+(define (problem sh-transport-p01)
+  (:domain sh-transport)
+  (:objects
+    depot dock - location
+    crate - package
+  )
+  (:htn
+    :parameters ()
+    :subtasks (and
+      (st1 (deliver crate depot dock))
+      (st2 (survey depot dock)))
+    :ordering (and (< st1 st2)))
+  (:init (at crate depot))
+)

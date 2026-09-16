@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "witness_id": "w1",
+  "consumer_ref": {
+    "kind": "task",
+    "id": "t2",
+    "revision": 1,
+    "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "purpose": "START",
+  "truth": "TRUE",
+  "freshness": "CURRENT",
+  "availability": "READABLE",
+  "decision": "USABLE",
+  "scope_id": "m1",
+  "scope_epoch": 3,
+  "support_revision": 4,
+  "as_of_ms": 1000,
+  "not_after_ms": 2000,
+  "support_refs": [
+    {
+      "kind": "observation",
+      "id": "obs1",
+      "revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "reason_codes": []
+}

@@ -1,0 +1,17 @@
+; SPDX-FileCopyrightText: 2026 DennyWanye
+; SPDX-License-Identifier: Apache-2.0
+(define (domain sh-conditional)
+  (:requirements :strips :typing :hierarchy :conditional-effects :universal-preconditions)
+  (:types location package - object)
+  (:predicates (at ?p - package ?l - location) (sealed ?p - package))
+  (:task tidy :parameters (?l - location))
+  (:method m-tidy
+    :parameters (?l - location)
+    :task (tidy ?l)
+    :precondition (forall (?p - package) (sealed ?p))
+    :subtasks (and (t1 (sweep ?l))))
+  (:action sweep
+    :parameters (?l - location)
+    :effect (forall (?p - package)
+              (when (at ?p ?l) (sealed ?p))))
+)

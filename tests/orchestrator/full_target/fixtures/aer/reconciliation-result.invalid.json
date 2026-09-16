@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "record_id": "rec1",
+  "operation_id": "op1",
+  "request_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "connector_namespace": "test-account/ledger-v1",
+  "outcome": "UNKNOWN",
+  "observed_at_ms": 1500,
+  "evidence_refs": [],
+  "old_request_cannot_apply": false,
+  "query_completeness": "BEST_EFFORT",
+  "explanation": "查无记录，但请求仍可能在途；不形成最终否定。",
+  "model_says_approved": true
+}
