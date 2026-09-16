@@ -1,6 +1,6 @@
 # FULL-TARGET-1.4 实施交接（P0–P2 先行）
 
-**最后核查：2026-09-16 CST，第三批 b 提交（P2.3b）。第三批 a e78a8cc。第一批 623d4c8、第二批 7b0a88f。计划来源：Host 仓库 `plans/taskSys2/升级planV1/v1.4/simpleharness-full-target-1.4/complete-plan.zh-CN.md`（§23 执行顺序、§21.5 Grok 验收协议）。用户指令：先完成 P0、P1、P2 并做好测试，然后交用户验收。**
+**最后核查：2026-09-16 CST，第三批 c 提交（P2.3c 第一部分）。第三批 a e78a8cc、b 767316b。第一批 623d4c8、第二批 7b0a88f。计划来源：Host 仓库 `plans/taskSys2/升级planV1/v1.4/simpleharness-full-target-1.4/complete-plan.zh-CN.md`（§23 执行顺序、§21.5 Grok 验收协议）。用户指令：先完成 P0、P1、P2 并做好测试，然后交用户验收。**
 
 ## 1. 接手结论
 
@@ -26,7 +26,9 @@
 | P1.1 契约第四～六轮 | 操作三轴、审批与候选策略、demand、codec 补齐、read-set 通道、HUMAN 作者、步骤复用、Acceptance 引用、ObligationOpening | 已交付 | 303（五文件实测） | 每轮全目录测试全绿 |
 | P2.3a | Commit 接线：PlanCommitsMixin.commit_plan_revision（ADR-13：legacy 门 → 幂等 → epoch → 整数闸门不 rebase → 语义 read-set 11 通道 → 结构/保留性/替代=方法实例 → 预算 → 在途 → 同事务写全表 + PlanRevisionCommitted）、orchestration_semantics_version 默认 legacy、parse_plan_proposal/parse_method_proposal、两个新标签块与 hierarchical Planner 模板、validate_graph_v2、脚本化 fixture | 已交付，审阅修复完成 | 116 + 66 | 需修后合并 → 已修（空 issued_by 拒绝、带 openings 的修订原先提交不了、写半场绕过快照不变式、golden 常量与 HEAD 字节摘要） |
 | P2.3b | event_handler 装配 hierarchical_dispatch（Planner 回复 → 解析 → 编译 → commit_plan_revision；被拒分类与有界重编译；repair_hint 接 BlockError；compound phase 由 reducer 推进；list/ready/terminal 走投影；PlanIntegrityError 只停本 Mission）；versioning 新模式 materialise_v2 只按 InputManifest，legacy 三函数源码 hash 锁定 | 已交付，审阅修复完成 | 102 + 32 | 需修后合并 → 已修（GraphIntegrityError 逃逸到共享 run 循环、hierarchical Planner 收集路径零覆盖、事件归一化按字段名）；给 P2.3c 的四条阻碍见 P2.3b/journal §7 |
-| P2.3c | allocator form 门 + 根 GoalResolution + 谓词观察器 + synthesis；Grok 验收（题集已获用户三项决定，P2.3c 完成后冻结） | 待做 | | |
+| P2.3c 第一部分 | allocator v2（form 门先于 status，只接 EligiblePrimitiveTask，旧函数 hash 不变）、ResolutionCommitsMixin（accept_review / commit_goal_resolution，AER §7 顺序，交付回执复读校验，根义务闭包读法已裁决采纳）、orchestrator/_read_set.py（11 通道公共检查，plan_commits 切换后 116 条不变）、code/appworld 谓词观察器（只读、超时、三态、解析失败一律 UNAVAILABLE）、MethodSynthesizer 系统侧、method_synthesizer 角色模板 | 已交付，审阅修复完成 | 365 | 需修后合并 → 已修（read-set 5/11 → 11/11、交付回执复读、观察器实参写文件、ValueError 当负观察） |
+| P2.3c 第二部分 | 接线：CommitService 加 ResolutionCommitsMixin；hierarchical_dispatch 调 commit_goal_resolution；occurrence 桥到可派发工作 + allocate_v2；派发前 evaluate_readiness 与输出索引；hierarchical Planner 包与提示词；Manager 图变更闸门；observers 注册；Synthesizer 经 BaseAgent；回执两表迁移；L2 状态谓词；新 Mission 走 HTN 跑真实叶子 | 待做 | | |
+| Grok 验收 | 题集冻结候选包已备（L1 12 / L2 12 / L3 4 / L4 3，隐藏评分器与参考解自证 21/21）；用户三项决定已批；等第二部分通过审阅后冻结并由独立子代理执行；分批与否待用户答复 | 待做 | | |
 
 ## 3. 约束
 

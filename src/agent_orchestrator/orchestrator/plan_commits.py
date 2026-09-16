@@ -47,13 +47,10 @@ from typing import TYPE_CHECKING, Any
 from simple_harness.contracts import canonical_json
 
 from ..contracts import TERMINAL_MISSION, ContractError
-from ..contracts.evidence_state import Validity
 from ..contracts.htn import (
     ContractRevision,
     DispatchGeneration,
     GraphStructureBudget,
-    MethodRegistryStatus,
-    ObligationId,
     OccurrenceId,
     ProposedPlanDelta,
     ReadItem,
@@ -75,6 +72,7 @@ from ..planning.htn.compiler import BudgetRequirement, apply_obligation_openings
 from ..storage.htn_store import HtnStore, PlanCommitReceipt
 from ..storage.obligation_store import ObligationStore
 from ..storage.store import StoreError
+from ._read_set import ReadSetChannelUnknown, SemanticReadSetChecker
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..contracts import Event, Mission
@@ -213,22 +211,6 @@ class CommitPlanCommand:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class _Stale:
-    """One read-set item that no longer describes the world."""
-
-    channel: str
-    subject: str
-    expected: str
-    found: str
-
-    def detail(self) -> str:
-        return (
-            f"{self.channel} {self.subject!r} was read at {self.expected}, "
-            f"the current state is {self.found}"
-        )
-
-
 class PlanCommitsMixin:
     """Commit one PlanRevision: check everything, then write it in one transaction."""
 
@@ -318,39 +300,84 @@ class PlanCommitsMixin:
         content hash is refused here rather than recorded as an unre-checkable read.
         """
 
-        resolvers = {
-            ReadItemKind.TASK: self._goal_state,
-            ReadItemKind.METHOD: self._method_state,
-            ReadItemKind.FACT: self._observation_state,
-            ReadItemKind.ACCEPTANCE: self._acceptance_state,
-            ReadItemKind.OBLIGATION: self._obligation_state,
-            ReadItemKind.AUTHORITY: self._authority_state,
-        }
-        resolve = resolvers.get(ReadItemKind(str(kind)))
-        if resolve is None:
-            raise PlanCommitRejected(
-                "READ_SET_UNRESOLVED", f"{kind!s} is not a channel this deployment re-checks"
-            )
-        semantics = HtnStore(self._store)
-        probe = ReadItem(kind=kind, id=subject_id, semantic_revision=0, content_hash="0" * 64)
-        found = resolve(semantics, mission_id, probe)
-        if found is None:
-            raise PlanCommitRejected(
-                "READ_SET_UNRESOLVED", f"{kind!s} {subject_id!r} is not something this store holds"
-            )
-        revision, digest = found
+        checker = self._read_set_checker(mission_id)
         try:
-            return ReadItem(
-                kind=kind, id=subject_id, semantic_revision=revision, content_hash=digest
-            )
-        except ContractError as error:
-            # e.g. a suspended method, whose "state" is a status and not a hash: there
-            # is nothing here a proposal may legitimately claim to have read.
-            raise PlanCommitRejected(
-                "READ_SET_UNRESOLVED",
-                f"{kind!s} {subject_id!r} is currently {digest}, which cannot be read as a "
-                f"revision ({error})",
-            ) from error
+            return checker.read_item(kind, subject_id)
+        except ReadSetChannelUnknown as unknown:
+            raise PlanCommitRejected("READ_SET_UNRESOLVED", unknown.detail) from unknown
+
+    def _read_set_checker(self, mission_id: str) -> SemanticReadSetChecker:
+        """The one re-validation implementation, configured for the *plan* path.
+
+        ``allow_task_control_channels`` stays off: a plan proposal's TASK ids are
+        bare task ids, and leaving the namespaced dispatch-control ids unresolved is
+        exactly what this path did before ``_read_set`` existed (§18.5 constraint 3 —
+        the old behaviour is not redefined by sharing an implementation).
+        """
+
+        return SemanticReadSetChecker(
+            self._store,
+            HtnStore(self._store),
+            mission_id=mission_id,
+            resolvers={
+                "goal": self._goal_state,
+                "method": self._method_state,
+                "observation": self._observation_state,
+                "acceptance": self._acceptance_state,
+                "obligation": self._obligation_state,
+                "authority": self._authority_state,
+            },
+        )
+
+    # -- one seam per channel: this path's own name for the shared resolver.  They
+    # delegate rather than re-implement — ``_read_set`` is the single implementation
+    # (§ADR-13 clause 2) — and they exist because the mutation suite weakens one
+    # channel at a time through *this* class, which is also how a deployment would
+    # override one without forking the check.
+    def _goal_state(
+        self, semantics: HtnStore, mission_id: str, item: ReadItem
+    ) -> tuple[int, str] | None:
+        return _shared(self._store, semantics, mission_id).goal_state(semantics, mission_id, item)
+
+    def _method_state(
+        self, semantics: HtnStore, mission_id: str, item: ReadItem
+    ) -> tuple[int, str] | None:
+        return _shared(self._store, semantics, mission_id).method_state(semantics, mission_id, item)
+
+    def _observation_state(
+        self, semantics: HtnStore, mission_id: str, item: ReadItem
+    ) -> tuple[int, str] | None:
+        return _shared(self._store, semantics, mission_id).observation_state(
+            semantics, mission_id, item
+        )
+
+    def _witness_state(
+        self, semantics: HtnStore, mission_id: str, item: ReadItem
+    ) -> tuple[int, str] | None:
+        return _shared(self._store, semantics, mission_id).witness_state(
+            semantics, mission_id, item
+        )
+
+    def _acceptance_state(
+        self, semantics: HtnStore, mission_id: str, item: ReadItem
+    ) -> tuple[int, str] | None:
+        return _shared(self._store, semantics, mission_id).acceptance_state(
+            semantics, mission_id, item
+        )
+
+    def _obligation_state(
+        self, semantics: HtnStore, mission_id: str, item: ReadItem
+    ) -> tuple[int, str] | None:
+        return _shared(self._store, semantics, mission_id).obligation_state(
+            semantics, mission_id, item
+        )
+
+    def _authority_state(
+        self, semantics: HtnStore, mission_id: str, item: ReadItem
+    ) -> tuple[int, str] | None:
+        return _shared(self._store, semantics, mission_id).authority_state(
+            semantics, mission_id, item
+        )
 
     # ------------------------------------------------------------------ gate 1: identity
     @staticmethod
@@ -457,288 +484,25 @@ class PlanCommitsMixin:
     ) -> None:
         """ADR-13 clause 2: every channel, item by item, fail closed.
 
-        A channel that cannot be re-checked is refused separately from one that is
-        out of date — "I could not tell" and "it changed" call for different work by
-        the proposer, and reporting the first as the second would send them off to
-        recompile something that was never the problem.
+        The channel-by-channel work lives in :mod:`._read_set` so this path and the
+        accept-side one cannot disagree about what a subject's semantic revision is
+        (the P2.3c review found a second, five-channel copy).  What stays here is
+        this path's own vocabulary: a channel that cannot be re-checked is refused
+        separately from one that is out of date — "I could not tell" and "it changed"
+        call for different work by the proposer, and reporting the first as the second
+        would send them off to recompile something that was never the problem.
         """
 
-        mission_id = command.mission_id
-        stale: list[_Stale] = []
-        unresolved: list[str] = []
-
-        current_requirements = semantics.latest_requirements_revision(mission_id)
-        current_revision = 0 if current_requirements is None else int(current_requirements.revision)
-        if int(read_set.requirements_revision) != current_revision:
-            stale.append(
-                _Stale(
-                    "requirements",
-                    mission_id,
-                    str(int(read_set.requirements_revision)),
-                    str(current_revision),
-                )
-            )
-
-        for item in read_set.goal_revisions:
-            self._probe(semantics, mission_id, item, "goal", self._goal_state, stale, unresolved)
-        for item in read_set.method_revisions:
-            self._probe(
-                semantics, mission_id, item, "method", self._method_state, stale, unresolved
-            )
-        for item in read_set.observation_revisions:
-            self._probe(
-                semantics,
-                mission_id,
-                item,
-                "observation",
-                self._observation_state,
-                stale,
-                unresolved,
-            )
-        for item in read_set.acceptance_revisions:
-            self._probe(
-                semantics, mission_id, item, "acceptance", self._acceptance_state, stale, unresolved
-            )
-        for item in read_set.obligation_revisions:
-            self._probe(
-                semantics, mission_id, item, "obligation", self._obligation_state, stale, unresolved
-            )
-        for item in read_set.authority_revisions:
-            self._probe(
-                semantics, mission_id, item, "authority", self._authority_state, stale, unresolved
-            )
-
-        # C29: the *set* of supports, not only its members.  Adding a
-        # counter-observation leaves every positive support untouched, so without
-        # the member digest the read would still look current (AER scenario I02).
-        for support in read_set.support_sets:
-            try:
-                stored = semantics.get_justification_set(support.support_set_id)
-            except StoreError:
-                unresolved.append(f"support_set {support.support_set_id!r}")
-                continue
-            if (stored.member_revision, stored.member_digest) != (
-                int(support.revision),
-                support.member_digest,
-            ):
-                stale.append(
-                    _Stale(
-                        "support_set",
-                        support.support_set_id,
-                        f"revision {int(support.revision)} digest {support.member_digest[:12]}",
-                        f"revision {stored.member_revision} digest {stored.member_digest[:12]}",
-                    )
-                )
-
-        # C29: the epoch barrier.  Evidence is invalidated by raising the scope's
-        # epoch, which never edits the record the proposal read.
-        for scope in read_set.scope_epochs:
-            current_epoch = semantics.epoch(mission_id, scope.scope_id)
-            if int(scope.validity_epoch) != current_epoch:
-                stale.append(
-                    _Stale(
-                        "validity_epoch",
-                        scope.scope_id,
-                        str(int(scope.validity_epoch)),
-                        str(current_epoch),
-                    )
-                )
-
-        # TG §11.2: "there is no such thing" is a read too, and it goes stale by
-        # becoming false — which is exactly the A→B / B→A merge the plan warns about.
-        for absence in read_set.absences:
-            present = self._absence_broken(
-                semantics, mission_id, absence.predicate, absence.scope_id
-            )
-            if present is not None:
-                stale.append(
-                    _Stale(
-                        "absence",
-                        f"{absence.predicate}/{absence.scope_id}",
-                        "nothing",
-                        present,
-                    )
-                )
-
-        if unresolved:
-            raise PlanCommitRejected(
-                "READ_SET_UNRESOLVED",
-                "the read-set names subjects this store cannot re-check: "
-                + "; ".join(sorted(unresolved)),
-            )
-        if stale:
-            raise PlanCommitRejected(
-                "READ_SET_STALE",
-                "; ".join(
-                    item.detail() for item in sorted(stale, key=lambda s: (s.channel, s.subject))
-                ),
-            )
-
-    def _probe(
-        self,
-        semantics: HtnStore,
-        mission_id: str,
-        item: ReadItem,
-        channel: str,
-        resolve: Any,
-        stale: list[_Stale],
-        unresolved: list[str],
-    ) -> None:
-        found = resolve(semantics, mission_id, item)
-        if found is None:
-            unresolved.append(f"{channel} {item.id!r}")
-            return
-        revision, digest = found
-        if (revision, digest) != (int(item.semantic_revision), item.content_hash):
-            stale.append(
-                _Stale(
-                    channel,
-                    item.id,
-                    f"revision {int(item.semantic_revision)} hash {item.content_hash[:12]}",
-                    f"revision {revision} hash {digest[:12]}",
-                )
-            )
-
-    # -- one resolver per channel: "what does the store say about this subject now?"
-    def _goal_state(
-        self, semantics: HtnStore, mission_id: str, item: ReadItem
-    ) -> tuple[int, str] | None:
-        binding = semantics.task_semantics_of(mission_id, item.id)
-        if binding is None:
-            return None
-        return int(binding.contract_revision), binding.contract_hash
-
-    def _method_state(
-        self, semantics: HtnStore, mission_id: str, item: ReadItem
-    ) -> tuple[int, str] | None:
-        del mission_id
-        try:
-            stored = semantics.get_method(item.id, int(item.semantic_revision))
-        except StoreError:
-            return None
-        if stored.registration.status in (
-            MethodRegistryStatus.SUSPENDED,
-            MethodRegistryStatus.RETIRED,
-            MethodRegistryStatus.REJECTED,
-        ):
-            # A suspended definition is not "missing"; it is a definition that may no
-            # longer be built on, and saying so with the status is more useful than a
-            # hash mismatch would be.
-            return int(item.semantic_revision), f"status:{stored.registration.status!s}"
-        return stored.contract.method_version, stored.contract.method_ref().content_hash
-
-    def _observation_state(
-        self, semantics: HtnStore, mission_id: str, item: ReadItem
-    ) -> tuple[int, str] | None:
-        try:
-            record = semantics.get_observation(item.id)
-        except StoreError:
-            return self._witness_state(semantics, mission_id, item)
-        # An observation record is immutable, so it goes stale by being *superseded*:
-        # a later record for the same proposition is precisely the counter-evidence
-        # a plan built on the earlier one must not ignore.
-        newest = semantics.list_observations(mission_id, proposition_key=record.proposition_key)
-        if newest and newest[-1].observation_id != record.observation_id:
-            return int(item.semantic_revision), f"superseded_by:{newest[-1].observation_id}"
-        return int(item.semantic_revision), content_hash_of(record.to_json())
-
-    def _witness_state(
-        self, semantics: HtnStore, mission_id: str, item: ReadItem
-    ) -> tuple[int, str] | None:
-        """A fact read that names a :class:`ValidityWitness` rather than a record.
-
-        C29: a witness is valid only while its scope epoch still stands, so the
-        epoch is the witness's semantic revision.  A fact read that names neither an
-        observation nor a witness is left unresolved on purpose — it cannot be
-        re-checked, and passing it would be a gate that answers "yes" by default.
-        """
-
-        try:
-            witness = semantics.get_validity_witness(item.id)
-        except StoreError:
-            return None
-        current = semantics.epoch(mission_id, witness.scope_id)
-        if current != witness.scope_epoch:
-            # The epoch barrier fired after the witness was taken: the witness is not
-            # wrong, it is *out of date*, and the difference is what the proposer has
-            # to be told so it re-evaluates rather than re-argues.
-            return current, f"scope_epoch:{current}"
-        return witness.scope_epoch, content_hash_of(witness.to_json())
-
-    def _acceptance_state(
-        self, semantics: HtnStore, mission_id: str, item: ReadItem
-    ) -> tuple[int, str] | None:
-        del mission_id
-        try:
-            acceptance = semantics.get_acceptance(item.id)
-        except StoreError:
-            return None
-        if acceptance.validity is not Validity.CURRENT:
-            return int(item.semantic_revision), f"validity:{acceptance.validity!s}"
-        return int(acceptance.contract_revision), content_hash_of(acceptance.to_json())
-
-    def _obligation_state(
-        self, semantics: HtnStore, mission_id: str, item: ReadItem
-    ) -> tuple[int, str] | None:
         del semantics
-        obligations = ObligationStore(self._store)
-        duty_id = ObligationId(item.id)
-        if not obligations.exists(mission_id, duty_id):
-            return None
-        duty = obligations.obligation(mission_id, duty_id)
-        account = obligations.account(mission_id, duty_id)
-        # A duty's *shape* history is its semantic revision: re-planning it is exactly
-        # what a plan that read it needs to hear about (§8.4).
-        return account.shape_changes, content_hash_of(
-            {
-                "obligation": duty.to_json(),
-                "lifecycle": str(account.lifecycle),
-                "resolution_ref": account.resolution_ref,
-            }
-        )
-
-    def _authority_state(
-        self, semantics: HtnStore, mission_id: str, item: ReadItem
-    ) -> tuple[int, str] | None:
-        del mission_id, semantics
-        record = self._store.get_approval(item.id)
-        if record is None:
-            return None
-        return int(record.get("version", 0)), content_hash_of(dict(record))
-
-    def _absence_broken(
-        self, semantics: HtnStore, mission_id: str, predicate: str, scope_id: str
-    ) -> str | None:
-        """What now exists where the proposal read nothing, or ``None``.
-
-        The three predicates are the three "nothing is there" facts a plan can rest
-        on: no method instance adopted at an occurrence, no duty under that id, and
-        no order edge into a node.  A predicate this deployment does not know is not
-        silently treated as absent — an unknown absence claim is unresolvable.
-        """
-
-        if predicate == "no_adopted_method_instance":
-            for draft in semantics.list_method_instances(mission_id, state="ADOPTED"):
-                if str(draft.effective_goal_occurrence_id) == scope_id:
-                    return f"method instance {draft.instance_id!s}"
-            return None
-        if predicate == "no_obligation":
-            obligations = ObligationStore(self._store)
-            return (
-                f"obligation {scope_id}"
-                if obligations.exists(mission_id, ObligationId(scope_id))
-                else None
-            )
-        if predicate == "no_order_constraint_into":
-            active = semantics.active_plan_revision(mission_id)
-            if active is None:
-                return None
-            found = semantics.list_order_constraints(mission_id, active.revision, after=scope_id)
-            return f"order constraint from {found[0].before!s}" if found else None
-        raise PlanCommitRejected(
-            "READ_SET_UNRESOLVED",
-            f"absence predicate {predicate!r} is not one this deployment can re-check",
-        )
+        checker = self._read_set_checker(command.mission_id)
+        try:
+            verdict = checker.verify(read_set)
+        except ReadSetChannelUnknown as unknown:
+            raise PlanCommitRejected("READ_SET_UNRESOLVED", unknown.detail) from unknown
+        if verdict.unresolved:
+            raise PlanCommitRejected("READ_SET_UNRESOLVED", verdict.unresolved_detail())
+        if verdict.stale:
+            raise PlanCommitRejected("READ_SET_STALE", verdict.stale_detail())
 
     # ------------------------------------------------------- gate 6: the active plan
     @staticmethod
@@ -1266,6 +1030,12 @@ class PlanCommitsMixin:
                 f"mission {mission.id} runs under the hierarchical semantics, where every Task "
                 f"carries a TaskSemanticBindingV1; {sorted(missing)} carry none (§18.5)",
             )
+
+
+def _shared(store: Store, semantics: HtnStore, mission_id: str) -> SemanticReadSetChecker:
+    """The shared resolver set, with no overrides — the implementation itself."""
+
+    return SemanticReadSetChecker(store, semantics, mission_id=mission_id)
 
 
 def _rebound(binding: TaskSemanticBindingV1, task_id: str) -> TaskSemanticBindingV1:
