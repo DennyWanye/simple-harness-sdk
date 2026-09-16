@@ -200,6 +200,20 @@ class ObligationCommitsMixin:
                 f"{kind!r} is not a requester kind; a demand is withdrawn by the consumer "
                 f"that held it, one of {sorted(REQUESTER_KINDS)} (§24.1 decision 9)"
             )
+        # Third-round review P2-4: the same standard as admitting.  Ending a
+        # consumer's interest makes an occurrence undispatchable, which is as much a
+        # decision about the work as starting it — an unsigned, unevidenced withdrawal
+        # is a boolean somebody set, which is what this entry point exists to replace.
+        if not str(principal).strip():
+            raise ContractError(
+                "withdrawing a demand needs the principal that authorised the command; a "
+                "withdrawal nobody signed cannot be told apart from a lost demand (§18.5)"
+            )
+        if not evidence:
+            raise ContractError(
+                f"the withdrawal of the demand for {obligation_id!s} names no evidence; §6.1 "
+                "requires the authorisation to be recorded, not asserted"
+            )
         target = ObligationId(str(obligation_id))
         view = self._flip_demand(mission_id, target, ledger=ledger, admit=False)
         self._emit_demand_event(
@@ -242,10 +256,25 @@ class ObligationCommitsMixin:
         plan_revision: int | None,
         view: ObligationAccountView,
     ) -> None:
+        """One audit entry per *act*, not one per (duty, revision, direction).
+
+        Third-round review P2-4.  Keying on ``(mission, duty, event_type, revision)``
+        alone made a second admission inside one revision — ``admit → withdraw →
+        admit``, which is exactly what a retired-and-re-adopted slot does — collide
+        with the first and be swallowed by the Commit Service's idempotency key.  The
+        ledger bit really flipped back, so the account and the audit trail disagreed
+        by one act.  The ordinal is how many complete flips this duty has already been
+        through, read back from the events themselves, so a genuine replay (the same
+        act, re-offered) still lands on the same key and a new act never does.  The
+        bootstrap path (``plan_revision=None``) is the one that shows it most: the root
+        duty's admission carries no revision to separate it at all.
+        """
+
         self._emit(
             event_type,
             mission_id,
-            key=f"{mission_id}:{target!s}:{event_type}:{plan_revision}",
+            key=f"{mission_id}:{target!s}:{event_type}:{plan_revision}:"
+            f"{self._demand_ordinal(mission_id, target, event_type)}",
             payload={
                 "obligation_id": str(target),
                 "parent_obligation_id": (
@@ -259,6 +288,31 @@ class ObligationCommitsMixin:
                 "has_admitted_demand": bool(view.has_admitted_demand),
             },
         )
+
+    def _demand_ordinal(self, mission_id: str, target: ObligationId, event_type: str) -> int:
+        """Which flip of this duty's demand this act is (review P2-4).
+
+        Counted from the events of the **opposite** direction, which is what makes the
+        answer both correct and replay-stable.  A demand alternates: admitted,
+        withdrawn, admitted again.  So the *n*-th admission is the one with *n*
+        withdrawals recorded before it, and the *n*-th withdrawal is the one that ends
+        the *n*-th admission.  Counting this direction's own events instead would make
+        a re-offered act look like a new one (the act's own event is already there) and
+        no state check can tell those apart — which is how the first attempt at this
+        repair still let ``admit → withdraw → admit`` write only one admission.
+        """
+
+        def recorded(kind: str) -> int:
+            return sum(
+                1
+                for event in self._store.list_events(mission_id)
+                if event.type == kind
+                and str((event.payload or {}).get("obligation_id", "")) == str(target)
+            )
+
+        if event_type == DEMAND_ADMITTED:
+            return recorded(DEMAND_WITHDRAWN)
+        return max(recorded(DEMAND_ADMITTED) - 1, 0)
 
     def _inherit_obligation_on_replacement(
         self,

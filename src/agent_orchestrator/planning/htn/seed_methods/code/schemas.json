@@ -123,5 +123,36 @@
       "version": 1
     },
     "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "code.diff-scope",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "changeset",
+        "type": "ref",
+        "required": true
+      },
+      {
+        "name": "paths",
+        "type": "string",
+        "required": true
+      }
+    ]
+  },
+  {
+    "schema_ref": {
+      "id": "code.package-only",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "package",
+        "type": "string",
+        "required": true
+      }
+    ]
   }
 ]

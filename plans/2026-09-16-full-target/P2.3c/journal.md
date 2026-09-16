@@ -1785,3 +1785,337 @@ DATA 许可与前置条件许可都是 `purpose=START`，且两者的 `support_r
 6. 就绪闸门是否该看 outcome——已 COMPLETED 的叶子仍出现在 `admitted_not_dispatched`
    （2c §8 第 1 条）。
 7. synthesizer 那两条只有源码字符串守着的性质（P2-21）。
+
+---
+
+# P2.3c 第三部分 a · 施工日志（2026-09-17）
+
+## 0. 起点与输入
+
+上游：第二部分 d（HEAD `f0c51ea`，树干净）。读入的是 2d §4（冒烟三轮，卡在
+`ROOT_REVIEW_PACKAGE_MISSING`）与 §11（留给第三部分的七条）、2c §13 与第一部分 §6 末节
+（L2 谓词五条），外加两份协调者来件：第三轮独立审阅的处置清单，与 Host 侧 Grok 验收
+runner 的 G1/G2/G4/G5 缺口。
+
+本片交付三件：**根 MISSION_FINAL 评审裁剪协调器**、**L2 业务态谓词**、
+**真实模型冒烟到 COMPLETED**；外加审阅必修/应修与 runner 四条缺口。
+
+## 1. 根 MISSION_FINAL 评审协调器（交付 1）
+
+新文件 `src/agent_orchestrator/orchestrator/root_review.py`（1142 行）。
+它只做一件事：把「根可以被评审了」变成三份**不可变锚**——`RequirementsRevision`、
+`ReviewPackage`（purpose=`MISSION_FINAL`）、`ValidityWitness`（ACCEPT）——然后请评审人，
+再把评审人说的话写成 `ReviewRecord`。**系统永远不写判决**（AER I05）。
+
+接线点（都在 `event_handler`）：
+
+* `_decide`：在 `_root_resolution_formed` 之前插 `_advance_root_review`。
+  返回 `True` 表示这一轮「有事发生」（裁了包 / 问了评审人），算作进展。
+* `_root_review(mission, new_mode)` 造协调器，`max_cuts_per_revision` 取自
+  `OrchestratorConfig.max_root_review_cuts`（默认 3，`__post_init__` 要求 ≥ 1）。
+* `_ask_root_reviewer`：`create_service_intent(kind="plan", role="root_reviewer")`，
+  `creation_key = f"{mission}:root-review:{package_id}"`（**按包幂等**），
+  `budget_account = ReviewAccount.MISSION`——从 `account_for_purpose` 读出来的，
+  和 §13 v1.4 不会对不上；**永远不落在 Task 预算上**。
+* `_collect_plan` 增加 `role == "root_reviewer"` 分支 → `_collect_root_review`，
+  用既有的 `parse_critic_verdict`：`PASS→ACCEPT`、`FAIL→REJECTED`，
+  `met:false → CriterionVerdict.FAIL`，**没有任何分支能从「不是 PASS」造出 ACCEPT**。
+  读不懂的回复**不写记录**，只写 `HierarchicalRootReviewUnreadable`，官方记录位留空。
+* 新提示词 `root-reviewer-v1`（`role_templates.ROOT_REVIEWER`），要求输出
+  `<critic_verdict>`。
+
+**重裁规则**（2d P1-7 的连带后果）：`RootReviewState.stale_reasons` 三个通道——
+`REQUIREMENTS_MOVED`（requirements 修订动了）、`CONTRIBUTIONS_MOVED`（贡献的 Acceptance 集合动了）、
+`SCOPE_EPOCH_MOVED`。任一命中 → 旧包 `HierarchicalRootReviewSuperseded` **留记录**地作废，
+再裁新包。`HierarchicalDispatch.live_root_review_package` 是「根从哪份评审里出结论」的唯一答案：
+跳过 superseded，优先取有裁剪事件的最后一份。
+
+**有界**：每个 requirements 修订最多 N 次（默认 3）。超了写
+`HierarchicalRootReviewCutBudgetSpent`（每修订一次，之后闭嘴），走 2d 的 idle-stall 结束，
+**不是每轮再花一次模型调用**。评审人判 FAIL → `HierarchicalRootReviewRejected`，
+进 §9.1 的决策表，**不重试**。
+
+其它要点：
+
+* `root_criteria` 用根目标自己的 `coverage_criteria`，`EvaluationKind.SEMANTIC`、
+  `required_check_ids=()`、`independence_required=True`、`RequirementClass.REQUIRED_OUTCOME`、
+  `CriterionOrigin.DERIVED`。
+* `producer_agent_ids` 是**从每个叶子自己的 ReviewPackage** 里读出来的
+  （acceptance → record → package），不是猜的；`attempt_root_resolution` 因此拿到真的
+  `IndependenceFacts`，自评审会被独立性公式挡住。
+* `_outcome` 处理 I07：判过（PASS 或 FAIL）就是 `SUCCEEDED`，只有 UNKNOWN 才 `NOT_RUN`。
+
+测试：新文件 `tests/orchestrator/full_target/test_root_review_coordinator.py`（52 条），
+分 8 节。变异自证 **5 条**全部 KILLED：
+
+| 变异 | 注入 | 结果 |
+| --- | --- | --- |
+| 系统自填 PASS | 让协调器自己写 ACCEPT 记录 | 红（KILLED） |
+| 重裁不作废旧包 | 保留旧 MISSION_FINAL 包 | 根 Resolution 从过期评审出结论 → 红（KILLED） |
+| 裁剪不设上限 | `max_cuts_per_revision` 拆掉 | 无限重裁 → 红（KILLED） |
+| 裁剪时忘掉作者 | `producer_agent_ids → ()` | 生产者通过自评审 → 红（KILLED） |
+| 评审意图的非法界 | `max_tool_calls_per_turn=0` | 意图根本进不了库 → 红（KILLED） |
+
+第 8 节是冒烟逼出来的（见 §5）：`_ask_root_reviewer` / `_collect_root_review` 这两处
+**此前零测试**，它们是协调器与 Orchestrator 相接的地方。
+
+## 2. L2 业务态谓词（交付 2）
+
+六个签名进 `seed_methods/<domain>/predicates.json`（纯追加，现有行一字未动；
+`seed_content_hash` 由 `(id, version)` 派生，所以既有哈希不受影响，
+`test_seed_methods.py` 的漂移检查同步加了对应条目）：
+
+| 谓词 | 世界假设 | 观察器 | 否定的可采性 |
+| --- | --- | --- | --- |
+| `appworld.account-exists` | OPEN | `AccountObserver` | 普通否定 |
+| `appworld.list-contains` | OPEN | `ListObserver` | 普通否定 |
+| `appworld.list-size` | CLOSED | `ListObserver` | 可枚举 + watermark 才否定 |
+| `appworld.amount-equals` | CLOSED | `AmountObserver` | 同上 |
+| `code.diff-touches-only` | CLOSED | `DiffScopeObserver` | `git diff --name-only` 是完整枚举 |
+| `code.declared-dependency-present` | OPEN | `DependencyObserver` | 普通否定（锁文件/私有源它读不到） |
+
+规矩两条，每条都有测试：
+
+1. **只读**。appworld 侧只认 `AppWorldEpisode.observe_public_api` 能读到的东西，
+   读不到就是 `OBSERVER_UNAVAILABLE`，不是 FALSE；code 侧全部走既有 allowlist
+   与 `--` 分隔符（`git diff --name-only`、`git ls-files --cached`、`git cat-file -p`）。
+2. **解析失败永不变成 FALSE**。两条变异自证钉这一条
+   （`test_mutant_folding_every_value_error_into_refused_would_forge_a_false`、
+   `test_mutant_reading_a_parse_failure_as_a_polarity_would_forge_a_denial`）。
+
+`code_observers()` 7 个、`appworld_observers()` 8 个，`CODE_OBSERVER_COVERAGE` /
+`APPWORLD_OBSERVER_COVERAGE` 与 `test_htn_deployment_wiring.py` 的观察器索引同步更新。
+每个谓词都有 TRUE / FALSE / UNAVAILABLE 三态用例。
+
+顺带一个真缺陷：`declares_package` 原来是子串匹配，`requests` 会被 `requests-mock` 答成
+TRUE；`NAME_CHARACTERS` 补上 `-` 与 `.` 后边界才对。
+
+## 3. 审阅处置（第三轮独立审阅）
+
+| 条目 | 处置 | 说明 / 测试名 |
+| --- | --- | --- |
+| **P0-A** `test_the_older_worker_prompts_keep_their_bytes` 用了会漂的 `git show HEAD:` | **已修** | 改成文件内冻结 sha256 常量 `FROZEN_PROMPT_DIGESTS`（与 `MIGRATION_16_CHECKSUM` 同一手法），覆盖 `WORKER`/`WORKER_V2`/`PLANNER`/`CRITIC`/`CRITIC_V2`/`WORKER_HIERARCHICAL`。`test_a_shipped_prompt_keeps_its_bytes`（参数化）+ `test_the_frozen_digests_cover_the_prompts_this_slice_depends_on`。**偏差**：审阅要求「git 不可用时 skip 而不是 error」——新写法**根本不调 git**，这条要求自动不适用，故未实现 skip 分支 |
+| **P0-A 连带** PLANNER / CRITIC 也要钉常量 | **已修** | 同上，6 个提示词一起钉 |
+| **P1-A** 裁决 2 偏差：确认轮之后无条件 return | **已修** | `_confirm_and_stop_stalled` 改为返回 `bool`（世界动了且结转额度没用完 = `carry_on`）；`run()` 的空闲分支 `if await self._confirm_and_stop_stalled(): idle_rounds = 0; continue`。结转**有界**：`MAX_STALL_CARRY_ONS = 2`（每 Mission 每次 `run()`），否则一个持续被喂 demand 的世界会让 `run()` 永不返回（写这条时真撞上了，`test_a_legacy_mission_produces_identical_event_bytes…` 挂死）。测试：`test_a_confirmation_that_moves_the_world_lets_the_run_carry_on`、`test_the_carry_on_is_bounded_so_a_moving_world_ends_the_run` |
+| **P1-B** 两处承重接线零测试（M18/M19 存活） | **已修** | `test_output_port_claims.py` 新增一节：`declared_output_ports` 等于 `declared_ports_in_revision`（legacy 无此段）、部署把 `worker-v3` 钉死时层次叶子仍拿 `worker-hierarchical-v1` 而 legacy Mission 仍拿 `worker-v3`。变异 M18（`declared_ports = ()`）与 M19（跳过 `_hierarchical_worker_template`）实跑注入 → 都 **KILLED** |
+| **P1-C** `test_a_legacy_mission_that_idles_is_never_stopped_by_this_path` 是空测 | **已修** | 新助手 `_force_active()` 把 legacy fixture 推到 ACTIVE 并注入 `_stalled_at`，再断言 0 条 `MissionFailed`。变异 M15b（让该路径也停 legacy）→ 红，**KILLED** |
+| **P2-1** `_record_witness` 主键冲突后原样返回旧行 | **已修** | 新模块函数 `_same_conclusion(held, offered)`（比 truth/decision/freshness/availability）；结论不同 → `None` + `HierarchicalWitnessKeyTaken`。测试 `test_a_second_opinion_under_the_very_same_key_is_refused`（**同一个 witness_id**，先重发同一结论拿回旧行，再发相反结论拿到 `None`，且旧行一字未被覆盖）——这正是审阅指出的、旧的 `wit-pre-rival` 用例**没有覆盖到**的那条路径 |
+| **P2-3** `declared_output_ports_for` 是否与 binding 求交 | **已修（按"不求交"定稿）** | docstring 写明「**是边让它成为必需的**」；**故意不**与 `binding.output_ports` 求交：边消费了而 binding 没声明的端口，应当在计划完整性处更早被拒，在这里悄悄丢掉只会把缺陷藏起来 |
+| **P2-4** `admit→withdraw→admit` 的第二次 admit 被幂等键吞掉 | **已修** | `_emit_demand_event` 的键加 ordinal。**第一版写错了**：ordinal 数「本方向已记录的事件数」，再用状态做重放判别——第二次 admit 仍落回同一个键。改成数**相反方向**的事件：admit 的序号 = 已记录的 withdraw 数，withdraw 的序号 = 已记录的 admit 数 − 1，两边都天然重放稳定。`withdraw_obligation_demand` 另补 principal / evidence 非空校验。测试 `test_the_same_duty_may_be_asked_for_again_after_it_was_given_up`、`test_an_unsigned_or_unevidenced_withdrawal_is_refused` |
+| **P2-5** legacy golden 含 pytest 计时串 | **已修** | `_VOLATILE_PATTERNS` 增加 `\bin \d+(\.\d+)?s\b → in <duration>`，比对前把 `VerificationLayerRecorded.summary` 里的时长归一 |
+| **P2-7** `plan_revision_committed_at` 扫全量事件、查不到时静默返回 0 | **已修** | 改成按 type 的 SQL 查询，查不到返回 `None`（签名 `int | None`）；`propositions_looked_at` 显式处理 `None` |
+| **P2-9** `role_templates.py` 新增段的 format 偏离 / docstring 里的中文「局」 | **已修** | 只补了 `hierarchical_planner_versions()` 与 `WORKER_HIERARCHICAL_VERSION` 之间缺的那一个空行（该文件在 HEAD 上就不是 format-clean，其余偏离是 HEAD 既有的，一律没动）；`event_handler.py` 与 `test_htn_end_to_end.py` 里的「局」改成英文 |
+| **P2-2 / 6 / 8 / 10 / 11** | **仅记录** | P2-11 正是本片交付的根评审裁剪与重裁，已闭环；其余维持第二部分 d 的记录 |
+
+## 4. Host 侧 Grok 验收 runner 的四条缺口
+
+### G1 · 方法拒绝理由落库
+
+四轴报告以前只喂 Planner 提示词，跑完没人能回读，runner 只能用 probe 绕。
+新增幂等事件 `MethodApplicabilityAssessed`（键 `mission:plan_revision`），载荷：
+
+```
+{"plan_revision": int,
+ "refused_methods": [{…applicability_reports 的条目…, "observation_ids": [...]}],
+ "refusal_count": int, "truncated": bool}
+```
+
+条目形状**就是 `applicability_reports()` 的输出**（同一个渲染器），所以事件与提示词
+说的是同一句话；`observation_ids` 是被引用的命题上已有的观察记录 id——注意它是
+「与该命题相关的观察」，不是「结算了该命题的观察」：命题之所以 UNKNOWN，恰恰是因为
+看过的东西没能结算它，能把「没人看过」和「看过但没定」分开，正是这个字段的用处。
+接线在 `event_handler` 渲染 Planner 包的同一处：**一次评估，既渲染又落库**，
+不会出现两次评估看到两个世界。一轮没有任何拒绝就**不写事件**（「没有方法被拒」
+和「没有事件」是同一个事实，每轮写一条只会把有话说的那些埋掉）。
+测试 `test_the_refusal_reasons_are_written_where_a_reader_can_find_them`、
+`test_a_round_that_refused_nothing_writes_no_assessment`。
+**没有改 `PlanRevisionCommitted` 的载荷**（它有字节级 golden）。
+
+### G2 · 共享只读子目标（§21.5 L4 M3 的 `shared_reuse`）
+
+先走了一条**死路**，记下来免得后人再走：想让**同一个方法实例**的两个 slot 共享一个
+只读子目标（runner 建议的写法之一），在 `plan_slots` 里把已规划的 slot 也放进
+`SharedGoalIndex`——结果被计划投影的结构检查 `duplicate_slot` 挡住：
+「一个方法的各个位置是各自的工作，不是一个句柄被复用两次」。这是**故意**的不变量，
+不该为了让指标能触发而放宽。两处改动都已回滚（`grounding.py` / `compiler.py` 逐字节回到 HEAD）。
+
+真正的缺口在**编排器**：`HierarchicalDispatch._compile` 调 `ground_method` /
+`compile_refinement_bundle` 时 `sharing` 恒为 `None`，也就是说**运行中的 Mission 里
+跨实例共享也从未发生过**，与方法库写成什么样无关。补法：
+
+* 新函数 `hierarchical_dispatch.shared_goal_index(network, *, catalog)`——把当前网络里
+  每个有语义绑定的 occurrence 作为**候选**放进索引；判不判得成仍由 `may_share` 决定
+  （整条签名相同、消费者 slot 的 reuse 策略允许、类型只读或有 effect identity）。
+  索引只是候选，不是合并。
+* `_compile` 把它同时传给 `ground_method` 与 `compile_refinement_bundle`。
+
+种子库补一对方法，让「父子两个实例想要同一个只读目标」在 code 域真的存在：
+
+* 新 compound 类型 `code.assess-regression`（参数 schema 复用已有的 `code.repository-only`）；
+* 新方法 `code.assess-by-reading`（`facts` → `reproduce`）；
+* 新方法 `code.fix-by-assessed-revert`（`facts`、`assess`(compound)、`revert`、`verify`），
+  applicable_when = repo-checked-out ∧ regression-commit-known ∧ test-is-failing。
+
+第二轮细化 `assess` 时，子方法的 `facts` slot 与父实例的 `facts` occurrence 签名相同 →
+**共享**，两个实例两个 slot 指向同一个 occurrence，正是 mechlib v2 的 `consumers` 形状。
+借用方判 `SHARE_ACTIVE` 而非 `REUSE_ACCEPTED`：这时还没有任何 Acceptance，
+TG 裁决 9 把 `REUSE_ACCEPTED` 绑死在一个确切的 Acceptance 上，宣称「已验收」是撒谎。
+
+测试：`test_seed_methods.py` 三条（种子对能共享 / 两个消费者都拿到输入 /
+**不给索引就读两次**——对照组），`test_htn_end_to_end.py` 六条走**真 Orchestrator 两轮
+refine**（只读一次、两个实例都绑它、策略是 SHARE_ACTIVE、只开一行 Task、写步骤不被折叠），
+外加变异 `test_mutant_a_dispatch_that_offers_no_index_reads_the_repository_twice` → **KILLED**。
+
+给 runner 的话：`shared_reuse` 现在**可以**触发，但触发路径是「父目标 → 子 compound →
+子方法也要同一份只读读取」。M3 的根目标是 `code.review-changes`，而 `code.review-params`
+里没有 `repository`，所以这条链在 review 域接不上；要真判 L4 M3，把共享构造挂到
+`code.fix-failing-test`（M2 已经是这个根类型）上即可。方法库与机制都已就位。
+`methods.json` / `task_types.json` 变了（纯追加），FREEZE-candidate 需重生成。
+
+### G4 · `ChangesetObserver` 只能测 pathspec
+
+`_operands()` 无条件插 `--`，所以操作数永远是路径。改法**不是**放开 `--`：
+
+* 新增 `REVISION_OPERANDS = {"diff": 1}`——**只有 `diff`，只有一个** revision 操作数可以
+  出现在 `--` 之前；
+* 新增 `revision()` 校验器：先过 `operand()` 全套（非空、不以 `-` 开头、无控制字符），
+  再过更窄的 `REVISION_CHARACTERS`（不含 `:`、`{`、空白）；
+* `_Command.git(..., revisions=...)` 仍然照常吐出 `--`，**后面什么都不跟**——
+  revision 因此不会又被当成 pathspec；
+* `_check_arguments` 里，以 `-` 开头的 token **永远不是** revision 候选，直接掉进原来的
+  「不在受信参数表里」拒绝分支，P0-3 的写文件防线一字未动；
+* `changeset_operands(changeset)` 按形状分流：含 `..` 的当 revision range，其余当路径。
+  用形状而不是加第二个参数，是因为 `changeset` 的签名已经发布、内容哈希是冻的。
+
+测试 8 条，包含把原来那条编码了缺陷的
+`test_every_operand_goes_after_the_separator` 改写为一对
+（路径仍在 `--` 之后 / revision range 在 `--` 之前），以及
+「写文件的 flag 在允许 revision 的位置上仍被拒」。
+
+### G5 · `ArmSpec` / `ExperimentManifest` 加 `H` 臂
+
+`ARMS` 仍然是 `("S","R","D","F")`（这是基线的身份），新增 `HIERARCHICAL_ARM = "H"`、
+`ARM_NAMES = ARMS + ("H",)`、`DECLARABLE_ARMS = (ARMS, ARM_NAMES)`。
+manifest 只接受这两种声明之一（少一臂、乱序、重复仍拒）。
+`run_experiment` 的执行器集合改成与 manifest **声明的**臂比对，拒绝文案仍含
+「exactly S/R/D/F」（四臂时逐字不变）。
+
+**四臂字节未变**已用 `git show HEAD:src/.../experiment.py` 取出旧版并排跑验证：
+fingerprint 与 8 条 run 的 `(run_id, arm, task_id, repetition, seed)` **逐项相同**。
+新测试文件 `test_hierarchical_arm_declaration.py`（10 条）把
+fingerprint `c7f7fc57…a81d` 与首条 run_id `7b295950…798e` 钉成常量。
+
+## 5. 真实模型冒烟（交付 3）
+
+模型 `deepseek-flash`（官方端点 id），命令与前几段相同，**key 全程不打印、不落盘**
+（收据里已逐字节确认不含 key）。原计划上限 3 轮，实际跑了 **4 轮**——
+偏差与理由见 §7 第 1 条。
+
+| 轮 | 结局 | 挖出的真缺陷 | 修法 + 单测 |
+| --- | --- | --- | --- |
+| 1 | `ValueError` 直接抛出，Mission 死在自己的评审路上 | `_ask_root_reviewer` 构造 `AgentLimits(max_tool_calls_per_turn=0)`；`AgentLimits` 要求正整数。`tool_names=()` 才是「不许调工具」的闸门，limit 只是**上界**。**同一拼法在 `_ask_method_synthesis` 里也有**（更早写的，同样从未被跑过） | 两处都改成 1 并写明理由；`test_root_review_coordinator.py` 新增第 8 节（5 条）实跑 `_ask_root_reviewer`，含变异 `test_mutant_a_reviewer_intent_with_an_illegal_bound_never_reaches_the_store` |
+| 2 | 根评审**裁剪成功**、评审人被问到，但回复里没有 `<critic_verdict>` 块 → `HierarchicalRootReviewUnreadable` → idle-stall → FAILED(`no_dispatchable_work`) | 读不懂的回复**没有第二次机会**，而 Task Critic 早就有（`critic_schema_retry_feedback`）。「读不懂」不是「回答了」，不给第二次等于拿模型的格式失误当判决 | `MAX_ROOT_REVIEW_ASKS = 2`；意图 subject 加序号，第二次把上一次的解析错误作为 `schema_feedback` 附在同一份请求上（同一个锚）。**被读懂过的回复永不重问**——FAIL 走 §9.1。测试 3 条：`test_an_unreadable_reply_may_be_put_to_the_reviewer_once_more`、`test_the_second_unreadable_reply_ends_the_asking`、`test_a_reviewer_that_answered_is_never_asked_again` |
+| 3 | 第二次回复**读懂了**，评审人判 **FAIL**：四条贡献的 `artifacts` 全是空数组，「无任何证据支撑」 | 评审人是对的，错的是我给它看的东西：`RootReviewCoordinator.request` 读了 `acceptance.artifact_refs`，而 accept 路径**不往那里写**——它把产物记在**声明的输出端口**上（migration 17 的 `acceptance_outputs`） | `request` 改读 `list_acceptance_outputs`，每条贡献带 `accepted_outputs`（port + artifact_id）、`goal_statement`、以及它**被验收时所依据的那份 ReviewRecord**（verdict + 逐准则）。测试 `test_the_reviewer_is_shown_what_each_contribution_delivered`、`test_a_judgement_the_library_cannot_produce_is_an_empty_field` |
+| 4 | **COMPLETED** | —— | —— |
+
+第 4 轮的收据（`part3a-round04-report.json` / `-events.json`）：
+
+* Mission `mission-7ebe2d5cafa71266`，`status = COMPLETED`，`stop_reason = verification_passed`；
+* **根评审裁剪 1 次、作废 0 次、拒绝 0 次、预算耗尽 0 次**；
+  评审记录 5 条：4 条 `TASK_CONTENT` ACCEPT + 1 条 **`MISSION_FINAL` ACCEPT**
+  （`pkg-root-6eff8f58ca918023a2c53fcf15f8134f`）；
+* plan revision 1、Attempt 4、工具调用 32、**结算 172,864 tokens**（上限 600,000）；
+* `proposal_unreadable = false`、`rejections = []`、`stalled = []`；
+* 事件里有 `HierarchicalRootReviewCut` → `GoalResolutionCommitted` → `MissionSuccessJudged`
+  → `MissionCompleted`——**这正是第二部分 d 卡在 `ROOT_REVIEW_PACKAGE_MISSING` 的那条路**。
+
+原始收据只在 `.local-test-evidence/2026-09-16/htn-smoke/`（gitignore），
+日志里只留结论、id 与 token 数。
+
+## 6. 顺手项（第二部分 d §11）
+
+* **P2-17**（`until_idle=False` / `max_cycles` 路径也留 stall 记录）——**已做**。
+  `run()` 开头清空结转计数；`if not until_idle:` 分支在返回前先
+  `await self._record_hierarchical_stall()`；`while` 循环撞 `max_cycles` 退出后同样补一次。
+  也就是说三条退出路径（空闲、单轮、撞上限）现在都留记录。
+* **P2-18**（`applicable_when` 跨复合传递 / `condition_digest` 反查）——**仍只记录**。
+  它要动 `grounding.task_binding_for` 与一张条件表，且反查路径在库里根本不存在；
+  本片的预算已经用在根评审与 runner 四条上，强行塞进来会把两件事都做半。
+
+## 7. 偏差与契约变更
+
+1. **冒烟用了 4 轮，超出上限 1 轮**。理由：第 3 轮定位到的缺陷**就在本片自己的交付物里**
+   （`RootReviewCoordinator.request` 读错字段），修法是换一个读取来源；停在第 3 轮
+   等于明知交付物坏着还交。收益是本片的头号交付（层次 Mission 走到 COMPLETED）**真的成立**
+   而不是「理论上成立」。多花的是一次 ~17 万 token 的调用。
+2. **契约新增（非破坏）**：
+   * `OrchestratorConfig.max_root_review_cuts`（默认 3，`>= 1`）——**同时登记进
+     `governance.policies.SNAPSHOT_FIELDS` 的 `include`**。这条是被旧模式回归抓出来的：
+     `policy_snapshot` 要求每个配置字段都被分类，漏登记会让 step02 的 CLI demo 直接抛
+     `ValueError`。**连带后果：策略快照的摘要变了**（多一个字段），
+     依赖快照 digest 的部署需要知道。
+   * 四个新事件：`HierarchicalRootReviewCut`、`HierarchicalRootReviewSuperseded`、
+     `HierarchicalRootReviewRejected`、`HierarchicalRootReviewUnreadable`、
+     `HierarchicalRootReviewCutBudgetSpent`（五个，含预算耗尽），
+     外加 G1 的 `MethodApplicabilityAssessed`。
+   * 新提示词版本 `root-reviewer-v1`（新角色，不改任何既有模板的字节）。
+   * `ArmSpec` / `ExperimentManifest` 接受 `H` 臂（四臂声明字节不变，已实测）。
+3. **`contracts/` 只读，本片一行未改**；没有需要提的契约变更请求。
+4. **种子库改动均为纯追加**（现有行一字未动）：code 域 6 个谓词/5 个 schema/5 个观察器类型
+   + 1 个 compound 类型 + 2 个方法；appworld 域 3 个谓词/若干 schema 与观察器类型。
+   `seed_content_hash` 由 `(id, version)` 派生，既有哈希不受影响；
+   `test_seed_methods.py` 的漂移检查与 `test_htn_deployment_wiring.py` 的方法/观察器清单同步更新。
+   **`methods.json` 与 `task_types.json` 变了 → runner 的 FREEZE-candidate 需重生成。**
+5. **回滚记录**：G2 的第一版（同实例两个 slot 共享）与它连带的 `compiler.py` 放宽，
+   因为撞上 `duplicate_slot` 这条**故意的**不变量而**整体回滚**，两个文件逐字节回到 HEAD。
+6. **P0-A 的 skip 分支未实现**：新写法不依赖 git，「git 不可用时 skip」无从谈起。
+
+## 8. 留给后面
+
+1. **P2-18**：`applicable_when` 跨复合传递与 `condition_digest` 反查（理由见 §6）。
+2. **`bind_shared_goal` 仍未接通**：契约能解析它，`HierarchicalDispatch._compile` 只接受
+   `refine`（一轮一条）。也就是说共享目标现在**只能**由系统在细化时认出来，
+   Planner 主动说「这两个是同一个目标」还做不到。要判「臂**自己**发现复用」这种性质，
+   得先把这条操作接进提交路径。
+3. **G2 给 runner 的构造建议**（§4）：L4 M3 若要真判 `shared_reuse`，
+   共享构造需挂在 `code.fix-failing-test` 上；`code.review-changes` 的参数 schema 里没有
+   `repository`，review 域接不上这条链。
+4. `code.assess-regression` 这条新 compound 目前**只有一条方法**，
+   没有 OR 分支；真上题时可能需要第二条。
+5. 第二部分 d §11 的其余各条（P2-10、P2-20、就绪闸门看 outcome、synthesizer 源码断言）原样留存。
+
+## 9. 旧模式回归（硬门槛）
+
+范围与前几段完全相同（`step02..step09 p32 p33 p34 p35 p36
+test_critic_test_evidence_order.py`），在**本段全部改动落盘、不再编辑源码树**后跑。
+
+结果：**1 failed, 1854 passed, 20 skipped（8 分 27 秒）**——与第二部分 d 的收尾口径
+（1 failed / 1854 passed / 20 skipped）**逐项一致**。唯一的红仍是已知可忽略的
+`p33/test_p33_source_dependencies.py::test_legacy_check_ast_and_default_retrieval_bytes_are_unchanged`。
+
+**中途被抓出来的真回归（已修）**：第一次跑时 step02/03/06/09 多处红，
+原因是 `OrchestratorConfig.max_root_review_cuts` 没有登记进
+`governance.policies.SNAPSHOT_FIELDS`，`policy_snapshot()` 对未分类字段直接抛
+`ValueError`，CLI demo 整条挂掉。登记为 `include`（它决定层次 Mission 何时停止重裁，
+是行为参数）后全绿。**这正是旧模式回归作为硬门槛的价值**：新配置字段的这条约束
+在 full_target 里一条都碰不到。
+
+## 10. 结果
+
+* `tests/orchestrator/full_target`：**2585 passed, 2 skipped**（上游基线 2435/2，净增 150 条）。
+* 新文件三个：`src/agent_orchestrator/orchestrator/root_review.py`（1142 行）、
+  `tests/orchestrator/full_target/test_root_review_coordinator.py`（1030 行 / 52 条）、
+  `tests/orchestrator/full_target/test_hierarchical_arm_declaration.py`（102 行 / 10 条）。
+* 改动规模：26 个已跟踪文件 + 3 个新文件，`git diff --stat HEAD` 合计 **+4164 / −110**。
+* 变异自证本段新增 **8 条**，全部 KILLED：根评审 5 条（自填 PASS / 重裁不作废 /
+  不设上限 / 忘掉作者 / 非法工具界）、G2 的「不给共享索引」1 条、
+  L2 谓词的「解析失败变 FALSE」与「解析失败变否定」2 条；
+  另有 M15b / M18 / M19 三条审阅指名的存活变异实跑注入验证，均 KILLED。
+* 旧模式回归：**1 failed / 1854 passed / 20 skipped**，与基线逐项一致（见 §9）。
+* `ruff check`（本段改过的全部文件 + 三个新文件）：All checks passed。
+* `ruff format --check`：在 HEAD 上就 format-clean 的文件（`experiment.py`、
+  `hierarchical_dispatch.py`、`obligation_commits.py`、两个 observers、以及全部测试文件）
+  本段跑完仍 clean；HEAD 上**本来就不 clean** 的
+  `event_handler.py`、`role_templates.py`、`assembly.py`、`policies.py`
+  按「只追加合规块、不整文件重排」处理（逐个用 `git show HEAD:` 验过 HEAD 的状态）。
+* `mypy src/agent_orchestrator`：**17 errors in 4 files**，与基线一致。

@@ -112,5 +112,106 @@
     ],
     "temporal_use": "CURRENT_AT_USE",
     "statement": "the submitted action has a confirming receipt"
+  },
+  {
+    "predicate_ref": {
+      "id": "appworld.account-exists",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "app",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "account",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "appworld.account-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the named account is one the application serves to this episode"
+  },
+  {
+    "predicate_ref": {
+      "id": "appworld.list-contains",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "list_ref",
+        "type": "ref",
+        "required": true
+      },
+      {
+        "name": "item_ref",
+        "type": "ref",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "appworld.list-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the named public list contains the named item"
+  },
+  {
+    "predicate_ref": {
+      "id": "appworld.list-size",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "list_ref",
+        "type": "ref",
+        "required": true
+      },
+      {
+        "name": "size",
+        "type": "integer",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "appworld.list-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the named public list holds exactly the stated number of items"
+  },
+  {
+    "predicate_ref": {
+      "id": "appworld.amount-equals",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "transfer_ref",
+        "type": "ref",
+        "required": true
+      },
+      {
+        "name": "amount",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "currency",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "appworld.amount-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the named transfer records exactly this amount in this currency"
   }
 ]

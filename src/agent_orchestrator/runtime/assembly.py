@@ -36,6 +36,7 @@ from simple_harness.runtime.consumer_adapter import ConsumerRuntimePolicies
 from ..artifacts.workspace import WorkspaceManager
 from ..contracts import Budget
 from ..governance.policies import DeploymentPolicy
+from ..orchestrator.root_review import DEFAULT_MAX_CUTS_PER_REVISION
 from ..scheduling.backpressure import BackpressureLimits
 from .agent_worker import AgentBridge
 from .model_router import DEFAULT_PROFILE, RuntimeProfile
@@ -89,6 +90,12 @@ class OrchestratorConfig:
         1  # D3-5': explorative candidates per Task (each counts as an attempt)
     )
     max_planning_attempts: int = 2  # D3-2': Planner proposals before planning_failed
+    # P2.3c part 3a: how many times one ``requirements_revision`` may have its root
+    # MISSION_FINAL review cut.  A re-cut is the correct answer to a leaf accepted or
+    # revoked after the review was cut (review P1-7); an *unbounded* re-cut is a loop
+    # that spends the Mission account every cycle, so the bound is configuration and
+    # not a constant buried in the coordinator.
+    max_root_review_cuts: int = DEFAULT_MAX_CUTS_PER_REVISION
     lease_seconds: float = 60.0
     sdk_lease_ttl_seconds: float | None = None  # D3-10': SDK Run lease; default lease_seconds / 2
     stall_seconds: float = 180.0
@@ -182,6 +189,8 @@ class OrchestratorConfig:
             raise ValueError("candidates_per_task and max_concurrency must be >= 1")
         if self.max_planning_attempts < 1:
             raise ValueError("max_planning_attempts must be >= 1")
+        if self.max_root_review_cuts < 1:
+            raise ValueError("max_root_review_cuts must be >= 1")
         if self.min_task_tokens is not None and (
             isinstance(self.min_task_tokens, bool) or self.min_task_tokens < 0
         ):
@@ -264,6 +273,7 @@ class OrchestratorConfig:
             "max_concurrent_model_calls": self.max_concurrent_model_calls,
             "candidates_per_task": self.candidates_per_task,
             "max_planning_attempts": self.max_planning_attempts,
+            "max_root_review_cuts": self.max_root_review_cuts,
             "lease_seconds": self.lease_seconds,
             "sdk_lease_ttl_seconds": self.sdk_lease_ttl_seconds,
             "stall_seconds": self.stall_seconds,

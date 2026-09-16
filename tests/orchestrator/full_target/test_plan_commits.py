@@ -1790,6 +1790,57 @@ def test_the_admission_event_names_the_principal_and_the_requesting_slot(tmp_pat
     assert admissions[0].payload["evidence"]["requirement_refs"] == ["req-1"]
 
 
+def test_the_same_duty_may_be_asked_for_again_after_it_was_given_up(tmp_path):
+    """Third-round review P2-4: the second admit within one revision was swallowed.
+
+    The idempotency key was ``(mission, duty, event_type, plan_revision)``, so
+    ``admit → withdraw → admit`` inside one revision recorded the first admission, the
+    withdrawal, and then *nothing* — the ledger said the duty was demanded again and
+    the event log said it never was.  An ordinal in the key tells the two acts apart;
+    the ordinal is derived from the recorded events and the resulting state, so a
+    genuine replay of one act still lands on its own row rather than a second one.
+    """
+
+    world = _world(tmp_path)
+    _admit_root_demand(world)
+    assert len(_events(world, DEMAND_ADMITTED)) == 1
+
+    world.service.withdraw_obligation_demand(
+        world.mission.id,
+        ROOT_DUTY,
+        principal="manager-1",
+        requester={"kind": "mission_root"},
+        evidence={"reason": "the branch that asked for it retired"},
+    )
+    assert world.duties.account(world.mission.id, ROOT_DUTY).has_admitted_demand is False
+    assert len(_events(world, DEMAND_WITHDRAWN)) == 1
+
+    _admit_root_demand(world)
+    assert world.duties.account(world.mission.id, ROOT_DUTY).has_admitted_demand is True
+    admissions = _events(world, DEMAND_ADMITTED)
+    assert len(admissions) == 2, "asking again is a second act, not a replay of the first"
+    assert len({item.id for item in admissions}) == 2
+
+
+@pytest.mark.parametrize(
+    ("principal", "evidence"),
+    [("", {"reason": "r"}), ("   ", {"reason": "r"}), ("manager-1", {})],
+)
+def test_an_unsigned_or_unevidenced_withdrawal_is_refused(tmp_path, principal, evidence):
+    """P2-4: ending a consumer's interest is as much a decision as starting it."""
+
+    world = _world(tmp_path)
+    _admit_root_demand(world)
+    with pytest.raises(ContractError):
+        world.service.withdraw_obligation_demand(
+            world.mission.id,
+            ROOT_DUTY,
+            principal=principal,
+            requester={"kind": "mission_root"},
+            evidence=evidence,
+        )
+
+
 def test_an_opening_no_adopted_slot_asks_for_is_refused(tmp_path):
     """Memo test 2: a duty with no consumer is refused, and nothing is written.
 

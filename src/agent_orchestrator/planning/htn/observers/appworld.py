@@ -42,7 +42,7 @@ from typing import Any, Protocol, runtime_checkable
 from ....contracts.models import ContractError
 from ....evaluation.appworld_api_observations import PUBLIC_READ_APIS
 from ....knowledge.predicates import PredicateSignature
-from . import Observation, denial, observed, unavailable
+from . import COMPLETE_COVERAGE, Observation, denial, observed, unavailable
 
 OBSERVER_VERSION = "appworld-observers-v1"
 
@@ -559,12 +559,344 @@ class ReceiptObserver(_AppWorldObserver):
         )
 
 
+#: How a public-read field is named in a ``list_ref`` / ``transfer_ref`` argument:
+#: ``<app>.<api>.<field>``.  Three parts and no more, because the only surface these
+#: observers may read is the host's frozen :data:`PUBLIC_READ_APIS`, and a reference
+#: that could name anything else would be a reference to something unobservable.
+REFERENCE_SEPARATOR = "."
+REFERENCE_PARTS = 3
+
+
+def resolve_public_field(reference: object) -> tuple[str, str, str]:
+    """``<app>.<api>.<field>`` → the three parts, or a refusal.
+
+    Checked against :data:`PUBLIC_READ_APIS` here rather than at the read, so a
+    reference to a field the policy does not admit is refused as *unreadable* instead
+    of travelling to the host and coming back as something a caller might read as a
+    polarity.  An observer may not widen the frozen policy, so a reference outside it
+    has no answer at all — not a negative one.
+    """
+
+    if not isinstance(reference, str) or not reference.strip():
+        raise ContractError("the reference argument names nothing")
+    parts = reference.strip().split(REFERENCE_SEPARATOR)
+    if len(parts) != REFERENCE_PARTS or not all(item.strip() for item in parts):
+        raise ContractError(
+            f"{reference!r} is not an <app>.<api>.<field> reference into the host's public "
+            "read surface"
+        )
+    app, api, field = (item.strip() for item in parts)
+    admitted = PUBLIC_READ_APIS.get((app, api))
+    if admitted is None:
+        raise ContractError(
+            f"{app}.{api} is not one of the host's public read APIs; an observer reads the "
+            "frozen policy and never widens it"
+        )
+    if field not in admitted:
+        raise ContractError(
+            f"{field!r} is not a field {app}.{api} admits ({list(admitted)}); a field the "
+            "projection never carries cannot be observed"
+        )
+    return app, api, field
+
+
+def decode_public_value(raw: object) -> Any:
+    """One admitted projection field, decoded as the JSON document it carries.
+
+    The host's projection admits ``str | None`` values, so a list or a record travels
+    as text.  A value that is absent, not text, or not readable JSON is **not** an
+    empty list and **not** a mismatched amount: it is something this observer could
+    not read, and it raises so every caller answers UNAVAILABLE rather than inventing
+    a polarity out of a parse failure (AER §8.2 dimension 4).
+    """
+
+    import json
+
+    if raw is None:
+        raise ContractError("the projection carries no value for this field")
+    if not isinstance(raw, str):
+        raise ContractError(
+            f"the projection carries {type(raw).__name__} for this field rather than text"
+        )
+    try:
+        return json.loads(raw)
+    except ValueError as error:
+        raise ContractError(f"the field is not readable as JSON ({error})") from error
+
+
+class AccountObserver(_AppWorldObserver):
+    """Does this application serve the named account?  (OPEN)
+
+    Read through the host's frozen ``show_profile`` projection, which is the only
+    public read that names an identity at all.  That shapes what this predicate can
+    honestly mean, and the declaration says so: *served to this episode*, not "exists
+    somewhere in the application's database".  Three answers follow directly:
+
+    * the profile comes back and names the account → **TRUE**;
+    * the host **refuses** the read for this app → **FALSE**: the same reading
+      :class:`AvailabilityObserver` already makes of a refusal — the app serves this
+      episode nothing, so it serves it no account either;
+    * the profile comes back and names somebody else → **UNAVAILABLE**.  The frozen
+      surface cannot enumerate accounts, so not finding one in the single profile it
+      serves is not that account's absence; turning it into FALSE would be
+      negation-as-failure over a surface that was never a complete query.
+    """
+
+    observer_name = "appworld.account-observer"
+    predicates: tuple[str, ...] = ("appworld.account-exists",)
+
+    def _read(
+        self,
+        predicate: str,
+        signature: PredicateSignature,
+        arguments: Mapping[str, Any],
+        *,
+        now_ms: int,
+    ) -> Observation:
+        app = str(arguments.get("app", ""))
+        account = str(arguments.get("account", ""))
+        if not app.strip() or not account.strip():
+            return unavailable(
+                self.observer_id, predicate, "the app and account arguments both name something"
+            )
+        api = PROFILE_API[1]
+        read = self._get(app, api)
+        if read.refused:
+            return observed(
+                signature,
+                arguments,
+                polarity=False,
+                observer_id=self.observer_id,
+                now_ms=now_ms,
+                detail=(
+                    f"the host refused the profile read of {app}: {read.problem}; this episode "
+                    "is served no account by that application"
+                ),
+                observer_version=OBSERVER_VERSION,
+            )
+        if read.projection is None:
+            return unavailable(self.observer_id, predicate, read.problem)
+        names = [str(value) for value in read.projection.values() if isinstance(value, str)]
+        wanted = account.strip().casefold()
+        if (
+            wanted in {item.strip().casefold() for item in names}
+            or wanted == " ".join(names).strip().casefold()
+        ):
+            return observed(
+                signature,
+                arguments,
+                polarity=True,
+                observer_id=self.observer_id,
+                now_ms=now_ms,
+                detail=f"{app}.{api} serves {account!r}",
+                observer_version=OBSERVER_VERSION,
+            )
+        return unavailable(
+            self.observer_id,
+            predicate,
+            f"{app}.{api} serves one profile and it is not {account!r}; the host's public read "
+            "surface cannot enumerate accounts, so not finding it here is not its absence "
+            "(§6.6 C28)",
+        )
+
+
+class ListObserver(_AppWorldObserver):
+    """What is in a public list, and how many things are in it?
+
+    One read answers both predicates, so they cannot contradict each other.  The list
+    is read **whole** — the projection carries the entire field — which is what makes
+    a miss an *authoritative negative* over that reference: a complete, scoped,
+    watermarked query, the only shape §6.6 C28 lets ``appworld.list-size`` (CLOSED)
+    conclude FALSE from.
+
+    A field this observer cannot decode is never an empty list.  ``[]`` and "I could
+    not read it" are different answers and the second one is UNAVAILABLE.
+    """
+
+    observer_name = "appworld.list-observer"
+    predicates: tuple[str, ...] = ("appworld.list-contains", "appworld.list-size")
+
+    def _read(
+        self,
+        predicate: str,
+        signature: PredicateSignature,
+        arguments: Mapping[str, Any],
+        *,
+        now_ms: int,
+    ) -> Observation:
+        reference = arguments.get("list_ref", "")
+        try:
+            app, api, field = resolve_public_field(reference)
+        except ContractError as refused:
+            return unavailable(self.observer_id, predicate, str(refused))
+        read = self._get(app, api)
+        if read.projection is None:
+            # A refusal is a fact about the *API*, not about the list's contents, so
+            # unlike ``app-reachable`` it does not make this proposition false.
+            return unavailable(
+                self.observer_id,
+                predicate,
+                read.problem or f"the host did not serve {app}.{api}",
+            )
+        try:
+            decoded = decode_public_value(read.projection.get(field))
+        except ContractError as refused:
+            return unavailable(self.observer_id, predicate, str(refused))
+        if not isinstance(decoded, list):
+            return unavailable(
+                self.observer_id,
+                predicate,
+                f"{reference!r} carries {type(decoded).__name__} rather than a list; a value "
+                "that is not a list is not an empty one",
+            )
+        items = [str(item) for item in decoded]
+        scope = f"appworld-public-read:{app}.{api}.{field}"
+        if predicate == "appworld.list-size":
+            size = arguments.get("size")
+            if not isinstance(size, int) or isinstance(size, bool):
+                return unavailable(
+                    self.observer_id, predicate, "the size argument is not a whole number"
+                )
+            holds = len(items) == int(size)
+            detail = f"{reference!r} holds {len(items)} item(s) against a stated {int(size)}"
+        else:
+            item_ref = str(arguments.get("item_ref", ""))
+            if not item_ref.strip():
+                return unavailable(
+                    self.observer_id, predicate, "the item_ref argument names nothing"
+                )
+            holds = item_ref.strip() in items
+            detail = f"{reference!r} holds {len(items)} item(s); {item_ref!r} is "
+            detail += "among them" if holds else "not among them"
+        if holds:
+            return observed(
+                signature,
+                arguments,
+                polarity=True,
+                observer_id=self.observer_id,
+                now_ms=now_ms,
+                detail=detail,
+                coverage=COMPLETE_COVERAGE,
+                coverage_scope=scope,
+                query_watermark_ms=now_ms,
+                observer_version=OBSERVER_VERSION,
+            )
+        return denial(
+            signature,
+            arguments,
+            observer_id=self.observer_id,
+            now_ms=now_ms,
+            coverage_scope=scope,
+            detail=detail,
+            observer_version=OBSERVER_VERSION,
+        )
+
+
+class AmountObserver(_AppWorldObserver):
+    """Does this transfer record exactly this amount, in this currency?  (CLOSED)
+
+    Money is compared as **text**, and the predicate declares ``amount`` as a string
+    for that reason: ``10.10`` and ``10.1`` are the same float and two different
+    amounts, and a hard constraint decided by binary floating point is a hard
+    constraint decided by rounding.  Both sides are normalised only by stripping
+    surrounding whitespace — nothing else, because every other normalisation is a
+    judgement about what the two systems meant.
+
+    The record is read whole from the host's authoritative projection, so a mismatch
+    is an authoritative negative and the denial carries its scope and watermark.  A
+    record this observer cannot decode is UNAVAILABLE: a hard constraint may not be
+    refused by a parse failure.
+    """
+
+    observer_name = "appworld.amount-observer"
+    predicates: tuple[str, ...] = ("appworld.amount-equals",)
+
+    def _read(
+        self,
+        predicate: str,
+        signature: PredicateSignature,
+        arguments: Mapping[str, Any],
+        *,
+        now_ms: int,
+    ) -> Observation:
+        reference = arguments.get("transfer_ref", "")
+        try:
+            app, api, field = resolve_public_field(reference)
+        except ContractError as refused:
+            return unavailable(self.observer_id, predicate, str(refused))
+        amount = str(arguments.get("amount", "")).strip()
+        currency = str(arguments.get("currency", "")).strip()
+        if not amount or not currency:
+            return unavailable(
+                self.observer_id,
+                predicate,
+                "the amount and currency arguments both state something",
+            )
+        read = self._get(app, api)
+        if read.projection is None:
+            return unavailable(
+                self.observer_id,
+                predicate,
+                read.problem or f"the host did not serve {app}.{api}",
+            )
+        try:
+            decoded = decode_public_value(read.projection.get(field))
+        except ContractError as refused:
+            return unavailable(self.observer_id, predicate, str(refused))
+        if not isinstance(decoded, Mapping):
+            return unavailable(
+                self.observer_id,
+                predicate,
+                f"{reference!r} carries {type(decoded).__name__} rather than a transfer record",
+            )
+        recorded_amount = decoded.get("amount")
+        recorded_currency = decoded.get("currency")
+        if not isinstance(recorded_amount, str) or not isinstance(recorded_currency, str):
+            return unavailable(
+                self.observer_id,
+                predicate,
+                f"{reference!r} records its amount or currency as something other than text; "
+                "an amount this observer cannot read is not an amount that differs",
+            )
+        scope = f"appworld-public-read:{app}.{api}.{field}"
+        detail = (
+            f"{reference!r} records {recorded_amount!r} {recorded_currency!r} against a stated "
+            f"{amount!r} {currency!r}"
+        )
+        if recorded_amount.strip() == amount and recorded_currency.strip() == currency:
+            return observed(
+                signature,
+                arguments,
+                polarity=True,
+                observer_id=self.observer_id,
+                now_ms=now_ms,
+                detail=detail,
+                coverage=COMPLETE_COVERAGE,
+                coverage_scope=scope,
+                query_watermark_ms=now_ms,
+                observer_version=OBSERVER_VERSION,
+            )
+        return denial(
+            signature,
+            arguments,
+            observer_id=self.observer_id,
+            now_ms=now_ms,
+            coverage_scope=scope,
+            detail=detail,
+            observer_version=OBSERVER_VERSION,
+        )
+
+
 def appworld_observers(
     client: AppWorldReadOnlyClient | None = None,
     *,
     scope_id: str = "appworld-episode",
 ) -> tuple[_AppWorldObserver, ...]:
-    """The five ``appworld`` observers over one episode, or over no episode at all."""
+    """The ``appworld`` observers over one episode, or over no episode at all.
+
+    Eight since P2.3c part 3a: the five structural ones §7.3 asked for, plus the three
+    **business-state** readers L2 acceptance needs — account, list and amount.
+    """
 
     config = AppWorldObserverConfig(client=client, scope_id=scope_id)
     return (
@@ -573,6 +905,9 @@ def appworld_observers(
         ApiObserver(config),
         EntityObserver(config),
         ReceiptObserver(config),
+        AccountObserver(config),
+        ListObserver(config),
+        AmountObserver(config),
     )
 
 
@@ -585,6 +920,10 @@ APPWORLD_OBSERVER_COVERAGE: Mapping[str, tuple[str, ...]] = {
     "appworld.entity-ambiguous": ("appworld.entity-observer",),
     "appworld.entity-unique": ("appworld.entity-observer",),
     "appworld.action-confirmed": ("appworld.receipt-observer",),
+    "appworld.account-exists": ("appworld.account-observer",),
+    "appworld.list-contains": ("appworld.list-observer",),
+    "appworld.list-size": ("appworld.list-observer",),
+    "appworld.amount-equals": ("appworld.amount-observer",),
 }
 
 
@@ -596,8 +935,15 @@ __all__ = (
     "PROFILE_API",
     "REFUSAL_MARKERS",
     "TRANSPORT_ERRORS",
+    "REFERENCE_PARTS",
+    "REFERENCE_SEPARATOR",
+    "AccountObserver",
+    "AmountObserver",
+    "ListObserver",
     "ReadOutcome",
     "classify_read_error",
+    "decode_public_value",
+    "resolve_public_field",
     "ApiObserver",
     "ApiSurface",
     "AppWorldObserverConfig",

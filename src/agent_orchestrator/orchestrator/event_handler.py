@@ -230,6 +230,15 @@ SYSTEM_CRITIC_MODEL_CALLS = 12
 
 
 RECONCILE_EVERY_CYCLES = 50  # D7-5': UNKNOWN actions are asked about again while a run goes on
+
+#: How many times one Mission's stall confirmation may say "the world moved, go round
+#: again" within a single ``run()`` (P2.3c part 3a, third-round review P1-A).  The
+#: confirmation cycle has side effects — it re-issues licences and records
+#: observations — so a deployment whose observers answer something new each time would
+#: move the fingerprint for ever.  Past this bound the run returns with the Mission
+#: still ACTIVE and its stall recorded, which is an answer to the caller rather than a
+#: verdict about the Mission.
+MAX_STALL_CARRY_ONS = 2
 # step 9 (plan D9-3'): the whitelisted items a deployment configuration also names — a
 # difference from the ACTIVE version is recorded as drift (the version still governs)
 CONFIG_DERIVED = frozenset(
@@ -382,6 +391,9 @@ class Orchestrator:
         #: ``_confirm_and_stop_stalled`` so the confirmation compares *this* stall
         #: against what one more cycle produces (P2.3c part 2d, decision 2).
         self._stalled_at: dict[str, str] = {}
+        #: mission id → how many times this ``run()`` has already carried on because
+        #: the stall confirmation moved the world (third-round review P1-A).
+        self._stall_carry_ons: dict[str, int] = {}
         self._client_ids: dict[str, str | None] = {}
         self._released: set[str] = set()
         self.progress_log: list[str] = []
@@ -1590,6 +1602,9 @@ class Orchestrator:
         await self.actions.reconcile()  # D7-5': every run() first asks about UNKNOWN actions
         cycles = 0
         idle_rounds = 0
+        # P1-A's carry-on budget is per ``run()``: a fresh execution cycle is allowed
+        # to give a Mission the same benefit of the doubt the last one did.
+        self._stall_carry_ons.clear()
         while cycles < max_cycles:
             progressed = await self._cycle()
             if progressed:
@@ -1599,6 +1614,15 @@ class Orchestrator:
                     await self.actions.reconcile()
                 continue
             if not until_idle:
+                # P2.3c part 2d, P2-17: a caller that drives the loop one step at a
+                # time gets the same *record* an idle ``run(until_idle=True)`` gets.
+                # Not the same *decision*: ``_confirm_and_stop_stalled`` spends a
+                # whole confirming cycle and then fails the Mission, and a stepping
+                # caller has not asked this loop to decide anything — it asked it to
+                # take one step and hand control back.  The record is free; the
+                # verdict is not the stepper's to make (§9.1: the repetition is what
+                # licenses the stop, and one step is not a repetition).
+                await self._record_hierarchical_stall()
                 return
             if self._has_inflight():
                 idle_rounds = 0
@@ -1612,9 +1636,23 @@ class Orchestrator:
                     idle_rounds = 0
                     continue
                 await self._record_hierarchical_stall()
-                await self._confirm_and_stop_stalled()
+                if await self._confirm_and_stop_stalled():
+                    # Third-round review P1-A.  The confirmation cycle moved the world,
+                    # and the work it unblocked is this loop's to dispatch — returning
+                    # here would hand the caller an "idle" run with a ready occurrence
+                    # and no Attempt.  Bounded by ``MAX_STALL_CARRY_ONS`` inside the
+                    # confirmation itself, so a world that keeps changing under the
+                    # gates ends the run rather than spinning in it.
+                    idle_rounds = 0
+                    continue
                 return
             await asyncio.sleep(self._poll)
+        # P2.3c part 2d, P2-17: ``max_cycles`` progressing cycles were spent and the
+        # loop is leaving with work still on the plan.  The same record as the idle
+        # path, for the same reason: a Mission left ACTIVE with nothing written down
+        # is the one ending the smoke test refuses.  No stop here either — running
+        # out of cycles is the caller's bound, not a statement about the Mission.
+        await self._record_hierarchical_stall()
 
     async def _record_hierarchical_stall(self) -> None:
         """A hierarchical Mission that idles with work left over says so, once.
@@ -1747,12 +1785,12 @@ class Orchestrator:
         }
         return sha256_hex_text(canonical_json(situation))
 
-    async def _confirm_and_stop_stalled(self) -> None:
+    async def _confirm_and_stop_stalled(self) -> bool:
         """Look once more, and if the world has not moved, end this execution cycle.
 
         P2.3c part 2d, decision 2.  §15 makes a Mission a **bounded** cycle: "somebody
         could admit a demand later" belongs to the next cycle or to the Commitment
-        above it, not to this one, and a局 that never ends cannot enter the paired
+        above it, not to this one, and a run that never ends cannot enter the paired
         evaluation §21.5 asks for.  But §9.1 licenses stopping on *repeated* no
         progress, not on the first idle turn — and part 2c's smoke showed why: one
         evidence round or one witness re-issue moved the world twice.
@@ -1767,12 +1805,34 @@ class Orchestrator:
 
         One cycle, hard-coded.  A ``while`` here would turn an idle loop into a busy
         one, which is the failure this method exists to end.
+
+        Returns whether the loop should **carry on** — third-round review P1-A.
+        The confirmation cycle is a cycle *with side effects*: it re-issues both
+        licence lanes, records observations and advances compound phases, and the
+        decision memo's own wording for a moved fingerprint is "do nothing, **let the
+        loop carry on**".  :meth:`run` used to return unconditionally afterwards, so a
+        Mission the confirmation had just unblocked — one admitted demand is enough —
+        was handed back to the caller as "idle" with a ``READY_CANDIDATE`` occurrence
+        and not one Attempt created.  That is exactly the case the memo protected when
+        it rejected the alternative design.
+
+        So the answer is "the world moved, go round again" — and it is bounded by
+        :data:`MAX_STALL_CARRY_ONS` per Mission per :meth:`run`.  The bound is not
+        decoration: a confirmation cycle *records observations*, so a deployment whose
+        observers answer something new every time would move the fingerprint for ever
+        and the carry-on would be the busy loop this whole path exists to end.  Past
+        the bound the run simply returns — the Mission stays ACTIVE with its stall
+        recorded, which is the caller's answer and not a verdict about the Mission.
+
+        A ``False`` therefore means "nothing here needs another cycle": either a
+        Mission was stopped, or there was no stalled hierarchical Mission at all.
         """
 
         from ..contracts.htn import ObligationId
         from ..contracts.obligations import ObligationLifecycle
         from ..storage.obligation_store import ObligationStore
 
+        carry_on = False
         for mission in self._active_missions():
             if mission.status is not MissionStatus.ACTIVE:
                 continue
@@ -1797,10 +1857,20 @@ class Orchestrator:
             rows = self.store.list_tasks(mission.id)
             after = self._stall_fingerprint(mission, admissions, rows)
             if after != before:
-                self._note(
-                    f"mission {mission.id}: the confirmation cycle moved the world; "
-                    "the stall is not confirmed"
-                )
+                spent = self._stall_carry_ons.get(mission.id, 0)
+                if spent < MAX_STALL_CARRY_ONS:
+                    self._stall_carry_ons[mission.id] = spent + 1
+                    carry_on = True
+                    self._note(
+                        f"mission {mission.id}: the confirmation cycle moved the world; "
+                        "the stall is not confirmed and the loop carries on"
+                    )
+                else:
+                    self._note(
+                        f"mission {mission.id}: the confirmation cycle moved the world for the "
+                        f"{spent + 1}th time; this execution cycle ends with the Mission active "
+                        "and its stall recorded"
+                    )
                 continue
             duties = ObligationStore(self.store)
             outstanding: list[dict[str, Any]] = []
@@ -1833,6 +1903,7 @@ class Orchestrator:
                 f"mission {mission.id}: no dispatchable work, confirmed by one more cycle; "
                 "this execution cycle ends"
             )
+        return carry_on
 
     # ---------------------------------------------------------------- cycle
     def _active_missions(self) -> list[Mission]:
@@ -2165,6 +2236,11 @@ class Orchestrator:
 
         snapshot = world.capabilities()
         records = tuple(getattr(snapshot, "records", ()) or ())
+        # G1: one assessment, rendered into the prompt *and* recorded.  Computing it
+        # twice would let the record and the message disagree about a world that moved
+        # between them, and the record exists precisely to say what the model was told.
+        reports = new_mode.method_applicability(mission.id)
+        new_mode.record_method_applicability(mission.id, reports=reports)
         package = hierarchical_planner_package(
             mission,
             network,
@@ -2183,7 +2259,7 @@ class Orchestrator:
             # this Mission recorded, so a Planner that cites a fact cites one the
             # library holds (part 2b's smoke stopped at ``READ_SET_UNRESOLVED``
             # because it had never been shown one).
-            reports=new_mode.method_applicability(mission.id),
+            reports=reports,
             observations=new_mode.semantics().list_observations(mission.id),
             attempt_ordinal=ordinal,
             rejected=self._planning_rejections(mission.id) if ordinal > 1 else (),
@@ -2433,9 +2509,13 @@ class Orchestrator:
             instructions=template.instructions,
             model_profile_ref=decision.profile_id,
             tool_names=(),
+            # ``tool_names=()`` is what stops this agent calling a tool; the limit is a
+            # *bound*, and :class:`AgentLimits` refuses a non-positive one — a zero here
+            # raised ``ValueError`` before the intent was ever created, which the
+            # part-3a smoke found on the root-review path (the identical spelling).
             limits=AgentLimits(
                 max_model_calls_per_turn=2,
-                max_tool_calls_per_turn=0,
+                max_tool_calls_per_turn=1,
                 turn_deadline_seconds=self._config.turn_deadline_seconds,
             ),
         )
@@ -3432,6 +3512,12 @@ class Orchestrator:
         if str(intent.config.get("role", "")) == "method_synthesizer":
             await self._collect_synthesizer(intent, result, mission, text)
             return
+        # P2.3c part 3a: the root MISSION_FINAL reviewer rides on the same ``plan``
+        # intent kind (it has no Attempt, so the ``critic`` kind's attempt-bound
+        # collection does not apply) and its reply is a verdict, not a proposal.
+        if str(intent.config.get("role", "")) == "root_reviewer":
+            await self._collect_root_review(intent, result, mission, text)
+            return
         # P2.3b: a hierarchical Mission's Planner speaks the typed contract (§18.3), so
         # the reply goes to the assembly and the flat-DAG path below is not entered.
         new_mode = self._new_mode(mission)
@@ -3471,6 +3557,83 @@ class Orchestrator:
             f"task graph committed: {[task.id for task in tasks]} (warnings={receipt.get('warnings')})"
         )
         self._settle_intent(intent, "SETTLED")
+        self._settle_service_if_known(intent.subject_id, mission.id)
+
+    async def _collect_root_review(  # type: ignore[no-untyped-def]
+        self, intent: DispatchIntent, result, mission: Mission, text: str
+    ) -> None:
+        """A ``<critic_verdict>`` reply → the official root ``ReviewRecord`` (AER I05).
+
+        The conclusion is the reviewer's and nothing here adjusts it: ``PASS``
+        becomes ``ACCEPT``, ``FAIL`` becomes ``REJECTED``, and a criterion the
+        reviewer reported ``met: false`` is written ``FAIL`` — there is no branch
+        that produces an ACCEPT out of a reply that did not say PASS.
+
+        An unreadable reply writes **no** record.  ``parse_critic_verdict`` is strict
+        on purpose (AER-V04: a malformed verdict is an error, never a PASS), and an
+        answer we could not read is not a conclusion, so the package keeps its one
+        official-record slot free and the Mission reaches the idle-stall path with
+        ``HierarchicalRootReviewUnreadable`` written down.  Asking again with the same
+        anchor would spend the Mission account on the same question.
+        """
+
+        from ..contracts.resolution import CriterionVerdict, ReviewVerdict
+
+        new_mode = self._new_mode(mission)
+        package_id = str(intent.config.get("review_package_id", ""))
+        expected = [str(item) for item in intent.config.get("review_criteria", [])]
+        if new_mode is None:
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            return
+        coordinator = self._root_review(mission, new_mode)
+        try:
+            package = coordinator.semantics.get_review_package(package_id)
+        except StoreError as error:
+            self._note(f"root review reply names no stored package ({error})")
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            return
+        try:
+            if result.state is not AgentTurnState.COMMITTED:
+                raise ContractError(f"root reviewer turn failed: {dict(result.error or {})}")
+            verdict = parse_critic_verdict(text, expected_criteria=expected)
+        except (ContractError, BlockError) as error:
+            coordinator.record_unreadable(
+                mission.id,
+                package,
+                detail=str(error),
+                reviewer_turn_id=str(getattr(result, "turn_id", "") or intent.intent_id),
+            )
+            self._note(f"mission {mission.id}: the root review reply was unreadable ({error})")
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            return
+        verdicts = {
+            str(item.get("criterion")): (
+                CriterionVerdict.PASS if bool(item.get("met")) else CriterionVerdict.FAIL
+            )
+            for item in verdict.mission_criteria
+        }
+        try:
+            record = coordinator.record_review(
+                mission.id,
+                package,
+                verdict=ReviewVerdict.ACCEPT if verdict.passed else ReviewVerdict.REJECTED,
+                criterion_verdicts=verdicts,
+                reviewer_agent_id=str(intent.agent_id or "root-reviewer"),
+                reviewer_turn_id=str(getattr(result, "turn_id", "") or intent.intent_id),
+                findings=verdict.findings,
+            )
+        except (ContractError, StoreError) as error:
+            self._note(f"mission {mission.id}: the root review record was refused ({error})")
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            return
+        self._note(
+            f"mission {mission.id}: root review {record.record_id} concluded {record.verdict!s}"
+        )
+        self._settle_intent(intent, "SETTLED" if verdict.passed else "FAILED")
         self._settle_service_if_known(intent.subject_id, mission.id)
 
     async def _collect_synthesizer(  # type: ignore[no-untyped-def]
@@ -5870,6 +6033,15 @@ class Orchestrator:
             current = self.store.get_mission(mission.id)  # not the cycle's stale snapshot
             if current is None or current.status is not MissionStatus.ACTIVE:
                 return False
+            # P2.3c part 3a: the root ``MISSION_FINAL`` review is *cut and reviewed*
+            # before the resolution is offered.  Part 2d's smoke stopped exactly here
+            # — ``ROOT_REVIEW_PACKAGE_MISSING`` — because nothing in ``src`` produced
+            # the anchor ``root_resolution_inputs`` reads.  The coordinator is
+            # deliberately a separate step and not folded into the trigger: the
+            # trigger reads anchors and never writes them, and a review that writes
+            # its own conclusion is the shape §21.5 exists to forbid.
+            if new_mode is not None and await self._advance_root_review(current, new_mode):
+                return True
             if new_mode is not None and not await self._root_resolution_formed(current, new_mode):
                 # §21.5 hard invariant, "wrongly declared complete = 0": a hierarchical
                 # Mission reaches COMPLETED only *after* its root GoalResolution is
@@ -6040,6 +6212,182 @@ class Orchestrator:
             if current is None or current.status in TERMINAL_MISSION:
                 break
         return progressed
+
+    def _root_review(self, mission: Mission, new_mode: HierarchicalDispatch) -> Any:
+        """The deployment's root-review coordinator for this Mission.
+
+        Built per call rather than held: it carries no Mission state, and a held one
+        would outlive the store handle a restart replaces.
+        """
+
+        from .root_review import RootReviewCoordinator
+
+        return RootReviewCoordinator(
+            self.store,
+            self.commit,
+            new_mode,
+            scope_id="mission",
+            issued_by=self._owner,
+            max_cuts_per_revision=self._config.max_root_review_cuts,
+        )
+
+    async def _advance_root_review(
+        self, mission: Mission, new_mode: HierarchicalDispatch
+    ) -> bool:
+        """Move the root ``MISSION_FINAL`` review one step, or say why it cannot.
+
+        ``True`` means *something happened* — a package was cut, a reviewer was
+        asked — and the cycle counts as progress.  ``False`` means the review needs
+        nothing from this loop, which is true both when it is ``READY`` (the caller
+        goes on to offer the resolution) and when it is stuck: a stuck review is left
+        for part 2d's idle-stall path, which records every gate still holding the
+        Mission and stops it after one confirming cycle, rather than being retried
+        here every cycle on the Mission's own account.
+        """
+
+        from .root_review import RootReviewStatus
+
+        coordinator = self._root_review(mission, new_mode)
+        try:
+            state = coordinator.state(mission.id)
+        except (GraphIntegrityError, ContractError, StoreError) as error:
+            self._note(f"mission {mission.id}: the root review state could not be read ({error})")
+            return False
+        if state.status in {
+            RootReviewStatus.READY,
+            RootReviewStatus.ALREADY_RESOLVED,
+            RootReviewStatus.NOT_READY,
+            RootReviewStatus.UNREADABLE_PLAN,
+        }:
+            return False
+        if state.status is RootReviewStatus.CUT_BUDGET_SPENT:
+            # Once per revision, and then silence: the stall record is what an
+            # operator reads next, and a second line every cycle would bury it.
+            coordinator.record_cut_budget_spent(mission.id, state)
+            self._note(f"mission {mission.id}: root review not re-cut ({state.detail})")
+            return False
+        if state.status is RootReviewStatus.REVIEW_REJECTED:
+            # §9.1's decision table, never a silent retry.  The record is already
+            # written and announced by ``record_review``; this loop does not get to
+            # ask the same question again with the same anchor.
+            self._note(f"mission {mission.id}: {state.detail}")
+            return False
+        if state.needs_cut:
+            try:
+                package = coordinator.cut(mission.id, now_ms=int(self.store.now * 1000))
+            except (ContractError, StoreError) as error:
+                self._note(f"mission {mission.id}: the root review could not be cut ({error})")
+                return False
+            self._note(
+                f"mission {mission.id}: root review cut {package.package_id} over "
+                f"requirements revision {int(package.binding.requirements_revision)} and "
+                f"{len(package.child_acceptance_refs)} contribution(s)"
+                + (f" (re-cut: {', '.join(state.stale_reasons)})" if state.stale_reasons else "")
+            )
+            await self._ask_root_reviewer(mission, coordinator, package)
+            return True
+        if state.status is RootReviewStatus.AWAITING_REVIEW and state.package is not None:
+            # The intent's creation key is the package id, so this is idempotent: a
+            # package already out for review is not asked about twice.
+            return await self._ask_root_reviewer(mission, coordinator, state.package)
+        return False
+
+    async def _ask_root_reviewer(
+        self, mission: Mission, coordinator: Any, package: Any
+    ) -> bool:
+        """Create the root reviewer's intent.  Idempotent per review package.
+
+        ``kind="plan"`` rather than ``"critic"``: the ``critic`` kind is the Task
+        Critic's, which is bound to an Attempt and collected by the attempt runner,
+        and a review of the whole composition has no Attempt.  The *role* is its own
+        (``root_reviewer``) and so is the account — ``ReviewAccount.MISSION``, never a
+        Task budget (§13 v1.4, §18.5).
+        """
+
+        from ..runtime.role_templates import ROOT_REVIEWER
+        from .root_review import MAX_ROOT_REVIEW_ASKS, ROOT_REVIEW_UNREADABLE
+
+        # An unreadable reply is not an answer, so this is not asking the same
+        # question twice: it is the same question put once more, with the parse error
+        # attached, exactly as ``critic_schema_retry_feedback`` does for the Task
+        # Critic.  Bounded at two — a model that cannot produce the block twice is a
+        # deployment problem, and the Mission goes to the idle-stall path with the
+        # reason written down rather than spending the Mission account in a loop.
+        unreadable = [
+            event
+            for event in self.store.list_events(mission.id)
+            if event.type == ROOT_REVIEW_UNREADABLE
+            and str((event.payload or {}).get("package_id", "")) == str(package.package_id)
+        ]
+        ordinal = len(unreadable) + 1
+        if ordinal > MAX_ROOT_REVIEW_ASKS:
+            return False
+        subject = f"{mission.id}:root-review:{package.package_id}:{ordinal}"
+        if self.store.get_intent_for_subject(subject) is not None:
+            return False
+        request = coordinator.request(
+            mission.id,
+            package,
+            schema_feedback=(
+                ""
+                if not unreadable
+                else "上一次回答无法解析："
+                + str((unreadable[-1].payload or {}).get("detail", ""))
+                + "。请重新给出同一份判断，整段回答只包含一个 <critic_verdict>…</critic_verdict> 块。"
+            ),
+        )
+        template = self._template(ROOT_REVIEWER, mission.id)
+        decision = self._route_service("critic", mission.id)
+        config = AgentConfig(
+            name=f"root-reviewer-{str(package.package_id)[-8:]}",
+            instructions=template.instructions,
+            model_profile_ref=decision.profile_id,
+            # A root review reads the package it was handed and answers; it has no
+            # tools.  ``tool_names=()`` is the gate — the limit is only a bound, and
+            # :class:`AgentLimits` refuses a non-positive one, so a zero here raised
+            # ``ValueError`` and the Mission died on the way to its own review.
+            tool_names=(),
+            limits=AgentLimits(
+                max_model_calls_per_turn=2,
+                max_tool_calls_per_turn=1,
+                turn_deadline_seconds=self._config.turn_deadline_seconds,
+            ),
+        )
+        message = user_message_json(json.dumps(request.to_json(), ensure_ascii=False))
+        try:
+            self.commit.create_service_intent(
+                kind="plan",
+                subject_id=subject,
+                mission_id=mission.id,
+                # §13 v1.4: the cost of a MISSION_FINAL review lands on the Mission
+                # account.  ``coordinator.account`` is read from
+                # ``account_for_purpose`` so the two cannot drift.
+                account_id=mission_account(mission.id),
+                creation_key=subject,
+                input_id="attempt-input",
+                input_hash=sha256_hex(message),
+                config={
+                    "agent_config": config.to_json(),
+                    "message": message,
+                    "context_version": request.content_hash(),
+                    "prompt_version": template.prompt_version,
+                    "base_version": mission.version,
+                    "ordinal": 1,
+                    "role": "root_reviewer",
+                    "budget_account": str(coordinator.account),
+                    "review_package_id": str(package.package_id),
+                    "review_criteria": list(request.criterion_ids),
+                    **self._service_config(decision),
+                },
+                reservation=self._reservation(
+                    self._config.critic_reserve_tokens, decision.profile_id
+                ),
+            )
+        except (ContractError, CommitRejected, BudgetError, RoutingUnavailable) as error:
+            self._note(f"mission {mission.id}: the root reviewer was not asked ({error})")
+            return False
+        self._note(f"mission {mission.id}: root reviewer asked about {package.package_id}")
+        return True
 
     async def _root_resolution_formed(
         self, mission: Mission, new_mode: HierarchicalDispatch

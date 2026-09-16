@@ -176,39 +176,68 @@ def test_the_worker_template_never_asks_the_model_for_a_system_bound_field() -> 
     assert "declared_output_ports" in instructions
 
 
-def test_the_older_worker_prompts_keep_their_bytes() -> None:
-    """The hierarchical prompt is a *new version*, not an edit of the shipped ones.
+#: The sha256 of every shipped prompt whose bytes a replayable Mission depends on.
+#: Frozen **here**, as literals, for the reason the third-round review found the hard
+#: way: the previous guard compared the templates against ``git show HEAD:``, and the
+#: moment the hierarchical worker was committed ``HEAD`` became the new file — so the
+#: test was comparing the templates with themselves, went permanently red on the
+#: ``hasattr`` line, and the invariant it stood for ("a shipped prompt never changes
+#: its bytes") had no guard left at all.  A digest in the test file cannot move with
+#: the tree, needs no ``git`` to check, and says exactly which byte changed when it
+#: fails.  This is the same technique the migration checksums use.
+#:
+#: **Changing a value here is never the fix for a failing assertion.**  An Attempt
+#: freezes its ``prompt_version`` and replays on those bytes (§26.3); editing a
+#: shipped template in place silently rewrites the past.  A new wording is a new
+#: version, registered beside the old one, with its own line below.
+FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
+    # name: (prompt_version, sha256 of instructions)
+    "WORKER": ("worker-v3", "c587ce55ff9a01e38ba5b362f8bb9de518b99404f712e63409f871d2d3f0d285"),
+    "WORKER_V2": ("worker-v2", "c0c35d2d2639ea6655c66bf7b30b6f46cf04ffbb458a79caba63b6477ae46f37"),
+    "PLANNER": ("planner-v4", "13537f0abf6322c7075af9b5ddb3c0b7316c0271830311f49c3d6c195f5c9aad"),
+    "CRITIC": ("critic-v3", "427fb096fc0c4cf6acc67358cd631d3f3c4c39ce2fea60b768a529f6290b7120"),
+    "CRITIC_V2": ("critic-v2", "8eb51a32c06bfa16da88e4e89a28f48b50ce2e06969aec467abd803078a1c5ce"),
+    "WORKER_HIERARCHICAL": (
+        "worker-hierarchical-v1",
+        "e82e74aff9b37d4746da0e982b38855e3cb639efe848fb1a15116a18023e7de2",
+    ),
+}
 
-    ``worker-v3`` and ``worker-v2`` are what every replayable Mission ran on, so the
-    check is a byte comparison against the file as it stands at ``HEAD``: the module
-    is loaded from ``git show`` into a throwaway namespace and the two templates'
-    instructions are compared verbatim.
+
+@pytest.mark.parametrize("name", sorted(FROZEN_PROMPT_DIGESTS))
+def test_a_shipped_prompt_keeps_its_bytes(name: str) -> None:
+    """Every shipped template still hashes to the digest frozen beside it.
+
+    The hierarchical prompt is a *new version*, not an edit of the shipped ones, and
+    this is what says so: ``worker-v3`` and ``worker-v2`` are the bytes every
+    replayable Mission ran on, and ``worker-hierarchical-v1`` is now one of them too.
     """
 
-    import subprocess
-    import sys
-    import types
+    import hashlib
 
-    head = subprocess.run(
-        ["git", "show", "HEAD:src/agent_orchestrator/runtime/role_templates.py"],
-        capture_output=True,
-        text=True,
-        check=True,
-        cwd=str(Path(__file__).resolve().parents[3]),
-    ).stdout
-    name = "agent_orchestrator.runtime._role_templates_at_head"
-    module = types.ModuleType(name)
-    module.__file__ = "role_templates_at_head.py"
-    module.__package__ = "agent_orchestrator.runtime"
-    sys.modules[name] = module
-    try:
-        exec(compile(head, "role_templates_at_head.py", "exec"), module.__dict__)  # noqa: S102
-        assert module.WORKER.instructions == WORKER.instructions
-        assert module.WORKER_V2.instructions == WORKER_V2.instructions
-        assert module.WORKER.prompt_version == WORKER.prompt_version == "worker-v3"
-        assert not hasattr(module, "WORKER_HIERARCHICAL"), "the new version is new"
-    finally:
-        sys.modules.pop(name, None)
+    from agent_orchestrator.runtime import role_templates
+
+    template = getattr(role_templates, name)
+    version, digest = FROZEN_PROMPT_DIGESTS[name]
+    assert template.prompt_version == version
+    assert hashlib.sha256(template.instructions.encode("utf-8")).hexdigest() == digest, (
+        f"{name} ({version}) changed its bytes; an Attempt replays on the prompt it froze, "
+        "so a new wording is a new version registered beside this one — never an edit of it"
+    )
+
+
+def test_the_frozen_digests_cover_the_prompts_this_slice_depends_on() -> None:
+    """A digest table nobody extends stops guarding what the deployment added.
+
+    The hierarchical worker is the one this slice introduced, and it is in the table;
+    the four DAG-mode templates it must not have touched are in it too.
+    """
+
+    assert {"WORKER", "WORKER_V2", "WORKER_HIERARCHICAL"} <= set(FROZEN_PROMPT_DIGESTS)
+    assert {"PLANNER", "CRITIC", "CRITIC_V2"} <= set(FROZEN_PROMPT_DIGESTS)
+    assert FROZEN_PROMPT_DIGESTS["WORKER_HIERARCHICAL"][0] == WORKER_HIERARCHICAL_VERSION
+    assert WORKER.prompt_version == "worker-v3"
+    assert WORKER_V2.prompt_version == "worker-v2"
 
 
 def test_the_hierarchical_worker_version_is_registered_and_pinnable() -> None:
@@ -248,3 +277,178 @@ def test_a_claim_is_checked_against_the_files_this_envelope_declares() -> None:
             attempt_paths=(),
         )
     assert refused.value.reason == "output_path_not_produced"
+
+
+# ======================================================================================
+# The two wiring steps decision 4 rests on (third-round review P1-B)
+#
+# The parsing side, the pairing side and the refusing side all had tests.  The two
+# steps *between* them did not, and both mutants survived the whole suite: stop
+# handing the model the port names, and stop swapping in the prompt that asks for
+# them.  Either one on its own reproduces part 2c's round-9 blocker — every leaf
+# refused with ``OUTPUT_PORT_UNCLAIMED`` and the Mission stopped with no dispatchable
+# work — so both are asserted here against a real dispatch intent.
+# ======================================================================================
+
+import asyncio  # noqa: E402
+import json  # noqa: E402
+import sys  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from test_htn_end_to_end import (  # noqa: E402
+    HIERARCHICAL_SEMANTICS,
+    build_world,
+    committed,
+)
+
+from agent_orchestrator.orchestrator.accepted_outputs import (  # noqa: E402
+    declared_ports_in_revision,
+)
+from agent_orchestrator.storage.htn_store import HtnStore  # noqa: E402
+
+
+def _leaf_intent(tmp_path, *, mode: str = HIERARCHICAL_SEMANTICS, pin: str | None = None):
+    """Drive one real ``_decide`` and return the worker intent it created.
+
+    The intent is *created* by ``_decide`` and only dispatched by a later phase of
+    the cycle, so nothing here needs a model to answer — which is what makes this a
+    test of the wiring rather than of a reply.
+    """
+
+    from agent_orchestrator.orchestrator.event_handler import Orchestrator
+    from agent_orchestrator.runtime.assembly import OrchestratorConfig
+    from agent_orchestrator.testing.fixtures import RoleScriptedProvider
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = (
+        committed(evidence, key=f"p23c-ports-{mode}-{pin}", mode=mode, demand=True)
+        if mode == HIERARCHICAL_SEMANTICS
+        else build_world(evidence, key=f"p23c-ports-{mode}-{pin}", mode=mode)
+    )
+    world.store.close()
+    config = OrchestratorConfig(evidence_root=evidence, max_concurrency=1, test_timeout_seconds=5)
+
+    async def case():
+        async with Orchestrator(config, RoleScriptedProvider({"worker": []})) as loop:
+            if mode == HIERARCHICAL_SEMANTICS:
+                world.env.semantics = HtnStore(loop.store)
+                loop.install_hierarchical(planning=world.env)
+            else:
+                loop.install_hierarchical(planning=None)
+            if pin is not None:
+                # The deployment's frozen ``prompt_versions``, injected where the loop
+                # reads it.  A pin is a real deployment fact (§26.3), and the question
+                # this test asks is what the hierarchical branch does with one.
+                version = loop.policy_version_of(world.mission.id)
+                policy = dict(loop.policy_for(world.mission.id))
+                policy["prompt_versions"] = {
+                    **dict(policy.get("prompt_versions") or {}),
+                    "worker": pin,
+                }
+                loop._policies[version] = policy
+            mission = loop.store.get_mission(world.mission.id)
+            assert mission is not None
+            await loop._decide(mission)
+            intents = [
+                item
+                for item in loop.store.list_intents(
+                    "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                )
+                if item.mission_id == world.mission.id and item.kind == "attempt"
+            ]
+            ports = {}
+            if mode == HIERARCHICAL_SEMANTICS:
+                semantics = HtnStore(loop.store)
+                active = semantics.active_plan_revision(world.mission.id)
+                assert active is not None
+                task_id = None if not intents else intents[0].config.get("task_id")
+                occurrence = next(
+                    str(item.occurrence_id)
+                    for item in semantics.list_plan_memberships(
+                        world.mission.id, int(active.revision)
+                    )
+                    if task_id is None or str(item.task_id) == str(task_id)
+                )
+                ports = declared_ports_in_revision(
+                    semantics.list_data_requirements(world.mission.id, int(active.revision)),
+                    occurrence,
+                )
+            return intents, ports
+
+    return asyncio.run(case())
+
+
+def _content(intent) -> str:
+    """The text the model is actually handed for this intent."""
+
+    message = intent.config.get("message")
+    if isinstance(message, dict):
+        return str(message.get("content", ""))
+    return str(message or "")
+
+
+def _section(message: str, name: str) -> dict:
+    """The typed context section the loop sealed into the model's message.
+
+    The message is a rendered package, so the section is found by its heading and
+    decoded from the JSON that follows it — which also proves the model is handed the
+    ports as *data* with a heading, not as prose.
+    """
+
+    heading = f"## {name}\n"
+    assert heading in message, name
+    tail = message[message.index(heading) + len(heading) :]
+    decoder = json.JSONDecoder()
+    value, _ = decoder.raw_decode(tail.lstrip())
+    return value
+
+
+def test_the_leaf_is_told_which_output_ports_its_occurrence_declares(tmp_path) -> None:
+    """Mutation M18: stop putting ``declared_output_ports`` in the typed context.
+
+    Without it the model is never told a port name exists, so every honest envelope
+    omits ``outputs`` and ``accept_review`` refuses the leaf with
+    ``OUTPUT_PORT_UNCLAIMED``.  The set is the **plan's**, so it is compared against
+    ``declared_ports_in_revision`` rather than against a literal.
+    """
+
+    intents, ports = _leaf_intent(tmp_path)
+    assert intents, "a demanded leaf reaches the allocator and gets an intent"
+    message = _content(intents[0])
+    assert "declared_output_ports" in message
+    section = _section(message, "declared_output_ports")
+    assert section["data_not_instruction"] is True
+    assert {item["port"] for item in section["ports"]} == set(ports)
+    assert set(ports), "the fixture's leaf really does declare a consumed port"
+
+
+def test_a_legacy_leaf_is_never_handed_a_declared_output_ports_section(tmp_path) -> None:
+    """§18.5 rule 1: ``ResultEnvelope`` refuses unknown keys, so the DAG mode must not
+    be shown a key its contract has no field for."""
+
+    intents, _ = _leaf_intent(tmp_path, mode="legacy")
+    for intent in intents:
+        assert "declared_output_ports" not in _content(intent)
+
+
+def test_a_dag_mode_pin_does_not_reach_a_hierarchical_leaf(tmp_path) -> None:
+    """Mutation M19: stop swapping in the hierarchical Worker template.
+
+    ``worker-v3`` never asks the model which port its files belong to.  A deployment
+    that pins it is pinning the *other mode's* prompt, and honouring that pin here is
+    the same round-9 blocker by another route.
+    """
+
+    intents, _ = _leaf_intent(tmp_path, pin="worker-v3")
+    assert intents
+    assert intents[0].config["prompt_version"] == WORKER_HIERARCHICAL_VERSION
+
+
+def test_a_dag_mode_pin_is_honoured_on_a_legacy_mission(tmp_path) -> None:
+    """The other half: the pin is not ignored, it belongs to the mode that has it."""
+
+    intents, _ = _leaf_intent(tmp_path, mode="legacy", pin="worker-v3")
+    for intent in intents:
+        assert intent.config["prompt_version"] == "worker-v3"

@@ -805,5 +805,171 @@
         "version": 1
       }
     ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.account-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.account-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.account-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe whether the application serves the named account",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.account-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-account-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.account-exists",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.list-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.list-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.list-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe the contents and size of a public list, with complete coverage",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.list-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-list-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.list-contains",
+        "version": 1
+      },
+      {
+        "id": "appworld.list-size",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.amount-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.amount-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.transfer-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe the amount and currency a transfer records",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.transfer-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-amount-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.amount-equals",
+        "version": 1
+      }
+    ]
   }
 ]

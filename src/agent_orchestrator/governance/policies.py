@@ -255,6 +255,11 @@ SNAPSHOT_FIELDS: dict[str, str] = {
             "manager_after_failures",
             "no_progress_limit",
             "max_manager_rounds",
+            # P2.3c part 3a: how many times one requirements revision's root
+            # MISSION_FINAL review may be re-cut.  It shapes when a hierarchical
+            # Mission stops asking and takes the idle-stall path, so it is a
+            # behaviour parameter and belongs in the snapshot.
+            "max_root_review_cuts",
             "manager_reserve_tokens",
             "aging_window_seconds",
             "global_budget",

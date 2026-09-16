@@ -116,5 +116,49 @@
       "version": 1
     },
     "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "appworld.account-only",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "app",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "account",
+        "type": "string",
+        "required": true
+      }
+    ]
+  },
+  {
+    "schema_ref": {
+      "id": "appworld.list-only",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "list_ref",
+        "type": "ref",
+        "required": true
+      }
+    ]
+  },
+  {
+    "schema_ref": {
+      "id": "appworld.transfer-only",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "transfer_ref",
+        "type": "ref",
+        "required": true
+      }
+    ]
   }
 ]

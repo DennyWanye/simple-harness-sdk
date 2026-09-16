@@ -55,6 +55,13 @@ from agent_orchestrator.governance.policies import deployed_layers  # noqa: E402
 from agent_orchestrator.orchestrator.commit_service import MissionSpec  # noqa: E402
 from agent_orchestrator.orchestrator.event_handler import Orchestrator  # noqa: E402
 from agent_orchestrator.orchestrator.plan_commits import HIERARCHICAL_SEMANTICS  # noqa: E402
+from agent_orchestrator.orchestrator.root_review import (  # noqa: E402
+    ROOT_REVIEW_CUT,
+    ROOT_REVIEW_CUT_BUDGET_SPENT,
+    ROOT_REVIEW_REJECTED,
+    ROOT_REVIEW_SUPERSEDED,
+    ROOT_REVIEW_UNREADABLE,
+)
 from agent_orchestrator.planning.htn import evidence_round  # noqa: E402
 from agent_orchestrator.planning.htn.observers.code import code_observers  # noqa: E402
 from agent_orchestrator.planning.htn.planner_package import recorded_facts  # noqa: E402
@@ -343,6 +350,31 @@ def test_real_hierarchical_planner_round(tmp_path):
                 "stalled": [
                     item.payload for item in events if item.type == "HierarchicalMissionStalled"
                 ],
+                # P2.3c part 3a: how many times the root MISSION_FINAL review was cut,
+                # and what the reviewer said.  A run that reaches COMPLETED does so
+                # through exactly these records, so a report without them cannot say
+                # *why* the Mission was allowed to finish.
+                "root_review": {
+                    "cuts": sum(1 for item in events if item.type == ROOT_REVIEW_CUT),
+                    "superseded": sum(1 for item in events if item.type == ROOT_REVIEW_SUPERSEDED),
+                    "rejected": [
+                        item.payload
+                        for item in events
+                        if item.type in {ROOT_REVIEW_REJECTED, ROOT_REVIEW_UNREADABLE}
+                    ],
+                    "budget_spent": sum(
+                        1 for item in events if item.type == ROOT_REVIEW_CUT_BUDGET_SPENT
+                    ),
+                    "records": [
+                        {
+                            "package_id": str(package.package_id),
+                            "purpose": str(package.purpose),
+                            "verdict": str(stored.record.verdict),
+                        }
+                        for package in semantics.list_review_packages(mission.id)
+                        for stored in semantics.list_review_records(str(package.package_id))
+                    ],
+                },
                 "tokens": _account(orchestrator, mission.id),
                 "progress": orchestrator.progress_log[-40:],
             }

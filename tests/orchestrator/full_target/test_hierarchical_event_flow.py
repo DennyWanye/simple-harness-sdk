@@ -1093,7 +1093,16 @@ _VOLATILE_KEYS = frozenset(
 #: The same per-run identifiers where they appear *inside* a string or a list of
 #: strings (a knowledge id in ``final_report.knowledge``, in ``lineage.knowledge[].id``
 #: and in ``lineage.edges[].produced``) rather than as their own field.
-_VOLATILE_PATTERNS = ((re.compile(r"observation:[0-9a-f]{64}"), "observation:<id>"),)
+_VOLATILE_PATTERNS = (
+    (re.compile(r"observation:[0-9a-f]{64}"), "observation:<id>"),
+    # Third-round review P2-5: ``VerificationLayerRecorded.summary`` quotes pytest's
+    # own one-line report, which ends in the wall-clock time the run took.  Under CPU
+    # contention the two runs of this golden legitimately differ by hundredths of a
+    # second, and the suite's one hard gate on "the DAG mode's bytes did not change"
+    # was failing about a third of the time under parallel load.  How long a test took
+    # is not behaviour; that it ran and what it reported is, and both survive this.
+    (re.compile(r"\bin \d+(?:\.\d+)?s\b"), "in <duration>"),
+)
 
 
 def _redact(value: Any, root: Path) -> Any:
@@ -1366,11 +1375,17 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     key has to stay an unknown field rather than being quietly accepted.  Asking the
     mode there is exactly what keeps the two contracts apart (§18.5 rule 1).
 
-    Part 2d's stall decision adds the last two: ``_stall_fingerprint`` (the identity
+    Part 2d's stall decision adds two more: ``_stall_fingerprint`` (the identity
     of a stall, which is a hierarchical notion — it is built out of admissions, scope
     epochs and admitted demands) and ``_confirm_and_stop_stalled`` (the one place a
     Mission is ended for having nothing to dispatch).  A legacy Mission idles for the
     legacy scheduler's reasons and neither of them may touch it.
+
+    Part 3a adds the fifteenth, ``_collect_root_review``: a ``MISSION_FINAL`` verdict
+    is recorded through the hierarchical assembly's coordinator, and a legacy Mission
+    has no root ``GoalResolution`` for one to feed.  ``_advance_root_review`` and
+    ``_ask_root_reviewer`` are deliberately **not** extra sites — they are reached
+    only from ``_decide``, which has already asked, and are handed the answer.
     """
 
     del tmp_path
@@ -1379,7 +1394,7 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     from agent_orchestrator.orchestrator import event_handler
 
     source = inspect.getsource(event_handler)
-    assert source.count("self._new_mode(mission)") == 14
+    assert source.count("self._new_mode(mission)") == 15
     assert "is_hierarchical(mission)" in inspect.getsource(event_handler.Orchestrator._new_mode)
 
 

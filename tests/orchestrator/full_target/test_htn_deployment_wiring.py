@@ -109,6 +109,10 @@ def test_the_seed_methods_went_through_the_admission_protocol() -> None:
     assert {item.method_id for item in refs} == {
         "code.fix-by-patch",
         "code.fix-by-revert",
+        # G2: the third branch of the OR, whose sub-goal needs the same read-only
+        # reading of the repository its parent already has.
+        "code.fix-by-assessed-revert",
+        "code.assess-by-reading",
         "code.review-changes-directly",
         "code.review-changes-recursively",
     }
@@ -323,6 +327,12 @@ def test_the_deployment_assigns_one_reader_per_predicate(worktree) -> None:
         "code.repo-checked-out",
         "code.test-is-failing",
         "code.working-tree-clean",
+        # P2.3c part 3a: the two business-state readers L2 acceptance needs.  They
+        # are in this set for the same reason the others are — the deployment index
+        # assigns exactly one reader per declared predicate, and a predicate the seed
+        # library declares with no reader installed would be permanently unknowable.
+        "code.diff-touches-only",
+        "code.declared-dependency-present",
     }
 
 

@@ -854,5 +854,143 @@
         "version": 1
       }
     ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.diff-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.diff-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.diff-scope",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "observe which paths a changeset touches, with complete coverage",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "code.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.diff-scope",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-diff-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "observes": [
+      {
+        "id": "code.diff-touches-only",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.dependency-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.dependency-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.package-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "observe whether a package is declared in a dependency manifest",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "code.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.package-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-dependency-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "observes": [
+      {
+        "id": "code.declared-dependency-present",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.assess-regression",
+      "version": 1
+    },
+    "form": "compound",
+    "goal_signature": {
+      "signature_id": "code.assess-regression",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "establish that the failure reproduces before anything is changed",
+      "coverage_criteria": [
+        "c-failure-reproduced"
+      ]
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "domain": "code"
   }
 ]

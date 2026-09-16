@@ -73,6 +73,7 @@ from agent_orchestrator.planning.htn.observers.code import (
     OPERAND_SEPARATOR,
     READ_ONLY_GIT,
     READ_ONLY_PYTHON,
+    REVISION_OPERANDS,
     TRUSTED_ARGUMENTS,
     BudgetExhausted,
     ChangesetObserver,
@@ -172,9 +173,26 @@ def test_every_appworld_observer_is_one_the_signature_lists(predicate: str) -> N
     assert set(APPWORLD_OBSERVER_COVERAGE[predicate]) <= listed
 
 
-def test_the_factories_offer_five_observers_per_domain(tmp_path: Path) -> None:
-    assert len(code_observers(tmp_path)) == 5
-    assert len(appworld_observers()) == 5
+def test_the_factories_offer_the_five_structural_observers_and_the_l2_readers(
+    tmp_path: Path,
+) -> None:
+    """§7.3's five per domain is a floor; P2.3c part 3a added the business-state ones.
+
+    The count is asserted rather than the set so that adding a reader is a deliberate
+    act that comes back here — the same discipline the wiring-site count uses.
+    """
+
+    assert {item.observer_id for item in code_observers(tmp_path)} >= {
+        "code.diff-observer",
+        "code.dependency-observer",
+    }
+    assert {item.observer_id for item in appworld_observers()} >= {
+        "appworld.account-observer",
+        "appworld.list-observer",
+        "appworld.amount-observer",
+    }
+    assert len(code_observers(tmp_path)) == 7
+    assert len(appworld_observers()) == 8
 
 
 def test_every_observer_satisfies_the_protocol(tmp_path: Path) -> None:
@@ -1055,12 +1073,90 @@ def test_a_writing_flag_operand_really_would_have_written_without_the_gate(
     assert not target.exists()
 
 
-def test_every_operand_goes_after_the_separator(tmp_path: Path) -> None:
+def test_every_path_operand_goes_after_the_separator(tmp_path: Path) -> None:
+    conf, runner = config(tmp_path, {"numstat": ok("1\t1\ta.py\n")})
+    ChangesetObserver(conf).observe(
+        sig("code.changeset-reviewable"), {"changeset": "src/a.py"}, now_ms=NOW_MS
+    )
+    assert runner.calls == [("git", "diff", "--numstat", OPERAND_SEPARATOR, "src/a.py")]
+
+
+def test_a_revision_range_goes_before_the_separator(tmp_path: Path) -> None:
+    """G4: a revision after ``--`` is a pathspec, so the range could never be read.
+
+    The separator is still emitted, with nothing after it, so the revision cannot
+    also be read as a path and no caller token can arrive as a flag.
+    """
+
     conf, runner = config(tmp_path, {"numstat": ok("1\t1\ta.py\n")})
     ChangesetObserver(conf).observe(
         sig("code.changeset-reviewable"), {"changeset": "HEAD~1..HEAD"}, now_ms=NOW_MS
     )
-    assert runner.calls == [("git", "diff", "--numstat", OPERAND_SEPARATOR, "HEAD~1..HEAD")]
+    assert runner.calls == [("git", "diff", "--numstat", "HEAD~1..HEAD", OPERAND_SEPARATOR)]
+
+
+def test_the_diff_scope_observer_reads_a_revision_range_the_same_way(tmp_path: Path) -> None:
+    from agent_orchestrator.planning.htn.observers.code import DiffScopeObserver
+
+    conf, runner = config(tmp_path, {"name-only": ok("src/a.py\n")})
+    observation = DiffScopeObserver(conf).observe(
+        sig("code.diff-touches-only"),
+        {"changeset": "main..HEAD", "paths": "src/"},
+        now_ms=NOW_MS,
+    )
+    assert observation.polarity is True
+    assert runner.calls == [("git", "diff", "--name-only", "main..HEAD", OPERAND_SEPARATOR)]
+
+
+def test_a_revision_that_looks_like_a_flag_is_refused_before_it_is_spawned(
+    tmp_path: Path,
+) -> None:
+    conf, runner = config(tmp_path, {})
+    observation = ChangesetObserver(conf).observe(
+        sig("code.changeset-reviewable"), {"changeset": "--output=a..b"}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("spelling", ["HEAD..@{upstream}", "HEAD..a:b", "HEAD..a b"])
+def test_a_revision_outside_the_grammar_is_unavailable_never_false(
+    tmp_path: Path, spelling: str
+) -> None:
+    conf, runner = config(tmp_path, {})
+    observation = ChangesetObserver(conf).observe(
+        sig("code.changeset-too-large"), {"changeset": spelling}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert runner.calls == []
+
+
+def test_only_diff_may_carry_a_revision_and_only_one(tmp_path: Path) -> None:
+    from agent_orchestrator.planning.htn.observers.code import _Command
+
+    conf, _runner = config(tmp_path, {})
+    assert REVISION_OPERANDS == {"diff": 1}
+    _Command(conf).run(["git", "diff", "--numstat", "a..b", OPERAND_SEPARATOR])
+    with pytest.raises(ContractError):
+        _Command(conf).run(["git", "diff", "--numstat", "a..b", "c..d", OPERAND_SEPARATOR])
+    with pytest.raises(ContractError):
+        _Command(conf).run(["git", "log", "--oneline", "HEAD", OPERAND_SEPARATOR])
+
+
+def test_a_writing_flag_is_still_refused_where_a_revision_is_allowed(tmp_path: Path) -> None:
+    """The G4 allowance is one revision, not a hole: P0-3's defence is unchanged."""
+
+    from agent_orchestrator.planning.htn.observers.code import _Command
+
+    conf, _runner = config(tmp_path, {})
+    target = tmp_path / "written.txt"
+    for argv in (
+        ["git", "diff", "--numstat", f"--output={target}", OPERAND_SEPARATOR],
+        ["git", "diff", "--numstat", "a..b", f"--output={target}", OPERAND_SEPARATOR],
+    ):
+        with pytest.raises(ContractError):
+            _Command(conf).run(argv)
+    assert not target.exists()
 
 
 def test_the_history_observer_passes_its_ref_as_an_operand(tmp_path: Path) -> None:
@@ -1387,3 +1483,491 @@ def test_mutant_folding_every_value_error_into_refused_would_forge_a_false() -> 
         classify_read_error(ValueError("API is not authorized for observation"))
         is ReadOutcome.REFUSED
     )
+
+
+# ======================================================================================
+# 9. P2.3c part 3a: the L2 business-state predicates
+#
+# Six declarations the first part listed as "L2 needs these and the repository has
+# none of them", each with a reader and each pinned on the same three axes: TRUE,
+# FALSE and "I could not ask" — and, for every one of them, the axis that matters
+# most, which is that a *parse failure never becomes FALSE*.  Every CLOSED denial
+# here goes through the admissibility check, so a FALSE that could not carry its
+# scope and watermark would not be built at all (§6.6 C28).
+# ======================================================================================
+
+
+def diff_observer(tmp_path: Path, answers: Mapping[str, CommandResult]):
+    from agent_orchestrator.planning.htn.observers.code import DiffScopeObserver
+
+    settings, runner = config(tmp_path, answers)
+    return DiffScopeObserver(settings), runner
+
+
+def dependency_observer(tmp_path: Path, answers: Mapping[str, CommandResult]):
+    from agent_orchestrator.planning.htn.observers.code import DependencyObserver
+
+    settings, runner = config(tmp_path, answers)
+    return DependencyObserver(settings), runner
+
+
+# -------------------------------------------------------------- code.diff-touches-only
+def test_a_changeset_inside_the_authorised_paths_is_true(tmp_path: Path) -> None:
+    observer, _ = diff_observer(tmp_path, {"diff": ok("src/a.py\nsrc/b/c.py\n")})
+    observation = observer.observe(
+        sig("code.diff-touches-only"), {"changeset": "src", "paths": "src"}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVED
+    assert observation.polarity is True
+    assert observation.record is not None
+    assert observation.record.coverage is COMPLETE_COVERAGE
+
+
+def test_a_changeset_that_strays_outside_is_an_authoritative_negative(tmp_path: Path) -> None:
+    observer, _ = diff_observer(tmp_path, {"diff": ok("src/a.py\ndeploy/secrets.yaml\n")})
+    observation = observer.observe(
+        sig("code.diff-touches-only"), {"changeset": ".", "paths": "src,tests"}, now_ms=NOW_MS
+    )
+    assert observation.polarity is False
+    assert observation.authoritative_negative
+    assert authoritative_negative_matches_observer(
+        sig("code.diff-touches-only"), observation.record
+    )
+    assert "deploy/secrets.yaml" in observation.detail
+
+
+def test_a_diff_that_could_not_be_run_is_unavailable(tmp_path: Path) -> None:
+    observer, _ = diff_observer(tmp_path, {"diff": timed_out()})
+    observation = observer.observe(
+        sig("code.diff-touches-only"), {"changeset": "src", "paths": "src"}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert observation.record is None
+
+
+def test_an_unstated_authorisation_is_unavailable_and_never_false(tmp_path: Path) -> None:
+    """ "Touches only nothing" is not a scope, and it is certainly not a violation."""
+
+    observer, runner = diff_observer(tmp_path, {"diff": ok("src/a.py\n")})
+    observation = observer.observe(
+        sig("code.diff-touches-only"), {"changeset": "src", "paths": "  "}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert runner.calls == [], "a refused argument never reaches a process"
+
+
+def test_an_authorised_path_may_not_climb_out_of_the_repository(tmp_path: Path) -> None:
+    observer, runner = diff_observer(tmp_path, {"diff": ok("a.py\n")})
+    for value in ("../etc", "/etc", "-rf"):
+        observation = observer.observe(
+            sig("code.diff-touches-only"), {"changeset": ".", "paths": value}, now_ms=NOW_MS
+        )
+        assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert runner.calls == []
+
+
+def test_an_authorised_prefix_is_matched_by_path_segment(tmp_path: Path) -> None:
+    """``src`` must not authorise ``srcret/`` — a textual prefix test says it does."""
+
+    observer, _ = diff_observer(tmp_path, {"diff": ok("srcret/secrets.py\n")})
+    observation = observer.observe(
+        sig("code.diff-touches-only"), {"changeset": ".", "paths": "src"}, now_ms=NOW_MS
+    )
+    assert observation.polarity is False
+
+
+def test_the_diff_observer_takes_no_flag_from_its_caller(tmp_path: Path) -> None:
+    observer, runner = diff_observer(tmp_path, {"diff": ok("a.py\n")})
+    observer.observe(
+        sig("code.diff-touches-only"), {"changeset": "src", "paths": "src"}, now_ms=NOW_MS
+    )
+    argv = runner.calls[0]
+    assert argv[:4] == ("git", "diff", "--name-only", OPERAND_SEPARATOR)
+    assert "--name-only" in TRUSTED_ARGUMENTS["diff"]
+
+
+# ------------------------------------------------- code.declared-dependency-present
+MANIFEST = 'dependencies = ["httpx>=0.27", "pytest"]\n'
+
+
+def test_a_declared_dependency_is_true(tmp_path: Path) -> None:
+    observer, _ = dependency_observer(
+        tmp_path, {"ls-files": ok("pyproject.toml\n"), "cat-file": ok(MANIFEST)}
+    )
+    observation = observer.observe(
+        sig("code.declared-dependency-present"), {"package": "httpx"}, now_ms=NOW_MS
+    )
+    assert observation.polarity is True
+
+
+def test_a_dependency_no_manifest_declares_is_false(tmp_path: Path) -> None:
+    observer, _ = dependency_observer(
+        tmp_path, {"ls-files": ok("pyproject.toml\n"), "cat-file": ok(MANIFEST)}
+    )
+    observation = observer.observe(
+        sig("code.declared-dependency-present"), {"package": "requests"}, now_ms=NOW_MS
+    )
+    assert observation.polarity is False
+    # OPEN, so the negative is an ordinary observation and not a denial: this
+    # observer reads six manifests and makes no claim about the ones it does not.
+    assert not observation.authoritative_negative
+
+
+def test_a_repository_with_no_manifest_is_unavailable(tmp_path: Path) -> None:
+    observer, _ = dependency_observer(tmp_path, {"ls-files": ok("")})
+    observation = observer.observe(
+        sig("code.declared-dependency-present"), {"package": "httpx"}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert observation.record is None
+
+
+def test_a_manifest_that_could_not_be_read_is_unavailable(tmp_path: Path) -> None:
+    observer, _ = dependency_observer(
+        tmp_path, {"ls-files": ok("pyproject.toml\n"), "cat-file": timed_out()}
+    )
+    observation = observer.observe(
+        sig("code.declared-dependency-present"), {"package": "httpx"}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+
+
+def test_a_dependency_name_is_matched_whole_and_never_as_a_substring(tmp_path: Path) -> None:
+    observer, _ = dependency_observer(
+        tmp_path,
+        {"ls-files": ok("pyproject.toml\n"), "cat-file": ok('dependencies = ["requests-mock"]\n')},
+    )
+    assert (
+        observer.observe(
+            sig("code.declared-dependency-present"), {"package": "requests"}, now_ms=NOW_MS
+        ).polarity
+        is False
+    )
+    assert (
+        observer.observe(
+            sig("code.declared-dependency-present"), {"package": "requests-mock"}, now_ms=NOW_MS
+        ).polarity
+        is True
+    )
+
+
+def test_the_dependency_observer_reads_head_and_never_the_worktree(tmp_path: Path) -> None:
+    observer, runner = dependency_observer(
+        tmp_path, {"ls-files": ok("pyproject.toml\n"), "cat-file": ok(MANIFEST)}
+    )
+    observer.observe(sig("code.declared-dependency-present"), {"package": "httpx"}, now_ms=NOW_MS)
+    read = next(item for item in runner.calls if "cat-file" in item)
+    assert read == ("git", "cat-file", "-p", OPERAND_SEPARATOR, "HEAD:pyproject.toml")
+    assert "-p" in TRUSTED_ARGUMENTS["cat-file"]
+
+
+def test_the_two_new_code_readers_run_only_allowlisted_commands(tmp_path: Path) -> None:
+    for observer, runner, arguments, predicate in (
+        (
+            *diff_observer(tmp_path, {"diff": ok("a.py\n")}),
+            {"changeset": ".", "paths": "a.py"},
+            "code.diff-touches-only",
+        ),
+        (
+            *dependency_observer(
+                tmp_path, {"ls-files": ok("pyproject.toml\n"), "cat-file": ok(MANIFEST)}
+            ),
+            {"package": "httpx"},
+            "code.declared-dependency-present",
+        ),
+    ):
+        observer.observe(sig(predicate), arguments, now_ms=NOW_MS)
+        assert runner.calls
+        for argv in runner.calls:
+            assert argv[0] == "git"
+            assert argv[1] in READ_ONLY_GIT
+            assert set(argv[2 : argv.index(OPERAND_SEPARATOR)]) <= TRUSTED_ARGUMENTS[argv[1]]
+
+
+# ------------------------------------------------------------- appworld.account-exists
+PROFILE_SURFACE = [("supervisor", "show_profile")]
+TASK_SURFACE = [("supervisor", "show_active_task")]
+
+
+def account_observer(episode: Any):
+    from agent_orchestrator.planning.htn.observers.appworld import AccountObserver
+
+    return AccountObserver(AppWorldObserverConfig(client=episode))
+
+
+def list_observer(episode: Any):
+    from agent_orchestrator.planning.htn.observers.appworld import ListObserver
+
+    return ListObserver(AppWorldObserverConfig(client=episode))
+
+
+def amount_observer(episode: Any):
+    from agent_orchestrator.planning.htn.observers.appworld import AmountObserver
+
+    return AmountObserver(AppWorldObserverConfig(client=episode))
+
+
+def test_an_account_the_public_profile_names_is_true() -> None:
+    episode = FakeEpisode(
+        surface=PROFILE_SURFACE, projection={"first_name": "Ada", "last_name": "Lovelace"}
+    )
+    observation = account_observer(episode).observe(
+        sig("appworld.account-exists"),
+        {"app": "supervisor", "account": "Ada Lovelace"},
+        now_ms=NOW_MS,
+    )
+    assert observation.polarity is True
+
+
+def test_an_app_the_host_refuses_serves_this_episode_no_account() -> None:
+    episode = FakeEpisode(surface=TASK_SURFACE)
+    observation = account_observer(episode).observe(
+        sig("appworld.account-exists"), {"app": "venmo", "account": "Ada"}, now_ms=NOW_MS
+    )
+    assert observation.polarity is False
+
+
+def test_an_account_the_frozen_surface_cannot_enumerate_is_unavailable() -> None:
+    """The one that matters: a public surface that reads one profile cannot deny."""
+
+    episode = FakeEpisode(
+        surface=PROFILE_SURFACE, projection={"first_name": "Ada", "last_name": "Lovelace"}
+    )
+    observation = account_observer(episode).observe(
+        sig("appworld.account-exists"),
+        {"app": "supervisor", "account": "Grace Hopper"},
+        now_ms=NOW_MS,
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert observation.record is None
+
+
+def test_an_account_read_that_could_not_be_completed_is_unavailable() -> None:
+    observation = account_observer(FakeEpisode(transport_error=True)).observe(
+        sig("appworld.account-exists"), {"app": "supervisor", "account": "Ada"}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+
+
+def test_an_account_observer_with_no_episode_is_unavailable() -> None:
+    observation = account_observer(None).observe(
+        sig("appworld.account-exists"), {"app": "supervisor", "account": "Ada"}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+
+
+# --------------------------------------- appworld.list-contains / appworld.list-size
+LIST_REF = "supervisor.show_active_task.answer"
+
+
+def list_episode(answer: Any) -> FakeEpisode:
+    return FakeEpisode(
+        surface=TASK_SURFACE,
+        projection={"instruction": "do it", "status": "active", "answer": answer},
+    )
+
+
+def test_a_list_that_holds_the_item_is_true() -> None:
+    observation = list_observer(list_episode('["a", "b"]')).observe(
+        sig("appworld.list-contains"), {"list_ref": LIST_REF, "item_ref": "b"}, now_ms=NOW_MS
+    )
+    assert observation.polarity is True
+
+
+def test_a_list_that_does_not_hold_the_item_is_an_authoritative_negative() -> None:
+    observation = list_observer(list_episode('["a", "b"]')).observe(
+        sig("appworld.list-contains"), {"list_ref": LIST_REF, "item_ref": "z"}, now_ms=NOW_MS
+    )
+    assert observation.polarity is False
+    assert observation.authoritative_negative
+
+
+def test_the_stated_list_size_is_checked_against_the_whole_list() -> None:
+    observer = list_observer(list_episode('["a", "b"]'))
+    assert (
+        observer.observe(
+            sig("appworld.list-size"), {"list_ref": LIST_REF, "size": 2}, now_ms=NOW_MS
+        ).polarity
+        is True
+    )
+    wrong = observer.observe(
+        sig("appworld.list-size"), {"list_ref": LIST_REF, "size": 3}, now_ms=NOW_MS
+    )
+    assert wrong.polarity is False
+    assert authoritative_negative_matches_observer(sig("appworld.list-size"), wrong.record)
+
+
+@pytest.mark.parametrize("predicate", ["appworld.list-contains", "appworld.list-size"])
+@pytest.mark.parametrize("answer", ["not json at all", '{"a": 1}', None, "17"])
+def test_a_list_field_that_cannot_be_read_is_never_an_empty_list(
+    predicate: str, answer: Any
+) -> None:
+    """The axis this whole section exists for: a parse failure is not a FALSE."""
+
+    arguments: dict[str, Any] = {"list_ref": LIST_REF}
+    arguments.update({"item_ref": "a"} if predicate.endswith("contains") else {"size": 0})
+    observation = list_observer(list_episode(answer)).observe(
+        sig(predicate), arguments, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert observation.record is None
+
+
+def test_a_reference_outside_the_frozen_public_surface_is_unavailable() -> None:
+    episode = list_episode('["a"]')
+    for reference in ("venmo.show_transactions.items", "supervisor.show_active_task.secret", "x"):
+        observation = list_observer(episode).observe(
+            sig("appworld.list-contains"),
+            {"list_ref": reference, "item_ref": "a"},
+            now_ms=NOW_MS,
+        )
+        assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert episode.calls == [], "a reference the policy does not admit never reaches the host"
+
+
+def test_a_list_read_the_host_refused_is_unavailable_and_not_a_missing_item() -> None:
+    observation = list_observer(FakeEpisode(surface=PROFILE_SURFACE)).observe(
+        sig("appworld.list-contains"), {"list_ref": LIST_REF, "item_ref": "a"}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+
+
+def test_a_size_that_is_not_a_whole_number_is_unavailable() -> None:
+    for size in ("2", 2.0, True, None):
+        observation = list_observer(list_episode('["a", "b"]')).observe(
+            sig("appworld.list-size"), {"list_ref": LIST_REF, "size": size}, now_ms=NOW_MS
+        )
+        assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+
+
+# ------------------------------------------------------------ appworld.amount-equals
+TRANSFER_REF = "supervisor.show_active_task.answer"
+
+
+def transfer_episode(answer: Any) -> FakeEpisode:
+    return FakeEpisode(
+        surface=TASK_SURFACE,
+        projection={"instruction": "pay", "status": "active", "answer": answer},
+    )
+
+
+def test_a_transfer_that_records_the_stated_amount_is_true() -> None:
+    episode = transfer_episode('{"amount": "10.10", "currency": "USD"}')
+    observation = amount_observer(episode).observe(
+        sig("appworld.amount-equals"),
+        {"transfer_ref": TRANSFER_REF, "amount": "10.10", "currency": "USD"},
+        now_ms=NOW_MS,
+    )
+    assert observation.polarity is True
+
+
+def test_a_transfer_that_records_another_amount_is_an_authoritative_negative() -> None:
+    episode = transfer_episode('{"amount": "10.10", "currency": "USD"}')
+    observation = amount_observer(episode).observe(
+        sig("appworld.amount-equals"),
+        {"transfer_ref": TRANSFER_REF, "amount": "11.00", "currency": "USD"},
+        now_ms=NOW_MS,
+    )
+    assert observation.polarity is False
+    assert authoritative_negative_matches_observer(
+        sig("appworld.amount-equals"), observation.record
+    )
+
+
+def test_an_amount_is_compared_as_text_and_never_as_a_float() -> None:
+    """``10.10`` and ``10.1`` are one float and two amounts; the hard constraint says so."""
+
+    episode = transfer_episode('{"amount": "10.10", "currency": "USD"}')
+    observation = amount_observer(episode).observe(
+        sig("appworld.amount-equals"),
+        {"transfer_ref": TRANSFER_REF, "amount": "10.1", "currency": "USD"},
+        now_ms=NOW_MS,
+    )
+    assert observation.polarity is False
+
+
+def test_a_currency_that_differs_is_not_the_same_amount() -> None:
+    episode = transfer_episode('{"amount": "10.10", "currency": "EUR"}')
+    observation = amount_observer(episode).observe(
+        sig("appworld.amount-equals"),
+        {"transfer_ref": TRANSFER_REF, "amount": "10.10", "currency": "USD"},
+        now_ms=NOW_MS,
+    )
+    assert observation.polarity is False
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["not json", '["10.10"]', '{"amount": 10.1, "currency": "USD"}', '{"currency": "USD"}', None],
+)
+def test_a_transfer_record_that_cannot_be_read_is_never_a_mismatch(answer: Any) -> None:
+    observation = amount_observer(transfer_episode(answer)).observe(
+        sig("appworld.amount-equals"),
+        {"transfer_ref": TRANSFER_REF, "amount": "10.10", "currency": "USD"},
+        now_ms=NOW_MS,
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert observation.record is None
+
+
+def test_an_unstated_amount_or_currency_is_unavailable() -> None:
+    episode = transfer_episode('{"amount": "10.10", "currency": "USD"}')
+    for arguments in (
+        {"transfer_ref": TRANSFER_REF, "amount": " ", "currency": "USD"},
+        {"transfer_ref": TRANSFER_REF, "amount": "10.10", "currency": ""},
+    ):
+        observation = amount_observer(episode).observe(
+            sig("appworld.amount-equals"), arguments, now_ms=NOW_MS
+        )
+        assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+
+
+def test_an_amount_read_with_no_episode_is_unavailable() -> None:
+    observation = amount_observer(None).observe(
+        sig("appworld.amount-equals"),
+        {"transfer_ref": TRANSFER_REF, "amount": "10.10", "currency": "USD"},
+        now_ms=NOW_MS,
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+
+
+# ---------------------------------------------------------------- mutation self-checks
+def test_mutant_reading_a_parse_failure_as_a_polarity_would_forge_a_denial() -> None:
+    """Mutation 5 — ``decode_public_value`` returns ``[]`` instead of raising.
+
+    The guard is ``test_a_list_field_that_cannot_be_read_is_never_an_empty_list``.
+    With the mutant, a field the observer could not read answers "the list is empty",
+    and because the list read *is* an authoritative query that answer is written as a
+    CLOSED-world denial — a FALSE manufactured out of an integrity failure, which is
+    exactly the defect the P2.3c review found in ``_get`` and fixed.
+    """
+
+    from agent_orchestrator.planning.htn.observers import appworld as module
+
+    real = module.decode_public_value
+    module.decode_public_value = lambda raw: []  # type: ignore[assignment]
+    try:
+        observation = list_observer(list_episode("not json at all")).observe(
+            sig("appworld.list-size"), {"list_ref": LIST_REF, "size": 0}, now_ms=NOW_MS
+        )
+    finally:
+        module.decode_public_value = real  # type: ignore[assignment]
+    assert observation.outcome is ObservationOutcome.OBSERVED, "the mutant is in place"
+    assert observation.polarity is True, (
+        "an unreadable field became an empty list, and the empty list satisfied the "
+        "stated size — a fact about the world invented out of a parse failure"
+    )
+
+
+def test_mutant_a_prefix_match_would_authorise_a_path_nobody_authorised() -> None:
+    """Mutation 6 — ``path_is_under`` compares strings instead of path segments.
+
+    The guard is ``test_an_authorised_prefix_is_matched_by_path_segment``: with a
+    textual prefix test, authorising ``src`` silently authorises ``srcret/``.
+    """
+
+    from agent_orchestrator.planning.htn.observers.code import path_is_under
+
+    assert path_is_under("src/a.py", ("src",)) is True
+    assert path_is_under("srcret/secrets.py", ("src",)) is False
+    assert "srcret/secrets.py".startswith("src"), "the mutant's test would have said yes"

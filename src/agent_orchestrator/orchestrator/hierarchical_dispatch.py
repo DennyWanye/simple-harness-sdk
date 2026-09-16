@@ -44,6 +44,7 @@ handled, because §18.5 calls that corruption and not a legacy fallback.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -96,6 +97,7 @@ from ..contracts.resolution import (
     ReviewPurpose,
     ReviewRecord,
     ReviewVerdict,
+    WorkspaceAccess,
 )
 from ..contracts.semantic_base import TypedRef, TypedRefKind, content_hash_of
 from ..graph.eligibility import (
@@ -123,7 +125,12 @@ from ..planning.htn.compiler import (
     RootNetwork,
     compile_refinement_bundle,
 )
-from ..planning.htn.grounding import ground_method
+from ..planning.htn.grounding import (
+    SharedGoalEntry,
+    SharedGoalIndex,
+    SharingSignature,
+    ground_method,
+)
 from ..planning.planner import parse_method_proposal, parse_plan_proposal
 from ..storage.htn_store import HtnStore, PlanCommitReceipt
 from ..storage.obligation_store import ObligationStore
@@ -189,10 +196,33 @@ MISSION_STALLED = "HierarchicalMissionStalled"
 #: judgement about the work — and it is recorded rather than swallowed, because the
 #: occurrence that needed the licence then waits for a reason nobody could otherwise see.
 WITNESS_KEY_TAKEN = "HierarchicalWitnessKeyTaken"
+
+#: P2.3c part 3a.  The root ``MISSION_FINAL`` review package was cut, and an earlier
+#: one was retired.  The two names live *here*, beside the reader that has to honour
+#: them (:meth:`HierarchicalDispatch.live_root_review_package`), rather than in
+#: ``orchestrator.root_review`` which writes them: "which review does the root
+#: resolve from" is a question this module already answers, and an answer that could
+#: not see a supersede record would resolve from an anchor the world has moved past.
+ROOT_REVIEW_CUT = "HierarchicalRootReviewCut"
+ROOT_REVIEW_SUPERSEDED = "HierarchicalRootReviewSuperseded"
 #: P2.3c part 2c: one MethodSynthesizer round's outcome.  A refused proposal writes
 #: nothing to the registry and nothing to the plan, so without this event the only
 #: trace of the round would be its token cost.
 SYNTHESIS_ROUND_RECORDED = "MethodSynthesisRoundRecorded"
+#: G1 (Host acceptance runner): why each registered method was refused for each still
+#: open goal, at the plan revision the Planner was asked against.  The four-axis
+#: report was computed for the *prompt* and thrown away, so after a run nobody could
+#: say why a method had not been chosen — the runner had to re-derive it with a probe.
+#: One record per ``(mission, plan_revision)``: the assessment is a function of the
+#: world at that revision, so a second round against the same revision has nothing new
+#: to say and the idempotency key makes that explicit rather than appending a twin.
+METHOD_APPLICABILITY_ASSESSED = "MethodApplicabilityAssessed"
+
+#: How many refusals one :data:`METHOD_APPLICABILITY_ASSESSED` payload carries.  Far
+#: larger than the prompt's own cap (that one protects the model's attention; this one
+#: only stops a pathological registry from writing an unbounded row), and a payload
+#: that hits it says so in ``truncated`` instead of quietly ending.
+MAX_RECORDED_REFUSALS = 200
 
 #: How many times one Planner reply may be compiled in total.  Two means: compile,
 #: and if the commit was refused for a reason a fresh snapshot could fix, compile
@@ -1260,6 +1290,18 @@ class HierarchicalDispatch:
         one row.  ``None`` now means what it always claimed to mean: two different
         conclusions about the *same* subject at the same reading of the world, which
         is a real contradiction and is reported rather than swallowed.
+
+        Third-round review P2-1 closed the way that claim was still escapable.  Both
+        production lanes derive ``witness_id`` from the key's own components, so a
+        contention shows up as a **primary-key** conflict rather than an index one —
+        and the old recovery re-read the row *by id* and returned it, whatever it
+        said.  A second, opposite reading of the same world therefore inherited the
+        first reading's ``USABLE`` licence in silence (visible the moment a revoke or
+        supersede command exists: the same acceptance goes CURRENT → REVOKED and
+        ``issue_input_witnesses`` hands back the old permission).  So the row that
+        comes back is now *compared*: identical conclusion → the same licence,
+        re-issued; different conclusion → ``None``, and the caller records
+        :data:`WITNESS_KEY_TAKEN`.
         """
 
         try:
@@ -1268,8 +1310,11 @@ class HierarchicalDispatch:
             return witness
         except StoreError:
             for held in self.semantics().list_validity_witnesses(mission_id):
-                if held.witness_id == witness.witness_id:
+                if held.witness_id != witness.witness_id:
+                    continue
+                if _same_conclusion(held, witness):
                     return held
+                return None
             return None
 
     def _witness_key_taken(
@@ -1610,12 +1655,25 @@ class HierarchicalDispatch:
         The ports come from :func:`~.accepted_outputs.declared_ports_in_revision`, the
         same function the accept side checks against, so "which ports exist" has one
         answer rather than two.  A port is in this list only because a
-        ``DataRequirement`` consumes it, which is also why ``required`` is true for
-        every entry: an unconsumed port feeds nothing and asking for it would be
-        asking the model to do work for nobody.  ``cardinality`` comes from the
-        producer's own :class:`~..contracts.htn.PortSpec` where it has one, because
-        that is where TG §4.3 declares it; a port the binding does not list is
-        reported ``single``, which is the contract's own default.
+        ``DataRequirement`` consumes it, and **the edge is what makes it required** —
+        third-round review P2-3 asked for that to be said out loud, because the memo's
+        wording ("required and actually consumed") reads as two conditions and there is
+        only one: ``DataRequirement`` has no ``required`` field, so a port a live edge
+        consumes is a port this leaf owes, and an unconsumed port feeds nobody and is
+        not asked for at all.
+
+        Deliberately **not** intersected with the binding's own ``output_ports``.  The
+        memo describes the two sources as an intersection, and a port a live edge
+        consumes while the producer's contract does not declare it *is* a real defect —
+        but it is a defect in the **plan**, and answering it by quietly dropping the
+        port here would hide it: the leaf would then be told to produce nothing, the
+        consumer would wait for a port nobody was asked for, and the Mission would stall
+        with no reason anybody could read.  Plan integrity is where that belongs, and
+        until it refuses there, the honest thing is to ask for the port the edge needs
+        and let ``OUTPUT_PORT_UNCLAIMED`` name it if it never arrives.  The binding is
+        consulted for ``cardinality`` only, because that is where TG §4.3 declares it;
+        a port the binding does not list is reported ``single``, the contract's own
+        default.
         """
 
         from .accepted_outputs import declared_ports_in_revision
@@ -1837,16 +1895,8 @@ class HierarchicalDispatch:
                 ),
                 occurrence_id=str(root),
             )
-        package = next(
-            (
-                item
-                for item in semantics.list_review_packages(
-                    mission_id, purpose=ReviewPurpose.MISSION_FINAL
-                )
-                if str(item.binding.subject_ref.id) == str(spec.task_id)
-                and str(item.binding.obligation_id) == str(spec.obligation_id)
-            ),
-            None,
+        package = self.live_root_review_package(
+            mission_id, task_id=str(spec.task_id), obligation_id=str(spec.obligation_id)
         )
         if package is None:
             return RootResolutionInputs(
@@ -1927,6 +1977,67 @@ class HierarchicalDispatch:
             contributions=contributions,
         )
 
+    def superseded_review_packages(self, mission_id: str) -> frozenset[str]:
+        """The ``MISSION_FINAL`` packages a re-cut has retired (P2.3c part 3a).
+
+        A :class:`~...contracts.resolution.ReviewPackage` is an immutable anchor, so
+        "this review no longer counts" cannot be a column on it — it is the
+        :data:`ROOT_REVIEW_SUPERSEDED` event, and this is the one reader of it.
+        """
+
+        return frozenset(
+            str(event.payload.get("package_id", ""))
+            for event in self.store.list_events(mission_id)
+            if event.type == ROOT_REVIEW_SUPERSEDED
+        )
+
+    def live_root_review_package(
+        self, mission_id: str, *, task_id: str, obligation_id: str
+    ) -> ReviewPackage | None:
+        """The ``MISSION_FINAL`` package this root resolves from, or ``None``.
+
+        Three rules, in order, and each of them exists because of a way this could
+        answer wrongly:
+
+        1. only packages cut for **this** root, so a Mission with two roots in its
+           history cannot have one root's review resolve the other;
+        2. never a **superseded** one — the whole point of a re-cut is that the older
+           anchor described a world that has moved;
+        3. among what is left, the **last one this deployment cut**.  The order comes
+           from the :data:`ROOT_REVIEW_CUT` events rather than from ``created_at``,
+           because two packages written in the same clock tick have no order in the
+           rows at all.  A package nobody recorded a cut for is not ranked against
+           one that was: a recorded cut is this deployment saying "this is the anchor
+           now", and an unrecorded package is one somebody stored directly — so the
+           recorded ones win outright, and the old first-stored answer is kept for a
+           Mission that has none.
+        """
+
+        semantics = self.semantics()
+        retired = self.superseded_review_packages(mission_id)
+        candidates = [
+            item
+            for item in semantics.list_review_packages(
+                mission_id, purpose=ReviewPurpose.MISSION_FINAL
+            )
+            if str(item.binding.subject_ref.id) == str(task_id)
+            and str(item.binding.obligation_id) == str(obligation_id)
+            and str(item.package_id) not in retired
+        ]
+        if not candidates:
+            return None
+        order = {
+            str(event.payload.get("package_id", "")): index
+            for index, event in enumerate(
+                item for item in self.store.list_events(mission_id) if item.type == ROOT_REVIEW_CUT
+            )
+        }
+        recorded = [item for item in candidates if str(item.package_id) in order]
+        if not recorded:
+            return candidates[0]
+        recorded.sort(key=lambda item: order[str(item.package_id)])
+        return recorded[-1]
+
     def attempt_root_resolution(
         self,
         mission_id: str,
@@ -2005,12 +2116,22 @@ class HierarchicalDispatch:
             record=inputs.record,
             requirements=requirements,
             witness_id=inputs.witness_id,
-            # No defaults anywhere: an empty ``IndependenceFacts`` reads as "nobody
-            # produced this and the reviewer holds no rights", which is the most
-            # permissive world there is.  The deployment's review coordinator states
-            # the real ones; until it does, this hands over the empty facts and the
-            # acceptance rules refuse on them rather than being given a pass.
-            independence=IndependenceFacts(),
+            # No defaults anywhere, and nothing asserted: the facts are **read off
+            # the package**, which is the frozen anchor that recorded who produced
+            # the candidate at the time it was cut (AER §5.3).  Part 3a's review
+            # coordinator fills those in, so a root review whose reviewer is one of
+            # the producers now refuses (``INDEPENDENT_REVIEW_MISSING``) instead of
+            # passing vacuously on an empty set.  ``reviewer_can_write_candidate`` is
+            # derived from the package's own workspace access rather than stated:
+            # ``WRITE`` is refused at construction, so this reads False for every
+            # package that exists — and it reads it from the anchor instead of from
+            # a caller who could say otherwise.
+            independence=IndependenceFacts(
+                producer_agent_ids=tuple(inputs.package.producer_agent_ids),
+                reviewer_can_write_candidate=(
+                    inputs.package.reviewer_workspace_access is WorkspaceAccess.WRITE
+                ),
+            ),
             posture=ExecutionPosture(),
             read_set=self.read_set_for_root(mission_id, inputs),
             decided_at_ms=int(self.store.now * 1000),
@@ -2445,19 +2566,90 @@ class HierarchicalDispatch:
                 )
         return tuple(entries)
 
-    def plan_revision_committed_at(self, mission_id: str, plan_revision: int) -> int:
-        """When this plan revision was committed, in the same milliseconds an
-        observation is stamped with.  Zero when there is no such revision yet."""
+    def record_method_applicability(
+        self, mission_id: str, *, reports: Sequence[Any] | None = None
+    ) -> Event | None:
+        """Persist why each method was refused, at the revision it was assessed against.
 
-        return max(
-            (
-                int(event.created_at * 1000)
-                for event in self.store.list_events(mission_id)
-                if event.type == PLAN_REVISION_COMMITTED
-                and int(event.payload.get("plan_revision", 0)) == int(plan_revision)
-            ),
-            default=0,
+        G1.  :meth:`method_applicability` fed the Planner prompt and nothing else, so
+        the four axes — unknown precondition, conflict, parameter mismatch, missing
+        capability, missing authority — existed only inside one rendered message.  A
+        reader after the fact (the Host's acceptance runner, an operator, this suite)
+        had no way to ask "why was ``code.fix-by-patch`` not chosen here", which is the
+        question the axes were separated for in the first place.
+
+        ``reports`` is passed in by the caller that also renders the prompt, so the
+        record and the prompt are the *same* assessment rather than two runs of it
+        against a world that may have moved between them.
+
+        Returns ``None`` when nothing was refused: an event saying "no method was
+        refused" and the absence of an event are the same fact, and writing the first
+        one per round would bury the rounds that have something to say.
+        """
+
+        from ..planning.htn.planner_package import applicability_reports
+
+        entries = tuple(reports) if reports is not None else self.method_applicability(mission_id)
+        if not entries:
+            return None
+        network = self.network(mission_id)
+        semantics = self.semantics()
+        rendered = applicability_reports(entries, limit=MAX_RECORDED_REFUSALS)
+        refused: list[dict[str, Any]] = []
+        for item in rendered:
+            cited = tuple(item.get("unknown_preconditions", ())) + tuple(
+                item.get("conflicting_preconditions", ())
+            )
+            seen: list[str] = []
+            for key in cited:
+                for record in semantics.list_observations(mission_id, proposition_key=str(key)):
+                    observation = str(getattr(record, "observation_id", ""))
+                    if observation and observation not in seen:
+                        seen.append(observation)
+            # The observations that *bear on* the cited propositions, which is not the
+            # same as observations that settle them: a proposition is unknown here
+            # precisely because what was observed did not settle it.  Naming them is
+            # what lets a reader tell "nobody looked" from "somebody looked and the
+            # answer did not decide it".
+            refused.append({**item, "observation_ids": seen})
+        return append_hierarchical_event(
+            self.store,
+            METHOD_APPLICABILITY_ASSESSED,
+            mission_id,
+            key=f"{mission_id}:{int(network.plan_revision)}",
+            payload={
+                "plan_revision": int(network.plan_revision),
+                "refused_methods": refused,
+                "refusal_count": len(entries),
+                "truncated": len(entries) > len(rendered),
+            },
         )
+
+    def plan_revision_committed_at(self, mission_id: str, plan_revision: int) -> int | None:
+        """When this plan revision was committed, in observation milliseconds.
+
+        ``None`` when no such revision has been committed — third-round review P2-7.
+        It used to answer ``0``, which the evidence cap reads as "look at everything
+        since the beginning of time": the degradation back to a Mission-lifetime cap
+        was silent, and silent is the one thing a cap must not be.  The caller decides
+        what to do with "there is no such revision"; this method only says so.
+
+        Read with a typed query rather than by scanning every event of the Mission.
+        This runs once per evidence round per Mission, so the old ``list_events``
+        sweep was an O(events) read on a hot path that lengthens with the run.
+        """
+
+        rows = self.store.connection.execute(
+            "SELECT created_at, payload_json FROM events WHERE mission_id = ? AND type = ?"
+            " ORDER BY seq",
+            (str(mission_id), PLAN_REVISION_COMMITTED),
+        ).fetchall()
+        stamps = [
+            int(float(row[0]) * 1000)
+            for row in rows
+            if int((json.loads(row[1]) or {}).get("plan_revision", -1)) == int(plan_revision)
+        ]
+        return max(stamps) if stamps else None
 
     def propositions_looked_at(self, mission_id: str, *, plan_revision: int) -> frozenset[str]:
         """The propositions this Mission has already read **under this revision**.
@@ -2483,6 +2675,16 @@ class HierarchicalDispatch:
         """
 
         since = self.plan_revision_committed_at(mission_id, plan_revision)
+        if since is None:
+            # Review P2-7: a revision this Mission never committed is no barrier, and
+            # saying so out loud is the difference between "no barrier" and a silent
+            # fall back to the Mission-lifetime cap this rule replaced.  Every read
+            # counts, which is the conservative answer: nothing is looked at twice on
+            # the strength of a revision that does not exist.
+            return frozenset(
+                str(record.proposition_key)
+                for record in self.semantics().list_observations(mission_id)
+            )
         return frozenset(
             str(record.proposition_key)
             for record in self.semantics().list_observations(mission_id)
@@ -2829,6 +3031,12 @@ class HierarchicalDispatch:
             world.capabilities(),
             registry=world.predicates,
         )
+        # G2: what this network already holds that a slot of the new method may bind
+        # instead of re-doing.  Without it ``sharing`` was always ``None`` here, so a
+        # read-only sub-goal two consumers both need — TG §12's shared goal, and
+        # §21.5's "a shared sub-goal is reused at least once" — could not happen in a
+        # running Mission at all, whatever the method library said.
+        sharing = shared_goal_index(network, catalog=world.catalog)
         draft = ground_method(
             parent,
             contract,
@@ -2836,6 +3044,7 @@ class HierarchicalDispatch:
             report,
             catalog=world.catalog,
             schemas=world.schemas,
+            sharing=sharing,
             plan_revision=network.plan_revision,
             goal_occurrence_id=occurrence,
         )
@@ -2846,6 +3055,7 @@ class HierarchicalDispatch:
             catalog=world.catalog,
             schemas=world.schemas,
             registry=world.registry,
+            sharing=sharing,
             # The delta records which proposal it was compiled from, so the commit's
             # own read-set row and event name the model's proposal and not a derived
             # delta id (§18.3's naming convention: the two are different objects).
@@ -3092,6 +3302,24 @@ def _root_criteria(requirements: Any, record: Any) -> tuple[ResolutionCriterion,
     )
 
 
+def _same_conclusion(held: ValidityWitness, offered: ValidityWitness) -> bool:
+    """Whether two licences over one key say the same thing (review P2-1).
+
+    Only the *verdict* axes, deliberately: the id already pins consumer, purpose,
+    scope, epoch, support revision and subject, so what is left to differ is what the
+    licence concluded.  ``as_of_ms`` is not on the list — re-reading the same world a
+    second later is the same conclusion, and treating it as a contradiction would make
+    every honest re-issue an anomaly.
+    """
+
+    return (
+        held.truth is offered.truth
+        and held.decision is offered.decision
+        and held.freshness is offered.freshness
+        and held.availability is offered.availability
+    )
+
+
 def append_hierarchical_event(
     store: Store,
     event_type: str,
@@ -3164,6 +3392,49 @@ def record_assembly_missing(store: Store, mission: Mission, *, at: str) -> Event
     )
 
 
+def shared_goal_index(network: TaskNetworkSnapshot, *, catalog: Any) -> SharedGoalIndex:
+    """The occurrences of this network a later slot may bind instead of re-doing.
+
+    G2.  Every occurrence that has a semantic binding is offered; nothing here decides
+    that two goals *are* one.  :func:`may_share` still has to agree on the whole
+    sharing signature, on the consumer slot's reuse policy, and on the task type being
+    read-only or carrying an effect identity — so an index entry is a candidate, never
+    a merge.  An occurrence whose task type this deployment cannot resolve is skipped
+    rather than indexed under a guess.
+    """
+
+    by_signature = {
+        (str(spec.goal_signature.signature_id), int(spec.goal_signature.version)): spec
+        for spec in catalog.task_types()
+    }
+    entries: list[SharedGoalEntry] = []
+    for occurrence in network.occurrences:
+        try:
+            binding = network.binding_for_occurrence(occurrence.occurrence_id)
+        except (KeyError, ContractError):
+            continue
+        spec = by_signature.get(
+            (str(binding.goal_signature.signature_id), int(binding.goal_signature.version))
+        )
+        if spec is None:
+            continue
+        entries.append(
+            SharedGoalEntry(
+                occurrence_id=occurrence.occurrence_id,
+                task_id=binding.task_id,
+                obligation_id=binding.obligation_id,
+                signature=SharingSignature.of(
+                    spec,
+                    dict(binding.typed_parameters),
+                    authority_scope=binding.semantic_scope,
+                    semantic_scope=binding.semantic_scope,
+                ),
+                reuse_policy=spec.reuse_policy,
+            )
+        )
+    return SharedGoalIndex(entries)
+
+
 def _is_refine(operation: object) -> bool:
     """Whether one parsed plan operation is a refinement.
 
@@ -3178,6 +3449,8 @@ def _is_refine(operation: object) -> bool:
 __all__ = (
     "ASSEMBLY_MISSING",
     "MISSION_STALLED",
+    "ROOT_REVIEW_CUT",
+    "ROOT_REVIEW_SUPERSEDED",
     "WITNESS_KEY_TAKEN",
     "COMPOUND_DISPLAY_STATUS",
     "SYNTHESIS_ROUND_RECORDED",
@@ -3196,7 +3469,9 @@ __all__ = (
     "PlanRoundOutcome",
     "PlanningWorld",
     "SYNTHESIS_WORTHY_REFUSALS",
+    "METHOD_APPLICABILITY_ASSESSED",
     "append_hierarchical_event",
+    "shared_goal_index",
     "is_hierarchical",
     "missing_bindings",
     "next_compound_phase",
