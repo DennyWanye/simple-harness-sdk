@@ -48,6 +48,14 @@ class MissionStopReason(StrEnum):
     APPROVAL_REJECTED = "approval_rejected"  # step 7 (D7-7): rejected / revoked / expired approval
     ACTION_FAILED = "action_failed"  # step 7 (D7-7): the external system refused the action
     HUMAN_OVERRIDE = "human_override"  # step 7 (D7-9): a person took over and stopped the Task
+    #: FULL-TARGET P2.3c part 2d: a hierarchical plan has nothing this execution cycle
+    #: can dispatch, confirmed by a second full cycle that read the world again and
+    #: found it unchanged.  Deliberately **not** ``NO_PROGRESS`` (which is Task-level
+    #: and counted per attempt), ``PLANNING_FAILED`` (a plan was committed and
+    #: dispatched) or ``INSUFFICIENT_EVIDENCE`` / ``MISSION_CRITERIA_UNMET`` (those are
+    #: *verdicts*, and no root Resolution was formed here) — §7.4 forbids reporting a
+    #: bound, a timeout and an incomplete model under one name.
+    NO_DISPATCHABLE_WORK = "no_dispatchable_work"
 
 
 class TaskStatus(StrEnum):

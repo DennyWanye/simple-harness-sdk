@@ -168,6 +168,14 @@ def run_round(
     One unreadable proposition does not abandon the round: a planner is told "three
     of these four are settled and this one could not be asked", which is a different
     state from "the round failed" and is repaired differently.
+
+    Review P2-19: an ask this deployment has no observer for is reported **once**.  It
+    used to be appended to ``unobservable`` *and* put through ``observe_predicate``
+    anyway, so the same proposition appeared twice in one result — once as "nobody can
+    read this" and once as the ``NO_OBSERVER`` outcome that says the same thing — and
+    a caller counting the round's answers counted it twice.  ``observe_predicate`` is
+    still the only path to an actual reading; this only stops asking it a question
+    whose answer we already have.
     """
 
     outcomes: list[ObservationOutcomeRecord] = []
@@ -175,6 +183,7 @@ def run_round(
     for ask in asks:
         if index.observer_for(str(ask.predicate_ref.id)) is None:
             unobservable.append(ask)
+            continue
         outcome = observe_predicate(index, ask.predicate_ref, ask.arguments, now_ms=int(now_ms))
         outcomes.append(_record(store, mission_id, outcome, scope_id=scope_id))
     return EvidenceRoundResult(outcomes=tuple(outcomes), unobservable=tuple(unobservable))

@@ -92,9 +92,21 @@ from agent_orchestrator.contracts.resolution import (
     ReviewVerdict,
 )
 from agent_orchestrator.contracts.semantic_base import TypedRefKind
-from agent_orchestrator.storage import acceptance_receipt_schema, htn_schema, schema
+from agent_orchestrator.knowledge.validity import (
+    NO_SUBJECT,
+    acceptance_subject,
+    condition_subject,
+    witness_subject,
+)
+from agent_orchestrator.storage import (
+    acceptance_receipt_schema,
+    htn_schema,
+    schema,
+    validity_subject_schema,
+)
 from agent_orchestrator.storage.htn_store import HtnStore
 from agent_orchestrator.storage.store import Store, StoreConflict
+from simple_harness.contracts import canonical_json
 
 MISSION = "mission-1"
 
@@ -203,6 +215,11 @@ MIGRATION_17_TABLES: tuple[str, ...] = (
     "delivery_receipts",
     "acceptance_outputs",
 )
+
+#: Migration 18 (P2.3c part 2d, decision 1) as shipped.  It creates no table: it adds
+#: ``validity_witnesses.subject_digest`` and re-keys the unique index on it, so that a
+#: consumer may hold its DATA licence and its precondition licence at the same time.
+MIGRATION_18_CHECKSUM = "a24b4ef345f3ef46ec4b43ee3d68da5f6cc3372aae7968dcc0b7b7a9efd671d8"
 
 #: Every table the full-target migrations own.  The raw-SQL leak guard and the
 #: "storage is the only writer" checks iterate this, so a migration that adds a table
@@ -460,22 +477,39 @@ def goal_resolution(
 
 
 def witness(
-    *, witness_id: str = "witness-1", scope_epoch: int = 1, support_revision: int = 4
+    *,
+    witness_id: str = "witness-1",
+    scope_epoch: int = 1,
+    support_revision: int = 4,
+    support_refs_acceptance: str | None = None,
+    condition_digests: tuple[str, ...] = (),
+    truth: TruthValue = TruthValue.TRUE,
 ) -> ValidityWitness:
+    """One licence.  ``support_refs_acceptance`` / ``condition_digests`` pick its lane.
+
+    A witness with neither names no subject, which is what migration 18 back-fills
+    onto every row written before it.
+    """
+
+    support = [tref(TypedRefKind.OBSERVATION, "observation-1")]
+    if support_refs_acceptance is not None:
+        support.append(tref(TypedRefKind.ACCEPTANCE, support_refs_acceptance))
+    usable = truth is TruthValue.TRUE
     return ValidityWitness(
         witness_id=witness_id,
         consumer_ref=tref(TypedRefKind.TASK, "task-2"),
         purpose=WitnessPurpose.START,
-        truth=TruthValue.TRUE,
+        truth=truth,
         freshness=Validity.CURRENT,
         availability=Availability.READABLE,
-        decision=WitnessDecision.USABLE,
+        decision=WitnessDecision.USABLE if usable else WitnessDecision.BLOCKED,
         scope_id="mission-1",
         scope_epoch=scope_epoch,
         support_revision=support_revision,
         as_of_ms=1_000,
         not_after_ms=2_000,
-        support_refs=(tref(TypedRefKind.OBSERVATION, "observation-1"),),
+        support_refs=tuple(support),
+        reason_codes=tuple(f"condition:{digest}" for digest in condition_digests),
     )
 
 
@@ -544,10 +578,19 @@ def planned(htn: HtnStore) -> HtnStore:
 # --------------------------------------------------------------------------------------
 
 
-def test_migration_seventeen_is_the_new_head() -> None:
-    assert schema.SCHEMA_VERSION == 17
-    assert schema.SCHEMA_NAME == "orchestrator-full-target-acceptance-receipts"
-    assert schema.MIGRATIONS[-1].ddl is acceptance_receipt_schema.DDL
+def test_migration_eighteen_is_the_new_head() -> None:
+    assert schema.SCHEMA_VERSION == 18
+    assert schema.SCHEMA_NAME == "orchestrator-full-target-witness-subject"
+    assert schema.MIGRATIONS[-1].ddl is validity_subject_schema.DDL
+
+
+def test_migration_seventeen_is_still_migration_seventeen() -> None:
+    """P2.3c part 2d adds 18; it does not move, rename or re-number 17."""
+
+    seventeen = schema.MIGRATIONS[16]
+    assert seventeen.version == 17
+    assert seventeen.name == "orchestrator-full-target-acceptance-receipts"
+    assert seventeen.ddl is acceptance_receipt_schema.DDL
 
 
 def test_migration_sixteen_is_still_migration_sixteen() -> None:
@@ -560,7 +603,7 @@ def test_migration_sixteen_is_still_migration_sixteen() -> None:
 
 
 def test_the_fifteen_older_migrations_keep_their_checksums() -> None:
-    assert len(schema.MIGRATIONS) == 17
+    assert len(schema.MIGRATIONS) == 18
     for migration, expected in zip(schema.MIGRATIONS[:15], FROZEN_MIGRATIONS, strict=True):
         assert (migration.version, migration.name, migration.checksum) == expected
 
@@ -581,9 +624,35 @@ def test_migration_sixteen_is_pinned_to_its_checksum_and_table_list() -> None:
 def test_migration_seventeen_is_pinned_to_its_checksum_and_table_list() -> None:
     """The same pin, one migration later: the accept-side receipts and output index."""
 
-    assert schema.MIGRATIONS[-1].checksum == MIGRATION_17_CHECKSUM
+    assert schema.MIGRATIONS[16].checksum == MIGRATION_17_CHECKSUM
     assert acceptance_receipt_schema.TABLES == MIGRATION_17_TABLES
     assert len(set(FULL_TARGET_TABLES)) == len(FULL_TARGET_TABLES)
+
+
+def test_migration_eighteen_is_pinned_and_creates_no_table() -> None:
+    """Decision 1 widens one key; it does not introduce state of its own."""
+
+    assert schema.MIGRATIONS[-1].checksum == MIGRATION_18_CHECKSUM
+    ddl = validity_subject_schema.DDL
+    assert "CREATE TABLE" not in ddl.upper()
+    assert "DROP TABLE" not in ddl.upper()
+    # The only index it drops is the one it immediately replaces.
+    assert ddl.upper().count("DROP INDEX") == 1
+    assert "validity_witnesses_consumer_idx" in ddl
+
+
+def test_migration_sixteen_checksum_is_unchanged_by_eighteen() -> None:
+    """Decision 1's anti-regression anchor (memo test 4).
+
+    The subject column is added by a *new* migration; migration 16's bytes are not
+    edited.  A library that already ran 16 and 17 has to be able to apply 18 on top,
+    which a changed 16 would make impossible — and that is exactly what this pin
+    catches, in the same file that pins 16 itself.
+    """
+
+    assert schema.MIGRATIONS[15].checksum == MIGRATION_16_CHECKSUM
+    assert schema.MIGRATIONS[15].ddl is htn_schema.DDL
+    assert "subject_digest" not in htn_schema.DDL
 
 
 def test_migration_seventeen_does_not_touch_a_migration_sixteen_table() -> None:
@@ -624,10 +693,78 @@ def test_the_declared_table_list_is_exactly_what_migration_seventeen_adds(
     older.close()
     monkeypatch.undo()
 
+    monkeypatch.setattr(schema, "MIGRATIONS", schema.MIGRATIONS[:17])
     newer = Store.open(tmp_path / "v17.db")
     after = _table_names(newer)
     newer.close()
+    monkeypatch.undo()
     assert after - before == set(acceptance_receipt_schema.TABLES)
+
+
+def test_migration_eighteen_upgrades_an_existing_library_in_place(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Memo test 3: a deployed migration-17 library opens, upgrades and keeps its rows.
+
+    The old unique key is strictly narrower than the new one, so no library that was
+    consistent under 17 can collide under 18; the back-filled rows read back with the
+    empty subject, which is what they always meant.
+    """
+
+    path = tmp_path / "deployed.db"
+    monkeypatch.setattr(schema, "MIGRATIONS", schema.MIGRATIONS[:17])
+    older = Store.open(path)
+    older.insert_mission(_mission(), spec_hash="h")
+    legacy = witness()
+    # Written the way migration 17 wrote it — with no subject column at all, which is
+    # the row shape this migration has to be able to upgrade.
+    with older.transaction() as connection:
+        connection.execute(
+            "INSERT INTO validity_witnesses(witness_id,mission_id,consumer_kind,consumer_id,"
+            "purpose,scope_id,scope_epoch,support_revision,truth,freshness,availability,"
+            "decision,as_of_ms,not_after_ms,witness_json,created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                legacy.witness_id,
+                MISSION,
+                str(legacy.consumer_ref.kind),
+                legacy.consumer_ref.id,
+                str(legacy.purpose),
+                legacy.scope_id,
+                legacy.scope_epoch,
+                legacy.support_revision,
+                str(legacy.truth),
+                str(legacy.freshness),
+                str(legacy.availability),
+                str(legacy.decision),
+                legacy.as_of_ms,
+                legacy.not_after_ms,
+                canonical_json(legacy.to_json()),
+                1.0,
+            ),
+        )
+    older.close()
+    monkeypatch.undo()
+
+    upgraded = Store.open(path)
+    try:
+        applied = [
+            tuple(row)
+            for row in upgraded.connection.execute(
+                "SELECT version,name,checksum FROM orch_schema_migrations ORDER BY version"
+            )
+        ]
+        assert applied[-1] == (18, schema.SCHEMA_NAME, MIGRATION_18_CHECKSUM)
+        assert (tmp_path / "deployed.db.pre-schema-18.backup").is_file()
+        stored = HtnStore(upgraded).list_validity_witnesses(MISSION)
+        assert [item.witness_id for item in stored] == ["witness-1"]
+        subjects = [
+            row[0]
+            for row in upgraded.connection.execute("SELECT subject_digest FROM validity_witnesses")
+        ]
+        assert subjects == [NO_SUBJECT]
+    finally:
+        upgraded.close()
 
 
 def test_every_new_table_exists_and_is_strict(store: Store) -> None:
@@ -905,11 +1042,13 @@ def test_upgrading_a_copy_of_a_v15_library_keeps_every_old_row(
         after = {table: _dump(rehearsal, table) for table in sampled}
         assert after == before
         applied = _dump(rehearsal, "orch_schema_migrations")
-        assert [row[0] for row in applied] == list(range(1, 18))
-        assert applied[-1][1] == "orchestrator-full-target-acceptance-receipts"
+        assert [row[0] for row in applied] == list(range(1, 19))
+        assert applied[-1][1] == "orchestrator-full-target-witness-subject"
         assert applied[-1][2] == schema.MIGRATIONS[-1].checksum
-        assert applied[-2][1] == "orchestrator-full-target-htn"
-        assert applied[-2][2] == MIGRATION_16_CHECKSUM
+        assert applied[-2][1] == "orchestrator-full-target-acceptance-receipts"
+        assert applied[-2][2] == MIGRATION_17_CHECKSUM
+        assert applied[-3][1] == "orchestrator-full-target-htn"
+        assert applied[-3][2] == MIGRATION_16_CHECKSUM
         assert applied[:15] == _dump(original, "orch_schema_migrations")[:15]
         for table in FULL_TARGET_TABLES:
             assert (
@@ -927,7 +1066,7 @@ def test_the_upgrade_writes_a_backup_of_the_old_library(
     _open_at_version_fifteen(path, monkeypatch)
     upgraded = Store.open(path)
     upgraded.close()
-    backup = tmp_path / "v15.db.pre-schema-17.backup"
+    backup = tmp_path / "v15.db.pre-schema-18.backup"
     assert backup.is_file()
     assert [row[0] for row in _dump(backup, "orch_schema_migrations")] == list(range(1, 16))
     assert _dump(backup, "missions")
@@ -1507,17 +1646,92 @@ def test_a_goal_resolution_round_trips_and_is_unique(htn: HtnStore) -> None:
 
 def test_a_validity_witness_round_trips(htn: HtnStore) -> None:
     stored = witness()
-    htn.insert_validity_witness(MISSION, stored)
+    htn.insert_validity_witness(MISSION, stored, subject=NO_SUBJECT)
     assert htn.get_validity_witness("witness-1") == stored
     assert htn.list_validity_witnesses(MISSION, scope_id="mission-1") == (stored,)
 
 
 def test_one_witness_per_consumer_purpose_scope_and_support_revision(htn: HtnStore) -> None:
-    htn.insert_validity_witness(MISSION, witness())
+    htn.insert_validity_witness(MISSION, witness(), subject=NO_SUBJECT)
     with pytest.raises(StoreConflict, match="conflicts with one already stored"):
-        htn.insert_validity_witness(MISSION, witness(witness_id="witness-2"))
-    htn.insert_validity_witness(MISSION, witness(witness_id="witness-3", scope_epoch=2))
+        htn.insert_validity_witness(MISSION, witness(witness_id="witness-2"), subject=NO_SUBJECT)
+    htn.insert_validity_witness(
+        MISSION, witness(witness_id="witness-3", scope_epoch=2), subject=NO_SUBJECT
+    )
     assert len(htn.list_validity_witnesses(MISSION)) == 2
+
+
+def test_two_licences_over_two_subjects_live_side_by_side(htn: HtnStore) -> None:
+    """P2.3c part 2d, decision 1 (memo test 1), at the storage level.
+
+    One consumer, one purpose, one scope epoch, one support revision — and two
+    licences, because they were taken over two different supports.  AER §8.1 puts
+    ``support_selection`` inside a witness's identity, so these are two rows.
+    """
+
+    data = witness(witness_id="witness-data", support_refs_acceptance="acceptance-7")
+    conditions = witness(witness_id="witness-pre", condition_digests=("d1", "d2"))
+    assert witness_subject(data) == acceptance_subject("acceptance-7")
+    assert witness_subject(conditions) == condition_subject(("d2", "d1"))
+    htn.insert_validity_witness(MISSION, data, subject=witness_subject(data))
+    htn.insert_validity_witness(MISSION, conditions, subject=witness_subject(conditions))
+    assert len(htn.list_validity_witnesses(MISSION)) == 2
+    assert htn.list_validity_witnesses(MISSION, subject=acceptance_subject("acceptance-7")) == (
+        data,
+    )
+
+
+def test_two_conclusions_about_the_same_subject_still_conflict(htn: HtnStore) -> None:
+    """Decision 1 widened the key by one dimension; it did not open it."""
+
+    first = witness(witness_id="witness-data", support_refs_acceptance="acceptance-7")
+    second = witness(
+        witness_id="witness-data-2",
+        support_refs_acceptance="acceptance-7",
+        truth=TruthValue.UNKNOWN,
+    )
+    htn.insert_validity_witness(MISSION, first, subject=witness_subject(first))
+    with pytest.raises(StoreConflict, match="conflicts with one already stored"):
+        htn.insert_validity_witness(MISSION, second, subject=witness_subject(second))
+
+
+def test_a_witness_cannot_be_stored_under_a_subject_it_does_not_name(htn: HtnStore) -> None:
+    """Memo test 5, and decision 1's first mutation self-check.
+
+    The issuer declares the subject and the store re-derives it from the witness.  A
+    declaration the witness does not support is refused, so a caller cannot file two
+    unrelated licences under one key by simply naming the same subject twice — nor a
+    single licence under a subject that hides it from the consumer looking for it.
+
+    **Mutation**: comment out the ``witness_subject(witness) == subject`` check in
+    ``HtnStore.insert_validity_witness`` and this test goes red.
+    """
+
+    stored = witness(witness_id="witness-data", support_refs_acceptance="acceptance-7")
+    with pytest.raises(StoreConflict, match="but names"):
+        htn.insert_validity_witness(MISSION, stored, subject=acceptance_subject("acceptance-9"))
+    with pytest.raises(StoreConflict, match="but names"):
+        htn.insert_validity_witness(MISSION, stored, subject=NO_SUBJECT)
+    assert htn.list_validity_witnesses(MISSION) == ()
+
+
+def test_the_index_key_still_separates_two_different_acceptances(htn: HtnStore) -> None:
+    """Memo test 6, decision 1's core mutation self-check.
+
+    **Mutation**: put the old seven-column key back (or write a constant into
+    ``subject_digest``) and the second insert below starts raising ``StoreConflict``
+    — which is precisely the defect part 2c's smoke hit, where a leaf's second
+    licence could not be stored and the occurrence waited for it for ever.
+    """
+
+    for index, acceptance in enumerate(("acceptance-7", "acceptance-8")):
+        stored = witness(witness_id=f"witness-{index}", support_refs_acceptance=acceptance)
+        htn.insert_validity_witness(MISSION, stored, subject=witness_subject(stored))
+    assert len(htn.list_validity_witnesses(MISSION)) == 2
+    assert {
+        row[0]
+        for row in htn._store.connection.execute("SELECT subject_digest FROM validity_witnesses")
+    } == {acceptance_subject("acceptance-7"), acceptance_subject("acceptance-8")}
 
 
 def test_an_observation_round_trips(htn: HtnStore) -> None:

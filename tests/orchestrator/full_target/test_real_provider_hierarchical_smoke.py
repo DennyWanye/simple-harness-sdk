@@ -244,7 +244,11 @@ def test_real_hierarchical_planner_round(tmp_path):
             "workspace_list",
             "run_tests",
         ),
-        budget=Budget(max_tokens=400_000, max_attempts=3),
+        # Part 2d, smoke round 2: three leaves each took one Attempt and the Mission
+        # then stopped on ``budget_exhausted`` before the root compound could be
+        # resolved — the allowance, not the plan, was the bound.  A minimal
+        # hierarchical plan is three leaves plus room for one repair each.
+        budget=Budget(max_tokens=600_000, max_attempts=8),
         orchestration_semantics_version=HIERARCHICAL_SEMANTICS,
         # The observers read the real worktree; the Worker works in the Mission's own
         # isolated workspace, which starts empty unless the Mission seeds it.  The
@@ -284,10 +288,21 @@ def test_real_hierarchical_planner_round(tmp_path):
             # gate refuses an occurrence whose duty nobody is asking for
             # (``obligation_demand_not_admitted``).  The consumer here is whoever
             # submitted the Mission — the same caller that registers the root duty —
-            # so the two acts belong together, exactly as the in-process end-to-end
-            # worlds do it (``World.admit_demand``).  The Orchestrator deliberately
-            # does not admit on its own behalf: it would be voting for its own work.
-            duties.admit_demand(mission.id, ObligationId(ROOT_DUTY))
+            # so the two acts belong together.  The Orchestrator deliberately does not
+            # admit on its own behalf: it would be voting for its own work.  P2.3c
+            # part 2d routes the bootstrap through the audited entry point, so the
+            # root's admission is a record with a principal and evidence on it like
+            # every child admission the commit path makes.
+            orchestrator.commit.admit_obligation_demand(
+                mission.id,
+                ObligationId(ROOT_DUTY),
+                principal="mission-submitter",
+                requester={"kind": "mission_root"},
+                evidence={
+                    "requirement_refs": list(binding.goal_signature.coverage_criteria),
+                    "mission_id": mission.id,
+                },
+            )
             semantics.put_task_semantics(mission.id, binding)
             looked = _look(world, semantics, mission.id, str(repo))
             await orchestrator.run()

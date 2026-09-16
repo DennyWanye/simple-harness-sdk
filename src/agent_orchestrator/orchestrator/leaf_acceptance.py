@@ -101,6 +101,8 @@ from ..contracts.semantic_base import (
     TypedRefKind,
     content_hash_of,
 )
+from ..knowledge.validity import acceptance_subject
+from ..runtime.output_blocks import PortClaim
 from ..storage.htn_store import HtnStore
 from ..storage.store import StoreError
 from ..verification.acceptance_rules import ExecutionPosture, IndependenceFacts
@@ -292,32 +294,52 @@ def accepted_outputs_for(
     support_revision: int,
     artifacts: Sequence[Any],
     namespace: str,
+    claims: Sequence[PortClaim] = (),
 ) -> tuple[AcceptedOutput, ...]:
-    """The accepted artifacts, filed under the ports the plan declares.
+    """The accepted artifacts, filed at the ports the producer **said** they belong to.
 
-    The pairing rule is stated rather than guessed: an artifact is filed at the port
-    whose key its recorded path names, and when a producer declares exactly one port
-    the single accepted artifact goes there.  Anything else — two artifacts and two
-    ports with no name in common — is left unindexed rather than paired by position,
-    because a consumer that binds to the wrong artifact is a worse outcome than a
-    consumer that reports ``WAITING_DATA``.
+    P2.3c part 2d, decision 4.  The pairing is *declared*, not derived.  Until now
+    this function guessed: an artifact went to the port whose key appeared anywhere
+    inside its path (so a port called ``facts`` claimed ``artifacts/anything.json``),
+    or, when there was exactly one port and one file, to that port by position.  TG
+    design §10.2 forbids exactly that — "two different hashes onto one final file"
+    may not be settled by topology or by name — and §21.5's "wrongly declared
+    complete = 0" is what a mis-paired artifact ends up violating downstream.
+
+    So the port comes from a :class:`~..runtime.output_blocks.PortClaim`, which the
+    Worker wrote and the block parser already checked against this plan's declared
+    ports and this Attempt's real files.  Everything else on the
+    :class:`~..artifacts.input_bindings.AcceptedOutput` is system-bound: the schema
+    comes from the ``DataRequirement`` that declares the edge (never from the
+    producer, which could otherwise relabel its own output), and the acceptance id,
+    content hash, support revision and occurrence are filled here.
+
+    An artifact no claim names stays an artifact: it is evidence of the run and is
+    not indexed.  A *port* nobody claimed is the accept side's problem, not this
+    function's — :meth:`ResolutionCommitsMixin.accept_review` refuses the acceptance
+    with ``OUTPUT_PORT_UNCLAIMED`` rather than letting the leaf pass with a gap.
     """
 
-    if not ports or not artifacts:
+    if not ports or not artifacts or not claims:
         return ()
-    out: list[AcceptedOutput] = []
-    remaining = dict(ports)
-    for ordinal, artifact in enumerate(artifacts):
+    by_path: dict[str, Any] = {}
+    for artifact in artifacts:
         path = str(getattr(artifact, "path", "") or getattr(artifact, "id", ""))
-        port = _port_for(path, remaining, single=len(ports) == 1 and len(artifacts) == 1)
-        if port is None:
+        by_path.setdefault(path, artifact)
+    out: list[AcceptedOutput] = []
+    for ordinal, claim in enumerate(claims):
+        schema = ports.get(claim.port_key)
+        artifact = by_path.get(claim.path)
+        if schema is None or artifact is None:
+            # The parser refuses both of these at the block, so reaching here means a
+            # caller assembled claims by hand.  Skipping is the conservative answer —
+            # inventing a port or an artifact is the guess this whole change removes.
             continue
-        schema = remaining.pop(port)
         out.append(
             AcceptedOutput(
                 producer_occurrence=occurrence,
                 producer_task_ref=task_id,
-                output_port=port,
+                output_port=claim.port_key,
                 producer_result_id=str(result_id),
                 acceptance_id=str(acceptance_id),
                 support_revision=int(support_revision),
@@ -326,22 +348,13 @@ def accepted_outputs_for(
                 schema_ref=schema,
                 source_revision=str(getattr(artifact, "version", "") or "1"),
                 source_identity=ResourceIdentity(
-                    namespace=namespace, path=path or str(artifact.id)
+                    namespace=namespace, path=claim.path or str(artifact.id)
                 ),
                 producer_ordinal=ordinal,
                 disclosure=DisclosureState.DISCLOSABLE,
             )
         )
     return tuple(out)
-
-
-def _port_for(path: str, ports: Mapping[str, Any], *, single: bool) -> str | None:
-    for port in sorted(ports, key=len, reverse=True):
-        if port and port in path:
-            return port
-    if single:
-        return next(iter(ports))
-    return None
 
 
 # --------------------------------------------------------------------------------------
@@ -386,8 +399,16 @@ class LeafAcceptanceAssembly:
         command_id: str | None = None,
         input_manifest_hash: str = "",
         namespace: str = "workspace",
+        port_claims: Sequence[PortClaim] = (),
     ) -> AcceptanceReceipt:
-        """Freeze the anchors, then commit the acceptance.  Nothing else decides."""
+        """Freeze the anchors, then commit the acceptance.  Nothing else decides.
+
+        ``port_claims`` is what the Worker said about its own files — "this path is
+        the ``repository_facts`` the plan asked for" — already checked against the
+        declared ports and the Attempt's artifacts by the block parser.  Without it
+        no output is indexed and ``accept_review`` refuses any required port that a
+        consumer is waiting on (``OUTPUT_PORT_UNCLAIMED``, decision 4).
+        """
 
         outcomes = layer_outcomes(layers)
         binding = self.semantics.task_semantics_of(mission_id, task_id)
@@ -409,8 +430,8 @@ class LeafAcceptanceAssembly:
             mission_id, binding, revision, result_id, manifest, producer_agent_ids
         )
         record = self._record(package, outcomes, result_id, reviewer_agent_id)
-        witness = self._witness(mission_id, task_id, now_ms=now_ms)
         acceptance_id = f"acc-{content_hash_of({'task': task_id, 'result': result_id})[:32]}"
+        witness = self._witness(mission_id, task_id, acceptance_id=acceptance_id, now_ms=now_ms)
         command = AcceptReviewCommand(
             command_id=command_id or f"accept:{result_id}",
             mission_id=mission_id,
@@ -435,6 +456,7 @@ class LeafAcceptanceAssembly:
                 acceptance_id=acceptance_id,
                 artifacts=artifacts,
                 namespace=namespace,
+                port_claims=port_claims,
             ),
             purpose=ReviewPurpose.TASK_CONTENT,
             # The Critic layer is the independent semantic review; this deployment
@@ -595,10 +617,45 @@ class LeafAcceptanceAssembly:
             self.semantics.insert_review_record(record, official=True)
         return record
 
-    def _witness(self, mission_id: str, task_id: str, *, now_ms: int) -> ValidityWitness:
+    def _witness(
+        self, mission_id: str, task_id: str, *, acceptance_id: str, now_ms: int
+    ) -> ValidityWitness:
+        """The ACCEPT licence, named after the key it occupies (part 2d, review P0-2).
+
+        Two things were wrong before, and they were the same thing.  The id was
+        ``hash(task, now_ms)`` while the row's unique key carried no clock, so a
+        *second* acceptance of one leaf minted a **new id** landing on the **old
+        key**: ``get_validity_witness`` missed it (different id), the insert hit the
+        index, and the ``StoreError`` travelled out of ``accept()`` into
+        ``_accept_hierarchical_leaf``, which records "acceptance refused" and moves
+        on.  Re-working a leaf after its acceptance was revoked could therefore never
+        produce a new acceptance, and ``_require_accepted_work`` then refused to
+        judge the Mission for ever.
+
+        So the id is now derived from exactly what the key is made of — consumer,
+        purpose, scope, epoch, support revision and the subject — which makes
+        "already stored" answerable by a keyed read instead of by an exception, and
+        makes the two acceptances of one leaf two rows rather than two claims on one.
+        It names ``acceptance_id`` in its ``support_refs`` because §11.5 requires a
+        witness to say what it was taken over, and because that is what
+        :func:`~..knowledge.validity.witness_subject` recomputes the subject from.
+        """
+
         epoch = self.semantics.epoch(mission_id, self.scope_id)
+        subject = acceptance_subject(str(acceptance_id))
+        support_revision = len(self.semantics.list_observations(mission_id))
         witness = ValidityWitness(
-            witness_id=f"wit-{content_hash_of({'t': task_id, 'at': int(now_ms)})[:32]}",
+            witness_id="wit-"
+            + content_hash_of(
+                {
+                    "consumer": str(task_id),
+                    "purpose": str(WitnessPurpose.ACCEPT),
+                    "scope": self.scope_id,
+                    "epoch": int(epoch),
+                    "support_revision": int(support_revision),
+                    "subject": subject,
+                }
+            )[:32],
             consumer_ref=TypedRef(
                 kind=TypedRefKind.TASK,
                 id=str(task_id),
@@ -612,13 +669,24 @@ class LeafAcceptanceAssembly:
             decision=WitnessDecision.USABLE,
             scope_id=self.scope_id,
             scope_epoch=epoch,
-            support_revision=len(self.semantics.list_observations(mission_id)),
+            support_revision=support_revision,
             as_of_ms=int(now_ms),
+            support_refs=(
+                TypedRef(
+                    kind=TypedRefKind.ACCEPTANCE,
+                    id=str(acceptance_id),
+                    revision=1,
+                    content_hash=content_hash_of(str(acceptance_id)),
+                ),
+            ),
         )
         try:
+            # The id *is* the key, so "is this licence already stored" is one keyed
+            # read.  It used to be a read that could not answer the question (the id
+            # carried a clock the key did not) followed by an insert that raised.
             return self.semantics.get_validity_witness(witness.witness_id)
         except StoreError:
-            self.semantics.insert_validity_witness(mission_id, witness)
+            self.semantics.insert_validity_witness(mission_id, witness, subject=subject)
             return witness
 
     def _read_set(
@@ -648,6 +716,7 @@ class LeafAcceptanceAssembly:
         acceptance_id: str,
         artifacts: Sequence[Any],
         namespace: str,
+        port_claims: Sequence[PortClaim] = (),
     ) -> tuple[AcceptedOutput, ...]:
         semantics = self.semantics
         active = semantics.active_plan_revision(mission_id)
@@ -676,6 +745,7 @@ class LeafAcceptanceAssembly:
             support_revision=len(semantics.list_observations(mission_id)),
             artifacts=artifacts,
             namespace=namespace,
+            claims=port_claims,
         )
 
 

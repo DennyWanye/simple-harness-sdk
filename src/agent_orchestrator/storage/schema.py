@@ -20,6 +20,7 @@ from ..governance.mission_system_tail_schema import DDL as DDL_V15
 from .acceptance_receipt_schema import DDL as DDL_V17
 from .fragment_schema import FRAGMENT_SCHEMA_SQL as DDL_V14
 from .htn_schema import DDL as DDL_V16
+from .validity_subject_schema import DDL as DDL_V18
 
 
 @dataclass(frozen=True, slots=True)
@@ -552,6 +553,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(15, "orchestrator-mission-system-tail", DDL_V15),
     Migration(16, "orchestrator-full-target-htn", DDL_V16),
     Migration(17, "orchestrator-full-target-acceptance-receipts", DDL_V17),
+    Migration(18, "orchestrator-full-target-witness-subject", DDL_V18),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -576,6 +578,7 @@ __all__ = (
     "DDL_V10",
     "DDL_V11",
     "DDL_V17",
+    "DDL_V18",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

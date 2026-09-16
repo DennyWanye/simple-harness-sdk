@@ -75,7 +75,27 @@ from .seed_methods.loader import install_library
 #: says a task type needs ``tests.run``, and it is this host that knows running a
 #: test suite means the ``code_test`` layer is deployed.  Keeping it here rather
 #: than in ``seed_methods/`` is why a third domain still needs data only.
-CAPABILITY_LAYERS: Mapping[str, str] = {"tests.run": "code_test"}
+#:
+#: The table is the deployment's **declaration of what it can run**, so it lists
+#: every capability the shipped domains name, and ``None`` is a positive statement
+#: ("this host needs no extra layer for it"), not an absence.  A capability that is
+#: not listed at all is reported ``configured=False``: review P1-6 found the old
+#: rule (``needed is None or needed in layers``) fail-*open*, so any capability the
+#: deployment had never heard of was reported as configured and a method could be
+#: admitted against a tool this host does not have.  Adding a domain now means
+#: adding its capabilities here, which is the point.
+CAPABILITY_LAYERS: Mapping[str, str | None] = {
+    # code
+    "repo.read": None,
+    "repo.write": None,
+    "tests.run": "code_test",
+    # appworld
+    "appworld.api": None,
+    "appworld.read": None,
+    "appworld.search": None,
+    "appworld.write": None,
+}
+
 
 #: The scope every snapshot is cut in when a caller does not say otherwise.
 DEFAULT_SCOPE = "mission"
@@ -116,7 +136,7 @@ def capability_records(
     catalog: TaskTypeCatalog,
     *,
     deployed_layers: Iterable[str] = (),
-    capability_layers: Mapping[str, str] = CAPABILITY_LAYERS,
+    capability_layers: Mapping[str, str | None] = CAPABILITY_LAYERS,
     unhealthy: Iterable[str] = (),
     unauthorized: Iterable[str] = (),
 ) -> tuple[CapabilityRecord, ...]:
@@ -132,12 +152,19 @@ def capability_records(
     denied = frozenset(str(item) for item in unauthorized)
     records: list[CapabilityRecord] = []
     for capability_id in declared_capability_ids(catalog):
-        needed = capability_layers.get(capability_id)
+        if capability_id in capability_layers:
+            needed = capability_layers[capability_id]
+            configured = needed is None or needed in layers
+        else:
+            # Fail closed (review P1-6): an undeclared capability is one this host
+            # cannot promise, and promising it is how a method gets admitted
+            # against a tool nobody deployed.
+            configured = False
         records.append(
             CapabilityRecord(
                 capability_id=capability_id,
                 registered=_implemented(catalog, capability_id),
-                configured=needed is None or needed in layers,
+                configured=configured,
                 healthy=capability_id not in down,
                 authorized=capability_id not in denied,
             )
@@ -362,7 +389,7 @@ def build_planning_world(
     unauthorized: Iterable[str] = (),
     observers: Sequence[PredicateObserver] | None = None,
     scope_id: str = DEFAULT_SCOPE,
-    capability_layers: Mapping[str, str] = CAPABILITY_LAYERS,
+    capability_layers: Mapping[str, str | None] = CAPABILITY_LAYERS,
 ) -> DeploymentPlanningWorld:
     """Assemble one deployment's ``PlanningWorld`` from the seed library.
 

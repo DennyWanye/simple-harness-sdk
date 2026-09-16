@@ -34,11 +34,14 @@ from .applicability import (
 from .compiler import (
     BudgetRequirement,
     CompilationRefused,
+    DemandAdmission,
+    DemandNotAdmissible,
     RefinementCompilation,
     RootNetwork,
     apply_obligation_openings,
     compile_refinement,
     compile_refinement_bundle,
+    demand_admissions_for,
 )
 from .grounding import (
     GroundingError,
@@ -124,7 +127,10 @@ __all__ = (
     "TaskTypeCatalog",
     "TaskTypeSpec",
     "UnsupportedFeature",
+    "DemandAdmission",
+    "DemandNotAdmissible",
     "apply_obligation_openings",
+    "demand_admissions_for",
     "assess_method",
     "compile_refinement",
     "compile_refinement_bundle",

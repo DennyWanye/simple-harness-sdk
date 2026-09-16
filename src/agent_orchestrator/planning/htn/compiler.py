@@ -36,7 +36,7 @@ the plan into a defect in the execution.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -869,30 +869,186 @@ def _check_obligations_accounted(
         )
 
 
+class DemandNotAdmissible(ContractError):
+    """Nobody in this delta is asking for a duty it opens, or may ask for it.
+
+    A separate class from the fuel refusals: "the parent cannot afford this child"
+    and "no adopted slot wants this child" are different defects with different
+    repairs, and §7.4 forbids reporting two causes under one name.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class DemandAdmission:
+    """Who is asking for a newly opened duty's work, and on what authority.
+
+    TG implementation design §9.2 gives a demand its identity as
+    ``DemandRef(consumer_instance, slot, obligation, producer, state)``: the thing
+    that wants the work is a **slot of an adopted method instance**, not the Mission
+    and not the model.  §6.1 adds that a genuinely new responsibility is created by
+    an explicit command and records its relation to its parent.  This record is the
+    two of those put together, and it is what the commit path writes down.
+    """
+
+    obligation_id: ObligationId
+    parent_obligation_id: ObligationId
+    relation: ObligationRelation
+    #: ``method_slot`` — an adopted slot asked for it; ``authorization`` — a separate
+    #: authority did.  The Mission-root case never arrives through a plan delta.
+    requester_kind: str
+    method_instance_id: str | None = None
+    slot_key: str | None = None
+    occurrence_id: str | None = None
+    authorization_ref: TypedRef | None = None
+
+    def requester(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"kind": self.requester_kind}
+        if self.method_instance_id is not None:
+            payload["method_instance_id"] = self.method_instance_id
+        if self.slot_key is not None:
+            payload["slot_key"] = self.slot_key
+        if self.occurrence_id is not None:
+            payload["occurrence_id"] = self.occurrence_id
+        if self.authorization_ref is not None:
+            payload["authorization_ref"] = self.authorization_ref.to_json()
+        return payload
+
+
+def demand_admissions_for(delta: ProposedPlanDelta) -> tuple[DemandAdmission, ...]:
+    """Which slot is asking for each duty this delta opens, or refuse the delta.
+
+    P2.3c part 2d, decision 3.  Until now nothing on the production path ever
+    admitted a demand, so every NEW_WORK child this delta opened was permanently
+    undispatchable: ``has_admitted_demand`` stayed false and the readiness gate --
+    correctly -- withheld it.  The fix is not to loosen that gate (TG §6 and §24.1
+    decision 9 both require it) but to answer the question it asks.
+
+    The rules are deterministic and there is no default pass:
+
+    ``REFINES_PARENT``
+        exactly one ``ChildBinding`` in this same delta must name the opened duty.
+        That slot is the consumer, and its ``(instance_id, slot_key,
+        occurrence_id)`` is the ``DemandRef`` TG §9.2 describes.  No such slot means
+        nobody adopted the work, and TG §3.2 is explicit that a candidate which is
+        not in the approved execution scope gets **no** real demand -- so the delta
+        is refused rather than opening a duty nobody asked for.  Two such slots is
+        the shared-work case, which registers its own second ``DemandRef`` through
+        the commit path rather than riding on this one.
+
+    ``INDEPENDENT_AUTHORIZED``
+        the opening's own ``authorization_ref`` is the requester.  It does not
+        inherit the parent's demand, because it is not refining the parent's work.
+
+    The parent's own account is checked by the caller, which holds the ledger:
+    refining a duty nobody demands would manufacture demand out of nothing.
+    """
+
+    by_duty: dict[str, list[tuple[str, str, str]]] = {}
+    for draft in delta.method_instances:
+        for binding in draft.child_bindings:
+            by_duty.setdefault(str(binding.obligation_id), []).append(
+                (str(binding.instance_id), str(binding.slot_key), str(binding.occurrence_id))
+            )
+    out: list[DemandAdmission] = []
+    for opening in delta.obligation_openings:
+        duty = str(opening.obligation_id)
+        if opening.relation is ObligationRelation.INDEPENDENT_AUTHORIZED:
+            if opening.authorization_ref is None:  # pragma: no cover - contract enforces it
+                raise DemandNotAdmissible(
+                    f"the independently authorised duty {duty} names no authority; "
+                    "planning alone does not create responsibility (§6.1)"
+                )
+            out.append(
+                DemandAdmission(
+                    obligation_id=opening.obligation_id,
+                    parent_obligation_id=opening.parent_obligation_id,
+                    relation=opening.relation,
+                    requester_kind="authorization",
+                    authorization_ref=opening.authorization_ref,
+                )
+            )
+            continue
+        slots = by_duty.get(duty, [])
+        if not slots:
+            raise DemandNotAdmissible(
+                f"no adopted slot in this delta asks for the work of {duty}; a refinement "
+                "creates the duty its own method instance adopted, and an opening nobody "
+                "adopted would be a duty with no consumer (TG §3.2, §9.2)"
+            )
+        if len(slots) > 1:
+            raise DemandNotAdmissible(
+                f"{len(slots)} slots of this delta bind {duty}; a second consumer registers "
+                "its own DemandRef through the commit path rather than sharing this one "
+                "(§24.1 decision 9)"
+            )
+        instance_id, slot_key, occurrence = slots[0]
+        out.append(
+            DemandAdmission(
+                obligation_id=opening.obligation_id,
+                parent_obligation_id=opening.parent_obligation_id,
+                relation=opening.relation,
+                requester_kind="method_slot",
+                method_instance_id=instance_id,
+                slot_key=slot_key,
+                occurrence_id=occurrence,
+            )
+        )
+    return tuple(out)
+
+
 def apply_obligation_openings(
     ledger: ObligationLedger,
     delta: ProposedPlanDelta,
     *,
     granted_fuel: Mapping[str, int] | None = None,
+    admit: Callable[[DemandAdmission, ObligationLedger], ObligationAccountView] | None = None,
 ) -> tuple[ObligationAccountView, ...]:
-    """Open every duty the delta asks for, against its parent's current account.
+    """Open every duty the delta asks for, and admit the demand that asked for it.
 
     The Commit service does this inside the same transaction as the rest of the
     delta; this function exists so the planning side can do it in one call and so a
-    test can show that a newly opened sub-goal is immediately refinable.  It is a
-    thin ordering over :meth:`ObligationLedger.open_from`, which does the checking.
+    test can show that a newly opened sub-goal is immediately refinable.
+
+    P2.3c part 2d, decision 3: opening and admitting are one step, because TG
+    implementation design §7.3 puts ``validate_data_bindings_and_demand`` inside
+    ``commit_plan_revision`` itself.  Splitting them would leave a window in which
+    the plan is committed, the occurrences are materialised and the duty is open,
+    but nothing is dispatchable -- which is the state part 2c's smoke ended in.
+    :func:`demand_admissions_for` decides *who* is asking; this function additionally
+    refuses to refine a duty that nobody demands, because a child cannot inherit an
+    interest its parent does not hold.
+
+    ``admit`` lets the Commit service route the admission through its own audited
+    entry point (``CommitService.admit_obligation_demand``, which writes the
+    ``ObligationDemandAdmitted`` event) while the rules above stay in this one place;
+    the dry run that checks a command before the transaction leaves it unset and just
+    flips the bit on a ledger it throws away.
     """
 
     grants = dict(granted_fuel or {})
+    admissions = {str(item.obligation_id): item for item in demand_admissions_for(delta)}
     out: list[ObligationAccountView] = []
     for opening in delta.obligation_openings:
         parent_account = ledger.account(opening.parent_obligation_id)
-        out.append(
-            ledger.open_from(
-                opening,
-                parent_account,
-                granted_fuel=grants.get(str(opening.obligation_id)),
+        admission = admissions[str(opening.obligation_id)]
+        if (
+            admission.relation is ObligationRelation.REFINES_PARENT
+            and not parent_account.has_admitted_demand
+        ):
+            raise DemandNotAdmissible(
+                f"the parent duty {opening.parent_obligation_id!s} has no admitted demand, so "
+                f"there is nobody for {opening.obligation_id!s} to inherit an interest from; "
+                "refining work nobody wants is refused rather than assumed (§6.1)"
             )
+        ledger.open_from(
+            opening,
+            parent_account,
+            granted_fuel=grants.get(str(opening.obligation_id)),
+        )
+        out.append(
+            ledger.admit_demand(opening.obligation_id)
+            if admit is None
+            else admit(admission, ledger)
         )
     return tuple(out)
 
@@ -1230,7 +1386,10 @@ __all__ = (
     "DEFAULT_FRESHNESS_POLICY",
     "BudgetRequirement",
     "CompilationRefused",
+    "DemandNotAdmissible",
+    "DemandAdmission",
     "apply_obligation_openings",
+    "demand_admissions_for",
     "RefinementCompilation",
     "RootNetwork",
     "build_read_set",

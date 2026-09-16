@@ -567,6 +567,22 @@ class ResolutionCommitsMixin:
 
         def _require_mission(self, mission_id: str) -> Mission: ...
 
+        # Provided by ``ObligationCommitsMixin`` (P2.3c part 2d, decision 3): the one
+        # audited entry point for ending a consumer's interest in a duty.
+        def withdraw_obligation_demand(
+            self,
+            mission_id: str,
+            obligation_id: Any,
+            *,
+            principal: str,
+            requester: Mapping[str, Any],
+            evidence: Mapping[str, Any],
+            parent_obligation_id: Any = None,
+            relation: str | None = None,
+            ledger: Any = None,
+            plan_revision: int | None = None,
+        ) -> Any: ...
+
     # =============================================================== accept_review
     def accept_review(
         self, command: AcceptReviewCommand, principal: ResolutionPrincipal
@@ -738,18 +754,28 @@ class ResolutionCommitsMixin:
           on a plan that will be committed later, which is the stale read ADR-13 is
           about.
 
-        A command with no outputs writes nothing and asks nothing: a leaf whose
-        result no occurrence consumes has no declared port, and inventing an entry
-        for it is the ancestor sweep under a typed name.
+        A leaf whose result no occurrence consumes has no declared port, so a command
+        with no outputs and no unclaimed port writes nothing and asks nothing;
+        inventing an entry for it is the ancestor sweep under a typed name.
+
+        P2.3c part 2d, decision 4 adds the fourth refusal, and it is the one that runs
+        when the command states *nothing*: a port this occurrence declares, that a
+        ``DataRequirement`` actually consumes, and that no output covers, is
+        ``OUTPUT_PORT_UNCLAIMED``.  TG implementation design §4.3 says an unprovable
+        binding produces an explicit conversion task **or a refusal** — never ``Any``,
+        and never a quiet gap — and leaving the port empty here is what made part 2c's
+        smoke sit in ``WAITING_DATA`` for ever.  A refusal is recorded and does **not**
+        undo the verification (part 2b's rule): it is §9.1's "content defect → a new
+        content attempt against the same duty", and the retry path is the ordinary one.
         """
 
         from .accepted_outputs import check_against_ports
 
         outputs = tuple(command.outputs)
-        if not outputs:
-            return ()
         active = semantics.active_plan_revision(command.mission_id)
         if active is None:
+            if not outputs:
+                return ()
             raise ResolutionCommitRejected(
                 "NO_PLAN_REVISION",
                 "the command states accepted outputs, and this Mission has no active plan "
@@ -761,20 +787,35 @@ class ResolutionCommitsMixin:
             (spec.occurrence_id for spec in members if str(spec.task_id) == command.task_id), None
         )
         if producer is None:
+            if not outputs:
+                return ()
             raise ResolutionCommitRejected(
                 "OCCURRENCE_UNKNOWN",
                 f"task {command.task_id!r} is not a member of plan revision {revision}; an "
                 "accepted output is filed under the occurrence the plan holds, not under one "
                 "the command names",
             )
+        consumed = _declared_ports(semantics, command.mission_id, revision, producer)
+        # Order matters: "you named a port that does not exist" is answered before
+        # "you left a declared port empty".  A relabelled output is both, and the
+        # first is the actionable one — the second would send the producer looking
+        # for a file it already wrote.
         try:
-            checked = check_against_ports(
-                _declared_ports(semantics, command.mission_id, revision, producer),
-                producer,
-                outputs,
-            )
+            checked = check_against_ports(consumed, producer, outputs)
         except ContractError as error:
             raise ResolutionCommitRejected("OUTPUT_NOT_DECLARED", str(error)) from error
+        unclaimed = sorted(set(consumed) - {output.output_port for output in outputs})
+        if unclaimed:
+            raise ResolutionCommitRejected(
+                "OUTPUT_PORT_UNCLAIMED",
+                f"occurrence {producer!s} declares output port(s) {unclaimed} that a data "
+                f"requirement of plan revision {revision} consumes, and this acceptance "
+                f"claims none of them; it offers {sorted(output.output_port for output in outputs)}"
+                ". Name the file you produced at each port rather than leaving the consumer "
+                "waiting on a port nobody filled (TG §4.3: refuse, do not leave it empty)",
+            )
+        if not checked:
+            return ()
         for output in checked:
             try:
                 semantics.insert_acceptance_output(
@@ -907,8 +948,27 @@ class ResolutionCommitsMixin:
             if withdrawn:
                 # TG decision 9: withdrawing the demand ends a *share*, not the duty.
                 # The open-duty CHECK refuses SATISFIED while a demand still hangs on
-                # it, so releasing the share is part of resolving the duty.
-                duties.withdraw_demand(command.mission_id, ObligationId(resolution.obligation_id))
+                # it, so releasing the share is part of resolving the duty.  P2.3c
+                # part 2d routes it through the audited entry point, so the release is
+                # a record with a name on it and not a silent bit flip.
+                self.withdraw_obligation_demand(
+                    command.mission_id,
+                    ObligationId(resolution.obligation_id),
+                    principal=str(principal.principal_id),
+                    requester=(
+                        {"kind": "mission_root"}
+                        if command.is_mission_root
+                        else {
+                            "kind": "method_slot",
+                            "method_instance_id": str(resolution.method_instance_id or ""),
+                        }
+                    ),
+                    evidence={
+                        "resolution_id": str(resolution.resolution_id),
+                        "obligation_id": str(resolution.obligation_id),
+                        "purpose": str(command.purpose),
+                    },
+                )
             satisfied = duties.set_lifecycle(
                 command.mission_id,
                 ObligationId(resolution.obligation_id),

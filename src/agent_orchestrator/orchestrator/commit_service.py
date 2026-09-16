@@ -4883,13 +4883,28 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             return failed
 
     def _judgment_network(self, mission: Mission) -> Any:
-        """The hierarchical plan ``judge_mission`` reads, or None for a legacy Mission."""
+        """The hierarchical plan ``judge_mission`` reads, or None for a legacy Mission.
 
+        Review P2-15: a plan whose bindings are damaged used to leave here as a
+        ``PlanIntegrityError`` — a ``RuntimeError`` — which ``judge_mission`` does not
+        catch and no caller of a *commit* entry expects.  ``_decide`` happened to hit
+        ``root_review_ready`` first and stop the Mission there, so it only showed under
+        a race; but ``judge_mission`` is public, and the honest answer to "may this
+        Mission be judged" on a damaged plan is a refusal that says so, not a crash.
+        """
+
+        from ..graph.projection_validation import GraphIntegrityError
         from .hierarchical_dispatch import HierarchicalDispatch, is_hierarchical
 
         if not is_hierarchical(mission):
             return None
-        return HierarchicalDispatch(self._store, self).network(mission.id)
+        try:
+            return HierarchicalDispatch(self._store, self).network(mission.id)
+        except GraphIntegrityError as error:
+            raise CommitRejected(
+                f"mission {mission.id} cannot be judged: its committed plan does not read back "
+                f"({error}). A damaged plan is repaired, not judged (§9.4)"
+            ) from error
 
     def _drop_compound_rows(self, network: Any, tasks: Sequence[Task]) -> list[Task]:
         """A compound row is never part of the judged set (review F6).
@@ -4912,12 +4927,21 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         """Every live primitive occurrence carries a CURRENT ``Acceptance`` (review F6).
 
         The hierarchical mode's answer to "is the work done" is the Acceptance, not the
-        Task row: §18.5 makes the row a rebuildable display index, and nothing in this
-        mode ever writes ``COMPLETED`` onto it — ``accept_review`` writes an Acceptance.
-        Judging on the status string would therefore have refused forever (the rows stay
-        READY), and *relaxing* the check to "no status is checked" would have judged a
-        Mission whose leaves nobody accepted.  So the same question is asked of the
-        record that actually answers it.
+        Task row: §18.5 makes the row a rebuildable display index, so judging on the
+        status string alone would be judging the index.  *Relaxing* the check to "no
+        status is checked" would judge a Mission whose leaves nobody accepted, so the
+        same question is asked of the record that actually answers it.
+
+        Review P2-14 corrects a false sentence that stood here — "nothing in this mode
+        ever writes ``COMPLETED`` onto it".  ``_collect_attempt`` calls
+        ``accept_result`` and *does* push the row to COMPLETED; the leaf acceptance
+        runs after that.  The rows only stay READY in tests that skip the real attempt
+        pipeline.  The substantive consequence was that the judgment ignored the row
+        entirely, so a leaf with a CURRENT Acceptance whose row had since gone FAILED
+        passed.  The Acceptance is still the record of acceptance; a FAILED row is a
+        *contradiction* of it, and a contradiction is refused rather than resolved in
+        favour of the more convenient half.  (A CANCELLED row is not a contradiction:
+        D5-4 drops superseded work from the judged set before this runs.)
         """
 
         from ..contracts.evidence_state import Validity
@@ -4929,7 +4953,8 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             for item in semantics.list_acceptances(mission.id)
             if item.validity is Validity.CURRENT
         }
-        live = {task.id for task in tasks}
+        rows = {task.id: task for task in tasks}
+        live = set(rows)
         unaccepted = sorted(
             str(spec.task_id)
             for spec in network.occurrences
@@ -4942,6 +4967,19 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 "mission judgment requires a current Acceptance for every live primitive "
                 f"occurrence; {unaccepted} carry none (§18.5: in this mode the Task row is a "
                 "display index and the Acceptance is the record that the work was accepted)"
+            )
+        contradicted = sorted(
+            str(spec.task_id)
+            for spec in network.occurrences
+            if spec.form is TaskForm.PRIMITIVE
+            and str(spec.task_id) in live
+            and rows[str(spec.task_id)].status is TaskStatus.FAILED
+        )
+        if contradicted:
+            raise CommitRejected(
+                "mission judgment refuses a leaf whose Acceptance and Task row disagree; "
+                f"{contradicted} carry a current Acceptance on a FAILED row (§21.5 'wrongly "
+                "declared complete = 0': the disagreement is repaired, not judged)"
             )
 
     def _require_root_resolution(self, mission_id: str) -> None:

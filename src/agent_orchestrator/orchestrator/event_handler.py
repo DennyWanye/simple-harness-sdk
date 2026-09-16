@@ -137,7 +137,14 @@ from ..runtime.model_router import (
     RuntimeProfile,
     classify_turn_error,
 )
-from ..runtime.output_blocks import BlockError, extract_block, outside_text, repair_hint
+from ..runtime.output_blocks import (
+    BlockError,
+    PortClaim,
+    extract_block,
+    outside_text,
+    parse_port_claims,
+    repair_hint,
+)
 from ..runtime.role_templates import (
     CRITIC,
     FRAGMENT_VALIDATION_DECISION_TAG,
@@ -363,6 +370,18 @@ class Orchestrator:
         # host support 0.9.8: the verification layers this deployment can run
         self._deployed = deployed_layers(config.deployment_policy)
         self._critic_verdicts: dict[str, CriticVerdict] = {}
+        #: result id → the output-port claims that arrived with that envelope
+        #: (P2.3c part 2d, decision 4).  ``ResultEnvelope`` is a frozen contract with
+        #: ``additionalProperties`` refused, so the claims are parsed out of the block
+        #: and carried beside it for the rest of this cycle — the same shape
+        #: ``_critic_verdicts`` above uses, and for the same reason.  The durable
+        #: guard against a lost claim is ``accept_review``'s ``OUTPUT_PORT_UNCLAIMED``,
+        #: which refuses rather than indexing a port nobody named.
+        self._port_claims: dict[str, tuple[PortClaim, ...]] = {}
+        #: mission id → the fingerprint of the stall just recorded for it, handed to
+        #: ``_confirm_and_stop_stalled`` so the confirmation compares *this* stall
+        #: against what one more cycle produces (P2.3c part 2d, decision 2).
+        self._stalled_at: dict[str, str] = {}
         self._client_ids: dict[str, str | None] = {}
         self._released: set[str] = set()
         self.progress_log: list[str] = []
@@ -1593,6 +1612,7 @@ class Orchestrator:
                     idle_rounds = 0
                     continue
                 await self._record_hierarchical_stall()
+                await self._confirm_and_stop_stalled()
                 return
             await asyncio.sleep(self._poll)
 
@@ -1606,13 +1626,12 @@ class Orchestrator:
         withheld and **nothing written down**: an operator saw a Mission that had
         simply stopped moving and had to re-derive which gate was holding what.
 
-        The record is deliberately not a verdict.  The Mission keeps its status and
-        its rows: "this process has nothing left to do" is not "this Mission can
-        never progress" — a demand admitted (TG decision 9), an approval granted or
-        an observation recorded from outside makes the very same plan runnable, and
-        failing it here would throw away work over a judgement this method cannot
-        make.  Whether a stall should eventually *stop* the Mission is a lifecycle
-        decision for the contract owner, and part 2c's journal asks it as one.
+        The record is deliberately not a verdict, and part 2d keeps it that way: the
+        Mission keeps its status and its rows here.  The *decision* is
+        :meth:`_confirm_and_stop_stalled`, which runs immediately after this and only
+        stops a Mission whose world has not moved across one more complete cycle —
+        §9.1's "repeated no progress", where the repetition is what licenses the stop
+        and a single idle cycle is not.
 
         A legacy Mission is none of its business (``_new_mode`` answers None), and a
         Mission with an admissible occurrence is not stalled — it is between cycles.
@@ -1669,11 +1688,150 @@ class Orchestrator:
                     "unfinished": sorted(
                         task.id for task in rows if task.status not in TERMINAL_TASK
                     )[:32],
+                    # §9.1: "the count is not reset by a rename".  The fingerprint is
+                    # what makes two stalls comparable *by identity* rather than by
+                    # coincidence, and it is what the confirmation cycle re-computes.
+                    "fingerprint": self._stall_fingerprint(mission, admissions, rows),
                 },
             )
             self._note(
                 f"mission {mission.id}: the loop went idle with work left over "
                 f"({len(blocking)} withheld, {len(admitted)} admitted and not dispatched)"
+            )
+            self._stalled_at[mission.id] = self._stall_fingerprint(mission, admissions, rows)
+
+    def _stall_fingerprint(self, mission: Mission, admissions: Any, rows: Sequence[Any]) -> str:
+        """Everything that would have to change for this stall to be a different one.
+
+        §9.1 requires that a repeated-no-progress count is **not** reset by a rename,
+        so the identity is the *situation*: which revision, which occurrences were
+        refused and for exactly which reasons and detail codes, which were admitted
+        and not dispatched, which rows are still open, which scope epochs are in
+        force, how much evidence has been recorded, and which duties currently hold an
+        admitted demand.  Those last three are the world-facing ones: an observation
+        recorded, an epoch bumped or a demand admitted from outside is precisely the
+        thing that makes the very same plan runnable again, and each of them moves
+        this digest.
+        """
+
+        from simple_harness.contracts import canonical_json
+
+        from ..contracts.htn import ObligationId
+        from ..storage.htn_store import HtnStore
+        from ..storage.obligation_store import ObligationStore
+
+        new_mode = self._new_mode(mission)
+        semantics = HtnStore(self.store)
+        duties = ObligationStore(self.store)
+        epochs: Mapping[str, int] = {}
+        demands: list[str] = []
+        if new_mode is not None:
+            try:
+                epochs = new_mode.scope_epochs(mission.id)
+            except (ContractError, StoreError, GraphIntegrityError):
+                epochs = {}
+            for duty in sorted(duties.obligation_ids(mission.id)):
+                account = duties.account(mission.id, ObligationId(duty))
+                if account.has_admitted_demand:
+                    demands.append(duty)
+        situation: dict[str, Any] = {
+            "plan_revision": int(admissions.plan_revision),
+            "withheld": sorted(
+                str(canonical_json(item.to_json())) for item in admissions.refusals
+            ),
+            "admitted_not_dispatched": sorted(admissions.readiness),
+            "unfinished": sorted(task.id for task in rows if task.status not in TERMINAL_TASK),
+            "scope_epochs": {str(key): int(value) for key, value in sorted(epochs.items())},
+            "support_revision": len(semantics.list_observations(mission.id)),
+            "admitted_demands": demands,
+        }
+        return sha256_hex_text(canonical_json(situation))
+
+    async def _confirm_and_stop_stalled(self) -> None:
+        """Look once more, and if the world has not moved, end this execution cycle.
+
+        P2.3c part 2d, decision 2.  §15 makes a Mission a **bounded** cycle: "somebody
+        could admit a demand later" belongs to the next cycle or to the Commitment
+        above it, not to this one, and a局 that never ends cannot enter the paired
+        evaluation §21.5 asks for.  But §9.1 licenses stopping on *repeated* no
+        progress, not on the first idle turn — and part 2c's smoke showed why: one
+        evidence round or one witness re-issue moved the world twice.
+
+        So exactly **one** more complete cycle runs — re-issue both licence lanes,
+        one evidence round, advance the compound phases, re-read the admissions — and
+        the fingerprint is taken again.  Moved: nothing happens and the loop is free to
+        carry on.  Identical: :meth:`CommitService.fail_mission` ends the Mission with
+        ``NO_DISPATCHABLE_WORK`` and a §6.4-shaped report — the structure that *was*
+        expanded and the duties that are still outstanding, never a claim that the goal
+        is impossible (§7.4).
+
+        One cycle, hard-coded.  A ``while`` here would turn an idle loop into a busy
+        one, which is the failure this method exists to end.
+        """
+
+        from ..contracts.htn import ObligationId
+        from ..contracts.obligations import ObligationLifecycle
+        from ..storage.obligation_store import ObligationStore
+
+        for mission in self._active_missions():
+            if mission.status is not MissionStatus.ACTIVE:
+                continue
+            before = self._stalled_at.pop(mission.id, None)
+            if before is None:
+                continue
+            new_mode = self._new_mode(mission)
+            if new_mode is None:
+                continue
+            try:
+                now_ms = int(self.store.now * 1000)
+                network = new_mode.network(mission.id)
+                new_mode.issue_input_witnesses(mission.id, network, now_ms=now_ms)
+                new_mode.issue_start_witnesses(mission.id, network, now_ms=now_ms)
+                self._gather_evidence(mission)
+                new_mode.advance_compound_phases(mission.id)
+                admissions = new_mode.admissions(mission.id)
+            except (GraphIntegrityError, ContractError, StoreError) as error:
+                # An unreadable plan is the integrity path's finding, not this one's.
+                self._note(f"mission {mission.id}: stall confirmation could not read ({error})")
+                continue
+            rows = self.store.list_tasks(mission.id)
+            after = self._stall_fingerprint(mission, admissions, rows)
+            if after != before:
+                self._note(
+                    f"mission {mission.id}: the confirmation cycle moved the world; "
+                    "the stall is not confirmed"
+                )
+                continue
+            duties = ObligationStore(self.store)
+            outstanding: list[dict[str, Any]] = []
+            for duty in sorted(duties.obligation_ids(mission.id)):
+                account = duties.account(mission.id, ObligationId(duty))
+                if account.lifecycle is ObligationLifecycle.UNSATISFIED:
+                    outstanding.append(
+                        {
+                            "obligation_id": duty,
+                            "has_admitted_demand": bool(account.has_admitted_demand),
+                            "remaining_fuel": int(account.remaining_fuel),
+                        }
+                    )
+            self.commit.fail_mission(
+                mission.id,
+                stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
+                detail={
+                    "plan_revision": int(admissions.plan_revision),
+                    # §6.4: the report names the structure that was expanded and the
+                    # duties still outstanding.  Every refusal, not a sample — an
+                    # operator must not have to re-derive which gate held what.
+                    "withheld": [item.to_json() for item in admissions.refusals],
+                    "admitted_not_dispatched": sorted(admissions.readiness),
+                    "outstanding_obligations": outstanding,
+                    "fingerprint": after,
+                    "confirmed_after_one_more_cycle": True,
+                },
+            )
+            self._note(
+                f"mission {mission.id}: no dispatchable work, confirmed by one more cycle; "
+                "this execution cycle ends"
             )
 
     # ---------------------------------------------------------------- cycle
@@ -2003,6 +2161,8 @@ class Orchestrator:
         # ``PlanningWorld`` and ``capabilities`` / ``snapshot`` are calls — the same
         # split ``compile_proposal`` reads them with.  Spelled the same way here so
         # the package and the compiler cannot end up describing two different worlds.
+        from ._read_set import SemanticReadSetChecker as _SemanticReadSetChecker
+
         snapshot = world.capabilities()
         records = tuple(getattr(snapshot, "records", ()) or ())
         package = hierarchical_planner_package(
@@ -2027,6 +2187,11 @@ class Orchestrator:
             observations=new_mode.semantics().list_observations(mission.id),
             attempt_ordinal=ordinal,
             rejected=self._planning_rejections(mission.id) if ordinal > 1 else (),
+            # Review P2-13: the read-set entry a fact is quoted by is computed by the
+            # **checker that will re-check it**, never a second time here.
+            read_item=_SemanticReadSetChecker(
+                self.store, new_mode.semantics(), mission_id=mission.id
+            ).read_item,
         )
         return _seal(package)
 
@@ -2040,23 +2205,51 @@ class Orchestrator:
         hierarchical package, and every round came back ``proposal_unreadable`` —
         P2.3b's blocker (c) again, one layer further in.
 
-        A pin is still honoured when it names a *hierarchical* version, which is how a
-        Mission stays replayable on the exact prompt it ran with.  A pin naming a
-        version outside that set belongs to the other mode and does not apply here.
+        A pin is still honoured when it names a hierarchical version **written against
+        the package this build assembles**, which is how a Mission stays replayable on
+        the exact prompt it ran with.  Review P1-8: mode alone was not enough — every
+        hierarchical version passed, so a pin on ``planner-hierarchical-v2`` produced
+        the v2 prompt ("this package gives you no observation ids") against the v3
+        package (which carries ``facts``), re-opening the ``READ_SET_UNRESOLVED`` the
+        part-2c smoke was stuck on.  The pin now chooses among the versions of the
+        current package version only; anything else falls back to that package's
+        default prompt.
         """
 
         from ..runtime.role_templates import (
-            HIERARCHICAL_PLANNER_VERSIONS,
             PLANNER_HIERARCHICAL_V3,
+            hierarchical_planner_versions,
         )
 
         candidate = self._template(PLANNER_HIERARCHICAL, mission_id)
-        if candidate.prompt_version in HIERARCHICAL_PLANNER_VERSIONS:
+        if candidate.prompt_version in hierarchical_planner_versions():
             return candidate
         # P2.3c part 2c: v3 is the one whose read-set rule matches the package the
         # branch above builds (it carries a ``facts`` section; v2 tells the model there
         # is none).  The prompt and the package are chosen together or not at all.
         return PLANNER_HIERARCHICAL_V3
+
+    def _hierarchical_worker_template(self, role: Any, mission_id: str) -> Any:
+        """The Worker prompt that knows about output ports (part 2d, decision 4).
+
+        Same rule as :meth:`_hierarchical_planner_template`, for the same reason: a
+        deployment's frozen ``prompt_versions`` pins ``worker`` to a DAG-mode version,
+        and ``worker-v3`` never asks the model which port its files belong to — so the
+        accept side would refuse every leaf for ``OUTPUT_PORT_UNCLAIMED``.  A pin that
+        names a hierarchical version is honoured, which is how a Mission stays
+        replayable on the prompt it ran with; any other pin belongs to the other mode.
+        """
+
+        from ..runtime.role_templates import (
+            HIERARCHICAL_WORKER_VERSIONS,
+            WORKER_HIERARCHICAL,
+        )
+
+        if role.name != "worker":
+            return role
+        if role.prompt_version in HIERARCHICAL_WORKER_VERSIONS:
+            return role
+        return WORKER_HIERARCHICAL
 
     async def _create_planner_intent(self, mission_id: str, *, ordinal: int) -> DispatchIntent:
         from ..runtime.action_schema import planner_action_contract
@@ -2155,6 +2348,7 @@ class Orchestrator:
         *,
         result_id: str,
         layers: Sequence[Any],
+        port_claims: Sequence[PortClaim] = (),
     ) -> None:
         """A verified primitive leaf → an ``Acceptance`` → the accepted-output index.
 
@@ -2193,6 +2387,7 @@ class Orchestrator:
                 reviewer_agent_id=f"critic:{attempt.id}",
                 now_ms=int(self.store.now * 1000),
                 command_id=f"accept:{result_id}",
+                port_claims=port_claims,
             )
         except (ContractError, ResolutionCommitRejected, StoreError) as error:
             self._note(f"task {task.id}: acceptance refused ({error})")
@@ -3656,6 +3851,14 @@ class Orchestrator:
             raw = extract_block(text, RESULT_ENVELOPE_TAG)
         except BlockError as error:
             raise ContractError(str(error)) from error
+        # P2.3c part 2d, decision 4.  ``outputs`` is the hierarchical Worker's
+        # "this file is what I produced at that port".  It is taken off the block
+        # before ``ResultEnvelope.from_json`` because that contract refuses unknown
+        # keys by design (§18.5: a model may not add fields to a system contract),
+        # and it is checked *here* — against the ports this occurrence declares and
+        # the files this Attempt actually wrote — so a bad claim is a bounded repair
+        # on the same Attempt rather than a wrong artifact bound downstream.
+        claims = self._port_claims_from(raw, attempt)
         client_ids = {raw.get("id"), raw.get("result_id")} - {None}
         if len(client_ids) > 1:
             raise ContractError("result carries both id and result_id with different values")
@@ -3687,7 +3890,44 @@ class Orchestrator:
         envelope = ResultEnvelope.from_json({**body, "id": result_id})
         if outside_text(text, RESULT_ENVELOPE_TAG):
             logger.info("orchestrator.envelope_prose", extra={"attempt_id": attempt.id})
+        if claims:
+            self._port_claims[result_id] = claims
         return envelope, client_result_id
+
+    def _port_claims_from(self, raw: dict[str, Any], attempt: Attempt) -> tuple[PortClaim, ...]:
+        """Pop ``outputs`` off the block and check it, or refuse the block.
+
+        Legacy Missions never declare a port, so ``outputs`` is absent, nothing is
+        popped and the envelope parses exactly as it did before (§18.5 rule 1).
+        """
+
+        if "outputs" not in raw:
+            return ()
+        stated = raw.pop("outputs")
+        mission = self.store.get_mission(attempt.mission_id)
+        new_mode = None if mission is None else self._new_mode(mission)
+        if new_mode is None:
+            raise ContractError(
+                "result has unknown fields: ['outputs']"  # the contract's own wording
+            )
+        declared = new_mode.declared_output_ports_for(attempt.mission_id, attempt.task_id)
+        single = [item["port"] for item in declared if item.get("cardinality") == "single"]
+        # The files this Attempt wrote are the ones this envelope *declares*: the
+        # artifact rows are written from ``envelope.artifacts`` after the result is
+        # accepted, so at parse time ``list_artifacts`` is empty and checking against
+        # it refused every honest claim (found by the part 2d smoke, round 1).  Each of
+        # those paths is separately checked against the real workspace before it
+        # becomes an artifact, so a claim can never outlive a file that was not there.
+        produced = [str(item) for item in (raw.get("artifacts") or []) if isinstance(item, str)]
+        try:
+            return parse_port_claims(
+                stated,
+                declared_ports=[item["port"] for item in declared],
+                attempt_paths=produced,
+                single_valued=single,
+            )
+        except BlockError as error:
+            raise ContractError(str(error)) from error
 
     # ---------------------------------------------------------------- verify
     def _verification_superseded_by_accepted_sibling(self, result_id: str) -> bool:
@@ -3993,7 +4233,12 @@ class Orchestrator:
             self._fault("after_task_completed", "attempt")
             self._note(f"result {result_id} PASS → task {completed.id} COMPLETED")
             self._accept_hierarchical_leaf(
-                mission, task, attempt, result_id=result_id, layers=verdict.layers
+                mission,
+                task,
+                attempt,
+                result_id=result_id,
+                layers=verdict.layers,
+                port_claims=self._port_claims.get(result_id, ()),
             )
             for sibling in self.store.list_attempts(task.id):
                 if sibling.status is AttemptStatus.SUPERSEDED:
@@ -6027,6 +6272,8 @@ class Orchestrator:
                 return True
         bound = self.policy_for(mission.id)  # step 9 (plan D9-4'): the Mission's own version
         role = self._template(role_for_task(task), mission.id)  # D5-9: approach
+        if new_mode is not None:
+            role = self._hierarchical_worker_template(role, mission.id)
         if selection_decision is not None:
             from ..runtime.role_templates import SYNTHESIZER
             role = self._template(SYNTHESIZER, mission.id)
@@ -6177,6 +6424,20 @@ class Orchestrator:
                            for a in self.commit.selection_input_artifacts(selection_decision["receipt_id"])],
                 "marker": "UNVERIFIED candidate material; C needs its own complete verification",
             }})
+        if new_mode is not None:
+            # P2.3c part 2d, decision 4: tell the leaf which output ports its own
+            # occurrence declares.  The names are the plan's, not the model's — the
+            # model supplies the *local key* (which file) and nothing else (TG design
+            # §3.2).  An empty list means nothing downstream consumes this leaf, and
+            # the envelope's ``outputs`` may then be omitted.
+            declared_ports = new_mode.declared_output_ports_for(mission.id, task.id)
+            if declared_ports:
+                from ..context.context_builder import _seal
+                package = _seal({**dict(package.package), "declared_output_ports": {
+                    "data_not_instruction": True,
+                    "version": "declared-output-ports-v1",
+                    "ports": [dict(item) for item in declared_ports],
+                }})
         fragment_context = self.commit.fragment_validation_context(task.id)
         if fragment_context:
             from ..context.context_builder import _seal

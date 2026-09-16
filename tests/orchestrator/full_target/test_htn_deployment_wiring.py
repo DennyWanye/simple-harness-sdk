@@ -38,9 +38,10 @@ _HTN_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "htn"
 if str(_HTN_FIXTURES) not in sys.path:
     sys.path.insert(0, str(_HTN_FIXTURES))
 
-from agent_orchestrator.contracts.evidence_state import TruthValue  # noqa: E402
+from agent_orchestrator.contracts.evidence_state import TruthValue, WitnessPurpose  # noqa: E402
 from agent_orchestrator.contracts.models import ContractError  # noqa: E402
 from agent_orchestrator.graph.eligibility import ReadinessReason  # noqa: E402
+from agent_orchestrator.knowledge.validity import witness_subject  # noqa: E402
 from agent_orchestrator.planning.htn.observation_pipeline import (  # noqa: E402
     build_index,
     observe_predicate,
@@ -142,6 +143,52 @@ def test_an_unhealthy_tool_and_a_missing_layer_are_different_axes() -> None:
     table = {item.capability_id: item for item in world.records}
     assert table["repo.write"].unavailable_reasons() == ("healthy",)
     assert table["tests.run"].available
+
+
+def test_an_undeclared_capability_is_not_configured() -> None:
+    """Review P1-6: the ``configured`` axis used to be fail-open.
+
+    ``needed is None or needed in layers`` read a *missing* table entry as "needs no
+    layer", so a capability this deployment had never heard of came back
+    ``configured=True`` and a method could be admitted against a tool nobody
+    installed.  The table is the deployment's declaration now: listed with a layer,
+    listed with ``None`` (this host runs it as-is), or not listed — and not listed
+    is refused with the §14.2 axis that says why.
+    """
+
+    world = build_planning_world("m-1", domains=("code",), deployed_layers=("code_test",))
+    # A deployment that declares nothing: every capability the domain names is one
+    # this host has not promised.
+    blank = {
+        item.capability_id: item
+        for item in capability_records(
+            world.catalog, deployed_layers=("code_test",), capability_layers={}
+        )
+    }
+    assert set(blank) == set(declared_capability_ids(world.catalog))
+    assert all(item.registered for item in blank.values())
+    assert all(not item.configured for item in blank.values())
+    assert all(item.unavailable_reasons() == ("configured",) for item in blank.values())
+    # A deployment that declares one of them, with ``None`` meaning "no extra layer".
+    partial = {
+        item.capability_id: item
+        for item in capability_records(
+            world.catalog, deployed_layers=("code_test",), capability_layers={"repo.read": None}
+        )
+    }
+    assert partial["repo.read"].available
+    assert not partial["tests.run"].configured
+
+
+def test_every_capability_the_shipped_domains_name_is_declared_by_the_deployment() -> None:
+    """The fail-closed rule is only usable if the table covers what actually ships."""
+
+    for domain in ("code", "appworld"):
+        world = build_planning_world("m-1", domains=(domain,))
+        missing = [
+            item for item in declared_capability_ids(world.catalog) if item not in CAPABILITY_LAYERS
+        ]
+        assert missing == [], f"{domain} names capabilities this deployment never declared"
 
 
 def test_a_capability_named_only_by_a_compound_type_is_not_registered() -> None:
@@ -656,6 +703,28 @@ def test_a_settled_proposition_is_not_looked_at_a_second_time(demo: DemoWorld) -
     assert len(demo.observer.calls) == 2
 
 
+def test_an_ask_with_no_observer_is_reported_once(demo: DemoWorld) -> None:
+    """Review P2-19: one ask, one answer.
+
+    ``run_round`` used to append an unreadable ask to ``unobservable`` and then call
+    ``observe_predicate`` on it anyway, so the very same proposition came back twice
+    in one result — once as "this deployment has no reader" and once as the
+    ``NO_OBSERVER`` outcome saying the same thing.
+    """
+
+    ask = evidence_round.EvidenceAsk(
+        predicate_ref=ref("demo.nobody-reads-this"),
+        arguments={"subject": "alpha"},
+        proposition_key="demo.nobody-reads-this#alpha",
+    )
+    before = len(demo.observer.calls)
+    result = demo.look((ask,))
+    assert [item.proposition_key for item in result.unobservable] == [ask.proposition_key]
+    assert result.outcomes == ()
+    assert result.recorded == ()
+    assert len(demo.observer.calls) == before, "an ask nobody can read is not a reading"
+
+
 def test_an_unregistered_observer_type_is_not_looked_at_through_the_index(demo: DemoWorld) -> None:
     """Mutation: running every pending ask would route around the catalogue."""
 
@@ -908,3 +977,280 @@ def test_mutant_a_snapshot_cached_at_assembly_time(demo: DemoWorld) -> None:
     assert cached.support_revision == 0
     assert live.support_revision == 2
     assert live.snapshot_id != cached.snapshot_id
+
+
+# ======================================================================================
+# 6. review P0-1, confirmed on the real deployment world
+# ======================================================================================
+#
+# The reviewer's probe showed that a leaf with **both** START lanes — a DATA edge
+# whose producer has been accepted, and a gated method whose precondition was
+# observed — could never be licensed: the two witnesses shared one row of
+# ``validity_witnesses_consumer_idx`` (same Mission, consumer, ``purpose=START``,
+# scope, epoch and ``support_revision``), so whichever lane ran first took the key
+# and the other was refused as a duplicate.  ``_decide`` issues the DATA lane first,
+# so the precondition licence always lost and the consumer sat on
+# ``WAITING_EVIDENCE/witness_missing`` for ever.
+#
+# Part 2d, adjudication 1 gave the row a ``subject_digest``, so the two licences are
+# two different permissions about two different subjects and both can exist.  This
+# section confirms the repair **on the shipped code domain assembled by
+# ``build_planning_world``** — not on a fixture double — because the probe was run
+# on the double and the double is what hid the defect (review P2-16).
+#
+# ``code.fix-by-patch`` is the scenario in the shipped data: the method is gated on
+# ``code.repo-checked-out`` and ``code.test-is-failing``, and its ``reproduce`` step
+# consumes ``facts.facts`` over a DATA edge.
+
+
+ROOT_TASK = "task-root"
+ROOT_DUTY = "obl-root"
+GOAL_TYPE = "code.fix-failing-test"
+REPOSITORY = "repo-1"
+FAILING_TEST = "tests/test_kv.py::test_get"
+
+
+def _both_lane_world(tmp_path):
+    """A committed ``code.fix-by-patch`` plan on the real deployment world."""
+
+    from agent_orchestrator.contracts.htn import (
+        ObligationId,
+        TaskForm,
+        TaskRef,
+        TaskSemanticBindingV1,
+    )
+    from agent_orchestrator.contracts.obligations import Obligation
+    from agent_orchestrator.contracts.semantic_base import content_hash_of
+    from agent_orchestrator.orchestrator.hierarchical_dispatch import HierarchicalDispatch
+    from agent_orchestrator.orchestrator.plan_commits import PlanPrincipal
+    from agent_orchestrator.storage.obligation_store import ObligationStore
+
+    service, mission = _mission(tmp_path, key="p23c-both-lanes")
+    semantics = HtnStore(service.store)
+    world = build_planning_world(
+        mission.id, domains=("code",), semantics=semantics, deployed_layers=("code_test",)
+    )
+    spec = world.catalog.require(ref(GOAL_TYPE))
+    ObligationStore(service.store).register(
+        Obligation(
+            obligation_id=ObligationId(ROOT_DUTY),
+            mission_id=mission.id,
+            requirement_refs=tuple(spec.goal_signature.coverage_criteria),
+            goal_signature_id=GOAL_TYPE,
+        ),
+        recursion_fuel=8,
+    )
+    semantics.put_task_semantics(
+        mission.id,
+        TaskSemanticBindingV1(
+            task_id=TaskRef(ROOT_TASK),
+            obligation_id=ObligationId(ROOT_DUTY),
+            contract_revision=1,
+            contract_hash=content_hash_of([ROOT_TASK, GOAL_TYPE]),
+            form=TaskForm.COMPOUND,
+            goal_signature=spec.goal_signature,
+            typed_parameters={"repository": REPOSITORY, "failing_test": FAILING_TEST},
+            requirement_refs=tuple(spec.goal_signature.coverage_criteria),
+            semantic_scope="mission",
+        ),
+    )
+    service.begin_planning(mission.id)
+    _say(world, semantics, mission.id, "code.repo-checked-out", {"repository": REPOSITORY})
+    _say(world, semantics, mission.id, "code.test-is-failing", {"test": FAILING_TEST})
+    dispatch = HierarchicalDispatch(service.store, service, planning=world)
+    outcome = dispatch.apply_planner_reply(
+        mission.id,
+        _refine_text("code.fix-by-patch"),
+        principal=PlanPrincipal("manager-1", "mission", 0),
+        command_id="cmd-a",
+    )
+    assert outcome.committed, outcome.last_reason
+    network = dispatch.network(mission.id)
+    seen: set[str] = set()
+    duties = ObligationStore(service.store)
+    for occurrence in network.occurrences:
+        duty = str(occurrence.obligation_id)
+        if duty in seen or not duties.exists(mission.id, occurrence.obligation_id):
+            continue
+        seen.add(duty)
+        if not duties.account(mission.id, occurrence.obligation_id).has_admitted_demand:
+            service.admit_obligation_demand(
+                mission.id,
+                occurrence.obligation_id,
+                principal="mission-submitter",
+                requester={"kind": "mission_root"},
+                evidence={"mission_id": mission.id},
+            )
+    return service, mission, semantics, world, dispatch
+
+
+def _say(world, semantics, mission_id: str, predicate: str, arguments: dict) -> None:
+    from agent_orchestrator.planning.htn.observers import observed
+
+    signature = world.predicates.require(ref(predicate))
+    observation = observed(
+        signature,
+        arguments,
+        polarity=True,
+        observer_id=signature.observer_ids[0],
+        now_ms=1_000,
+    )
+    semantics.insert_observation(mission_id, observation.record)
+
+
+def _refine_text(method_id: str) -> str:
+    from agent_orchestrator.testing.fixtures import plan_revision_proposal_step
+
+    reference = ref(method_id)
+    return plan_revision_proposal_step(
+        proposal_id="prop-1",
+        expected_plan_revision=0,
+        read_set=[
+            {
+                "kind": "method",
+                "id": reference.id,
+                "semantic_revision": reference.version,
+                "content_hash": reference.content_hash,
+            }
+        ],
+        operations=[
+            {
+                "op": "refine",
+                "goal_id": ROOT_TASK,
+                "obligation_id": ROOT_DUTY,
+                "method_ref": {
+                    "id": reference.id,
+                    "version": reference.version,
+                    "content_hash": reference.content_hash,
+                },
+                "bindings": {},
+            }
+        ],
+    )
+
+
+def _task_of(dispatch, mission_id: str, type_id: str) -> str:
+    """The Task row whose semantic binding names this task type."""
+
+    bindings = dispatch.admissions(mission_id).bindings
+    for task_id, binding in bindings.items():
+        if str(binding.goal_signature.signature_id) == type_id:
+            return str(task_id)
+    raise AssertionError(f"no occurrence of {type_id} in {sorted(bindings)}")
+
+
+def _accept(service, dispatch, mission_id: str, task_id: str):
+    """Verify and accept one leaf, claiming its declared output port."""
+
+    from agent_orchestrator.orchestrator.leaf_acceptance import (
+        LayerOutcome,
+        LeafAcceptanceAssembly,
+    )
+    from agent_orchestrator.runtime.output_blocks import PortClaim
+
+    @dataclass(frozen=True)
+    class _Artifact:
+        id: str
+        path: str
+        content_hash: str = "a" * 64
+        version: str = "1"
+
+    declared = dispatch.declared_output_ports_for(mission_id, task_id)
+    items = tuple(
+        _Artifact(f"artifact-{index}", f"out/{item['port']}.json")
+        for index, item in enumerate(declared)
+    )
+    claims = tuple(
+        PortClaim(port_key=item["port"], path=items[index].path)
+        for index, item in enumerate(declared)
+    )
+    assembly = LeafAcceptanceAssembly(service.store, service, dispatch=dispatch)
+    return assembly.accept(
+        mission_id,
+        task_id,
+        result_id=f"result-{task_id}",
+        layers=(
+            LayerOutcome("schema_check", "PASS"),
+            LayerOutcome("rule_check", "PASS"),
+            LayerOutcome("critic_review", "PASS"),
+        ),
+        artifacts=items,
+        producer_agent_ids=("agent-worker",),
+        reviewer_agent_id="agent-critic",
+        now_ms=1_000_000,
+        port_claims=claims,
+    )
+
+
+def test_a_consumer_with_both_start_lanes_is_licensed_on_the_real_world(tmp_path) -> None:
+    """Review P0-1, confirmed where it matters: the shipped domain, the real world.
+
+    ``reproduce`` is licensed by the DATA lane (``facts.facts`` is accepted) *and*
+    by the precondition lane (``code.fix-by-patch`` is gated).  Before adjudication 1
+    the second licence was refused as a duplicate key and the occurrence never left
+    ``WAITING_EVIDENCE``; it is now ``READY_CANDIDATE``.
+    """
+
+    service, mission, semantics, world, dispatch = _both_lane_world(tmp_path)
+    producer = _task_of(dispatch, mission.id, "code.read-repository-facts")
+    consumer = _task_of(dispatch, mission.id, "code.reproduce-failure")
+
+    _accept(service, dispatch, mission.id, producer)
+
+    # exactly the order ``_decide`` uses
+    dispatch.issue_input_witnesses(mission.id, dispatch.network(mission.id), now_ms=1_000_000)
+    dispatch.issue_start_witnesses(mission.id, now_ms=1_000_000)
+
+    # The precondition lane, looked up the way the readiness gate looks it up.
+    assert dispatch.start_witnesses(mission.id, consumer), "no precondition licence"
+    # Both lanes, in the library: two rows under one consumer and one purpose, which
+    # is exactly the pair the old unique key could not hold.
+    licences = [
+        item
+        for item in semantics.list_validity_witnesses(mission.id)
+        if str(item.consumer_ref.id) == consumer and str(item.purpose) == str(WitnessPurpose.START)
+    ]
+    subjects = {witness_subject(item) for item in licences}
+    assert len(subjects) == 2, f"both lanes, two subjects: {sorted(subjects)}"
+    assert any(item.startswith("acceptance:") for item in subjects)
+    assert any(item.startswith("conditions:") for item in subjects)
+    assert len({int(item.support_revision) for item in licences}) == 1, (
+        "the two lanes count the same observations, which is why they collided"
+    )
+
+    admissions = dispatch.admissions(mission.id)
+    refusal = admissions.refusal_for(consumer)
+    assert refusal is None, (refusal.reason, refusal.detail_codes) if refusal else None
+    assert admissions.admission_for(consumer) is not None
+
+
+def test_a_start_licence_is_written_at_the_scope_epoch_it_was_taken_in(tmp_path) -> None:
+    """Review P2-11 (mutation M12): the **write** side of the epoch barrier.
+
+    ``scope_epoch=self.semantics.epoch(...)`` is what makes a licence stop counting
+    once the scope is re-opened, and the read side is guarded by seven behaviour
+    tests — but writing a constant ``0`` instead survived the whole suite, because
+    every test world sat at epoch 0 and the constant happened to be right.  Here the
+    scope is bumped first, so a constant is visibly the wrong number.
+    """
+
+    service, mission, semantics, world, dispatch = _both_lane_world(tmp_path)
+    producer = _task_of(dispatch, mission.id, "code.read-repository-facts")
+    consumer = _task_of(dispatch, mission.id, "code.reproduce-failure")
+    _accept(service, dispatch, mission.id, producer)
+
+    # The first bump writes the row at 0; the second is the first real re-opening.
+    semantics.bump_epoch(mission.id, "mission", bumped_by="test-operator")
+    semantics.bump_epoch(mission.id, "mission", bumped_by="test-operator")
+    epoch = int(semantics.epoch(mission.id, "mission"))
+    assert epoch > 0, "the scope really was re-opened"
+
+    dispatch.issue_input_witnesses(mission.id, dispatch.network(mission.id), now_ms=1_000_000)
+    dispatch.issue_start_witnesses(mission.id, now_ms=1_000_000)
+    issued = [
+        item
+        for item in semantics.list_validity_witnesses(mission.id)
+        if str(item.consumer_ref.id) == consumer and str(item.purpose) == str(WitnessPurpose.START)
+    ]
+    assert issued, "the consumer was licensed at the new epoch"
+    assert {int(item.scope_epoch) for item in issued} == {epoch}

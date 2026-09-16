@@ -32,6 +32,7 @@ implementation, and an assertion the real tests make must catch it.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 import sys
@@ -645,7 +646,13 @@ def _admit_demand(world: World) -> None:
         seen.add(duty)
         account = duties.account(world.mission.id, spec.obligation_id)
         if not account.has_admitted_demand:
-            duties.admit_demand(world.mission.id, spec.obligation_id)
+            world.service.admit_obligation_demand(
+                world.mission.id,
+                spec.obligation_id,
+                principal="mission-submitter",
+                requester={"kind": "mission_root"},
+                evidence={"occurrence": str(spec.occurrence_id)},
+            )
 
 
 def _make_task(world: World, task_id: str, *, status: TaskStatus) -> None:
@@ -1352,6 +1359,18 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     with occurrences every gate withheld, it writes those refusals down — and asking
     the mode there is what keeps the record off a legacy Mission, whose idleness is
     the legacy scheduler's business and not this one's.
+
+    Part 2d adds a twelfth, ``_port_claims_from``: the hierarchical Worker's envelope
+    carries an ``outputs`` map naming which file went to which declared port, and
+    ``ResultEnvelope`` refuses unknown keys by design — so on a *legacy* Mission that
+    key has to stay an unknown field rather than being quietly accepted.  Asking the
+    mode there is exactly what keeps the two contracts apart (§18.5 rule 1).
+
+    Part 2d's stall decision adds the last two: ``_stall_fingerprint`` (the identity
+    of a stall, which is a hierarchical notion — it is built out of admissions, scope
+    epochs and admitted demands) and ``_confirm_and_stop_stalled`` (the one place a
+    Mission is ended for having nothing to dispatch).  A legacy Mission idles for the
+    legacy scheduler's reasons and neither of them may touch it.
     """
 
     del tmp_path
@@ -1360,7 +1379,7 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     from agent_orchestrator.orchestrator import event_handler
 
     source = inspect.getsource(event_handler)
-    assert source.count("self._new_mode(mission)") == 11
+    assert source.count("self._new_mode(mission)") == 14
     assert "is_hierarchical(mission)" in inspect.getsource(event_handler.Orchestrator._new_mode)
 
 
@@ -1681,10 +1700,22 @@ def _events(orchestrator: Orchestrator, mission_id: str, kind: str) -> list[Any]
 
 
 def test_the_handler_commits_a_scripted_hierarchical_planner_reply(tmp_path):
+    """The reply is committed; how the cycle then ends is decision 2's business.
+
+    Part 2d: this world has no demand admitted for its occurrences, so once the plan
+    is on the board the loop goes idle with everything withheld, confirms that across
+    one more cycle and ends the execution cycle with ``NO_DISPATCHABLE_WORK`` (§15: a
+    Mission is a bounded cycle).  The property this test is about is the commit, so it
+    asserts the commit — and that if the Mission did end, it ended for *that* reason
+    and not for a planning or verification failure.
+    """
+
     def probe(orchestrator, mission, env, contract) -> None:
         del env, contract
         assert _events(orchestrator, mission.id, PLAN_REVISION_COMMITTED), orchestrator.progress_log
-        assert orchestrator.store.get_mission(mission.id).status is not MissionStatus.FAILED
+        final = orchestrator.store.get_mission(mission.id)
+        if final.status is MissionStatus.FAILED:
+            assert final.final_report["stop_reason"] == "no_dispatchable_work"
 
     _drive(tmp_path, [_proposal_text(_outer())], probe)
 
@@ -1826,6 +1857,21 @@ def _force_active(orchestrator: Orchestrator, mission_id: str):
     from agent_orchestrator.orchestrator.state_machine import next_mission
 
     mission = orchestrator.store.get_mission(mission_id)
+    if mission.status is MissionStatus.FAILED:
+        # Part 2d: an idle hierarchical cycle now *ends* (``NO_DISPATCHABLE_WORK``),
+        # so a guard about what happens while ACTIVE has to put it back there.  §25.1
+        # has no FAILED→ACTIVE edge — correctly — so the row is rewritten directly
+        # rather than transitioned; this is a test putting a world back, not the
+        # product reviving a Mission.
+        assert mission.final_report["stop_reason"] == "no_dispatchable_work"
+        revived = dataclasses.replace(
+            mission,
+            status=MissionStatus.ACTIVE,
+            stop_reason=None,
+            version=mission.version + 1,
+        )
+        orchestrator.store.update_mission(revived, expected_version=mission.version)
+        return revived
     if mission.status is MissionStatus.PLANNING:
         updated = next_mission(mission, MissionStatus.ACTIVE)
         orchestrator.store.update_mission(updated, expected_version=mission.version)

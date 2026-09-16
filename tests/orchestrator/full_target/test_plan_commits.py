@@ -49,6 +49,7 @@ from agent_orchestrator.contracts.evidence_state import (  # noqa: E402
 from agent_orchestrator.contracts.htn import (  # noqa: E402
     AbsenceRead,
     MethodRegistryStatus,
+    ObligationRelation,
     OccurrenceId,
     ReadItem,
     ReadItemKind,
@@ -91,6 +92,10 @@ from agent_orchestrator.graph.task_network import (  # noqa: E402
 from agent_orchestrator.orchestrator.commit_service import (  # noqa: E402
     CommitService,
     MissionSpec,
+)
+from agent_orchestrator.orchestrator.obligation_commits import (  # noqa: E402
+    DEMAND_ADMITTED,
+    DEMAND_WITHDRAWN,
 )
 from agent_orchestrator.orchestrator.plan_commits import (  # noqa: E402
     HIERARCHICAL_SEMANTICS,
@@ -1068,20 +1073,11 @@ def test_a_truthful_cost_declaration_passes(tmp_path):
 
 
 def test_an_opening_the_parent_cannot_fund_is_refused(tmp_path):
-    from agent_orchestrator.contracts.htn import BudgetInheritance, ObligationOpening
+    """And it keeps its own name: "cannot afford" is not "nobody asked" (§7.4)."""
 
     world = _world(tmp_path)
-    opening = ObligationOpening(
-        obligation_id="obl-child",  # type: ignore[arg-type]
-        parent_obligation_id=ROOT_DUTY,  # type: ignore[arg-type]
-        relation="refines_parent",
-        requirement_refs=("req-1",),
-        goal_signature=world.binding.goal_signature,
-        budget_inheritance=BudgetInheritance.INHERIT_PARENT_FUEL_SHARE,
-        fuel_share=FUEL + 5,
-    )
-    delta = dataclasses.replace(world.command.delta, obligation_openings=(opening,))
-    command = dataclasses.replace(world.command, delta=delta)
+    _admit_root_demand(world)
+    command = _with_child_duty(world, "obl-child", fuel=FUEL + 5)
     assert _refusal(world, command) == "BUDGET_INSUFFICIENT"
     assert world.duties.obligation_ids(world.mission.id) == (ROOT_DUTY,)
 
@@ -1672,23 +1668,336 @@ def test_re_opening_an_existing_duty_is_a_named_refusal(tmp_path):
     assert "referenced, not opened again" in str(caught.value)
 
 
-def test_a_fundable_opening_is_committed_and_lands_in_the_ledger(tmp_path):
-    """The positive case the old placement made impossible.
+def _admit_root_demand(world: World) -> None:
+    """The Mission's own duty is asked for by the requirements it was created from."""
 
-    With the check reading the duty set *after* the openings had been written, every
-    legitimate opening looked like a re-opening — so no plan revision that opened a
-    duty could ever be committed, and no test noticed because none tried.
+    world.service.admit_obligation_demand(
+        world.mission.id,
+        ROOT_DUTY,
+        principal="manager-1",
+        requester={"kind": "mission_root"},
+        evidence={"requirement_refs": ["req-1"]},
+    )
+
+
+def _adopting_slot_for(world: World, duty: str, *, fuel: int = 2):
+    """The delta, network and bindings with the first slot adopting ``duty``.
+
+    P2.3c part 2d, decision 3: an opening is only legitimate when a slot of this
+    same delta adopts the duty it opens (TG §9.2's ``DemandRef``).  This helper
+    builds exactly that shape, so the tests below exercise the real rule rather than
+    a duty floating free of the plan that wanted it.
+    """
+
+    delta = world.command.delta
+    draft = delta.method_instances[0]
+    first = draft.child_bindings[0]
+    occurrence = first.occurrence_id
+    adopted = dataclasses.replace(
+        draft,
+        child_bindings=(
+            dataclasses.replace(first, obligation_id=duty),
+            *draft.child_bindings[1:],
+        ),
+    )
+    task_of = {str(spec.occurrence_id): str(spec.task_id) for spec in delta.occurrences}
+    owner = task_of[str(occurrence)]
+
+    def _respec(specs):
+        return tuple(
+            dataclasses.replace(spec, obligation_id=duty)
+            if spec.occurrence_id == occurrence
+            else spec
+            for spec in specs
+        )
+
+    def _rebind(bindings):
+        return tuple(
+            dataclasses.replace(item, obligation_id=duty) if str(item.task_id) == owner else item
+            for item in bindings
+        )
+
+    return (
+        dataclasses.replace(
+            delta,
+            method_instances=(adopted, *delta.method_instances[1:]),
+            occurrences=_respec(delta.occurrences),
+            obligation_openings=(_opening(world, duty, fuel=fuel),),
+        ),
+        dataclasses.replace(
+            world.command.network,
+            occurrences=_respec(world.command.network.occurrences),
+            method_instances=(adopted, *world.command.network.method_instances[1:]),
+            task_bindings=_rebind(world.command.network.task_bindings),
+        ),
+        _rebind(world.command.task_bindings),
+    )
+
+
+def _with_child_duty(world: World, duty: str, *, fuel: int = 2) -> CommitPlanCommand:
+    delta, network, bindings = _adopting_slot_for(world, duty, fuel=fuel)
+    return dataclasses.replace(world.command, delta=delta, network=network, task_bindings=bindings)
+
+
+def test_a_refining_opening_gets_its_demand_from_the_slot_that_adopted_it(tmp_path):
+    """P2.3c part 2d, decision 3 (memo test 1).
+
+    Before it, nothing on the production path ever admitted a demand: a duty this
+    delta opened was registered, funded, materialised as a Task — and permanently
+    undispatchable, because ``has_admitted_demand`` stayed false and TG §6's gate
+    (correctly) withheld it.  The slot that adopted the duty is the consumer, so the
+    admission happens in this same transaction and says so.
+
+    It also covers the positive case the old commit-ready placement made impossible:
+    with the duty set read *after* the openings were written, every legitimate
+    opening looked like a re-opening.
     """
 
     world = _world(tmp_path)
+    _admit_root_demand(world)
+    world.commit(_with_child_duty(world, "obl-child"))
+    assert set(world.duties.obligation_ids(world.mission.id)) == {ROOT_DUTY, "obl-child"}
+    assert world.semantics.active_plan_revision(world.mission.id).revision == 1
+    assert world.duties.account(world.mission.id, "obl-child").has_admitted_demand is True
+    committed = _events(world, PLAN_REVISION_COMMITTED)[0]
+    assert committed.payload["opened_obligations"] == ["obl-child"]
+    assert committed.payload["admitted_demands"] == ["obl-child"]
+
+
+def test_the_admission_event_names_the_principal_and_the_requesting_slot(tmp_path):
+    """Memo test 5: an admission is a record with a name on it, not a bit flip."""
+
+    world = _world(tmp_path)
+    _admit_root_demand(world)
+    command = _with_child_duty(world, "obl-child")
+    world.commit(command)
+    admissions = _events(world, DEMAND_ADMITTED)
+    assert [item.payload["obligation_id"] for item in admissions] == [ROOT_DUTY, "obl-child"]
+    child = admissions[-1].payload
+    assert child["principal"] == "manager-1"
+    assert child["relation"] == str(ObligationRelation.REFINES_PARENT)
+    assert child["parent_obligation_id"] == ROOT_DUTY
+    assert child["plan_revision"] == 1
+    requester = child["requester"]
+    assert requester["kind"] == "method_slot"
+    adopted = command.delta.method_instances[0]
+    assert requester["method_instance_id"] == str(adopted.instance_id)
+    assert requester["slot_key"] == str(adopted.child_bindings[0].slot_key)
+    assert requester["occurrence_id"] == str(adopted.child_bindings[0].occurrence_id)
+    assert child["evidence"]["delta_id"] == command.delta.delta_id
+    # The Mission root's own admission says what *it* rests on: the requirements.
+    assert admissions[0].payload["requester"]["kind"] == "mission_root"
+    assert admissions[0].payload["evidence"]["requirement_refs"] == ["req-1"]
+
+
+def test_an_opening_no_adopted_slot_asks_for_is_refused(tmp_path):
+    """Memo test 2: a duty with no consumer is refused, and nothing is written.
+
+    TG §3.2 is explicit that a candidate outside the approved execution scope gets
+    **no** real demand.  Opening it anyway would create a duty that is funded out of
+    its parent's allowance and can never be worked on — which is what part 2c's
+    smoke sat in.
+    """
+
+    world = _world(tmp_path)
+    _admit_root_demand(world)
     delta = dataclasses.replace(
         world.command.delta, obligation_openings=(_opening(world, "obl-child", fuel=2),)
     )
-    world.commit(dataclasses.replace(world.command, delta=delta))
-    assert set(world.duties.obligation_ids(world.mission.id)) == {ROOT_DUTY, "obl-child"}
-    assert world.semantics.active_plan_revision(world.mission.id).revision == 1
-    committed = _events(world, PLAN_REVISION_COMMITTED)[0]
-    assert committed.payload["opened_obligations"] == ["obl-child"]
+    command = dataclasses.replace(world.command, delta=delta)
+    with pytest.raises(PlanCommitRejected) as caught:
+        world.commit(command)
+    assert caught.value.reason == "DEMAND_NOT_ADMITTED"
+    assert "asks for the work of obl-child" in str(caught.value)
+    assert set(world.duties.obligation_ids(world.mission.id)) == {ROOT_DUTY}
+    assert world.semantics.list_plan_revisions(world.mission.id) == ()
+    assert _new_table_counts(world.service)["plan_revisions"] == 0
+
+
+def test_a_child_of_a_duty_nobody_demands_is_refused(tmp_path):
+    """Memo test 3: an interest cannot be inherited from a parent that holds none."""
+
+    world = _world(tmp_path)  # the root duty's demand is deliberately *not* admitted
+    with pytest.raises(PlanCommitRejected) as caught:
+        world.commit(_with_child_duty(world, "obl-child"))
+    assert caught.value.reason == "DEMAND_NOT_ADMITTED"
+    assert "has no admitted demand" in str(caught.value)
+    assert set(world.duties.obligation_ids(world.mission.id)) == {ROOT_DUTY}
+
+
+def test_an_independent_opening_without_an_authorization_ref_is_refused(tmp_path):
+    """Memo test 4, at the contract where §6.1 puts it.
+
+    An independently authorised duty stands on its own authority, so it does not
+    inherit the parent's demand — and it may not be built at all without naming the
+    authority that authorised it.  The refusal is the contract's, which is why no
+    commit can route around it.
+    """
+
+    from agent_orchestrator.contracts.htn import BudgetInheritance, ObligationOpening
+
+    world = _world(tmp_path)
+    with pytest.raises(ContractError, match="authorised it"):
+        ObligationOpening(
+            obligation_id="obl-independent",  # type: ignore[arg-type]
+            parent_obligation_id=ROOT_DUTY,  # type: ignore[arg-type]
+            relation=ObligationRelation.INDEPENDENT_AUTHORIZED,
+            requirement_refs=("req-1",),
+            goal_signature=world.binding.goal_signature,
+            budget_inheritance=BudgetInheritance.SEPARATE_GRANT,
+            grant_ref="grant-1",
+        )
+
+
+def test_a_second_slot_binding_one_opening_is_refused_rather_than_shared(tmp_path):
+    """§24.1 decision 9: a second consumer registers its own DemandRef.
+
+    Two slots of one delta binding one newly opened duty is the shared-work case,
+    and sharing is an explicit second admission — not one admission two slots quietly
+    lean on, where whichever withdraws first takes the other's work away.
+    """
+
+    world = _world(tmp_path)
+    _admit_root_demand(world)
+    delta, network, bindings = _adopting_slot_for(world, "obl-child")
+    draft = delta.method_instances[0]
+    both = dataclasses.replace(
+        draft,
+        child_bindings=tuple(
+            dataclasses.replace(item, obligation_id="obl-child") for item in draft.child_bindings
+        ),
+    )
+    command = dataclasses.replace(
+        world.command,
+        delta=dataclasses.replace(delta, method_instances=(both,)),
+        network=dataclasses.replace(network, method_instances=(both,)),
+        task_bindings=bindings,
+    )
+    with pytest.raises(PlanCommitRejected) as caught:
+        world.commit(command)
+    assert caught.value.reason == "DEMAND_NOT_ADMITTED"
+    assert "registers its own DemandRef" in str(caught.value)
+
+
+def test_retiring_the_adopting_slot_withdraws_only_its_own_demand(tmp_path):
+    """Memo test 6: retiring a branch ends *its* interest and nobody else's.
+
+    §24.1 decision 9 says a retiring branch removes **its own** adoption relation.
+    The rule is exercised on the commit path's own helper rather than through a
+    second full revision: a revision that retires the root's only adopted method and
+    replaces it with nothing is refused for being structurally incomplete long before
+    the demand question is reached, so driving the helper is what isolates *this*
+    rule instead of testing the structure gate twice.
+
+    Two cases, one world: nothing else binds the duty (released), and another
+    adopted slot still binds it (kept — that is the shared sub-goal).
+    """
+
+    world = _world(tmp_path)
+    _admit_root_demand(world)
+    first = _with_child_duty(world, "obl-child")
+    world.commit(first)
+    semantics = HtnStore(world.store)
+    duties = ObligationStore(world.store)
+    retired_ids = (first.delta.method_instances[0].instance_id,)
+
+    # Case A: another adopted slot still binds the duty, so the demand stays.
+    still_wanted = dataclasses.replace(
+        first,
+        command_id="cmd-shared",
+        delta=dataclasses.replace(
+            first.delta, delta_id="delta-shared", retired_instance_ids=retired_ids
+        ),
+    )
+    assert (
+        world.service._withdraw_retired_demands(semantics, duties, still_wanted, plan_revision=2)
+        == []
+    )
+    assert duties.account(world.mission.id, "obl-child").has_admitted_demand is True
+    assert _events(world, DEMAND_WITHDRAWN) == []
+
+    # Case B: the retired instance was the last consumer.
+    orphaning = dataclasses.replace(
+        first,
+        command_id="cmd-retire",
+        delta=dataclasses.replace(
+            first.delta,
+            delta_id="delta-retire",
+            method_instances=(),
+            retired_instance_ids=retired_ids,
+        ),
+    )
+    assert world.service._withdraw_retired_demands(
+        semantics, duties, orphaning, plan_revision=2
+    ) == ["obl-child"]
+    assert duties.account(world.mission.id, "obl-child").has_admitted_demand is False
+    # The root duty belongs to a different consumer and is untouched.
+    assert duties.account(world.mission.id, ROOT_DUTY).has_admitted_demand is True
+    withdrawals = _events(world, DEMAND_WITHDRAWN)
+    assert [item.payload["obligation_id"] for item in withdrawals] == ["obl-child"]
+    assert withdrawals[0].payload["evidence"]["retired_method_instances"] == [str(retired_ids[0])]
+
+
+def test_a_model_proposal_cannot_state_that_a_demand_was_admitted(tmp_path) -> None:
+    """Memo test 7 — decision 3's codec mutation self-check.
+
+    §18.5: the model proposes the shape of the work, never its authority.  "Somebody
+    is asking for this duty" is an authority claim, and after decision 3 it is also
+    the thing that makes an occurrence dispatchable — so a proposal that asserted it
+    would be admitting its own work.  The typed codec refuses the key outright rather
+    than reading and discarding it, and the fact that the key is refused is what makes
+    the refusal visible to whoever wrote it.
+
+    **Mutation**: list ``demand_admitted`` among ``ObligationOpening.from_json``'s
+    optional fields (or drop the strict unknown-key check in ``fields_of``) and this
+    test goes red — the payload is accepted, and nothing downstream would notice
+    that the plan, not the commit, decided who wanted the work.
+    """
+
+    from agent_orchestrator.contracts.htn import ObligationOpening
+
+    world = _world(tmp_path)
+    payload = _opening(world, "obl-child", fuel=2).to_json()
+    assert "demand_admitted" not in payload, "the contract does not carry the bit at all"
+    assert "has_admitted_demand" not in payload
+    with pytest.raises(ContractError, match="demand_admitted"):
+        ObligationOpening.from_json({**payload, "demand_admitted": True})
+    # And the honest payload still decodes, so the refusal is about the claim and not
+    # about strictness in general.
+    assert ObligationOpening.from_json(payload).obligation_id == "obl-child"
+
+
+def test_nothing_outside_the_commit_path_admits_a_demand() -> None:
+    """Memo test 8 — decision 3's static mutation self-check.
+
+    ``demand_admitted`` is what makes an occurrence dispatchable, so flipping it is
+    an authorisation act and belongs to one audited entry point.  The four files
+    below are the ledger primitive, its store, the audited entry point and the
+    commit-time rule that calls it; anywhere else is a second, unwritten way in.
+
+    **Mutation**: add one bare ``ledger.admit_demand(...)`` to ``event_handler.py``
+    and this test goes red.
+    """
+
+    import agent_orchestrator
+
+    root = Path(agent_orchestrator.__file__).parent
+    allowed = {
+        "contracts/obligations.py",
+        "storage/obligation_store.py",
+        "orchestrator/obligation_commits.py",
+        "planning/htn/compiler.py",
+    }
+    offenders = sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if "admit_demand(" in path.read_text(encoding="utf-8")
+        and str(path.relative_to(root)) not in allowed
+    )
+    assert offenders == [], (
+        "a demand may only be admitted through CommitService.admit_obligation_demand; "
+        f"{offenders} name the ledger primitive directly"
+    )
 
 
 def test_the_commit_ready_gate_refuses_before_anything_is_written(tmp_path):

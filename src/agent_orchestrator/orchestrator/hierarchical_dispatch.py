@@ -74,6 +74,7 @@ from ..contracts.htn import (
     OccurrenceId,
     OccurrenceSpec,
     PlanRevision,
+    PortCardinality,
     ReadItem,
     ReadItemKind,
     RefineOperation,
@@ -114,6 +115,8 @@ from ..graph.eligibility import (
 )
 from ..graph.projection_validation import GraphIntegrityError, require_topological_order
 from ..graph.task_network import GATING_REQUIREDNESS, TaskNetworkSnapshot
+from ..knowledge.validity import CONDITION_REASON_PREFIX as WITNESS_CONDITION_PREFIX
+from ..knowledge.validity import acceptance_subject, condition_subject
 from ..planning.htn.applicability import ApplicabilityStatus, assess_method
 from ..planning.htn.compiler import (
     RefinementCompilation,
@@ -129,6 +132,7 @@ from ..verification.acceptance_rules import CompoundFacts, ExecutionPosture, Ind
 from .accepted_outputs import accepted_output_from_json
 from .plan_commits import (
     HIERARCHICAL_SEMANTICS,
+    PLAN_REVISION_COMMITTED,
     CommitPlanCommand,
     PlanCommitRejected,
     PlanPrincipal,
@@ -1227,32 +1231,40 @@ class HierarchicalDispatch:
                     as_of_ms=int(now_ms),
                     support_refs=(_typed(TypedRefKind.ACCEPTANCE, str(output.acceptance_id)),),
                 )
-                stored = self._record_witness(mission_id, witness)
+                subject = acceptance_subject(str(output.acceptance_id))
+                stored = self._record_witness(mission_id, witness, subject=subject)
                 if stored is None:
-                    # The library already holds this consumer's START row for this
-                    # epoch and support revision, and it is not this one: the unique
-                    # index (mission, consumer, purpose, scope, epoch, support
-                    # revision) cannot hold two licences of different kinds at once.
-                    # Skipping is the honest answer — the consumer then reports
-                    # WAITING_DATA, which is true — and part 2c's journal raises the
-                    # index itself as a contract question.
-                    self._witness_key_taken(mission_id, witness)
+                    # Since migration 18 the subject is part of the key, so this is no
+                    # longer the DATA lane colliding with the precondition lane: it is
+                    # this consumer already holding a *different* verdict about this
+                    # very acceptance at this very reading of the world.  Skipping is
+                    # the honest answer — the consumer then reports WAITING_DATA,
+                    # which is true — and the anomaly is written down.
+                    self._witness_key_taken(mission_id, witness, subject=subject)
                     continue
                 issued.append(stored)
         return tuple(issued)
 
-    def _record_witness(self, mission_id: str, witness: ValidityWitness) -> ValidityWitness | None:
+    def _record_witness(
+        self, mission_id: str, witness: ValidityWitness, *, subject: str
+    ) -> ValidityWitness | None:
         """Store one witness, or answer what is already stored under its identity.
 
         Three outcomes, none of them an exception for the caller to interpret: the
         row is written; the very same row is already there (the same reading of the
         same world, re-issued) and comes back; or the *key* is held by a different
         licence and the answer is None.
+
+        Since migration 18 the key carries ``subject`` — which object this licence was
+        issued for — so the DATA lane and the precondition lane no longer contend for
+        one row.  ``None`` now means what it always claimed to mean: two different
+        conclusions about the *same* subject at the same reading of the world, which
+        is a real contradiction and is reported rather than swallowed.
         """
 
         try:
             semantics = self.semantics()
-            semantics.insert_validity_witness(mission_id, witness)
+            semantics.insert_validity_witness(mission_id, witness, subject=subject)
             return witness
         except StoreError:
             for held in self.semantics().list_validity_witnesses(mission_id):
@@ -1260,28 +1272,40 @@ class HierarchicalDispatch:
                     return held
             return None
 
-    def _witness_key_taken(self, mission_id: str, witness: ValidityWitness) -> None:
-        """Record, once, that a licence could not be stored beside another one."""
+    def _witness_key_taken(
+        self, mission_id: str, witness: ValidityWitness, *, subject: str
+    ) -> None:
+        """Record, once, that two conclusions were reached about the same subject.
+
+        Before migration 18 this fired whenever the two licence lanes met, which was
+        routine rather than exceptional.  With ``subject_digest`` in the key it fires
+        only when the *same* consumer reaches a *different* verdict about the *same*
+        subject at the same epoch and support revision — one reading of one world
+        giving two answers.  That is a genuine anomaly and is written down.
+        """
 
         append_hierarchical_event(
             self.store,
             WITNESS_KEY_TAKEN,
             mission_id,
             key=f"{mission_id}:{witness.consumer_ref.id}:{witness.scope_epoch}:"
-            f"{witness.support_revision}",
+            f"{witness.support_revision}:{subject}",
             task_id=str(witness.consumer_ref.id),
             payload={
                 "consumer": str(witness.consumer_ref.id),
                 "purpose": str(witness.purpose),
+                "subject_digest": str(subject),
                 "scope_id": witness.scope_id,
                 "scope_epoch": int(witness.scope_epoch),
                 "support_revision": int(witness.support_revision),
                 "reason_codes": list(witness.reason_codes),
                 "detail": (
-                    "the validity_witnesses unique index holds one START licence per "
-                    "consumer per scope epoch and support revision, and this consumer "
-                    "already has one of another kind; the licence was not stored and "
-                    "the occurrence stays withheld rather than running unlicensed"
+                    "the validity_witnesses unique index holds one licence per "
+                    "consumer per purpose per subject per scope epoch and support "
+                    "revision, and this consumer already holds a different verdict "
+                    "about that same subject at that same reading of the world; the "
+                    "licence was not stored and the occurrence stays withheld rather "
+                    "than running on a contested one"
                 ),
             },
         )
@@ -1291,8 +1315,9 @@ class HierarchicalDispatch:
     #: acceptance it covers); a condition is not a stored object and has no
     #: :class:`TypedRefKind`, so the digest travels as a reason code instead — the
     #: only alternative was guessing the link from the witness, which §11.5 calls
-    #: exactly the thing a witness must never allow.
-    CONDITION_REASON_PREFIX = "condition:"
+    #: exactly the thing a witness must never allow.  ``knowledge.validity`` owns the
+    #: prefix so the storage subject and this module agree by construction.
+    CONDITION_REASON_PREFIX = WITNESS_CONDITION_PREFIX
 
     def issue_start_witnesses(
         self,
@@ -1325,12 +1350,12 @@ class HierarchicalDispatch:
         rule 2) — is ``USABLE``.
 
         One witness covers **all** of a consumer's START preconditions, and names
-        each of them in its reason codes.  That is what the library can hold: the
-        ``validity_witnesses`` unique index is (mission, consumer, purpose, scope,
-        epoch, support revision), so "this consumer may start, now, on this reading
-        of the world" is one row by construction, not one row per condition.  ALL
-        semantics make the combination honest — one UNKNOWN member is enough to
-        withhold the whole licence (§6.6 rule 1).
+        each of them in its reason codes.  Since migration 18 the row is filed under
+        ``conditions:<digest of that set>``, so "this consumer may start, now, on this
+        reading of the world, over *these* conditions" is one row by construction —
+        and it sits beside, rather than instead of, the DATA lane's licence for the
+        same consumer.  ALL semantics make the combination honest — one UNKNOWN
+        member is enough to withhold the whole licence (§6.6 rule 1).
         """
 
         from ..planning.htn.applicability import (
@@ -1391,6 +1416,10 @@ class HierarchicalDispatch:
             reasons = tuple(
                 f"{self.CONDITION_REASON_PREFIX}{digest}" for digest in sorted(by_digest)
             )
+            # The whole (sorted) condition set is what this licence covers, so it is
+            # what the row is filed under.  ``condition_subject`` is the same function
+            # the store re-runs over ``reason_codes`` before it writes.
+            subject = condition_subject(by_digest)
             for child in sorted(draft.child_bindings, key=lambda item: str(item.occurrence_id)):
                 if forms.get(child.occurrence_id) is not TaskForm.PRIMITIVE:
                     continue
@@ -1403,6 +1432,11 @@ class HierarchicalDispatch:
                             "e": epoch,
                             "s": int(snapshot.support_revision),
                             "p": str(scope_id),
+                            # The subject is part of the row's identity since
+                            # migration 18, so it is part of the row's name too: a
+                            # different condition set is a different licence, not a
+                            # second verdict about the same one.
+                            "j": subject,
                         }
                     )[:28],
                     consumer_ref=_typed(TypedRefKind.TASK, consumer),
@@ -1418,9 +1452,9 @@ class HierarchicalDispatch:
                     support_refs=tuple(support),
                     reason_codes=reasons,
                 )
-                stored = self._record_witness(mission_id, witness)
+                stored = self._record_witness(mission_id, witness, subject=subject)
                 if stored is None:
-                    self._witness_key_taken(mission_id, witness)
+                    self._witness_key_taken(mission_id, witness, subject=subject)
                     continue
                 issued.append(stored)
         return tuple(issued)
@@ -1559,6 +1593,64 @@ class HierarchicalDispatch:
         return AcceptedOutputsIndex(
             outputs=tuple(self._recorded_outputs(mission_id, network)),
             completed_producers=completed,
+        )
+
+    def declared_output_ports_for(
+        self, mission_id: str, task_id: str, network: TaskNetworkSnapshot | None = None
+    ) -> tuple[dict[str, Any], ...]:
+        """The output ports this leaf is expected to deliver on, for its own context.
+
+        P2.3c part 2d, decision 4.  Part 2c's smoke ended here: the plan declared one
+        output port, the model wrote two files under names of its own, and nothing had
+        ever told it that ``repository_facts`` was the name the plan used.  The accept
+        side then paired by substring (``artifacts/…`` matches a port called ``facts``)
+        or by "one port, one file" — the guess TG design §10.2 forbids — or, honestly
+        but uselessly, not at all.
+
+        The ports come from :func:`~.accepted_outputs.declared_ports_in_revision`, the
+        same function the accept side checks against, so "which ports exist" has one
+        answer rather than two.  A port is in this list only because a
+        ``DataRequirement`` consumes it, which is also why ``required`` is true for
+        every entry: an unconsumed port feeds nothing and asking for it would be
+        asking the model to do work for nobody.  ``cardinality`` comes from the
+        producer's own :class:`~..contracts.htn.PortSpec` where it has one, because
+        that is where TG §4.3 declares it; a port the binding does not list is
+        reported ``single``, which is the contract's own default.
+        """
+
+        from .accepted_outputs import declared_ports_in_revision
+
+        semantics = self.semantics()
+        active = semantics.active_plan_revision(mission_id)
+        if active is None:
+            return ()
+        revision = int(active.revision)
+        occurrence = next(
+            (
+                spec.occurrence_id
+                for spec in semantics.list_plan_memberships(mission_id, revision)
+                if str(spec.task_id) == str(task_id)
+            ),
+            None,
+        )
+        if occurrence is None:
+            return ()
+        ports = declared_ports_in_revision(
+            semantics.list_data_requirements(mission_id, revision), occurrence
+        )
+        binding = semantics.task_semantics_of(mission_id, str(task_id))
+        specs = {} if binding is None else {item.port_key: item for item in binding.output_ports}
+        del network  # the rows are the authority here; the network is not rebuilt
+        return tuple(
+            {
+                "port": port,
+                "required": True,
+                "cardinality": (
+                    str(specs[port].cardinality) if port in specs else str(PortCardinality.SINGLE)
+                ),
+                "schema": {"id": schema.id, "version": int(schema.version)},
+            }
+            for port, schema in sorted(ports.items())
         )
 
     def _recorded_outputs(self, mission_id: str, network: TaskNetworkSnapshot) -> Sequence[Any]:
@@ -1745,14 +1837,6 @@ class HierarchicalDispatch:
                 ),
                 occurrence_id=str(root),
             )
-        requirements = semantics.latest_requirements_revision(mission_id)
-        if requirements is None:
-            return RootResolutionInputs(
-                reason="REQUIREMENTS_MISSING",
-                detail="the Mission has no RequirementsRevision; there is nothing for the root "
-                "resolution to claim coverage of (§6.3)",
-                occurrence_id=str(root),
-            )
         package = next(
             (
                 item
@@ -1770,6 +1854,31 @@ class HierarchicalDispatch:
                 detail=(
                     f"no MISSION_FINAL ReviewPackage is stored for task {spec.task_id!s}; the "
                     "root review has not been cut, so there is nothing to resolve from"
+                ),
+                occurrence_id=str(root),
+            )
+        # Review P1-7: the root's requirements are **the ones its review package was
+        # cut against**, not whatever revision happens to be latest.
+        # ``latest_requirements_revision`` used to answer this, but every leaf
+        # acceptance publishes a Mission-level revision carrying *that leaf's*
+        # coverage criteria — so one more leaf accepted between cutting the root
+        # review and forming the resolution silently moved the Mission's criteria to
+        # the last leaf's, and the resolution claimed coverage of something the
+        # reviewer never saw.  The package's binding is the only revision that was
+        # actually reviewed.
+        try:
+            requirements = semantics.get_requirements_revision(
+                mission_id, int(package.binding.requirements_revision)
+            )
+        except StoreError:
+            requirements = None
+        if requirements is None:
+            return RootResolutionInputs(
+                reason="REQUIREMENTS_MISSING",
+                detail=(
+                    "the root review package names requirements revision "
+                    f"{int(package.binding.requirements_revision)}, which this Mission does not "
+                    "hold; there is nothing for the root resolution to claim coverage of (§6.3)"
                 ),
                 occurrence_id=str(root),
             )
@@ -2336,6 +2445,50 @@ class HierarchicalDispatch:
                 )
         return tuple(entries)
 
+    def plan_revision_committed_at(self, mission_id: str, plan_revision: int) -> int:
+        """When this plan revision was committed, in the same milliseconds an
+        observation is stamped with.  Zero when there is no such revision yet."""
+
+        return max(
+            (
+                int(event.created_at * 1000)
+                for event in self.store.list_events(mission_id)
+                if event.type == PLAN_REVISION_COMMITTED
+                and int(event.payload.get("plan_revision", 0)) == int(plan_revision)
+            ),
+            default=0,
+        )
+
+    def propositions_looked_at(self, mission_id: str, *, plan_revision: int) -> frozenset[str]:
+        """The propositions this Mission has already read **under this revision**.
+
+        An observation does not always settle the atom that motivated it — a
+        non-authoritative negative on an OPEN predicate is still UNKNOWN (§6.6) — so
+        ``pending_asks`` keeps offering it, and the first real-model evidence round
+        recorded the same proposition several hundred times in a few seconds until
+        ``EvidenceEntry`` refused the snapshot.  A second identical read of an
+        unchanged world produces the same answer at the cost of one more row, so
+        within one revision each proposition is read once.
+
+        Review P1-4: part 2c capped it over the Mission's whole **lifetime**, which
+        made evidence unrefreshable — a precondition repaired while the plan ran (the
+        smoke's own ``code.test-is-failing``) was never looked at again, and
+        ``issue_start_witnesses``' promise of I19's "recompute, do not reuse the old
+        TRUE" was recomputing an expression over a frozen snapshot.  The rule, written
+        down: **committing a plan revision re-opens the look.**  A revision is the
+        moment the world has demonstrably changed — work retired, a method adopted, a
+        duty opened — and it is bounded, because a revision costs a Planner round of
+        its own.  So an observation recorded *before* the current revision was
+        committed no longer counts as having looked.
+        """
+
+        since = self.plan_revision_committed_at(mission_id, plan_revision)
+        return frozenset(
+            str(record.proposition_key)
+            for record in self.semantics().list_observations(mission_id)
+            if int(record.recorded_at_ms) >= since
+        )
+
     def run_evidence_round(self, mission_id: str, *, now_ms: int | None = None) -> Any:
         """Look at the UNKNOWN preconditions of every still-open goal, once.
 
@@ -2374,17 +2527,9 @@ class HierarchicalDispatch:
             return EvidenceRoundResult()
         network = self.network(mission_id)
         snapshot = world.snapshot()
-        # Every proposition this Mission has already looked at.  An observation does
-        # **not** always settle the atom that motivated it — a non-authoritative
-        # negative on an OPEN predicate is still UNKNOWN (§6.6) — so ``pending_asks``
-        # keeps offering it, and the first real-model run of this round recorded the
-        # same proposition several hundred times in a few seconds until
-        # ``EvidenceEntry`` refused the snapshot.  Looking again is a decision for a
-        # later revision, not for the next cycle: a second identical read of an
-        # unchanged world produces the same answer at the cost of one more row.
-        looked_at = {
-            str(record.proposition_key) for record in self.semantics().list_observations(mission_id)
-        }
+        looked_at = self.propositions_looked_at(
+            mission_id, plan_revision=int(network.plan_revision)
+        )
         moment = int(self.store.now * 1000) if now_ms is None else int(now_ms)
         asks: dict[str, EvidenceAsk] = {}
         for spec in sorted(network.occurrences, key=lambda item: str(item.occurrence_id)):

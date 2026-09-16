@@ -51,6 +51,7 @@ from ..contracts.htn import (
     ContractRevision,
     DispatchGeneration,
     GraphStructureBudget,
+    ObligationId,
     OccurrenceId,
     OccurrenceSpec,
     ProposedPlanDelta,
@@ -63,6 +64,7 @@ from ..contracts.htn import (
     TaskSemanticBindingV1,
     require_commit_ready,
 )
+from ..contracts.obligations import ObligationAccountView, ObligationLedger
 from ..contracts.semantic_base import content_hash_of
 from ..governance.budgets import BudgetError
 from ..graph.projection_validation import (
@@ -70,7 +72,12 @@ from ..graph.projection_validation import (
     validate_refinement_acyclic,
 )
 from ..graph.task_network import DEFAULT_PROJECTION_BUDGET, TaskNetworkSnapshot
-from ..planning.htn.compiler import BudgetRequirement, apply_obligation_openings
+from ..planning.htn.compiler import (
+    BudgetRequirement,
+    DemandAdmission,
+    DemandNotAdmissible,
+    apply_obligation_openings,
+)
 from ..planning.manager import inherit_limits
 from ..storage.htn_store import HtnStore, PlanCommitReceipt
 from ..storage.obligation_store import ObligationStore
@@ -250,6 +257,37 @@ class PlanCommitsMixin:
         ) -> Event: ...
 
         def _require_mission(self, mission_id: str) -> Mission: ...
+
+        # Provided by ``ObligationCommitsMixin``, which ``CommitService`` inherits
+        # alongside this one: admitting or withdrawing a demand is an authorisation
+        # act with one audited entry point (P2.3c part 2d, decision 3).
+        def admit_obligation_demand(
+            self,
+            mission_id: str,
+            obligation_id: Any,
+            *,
+            principal: str,
+            requester: Mapping[str, Any],
+            evidence: Mapping[str, Any],
+            parent_obligation_id: Any = None,
+            relation: str | None = None,
+            ledger: Any = None,
+            plan_revision: int | None = None,
+        ) -> ObligationAccountView: ...
+
+        def withdraw_obligation_demand(
+            self,
+            mission_id: str,
+            obligation_id: Any,
+            *,
+            principal: str,
+            requester: Mapping[str, Any],
+            evidence: Mapping[str, Any],
+            parent_obligation_id: Any = None,
+            relation: str | None = None,
+            ledger: Any = None,
+            plan_revision: int | None = None,
+        ) -> ObligationAccountView: ...
 
     # ------------------------------------------------------------------ public entry
     def commit_plan_revision(
@@ -799,6 +837,11 @@ class PlanCommitsMixin:
                 apply_obligation_openings(
                     ledger, command.delta, granted_fuel=dict(command.granted_fuel)
                 )
+            except DemandNotAdmissible as error:
+                # P2.3c part 2d, decision 3.  "Nobody asked for this work" is not a
+                # budget problem and does not get the budget's name (§7.4): the repair
+                # is to adopt the slot that wants it, or not to open the duty.
+                raise PlanCommitRejected("DEMAND_NOT_ADMITTED", str(error)) from error
             except ContractError as error:
                 raise PlanCommitRejected("BUDGET_INSUFFICIENT", str(error)) from error
 
@@ -875,6 +918,73 @@ class PlanCommitsMixin:
             found.update(str(child.occurrence_id) for child in bindings)
         return found
 
+    def _withdraw_retired_demands(
+        self,
+        semantics: HtnStore,
+        obligations: ObligationStore,
+        command: CommitPlanCommand,
+        *,
+        plan_revision: int,
+    ) -> list[str]:
+        """Retiring a slot ends **its own** interest, and nobody else's (§24.1 dec. 9).
+
+        A duty that another adopted slot still binds keeps its demand: that is the
+        shared-sub-goal case, where two consumers each hold a ``DemandRef`` and one
+        leaving must not take the other's work away.  A duty whose last adopting slot
+        just went is released, so it stops looking dispatchable to a plan that no
+        longer contains it.
+        """
+
+        if not command.delta.retired_instance_ids:
+            return []
+        retiring = {str(item) for item in command.delta.retired_instance_ids}
+        drafts = {
+            str(item.instance_id): item
+            for item in semantics.list_method_instances(command.mission_id)
+        }
+        orphaned: set[str] = set()
+        for instance_id in sorted(retiring):
+            try:
+                children = semantics.list_child_occurrences(command.mission_id, instance_id)
+            except StoreError:  # pragma: no cover - list never raises today
+                continue
+            held = drafts.get(instance_id)
+            # A refinement slot carries the *parent's* duty and opened nothing (§6.1),
+            # so retiring it cannot release an interest it never created — least of all
+            # the Mission's own root duty, which the requirements ask for and no slot
+            # above it holds.
+            parent_duty = None if held is None else str(held.obligation_id)
+            orphaned.update(
+                str(child.obligation_id)
+                for child in children
+                if str(child.obligation_id) != parent_duty
+            )
+        for draft in semantics.list_method_instances(command.mission_id, state="ADOPTED"):
+            if str(draft.instance_id) in retiring:
+                continue
+            orphaned -= {str(binding.obligation_id) for binding in draft.child_bindings}
+        for draft in command.delta.method_instances:
+            orphaned -= {str(binding.obligation_id) for binding in draft.child_bindings}
+        released: list[str] = []
+        for duty in sorted(orphaned):
+            account = obligations.account(command.mission_id, ObligationId(duty))
+            if not account.has_admitted_demand:
+                continue
+            self.withdraw_obligation_demand(
+                command.mission_id,
+                ObligationId(duty),
+                principal=command.issued_by or "commit-service",
+                requester={"kind": "method_slot"},
+                evidence={
+                    "retired_method_instances": sorted(retiring),
+                    "plan_revision": plan_revision,
+                    "delta_id": command.delta.delta_id,
+                },
+                plan_revision=plan_revision,
+            )
+            released.append(duty)
+        return released
+
     @staticmethod
     def _occurrence_tasks(semantics: HtnStore, command: CommitPlanCommand) -> dict[str, str]:
         """Occurrence → task, from the plan in force plus the one being proposed."""
@@ -913,10 +1023,45 @@ class PlanCommitsMixin:
         require_commit_ready(delta, registered_obligations=registered)
         # Duties next: an occurrence may not name a duty nobody opened, so the
         # openings have to exist before the membership that references them.
+        admitted: list[str] = []
         if delta.obligation_openings:
             ledger = obligations.load_ledger(command.mission_id)
-            apply_obligation_openings(ledger, delta, granted_fuel=dict(command.granted_fuel))
+            opened_by_duty = {
+                str(opening.obligation_id): opening for opening in delta.obligation_openings
+            }
+
+            def _admit(admission: DemandAdmission, held: ObligationLedger) -> ObligationAccountView:
+                # P2.3c part 2d, decision 3: the admission is a *recorded* act, taken by
+                # the principal this command was authorised under, inside the same
+                # transaction as the revision that adopted the slot asking for it
+                # (TG implementation design §7.3).
+                admitted.append(str(admission.obligation_id))
+                return self.admit_obligation_demand(
+                    command.mission_id,
+                    admission.obligation_id,
+                    principal=command.issued_by or "commit-service",
+                    requester=admission.requester(),
+                    evidence={
+                        "parent_obligation_id": str(admission.parent_obligation_id),
+                        "plan_revision": new_revision,
+                        "delta_id": delta.delta_id,
+                        "requirement_refs": list(
+                            opened_by_duty[str(admission.obligation_id)].requirement_refs
+                        ),
+                    },
+                    parent_obligation_id=admission.parent_obligation_id,
+                    relation=str(admission.relation),
+                    ledger=held,
+                    plan_revision=new_revision,
+                )
+
+            apply_obligation_openings(
+                ledger, delta, granted_fuel=dict(command.granted_fuel), admit=_admit
+            )
             obligations.persist(ledger)
+        released = self._withdraw_retired_demands(
+            semantics, obligations, command, plan_revision=new_revision
+        )
 
         for binding in command.task_bindings:
             if semantics.task_semantics_of(command.mission_id, str(binding.task_id)) is None:
@@ -984,6 +1129,10 @@ class PlanCommitsMixin:
             "opened_obligations": [
                 str(opening.obligation_id) for opening in delta.obligation_openings
             ],
+            # P2.3c part 2d, decision 3: "opened" and "somebody asked for it" are two
+            # different facts and the receipt carries both.
+            "admitted_demands": sorted(admitted),
+            "withdrawn_demands": sorted(released),
             "order_constraints": len(network.order_constraints),
             "data_requirements": len(network.data_requirements),
             "revoked_dispatch_generations": dict(sorted(revoked.items())),

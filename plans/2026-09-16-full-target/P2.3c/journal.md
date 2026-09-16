@@ -1449,3 +1449,339 @@ p32 p33 p34 p35 p36 test_critic_test_evidence_order.py`。
 造成的已知假阳性；这一轮的红只有上面那一条。）
 
 **新模式**：`tests/orchestrator/full_target` **2376 passed, 2 skipped**。
+
+# P2.3c 第二部分 d · 施工日志（2026-09-16）
+
+## 0. 起点与输入
+
+* 树：`main`，HEAD `0b28de0`（batch-3d `d26a7b1` 携带第二部分 2/2b/2c），开工前干净。
+* 输入一：裁决备忘 `scratchpad/p23c-decisions.md`（四条设计裁决，逐条照办、不改裁决）。
+* 输入二（施工中途追加）：2b/2c 的独立审阅报告
+  `reviews/审阅-第二部分bc-2026-09-16.md`，结论「需修后合」。协调方要求在四条裁决
+  与冒烟之后（或做对应裁决时顺带）一并修掉，并记入本段的「审阅处置」表（§7）。
+* 开工基线（`.local-test-evidence/2026-09-16/p23c-2d-baseline/`，git-ignored）：
+  * `full_target.txt`：2376 passed, 2 skipped。
+  * `legacy.txt`：1 failed, 1854 passed, 20 skipped（红的是已知可忽略的
+    `p33::test_legacy_check_ast_and_default_retrieval_bytes_are_unchanged`）。
+  * `mypy.txt`：17 errors in 4 files。
+  * `p35.txt`：**污染基线**——单独跑 p35 时 3 条红，原因是同时在改源码树，
+    p35 自己扫源码的 oracle 判「production inputs changed」。合并跑（§8）里 p35 全绿。
+
+## 1. 裁决 1 · 许可的「对象」进唯一键（migration 18）
+
+**问题**：`validity_witnesses_consumer_idx` 的键是
+`(mission, consumer_kind, consumer_id, purpose, scope_id, scope_epoch, support_revision)`。
+DATA 许可与前置条件许可都是 `purpose=START`，且两者的 `support_revision` 是**同一个计数器**
+（真 `DeploymentPlanningWorld.snapshot()` 与 `leaf_acceptance._outputs` 都取
+`len(list_observations)`），所以「既有数据输入、方法又被 gate」的叶子只能拿到先写的那一条，
+另一条被当重复键拒掉，该 occurrence 永远 `WAITING_EVIDENCE/witness_missing`。
+
+**落点**
+
+| 文件 | 改动 |
+| --- | --- |
+| `storage/validity_subject_schema.py`（新） | migration 18 的 DDL：加列 `subject_digest`、换唯一索引为 `..._v2`（键里带 subject）、加 `validity_witnesses_subject_idx` |
+| `storage/schema.py` | `SCHEMA_VERSION` 17 → 18；`Migration(18, "orchestrator-full-target-witness-subject", DDL_V18)`，checksum `a24b4ef3…d671d8`；16/17 的 checksum 逐字节未动 |
+| `knowledge/validity.py`（新） | **唯一**回答「一条许可的对象是什么」的地方：`witness_subject(witness)`、`condition_subject(digests)`、`acceptance_subject(acceptance_id)`、`NO_SUBJECT` |
+| `storage/htn_store.py` | `insert_validity_witness(..., *, subject)` 变成必填关键字；写入前校验 `witness_subject(witness) == subject`，不符抛 `StoreConflict`；`list_validity_witnesses(..., subject=None)` 可按对象过滤 |
+| `orchestrator/hierarchical_dispatch.py` | `_record_witness` / `_witness_key_taken` 带 subject；DATA 道用 `acceptance_subject(...)`，前置条件道用 `condition_subject(...)` 并把 subject 写进 `wit-pre-` 的 id 哈希 |
+| `orchestrator/leaf_acceptance.py` | ACCEPT 见证同样带 subject（见 §5 的 P0-2） |
+
+**契约字节未动**：`ValidityWitness` 没加字段（AER schema 是 `additionalProperties:false`），
+`purpose` 枚举没加值。对象只存在于**行**上，不在契约里。
+
+**测试**（`test_htn_store.py` / `test_htn_end_to_end.py`）
+
+* `test_a_witness_cannot_be_stored_under_a_subject_it_does_not_name`
+* `test_two_licences_over_two_subjects_live_side_by_side`
+* `test_the_index_key_still_separates_two_different_acceptances`
+* `test_two_conclusions_about_the_same_subject_still_conflict`
+* `test_a_data_licence_and_a_precondition_licence_are_held_at_once`
+* migration：`test_migration_eighteen_is_pinned_and_creates_no_table`、
+  `test_migration_eighteen_is_the_new_head`、
+  `test_migration_eighteen_upgrades_an_existing_library_in_place`、
+  `test_migration_sixteen_checksum_is_unchanged_by_eighteen`、
+  `test_migration_seventeen_is_still_migration_seventeen`
+
+**变异自证**：`witness_subject` 恒返回 `NO_SUBJECT` → 两条道重新撞键，
+`test_a_consumer_with_both_start_lanes_is_licensed_on_the_real_world`（§5 P0-1）红。**KILLED**。
+
+## 2. 裁决 3 · demand 的准入有了生产路径
+
+**问题**（第二部分 c §7 第 12 条自己记过）：生产侧**没有任何路径** `admit_demand`。
+计划提交开出的 NEW_WORK 子责任因此永远没有 admitted demand，其 occurrence 永远不可派发。
+
+**落点**
+
+| 文件 | 改动 |
+| --- | --- |
+| `planning/htn/compiler.py` | `DemandNotAdmissible(ContractError)`；`DemandAdmission`（带 `requester()`）；`demand_admissions_for(delta)`——REFINES_PARENT 必须恰有一个采纳它的 `ChildBinding`，INDEPENDENT_AUTHORIZED 必须带 `authorization_ref`；`apply_obligation_openings(ledger, delta, *, granted_fuel=None, admit=None)` 在父责任没有 admitted demand 时拒绝，否则开出并准入 |
+| `orchestrator/obligation_commits.py` | 事件 `ObligationDemandAdmitted` / `ObligationDemandWithdrawn`；`admit_obligation_demand(...)` / `withdraw_obligation_demand(...)`（都带 principal、requester、evidence、plan_revision） |
+| `orchestrator/plan_commits.py` | `_write` 传 `_admit` 闭包；`_withdraw_retired_demands(..., plan_revision=)`（跳过被退休草案自己的父责任，所以 Mission 根责任不会被释放）；`PlanRevisionCommitted` 载荷加 `admitted_demands` / `withdrawn_demands`；`DemandNotAdmissible` → `PlanCommitRejected("DEMAND_NOT_ADMITTED", …)` |
+| `orchestrator/resolution_commits.py` | 撤销改走 `withdraw_obligation_demand`（同一条审计路径） |
+
+**测试**（`test_plan_commits.py`）
+
+* `test_a_refining_opening_gets_its_demand_from_the_slot_that_adopted_it`
+* `test_an_opening_no_adopted_slot_asks_for_is_refused`
+* `test_a_second_slot_binding_one_opening_is_refused_rather_than_shared`
+* `test_an_independent_opening_without_an_authorization_ref_is_refused`
+* `test_a_child_of_a_duty_nobody_demands_is_refused`
+* `test_the_admission_event_names_the_principal_and_the_requesting_slot`
+* `test_retiring_the_adopting_slot_withdraws_only_its_own_demand`
+* `test_a_model_proposal_cannot_state_that_a_demand_was_admitted`
+* 静态守卫：`test_nothing_outside_the_commit_path_admits_a_demand`——`admit_demand(`
+  只允许出现在 `contracts/obligations.py`、`storage/obligation_store.py`、
+  `orchestrator/obligation_commits.py`、`planning/htn/compiler.py`
+
+**变异自证**：把第五个白名单文件加进静态守卫的允许集 → 守卫红。**KILLED**。
+
+**被这条裁决弄红的旧用例**（都按「补显式 admit，不放松规则」修，未改判据）：
+
+* `test_a_fundable_opening_is_committed_and_lands_in_the_ledger`
+* `test_an_opening_the_parent_cannot_fund_is_refused`（保留 `BUDGET_INSUFFICIENT` 名字，§7.4）
+
+  两条原本手工伪造 opening、没有任何 slot 采纳它。改成走新助手
+  `_admit_root_demand` / `_adopting_slot_for` / `_with_child_duty` 造出真正采纳该责任的 delta。
+* 退休场景做不成集成用例（退掉根唯一被采纳的方法会让计划结构不完整 → `STRUCTURE_INVALID`），
+  转成对 `_withdraw_retired_demands` 的两例直测，理由写在用例里。
+
+## 3. 裁决 4 · 端口↔产物由 Worker 声明，不再由路径猜
+
+**问题**：`accepted_outputs_for` 用**子串**配对（端口 `facts` 会匹配 `artifacts/…` 下任意文件）。
+
+**落点**
+
+| 文件 | 改动 |
+| --- | --- |
+| `runtime/output_blocks.py` | `PortClaim(port_key, path)`；`parse_port_claims(...)`，拒绝理由 `outputs_not_an_object` / `output_port_not_declared` / `output_port_claimed_twice` / `output_path_not_a_string` / `output_path_not_produced`，每条都有 `REPAIR_HINTS` |
+| `runtime/role_templates.py` | `worker-hierarchical-v1`：在 `worker-v3` 上**只**加一行 `outputs` 信封声明 + 一段说明（端口名从 `declared_output_ports` 抄，版本/哈希/验收 id/schema 一律不准写，必需的被消费端口不认领即拒）。`WORKER` / `WORKER_V2` 字节未动 |
+| `orchestrator/hierarchical_dispatch.py` | `declared_output_ports_for(mission_id, task_id)`——从 `declared_ports_in_revision` + 绑定的 `PortSpec` 推出 `{port, required, cardinality, schema}` |
+| `orchestrator/leaf_acceptance.py` | `accepted_outputs_for(..., claims=())` 重写：**删掉 `_port_for` 与两处兜底**；产物按路径建索引，端口由 claim 给、schema 由 `DataRequirement` 给 |
+| `orchestrator/resolution_commits.py` | 新拒绝理由 `OUTPUT_PORT_UNCLAIMED`，**排在** `check_against_ports`/`OUTPUT_NOT_DECLARED` **之后**（点名一个不存在的端口，更可操作的答案是「没这个端口」） |
+| `orchestrator/event_handler.py` | 打包 `declared_output_ports` 上下文段；`_port_claims_from(raw, attempt)`（弹出 `outputs` 再交给 `ResultEnvelope.from_json(strict=True)`；旧 Mission 仍抛契约自己的 "unknown fields: ['outputs']"） |
+
+**测试**：新文件 `test_output_port_claims.py`（13 条），关键几条
+
+* `test_the_port_a_claim_names_is_the_port_the_artifact_is_filed_at`
+* `test_no_port_is_ever_derived_from_an_artifact_path`
+* `test_a_required_consumed_port_nobody_claimed_refuses_the_acceptance`
+* `test_an_unclaimed_extra_artifact_is_kept_as_evidence_and_not_indexed`
+* `test_a_port_with_no_consumer_needs_no_claim`
+* `test_the_older_worker_prompts_keep_their_bytes`
+* `test_a_claim_is_checked_against_the_files_this_envelope_declares`（冒烟第 1 轮挖出来的真缺陷，见 §6）
+
+**被这条裁决弄红的旧用例**：20 条（所有叶子都被 `OUTPUT_PORT_UNCLAIMED` 拒）。
+修法是给 `_accept_leaf` 一个显式 `port_claims`，默认「按计划声明的端口顺序认领给定产物」，
+并在 docstring 里写明这是**替 Worker 的声明**站位，而不是放松规则。
+`test_an_undeclared_port_is_refused_and_writes_no_acceptance` 因排序改动一度拿到
+`OUTPUT_PORT_UNCLAIMED`，把 `check_against_ports` 提前后恢复。
+
+## 4. 裁决 2 · 空转的层次 Mission 有了有界的结束
+
+**落点**：`contracts/state_machines.py` 新增 `MissionStopReason.NO_DISPATCHABLE_WORK`
+（本片**唯一**被允许的契约改动，裁决备忘点名）；`orchestrator/event_handler.py`：
+
+* `_stall_fingerprint(mission, admissions, rows)`——plan_revision、排序后的 withheld、
+  admitted_not_dispatched、unfinished、scope_epochs、support_revision、admitted_demands；
+* `_record_hierarchical_stall` 载荷加 `fingerprint`，并记 `self._stalled_at[mission.id]`；
+* `_confirm_and_stop_stalled()`——**恰好再跑一个周期**（两条许可道 → `_gather_evidence`
+  → `advance_compound_phases` → `admissions`），指纹一致才
+  `fail_mission(stop_reason=NO_DISPATCHABLE_WORK, detail={…, confirmed_after_one_more_cycle: True})`，
+  报告形状按 §6.4；
+* `run()` 在 `_record_hierarchical_stall()` 之后调用它。
+
+**测试**（`test_htn_end_to_end.py`）
+
+* `test_a_stall_that_survives_the_confirm_cycle_stops_the_mission`
+* `test_a_stall_that_the_confirm_cycle_clears_does_not_fail_the_mission`
+* `test_the_stall_path_stops_after_exactly_one_confirm_cycle`
+* `test_the_stop_report_names_every_withheld_occurrence_and_outstanding_duty`
+* `test_the_mission_is_never_marked_completed_by_the_stall_path`
+* `test_a_legacy_mission_that_idles_is_never_stopped_by_this_path`
+
+**变异自证**：`_confirm_and_stop_stalled` 复用交进来的指纹而不重算 → 
+`test_a_stall_that_the_confirm_cycle_clears_does_not_fail_the_mission` 红。**KILLED**。
+
+**被这条裁决弄红的旧用例**：5 条。`_force_active` 抬不动 FAILED→ACTIVE（§25.1 没这条边，
+这是对的），所以测试助手改用 `dataclasses.replace` 直接重写行，并注明这是**测试把世界放回去**，
+不是产品复活 Mission。另有两条新用例最初会挂起（在可运行的世界上再跑一次完整 `run()`），
+改成直接驱动 `_confirm_and_stop_stalled()` 并交一个过期指纹。
+
+## 5. 审阅必修两条（P0）
+
+### P0-1 · 在**真** `build_planning_world` 上确认
+
+裁决 1 修的正是 P0-1。确认放在 `test_htn_deployment_wiring.py` 新的第 6 节，
+用的是 `build_planning_world(mission.id, domains=("code",), …)` 装出来的**真实部署世界**
+与**出厂的 code 域数据**——`code.fix-by-patch` 被两个前置条件 gate，它的 `reproduce`
+步骤又通过 DATA 边消费 `facts.facts`，正是「两条道都要」的那个消费者。
+
+`test_a_consumer_with_both_start_lanes_is_licensed_on_the_real_world` 断言：
+
+1. 前置条件道的许可按就绪闸门自己的查法拿得到；
+2. 库里该消费者、`purpose=START` 下有**两行**，subject 一条 `acceptance:`、一条 `conditions:`；
+3. 两行的 `support_revision` 相同（即它们当年撞键的原因确实还在）；
+4. `admissions()` 对它**没有拒绝**，`admission_for(consumer)` 非空 —— 即 **READY_CANDIDATE**。
+
+### P0-2 · 撤销后返工的 ACCEPT 许可
+
+`leaf_acceptance._witness` 自造的 id 里带 `now_ms`，而行的唯一键里没有，于是同一叶子第二次
+验收会把新 id 写到老键上，`get_validity_witness` 找不到、`insert` 撞索引、`StoreError`
+被 `_accept_hierarchical_leaf` 吞掉 → 撤销后返工整条路不通。
+
+修法：id 改成**它自己占的那把键**的摘要——
+`"wit-" + content_hash_of({consumer, purpose, scope, epoch, support_revision, subject})[:32]`，
+`support_refs` 带上该次 Acceptance，冲突时先 `get` 再按 subject 重读。
+
+* `test_a_revoked_leaf_can_be_accepted_again`
+* `test_the_accept_licence_is_named_after_the_key_it_occupies`
+* **变异自证**：把 Acceptance 从 ACCEPT 见证的 `support_refs` 里拿掉（两条许可重新落到空
+  subject 上、共用一把键）→ subject 断言红。**KILLED**。
+
+## 6. 真实模型冒烟（上限 3 轮，用满）
+
+命令按任务书；**全程没有打印或记录任何 key**。原始收据只在
+`.local-test-evidence/2026-09-16/htn-smoke/`（`round01..03.txt`、`report.json`、`events.json`）。
+
+| 轮 | 结果 | 挖出的真缺陷 / 处置 |
+| --- | --- | --- |
+| 1 | 三次 Attempt 全被拒，模型烧光重试 | **真缺陷**：`_port_claims_from` 拿 `store.list_artifacts(attempt.id)` 校验认领的路径，而产物行是**验收之后**才从 `envelope.artifacts` 写进去的，解析时恒为空 → 每个诚实的认领都被 `produced: []` 拒。改成校验 `raw.get("artifacts")`（这次信封自己声明的文件）。补 `test_a_claim_is_checked_against_the_files_this_envelope_declares` |
+| 2 | `budget_exhausted` | `Budget(max_tokens=400_000, max_attempts=3)` 被三个叶子正好吃光。提到 `600_000 / 8`，注释写明理由 |
+| 3 | **FAILED / `no_dispatchable_work`** | 见下 |
+
+**第 3 轮事实**（`round03.txt` / `report.json` / `events.json`）
+
+* 模型 `deepseek-flash`；Mission `mission-a15cd6763b11c82a`；`plan_revisions = 1`；
+  `rejections = []`；`proposal_unreadable = false`；结算 token **128 396**；建 4 个 Attempt。
+* **`OUTPUT_PORT_UNCLAIMED` 出现 0 次**（第 1 轮是 3 次块级
+  `output_path_not_produced`，那是上面那条真缺陷，不是模型不会填）。
+* 四个叶子全部派发、验证 PASS、写下 Acceptance；下游叶子拿到 `inputs=1`
+  ——**声明式端口的 DATA 链路端到端通了**。
+* 卡点（进度日志里重复三次）：
+  `root resolution not formed: ROOT_REVIEW_PACKAGE_MISSING (no MISSION_FINAL ReviewPackage
+  is stored for task task-root; the root review has not been cut, so there is nothing to
+  resolve from)`，接着
+  `the loop went idle with work left over (1 withheld, 4 admitted and not dispatched)`、
+  `no dispatchable work, confirmed by one more cycle; this execution cycle ends`。
+* **为什么如实记录而不是就地修**：「裁剪根 MISSION_FINAL ReviewPackage 的部署侧评审协调器」
+  是 2b §8 与 2c §13 都列过的第三部分范围。在本片末尾临时接一个根评审，等于让系统自己
+  写下它本该检查的那份评审结论，直接冲 §21.5「错误宣布完成 = 0」。任务书也允许如实记录
+  卡点、事件原因与 `OUTPUT_PORT_UNCLAIMED` 次数。
+* 冒烟结束时 Mission 以裁决 2 设计的方式停住（`no_dispatchable_work`，一轮确认周期之后），
+  这本身就是裁决 2 在真实世界里的一次演示。
+
+## 7. 审阅处置（2b/2c 独立审阅，结论「需修后合」）
+
+| 条目 | 处置 | 测试名 / 说明 |
+| --- | --- | --- |
+| **P0-1** DATA 与前置条件许可抢同一把键 | **已修**（裁决 1） | `test_a_consumer_with_both_start_lanes_is_licensed_on_the_real_world`（真 `build_planning_world` + 出厂 code 域，READY_CANDIDATE）；另见 §1 的 5 条 subject 用例 |
+| **P0-2** 第二次验收抛 `StoreError`，返工路径不通 | **已修** | `test_a_revoked_leaf_can_be_accepted_again`、`test_the_accept_licence_is_named_after_the_key_it_occupies`；变异 KILLED |
+| **P1-3** `_root_resolution_formed` 的回执接线零测试（M09 存活） | **已修**（补证据，不改产品） | 新 `delivered` fixture（requirements 带 `delivery_contract_ref`）+ `_Trigger` 桩跑**真**方法：`test_the_trigger_names_only_the_receipts_inside_the_root_closure`、`test_a_goal_with_no_delivery_contract_names_no_receipts`。变异 M09（改回「塞全部回执」）→ 红，**KILLED** |
+| **P1-4** 取证封顶无测试、且与 I19 矛盾 | **已修**（补测试 + 给出刷新触发） | 产品：`HierarchicalDispatch.propositions_looked_at(mission_id, *, plan_revision)` / `plan_revision_committed_at(...)`——**封顶改成按 plan revision**，提交一个新修订就把每个命题重新放开一次；规则写在 docstring 里。测试：`test_a_proposition_is_looked_at_once_under_one_plan_revision`、`test_a_plan_revision_re_opens_the_look` |
+| **P1-5** `_port_for` 子串配对 | **已修**（裁决 4 删除） | `test_no_port_is_ever_derived_from_an_artifact_path`、`test_the_port_a_claim_names_is_the_port_the_artifact_is_filed_at` |
+| **P1-6** `capability_records` 的 `configured` 轴 fail-open | **已修** | `CAPABILITY_LAYERS` 改成部署的**完整声明**（`None` = 本机无需额外层），**未登记 = `configured=False`**。`test_an_undeclared_capability_is_not_configured`、`test_every_capability_the_shipped_domains_name_is_declared_by_the_deployment`；变异（改回 `needs is None or …`）→ 红，**KILLED** |
+| **P1-7** `latest_requirements_revision` 被叶子验收反复改写 | **已修** | 根的 requirements 改从 `package.binding.requirements_revision` 取。`test_the_root_resolution_quotes_the_revision_its_review_was_cut_over`、`test_a_leaf_accepted_after_the_root_review_refuses_the_root_resolution`（裁剪之后再验收一个叶子 → 读集通道看见 requirements 动了，**`READ_SET_STALE` 拒绝**，修法是重裁根评审，不是拿一份评审人没看过的判据去判）。变异（改回 latest）→ 红（`NOT_ACCEPTABLE`），**KILLED** |
+| **P1-8** Planner pin 能选到 v1/v2 而包恒为 v3 | **已修** | `HIERARCHICAL_PLANNER_PACKAGE_VERSION`、`HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE`、`hierarchical_planner_versions()`——pin 只在**与当前包版本兼容**的提示词之间生效。`test_a_pin_from_an_older_package_version_does_not_apply_to_this_package`；顺带把 `test_a_legacy_prompt_pin_does_not_reach_the_hierarchical_branch` 从源码字符串断言改成跑真选择器（P2-21 的一条）。变异 → 红，**KILLED** |
+| **P2-9** `_decide` 侧 fail-closed 无独立证据（M02 存活） | **已修** | `test_the_decide_gate_refuses_before_the_legacy_allocator_is_consulted`——monkeypatch 掉 `allocate`，断言层次 Mission **根本不到旧分配器**，且事件的 `at == "decide"`。变异 M02 → 红，**KILLED** |
+| **P2-10** `_drop_compound_rows` 不承重、无测试 | **仅记录** | 审阅读码的结论与实际一致：hierarchical 分支不跑那条 `elif` 的状态清扫，问题是被短路解决的，不是被它解决的。第二部分 §3 把它写成 F6 修复的承重部分，措辞有误，此处更正。它今天只影响最终报告主体的挑选，留给第三部分决定是去掉还是补断言 |
+| **P2-11** START 许可的**写**侧 epoch 无证据（M12 存活） | **已修** | `test_a_start_licence_is_written_at_the_scope_epoch_it_was_taken_in`——先把 scope 真的 bump 到非零再签发。变异 M12（`scope_epoch=0`）→ 红，**KILLED** |
+| **P2-12** `facts` 段没有「只给引用不给推断」的守卫（M24 存活） | **已修** | `planner_package.FACT_ENTRY_FIELDS` + `refuse_fact_inference(entries)`，`recorded_facts` 返回前自查。`test_the_facts_section_carries_references_and_never_an_inference`；变异 M24（加 `inferred_holds`）→ 红，**KILLED** |
+| **P2-13** `recorded_facts` 第二次手写了 read-set 公式 | **已修** | `recorded_facts(..., read_item=)` / `hierarchical_planner_package(..., read_item=)`；`event_handler` 传 `SemanticReadSetChecker(...).read_item`——**由将来复检它的那个 checker 计算**。无 checker 时的字面式保留为「离线渲染」路径并注明。`test_the_quoted_read_set_entry_is_computed_by_the_checker` |
+| **P2-14** `_require_accepted_work` docstring 事实错误 + 不看行状态 | **已修** | docstring 更正（`_collect_attempt` 的 `accept_result` 确实会把行推到 COMPLETED）；判定加一条：CURRENT Acceptance 落在 **FAILED** 行上视为**矛盾**并拒绝。`test_a_current_acceptance_on_a_failed_row_does_not_pass_the_judgment` |
+| **P2-15** `judge_mission` 对损坏计划抛 `RuntimeError` | **已修** | `_judgment_network` 把 `GraphIntegrityError` 转成 `CommitRejected("… does not read back …")`。`test_a_damaged_plan_refuses_the_judgment_instead_of_crashing` |
+| **P2-16** `Env` 替身的 `support_revision` 恒 1、`scope_epoch` 恒 1 | **已修** | 替身接了 `semantics`：`support_revision = len(list_observations)`、`scope_epoch = epoch(mission, scope)`，与真 `DeploymentPlanningWorld.snapshot()` 同一事实；`entries` 仍是 `say()` 的便利。`build_world` / `World.reopen` / 新助手 `_install(loop, world)` 负责把它指向**当前**打开的库。§17/§18 的 START 用例因此跑在真计数器上；P0-1 另有真世界的确认（上面那条） |
+| **P2-17** `_witness_key_taken` 之后没有回压 | **仅记录** | 裁决 2 给了空转有界的结束（`no_dispatchable_work`），但仍只在 `run(until_idle=True)` 的空闲返回路径上；`until_idle=False` 或撞 `max_cycles` 仍不留 stall 记录。留第三部分 |
+| **P2-18** `applicable_when` 只往下传一层 / `condition_digest` 无反查 | **仅记录** | 属于 §18 的设计缺口（祖父方法被 gate、中间是 compound 时深层叶子拿不到 gate），且条件本身在库里没有反查路径。要动 `grounding.task_binding_for` 与一张条件表，超出本片裁决范围 |
+| **P2-19** `run_round` 同一个 ask 既计 `unobservable` 又去 `observe_predicate` | **已修** | 加 `continue`。`test_an_ask_with_no_observer_is_reported_once` |
+| **P2-20** `publish_methods` 会把注册表里所有方法写进库 | **仅记录** | 今天只在装配时调一次，风险低；真正要管的是 synthesizer 产出的 TRIAL_ADMITTED 方法，属第三部分的方法生命周期 |
+| **P2-21** 源码字符串断言仍有 14 条 | **部分已修** | 本段把 `test_a_legacy_prompt_pin_does_not_reach_the_hierarchical_branch` 换成行为断言（跑真选择器）。synthesizer 那两条（作者锁 MODEL、意图只在 hierarchical）仍是源码断言——它们钉的是「签名里没有 author 参数」这种**不可从外部观察**的性质，换成行为断言需要另造一条能伪造 author 的入口，等于为测试开一个产品不该有的口子。留记录 |
+
+## 8. 旧模式回归（硬门槛）
+
+范围与前几段相同：`step02..step09 p32 p33 p34 p35 p36 test_critic_test_evidence_order.py`，
+在**本段全部改动都落盘、不再编辑源码树**的情况下跑。
+
+结果：**1 failed, 1854 passed, 20 skipped（8 分 52 秒）**——与开工基线
+（1 failed / 1854 passed / 20 skipped）**逐项一致**。唯一的红仍是已知可忽略的
+`p33/test_p33_source_dependencies.py::test_legacy_check_ast_and_default_retrieval_bytes_are_unchanged`
+（第一部分起就是红的，本片没有碰 `check_ast` 与默认检索那两段源码）。
+
+**p35 逐项对比**（裁决 1 移动了 `SCHEMA_VERSION` 17 → 18，离线备份/恢复那组必须逐条比）：
+
+* **合并跑里 p35 全绿**，基线与本次都是——两次合并跑的红都只有上面那一条 p33，
+  所以 p35 的每一条在两次里都通过。这是唯一有效的对比口径。
+* **单独跑 p35 的基线是污染的**，已在 §0 记过：基线 `p35.txt` 是 3 failed / 207 passed，
+  三条红分别是
+  `test_action_cold_backup.py::test_action_applied_receipt_lost_sigkill_cold_and_offline_backup`、
+  `test_context_cold_recovery.py::test_rotated_worker_context_sigkill_cold_unknown_preserves_frozen_request`、
+  以及 `test_mission_system_runtime_hooks.py` 的两条里的一条——前两条是它们自己扫
+  `src/` 算 `_source_identity()` 的 oracle 在「边跑边改源码」时的已知假阳性。
+* **本片改完、树冻结后单独跑 p35**：2 failed / 208 passed。少掉的那条正是上面那个
+  source-identity oracle（现在绿了）。剩下的 2 条是
+  `test_mission_system_runtime_hooks.py::test_default_actual_synthesis_and_critic_consume_original_system_hold`
+  与 `::test_default_actual_conflict_and_critic_use_mission_pool_then_human_releases`，
+  失败原因是 `ModuleNotFoundError: No module named 'test_p33_doc_arbitration_runtime'`
+  ——**单独跑 p35 时 p33 没被收集，那个模块不在 sys.path 上**，与本片无关，
+  基线单独跑时也是红的。
+* **迁移相关的那一组逐条点名**（冻结树上单独跑，33 passed）：
+  `test_offline_backup.py` 11 条（含 `test_restore_rejects_damage_without_publishing_or_overwriting`
+  的 5 个参数化、`test_partial_backup_and_restore_failures_publish_nothing`、
+  `test_unknown_profile_and_publish_collision_never_overwrite`）、
+  `test_action_cold_backup.py::test_action_applied_receipt_lost_sigkill_cold_and_offline_backup`、
+  `test_priced_budget_cold_reopen.py` 1 条、`test_process_kill_recovery.py` 2 条、
+  `test_critic_admission_cold_recovery.py` 2 条、`test_provider_budget_recovery.py` 8 条、
+  `test_context_cold_recovery.py` 3 条 —— **全绿**。即 migration 18 的就地升级与
+  冷开/恢复路径没有破坏任何一条离线备份语义。
+
+## 9. 结果
+
+* `tests/orchestrator/full_target`：**2435 passed, 2 skipped**（基线 2376/2，净增 59 条）。
+* 变异自证共 **11 条**，全部 KILLED：裁决 1 的 `witness_subject → NO_SUBJECT`、
+  裁决 2 的「复用交进来的指纹」、裁决 3 的静态守卫白名单、P0-2 的「去掉 ACCEPT 见证的
+  acceptance support_ref」、P1-6 的 `needed is None or …`、P1-7 的 `latest_requirements_revision`、
+  P1-8 的「按模式而非按包版本认 pin」、M09「塞全部回执」、M12 `scope_epoch=0`、
+  M02「删掉 `_decide` 的 fail-closed」、M24「往 facts 条目加 `inferred_holds`」。
+* `ruff check`（本段改过的全部文件 + 三个新文件）：All checks passed。
+* `ruff format --check`：`plan_commits.py`、`compiler.py` 与 5 个测试文件在 HEAD 上是
+  format-clean 的（用 `git show HEAD:` 单独验过），本段把它们排回 clean；
+  `event_handler.py`、`commit_service.py`、`role_templates.py` 在 HEAD 上**就不是**
+  format-clean（同法验过），按「只动自己改的地方」没有整文件重排。
+* `mypy src/agent_orchestrator`：**17 errors in 4 files**，与基线一致。
+
+## 10. 偏差与契约变更
+
+1. **契约改动（裁决备忘授权的唯一一处）**：`MissionStopReason` 新增
+   `NO_DISPATCHABLE_WORK`。`ValidityWitness` 没加字段，`purpose` 没加值。
+2. **schema**：`SCHEMA_VERSION` 17 → 18；migration 18 只加列与换索引（additive），
+   16/17 的 checksum 逐字节未动；就地升级会留 `.pre-schema-18.backup`（按 pending 的最高版本命名）。
+3. `insert_validity_witness` 的 `subject` 变成**必填**关键字参数（13 处调用点逐个显式补齐）。
+4. 新事件两个：`ObligationDemandAdmitted`、`ObligationDemandWithdrawn`。
+5. `PlanRevisionCommitted` 载荷加 `admitted_demands` / `withdrawn_demands`。
+6. 新拒绝理由 `OUTPUT_PORT_UNCLAIMED`（accept 侧）与 `DEMAND_NOT_ADMITTED`（plan commit 侧）。
+7. 新提示词版本 `worker-hierarchical-v1`（`worker-v3` 上只加一行 `outputs`）；
+   `WORKER` / `WORKER_V2` 字节未动。
+8. Planner 提示词的 pin 语义收紧（P1-8）：pin 只在与当前**包版本**兼容的提示词之间生效。
+9. 根 Resolution 的 requirements 来源改变（P1-7）：从 `latest_requirements_revision`
+   改成 `package.binding.requirements_revision`。**连带后果**：根评审裁剪之后再发生一次
+   叶子验收，根 Resolution 会以 `READ_SET_STALE` 被拒（而不是悄悄换判据）。
+   部署侧的修法是重裁根评审——这条要让契约 owner 知道。
+10. 取证封顶语义改变（P1-4）：从「一个 Mission 一次」改成「一个 plan revision 一次」。
+11. `capability_records` 的 `configured` 轴改为 fail-closed（P1-6）：**装新域必须同时
+    在 `CAPABILITY_LAYERS` 里登记它的能力**，否则该能力报 `configured=False`。
+12. `_new_mode(mission)` 接线点 11 → 14。
+13. `judge_mission` 对损坏计划的出口从 `RuntimeError` 改成 `CommitRejected`（P2-15）。
+
+## 11. 留给第三部分
+
+1. **根 MISSION_FINAL ReviewPackage 的裁剪（部署侧评审协调器）**——冒烟第 3 轮的唯一卡点，
+   2b §8 / 2c §13 已列。没有它，层次 Mission 走不到 COMPLETED。
+   连带：P1-7 之后，「叶子验收晚于根评审裁剪」会让根 Resolution 被 `READ_SET_STALE` 拒，
+   协调器必须能**重裁**。
+2. `_witness_key_taken` 之后的回压与 `until_idle=False` / `max_cycles` 路径上的 stall 记录（P2-17）。
+3. `applicable_when` 的跨层传递与 `condition_digest` 的反查路径（P2-18）。
+4. `_drop_compound_rows` 的去留与最终报告主体的断言（P2-10）。
+5. `publish_methods` 与 synthesizer 产出方法的生命周期（P2-20）。
+6. 就绪闸门是否该看 outcome——已 COMPLETED 的叶子仍出现在 `admitted_not_dispatched`
+   （2c §8 第 1 条）。
+7. synthesizer 那两条只有源码字符串守着的性质（P2-21）。

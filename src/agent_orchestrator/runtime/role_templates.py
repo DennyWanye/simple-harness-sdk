@@ -586,6 +586,77 @@ HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
     }
 )
 
+#: The hierarchical Planner **package** this build assembles.
+#:
+#: P2.3c part 2d, review P1-8: "the prompt and the package are chosen together or
+#: not at all" was written in the chooser's comment but not enforced — a pin naming
+#: ``planner-hierarchical-v2`` passed the membership test above and produced the v2
+#: prompt against the v3 package.  v2 tells the model *"this package gives you no
+#: observation ids, so never write kind=fact"*, while the v3 package carries a
+#: ``facts`` section; that pairing is exactly the ``READ_SET_UNRESOLVED`` the part-2c
+#: smoke spent two rounds on.  Bump this number whenever the package changes in a way
+#: a prompt can be wrong about, and list the prompts written against it below.
+HIERARCHICAL_PLANNER_PACKAGE_VERSION = 2
+
+#: Which prompt versions were written against which package version.  A pin only
+#: applies among the versions of the package the branch actually builds.
+HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE: Mapping[int, frozenset[str]] = {
+    # package 1: no ``facts`` section; the prompt forbids ``kind=fact`` read-set entries.
+    1: frozenset({PLANNER_HIERARCHICAL_V1_VERSION, PLANNER_HIERARCHICAL_VERSION}),
+    # package 2 (part 2c): carries ``facts``; the prompt tells the model to copy an
+    # entry from it rather than invent an observation id.
+    2: frozenset({PLANNER_HIERARCHICAL_V3_VERSION}),
+}
+
+
+def hierarchical_planner_versions(
+    package_version: int = HIERARCHICAL_PLANNER_PACKAGE_VERSION,
+) -> frozenset[str]:
+    """The prompt versions a pin may select while this package version is built."""
+
+    return HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE.get(int(package_version), frozenset())
+
+WORKER_HIERARCHICAL_VERSION = "worker-hierarchical-v1"
+
+# P2.3c part 2d, decision 4: the hierarchical Worker is told **which output ports its
+# occurrence declares**, and says which file it wrote at each of them.  Nothing else
+# changes: it is ``worker-v3`` plus one field in the envelope contract, derived with
+# ``_revise`` so the older versions keep their bytes and their frozen digests.
+#
+# Why the model at all: which of this Attempt's files is the ``repository_facts`` a
+# downstream step asked for is a *local key* (TG design §3.2) — only the agent that
+# wrote it knows.  Everything the system binds (acceptance id, content hash, schema
+# ref, producer result, support revision, occurrence) stays out of the model's hands
+# and is refused by the parser if it appears; the prompt says so in as many words.
+WORKER_HIERARCHICAL = _revise(
+    WORKER,
+    WORKER_HIERARCHICAL_VERSION,
+    (
+        '   "evidence": [你修改过的文件路径或测试路径], "artifacts": [你修改或新增的文件路径],\n',
+        '   "evidence": [你修改过的文件路径或测试路径], "artifacts": [你修改或新增的文件路径],\n'
+        '   "outputs": {"<输入 declared_output_ports 里给你的端口名>": "<你本次写过的一个文件路径>"},\n',
+    ),
+    (
+        "artifacts 里的路径必须是工作区里真实存在的文件。块外不要输出任何文字。",
+        "artifacts 里的路径必须是工作区里真实存在的文件。\n"
+        "outputs 说明本次产物对应计划里的哪个输出端口：端口名只能从输入的 declared_output_ports 里照抄，"
+        "不能自己造；每个值必须是你本次真实写过的文件路径（要同时出现在 artifacts 里）。"
+        "没有声明的多余文件照常放在 artifacts 里当证据，不用写进 outputs。"
+        "outputs 里只写「端口名: 路径」两项，不要写版本、哈希、验收 id、schema 之类的字段——"
+        "那些由系统填写，你写了整块会被拒绝并要求重写。"
+        "declared_output_ports 里 required=true 且下游确有消费者的端口必须被认领，漏掉会被验收拒绝。\n"
+        "块外不要输出任何文字。",
+    ),
+)
+register_template(WORKER_HIERARCHICAL)
+
+#: Every registered prompt version a *hierarchical* Worker may be pinned to.  Same
+#: rule as ``HIERARCHICAL_PLANNER_VERSIONS``: a deployment pin naming ``worker-v3``
+#: is a pin for the DAG mode and does not apply here, because ``worker-v3`` never
+#: asks for ``outputs`` and the accept side would then refuse every leaf for
+#: ``OUTPUT_PORT_UNCLAIMED``.
+HIERARCHICAL_WORKER_VERSIONS: frozenset[str] = frozenset({WORKER_HIERARCHICAL_VERSION})
+
 METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v1"
 
 # P2.3c (§7.3 source 4, §18.5 C8): the MethodSynthesizer is a *new role*, not a new
@@ -747,7 +818,11 @@ __all__ = (
     "METHOD_SYNTHESIZER",
     "METHOD_SYNTHESIZER_VERSION",
     "PLAN_REVISION_PROPOSAL_TAG",
+    "HIERARCHICAL_PLANNER_PACKAGE_VERSION",
     "HIERARCHICAL_PLANNER_VERSIONS",
+    "HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE",
+    "hierarchical_planner_versions",
+    "HIERARCHICAL_WORKER_VERSIONS",
     "PLANNER_HIERARCHICAL",
     "PLANNER_HIERARCHICAL_V1",
     "PLANNER_HIERARCHICAL_V1_VERSION",
@@ -765,6 +840,8 @@ __all__ = (
     "ROLES",
     "TASK_PROPOSAL_TAG",
     "WORKER",
+    "WORKER_HIERARCHICAL",
+    "WORKER_HIERARCHICAL_VERSION",
     "WORKER_VERSION",
     "WORKER_V2",
     "RoleTemplate",

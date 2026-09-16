@@ -51,7 +51,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ...contracts.htn import TaskForm
+from ...contracts.htn import ReadItemKind, TaskForm
+from ...contracts.models import ContractError
 from ...contracts.semantic_base import content_hash_of
 from ...graph.task_network import TaskNetworkSnapshot
 
@@ -260,8 +261,42 @@ def applicability_reports(
     return tuple(out)
 
 
+#: Everything one ``facts`` entry may say.  Review P2-12: the section exists to hand
+#: the Planner *references* — what was observed, by whom, when, and the read-set entry
+#: that cites it — and never a conclusion drawn from them.  A judgement ("this holds",
+#: "this method is applicable") computed here would be this package deciding the very
+#: question the refinement round decides, with no record that it did.  The guard is
+#: structural because the failure is: nobody notices a field being added.
+FACT_ENTRY_FIELDS: frozenset[str] = frozenset(
+    {
+        "proposition_key",
+        "polarity",
+        "coverage",
+        "observer_id",
+        "observed_at_ms",
+        "read_set_entry",
+    }
+)
+
+
+def refuse_fact_inference(entries: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse a ``facts`` section that carries anything but references (P2-12)."""
+
+    for entry in entries:
+        extra = sorted(set(entry) - FACT_ENTRY_FIELDS)
+        if extra:
+            raise ContractError(
+                f"the planner package's facts section may only reference what was observed; "
+                f"{extra} would hand the model an inference this package is not entitled to "
+                f"make (allowed: {sorted(FACT_ENTRY_FIELDS)})"
+            )
+
+
 def recorded_facts(
-    observations: Sequence[Any], *, limit: int = MAX_FACTS
+    observations: Sequence[Any],
+    *,
+    limit: int = MAX_FACTS,
+    read_item: Any = None,
 ) -> tuple[dict[str, Any], ...]:
     """The observations this Mission has recorded, in the shape a ``read_set`` wants.
 
@@ -276,6 +311,14 @@ def recorded_facts(
     So each entry carries a ready-made ``read_set_entry``: the observation's id, the
     semantic revision and the content hash the checker recomputes
     (``_read_set.ReadSetChecker.observation_state``).  Copy it, do not derive it.
+
+    Review P2-13: **who computes that entry** is the checker, when a caller hands one
+    over.  ``ReadSetChecker.read_item``'s own docstring says the proposing side and
+    the checking side must agree on what a semantic revision is and that writing the
+    formula twice is how they stop agreeing — and this function was the second place
+    it was written.  ``read_item`` is therefore a callable ``(ReadItemKind, id) ->
+    ReadItem``; the literal below is the offline form, used only when no checker is
+    available (a package rendered without a store behind it).
 
     Two deliberate limits:
 
@@ -299,8 +342,17 @@ def recorded_facts(
     entries: list[dict[str, Any]] = []
     for key in sorted(newest):
         record = newest[key]
-        to_json = getattr(record, "to_json", None)
-        digest = content_hash_of(to_json()) if callable(to_json) else ""
+        identity = str(getattr(record, "observation_id", ""))
+        if read_item is not None:
+            quoted = read_item(ReadItemKind.FACT, identity).to_json()
+        else:
+            to_json = getattr(record, "to_json", None)
+            quoted = {
+                "kind": "fact",
+                "id": identity,
+                "semantic_revision": 1,
+                "content_hash": content_hash_of(to_json()) if callable(to_json) else "",
+            }
         entries.append(
             {
                 "proposition_key": key,
@@ -308,15 +360,12 @@ def recorded_facts(
                 "coverage": str(getattr(record, "coverage", "")),
                 "observer_id": getattr(record, "observer_id", None),
                 "observed_at_ms": int(getattr(record, "observed_at_ms", 0)),
-                "read_set_entry": {
-                    "kind": "fact",
-                    "id": str(getattr(record, "observation_id", "")),
-                    "semantic_revision": 1,
-                    "content_hash": digest,
-                },
+                "read_set_entry": quoted,
             }
         )
-    return tuple(entries[: max(0, limit)])
+    chosen = tuple(entries[: max(0, limit)])
+    refuse_fact_inference(chosen)
+    return chosen
 
 
 def hierarchical_planner_package(
@@ -330,6 +379,7 @@ def hierarchical_planner_package(
     observations: Sequence[Any] = (),
     attempt_ordinal: int = 1,
     rejected: Sequence[Mapping[str, Any]] = (),
+    read_item: Any = None,
 ) -> dict[str, Any]:
     """The whole package, as a plain mapping the context builder can seal.
 
@@ -365,7 +415,7 @@ def hierarchical_planner_package(
         # that cites it verbatim.  See :func:`recorded_facts`: a Planner that is shown
         # no observation id can only invent one, and an invented id is
         # ``READ_SET_UNRESOLVED``.
-        "facts": [dict(item) for item in recorded_facts(observations)],
+        "facts": [dict(item) for item in recorded_facts(observations, read_item=read_item)],
         "operators": {
             "available_capabilities": sorted(str(item) for item in capabilities),
             "unavailable_capabilities": sorted(str(item) for item in unavailable_capabilities),
@@ -463,5 +513,7 @@ __all__ = (
     "method_library",
     "open_goals",
     "pending_primitives",
+    "FACT_ENTRY_FIELDS",
     "recorded_facts",
+    "refuse_fact_inference",
 )

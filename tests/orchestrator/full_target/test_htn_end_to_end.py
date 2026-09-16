@@ -86,6 +86,10 @@ from agent_orchestrator.graph.eligibility import ReadinessReason  # noqa: E402
 from agent_orchestrator.knowledge.predicates import (  # noqa: E402
     PredicateRegistry,
 )
+from agent_orchestrator.knowledge.validity import (  # noqa: E402
+    NO_SUBJECT,
+    witness_subject,
+)
 from agent_orchestrator.orchestrator import occurrence_tasks  # noqa: E402
 from agent_orchestrator.orchestrator.accepted_outputs import (  # noqa: E402
     accepted_output_from_json,
@@ -130,6 +134,7 @@ from agent_orchestrator.orchestrator.plan_commits import (  # noqa: E402
     PlanPrincipal,
 )
 from agent_orchestrator.orchestrator.resolution_commits import (  # noqa: E402
+    GOAL_RESOLUTION_COMMITTED,
     eligible_root_receipts,
 )
 from agent_orchestrator.planning.htn.observation_pipeline import (  # noqa: E402
@@ -300,7 +305,12 @@ class World:
         raise AssertionError(f"no occurrence for {task_id}")
 
     def admit_demand(self) -> None:
-        """TG decision 9: an occurrence competes only while a demand for its duty lives."""
+        """TG decision 9: an occurrence competes only while a demand for its duty lives.
+
+        P2.3c part 2d routes the bootstrap through ``CommitService`` so that this
+        fixture uses the same audited entry point production does; duties the commit
+        path already admitted for the slot that adopted them are skipped.
+        """
 
         seen: set[str] = set()
         for spec in self.network().occurrences:
@@ -309,7 +319,13 @@ class World:
                 continue
             seen.add(duty)
             if not self.duties.account(self.mission.id, spec.obligation_id).has_admitted_demand:
-                self.duties.admit_demand(self.mission.id, spec.obligation_id)
+                self.service.admit_obligation_demand(
+                    self.mission.id,
+                    spec.obligation_id,
+                    principal="mission-submitter",
+                    requester={"kind": "mission_root"},
+                    evidence={"mission_id": self.mission.id, "occurrence": str(spec.occurrence_id)},
+                )
 
     def reopen(self) -> World:
         """Re-open the same library, as a restarted process would."""
@@ -317,6 +333,9 @@ class World:
         self.store.close()
         service = CommitService(Store.open(self.path))
         mission = service.store.get_mission(self.mission.id)
+        # The Env reads its counters out of the store (review P2-16), so it has to
+        # follow the reopened one; the closed handle would raise on the next look.
+        self.env.semantics = HtnStore(service.store)
         return dataclasses.replace(
             self,
             service=service,
@@ -397,6 +416,10 @@ def build_world(
     # skipped it would be testing a transition the deployment never makes.  Both modes,
     # because the legacy witnesses below compare the two at the same phase.
     service.begin_planning(mission.id)
+    # Review P2-16: the double counts the *same rows* the real world counts, so a
+    # START-lane test here sees ``support_revision`` move with the evidence instead
+    # of sitting at the fixture's constant 1.
+    env.semantics = HtnStore(service.store)
     return World(
         service=service,
         mission=mission,
@@ -790,9 +813,9 @@ def test_an_output_of_an_occurrence_the_plan_dropped_is_not_offered(world: World
 # ======================================================================================
 
 
-def test_migration_seventeen_is_the_head_and_is_additive() -> None:
-    assert schema.SCHEMA_VERSION == 17
-    assert schema.MIGRATIONS[-1].ddl is acceptance_receipt_schema.DDL
+def test_migration_seventeen_is_additive_and_eighteen_is_the_head() -> None:
+    assert schema.SCHEMA_VERSION == 18
+    assert schema.MIGRATIONS[16].ddl is acceptance_receipt_schema.DDL
     assert "ALTER TABLE" not in acceptance_receipt_schema.DDL.upper()
 
 
@@ -1077,6 +1100,45 @@ def test_the_event_handler_chooses_the_hierarchical_prompt_with_the_package() ->
     assert "_hierarchical_planner_template" in source
 
 
+class _Pinned:
+    """Just enough ``Orchestrator`` to answer ``_template``: a domain and a pin table.
+
+    The two collaborators the chooser reads are ``commit.domain_for`` (the frozen
+    domain profile) and ``policy_for``’s ``prompt_versions`` (the frozen pin), so a
+    stub that supplies exactly those runs the **real** chooser against a real pin.
+    """
+
+    def __init__(self, pin: str | None) -> None:
+        from agent_orchestrator.governance.domains import resolve_domain
+
+        self._domain = resolve_domain(None)
+        self._pin = pin
+
+    class _Commit:
+        def __init__(self, domain: Any) -> None:
+            self._domain = domain
+
+        def domain_for(self, mission_id: str) -> Any:
+            return self._domain
+
+    @property
+    def commit(self) -> Any:
+        return self._Commit(self._domain)
+
+    def policy_for(self, mission_id: str) -> dict[str, Any]:
+        return {"prompt_versions": {} if self._pin is None else {"planner": self._pin}}
+
+    def choose(self) -> Any:
+        from agent_orchestrator.orchestrator.event_handler import Orchestrator
+
+        return Orchestrator._hierarchical_planner_template(self, "m-1")  # type: ignore[arg-type]
+
+    def _template(self, template: Any, mission_id: str) -> Any:
+        from agent_orchestrator.orchestrator.event_handler import Orchestrator
+
+        return Orchestrator._template(self, template, mission_id)  # type: ignore[arg-type]
+
+
 def test_a_legacy_prompt_pin_does_not_reach_the_hierarchical_branch() -> None:
     """P2.3c part 2b: the mode picks the prompt, a policy pin only picks the version.
 
@@ -1085,21 +1147,47 @@ def test_a_legacy_prompt_pin_does_not_reach_the_hierarchical_branch() -> None:
     *role* — so the hierarchical branch was handed the legacy prompt while holding
     the hierarchical package.  That is the half-mode §18.5 rule 1 forbids, and it is
     what made every real-model round come back ``proposal_unreadable``.
+
+    Part 2d (review P2-21) drives the real chooser instead of reading its source.
     """
 
-    import inspect
+    from agent_orchestrator.runtime.role_templates import PLANNER, PLANNER_HIERARCHICAL_V3
 
-    from agent_orchestrator.orchestrator import event_handler
+    assert _Pinned(PLANNER.prompt_version).choose() is PLANNER_HIERARCHICAL_V3
+    assert _Pinned(None).choose() is PLANNER_HIERARCHICAL_V3
+
+
+def test_a_pin_from_an_older_package_version_does_not_apply_to_this_package() -> None:
+    """Review P1-8: the prompt and the package are chosen together, now in code.
+
+    ``planner-hierarchical-v2`` is a hierarchical prompt, so the old membership test
+    honoured the pin — and handed the model a prompt that says "this package gives
+    you no observation ids, never write kind=fact" together with a package whose
+    ``facts`` section is the only place a legal fact entry can be copied from.  A pin
+    only selects among the prompts written against the package this build assembles.
+    """
+
     from agent_orchestrator.runtime.role_templates import (
+        HIERARCHICAL_PLANNER_PACKAGE_VERSION,
         HIERARCHICAL_PLANNER_VERSIONS,
-        PLANNER,
+        HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE,
         PLANNER_HIERARCHICAL,
+        PLANNER_HIERARCHICAL_V1,
+        PLANNER_HIERARCHICAL_V3,
+        hierarchical_planner_versions,
     )
 
-    chooser = inspect.getsource(event_handler.Orchestrator._hierarchical_planner_template)
-    assert "HIERARCHICAL_PLANNER_VERSIONS" in chooser
-    assert PLANNER.prompt_version not in HIERARCHICAL_PLANNER_VERSIONS
-    assert PLANNER_HIERARCHICAL.prompt_version in HIERARCHICAL_PLANNER_VERSIONS
+    # v1 and v2 belong to the older package; v3 is this package’s own.
+    assert _Pinned(PLANNER_HIERARCHICAL_V1.prompt_version).choose() is PLANNER_HIERARCHICAL_V3
+    assert _Pinned(PLANNER_HIERARCHICAL.prompt_version).choose() is PLANNER_HIERARCHICAL_V3
+    assert _Pinned(PLANNER_HIERARCHICAL_V3.prompt_version).choose() is PLANNER_HIERARCHICAL_V3
+    assert hierarchical_planner_versions() == frozenset({PLANNER_HIERARCHICAL_V3.prompt_version})
+    # the mode-level set is still the union of every group, and nothing is orphaned
+    assert (
+        frozenset().union(*HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE.values())
+        == HIERARCHICAL_PLANNER_VERSIONS
+    )
+    assert HIERARCHICAL_PLANNER_PACKAGE_VERSION in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE
 
 
 # ======================================================================================
@@ -1780,18 +1868,49 @@ def _assembly(world: World):
     return LeafAcceptanceAssembly(world.store, world.service, dispatch=world.dispatch)
 
 
-def _accept_leaf(world: World, *, layers=None, artifacts=None, result_id: str = "result-1"):
+def _accept_leaf(
+    world: World,
+    *,
+    layers=None,
+    artifacts=None,
+    result_id: str = "result-1",
+    now_ms: int = 1_000_000,
+    port_claims=None,
+    task_id: str | None = None,
+):
+    """Accept one leaf, stating which file went to which declared port.
+
+    P2.3c part 2d, decision 4: the port↔artifact pairing is *declared* by the Worker,
+    never derived from the path.  This helper stands in for that declaration — it
+    claims the plan's declared ports in order over the supplied artifacts, which is
+    what a Worker writing a single output would have said — and any test that cares
+    about the claim itself passes ``port_claims`` explicitly.
+    """
+
+    from agent_orchestrator.runtime.output_blocks import PortClaim
+
+    leaf = _leaf_task(world) if task_id is None else task_id
+    items = tuple(
+        artifacts if artifacts is not None else (_Artifact("artifact-1", "out/result.json"),)
+    )
+    claims = port_claims
+    if claims is None:
+        declared = world.dispatch.declared_output_ports_for(world.mission.id, leaf)
+        claims = tuple(
+            PortClaim(port_key=item["port"], path=items[index].path)
+            for index, item in enumerate(declared)
+            if index < len(items)
+        )
     return _assembly(world).accept(
         world.mission.id,
-        _leaf_task(world),
+        leaf,
         result_id=result_id,
         layers=layers if layers is not None else _passing_layers(),
-        artifacts=(
-            artifacts if artifacts is not None else (_Artifact("artifact-1", "out/result.json"),)
-        ),
+        artifacts=items,
         producer_agent_ids=("agent-worker",),
         reviewer_agent_id="agent-critic",
-        now_ms=1_000_000,
+        now_ms=now_ms,
+        port_claims=claims,
     )
 
 
@@ -1800,6 +1919,77 @@ def test_a_verified_leaf_becomes_a_committed_acceptance(live: World) -> None:
     assert str(receipt.acceptance.task_id) == _leaf_task(live)
     stored = live.semantics.get_acceptance(receipt.acceptance_id)
     assert stored.to_json() == receipt.acceptance.to_json()
+
+
+def test_a_revoked_leaf_can_be_accepted_again(live: World) -> None:
+    """Review P0-2: rework after a revocation has to be able to land.
+
+    The ACCEPT licence used to be named ``hash(task, now_ms)`` while its row's unique
+    key carried no clock, so the second acceptance of one leaf minted a new id onto
+    the old key.  ``get_validity_witness`` missed it, the insert hit the index, and
+    the ``StoreError`` escaped ``accept()`` into ``_accept_hierarchical_leaf``, which
+    records "acceptance refused" — for ever, because the observation count that feeds
+    ``support_revision`` does not move during execution.  A revoked leaf could then
+    never be re-accepted and ``_require_accepted_work`` could never be satisfied.
+
+    **Mutation**: drop the acceptance from the ACCEPT witness's ``support_refs`` (so
+    both licences fall under the empty subject and share one key again) and the
+    subject assertion below goes red — there is one licence where there are two
+    acceptances, and the second acceptance is standing on the first one's permission.
+    """
+
+    first = _accept_leaf(live)
+    _revoke(live, str(first.acceptance_id))
+    second = _accept_leaf(live, result_id="result-2", now_ms=1_100_000)
+    assert str(second.acceptance_id) != str(first.acceptance_id)
+    assert live.semantics.get_acceptance(second.acceptance_id).validity is Validity.CURRENT
+    # Two acceptances, two licences: each names the acceptance it was taken over.
+    licences = [
+        item
+        for item in live.semantics.list_validity_witnesses(live.mission.id)
+        if item.purpose is WitnessPurpose.ACCEPT
+    ]
+    assert {witness_subject(item) for item in licences} == {
+        f"acceptance:{first.acceptance_id}",
+        f"acceptance:{second.acceptance_id}",
+    }
+
+
+def test_the_accept_licence_is_named_after_the_key_it_occupies(live: World) -> None:
+    """Review P0-2, stated as the property rather than as a symptom.
+
+    The row's identity is (consumer, purpose, scope, epoch, support revision,
+    subject); the id is a digest of exactly those, so "already stored" is a keyed
+    read and can never disagree with the index.  Replaying the same acceptance is
+    therefore one licence, not a refusal.
+    """
+
+    from agent_orchestrator.contracts.semantic_base import content_hash_of
+
+    first = _accept_leaf(live)
+    again = _accept_leaf(live)
+    assert str(again.acceptance_id) == str(first.acceptance_id)
+    licences = [
+        item
+        for item in live.semantics.list_validity_witnesses(live.mission.id)
+        if item.purpose is WitnessPurpose.ACCEPT
+    ]
+    assert len(licences) == 1
+    held = licences[0]
+    assert (
+        held.witness_id
+        == "wit-"
+        + content_hash_of(
+            {
+                "consumer": str(held.consumer_ref.id),
+                "purpose": str(WitnessPurpose.ACCEPT),
+                "scope": held.scope_id,
+                "epoch": int(held.scope_epoch),
+                "support_revision": int(held.support_revision),
+                "subject": witness_subject(held),
+            }
+        )[:32]
+    ), "the id carries the key and nothing else — no clock"
 
 
 def test_the_review_anchors_are_frozen_in_the_store_before_the_command(live: World) -> None:
@@ -1912,6 +2102,8 @@ def _accept_with_port(assembly, world: World, port: str):
         outputs = original(ports, **kwargs)
         return tuple(dataclasses.replace(item, output_port=port) for item in outputs)
 
+    from agent_orchestrator.runtime.output_blocks import PortClaim
+
     module.accepted_outputs_for = relabelled
     try:
         return assembly.accept(
@@ -1923,9 +2115,137 @@ def _accept_with_port(assembly, world: World, port: str):
             producer_agent_ids=("agent-worker",),
             reviewer_agent_id="agent-critic",
             now_ms=1_000_000,
+            # An honest claim on the way in; the relabelling above is what renames the
+            # port afterwards, which is a producer relabelling its own output.
+            port_claims=(PortClaim(port_key="result", path="out/result.json"),),
         )
     finally:
         module.accepted_outputs_for = original
+
+
+# ================================================= part 2d, decision 4: declared ports
+def test_the_port_a_claim_names_is_the_port_the_artifact_is_filed_at(live: World) -> None:
+    """Part 2c's smoke round 9, as a test.
+
+    Two files, one declared port, and no name in common between them.  The old rule
+    paired by substring or by "one port and one file", so this either mis-filed the
+    wrong artifact or filed nothing and left the consumer in ``WAITING_DATA`` for
+    ever.  The claim says which file it is, and that is the whole rule.
+    """
+
+    from agent_orchestrator.runtime.output_blocks import PortClaim
+
+    receipt = _accept_leaf(
+        live,
+        artifacts=(
+            _Artifact("artifact-a", "notes/scratch.md"),
+            _Artifact("artifact-b", "build/report-2026.json"),
+        ),
+        port_claims=(PortClaim(port_key="result", path="build/report-2026.json"),),
+    )
+    rows = live.semantics.list_acceptance_outputs(live.mission.id)
+    assert [(row["output_port"], row["artifact_id"]) for row in rows] == [("result", "artifact-b")]
+    assert rows[0]["acceptance_id"] == receipt.acceptance_id
+    # And the consumer is licensed to run on it.
+    live.dispatch.issue_input_witnesses(live.mission.id, live.network(), now_ms=1_000_000)
+    assert live.dispatch.input_witnesses(live.mission.id, _review_task(live))
+
+
+def test_an_unclaimed_extra_artifact_is_kept_as_evidence_and_not_indexed(live: World) -> None:
+    """A debug file or a log is a normal thing to produce; it is not an output.
+
+    §10.2 forbids choosing between two hashes for one destination — it does not
+    forbid producing files nobody asked for.  They stay artifacts (evidence of the
+    run) and simply do not enter the index, and the acceptance is **not** refused.
+    """
+
+    from agent_orchestrator.runtime.output_blocks import PortClaim
+
+    _accept_leaf(
+        live,
+        artifacts=(
+            _Artifact("artifact-a", "out/result.json"),
+            _Artifact("artifact-spare", "out/debug.log"),
+        ),
+        port_claims=(PortClaim(port_key="result", path="out/result.json"),),
+    )
+    rows = live.semantics.list_acceptance_outputs(live.mission.id)
+    assert [row["artifact_id"] for row in rows] == ["artifact-a"]
+    assert live.semantics.list_acceptances(live.mission.id)
+
+
+def test_a_required_consumed_port_nobody_claimed_refuses_the_acceptance(live: World) -> None:
+    """TG §4.3: an unprovable binding is refused, never left empty.
+
+    Leaving it empty is what part 2c did, and the consequence was a Mission that sat
+    in ``WAITING_DATA`` until an operator killed it.  The refusal is recorded and
+    does *not* undo the verification: the verdict is a fact that happened, and this
+    is §9.1's "content defect → a new content attempt against the same duty".
+    """
+
+    from agent_orchestrator.orchestrator.resolution_commits import ResolutionCommitRejected
+
+    with pytest.raises(ResolutionCommitRejected) as refused:
+        _accept_leaf(live, port_claims=())
+    assert refused.value.reason == "OUTPUT_PORT_UNCLAIMED"
+    assert "result" in str(refused.value)
+    assert live.semantics.list_acceptances(live.mission.id) == ()
+    assert live.semantics.list_acceptance_outputs(live.mission.id) == ()
+
+
+def test_a_port_with_no_consumer_needs_no_claim(live: World) -> None:
+    """Nothing consumes the review leaf, so it declares no port and claims none."""
+
+    assert live.dispatch.declared_output_ports_for(live.mission.id, _review_task(live)) == ()
+    _accept_leaf(
+        live,
+        task_id=_review_task(live),
+        result_id="result-review",
+        artifacts=(_Artifact("artifact-2", "out/verdict.json"),),
+    )
+    assert live.semantics.list_acceptance_outputs(live.mission.id) == ()
+
+
+def test_no_port_is_ever_derived_from_an_artifact_path(live: World) -> None:
+    """Decision 4's mutation self-check, and review P1-5's defect in one test.
+
+    The old fallbacks were "the port name appears somewhere in the path" (so a port
+    called ``facts`` claimed ``artifacts/anything.json`` — the reviewer's probe) and
+    "one port, one artifact, so they go together".  Both are the guess TG design
+    §10.2 forbids.
+
+    **Mutation**: put either fallback back into ``accepted_outputs_for`` and let the
+    claim list be empty.  The first assertion below goes red (a port appears out of
+    nowhere) and so does
+    ``test_a_required_consumed_port_nobody_claimed_refuses_the_acceptance``
+    (a refusal turns into a pass).
+    """
+
+    import inspect
+
+    from agent_orchestrator.contracts.htn import OccurrenceId, TaskRef
+    from agent_orchestrator.orchestrator import leaf_acceptance as module
+
+    assert (
+        module.accepted_outputs_for(
+            {"facts": _schema_of(live)},
+            occurrence=OccurrenceId(live.occurrence_of(_leaf_task(live))),
+            task_id=TaskRef(_leaf_task(live)),
+            result_id="result-x",
+            acceptance_id="acc-x",
+            support_revision=0,
+            artifacts=(_Artifact("artifact-z", "artifacts/unrelated-output.json"),),
+            namespace="workspace",
+            claims=(),
+        )
+        == ()
+    ), "no claim, no index entry — a path is not a port"
+    assert "_port_for" not in inspect.getsource(module), "the guessing helper is gone"
+
+
+def _schema_of(world: World):
+    producer = OccurrenceId(world.occurrence_of(_leaf_task(world)))
+    return declared_output_ports(world.network(), producer)["result"]
 
 
 def test_a_leaf_whose_output_nobody_consumes_indexes_nothing(live: World) -> None:
@@ -2190,6 +2510,48 @@ def test_the_missing_assembly_is_recorded_once_for_the_mission(tmp_path) -> None
             assert len(events) == 1
             assert events[0].payload["semantics"] == HIERARCHICAL_SEMANTICS
             assert "install_hierarchical" in events[0].payload["detail"]
+
+    asyncio.run(case())
+
+
+def test_the_decide_gate_refuses_before_the_legacy_allocator_is_consulted(
+    tmp_path, monkeypatch
+) -> None:
+    """Review P2-9 (mutation M02): the ``at="decide"`` half of the fail-closed rule.
+
+    Deleting the guard at the top of ``_decide`` left the whole suite green, because
+    ``_next_attempt``'s own guard still refused every dispatch.  Behaviourally that is
+    still fail-closed — but the property the guard exists for is that a hierarchical
+    Mission with no assembly never reaches the **legacy allocator** at all, and that
+    the refusal is recorded at the place it happened.  Neither had a test.
+    """
+
+    from agent_orchestrator.orchestrator import event_handler as module
+
+    world, orchestrator = _unassembled(tmp_path)
+    consulted: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "allocate",
+        lambda *args, **kwargs: (
+            consulted.append("allocate")
+            or (_ for _ in ()).throw(
+                AssertionError("the legacy allocator was consulted for a hierarchical Mission")
+            )
+        ),
+    )
+
+    async def case() -> None:
+        async with orchestrator as loop:
+            mission = loop.store.get_mission(world.mission.id)
+            assert await loop._decide(mission) is False
+            assert consulted == []
+            events = [
+                event
+                for event in loop.store.list_events(mission.id)
+                if event.type == ASSEMBLY_MISSING
+            ]
+            assert [event.payload["at"] for event in events] == ["decide"]
 
     asyncio.run(case())
 
@@ -2464,7 +2826,7 @@ def _final_criterion(criterion_id: str = ROOT_CRITERION):
     )
 
 
-def _publish_final_requirements(world: World, *, criteria=None):
+def _publish_final_requirements(world: World, *, criteria=None, delivery: str | None = None):
     from agent_orchestrator.contracts.resolution import (
         CriterionExpr,
         RequirementsRevision,
@@ -2479,6 +2841,7 @@ def _publish_final_requirements(world: World, *, criteria=None):
         revision=revision,
         criteria=tuple(criteria or (_final_criterion(),)),
         success_expression=CriterionExpr(ROOT_CRITERION),
+        delivery_contract_ref=delivery,
     )
     world.semantics.insert_requirements_revision(published)
     return published
@@ -2583,7 +2946,7 @@ def _final_witness(world: World, *, now_ms: int = ROOT_NOW_MS):
         support_revision=0,
         as_of_ms=int(now_ms),
     )
-    world.semantics.insert_validity_witness(world.mission.id, witness)
+    world.semantics.insert_validity_witness(world.mission.id, witness, subject=NO_SUBJECT)
     return witness
 
 
@@ -2603,12 +2966,12 @@ def _accept_every_child(world: World) -> None:
     )
 
 
-def _ready_for_root(world: World, *, verdicts=None, verdict=None):
+def _ready_for_root(world: World, *, verdicts=None, verdict=None, delivery: str | None = None):
     """Everything a root ``GoalResolution`` is read from, stored the way a deployment would."""
 
     world.dispatch.issue_input_witnesses(world.mission.id, world.network(), now_ms=1_000_000)
     _accept_every_child(world)
-    requirements = _publish_final_requirements(world)
+    requirements = _publish_final_requirements(world, delivery=delivery)
     package = _final_package(world, requirements)
     record = _final_record(world, package, verdicts=verdicts, verdict=verdict)
     _final_witness(world)
@@ -2639,6 +3002,78 @@ def test_the_root_review_is_ready_once_every_gating_child_is_accepted(
     resolvable: World,
 ) -> None:
     assert resolvable.dispatch.root_review_ready(resolvable.mission.id) is True
+
+
+def test_the_root_resolution_quotes_the_revision_its_review_was_cut_over(
+    resolvable: World,
+) -> None:
+    """Review P1-7: the root is judged against the revision the reviewer saw."""
+
+    from agent_orchestrator.contracts.resolution import ReviewPurpose
+
+    package = next(
+        item
+        for item in resolvable.semantics.list_review_packages(
+            resolvable.mission.id, purpose=ReviewPurpose.MISSION_FINAL
+        )
+    )
+    outcome = _offer_root(resolvable)
+    assert outcome.committed, f"{outcome.reason}: {outcome.detail}"
+    stored = resolvable.semantics.adopted_goal_resolution(resolvable.mission.id, ROOT_DUTY)
+    assert stored is not None
+    assert int(stored.requirements_version) == int(package.binding.requirements_revision)
+
+
+def test_a_leaf_accepted_after_the_root_review_refuses_the_root_resolution(
+    resolvable: World,
+) -> None:
+    """Review P1-7: a leaf acceptance after the cut invalidates the root review.
+
+    ``RequirementsRevision`` is a Mission-level object, but every leaf acceptance
+    publishes one carrying *that leaf's* coverage criteria — so "the Mission's current
+    requirements" is really "the last leaf that happened to be accepted".  The root
+    resolution used to read ``latest_requirements_revision``, and the only reason no
+    test saw it is that ``_ready_for_root`` accepts every child *before* publishing
+    the final revision; the real loop accepts leaves from ``_collect_attempt`` with no
+    ordering relative to the root review at all.  The root then claimed coverage of a
+    criterion nobody had reviewed, which is §21.5's "wrongly declared complete".
+
+    The root now reads the revision its ``ReviewPackage`` was bound to, so the
+    read-set channel can see that the Mission's requirements have moved underneath the
+    review and refuses: the repair is to cut the root review again against the current
+    revision, not to resolve against one the reviewer never saw.
+    """
+
+    from agent_orchestrator.contracts.resolution import (
+        CriterionExpr,
+        RequirementsRevision,
+        RequirementsRevisionId,
+        ReviewPurpose,
+    )
+
+    package = next(
+        item
+        for item in resolvable.semantics.list_review_packages(
+            resolvable.mission.id, purpose=ReviewPurpose.MISSION_FINAL
+        )
+    )
+    reviewed = int(package.binding.requirements_revision)
+    # Exactly the shape ``leaf_acceptance._requirements`` publishes, one leaf later.
+    resolvable.semantics.insert_requirements_revision(
+        RequirementsRevision(
+            revision_id=RequirementsRevisionId("req-a-later-leaf"),
+            mission_id=resolvable.mission.id,
+            revision=reviewed + 1,
+            criteria=(_final_criterion("c-a-later-leaf"),),
+            success_expression=CriterionExpr("c-a-later-leaf"),
+        )
+    )
+
+    outcome = _offer_root(resolvable)
+    assert not outcome.committed
+    assert outcome.reason == "READ_SET_STALE"
+    assert f"was read at {reviewed}" in outcome.detail
+    assert resolvable.semantics.adopted_goal_resolution(resolvable.mission.id, ROOT_DUTY) is None
 
 
 def test_the_root_resolution_is_formed_from_the_stored_anchors(resolvable: World) -> None:
@@ -2813,6 +3248,70 @@ def test_a_leaf_whose_acceptance_was_revoked_stops_the_judgment(resolvable: Worl
     assert "current Acceptance" in str(caught.value)
 
 
+def test_a_damaged_plan_refuses_the_judgment_instead_of_crashing(resolvable: World) -> None:
+    """Review P2-15: ``judge_mission`` is a commit entry, so it answers with a refusal.
+
+    ``_judgment_network`` reads the plan back, and a plan member whose Task has no
+    semantic binding used to leave here as ``PlanIntegrityError`` — a ``RuntimeError``
+    nothing on this path catches.  ``_decide`` hit ``root_review_ready`` first and
+    stopped the Mission there, so it only showed under a race; the public entry had no
+    answer at all.
+    """
+
+    from agent_orchestrator.contracts.htn import OccurrenceId, OccurrenceSpec, Requiredness
+
+    assert _offer_root(resolvable).committed
+    revision = int(resolvable.semantics.active_plan_revision(resolvable.mission.id).revision)
+    resolvable.semantics.insert_plan_membership(
+        resolvable.mission.id,
+        revision,
+        OccurrenceSpec(
+            occurrence_id=OccurrenceId("occ-orphan"),
+            task_id=TaskRef("task-orphan"),
+            obligation_id=ROOT_DUTY,  # type: ignore[arg-type]
+            form=TaskForm.PRIMITIVE,
+            requiredness=Requiredness.OPTIONAL_AUTHORIZED,
+        ),
+        instance_id=None,
+    )
+    judgments = [{"criterion": item, "met": True} for item in resolvable.mission.success_criteria]
+    with pytest.raises(CommitRejected) as caught:
+        resolvable.service.judge_mission(
+            resolvable.mission.id, judgments=judgments, summary="damaged"
+        )
+    assert "does not read back" in str(caught.value)
+
+
+def test_a_current_acceptance_on_a_failed_row_does_not_pass_the_judgment(
+    resolvable: World,
+) -> None:
+    """Review P2-14: the Acceptance and the row disagreeing is a contradiction.
+
+    The judgment read only the Acceptances, on the strength of a docstring claiming
+    "nothing in this mode ever writes COMPLETED onto the row" — which is false:
+    ``_collect_attempt`` calls ``accept_result`` and pushes the row to COMPLETED
+    before the leaf acceptance runs.  So a leaf whose row had since gone FAILED, with
+    its Acceptance still CURRENT, was judged as accepted work.
+    """
+
+    assert _offer_root(resolvable).committed
+    leaf = _leaf_task(resolvable)
+    row = resolvable.store.get_task(leaf)
+    # The row moves under the Acceptance, which is the situation being pinned; the
+    # product never lifts a row this way.
+    resolvable.store.update_task(
+        dataclasses.replace(row, status=TaskStatus.FAILED, version=row.version + 1),
+        expected_version=row.version,
+    )
+    judgments = [{"criterion": item, "met": True} for item in resolvable.mission.success_criteria]
+    with pytest.raises(CommitRejected) as caught:
+        resolvable.service.judge_mission(
+            resolvable.mission.id, judgments=judgments, summary="contradicted"
+        )
+    assert "disagree" in str(caught.value)
+    assert leaf in str(caught.value)
+
+
 def test_a_legacy_mission_is_judged_without_asking_for_a_resolution(tmp_path) -> None:
     """The mode gate is a gate on the *mode*: legacy judgment is byte-for-byte unchanged."""
 
@@ -2914,6 +3413,133 @@ def test_an_out_of_closure_receipt_does_not_block_the_root_resolution(
         required_stage=DeliveryStage.CONFIRMED,
     )
     assert "rcpt-stray" not in chosen
+
+
+class _Trigger:
+    """Just enough ``Orchestrator`` to run the real ``_root_resolution_formed``.
+
+    The method reads four things off ``self`` — ``commit``, ``_owner``, ``_note`` and
+    ``_plan_integrity_stop`` — so a stub carrying those runs the **wiring** rather
+    than a copy of it.  Review P1-3: every test of the receipt filter called
+    ``eligible_root_receipts`` directly, so the branch that calls it had never been
+    executed and the mutation that hands over every recorded receipt survived the
+    whole suite.
+    """
+
+    def __init__(self, world: World) -> None:
+        self._world = world
+        self.notes: list[str] = []
+
+    _owner = "orchestrator-1"
+
+    @property
+    def commit(self) -> Any:
+        return self._world.service
+
+    def _note(self, text: str) -> None:
+        self.notes.append(text)
+
+    async def _plan_integrity_stop(self, mission: Any, error: Exception) -> None:
+        raise error
+
+    async def formed(self) -> bool:
+        from agent_orchestrator.orchestrator.event_handler import Orchestrator
+
+        return await Orchestrator._root_resolution_formed(  # type: ignore[arg-type]
+            self, self._world.mission, self._world.dispatch
+        )
+
+
+@pytest.fixture
+def delivered(tmp_path) -> World:
+    """A resolvable Mission whose goal declares a delivery contract."""
+
+    world = committed(tmp_path, key="p23c-delivery", demand=True)
+    _ready_for_root(world, delivery="contract-ship-it")
+    return world
+
+
+def _stray_receipt(world: World, *, receipt_id: str) -> None:
+    """One recorded receipt quoting an Acceptance outside the root's duty closure."""
+
+    from agent_orchestrator.contracts.evidence_state import Validity
+    from agent_orchestrator.contracts.resolution import Acceptance, ReviewRecordId
+
+    stray_record = ReviewRecordId(f"rec-{receipt_id}")
+    package = dataclasses.replace(_stub_package(world), package_id=f"pkg-{receipt_id}")
+    world.semantics.insert_review_package(package)
+    world.semantics.insert_review_record(
+        dataclasses.replace(
+            _stub_record(world), record_id=stray_record, package_id=f"pkg-{receipt_id}"
+        ),
+        official=False,
+    )
+    world.semantics.insert_acceptance(
+        Acceptance(
+            acceptance_id=AcceptanceId(f"acc-{receipt_id}"),
+            mission_id=world.mission.id,
+            task_id=TaskRef(_leaf_task(world)),
+            obligation_id="obl-elsewhere",
+            requirements_revision=1,
+            contract_revision=1,
+            input_manifest_hash=HEX_A,
+            review_record_id=stray_record,
+            accepted_at_ms=1,
+            validity=Validity.CURRENT,
+        )
+    )
+    _record_receipt(
+        world,
+        receipt_id=receipt_id,
+        acceptance_id=f"acc-{receipt_id}",
+        obligation="obl-elsewhere",
+    )
+
+
+def test_the_trigger_names_only_the_receipts_inside_the_root_closure(delivered: World) -> None:
+    """Review P1-3 (mutation M09): the delivery branch, executed end to end.
+
+    ``delivery_contract_ref`` appeared nowhere in this suite, so the whole
+    ``if ... delivery_contract_ref:`` branch of ``_root_resolution_formed`` — the
+    required stage *and* the receipt filter — had never run.  Here the goal declares
+    a contract, the library holds one receipt inside the root's duty closure and one
+    outside it, and the root resolution has to form quoting only the first.  Handing
+    over every recorded receipt (the pre-F5 wiring) makes ``_check_delivery`` refuse
+    the whole command with ``DELIVERY_RECEIPT_INVALID``.
+    """
+
+    live = next(
+        item
+        for item in delivered.semantics.list_acceptances(delivered.mission.id)
+        if str(item.obligation_id) != "obl-elsewhere"
+    )
+    _record_receipt(
+        delivered,
+        receipt_id="rcpt-live",
+        acceptance_id=str(live.acceptance_id),
+        obligation=str(live.obligation_id),
+    )
+    _stray_receipt(delivered, receipt_id="rcpt-stray")
+
+    trigger = _Trigger(delivered)
+    assert asyncio.run(trigger.formed()) is True, trigger.notes
+
+    committed_events = delivered.events(GOAL_RESOLUTION_COMMITTED)
+    assert len(committed_events) == 1
+    payload = committed_events[0].payload
+    assert payload["is_mission_root"] is True
+    assert payload["required_delivery_stage"] == str(DeliveryStage.CONFIRMED)
+    assert payload["delivery_receipt_id"] == "rcpt-live"
+
+
+def test_a_goal_with_no_delivery_contract_names_no_receipts(resolvable: World) -> None:
+    """The other side of the same branch: no contract, no stage, no receipts."""
+
+    trigger = _Trigger(resolvable)
+    assert asyncio.run(trigger.formed()) is True, trigger.notes
+    payload = resolvable.events(GOAL_RESOLUTION_COMMITTED)[0].payload
+    assert payload["required_delivery_stage"] is None
+    assert payload["delivery_receipt_id"] is None
 
 
 def test_an_in_closure_receipt_is_chosen_and_a_revoked_one_is_not(resolvable: World) -> None:
@@ -3327,6 +3953,126 @@ def test_the_facts_section_quotes_an_observation_the_read_set_checker_accepts(
     assert verdict.stale == () and verdict.unresolved == ()
 
 
+def _record_look(world: World, key: str, *, at_ms: int, identity: str) -> None:
+    world.semantics.insert_observation(
+        world.mission.id,
+        ObservationRecord(
+            observation_id=identity,
+            proposition_key=key,
+            polarity=True,
+            source_ref=TypedRef(
+                kind=TypedRefKind.OBSERVATION, id="obs-1", revision=1, content_hash=HEX_A
+            ),
+            observed_at_ms=at_ms,
+            recorded_at_ms=at_ms,
+            coverage=QueryCompleteness.BEST_EFFORT,
+            observer_id="observer-1",
+        ),
+    )
+
+
+def test_a_proposition_is_looked_at_once_under_one_plan_revision(world: World) -> None:
+    """Review P1-4: the cap part 2c claimed but no test held.
+
+    ``run_evidence_round`` skips an ask whose proposition this Mission has already
+    read, and removing that skip (mutation M23) used to leave the whole suite green —
+    while the real-model round it was written for recorded the same proposition
+    several hundred times in seconds.
+    """
+
+    revision = int(world.network().plan_revision)
+    committed_at = world.dispatch.plan_revision_committed_at(world.mission.id, revision)
+    assert committed_at > 0, "the fixture really did commit a revision"
+
+    assert world.dispatch.propositions_looked_at(world.mission.id, plan_revision=revision) == (
+        frozenset()
+    )
+    _record_look(world, "plan.ready#alpha", at_ms=committed_at + 5, identity="obsrec-now")
+    assert world.dispatch.propositions_looked_at(world.mission.id, plan_revision=revision) == (
+        frozenset({"plan.ready#alpha"})
+    )
+
+
+def test_a_plan_revision_re_opens_the_look(world: World) -> None:
+    """Review P1-4: the cap used to be for the Mission's whole lifetime.
+
+    Evidence could then never refresh — a precondition repaired while the plan ran was
+    never read again, which contradicts I19's "recompute, do not reuse the old TRUE"
+    that ``issue_start_witnesses`` argues for one file over.  An observation taken
+    before the current revision was committed no longer counts as having looked, so
+    committing a revision gives every proposition exactly one more read.
+    """
+
+    revision = int(world.network().plan_revision)
+    committed_at = world.dispatch.plan_revision_committed_at(world.mission.id, revision)
+    _record_look(world, "plan.ready#alpha", at_ms=committed_at - 1, identity="obsrec-before")
+    assert world.dispatch.propositions_looked_at(world.mission.id, plan_revision=revision) == (
+        frozenset()
+    ), "a read from before this revision is not a read under it"
+    # The Mission-lifetime rule would have counted it, whenever it was taken.
+    assert world.semantics.list_observations(world.mission.id)
+    # and a revision this Mission never committed is no barrier at all
+    assert world.dispatch.plan_revision_committed_at(world.mission.id, revision + 99) == 0
+    assert world.dispatch.propositions_looked_at(
+        world.mission.id, plan_revision=revision + 99
+    ) == frozenset({"plan.ready#alpha"})
+
+
+def test_the_facts_section_carries_references_and_never_an_inference(world: World) -> None:
+    """Review P2-12: the section hands over what was observed, not what follows.
+
+    Mutation M24 — add an ``inferred_holds`` field to every entry — used to leave the
+    whole suite green.  A conclusion computed here would be this package deciding the
+    question the refinement round decides, with no record that it did, so the set of
+    fields an entry may carry is now checked rather than merely intended.
+    """
+
+    from agent_orchestrator.planning.htn.planner_package import (
+        FACT_ENTRY_FIELDS,
+        refuse_fact_inference,
+    )
+
+    _record_look(world, "plan.ready#alpha", at_ms=10, identity="obsrec-guard")
+    entries = recorded_facts(world.semantics.list_observations(world.mission.id))
+    assert entries and all(set(item) <= FACT_ENTRY_FIELDS for item in entries)
+    with pytest.raises(ContractError, match="inference"):
+        refuse_fact_inference([{**entries[0], "inferred_holds": True}])
+
+
+def test_the_quoted_read_set_entry_is_computed_by_the_checker(world: World) -> None:
+    """Review P2-13: one formula for "what revision is this", not two.
+
+    ``ReadSetChecker.read_item`` says in as many words that the proposing side and the
+    checking side writing that formula twice is how they stop agreeing — and this
+    package was the second place it was written.  The entry the Planner is told to
+    copy is produced by the checker that will re-check it.
+    """
+
+    from agent_orchestrator.orchestrator._read_set import SemanticReadSetChecker
+
+    _record_look(world, "plan.ready#alpha", at_ms=10, identity="obsrec-checker")
+    checker = SemanticReadSetChecker(world.store, world.semantics, mission_id=world.mission.id)
+    entries = recorded_facts(
+        world.semantics.list_observations(world.mission.id), read_item=checker.read_item
+    )
+    quoted = entries[0]["read_set_entry"]
+    assert quoted == checker.read_item(ReadItemKind.FACT, "obsrec-checker").to_json()
+    verdict = checker.verify(
+        SemanticReadSet(
+            requirements_revision=0,
+            observation_revisions=(
+                ReadItem(
+                    kind=ReadItemKind.FACT,
+                    id=quoted["id"],
+                    semantic_revision=int(quoted["semantic_revision"]),
+                    content_hash=str(quoted["content_hash"]),
+                ),
+            ),
+        )
+    )
+    assert verdict.stale == () and verdict.unresolved == ()
+
+
 def test_only_the_newest_observation_of_a_proposition_is_offered(world: World) -> None:
     """A superseded record is an entry guaranteed to refuse the commit."""
 
@@ -3532,6 +4278,18 @@ def _stalled(tmp_path, *, mode: str = HIERARCHICAL_SEMANTICS):
     return world, Orchestrator(config, RoleScriptedProvider({"planner": []})), mode
 
 
+def _install(loop: Any, world: World) -> None:
+    """Hand the loop this Env, pointed at the store the **loop** opened.
+
+    ``_stalled`` closes the fixture's handle and the Orchestrator opens its own over
+    the same file; since review P2-16 the Env reads its evidence counters out of a
+    store, so it has to be the live one.
+    """
+
+    world.env.semantics = HtnStore(loop.store)
+    loop.install_hierarchical(planning=world.env)
+
+
 def test_an_idle_hierarchical_mission_with_withheld_work_records_the_stall(tmp_path) -> None:
     """The loop stops looking; the reasons are written down rather than left implied."""
 
@@ -3539,7 +4297,7 @@ def test_an_idle_hierarchical_mission_with_withheld_work_records_the_stall(tmp_p
 
     async def case():
         async with orchestrator as loop:
-            loop.install_hierarchical(planning=world.env)
+            _install(loop, world)
             await loop.run()
             return loop.store.get_mission(world.mission.id), list(
                 loop.store.list_events(world.mission.id)
@@ -3555,23 +4313,195 @@ def test_an_idle_hierarchical_mission_with_withheld_work_records_the_stall(tmp_p
         "NOT_SELECTED",
         "NEEDS_REFINEMENT",
     }
-    # The record is not a verdict: an admitted demand from outside would run this plan.
-    assert mission.status is MissionStatus.ACTIVE
+    assert payload["fingerprint"], "the stall carries its own identity (§9.1)"
+    # The *record* is still not the verdict.  The verdict is the second step below, and
+    # the two events together are the whole narrative: where it is stuck, then that one
+    # more cycle found it stuck in exactly the same place, then the cycle ends.
+    assert [item.type for item in events].index(MISSION_STALLED) < [
+        item.type for item in events
+    ].index("MissionFailed")
+    assert mission.status is MissionStatus.FAILED
 
 
-def test_the_stall_record_does_not_cancel_or_fail_anything(tmp_path) -> None:
-    """A Mission nobody can move *this cycle* keeps its rows and its status."""
+def test_a_stall_that_survives_the_confirm_cycle_stops_the_mission(tmp_path) -> None:
+    """P2.3c part 2d, decision 2 (memo test 2).
+
+    §15 makes a Mission a **bounded** execution cycle: "somebody could admit a demand
+    later" belongs to the next cycle, not to this one, and a局 that never ends cannot
+    enter the paired evaluation §21.5 asks for.  §9.1 licenses stopping on *repeated*
+    no progress, so the stop comes after one more complete cycle that read the world
+    again and found it unchanged.
+    """
 
     world, orchestrator, _ = _stalled(tmp_path)
 
     async def case():
         async with orchestrator as loop:
-            loop.install_hierarchical(planning=world.env)
+            _install(loop, world)
             await loop.run()
-            return [task.status for task in loop.store.list_tasks(world.mission.id)]
+            return loop.store.get_mission(world.mission.id)
 
-    statuses = asyncio.run(case())
-    assert TaskStatus.CANCELLED not in statuses
+    mission = asyncio.run(case())
+    assert mission.status is MissionStatus.FAILED
+    assert mission.final_report["stop_reason"] == "no_dispatchable_work"
+    assert mission.final_report["detail"]["confirmed_after_one_more_cycle"] is True
+
+
+def test_the_stop_report_names_every_withheld_occurrence_and_outstanding_duty(
+    tmp_path,
+) -> None:
+    """Memo test 3, and §6.4's shape: the expanded structure and the open duties.
+
+    ``BOUND_REACHED`` is the model: the report says what was expanded and what is
+    still owed, and never that the goal is impossible (§7.4 / TG §8.2 — a missing
+    input, an unavailable observer and an UNKNOWN external action are three different
+    causes and are not all converted into "the task failed").
+    """
+
+    world, orchestrator, _ = _stalled(tmp_path)
+
+    async def case():
+        async with orchestrator as loop:
+            _install(loop, world)
+            await loop.run()
+            return loop.store.get_mission(world.mission.id), loop.hierarchical.admissions(
+                world.mission.id
+            )
+
+    mission, admissions = asyncio.run(case())
+    detail = mission.final_report["detail"]
+    assert len(detail["withheld"]) == len(admissions.refusals), "every refusal, not a sample"
+    assert all(item["reason"] and item["detail_codes"] for item in detail["withheld"])
+    assert detail["outstanding_obligations"], "the duties still owed are named"
+    assert all(
+        set(item) >= {"obligation_id", "has_admitted_demand", "remaining_fuel"}
+        for item in detail["outstanding_obligations"]
+    )
+    assert detail["plan_revision"] == int(admissions.plan_revision)
+    # §7.4: this is a bound, not a verdict about the goal.
+    assert mission.final_report["stop_reason"] not in {
+        "insufficient_evidence",
+        "mission_criteria_unmet",
+        "planning_failed",
+        "no_progress",
+    }
+
+
+def test_a_stall_that_the_confirm_cycle_clears_does_not_fail_the_mission(tmp_path) -> None:
+    """Memo test 1, and decision 2's first mutation self-check.
+
+    A demand admitted from outside, an approval granted, an observation recorded —
+    each is exactly the kind of change that makes the very same plan runnable, and
+    part 2c's smoke moved twice on changes of that size.  §9.1 only licenses a stop on
+    a *repeated* lack of progress, so the confirmation **re-reads the world** and
+    compares; it does not act on the verdict it was handed.
+
+    Driven directly rather than through two full runs: what is under test is the
+    comparison, and a second loop would only be asserting that the scheduler idles.
+
+    **Mutation**: make ``_confirm_and_stop_stalled`` treat the fingerprint it was
+    handed as the current one (skip the re-read) and this goes red — the Mission is
+    stopped although its world had moved.
+    """
+
+    world, orchestrator, _ = _stalled(tmp_path)
+
+    async def case():
+        async with orchestrator as loop:
+            _install(loop, world)
+            mission = loop.store.get_mission(world.mission.id)
+            assert mission.status is MissionStatus.ACTIVE
+            # A stall was recorded under a world that no longer holds.
+            loop._stalled_at[world.mission.id] = "a fingerprint from a world that moved"
+            await loop._confirm_and_stop_stalled()
+            return loop.store.get_mission(world.mission.id)
+
+    mission = asyncio.run(case())
+    assert mission.status is MissionStatus.ACTIVE, "a changed world is not a confirmed stall"
+
+
+def test_the_stall_path_stops_after_exactly_one_confirm_cycle(tmp_path) -> None:
+    """Memo test 7 — decision 2's second mutation self-check.
+
+    The confirmation is **one** cycle, hard-coded.  A ``while`` here would turn an idle
+    loop into a busy one, which is the failure this whole path exists to end.
+
+    **Mutation**: wrap the body of ``_confirm_and_stop_stalled`` in a retry loop and
+    the count below stops being 1.
+    """
+
+    world, orchestrator, _ = _stalled(tmp_path)
+    calls: list[str] = []
+
+    async def case():
+        async with orchestrator as loop:
+            _install(loop, world)
+            real = loop.hierarchical.admissions
+
+            def counted(mission_id, *args, **kwargs):
+                calls.append(str(mission_id))
+                return real(mission_id, *args, **kwargs)
+
+            loop.hierarchical.admissions = counted  # type: ignore[method-assign]
+            loop._stalled_at[world.mission.id] = "not the current fingerprint"
+            await loop._confirm_and_stop_stalled()
+
+    asyncio.run(case())
+    assert calls == [world.mission.id], "the confirmation reads the admissions once"
+
+
+def test_the_mission_is_never_marked_completed_by_the_stall_path(tmp_path) -> None:
+    """Memo test 5 — §21.5's two hard invariants, asserted on this path directly.
+
+    A stop can never become a completion: it does not go through
+    ``attempt_root_resolution`` and it never writes ``COMPLETED``.  The budget
+    conservation also has to hold at the end of the局, because ``fail_mission``
+    cascades the stop (cancels open work, closes intents, releases reservations).
+    """
+
+    world, orchestrator, _ = _stalled(tmp_path)
+
+    async def case():
+        async with orchestrator as loop:
+            _install(loop, world)
+            await loop.run()
+            from agent_orchestrator.contracts.htn import ObligationId
+
+            duties = ObligationStore(loop.store)
+            return (
+                loop.store.get_mission(world.mission.id),
+                list(loop.store.list_events(world.mission.id)),
+                [
+                    duties.account(world.mission.id, ObligationId(str(duty))).remaining_fuel
+                    for duty in duties.obligation_ids(world.mission.id)
+                ],
+            )
+
+    mission, events, fuel = asyncio.run(case())
+    assert mission.status is not MissionStatus.COMPLETED
+    kinds = [item.type for item in events]
+    assert "MissionCompleted" not in kinds
+    assert "GoalResolutionCommitted" not in kinds, "no root Resolution was formed"
+    assert fuel and all(item >= 0 for item in fuel), "no duty is over-drawn at the end"
+
+
+def test_a_legacy_mission_that_idles_is_never_stopped_by_this_path(tmp_path) -> None:
+    """Memo test 4: the stop is hierarchical-only, like the record above it."""
+
+    world, orchestrator, _ = _stalled(tmp_path, mode="legacy")
+
+    async def case():
+        async with orchestrator as loop:
+            loop.install_hierarchical(planning=None)
+            await loop.run()
+            return loop.store.get_mission(world.mission.id), [
+                item.type for item in loop.store.list_events(world.mission.id)
+            ]
+
+    mission, kinds = asyncio.run(case())
+    assert MISSION_STALLED not in kinds
+    if mission.status is MissionStatus.FAILED:
+        assert mission.final_report["stop_reason"] != "no_dispatchable_work"
 
 
 def test_a_legacy_mission_that_idles_is_not_reported_as_stalled(tmp_path) -> None:
@@ -3581,7 +4511,7 @@ def test_a_legacy_mission_that_idles_is_not_reported_as_stalled(tmp_path) -> Non
 
     async def case():
         async with orchestrator as loop:
-            loop.install_hierarchical(planning=world.env)
+            _install(loop, world)
             await loop._record_hierarchical_stall()
             return [
                 item
@@ -3606,14 +4536,20 @@ def test_an_occurrence_that_was_admitted_and_never_ran_is_named_in_the_record(tm
 
     async def case():
         async with orchestrator as loop:
-            loop.install_hierarchical(planning=world.env)
+            _install(loop, world)
             duties = ObligationStore(loop.store)
             for spec in loop.hierarchical.network(world.mission.id).occurrences:
                 if (
                     duties.exists(world.mission.id, spec.obligation_id)
                     and not duties.account(world.mission.id, spec.obligation_id).has_admitted_demand
                 ):
-                    duties.admit_demand(world.mission.id, spec.obligation_id)
+                    loop.commit.admit_obligation_demand(
+                        world.mission.id,
+                        spec.obligation_id,
+                        principal="mission-submitter",
+                        requester={"kind": "mission_root"},
+                        evidence={"occurrence": str(spec.occurrence_id)},
+                    )
             admitted = sorted(loop.hierarchical.admissions(world.mission.id).readiness)
             assert admitted, "the fixture must really have an admissible occurrence"
             await loop._record_hierarchical_stall()
@@ -3630,16 +4566,15 @@ def test_an_occurrence_that_was_admitted_and_never_ran_is_named_in_the_record(tm
     assert records[0].payload["unfinished"], "the rows that are still open are named"
 
 
-def test_a_licence_that_cannot_be_stored_beside_another_is_recorded_not_swallowed(
-    tmp_path,
-) -> None:
-    """The two START lanes share one unique key; the loser says so instead of crashing.
+def test_a_data_licence_and_a_precondition_licence_are_held_at_once(tmp_path) -> None:
+    """P2.3c part 2d, decision 1: the two START lanes no longer contend for one row.
 
-    ``validity_witnesses`` holds one START row per (mission, consumer, scope, epoch,
-    support revision), which cannot express "this consumer has a DATA licence *and* a
-    precondition licence taken at the same reading of the world".  Until that index
-    carries the licensed subject, one of the two is refused — and an occurrence that
-    waits because of a storage limit must be able to say so.
+    Migration 16 keyed ``validity_witnesses`` on (mission, consumer, purpose, scope,
+    epoch, support revision) and made it UNIQUE, so a leaf that both consumes an
+    accepted output and sits under a gated method could hold only one of its two
+    licences — and waited for the one that lost.  Migration 18 puts the licensed
+    *subject* in the key: an acceptance and a condition set are different subjects,
+    so both rows exist and the occurrence is licensed for what it actually needs.
     """
 
     from agent_orchestrator.contracts.evidence_state import ValidityWitness
@@ -3648,30 +4583,82 @@ def test_a_licence_that_cannot_be_stored_beside_another_is_recorded_not_swallowe
     world = _gated(tmp_path)
     leaf = _gated_leaf(world)
     snapshot = world.env.snapshot()
-    world.semantics.insert_validity_witness(
-        world.mission.id,
-        ValidityWitness(
-            witness_id="wit-in-occupied",
-            consumer_ref=TypedRef(kind=TypedRefKind.TASK, id=leaf, revision=1, content_hash=HEX_A),
-            purpose=WitnessPurpose.START,
-            truth=TruthValue.TRUE,
-            freshness=Validity.CURRENT,
-            availability=Availability.READABLE,
-            decision=WitnessDecision.USABLE,
-            scope_id="mission",
-            scope_epoch=world.semantics.epoch(world.mission.id, "mission"),
-            support_revision=int(snapshot.support_revision),
-            as_of_ms=1_000,
+    epoch = world.semantics.epoch(world.mission.id, "mission")
+    data_lane = ValidityWitness(
+        witness_id="wit-in-occupied",
+        consumer_ref=TypedRef(kind=TypedRefKind.TASK, id=leaf, revision=1, content_hash=HEX_A),
+        purpose=WitnessPurpose.START,
+        truth=TruthValue.TRUE,
+        freshness=Validity.CURRENT,
+        availability=Availability.READABLE,
+        decision=WitnessDecision.USABLE,
+        scope_id="mission",
+        scope_epoch=epoch,
+        support_revision=int(snapshot.support_revision),
+        as_of_ms=1_000,
+        support_refs=(
+            TypedRef(
+                kind=TypedRefKind.ACCEPTANCE, id="acc-upstream", revision=1, content_hash=HEX_A
+            ),
         ),
     )
-    assert world.dispatch.issue_start_witnesses(world.mission.id, now_ms=1_000_000) == ()
+    world.semantics.insert_validity_witness(
+        world.mission.id, data_lane, subject=witness_subject(data_lane)
+    )
+    issued = world.dispatch.issue_start_witnesses(world.mission.id, now_ms=1_000_000)
+    assert issued, "the precondition lane is stored beside the DATA lane, not instead of it"
+    assert not world.events(WITNESS_KEY_TAKEN), "there is nothing anomalous to report"
+    held = world.semantics.list_validity_witnesses(world.mission.id)
+    assert {witness_subject(item) for item in held} >= {
+        "acceptance:acc-upstream",
+    }, "the DATA licence is still there under its own subject"
+    assert world.dispatch.start_witnesses(world.mission.id, leaf), "and the leaf is licensed"
+
+
+def test_two_conclusions_about_the_same_subject_still_conflict(tmp_path) -> None:
+    """The key still refuses one reading of one world giving two answers.
+
+    Decision 1 widened the key by exactly one dimension; it did not open it.  A second
+    licence naming the *same* subject, epoch and support revision as one already held
+    is a contradiction, and it is recorded rather than swallowed.
+    """
+
+    from agent_orchestrator.contracts.evidence_state import ValidityWitness
+    from agent_orchestrator.contracts.semantic_base import TypedRef
+
+    world = _gated(tmp_path)
+    leaf = _gated_leaf(world)
+    snapshot = world.env.snapshot()
+    epoch = world.semantics.epoch(world.mission.id, "mission")
+    issued = world.dispatch.issue_start_witnesses(world.mission.id, now_ms=1_000_000)
+    assert issued, "the precondition lane issued its licence"
+    rival = ValidityWitness(
+        witness_id="wit-pre-rival",
+        consumer_ref=TypedRef(kind=TypedRefKind.TASK, id=leaf, revision=1, content_hash=HEX_A),
+        purpose=WitnessPurpose.START,
+        truth=TruthValue.UNKNOWN,
+        freshness=Validity.CURRENT,
+        availability=Availability.READABLE,
+        decision=WitnessDecision.BLOCKED,
+        scope_id="mission",
+        scope_epoch=epoch,
+        support_revision=int(snapshot.support_revision),
+        as_of_ms=1_000,
+        reason_codes=tuple(
+            code
+            for code in next(
+                item for item in issued if str(item.consumer_ref.id) == leaf
+            ).reason_codes
+        ),
+    )
+    stored = world.dispatch._record_witness(world.mission.id, rival, subject=witness_subject(rival))
+    assert stored is None, "the same subject at the same reading may not hold two verdicts"
+    world.dispatch._witness_key_taken(world.mission.id, rival, subject=witness_subject(rival))
     taken = world.events(WITNESS_KEY_TAKEN)
     assert len(taken) == 1
     assert taken[0].payload["consumer"] == leaf
+    assert taken[0].payload["subject_digest"].startswith("conditions:")
     assert taken[0].payload["reason_codes"], "the record says which licence was refused"
-    # And the occurrence waits rather than running on somebody else's licence.
-    refusal = world.dispatch.admissions(world.mission.id).refusal_for(leaf)
-    assert refusal.reason is ReadinessReason.WAITING_EVIDENCE
 
 
 def test_an_assembly_with_no_planning_world_issues_no_start_licence(tmp_path) -> None:

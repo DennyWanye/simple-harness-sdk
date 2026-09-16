@@ -59,6 +59,7 @@ from ..contracts.resolution import (
     account_for_purpose,
 )
 from ..contracts.semantic_base import TypedRef, content_hash_of, enum_of, identifier, index
+from ..knowledge.validity import witness_subject
 from .store import Store, StoreConflict
 
 #: A plan revision is PREPARED until it is adopted, ACTIVE while it is the plan
@@ -1243,20 +1244,41 @@ class HtnStore:
         return tuple(GoalResolution.from_json(json.loads(row[0])) for row in rows)
 
     # ================================================================== evidence
-    def insert_validity_witness(self, mission_id: str, witness: ValidityWitness) -> ValidityWitness:
+    def insert_validity_witness(
+        self, mission_id: str, witness: ValidityWitness, *, subject: str
+    ) -> ValidityWitness:
+        """Store one licence, filed under the subject its issuer names (migration 18).
+
+        ``subject`` is declared by the caller and re-checked here against
+        :func:`~..knowledge.validity.witness_subject`, which recomputes it from the
+        witness alone.  The declaration is what AER §8.1 asks for — a licence says
+        which support it was taken over — and the recomputation is what keeps the row
+        auditable (§16.1): a subject the witness does not name would let two different
+        licences be filed under one key again, so it is refused rather than stored.
+        """
+
         if not isinstance(witness, ValidityWitness):
             raise StoreConflict("insert_validity_witness expects a ValidityWitness")
+        expected = witness_subject(witness)
+        if str(subject) != expected:
+            raise StoreConflict(
+                f"validity witness {witness.witness_id} was offered under subject {subject!r}"
+                f" but names {expected!r}; a licence is filed under the subject it says it"
+                " was taken over, never under one supplied beside it"
+            )
         mission = identifier(mission_id, "mission_id")
         self._insert(
             "INSERT INTO validity_witnesses(witness_id,mission_id,consumer_kind,consumer_id,"
-            "purpose,scope_id,scope_epoch,support_revision,truth,freshness,availability,decision,"
-            "as_of_ms,not_after_ms,witness_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "purpose,subject_digest,scope_id,scope_epoch,support_revision,truth,freshness,"
+            "availability,decision,as_of_ms,not_after_ms,witness_json,created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 witness.witness_id,
                 mission,
                 str(witness.consumer_ref.kind),
                 witness.consumer_ref.id,
                 str(witness.purpose),
+                expected,
                 witness.scope_id,
                 witness.scope_epoch,
                 witness.support_revision,
@@ -1283,13 +1305,16 @@ class HtnStore:
         return ValidityWitness.from_json(json.loads(row[0]))
 
     def list_validity_witnesses(
-        self, mission_id: str, *, scope_id: str | None = None
+        self, mission_id: str, *, scope_id: str | None = None, subject: str | None = None
     ) -> tuple[ValidityWitness, ...]:
         clauses = ["mission_id = ?"]
         values: list[Any] = [identifier(mission_id, "mission_id")]
         if scope_id is not None:
             clauses.append("scope_id = ?")
             values.append(identifier(scope_id, "scope_id"))
+        if subject is not None:
+            clauses.append("subject_digest = ?")
+            values.append(str(subject))
         rows = self._store.connection.execute(
             f"SELECT witness_json FROM validity_witnesses WHERE {' AND '.join(clauses)}"
             " ORDER BY as_of_ms, witness_id",

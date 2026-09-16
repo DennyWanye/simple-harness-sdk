@@ -104,6 +104,7 @@ from agent_orchestrator.contracts.semantic_base import (
     VersionedRef,
     content_hash_of,
 )
+from agent_orchestrator.knowledge.validity import NO_SUBJECT
 from agent_orchestrator.orchestrator._read_set import SemanticReadSetChecker
 from agent_orchestrator.orchestrator.commit_service import CommitService, MissionSpec
 from agent_orchestrator.orchestrator.plan_commits import HIERARCHICAL_SEMANTICS, LEGACY_SEMANTICS
@@ -714,8 +715,12 @@ def build_world(tmp_path: Any, *, mode: str = HIERARCHICAL_SEMANTICS, key: str =
         ),
         state="ADOPTED",
     )
-    semantics.insert_validity_witness(mission.id, accept_witness("wit-leaf", LEAF_TASK))
-    semantics.insert_validity_witness(mission.id, accept_witness("wit-root", ROOT_TASK))
+    semantics.insert_validity_witness(
+        mission.id, accept_witness("wit-leaf", LEAF_TASK), subject=NO_SUBJECT
+    )
+    semantics.insert_validity_witness(
+        mission.id, accept_witness("wit-root", ROOT_TASK), subject=NO_SUBJECT
+    )
     return World(
         service=service,
         mission=mission,
@@ -1025,6 +1030,7 @@ def test_a_start_witness_does_not_license_an_acceptance(world: World) -> None:
     world.semantics.insert_validity_witness(
         world.mission.id,
         accept_witness("wit-start", LEAF_TASK, purpose=WitnessPurpose.START, support_revision=4),
+        subject=NO_SUBJECT,
     )
     command = world.accept_command(witness_id="wit-start")
     assert refusal(world.accept, command) == "WITNESS_PURPOSE_NOT_ACCEPT"
@@ -1039,6 +1045,7 @@ def test_a_witness_whose_deadline_has_passed_is_stale(world: World) -> None:
     world.semantics.insert_validity_witness(
         world.mission.id,
         accept_witness("wit-expired", LEAF_TASK, not_after_ms=NOW_MS - 1, support_revision=2),
+        subject=NO_SUBJECT,
     )
     command = world.accept_command(witness_id="wit-expired")
     assert refusal(world.accept, command) == "WITNESS_STALE"
@@ -1048,6 +1055,7 @@ def test_a_witness_taken_before_the_epoch_barrier_is_stale(world: World) -> None
     world.semantics.insert_validity_witness(
         world.mission.id,
         accept_witness("wit-old-epoch", LEAF_TASK, scope_epoch=3, support_revision=3),
+        subject=NO_SUBJECT,
     )
     command = world.accept_command(
         witness_id="wit-old-epoch",
@@ -1527,6 +1535,7 @@ def test_mutant_accepting_without_the_witness_purpose_check_would_reuse_a_start_
     world.semantics.insert_validity_witness(
         world.mission.id,
         accept_witness("wit-start2", LEAF_TASK, purpose=WitnessPurpose.START, support_revision=5),
+        subject=NO_SUBJECT,
     )
     real = refusal(world.accept, world.accept_command(witness_id="wit-start2"))
     assert real == "WITNESS_PURPOSE_NOT_ACCEPT"

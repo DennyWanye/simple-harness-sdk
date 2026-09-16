@@ -159,6 +159,19 @@ class Env:
     #: built by :func:`seed_env`.  A hand-built Env has none: it declares its own
     #: types with no seed data at all, which is the case the fixture exists for.
     world: Any = None
+    #: The ``HtnStore`` this Env’s Mission records observations in, when a suite
+    #: attaches one.  P2.3c part 2d (review P2-16): ``snapshot()`` used to stamp
+    #: ``support_revision=1`` and ``scope_epoch=1`` unconditionally, while the real
+    #: ``DeploymentPlanningWorld.snapshot()`` stamps ``len(list_observations)`` and
+    #: the real epoch.  Every §17/§18 START-lane test therefore ran against a counter
+    #: that never moved — which is the direct reason review P0-1 (the DATA licence
+    #: and the precondition licence colliding on one unique key) escaped the whole
+    #: suite.  With a store attached the two counters are the same fact here too, and
+    #: the declarations ``say()`` builds stay the fixture’s own convenience.
+    semantics: Any = None
+    #: Which scope the snapshot is cut in; empty means "this Mission", which is the
+    #: scope id this fixture has always stamped.
+    scope_id: str = ""
     _entries: dict[str, EvidenceEntry] = field(default_factory=dict)
 
     # -- declarations -------------------------------------------------------------
@@ -282,12 +295,33 @@ class Env:
         return key
 
     def snapshot(self, snapshot_id: str = "snapshot-1", as_of_ms: int = 1_000) -> EvidenceSnapshot:
+        """The declared evidence, counted the way the real deployment counts it.
+
+        ``entries`` stay the fixture’s: ``say()`` is how these suites state a world
+        without writing an observer.  ``support_revision`` and ``scope_epoch`` are
+        **not** the fixture’s to invent — they are the same two facts
+        ``DeploymentPlanningWorld.snapshot()`` reads, and inventing them is what hid
+        review P0-1.  With no store attached there is nothing to count, so the old
+        constants stand and the hand-built worlds keep their meaning.
+        """
+
+        if self.semantics is None:
+            return EvidenceSnapshot(
+                snapshot_id=snapshot_id,
+                as_of_ms=as_of_ms,
+                scope_id=self.mission,
+                scope_epoch=1,
+                support_revision=1,
+                entries=tuple(self._entries[key] for key in sorted(self._entries)),
+            )
+        scope = self.scope_id or self.mission
+        observations = tuple(self.semantics.list_observations(self.mission))
         return EvidenceSnapshot(
             snapshot_id=snapshot_id,
             as_of_ms=as_of_ms,
-            scope_id=self.mission,
-            scope_epoch=1,
-            support_revision=1,
+            scope_id=scope,
+            scope_epoch=int(self.semantics.epoch(self.mission, scope)),
+            support_revision=len(observations),
             entries=tuple(self._entries[key] for key in sorted(self._entries)),
         )
 
