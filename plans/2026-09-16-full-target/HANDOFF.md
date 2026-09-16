@@ -1,6 +1,6 @@
 # FULL-TARGET-1.4 实施交接（P0–P2 先行）
 
-**最后核查：2026-09-16 CST，第三批 c 提交（P2.3c 第一部分）。第三批 a e78a8cc、b 767316b。第一批 623d4c8、第二批 7b0a88f。计划来源：Host 仓库 `plans/taskSys2/升级planV1/v1.4/simpleharness-full-target-1.4/complete-plan.zh-CN.md`（§23 执行顺序、§21.5 Grok 验收协议）。用户指令：先完成 P0、P1、P2 并做好测试，然后交用户验收。**
+**最后核查：2026-09-16 CST，第三批 d 提交 d26a7b1（P2.3c 第二部分、b、c；四项设计裁决与 b/c 独立审阅进行中）。第三批 a e78a8cc、b 767316b、c 28fcc0d。第一批 623d4c8、第二批 7b0a88f。计划来源：Host 仓库 `plans/taskSys2/升级planV1/v1.4/simpleharness-full-target-1.4/complete-plan.zh-CN.md`（§23 执行顺序、§21.5 Grok 验收协议）。用户指令：先完成 P0、P1、P2 并做好测试，然后交用户验收。**
 
 ## 1. 接手结论
 
