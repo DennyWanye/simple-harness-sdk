@@ -1,3 +1,16 @@
+## 0.12.0 — FULL-TARGET-1.4 P0–P2：HTN 递归任务分解端到端（2026-09-17）
+
+候选提交 00a4379（P2.3c 第三部分 c）。旧模式（`orchestration_semantics_version=legacy`，默认）零回归：legacy 事件字节 golden、allocator/frontier 源码 hash、冻结提示词摘要全部不变。
+
+- 契约：TaskSemanticBindingV1、MethodContract/MethodInstance、ObligationLedger（递归燃料 BOUND_REACHED）、四值谓词逻辑（§6.6）、ValidityWitness 与 epoch 屏障、DataRequirement → BoundInput → InputManifest、Acceptance / GoalResolution / DeliveryReceipt 分离、OperationEnvelope 三轴。
+- HTN 核心：方法注册表与准入、grounding、refinement（AND-OR、共享只读子目标）、编译为 TaskNetwork、PANDA/HDDL 后端适配（本机 stub）。
+- 接线：`commit_plan_revision`（ADR-13：整数闸门 + 语义 read-set 11 通道，不 rebase）、occurrence→Task 物化与预算份额守恒、`allocate_v2` 派发闸门（readiness → admit_for_dispatch，form=compound 永不派发）、未装配部署 fail-closed、叶子验收链路与 `acceptance_outputs`、Worker 显式输出端口声明、demand 在计划提交事务内 admit、根 MISSION_FINAL 评审裁剪协调器（有界重裁、系统永不自填 PASS）、Mission COMPLETED 只经根 GoalResolution、空转确认一轮后 `no_dispatchable_work`。
+- 存储：迁移 16（31 张 STRICT 表）、17（验收回执与输出索引）、18（见证主体列）；旧迁移校验和不变。
+- 观察器：code / appworld 只读谓词观察器（允许表、三态、解析失败永不为 FALSE），L2 业务状态谓词六条。
+- 真实模型冒烟（deepseek-flash）：分层 Mission 由根 Resolution 触发到 COMPLETED。
+- 策略快照 digest 因新增 `max_root_review_cuts` 变为 `7cf60224…`；分层 Mission 收尾两次 mission 账户模型调用（root reviewer + Mission Judge）。
+- 测试：`tests/orchestrator/full_target` 2648 条；编排范围 4614 通过（p33 的 Python 3.14 AST 断言为已知失败）。
+
 ## 0.11.0 candidate — P3.3 A–E（F验证完成，未发布）
 
 领域、引用、准则评估、证据不足出口、来源失效与文档人工仲裁的SDK候选；F完成无新增回归与干净安装验证（存在明确既有失败），G文档报告交付仍待完成。
