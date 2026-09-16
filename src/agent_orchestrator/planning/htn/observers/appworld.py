@@ -23,7 +23,12 @@ could not ask*:
   request is a negative **observation** (``polarity=False``);
 * no client at all, a transport failure, a timeout, or a world whose identity moved
   under the read is :attr:`~.ObservationOutcome.OBSERVER_UNAVAILABLE` with **no**
-  record — the service not being up is not evidence about the world (AER §8.2).
+  record — the service not being up is not evidence about the world (AER §8.2);
+* and — the fourth-round addition, runner gap G8 — a read the *host's own policy*
+  declines to send is UNAVAILABLE too, not a negative observation.  The frozen
+  allowlist admits two ``supervisor`` GETs, so every other application was being
+  recorded as a settled negative on the strength of a request that never left the
+  process.  :func:`read_is_permitted` splits that case off before the call.
 
 ``appworld.action-confirmed`` is the domain's CLOSED predicate.  A receipt ledger
 *enumerates* the confirmed actions of an episode, so its answer is a complete,
@@ -87,6 +92,24 @@ class ReadOutcome(StrEnum):
     REFUSED = "REFUSED"
     #: We could not get a usable answer: transport, parse, or a world that moved.
     UNAVAILABLE = "UNAVAILABLE"
+
+
+def read_is_permitted(app: str, api: str) -> bool:
+    """Whether the host's *own* frozen policy would let this read leave at all.
+
+    :meth:`~....evaluation.appworld.AppWorldEpisode.observe_public_api` refuses
+    ``(app, api)`` outside :data:`PUBLIC_READ_APIS` **before** it touches the world —
+    no request is sent, no application is consulted, nothing about the world is
+    learned.  Asking the question here rather than reading the refusal afterwards is
+    the whole of the G8 fix: the refusal text is indistinguishable from an
+    application saying no, and the P2.3c review measured the consequence —
+    ``appworld.account-exists`` was FALSE for venmo, spotify and amazon on every
+    deployment, because the frozen table admits two ``supervisor`` GETs and nothing
+    else.  A policy that declined to ask is OBSERVER_UNAVAILABLE (AER §8.2): we did
+    not look, so we saw nothing.
+    """
+
+    return (str(app), str(api)) in PUBLIC_READ_APIS
 
 
 def classify_read_error(error: ValueError) -> ReadOutcome:
@@ -161,15 +184,27 @@ class _Read:
 
     ``refused`` and ``projection`` are mutually exclusive by construction, so a
     caller cannot read an integrity failure as a polarity by forgetting a branch.
+
+    ``policy_refused`` is the third case and it is **not** a refusal: the host's own
+    allowlist declined to send the request, so the application never heard the
+    question.  It is kept apart from ``refused`` by an invariant rather than by a
+    comment, because the two are one boolean apart and the P2.3c review found the
+    whole of G8 living in that one boolean.
     """
 
     projection: Mapping[str, Any] | None = None
     refused: bool = False
+    policy_refused: bool = False
     problem: str = ""
 
     def __post_init__(self) -> None:
         if self.refused and self.projection is not None:
             raise ContractError("a refused read carries no projection")
+        if self.policy_refused and (self.refused or self.projection is not None):
+            raise ContractError(
+                "a read the host's own policy declined to send is not the application "
+                "refusing it, and it carries no projection"
+            )
         if self.projection is None and not self.problem:
             raise ContractError("a read with no projection says why")
 
@@ -211,6 +246,20 @@ class _AppWorldObserver:
     @property
     def client(self) -> AppWorldReadOnlyClient | None:
         return self._config.client
+
+    @property
+    def coverage_scope(self) -> str:
+        """The scope this observer's *complete* queries are complete over.
+
+        The deployment's, not a description of the read.  ``justifications`` admits
+        an authoritative negative only when its ``coverage_scope`` equals the scope
+        the decision is being made in, so an observer that invents its own string —
+        which is what this module did until the fourth P2.3c review round — produces
+        denials that are always dropped as ``COVERAGE_SCOPE_MISMATCH``, and a CLOSED
+        predicate that can never conclude FALSE is a CLOSED predicate in name only.
+        """
+
+        return str(self._config.scope_id)
 
     def predicate_ids(self) -> tuple[str, ...]:
         return self.predicates
@@ -258,11 +307,27 @@ class _AppWorldObserver:
         world whose identity moved under the read both came out as a negative
         observation — a FALSE manufactured out of an integrity failure.  Now a refusal
         is a refusal, and anything we could not read is UNAVAILABLE.
+
+        The fourth round added the case in front of all of them: a read the host's
+        **own** frozen policy will not send (:func:`read_is_permitted`).  It is split
+        off here, before the call, because afterwards it is a ``ValueError`` whose
+        text says "not authorized" — the same words an application's own refusal
+        would use — and reading it as a polarity is how every non-``supervisor``
+        application came out as a settled negative (G8).
         """
 
         client = self.client
         if client is None:  # pragma: no cover - guarded by observe()
             return _Read(problem="no AppWorld episode is attached")
+        if not read_is_permitted(app, api):
+            return _Read(
+                policy_refused=True,
+                problem=(
+                    f"the host's frozen public-read policy does not admit {app}.{api}, so no "
+                    f"request was sent and {app} was never asked; a read we did not make is "
+                    "not an answer about the world (AER §8.2)"
+                ),
+            )
         try:
             _receipt, projection = client.observe_public_api(app, api)
         except TRANSPORT_ERRORS as error:
@@ -310,6 +375,8 @@ class AvailabilityObserver(_AppWorldObserver):
             return unavailable(self.observer_id, predicate, "the app argument names nothing")
         api = ACTIVE_TASK_API[1]
         read = self._get(app, api)
+        if read.policy_refused:
+            return unavailable(self.observer_id, predicate, read.problem)
         if read.refused:
             return observed(
                 signature,
@@ -356,6 +423,8 @@ class CredentialObserver(_AppWorldObserver):
         if not app.strip():
             return unavailable(self.observer_id, predicate, "the app argument names nothing")
         read = self._get(app, PROFILE_API[1])
+        if read.policy_refused:
+            return unavailable(self.observer_id, predicate, read.problem)
         if read.refused:
             return observed(
                 signature,
@@ -633,9 +702,13 @@ class AccountObserver(_AppWorldObserver):
     somewhere in the application's database".  Three answers follow directly:
 
     * the profile comes back and names the account → **TRUE**;
-    * the host **refuses** the read for this app → **FALSE**: the same reading
-      :class:`AvailabilityObserver` already makes of a refusal — the app serves this
-      episode nothing, so it serves it no account either;
+    * the **application** refuses an authorised read for this app → **FALSE**: the
+      same reading :class:`AvailabilityObserver` makes of a refusal — the app serves
+      this episode nothing, so it serves it no account either;
+    * the host's own frozen policy would not send the read at all → **UNAVAILABLE**.
+      This is the G8 case and it is not the one above: no request left the process,
+      so the application never said anything.  Folding the two together made this
+      predicate FALSE for every application except ``supervisor``;
     * the profile comes back and names somebody else → **UNAVAILABLE**.  The frozen
       surface cannot enumerate accounts, so not finding one in the single profile it
       serves is not that account's absence; turning it into FALSE would be
@@ -661,6 +734,8 @@ class AccountObserver(_AppWorldObserver):
             )
         api = PROFILE_API[1]
         read = self._get(app, api)
+        if read.policy_refused:
+            return unavailable(self.observer_id, predicate, read.problem)
         if read.refused:
             return observed(
                 signature,
@@ -750,7 +825,6 @@ class ListObserver(_AppWorldObserver):
                 "that is not a list is not an empty one",
             )
         items = [str(item) for item in decoded]
-        scope = f"appworld-public-read:{app}.{api}.{field}"
         if predicate == "appworld.list-size":
             size = arguments.get("size")
             if not isinstance(size, int) or isinstance(size, bool):
@@ -759,34 +833,54 @@ class ListObserver(_AppWorldObserver):
                 )
             holds = len(items) == int(size)
             detail = f"{reference!r} holds {len(items)} item(s) against a stated {int(size)}"
-        else:
-            item_ref = str(arguments.get("item_ref", ""))
-            if not item_ref.strip():
-                return unavailable(
-                    self.observer_id, predicate, "the item_ref argument names nothing"
+            # CLOSED: the whole field was read, so the count is a complete query and a
+            # mismatch is an authoritative negative.  The scope it is claimed over is
+            # the deployment's (:attr:`AppWorldObserverConfig.scope_id`) and not a
+            # description of the read — an anchor is admitted only when the query's
+            # scope *is* the deciding scope (``justifications`` C28), and the P2.3c
+            # fourth round found this observer naming a scope no selector could ever
+            # match, so the denial was dropped and the predicate stayed UNKNOWN.
+            if holds:
+                return observed(
+                    signature,
+                    arguments,
+                    polarity=True,
+                    observer_id=self.observer_id,
+                    now_ms=now_ms,
+                    detail=detail,
+                    coverage=COMPLETE_COVERAGE,
+                    coverage_scope=self.coverage_scope,
+                    query_watermark_ms=now_ms,
+                    observer_version=OBSERVER_VERSION,
                 )
-            holds = item_ref.strip() in items
-            detail = f"{reference!r} holds {len(items)} item(s); {item_ref!r} is "
-            detail += "among them" if holds else "not among them"
-        if holds:
-            return observed(
+            return denial(
                 signature,
                 arguments,
-                polarity=True,
                 observer_id=self.observer_id,
                 now_ms=now_ms,
+                coverage_scope=self.coverage_scope,
                 detail=detail,
-                coverage=COMPLETE_COVERAGE,
-                coverage_scope=scope,
-                query_watermark_ms=now_ms,
                 observer_version=OBSERVER_VERSION,
             )
-        return denial(
+        item_ref = str(arguments.get("item_ref", ""))
+        if not item_ref.strip():
+            return unavailable(self.observer_id, predicate, "the item_ref argument names nothing")
+        holds = item_ref.strip() in items
+        detail = f"{reference!r} holds {len(items)} item(s); {item_ref!r} is "
+        detail += "among them" if holds else "not among them"
+        # OPEN, and therefore an *ordinary* observation in both directions.  Until the
+        # fourth review round a miss was built with :func:`denial`, which claims
+        # AUTHORITATIVE_WITH_SCOPE — and ``justifications`` only checks that the
+        # observer is authorised to make such a claim when the predicate is CLOSED, so
+        # an OPEN predicate issuing one walks past that check.  The declaration is
+        # right: one public list is not the application, and an item that is not in
+        # this field may still exist somewhere the frozen surface cannot read.
+        return observed(
             signature,
             arguments,
+            polarity=holds,
             observer_id=self.observer_id,
             now_ms=now_ms,
-            coverage_scope=scope,
             detail=detail,
             observer_version=OBSERVER_VERSION,
         )
@@ -858,7 +952,6 @@ class AmountObserver(_AppWorldObserver):
                 f"{reference!r} records its amount or currency as something other than text; "
                 "an amount this observer cannot read is not an amount that differs",
             )
-        scope = f"appworld-public-read:{app}.{api}.{field}"
         detail = (
             f"{reference!r} records {recorded_amount!r} {recorded_currency!r} against a stated "
             f"{amount!r} {currency!r}"
@@ -872,7 +965,7 @@ class AmountObserver(_AppWorldObserver):
                 now_ms=now_ms,
                 detail=detail,
                 coverage=COMPLETE_COVERAGE,
-                coverage_scope=scope,
+                coverage_scope=self.coverage_scope,
                 query_watermark_ms=now_ms,
                 observer_version=OBSERVER_VERSION,
             )
@@ -881,7 +974,7 @@ class AmountObserver(_AppWorldObserver):
             arguments,
             observer_id=self.observer_id,
             now_ms=now_ms,
-            coverage_scope=scope,
+            coverage_scope=self.coverage_scope,
             detail=detail,
             observer_version=OBSERVER_VERSION,
         )
@@ -943,6 +1036,7 @@ __all__ = (
     "ReadOutcome",
     "classify_read_error",
     "decode_public_value",
+    "read_is_permitted",
     "resolve_public_field",
     "ApiObserver",
     "ApiSurface",

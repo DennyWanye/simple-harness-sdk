@@ -28,6 +28,7 @@ domain conclude FALSE from.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess  # noqa: S404 - read-only commands from a fixed allowlist, see _Command.run
 import sys
@@ -92,7 +93,11 @@ OPERAND_SEPARATOR = "--"
 #: the separator, so it is checked against its own grammar (:func:`revision`) instead
 #: of the path rule, and ``--`` is still emitted with nothing after it: no caller
 #: token can become a flag, and none can become a path either.
-REVISION_OPERANDS: Mapping[str, int] = {"diff": 1}
+#: ``rev-parse`` joined ``diff`` in the fourth review round (runner gap G7): asking
+#: whether a ref resolves is asking about a **revision**, and putting it after ``--``
+#: made git read ``refs/bisect/bad`` as a pathspec, which never resolves — so
+#: ``code.regression-commit-known`` was UNKNOWN on every worktree in the world.
+REVISION_OPERANDS: Mapping[str, int] = {"diff": 1, "rev-parse": 1}
 
 #: What a revision may be spelled with.  Deliberately narrower than git's own
 #: grammar: no ``:`` (``rev:path`` is a different read), no ``{`` (``@{upstream}``
@@ -643,6 +648,14 @@ class HistoryObserver(_CodeObserver):
     Read-only: a finished ``git bisect`` leaves ``refs/bisect/bad`` behind, so asking
     whether that ref resolves answers the predicate without starting, advancing or
     resetting a bisect.
+
+    The ref goes through the **revision** path (G4's :data:`REVISION_OPERANDS`), not
+    the operand path.  Runner gap G7: an operand is emitted after ``--``, where git
+    reads it as a pathspec, and ``git rev-parse --verify --quiet -- refs/bisect/bad``
+    exits 1 on a repository where ``git rev-parse --verify --quiet refs/bisect/bad``
+    exits 0 and prints the sha.  The predicate was therefore UNKNOWN everywhere, and
+    the stub runner the suite used matched on substrings, so the stray ``--`` was
+    invisible to it.  The test beside this class now runs real git.
     """
 
     observer_name = "code.history-observer"
@@ -657,7 +670,7 @@ class HistoryObserver(_CodeObserver):
         now_ms: int,
     ) -> Observation:
         result = self._command.git(
-            "rev-parse", "--verify", "--quiet", operands=("refs/bisect/bad",)
+            "rev-parse", "--verify", "--quiet", revisions=("refs/bisect/bad",)
         )
         if not result.usable:
             return self._unusable(predicate, result, "git rev-parse refs/bisect/bad")
@@ -900,6 +913,11 @@ class DiffScopeObserver(_CodeObserver):
     negative* — a complete, scoped, watermarked query — and the denial is admissible.
     Output this observer cannot read is not an enumeration, so it answers UNAVAILABLE
     rather than turning a parse failure into "the changeset is dirty".
+
+    An enumeration of **nothing** is the same kind of non-answer and is treated the
+    same way: git exits 0 and prints nothing for a misspelled path and for
+    ``HEAD..HEAD`` just as it does for a changeset that really touched nothing, so an
+    empty result cannot carry a completeness claim about this changeset.
     """
 
     observer_name = "code.diff-observer"
@@ -923,6 +941,23 @@ class DiffScopeObserver(_CodeObserver):
         if not result.usable or result.exit_code != 0:
             return self._unusable(predicate, result, f"git diff --name-only {changeset}")
         touched = result.lines
+        if not touched:
+            # P0-2, fourth review round.  ``git diff --name-only`` exits 0 with no
+            # output for three quite different worlds: a changeset that touched
+            # nothing, a path that does not exist, and an empty range such as
+            # ``HEAD..HEAD``.  Returning TRUE here answered all three the same way,
+            # and answered them with COMPLETE_COVERAGE — a CLOSED safety gate passed
+            # by a typo in an argument.  An enumeration that enumerated nothing is not
+            # a complete query over this changeset; it is the observer failing to find
+            # the changeset, and that is UNAVAILABLE (AER §8.2, §6.6 C28).
+            return unavailable(
+                self.observer_id,
+                predicate,
+                f"git diff --name-only {changeset} enumerated no path at all; an empty "
+                "enumeration does not distinguish a changeset that touched nothing from a "
+                "changeset this observer could not find, so it is not evidence that only "
+                f"{list(allowed)} were touched",
+            )
         outside = tuple(item for item in touched if not path_is_under(item, allowed))
         if not outside:
             return observed(
@@ -1033,6 +1068,23 @@ class DependencyObserver(_CodeObserver):
 NAME_CHARACTERS: frozenset[str] = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-.")
 
 
+#: A ``/`` on either side of a match means it is part of a **path** — a homepage URL,
+#: a ``go.mod`` module path — and a path is not the bare name this predicate asks
+#: about.  Review round 4, P1-4①: without it ``declared-dependency-present('requests')``
+#: was answered TRUE by ``homepage = "https://github.com/psf/requests"``.
+PATH_CHARACTER = "/"
+
+#: A **bare** key before ``=``: ``dependencies = [...]``, ``requires-python = ...``.
+#: That is the manifest's own vocabulary, not something it declares, and matching it
+#: made ``declared-dependency-present('dependencies')`` TRUE on every pyproject.toml.
+#: JSON spells its keys quoted (``"requests": "^2"``), so this leaves package.json —
+#: where the package name really *is* the key — alone.
+_BARE_KEY = re.compile(r"^([a-z0-9_.\-]+)\s*=")
+
+#: ``[project.optional-dependencies]``: a section header names a table, not a package.
+_TABLE_HEADER = re.compile(r"^\[[^\]]*\]$")
+
+
 def declares_package(manifest: str, package: str) -> bool:
     """Whether ``manifest`` declares ``package``, matched on whole names only.
 
@@ -1044,12 +1096,35 @@ def declares_package(manifest: str, package: str) -> bool:
     ``go.mod`` all spell a dependency as the name surrounded by punctuation, and
     parsing four grammars to answer "is this name declared" would be four ways to be
     wrong.
+
+    Syntax-agnostic is not the same as structure-blind, though, and the fourth P2.3c
+    review round measured what the difference costs: a whole-file search also answers
+    TRUE from a comment, from a URL, and from the manifest's **own key names**.  Four
+    cheap line-level rules remove those without committing to any one grammar — skip a
+    whole-line comment, skip a section header, ignore a bare key before ``=``, and
+    refuse a match that has a ``/`` against it.  A miss is still an ordinary negative
+    (this predicate is OPEN), so none of this can manufacture a denial.
     """
 
     name = package.strip().lower()
     if not name:
         return False
-    text = manifest.lower()
+    for raw in manifest.lower().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if _TABLE_HEADER.match(line):
+            continue
+        key = _BARE_KEY.match(line)
+        body = line[key.end() :] if key is not None and key.group(1) == name else line
+        if _names(body, name):
+            return True
+    return False
+
+
+def _names(text: str, name: str) -> bool:
+    """Whether ``name`` occurs in ``text`` as a whole, non-path name."""
+
     boundary = NAME_CHARACTERS
     start = 0
     while True:
@@ -1058,7 +1133,12 @@ def declares_package(manifest: str, package: str) -> bool:
             return False
         before = text[index - 1] if index else ""
         after = text[index + len(name) :][:1]
-        if before not in boundary and after not in boundary:
+        if (
+            before not in boundary
+            and after not in boundary
+            and before != PATH_CHARACTER
+            and after != PATH_CHARACTER
+        ):
             return True
         start = index + 1
 

@@ -1135,10 +1135,15 @@ def test_only_diff_may_carry_a_revision_and_only_one(tmp_path: Path) -> None:
     from agent_orchestrator.planning.htn.observers.code import _Command
 
     conf, _runner = config(tmp_path, {})
-    assert REVISION_OPERANDS == {"diff": 1}
+    # ``rev-parse`` joined the table in review round 4 (G7): asking whether a ref
+    # resolves is asking about a revision, and an operand would be read as a pathspec.
+    assert REVISION_OPERANDS == {"diff": 1, "rev-parse": 1}
     _Command(conf).run(["git", "diff", "--numstat", "a..b", OPERAND_SEPARATOR])
+    _Command(conf).run(["git", "rev-parse", "--verify", "--quiet", "a", OPERAND_SEPARATOR])
     with pytest.raises(ContractError):
         _Command(conf).run(["git", "diff", "--numstat", "a..b", "c..d", OPERAND_SEPARATOR])
+    with pytest.raises(ContractError):
+        _Command(conf).run(["git", "rev-parse", "--verify", "--quiet", "a", "b", OPERAND_SEPARATOR])
     with pytest.raises(ContractError):
         _Command(conf).run(["git", "log", "--oneline", "HEAD", OPERAND_SEPARATOR])
 
@@ -1159,7 +1164,16 @@ def test_a_writing_flag_is_still_refused_where_a_revision_is_allowed(tmp_path: P
     assert not target.exists()
 
 
-def test_the_history_observer_passes_its_ref_as_an_operand(tmp_path: Path) -> None:
+def test_the_history_observer_passes_its_ref_as_a_revision(tmp_path: Path) -> None:
+    """G7: the ref goes *before* ``--``, because after it git reads a pathspec.
+
+    Asserted as the exact argv rather than "the ref appears somewhere in the line".
+    The stub runner matches on substrings, so the spelling that was actually shipped
+    — ``rev-parse --verify --quiet -- refs/bisect/bad``, which exits 1 on every
+    repository — satisfied the old assertion, and the predicate was UNKNOWN
+    everywhere for a whole release.
+    """
+
     conf, runner = config(tmp_path, {"refs/bisect/bad": ok("abc\n")})
     HistoryObserver(conf).observe(
         sig("code.regression-commit-known"), {"repository": "r"}, now_ms=NOW_MS
@@ -1169,9 +1183,75 @@ def test_the_history_observer_passes_its_ref_as_an_operand(tmp_path: Path) -> No
         "rev-parse",
         "--verify",
         "--quiet",
-        OPERAND_SEPARATOR,
         "refs/bisect/bad",
+        OPERAND_SEPARATOR,
     )
+
+
+def _real_repo(root: Path) -> bool:
+    """A throwaway git repository with one commit, or ``False`` without git."""
+
+    def run(*argv: str) -> int:
+        return subprocess.run(  # noqa: S603 - fixed argv, throwaway directory
+            list(argv), cwd=str(root), capture_output=True, text=True, check=False
+        ).returncode
+
+    try:
+        if run("git", "init", "-q", ".") != 0:
+            return False  # pragma: no cover - a machine without git
+    except FileNotFoundError:  # pragma: no cover - a machine without git
+        return False
+    (root / "a.txt").write_text("one\n", encoding="utf-8")
+    run("git", "add", "a.txt")
+    run("git", "-c", "user.email=a@b.invalid", "-c", "user.name=t", "commit", "-qm", "one")
+    return True
+
+
+def test_the_history_observer_finds_a_real_bisect_ref(tmp_path: Path) -> None:
+    """The regression test G7 asked for: real git, not a substring-matching stub."""
+
+    if not _real_repo(tmp_path):  # pragma: no cover - a machine without git
+        pytest.skip("git is not available here")
+    observer = HistoryObserver(CodeObserverConfig(root=tmp_path, timeout_seconds=20.0))
+    absent = observer.observe(
+        sig("code.regression-commit-known"), {"repository": "r"}, now_ms=NOW_MS
+    )
+    assert absent.polarity is False
+    # ``code.regression-commit-known`` is OPEN, so "no such ref" is an ordinary
+    # negative observation and never an authoritative one (§6.6).
+    assert not absent.authoritative_negative
+    subprocess.run(  # noqa: S603 - fixed argv, throwaway directory
+        ["git", "update-ref", "refs/bisect/bad", "HEAD"],
+        cwd=str(tmp_path),
+        capture_output=True,
+        check=False,
+    )
+    found = observer.observe(
+        sig("code.regression-commit-known"), {"repository": "r"}, now_ms=NOW_MS
+    )
+    assert found.polarity is True
+    assert "refs/bisect/bad resolves to" in found.detail
+
+
+def test_a_ref_read_as_a_pathspec_is_the_defect_g7_reported(tmp_path: Path) -> None:
+    """Mutation self-proof: the shipped spelling really did exit 1 on a real repo."""
+
+    if not _real_repo(tmp_path):  # pragma: no cover - a machine without git
+        pytest.skip("git is not available here")
+    subprocess.run(  # noqa: S603 - fixed argv, throwaway directory
+        ["git", "update-ref", "refs/bisect/bad", "HEAD"],
+        cwd=str(tmp_path),
+        capture_output=True,
+        check=False,
+    )
+    as_revision = run_read_only(
+        ["git", "rev-parse", "--verify", "--quiet", "refs/bisect/bad", "--"], tmp_path, 20.0
+    )
+    as_pathspec = run_read_only(
+        ["git", "rev-parse", "--verify", "--quiet", "--", "refs/bisect/bad"], tmp_path, 20.0
+    )
+    assert as_revision.exit_code == 0 and as_revision.stdout.strip()
+    assert as_pathspec.exit_code != 0
 
 
 def test_the_trusted_argument_table_covers_every_allowed_subcommand() -> None:
@@ -1719,12 +1799,26 @@ def test_an_account_the_public_profile_names_is_true() -> None:
     assert observation.polarity is True
 
 
-def test_an_app_the_host_refuses_serves_this_episode_no_account() -> None:
+def test_an_app_outside_the_frozen_policy_is_unavailable_never_false() -> None:
+    """P0-1 / runner gap G8, and the test that used to pin the defect as the spec.
+
+    ``PUBLIC_READ_APIS`` admits two ``supervisor`` GETs, so the host declines to send
+    a read of venmo, spotify or amazon **before** any request leaves the process.
+    Reading that as a negative observation made ``appworld.account-exists`` FALSE for
+    every real application on every deployment — a settled fact derived from a
+    question nobody asked.
+    """
+
     episode = FakeEpisode(surface=TASK_SURFACE)
     observation = account_observer(episode).observe(
         sig("appworld.account-exists"), {"app": "venmo", "account": "Ada"}, now_ms=NOW_MS
     )
-    assert observation.polarity is False
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert observation.record is None
+    assert observation.polarity is None
+    assert "frozen public-read policy" in observation.detail
+    # And it really was never asked: no read was attempted against that app.
+    assert not [item for item in episode.calls if item.startswith("observe_public_api:venmo")]
 
 
 def test_an_account_the_frozen_surface_cannot_enumerate_is_unavailable() -> None:
@@ -1774,12 +1868,23 @@ def test_a_list_that_holds_the_item_is_true() -> None:
     assert observation.polarity is True
 
 
-def test_a_list_that_does_not_hold_the_item_is_an_authoritative_negative() -> None:
+def test_a_list_that_does_not_hold_the_item_denies_nothing_authoritatively() -> None:
+    """P1-4③: ``appworld.list-contains`` is declared OPEN, so it may not deny.
+
+    ``justifications`` only checks that an observer is *authorised* to make an
+    authoritative negative when the predicate is CLOSED, so an OPEN predicate that
+    issues one walks straight past that check.  The declaration is the right one —
+    one public list is not the whole application — so the observer stopped claiming
+    completeness rather than the declaration being widened.
+    """
+
     observation = list_observer(list_episode('["a", "b"]')).observe(
         sig("appworld.list-contains"), {"list_ref": LIST_REF, "item_ref": "z"}, now_ms=NOW_MS
     )
     assert observation.polarity is False
-    assert observation.authoritative_negative
+    assert not observation.authoritative_negative
+    assert observation.record is not None
+    assert observation.record.coverage_scope is None
 
 
 def test_the_stated_list_size_is_checked_against_the_whole_list() -> None:
@@ -1971,3 +2076,360 @@ def test_mutant_a_prefix_match_would_authorise_a_path_nobody_authorised() -> Non
     assert path_is_under("src/a.py", ("src",)) is True
     assert path_is_under("srcret/secrets.py", ("src",)) is False
     assert "srcret/secrets.py".startswith("src"), "the mutant's test would have said yes"
+
+
+# ======================================================================================
+# 9. Review round 4: "we did not look" is never a polarity
+# ======================================================================================
+
+
+@pytest.mark.parametrize(
+    ("observer", "predicate", "arguments"),
+    [
+        (
+            AvailabilityObserver,
+            "appworld.app-reachable",
+            {"app": "spotify"},
+        ),
+        (
+            CredentialObserver,
+            "appworld.credentials-valid",
+            {"app": "amazon"},
+        ),
+    ],
+)
+def test_a_policy_refusal_is_unavailable_for_every_observer_that_reads_an_app(
+    observer: Any, predicate: str, arguments: dict[str, Any]
+) -> None:
+    """P0-1 / G8, the same shape in all three app-reading observers.
+
+    ``AvailabilityObserver`` and ``CredentialObserver`` carried the identical branch
+    ``AccountObserver`` did, so ``appworld.app-reachable`` and
+    ``appworld.credentials-valid`` were FALSE for every non-``supervisor``
+    application too — the runner's journal §9 measured exactly that and pinned its
+    root goal to ``"supervisor"`` to work around it.
+    """
+
+    episode = FakeEpisode(surface=[("supervisor", "show_active_task")])
+    observation = observer(AppWorldObserverConfig(client=episode)).observe(
+        sig(predicate), arguments, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert observation.record is None
+    assert "frozen public-read policy" in observation.detail
+    assert episode.calls == []
+
+
+def test_a_read_the_policy_admits_still_reaches_the_application() -> None:
+    """The other half: the pre-check must not swallow reads the policy does admit."""
+
+    episode = FakeEpisode(surface=[("supervisor", "show_active_task")])
+    observation = AvailabilityObserver(AppWorldObserverConfig(client=episode)).observe(
+        sig("appworld.app-reachable"), {"app": "supervisor"}, now_ms=NOW_MS
+    )
+    assert observation.polarity is True
+    assert episode.calls == ["observe_public_api:supervisor.show_active_task"]
+
+
+def test_an_application_that_refuses_an_admitted_read_is_still_a_negative() -> None:
+    """A refusal from the *application* keeps its old meaning; only policy moved."""
+
+    episode = FakeEpisode(surface=[("phone", "show_active_task")])
+    observation = AvailabilityObserver(AppWorldObserverConfig(client=episode)).observe(
+        sig("appworld.app-reachable"), {"app": "supervisor"}, now_ms=NOW_MS
+    )
+    assert observation.available
+    assert observation.polarity is False
+    assert episode.calls == ["observe_public_api:supervisor.show_active_task"]
+
+
+def test_a_policy_refused_read_is_not_an_application_refusal() -> None:
+    """The invariant that keeps the two one boolean apart from each other."""
+
+    from agent_orchestrator.planning.htn.observers.appworld import _Read, read_is_permitted
+
+    assert read_is_permitted("supervisor", "show_profile") is True
+    assert read_is_permitted("venmo", "show_profile") is False
+    with pytest.raises(ContractError, match="not the application refusing it"):
+        _Read(policy_refused=True, refused=True, problem="both at once")
+
+
+def test_mutant_folding_a_policy_refusal_back_into_a_refusal_is_caught() -> None:
+    """Mutation self-proof for P0-1: fold the two cases together again → red.
+
+    ``_get`` is mutated to report the host's own policy refusal the way the shipped
+    code did — as the application saying no — and the guard above turns red.
+    """
+
+    from agent_orchestrator.planning.htn.observers import appworld as module
+
+    real = module.read_is_permitted
+    module.read_is_permitted = lambda app, api: True  # type: ignore[assignment]
+    try:
+        episode = FakeEpisode(surface=[("supervisor", "show_active_task")])
+        observation = account_observer(episode).observe(
+            sig("appworld.account-exists"), {"app": "venmo", "account": "Ada"}, now_ms=NOW_MS
+        )
+    finally:
+        module.read_is_permitted = real  # type: ignore[assignment]
+    assert observation.polarity is False, (
+        "with the pre-check gone the host's own allowlist refusal is read as venmo "
+        "denying this episode an account — P0-1 restored"
+    )
+
+
+# -------------------------------------------- P0-2: an empty enumeration is not a TRUE
+
+
+def _diff_scope_observer(root: Path) -> Any:
+    from agent_orchestrator.planning.htn.observers.code import DiffScopeObserver
+
+    return DiffScopeObserver(CodeObserverConfig(root=root, timeout_seconds=20.0))
+
+
+@pytest.mark.parametrize("changeset", ["nosuch/path", "HEAD..HEAD", "docs/never-written"])
+def test_an_empty_diff_enumeration_is_unavailable_never_a_closed_world_true(
+    tmp_path: Path, changeset: str
+) -> None:
+    """P0-2: ``git diff --name-only`` exits 0 with no output for three worlds.
+
+    A changeset that touched nothing, a path that does not exist, and an empty range
+    are indistinguishable at this surface, so none of them may be answered as "only
+    the authorised paths were touched" — least of all with COMPLETE_COVERAGE, which
+    is what turns this into a CLOSED safety gate passed by a typo in an argument.
+    """
+
+    if not _real_repo(tmp_path):  # pragma: no cover - a machine without git
+        pytest.skip("git is not available here")
+    observation = _diff_scope_observer(tmp_path).observe(
+        sig("code.diff-touches-only"), {"changeset": changeset, "paths": "src"}, now_ms=NOW_MS
+    )
+    assert observation.outcome is ObservationOutcome.OBSERVER_UNAVAILABLE
+    assert observation.record is None
+    assert "enumerated no path at all" in observation.detail
+
+
+def _tracked_change(root: Path, relative: str) -> None:
+    """Commit a file and then modify it, so ``git diff`` really enumerates it."""
+
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x = 1\n", encoding="utf-8")
+    for argv in (
+        ["git", "add", relative],
+        ["git", "-c", "user.email=a@b.invalid", "-c", "user.name=t", "commit", "-qm", relative],
+    ):
+        subprocess.run(  # noqa: S603 - fixed argv, throwaway directory
+            argv, cwd=str(root), capture_output=True, check=False
+        )
+    path.write_text("x = 2\n", encoding="utf-8")
+
+
+def test_a_diff_that_really_touched_the_authorised_paths_is_still_true(tmp_path: Path) -> None:
+    """The control: a non-empty enumeration inside the scope still concludes TRUE."""
+
+    if not _real_repo(tmp_path):  # pragma: no cover - a machine without git
+        pytest.skip("git is not available here")
+    _tracked_change(tmp_path, "src/b.py")
+    observation = _diff_scope_observer(tmp_path).observe(
+        sig("code.diff-touches-only"), {"changeset": "src", "paths": "src"}, now_ms=NOW_MS
+    )
+    assert observation.polarity is True
+    assert observation.record is not None
+    assert observation.record.coverage is QueryCompleteness.AUTHORITATIVE_WITH_SCOPE
+
+
+def test_a_diff_that_left_the_scope_is_still_an_authoritative_denial(tmp_path: Path) -> None:
+    if not _real_repo(tmp_path):  # pragma: no cover - a machine without git
+        pytest.skip("git is not available here")
+    _tracked_change(tmp_path, "secrets.txt")
+    observation = _diff_scope_observer(tmp_path).observe(
+        sig("code.diff-touches-only"), {"changeset": ".", "paths": "src"}, now_ms=NOW_MS
+    )
+    assert observation.polarity is False
+    assert observation.authoritative_negative
+
+
+def test_mutant_an_empty_enumeration_read_as_complete_coverage_is_caught(
+    tmp_path: Path,
+) -> None:
+    """Mutation self-proof for P0-2 (the review's M-A7), against real git.
+
+    The shipped code took ``touched == ()`` straight to ``polarity=True`` with
+    COMPLETE_COVERAGE.  Reproduced here by asking the *same* question through a
+    changeset that really does enumerate nothing, and checking that git behaves the
+    way the defect depended on — exit 0, no output — so the guard above is load
+    bearing rather than incidental.
+    """
+
+    if not _real_repo(tmp_path):  # pragma: no cover - a machine without git
+        pytest.skip("git is not available here")
+    for changeset in ("nosuch/path", "HEAD..HEAD"):
+        argv = ["git", "diff", "--name-only"]
+        argv += [changeset, "--"] if ".." in changeset else ["--", changeset]
+        result = run_read_only(argv, tmp_path, 20.0)
+        assert result.exit_code == 0 and result.lines == (), changeset
+
+
+# ------------------------------- P1-4②: a CLOSED denial that can reach an anchor at all
+
+
+def test_a_closed_appworld_denial_is_scoped_to_the_deployments_own_scope() -> None:
+    """P1-4②: an authoritative negative is admitted only in the scope it names."""
+
+    from agent_orchestrator.planning.htn.observers.appworld import AmountObserver, ListObserver
+
+    config_ = AppWorldObserverConfig(client=list_episode('["a", "b"]'), scope_id="mission")
+    wrong = ListObserver(config_).observe(
+        sig("appworld.list-size"), {"list_ref": LIST_REF, "size": 3}, now_ms=NOW_MS
+    )
+    assert wrong.authoritative_negative
+    assert wrong.record is not None
+    assert wrong.record.coverage_scope == "mission"
+    money = AppWorldObserverConfig(
+        client=transfer_episode('{"amount": "10.10", "currency": "USD"}'), scope_id="mission"
+    )
+    mismatch = AmountObserver(money).observe(
+        sig("appworld.amount-equals"),
+        {"transfer_ref": TRANSFER_REF, "amount": "10.11", "currency": "USD"},
+        now_ms=NOW_MS,
+    )
+    assert mismatch.authoritative_negative
+    assert mismatch.record is not None
+    assert mismatch.record.coverage_scope == "mission"
+
+
+def test_a_closed_appworld_denial_reaches_the_anchor_layer_end_to_end() -> None:
+    """And the whole way through: the selector admits it, a foreign scope does not."""
+
+    from agent_orchestrator.contracts.evidence_state import Validity, WitnessPurpose
+    from agent_orchestrator.knowledge.justifications import (
+        AnchorCandidate,
+        AnchorRejection,
+        AnchorSelector,
+    )
+    from agent_orchestrator.planning.htn.observers.appworld import ListObserver
+
+    signature = sig("appworld.list-size")
+
+    def denial_in(scope: str) -> Any:
+        observation = ListObserver(
+            AppWorldObserverConfig(client=list_episode('["a", "b"]'), scope_id=scope)
+        ).observe(signature, {"list_ref": LIST_REF, "size": 3}, now_ms=NOW_MS)
+        assert observation.record is not None
+        return observation.record
+
+    def selection(record: Any) -> Any:
+        return AnchorSelector(
+            signatures={record.proposition_key: signature},
+            scope_id="mission",
+            purpose=WitnessPurpose.ACCEPT,
+            as_of_ms=NOW_MS,
+        ).select(
+            [
+                AnchorCandidate(
+                    observation=record,
+                    observer_id="appworld.list-observer",
+                    scope_id="mission",
+                    source_group="appworld-observers",
+                    validity=Validity.CURRENT,
+                    temporal_use=signature.temporal_use,
+                )
+            ]
+        )
+
+    admitted = selection(denial_in("mission"))
+    assert len(admitted.anchors) == 1, admitted.rejected
+    assert admitted.rejected == ()
+    # The negative control is the exact rejection the fourth review round measured:
+    # a reader that names its own string for the coverage scope is dropped here every
+    # time, so the CLOSED predicate could never conclude FALSE about anything.
+    dropped = selection(denial_in("appworld-episode"))
+    assert admitted.anchors and not dropped.anchors
+    assert [item.reason for item in dropped.rejected] == [AnchorRejection.COVERAGE_SCOPE_MISMATCH]
+
+
+def test_the_deployment_hands_the_appworld_readers_its_own_scope() -> None:
+    """The wiring P1-4② needed: the world's scope reaches the observer config."""
+
+    from agent_orchestrator.planning.htn.world import domain_observers
+
+    readers = domain_observers(
+        ("appworld",), appworld_episode=list_episode("[]"), appworld_scope="mission"
+    )
+    assert readers
+    assert all(getattr(item, "coverage_scope", None) == "mission" for item in readers)
+
+
+# ---------------------------------- P1-4①: a manifest's own vocabulary is not a package
+
+PYPROJECT_MANIFEST = """\
+[project]
+name = "demo"
+dependencies = ["requests", "httpx>=0.2"]
+# pytest is named only in this comment
+[project.optional-dependencies]
+dev = ["ruff"]
+homepage = "https://github.com/psf/urllib3"
+"""
+
+
+@pytest.mark.parametrize(
+    ("package", "declared", "why"),
+    [
+        ("requests", True, "a real entry in the dependency list"),
+        ("httpx", True, "an entry with a version specifier"),
+        ("ruff", True, "an entry in an optional group"),
+        ("dependencies", False, "the manifest's own key, not a package"),
+        ("project", False, "a section header, not a package"),
+        ("pytest", False, "a whole-line comment declares nothing"),
+        ("urllib3", False, "the tail of a homepage URL is a path segment"),
+        ("requests-mock", False, "a longer name is not this name"),
+    ],
+)
+def test_a_manifest_declares_its_dependencies_and_not_its_own_grammar(
+    package: str, declared: bool, why: str
+) -> None:
+    """P1-4①: the whole-file search answered TRUE from keys, comments and URLs.
+
+    ``declared-dependency-present('dependencies')`` was TRUE on every pyproject.toml
+    in existence, which is a predicate that cannot distinguish a dependency from the
+    word "dependencies".  Still syntax-agnostic — four line-level rules, no grammar.
+    """
+
+    from agent_orchestrator.planning.htn.observers.code import declares_package
+
+    assert declares_package(PYPROJECT_MANIFEST, package) is declared, why
+
+
+def test_a_json_manifest_still_declares_by_key() -> None:
+    """The rule must not break ``package.json``, where the name really is the key.
+
+    A bare key before ``=`` is the manifest's vocabulary; a *quoted* key before ``:``
+    is how JSON spells a dependency, so only the first is ignored.
+    """
+
+    from agent_orchestrator.planning.htn.observers.code import declares_package
+
+    document = '{"dependencies": {"requests": "^2.0", "left-pad": "1.0"}}'
+    assert declares_package(document, "requests") is True
+    assert declares_package(document, "left-pad") is True
+    assert declares_package(document, "right-pad") is False
+
+
+def test_a_go_module_path_is_matched_whole_and_not_by_its_tail() -> None:
+    from agent_orchestrator.planning.htn.observers.code import declares_package
+
+    document = "require (\n\tgithub.com/psf/requests v1.2.3\n)\n"
+    assert declares_package(document, "github.com/psf/requests") is True
+    assert declares_package(document, "requests") is False, "a path segment is not the name"
+
+
+def test_mutant_a_whole_file_search_would_answer_from_the_key_name() -> None:
+    """Mutation self-proof for P1-4①: the pre-round-4 search, run on the same text."""
+
+    from agent_orchestrator.planning.htn.observers.code import _names
+
+    assert _names(PYPROJECT_MANIFEST.lower(), "dependencies") is True, (
+        "searching the whole file finds the key, which is what the old code did"
+    )

@@ -16,6 +16,7 @@ appended after the four rather than sorted in, and why `ARMS` still means the fo
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -100,3 +101,55 @@ def test_the_hierarchical_arm_survives_a_replace() -> None:
     plan = manifest(ARM_NAMES)
     again = replace(plan, seed=8)
     assert tuple(arm.arm for arm in again.arms) == ARM_NAMES
+
+
+# ======================================================================================
+# Review round 4, P1-6: the executor's own arm gate
+# ======================================================================================
+
+
+def test_the_executor_gate_reads_the_declared_arm_names() -> None:
+    """The literal ``{"S","R","D","F"}`` drifted away from ``ARM_NAMES`` at G5.
+
+    An ``H`` run reached ``execute_arm`` as ``arm must be S/R/D/F`` — a refusal that
+    names the wrong problem, and the one the review flagged as "开跑即抛".  The gate
+    now reads the declaration, so the arm set cannot drift again.
+    """
+
+    import asyncio
+
+    from agent_orchestrator.evaluation.appworld_arms import ArmRuntime, execute_arm
+
+    runtime = ArmRuntime(
+        provider=object(),
+        model="fake",
+        tokenizer=object(),
+        context_policy=object(),
+        budget=budget(),
+    )
+    with pytest.raises(ValueError, match="arm must be one of"):
+        asyncio.run(execute_arm("X", None, runtime, Path("/nonexistent")))  # type: ignore[arg-type]
+
+
+def test_the_hierarchical_arm_is_refused_here_by_name_and_for_a_reason() -> None:
+    """And it is refused *as H*, not mis-run as a legacy orchestrated arm.
+
+    ``_orchestrated`` submits a Mission with no ``orchestration_semantics_version``,
+    which §18.5 rule 1 makes **legacy**.  Falling through to it would write a legacy
+    result under a hierarchical arm name, which is an unreadable acceptance score.
+    The hierarchical arm is assembled by the acceptance runner's own ``run_h_arm``.
+    """
+
+    import asyncio
+
+    from agent_orchestrator.evaluation.appworld_arms import ArmRuntime, execute_arm
+
+    runtime = ArmRuntime(
+        provider=object(),
+        model="fake",
+        tokenizer=object(),
+        context_policy=object(),
+        budget=budget(),
+    )
+    with pytest.raises(ValueError, match="assembled by the hierarchical runner"):
+        asyncio.run(execute_arm(HIERARCHICAL_ARM, None, runtime, Path("/nonexistent")))  # type: ignore[arg-type]

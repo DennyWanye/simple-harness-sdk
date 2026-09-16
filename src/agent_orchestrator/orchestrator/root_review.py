@@ -334,6 +334,73 @@ def acceptance_ref(acceptance_id: str) -> TypedRef:
     )
 
 
+#: What a contribution carrying no delivered artifact at all is labelled with, and
+#: why.  ``none`` is a *statement* rather than an empty field: the reviewer is being
+#: asked whether these parts compose into the root goal, and "this part delivered
+#: nothing the plan recorded" is an answer it needs, not a blank to fill in.
+NO_EVIDENCE = "none"
+NO_EVIDENCE_REASON = (
+    "this acceptance recorded no artifact at a declared output port, so there is no "
+    "delivered evidence to read; judge it on its goal_statement and the review it was "
+    "accepted under, and say in findings if that is not enough"
+)
+
+
+def _evidence_label(
+    outputs: Sequence[Mapping[str, Any]],
+    artifacts: Sequence[str],
+    review: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """One contribution's evidence, or an explicit statement that there is none."""
+
+    if outputs or artifacts:
+        return {
+            "kind": "accepted_outputs" if outputs else "artifacts",
+            "count": len(outputs) or len(artifacts),
+        }
+    return {
+        "kind": NO_EVIDENCE,
+        "count": 0,
+        "reason": NO_EVIDENCE_REASON,
+        "review_available": bool(review),
+    }
+
+
+def refuse_self_contradicting_accept(
+    verdict: ReviewVerdict, criterion_verdicts: Mapping[str, CriterionVerdict]
+) -> None:
+    """An ACCEPT may not carry a criterion the reviewer itself judged FAIL.
+
+    The symmetric half of the fourth review round's P0-3.  One direction —
+    ``FAIL`` while every criterion is met — is **legal** and is in fact the shape a
+    composition review exists to produce: each part satisfies its own criterion and
+    the parts still do not add up to the root goal.  The other direction is not a
+    judgement at all, it is two judgements that contradict each other, and it must
+    not become a record: the AER §6.2 success expression would read the criteria and
+    ``evaluate_success_expression`` would refuse — but that is one layer's accident,
+    not a property of the record, and a record is what gets replayed.
+
+    Deliberately here and **not** in ``parse_critic_verdict``: that parser is also
+    the legacy Task Critic's, whose §22 contract does allow a PASS that names an
+    unmet criterion (a Critic is not the Mission's success authority; the Mission
+    Judge is).  Tightening it there would change a shipped contract on the legacy
+    path, which is not what this fix is about.
+    """
+
+    unmet = sorted(
+        str(key)
+        for key, value in criterion_verdicts.items()
+        if CriterionVerdict(value) is CriterionVerdict.FAIL
+    )
+    if verdict is ReviewVerdict.ACCEPT and unmet:
+        raise ContractError(
+            "a root review that ACCEPTs may not also report a criterion it judged FAIL "
+            f"({unmet}); the reply contradicts itself and no conclusion can be read off it "
+            "(AER I05).  A FAIL whose criteria are all met is a different thing and is legal: "
+            "that is a composition the parts satisfy and the whole does not"
+        )
+
+
 @dataclass(slots=True)
 class RootReviewCoordinator:
     """The deployment side of the root ``MISSION_FINAL`` review.
@@ -619,7 +686,17 @@ class RootReviewCoordinator:
             )
         return RootReviewState(
             status=RootReviewStatus.READY,
-            detail="",
+            # Review round 4, P2-6.  ``READY`` means "there is nothing left for *this*
+            # module to do", not "the Mission will resolve": the reviewer said ACCEPT,
+            # and whether the criteria it reported actually satisfy §6.2's success
+            # expression is ``acceptance_rules``' answer and not this one's.  A root
+            # whose reviewer accepted while leaving a criterion unmet sits here and is
+            # refused downstream every cycle, and an operator reading "READY" with
+            # nothing happening deserves to be told which half is ready.
+            detail=(
+                "the reviewer concluded ACCEPT; whether its criterion verdicts satisfy the "
+                "root goal's success expression is decided by commit_goal_resolution"
+            ),
             task_id=base.task_id,
             obligation_id=base.obligation_id,
             package=package,
@@ -925,6 +1002,9 @@ class RootReviewCoordinator:
             except StoreError:  # pragma: no cover - the cut read them a moment ago
                 continue
             child = semantics.task_semantics_of(mission_id, str(acceptance.task_id))
+            outputs = delivered.get(str(acceptance.acceptance_id), [])
+            artifacts = [str(item.id) for item in acceptance.artifact_refs]
+            review = self._child_review(str(acceptance.review_record_id))
             contributions.append(
                 {
                     "acceptance_id": str(acceptance.acceptance_id),
@@ -934,9 +1014,17 @@ class RootReviewCoordinator:
                     "goal_statement": (
                         "" if child is None else str(child.goal_signature.statement)
                     ),
-                    "accepted_outputs": delivered.get(str(acceptance.acceptance_id), []),
-                    "review": self._child_review(str(acceptance.review_record_id)),
-                    "artifacts": [str(item.id) for item in acceptance.artifact_refs],
+                    "accepted_outputs": outputs,
+                    "review": review,
+                    "artifacts": artifacts,
+                    # Review round 4, P1-2.  A leaf whose plan declared no output port
+                    # produces no ``acceptance_outputs`` row, so its evidence really is
+                    # empty — and handing a reviewer an empty array with no explanation
+                    # is how the third round's smoke got a correct FAIL on work that had
+                    # in fact been done.  The gap is stated instead of left to be
+                    # guessed at, and what *is* there (the goal it was accepted against
+                    # and the judgement it was accepted under) is named beside it.
+                    "evidence": _evidence_label(outputs, artifacts, review),
                 }
             )
         return RootReviewRequest(
@@ -1005,6 +1093,7 @@ class RootReviewCoordinator:
         """
 
         resolved = ReviewVerdict(verdict)
+        refuse_self_contradicting_accept(resolved, criterion_verdicts)
         limitations = tuple(
             f"{one.get('severity', 'minor')}: {str(one.get('detail', ''))[:200]}"
             for one in findings
@@ -1137,6 +1226,7 @@ __all__ = (
     "RootReviewState",
     "RootReviewStatus",
     "acceptance_ref",
+    "refuse_self_contradicting_accept",
     "root_criteria",
     "root_requirements",
 )

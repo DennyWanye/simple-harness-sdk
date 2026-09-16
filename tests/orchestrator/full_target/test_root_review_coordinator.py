@@ -345,11 +345,50 @@ def test_the_reviewer_is_shown_what_each_contribution_delivered(cut: World) -> N
     for item in delivered:
         for output in item["accepted_outputs"]:
             assert output["port"] and output["artifact_id"]
+    # Review round 4, P1-2: "at least one" was the half that let the defect survive.
+    # On this very fixture one of the two contributions arrived with *no* evidence at
+    # all, and a correct reviewer can only answer met=false to that — an error
+    # declared the wrong way, at exactly the place §21.5 scores.  **Every**
+    # contribution now either carries evidence or says in so many words that it has
+    # none, and why.
+    for item in contributions:
+        assert item["evidence"]["kind"] in {"accepted_outputs", "artifacts", "none"}
+        if item["accepted_outputs"] or item["artifacts"]:
+            assert item["evidence"]["count"] >= 1
+        else:
+            assert item["evidence"]["kind"] == "none"
+            assert item["evidence"]["reason"], "a blank field is what the reviewer guessed at"
+            assert item["goal_statement"] or item["review"], (
+                "with no delivered artifact there must still be something to judge on"
+            )
     judged = [item for item in contributions if item["review"]]
     assert judged, "and the judgement it was accepted under"
     for item in judged:
         assert item["review"]["verdict"]
         assert item["review"]["review_record_id"]
+
+
+def test_the_prompt_names_the_fields_the_request_actually_carries(cut: World) -> None:
+    """P1-2: the third round fixed the payload and left the prompt pointing at ``artifacts``.
+
+    ``artifacts`` reads ``acceptance.artifact_refs``, which the accept path does not
+    populate — so the reviewer was being told to look at the one field that is always
+    empty.  A prompt that names a field the request does not deliver is the same
+    defect as a request that does not deliver the field.
+    """
+
+    from agent_orchestrator.runtime.role_templates import ROOT_REVIEWER
+
+    coordination = coordinator(cut)
+    package = coordination.live_package(cut.mission.id)
+    contributions = coordination.request(cut.mission.id, package).contributions
+    assert contributions
+    for field in ("goal_statement", "accepted_outputs", "review", "evidence"):
+        assert field in contributions[0], field
+        assert field in ROOT_REVIEWER.instructions, field
+    assert "artifacts）" not in ROOT_REVIEWER.instructions, (
+        "the prompt no longer sends the reviewer to the field the accept path leaves empty"
+    )
 
 
 def test_a_judgement_the_library_cannot_produce_is_an_empty_field(cut: World) -> None:
@@ -1028,3 +1067,469 @@ def test_a_reviewer_that_answered_is_never_asked_again(cut: World, tmp_path) -> 
 
     assert asyncio.run(case()) is False
     assert events(cut, ROOT_REVIEW_REJECTED), "the refusal is the record, not a retry"
+
+
+# ======================================================================================
+# 9. Reading the reply back: the one line between "the reviewer said FAIL" and COMPLETED
+# ======================================================================================
+#
+# Review round 4, P0-3.  ``_collect_root_review`` had no test at all, and neither did
+# the combination a composition review most naturally produces: **FAIL with a blocker
+# while every individual criterion is met** — each accepted part satisfies its own
+# criterion, and the parts still do not add up to the root goal.  On that shape the
+# AER §6.2 success expression *passes* (every criterion is PASS), so
+# ``event_handler.py``'s ``ReviewVerdict.ACCEPT if verdict.passed else REJECTED`` is
+# the only thing left standing between a FAIL and a Mission declared complete.  The
+# review mutated that one line and the whole 2582-test suite stayed green.
+
+
+def _verdict_block(criteria: list[str], *, verdict: str, met: dict[str, bool] | None = None):
+    met = met or {}
+    findings = (
+        [{"severity": "blocker", "detail": "the parts do not compose into the root goal"}]
+        if verdict == "FAIL"
+        else []
+    )
+    return (
+        "<critic_verdict>"
+        + json.dumps(
+            {
+                "verdict": verdict,
+                "findings": findings,
+                "mission_criteria": [
+                    {"criterion": item, "met": met.get(item, True), "reason": "scripted"}
+                    for item in criteria
+                ],
+            }
+        )
+        + "</critic_verdict>"
+    )
+
+
+class _Committed:
+    """The shape ``_collect_root_review`` reads a dispatched turn through."""
+
+    def __init__(self, state: Any, turn_id: str = "turn-root-1") -> None:
+        self.state = state
+        self.turn_id = turn_id
+        self.error: dict[str, Any] | None = None
+
+
+def _collect(world: World, tmp_path, *, verdict: str, met: dict[str, bool] | None = None):
+    """Ask the reviewer through the loop, then hand the loop a real reply."""
+
+    import asyncio
+
+    from simple_harness.agents import AgentTurnState
+
+    async def case():
+        async with _orchestrator(tmp_path) as loop:
+            loop.install_hierarchical(planning=world.env)
+            mission = loop.store.get_mission(world.mission.id)
+            coordination = loop._root_review(mission, loop._new_mode(mission))
+            package = coordination.live_package(mission.id)
+            assert package is not None
+            await loop._ask_root_reviewer(mission, coordination, package)
+            subject = f"{mission.id}:root-review:{package.package_id}:1"
+            intent = loop.store.get_intent_for_subject(subject)
+            assert intent is not None
+            criteria = [str(item) for item in intent.config["review_criteria"]]
+            await loop._collect_root_review(
+                intent,
+                _Committed(AgentTurnState.COMMITTED),
+                mission,
+                _verdict_block(criteria, verdict=verdict, met=met),
+            )
+            return (
+                criteria,
+                coordination.semantics.official_review_record(str(package.package_id)),
+                [item for item in loop.store.list_events(mission.id) if "RootReview" in item.type],
+            )
+
+    return asyncio.run(case())
+
+
+def test_a_reviewer_that_said_fail_resolves_nothing_even_with_every_criterion_met(
+    cut: World, tmp_path
+) -> None:
+    """P0-3: the shape a composition review exists to produce, end to end.
+
+    Every criterion ``met: true`` and a blocker on the whole, so the §6.2 success
+    expression is satisfied on every axis it evaluates.  The record's own verdict is
+    the only remaining defence, and this is the test that stands on it: mutate
+    ``event_handler``'s ``ACCEPT if verdict.passed else REJECTED`` to a bare ``ACCEPT``
+    and the root ``GoalResolution`` commits.
+    """
+
+    criteria, record, _events = _collect(cut, tmp_path, verdict="FAIL")
+    assert criteria == [ROOT_CRITERION]
+    assert record is not None
+    assert record.verdict is ReviewVerdict.REJECTED
+    # The criteria axis really is all-PASS: this test is not passing for the wrong reason.
+    assert [item.verdict for item in record.criteria] == [CriterionVerdict.PASS]
+    outcome = offer_root(cut)
+    assert outcome.committed is False
+    assert cut.semantics.adopted_goal_resolution(cut.mission.id, ROOT_DUTY) is None
+
+
+def test_a_reviewer_that_said_pass_is_recorded_as_an_accept(cut: World, tmp_path) -> None:
+    """The control for the test above: the same wiring, the opposite conclusion."""
+
+    _criteria, record, _events = _collect(cut, tmp_path, verdict="PASS")
+    assert record is not None
+    assert record.verdict is ReviewVerdict.ACCEPT
+    assert [item.verdict for item in record.criteria] == [CriterionVerdict.PASS]
+
+
+def test_a_pass_that_names_an_unmet_criterion_is_not_a_conclusion(cut: World, tmp_path) -> None:
+    """The symmetric half of P0-3: two judgements that contradict each other.
+
+    ``parse_critic_verdict`` allows it — it only checks ``FAIL ⟺ blocker`` — and the
+    legacy Task Critic's §22 contract genuinely permits a PASS that names an unmet
+    criterion, so the refusal lives in the root-review coordinator instead of in the
+    shared parser.  No official record is written and the package keeps its one slot.
+    """
+
+    _criteria, record, recorded = _collect(
+        cut, tmp_path, verdict="PASS", met={ROOT_CRITERION: False}
+    )
+    assert record is None
+    assert [item.type for item in recorded if item.type == ROOT_REVIEW_REJECTED] == []
+    outcome = offer_root(cut)
+    assert outcome.committed is False
+
+
+def test_the_coordinator_refuses_a_self_contradicting_accept_directly(cut: World) -> None:
+    """And at the coordinator's own door, not only through the loop."""
+
+    from agent_orchestrator.orchestrator.root_review import refuse_self_contradicting_accept
+
+    with pytest.raises(ContractError, match="may not also report a criterion it judged FAIL"):
+        review(cut, verdict=ReviewVerdict.ACCEPT, verdicts={ROOT_CRITERION: CriterionVerdict.FAIL})
+    # …while the legal asymmetric shape is left alone.
+    refuse_self_contradicting_accept(
+        ReviewVerdict.REJECTED, {ROOT_CRITERION: CriterionVerdict.PASS}
+    )
+    refuse_self_contradicting_accept(
+        ReviewVerdict.ACCEPT, {ROOT_CRITERION: CriterionVerdict.UNKNOWN}
+    )
+
+
+def test_mutant_ignoring_the_reviewers_conclusion_declares_the_mission_complete(
+    cut: World, tmp_path, monkeypatch
+) -> None:
+    """Mutation self-proof for P0-3 (the review's M20), run end to end.
+
+    ``ReviewVerdict.ACCEPT if verdict.passed else REJECTED`` is replaced by a bare
+    ACCEPT — the single-line regression the review demonstrated — and the same FAIL
+    reply now produces a committed root ``GoalResolution``.  The guard above is the
+    only automated evidence that this line is load bearing.
+    """
+
+    from agent_orchestrator.orchestrator import root_review as module
+
+    real = module.RootReviewCoordinator.record_review
+
+    def always_accept(self, mission_id, package, **kwargs: Any):
+        return real(self, mission_id, package, **{**kwargs, "verdict": ReviewVerdict.ACCEPT})
+
+    monkeypatch.setattr(module.RootReviewCoordinator, "record_review", always_accept)
+    _criteria, record, _events = _collect(cut, tmp_path, verdict="FAIL")
+    assert record is not None
+    assert record.verdict is ReviewVerdict.ACCEPT, "the mutant is in place"
+    outcome = offer_root(cut)
+    assert outcome.committed is True, (
+        "with the reviewer's conclusion ignored the root goal resolves and the Mission "
+        "is declared complete on a reply that said FAIL"
+    )
+
+
+# ======================================================================================
+# 10. The one parser: a malformed verdict is an error, never a PASS (P1-7)
+# ======================================================================================
+#
+# ``critics.py`` is not touched by this slice, but part 3a made the root MISSION_FINAL
+# review depend on it — deliberately, so that there is exactly one place a reply can
+# become a PASS (``role_templates.py``: "a second parser is a second place a bad reply
+# becomes a PASS").  The review then found that the *whole repository* had no test for
+# the negative direction: replacing ``raise ContractError`` with ``verdict = "PASS"``
+# left all 2582 tests green.  These are that test.
+
+
+def _block(payload: dict[str, Any]) -> str:
+    return "<critic_verdict>" + json.dumps(payload) + "</critic_verdict>"
+
+
+@pytest.mark.parametrize(
+    ("name", "verdict"),
+    [
+        ("lower case", "pass"),
+        ("a synonym", "ok"),
+        ("null", None),
+        ("a number", 1),
+        ("a list", ["PASS"]),
+        ("empty", ""),
+    ],
+)
+def test_a_verdict_that_is_not_pass_or_fail_is_a_contract_error(name: str, verdict: Any) -> None:
+    from agent_orchestrator.verification.critics import parse_critic_verdict
+
+    with pytest.raises(ContractError, match="must be PASS or FAIL"):
+        parse_critic_verdict(
+            _block(
+                {
+                    "verdict": verdict,
+                    "findings": [],
+                    "mission_criteria": [{"criterion": "c-1", "met": True}],
+                }
+            ),
+            expected_criteria=["c-1"],
+        )
+
+
+def test_a_reply_with_no_verdict_field_at_all_is_a_contract_error() -> None:
+    from agent_orchestrator.verification.critics import parse_critic_verdict
+
+    with pytest.raises(ContractError, match="must be PASS or FAIL"):
+        parse_critic_verdict(
+            _block({"findings": [], "mission_criteria": [{"criterion": "c-1", "met": True}]}),
+            expected_criteria=["c-1"],
+        )
+
+
+def test_a_reply_with_no_block_is_a_contract_error() -> None:
+    from agent_orchestrator.verification.critics import parse_critic_verdict
+
+    with pytest.raises(ContractError, match="unreadable"):
+        parse_critic_verdict("PASS, everything looks fine", expected_criteria=["c-1"])
+
+
+@pytest.mark.parametrize(
+    ("name", "payload", "match"),
+    [
+        (
+            "a met that is not a bool",
+            {
+                "verdict": "PASS",
+                "findings": [],
+                "mission_criteria": [{"criterion": "c-1", "met": "yes"}],
+            },
+            "met must be boolean",
+        ),
+        (
+            "a FAIL with no blocker",
+            {
+                "verdict": "FAIL",
+                "findings": [{"severity": "minor", "detail": "nit"}],
+                "mission_criteria": [{"criterion": "c-1", "met": True}],
+            },
+            "FAIL iff a blocker",
+        ),
+        (
+            "a PASS with a blocker",
+            {
+                "verdict": "PASS",
+                "findings": [{"severity": "blocker", "detail": "no"}],
+                "mission_criteria": [{"criterion": "c-1", "met": True}],
+            },
+            "FAIL iff a blocker",
+        ),
+        (
+            "criteria in the wrong order",
+            {
+                "verdict": "PASS",
+                "findings": [],
+                "mission_criteria": [{"criterion": "c-2", "met": True}],
+            },
+            "cover the Mission criteria in order",
+        ),
+    ],
+)
+def test_every_other_malformed_verdict_is_refused_too(
+    name: str, payload: dict[str, Any], match: str
+) -> None:
+    from agent_orchestrator.verification.critics import parse_critic_verdict
+
+    with pytest.raises(ContractError, match=match):
+        parse_critic_verdict(_block(payload), expected_criteria=["c-1"])
+
+
+def test_mutant_a_parser_that_defaults_to_pass_would_pass_every_malformed_reply() -> None:
+    """Mutation self-proof for P1-7 (the review's M03): the guard above is the only one.
+
+    With ``verdict not in {"PASS","FAIL"}`` answering PASS instead of raising, a reply
+    saying ``"ok"`` becomes a passing verdict — and since part 3a the root review reads
+    its conclusion through this same parser.
+    """
+
+    from agent_orchestrator.verification.critics import CriticVerdict
+
+    assert CriticVerdict(verdict="ok", findings=(), mission_criteria=(), raw={}).passed is False, (
+        "only the exact word PASS passes"
+    )
+    assert CriticVerdict(verdict="PASS", findings=(), mission_criteria=(), raw={}).passed is True
+
+
+# ======================================================================================
+# 11. Review round 4, P2: channels and rules that were only ever covered by accident
+# ======================================================================================
+
+
+def test_contributions_moving_is_its_own_recut_channel(cut: World) -> None:
+    """P2-3: ``CONTRIBUTIONS_MOVED`` had no test — ``REQUIREMENTS_MOVED`` hid it.
+
+    Every leaf acceptance publishes a new Mission-level ``RequirementsRevision``, so
+    in the natural fixture both codes fire together and the existing test asserts the
+    other one.  Turning the channel off survived the whole suite.  Here the package
+    is made to disagree about its *contributions* only, with the requirements
+    revision left exactly where the live package found it.
+    """
+
+    import dataclasses
+
+    from agent_orchestrator.orchestrator.root_review import acceptance_ref
+
+    coordination = coordinator(cut)
+    package = coordination.live_package(cut.mission.id)
+    assert package is not None
+    assert coordination.stale_reasons(cut.mission.id, package) == ()
+    moved = dataclasses.replace(
+        package,
+        child_acceptance_refs=(*package.child_acceptance_refs, acceptance_ref("acc-from-later")),
+    )
+    reasons = coordination.stale_reasons(cut.mission.id, moved)
+    assert reasons == ("CONTRIBUTIONS_MOVED",), "only this channel, and it really fires"
+    assert int(moved.binding.requirements_revision) == int(package.binding.requirements_revision), (
+        "the requirements did not move, so the other channel cannot be what answered"
+    )
+
+
+def test_the_live_package_skips_a_superseded_one_even_when_it_is_the_last(cut: World) -> None:
+    """P2-4, rule 2 on its own: the newest package is not automatically the live one.
+
+    Rules 2 (skip superseded) and 3 (take the last recorded cut) are redundant on the
+    natural path — a re-cut both supersedes the old package *and* appends a later cut
+    event — so the review's mutations of each one separately both survived.  Here the
+    **last** recorded cut is the superseded one, which only rule 2 can answer.
+    """
+
+    import dataclasses
+
+    from agent_orchestrator.contracts.resolution import ReviewPackageId
+    from agent_orchestrator.orchestrator.hierarchical_dispatch import append_hierarchical_event
+    from agent_orchestrator.orchestrator.root_review import ROOT_REVIEW_SUPERSEDED
+
+    coordination = coordinator(cut)
+    first = coordination.live_package(cut.mission.id)
+    assert first is not None
+    second = dataclasses.replace(first, package_id=ReviewPackageId(str(first.package_id) + "-b"))
+    cut.semantics.insert_review_package(second)
+    append_hierarchical_event(
+        cut.store,
+        ROOT_REVIEW_CUT,
+        cut.mission.id,
+        key=f"{cut.mission.id}:{second.package_id}",
+        task_id=str(second.binding.subject_ref.id),
+        payload={
+            "package_id": str(second.package_id),
+            "requirements_revision": int(second.binding.requirements_revision),
+            "scope_epoch": 0,
+        },
+    )
+    assert str(coordinator(cut).live_package(cut.mission.id).package_id) == str(
+        second.package_id
+    ), "rule 3 alone would pick the later cut"
+    append_hierarchical_event(
+        cut.store,
+        ROOT_REVIEW_SUPERSEDED,
+        cut.mission.id,
+        key=f"{cut.mission.id}:{second.package_id}",
+        task_id=str(second.binding.subject_ref.id),
+        payload={"package_id": str(second.package_id), "reasons": ["TEST"]},
+    )
+    live = coordinator(cut).live_package(cut.mission.id)
+    assert live is not None
+    assert str(live.package_id) == str(first.package_id), (
+        "a retired anchor is never the live one, however recently it was cut"
+    )
+
+
+def test_the_live_package_takes_the_last_cut_of_two_that_are_both_live(cut: World) -> None:
+    """P2-4, rule 3 on its own: two packages, neither superseded."""
+
+    import dataclasses
+
+    from agent_orchestrator.contracts.resolution import ReviewPackageId
+    from agent_orchestrator.orchestrator.hierarchical_dispatch import append_hierarchical_event
+
+    coordination = coordinator(cut)
+    first = coordination.live_package(cut.mission.id)
+    assert first is not None
+    second = dataclasses.replace(first, package_id=ReviewPackageId(str(first.package_id) + "-c"))
+    cut.semantics.insert_review_package(second)
+    append_hierarchical_event(
+        cut.store,
+        ROOT_REVIEW_CUT,
+        cut.mission.id,
+        key=f"{cut.mission.id}:{second.package_id}",
+        task_id=str(second.binding.subject_ref.id),
+        payload={
+            "package_id": str(second.package_id),
+            "requirements_revision": int(second.binding.requirements_revision),
+            "scope_epoch": 0,
+        },
+    )
+    live = coordinator(cut).live_package(cut.mission.id)
+    assert live is not None
+    assert str(live.package_id) == str(second.package_id), (
+        "with nothing superseded, the answer is the last cut this deployment recorded"
+    )
+
+
+def test_a_criterion_nobody_judged_is_recorded_as_never_having_been_run(cut: World) -> None:
+    """P2-5 / I07: the *execution* axis, which no test read.
+
+    ``project_verdict`` flattens a non-conclusive execution to UNKNOWN anyway, so the
+    acceptance answer does not change — but the stored record is what a replay reads,
+    and "judged FAIL" and "nobody looked" are different facts about the same
+    criterion.  Turning ``NOT_RUN`` into ``SUCCEEDED`` survived the whole suite.
+    """
+
+    from agent_orchestrator.contracts.resolution import CheckExecution
+
+    unjudged = review(cut, verdicts={})
+    assert [item.check_execution for item in unjudged.criteria] == [CheckExecution.NOT_RUN]
+    assert [item.verdict for item in unjudged.criteria] == [CriterionVerdict.UNKNOWN]
+
+
+@pytest.mark.parametrize(
+    ("verdict", "criterion"),
+    [
+        (ReviewVerdict.REJECTED, CriterionVerdict.FAIL),
+        (ReviewVerdict.ACCEPT, CriterionVerdict.PASS),
+    ],
+)
+def test_a_criterion_the_reviewer_did_judge_carries_a_finished_execution(
+    cut: World, verdict: ReviewVerdict, criterion: CriterionVerdict
+) -> None:
+    """Either way round: a judgement that happened is an execution that succeeded."""
+
+    from agent_orchestrator.contracts.resolution import CheckExecution
+
+    record = review(cut, verdict=verdict, verdicts={ROOT_CRITERION: criterion})
+    assert [item.check_execution for item in record.criteria] == [CheckExecution.SUCCEEDED]
+
+
+def test_ready_says_which_half_of_the_question_is_ready(cut: World) -> None:
+    """P2-6: ``READY`` is this module's answer, not the Mission's.
+
+    A reviewer that accepts while reporting an unmet criterion leaves the state here
+    at READY for ever while ``commit_goal_resolution`` refuses it every cycle, and an
+    operator reading a bare "READY" has nothing to go on.
+    """
+
+    review(cut)
+    state = coordinator(cut).state(cut.mission.id)
+    assert state.status is RootReviewStatus.READY
+    assert "success expression" in state.detail
+    assert "commit_goal_resolution" in state.detail

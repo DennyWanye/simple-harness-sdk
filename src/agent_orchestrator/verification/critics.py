@@ -66,7 +66,13 @@ def parse_critic_verdict(text: str, *, expected_criteria: Sequence[str]) -> Crit
     except BlockError as error:
         raise ContractError(f"critic verdict unreadable: {error}") from error
     verdict = raw.get("verdict")
-    if verdict not in {"PASS", "FAIL"}:
+    # ``isinstance`` first: P2.3c review round 4 (P1-7) found that an *unhashable*
+    # verdict — ``"verdict": ["PASS"]`` — raised ``TypeError`` out of the set test
+    # rather than ``ContractError``, and ``TypeError`` is not one of the exceptions
+    # the root-review collector catches, so a reply shaped that way took the loop
+    # down instead of being recorded as unreadable.  Every malformed verdict must
+    # leave here as the same refusal.
+    if not isinstance(verdict, str) or verdict not in {"PASS", "FAIL"}:
         raise ContractError("critic verdict must be PASS or FAIL")
     findings = raw.get("findings", [])
     if not isinstance(findings, list) or any(not isinstance(item, Mapping) for item in findings):

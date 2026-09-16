@@ -2774,26 +2774,170 @@ def test_the_borrowing_slot_shares_live_work_rather_than_claiming_an_acceptance(
 
 
 def test_the_shared_reading_is_paid_for_once(tmp_path) -> None:
-    """The point of sharing: the second consumer opens no second Task and no second duty."""
+    """The point of sharing: two slots want the reading and one Task pays for it.
+
+    Review round 4, P1-5: this filtered the Task rows by the shared occurrence's own
+    ``task_id`` and asserted the result had one element — a filter by equality on an
+    id, which cannot return two whatever the implementation does.  What has to be
+    compared is the number of *consumers* against the number of rows opened for them.
+    """
 
     world, _ = _shared_reading_world(tmp_path)
-    shared = _readings(world)[0]
-    tasks = [task for task in world.tasks().values() if task.id == str(shared.task_id)]
-    assert len(tasks) == 1
+    readings = _readings(world)
+    semantics = HtnStore(world.store)
+    shared = str(readings[0].occurrence_id)
+    consumers = [
+        binding
+        for draft in semantics.list_method_instances(world.mission.id, state="ADOPTED")
+        for binding in semantics.list_child_occurrences(world.mission.id, str(draft.instance_id))
+        if str(binding.goal_occurrence_id or binding.occurrence_id) == shared
+    ]
+    assert len(consumers) == 2, "two slots really do want this reading"
+    assert len(readings) == 1, "and exactly one occurrence answers both"
+    assert len({str(spec.task_id) for spec in readings}) == 1
+    assert len({str(spec.obligation_id) for spec in readings}) == 1
+    reading_tasks = [
+        task
+        for task in world.tasks().values()
+        if task.id in {str(spec.task_id) for spec in readings}
+    ]
+    assert len(reading_tasks) == 1, "one Task row, not one per consumer"
 
 
-def test_a_writing_sub_goal_is_never_folded_into_one_occurrence(tmp_path) -> None:
-    """The rule is unchanged: only a read-only, reusable goal may be one goal twice."""
+def _outer_that_writes_and_delegates():
+    """root → {work, sub}: the parent *writes*, and the child declares the same write."""
 
-    world, _ = _shared_reading_world(tmp_path)
+    return method(
+        "plan.outer-writes",
+        "plan.goal",
+        parameter_schema="plan.goal.params",
+        steps=(
+            step(
+                "work",
+                "plan.work",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject")},
+                capabilities=("plan.read",),
+            ),
+            step("sub", "plan.sub", TaskForm.COMPOUND, {"subject": param("subject")}),
+        ),
+        links=(("c-root", "work", "c-work"),),
+        finalizer="work",
+    )
+
+
+def _shared_writing_world(tmp_path) -> World:
+    """The same two rounds as ``_shared_reading_world``, over the writing goal.
+
+    ``plan.work`` carries the default ``NEW_WORK`` reuse policy, so both declarations
+    ground to the *same sharing signature* and must still become two occurrences.
+    That is the only shape in which "a writing sub-goal is never folded" is actually
+    being tested; the reading fixture never declared ``plan.work`` twice, so its
+    ``== 1`` held for want of a second candidate rather than because of the rule.
+    """
+
+    world = build_world(tmp_path, key="p23c-g2-write")
+    env = _shared_reading_env(world.mission.id)
+    outer, inner = _outer_that_writes_and_delegates(), _inner_that_needs_the_same_reading()
+    for contract in (outer, inner):
+        receipt = env.admit(contract)
+        assert receipt.admitted, receipt.problems
+        HtnStore(world.store).register_method(
+            contract, env.registry.registration(contract.method_ref())
+        )
+    world = dataclasses.replace(world, env=env, contract=outer)
+    world.dispatch.planning = env
+    assert world.plan(command_id="cmd-g2w-1").committed
     network = world.network()
-    work = [
+    child = next(
+        spec
+        for spec in network.occurrences
+        if str(network.binding_for_occurrence(spec.occurrence_id).goal_signature.signature_id)
+        == "plan.sub"
+    )
+    reference = inner.method_ref()
+    outcome = world.plan(
+        _proposal_text(
+            inner,
+            proposal_id="prop-g2w",
+            expected_plan_revision=int(network.plan_revision),
+            operations=[
+                {
+                    "op": "refine",
+                    "goal_id": str(child.task_id),
+                    "obligation_id": str(child.obligation_id),
+                    "method_ref": {
+                        "id": reference.method_id,
+                        "version": reference.version,
+                        "content_hash": reference.content_hash,
+                    },
+                    "bindings": {},
+                }
+            ],
+        ),
+        command_id="cmd-g2w-2",
+    )
+    assert outcome.committed, outcome.last_reason
+    return world
+
+
+def _works(world: World) -> list[Any]:
+    network = world.network()
+    return [
         spec
         for spec in network.occurrences
         if str(network.binding_for_occurrence(spec.occurrence_id).goal_signature.signature_id)
         == "plan.work"
     ]
-    assert len(work) == 1
+
+
+def test_a_writing_sub_goal_is_never_folded_into_one_occurrence(tmp_path) -> None:
+    """The rule: only a read-only, reusable goal may be one goal twice.
+
+    Two method instances declare ``plan.work`` with identical parameters, so the
+    sharing signature matches exactly and the *only* thing standing between them and
+    a fold is ``may_share``'s reuse-policy gate.  Two occurrences, two Tasks, two
+    duties — the same-shaped world that folds the reading into one.
+    """
+
+    world = _shared_writing_world(tmp_path)
+    works = _works(world)
+    assert len(works) == 2, "a NEW_WORK goal is its own work however alike the two look"
+    assert len({str(spec.occurrence_id) for spec in works}) == 2
+    assert len({str(spec.task_id) for spec in works}) == 2, "two Task rows, paid for twice"
+    # And the two really are the same goal by signature: it is the reuse policy that
+    # keeps them apart, not a difference the grounder happened to find.
+    network = world.network()
+    bindings = [network.binding_for_occurrence(spec.occurrence_id) for spec in works]
+    assert len({tuple(sorted(item.typed_parameters.items())) for item in bindings}) == 1
+    assert len({str(item.goal_signature.signature_id) for item in bindings}) == 1
+    assert len({str(item.semantic_scope) for item in bindings}) == 1
+
+
+def test_the_index_refuses_to_fold_a_new_work_goal_and_says_why(tmp_path) -> None:
+    """P1-5: the wiring layer, where ``lookup`` asks ``may_share`` at all.
+
+    The review's mutation at ``grounding.py`` — ``lookup`` handing back the entry
+    without consulting ``may_share`` — was killed by exactly one test.  This asks the
+    index directly, in both directions, with one signature.
+    """
+
+    from agent_orchestrator.orchestrator.hierarchical_dispatch import shared_goal_index
+    from agent_orchestrator.planning.htn.grounding import ShareVerdict
+
+    world = _shared_writing_world(tmp_path)
+    index = shared_goal_index(world.network(), catalog=world.env.catalog)
+    wanted = str(_works(world)[0].occurrence_id)
+    entry = next(item for item in index.entries() if str(item.occurrence_id) == wanted)
+    refused, decision = index.lookup(entry.signature, reuse_policy=ReusePolicy.NEW_WORK)
+    assert refused is None
+    assert decision.verdict is ShareVerdict.REUSE_NOT_PERMITTED
+    assert not decision.shareable
+    # The same signature under a policy that does permit reuse *is* bound, so the
+    # refusal above is the policy answering and not the lookup failing to find it.
+    found, allowed = index.lookup(entry.signature, reuse_policy=ReusePolicy.SHARE_ACTIVE)
+    assert found is not None and allowed.shareable
+    assert str(found.occurrence_id) == wanted
 
 
 def test_mutant_a_dispatch_that_offers_no_index_reads_the_repository_twice(
@@ -4203,6 +4347,73 @@ def test_the_refusal_reasons_are_written_where_a_reader_can_find_them(tmp_path) 
     assert len(written) == 1
 
 
+def test_a_new_plan_revision_gets_its_own_assessment(tmp_path) -> None:
+    """P2-10: the idempotency key is ``(mission, plan_revision)`` — both halves.
+
+    Review round 4: dropping ``plan_revision`` from the key left the old test green,
+    because within one revision "once per mission" and "once per revision" are the
+    same thing.  The assessment is a statement about a *plan*, so a plan that moved
+    must be assessed again; deduplicating on the mission alone would answer the
+    runner's "why was this method not chosen" with an assessment of a plan that no
+    longer exists.
+    """
+
+    from agent_orchestrator.orchestrator.hierarchical_dispatch import (
+        METHOD_APPLICABILITY_ASSESSED,
+    )
+
+    world = build_world(tmp_path, key="p23c-g1-revision")
+    world.env.register_predicate("plan.ready", closed=False)
+    contract = method(
+        "plan.gated",
+        "plan.goal",
+        parameter_schema="plan.goal.params",
+        applicable=(
+            {
+                "op": "predicate",
+                "predicate_ref": ref("plan.ready").to_json(),
+                "arguments": {"subject": param("subject")},
+            },
+        ),
+        steps=(
+            step(
+                "leaf",
+                "plan.leaf",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject")},
+                capabilities=("plan.read",),
+            ),
+        ),
+        links=(("c-root", "leaf", "c-done"),),
+        finalizer="leaf",
+    )
+    assert world.env.admit(contract).admitted
+    HtnStore(world.store).register_method(
+        contract, world.env.registry.registration(contract.method_ref())
+    )
+    # The *same* assessment is offered both times, so the only thing that differs
+    # between the two calls is the plan revision the key is built from.
+    reports = world.dispatch.method_applicability(world.mission.id)
+    assert reports
+    first = world.dispatch.record_method_applicability(world.mission.id, reports=reports)
+    assert first is not None
+    before = int(world.dispatch.network(world.mission.id).plan_revision)
+    assert world.plan(command_id="cmd-g1-rev").committed
+    after = int(world.dispatch.network(world.mission.id).plan_revision)
+    assert after != before, "the plan really did move"
+    second = world.dispatch.record_method_applicability(world.mission.id, reports=reports)
+    assert second is not None
+    assert second.id != first.id, "a moved plan is a different assessment, not a duplicate"
+    again = world.dispatch.record_method_applicability(world.mission.id, reports=reports)
+    assert again is not None and again.id == second.id, "and still once per revision"
+    written = [
+        event
+        for event in world.store.list_events(mission_id=world.mission.id)
+        if event.type == METHOD_APPLICABILITY_ASSESSED
+    ]
+    assert [int(item.payload["plan_revision"]) for item in written] == [before, after]
+
+
 def test_a_round_that_refused_nothing_writes_no_assessment(world: World) -> None:
     """An event saying "nothing was refused" and no event are the same fact."""
 
@@ -4894,6 +5105,93 @@ def test_a_confirmation_that_moves_the_world_lets_the_run_carry_on(tmp_path) -> 
     )
     assert mission is not None
     assert mission.status is MissionStatus.ACTIVE, "a moved world is never a stop"
+
+
+def test_run_itself_comes_back_round_after_a_carry_on(tmp_path) -> None:
+    """Review round 4, P1-1: P1-A's fix lives in ``run()``, so the test has to too.
+
+    The two tests either side of this one assert what ``_confirm_and_stop_stalled``
+    *returns*; neither goes through ``run()``.  The review restored P1-A's original
+    defect exactly — ``await self._confirm_and_stop_stalled()`` followed by an
+    unconditional ``return`` — and 297 tests stayed green.  This one watches the loop
+    itself: after a confirmation that moved the world there must be another
+    ``_cycle``, because that cycle is where the unblocked work would be dispatched.
+
+    The world is moved the way the fingerprint's own docstring says it can be — one
+    more observation recorded during the confirmation cycle, which is literally what
+    ``_gather_evidence`` is there to do.  Deliberately a move that unblocks *nothing*:
+    the assertion is about the loop coming back round, and a fixture that also starts
+    dispatching would be a slower test measuring something else.
+    """
+
+    world, orchestrator, _ = _stalled(tmp_path)
+
+    async def case():
+        async with orchestrator as loop:
+            _install(loop, world)
+            moved: list[str] = []
+            confirming: list[bool] = []
+            real_gather = loop._gather_evidence
+
+            def moving(mission: Any) -> Any:
+                outcome = real_gather(mission)
+                # Only inside the confirmation cycle: that is the one whose
+                # fingerprint ``run()`` compares against the recorded stall.
+                if confirming and not moved:
+                    moved.append(mission.id)
+                    HtnStore(loop.store).insert_observation(
+                        mission.id,
+                        ObservationRecord(
+                            observation_id="obsrec-carry-on-1",
+                            proposition_key="stall.world-moved#1",
+                            polarity=True,
+                            source_ref=TypedRef(
+                                kind=TypedRefKind.OBSERVATION,
+                                id="obs-carry-on-1",
+                                revision=1,
+                                content_hash=HEX_A,
+                            ),
+                            observed_at_ms=10,
+                            recorded_at_ms=10,
+                            coverage=QueryCompleteness.BEST_EFFORT,
+                            observer_id="observer-1",
+                        ),
+                    )
+                return outcome
+
+            loop._gather_evidence = moving  # type: ignore[method-assign]
+            timeline: list[str] = []
+            real_cycle = loop._cycle
+            real_confirm = loop._confirm_and_stop_stalled
+
+            async def counted_cycle():
+                timeline.append("cycle")
+                return await real_cycle()
+
+            async def watched_confirm():
+                confirming.append(True)
+                try:
+                    carried = await real_confirm()
+                finally:
+                    confirming.pop()
+                timeline.append("carry-on" if carried else "stop")
+                return carried
+
+            loop._cycle = counted_cycle  # type: ignore[method-assign]
+            loop._confirm_and_stop_stalled = watched_confirm  # type: ignore[method-assign]
+            await loop.run(max_cycles=8)
+            return timeline, moved, loop.store.get_mission(world.mission.id)
+
+    timeline, moved, mission = asyncio.run(case())
+    assert moved, "the confirmation cycle really did move the world"
+    assert "carry-on" in timeline, "the confirmation asked the loop for another cycle"
+    after = timeline[timeline.index("carry-on") + 1 :]
+    assert "cycle" in after, (
+        "run() returned on a carry-on instead of coming back round; the work the "
+        "confirmation unblocked would never be dispatched"
+    )
+    assert timeline[-1] == "stop", "and the second confirmation, which moved nothing, ends it"
+    assert mission is not None
 
 
 def test_the_carry_on_is_bounded_so_a_moving_world_ends_the_run(tmp_path) -> None:

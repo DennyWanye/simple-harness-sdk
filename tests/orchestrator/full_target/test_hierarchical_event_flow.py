@@ -96,6 +96,13 @@ from agent_orchestrator.orchestrator.plan_commits import (  # noqa: E402
     PlanCommitRejected,
     PlanPrincipal,
 )
+from agent_orchestrator.orchestrator.root_review import (  # noqa: E402
+    ROOT_REVIEW_CUT,
+    ROOT_REVIEW_CUT_BUDGET_SPENT,
+    ROOT_REVIEW_REJECTED,
+    ROOT_REVIEW_SUPERSEDED,
+    ROOT_REVIEW_UNREADABLE,
+)
 from agent_orchestrator.runtime.assembly import OrchestratorConfig  # noqa: E402
 from agent_orchestrator.storage.htn_store import HtnStore  # noqa: E402
 from agent_orchestrator.storage.obligation_store import ObligationStore  # noqa: E402
@@ -1093,39 +1100,71 @@ _VOLATILE_KEYS = frozenset(
 #: The same per-run identifiers where they appear *inside* a string or a list of
 #: strings (a knowledge id in ``final_report.knowledge``, in ``lineage.knowledge[].id``
 #: and in ``lineage.edges[].produced``) rather than as their own field.
-_VOLATILE_PATTERNS = (
-    (re.compile(r"observation:[0-9a-f]{64}"), "observation:<id>"),
-    # Third-round review P2-5: ``VerificationLayerRecorded.summary`` quotes pytest's
-    # own one-line report, which ends in the wall-clock time the run took.  Under CPU
-    # contention the two runs of this golden legitimately differ by hundredths of a
-    # second, and the suite's one hard gate on "the DAG mode's bytes did not change"
-    # was failing about a third of the time under parallel load.  How long a test took
-    # is not behaviour; that it ran and what it reported is, and both survive this.
-    (re.compile(r"\bin \d+(?:\.\d+)?s\b"), "in <duration>"),
+_VOLATILE_PATTERNS = ((re.compile(r"observation:[0-9a-f]{64}"), "observation:<id>"),)
+
+#: How long a *test run* took, normalised **only where a pytest report line is
+#: quoted**, named by ``(event_type, field)``.
+#:
+#: Third-round review P2-5 added this because pytest's one-line report ends in the
+#: wall-clock time the run took, and under CPU contention two runs of this golden
+#: legitimately differ by hundredths of a second — the suite's one hard gate on "the
+#: DAG mode's bytes did not change" was failing about a third of the time under
+#: parallel load.
+#:
+#: Fourth round, P1-3: that fix was applied to *every string of every payload of every
+#: event*, and the reviewer demonstrated the cost — a real, assembly-dependent
+#: behavioural difference (a timeout ceiling of ``in 60s`` against ``in 10s``) injected
+#: into an event went unnoticed, because the pattern ate it on the way past.  A
+#: normalisation that forgives a decision is not checking anything, which is the same
+#: warning ``_VOLATILE_KEYS`` already carries about ``max_rss_bytes``.  The nine places
+#: a duration legitimately appears in this golden were measured, not guessed; they are
+#: exactly the fields that quote a captured test report, and nowhere else is forgiven.
+_REPORT_DURATION = re.compile(r"\bin \d+(?:\.\d+)?s\b")
+_REPORT_DURATION_FIELDS = frozenset(
+    {
+        ("AttemptCreated", "feedback"),
+        ("MissionCompleted", "reason"),
+        ("MissionSuccessJudged", "reason"),
+        ("VerificationFailed", "output"),
+        ("VerificationFailed", "stdout"),
+        ("VerificationFailed", "summary"),
+        ("VerificationLayerRecorded", "summary"),
+        ("VerificationPassed", "output"),
+        ("VerificationPassed", "stdout"),
+    }
 )
 
 
-def _redact(value: Any, root: Path) -> Any:
+def _redact(value: Any, root: Path, *, event_type: str = "", field: str | None = None) -> Any:
     """Normalise what legitimately differs between two runs of the same Mission.
 
     The evidence root and the per-run identifiers above are *environment*, not
     behaviour.  Everything else — every task and attempt id, artifact content hash,
-    criterion verdict, ordinal, budget figure, byte ceiling and stop reason — is
-    compared byte for byte, which is what §18.5 rule 3 asks for.
+    criterion verdict, ordinal, budget figure, byte ceiling, timeout and stop reason —
+    is compared byte for byte, which is what §18.5 rule 3 asks for.
+
+    ``field`` is the key the string was found under, so the one duration exception is
+    pinned to ``(event_type, field)`` pairs rather than applied to the whole payload.
     """
 
     if isinstance(value, str):
         text = value.replace(str(root), "<root>")
         for pattern, replacement in _VOLATILE_PATTERNS:
             text = pattern.sub(replacement, text)
+        if (event_type, field) in _REPORT_DURATION_FIELDS:
+            text = _REPORT_DURATION.sub("in <duration>", text)
         return text
     if isinstance(value, dict):
         return {
-            key: ("<env>" if key in _VOLATILE_KEYS else _redact(item, root))
+            key: (
+                "<env>"
+                if key in _VOLATILE_KEYS
+                else _redact(item, root, event_type=event_type, field=str(key))
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_redact(item, root) for item in value]
+        return [_redact(item, root, event_type=event_type, field=field) for item in value]
     return value
 
 
@@ -1177,7 +1216,7 @@ def _legacy_events(tmp_path, *, install: bool) -> list[tuple[str, str]]:
             for event in orchestrator.store.list_events(mission.id):
                 if event.type in _SAMPLED_EVENTS:
                     continue
-                payload = _redact(dict(event.payload), Path(tmp_path))
+                payload = _redact(dict(event.payload), Path(tmp_path), event_type=event.type)
                 # The subject travels in the key, not only in the payload: two events
                 # of one type that name different Tasks are two different facts.
                 rows.append(
@@ -1210,6 +1249,13 @@ class _ExplodingDispatch(HierarchicalDispatch):
     attempt_inputs = occurrences = ready_occurrences = _boom  # type: ignore[assignment]
     running_occurrences = record_integrity_failure = _boom  # type: ignore[assignment]
     admit_method_proposal = compile_proposal = build_command = _boom  # type: ignore[assignment]
+    # Review round 4, P2-8: part 3a added seven entry points and the sentinel still
+    # covered the seventeen it was written with, so the one thing it exists to catch —
+    # a legacy Mission reaching the hierarchical assembly through a *new* door — had no
+    # sentinel on any of the new doors.
+    live_root_review_package = root_contributions = _boom  # type: ignore[assignment]
+    superseded_review_packages = root_resolution_inputs = _boom  # type: ignore[assignment]
+    admissions = method_applicability = record_method_applicability = _boom  # type: ignore[assignment]
 
 
 def _single_task_case() -> tuple[Any, MissionSpec, int]:
@@ -1325,12 +1371,48 @@ def test_the_legacy_path_never_enters_the_assembly_at_all(tmp_path, name, build)
     asyncio.run(case())
 
 
+#: Every event type this programme added that a legacy Mission must never produce.
+#: Review round 4, P2-8: part 3a wrote six more and none of them were listed here.
+NEW_EVENT_TYPES = frozenset(
+    {
+        PLAN_REVISION_COMMITTED,
+        PLAN_COMMIT_REFUSED,
+        DISPATCH_INTERCEPTED,
+        COMPOUND_PHASE_CHANGED,
+        PLAN_INTEGRITY_FAILED,
+        ROOT_REVIEW_CUT,
+        ROOT_REVIEW_SUPERSEDED,
+        ROOT_REVIEW_REJECTED,
+        ROOT_REVIEW_UNREADABLE,
+        ROOT_REVIEW_CUT_BUDGET_SPENT,
+    }
+)
+
+
 def test_the_legacy_run_appends_none_of_the_new_event_types(tmp_path):
     rows = _legacy_events(tmp_path, install=True)
-    kinds = {kind for kind, _ in rows}
-    assert kinds.isdisjoint(
-        {PLAN_REVISION_COMMITTED, PLAN_COMMIT_REFUSED, DISPATCH_INTERCEPTED, COMPOUND_PHASE_CHANGED}
-    )
+    # The row key is ``type|task|attempt``; comparing the whole key against a bare
+    # type name is a comparison that can never fail, which is what this assertion was
+    # doing before review round 4.
+    kinds = {kind.split("|", 1)[0] for kind, _ in rows}
+    assert kinds, "the legacy Mission really did produce events"
+    assert kinds.isdisjoint(NEW_EVENT_TYPES)
+
+
+def test_the_new_event_type_list_is_the_one_the_modules_declare(tmp_path):
+    """And the list itself cannot quietly shrink: it is read off the modules."""
+
+    from agent_orchestrator.orchestrator import root_review as root_module
+
+    declared = {
+        getattr(root_module, name)
+        for name in dir(root_module)
+        if name.startswith("ROOT_REVIEW_")
+        and isinstance(getattr(root_module, name), str)
+        and getattr(root_module, name).startswith("HierarchicalRootReview")
+    }
+    assert declared <= NEW_EVENT_TYPES, sorted(declared - NEW_EVENT_TYPES)
+    assert len(NEW_EVENT_TYPES) >= 10
 
 
 def test_the_mode_switch_defaults_to_legacy_for_a_mission_without_the_opt_in(tmp_path):
@@ -2082,3 +2164,106 @@ def test_the_plan_integrity_error_reports_no_topological_order(tmp_path):
         world.dispatch.network(world.mission.id)
     assert caught.value.cycle == ()
     assert not hasattr(caught.value, "order")
+
+
+# ======================================================================================
+# Review round 4, P1-3: what the golden's normalisation may and may not forgive
+# ======================================================================================
+
+
+def test_redact_normalises_a_quoted_test_report_and_nothing_else() -> None:
+    """The boundary the fourth round asked for, stated as a unit.
+
+    The first group *must* be normalised: it is pytest's own report line, whose
+    wall-clock tail differs between two runs of the same Mission under CPU
+    contention.  The second group must survive byte for byte — a timeout ceiling, a
+    budget, a stated deadline are **decisions**, and the review demonstrated a real
+    assembly-dependent difference (``in 60s`` against ``in 10s``) travelling straight
+    through the old whole-payload rule.
+    """
+
+    root = Path("/tmp/evidence")
+    assert _redact(
+        {"summary": "1 passed in 0.31s"},
+        root,
+        event_type="VerificationLayerRecorded",
+    ) == {"summary": "1 passed in <duration>"}
+    # Same words, different event: not a quoted report, so not forgiven.
+    assert _redact(
+        {"summary": "the turn is abandoned in 60s"}, root, event_type="AttemptCreated"
+    ) == {"summary": "the turn is abandoned in 60s"}
+    # Same event, different field: a ceiling is a decision wherever it is written.
+    slow = _redact({"detail": "deadline in 60s"}, root, event_type="VerificationFailed")
+    quick = _redact({"detail": "deadline in 10s"}, root, event_type="VerificationFailed")
+    assert slow != quick, "a behavioural difference must not be normalised away"
+
+
+def test_redact_still_hides_the_environment_everywhere() -> None:
+    root = Path("/tmp/evidence")
+    payload = {
+        "path": "/tmp/evidence/run/a.md",
+        "execution_id": "e-1",
+        "claims": ["observation:" + "a" * 64],
+        "max_rss_bytes": 1024,
+    }
+    assert _redact(payload, root, event_type="VerificationPassed") == {
+        "path": "<root>/run/a.md",
+        "execution_id": "<env>",
+        "claims": ["observation:<id>"],
+        "max_rss_bytes": 1024,
+    }
+
+
+def test_the_report_duration_pairs_are_the_ones_the_golden_actually_produces(tmp_path) -> None:
+    """The allowlist was measured against a real run, not guessed at.
+
+    Every ``(event_type, field)`` it names must still be one the legacy golden really
+    writes a duration into; a pair that stopped occurring is a licence nobody needs
+    any more, and a pair that started occurring would make the golden flaky again.
+    """
+
+    from agent_orchestrator.orchestrator.event_handler import Orchestrator  # noqa: PLC0415
+    from agent_orchestrator.runtime.assembly import OrchestratorConfig  # noqa: PLC0415
+    from agent_orchestrator.testing.fixtures import (  # noqa: PLC0415
+        DEMO_PROPOSAL,
+        DEMO_SEED,
+        demo_single_task_provider,
+    )
+
+    found: set[tuple[str, str]] = set()
+
+    def walk(value: Any, event_type: str, field: str | None) -> None:
+        if isinstance(value, str):
+            if _REPORT_DURATION.search(value) and field is not None:
+                found.add((event_type, field))
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                walk(item, event_type, str(key))
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, event_type, field)
+
+    config = OrchestratorConfig(
+        evidence_root=Path(tmp_path) / "evidence", max_concurrency=1, test_timeout_seconds=60
+    )
+
+    async def case() -> None:
+        async with Orchestrator(config, demo_single_task_provider()) as orchestrator:
+            mission = await orchestrator.submit_mission(
+                MissionSpec(
+                    goal=str(DEMO_PROPOSAL["root_goal"]),
+                    success_criteria=tuple(DEMO_PROPOSAL["success_criteria"]),
+                    tenant_id="tenant-p23c-duration",
+                    idempotency_key="duration-pairs",
+                    allowed_tools=tuple(DEMO_PROPOSAL["allowed_tools"]),
+                    budget=Budget(max_tokens=200_000, max_attempts=12),
+                    workspace_seed=DEMO_SEED,
+                )
+            )
+            await orchestrator.run()
+            for event in orchestrator.store.list_events(mission.id):
+                walk(dict(event.payload), event.type, None)
+
+    asyncio.run(case())
+    assert found, "the golden really does quote a test report"
+    assert found == _REPORT_DURATION_FIELDS, sorted(found ^ _REPORT_DURATION_FIELDS)

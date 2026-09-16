@@ -439,7 +439,17 @@ def build_planning_world(
         scope_id=scope_id,
     )
     chosen_observers = (
-        domain_observers(chosen, worktree=worktree, appworld_episode=appworld_episode)
+        domain_observers(
+            chosen,
+            worktree=worktree,
+            appworld_episode=appworld_episode,
+            # P2.3c review 4, P1-4②: the appworld observers' *complete* queries are
+            # complete over this deployment's scope, and an authoritative negative is
+            # admitted only when it says so.  Leaving the reader on its own default
+            # while the world decided in ``scope_id`` made every appworld denial a
+            # ``COVERAGE_SCOPE_MISMATCH``, so the CLOSED predicates stayed UNKNOWN.
+            appworld_scope=scope_id,
+        )
         if observers is None
         else tuple(observers)
     )

@@ -27,7 +27,7 @@ from ..runtime.model_router import RuntimeProfile
 from ..runtime.tool_gateway import WorkspaceBinding, WorkspaceToolGateway, read_tool_schemas
 from .appworld import AppWorldEpisode
 from .appworld_knowledge import AppWorldKnowledgeBridge
-from .experiment import ExperimentBudget
+from .experiment import ARM_NAMES, HIERARCHICAL_ARM, ExperimentBudget
 
 TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list", "appworld_execute")
 HOST_KNOWLEDGE_TOOLS = (*TOOLS, "knowledge_list", "knowledge_read")
@@ -70,8 +70,23 @@ class ArmRuntime:
 async def execute_arm(
     arm: str, episode: AppWorldEpisode, runtime: ArmRuntime, root: Path
 ) -> dict[str, Any]:
-    if arm not in {"S", "R", "D", "F"}:
-        raise ValueError("arm must be S/R/D/F")
+    if arm not in ARM_NAMES:
+        raise ValueError(f"arm must be one of {list(ARM_NAMES)}")
+    if arm == HIERARCHICAL_ARM:
+        # P2.3c review round 4, P1-6.  G5 widened the manifest and ``run_experiment``
+        # to the fifth arm but left this literal at four, so H reached here as
+        # "arm must be S/R/D/F" — a refusal that names the wrong problem.  The arm
+        # *name* is legal now; what this executor cannot do is run it.  ``_orchestrated``
+        # submits a **legacy** Mission (§18.5 rule 1: a Mission is legacy unless its
+        # creator asks otherwise in so many words), and letting H fall through to it
+        # would label a legacy run "hierarchical" in the receipts — an unreadable
+        # acceptance score, which is worse than a clear stop.  The hierarchical arm is
+        # assembled by the acceptance runner's own ``run_h_arm``.
+        raise ValueError(
+            "the H arm is assembled by the hierarchical runner, not by this four-arm "
+            "executor: _orchestrated submits a legacy Mission, so running H here would "
+            "record a legacy result under a hierarchical arm name"
+        )
     if (runtime.knowledge_protocol is not None
             and runtime.knowledge_protocol != HOST_KNOWLEDGE_EXECUTOR_IDS.get(arm)):
         raise ValueError("Host knowledge protocol requires its new D/F executor identity")

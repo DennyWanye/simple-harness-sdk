@@ -2119,3 +2119,179 @@ test_critic_test_evidence_order.py`），在**本段全部改动落盘、不再�
   `event_handler.py`、`role_templates.py`、`assembly.py`、`policies.py`
   按「只追加合规块、不整文件重排」处理（逐个用 `git show HEAD:` 验过 HEAD 的状态）。
 * `mypy src/agent_orchestrator`：**17 errors in 4 files**，与基线一致。
+
+---
+
+# P2.3c 第三部分 c · 施工日志（2026-09-17）
+
+## 0. 起点与输入
+
+- 基线 `main` HEAD `cfbd21b`（代码 `49f31f1`），工作树干净；`tests/orchestrator/full_target`
+  **2585 passed / 2 skipped**。
+- 输入两份：
+  - `P2.3c/reviews/审阅-第三部分a-2026-09-17.md`（第四轮独立审阅，56 条变异、
+    P0-1~3、P1-1~7、P2-1~14、§9「开跑前必须做」）；
+  - Host 仓库 `.local-test-evidence/2026-09-16/htn-acceptance/runner/JOURNAL.zh-CN.md`
+    §7–§13 的 runner 缺口 **G7**、**G8**。
+- 目标：这是 Grok 验收开跑与发布版本前的最后一批代码改动。测试先行；旧模式零回归是硬门槛。
+
+## 1. 审阅处置表（逐条：修 / 记录）
+
+| 条目 | 处置 | 改了什么 | 守它的测试 | 变异 |
+|---|---|---|---|---|
+| **P0-1 / G8** appworld 本地策略拒读被读成否定观察 | **修** | `observers/appworld.py`：新增 `read_is_permitted(app, api)`；`_Read` 加 `policy_refused` 与互斥不变式；`_get` **发请求前**分流；`Availability`/`Credential`/`Account` 三个观察器都先判 `policy_refused` → UNAVAILABLE | `test_an_app_outside_the_frozen_policy_is_unavailable_never_false`、`test_a_policy_refusal_is_unavailable_for_every_observer_that_reads_an_app[2]`、`test_a_read_the_policy_admits_still_reaches_the_application`、`test_an_application_that_refuses_an_admitted_read_is_still_a_negative`、`test_a_policy_refused_read_is_not_an_application_refusal` | M-P0-1 **KILLED**（3 failed） |
+| **P0-2** `diff-touches-only` 空枚举 = TRUE + COMPLETE_COVERAGE | **修** | `observers/code.py::DiffScopeObserver`：`touched` 为空 → UNAVAILABLE（选了审阅给的第一种修法） | `test_an_empty_diff_enumeration_is_unavailable_never_a_closed_world_true[3 例：nosuch/path、HEAD..HEAD、docs/never-written]` + 两条对照（真跑 git：范围内 TRUE、越界权威否认） | M-P0-2 **KILLED**（3 failed） |
+| **P0-3** ①「FAIL + 全 met=true」端到端零测试 | **修** | 无产品改动（代码本来就对），补测试驱动 `event_handler._collect_root_review` | `test_a_reviewer_that_said_fail_resolves_nothing_even_with_every_criterion_met`（断 `record.verdict is REJECTED` 且根 Resolution `committed is False`）+ 对照 `..._said_pass_is_recorded_as_an_accept` | **M20 KILLED** |
+| **P0-3** ②对称校验「PASS 却有准则 met=false」 | **修** | `root_review.py` 新增 `refuse_self_contradicting_accept()`，`record_review` 入口即拒 | `test_a_pass_that_names_an_unmet_criterion_is_not_a_conclusion`、`test_the_coordinator_refuses_a_self_contradicting_accept_directly` | M-P0-3b **KILLED** |
+| **G7** `refs/bisect/bad` 被当路径 | **修** | `observers/code.py`：`REVISION_OPERANDS` 加 `rev-parse: 1`；`HistoryObserver` 改走 `revisions=(...)` | `test_the_history_observer_passes_its_ref_as_a_revision`（**精确 argv**）、`test_the_history_observer_finds_a_real_bisect_ref`（**真跑 git**：无 ref → 普通否定观察、有 ref → TRUE）、`test_a_ref_read_as_a_pathspec_is_the_defect_g7_reported` | M-G7 **KILLED**（2 failed） |
+| **P1-1** `run()` carry-on 零测试 | **修** | 无产品改动，补真走 `run()` 的测试 | `test_run_itself_comes_back_round_after_a_carry_on` | **M23 KILLED** |
+| **P1-2** 提示词字段 / 零证据贡献 | **修** | `role_templates.py::ROOT_REVIEWER` 改成 `goal_statement / accepted_outputs / review / evidence`（不再提 `artifacts`）；`root_review.request()` 每条贡献加 `evidence`，零证据时 `kind="none"` + `reason` | `test_the_reviewer_is_shown_what_each_contribution_delivered`（**每一个**贡献都要带证据或显式标 none）、`test_the_prompt_names_the_fields_the_request_actually_carries` | M-P1-2 **KILLED** |
+| **P1-3** golden 归一化过宽 | **修** | `test_hierarchical_event_flow.py`：时长归一化改为按 `(event_type, field)` 九对定点（`_REPORT_DURATION_FIELDS`，**实测**得出而非猜），`_redact` 接 `event_type`/`field` | `test_redact_normalises_a_quoted_test_report_and_nothing_else`（`in 60s` vs `in 10s` 必须不同）、`test_redact_still_hides_the_environment_everywhere`、`test_the_report_duration_pairs_are_the_ones_the_golden_actually_produces` | M-P1-3 **KILLED** |
+| **P1-4①** `declares_package` 命中键名/注释/URL | **修** | `observers/code.py::declares_package` 改成逐行 + 四条行级规则（跳整行注释、跳表头、忽略 `=` 前的裸键、`/` 两侧不算边界），仍不解析任何语法 | `test_a_manifest_declares_its_dependencies_and_not_its_own_grammar[8 例]`、`test_a_json_manifest_still_declares_by_key`、`test_a_go_module_path_is_matched_whole_and_not_by_its_tail` | M-P1-4-1 **KILLED**（3 failed） |
+| **P1-4②** 三条 CLOSED 谓词的否认落不到锚点 | **修** | `AppWorldObserverConfig.scope_id` 变成活配置：`_AppWorldObserver.coverage_scope` 用它做 `list-size` / `amount-equals` 的 `coverage_scope`；`build_planning_world` 把世界自己的 `scope_id` 传给 `domain_observers(appworld_scope=...)` | `test_a_closed_appworld_denial_is_scoped_to_the_deployments_own_scope`、`test_a_closed_appworld_denial_reaches_the_anchor_layer_end_to_end`（**端到端**：`AnchorSelector.select` 收下；用旧描述性 scope 的同一条否认被 `COVERAGE_SCOPE_MISMATCH` 丢掉）、`test_the_deployment_hands_the_appworld_readers_its_own_scope` | M-P1-4-2 **KILLED**（3 failed） |
+| **P1-4③** `list-contains` 声明 OPEN 却发权威否认 | **修**（选「改观察器」） | `ListObserver`：`list-contains` 未命中改为普通否定观察，不带 coverage/scope/watermark；`list-size`（CLOSED）保持 `denial()`。**理由**：一条公开列表不是整个应用，某项不在这个字段里不等于它在应用里不存在——声明是对的，越权的是观察器 | `test_a_list_that_does_not_hold_the_item_denies_nothing_authoritatively` | M-P1-4-3 **KILLED** |
+| **P1-5** G2 两条空测 + `may_share` 接线层 | **修** | 新 fixture `_shared_writing_world`（两个方法实例都声明 `plan.work`，签名完全相同，只靠 `NEW_WORK` 拦住）；`test_the_shared_reading_is_paid_for_once` 改成「消费者 2 ↔ Task 1」 | `test_a_writing_sub_goal_is_never_folded_into_one_occurrence`、`test_the_index_refuses_to_fold_a_new_work_goal_and_says_why`（真 `shared_goal_index` + 两个方向） | M-B10 **KILLED**（2 failed） |
+| **P1-6** H 臂在 `execute_arm` 抛 | **修（有偏差，见 §3）** | `appworld_arms.py`：臂名闸门改读 `ARM_NAMES`（H 不再是「名字非法」），H 单独给出指名理由的拒绝 | `test_the_executor_gate_reads_the_declared_arm_names`、`test_the_hierarchical_arm_is_refused_here_by_name_and_for_a_reason` | M-P1-6 **KILLED**（2 failed） |
+| **P1-7** 非法 verdict 静默变 PASS 全仓零测试 | **修** | 补参数化负向解析测试；另修一个真缺陷：`verdict` 为**不可哈希**值（`["PASS"]`）时 `verdict not in {...}` 抛 `TypeError`，而 `_collect_root_review` 只接 `ContractError`/`BlockError`——坏回复会把循环打挂而不是记为读不懂。`critics.py` 加 `isinstance(verdict, str)` 前置 | `test_a_verdict_that_is_not_pass_or_fail_is_a_contract_error[6]`、`..._no_verdict_field...`、`..._no_block...`、`test_every_other_malformed_verdict_is_refused_too[4]` | M-P1-7 **KILLED**（7 failed） |
+| **P2-1** 收尾两次 mission 账户调用 | **记录**（§2 口径） | — | — | — |
+| **P2-2** 策略快照 digest 变更 | **记录**（写进 HANDOFF 发布说明段） | — | — | — |
+| **P2-3** `CONTRIBUTIONS_MOVED` 零测试 | **修** | 无产品改动，补独立触发的测试（requirements 不动，只动贡献） | `test_contributions_moving_is_its_own_recut_channel` | M-P2-3 **KILLED** |
+| **P2-4** live package 规则 2/3 互相遮蔽 | **修** | 无产品改动，两条各自独立的用例 | `test_the_live_package_skips_a_superseded_one_even_when_it_is_the_last`（最后一次裁剪恰好是被作废的那份）、`test_the_live_package_takes_the_last_cut_of_two_that_are_both_live` | **M04 KILLED、M25 KILLED** |
+| **P2-5** I07 执行轴零测试 | **修** | 无产品改动，补 `check_execution` 断言 | `test_a_criterion_nobody_judged_is_recorded_as_never_having_been_run`、`test_a_criterion_the_reviewer_did_judge_carries_a_finished_execution[2]` | M-P2-5 **KILLED** |
+| **P2-6** `READY` 名不副实 | **修（加说明）** | `state()` 的 READY 分支写明「评审人判了 ACCEPT；准则是否满足成功表达式由 `commit_goal_resolution` 决定」 | `test_ready_says_which_half_of_the_question_is_ready` | M-P2-6 **KILLED** |
+| **P2-8** `_ExplodingDispatch` 覆盖面 + 新事件名 | **修** | 哨兵补 7 个新入口（`live_root_review_package` / `root_contributions` / `superseded_review_packages` / `root_resolution_inputs` / `admissions` / `method_applicability` / `record_method_applicability`）；`NEW_EVENT_TYPES` 补 6 个新事件名，并修掉「拿 `type|task|attempt` 整键去比裸类型名」这条**永远不会失败**的断言 | `test_the_legacy_run_appends_none_of_the_new_event_types`、`test_the_new_event_type_list_is_the_one_the_modules_declare` | 见 §3 第 2 条（加宽本身不可独立杀死） |
+| **P2-10** G1 幂等键按 plan_revision 零测试 | **修** | 无产品改动，补「计划动了就该有第二份评估」的测试 | `test_a_new_plan_revision_gets_its_own_assessment` | **M-B7 KILLED** |
+| P2-7 / P2-9 / P2-11 / P2-12 / P2-13 / P2-14 | **记录**（§4 留给后面） | — | — | — |
+
+## 2. 必须写进开跑记录的口径（审阅 §9）
+
+1. **层次 Mission 收尾会花两次 mission 账户的模型调用**：根评审人
+   （`event_handler._ask_root_reviewer`，`account_id = mission_account(mission.id)`）
+   **加上**既有的 Mission Judge（`_judge`，根 Resolution 成立后触发）。
+   §13 v1.4 的映射表原文只写了「MISSION_FINAL → Mission 账户（现有 Mission Judge）」，
+   本片之后是**两次**。顺序上保守（多一道闸，不会造成错误完成），但
+   **§21.5 的预算守恒必须按两次算**，否则结果无法解释。
+2. **`shared_reuse` 只有把共享构造挂到 `code.fix-failing-test` 才可能非零**；
+   `code.assess-regression` 目前只有一条方法、没有 OR 分支。
+3. **策略快照 digest 已变为 `7cf60224…`**（差异恰好 `config.max_root_review_cuts: null → 3`），
+   依赖旧 digest 做外部对照的脚本要重取基线。
+4. **G7 已修**：`code.regression-commit-known` 现在能在真 git 工作区上为 TRUE，
+   runner 的 M3 `shared_reuse` 不再需要记 BLOCKED（runner 侧无须改动，按 JOURNAL §9 的预期）。
+5. **G8 已修**：`appworld.app-reachable` / `credentials-valid` / `account-exists` 对非
+   `supervisor` 应用不再恒为 FALSE，而是 OBSERVER_UNAVAILABLE。runner 把 `app` 钉成
+   `"supervisor"` 的绕过**仍然有效且仍然需要**——本片修的是「看不见不等于否定」，
+   没有放宽 `PUBLIC_READ_APIS`，所以非 supervisor 应用依然**观察不到**，只是从
+   「假的 FALSE」变成了诚实的 UNKNOWN。domain 的 `app` 参数仍无法区分应用。
+
+## 3. 偏差（与任务书不同的地方，及理由）
+
+1. **P1-6 没有直接把 `"H"` 加进可执行的臂名集合**。
+   `execute_arm` 的非 S/R 分支走 `_orchestrated`，而它提交的 `MissionSpec` 不带
+   `orchestration_semantics_version`，按 §18.5 rule 1 就是**legacy** Mission。
+   把 H 放进去会让一次 legacy 运行以「hierarchical 臂」的名义写进收据，
+   验收成绩直接不可读——比抛错更糟。**已确认**（runner JOURNAL §12 B 段
+   `one L3 + one L4 episode through run_h_arm`）Grok 验收的 H 执行器走的是
+   runner 自己的 `run_h_arm`，**不经过** `execute_arm`。
+   所以做法是：臂名闸门改读 `ARM_NAMES`（名字合法，不再是「arm must be S/R/D/F」
+   这种指错地方的报错），H 单独给一条指名 `run_h_arm` 的拒绝。
+   legacy 四臂的字节与 fingerprint 未动（`test_the_four_arm_manifest_keeps_its_bytes_and_its_run_ids` 仍绿）。
+2. **P2-8 的哨兵加宽无法独立自证**。实测：把 `_new_mode` 改成对 legacy Mission 也交出
+   assembly（M-C2 那一类），**宽哨兵与窄哨兵都会爆**——legacy 路径先撞上
+   `network` 这道早就在名单里的门。所以这 7 个新名字是**防御性加宽**（守将来新增的入口），
+   今天没有任何变异能把宽窄两版区分开。如实记录，不声称它被测试守着。
+   同段里**能**自证的是另一半：`NEW_EVENT_TYPES` 那条断言此前拿 `type|task|attempt`
+   整键去比裸类型名，**在任何实现下都不会失败**，现在改对了。
+3. **「PASS 却有准则 met=false」的对称校验放在协调器层，不在 `parse_critic_verdict`**。
+   理由：同一个解析器也是 legacy Task Critic 的，而 §22 的 Critic 契约**允许**
+   PASS 同时点名未满足的准则（Critic 不是 Mission 的成功权威，Mission Judge 才是）——
+   仓里就有这样的 fixture（`p34/test_fragment_runtime.py:133`：PASS + `file:missing.md` met=false）。
+   在解析器上收紧会改动 legacy 路径上的既有契约，不是本次修复该做的事。
+   写在 `refuse_self_contradicting_accept` 的 docstring 里。
+4. **P0-2 选了「空枚举 → UNAVAILABLE」而不是「先确认 changeset 指向存在的对象」**。
+   后者不覆盖 `HEAD..HEAD`：两个端点都解析得开，范围却是空的，
+   `git rev-parse --verify --quiet 'HEAD..HEAD' --` 本身 exit 1，无法用来确认。
+   而审阅点名 `HEAD..HEAD` 必须不能是 TRUE，所以只有第一种修法能覆盖全部三例。
+
+## 4. 记录（本片不修）
+
+- **P2-7** `cut()` 在包 id 已存在时静默复用旧行（自然路径不可达）。
+- **P2-9** 零回归范围口径不含 `full_target/`（本片仍按任务书的范围跑，另跑 full_target 全绿）。
+- **P2-11** `shared_reuse` 的挂载前提（已写进 §2 开跑口径）。
+- **P2-12** `ROOT_REVIEWER` / `METHOD_SYNTHESIZER` 只进 `TEMPLATE_VERSIONS` 不进 `ROLES`，
+  prompt 版本不进 `policy_snapshot["role_templates"]`（既有设计缺口）。
+- **P2-13** p33 AST 钉子在 Python 3.14 上永红（本片未动，仍是唯一的已知红）。
+- **P2-14** L2 小项：`AccountObserver` 姓名匹配过宽；`changeset` 为路径时读的是未暂存改动；
+  `test_predicate_observers.py` 两条同义反复断言。
+- **`ReceiptObserver`（CLOSED `action-confirmed`）的 `coverage_scope` 仍来自账本自己的
+  `receipt_scope()`**，与锚点层的 scope 同样对不上。它不是本轮点名的「三条新 CLOSED 谓词」，
+  且其 scope 是账本协议的一部分并有既有测试钉着（`"episode:task-1"`），本片未动。
+  `code` 域的 `worktree:{root}` / `git-diff:{changeset}` 同理。**这是一个域级遗留问题**：
+  锚点层要求 `coverage_scope == 决策 scope`，而多数观察器写的是描述性字符串。
+
+## 5. 变异自证
+
+在无 `.git` 的隔离副本（`<scratchpad>/mut`，`PYTHONPATH` 指向副本 `src`，
+每条改前备份、跑完恢复并核对 sha256）上注入 **21 条**，
+`clean` 与 `mutant` 两次都只跑该条对应的守卫选择器：
+
+```
+KILLED  M-P0-1   策略拒读折回「应用拒绝」          clean=4 passed   mutant=3 failed
+KILLED  M-P0-2   空枚举重新答 TRUE                clean=3 passed   mutant=3 failed
+KILLED  M-G7     bisect ref 重新当 pathspec        clean=2 passed   mutant=2 failed
+KILLED  M-P1-4-1 declares_package 全文搜索         clean=11 passed  mutant=3 failed
+KILLED  M-P1-4-3 list-contains 重新发权威否认      clean=1 passed   mutant=1 failed
+KILLED  M-P1-4-2 CLOSED 否认重新自造 scope         clean=3 passed   mutant=3 failed
+KILLED  M-P1-7   非法 verdict 变 PASS              clean=7 passed   mutant=7 failed
+KILLED  M20      忽略评审人结论一律 ACCEPT         clean=1 passed   mutant=1 failed
+KILLED  M-P0-3b  去掉自相矛盾 ACCEPT 的守卫        clean=2 passed   mutant=2 failed
+KILLED  M-P2-3   关掉 CONTRIBUTIONS_MOVED          clean=1 passed   mutant=1 failed
+KILLED  M-P2-5   未判准则声称执行成功              clean=1 passed   mutant=1 failed
+KILLED  M-P2-6   READY 重新不说话                  clean=1 passed   mutant=1 failed
+KILLED  M-P1-2   每条贡献都标成「有证据」          clean=1 passed   mutant=1 failed
+KILLED  M04      live package 不过滤作废           clean=1 passed   mutant=1 failed
+KILLED  M25      live package 取第一份             clean=1 passed   mutant=1 failed
+KILLED  M-B7     幂等键去掉 plan_revision          clean=1 passed   mutant=1 failed
+KILLED  M-B10    索引不再问 may_share              clean=2 passed   mutant=2 failed
+KILLED  M23      run() 忽略 carry_on 直接 return   clean=1 passed   mutant=1 failed
+KILLED  M-P1-6   臂名闸门回到四名字面量            clean=2 passed   mutant=2 failed
+KILLED  M-P1-3   golden 到处原谅时长                clean=1 passed   mutant=1 failed
+（不可独立杀死）M-P2-8 哨兵变窄 —— 见 §3 第 2 条，宽窄两版在同一条 M-C2 下都会爆
+```
+
+**20/21 KILLED**，唯一非 KILLED 的那条已在 §3 第 2 条说明为什么它在今天的代码上
+本来就不可能被区分。第四轮审阅点名的 5 条存活变异——**M20、M23、M04、M25、M-B7**——
+以及两条 L2 P0（**M-A7** = M-P0-2、G8 = M-P0-1）现在全部有守卫。
+
+## 6. 旧模式回归（硬门槛）
+
+```
+pytest tests/orchestrator/{step02..step09,p32..p36} tests/orchestrator/test_critic_test_evidence_order.py
+  -> 1 failed, 1854 passed, 20 skipped (8 分 45 秒)
+```
+
+与第三部分 a 的收尾口径（1 failed / 1854 passed / 20 skipped）**逐项一致**；
+唯一的红仍是已知可忽略的
+`p33/test_p33_source_dependencies.py::test_legacy_check_ast_and_default_retrieval_bytes_are_unchanged`
+（Python 3.14 的 `ast.dump` 漂移，HEAD 上同红）。**零新增失败。**
+
+`tests/orchestrator/full_target/test_hierarchical_event_flow.py` 的 legacy golden
+与 `_ExplodingDispatch` 三例全绿——P1-3 收紧归一化后**没有**把 legacy 字节比对变红，
+也就是说本片确实没有碰到 legacy 的任何一个字节。
+
+## 7. 结果
+
+* `tests/orchestrator/full_target`：**2648 passed, 2 skipped**（本段基线 2585/2，净增 **63** 条）。
+* 改动：12 个已跟踪文件，`git diff --numstat` 合计 **+1878 / −74**；无新文件。
+  - src 7 个：`observers/appworld.py`（+142/−）、`observers/code.py`、`orchestrator/root_review.py`、
+    `planning/htn/world.py`、`runtime/role_templates.py`、`verification/critics.py`、
+    `evaluation/appworld_arms.py`；
+  - tests 5 个：`test_predicate_observers.py`、`test_root_review_coordinator.py`、
+    `test_htn_end_to_end.py`、`test_hierarchical_event_flow.py`、`test_hierarchical_arm_declaration.py`。
+* `ruff check`（本段改过的 12 个文件）：All checks passed。
+* `ruff format --check`：HEAD 上就 format-clean 的 9 个文件本段跑完仍 clean
+  （四个测试文件跑过 `ruff format`）；HEAD 上**本来就不 clean** 的
+  `appworld_arms.py`、`role_templates.py`、`critics.py` 按「只追加合规块、不整文件重排」处理
+  （逐个用 `git show HEAD: | ruff format --check --stdin-filename` 验过 HEAD 的状态）。
+* `mypy src/agent_orchestrator`：**17 errors in 4 files**，与基线一致（未新增）。
+* 变异自证：**20/21 KILLED**（§5）。
+* **未跑**：`gap_phase1`（按任务书）、真实模型（本片不调模型）。
