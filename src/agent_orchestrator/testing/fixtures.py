@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from simple_harness import Message, MessageRole
@@ -179,6 +179,76 @@ def graph_proposal_step(tasks: Sequence[dict[str, Any]]) -> str:
     return "<task_graph_proposal>" + body + "</task_graph_proposal>"
 
 
+# ------------------------------------------------- the two hierarchical-mode blocks
+# §18.5 C8: P2.1/P2.3 need the *typed* Planner output deterministically, so the two
+# new tag blocks are scripted here beside the DAG ones.  They are plain strings, like
+# ``proposal_step`` above, so nothing about the existing script protocol changes: a
+# script step is still a string or a callable of one ``ProviderRequest``.
+#
+# Deliberately unvalidated.  A fixture that refused a malformed block could not be
+# used to test the parser's refusals, so shaping the JSON is the caller's business
+# and ``extras`` exists precisely to script a block that *must* be rejected (an
+# authority field the model may not write, a stale revision, a missing key).
+
+
+def plan_revision_proposal_step(
+    *,
+    proposal_id: str = "prop-1",
+    expected_plan_revision: int = 0,
+    read_set: Sequence[Mapping[str, Any]] = (),
+    operations: Sequence[Mapping[str, Any]] = (),
+    rationale: str = "脚本化提案",
+    trigger_refs: Sequence[Mapping[str, Any]] = (),
+    running_work_policy: str = "retain_if_bindings_unchanged",
+    schema_version: Any = 1,
+    extras: Mapping[str, Any] | None = None,
+    drop: Sequence[str] = (),
+) -> str:
+    """One scripted ``<plan_revision_proposal>`` block (§18.3 ``plan-revision-proposal-v1``).
+
+    ``mission_id`` is *never* written: which Mission a proposal belongs to is decided
+    by the request that produced it, and ``parse_plan_proposal`` refuses a block that
+    names one.  A test that wants that refusal passes it through ``extras``.
+    """
+
+    body: dict[str, Any] = {
+        "schema_version": schema_version,
+        "proposal_id": proposal_id,
+        "expected_plan_revision": expected_plan_revision,
+        "trigger_refs": [dict(ref) for ref in trigger_refs],
+        "read_set": [dict(item) for item in read_set],
+        "operations": [dict(operation) for operation in operations],
+        "rationale": rationale,
+        "running_work_policy": running_work_policy,
+    }
+    body.update({key: value for key, value in dict(extras or {}).items()})
+    for key in drop:
+        body.pop(key, None)
+    return (
+        "<plan_revision_proposal>"
+        + json.dumps(body, ensure_ascii=False)
+        + "</plan_revision_proposal>"
+    )
+
+
+def method_proposal_step(
+    method: Mapping[str, Any],
+    *,
+    rationale: str = "脚本化方法",
+    extras: Mapping[str, Any] | None = None,
+) -> str:
+    """One scripted ``<method_proposal>`` block (§7.3).
+
+    ``registry_status`` is *not* set by default and is passed through when a caller
+    does set it — the admission protocol has to see and refuse a model-authored
+    claim, so the fixture may not quietly drop it.
+    """
+
+    body: dict[str, Any] = {"method": dict(method), "rationale": rationale}
+    body.update({key: value for key, value in dict(extras or {}).items()})
+    return "<method_proposal>" + json.dumps(body, ensure_ascii=False) + "</method_proposal>"
+
+
 def critic_step(
     *, verdict: str, criteria_met: bool, blocker: str | None = None
 ) -> Callable[[ProviderRequest], str]:
@@ -269,7 +339,9 @@ __all__ = (
     "demo_worker_script",
     "envelope_step",
     "graph_proposal_step",
+    "method_proposal_step",
     "package_of",
+    "plan_revision_proposal_step",
     "proposal_step",
     "role_of",
 )

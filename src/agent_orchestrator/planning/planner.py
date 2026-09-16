@@ -9,11 +9,45 @@ the Commit Service checks (§24 step 3) — the Planner cannot write the Task DA
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from ..contracts import ContractError
+from ..contracts.htn import PlanProposal
 from ..graph.task_graph import TaskGraphProposal
 from ..orchestrator.commit_service import TaskProposal
+from ..planning.htn.registry import MethodProposal
 from ..runtime.output_blocks import BlockError, extract_block
-from ..runtime.role_templates import TASK_GRAPH_PROPOSAL_TAG, TASK_PROPOSAL_TAG
+from ..runtime.role_templates import (
+    METHOD_PROPOSAL_TAG,
+    PLAN_REVISION_PROPOSAL_TAG,
+    TASK_GRAPH_PROPOSAL_TAG,
+    TASK_PROPOSAL_TAG,
+)
+
+#: §18.5 / §7.3: what a model may *never* write into a proposal, because each of
+#: these is the system's own answer to "may this happen at all".  They are refused
+#: at the boundary rather than overwritten, because silently replacing a claimed
+#: ``manager_epoch`` with the real one would let a model probe the gate for free and
+#: would leave no record that it tried.
+SYSTEM_BOUND_FIELDS = frozenset(
+    {
+        "mission_id",
+        "principal",
+        "principal_id",
+        "scope",
+        "scope_id",
+        "manager_epoch",
+        "budget_account",
+        "budget_grant_revision",
+        "registry_status",
+        "opened_by",
+        "authorization_ref",
+        "grant_ref",
+        "provenance",
+        "authored_by",
+    }
+)
 
 
 def parse_task_proposal(text: str) -> TaskProposal:
@@ -46,4 +80,64 @@ def parse_task_graph_proposal(text: str) -> TaskGraphProposal:
     return TaskGraphProposal.from_json(raw)
 
 
-__all__ = ("parse_task_graph_proposal", "parse_task_proposal")
+def _refuse_authority_claims(payload: Mapping[str, Any], where: str) -> None:
+    """Refuse a block that fills in a field the system binds.
+
+    Only the *structural* keys are inspected — the block's own fields, its
+    ``read_set`` entries and each operation's own fields.  A method parameter that
+    happens to be called ``scope`` inside ``bindings`` is a value, not a claim, and
+    refusing it would make the contract depend on a domain's vocabulary.
+    """
+
+    claimed = sorted(SYSTEM_BOUND_FIELDS & set(payload))
+    if claimed:
+        raise ContractError(
+            f"{where} sets {claimed}, which the system binds; a model proposes the shape "
+            "of the work, never its authority (§18.5)"
+        )
+
+
+def parse_plan_proposal(text: str, *, mission_id: str) -> PlanProposal:
+    """Strict parse of the Planner's ``<plan_revision_proposal>`` block (§18.3, C8).
+
+    ``mission_id`` is supplied by the caller and not read from the block: which
+    Mission a proposal belongs to is decided by the request that produced it, so a
+    block naming one is refused rather than believed.
+    """
+
+    try:
+        raw = extract_block(text, PLAN_REVISION_PROPOSAL_TAG)
+    except BlockError as error:
+        raise ContractError(f"plan revision proposal unreadable: {error}") from error
+    _refuse_authority_claims(raw, "plan revision proposal")
+    for index, item in enumerate(raw.get("read_set") or ()):
+        if isinstance(item, Mapping):
+            _refuse_authority_claims(item, f"plan revision proposal read_set[{index}]")
+    for index, item in enumerate(raw.get("operations") or ()):
+        if isinstance(item, Mapping):
+            _refuse_authority_claims(item, f"plan revision proposal operations[{index}]")
+    return PlanProposal.from_json({**raw, "mission_id": mission_id})
+
+
+def parse_method_proposal(text: str) -> MethodProposal:
+    """Strict parse of a ``<method_proposal>`` block into a registry submission (§7.3).
+
+    A declared ``registry_status`` is *kept*, not dropped: the admission protocol
+    refuses a model-authored claim explicitly and records the refusal, which a
+    silent normalisation here would hide.
+    """
+
+    try:
+        raw = extract_block(text, METHOD_PROPOSAL_TAG)
+    except BlockError as error:
+        raise ContractError(f"method proposal unreadable: {error}") from error
+    return MethodProposal.from_json(raw)
+
+
+__all__ = (
+    "SYSTEM_BOUND_FIELDS",
+    "parse_method_proposal",
+    "parse_plan_proposal",
+    "parse_task_graph_proposal",
+    "parse_task_proposal",
+)

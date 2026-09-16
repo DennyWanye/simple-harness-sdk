@@ -19,6 +19,7 @@ from dataclasses import dataclass, fields, replace
 from typing import Any
 
 from ..contracts import Budget, ContractError, Mission
+from ..contracts.htn import GraphStructureBudget
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS, VERIFICATION_LAYERS
 from ..governance.domains import DomainProfileV1, check_against_domain, resolve_domain
 from ..planning.manager import inherit_limits, system_reserve_tokens
@@ -278,6 +279,73 @@ def pytest_criteria(criteria: Sequence[str]) -> list[str]:
     return [c for c in criteria if c.startswith("pytest:")]
 
 
+def _node_checks(
+    mission: Mission,
+    proposal: TaskGraphProposal,
+    *,
+    deployed_layers: frozenset[str],
+    task_floor: TaskBudgetFloor | None,
+    candidates: int,
+    domain: DomainProfileV1,
+) -> None:
+    """The per-node contract, domain, tool and budget checks, shared by both gates.
+
+    One body, two callers.  The checks, their order and their exact messages are the
+    v1 ones — every existing receipt and every existing rejection string was produced
+    by this sequence — so :func:`validate_graph` calls it rather than keeping a
+    near-identical copy that could drift away from it one edit at a time.
+    """
+
+    for node in proposal.tasks:
+        problems = check_against_domain(
+            domain,
+            key=node.key,
+            success_criteria=node.success_criteria,
+            verification_policy=node.verification_policy,
+        )
+        if problems:
+            raise GraphRejected("domain", "; ".join(problems))
+        if not node.goal.strip():
+            raise GraphRejected("contract", f"{node.key}: goal is blank")
+        if not node.rationale.strip():
+            raise GraphRejected("contract", f"{node.key}: no rationale (§19.5 goal drift)")
+        if not node.success_criteria:
+            raise GraphRejected("contract", f"{node.key}: no success criteria (§6.3)")
+        if not node.verification_policy:
+            raise GraphRejected("contract", f"{node.key}: no verification policy")
+        unknown_layers = set(node.verification_policy) - set(VERIFICATION_LAYERS)
+        if unknown_layers:
+            raise GraphRejected("contract", f"{node.key}: unknown layers {sorted(unknown_layers)}")
+        undeployed = set(node.verification_policy) - deployed_layers
+        if undeployed:
+            raise GraphRejected(
+                "verification_policy_undeployed",
+                f"{node.key}: layers not deployed {sorted(undeployed)}",
+            )
+        if "code_test" not in deployed_layers and pytest_criteria(node.success_criteria):
+            raise GraphRejected(
+                "verification_policy_undeployed",
+                f"{node.key}: pytest criteria need local code execution, which this "
+                f"deployment has turned off: {pytest_criteria(node.success_criteria)}",
+            )
+        extra_tools = set(node.allowed_tools) - set(mission.allowed_tools)
+        if extra_tools:
+            raise GraphRejected(
+                "tools", f"{node.key}: tools outside the Mission {sorted(extra_tools)}"
+            )
+        if not node.budget.fits_within(mission.budget):
+            raise GraphRejected(
+                "budget",
+                f"{node.key}: budget exceeds the Mission budget (§18.2); "
+                f"mission={mission.budget.to_json()}",
+            )
+        refusal = floor_refusal(
+            task_floor, node.verification_policy, node.budget.max_tokens, candidates
+        )
+        if refusal:
+            raise GraphRejected("budget", f"{node.key}: {refusal}")
+
+
 def validate_graph(
     mission: Mission,
     proposal: TaskGraphProposal,
@@ -310,59 +378,16 @@ def validate_graph(
     if depth and max(depth.values()) > MAX_GRAPH_DEPTH:
         raise GraphRejected("depth", f"graph depth {max(depth.values())} > {MAX_GRAPH_DEPTH}")
     profile = domain if domain is not None else resolve_domain(None)
-    for node in proposal.tasks:
-        # P3.3 (D1) gate 1 of 5: the Mission's frozen domain decides which criteria
-        # grammar and which layers a proposed Task may use
-        problems = check_against_domain(
-            profile,
-            key=node.key,
-            success_criteria=node.success_criteria,
-            verification_policy=node.verification_policy,
-        )
-        if problems:
-            raise GraphRejected("domain", "; ".join(problems))
-        if not node.goal.strip():
-            raise GraphRejected("contract", f"{node.key}: goal is blank")
-        if not node.rationale.strip():
-            raise GraphRejected("contract", f"{node.key}: no rationale (§19.5 goal drift)")
-        if not node.success_criteria:
-            raise GraphRejected("contract", f"{node.key}: no success criteria (§6.3)")
-        if not node.verification_policy:
-            raise GraphRejected("contract", f"{node.key}: no verification policy")
-        unknown_layers = set(node.verification_policy) - set(VERIFICATION_LAYERS)
-        if unknown_layers:
-            raise GraphRejected("contract", f"{node.key}: unknown layers {sorted(unknown_layers)}")
-        undeployed = set(node.verification_policy) - deployed_layers  # host support 0.9.8
-        if undeployed:
-            raise GraphRejected(
-                "verification_policy_undeployed",
-                f"{node.key}: layers not deployed {sorted(undeployed)}",
-            )
-        if "code_test" not in deployed_layers and pytest_criteria(node.success_criteria):
-            # review round 1 P1-1: nobody could judge such a criterion here
-            raise GraphRejected(
-                "verification_policy_undeployed",
-                f"{node.key}: pytest criteria need local code execution, which this "
-                f"deployment has turned off: {pytest_criteria(node.success_criteria)}",
-            )
-        extra_tools = set(node.allowed_tools) - set(mission.allowed_tools)
-        if extra_tools:
-            raise GraphRejected(
-                "tools", f"{node.key}: tools outside the Mission {sorted(extra_tools)}"
-            )
-        if not node.budget.fits_within(mission.budget):
-            raise GraphRejected(
-                "budget",
-                f"{node.key}: budget exceeds the Mission budget (§18.2); "
-                f"mission={mission.budget.to_json()}",
-            )
-        # P3.1 fix F-ORCH-1: the effective budget (explicit, or the pool share) must carry
-        # a first Attempt and its Critic; the proposal is refused, never silently raised
-        refusal = floor_refusal(
-            task_floor, node.verification_policy, node.budget.max_tokens, candidates
-        )
-        if refusal:
-            raise GraphRejected("budget", f"{node.key}: {refusal}")
+    # P3.3 (D1) gate 1 of 5 and the rest of the per-node contract; one shared body
+    # so the v1 and v2 gates cannot drift (see :func:`_node_checks`)
+    _node_checks(
+        mission,
+        proposal,
+        deployed_layers=deployed_layers,
+        task_floor=task_floor,
+        candidates=candidates,
+        domain=profile,
+    )
     # §18.2: the children's budgets come from the parent — in sum, per limited dimension;
     # the system tasks' reserve (D4-20) is part of the sum on the token dimension
     for name in ("max_tokens", "max_cost_micros"):
@@ -407,6 +432,184 @@ def validate_graph(
     )
 
 
+# ======================================================================== v2 (P2.3a)
+# The hierarchical-mode admission gate.  ``validate_graph`` above is untouched: a
+# legacy Mission is still judged against the two module constants, which is what
+# every existing receipt and every existing rejection message was produced under.
+
+
+def _representation_drift(
+    proposal: TaskGraphProposal, typed_order: Mapping[str, Sequence[str]]
+) -> list[str]:
+    """§18.5: ``dependencies`` and the typed ORDER/DATA edges must be the same set.
+
+    This is a **representation-drift** check, and only that.  During the side-table
+    period one relation is recorded twice — in the projected ``dependencies`` and in
+    the typed tables — and only one of them can be authoritative for what actually
+    runs.  So both directions are refused: an edge with no typed relation behind it
+    (the projection would order work the plan never ordered) and a typed relation the
+    projection dropped (the scheduler would dispatch a consumer before its producer).
+
+    It is *not* an OR gate, and must not be described as one.  Two equal sets say
+    nothing about meaning: ``C`` depending on both ``A`` and ``B``, with the same two
+    typed relations recorded, passes here and is simply read as AND — which is the
+    graph layer's only reading.  What stops an OR from being written as two
+    dependencies is that a choice may exist only as a second MethodInstance for one
+    goal occurrence, of which at most one may be adopted; that invariant lives at the
+    delta layer, in ``PlanCommitsMixin._check_or_resolved_at_method_layer``.
+    """
+
+    problems: list[str] = []
+    for node in proposal.tasks:
+        declared = list(node.dependencies)
+        if len(set(declared)) != len(declared):
+            problems.append(f"{node.key}: repeats a dependency {sorted(declared)}")
+        typed = set(typed_order.get(node.key, ()))
+        untyped = sorted(set(declared) - typed)
+        if untyped:
+            problems.append(
+                f"{node.key}: dependencies {untyped} are backed by no ORDER or DATA relation; "
+                "the projection would order work the plan never ordered"
+            )
+        unprojected = sorted(typed - set(declared))
+        if unprojected:
+            problems.append(
+                f"{node.key}: typed relations {unprojected} are missing from dependencies; "
+                "the projection would dispatch it before its producer"
+            )
+    for key, befores in typed_order.items():
+        if key not in {node.key for node in proposal.tasks}:
+            problems.append(f"typed relations name {key!r}, which the proposal does not contain")
+            del befores
+    return problems
+
+
+def validate_graph_v2(
+    mission: Mission,
+    proposal: TaskGraphProposal,
+    *,
+    structure_budget: GraphStructureBudget,
+    typed_order: Mapping[str, Sequence[str]] | None = None,
+    deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
+    task_floor: TaskBudgetFloor | None = None,
+    candidates: int = 1,
+    domain: DomainProfileV1 | None = None,
+) -> ValidatedGraph:
+    """The hierarchical-mode graph gate (§18.5, ADR-08).
+
+    Two things differ from :func:`validate_graph`, and nothing else does:
+
+    * the size bounds come from a *versioned* :class:`GraphStructureBudget` rather
+      than from the module constants ``MAX_TASKS`` / ``MAX_GRAPH_DEPTH``, so a
+      deployment that raises them records which budget version admitted the plan
+      instead of shipping a different constant;
+    * ``dependencies`` and the typed ORDER/DATA edges must describe the *same* set of
+      relations — the cross-table invariant §18.5 asks for, so that the projection a
+      scheduler reads cannot drift away from the relations the plan actually holds.
+      This is a representation check, not an OR gate: the graph layer reads several
+      dependencies as AND, and what confines a choice to the method-instance layer is
+      ``PlanCommitsMixin._check_or_resolved_at_method_layer``.
+
+    Exceeding a bound is ``bound_reached`` with the offending dimension named — never
+    a silently trimmed graph and never "the goal is impossible" (ADR-08).
+    """
+
+    if not proposal.tasks:
+        raise GraphRejected("empty", "a task graph needs at least one task")
+    if len(proposal.tasks) > structure_budget.max_nodes:
+        raise GraphRejected(
+            "bound_reached",
+            f"{len(proposal.tasks)} tasks > max_nodes={structure_budget.max_nodes} "
+            f"(structure budget v{structure_budget.budget_version})",
+        )
+    if len(proposal.tasks) > structure_budget.max_live_tasks:
+        raise GraphRejected(
+            "bound_reached",
+            f"{len(proposal.tasks)} tasks > max_live_tasks={structure_budget.max_live_tasks} "
+            f"(structure budget v{structure_budget.budget_version})",
+        )
+    proposal = normalise_budgets(mission, proposal)
+    report = find_duplicates(
+        [(node.key, node.goal, node.dependencies, node.success_criteria) for node in proposal.tasks]
+    )
+    if report.problems:
+        raise GraphRejected("duplicate", "; ".join(report.problems))
+    try:
+        order = check_dependencies(proposal.edges())
+    except DependencyError as error:
+        raise GraphRejected(error.reason, error.detail) from error
+    drifted = _representation_drift(proposal, dict(typed_order or {}))
+    if drifted:
+        raise GraphRejected("representation_drift", "; ".join(drifted))
+    conflicts = _sibling_output_conflicts(proposal)
+    if conflicts:
+        raise GraphRejected("artifact_conflict", "; ".join(conflicts))
+    edges = proposal.edges()
+    depth: dict[str, int] = {}
+    for key in order:
+        depth[key] = 1 + max((depth[d] for d in edges[key]), default=0)
+    if depth and max(depth.values()) > structure_budget.max_depth:
+        raise GraphRejected(
+            "bound_reached",
+            f"graph depth {max(depth.values())} > max_depth={structure_budget.max_depth} "
+            f"(structure budget v{structure_budget.budget_version})",
+        )
+    total_edges = sum(len(values) for values in edges.values())
+    if total_edges > structure_budget.max_edges:
+        raise GraphRejected(
+            "bound_reached",
+            f"{total_edges} edges > max_edges={structure_budget.max_edges} "
+            f"(structure budget v{structure_budget.budget_version})",
+        )
+    fan_out: dict[str, int] = {}
+    for key, dependencies in edges.items():
+        for dependency in dependencies:
+            fan_out[dependency] = fan_out.get(dependency, 0) + 1
+        del key
+    widest = max(fan_out.values(), default=0)
+    if widest > structure_budget.max_fan_out:
+        raise GraphRejected(
+            "bound_reached",
+            f"fan-out {widest} > max_fan_out={structure_budget.max_fan_out} "
+            f"(structure budget v{structure_budget.budget_version})",
+        )
+    profile = domain if domain is not None else resolve_domain(None)
+    _node_checks(
+        mission,
+        proposal,
+        deployed_layers=deployed_layers,
+        task_floor=task_floor,
+        candidates=candidates,
+        domain=profile,
+    )
+    for name in ("max_tokens", "max_cost_micros"):
+        parent = getattr(mission.budget, name)
+        if parent is None:
+            continue
+        total = _sum_dimension(proposal.tasks, name)
+        if total is None:  # cannot happen after normalisation; kept as a guard
+            raise GraphRejected(
+                "budget", f"every task must bound {name} when the Mission bounds it"
+            )
+        reserve = system_reserve_tokens(mission) if name == "max_tokens" else 0
+        if total + reserve > parent:
+            raise GraphRejected(
+                "budget",
+                f"sum of task {name} ({total}) plus the system reserve ({reserve}) exceeds "
+                f"the Mission ({parent}); dimension={name} remaining={max(0, parent - reserve)}",
+            )
+    roots, leaves = roots_and_leaves(proposal.edges())
+    if not roots or not leaves:
+        raise GraphRejected("shape", "graph needs a root and a terminal task")
+    return ValidatedGraph(
+        proposal=proposal,
+        order=tuple(order),
+        roots=tuple(roots),
+        leaves=tuple(leaves),
+        warnings=report.suspected,
+    )
+
+
 __all__ = (
     "MAX_TASKS",
     "GraphRejected",
@@ -418,4 +621,5 @@ __all__ = (
     "floor_refusal",
     "normalise_budgets",
     "validate_graph",
+    "validate_graph_v2",
 )

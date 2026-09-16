@@ -45,6 +45,7 @@ from ..contracts import (
     TaskStatus,
     ids,
 )
+from ..contracts.htn import TaskSemanticBindingV1
 from ..contracts.models import (
     STEP2_IMPLEMENTED_LAYERS,
     default_change_policy,
@@ -115,6 +116,15 @@ from .fragment_commits import FragmentCommitsMixin
 from .human_commits import HumanCommitsMixin
 from .mission_tail_commits import MissionTailCommitsMixin
 from .obligation_commits import ObligationCommitsMixin
+from .plan_commits import (
+    HIERARCHICAL_SEMANTICS,
+    LEGACY_SEMANTICS,
+    SEMANTICS_KEY,
+    PlanCommitRejected,
+    PlanCommitsMixin,
+    normalise_semantics,
+    semantics_of,
+)
 from .policy_commits import PolicyCommitsMixin
 from .protected_tail_commits import ProtectedTailCommitsMixin
 from .selection_commits import SelectionCommitsMixin
@@ -167,6 +177,9 @@ class MissionSpec:
     domain: str = CODE_DOMAIN  # P3.3 (D1): the domain profile this Mission freezes
     search_policy_version_id: str | None = None
     runtime_profile_id: str | None = None
+    # §18.5 rule 1: the server-side default is ``legacy``.  Only a Mission that asks
+    # for the hierarchical semantics in so many words requires semantic bindings.
+    orchestration_semantics_version: str = LEGACY_SEMANTICS
 
     def to_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -195,6 +208,10 @@ class MissionSpec:
             data["domain"] = self.domain
         if self.runtime_profile_id is not None:
             data["runtime_profile_id"] = self.runtime_profile_id
+        if self.orchestration_semantics_version != LEGACY_SEMANTICS:
+            # like ``domain`` above: the default must not change ``spec_hash``, or a
+            # Host re-sending the same request after upgrading gets a MissionConflict
+            data[SEMANTICS_KEY] = self.orchestration_semantics_version
         return data
 
 
@@ -274,8 +291,9 @@ def task_account(task_id: str) -> str:
 
 
 class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCommitsMixin,
-    ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin, SourceCommitsMixin, ObligationCommitsMixin
-):  # step 7: the action ledger + approvals half; step 9: the policy registry half
+    ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin, SourceCommitsMixin, ObligationCommitsMixin,
+    PlanCommitsMixin,
+):  # step 7: the action ledger + approvals half; step 9: the policy registry half; P2.3a: the plan revision half
     def __init__(
         self,
         store: Store,
@@ -635,6 +653,10 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             not isinstance(spec.runtime_profile_id, str) or not spec.runtime_profile_id.strip()
         ):
             raise CommitRejected("runtime_profile_id must be a nonempty profile reference")
+        try:  # §18.5: an unknown semantics version is refused before anything is written
+            semantics_version = normalise_semantics(spec.orchestration_semantics_version)
+        except ContractError as error:
+            raise CommitRejected(str(error)) from error
         spec_hash = sha256_hex(spec.to_json())
         try:  # P3.3 (D1): an unknown domain is refused before anything is written
             domain = resolve_domain(spec.domain)
@@ -678,6 +700,11 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     "conflict_reserve_remaining": int(spec.conflict_reserve_tokens),
                     **({} if spec.runtime_profile_id is None else {
                         "runtime_profile_id": spec.runtime_profile_id,
+                    }),
+                    # written only for the new mode, so a legacy Mission's stored JSON
+                    # keeps the exact bytes it had before P2.3a (§18.5 rule 1)
+                    **({} if semantics_version == LEGACY_SEMANTICS else {
+                        SEMANTICS_KEY: semantics_version,
                     }),
                     **({} if spec.synthesis is None else {"synthesis": dict(spec.synthesis)}),
                 },
@@ -1008,6 +1035,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         *,
         base_version: int,
         source: Mapping[str, Any],
+        semantic_bindings: Mapping[str, TaskSemanticBindingV1] | None = None,
     ) -> tuple[list[Task], Mapping[str, Any]]:
         """Apply the Planner's whole Task DAG proposal atomically (step 3, D3-2/D3-3).
 
@@ -1029,8 +1057,9 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 proposal_json,
                 base_version=base_version,
                 source=source,
+                semantic_bindings=semantic_bindings,
             )
-        except GraphRejected as error:
+        except (GraphRejected, PlanCommitRejected) as error:
             # the write transaction rolled back; the rejection itself is a durable fact
             self._emit(
                 "TaskGraphRejected",
@@ -1038,6 +1067,13 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 key=f"{mission_id}:{base_version}:{sha256_hex(proposal_json)[:12]}:{source.get('intent_id', '')}",
                 payload={"reason": error.reason, "detail": error.detail, "source": dict(source)},
             )
+            if isinstance(error, PlanCommitRejected):
+                # P2.3a: a hierarchical refusal records the same durable fact as any
+                # other graph rejection, but keeps its own type and reason name —
+                # ``MISSING_SEMANTIC_BINDING`` is a machine name the proposer acts on
+                # (§18.5), and laundering it into a ``CommitRejected`` message string
+                # would leave the caller nothing to branch on.
+                raise
             raise CommitRejected(f"task graph rejected ({error.reason}): {error.detail}") from error
 
     def _commit_task_graph(
@@ -1049,6 +1085,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         *,
         base_version: int,
         source: Mapping[str, Any],
+        semantic_bindings: Mapping[str, TaskSemanticBindingV1] | None = None,
     ) -> tuple[list[Task], Mapping[str, Any]]:
         with self._store.transaction():
             receipt = self._store.get_receipt(commit)
@@ -1166,6 +1203,13 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                         "proposal": dict(template),
                         "source": {"template": "synthesis"},
                     },
+                )
+            if semantics_of(mission) == HIERARCHICAL_SEMANTICS:
+                # §18.5: in the new mode a Task without a meaning is corruption, so the
+                # whole graph is refused here rather than dispatched half-understood.
+                # A legacy Mission never reaches this branch and keeps its exact path.
+                self._require_semantic_bindings(
+                    mission, [task.id for task in tasks], semantic_bindings, key_to_id
                 )
             activated = next_mission(
                 mission,

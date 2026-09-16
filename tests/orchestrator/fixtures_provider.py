@@ -16,7 +16,9 @@ from agent_orchestrator.testing.fixtures import (  # noqa: F401
     demo_worker_script,
     envelope_step,
     graph_proposal_step,
+    method_proposal_step,
     package_of,
+    plan_revision_proposal_step,
     proposal_step,
     role_of,
 )

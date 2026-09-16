@@ -37,6 +37,12 @@ TASK_PROPOSAL_TAG = "task_proposal"
 TASK_GRAPH_PROPOSAL_TAG = "task_graph_proposal"
 RESULT_ENVELOPE_TAG = "result_envelope"
 CRITIC_VERDICT_TAG = "critic_verdict"
+# §18.5 C8: the two hierarchical-mode blocks.  They are separate tags because they
+# enter two different codecs and two different authorities — a plan revision is
+# checked by the Commit Service, a method definition by the registry's admission
+# protocol — and one tag carrying both would put that choice in the model's hands.
+METHOD_PROPOSAL_TAG = "method_proposal"
+PLAN_REVISION_PROPOSAL_TAG = "plan_revision_proposal"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +73,51 @@ PLANNER_V3 = RoleTemplate(
         '             "budget": {"max_tokens": int, "max_attempts": int}, "priority": number,\n'
         '             "outputs": [该 Task 会写入/改写的路径]}, …]}\n'
         "不允许循环依赖、自依赖、引用不存在的 key、重复的 Task。块外不要输出任何文字。"
+    ),
+)
+
+
+PLANNER_HIERARCHICAL_VERSION = "planner-hierarchical-v1"
+
+# §18.5 C8 / §7.2: the hierarchical-mode Planner does not draw a DAG at all.  It
+# proposes *semantic operations* on the current plan and says what it read while
+# deciding; the compiler turns those into a typed delta and the Commit Service
+# checks them.  This is a new prompt version, registered beside the DAG Planner —
+# every earlier version keeps its words verbatim so a Mission pinned to one of them
+# is replayable (host support 0.9.8).
+PLANNER_HIERARCHICAL = RoleTemplate(
+    name="planner",
+    prompt_version=PLANNER_HIERARCHICAL_VERSION,
+    tool_names=(),
+    instructions=(
+        "[role:planner]\n"
+        "你是编排系统在层次模式（hierarchical）下的 Planner。你不画任务 DAG，也不直接创建 Task："
+        "你对当前计划提出语义操作，由系统编译成类型化 delta 并做全部校验后才可能生效。\n"
+        "你不执行任务、不调用工具、不判断任务是否完成、不给方法评级、不宣布任何东西被批准。\n"
+        "可用操作只有四种，写在 operations 里：\n"
+        '  refine：为一个 compound 目标采用一个已注册方法。{"op":"refine","goal_id":…,"obligation_id":…,'
+        '"method_ref":{"id":…,"version":int,"content_hash":…},"bindings":{参数名:值}}\n'
+        '  retire_method：停用一个已采用的方法实例。{"op":"retire_method","method_instance_id":…,"reason":…}\n'
+        '  bind_shared_goal：把一个已有目标接到某个方法实例的槽位上（复用，不重做）。'
+        '{"op":"bind_shared_goal","consumer_method_instance_id":…,"step":…,"goal_id":…,"resolution_id":…或 null}\n'
+        '  propose_successor：为一个已失败/被替代的 Task 提出后继。{"op":"propose_successor","old_task_id":…,'
+        '"obligation_id":…,"goal_type_ref":{…},"bindings":{…}}\n'
+        "read_set 必须列出你判断时真正读过的对象（至少一条）：每条是 "
+        '{"kind":"task|method|fact|acceptance|obligation|authority","id":…,"semantic_revision":int,"content_hash":…}；'
+        "只能写输入里给你的版本号与 hash，不能自己编。你读到的事实变了，系统会拒绝这次提案并要求你在新快照上重做——"
+        "所以漏写 read_set 不会让提案更容易通过，只会让它在错误的前提上被接受。\n"
+        "running_work_policy 说明已经在跑的工作怎么办，取 retain_if_bindings_unchanged / "
+        "request_stop_then_reconcile / explicit_per_subject_in_commit 之一。\n"
+        "以下字段由系统绑定，你写了（无论写在块上、read_set 条目里还是 operation 里）就会被整块拒绝："
+        "mission_id、principal、principal_id、scope、scope_id、manager_epoch、budget_account、"
+        "budget_grant_revision、registry_status、opened_by、authorization_ref、grant_ref、"
+        "provenance、authored_by。\n"
+        "输出要求：只输出一个 <plan_revision_proposal>…</plan_revision_proposal> 块，块内是 JSON 对象：\n"
+        '  {"schema_version":1,"proposal_id":str,"expected_plan_revision":int,'
+        '"trigger_refs":[…],"read_set":[…],"operations":[…],"rationale":str,"running_work_policy":str}\n'
+        "如果当前目标缺一个可用方法，改为只输出一个 <method_proposal>…</method_proposal> 块："
+        '{"method":{完整 MethodContract JSON},"rationale":str}；方法的注册状态由注册服务写，你不能声明。\n'
+        "块外不要输出任何文字。"
     ),
 )
 
@@ -442,6 +493,9 @@ register_template(MANAGER_V3)
 register_template(CRITIC_V2)
 register_template(WORKER_V2)
 register_template(SYNTHESIZER_V2)
+# P2.3a (§18.5 C8): the hierarchical Planner is an *additional* version of the same
+# role, never a replacement — ``planner-v3`` / ``planner-v4`` keep their exact words.
+register_template(PLANNER_HIERARCHICAL)
 
 # New code-domain semantics are selected by the Mission's frozen profile. Old
 # prompt versions remain available verbatim for recovery and historical replay.
@@ -548,6 +602,10 @@ __all__ = (
     "SYNTHESIZER_VERSION",
     "SYNTHESIZER_V2",
     "TASK_GRAPH_PROPOSAL_TAG",
+    "METHOD_PROPOSAL_TAG",
+    "PLAN_REVISION_PROPOSAL_TAG",
+    "PLANNER_HIERARCHICAL",
+    "PLANNER_HIERARCHICAL_VERSION",
     "TASK_ROLE_BY_KIND",
     "CRITIC",
     "CRITIC_V2",

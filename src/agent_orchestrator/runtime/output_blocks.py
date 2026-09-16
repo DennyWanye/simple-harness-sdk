@@ -50,4 +50,30 @@ def outside_text(text: str, tag: str) -> str:
     return re.sub(rf"<{tag}>.*?</{tag}>", "", text, flags=re.DOTALL).strip()
 
 
-__all__ = ("BlockError", "extract_block", "outside_text")
+#: What to say back to the Agent for each way a block can be unreadable (§18.5 C8).
+#: The repair is *bounded*: the same Attempt is told precisely what was wrong and
+#: asked again, and a malformed block never becomes a second request that quietly
+#: launders the failure into a fresh identity.
+REPAIR_HINTS: dict[str, str] = {
+    "empty_output": "你没有输出任何内容。只输出一个 <{tag}> 块。",
+    "block_missing": "没有找到 <{tag}> 块。只输出一个 <{tag}>…</{tag}> 块，块内是 JSON 对象。",
+    "block_ambiguous": "输出里有多个 <{tag}> 块。只保留一个。",
+    "invalid_json": "<{tag}> 块内不是合法 JSON（{detail}）。重新输出完整的 JSON 对象。",
+    "not_an_object": "<{tag}> 块内必须是 JSON 对象，不是 {detail}。",
+}
+
+
+def repair_hint(error: BlockError, tag: str) -> str:
+    """The one instruction the repair Attempt is given for ``error``.
+
+    A single sentence naming the tag and the defect, because the model is being
+    asked to fix *this* output — not to be told the whole contract again.
+    """
+
+    template = REPAIR_HINTS.get(
+        error.reason, "<{tag}> 块无法解析（{detail}）。按契约重新输出该块。"
+    )
+    return template.format(tag=tag, detail=error.detail or error.reason)
+
+
+__all__ = ("REPAIR_HINTS", "BlockError", "extract_block", "outside_text", "repair_hint")
