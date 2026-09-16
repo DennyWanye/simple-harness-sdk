@@ -114,6 +114,7 @@ from .action_commits import ActionCommitsMixin
 from .fragment_commits import FragmentCommitsMixin
 from .human_commits import HumanCommitsMixin
 from .mission_tail_commits import MissionTailCommitsMixin
+from .obligation_commits import ObligationCommitsMixin
 from .policy_commits import PolicyCommitsMixin
 from .protected_tail_commits import ProtectedTailCommitsMixin
 from .selection_commits import SelectionCommitsMixin
@@ -273,7 +274,7 @@ def task_account(task_id: str) -> str:
 
 
 class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCommitsMixin,
-    ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin, SourceCommitsMixin
+    ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin, SourceCommitsMixin, ObligationCommitsMixin
 ):  # step 7: the action ledger + approvals half; step 9: the policy registry half
     def __init__(
         self,
@@ -1505,6 +1506,14 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             for old_id, replacement_key in validated.superseded.items():
                 self._cancel_task_entity(
                     old_id, reason="superseded", replaced_by=key_to_id[replacement_key]
+                )
+                self._inherit_obligation_on_replacement(
+                    self._store.connection,
+                    mission_id,
+                    old_id,
+                    key_to_id[replacement_key],
+                    reason="REPLACE",
+                    graph_version=new_version,
                 )
             for old_id, reason in validated.cancels.items():
                 self._cancel_task_entity(

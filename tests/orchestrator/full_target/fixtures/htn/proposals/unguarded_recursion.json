@@ -1,0 +1,63 @@
+{
+  "method": {
+    "schema_version": 1,
+    "method_id": "code.review-changes-forever",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "code.review-changes",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "code.review-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "code.outputs",
+      "version": 1
+    },
+    "applicable_when": [],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "review_part",
+        "task_type_ref": {
+          "id": "code.review-changes",
+          "version": 1
+        },
+        "form": "compound",
+        "arguments": {
+          "changeset": {
+            "op": "parameter",
+            "name": "changeset"
+          },
+          "depth_budget": {
+            "op": "parameter",
+            "name": "depth_budget"
+          }
+        },
+        "required_capabilities": [],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-every-chunk-reviewed",
+          "child_step": "review_part",
+          "child_criterion_id": "c-part",
+          "evidence_requirement": "the part is reviewed"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "review_part",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  "author": "model",
+  "registry_status": "DRAFT",
+  "rationale": "proposed because no admitted method applied"
+}

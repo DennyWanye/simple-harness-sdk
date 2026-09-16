@@ -1,0 +1,450 @@
+[
+  {
+    "schema_version": 1,
+    "method_id": "widget.build-from-parts",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "widget.build-widget",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "widget.params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "widget.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "widget.design-available",
+          "version": 1
+        },
+        "arguments": {
+          "widget": {
+            "op": "parameter",
+            "name": "widget"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "widget.parts-in-stock",
+          "version": 1
+        },
+        "arguments": {
+          "widget": {
+            "op": "parameter",
+            "name": "widget"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "blueprint",
+        "task_type_ref": {
+          "id": "widget.read-blueprint",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "widget": {
+            "op": "parameter",
+            "name": "widget"
+          }
+        },
+        "required_capabilities": [
+          "widget.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "parts",
+        "task_type_ref": {
+          "id": "widget.pick-parts",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "blueprint": {
+            "op": "output",
+            "step": "blueprint",
+            "port": "blueprint"
+          }
+        },
+        "required_capabilities": [
+          "widget.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "assemble",
+        "task_type_ref": {
+          "id": "widget.assemble",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "parts": {
+            "op": "output",
+            "step": "parts",
+            "port": "parts"
+          }
+        },
+        "required_capabilities": [
+          "widget.build"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "verify",
+        "task_type_ref": {
+          "id": "widget.verify-assembly",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "assembly": {
+            "op": "output",
+            "step": "assemble",
+            "port": "assembly"
+          }
+        },
+        "required_capabilities": [
+          "widget.read"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "blueprint",
+        "after": "parts"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-widget-built",
+          "child_step": "verify",
+          "child_criterion_id": "c-verified",
+          "evidence_requirement": "the assembly passes verification"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "verify",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "widget.build-from-kit",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "widget.build-widget",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "widget.params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "widget.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "widget.design-available",
+          "version": 1
+        },
+        "arguments": {
+          "widget": {
+            "op": "parameter",
+            "name": "widget"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "widget.kit-available",
+          "version": 1
+        },
+        "arguments": {
+          "widget": {
+            "op": "parameter",
+            "name": "widget"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "blueprint",
+        "task_type_ref": {
+          "id": "widget.read-blueprint",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "widget": {
+            "op": "parameter",
+            "name": "widget"
+          }
+        },
+        "required_capabilities": [
+          "widget.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "unpack",
+        "task_type_ref": {
+          "id": "widget.unpack-kit",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "blueprint": {
+            "op": "output",
+            "step": "blueprint",
+            "port": "blueprint"
+          }
+        },
+        "required_capabilities": [
+          "widget.build"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "verify",
+        "task_type_ref": {
+          "id": "widget.verify-assembly",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "assembly": {
+            "op": "output",
+            "step": "unpack",
+            "port": "assembly"
+          }
+        },
+        "required_capabilities": [
+          "widget.read"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "blueprint",
+        "after": "unpack"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-widget-built",
+          "child_step": "verify",
+          "child_criterion_id": "c-verified",
+          "evidence_requirement": "the assembly passes verification"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "verify",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "widget.assemble-tier-directly",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "widget.assemble-tier",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "widget.params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "widget.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "widget.tier-buildable",
+          "version": 1
+        },
+        "arguments": {
+          "widget": {
+            "op": "parameter",
+            "name": "widget"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "assemble",
+        "task_type_ref": {
+          "id": "widget.assemble",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {},
+        "required_capabilities": [
+          "widget.build"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-tier-assembled",
+          "child_step": "assemble",
+          "child_criterion_id": "c-assembled",
+          "evidence_requirement": "the tier is assembled"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "assemble",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "widget.assemble-tier-recursively",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "widget.assemble-tier",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "widget.params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "widget.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "widget.tier-too-deep",
+          "version": 1
+        },
+        "arguments": {
+          "widget": {
+            "op": "parameter",
+            "name": "widget"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "blueprint",
+        "task_type_ref": {
+          "id": "widget.read-blueprint",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "widget": {
+            "op": "parameter",
+            "name": "widget"
+          }
+        },
+        "required_capabilities": [
+          "widget.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "subtier",
+        "task_type_ref": {
+          "id": "widget.assemble-tier",
+          "version": 1
+        },
+        "form": "compound",
+        "arguments": {
+          "widget": {
+            "op": "constant",
+            "value": "subtier"
+          },
+          "tier": {
+            "op": "constant",
+            "value": 1
+          }
+        },
+        "required_capabilities": [],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "assemble",
+        "task_type_ref": {
+          "id": "widget.assemble",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {},
+        "required_capabilities": [
+          "widget.build"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "blueprint",
+        "after": "subtier"
+      },
+      {
+        "before": "subtier",
+        "after": "assemble"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-tier-assembled",
+          "child_step": "assemble",
+          "child_criterion_id": "c-assembled",
+          "evidence_requirement": "the tier is assembled"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "assemble",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  }
+]

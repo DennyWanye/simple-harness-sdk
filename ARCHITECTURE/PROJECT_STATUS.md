@@ -1,3 +1,5 @@
+最后更新：2026-09-16 CST。FULL-TARGET-1.4 第二批：P2.1/P2.1c/P2.2b/P1.2/P1.3 交付并经独立审阅修复；迁移 16 新增 31 张表（旧 DDL checksum 不变）；commit_service 改动 11 行仅新模式生效。接线片 P2.3a/b/c 未开始。[交接](../plans/2026-09-16-full-target/HANDOFF.md)。
+
 最后更新：2026-09-16 CST。FULL-TARGET-1.4（通用动态 HTN）实施第一批：P1.1/P1.1b/P1.1c/P2.1b/P2.2 交付并经独立审阅修复，630 条新测试；P2.2b 与 P1.2 在途；接线片 P2.3a/b/c 未开始，任何生产路径尚未使用新模块。[交接](../plans/2026-09-16-full-target/HANDOFF.md)。
 
 最后更新：2026-09-15 23:27 CST。生产 `f7432dc`：R 信封计量修复。Host 侧 Flash v2 2/2 选择闭环不能写进 v1 19/96。[指针](../plans/2026-09-14-gap-phase1/HANDOFF-2026-09-15-r-envelope.md)。

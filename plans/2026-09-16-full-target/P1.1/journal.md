@@ -253,3 +253,164 @@ uv run --frozen --group dev mypy src/agent_orchestrator
 **全目录当前有一个收集错误，不是本片造成的**：`tests/orchestrator/full_target/test_input_manifest_resolution.py`（P2.2b）import `agent_orchestrator.artifacts.input_bindings`，该模块尚未落地 —— 测试文件先于实现写入，属于并发小片的在途状态。除该文件外全目录全绿。
 
 未提交、未推送、未跑全量回归、未改动其他小片的文件。
+
+---
+
+## 11. 契约第四轮（2026-09-16，来自 P1.2 / P2.1c 的请求）
+
+追加耗时约 30 分钟。同样只做加法；新增可选字段仍遵循第三轮定下的"为空即整键省略"规则，既有对象字节与 content hash 不变。
+
+### 逐项
+
+| # | 请求方 | 落点 | 做法 |
+|---|---|---|---|
+| 1 | P1.2 | `htn.py` / `obligations.py` | `MethodRegistration` 补 `from_json`（原本只有 `to_json`，存储层在就地重建）；`ExpansionRecord` 补 `to_json`/`from_json`。**确认 `BoundInput.from_json` 早已存在**，`artifacts/input_bindings.py` 未碰（P2.2b 所有）。 |
+| 2 | P1.2 | `obligations.py` | `record_spend` 增加 `tokens` 轴，三个参数全部校验完再一次性累加；`ObligationAccountView` 增加 `consumed_tokens`（docstring 注明对应 `obligation_store` 的 `spent_tokens` 列）。 |
+| 3 | P2.1c | `resolution.py` | 三轴进契约：`OperationControl`（PROPOSED/AWAITING_AUTHORIZATION/READY/DISPATCHING/QUIESCING/CLOSED）、`EffectOutcome`（NOT_HANDED_OFF/PENDING/APPLIED/NOT_APPLIED/PARTIAL/UNKNOWN）、`AccountingState`（UNRESERVED/RESERVED/PARTIALLY_SETTLED/SETTLED/USAGE_UNKNOWN）；`OperationCurrentState` frozen 记录 + codec。`OperationEnvelope` 未动。 |
+| 4 | P1.2 | `obligations.py` | `ObligationAccountView` 增加 `has_admitted_demand`；`ObligationLedger` 增加 `admit_demand()` / `withdraw_demand()`，均校验后原子写。 |
+| 5 | P2.1c | `resolution.py` | `ApprovalDecision`（NOT_REQUIRED/PENDING/GRANTED/DENIED/EXPIRED）+ `ApprovalState`（decision、granted_by、granted_at_ms、expires_at_ms、`is_effective(now_ms)`）；`CandidatePolicy`（policy_version、max_candidates、synthesis_allowed、reserve_tokens）+ `LEGACY_CANDIDATE_RANGE`。 |
+
+### 契约里钉住的规则（都配了拒绝测试）
+
+- **`OperationCurrentState`**：未授权（PROPOSED / AWAITING_AUTHORIZATION）却已有 effect ≠ NOT_HANDED_OFF 即拒 —— 那等于"批准跟在动作后面"（I03、I04）；`NOT_HANDED_OFF` 与在途 `in_flight_handoff_id` 不能并存。反过来**允许** CLOSED + UNKNOWN + USAGE_UNKNOWN：关掉控制流既不决定世界（I10），也不抹掉已发生的费用（I13）。
+- **`ApprovalState`**：GRANTED 必须署名与时间（"无人署名的批准不是批准"）；NOT_REQUIRED / PENDING 不得携带 granted_by 或 granted_at_ms；`expires_at_ms` 不得早于 `granted_at_ms`；`is_effective` 用 `now_ms < expires_at_ms`（与 `ValidityWitness` 同一排他语义）。
+- **`CandidatePolicy`**：`synthesis_allowed` 需要 `max_candidates >= 2` 且 `reserve_tokens > 0` —— 与 `planning/candidate_selection.py` 第 61–62 行的既有判据逐条对应。`max_candidates` 本身不设 3 的上限（ADR-08 已用版本化容量取代固定通用限制），是否落在旧的 1..3 区间由 `compatible_with_legacy` 报告，`LEGACY_CANDIDATE_RANGE` 记录旧默认值。
+- **`admit_demand`**：重复准入**拒绝**而不是幂等 —— 两次准入被当成一次，正是"撤回一个共享者把别人还需要的共享也释放掉"的成因（TG 裁决 9）；已关闭的义务不得再准入 demand。
+- **`MethodRegistration.from_json`**：回程重跑准入规则，被改过的行不能把从未授予的晋级恢复回来（模型作者 + ADMITTED、TRIAL_ADMITTED 缺 mission 作用域均拒）。
+
+### 本轮偏差
+
+15. **`OperationCurrentState` 比请求的字段清单多一个 `accounting_state`**（默认 UNRESERVED）。原清单是 authorization_state / authorization_epoch / dispatch_generation / effect_outcome / in_flight_handoff_id / budget_refs / next_reconcile_at_ms，其中没有记账轴。但本项的标题就是"操作三轴进契约"，只记两轴会让第三个枚举没有落点，AER §13 的"控制、后果、记账分开"也就只剩两半。字段可选且有默认值，对既有调用零影响。
+
+16. **`ApprovalState` 拆成 `ApprovalDecision`（枚举）+ `ApprovalState`（记录）**。请求写的是"ApprovalState（五个值，含 granted_by…）"，一个类型不能同时是枚举和带三个字段的记录，因此枚举叫 `ApprovalDecision`，记录保留请求里的名字 `ApprovalState`。
+
+### 本轮新增测试
+
+共 **+31 条**（225 → 256；全目录 1057）：
+
+- `test_obligation_conservation.py`（22 → 31）：token 轴累加、换方法后 token 不重置、被拒 token 数额不改任何计数器、demand 准入/撤回、重复准入拒绝、撤回未准入拒绝、已关闭义务不得准入、ExpansionRecord 往返 + 未知字段拒绝。
+- `test_semantic_binding_codec.py`（116 → 120）：MethodRegistration 往返、被改过的行不能恢复未授予的 ADMITTED、TRIAL_ADMITTED 仍需 mission 作用域、BoundInput 往返确认。
+- `test_aer_contract_codecs.py`（51 → 68）：三轴分别记录并往返、CLOSED+UNKNOWN+USAGE_UNKNOWN 合法且 `settled`、未授权却有 effect 拒绝、NOT_HANDED_OFF 与在途 handoff 并存拒绝、PROPOSED 未交接合法、GRANTED 署名与到期、无署名 GRANTED 拒绝、PENDING 带署名拒绝、四种非 GRANTED 都不授权、到期早于授予拒绝、CandidatePolicy 往返与 legacy 区间、超出旧区间合法但报告、synthesis 两条前置各一拒绝、版本与候选数下界各一拒绝。
+
+### 本轮验证
+
+```
+uv run --frozen --group dev --extra local-capacity pytest tests/orchestrator/full_target -q
+→ 1057 passed, 1 skipped（含 P1.1b / P1.1c / P2.1b / P2.2 / P2.2b 的测试；上一轮的
+  test_input_manifest_resolution 收集错误已因 P2.2b 模块落地而消失）
+
+uv run --frozen --group dev ruff check / ruff format --check <本片源文件 + tests/orchestrator/full_target>
+→ All checks passed / 47 files already formatted
+uv run --frozen --group dev mypy src/agent_orchestrator
+→ contracts/、knowledge/、planning/htn/applicability.py 零错误；仓库总数 17（均为既有可选依赖缺失）
+```
+
+未提交、未推送、未跑全量回归；`planning/htn/{registry,grounding,refinement,compiler,validation}.py`（P2.1）与 `orchestrator/`（P1.3）等其他小片的文件未碰。
+
+---
+
+## 12. 契约第五轮（2026-09-16，来自 P2.1c / P2.1 的请求）
+
+追加耗时约 25 分钟。同样只做加法，新增可选字段一律"为空即整键省略"，既有对象字节与 content hash 不变；P2.1 已落地的 `planning/htn/{registry,grounding,refinement,compiler,validation}.py` 与 `seed_methods/` 未碰，其测试保持全绿。
+
+### 逐项
+
+| # | 请求方 | 落点 | 做法 |
+|---|---|---|---|
+| 1 | P2.1c | `htn.py` | `SemanticReadSet` 增加 `obligation_revisions` / `authority_revisions` 两条带类型通道，分别只接受 `ReadItemKind.OBLIGATION` / `AUTHORITY` 的条目；缺省为空时两键整键省略。docstring 写明为什么分通道：过期的义务与被撤销的授权，提交失败的原因不同、重读的方式也不同。 |
+| 2 | P2.1 | `htn.py` | `RegistryAuthor` 增加 `HUMAN`。准入规则里 `HUMAN` 与 `SYSTEM` 同等（§7.3 限制的是**模型**自我晋级），因此人工种子方法可以如实记为 HUMAN 而不再被迫记成 SYSTEM。 |
+| 3 | P2.1 | `htn.py` | `MethodStep` 增加可选 `reuse_policy: ReusePolicy | None`。未声明即"沿用任务类型层的默认"，由使用方解释 —— 契约不替它挑默认值，否则方法就能靠"不写"悄悄改变去重语义。 |
+| 4 | P2.1 | `htn.py` | `ChildBinding` 增加可选 `acceptance_ref: TypedRef | None`；构造校验：只有 `REUSE_ACCEPTED` 可以指向具体 Acceptance（`SHARE_ACTIVE` 共享的是在途工作，还没有 acceptance；`NEW_WORK` 无可指）。 |
+| 5 | P2.1 | `knowledge/predicates.py` | `PredicateSignature` 补 `from_json`（`to_json` 原已完整），并补 `PredicateParameter.from_json`。回程重跑注册规则：封闭域仍需观察者、整个 payload 仍过 `reject_executable` —— 存储或传输过的声明不能因此取得注册时被拒的否定权或可执行内容。 |
+
+### 本轮偏差
+
+17. **第 3 项让契约先于 schema**。`method-contract-v1.schema.json` 是 `additionalProperties: false` 且 required 列表里没有 `reuse_policy`，所以带该字段的 payload 在 schema 层是非法的，而本仓库的 codec 会接受它。未声明时整键省略，因此 4 个正样本 fixture 的 `to_json() == payload` 逐字节断言仍然成立（已有测试钉住）。schema 的版本升级属于计划包，本片不拥有 —— 这一条记在这里，等 schema 升版时一并处理。
+
+### 本轮新增测试（+18 条）
+
+- `test_semantic_binding_codec.py`（96 → 111）：两条读通道往返、各自拒绝错误 kind（参数化 2 条）、未使用新通道时不含键；HUMAN 作者往返、HUMAN 不放松模型晋级规则；step 声明 reuse_policy 往返、未声明保持 schema 字节、未知策略拒绝；reuse 槽指向 Acceptance 往返、NEW_WORK / SHARE_ACTIVE 带 acceptance_ref 拒绝（参数化 2 条）、未使用时不含键。
+- `test_predicate_truth_table.py`（63 → 68）：PredicateSignature 往返、回程仍要求封闭域有观察者、回程仍拒绝可执行内容、未知字段拒绝、往返后的声明仍能在注册表里解析命中。
+
+### 本轮验证
+
+```
+uv run --frozen --group dev --extra local-capacity pytest tests/orchestrator/full_target -q
+→ 1422 passed, 1 skipped（含 P2.1 的 297 条；本轮加法未让任何一条变红）
+
+uv run --frozen --group dev ruff check / ruff format --check <本片源文件 + tests/orchestrator/full_target>
+→ All checks passed / 53 files already formatted
+uv run --frozen --group dev mypy src/agent_orchestrator
+→ contracts/、knowledge/、planning/htn/applicability.py 零错误；仓库总数 17（均为既有可选依赖缺失）
+```
+
+**本片五个测试文件的实测条数**（此前几轮journal里的分文件条数是估算，以下为实测）：
+
+| 文件 | 条数 |
+|---|---:|
+| `test_predicate_truth_table.py` | 68 |
+| `test_htn_recursion_fuel.py` | 11 |
+| `test_obligation_conservation.py` | 25 |
+| `test_semantic_binding_codec.py` | 111 |
+| `test_aer_contract_codecs.py` | 68 |
+| **合计** | **283** |
+
+未提交、未推送、未跑全量回归；其他小片的文件未碰。
+
+---
+
+## 13. 契约第六轮（2026-09-16，CR#6：P2.1 审阅发现的交接缝）
+
+追加耗时约 30 分钟。只做加法；`planning/htn/*`（P2.1 正在同时修）未碰。
+
+### 补的是哪条缝
+
+编译器会为一个尚未注册的 `obligation_id` 产出 occurrence，而契约里没有任何地方说这个义务是谁开的、授权从哪来、燃料从哪来。留着这个缝，落库那一步就只能由账本"顺手"建一个义务 —— 而新建的义务带着**全新的失败计数和全新的燃料**，正是 §6.1 明令禁止的那次重置。所以这一轮把"开一个新义务"变成必须显式说出口的事。
+
+### 逐项
+
+| 落点 | 做法 |
+|---|---|
+| `htn.py` 新类型 | `BudgetInheritance`（INHERIT_PARENT_FUEL_SHARE / SEPARATE_GRANT）与 `ObligationOpening`（obligation_id、parent_obligation_id、relation、requirement_refs、goal_signature、budget_inheritance、fuel_share、grant_ref、authorization_ref、opened_by），frozen + 完整 codec |
+| `htn.py` `ProposedPlanDelta` | 增加可选 `obligation_openings`（缺省空整键省略）；构造期校验同一 delta 内不得重复开同一义务 |
+| `htn.py` `require_commit_ready` | 增加 keyword `registered_obligations: frozenset[ObligationId] | None`。给出已注册集合时：占用未注册义务的 occurrence 必须在 openings 里有对应项；openings 不得重开已存在的义务。不给集合时行为与之前完全一致（纯加法） |
+| `obligations.py` `ObligationLedger` | 增加 `open_from(opening, parent_account, *, granted_fuel=None)`：全部校验后原子开户 |
+
+### 契约里钉住的规则（各配拒绝测试）
+
+- `INDEPENDENT_AUTHORIZED` 必须带 `authorization_ref` —— "规划本身不创造责任"。
+- `REFINES_PARENT` 不得用 `SEPARATE_GRANT` —— 给细化发一笔新拨款，等于换个名字的新重试预算（§6.1）。
+- `INHERIT_PARENT_FUEL_SHARE` 必须给 `fuel_share` 且不得带 `grant_ref`；`SEPARATE_GRANT` 反之。
+- `opened_by` 只接受 SYSTEM / HUMAN，**拒绝 MODEL**（也拒绝 TOOL）：模型可以提议工作的形状，不能自行宣布多了一份责任。
+- `open_from`：细化从父账 `remaining` 划走 `fuel_share`，父账 `fuel_limit` 同步减少 —— **分解重新分配预算，从不凭空制造预算**；父账余额不足即拒（报 BOUND_REACHED 而不是超额分配）。`SEPARATE_GRANT` 按 `granted_fuel` 初始化，父账分文不动。
+- `open_from` 的 `parent_account` 是调用方读到的视图；与账本当前状态不符即拒 —— 按陈旧读开子义务，正是"一份额度养两个孩子"的成因。
+- 父义务非 UNSATISFIED 不得出资；已注册的义务不得再开；传错别人的账户即拒。
+
+### 本轮偏差
+
+18. **`open_from` 增加了 `granted_fuel` 关键字参数**（原请求只写 `open_from(opening, parent_account)`）。`grant_ref` 是一个**引用**而不是数额，`SEPARATE_GRANT` 的账户没有燃料可以初始化。把数额做成 opening 的字段会让模型侧的提案能写自己的额度，所以改为由调用方从它读到的 grant 传入；`INHERIT_PARENT_FUEL_SHARE` 传了它反而会被拒。
+
+19. **`ObligationOpening.parent_obligation_id` 是必填**（原请求未标可选性）。两种 relation 都记录与父责任的关系（§6.1："语义上确实新增的责任由显式命令创建，并记录与父责任的关系"）；根义务来自 Mission，不由 delta 打开。
+
+20. **"不得与 occurrences 引用的既有义务重复"落在 `require_commit_ready` 而非构造期**。delta 自己不知道哪些义务已存在，这条只能在拿到已注册集合时判断；构造期能做的只有"同一 delta 内不重复开"，两处都做了。
+
+### 本轮新增测试（+28 条）
+
+- `test_obligation_conservation.py`（25 → 38）：opening 往返；独立授权缺 authorization_ref 拒绝 + 带上后通过；细化用 SEPARATE_GRANT 拒绝；继承缺 fuel_share / 多带 grant_ref 各一拒绝；模型 opened_by 拒绝 + HUMAN 通过；细化开户把燃料移出父账；父账余额不足拒绝且账本不变；SEPARATE_GRANT 按 grant 初始化且父账不动；缺 granted_fuel 拒绝；陈旧父视图拒绝；重开已存在义务拒绝且父账不变；已关闭父义务拒绝；传错账户拒绝。
+- `test_semantic_binding_codec.py`（111 → 118）：delta 携带 openings 往返；未开义务时不含键；同一 delta 重复开拒绝；占用未注册义务的 occurrence 在 commit 期拒绝；本 delta 开了该义务则通过；重开已存在义务拒绝；不传已注册集合时只校验形状（向后兼容）。
+
+### 本轮验证
+
+```
+uv run --frozen --group dev --extra local-capacity pytest tests/orchestrator/full_target -q
+→ 1450 passed, 1 skipped
+
+uv run --frozen --group dev ruff check / ruff format --check <本片源文件 + tests/orchestrator/full_target>
+→ All checks passed / 53 files already formatted
+uv run --frozen --group dev mypy src/agent_orchestrator
+→ contracts/、knowledge/、planning/htn/applicability.py 零错误
+```
+
+**mypy 仓库总数从 17 升到 20，增量全在 `planning/htn/compiler.py`（P2.1 在途）**：两处 `Name "TypedRef" is not defined`（缺 import）与一处把 `TypedRef` 传给 `ReadItem.id`（该字段一直是 `str`，本轮未改）。不是本轮加法造成的，也不在本片可改范围内 —— 留给 P2.1 的修复轮。
+
+本片五个测试文件实测合计 **303 条**（68 / 11 / 38 / 118 / 68）。未提交、未推送、未跑全量回归。

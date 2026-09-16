@@ -1,6 +1,6 @@
 # FULL-TARGET-1.4 实施交接（P0–P2 先行）
 
-**最后核查：2026-09-16 CST，第一批提交（P1.1、P1.1b、P1.1c、P2.1b、P2.2）。计划来源：Host 仓库 `plans/taskSys2/升级planV1/v1.4/simpleharness-full-target-1.4/complete-plan.zh-CN.md`（§23 执行顺序、§21.5 Grok 验收协议）。用户指令：先完成 P0、P1、P2 并做好测试，然后交用户验收。**
+**最后核查：2026-09-16 CST，第二批提交（P2.1、P2.1c、P2.2b、P1.2、P1.3、契约第四～六轮）。第一批 623d4c8。计划来源：Host 仓库 `plans/taskSys2/升级planV1/v1.4/simpleharness-full-target-1.4/complete-plan.zh-CN.md`（§23 执行顺序、§21.5 Grok 验收协议）。用户指令：先完成 P0、P1、P2 并做好测试，然后交用户验收。**
 
 ## 1. 接手结论
 
@@ -18,9 +18,13 @@
 | P1.1b | 验收纯规则（verification/acceptance_rules.py） | 已交付，审阅修复完成，已适配契约第三轮 | 122 | 需修后合并 → 已修（独立性/在途事实必填、表达式一致性、伪回执） |
 | P1.1c | 理由最小不动点（knowledge/justifications.py） | 已交付，审阅修复完成 | 101 | 需修后合并 → 已修（假设支持一律 taint、注册表必填、独立路径计数） |
 | P2.1b | TaskNetwork 快照与投影验证（graph/task_network.py、graph/projection_validation.py） | 已交付，审阅修复完成，已切契约第三轮 | 117 | 需修后合并 → 已修（无 gating 孩子的 exit 门、共享复合子目标、资源分桶） |
-| P2.2b | InputManifest 纯解析（artifacts/input_bindings.py） | 审阅修复中（未入第一批提交） | 92 | 需修后合并（witness 用途/消费者校验） |
-| P1.2 | 存储层与第 16 号迁移 | 实施中（未入第一批提交） | | |
-| P2.1 P2.1c P2.2b P1.2 P1.3 P2.3a P2.3b P2.3c | | 待做 | | |
+| P2.2b | InputManifest 纯解析（artifacts/input_bindings.py） | 已交付，审阅修复完成 | 111 | 需修后合并 → 已修（witness 用途/消费者/支持修订三闸门、epoch 未知拒绝、内嵌 BoundInput） |
+| P1.2 | 存储层与第 16 号迁移（storage/htn_schema、htn_store、obligation_store；31 张 STRICT 表） | 已交付，审阅修复完成 | 111 | 需修后合并 → 已修（ACTIVE 部分唯一索引直测、SQL 相对累加与真并发测试、迁移 16 校验和钉入、零白名单静态守卫、input_manifests 拆表） |
+| P1.3 | 替代任务沿 Obligation 继承失败计数与额度（orchestrator/obligation_commits.py，commit_service +10/−1） | 已交付，审阅修复完成 | 33 | 需修后合并 → 已修（事件键并入序号、单行写入、后继绑定清空派发态、零裸 SQL）；旧模式零回归由字节级事件对比测试钉住 |
+| P2.1 | HTN 核心（planning/htn/{registry,grounding,refinement,compiler,validation}.py、seed_methods/ code+appworld+虚构域 widget） | 已交付，审阅修复完成 | 340 | 需修后合并 → 已修（HDDL 导出重写为全 ground 模型并 stub 联调 VERIFIED、取证不扣燃料、义务开户 ObligationOpening、27/27 变异捕获） |
+| P2.1c | 纯 readiness 与 EligiblePrimitiveTask（graph/eligibility.py） | 已交付，审阅修复完成，已切契约第四/五轮 | 200 | 需修后合并 → 已修（replace/copy/pickle 旁路拒绝、witness 消费者校验、新鲜度复用契约、read-set 义务/授权通道） |
+| P1.1 契约第四～六轮 | 操作三轴、审批与候选策略、demand、codec 补齐、read-set 通道、HUMAN 作者、步骤复用、Acceptance 引用、ObligationOpening | 已交付 | 303（五文件实测） | 每轮全目录测试全绿 |
+| P2.3a P2.3b P2.3c | 接线片（旁表 + plan_commits mixin + planner 标签块；event_handler 与 versioning；allocator form 门 + 根验收 + Grok 验收） | 待做 | | |
 
 ## 3. 约束
 

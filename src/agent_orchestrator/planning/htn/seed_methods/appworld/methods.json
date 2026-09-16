@@ -1,0 +1,518 @@
+[
+  {
+    "schema_version": 1,
+    "method_id": "appworld.fulfil-by-api",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "appworld.fulfil-request",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "appworld.request-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "appworld.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "appworld.app-reachable",
+          "version": 1
+        },
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "appworld.credentials-valid",
+          "version": 1
+        },
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "appworld.api-supports-request",
+          "version": 1
+        },
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "profile",
+        "task_type_ref": {
+          "id": "appworld.read-user-profile",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          }
+        },
+        "required_capabilities": [
+          "appworld.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "query",
+        "task_type_ref": {
+          "id": "appworld.query-app-api",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "profile": {
+            "op": "output",
+            "step": "profile",
+            "port": "profile"
+          }
+        },
+        "required_capabilities": [
+          "appworld.api"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "submit",
+        "task_type_ref": {
+          "id": "appworld.submit-action",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          },
+          "records": {
+            "op": "output",
+            "step": "query",
+            "port": "records"
+          }
+        },
+        "required_capabilities": [
+          "appworld.write"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "confirm",
+        "task_type_ref": {
+          "id": "appworld.confirm-receipt",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "receipt": {
+            "op": "output",
+            "step": "submit",
+            "port": "receipt"
+          }
+        },
+        "required_capabilities": [
+          "appworld.read"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "profile",
+        "after": "query"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-request-satisfied",
+          "child_step": "confirm",
+          "child_criterion_id": "c-confirmed",
+          "evidence_requirement": "the application confirms the requested change"
+        },
+        {
+          "parent_criterion_id": "c-actions-confirmed",
+          "child_step": "submit",
+          "child_criterion_id": "c-submitted",
+          "evidence_requirement": "every submitted action has a recorded receipt"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "confirm",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "appworld.fulfil-by-search",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "appworld.fulfil-request",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "appworld.request-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "appworld.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "appworld.app-reachable",
+          "version": 1
+        },
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "appworld.credentials-valid",
+          "version": 1
+        },
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "profile",
+        "task_type_ref": {
+          "id": "appworld.read-user-profile",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          }
+        },
+        "required_capabilities": [
+          "appworld.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "search",
+        "task_type_ref": {
+          "id": "appworld.search-app",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "profile": {
+            "op": "output",
+            "step": "profile",
+            "port": "profile"
+          }
+        },
+        "required_capabilities": [
+          "appworld.search"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "submit",
+        "task_type_ref": {
+          "id": "appworld.submit-action",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          },
+          "records": {
+            "op": "output",
+            "step": "search",
+            "port": "records"
+          }
+        },
+        "required_capabilities": [
+          "appworld.write"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "confirm",
+        "task_type_ref": {
+          "id": "appworld.confirm-receipt",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "receipt": {
+            "op": "output",
+            "step": "submit",
+            "port": "receipt"
+          }
+        },
+        "required_capabilities": [
+          "appworld.read"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "profile",
+        "after": "search"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-request-satisfied",
+          "child_step": "confirm",
+          "child_criterion_id": "c-confirmed",
+          "evidence_requirement": "the application confirms the requested change"
+        },
+        {
+          "parent_criterion_id": "c-actions-confirmed",
+          "child_step": "submit",
+          "child_criterion_id": "c-submitted",
+          "evidence_requirement": "every submitted action has a recorded receipt"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "confirm",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "appworld.resolve-entity-directly",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "appworld.resolve-entity",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "appworld.entity-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "appworld.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "appworld.entity-unique",
+          "version": 1
+        },
+        "arguments": {
+          "entity": {
+            "op": "parameter",
+            "name": "entity"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "pick",
+        "task_type_ref": {
+          "id": "appworld.pick-entity",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "entity": {
+            "op": "parameter",
+            "name": "entity"
+          }
+        },
+        "required_capabilities": [
+          "appworld.read"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-entity-resolved",
+          "child_step": "pick",
+          "child_criterion_id": "c-picked",
+          "evidence_requirement": "exactly one record is named as the resolution"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "pick",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "appworld.resolve-entity-recursively",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "appworld.resolve-entity",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "appworld.entity-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "appworld.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "appworld.entity-ambiguous",
+          "version": 1
+        },
+        "arguments": {
+          "entity": {
+            "op": "parameter",
+            "name": "entity"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "narrow",
+        "task_type_ref": {
+          "id": "appworld.narrow-candidates",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "entity": {
+            "op": "parameter",
+            "name": "entity"
+          }
+        },
+        "required_capabilities": [
+          "appworld.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "resolve_part",
+        "task_type_ref": {
+          "id": "appworld.resolve-entity",
+          "version": 1
+        },
+        "form": "compound",
+        "arguments": {
+          "entity": {
+            "op": "constant",
+            "value": "candidate"
+          },
+          "narrow_budget": {
+            "op": "constant",
+            "value": 1
+          },
+          "candidates": {
+            "op": "output",
+            "step": "narrow",
+            "port": "candidates"
+          }
+        },
+        "required_capabilities": [],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "pick",
+        "task_type_ref": {
+          "id": "appworld.pick-entity",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "entity": {
+            "op": "parameter",
+            "name": "entity"
+          },
+          "resolved": {
+            "op": "output",
+            "step": "resolve_part",
+            "port": "entity"
+          }
+        },
+        "required_capabilities": [
+          "appworld.read"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "narrow",
+        "after": "resolve_part"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-entity-resolved",
+          "child_step": "pick",
+          "child_criterion_id": "c-picked",
+          "evidence_requirement": "the narrowed candidate set resolves to one record"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "pick",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  }
+]

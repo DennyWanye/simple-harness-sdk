@@ -1,0 +1,497 @@
+[
+  {
+    "schema_version": 1,
+    "method_id": "code.fix-by-patch",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "code.fix-failing-test",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "code.repo-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "code.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "code.repo-checked-out",
+          "version": 1
+        },
+        "arguments": {
+          "repository": {
+            "op": "parameter",
+            "name": "repository"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "code.test-is-failing",
+          "version": 1
+        },
+        "arguments": {
+          "test": {
+            "op": "parameter",
+            "name": "failing_test"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "facts",
+        "task_type_ref": {
+          "id": "code.read-repository-facts",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "repository": {
+            "op": "parameter",
+            "name": "repository"
+          }
+        },
+        "required_capabilities": [
+          "repo.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "reproduce",
+        "task_type_ref": {
+          "id": "code.reproduce-failure",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "repository_facts": {
+            "op": "output",
+            "step": "facts",
+            "port": "facts"
+          }
+        },
+        "required_capabilities": [
+          "tests.run"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "patch",
+        "task_type_ref": {
+          "id": "code.apply-patch",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "repository": {
+            "op": "parameter",
+            "name": "repository"
+          },
+          "diagnosis": {
+            "op": "output",
+            "step": "reproduce",
+            "port": "diagnosis"
+          }
+        },
+        "required_capabilities": [
+          "repo.write"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "verify",
+        "task_type_ref": {
+          "id": "code.verify-tests",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "patch": {
+            "op": "output",
+            "step": "patch",
+            "port": "patch"
+          }
+        },
+        "required_capabilities": [
+          "tests.run"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "facts",
+        "after": "reproduce"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-test-passes",
+          "child_step": "verify",
+          "child_criterion_id": "c-green",
+          "evidence_requirement": "the suite passes on the patched revision"
+        },
+        {
+          "parent_criterion_id": "c-change-explained",
+          "child_step": "patch",
+          "child_criterion_id": "c-explained",
+          "evidence_requirement": "the patch names the defect it addresses"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "verify",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "code.fix-by-revert",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "code.fix-failing-test",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "code.repo-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "code.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "code.repo-checked-out",
+          "version": 1
+        },
+        "arguments": {
+          "repository": {
+            "op": "parameter",
+            "name": "repository"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "code.regression-commit-known",
+          "version": 1
+        },
+        "arguments": {
+          "repository": {
+            "op": "parameter",
+            "name": "repository"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "facts",
+        "task_type_ref": {
+          "id": "code.read-repository-facts",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "repository": {
+            "op": "parameter",
+            "name": "repository"
+          }
+        },
+        "required_capabilities": [
+          "repo.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "revert",
+        "task_type_ref": {
+          "id": "code.revert-commit",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "repository_facts": {
+            "op": "output",
+            "step": "facts",
+            "port": "facts"
+          }
+        },
+        "required_capabilities": [
+          "repo.write"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "verify",
+        "task_type_ref": {
+          "id": "code.verify-tests",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "patch": {
+            "op": "output",
+            "step": "revert",
+            "port": "patch"
+          }
+        },
+        "required_capabilities": [
+          "tests.run"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "facts",
+        "after": "revert"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-test-passes",
+          "child_step": "verify",
+          "child_criterion_id": "c-green",
+          "evidence_requirement": "the suite passes once the regression commit is gone"
+        },
+        {
+          "parent_criterion_id": "c-change-explained",
+          "child_step": "revert",
+          "child_criterion_id": "c-explained",
+          "evidence_requirement": "the revert names the commit it undoes"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "verify",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "code.review-changes-directly",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "code.review-changes",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "code.review-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "code.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "code.changeset-reviewable",
+          "version": 1
+        },
+        "arguments": {
+          "changeset": {
+            "op": "parameter",
+            "name": "changeset"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "inspect",
+        "task_type_ref": {
+          "id": "code.inspect-changeset",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "changeset": {
+            "op": "parameter",
+            "name": "changeset"
+          }
+        },
+        "required_capabilities": [
+          "repo.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "summarize",
+        "task_type_ref": {
+          "id": "code.summarize-review",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "findings": {
+            "op": "output",
+            "step": "inspect",
+            "port": "findings"
+          }
+        },
+        "required_capabilities": [
+          "repo.read"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-every-chunk-reviewed",
+          "child_step": "summarize",
+          "child_criterion_id": "c-summary",
+          "evidence_requirement": "the summary covers every inspected hunk"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "summarize",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "code.review-changes-recursively",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "code.review-changes",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "code.review-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "code.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "code.changeset-too-large",
+          "version": 1
+        },
+        "arguments": {
+          "changeset": {
+            "op": "parameter",
+            "name": "changeset"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "split",
+        "task_type_ref": {
+          "id": "code.split-changeset",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "changeset": {
+            "op": "parameter",
+            "name": "changeset"
+          }
+        },
+        "required_capabilities": [
+          "repo.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "review_part",
+        "task_type_ref": {
+          "id": "code.review-changes",
+          "version": 1
+        },
+        "form": "compound",
+        "arguments": {
+          "changeset": {
+            "op": "constant",
+            "value": "chunk"
+          },
+          "depth_budget": {
+            "op": "constant",
+            "value": 1
+          },
+          "chunks": {
+            "op": "output",
+            "step": "split",
+            "port": "chunks"
+          }
+        },
+        "required_capabilities": [],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "summarize",
+        "task_type_ref": {
+          "id": "code.summarize-review",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "findings": {
+            "op": "output",
+            "step": "review_part",
+            "port": "review"
+          }
+        },
+        "required_capabilities": [
+          "repo.read"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "split",
+        "after": "review_part"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-every-chunk-reviewed",
+          "child_step": "summarize",
+          "child_criterion_id": "c-summary",
+          "evidence_requirement": "every chunk produced by the split has a recorded review"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "summarize",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  }
+]

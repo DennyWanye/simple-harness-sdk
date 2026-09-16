@@ -1,0 +1,116 @@
+[
+  {
+    "predicate_ref": {
+      "id": "appworld.app-reachable",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "app",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "appworld.availability-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the named application answers requests"
+  },
+  {
+    "predicate_ref": {
+      "id": "appworld.credentials-valid",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "app",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "appworld.credential-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the stored credentials for the application are accepted"
+  },
+  {
+    "predicate_ref": {
+      "id": "appworld.api-supports-request",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "app",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "appworld.api-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the application's API covers the requested operation"
+  },
+  {
+    "predicate_ref": {
+      "id": "appworld.entity-ambiguous",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "entity",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "appworld.entity-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the named entity matches more than one record"
+  },
+  {
+    "predicate_ref": {
+      "id": "appworld.entity-unique",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "entity",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "appworld.entity-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the named entity matches exactly one record"
+  },
+  {
+    "predicate_ref": {
+      "id": "appworld.action-confirmed",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "action",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "appworld.receipt-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the submitted action has a confirming receipt"
+  }
+]

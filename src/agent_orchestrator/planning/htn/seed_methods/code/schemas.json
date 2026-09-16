@@ -1,0 +1,127 @@
+[
+  {
+    "schema_ref": {
+      "id": "code.repo-params",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "repository",
+        "type": "ref",
+        "required": true
+      },
+      {
+        "name": "failing_test",
+        "type": "string",
+        "required": true
+      }
+    ]
+  },
+  {
+    "schema_ref": {
+      "id": "code.review-params",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "changeset",
+        "type": "ref",
+        "required": true
+      },
+      {
+        "name": "depth_budget",
+        "type": "integer",
+        "required": true
+      }
+    ]
+  },
+  {
+    "schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "repository",
+        "type": "ref",
+        "required": true
+      }
+    ]
+  },
+  {
+    "schema_ref": {
+      "id": "code.changeset-only",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "changeset",
+        "type": "ref",
+        "required": true
+      }
+    ]
+  },
+  {
+    "schema_ref": {
+      "id": "code.outputs",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "code.facts",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "code.diagnosis",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "code.patch",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "code.report",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "code.chunks",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "code.findings",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "code.summary",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "code.observation",
+      "version": 1
+    },
+    "fields": []
+  }
+]

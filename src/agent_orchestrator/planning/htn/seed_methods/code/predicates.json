@@ -1,0 +1,117 @@
+[
+  {
+    "predicate_ref": {
+      "id": "code.repo-checked-out",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "repository",
+        "type": "ref",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "code.repo-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the named repository is checked out in a usable workspace"
+  },
+  {
+    "predicate_ref": {
+      "id": "code.test-is-failing",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "test",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "code.test-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the named test currently fails on the checked-out revision"
+  },
+  {
+    "predicate_ref": {
+      "id": "code.regression-commit-known",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "repository",
+        "type": "ref",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "code.history-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the commit that introduced the regression has been identified"
+  },
+  {
+    "predicate_ref": {
+      "id": "code.working-tree-clean",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "repository",
+        "type": "ref",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "code.repo-observer",
+      "code.workspace-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the workspace has no uncommitted modification"
+  },
+  {
+    "predicate_ref": {
+      "id": "code.changeset-too-large",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "changeset",
+        "type": "ref",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "code.changeset-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the changeset exceeds what one review pass can cover"
+  },
+  {
+    "predicate_ref": {
+      "id": "code.changeset-reviewable",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "changeset",
+        "type": "ref",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "code.changeset-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the changeset is small enough for a single review pass"
+  }
+]

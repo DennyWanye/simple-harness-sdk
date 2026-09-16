@@ -1,0 +1,75 @@
+[
+  {
+    "schema_ref": {
+      "id": "widget.params",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "widget",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "tier",
+        "type": "integer",
+        "required": true
+      }
+    ]
+  },
+  {
+    "schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "widget",
+        "type": "string",
+        "required": true
+      }
+    ]
+  },
+  {
+    "schema_ref": {
+      "id": "widget.outputs",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "widget.blueprint",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "widget.parts",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "widget.assembly",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "widget.report",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "widget.observation",
+      "version": 1
+    },
+    "fields": []
+  }
+]

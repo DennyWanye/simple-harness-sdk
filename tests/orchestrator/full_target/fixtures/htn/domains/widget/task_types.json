@@ -1,0 +1,654 @@
+[
+  {
+    "task_type_ref": {
+      "id": "widget.build-widget",
+      "version": 1
+    },
+    "form": "compound",
+    "goal_signature": {
+      "signature_id": "widget.build-widget",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "build the named widget",
+      "coverage_criteria": [
+        "c-widget-built"
+      ]
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "parameter_schema_ref": {
+      "id": "widget.params",
+      "version": 1
+    },
+    "domain": "widget"
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.assemble-tier",
+      "version": 1
+    },
+    "form": "compound",
+    "goal_signature": {
+      "signature_id": "widget.assemble-tier",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "assemble one tier of the widget",
+      "coverage_criteria": [
+        "c-tier-assembled"
+      ]
+    },
+    "input_ports": [
+      {
+        "port_key": "parts",
+        "schema_ref": {
+          "id": "widget.parts",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": false
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "assembly",
+        "schema_ref": {
+          "id": "widget.assembly",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.params",
+      "version": 1
+    },
+    "domain": "widget"
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.read-blueprint",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "widget.read-blueprint",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.widget-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "read the widget's blueprint",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "blueprint",
+        "schema_ref": {
+          "id": "widget.blueprint",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "widget.op-read-blueprint",
+      "version": 1
+    },
+    "required_capabilities": [
+      "widget.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "reuse_accepted",
+    "domain": "widget",
+    "resource_reads": [
+      {
+        "namespace": "widget",
+        "object_id": "designs"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.pick-parts",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "widget.pick-parts",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.widget-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "pick the parts the blueprint calls for",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "blueprint",
+        "schema_ref": {
+          "id": "widget.blueprint",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "parts",
+        "schema_ref": {
+          "id": "widget.parts",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "widget.op-pick-parts",
+      "version": 1
+    },
+    "required_capabilities": [
+      "widget.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "widget"
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.assemble",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "widget.assemble",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.widget-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "assemble the picked parts",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "parts",
+        "schema_ref": {
+          "id": "widget.parts",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "assembly",
+        "schema_ref": {
+          "id": "widget.assembly",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "widget.op-assemble",
+      "version": 1
+    },
+    "required_capabilities": [
+      "widget.build"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "widget",
+    "resource_writes": [
+      {
+        "namespace": "widget",
+        "object_id": "bench"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.unpack-kit",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "widget.unpack-kit",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.widget-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "unpack the prebuilt kit",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "blueprint",
+        "schema_ref": {
+          "id": "widget.blueprint",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "assembly",
+        "schema_ref": {
+          "id": "widget.assembly",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "widget.op-unpack-kit",
+      "version": 1
+    },
+    "required_capabilities": [
+      "widget.build"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "widget",
+    "resource_writes": [
+      {
+        "namespace": "widget",
+        "object_id": "bench"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.verify-assembly",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "widget.verify-assembly",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.widget-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "verify the finished assembly",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "assembly",
+        "schema_ref": {
+          "id": "widget.assembly",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "report",
+        "schema_ref": {
+          "id": "widget.report",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "widget.op-verify-assembly",
+      "version": 1
+    },
+    "required_capabilities": [
+      "widget.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "widget"
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.design-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "widget.design-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.widget-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "observe whether a current design exists",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "widget.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "widget.op-design-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "widget.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "widget",
+    "observes": [
+      {
+        "id": "widget.design-available",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.stock-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "widget.stock-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.widget-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "observe the parts stock",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "widget.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "widget.op-stock-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "widget.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "widget",
+    "observes": [
+      {
+        "id": "widget.parts-in-stock",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.catalog-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "widget.catalog-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.widget-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "observe the kit catalogue",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "widget.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "widget.op-catalog-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "widget.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "widget",
+    "observes": [
+      {
+        "id": "widget.kit-available",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.tier-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "widget.tier-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.widget-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "observe the depth of the assembly tier",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "widget.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "widget.op-tier-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "widget.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "widget",
+    "observes": [
+      {
+        "id": "widget.tier-too-deep",
+        "version": 1
+      },
+      {
+        "id": "widget.tier-buildable",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "widget.assembly-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "widget.assembly-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "widget.widget-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "widget.outputs",
+        "version": 1
+      },
+      "statement": "observe the verification state of an assembly, with complete coverage",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "widget.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "widget.widget-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "widget.op-assembly-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "widget.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "widget",
+    "observes": [
+      {
+        "id": "widget.assembly-verified",
+        "version": 1
+      }
+    ]
+  }
+]

@@ -1,0 +1,858 @@
+[
+  {
+    "task_type_ref": {
+      "id": "code.fix-failing-test",
+      "version": 1
+    },
+    "form": "compound",
+    "goal_signature": {
+      "signature_id": "code.fix-failing-test",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repo-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "make the named failing test pass and explain the change",
+      "coverage_criteria": [
+        "c-test-passes",
+        "c-change-explained"
+      ]
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "parameter_schema_ref": {
+      "id": "code.repo-params",
+      "version": 1
+    },
+    "domain": "code"
+  },
+  {
+    "task_type_ref": {
+      "id": "code.review-changes",
+      "version": 1
+    },
+    "form": "compound",
+    "goal_signature": {
+      "signature_id": "code.review-changes",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.review-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "review every part of the changeset",
+      "coverage_criteria": [
+        "c-every-chunk-reviewed"
+      ]
+    },
+    "input_ports": [
+      {
+        "port_key": "chunks",
+        "schema_ref": {
+          "id": "code.chunks",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": false
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "review",
+        "schema_ref": {
+          "id": "code.findings",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.review-params",
+      "version": 1
+    },
+    "domain": "code"
+  },
+  {
+    "task_type_ref": {
+      "id": "code.read-repository-facts",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.read-repository-facts",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "read the repository's current facts",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "facts",
+        "schema_ref": {
+          "id": "code.facts",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-read-repository-facts",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "reuse_accepted",
+    "domain": "code",
+    "resource_reads": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.reproduce-failure",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.reproduce-failure",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "reproduce the reported failure and record a diagnosis",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "repository_facts",
+        "schema_ref": {
+          "id": "code.facts",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "diagnosis",
+        "schema_ref": {
+          "id": "code.diagnosis",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-reproduce-failure",
+      "version": 1
+    },
+    "required_capabilities": [
+      "tests.run"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "resource_reads": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.apply-patch",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.apply-patch",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "apply a patch that addresses the diagnosis",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "diagnosis",
+        "schema_ref": {
+          "id": "code.diagnosis",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "patch",
+        "schema_ref": {
+          "id": "code.patch",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-apply-patch",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.write"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "preconditions": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "code.working-tree-clean",
+          "version": 1
+        },
+        "arguments": {
+          "repository": {
+            "op": "parameter",
+            "name": "repository"
+          }
+        }
+      }
+    ],
+    "resource_writes": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.verify-tests",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.verify-tests",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "run the test suite and record the report",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "patch",
+        "schema_ref": {
+          "id": "code.patch",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "report",
+        "schema_ref": {
+          "id": "code.report",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-verify-tests",
+      "version": 1
+    },
+    "required_capabilities": [
+      "tests.run"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "resource_reads": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.revert-commit",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.revert-commit",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "revert the commit that introduced the regression",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "repository_facts",
+        "schema_ref": {
+          "id": "code.facts",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "patch",
+        "schema_ref": {
+          "id": "code.patch",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-revert-commit",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.write"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "resource_writes": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.split-changeset",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.split-changeset",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.changeset-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "split the changeset into reviewable chunks",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "chunks",
+        "schema_ref": {
+          "id": "code.chunks",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.changeset-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-split-changeset",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "resource_reads": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.inspect-changeset",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.inspect-changeset",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.changeset-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "inspect the changeset and record findings",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "findings",
+        "schema_ref": {
+          "id": "code.findings",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.changeset-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-inspect-changeset",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "resource_reads": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.summarize-review",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.summarize-review",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.changeset-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "summarise the review findings",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "findings",
+        "schema_ref": {
+          "id": "code.findings",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "summary",
+        "schema_ref": {
+          "id": "code.summary",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.changeset-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-summarize-review",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code"
+  },
+  {
+    "task_type_ref": {
+      "id": "code.repo-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.repo-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "observe the repository checkout and workspace state",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "code.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-repo-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "observes": [
+      {
+        "id": "code.repo-checked-out",
+        "version": 1
+      },
+      {
+        "id": "code.working-tree-clean",
+        "version": 1
+      }
+    ],
+    "resource_reads": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.test-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.test-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "observe whether the named test fails",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "code.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-test-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "tests.run"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "observes": [
+      {
+        "id": "code.test-is-failing",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.history-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.history-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "observe the revision history for the regression commit",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "code.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-history-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "observes": [
+      {
+        "id": "code.regression-commit-known",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.changeset-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.changeset-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.changeset-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "observe the size and reviewability of a changeset",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "code.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.changeset-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-changeset-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "observes": [
+      {
+        "id": "code.changeset-too-large",
+        "version": 1
+      },
+      {
+        "id": "code.changeset-reviewable",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.workspace-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.workspace-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "observe whether the workspace is clean, with complete coverage",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "code.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-workspace-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "observes": [
+      {
+        "id": "code.working-tree-clean",
+        "version": 1
+      }
+    ]
+  }
+]

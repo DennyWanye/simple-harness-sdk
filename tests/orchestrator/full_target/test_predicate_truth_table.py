@@ -45,9 +45,12 @@ from agent_orchestrator.contracts.htn import (
     parse_condition,
 )
 from agent_orchestrator.contracts.models import ContractError
-from agent_orchestrator.contracts.semantic_base import TypedRefKind
+from agent_orchestrator.contracts.semantic_base import TypedRefKind, VersionedRef
 from agent_orchestrator.knowledge.predicates import (
+    ArgumentType,
+    PredicateParameter,
     PredicateRegistry,
+    PredicateSignature,
     WorldAssumption,
     atom_truth,
     authoritative_negative_matches_observer,
@@ -621,3 +624,72 @@ def test_an_observation_round_trips_with_its_observer() -> None:
         observer_id="observer-1", coverage=QueryCompleteness.AUTHORITATIVE_WITH_SCOPE
     )
     assert ObservationRecord.from_json(observation.to_json()) == observation
+
+
+# --------------------------------------------------------------------------------------
+# Contract round 5: a predicate declaration travels through its own codec (P2.1)
+# --------------------------------------------------------------------------------------
+
+
+def test_a_predicate_signature_round_trips_through_its_codec() -> None:
+    signature = PredicateSignature(
+        predicate_ref=VersionedRef(id="pred-sources", version=2, content_hash="a" * 64),
+        parameters=(
+            PredicateParameter(name="subject", type=ArgumentType.STRING),
+            PredicateParameter(name="depth", type=ArgumentType.INTEGER, required=False),
+        ),
+        world_assumption=WorldAssumption.CLOSED,
+        observer_ids=("observer-1",),
+        authority_scope="workspace-1",
+        statement="the named sources are readable",
+    )
+
+    restored = PredicateSignature.from_json(signature.to_json())
+
+    assert restored == signature
+    assert restored.to_json() == signature.to_json()
+
+
+def test_a_stored_declaration_cannot_acquire_denial_powers_registration_refused() -> None:
+    """A CLOSED-world predicate still needs an observer on the way back in."""
+
+    payload = PredicateSignature(
+        predicate_ref=VersionedRef(id="pred-sources", version=1, content_hash="a" * 64),
+        world_assumption=WorldAssumption.CLOSED,
+        observer_ids=("observer-1",),
+    ).to_json()
+    payload["observer_ids"] = []
+
+    with pytest.raises(ContractError, match="needs at least one authoritative observer"):
+        PredicateSignature.from_json(payload)
+
+
+def test_a_stored_declaration_cannot_smuggle_executable_content_back_in() -> None:
+    payload = PredicateSignature(
+        predicate_ref=VersionedRef(id="pred-sources", version=1, content_hash="a" * 64),
+        statement="the named sources are readable",
+    ).to_json()
+    payload["statement"] = "eval('True')"
+
+    with pytest.raises(ContractError, match="executable code or a query fragment"):
+        PredicateSignature.from_json(payload)
+
+
+def test_a_predicate_signature_refuses_an_unknown_field() -> None:
+    payload = PredicateSignature(
+        predicate_ref=VersionedRef(id="pred-sources", version=1, content_hash="a" * 64),
+    ).to_json()
+    payload["trusted"] = True
+
+    with pytest.raises(ContractError, match="unknown fields"):
+        PredicateSignature.from_json(payload)
+
+
+def test_a_round_tripped_signature_still_resolves_in_the_registry() -> None:
+    world = World({"p": TruthValue.TRUE})
+    restored = PredicateSignature.from_json(world.signatures["p"].to_json())
+
+    registry = PredicateRegistry()
+    registry.register(restored)
+
+    assert registry.resolve(restored.predicate_ref) == restored

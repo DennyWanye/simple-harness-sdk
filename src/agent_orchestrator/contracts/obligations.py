@@ -24,7 +24,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from .htn import ObligationId, Requiredness, obligation_id
+from .htn import (
+    BudgetInheritance,
+    ObligationId,
+    ObligationOpening,
+    Requiredness,
+    obligation_id,
+)
 from .models import ContractError
 from .semantic_base import (
     MAX_LIST,
@@ -290,6 +296,24 @@ class ExpansionRecord:
 
         return (self.method_id, self.parameters_digest)
 
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "method_id": self.method_id,
+            "parameters_digest": self.parameters_digest,
+            "task_id": self.task_id,
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "expansion_record") -> ExpansionRecord:
+        data = fields_of(
+            value, name, required=("method_id", "parameters_digest"), optional=("task_id",)
+        )
+        return cls(
+            method_id=data["method_id"],
+            parameters_digest=data["parameters_digest"],
+            task_id=data.get("task_id"),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ObligationAccountView:
@@ -299,11 +323,19 @@ class ObligationAccountView:
     failure_count: int
     consumed_cost_micros: int
     consumed_attempts: int
-    fuel_limit: int
-    fuel_used: int
-    expansions: int
-    shape_changes: int
-    lifecycle: ObligationLifecycle
+    #: Tokens spent against this duty.  Money and tokens are separate axes: a
+    #: deployment can be inside its cost ceiling and far past its context budget.
+    #: ``storage.obligation_store`` persists this as ``spent_tokens``.
+    consumed_tokens: int = 0
+    #: Whether a demand for this duty is currently admitted (TG decision 9).  An
+    #: active share needs a live demand; withdrawing the last one releases the
+    #: sharing, it does not cancel the duty.
+    has_admitted_demand: bool = False
+    fuel_limit: int = 0
+    fuel_used: int = 0
+    expansions: int = 0
+    shape_changes: int = 0
+    lifecycle: ObligationLifecycle = ObligationLifecycle.UNSATISFIED
     resolution_ref: str | None = None
 
     @property
@@ -316,6 +348,8 @@ class ObligationAccountView:
             "failure_count": self.failure_count,
             "consumed_cost_micros": self.consumed_cost_micros,
             "consumed_attempts": self.consumed_attempts,
+            "consumed_tokens": self.consumed_tokens,
+            "has_admitted_demand": self.has_admitted_demand,
             "fuel_limit": self.fuel_limit,
             "fuel_used": self.fuel_used,
             "remaining_fuel": self.remaining_fuel,
@@ -382,6 +416,8 @@ class _Account:
     __slots__ = (
         "consumed_attempts",
         "consumed_cost_micros",
+        "consumed_tokens",
+        "demand_admitted",
         "expansion_keys",
         "failure_count",
         "fuel_limit",
@@ -399,6 +435,8 @@ class _Account:
         self.failure_count = 0
         self.consumed_cost_micros = 0
         self.consumed_attempts = 0
+        self.consumed_tokens = 0
+        self.demand_admitted = False
         self.expansion_keys: list[tuple[str, str]] = []
         self.shape_changes: list[tuple[ShapeChange, str]] = []
         self.lifecycle = obligation.lifecycle
@@ -434,6 +472,96 @@ class ObligationLedger:
         fuel = self._default_fuel if recursion_fuel is None else index(recursion_fuel, "fuel")
         self._accounts[obligation.obligation_id] = _Account(obligation, fuel)
 
+    def open_from(
+        self,
+        opening: ObligationOpening,
+        parent_account: ObligationAccountView,
+        *,
+        granted_fuel: int | None = None,
+    ) -> ObligationAccountView:
+        """Open the duty an :class:`ObligationOpening` describes (§6.1, CR#6).
+
+        The fuel comes from somewhere real.  A refinement takes ``fuel_share`` out of
+        the parent's remaining allowance and the parent's limit drops by exactly that
+        much — decomposition redistributes budget, it never creates any.  A separately
+        granted duty starts from ``granted_fuel``, which the caller gets from the
+        grant the opening references.
+
+        ``parent_account`` is the view the caller read.  If it no longer matches the
+        ledger the call is refused rather than applied to a state the caller never
+        saw: opening a child against a stale read is how a parent ends up funding two
+        children out of one share.
+        """
+
+        if not isinstance(opening, ObligationOpening):
+            raise ContractError("open_from expects an ObligationOpening")
+        if not isinstance(parent_account, ObligationAccountView):
+            raise ContractError("open_from expects the parent's ObligationAccountView")
+        if parent_account.obligation_id != opening.parent_obligation_id:
+            raise ContractError(
+                "open_from was given another duty's account than the opening's parent"
+            )
+        parent = self._require(opening.parent_obligation_id)
+        if self.account(opening.parent_obligation_id) != parent_account:
+            raise ContractError(
+                f"the parent account for {opening.parent_obligation_id!s} has changed since "
+                "it was read; re-read it and decide again"
+            )
+        if opening.obligation_id in self._accounts:
+            raise ContractError(
+                f"obligation {opening.obligation_id!s} is already registered; "
+                "a duty that exists is referenced, not opened again (§6.1)"
+            )
+        if parent.lifecycle is not ObligationLifecycle.UNSATISFIED:
+            raise ContractError(
+                f"the parent duty {opening.parent_obligation_id!s} is {parent.lifecycle!s} "
+                "and cannot fund new work"
+            )
+
+        if opening.budget_inheritance is BudgetInheritance.INHERIT_PARENT_FUEL_SHARE:
+            if granted_fuel is not None:
+                raise ContractError(
+                    "an inherited allowance takes its fuel from the parent, not from a grant"
+                )
+            share = index(opening.fuel_share, "opening.fuel_share", minimum=1)
+            remaining = max(parent.fuel_limit - parent.fuel_used, 0)
+            if share > remaining:
+                raise ContractError(
+                    f"the parent duty has {remaining} fuel left and cannot hand over {share}; "
+                    "report BOUND_REACHED instead of over-allocating (ADR-08)"
+                )
+            child_fuel = share
+        else:
+            if granted_fuel is None:
+                raise ContractError(
+                    "a separately granted duty needs the fuel its grant actually provides"
+                )
+            child_fuel = index(granted_fuel, "granted_fuel")
+            share = 0
+
+        child = Obligation(
+            obligation_id=opening.obligation_id,
+            mission_id=parent.obligation.mission_id,
+            requirement_refs=opening.requirement_refs,
+            goal_signature_id=opening.goal_signature.signature_id,
+            scope=parent.obligation.scope,
+            authority_ref=(
+                parent.obligation.authority_ref
+                if opening.authorization_ref is None
+                else opening.authorization_ref.id
+            ),
+            budget_lineage_ref=(
+                opening.grant_ref
+                if opening.budget_inheritance is BudgetInheritance.SEPARATE_GRANT
+                else parent.obligation.budget_lineage_ref
+            ),
+            parent_obligation_id=opening.parent_obligation_id,
+        )
+        # Everything above is a check; the two writes below happen together.
+        parent.fuel_limit -= share
+        self._accounts[opening.obligation_id] = _Account(child, child_fuel)
+        return self.account(opening.obligation_id)
+
     def obligation(self, target: ObligationId) -> Obligation:
         return self._require(target).obligation
 
@@ -444,6 +572,8 @@ class ObligationLedger:
             failure_count=account.failure_count,
             consumed_cost_micros=account.consumed_cost_micros,
             consumed_attempts=account.consumed_attempts,
+            consumed_tokens=account.consumed_tokens,
+            has_admitted_demand=account.demand_admitted,
             fuel_limit=account.fuel_limit,
             fuel_used=account.fuel_used,
             expansions=len(account.expansion_keys),
@@ -465,16 +595,57 @@ class ObligationLedger:
         return account.failure_count
 
     def record_spend(
-        self, target: ObligationId, *, cost_micros: int = 0, attempts: int = 0
+        self,
+        target: ObligationId,
+        *,
+        cost_micros: int = 0,
+        attempts: int = 0,
+        tokens: int = 0,
     ) -> ObligationAccountView:
+        """Accrue spend against the duty on all three axes at once.
+
+        Money, attempts and tokens are separate ceilings and are reported
+        separately; a run can be well inside its cost budget and out of context.
+        """
+
         account = self._require(target)
         # Validate every argument before touching the row: a rejected call must
         # leave the ledger exactly as it was, or a caller that retries after a
         # validation error would double-count the half that did land.
         spent = index(cost_micros, "cost_micros")
         tries = index(attempts, "attempts")
+        spent_tokens = index(tokens, "tokens")
         account.consumed_cost_micros += spent
         account.consumed_attempts += tries
+        account.consumed_tokens += spent_tokens
+        return self.account(target)
+
+    def admit_demand(self, target: ObligationId) -> ObligationAccountView:
+        """TG decision 9: record that a live consumer is sharing this duty's work.
+
+        Admitting twice is refused rather than treated as idempotent: two admissions
+        that look like one are exactly how a withdrawal releases a share another
+        consumer still needs.
+        """
+
+        account = self._require(target)
+        if account.lifecycle is not ObligationLifecycle.UNSATISFIED:
+            raise ContractError("a demand may only be admitted against an open obligation")
+        if account.demand_admitted:
+            raise ContractError(
+                f"obligation {target!s} already has an admitted demand; "
+                "a second consumer registers its own DemandRef"
+            )
+        account.demand_admitted = True
+        return self.account(target)
+
+    def withdraw_demand(self, target: ObligationId) -> ObligationAccountView:
+        """Release the admitted demand.  This ends a share, never the duty itself."""
+
+        account = self._require(target)
+        if not account.demand_admitted:
+            raise ContractError(f"obligation {target!s} has no admitted demand to withdraw")
+        account.demand_admitted = False
         return self.account(target)
 
     def note_shape_change(

@@ -37,7 +37,10 @@ from agent_orchestrator.contracts.evidence_state import (
     phase_check_points,
 )
 from agent_orchestrator.contracts.htn import (
+    MAX_CONDITION_NODES,
     Binding,
+    BoundInput,
+    BudgetInheritance,
     ChildBinding,
     ContractRevision,
     DataRequirement,
@@ -48,10 +51,14 @@ from agent_orchestrator.contracts.htn import (
     GraphStructureBudget,
     MethodContract,
     MethodInstanceDraft,
+    MethodRegistration,
     MethodRegistryStatus,
+    MethodStep,
     NetworkEndpoint,
     ObligationCoverage,
     ObligationId,
+    ObligationOpening,
+    ObligationRelation,
     OccurrenceId,
     OccurrenceSpec,
     OrderConstraint,
@@ -73,6 +80,7 @@ from agent_orchestrator.contracts.htn import (
     ScopeEpochRead,
     SemanticReadSet,
     SideEffectKind,
+    StructureBudget,
     SupportSetRead,
     TaskForm,
     TaskRef,
@@ -1207,3 +1215,327 @@ def test_an_unshared_child_binding_keeps_the_bytes_it_had_before_the_field_exist
         obligation_id=ObligationId("obligation-2"),
     )
     assert "goal_occurrence_id" not in plain.to_json()
+
+
+# --------------------------------------------------------------------------------------
+# Contract round 4: MethodRegistration travels through its codec (P1.2)
+# --------------------------------------------------------------------------------------
+
+
+def test_a_method_registration_round_trips_through_its_codec() -> None:
+    registration = admit_method(
+        method_contract().method_ref(),
+        MethodRegistryStatus.TRIAL_ADMITTED,
+        author=RegistryAuthor.SYSTEM,
+        admission_receipt_ref=tref(TypedRefKind.REVIEW, "admission-1"),
+        trial_scope_mission="mission-1",
+    )
+
+    restored = MethodRegistration.from_json(registration.to_json())
+
+    assert restored == registration
+    assert restored.to_json() == registration.to_json()
+
+
+def test_a_stored_registration_cannot_restore_a_promotion_that_was_never_granted() -> None:
+    """Rebuilding through the codec re-runs the admission rules on the way back in."""
+
+    payload = admit_method(
+        method_contract().method_ref(),
+        MethodRegistryStatus.DRAFT,
+        author=RegistryAuthor.MODEL,
+    ).to_json()
+    payload["status"] = "ADMITTED"
+
+    with pytest.raises(ContractError, match="registry_status past DRAFT"):
+        MethodRegistration.from_json(payload)
+
+
+def test_a_stored_trial_admission_still_needs_its_mission_scope() -> None:
+    payload = admit_method(
+        method_contract().method_ref(),
+        MethodRegistryStatus.TRIAL_ADMITTED,
+        author=RegistryAuthor.SYSTEM,
+        trial_scope_mission="mission-1",
+    ).to_json()
+    payload["trial_scope_mission"] = None
+
+    with pytest.raises(ContractError, match="scoped to one mission"):
+        MethodRegistration.from_json(payload)
+
+
+def test_a_bound_input_already_travels_through_a_codec() -> None:
+    bound = BoundInput(
+        requirement_id="requirement-1",
+        producer_result_id="result-1",
+        acceptance_id="acceptance-1",
+        artifact_id="artifact-1",
+        content_hash=HASH_A,
+        schema_ref=vref("evidence"),
+        source_revision="rev-3",
+    )
+    assert BoundInput.from_json(bound.to_json()) == bound
+
+
+# --------------------------------------------------------------------------------------
+# Contract round 5: control read channels, human authorship, reuse declarations
+# --------------------------------------------------------------------------------------
+
+
+def test_the_read_set_carries_obligation_and_authority_channels() -> None:
+    """A stale duty and a revoked authority fail a commit for different reasons."""
+
+    enriched = SemanticReadSet(
+        requirements_revision=3,
+        obligation_revisions=(
+            ReadItem(
+                kind=ReadItemKind.OBLIGATION,
+                id="obligation-1",
+                semantic_revision=4,
+                content_hash=HASH_A,
+            ),
+        ),
+        authority_revisions=(
+            ReadItem(
+                kind=ReadItemKind.AUTHORITY,
+                id="grant-1",
+                semantic_revision=2,
+                content_hash=HASH_A,
+            ),
+        ),
+    )
+
+    restored = SemanticReadSet.from_json(enriched.to_json())
+    assert restored == enriched
+    assert restored.obligation_revisions[0].id == "obligation-1"
+    assert restored.authority_revisions[0].id == "grant-1"
+
+
+@pytest.mark.parametrize(
+    "channel,wrong_kind",
+    [
+        ("obligation_revisions", ReadItemKind.AUTHORITY),
+        ("authority_revisions", ReadItemKind.OBLIGATION),
+    ],
+)
+def test_a_read_channel_refuses_an_entry_of_another_kind(
+    channel: str, wrong_kind: ReadItemKind
+) -> None:
+    item = ReadItem(kind=wrong_kind, id="x-1", semantic_revision=1, content_hash=HASH_A)
+    with pytest.raises(ContractError, match="entries must be of kind"):
+        SemanticReadSet(requirements_revision=1, **{channel: (item,)})
+
+
+def test_a_read_set_without_the_new_channels_keeps_its_earlier_bytes() -> None:
+    payload = read_set().to_json()
+    assert "obligation_revisions" not in payload
+    assert "authority_revisions" not in payload
+    assert SemanticReadSet.from_json(payload) == read_set()
+
+
+def test_a_hand_written_seed_method_is_recorded_as_human_authored() -> None:
+    """Recording a person's work as SYSTEM loses the one fact the field exists for."""
+
+    registration = admit_method(
+        method_contract().method_ref(),
+        MethodRegistryStatus.ADMITTED,
+        author=RegistryAuthor.HUMAN,
+    )
+
+    assert registration.author is RegistryAuthor.HUMAN
+    assert MethodRegistration.from_json(registration.to_json()) == registration
+
+
+def test_human_authorship_does_not_relax_the_model_promotion_rule() -> None:
+    payload = admit_method(
+        method_contract().method_ref(),
+        MethodRegistryStatus.DRAFT,
+        author=RegistryAuthor.MODEL,
+    ).to_json()
+    payload["author"] = "human"
+    assert MethodRegistration.from_json(payload).author is RegistryAuthor.HUMAN
+
+    payload["author"] = "model"
+    payload["status"] = "ADMITTED"
+    with pytest.raises(ContractError, match="registry_status past DRAFT"):
+        MethodRegistration.from_json(payload)
+
+
+def test_a_method_step_may_declare_how_its_work_is_de_duplicated() -> None:
+    step = MethodStep(
+        local_id="extract",
+        task_type_ref=vref("extract-evidence"),
+        form=TaskForm.PRIMITIVE,
+        arguments={},
+        required_capabilities=("sources.read",),
+        obligation_relation=ObligationRelation.REFINES_PARENT,
+        reuse_policy=ReusePolicy.REUSE_ACCEPTED,
+    )
+
+    assert step.to_json()["reuse_policy"] == "reuse_accepted"
+    assert (
+        MethodStep.from_json(step.to_json(), "step", StructureBudget(MAX_CONDITION_NODES)) == step
+    )
+
+
+def test_a_step_that_declares_no_reuse_policy_keeps_the_published_schema_bytes() -> None:
+    """``method-contract-v1`` does not declare this field, so an unset step is unchanged."""
+
+    contract = method_contract()
+    assert "reuse_policy" not in contract.steps[0].to_json()
+    assert contract.steps[0].reuse_policy is None
+
+
+def test_a_method_step_refuses_an_unknown_reuse_policy() -> None:
+    payload = MethodStep(
+        local_id="extract",
+        task_type_ref=vref("extract-evidence"),
+        form=TaskForm.PRIMITIVE,
+        arguments={},
+        required_capabilities=(),
+        obligation_relation=ObligationRelation.REFINES_PARENT,
+    ).to_json()
+    payload["reuse_policy"] = "whatever_is_cheapest"
+
+    with pytest.raises(ContractError, match="must be one of"):
+        MethodStep.from_json(payload, "step", StructureBudget(MAX_CONDITION_NODES))
+
+
+def test_a_reusing_slot_may_name_the_exact_acceptance_it_reuses() -> None:
+    binding = ChildBinding(
+        instance_id="instance-1",  # type: ignore[arg-type]
+        slot_key="extract",
+        occurrence_id=OccurrenceId("occurrence-1"),
+        obligation_id=ObligationId("obligation-2"),
+        reuse_policy=ReusePolicy.REUSE_ACCEPTED,
+        acceptance_ref=tref(TypedRefKind.ACCEPTANCE, "acceptance-1"),
+    )
+
+    assert ChildBinding.from_json(binding.to_json()) == binding
+    assert binding.acceptance_ref is not None
+    assert binding.acceptance_ref.id == "acceptance-1"
+
+
+@pytest.mark.parametrize("policy", [ReusePolicy.NEW_WORK, ReusePolicy.SHARE_ACTIVE])
+def test_a_slot_that_is_not_reusing_has_no_acceptance_to_point_at(policy: ReusePolicy) -> None:
+    """Sharing live work has no acceptance yet, and new work has nothing to point at."""
+
+    with pytest.raises(ContractError, match="no accepted result to point at"):
+        ChildBinding(
+            instance_id="instance-1",  # type: ignore[arg-type]
+            slot_key="extract",
+            occurrence_id=OccurrenceId("occurrence-1"),
+            obligation_id=ObligationId("obligation-2"),
+            reuse_policy=policy,
+            acceptance_ref=tref(TypedRefKind.ACCEPTANCE, "acceptance-1"),
+        )
+
+
+def test_a_slot_without_an_acceptance_ref_keeps_the_bytes_it_had_before() -> None:
+    plain = ChildBinding(
+        instance_id="instance-1",  # type: ignore[arg-type]
+        slot_key="extract",
+        occurrence_id=OccurrenceId("occurrence-1"),
+        obligation_id=ObligationId("obligation-2"),
+    )
+    assert "acceptance_ref" not in plain.to_json()
+
+
+# --------------------------------------------------------------------------------------
+# Contract round 6 (CR#6): a delta says which duties it opens
+# --------------------------------------------------------------------------------------
+
+
+def _opening(obligation: str = "obligation-new", parent: str = "obligation-1") -> ObligationOpening:
+    return ObligationOpening(
+        obligation_id=ObligationId(obligation),
+        parent_obligation_id=ObligationId(parent),
+        relation=ObligationRelation.REFINES_PARENT,
+        requirement_refs=("c-complete",),
+        goal_signature=goal_signature(),
+        budget_inheritance=BudgetInheritance.INHERIT_PARENT_FUEL_SHARE,
+        fuel_share=1,
+    )
+
+
+def test_a_delta_carries_the_duties_it_opens_and_round_trips() -> None:
+    delta = proposed_delta()
+    with_openings = ProposedPlanDelta(
+        delta_id=delta.delta_id,
+        mission_id=delta.mission_id,
+        base_plan_revision=delta.base_plan_revision,
+        read_set=delta.read_set,
+        occurrences=delta.occurrences,
+        obligation_openings=(_opening("obligation-2"), _opening("obligation-3")),
+    )
+
+    restored = ProposedPlanDelta.from_json(with_openings.to_json())
+    assert restored == with_openings
+    assert len(restored.obligation_openings) == 2
+
+
+def test_a_delta_that_opens_nothing_keeps_its_earlier_bytes() -> None:
+    assert "obligation_openings" not in proposed_delta().to_json()
+
+
+def test_a_delta_may_not_open_one_duty_twice() -> None:
+    with pytest.raises(ContractError, match="must not open one duty twice"):
+        ProposedPlanDelta(
+            delta_id="delta-1",
+            mission_id="mission-1",  # type: ignore[arg-type]
+            base_plan_revision=PlanRevision(1),
+            read_set=read_set(),
+            obligation_openings=(_opening("obligation-2"), _opening("obligation-2")),
+        )
+
+
+def test_an_occurrence_for_a_duty_nobody_opened_is_refused_at_commit() -> None:
+    """Otherwise the ledger invents the duty — with a fresh failure count (§6.1)."""
+
+    delta = proposed_delta()
+
+    with pytest.raises(ContractError, match="names unregistered duty"):
+        require_commit_ready(
+            delta, registered_obligations=frozenset({ObligationId("obligation-2")})
+        )
+
+
+def test_an_occurrence_whose_duty_this_delta_opens_is_accepted() -> None:
+    delta = proposed_delta()
+    with_openings = ProposedPlanDelta(
+        delta_id=delta.delta_id,
+        mission_id=delta.mission_id,
+        base_plan_revision=delta.base_plan_revision,
+        read_set=delta.read_set,
+        occurrences=delta.occurrences,
+        obligation_openings=(_opening("obligation-3"),),
+    )
+
+    assert (
+        require_commit_ready(
+            with_openings, registered_obligations=frozenset({ObligationId("obligation-2")})
+        )
+        is with_openings
+    )
+
+
+def test_a_delta_may_not_re_open_a_duty_that_already_exists() -> None:
+    delta = ProposedPlanDelta(
+        delta_id="delta-1",
+        mission_id="mission-1",  # type: ignore[arg-type]
+        base_plan_revision=PlanRevision(1),
+        read_set=read_set(),
+        obligation_openings=(_opening("obligation-2"),),
+    )
+
+    with pytest.raises(ContractError, match="already exist"):
+        require_commit_ready(
+            delta, registered_obligations=frozenset({ObligationId("obligation-2")})
+        )
+
+
+def test_commit_readiness_without_a_registered_set_still_only_checks_the_shape() -> None:
+    """The duty check is opt-in: a caller that has no ledger to consult is not lying."""
+
+    delta = proposed_delta()
+    assert require_commit_ready(delta) is delta

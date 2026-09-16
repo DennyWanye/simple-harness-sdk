@@ -36,6 +36,7 @@ from .models import ContractError
 from .semantic_base import (
     MAX_TEXT,
     EvidenceRef,
+    Provenance,
     TypedRef,
     TypedRefKind,
     VersionedRef,
@@ -50,6 +51,7 @@ from .semantic_base import (
     json_object,
     json_value,
     optional_identifier,
+    optional_index,
     reject_executable,
     reject_model_claimed_provenance,
     schema_version,
@@ -283,7 +285,15 @@ class MethodRegistryStatus(StrEnum):
 
 
 class RegistryAuthor(StrEnum):
+    """Who wrote a method definition.
+
+    ``HUMAN`` exists so a hand-written seed method is recorded as what it is rather
+    than as something the system produced; for admission it is treated like
+    ``SYSTEM``, because the rule §7.3 states is about a *model* promoting itself.
+    """
+
     SYSTEM = "system"
+    HUMAN = "human"
     MODEL = "model"
 
 
@@ -719,6 +729,10 @@ class MethodStep:
     arguments: Mapping[str, Any]
     required_capabilities: tuple[str, ...]
     obligation_relation: ObligationRelation
+    #: How this step's work should be de-duplicated.  Unset means "take the default
+    #: from the task type"; the method does not get to silently override it by
+    #: omission, so the interpretation belongs to the caller that knows the default.
+    reuse_policy: ReusePolicy | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "local_id", identifier(self.local_id, "step.local_id"))
@@ -735,9 +749,13 @@ class MethodStep:
             "obligation_relation",
             enum_of(ObligationRelation, self.obligation_relation, "step.obligation_relation"),
         )
+        if self.reuse_policy is not None:
+            object.__setattr__(
+                self, "reuse_policy", enum_of(ReusePolicy, self.reuse_policy, "step.reuse_policy")
+            )
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "local_id": self.local_id,
             "task_type_ref": self.task_type_ref.to_json(),
             "form": str(self.form),
@@ -745,6 +763,11 @@ class MethodStep:
             "required_capabilities": list(self.required_capabilities),
             "obligation_relation": str(self.obligation_relation),
         }
+        # Omitted when unset: ``method-contract-v1`` does not declare this field, so a
+        # step that does not use it stays byte-identical to the published schema.
+        if self.reuse_policy is not None:
+            payload["reuse_policy"] = str(self.reuse_policy)
+        return payload
 
     @classmethod
     def from_json(cls, value: object, name: str, budget: StructureBudget) -> MethodStep:
@@ -759,6 +782,7 @@ class MethodStep:
                 "required_capabilities",
                 "obligation_relation",
             ),
+            optional=("reuse_policy",),
         )
         return cls(
             local_id=data["local_id"],
@@ -767,6 +791,7 @@ class MethodStep:
             arguments=parse_arguments(data["arguments"], f"{name}.arguments", budget),
             required_capabilities=tuple(data["required_capabilities"]),
             obligation_relation=data["obligation_relation"],
+            reuse_policy=data.get("reuse_policy"),
         )
 
 
@@ -1086,6 +1111,34 @@ class MethodRegistration:
             ),
             "trial_scope_mission": self.trial_scope_mission,
         }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "method_registration") -> MethodRegistration:
+        """Rebuild a registration through the codec, not by re-deriving it from a row.
+
+        The admission rules — a model may not submit past DRAFT, TRIAL_ADMITTED is
+        mission-scoped — run again on the way back in, so a hand-edited or migrated
+        row cannot restore a promotion that was never granted.
+        """
+
+        data = fields_of(
+            value,
+            name,
+            required=("method_ref", "status", "author"),
+            optional=("admission_receipt_ref", "trial_scope_mission"),
+        )
+        raw_receipt = data.get("admission_receipt_ref")
+        return cls(
+            method_ref=MethodRef.from_json(data["method_ref"], f"{name}.method_ref"),
+            status=data["status"],
+            author=data["author"],
+            admission_receipt_ref=(
+                None
+                if raw_receipt is None
+                else TypedRef.from_json(raw_receipt, f"{name}.admission_receipt_ref")
+            ),
+            trial_scope_mission=data.get("trial_scope_mission"),
+        )
 
 
 def admit_method(
@@ -1587,6 +1640,10 @@ class ChildBinding:
     #: unshared case; naming another lets two adopting slots point at one shared
     #: goal without either of them owning it.
     goal_occurrence_id: OccurrenceId | None = None
+    #: The exact Acceptance whose result this slot reuses.  Only a slot that is
+    #: actually reusing an accepted result may name one: sharing live work has no
+    #: acceptance yet, and new work has nothing to point at (I01).
+    acceptance_ref: TypedRef | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1628,6 +1685,14 @@ class ChildBinding:
                 "a slot that binds another goal occurrence is reusing or sharing it; "
                 "NEW_WORK means this slot creates the work itself (TG decision 9)"
             )
+        if self.acceptance_ref is not None:
+            if not isinstance(self.acceptance_ref, TypedRef):
+                raise ContractError("child_binding.acceptance_ref must be a TypedRef")
+            if self.reuse_policy is not ReusePolicy.REUSE_ACCEPTED:
+                raise ContractError(
+                    f"a {self.reuse_policy!s} slot has no accepted result to point at; "
+                    "only REUSE_ACCEPTED binds a specific Acceptance (TG decision 9)"
+                )
 
     def to_json(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -1640,6 +1705,8 @@ class ChildBinding:
         }
         if self.goal_occurrence_id is not None:
             payload["goal_occurrence_id"] = str(self.goal_occurrence_id)
+        if self.acceptance_ref is not None:
+            payload["acceptance_ref"] = self.acceptance_ref.to_json()
         return payload
 
     @classmethod
@@ -1648,9 +1715,15 @@ class ChildBinding:
             value,
             name,
             required=("instance_id", "slot_key", "occurrence_id", "obligation_id"),
-            optional=("requiredness", "reuse_policy", "goal_occurrence_id"),
+            optional=(
+                "requiredness",
+                "reuse_policy",
+                "goal_occurrence_id",
+                "acceptance_ref",
+            ),
         )
         raw_goal_occurrence = data.get("goal_occurrence_id")
+        raw_acceptance = data.get("acceptance_ref")
         return cls(
             instance_id=MethodInstanceId(data["instance_id"]),
             slot_key=data["slot_key"],
@@ -1660,6 +1733,11 @@ class ChildBinding:
             reuse_policy=data.get("reuse_policy", ReusePolicy.NEW_WORK),
             goal_occurrence_id=(
                 None if raw_goal_occurrence is None else OccurrenceId(raw_goal_occurrence)
+            ),
+            acceptance_ref=(
+                None
+                if raw_acceptance is None
+                else TypedRef.from_json(raw_acceptance, f"{name}.acceptance_ref")
             ),
         )
 
@@ -2275,6 +2353,11 @@ class SemanticReadSet:
     method_revisions: tuple[ReadItem, ...] = ()
     observation_revisions: tuple[ReadItem, ...] = ()
     acceptance_revisions: tuple[ReadItem, ...] = ()
+    #: The duties and the authority grants this proposal read.  Separate channels
+    #: rather than one undifferentiated list: a stale obligation and a revoked
+    #: authority fail the commit for different reasons and are re-read differently.
+    obligation_revisions: tuple[ReadItem, ...] = ()
+    authority_revisions: tuple[ReadItem, ...] = ()
     manager_epoch: int = 0
     budget_grant_revision: int = 0
     support_sets: tuple[SupportSetRead, ...] = ()
@@ -2300,13 +2383,15 @@ class SemanticReadSet:
             ("method_revisions", ReadItemKind.METHOD),
             ("observation_revisions", ReadItemKind.FACT),
             ("acceptance_revisions", ReadItemKind.ACCEPTANCE),
+            ("obligation_revisions", ReadItemKind.OBLIGATION),
+            ("authority_revisions", ReadItemKind.AUTHORITY),
         ):
             for item in getattr(self, label):
                 if item.kind is not expected:
                     raise ContractError(f"read_set.{label} entries must be of kind {expected!s}")
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "requirements_revision": self.requirements_revision,
             "goal_revisions": [item.to_json() for item in self.goal_revisions],
             "method_revisions": [item.to_json() for item in self.method_revisions],
@@ -2318,6 +2403,13 @@ class SemanticReadSet:
             "scope_epochs": [item.to_json() for item in self.scope_epochs],
             "absences": [item.to_json() for item in self.absences],
         }
+        # Omitted when empty so a read-set written before these channels existed
+        # keeps its bytes, and with them the delta's content hash.
+        if self.obligation_revisions:
+            payload["obligation_revisions"] = [item.to_json() for item in self.obligation_revisions]
+        if self.authority_revisions:
+            payload["authority_revisions"] = [item.to_json() for item in self.authority_revisions]
+        return payload
 
     @classmethod
     def from_json(cls, value: object, name: str = "semantic_read_set") -> SemanticReadSet:
@@ -2330,6 +2422,8 @@ class SemanticReadSet:
                 "method_revisions",
                 "observation_revisions",
                 "acceptance_revisions",
+                "obligation_revisions",
+                "authority_revisions",
                 "manager_epoch",
                 "budget_grant_revision",
                 "support_sets",
@@ -2352,6 +2446,12 @@ class SemanticReadSet:
             ),
             acceptance_revisions=read_items(
                 data.get("acceptance_revisions", ()), f"{name}.acceptance_revisions"
+            ),
+            obligation_revisions=read_items(
+                data.get("obligation_revisions", ()), f"{name}.obligation_revisions"
+            ),
+            authority_revisions=read_items(
+                data.get("authority_revisions", ()), f"{name}.authority_revisions"
             ),
             manager_epoch=data.get("manager_epoch", 0),
             budget_grant_revision=data.get("budget_grant_revision", 0),
@@ -2658,6 +2758,170 @@ class OccurrenceSpec:
         )
 
 
+class BudgetInheritance(StrEnum):
+    """§6.1: where a newly opened duty's allowance comes from.
+
+    A refinement spends a slice of the parent's fuel — that is what stops
+    decomposition from minting retry budget.  A genuinely new duty needs its own
+    grant, which is an explicit command, not a side effect of planning.
+    """
+
+    INHERIT_PARENT_FUEL_SHARE = "inherit_parent_fuel_share"
+    SEPARATE_GRANT = "separate_grant"
+
+
+@dataclass(frozen=True, slots=True)
+class ObligationOpening:
+    """A duty this delta asks to create (§6.1, CR#6).
+
+    Without this, a compiler that emits an occurrence for an unregistered duty
+    leaves the ledger to invent one — and an invented duty starts with a fresh
+    failure count and fresh fuel, which is precisely the reset §6.1 forbids.  An
+    opening says out loud where the new duty's authority and allowance come from.
+
+    ``opened_by`` is filled by the system: a model may propose the shape of the
+    work, never the fact that a new responsibility was authorised.
+    """
+
+    obligation_id: ObligationId
+    parent_obligation_id: ObligationId
+    relation: ObligationRelation
+    requirement_refs: tuple[str, ...]
+    goal_signature: GoalSignature
+    budget_inheritance: BudgetInheritance = BudgetInheritance.INHERIT_PARENT_FUEL_SHARE
+    fuel_share: int | None = None
+    grant_ref: str | None = None
+    authorization_ref: TypedRef | None = None
+    opened_by: Provenance = Provenance.SYSTEM
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "obligation_id", obligation_id(self.obligation_id, "opening.obligation_id")
+        )
+        object.__setattr__(
+            self,
+            "parent_obligation_id",
+            obligation_id(self.parent_obligation_id, "opening.parent_obligation_id"),
+        )
+        if self.obligation_id == self.parent_obligation_id:
+            raise ContractError("an opening may not name its own parent")
+        object.__setattr__(
+            self, "relation", enum_of(ObligationRelation, self.relation, "opening.relation")
+        )
+        object.__setattr__(
+            self,
+            "requirement_refs",
+            identifiers(self.requirement_refs, "opening.requirement_refs"),
+        )
+        if not self.requirement_refs:
+            raise ContractError("opening.requirement_refs must say which requirements it serves")
+        if not isinstance(self.goal_signature, GoalSignature):
+            raise ContractError("opening.goal_signature must be a GoalSignature")
+        object.__setattr__(
+            self,
+            "budget_inheritance",
+            enum_of(BudgetInheritance, self.budget_inheritance, "opening.budget_inheritance"),
+        )
+        object.__setattr__(
+            self, "fuel_share", optional_index(self.fuel_share, "opening.fuel_share", minimum=1)
+        )
+        object.__setattr__(
+            self, "grant_ref", optional_identifier(self.grant_ref, "opening.grant_ref")
+        )
+        if self.authorization_ref is not None and not isinstance(self.authorization_ref, TypedRef):
+            raise ContractError("opening.authorization_ref must be a TypedRef or null")
+        object.__setattr__(
+            self, "opened_by", enum_of(Provenance, self.opened_by, "opening.opened_by")
+        )
+
+        if self.relation is ObligationRelation.INDEPENDENT_AUTHORIZED:
+            if self.authorization_ref is None:
+                raise ContractError(
+                    "an independently authorised duty must name the authority that "
+                    "authorised it; planning alone does not create responsibility (§6.1)"
+                )
+        elif self.budget_inheritance is BudgetInheritance.SEPARATE_GRANT:
+            raise ContractError(
+                "a refinement of the parent duty spends the parent's allowance; "
+                "a separate grant would hand decomposition a fresh retry budget (§6.1)"
+            )
+
+        if self.budget_inheritance is BudgetInheritance.INHERIT_PARENT_FUEL_SHARE:
+            if self.fuel_share is None:
+                raise ContractError("an inherited allowance must say how much fuel it takes")
+            if self.grant_ref is not None:
+                raise ContractError("an inherited allowance has no separate grant to reference")
+        else:
+            if self.grant_ref is None:
+                raise ContractError("a separate grant must reference the grant that made it")
+            if self.fuel_share is not None:
+                raise ContractError("a separately granted duty takes no share of the parent's fuel")
+
+        if self.opened_by not in {Provenance.SYSTEM, Provenance.HUMAN}:
+            raise ContractError(
+                f"opening.opened_by may not be {self.opened_by!s}; a new responsibility is "
+                "opened by the system or by a person, never self-declared by a model"
+            )
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "obligation_id": str(self.obligation_id),
+            "parent_obligation_id": str(self.parent_obligation_id),
+            "relation": str(self.relation),
+            "requirement_refs": list(self.requirement_refs),
+            "goal_signature": self.goal_signature.to_json(),
+            "budget_inheritance": str(self.budget_inheritance),
+            "fuel_share": self.fuel_share,
+            "grant_ref": self.grant_ref,
+            "authorization_ref": (
+                None if self.authorization_ref is None else self.authorization_ref.to_json()
+            ),
+            "opened_by": str(self.opened_by),
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "obligation_opening") -> ObligationOpening:
+        data = fields_of(
+            value,
+            name,
+            required=(
+                "obligation_id",
+                "parent_obligation_id",
+                "relation",
+                "requirement_refs",
+                "goal_signature",
+            ),
+            optional=(
+                "budget_inheritance",
+                "fuel_share",
+                "grant_ref",
+                "authorization_ref",
+                "opened_by",
+            ),
+        )
+        raw_authorization = data.get("authorization_ref")
+        return cls(
+            obligation_id=ObligationId(data["obligation_id"]),
+            parent_obligation_id=ObligationId(data["parent_obligation_id"]),
+            relation=data["relation"],
+            requirement_refs=tuple(data["requirement_refs"]),
+            goal_signature=GoalSignature.from_json(
+                data["goal_signature"], f"{name}.goal_signature"
+            ),
+            budget_inheritance=data.get(
+                "budget_inheritance", BudgetInheritance.INHERIT_PARENT_FUEL_SHARE
+            ),
+            fuel_share=data.get("fuel_share"),
+            grant_ref=data.get("grant_ref"),
+            authorization_ref=(
+                None
+                if raw_authorization is None
+                else TypedRef.from_json(raw_authorization, f"{name}.authorization_ref")
+            ),
+            opened_by=data.get("opened_by", Provenance.SYSTEM),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ObligationCoverage:
     """Which criteria of a duty the added occurrences are claimed to cover."""
@@ -2721,6 +2985,10 @@ class ProposedPlanDelta:
     order_constraints: tuple[OrderConstraint, ...] = ()
     data_requirements: tuple[DataRequirement, ...] = ()
     obligation_coverage: tuple[ObligationCoverage, ...] = ()
+    #: Duties this delta asks to create, with where their authority and allowance
+    #: come from.  An occurrence for a duty nobody opened is refused by
+    #: :func:`require_commit_ready`.
+    obligation_openings: tuple[ObligationOpening, ...] = ()
     referenced_occurrences: tuple[OccurrenceId, ...] = ()
     compiled_from_proposal_id: str | None = None
 
@@ -2734,6 +3002,9 @@ class ProposedPlanDelta:
         )
         if not isinstance(self.read_set, SemanticReadSet):
             raise ContractError("delta.read_set must be a SemanticReadSet (ADR-13)")
+        opened = [opening.obligation_id for opening in self.obligation_openings]
+        if len(set(opened)) != len(opened):
+            raise ContractError("delta.obligation_openings must not open one duty twice")
         object.__setattr__(
             self,
             "referenced_occurrences",
@@ -2780,7 +3051,7 @@ class ProposedPlanDelta:
         assert_method_instances_match_occurrences(self.method_instances, self.occurrences)
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "delta_id": self.delta_id,
             "mission_id": str(self.mission_id),
             "base_plan_revision": int(self.base_plan_revision),
@@ -2794,6 +3065,12 @@ class ProposedPlanDelta:
             "referenced_occurrences": [str(item) for item in self.referenced_occurrences],
             "compiled_from_proposal_id": self.compiled_from_proposal_id,
         }
+        # Omitted when empty so a delta that opens no duty keeps its earlier bytes.
+        if self.obligation_openings:
+            payload["obligation_openings"] = [
+                opening.to_json() for opening in self.obligation_openings
+            ]
+        return payload
 
     @classmethod
     def from_json(cls, value: object, name: str = "proposed_plan_delta") -> ProposedPlanDelta:
@@ -2808,6 +3085,7 @@ class ProposedPlanDelta:
                 "order_constraints",
                 "data_requirements",
                 "obligation_coverage",
+                "obligation_openings",
                 "referenced_occurrences",
                 "compiled_from_proposal_id",
             ),
@@ -2847,6 +3125,11 @@ class ProposedPlanDelta:
                 data.get("obligation_coverage", ()),
                 f"{name}.obligation_coverage",
                 lambda item, where: ObligationCoverage.from_json(item, where),
+            ),
+            obligation_openings=sequence_of(
+                data.get("obligation_openings", ()),
+                f"{name}.obligation_openings",
+                lambda item, where: ObligationOpening.from_json(item, where),
             ),
             referenced_occurrences=tuple(
                 OccurrenceId(item) for item in data.get("referenced_occurrences", ())
@@ -3307,8 +3590,19 @@ def assert_method_instances_match_occurrences(
             )
 
 
-def require_commit_ready(candidate: object) -> ProposedPlanDelta:
-    """§18.3 naming rule: a Commit takes a compiled delta, never a raw proposal."""
+def require_commit_ready(
+    candidate: object,
+    *,
+    registered_obligations: frozenset[ObligationId] | None = None,
+) -> ProposedPlanDelta:
+    """§18.3 naming rule: a Commit takes a compiled delta, never a raw proposal.
+
+    When the caller supplies the duties that already exist, this additionally
+    refuses a delta whose occurrence names a duty nobody opened, and one that opens
+    a duty that already exists.  Both holes end the same way — a second ledger row
+    for one responsibility, with its own untouched failure count (§6.1) — so the
+    check is here rather than left to whoever writes the ledger next.
+    """
 
     if isinstance(candidate, PlanProposal):
         raise ContractError(
@@ -3317,6 +3611,21 @@ def require_commit_ready(candidate: object) -> ProposedPlanDelta:
         )
     if not isinstance(candidate, ProposedPlanDelta):
         raise ContractError("commit input must be a ProposedPlanDelta")
+    if registered_obligations is not None:
+        opened = {opening.obligation_id for opening in candidate.obligation_openings}
+        already = sorted(str(item) for item in opened & registered_obligations)
+        if already:
+            raise ContractError(
+                f"delta.obligation_openings would re-open duties that already exist: {already}; "
+                "a duty that exists is referenced, not opened again"
+            )
+        known = registered_obligations | opened
+        for occurrence in candidate.occurrences:
+            if occurrence.obligation_id not in known:
+                raise ContractError(
+                    f"occurrence {occurrence.occurrence_id!s} names unregistered duty "
+                    f"{occurrence.obligation_id!s}, which this delta does not open"
+                )
     return candidate
 
 
@@ -3339,6 +3648,7 @@ __all__ = (
     "Binding",
     "BindSharedGoalOperation",
     "BoundInput",
+    "BudgetInheritance",
     "ChildBinding",
     "Condition",
     "ConstantCondition",
@@ -3373,6 +3683,7 @@ __all__ = (
     "ObjectValue",
     "ObligationCoverage",
     "ObligationId",
+    "ObligationOpening",
     "ObligationRelation",
     "OccurrenceId",
     "OccurrenceSpec",

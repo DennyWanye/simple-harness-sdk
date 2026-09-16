@@ -34,9 +34,14 @@ from agent_orchestrator.contracts.evidence_state import (
 )
 from agent_orchestrator.contracts.models import ContractError
 from agent_orchestrator.contracts.resolution import (
+    LEGACY_CANDIDATE_RANGE,
     OPERATION_PAYLOAD_CONFLICT,
+    AccountingState,
     AllExpr,
     AnyExpr,
+    ApprovalDecision,
+    ApprovalState,
+    CandidatePolicy,
     CheckExecution,
     Criterion,
     CriterionExpr,
@@ -45,7 +50,10 @@ from agent_orchestrator.contracts.resolution import (
     CriterionVerdict,
     DeliveryReceipt,
     DeliveryStage,
+    EffectOutcome,
     EvaluationKind,
+    OperationControl,
+    OperationCurrentState,
     OperationEnvelope,
     ReconciliationOutcome,
     ReconciliationResult,
@@ -802,3 +810,160 @@ def test_an_unknown_attribution_is_refused() -> None:
         TypedRef.from_json(payload)
     with pytest.raises(ContractError, match="not a known attribution"):
         TypedRef.from_model_json(payload)
+
+
+# --------------------------------------------------------------------------------------
+# Contract round 4: the three operation axes, approvals and candidate policy
+# --------------------------------------------------------------------------------------
+
+
+def operation_state(**overrides: Any) -> OperationCurrentState:
+    payload: dict[str, Any] = {
+        "operation_id": "operation-1",
+        "authorization_state": OperationControl.DISPATCHING,
+        "authorization_epoch": 2,
+        "dispatch_generation": 1,
+        "effect_outcome": EffectOutcome.PENDING,
+        "accounting_state": AccountingState.RESERVED,
+        "in_flight_handoff_id": "handoff-1",
+        "budget_refs": ("budget-root",),
+        "next_reconcile_at_ms": 5_000,
+    }
+    payload.update(overrides)
+    return OperationCurrentState(**payload)
+
+
+def test_the_three_operation_axes_are_recorded_separately() -> None:
+    state = operation_state()
+
+    assert state.authorization_state is OperationControl.DISPATCHING
+    assert state.effect_outcome is EffectOutcome.PENDING
+    assert state.accounting_state is AccountingState.RESERVED
+    assert OperationCurrentState.from_json(state.to_json()) == state
+
+
+def test_a_closed_operation_may_still_report_an_unknown_effect_and_unknown_usage() -> None:
+    """I10 and I13: closing the control flow neither decides the world nor erases cost."""
+
+    state = operation_state(
+        authorization_state=OperationControl.CLOSED,
+        effect_outcome=EffectOutcome.UNKNOWN,
+        accounting_state=AccountingState.USAGE_UNKNOWN,
+        in_flight_handoff_id=None,
+    )
+
+    assert state.effect_outcome is not EffectOutcome.NOT_APPLIED
+    assert state.settled is True
+
+
+def test_an_unauthorised_operation_cannot_already_have_an_effect() -> None:
+    """Invariants I03 / I04: approval precedes the action, never follows it."""
+
+    with pytest.raises(ContractError, match="approval followed the action"):
+        operation_state(
+            authorization_state=OperationControl.AWAITING_AUTHORIZATION,
+            effect_outcome=EffectOutcome.APPLIED,
+            in_flight_handoff_id=None,
+        )
+
+
+def test_not_handed_off_and_a_live_handoff_cannot_both_be_true() -> None:
+    with pytest.raises(ContractError, match="NOT_HANDED_OFF and a live handoff"):
+        operation_state(
+            authorization_state=OperationControl.READY,
+            effect_outcome=EffectOutcome.NOT_HANDED_OFF,
+            in_flight_handoff_id="handoff-1",
+        )
+
+
+def test_a_proposed_operation_that_has_not_been_handed_off_is_valid() -> None:
+    state = operation_state(
+        authorization_state=OperationControl.PROPOSED,
+        effect_outcome=EffectOutcome.NOT_HANDED_OFF,
+        accounting_state=AccountingState.UNRESERVED,
+        in_flight_handoff_id=None,
+        next_reconcile_at_ms=None,
+    )
+    assert state.settled is False
+    assert OperationCurrentState.from_json(state.to_json()) == state
+
+
+def test_a_granted_approval_names_who_granted_it_and_when() -> None:
+    approval = ApprovalState(
+        decision=ApprovalDecision.GRANTED,
+        granted_by="user-1",
+        granted_at_ms=1_000,
+        expires_at_ms=2_000,
+    )
+
+    assert approval.is_effective(now_ms=1_500) is True
+    assert approval.is_effective(now_ms=2_000) is False
+    assert ApprovalState.from_json(approval.to_json()) == approval
+
+
+def test_an_unattributed_grant_is_not_an_approval() -> None:
+    with pytest.raises(ContractError, match="must name who granted it"):
+        ApprovalState(decision=ApprovalDecision.GRANTED)
+
+
+def test_a_pending_approval_may_not_carry_a_grantor() -> None:
+    with pytest.raises(ContractError, match="may not\\s+carry a grantor"):
+        ApprovalState(decision=ApprovalDecision.PENDING, granted_by="user-1", granted_at_ms=1_000)
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        ApprovalDecision.NOT_REQUIRED,
+        ApprovalDecision.PENDING,
+        ApprovalDecision.DENIED,
+        ApprovalDecision.EXPIRED,
+    ],
+)
+def test_only_a_granted_approval_authorises_anything(decision: ApprovalDecision) -> None:
+    assert ApprovalState(decision=decision).is_effective(now_ms=1_000) is False
+
+
+def test_an_approval_may_not_expire_before_it_was_granted() -> None:
+    with pytest.raises(ContractError, match="precedes granted_at_ms"):
+        ApprovalState(
+            decision=ApprovalDecision.GRANTED,
+            granted_by="user-1",
+            granted_at_ms=2_000,
+            expires_at_ms=1_000,
+        )
+
+
+def test_a_candidate_policy_is_versioned_and_round_trips() -> None:
+    policy = CandidatePolicy(
+        policy_version=1, max_candidates=3, synthesis_allowed=True, reserve_tokens=4_000
+    )
+
+    assert CandidatePolicy.from_json(policy.to_json()) == policy
+    assert policy.compatible_with_legacy is True
+    assert LEGACY_CANDIDATE_RANGE == (1, 3)
+
+
+def test_a_policy_beyond_the_legacy_range_is_legal_but_says_so() -> None:
+    """ADR-08 replaced the universal 3-candidate rule with versioned capacity."""
+
+    wide = CandidatePolicy(policy_version=2, max_candidates=8)
+    assert wide.compatible_with_legacy is False
+
+
+def test_synthesis_needs_two_candidates_and_a_positive_tail_reserve() -> None:
+    with pytest.raises(ContractError, match="needs at least two of them"):
+        CandidatePolicy(
+            policy_version=1, max_candidates=1, synthesis_allowed=True, reserve_tokens=4_000
+        )
+    with pytest.raises(ContractError, match="positive tail budget"):
+        CandidatePolicy(
+            policy_version=1, max_candidates=3, synthesis_allowed=True, reserve_tokens=0
+        )
+
+
+def test_a_candidate_policy_needs_at_least_one_candidate_and_a_version() -> None:
+    with pytest.raises(ContractError, match="must be >= 1"):
+        CandidatePolicy(policy_version=1, max_candidates=0)
+    with pytest.raises(ContractError, match="must be >= 1"):
+        CandidatePolicy(policy_version=0, max_candidates=3)

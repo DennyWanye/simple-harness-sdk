@@ -13,7 +13,13 @@ from __future__ import annotations
 
 import pytest
 
-from agent_orchestrator.contracts.htn import Requiredness
+from agent_orchestrator.contracts.htn import (
+    BudgetInheritance,
+    GoalSignature,
+    ObligationOpening,
+    ObligationRelation,
+    Requiredness,
+)
 from agent_orchestrator.contracts.models import ContractError
 from agent_orchestrator.contracts.obligations import (
     ExpansionRecord,
@@ -25,6 +31,12 @@ from agent_orchestrator.contracts.obligations import (
     ShapeChange,
     achieve_outcome_admission,
     funding_owner_conflicts,
+)
+from agent_orchestrator.contracts.semantic_base import (
+    Provenance,
+    TypedRef,
+    TypedRefKind,
+    VersionedRef,
 )
 
 
@@ -279,3 +291,300 @@ def test_a_refused_shape_change_is_not_recorded() -> None:
 
     assert ledger.shape_changes(target) == ()
     assert ledger.account(target).shape_changes == 0
+
+
+# --------------------------------------------------------------------------------------
+# Contract round 4: the token axis and admitted demand (P1.2)
+# --------------------------------------------------------------------------------------
+
+
+def test_tokens_accrue_beside_money_and_attempts() -> None:
+    """Three ceilings, three counters: a run can be inside its cost and out of context."""
+
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=3)
+    target = duty().obligation_id
+
+    ledger.record_spend(target, cost_micros=1_200, attempts=1, tokens=4_000)
+    account = ledger.record_spend(target, cost_micros=300, attempts=1, tokens=1_500)
+
+    assert account.consumed_cost_micros == 1_500
+    assert account.consumed_attempts == 2
+    assert account.consumed_tokens == 5_500
+    assert account.to_json()["consumed_tokens"] == 5_500
+
+
+def test_tokens_survive_a_change_of_shape_like_every_other_counter() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=3)
+    target = duty().obligation_id
+    ledger.record_spend(target, tokens=9_000)
+
+    ledger.note_shape_change(target, ShapeChange.METHOD_SWITCHED, detail="method-b")
+
+    assert ledger.account(target).consumed_tokens == 9_000
+
+
+def test_a_refused_token_amount_leaves_every_counter_alone() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=3)
+    target = duty().obligation_id
+    ledger.record_spend(target, cost_micros=1_000, attempts=1, tokens=2_000)
+    before = ledger.account(target)
+
+    with pytest.raises(ContractError, match="tokens"):
+        ledger.record_spend(target, cost_micros=500, attempts=1, tokens=-1)
+
+    assert ledger.account(target) == before
+
+
+def test_a_demand_can_be_admitted_and_withdrawn() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=3)
+    target = duty().obligation_id
+
+    assert ledger.account(target).has_admitted_demand is False
+    assert ledger.admit_demand(target).has_admitted_demand is True
+    assert ledger.withdraw_demand(target).has_admitted_demand is False
+
+
+def test_a_second_admission_is_refused_rather_than_silently_merged() -> None:
+    """Two admissions that look like one is how a withdrawal releases someone else's share."""
+
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=3)
+    target = duty().obligation_id
+    ledger.admit_demand(target)
+
+    with pytest.raises(ContractError, match="already has an admitted demand"):
+        ledger.admit_demand(target)
+
+    assert ledger.account(target).has_admitted_demand is True
+
+
+def test_withdrawing_a_demand_that_was_never_admitted_is_refused() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=3)
+
+    with pytest.raises(ContractError, match="no admitted demand"):
+        ledger.withdraw_demand(duty().obligation_id)
+
+
+def test_a_demand_may_not_be_admitted_against_a_closed_duty() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=3)
+    target = duty().obligation_id
+    ledger.set_lifecycle(target, ObligationLifecycle.CANCELLED)
+
+    with pytest.raises(ContractError, match="open obligation"):
+        ledger.admit_demand(target)
+
+
+def test_an_expansion_record_round_trips_through_its_codec() -> None:
+    record = ExpansionRecord(method_id="method-a", parameters_digest="digest-1", task_id="task-7")
+    assert ExpansionRecord.from_json(record.to_json()) == record
+    assert ExpansionRecord.from_json({"method_id": "m", "parameters_digest": "d"}).task_id is None
+
+
+def test_an_expansion_record_refuses_an_unknown_field() -> None:
+    payload = ExpansionRecord(method_id="method-a", parameters_digest="digest-1").to_json()
+    payload["fuel_refunded"] = True
+    with pytest.raises(ContractError, match="unknown fields"):
+        ExpansionRecord.from_json(payload)
+
+
+# --------------------------------------------------------------------------------------
+# Contract round 6 (CR#6): opening a duty says where its authority and fuel come from
+# --------------------------------------------------------------------------------------
+
+
+def _goal_signature() -> GoalSignature:
+    return GoalSignature(
+        signature_id="extract-evidence",
+        version=1,
+        parameter_schema_ref=VersionedRef(id="parameters", version=1, content_hash="a" * 64),
+        output_schema_ref=VersionedRef(id="outputs", version=1, content_hash="a" * 64),
+        statement="extract the evidence the parent duty needs",
+    )
+
+
+def _opening(**overrides: object) -> ObligationOpening:
+    payload: dict[str, object] = {
+        "obligation_id": "obligation-child",
+        "parent_obligation_id": "obligation-1",
+        "relation": ObligationRelation.REFINES_PARENT,
+        "requirement_refs": ("c-complete",),
+        "goal_signature": _goal_signature(),
+        "budget_inheritance": BudgetInheritance.INHERIT_PARENT_FUEL_SHARE,
+        "fuel_share": 2,
+    }
+    payload.update(overrides)
+    return ObligationOpening(**payload)  # type: ignore[arg-type]
+
+
+def _authority() -> TypedRef:
+    return TypedRef(kind=TypedRefKind.REQUIREMENTS, id="grant-1", revision=1, content_hash="a" * 64)
+
+
+def test_an_opening_round_trips_through_its_codec() -> None:
+    opening = _opening()
+    assert ObligationOpening.from_json(opening.to_json()) == opening
+
+
+def test_an_independently_authorised_duty_must_name_its_authority() -> None:
+    """Planning alone does not create responsibility (§6.1)."""
+
+    with pytest.raises(ContractError, match="must name the authority"):
+        _opening(
+            relation=ObligationRelation.INDEPENDENT_AUTHORIZED,
+            budget_inheritance=BudgetInheritance.SEPARATE_GRANT,
+            fuel_share=None,
+            grant_ref="grant-1",
+        )
+
+    authorised = _opening(
+        relation=ObligationRelation.INDEPENDENT_AUTHORIZED,
+        budget_inheritance=BudgetInheritance.SEPARATE_GRANT,
+        fuel_share=None,
+        grant_ref="grant-1",
+        authorization_ref=_authority(),
+    )
+    assert authorised.grant_ref == "grant-1"
+
+
+def test_a_refinement_may_not_take_a_separate_grant() -> None:
+    """A fresh grant for a refinement is a fresh retry budget by another name."""
+
+    with pytest.raises(ContractError, match="fresh retry budget"):
+        _opening(
+            budget_inheritance=BudgetInheritance.SEPARATE_GRANT,
+            fuel_share=None,
+            grant_ref="grant-1",
+        )
+
+
+def test_an_inherited_allowance_must_say_how_much_it_takes() -> None:
+    with pytest.raises(ContractError, match="how much fuel it takes"):
+        _opening(fuel_share=None)
+    with pytest.raises(ContractError, match="no separate grant to reference"):
+        _opening(grant_ref="grant-1")
+
+
+def test_a_model_may_not_open_a_responsibility() -> None:
+    with pytest.raises(ContractError, match="never self-declared by a model"):
+        _opening(opened_by=Provenance.MODEL)
+
+    assert _opening(opened_by=Provenance.HUMAN).opened_by is Provenance.HUMAN
+
+
+def test_opening_a_refinement_moves_fuel_out_of_the_parent() -> None:
+    """Decomposition redistributes the allowance; it never creates any."""
+
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=5)
+    parent = duty().obligation_id
+
+    child = ledger.open_from(_opening(fuel_share=2), ledger.account(parent))
+
+    assert child.fuel_limit == 2
+    assert ledger.remaining_fuel(parent) == 3
+    assert ledger.obligation(child.obligation_id).parent_obligation_id == parent
+    assert ledger.account(child.obligation_id).failure_count == 0
+
+
+def test_a_parent_cannot_hand_over_fuel_it_no_longer_has() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=2)
+    parent = duty().obligation_id
+    ledger.consume_fuel(
+        parent, expansion=ExpansionRecord(method_id="method-a", parameters_digest="d1")
+    )
+    before = ledger.account(parent)
+
+    with pytest.raises(ContractError, match="cannot hand over"):
+        ledger.open_from(_opening(fuel_share=2), before)
+
+    assert ledger.account(parent) == before
+    assert "obligation-child" not in [str(item) for item in ledger.obligation_ids()]
+
+
+def test_a_separately_granted_duty_starts_from_its_grant_and_costs_the_parent_nothing() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=5)
+    parent = duty().obligation_id
+
+    child = ledger.open_from(
+        _opening(
+            relation=ObligationRelation.INDEPENDENT_AUTHORIZED,
+            budget_inheritance=BudgetInheritance.SEPARATE_GRANT,
+            fuel_share=None,
+            grant_ref="grant-1",
+            authorization_ref=_authority(),
+        ),
+        ledger.account(parent),
+        granted_fuel=4,
+    )
+
+    assert child.fuel_limit == 4
+    assert ledger.remaining_fuel(parent) == 5
+
+
+def test_a_separate_grant_without_its_fuel_is_refused() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=5)
+
+    with pytest.raises(ContractError, match="fuel its grant actually provides"):
+        ledger.open_from(
+            _opening(
+                relation=ObligationRelation.INDEPENDENT_AUTHORIZED,
+                budget_inheritance=BudgetInheritance.SEPARATE_GRANT,
+                fuel_share=None,
+                grant_ref="grant-1",
+                authorization_ref=_authority(),
+            ),
+            ledger.account(duty().obligation_id),
+        )
+
+
+def test_opening_against_a_stale_parent_view_is_refused() -> None:
+    """Two children funded out of one share is what a stale read buys."""
+
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=5)
+    parent = duty().obligation_id
+    stale = ledger.account(parent)
+    ledger.record_failure(parent)
+
+    with pytest.raises(ContractError, match="has changed since"):
+        ledger.open_from(_opening(), stale)
+
+
+def test_opening_a_duty_that_already_exists_is_refused() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=5)
+    ledger.register(duty("obligation-child"), recursion_fuel=1)
+    before = ledger.account(duty().obligation_id)
+
+    with pytest.raises(ContractError, match="already registered"):
+        ledger.open_from(_opening(), before)
+
+    assert ledger.account(duty().obligation_id) == before
+
+
+def test_a_closed_parent_cannot_fund_new_work() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=5)
+    parent = duty().obligation_id
+    ledger.set_lifecycle(parent, ObligationLifecycle.CANCELLED)
+
+    with pytest.raises(ContractError, match="cannot fund new work"):
+        ledger.open_from(_opening(), ledger.account(parent))
+
+
+def test_open_from_refuses_another_duty_s_account() -> None:
+    ledger = ObligationLedger()
+    ledger.register(duty(), recursion_fuel=5)
+    ledger.register(duty("obligation-other"), recursion_fuel=5)
+
+    with pytest.raises(ContractError, match="another duty's account"):
+        ledger.open_from(_opening(), ledger.account(duty("obligation-other").obligation_id))

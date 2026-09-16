@@ -34,11 +34,18 @@ from ..contracts.semantic_base import (
     VersionedRef,
     content_hash_of,
     enum_of,
+    fields_of,
     flag,
     identifier,
     reject_executable,
     text,
 )
+
+
+def _as_list(value: object, name: str) -> list[Any]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        raise ContractError(f"{name} must be a list")
+    return list(value)
 
 
 class WorldAssumption(StrEnum):
@@ -82,6 +89,11 @@ class PredicateParameter:
 
     def to_json(self) -> dict[str, Any]:
         return {"name": self.name, "type": str(self.type), "required": self.required}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "parameter") -> PredicateParameter:
+        data = fields_of(value, name, required=("name", "type"), optional=("required",))
+        return cls(name=data["name"], type=data["type"], required=data.get("required", True))
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +158,43 @@ class PredicateSignature:
             "authority_scope": self.authority_scope,
             "statement": self.statement,
         }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "predicate_signature") -> PredicateSignature:
+        """Rebuild a declaration through the codec.
+
+        The registration rules run again on the way back in — a CLOSED-world
+        predicate still needs an observer, and the whole payload still goes through
+        :func:`reject_executable` — so a stored or transmitted declaration cannot
+        acquire denial powers, or executable content, that registration refused.
+        """
+
+        data = fields_of(
+            value,
+            name,
+            required=("predicate_ref",),
+            optional=(
+                "parameters",
+                "world_assumption",
+                "observer_ids",
+                "temporal_use",
+                "authority_scope",
+                "statement",
+            ),
+        )
+        reject_executable(data, name)
+        return cls(
+            predicate_ref=VersionedRef.from_json(data["predicate_ref"], f"{name}.predicate_ref"),
+            parameters=tuple(
+                PredicateParameter.from_json(item, f"{name}.parameters[]")
+                for item in _as_list(data.get("parameters", ()), f"{name}.parameters")
+            ),
+            world_assumption=data.get("world_assumption", WorldAssumption.OPEN),
+            observer_ids=tuple(_as_list(data.get("observer_ids", ()), f"{name}.observer_ids")),
+            temporal_use=data.get("temporal_use", TemporalUse.CURRENT_AT_USE),
+            authority_scope=data.get("authority_scope"),
+            statement=data.get("statement"),
+        )
 
 
 @dataclass(frozen=True, slots=True)

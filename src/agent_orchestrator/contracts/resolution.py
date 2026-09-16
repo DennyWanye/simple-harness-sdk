@@ -53,6 +53,7 @@ from .semantic_base import (
     index,
     optional_hash_hex,
     optional_identifier,
+    optional_index,
     reject_executable,
     schema_version,
     sequence_of,
@@ -1758,6 +1759,361 @@ class OperationEnvelope:
         )
 
 
+class OperationControl(StrEnum):
+    """AER §13 axis 1: where the *orchestrator* has got to with this operation.
+
+    It says nothing about the world.  ``CLOSED`` means this side has finished
+    bookkeeping, not that the effect landed — that is :class:`EffectOutcome`.
+    """
+
+    PROPOSED = "PROPOSED"
+    AWAITING_AUTHORIZATION = "AWAITING_AUTHORIZATION"
+    READY = "READY"
+    DISPATCHING = "DISPATCHING"
+    QUIESCING = "QUIESCING"
+    CLOSED = "CLOSED"
+
+
+class EffectOutcome(StrEnum):
+    """AER §13 axis 2: what happened in the real world.
+
+    ``UNKNOWN`` is a real, terminal-for-now answer and is not ``NOT_APPLIED``
+    (invariant I10): a timeout says the orchestrator stopped waiting, never that
+    the other side did nothing.
+    """
+
+    NOT_HANDED_OFF = "NOT_HANDED_OFF"
+    PENDING = "PENDING"
+    APPLIED = "APPLIED"
+    NOT_APPLIED = "NOT_APPLIED"
+    PARTIAL = "PARTIAL"
+    UNKNOWN = "UNKNOWN"
+
+
+class AccountingState(StrEnum):
+    """AER §13 axis 3: what the money is doing.
+
+    Separate from both other axes because a cost that has been incurred must be
+    recorded even when the effect is UNKNOWN and the control flow closed
+    (invariant I13); ``USAGE_UNKNOWN`` is how that is said out loud.
+    """
+
+    UNRESERVED = "UNRESERVED"
+    RESERVED = "RESERVED"
+    PARTIALLY_SETTLED = "PARTIALLY_SETTLED"
+    SETTLED = "SETTLED"
+    USAGE_UNKNOWN = "USAGE_UNKNOWN"
+
+
+#: Control states in which the request has not yet been handed to a connector.
+_PRE_HANDOFF_CONTROL = frozenset(
+    {OperationControl.PROPOSED, OperationControl.AWAITING_AUTHORIZATION}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class OperationCurrentState:
+    """AER §12.2 / §13: the mutable control record beside the frozen envelope.
+
+    :class:`OperationEnvelope` is the immutable semantics of one real intent; this
+    is everything a retry, an authorisation or a reconciliation may legitimately
+    change.  Keeping them in separate records is what stops a retry from editing
+    what is being requested while it edits how the request is being managed.
+    """
+
+    operation_id: OperationId
+    authorization_state: OperationControl
+    authorization_epoch: int
+    dispatch_generation: int
+    effect_outcome: EffectOutcome
+    accounting_state: AccountingState = AccountingState.UNRESERVED
+    in_flight_handoff_id: str | None = None
+    budget_refs: tuple[str, ...] = ()
+    next_reconcile_at_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "operation_id",
+            OperationId(identifier(self.operation_id, "operation_state.operation_id")),
+        )
+        object.__setattr__(
+            self,
+            "authorization_state",
+            enum_of(
+                OperationControl, self.authorization_state, "operation_state.authorization_state"
+            ),
+        )
+        object.__setattr__(
+            self,
+            "authorization_epoch",
+            index(self.authorization_epoch, "operation_state.authorization_epoch"),
+        )
+        object.__setattr__(
+            self,
+            "dispatch_generation",
+            index(self.dispatch_generation, "operation_state.dispatch_generation"),
+        )
+        object.__setattr__(
+            self,
+            "effect_outcome",
+            enum_of(EffectOutcome, self.effect_outcome, "operation_state.effect_outcome"),
+        )
+        object.__setattr__(
+            self,
+            "accounting_state",
+            enum_of(AccountingState, self.accounting_state, "operation_state.accounting_state"),
+        )
+        object.__setattr__(
+            self,
+            "in_flight_handoff_id",
+            optional_identifier(self.in_flight_handoff_id, "operation_state.in_flight_handoff_id"),
+        )
+        object.__setattr__(
+            self, "budget_refs", identifiers(self.budget_refs, "operation_state.budget_refs")
+        )
+        object.__setattr__(
+            self,
+            "next_reconcile_at_ms",
+            optional_index(self.next_reconcile_at_ms, "operation_state.next_reconcile_at_ms"),
+        )
+        if (
+            self.effect_outcome is not EffectOutcome.NOT_HANDED_OFF
+            and self.authorization_state in _PRE_HANDOFF_CONTROL
+        ):
+            raise ContractError(
+                "an operation that has not been authorised cannot already have an effect; "
+                f"{self.authorization_state!s} with outcome {self.effect_outcome!s} "
+                "would mean approval followed the action (invariants I03, I04)"
+            )
+        if (
+            self.effect_outcome is EffectOutcome.NOT_HANDED_OFF
+            and self.in_flight_handoff_id is not None
+        ):
+            raise ContractError(
+                "an operation with an in-flight handoff has been handed off; "
+                "NOT_HANDED_OFF and a live handoff id cannot both be true"
+            )
+
+    @property
+    def settled(self) -> bool:
+        """Whether both the effect and the money have stopped moving."""
+
+        return self.effect_outcome not in {
+            EffectOutcome.PENDING,
+            EffectOutcome.NOT_HANDED_OFF,
+        } and self.accounting_state in {AccountingState.SETTLED, AccountingState.USAGE_UNKNOWN}
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "operation_id": str(self.operation_id),
+            "authorization_state": str(self.authorization_state),
+            "authorization_epoch": self.authorization_epoch,
+            "dispatch_generation": self.dispatch_generation,
+            "effect_outcome": str(self.effect_outcome),
+            "accounting_state": str(self.accounting_state),
+            "in_flight_handoff_id": self.in_flight_handoff_id,
+            "budget_refs": list(self.budget_refs),
+            "next_reconcile_at_ms": self.next_reconcile_at_ms,
+        }
+
+    @classmethod
+    def from_json(
+        cls, value: object, name: str = "operation_current_state"
+    ) -> OperationCurrentState:
+        data = fields_of(
+            value,
+            name,
+            required=(
+                "operation_id",
+                "authorization_state",
+                "authorization_epoch",
+                "dispatch_generation",
+                "effect_outcome",
+            ),
+            optional=(
+                "accounting_state",
+                "in_flight_handoff_id",
+                "budget_refs",
+                "next_reconcile_at_ms",
+            ),
+        )
+        return cls(
+            operation_id=OperationId(data["operation_id"]),
+            authorization_state=data["authorization_state"],
+            authorization_epoch=data["authorization_epoch"],
+            dispatch_generation=data["dispatch_generation"],
+            effect_outcome=data["effect_outcome"],
+            accounting_state=data.get("accounting_state", AccountingState.UNRESERVED),
+            in_flight_handoff_id=data.get("in_flight_handoff_id"),
+            budget_refs=tuple(data.get("budget_refs", ())),
+            next_reconcile_at_ms=data.get("next_reconcile_at_ms"),
+        )
+
+
+class ApprovalDecision(StrEnum):
+    """Whether a human or policy approval has been given for this subject."""
+
+    NOT_REQUIRED = "NOT_REQUIRED"
+    PENDING = "PENDING"
+    GRANTED = "GRANTED"
+    DENIED = "DENIED"
+    EXPIRED = "EXPIRED"
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalState:
+    """An approval and the identity and clock that bound it (§14.3).
+
+    A grant names who gave it and when: an approval with no grantor is not an
+    approval, and one that has passed ``expires_at_ms`` is not current — checked at
+    use, because "it was approved once" and "it is approved now" are different
+    claims (invariant I09).
+    """
+
+    decision: ApprovalDecision
+    granted_by: str | None = None
+    granted_at_ms: int | None = None
+    expires_at_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "decision", enum_of(ApprovalDecision, self.decision, "approval.decision")
+        )
+        object.__setattr__(
+            self, "granted_by", optional_identifier(self.granted_by, "approval.granted_by")
+        )
+        object.__setattr__(
+            self, "granted_at_ms", optional_index(self.granted_at_ms, "approval.granted_at_ms")
+        )
+        object.__setattr__(
+            self, "expires_at_ms", optional_index(self.expires_at_ms, "approval.expires_at_ms")
+        )
+        if self.decision is ApprovalDecision.GRANTED:
+            if self.granted_by is None or self.granted_at_ms is None:
+                raise ContractError(
+                    "a GRANTED approval must name who granted it and when; "
+                    "an unattributed grant is not an approval"
+                )
+        elif self.decision in {ApprovalDecision.NOT_REQUIRED, ApprovalDecision.PENDING}:
+            if self.granted_by is not None or self.granted_at_ms is not None:
+                raise ContractError(
+                    f"a {self.decision!s} approval has not been granted and may not "
+                    "carry a grantor or a grant time"
+                )
+        if (
+            self.expires_at_ms is not None
+            and self.granted_at_ms is not None
+            and self.expires_at_ms < self.granted_at_ms
+        ):
+            raise ContractError("approval.expires_at_ms precedes granted_at_ms")
+
+    def is_effective(self, *, now_ms: int) -> bool:
+        """Whether this approval authorises an action *now*."""
+
+        if self.decision is not ApprovalDecision.GRANTED:
+            return False
+        return self.expires_at_ms is None or now_ms < self.expires_at_ms
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "decision": str(self.decision),
+            "granted_by": self.granted_by,
+            "granted_at_ms": self.granted_at_ms,
+            "expires_at_ms": self.expires_at_ms,
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "approval_state") -> ApprovalState:
+        data = fields_of(
+            value,
+            name,
+            required=("decision",),
+            optional=("granted_by", "granted_at_ms", "expires_at_ms"),
+        )
+        return cls(
+            decision=data["decision"],
+            granted_by=data.get("granted_by"),
+            granted_at_ms=data.get("granted_at_ms"),
+            expires_at_ms=data.get("expires_at_ms"),
+        )
+
+
+#: The legacy universal candidate range (``planning/candidate_selection.py``).  ADR-08
+#: replaced fixed universal limits with versioned capacity, so this is recorded as the
+#: deployment's historical default, not as a ceiling the contract imposes.
+LEGACY_CANDIDATE_RANGE = (1, 3)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidatePolicy:
+    """How many alternatives one goal may carry, and what synthesis costs (§10.2).
+
+    Versioned rather than constant: ADR-08 removed the universal "3 candidates"
+    rule, and a policy that cannot say which version produced a plan cannot explain
+    why that plan was bounded the way it was.
+    """
+
+    policy_version: int
+    max_candidates: int
+    synthesis_allowed: bool = False
+    reserve_tokens: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "policy_version", index(self.policy_version, "policy.policy_version", minimum=1)
+        )
+        object.__setattr__(
+            self, "max_candidates", index(self.max_candidates, "policy.max_candidates", minimum=1)
+        )
+        object.__setattr__(
+            self, "synthesis_allowed", flag(self.synthesis_allowed, "policy.synthesis_allowed")
+        )
+        object.__setattr__(
+            self, "reserve_tokens", index(self.reserve_tokens, "policy.reserve_tokens")
+        )
+        if self.synthesis_allowed and self.max_candidates < 2:
+            raise ContractError(
+                "synthesis compares candidates, so it needs at least two of them "
+                "(planning/candidate_selection.py)"
+            )
+        if self.synthesis_allowed and self.reserve_tokens <= 0:
+            raise ContractError(
+                "synthesis must reserve a positive tail budget, or the final "
+                "integration is the step that runs out of tokens"
+            )
+
+    @property
+    def compatible_with_legacy(self) -> bool:
+        """Whether this policy stays inside the legacy 1..3 candidate range."""
+
+        low, high = LEGACY_CANDIDATE_RANGE
+        return low <= self.max_candidates <= high
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "policy_version": self.policy_version,
+            "max_candidates": self.max_candidates,
+            "synthesis_allowed": self.synthesis_allowed,
+            "reserve_tokens": self.reserve_tokens,
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "candidate_policy") -> CandidatePolicy:
+        data = fields_of(
+            value,
+            name,
+            required=("policy_version", "max_candidates"),
+            optional=("synthesis_allowed", "reserve_tokens"),
+        )
+        return cls(
+            policy_version=data["policy_version"],
+            max_candidates=data["max_candidates"],
+            synthesis_allowed=data.get("synthesis_allowed", False),
+            reserve_tokens=data.get("reserve_tokens", 0),
+        )
+
+
 OPERATION_PAYLOAD_CONFLICT = "OPERATION_PAYLOAD_CONFLICT"
 
 
@@ -1941,6 +2297,7 @@ def may_rehandoff(result: ReconciliationResult) -> bool:
 
 __all__ = (
     "GOAL_RESOLUTION_SCHEMA_VERSION",
+    "LEGACY_CANDIDATE_RANGE",
     "MAX_SUCCESS_EXPRESSION_NODES",
     "OPERATION_ENVELOPE_SCHEMA_VERSION",
     "OPERATION_PAYLOAD_CONFLICT",
@@ -1948,11 +2305,15 @@ __all__ = (
     "REVIEW_PURPOSE_ACCOUNTS",
     "REVIEW_RECORD_SCHEMA_VERSION",
     "Acceptance",
+    "AccountingState",
     "AcceptanceId",
     "AllExpr",
     "AmendmentPolicy",
     "AnyExpr",
+    "ApprovalDecision",
+    "ApprovalState",
     "CheckExecution",
+    "CandidatePolicy",
     "Criterion",
     "CriterionExpr",
     "CriterionMatch",
@@ -1961,11 +2322,14 @@ __all__ = (
     "CriterionVerdict",
     "DeliveryReceipt",
     "DeliveryStage",
+    "EffectOutcome",
     "EvaluationKind",
     "GoalResolution",
     "GoalResolutionId",
     "GoalSignature",
     "OperationConflict",
+    "OperationControl",
+    "OperationCurrentState",
     "OperationEnvelope",
     "OperationId",
     "OperationKind",

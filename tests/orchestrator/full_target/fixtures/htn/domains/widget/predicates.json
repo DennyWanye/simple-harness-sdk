@@ -1,0 +1,116 @@
+[
+  {
+    "predicate_ref": {
+      "id": "widget.design-available",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "widget",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "widget.design-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "a current design exists for the widget"
+  },
+  {
+    "predicate_ref": {
+      "id": "widget.parts-in-stock",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "widget",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "widget.stock-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "every part the design calls for is in stock"
+  },
+  {
+    "predicate_ref": {
+      "id": "widget.kit-available",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "widget",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "widget.catalog-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "a prebuilt kit covers this widget"
+  },
+  {
+    "predicate_ref": {
+      "id": "widget.tier-too-deep",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "widget",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "widget.tier-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the assembly tier has more sub-assemblies than one pass covers"
+  },
+  {
+    "predicate_ref": {
+      "id": "widget.tier-buildable",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "widget",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "OPEN",
+    "observer_ids": [
+      "widget.tier-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the assembly tier can be built in one pass"
+  },
+  {
+    "predicate_ref": {
+      "id": "widget.assembly-verified",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "widget",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "widget.assembly-observer"
+    ],
+    "temporal_use": "CURRENT_AT_USE",
+    "statement": "the assembly has passed its verification"
+  }
+]

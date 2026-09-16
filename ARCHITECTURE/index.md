@@ -1,3 +1,5 @@
+最后更新：2026-09-16 CST。FULL-TARGET-1.4 第二批提交：HTN 核心（planning/htn registry/grounding/refinement/compiler/validation + 种子方法库）、readiness 门（graph/eligibility）、InputManifest 解析（artifacts/input_bindings）、存储层与迁移 16（storage/htn_schema、htn_store、obligation_store，31 张 STRICT 表）、替代任务义务继承（orchestrator/obligation_commits，commit_service 仅在 superseded 分支加一处调用）、契约第四～六轮。full_target 1493 条测试全绿；编排范围回归无新失败；旧模式事件字节级不变。接线片 P2.3a/b/c 未开始，生产路径仍未使用 HTN。[交接](../plans/2026-09-16-full-target/HANDOFF.md)。
+
 最后更新：2026-09-16 CST。FULL-TARGET-1.4 实施第一批提交：HTN 契约（contracts/htn、obligations、evidence_state、resolution、semantic_base）、四值谓词求值器（planning/htn/applicability）、验收纯规则（verification/acceptance_rules）、理由最小不动点（knowledge/justifications）、TaskNetwork 快照与投影验证（graph/task_network、projection_validation）、PANDA 后端适配（planning/htn/backends/panda）。全部纯内存/纯函数，未接线；旧模式零改动；新增 630 条测试，编排范围回归无新失败。计划来源与状态见 [交接](../plans/2026-09-16-full-target/HANDOFF.md)。
 
 最后更新：2026-09-15 23:27 CST。AppWorld R 选择计量：`f7432dc` 预估计入 tool schema；空候选跳过选择轮。完整叙事在 Host `plans/taskSys2/HANDOFF-2026-09-15-r-envelope.md`。[本仓指针](../plans/2026-09-14-gap-phase1/HANDOFF-2026-09-15-r-envelope.md)。

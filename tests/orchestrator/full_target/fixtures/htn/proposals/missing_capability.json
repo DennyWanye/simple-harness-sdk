@@ -1,0 +1,119 @@
+{
+  "method": {
+    "schema_version": 1,
+    "method_id": "code.fix-by-history-rewrite",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "code.fix-failing-test",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "code.repo-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "code.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "code.repo-checked-out",
+          "version": 1
+        },
+        "arguments": {
+          "repository": {
+            "op": "parameter",
+            "name": "repository"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "facts",
+        "task_type_ref": {
+          "id": "code.read-repository-facts",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "repository": {
+            "op": "parameter",
+            "name": "repository"
+          }
+        },
+        "required_capabilities": [
+          "repo.rewrite-history"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "revert",
+        "task_type_ref": {
+          "id": "code.revert-commit",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "repository_facts": {
+            "op": "output",
+            "step": "facts",
+            "port": "facts"
+          }
+        },
+        "required_capabilities": [
+          "repo.write"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "verify",
+        "task_type_ref": {
+          "id": "code.verify-tests",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "patch": {
+            "op": "output",
+            "step": "revert",
+            "port": "patch"
+          }
+        },
+        "required_capabilities": [
+          "tests.run"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-test-passes",
+          "child_step": "verify",
+          "child_criterion_id": "c-green",
+          "evidence_requirement": "the suite passes afterwards"
+        },
+        {
+          "parent_criterion_id": "c-change-explained",
+          "child_step": "revert",
+          "child_criterion_id": "c-explained",
+          "evidence_requirement": "the revert is explained"
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "verify",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  "author": "model",
+  "registry_status": "DRAFT",
+  "rationale": "proposed because no admitted method applied"
+}
