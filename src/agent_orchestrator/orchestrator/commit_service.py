@@ -2743,15 +2743,29 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         )
 
     def record_planning_rejected(
-        self, mission_id: str, *, ordinal: int, reason: str, detail: Mapping[str, Any]
+        self,
+        mission_id: str,
+        *,
+        ordinal: int,
+        reason: str,
+        detail: Mapping[str, Any],
+        key: str | None = None,
     ) -> Event:
         """A Planner turn that produced no usable graph (D3-2'): durable feedback for the
-        next proposal, no state transition."""
+        next proposal, no state transition.
+
+        ``key`` overrides the default ``{mission}:planner:{ordinal}`` (review P2-2).
+        That default says "this is what round *n* came back with", and one round has one
+        answer — but P2.3d writes a second kind of record here: *why* a round is being
+        opened (D5-A's root-review findings).  Sharing the key made the two collide,
+        and the round's own rejection was the one dropped, so the next package told the
+        Planner what the reviewer had said and nothing about its own last answer.
+        """
 
         return self._emit(
             "PlanningRejected",
             mission_id,
-            key=f"{mission_id}:planner:{ordinal}",
+            key=key or f"{mission_id}:planner:{ordinal}",
             payload={"ordinal": ordinal, "reason": reason, "detail": dict(detail)},
         )
 

@@ -262,3 +262,158 @@ def test_a_step_neither_consumed_nor_linked_still_declares_no_port(three_step: W
     )
     assert declared_output_ports(three_step.network(), _occurrence(three_step, audit)) == {}
     assert three_step.dispatch.declared_output_ports_for(three_step.mission.id, audit) == ()
+
+
+# ======================================================================================
+# 5. review P2-6 / P2-7 / P2-10: the edges of the widened rule
+# ======================================================================================
+
+
+def _linked_world(tmp_path, *, key: str) -> World:
+    """A plan whose criterion link points at a step that is **not** the finalizer.
+
+    ``coverage_from_slots`` resolves a link's ``child_step`` to that slot, so the rule
+    was never finalizer-specific — but every fixture in this file, in
+    ``test_evidence_saturation`` and in the seed method ``code.fix-by-patch`` happened
+    to link the finalizer, so "criterion-linked" and "is the finalizer" were the same
+    set and nothing could tell which one the code was reading (review P2-10).
+
+    The linked step is a new task type ``plan.probe`` with three output ports:
+    ``result`` (consumed by the review edge), ``note`` (required, consumed by nobody)
+    and ``aside`` (optional, consumed by nobody) — which is what P2-6 needs to say
+    which of the last two is owed.
+    """
+
+    import test_htn_end_to_end as e2e
+
+    original_env, original_outer = e2e._env, e2e._outer
+
+    def env_with_probe(mission: str):
+        env = original_env(mission)
+        env.register_type(
+            "plan.probe",
+            parameters=(("subject", "string"),),
+            outputs=(
+                ("result", "plan.result"),
+                ("note", "plan.note"),
+                ("aside", "plan.aside", False),
+            ),
+            capabilities=("plan.read",),
+            domain="plan",
+        )
+        return env
+
+    def outer_linked_to_probe(method_id: str = "plan.outer"):
+        return method(
+            method_id,
+            "plan.goal",
+            parameter_schema="plan.goal.params",
+            steps=(
+                step(
+                    "probe",
+                    "plan.probe",
+                    TaskForm.PRIMITIVE,
+                    {"subject": param("subject")},
+                    capabilities=("plan.read",),
+                ),
+                step(
+                    "review",
+                    "plan.review",
+                    TaskForm.PRIMITIVE,
+                    {"subject": param("subject"), "result": out("probe", "result")},
+                    capabilities=("plan.read",),
+                ),
+            ),
+            links=(("c-root", "probe", "c-done"),),
+            finalizer="review",
+        )
+
+    e2e._env, e2e._outer = env_with_probe, outer_linked_to_probe
+    try:
+        return committed(tmp_path, demand=True, key=key)
+    finally:
+        e2e._env, e2e._outer = original_env, original_outer
+
+
+def _probe_task(world: World) -> str:
+    from test_htn_end_to_end import _task_of
+
+    return _task_of(world, "plan.probe")
+
+
+@pytest.fixture
+def linked(tmp_path) -> World:
+    return _linked_world(tmp_path, key="p23d-linked-nonfinal")
+
+
+def test_a_criterion_link_to_a_non_finalizer_step_declares_that_steps_ports(
+    linked: World,
+) -> None:
+    """The rule is "criterion-linked", not "is the finalizer"."""
+
+    probe, review = _occurrence(linked, _probe_task(linked)), _occurrence(
+        linked, _review_task(linked)
+    )
+    covered = criterion_linked_occurrences(
+        coverage_in_revision(linked.semantics, linked.mission.id, _revision(linked))
+    )
+    assert probe in covered and review not in covered, "the link points at the probe step"
+    assert "note" in _rows_ports(linked, _probe_task(linked)), (
+        "the step owes its unconsumed required port because the root criterion reads it"
+    )
+    # The finalizer is not criterion-linked in this plan, so its own unconsumed port is
+    # exactly what it was before D3: nobody's.
+    assert "verdict" not in _rows_ports(linked, _review_task(linked))
+
+
+def test_an_optional_port_of_a_criterion_linked_step_is_not_owed(linked: World) -> None:
+    """Review P2-6 (mutation M05 survived): which of the two readings this is.
+
+    "Declared" means "owed": ``declared_output_ports_for`` reports every port in the
+    set as ``required: True`` and ``OUTPUT_PORT_UNCLAIMED`` refuses a leaf that skipped
+    one.  An ``required=False`` port carried into that set would be reported to the
+    model as required and enforced as required, which is the opposite of what the
+    contract says about it — and carrying it in with ``required=False`` instead would
+    mean a port that is announced and never enforced, which is a longer way of saying
+    nothing.  So criterion linkage contributes the producer's **required** ports only.
+
+    A port an edge *consumes* is unaffected either way: the consumer's requirement is
+    what puts it in the set, and that has been true since before D3.
+    """
+
+    ports = _rows_ports(linked, _probe_task(linked))
+    assert "note" in ports, "required and criterion-linked: owed"
+    assert "aside" not in ports, "optional: the contract does not ask for it"
+    assert "result" in ports, "consumed by the review edge, as it always was"
+
+
+def test_the_network_reader_matches_the_binding_by_occurrence_not_by_position(
+    linked: World,
+) -> None:
+    """Review P2-7: ``zip(task_bindings, occurrences)`` assumed two orders agree.
+
+    ``HierarchicalDispatch.network()`` does build them side by side, but a snapshot
+    that came out of ``compile_proposal`` is "the old bindings then the new ones"
+    (``compiler.py``), which is not the occurrence order — and the *wrong* binding here
+    would declare another step's ports on this one.  ``binding_for_occurrence`` is the
+    lookup that cannot be off by a position.
+    """
+
+    import inspect
+
+    from agent_orchestrator.orchestrator import accepted_outputs as module
+
+    assert "zip(network.task_bindings" not in inspect.getsource(module.declared_output_ports)
+    network = linked.dispatch.network(linked.mission.id)
+    probe = _occurrence(linked, _probe_task(linked))
+    assert dict(declared_output_ports(network, probe)) == dict(
+        _rows_ports(linked, _probe_task(linked))
+    ), "the network reader and the row reader still give one answer"
+
+    # And the answer survives a snapshot whose two sequences are in different orders.
+    from dataclasses import replace
+
+    shuffled = replace(network, task_bindings=tuple(reversed(network.task_bindings)))
+    assert dict(declared_output_ports(shuffled, probe)) == dict(
+        declared_output_ports(network, probe)
+    )

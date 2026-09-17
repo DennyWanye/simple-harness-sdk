@@ -87,7 +87,14 @@ def _rejected_world(tmp_path, *, findings, key: str, tokens: int | None = None) 
     return world
 
 
-def _advance(world: World, evidence: Path, *, repairs: int = 1, rounds: int = 1) -> dict[str, Any]:
+def _advance(
+    world: World,
+    evidence: Path,
+    *,
+    repairs: int = 1,
+    rounds: int = 1,
+    spend_ordinal_one: bool = False,
+) -> dict[str, Any]:
     """Run ``_advance_root_review`` ``rounds`` times on a real Orchestrator."""
 
     config = OrchestratorConfig(
@@ -102,6 +109,18 @@ def _advance(world: World, evidence: Path, *, repairs: int = 1, rounds: int = 1)
         async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as loop:
             world.env.semantics = HtnStore(loop.store)
             loop.install_hierarchical(planning=world.env)
+            if spend_ordinal_one:
+                # Review P2-8: in production the first plan came from a Planner round,
+                # so the repair round is ordinal >= 2 — and ``_create_planner_intent``
+                # only puts ``_planning_rejections`` into the package when it is.  The
+                # fixture commits its first revision directly, so without this the
+                # repair round is ordinal 1 and the findings never reach the model.
+                await loop._try_planner_intent(world.mission.id, ordinal=1)
+                for item in loop.store.list_intents(
+                    "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                ):
+                    if item.mission_id == world.mission.id and item.kind == "plan":
+                        loop._settle_intent(item, "FAILED")
             moved: list[bool] = []
             for _ in range(rounds):
                 mission = loop.store.get_mission(world.mission.id)
@@ -122,6 +141,13 @@ def _advance(world: World, evidence: Path, *, repairs: int = 1, rounds: int = 1)
                 "status": loop.store.get_mission(world.mission.id).status,
                 "stop_reason": loop.store.get_mission(world.mission.id).stop_reason,
                 "next_ordinal": loop._next_planning_ordinal(world.mission.id),
+                "packages": [
+                    str(item.config.get("message", ""))
+                    for item in loop.store.list_intents(
+                        "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                    )
+                    if item.mission_id == world.mission.id and item.kind == "plan"
+                ],
             }
 
     return asyncio.run(case())
@@ -281,9 +307,8 @@ def test_a_rejected_repair_round_does_not_kill_a_mission_that_holds_a_plan(tmp_p
     assert outcome["after"] is MissionStatus.ACTIVE
     assert "MissionFailed" not in outcome["events"]
     # The refusal is still written down — not failing is not the same as not noticing.
-    # (One record, not two: ``record_planning_rejected`` is keyed by ordinal, and the
-    # repair round and its rejection are the same ordinal.)
-    assert "PlanningRejected" in outcome["events"]
+    # Two records: why the round was opened, and what came back from it (review P2-2).
+    assert outcome["events"].count("PlanningRejected") == 2
 
 
 def test_a_repair_round_that_cannot_be_funded_stops_the_mission_visibly(tmp_path) -> None:
@@ -344,3 +369,69 @@ def test_the_whole_loop_survives_a_repair_round_it_cannot_fund(tmp_path) -> None
     outcome = asyncio.run(case())
     assert outcome["status"] in TERMINAL_MISSION, "a Mission that cannot go on has an ending"
     assert "MissionFailed" in outcome["events"]
+
+
+def test_the_findings_are_in_the_package_the_repair_round_actually_carries(blocked) -> None:
+    """Review P2-8: the event is not the delivery — the package is.
+
+    ``test_the_findings_travel_to_the_planner_as_durable_feedback`` proves the record
+    exists; ``_create_planner_intent`` only folds ``_planning_rejections`` into the
+    package when ``ordinal > 1``, so with the fixture's first revision committed
+    directly the repair round was ordinal 1 and carried nothing.  Production ordinals
+    are >= 2, so the feature worked — but nothing here could have noticed if it stopped.
+    """
+
+    world, evidence = blocked
+    outcome = _advance(world, evidence, spend_ordinal_one=True)
+    assert outcome["moved"] == [True]
+    assert outcome["next_ordinal"] == 3, "ordinal 1 is spent, the repair took 2"
+    repair = [item for item in outcome["packages"] if "no readable proof" in item]
+    assert repair, "the blocking finding never reached the Planner's package"
+    assert ROOT_REVIEW_REPAIR_REASON in repair[0]
+
+
+def test_the_repair_record_does_not_swallow_the_rounds_own_rejection(blocked) -> None:
+    """Review P2-2: two different things were sharing one idempotency key.
+
+    ``record_planning_rejected`` is keyed ``{mission}:planner:{ordinal}``, and D5-A
+    wrote the findings under the ordinal it was about to open.  When *that* round was
+    then refused on its own merits — unreadable, ungrounded — the second write hit the
+    same key and was dropped, so the next package told the Planner what the reviewer
+    had said and not what was wrong with its own last answer.  The repair record is a
+    different fact about a different thing, so it gets its own key.
+    """
+
+    world, evidence = blocked
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=5,
+        max_root_review_repairs=1,
+        max_planning_attempts=4,
+    )
+
+    async def case() -> list[dict[str, Any]]:
+        async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            mission = loop.store.get_mission(world.mission.id)
+            assert await loop._advance_root_review(mission, loop._new_mode(mission))
+            intent = next(
+                item
+                for item in loop.store.list_intents(
+                    "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                )
+                if item.mission_id == world.mission.id and item.kind == "plan"
+            )
+            await loop._planning_rejected(
+                intent, reason="proposal_not_grounded", detail={"error": "named a stranger"}
+            )
+            return [
+                dict(item.payload)
+                for item in loop.store.list_events(world.mission.id)
+                if item.type == "PlanningRejected"
+            ]
+
+    reasons = [str(item["reason"]) for item in asyncio.run(case())]
+    assert ROOT_REVIEW_REPAIR_REASON in reasons, "why the round was opened"
+    assert "proposal_not_grounded" in reasons, "and what came back from it"

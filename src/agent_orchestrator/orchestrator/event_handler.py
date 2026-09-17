@@ -6693,6 +6693,17 @@ class Orchestrator:
           A repair produces a new revision, so a Mission cannot circle here: the same
           revision is never re-planned twice, and a Mission out of repairs falls
           through to the idle stall exactly as before.
+
+        Review P2-3: "one more round" is what *this* branch opens, not what the Mission
+        then spends.  The round it opens is an ordinary Planner round, so if its
+        proposal is refused ``_planning_rejected`` climbs the ordinary ladder — up to
+        ``max_planning_attempts`` in total, not one.  That is the intended behaviour
+        (a repair whose first proposal was unreadable is not a repair that was tried);
+        what is bounded here is how many times a *root review rejection* may reopen
+        planning at all.  The cross-revision bound is ``max_root_review_cuts``: each
+        repair produces a new revision whose acceptances move the contributions, which
+        spends a cut, and the cut budget ends the chain with
+        ``HierarchicalRootReviewCutBudgetSpent``.
         """
 
         if self._config.max_root_review_repairs < 1:
@@ -6721,6 +6732,11 @@ class Orchestrator:
             mission.id,
             ordinal=ordinal,
             reason=ROOT_REVIEW_REPAIR_REASON,
+            # Review P2-2: its own key.  This record says why the round is being opened;
+            # the round's own answer is written later under the ordinal key, and under
+            # one key the second write was dropped.  Keyed by revision because the bound
+            # is per revision — a second write here would mean the bound did not hold.
+            key=f"{mission.id}:root-review-repair:{revision}",
             detail={
                 "plan_revision": revision,
                 "package_id": str(package.package_id),

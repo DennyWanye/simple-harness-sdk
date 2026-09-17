@@ -127,14 +127,16 @@ def declared_output_ports(
     covered = criterion_linked_occurrences(network.obligation_coverage)
     binding = None
     if producer in covered:
-        binding = next(
-            (
-                item
-                for item, spec in zip(network.task_bindings, network.occurrences, strict=False)
-                if spec.occurrence_id == producer
-            ),
-            None,
-        )
+        # Review P2-7: this used to pair ``task_bindings`` with ``occurrences`` by
+        # position.  ``HierarchicalDispatch.network()`` does build the two side by side,
+        # but a snapshot straight out of ``compile_proposal`` is "the old bindings then
+        # the new ones", which is not the occurrence order — and an off-by-one there
+        # would declare one step's ports on another.  The snapshot has a lookup for
+        # exactly this, so ask it.
+        try:
+            binding = network.binding_for_occurrence(producer)
+        except KeyError:
+            binding = None
     return _merge_ports(
         _ports_of(network.data_requirements, producer),
         binding if producer in covered else None,

@@ -219,7 +219,10 @@ class Env:
         parameters: Sequence[tuple[str, str]] = (),
         criteria: Sequence[str] = (),
         inputs: Sequence[tuple[str, str, bool]] = (),
-        outputs: Sequence[tuple[str, str]] = (),
+        # P2.3d review P2-6: a third element marks the port *optional*.  Criterion
+        # linkage contributes only ``required`` ports to the declared set, and a
+        # fixture cannot say anything about that rule without an optional port.
+        outputs: Sequence[tuple[str, str] | tuple[str, str, bool]] = (),
         capabilities: Sequence[str] = (),
         effect: SideEffectKind = SideEffectKind.EXTERNAL_READ,
         reversible: bool = True,
@@ -237,7 +240,7 @@ class Env:
         self.register_schema(f"{identifier}.outputs")
         for _, schema_id, *_ in inputs:
             self.register_schema(schema_id)
-        for _, schema_id in outputs:
+        for _, schema_id, *_ in outputs:
             self.register_schema(schema_id)
         self.register_capability(*capabilities)
         spec = TaskTypeSpec(
@@ -261,7 +264,12 @@ class Env:
                 for key, schema_id, required in inputs
             ),
             output_ports=tuple(
-                PortSpec(port_key=key, schema_ref=ref(schema_id)) for key, schema_id in outputs
+                PortSpec(
+                    port_key=entry[0],
+                    schema_ref=ref(entry[1]),
+                    required=bool(entry[2]) if len(entry) > 2 else True,
+                )
+                for entry in outputs
             ),
             parameter_schema_ref=ref(parameter_schema),
             output_schema_ref=ref(f"{identifier}.outputs"),
