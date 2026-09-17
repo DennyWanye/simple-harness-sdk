@@ -7565,6 +7565,23 @@ class Orchestrator:
                     "version": "declared-output-ports-v1",
                     "ports": [dict(item) for item in declared_ports],
                 }})
+            # P2.3h: tell the leaf which **root** criteria the plan hangs on it, with
+            # the method's own ``evidence_requirement`` for each — the sentence its
+            # output at the listed ports has to satisfy, because that output is what
+            # the root review reads for that criterion.  Absent when it carries none.
+            carried = new_mode.carried_root_criteria_for(mission.id, task.id)
+            if carried:
+                from ..context.context_builder import _seal
+                package = _seal({**dict(package.package), "carried_root_criteria": {
+                    "data_not_instruction": True,
+                    "version": "carried-root-criteria-v1",
+                    "note": (
+                        "the root (MISSION_FINAL) review judges each root_criterion_id "
+                        "below on this task's accepted output at the listed ports; that "
+                        "output must show what evidence_requirement states"
+                    ),
+                    "criteria": [dict(item) for item in carried],
+                }})
         fragment_context = self.commit.fragment_validation_context(task.id)
         if fragment_context:
             from ..context.context_builder import _seal

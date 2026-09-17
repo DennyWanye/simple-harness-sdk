@@ -139,13 +139,13 @@
           "parent_criterion_id": "c-test-passes",
           "child_step": "verify",
           "child_criterion_id": "c-green",
-          "evidence_requirement": "the suite passes on the patched revision"
+          "evidence_requirement": "the report shows the named failing test was run on the patched revision and now passes, quoting the command and its result"
         },
         {
           "parent_criterion_id": "c-change-explained",
-          "child_step": "patch",
+          "child_step": "verify",
           "child_criterion_id": "c-explained",
-          "evidence_requirement": "the patch names the defect it addresses"
+          "evidence_requirement": "the report explains what the patch changed and why that change makes the reproduced failure pass, naming the defect it addresses"
         }
       ],
       "outputs": {},
@@ -271,13 +271,13 @@
           "parent_criterion_id": "c-test-passes",
           "child_step": "verify",
           "child_criterion_id": "c-green",
-          "evidence_requirement": "the suite passes once the regression commit is gone"
+          "evidence_requirement": "the report shows the named failing test was run once the regression commit is gone and now passes, quoting the command and its result"
         },
         {
           "parent_criterion_id": "c-change-explained",
-          "child_step": "revert",
+          "child_step": "verify",
           "child_criterion_id": "c-explained",
-          "evidence_requirement": "the revert names the commit it undoes"
+          "evidence_requirement": "the report names the commit the revert undoes and explains why removing it makes the failing test pass"
         }
       ],
       "outputs": {},
@@ -734,13 +734,13 @@
           "parent_criterion_id": "c-test-passes",
           "child_step": "verify",
           "child_criterion_id": "c-green",
-          "evidence_requirement": "the suite passes once the regression commit is gone"
+          "evidence_requirement": "the report shows the named failing test was run once the regression commit is gone and now passes, quoting the command and its result"
         },
         {
           "parent_criterion_id": "c-change-explained",
-          "child_step": "revert",
+          "child_step": "verify",
           "child_criterion_id": "c-explained",
-          "evidence_requirement": "the revert names the commit it undoes and the assessment that justified it"
+          "evidence_requirement": "the report names the commit the revert undoes and the assessment that justified it and explains why removing it makes the failing test pass"
         }
       ],
       "outputs": {},

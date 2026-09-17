@@ -1,0 +1,73 @@
+{
+  "schema": "code.facts",
+  "schema_version": 1,
+  "workspace_files": [
+    "README-task.md",
+    "REPORT.md",
+    "facts.json",
+    "stats/__init__.py",
+    "stats/window.py",
+    "tests/test_public_window.py"
+  ],
+  "package": {
+    "name": "stats",
+    "init": "stats/__init__.py",
+    "init_content": "empty file"
+  },
+  "modules": [
+    {
+      "path": "stats/window.py",
+      "purpose": "Sliding statistics over a sample buffer",
+      "functions": [
+        {
+          "name": "window_sum",
+          "signature": "window_sum(values, start, end)",
+          "documented_contract": "Sum of values[start:end]; end is exclusive (half-open range).",
+          "current_implementation": "return sum(values[start:end])",
+          "observed_behavior": "Sums values[start:end], covering the documented half-open range including index end-1 and excluding index end."
+        },
+        {
+          "name": "rolling_mean",
+          "signature": "rolling_mean(values, size)",
+          "documented_contract": "Mean of every consecutive window of size values. Added last week for the nightly trend chart. Raises ValueError if size <= 0.",
+          "current_implementation": "return [window_sum(values, offset, offset + size) / size for offset in range(0, len(values) - size + 1)]",
+          "depends_on": ["window_sum"],
+          "note": "Feature preserved. After the window_sum slice fix, each window mean includes the last sample of that window."
+        }
+      ]
+    }
+  ],
+  "tests": {
+    "path": "tests/test_public_window.py",
+    "imports": ["window_sum from stats.window"],
+    "does_not_import": ["rolling_mean"],
+    "cases": [
+      {
+        "name": "test_window_sum_of_an_empty_range_is_zero",
+        "assertion": "window_sum([1, 2, 3], 2, 2) == 0",
+        "status": "expected_pass",
+        "note": "Empty slice values[2:2] is empty; sum is 0."
+      },
+      {
+        "name": "test_window_sum_covers_the_whole_requested_range",
+        "assertion": "window_sum([1, 2, 3, 4, 5], 1, 4) == 9",
+        "status": "expected_pass",
+        "expected": 9,
+        "comment_in_test": "Reported by ops on 2026-09-14: the nightly totals are short by one sample.",
+        "explanation": "Correct half-open slice values[1:4] is [2, 3, 4] summing to 9."
+      }
+    ]
+  },
+  "mission_context": {
+    "user_goal": "Fix the failing test in tests/test_public_window.py without dropping the rolling window feature added last week.",
+    "constraint": "Do not delete or rewrite existing features; rolling_mean is still in use for the nightly trend chart.",
+    "root_cause": "window_sum sliced with end-1 instead of end (off-by-one). Fixed by summing values[start:end]. rolling_mean kept."
+  },
+  "change": {
+    "file": "stats/window.py",
+    "function": "window_sum",
+    "before": "return sum(values[start:end - 1])",
+    "after": "return sum(values[start:end])",
+    "preserved": ["rolling_mean"]
+  }
+}

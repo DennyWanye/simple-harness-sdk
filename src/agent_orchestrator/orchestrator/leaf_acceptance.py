@@ -13,11 +13,14 @@ happened.
 Where each anchor comes from — the point being that none of them is invented here:
 
 ``RequirementsRevision``
-    the leaf's own goal signature.  Its ``coverage_criteria`` are what the plan says
-    this occurrence has to cover; the *required checks* of each criterion are the
-    verification layers that actually ran on this result.  A criterion nobody can
-    check is therefore not silently satisfied — it is a criterion with no gate, and
-    the acceptance formula treats it as such.
+    the leaf's own goal signature plus the root criteria the adopted method's
+    ``criterion_links`` hang on this occurrence (P2.3h, :func:`criteria_for`).  Its
+    ``coverage_criteria`` are what the plan says this occurrence has to cover; the
+    *required checks* of each criterion are the verification layers that actually
+    ran on this result.  A criterion nobody can check is therefore not silently
+    satisfied — it is a criterion with no gate, and the acceptance formula treats it
+    as such.  A root criterion the plan did **not** link to this leaf is absent from
+    its package, never PASS.
 ``ReviewPackage`` / ``ReviewRecord``
     frozen from the verification verdict and **stored before the command**, because
     ``accept_review`` re-reads both from the store and compares content hashes: an
@@ -106,7 +109,7 @@ from ..runtime.output_blocks import PortClaim
 from ..storage.htn_store import HtnStore
 from ..storage.store import StoreError
 from ..verification.acceptance_rules import ExecutionPosture, IndependenceFacts
-from .accepted_outputs import output_ports_in_revision
+from .accepted_outputs import CarriedCriterion, carried_criteria_for, output_ports_in_revision
 from .resolution_commits import AcceptanceReceipt, AcceptReviewCommand, ResolutionPrincipal
 
 #: The review policy this deployment reviews a hierarchical leaf under.  A named
@@ -123,6 +126,15 @@ CONCLUSIVE_LAYER_STATUSES = frozenset({"PASS", "FAIL"})
 #: What the reviewer is allowed to do to the candidate.  ``WRITE`` is refused at
 #: construction, so stating ``READ_ONLY`` here is a claim the package can hold.
 REVIEWER_ACCESS = WorkspaceAccess.READ_ONLY
+
+#: The one criterion a leaf owes when the plan hangs no root criterion on it and its
+#: own goal type declares none (P2.3h).  Such a step — ``facts``, ``reproduce`` — is
+#: still accepted on its verified result; what it is *not* is a witness to the root
+#: goal, and its acceptance must not say otherwise.  Before P2.3h the fallback was
+#: the obligation's ``requirement_refs``, i.e. the **parent's** criteria, so every
+#: leaf's review stamped ``c-test-passes`` PASS and the root reviewer of the Grok C3
+#: run correctly refused to count those stamps as evidence.
+LEAF_LOCAL_CRITERION = "c-leaf-verified"
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,28 +198,57 @@ def check_ids(layers: Sequence[LayerOutcome]) -> tuple[str, ...]:
 
 
 def criteria_for(
-    binding: TaskSemanticBindingV1, layers: Sequence[LayerOutcome]
+    binding: TaskSemanticBindingV1,
+    layers: Sequence[LayerOutcome],
+    *,
+    carried: Sequence[CarriedCriterion] = (),
 ) -> tuple[Criterion, ...]:
-    """The leaf's coverage criteria, each gated on the checks that actually ran."""
+    """The leaf's own criteria, each gated on the checks that actually ran.
+
+    P2.3h: a leaf owes exactly three kinds of criterion and nothing else —
+
+    * its goal type's own ``coverage_criteria``, by name;
+    * the root criteria the adopted method's ``criterion_links`` hang on **this**
+      occurrence, under the link's ``child_criterion_id`` (``c-green`` for
+      ``verify``), with the link's ``evidence_requirement`` as the statement;
+    * when there are none of either, :data:`LEAF_LOCAL_CRITERION`.
+
+    The obligation's ``requirement_refs`` are no longer a fallback.  They are the
+    *parent's* requirements (a ``refines_parent`` step inherits them verbatim), so
+    reading them here made every leaf's ``ReviewRecord`` stamp every root criterion
+    PASS — the ``facts`` step vouching for ``c-test-passes`` — which is a stamp no
+    reviewer may take as evidence and the Grok C3 reviewer rightly did not.
+    """
 
     gates = check_ids(layers)
-    names = tuple(binding.goal_signature.coverage_criteria) or tuple(binding.requirement_refs)
-    if not names:
-        raise ContractError(
-            f"task {binding.task_id!s} declares no coverage criterion and no requirement ref; "
-            "an acceptance with nothing to cover would be an acceptance of nothing (AER §6.2)"
+    statements: dict[str, str] = {}
+    for name in binding.goal_signature.coverage_criteria:
+        statements.setdefault(
+            str(name), f"{name} is covered by the accepted result of {binding.task_id!s}"
+        )
+    for link in carried:
+        statements.setdefault(
+            str(link.leaf_criterion_id),
+            f"{link.leaf_criterion_id} covers root criterion {link.parent_criterion_id} of "
+            f"{link.parent_task_id}: {link.evidence_requirement}",
+        )
+    if not statements:
+        statements[LEAF_LOCAL_CRITERION] = (
+            f"the result of {binding.task_id!s} passed the verification layers that ran; "
+            "no root criterion is linked to this step, so this acceptance vouches for its "
+            "own declared outputs and for nothing about the root goal"
         )
     return tuple(
         Criterion(
-            criterion_id=str(name),
+            criterion_id=name,
             revision=1,
             origin=CriterionOrigin.DERIVED,
-            statement=f"{name} is covered by the accepted result of {binding.task_id!s}",
+            statement=statement,
             requirement_class=RequirementClass.REQUIRED_OUTCOME,
             evaluation_kind=EvaluationKind.DETERMINISTIC,
             required_evidence_policy=RequiredEvidencePolicy(required_check_ids=gates),
         )
-        for name in dict.fromkeys(names)
+        for name, statement in statements.items()
     )
 
 
@@ -217,10 +258,11 @@ def requirements_for(
     layers: Sequence[LayerOutcome],
     *,
     revision: int,
+    carried: Sequence[CarriedCriterion] = (),
 ) -> RequirementsRevision:
     """The requirements revision this leaf's acceptance is decided against."""
 
-    criteria = criteria_for(binding, layers)
+    criteria = criteria_for(binding, layers, carried=carried)
     expression: Any = CriterionExpr(criteria[0].criterion_id)
     if len(criteria) > 1:
         from ..contracts.resolution import AllExpr
@@ -424,7 +466,8 @@ class LeafAcceptanceAssembly:
                 "of its own (§6.3)"
             )
         semantics = self.semantics
-        revision = self._requirements(mission_id, binding, outcomes)
+        carried = self.carried_criteria(mission_id, binding)
+        revision = self._requirements(mission_id, binding, outcomes, carried=carried)
         manifest = input_manifest_hash or self._manifest_hash(mission_id, task_id)
         package = self._package(
             mission_id, binding, revision, result_id, manifest, producer_agent_ids
@@ -502,30 +545,83 @@ class LeafAcceptanceAssembly:
         return self.semantics.insert_input_manifest(mission_id, str(task_id), document)
 
     def _requirements(
-        self, mission_id: str, binding: TaskSemanticBindingV1, layers: Sequence[LayerOutcome]
+        self,
+        mission_id: str,
+        binding: TaskSemanticBindingV1,
+        layers: Sequence[LayerOutcome],
+        *,
+        carried: Sequence[CarriedCriterion] = (),
     ) -> RequirementsRevision:
         """This leaf's requirements revision, published once and re-read after that.
 
         A second leaf publishes a *later* revision rather than overwriting the
         first: a requirements revision is immutable, and the read-set channel that
         re-checks "which revision was this decided at" only means something if the
-        number moves when the content does.
+        number moves when the content does.  The number is therefore **Mission-wide
+        and monotone**, not per leaf: four leaves accepted in turn are recorded at
+        revisions 1–4 and the root's own revision comes after them.  The root review
+        request states that semantics beside the numbers (P2.3h), because a reviewer
+        who reads them as "accepted against an older root requirement" is reading
+        them wrongly.
         """
 
         semantics = self.semantics
         latest = semantics.latest_requirements_revision(mission_id)
         candidate = requirements_for(
-            mission_id, binding, layers, revision=1 if latest is None else int(latest.revision)
+            mission_id,
+            binding,
+            layers,
+            revision=1 if latest is None else int(latest.revision),
+            carried=carried,
         )
         if latest is not None and latest.content_hash() == candidate.content_hash():
             return latest
         published = (
             candidate
             if latest is None
-            else requirements_for(mission_id, binding, layers, revision=int(latest.revision) + 1)
+            else requirements_for(
+                mission_id, binding, layers, revision=int(latest.revision) + 1, carried=carried
+            )
         )
         semantics.insert_requirements_revision(published)
         return published
+
+    def carried_criteria(
+        self, mission_id: str, binding: TaskSemanticBindingV1
+    ) -> tuple[CarriedCriterion, ...]:
+        """The root criteria the adopted plan hangs on this leaf's occurrence (P2.3h).
+
+        Read from the same rows :meth:`_outputs` reads its ports from — the active
+        plan revision's memberships and adopted method instances — so "which root
+        criterion this leaf carries" and "which port it delivers on" come from one
+        plan.  An occurrence the active revision does not contain carries nothing.
+        """
+
+        located = self._occurrence_in_active_revision(mission_id, str(binding.task_id))
+        if located is None:
+            return ()
+        revision, occurrence = located
+        return carried_criteria_for(self.semantics, mission_id, revision, occurrence)
+
+    def _occurrence_in_active_revision(
+        self, mission_id: str, task_id: str
+    ) -> tuple[int, OccurrenceId] | None:
+        semantics = self.semantics
+        active = semantics.active_plan_revision(mission_id)
+        if active is None:
+            return None
+        revision = int(active.revision)
+        occurrence = next(
+            (
+                spec.occurrence_id
+                for spec in semantics.list_plan_memberships(mission_id, revision)
+                if str(spec.task_id) == str(task_id)
+            ),
+            None,
+        )
+        if occurrence is None:
+            return None
+        return revision, occurrence
 
     def _package(
         self,
@@ -719,20 +815,10 @@ class LeafAcceptanceAssembly:
         port_claims: Sequence[PortClaim] = (),
     ) -> tuple[AcceptedOutput, ...]:
         semantics = self.semantics
-        active = semantics.active_plan_revision(mission_id)
-        if active is None:
+        located = self._occurrence_in_active_revision(mission_id, str(binding.task_id))
+        if located is None:
             return ()
-        revision = int(active.revision)
-        occurrence = next(
-            (
-                spec.occurrence_id
-                for spec in semantics.list_plan_memberships(mission_id, revision)
-                if str(spec.task_id) == str(binding.task_id)
-            ),
-            None,
-        )
-        if occurrence is None:
-            return ()
+        revision, occurrence = located
         ports = output_ports_in_revision(
             semantics, mission_id, revision, occurrence, str(binding.task_id)
         )
@@ -751,6 +837,7 @@ class LeafAcceptanceAssembly:
 
 __all__ = (
     "CONCLUSIVE_LAYER_STATUSES",
+    "LEAF_LOCAL_CRITERION",
     "LEAF_REVIEW_POLICY",
     "LayerOutcome",
     "LeafAcceptanceAssembly",

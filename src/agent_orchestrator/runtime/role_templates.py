@@ -792,7 +792,7 @@ METHOD_SYNTHESIZER = RoleTemplate(
 )
 register_template(METHOD_SYNTHESIZER)
 
-ROOT_REVIEWER_VERSION = "root-reviewer-v1"
+ROOT_REVIEWER_V1_VERSION = "root-reviewer-v1"
 
 # P2.3c part 3a (§13 v1.4, AER §5.2/I05): the root ``MISSION_FINAL`` review is its own
 # role, for the same reason the MethodSynthesizer is — §18.5 forbids a new review
@@ -801,9 +801,9 @@ ROOT_REVIEWER_VERSION = "root-reviewer-v1"
 # ``<critic_verdict>`` shape so ``parse_critic_verdict`` stays the one parser: a
 # second parser would be a second place a malformed reply could become a PASS.
 # Every template above keeps its words byte-for-byte.
-ROOT_REVIEWER = RoleTemplate(
+ROOT_REVIEWER_V1 = RoleTemplate(
     name="root_reviewer",
-    prompt_version=ROOT_REVIEWER_VERSION,
+    prompt_version=ROOT_REVIEWER_V1_VERSION,
     tool_names=(),
     instructions=(
         "[role:root_reviewer]\n"
@@ -833,6 +833,62 @@ ROOT_REVIEWER = RoleTemplate(
         '  {"verdict": "PASS" | "FAIL", "findings": [{"severity": "blocker"|"major"|"minor", "detail": str}],\n'
         '   "mission_criteria": [{"criterion": str, "met": bool, "reason": str}]}\n'
         "块外不要输出任何文字。"
+    ),
+)
+register_template(ROOT_REVIEWER_V1)
+
+#: P2.3h.  The Grok C3 run rejected a correct Mission on a package that showed the
+#: reviewer artifact ids and nothing readable, stamped every root criterion PASS on
+#: every leaf, named no leaf answerable for ``c-change-explained`` and carried leaf
+#: revision numbers that read as staleness.  ``root_review.request`` now inlines an
+#: ``excerpt`` of each accepted output, names each criterion's ``covered_by``, keeps
+#: leaf reviews to the leaf's own criteria and explains the revision counter — and a
+#: reviewer reading v1's words would still look for the old fields.  v1 is not edited
+#: (an Attempt replays on the bytes it pinned, §26.3, and its digest is frozen in
+#: ``test_root_review_evidence``); this is a new version beside it.
+ROOT_REVIEWER_VERSION = "root-reviewer-v2"
+ROOT_REVIEWER = _revise(
+    ROOT_REVIEWER_V1,
+    ROOT_REVIEWER_VERSION,
+    (
+        "输入是一份类型化上下文，字段固定：review_package_id、goal_task_id、goal_statement、"
+        "requirements_revision、criteria（根目标必须覆盖的准则，逐条带 criterion_id 与 statement）、"
+        "contributions（每个子目标的 Acceptance：acceptance_id、task_id、requirements_revision、"
+        "goal_statement=该子目标要达成什么、accepted_outputs=该验收在声明的输出端口上真实交付的产物"
+        "（port 与 artifact_id）、review=该验收当时的评审结论、"
+        "evidence=这条贡献的证据情况，kind 为 none 时表示计划没有为它声明输出端口、"
+        "因而没有可读的交付证据，reason 说明这一点）。\n",
+        "输入是一份类型化上下文，字段固定：review_package_id、goal_task_id、goal_statement、"
+        "requirements_revision、requirements_revision_semantics（修订号的含义）、"
+        "criteria（根目标必须覆盖的准则，逐条带 criterion_id、statement 与 covered_by="
+        "计划指定承担这条准则的贡献：acceptance_id、task_id、leaf_criterion_id、"
+        "evidence_requirement=该贡献的产物必须展示什么、ports=去哪些端口读）、"
+        "contributions（每个子目标的 Acceptance：acceptance_id、task_id、"
+        "accepted_at_requirements_revision=该叶子验收时的修订号、"
+        "goal_statement=该子目标要达成什么、"
+        "carries_root_criteria=该叶子承担的根准则（root_criterion_id、leaf_criterion_id、"
+        "evidence_requirement、leaf_review_verdict），不承担任何根准则时为空、"
+        "accepted_outputs=该验收在声明的输出端口上真实交付的产物（port、artifact_id、"
+        "covers_root_criteria=这件产物是哪些根准则的证据、excerpt=产物内容摘录："
+        "kind 为 text 时 text 是原文（truncated=true 表示按长度截断，total_chars 是全文长度），"
+        "kind 为 binary/unavailable/omitted 时只有 content_hash 与 size_bytes、读不到正文）、"
+        "review=该验收当时的评审结论，其中 review.criteria 只含该叶子自己的准则"
+        "（叶子自己的准则名、经 leaf_criterion_id 链接的根准则、或 c-leaf-verified）、"
+        "evidence=这条贡献的证据情况：count 是交付件数、readable 是其中有原文摘录的件数，"
+        "kind 为 none 时表示计划没有为它声明输出端口、因而没有可读的交付证据，reason 说明这一点）。\n",
+    ),
+    (
+        "按 goal_statement 与 review 判断，并在 findings 里写明这一条缺少交付证据。\n",
+        "按 goal_statement 与 review 判断，并在 findings 里写明这一条缺少交付证据。"
+        "证据在 accepted_outputs[].excerpt.text 里：对每条根准则，先看 criteria[].covered_by "
+        "找到承担它的贡献，再读该贡献 covers_root_criteria 含这条准则的产物摘录，"
+        "按 evidence_requirement 判断摘录是否真的展示了要求的内容。"
+        "叶子 review.criteria 里的 PASS 只对该叶子 carries_root_criteria 列出的根准则有效，"
+        "叶子不承担的根准则不得因任何叶子的 PASS 而判 met=true；"
+        "covered_by 为空的准则，除非别的摘录直接证明，否则判 met=false 并说明无人承担。\n"
+        "  1b. 每条贡献的 accepted_at_requirements_revision 小于根的 requirements_revision "
+        "是正常形态（见 requirements_revision_semantics）：修订号是全 Mission 单调计数，"
+        "不表示过期或不组合，不得据此判 false，也不要就此记 finding。\n",
     ),
 )
 register_template(ROOT_REVIEWER)
@@ -950,6 +1006,8 @@ __all__ = (
     "METHOD_SYNTHESIZER",
     "METHOD_SYNTHESIZER_VERSION",
     "ROOT_REVIEWER",
+    "ROOT_REVIEWER_V1",
+    "ROOT_REVIEWER_V1_VERSION",
     "ROOT_REVIEWER_VERSION",
     "PLAN_REVISION_PROPOSAL_TAG",
     "HIERARCHICAL_PLANNER_PACKAGE_VERSION",

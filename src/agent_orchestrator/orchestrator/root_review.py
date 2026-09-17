@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from ..artifacts.store import ArtifactStoreError, read_verified
 from ..contracts.evidence_state import (
     Availability,
     TruthValue,
@@ -99,6 +100,7 @@ from ..contracts.semantic_base import (
 from ..knowledge.validity import NO_SUBJECT, witness_subject
 from ..storage.htn_store import HtnStore
 from ..storage.store import StoreError
+from .accepted_outputs import CarriedCriterion, carried_criteria_in_revision
 from .hierarchical_dispatch import (
     ROOT_REVIEW_CUT,
     ROOT_REVIEW_SUPERSEDED,
@@ -228,6 +230,8 @@ class RootReviewRequest:
     #: judged and was misread is asked to say the same thing readably, and one that
     #: judged FAIL is never asked again at all (§9.1 owns that, not this module).
     schema_feedback: str = ""
+    #: P2.3h: what the revision numbers in this request mean, stated beside them.
+    requirements_revision_semantics: str = ""
 
     def to_json(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -237,6 +241,7 @@ class RootReviewRequest:
             "goal_task_id": self.goal_task_id,
             "goal_statement": self.goal_statement,
             "requirements_revision": int(self.requirements_revision),
+            "requirements_revision_semantics": self.requirements_revision_semantics,
             "criteria": [dict(item) for item in self.criteria],
             "contributions": [dict(item) for item in self.contributions],
         }
@@ -357,12 +362,115 @@ def _evidence_label(
         return {
             "kind": "accepted_outputs" if outputs else "artifacts",
             "count": len(outputs) or len(artifacts),
+            # P2.3h: how many of those the reviewer can actually *read* in this
+            # request — an ``excerpt`` of kind ``text``.  A count of delivered
+            # artifacts with nothing readable behind it is what the Grok C3 reviewer
+            # was handed ("this package contains no report content").
+            "readable": sum(
+                1 for item in outputs if (item.get("excerpt") or {}).get("kind") == EXCERPT_TEXT
+            ),
         }
     return {
         "kind": NO_EVIDENCE,
         "count": 0,
         "reason": NO_EVIDENCE_REASON,
         "review_available": bool(review),
+    }
+
+
+# ----------------------------------------------------------------------------------
+# P2.3h: the evidence the reviewer reads, inlined into the request
+# ----------------------------------------------------------------------------------
+#
+# The Grok C3 run (2026-09-16, ``H-L3-C3-r0``) is the case: four leaves accepted,
+# every declared port delivered, the hidden grader PASS — and the root reviewer
+# REJECTED, on findings that were all correct *about the package it was shown*: the
+# ``report`` port arrived as an ``artifact_id`` and nothing else, so "the named test
+# now passes" could not be read off anything.  A reviewer with no tools cannot go
+# and fetch the file; what it is not shown, it does not have.
+#
+# Why the bytes are inlined rather than referenced: the request's ``content_hash``
+# is the intent's ``context_version`` — the promise "a reviewer judged *this*".  The
+# excerpt is a pure function of content-addressed bytes and two fixed caps, and each
+# excerpt carries the artifact's ``content_hash``, so the request hash stays
+# reproducible while covering what was actually read.  The stored ``ReviewPackage``
+# (the AER anchor) is unchanged — it references acceptances, not bytes — so this
+# adds no byte field to a contract.
+
+#: Per-artifact cap on the inlined text.  The same number ``workspace_read_file``
+#: pages a Worker's reads by (``tool_gateway``), so a reviewer sees what a Worker
+#: would have seen in one read.
+EXCERPT_MAX_CHARS = 4096
+#: Package-wide cap across every excerpt, so a Mission with many leaves cannot turn
+#: the review request into an unbounded prompt.  Contributions are visited in the
+#: package's own (sorted) order, so which artifact is omitted is deterministic.
+EXCERPT_BUDGET_CHARS = 32768
+EXCERPT_TEXT = "text"
+EXCERPT_BINARY = "binary"
+EXCERPT_UNAVAILABLE = "unavailable"
+EXCERPT_OMITTED = "omitted"
+
+#: P2.3h: the sentence the request carries beside every revision number.  The Grok
+#: C3 reviewer read "acceptances at revisions 1–4, root at 5" as "accepted against an
+#: older requirement" and rated it a major finding; the numbers are one Mission-wide
+#: monotone counter that every published requirements revision advances, so a leaf
+#: accepted earlier always carries a smaller number than the root's.
+REQUIREMENTS_REVISION_SEMANTICS = (
+    "requirements_revision numbers are one Mission-wide monotone counter: each leaf "
+    "acceptance publishes its own requirements revision (the leaf's own criteria) and "
+    "records the number current at that moment, and the root review's revision is "
+    "published last, so accepted_at_requirements_revision < requirements_revision for "
+    "every contribution is the expected shape and says nothing about staleness; a "
+    "contribution accepted against outdated inputs would have been superseded before "
+    "this package was cut"
+)
+
+
+def excerpt_of(
+    artifact: Any, *, max_chars: int = EXCERPT_MAX_CHARS, remaining: int | None = None
+) -> dict[str, Any]:
+    """What the reviewer may read of one delivered artifact, bounded and hashed.
+
+    ``artifact`` is the stored :class:`~..contracts.models.Artifact` row (or ``None``
+    when the library has none for the id, which is stated rather than guessed).  The
+    bytes come through :func:`~..artifacts.store.read_verified` — no symlink, hash
+    re-checked — so an excerpt can never quote bytes that are not the artifact's.
+    Text is UTF-8 that decodes strictly and carries no NUL; anything else is reported
+    as ``binary`` with its hash and size, which is all a reviewer can do with it.
+    """
+
+    if artifact is None:
+        return {"kind": EXCERPT_UNAVAILABLE, "reason": "no artifact row is stored for this id"}
+    header = {
+        "path": str(getattr(artifact, "path", "")),
+        "content_hash": str(getattr(artifact, "content_hash", "")),
+        "size_bytes": int(getattr(artifact, "size_bytes", 0) or 0),
+    }
+    try:
+        data = read_verified(artifact)
+    except (ArtifactStoreError, OSError) as error:
+        return {**header, "kind": EXCERPT_UNAVAILABLE, "reason": f"bytes unreadable: {error}"}
+    header["size_bytes"] = len(data)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return {**header, "kind": EXCERPT_BINARY}
+    if "\x00" in text:
+        return {**header, "kind": EXCERPT_BINARY}
+    if remaining is not None and remaining <= 0:
+        return {
+            **header,
+            "kind": EXCERPT_OMITTED,
+            "reason": f"the request's {EXCERPT_BUDGET_CHARS}-character excerpt budget is spent",
+            "total_chars": len(text),
+        }
+    limit = int(max_chars) if remaining is None else min(int(max_chars), int(remaining))
+    return {
+        **header,
+        "kind": EXCERPT_TEXT,
+        "total_chars": len(text),
+        "truncated": len(text) > limit,
+        "text": text[:limit],
     }
 
 
@@ -987,7 +1095,7 @@ class RootReviewCoordinator:
         # correct reviewer answered FAIL on "no evidence at all".  The port is part of
         # the evidence, not decoration: it is what says the artifact is the thing the
         # plan asked that slot for.
-        delivered: dict[str, list[Mapping[str, Any]]] = {}
+        delivered: dict[str, list[dict[str, Any]]] = {}
         for row in semantics.list_acceptance_outputs(mission_id):
             delivered.setdefault(str(row.get("acceptance_id", "")), []).append(
                 {
@@ -995,26 +1103,76 @@ class RootReviewCoordinator:
                     "artifact_id": str(row.get("artifact_id", "")),
                 }
             )
+        # P2.3h: which root criterion each leaf carries, read from the adopted plan's
+        # ``criterion_links`` — the same rows the leaf's own acceptance read when it
+        # built its criteria, so the reviewer sees the pairing the leaf was held to.
+        carried = self.carried_criteria(mission_id)
+        by_task: dict[str, list[CarriedCriterion]] = {}
+        for link in carried:
+            by_task.setdefault(str(link.task_id), []).append(link)
+        covered_by: dict[str, list[dict[str, Any]]] = {}
         contributions: list[Mapping[str, Any]] = []
+        budget = EXCERPT_BUDGET_CHARS
         for reference in package.child_acceptance_refs:
             try:
                 acceptance = semantics.get_acceptance(str(reference.id))
             except StoreError:  # pragma: no cover - the cut read them a moment ago
                 continue
             child = semantics.task_semantics_of(mission_id, str(acceptance.task_id))
+            links = by_task.get(str(acceptance.task_id), [])
+            root_ids = list(dict.fromkeys(str(item.parent_criterion_id) for item in links))
             outputs = delivered.get(str(acceptance.acceptance_id), [])
+            for output in outputs:
+                excerpt = excerpt_of(
+                    self.store.get_artifact(str(output["artifact_id"])), remaining=budget
+                )
+                if excerpt.get("kind") == EXCERPT_TEXT:
+                    budget -= len(str(excerpt.get("text", "")))
+                # A criterion link names a step, not a port; every accepted output of
+                # a linked step is what the root criterion reads (D3 made the port
+                # declared for exactly that reason).
+                output["covers_root_criteria"] = list(root_ids)
+                output["excerpt"] = excerpt
             artifacts = [str(item.id) for item in acceptance.artifact_refs]
             review = self._child_review(str(acceptance.review_record_id))
+            judged = dict(review.get("criteria", {})) if review else {}
+            carries = [
+                {
+                    "root_criterion_id": str(item.parent_criterion_id),
+                    "leaf_criterion_id": str(item.leaf_criterion_id),
+                    "evidence_requirement": str(item.evidence_requirement),
+                    "leaf_review_verdict": str(judged.get(str(item.leaf_criterion_id), "ABSENT")),
+                }
+                for item in links
+            ]
+            for item in links:
+                covered_by.setdefault(str(item.parent_criterion_id), []).append(
+                    {
+                        "acceptance_id": str(acceptance.acceptance_id),
+                        "task_id": str(acceptance.task_id),
+                        "leaf_criterion_id": str(item.leaf_criterion_id),
+                        "evidence_requirement": str(item.evidence_requirement),
+                        "ports": [str(output["port"]) for output in outputs],
+                    }
+                )
             contributions.append(
                 {
                     "acceptance_id": str(acceptance.acceptance_id),
                     "task_id": str(acceptance.task_id),
                     "obligation_id": str(acceptance.obligation_id),
-                    "requirements_revision": int(acceptance.requirements_revision),
+                    # P2.3h: named for what it is — the Mission-wide counter at the
+                    # moment this leaf was accepted — and explained once at the top of
+                    # the request (``requirements_revision_semantics``).
+                    "accepted_at_requirements_revision": int(acceptance.requirements_revision),
                     "goal_statement": (
                         "" if child is None else str(child.goal_signature.statement)
                     ),
+                    "carries_root_criteria": carries,
                     "accepted_outputs": outputs,
+                    # ``review.criteria`` are the leaf's **own** criteria (P2.3h): its
+                    # goal type's, the linked root criteria under their leaf ids, or
+                    # ``c-leaf-verified`` — never a root criterion the plan did not
+                    # hang on it.
                     "review": review,
                     "artifacts": artifacts,
                     # Review round 4, P1-2.  A leaf whose plan declared no output port
@@ -1036,13 +1194,27 @@ class RootReviewCoordinator:
                     "criterion_id": str(item.criterion_id),
                     "statement": str(item.statement),
                     "requirement_class": str(item.requirement_class),
+                    # P2.3h: who the plan made answerable for this criterion.  Empty
+                    # means no accepted contribution carries it — the reviewer is told
+                    # that in so many words rather than left to infer it.
+                    "covered_by": list(covered_by.get(str(item.criterion_id), [])),
                 }
                 for item in package.criteria
             ),
             contributions=tuple(contributions),
             requirements_revision=int(package.binding.requirements_revision),
             schema_feedback=str(schema_feedback),
+            requirements_revision_semantics=REQUIREMENTS_REVISION_SEMANTICS,
         )
+
+    def carried_criteria(self, mission_id: str) -> tuple[CarriedCriterion, ...]:
+        """The adopted plan's ``criterion_links``, resolved to occurrences and Tasks."""
+
+        semantics = self.semantics
+        active = semantics.active_plan_revision(mission_id)
+        if active is None:
+            return ()
+        return carried_criteria_in_revision(semantics, mission_id, int(active.revision))
 
     def _child_review(self, record_id: str) -> Mapping[str, Any]:
         """The judgement this contribution was accepted under, quoted not summarised.
@@ -1227,6 +1399,10 @@ __all__ = (
     "RootReviewStatus",
     "acceptance_ref",
     "refuse_self_contradicting_accept",
+    "EXCERPT_BUDGET_CHARS",
+    "EXCERPT_MAX_CHARS",
+    "REQUIREMENTS_REVISION_SEMANTICS",
+    "excerpt_of",
     "root_criteria",
     "root_requirements",
 )

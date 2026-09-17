@@ -1,0 +1,126 @@
+{
+  "review_package_id": "pkg-root-5eeceddb4bba2c1934ae5072725017f9",
+  "purpose": "MISSION_FINAL",
+  "budget_account": "mission",
+  "goal_task_id": "task-root",
+  "goal_statement": "make the named failing test pass and explain the change",
+  "requirements_revision": 5,
+  "criteria": [
+    {
+      "criterion_id": "c-test-passes",
+      "statement": "c-test-passes is covered by the accepted contributions of task-root, judged as a whole",
+      "requirement_class": "REQUIRED_OUTCOME"
+    },
+    {
+      "criterion_id": "c-change-explained",
+      "statement": "c-change-explained is covered by the accepted contributions of task-root, judged as a whole",
+      "requirement_class": "REQUIRED_OUTCOME"
+    }
+  ],
+  "contributions": [
+    {
+      "acceptance_id": "acc-00310d4e265d33d7f9489cbb13a8fe4c",
+      "task_id": "task-84cb9e7b38b4c8221fdd92048c37632e",
+      "obligation_id": "obl-root",
+      "requirements_revision": 2,
+      "goal_statement": "reproduce the reported failure and record a diagnosis",
+      "accepted_outputs": [
+        {
+          "port": "diagnosis",
+          "artifact_id": "artifact-9e92f71a421e6dc6"
+        }
+      ],
+      "review": {
+        "review_record_id": "rec-b0fe996f105d8daf203da59ed4a15ee4",
+        "verdict": "ACCEPT",
+        "criteria": {
+          "c-test-passes": "PASS",
+          "c-change-explained": "PASS"
+        }
+      },
+      "artifacts": [],
+      "evidence": {
+        "kind": "accepted_outputs",
+        "count": 1
+      }
+    },
+    {
+      "acceptance_id": "acc-2de5e1902096b728170910d380d6c276",
+      "task_id": "task-32ee2c5e43a321a156b8889ba356fbe0",
+      "obligation_id": "obl-root",
+      "requirements_revision": 3,
+      "goal_statement": "apply a patch that addresses the diagnosis",
+      "accepted_outputs": [
+        {
+          "port": "patch",
+          "artifact_id": "artifact-75b423f2d61753d9"
+        }
+      ],
+      "review": {
+        "review_record_id": "rec-c99e541998781f67f088f2e138c00aa6",
+        "verdict": "ACCEPT",
+        "criteria": {
+          "c-test-passes": "PASS",
+          "c-change-explained": "PASS"
+        }
+      },
+      "artifacts": [],
+      "evidence": {
+        "kind": "accepted_outputs",
+        "count": 1
+      }
+    },
+    {
+      "acceptance_id": "acc-679962041401035f0678e86cb197afb5",
+      "task_id": "task-49239160874172e860cb68a92bef6f92",
+      "obligation_id": "obl-root",
+      "requirements_revision": 4,
+      "goal_statement": "run the test suite and record the report",
+      "accepted_outputs": [
+        {
+          "port": "report",
+          "artifact_id": "artifact-6321a9bcb3508c7e"
+        }
+      ],
+      "review": {
+        "review_record_id": "rec-c7d08e2ab78ec97e8a352aa583437dcc",
+        "verdict": "ACCEPT",
+        "criteria": {
+          "c-test-passes": "PASS",
+          "c-change-explained": "PASS"
+        }
+      },
+      "artifacts": [],
+      "evidence": {
+        "kind": "accepted_outputs",
+        "count": 1
+      }
+    },
+    {
+      "acceptance_id": "acc-ccb45626f9a9129a0af9a071702b9144",
+      "task_id": "task-7335d7207ea396454bf701f4c38d6b38",
+      "obligation_id": "obl-root",
+      "requirements_revision": 1,
+      "goal_statement": "read the repository's current facts",
+      "accepted_outputs": [
+        {
+          "port": "facts",
+          "artifact_id": "artifact-41ca5e983acd56f3"
+        }
+      ],
+      "review": {
+        "review_record_id": "rec-830fa5384b2a3f460a55060925da47c8",
+        "verdict": "ACCEPT",
+        "criteria": {
+          "c-test-passes": "PASS",
+          "c-change-explained": "PASS"
+        }
+      },
+      "artifacts": [],
+      "evidence": {
+        "kind": "accepted_outputs",
+        "count": 1
+      }
+    }
+  ]
+}

@@ -2840,6 +2840,109 @@ planner:2 在 `1789615904.06` 交接到提供者，0.2 s 后传输层抛异常�
 - `tests/orchestrator/full_target` 2719 + 2 skip；旧模式回归 1 failed / 1854 passed / 20 skipped（唯一红仍是已知的 p33 AST 断言，零新增失败）；ruff 改动文件全清（仓库遗留 4 条不变）；`mypy src/agent_orchestrator` 17（基线）。
 - 真实局由协调方跑（任务书第 3 条），本片不跑。
 
+## 2j. P2.3h：根评审包必须携带可读证据、叶子准则按 criterion_links 限定、c-change-explained 有承诺人、requirements_revision 对齐（2026-09-17，分支 `p2.3h-root-review`，基 `8b8466d`）
+
+### 现象（真实 Grok 局 `H-L3-C3-r0`，只读证据）
+
+种子方法 `code.fix-by-patch` 在 grok-4.6 上整条链走通：四个叶子各自 Acceptance、`accepted_outputs`
+端口齐全（facts / diagnosis / patch / report），隐藏评分器 PASS；根评审（MISSION_FINAL）却 REJECTED。
+评审员的三条 findings **对它看到的包而言全部成立**（原包与回复逐字节存为夹具
+`tests/orchestrator/full_target/fixtures/htn/c3_root_review/`）：
+
+1. 每条 contribution 的 `artifacts: []`、`evidence: {kind: accepted_outputs, count: 1}` 只有 `artifact_id`——
+   评审员没有工具，读不到 report 正文，「指定的失败测试现在通过」无从判断；
+2. 每个叶子的子评审 `review.criteria` 把根的两条准则 `c-test-passes` / `c-change-explained` 全盖 PASS，
+   连 facts 叶子也是——评审员正确指出这些标记不能当证据；
+3. `c-change-explained` 没有任何叶子承诺交付：链接挂在 `patch` 步，而 patch 唯一的端口是代码
+   （`stats/window.py`）；verify 叶子 REPORT.md 里其实有解释，但包里看不到；
+4. 四个 Acceptance 记的是 requirements_revision 1–4、根是 5，评审员视为「不组合」（major）。
+
+### 根因（一句话）
+
+三处各自「按契约正确」的读法在根评审包这一点上合成了一个读不到证据的包：`request()` 只给 id 不给内容；
+`leaf_acceptance.criteria_for` 在叶子没有自己的 `coverage_criteria` 时回退到 `binding.requirement_refs`——
+而 `refines_parent` 步骤的 requirement_refs 是**父义务**原样继承的根准则；种子方法把 `c-change-explained`
+链到一个只交代码的步骤；`_requirements` 的修订号是全 Mission 单调计数，包里没解释。
+
+### 修法（落点与行数：`git diff --numstat`）
+
+| 文件 | +/− | 改了什么 |
+|---|---|---|
+| `orchestrator/accepted_outputs.py` | +122/−7 | 新 `CarriedCriterion` + `carried_criteria_in_revision` / `carried_criteria_for`：把已采纳方法的 `criterion_links` 解析到 occurrence 与 Task（child_step 为空落到 finalizer，与 `coverage_from_slots` 同规则）；`coverage_in_revision` 与之共用 `_adopted_in_revision` |
+| `orchestrator/leaf_acceptance.py` | +122/−35 | `criteria_for(binding, layers, *, carried)`：叶子只欠三种准则——自己的 `coverage_criteria`、链接到本 occurrence 的根准则（按 `child_criterion_id` 命名，statement 带 `evidence_requirement`）、两者皆无时 `LEAF_LOCAL_CRITERION = "c-leaf-verified"`；**删掉 `requirement_refs` 回退**。`accept()` 经 `carried_criteria()` 从活动修订读链接；`_occurrence_in_active_revision` 与 `_outputs` 共用 |
+| `orchestrator/root_review.py` | +178/−2 | `request()`：每条 accepted_output 附 `excerpt`（`excerpt_of`：经 `read_verified` 读字节、哈希复核；UTF-8 无 NUL → `text`（`EXCERPT_MAX_CHARS=4096` 截断、`total_chars`/`truncated`），否则 `binary`；库里没有行或字节读不到 → `unavailable`+reason；包级预算 `EXCERPT_BUDGET_CHARS=32768` 用完 → `omitted`，仍带 hash/size）与 `covers_root_criteria`；contribution 加 `carries_root_criteria`（root/leaf id、evidence_requirement、`leaf_review_verdict`，缺席记 ABSENT）；`requirements_revision` 改名 `accepted_at_requirements_revision`；`criteria[]` 加 `covered_by`（acceptance/task/leaf 准则/evidence_requirement/ports）；顶层加 `requirements_revision_semantics`；`evidence` 加 `readable` |
+| `orchestrator/hierarchical_dispatch.py` | +56/−0 | `carried_root_criteria_for(mission, task)`：Worker 上下文用，和叶子验收读同一批行 |
+| `orchestrator/event_handler.py` | +17/−0 | `declared_output_ports` 段旁加 `carried_root_criteria` 块（`data_not_instruction`、`version=carried-root-criteria-v1`、`note`、`criteria[]`），承担根准则的叶子才有 |
+| `runtime/role_templates.py` | +61/−3 | 只加 `root-reviewer-v2`（`_revise` 自 v1：说明 excerpt / covered_by / carries_root_criteria / covers_root_criteria / accepted_at_requirements_revision / requirements_revision_semantics / c-leaf-verified；硬约束 1 补「证据在 excerpt.text，叶子 PASS 只对其承担的根准则有效，covered_by 为空判 false」，新增 1b「修订号小于根是正常形态，不得据此判 false 或记 finding」）；`ROOT_REVIEWER_V1` 保留可 pin，sha256 `2b5ebe37…` 钉在 `test_root_review_evidence.FROZEN_ROOT_REVIEWER_V1` |
+| `planning/htn/seed_methods/code/methods.json` | +9/−9 | `code.fix-by-patch` / `fix-by-revert` / `fix-by-assessed-revert` 三个方法的 `c-change-explained` 链改到 `verify`（`c-explained`），`evidence_requirement` 改写为 report 必须展示的内容；`c-test-passes` 的 evidence_requirement 同步改为「report 显示指定失败测试在修后跑过并通过，引用命令与结果」 |
+
+### 三个二选一的理由
+
+- **摘录进请求正文而不是只给 content_hash**：评审员没有工具，引用它读不到；请求的 `content_hash()` 就是意图的
+  `context_version`，摘录是「内容寻址字节 + 两个固定上限」的纯函数，且每条摘录自带 `content_hash`，
+  所以包 hash 可复现、并且覆盖了评审员真正读到的东西。存库的 `ReviewPackage`（AER 锚）不变——它引用
+  Acceptance 而非字节，契约零改动。篡改字节的测试证明：hash 不符时摘录变 `unavailable(hash_mismatch)`、请求 hash 随之改变。
+- **`c-change-explained` 的承诺人选 verify 的 report，不选 patch 的 explanation 端口**：patch/revert 的端口按
+  schema 是代码（`code.patch`），加一个 prose 端口要动 task_types、data_requirements 与 Worker 契约；verify 是
+  finalizer、`report` 端口本就是 prose（`code.report`），且 C3 真实局里 verify 的 REPORT.md 已经写了「为什么」。
+  一条根准则一个承诺人，评审员按 `covered_by` 直接定位。链接名一个步骤不名端口——每条 accepted_output 的
+  `covers_root_criteria` 因此等于该 occurrence 承担的全部根准则（D3 已把链接视为端口的消费者）；若将来要精确到端口，
+  是契约变更（见 §5 追加）。
+- **修订号：加语义说明、不改数字**：`_requirements` 的单调计数是 read-set 通道「哪个修订上决定的」的前提，改成
+  按根统一呈现会让叶子 Acceptance 引用一个它没被决定过的修订。改名 `accepted_at_requirements_revision` + 顶层
+  `requirements_revision_semantics` + 提示词 1b。
+
+### 包结构前后对比（C3 同一局，修后由 `test_root_review_evidence.CodeWorld` 在真实 code 域上重放）
+
+| 字段 | 修前 | 修后 |
+|---|---|---|
+| `criteria[]` | `criterion_id/statement/requirement_class` | + `covered_by: [{acceptance_id, task_id, leaf_criterion_id, evidence_requirement, ports:["report"]}]`（两条根准则均指向 verify） |
+| `contributions[].requirements_revision` | 1/2/3/4（被读成过期） | 改名 `accepted_at_requirements_revision`，顶层 `requirements_revision_semantics` 说明单调计数 |
+| `contributions[].carries_root_criteria` | 无 | facts/reproduce/patch `[]`；verify `[{c-test-passes↔c-green, PASS}, {c-change-explained↔c-explained, PASS}]` |
+| `contributions[].accepted_outputs[]` | `port, artifact_id` | + `covers_root_criteria`、`excerpt{kind:text, path, content_hash, size_bytes, total_chars, truncated, text}` |
+| `contributions[].review.criteria` | 每叶 `{c-test-passes: PASS, c-change-explained: PASS}` | facts/reproduce/patch `{c-leaf-verified: PASS}`；verify `{c-green: PASS, c-explained: PASS}` |
+| `contributions[].evidence` | `{kind, count}` | + `readable`（有原文摘录的件数） |
+
+### 测试（`tests/orchestrator/full_target/test_root_review_evidence.py`，27 条，其中变异自证 4 条 + 1 条 I05 钉子）
+
+- 夹具：`fixtures/htn/c3_root_review/`（`package_before.json`、`verdict_before.json`、四件产物原文、README）；
+  `test_the_c3_package_before_the_fix_is_what_the_reviewer_rejected` 把缺陷形态钉死。
+- 证据（8）：report 原文进包、四件产物 hash/size/字节一致、`covers_root_criteria`、篡改字节 → `unavailable(hash_mismatch)`
+  且请求 hash 改变/同包两读同 hash、超长截断到 4096、二进制只给 hash+size、包级预算按包序耗尽（`omitted`）、
+  库里没有的产物标 `unavailable`。
+- 叶子准则（4）：facts 不再盖根准则、verify 只在 `c-green`/`c-explained` 下判、存库 ReviewPackage/ReviewRecord 同样只含叶子准则、
+  `criteria_for` 单测（无链接 → `c-leaf-verified`，有链接 → 子准则名 + 父准则/evidence_requirement 进 statement）。
+- 承诺人（5）：`c-change-explained`/`c-test-passes` 的 `covered_by` 都是 verify 的 report；三个 fix 方法链到 verify；
+  `carried_root_criteria_for`（verify 两条、facts/patch 空）；上下文块进 `_seal` 改变 `context_version`。
+- 修订号 + 提示词（2）：`accepted_at_requirements_revision` 1–4 < 根 5 且有说明；v2 命名新字段、v1 字节冻结、pin v1 可选。
+- 端到端（2）：`_advance_root_review` 裁包并发意图 → 从意图的 `message` 里取评审员真正看到的 JSON（`context_version` 与
+  `request().content_hash()` 一致）→ **按证据判的脚本化评审员**（只认 `covered_by` 指向的贡献、其 `leaf_review_verdict=PASS`、
+  且 `covers_root_criteria` 含该准则的 `excerpt.text` 里有要求的文字）→ `_collect_root_review` → `_root_resolution_formed` →
+  `judge_mission` → **COMPLETED**；对照组产物文本缺要求的内容 → REJECTED、根 Resolution 不成。
+- 变异（4，全部 KILLED）：M1 摘录改回 `unavailable` → 同一 Mission 被按证据判的评审员拒绝（正是 Grok 拒 C3 的形态）；
+  M2 链接抹掉 → 每条准则 `covered_by=[]` → 拒绝；M3 叶子不带链接（`carried_criteria` 返回空）→ review 叶子的锚只剩
+  `c-leaf-verified`、`leaf_review_verdict=ABSENT` → 拒绝；M4 修订语义置空 → 请求可见缺失。
+- I05 钉子：C3 包证据齐全也不能自成 Resolution，仍要评审员的 PASS。
+
+### 结果
+
+- `tests/orchestrator/full_target` **2746 passed + 2 skip**（基线 2719 + 2，本片 +27）；既有 570 条邻近套件
+  （root_review ×2 / end_to_end / deployment_wiring / seed_methods / finalizer_ports / resolution_commits / port_claims）在改动后先跑一遍全绿——
+  删掉 `requirement_refs` 回退没有碰到任何既有断言。
+- 旧模式回归：1 failed / 1854 passed / 20 skipped（唯一红仍是已知的 p33 `test_legacy_check_ast_and_default_retrieval_bytes_are_unchanged`，与基线逐项一致，零新增失败）。
+- ruff：改动文件全清；`mypy`：本机 venv 会跟进 `src/simple_harness` 的导入（179 条），其中 `agent_orchestrator` 内
+  仍是既有的 4 个文件（are_benchmark / agentdojo_bridge / agentdojo_runner / deepseek_tokens），**本片改动的 6 个文件 0 条**。
+- 真实模型局由协调方跑；本片不调模型。
+
+### 口径 / 兼容性
+
+- 请求正文新增字段、`contributions[].requirements_revision` 改名——只影响根评审员看到的 JSON（`context_version` 因而不同），
+  存库契约字节不变；`role_templates` 只加 v2，`template_for` pin `root-reviewer-v1` 仍可选到旧词。
+- `methods.json` 改了三条 `criterion_links` 的 `child_step`/`evidence_requirement`——runner 的 FREEZE-candidate 需重生成
+  （HANDOFF §2 第 9 条已有此项）。`patch` 步不再被链接引用，但其 `patch` 端口仍被 verify 的 DataRequirement 消费，端口集合不变。
+- Worker 提示词**未改**（任务书限定只加 root-reviewer 版本）：`carried_root_criteria` 块以数据形式自述
+  （`note` + 每条 `evidence_requirement`），`worker-hierarchical-v2` 的词不变。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、
@@ -2894,7 +2997,12 @@ planner:2 在 `1789615904.06` 交接到提供者，0.2 s 后传输层抛异常�
 
 ## 5. 契约变更请求
 
-无。本片没有改 `contracts/`：新配置项在 `runtime/assembly.py`，新事件名在 `orchestrator/`，
+**P2.3h 追加一条（未改 contracts/）**：`CriterionLink` 可选字段 `evidence_port: str | None`——
+链接目前只名步骤不名端口，根评审包只能把该 occurrence 的全部 accepted_outputs 都标为该根准则的证据
+（`covers_root_criteria`）。多端口的终结步（例如 report + log）会让评审员多读无关件。有了 `evidence_port`，
+`covered_by[].ports` 与 `covers_root_criteria` 可精确到一个端口。默认 None 时按现行为退化，向后兼容。
+
+P2.3d–P2.3f：无。本片没有改 `contracts/`：新配置项在 `runtime/assembly.py`，新事件名在 `orchestrator/`，
 新域档版本在 `governance/`，端口规则在 `orchestrator/accepted_outputs.py`。
 `HIERARCHICAL_WORKER_TEMPLATES` 是 `governance/domains.py` 里的一张普通模块级映射，
 不进 `DomainProfileV1`、不进快照、不参与 `to_json`/`from_json`，故无契约改动。

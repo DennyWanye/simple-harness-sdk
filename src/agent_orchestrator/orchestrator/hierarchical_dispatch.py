@@ -1728,6 +1728,66 @@ class HierarchicalDispatch:
             for port, schema in sorted(ports.items())
         )
 
+    def carried_root_criteria_for(
+        self, mission_id: str, task_id: str
+    ) -> tuple[dict[str, Any], ...]:
+        """The root criteria this leaf is answerable for, for its own context (P2.3h).
+
+        Read from the adopted method's ``criterion_links`` through
+        :func:`~.accepted_outputs.carried_criteria_for` — the same rows
+        :meth:`~..orchestrator.leaf_acceptance.LeafAcceptanceAssembly.carried_criteria`
+        builds the leaf's acceptance criteria from — so what the Worker is *told* it
+        carries and what its acceptance is *held to* cannot drift apart.  Each entry
+        names the root criterion, the leaf criterion it is judged under, the
+        ``evidence_requirement`` the method wrote for the link (the sentence the
+        leaf's report has to satisfy) and the ports that output is read from.
+
+        The Grok C3 run is why: ``c-change-explained`` hung on a step whose only
+        declared port carried code, the Worker was never told it owed an explanation
+        anywhere, and the root reviewer correctly found none in the package.
+        """
+
+        from .accepted_outputs import carried_criteria_for, output_ports_in_revision
+
+        semantics = self.semantics()
+        active = semantics.active_plan_revision(mission_id)
+        if active is None:
+            return ()
+        revision = int(active.revision)
+        occurrence = next(
+            (
+                spec.occurrence_id
+                for spec in semantics.list_plan_memberships(mission_id, revision)
+                if str(spec.task_id) == str(task_id)
+            ),
+            None,
+        )
+        if occurrence is None:
+            return ()
+        links = carried_criteria_for(semantics, mission_id, revision, occurrence)
+        if not links:
+            return ()
+        ports = sorted(
+            output_ports_in_revision(semantics, mission_id, revision, occurrence, str(task_id))
+        )
+        goals: dict[str, str] = {}
+        for item in links:
+            parent = str(item.parent_task_id)
+            if parent not in goals:
+                root = semantics.task_semantics_of(mission_id, parent)
+                goals[parent] = "" if root is None else str(root.goal_signature.statement)
+        return tuple(
+            {
+                "root_criterion_id": str(item.parent_criterion_id),
+                "root_task_id": str(item.parent_task_id),
+                "root_goal_statement": goals[str(item.parent_task_id)],
+                "leaf_criterion_id": str(item.leaf_criterion_id),
+                "evidence_requirement": str(item.evidence_requirement),
+                "ports": list(ports),
+            }
+            for item in links
+        )
+
     def _recorded_outputs(self, mission_id: str, network: TaskNetworkSnapshot) -> Sequence[Any]:
         """The accepted outputs the resolver may choose from (P2.3c part 2).
 

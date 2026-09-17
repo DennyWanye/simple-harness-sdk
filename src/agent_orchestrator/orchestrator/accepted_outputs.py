@@ -26,6 +26,7 @@ Two things it deliberately does *not* do:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from ..artifacts.input_bindings import AcceptedOutput, DisclosureState, ResourceIdentity
@@ -165,9 +166,7 @@ def declared_ports_in_revision(
     :func:`output_ports_in_revision`, which answers both from the rows itself.
     """
 
-    return _merge_ports(
-        _ports_of(requirements, producer), binding if criterion_linked else None
-    )
+    return _merge_ports(_ports_of(requirements, producer), binding if criterion_linked else None)
 
 
 def output_ports_in_revision(
@@ -215,6 +214,17 @@ def criterion_linked_occurrences(coverage: Sequence[Any]) -> frozenset[Any]:
 def coverage_in_revision(semantics: Any, mission_id: str, revision: int) -> tuple[Any, ...]:
     """:func:`stored_coverage` for a caller that holds only a store and a revision."""
 
+    instances, adopted, bindings = _adopted_in_revision(semantics, mission_id, revision)
+    return stored_coverage(semantics, instances, adopted, bindings)
+
+
+def _adopted_in_revision(
+    semantics: Any, mission_id: str, revision: int
+) -> tuple[tuple[Any, ...], tuple[Any, ...], dict[Any, Any]]:
+    """The method instances of one plan revision, which of them are adopted, and the
+    semantic bindings of the tasks they refine — the three inputs every "what does the
+    adopted plan say" reader starts from."""
+
     from ..contracts.htn import TaskRef
 
     bindings: dict[Any, Any] = {}
@@ -232,7 +242,111 @@ def coverage_in_revision(semantics: Any, mission_id: str, revision: int) -> tupl
         for draft in instances
         if semantics.method_instance_state(mission_id, str(draft.instance_id)) == "ADOPTED"
     )
-    return stored_coverage(semantics, instances, adopted, bindings)
+    return instances, adopted, bindings
+
+
+@dataclass(frozen=True, slots=True)
+class CarriedCriterion:
+    """One parent criterion a ``criterion_link`` hangs on one occurrence (§6.3).
+
+    P2.3h.  ``ObligationCoverage`` answers "which occurrences carry *some* root
+    criterion" and is enough for the port rule (D3).  It is not enough for the review
+    side, which needs the pairing itself: the leaf's own criterion id
+    (``leaf_criterion_id``, the link's ``child_criterion_id``), the parent criterion
+    it covers, and the ``evidence_requirement`` the method wrote for that link —
+    the sentence that tells a Worker what its report has to show and tells the root
+    reviewer what to look for in that leaf's accepted output.  The real Grok C3 run
+    rejected a correct Mission on exactly the absence of this: every leaf's review
+    stamped every root criterion PASS, and the reviewer rightly refused to read a
+    ``facts`` step's PASS on ``c-test-passes`` as evidence of anything.
+    """
+
+    parent_task_id: str
+    parent_criterion_id: str
+    occurrence_id: OccurrenceId
+    task_id: str
+    leaf_criterion_id: str
+    evidence_requirement: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "root_task_id": self.parent_task_id,
+            "root_criterion_id": self.parent_criterion_id,
+            "occurrence_id": str(self.occurrence_id),
+            "task_id": self.task_id,
+            "leaf_criterion_id": self.leaf_criterion_id,
+            "evidence_requirement": self.evidence_requirement,
+        }
+
+
+def carried_criteria_in_revision(
+    semantics: Any, mission_id: str, revision: int
+) -> tuple[CarriedCriterion, ...]:
+    """Every ``criterion_link`` of the adopted plan, resolved to the occurrence and Task
+    it lands on.
+
+    The same walk as :func:`stored_coverage` — adopted instances, their contracts,
+    slot → occurrence — kept beside it rather than folded in, because the two answer
+    different questions and ``ObligationCoverage`` deliberately flattens the pairing
+    this one exists to keep.  A link with no ``child_step`` lands on the finalizer, as
+    :func:`~..planning.htn.compiler.coverage_from_slots` resolves it; a link whose step
+    is not a slot contributes nothing (the compiler already refused that plan).  A
+    link whose ``child_criterion_id`` is empty is carried under the parent's own id:
+    the leaf then owes the parent criterion by name, which is what the method wrote.
+    """
+
+    from ..contracts.htn import TaskRef
+    from ..storage.store import StoreError
+
+    instances, adopted, bindings = _adopted_in_revision(semantics, mission_id, revision)
+    task_of = {
+        str(spec.occurrence_id): str(spec.task_id)
+        for spec in semantics.list_plan_memberships(mission_id, revision)
+    }
+    chosen = {str(item) for item in adopted}
+    carried: list[CarriedCriterion] = []
+    for draft in instances:
+        if str(draft.instance_id) not in chosen:
+            continue
+        parent = bindings.get(TaskRef(str(draft.goal_id)))
+        if parent is None:
+            continue
+        try:
+            stored = semantics.get_method(
+                str(draft.method_ref.method_id), int(draft.method_ref.version)
+            )
+        except StoreError:
+            continue
+        by_slot = {str(child.slot_key): child.occurrence_id for child in draft.child_bindings}
+        composition = stored.contract.composition
+        finalizer = by_slot.get(composition.finalizer_step or "")
+        for link in composition.criterion_links:
+            bound = by_slot.get(link.child_step or "") if link.child_step else finalizer
+            if bound is None or str(bound) not in task_of:
+                continue
+            carried.append(
+                CarriedCriterion(
+                    parent_task_id=str(parent.task_id),
+                    parent_criterion_id=str(link.parent_criterion_id),
+                    occurrence_id=bound,
+                    task_id=task_of[str(bound)],
+                    leaf_criterion_id=str(link.child_criterion_id or link.parent_criterion_id),
+                    evidence_requirement=str(link.evidence_requirement),
+                )
+            )
+    return tuple(carried)
+
+
+def carried_criteria_for(
+    semantics: Any, mission_id: str, revision: int, producer: OccurrenceId
+) -> tuple[CarriedCriterion, ...]:
+    """:func:`carried_criteria_in_revision`, for one occurrence."""
+
+    return tuple(
+        item
+        for item in carried_criteria_in_revision(semantics, mission_id, revision)
+        if str(item.occurrence_id) == str(producer)
+    )
 
 
 def stored_coverage(
@@ -283,9 +397,7 @@ def stored_coverage(
     return tuple(claims)
 
 
-def _merge_ports(
-    consumed: Mapping[str, VersionedRef], binding: Any
-) -> Mapping[str, VersionedRef]:
+def _merge_ports(consumed: Mapping[str, VersionedRef], binding: Any) -> Mapping[str, VersionedRef]:
     """``consumed`` plus the required ports a criterion-linked producer declares."""
 
     if binding is None:
@@ -359,8 +471,11 @@ def check_against_ports(
 
 
 __all__ = (
+    "CarriedCriterion",
     "accepted_output_from_json",
     "accepted_output_json",
+    "carried_criteria_for",
+    "carried_criteria_in_revision",
     "check_against_ports",
     "check_declared",
     "coverage_in_revision",
