@@ -218,6 +218,12 @@ logger = logging.getLogger("agent_orchestrator")
 #: and the per-revision bound is counted off the same rows.
 ROOT_REVIEW_REPAIR_REASON = "root_review_rejected"
 
+#: P2.3d / defect D2c.  The ``PlanningRejected`` reason for a proposal that *was*
+#: readable and was refused on its content — a method that is not grounded here, an
+#: operation the plan cannot carry.  ``proposal_unreadable`` stays what its name says:
+#: the typed block could not be parsed at all (``__cause__`` is a ``BlockError``).
+PROPOSAL_NOT_GROUNDED = "proposal_not_grounded"
+
 FAULT_POINTS = (
     "after_agent_created",
     "after_submit",
@@ -3754,10 +3760,22 @@ class Orchestrator:
             # durable rejection (which ``_planning_rejections`` feeds to the next
             # proposal), and no extra request is opened to launder the failure.
             cause = error.__cause__
+            # P2.3d / defect D2c: "I could not read the block" and "I read it and it
+            # breaks a rule" are different answers and used to share one reason code.
+            # In the Grok acceptance run all six L3 planning failures were recorded as
+            # ``proposal_unreadable`` while the Planner had in fact produced a
+            # well-formed ``<plan_revision_proposal>`` that chose a NEEDS_EVIDENCE
+            # method — so the event log said "the model cannot write the block" and an
+            # operator looking for a formatting problem found none.
+            # A turn that never committed produced no text at all, so there is nothing
+            # to be "not grounded" about — that stays unreadable, like a malformed block.
+            reason = "proposal_unreadable"
             if isinstance(cause, BlockError):
                 detail["repair_hint"] = repair_hint(cause, PLAN_REVISION_PROPOSAL_TAG)
                 detail["block_defect"] = cause.reason
-            await self._planning_rejected(intent, reason="proposal_unreadable", detail=detail)
+            elif result.state is AgentTurnState.COMMITTED:
+                reason = PROPOSAL_NOT_GROUNDED
+            await self._planning_rejected(intent, reason=reason, detail=detail)
             return
         if not outcome.committed:
             self._settle_intent(intent, "FAILED")

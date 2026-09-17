@@ -614,7 +614,10 @@ def test_the_event_handler_puts_the_repair_hint_into_the_planning_rejection(tmp_
 
     source = inspect.getsource(event_handler.Orchestrator._collect_plan_hierarchical)
     assert 'detail["repair_hint"] = repair_hint(cause, PLAN_REVISION_PROPOSAL_TAG)' in source
-    assert 'reason="proposal_unreadable"' in source
+    # P2.3d / defect D2c: the hint belongs to the *unreadable* branch, and the branch
+    # beside it is the one a readable-but-refused proposal takes.
+    assert 'reason = "proposal_unreadable"' in source
+    assert "reason = PROPOSAL_NOT_GROUNDED" in source
 
 
 def test_a_second_identical_reply_does_not_produce_a_second_revision(tmp_path):
@@ -1929,6 +1932,93 @@ def _planner_intent(orchestrator: Orchestrator, mission_id: str):
         )
         if item.mission_id == mission_id
     )
+
+
+class _CommittedTurn:
+    """A planner turn that committed; its text is whatever the case hands in."""
+
+    state = AgentTurnState.COMMITTED
+    turn_id = "turn-committed"
+    error: dict[str, Any] | None = None
+    public_output = None
+    usage_refs: tuple[Any, ...] = ()
+
+
+def _reject_reason(tmp_path, *, text: str, key: str) -> tuple[str, dict[str, Any]]:
+    """Hand ``_collect_plan_hierarchical`` one committed reply; report how it was filed."""
+
+    holder: dict[str, Any] = {}
+
+    async def case() -> None:
+        async with _orchestrator(tmp_path, []) as orchestrator:
+            mission, _env, _contract = _seed_hierarchical(orchestrator, key=key)
+            orchestrator.commit.begin_planning(mission.id)
+            await orchestrator._try_planner_intent(mission.id, ordinal=1)
+            current = orchestrator.store.get_mission(mission.id)
+            new_mode = orchestrator._new_mode(current)
+            assert new_mode is not None
+            await orchestrator._collect_plan_hierarchical(
+                _planner_intent(orchestrator, mission.id),
+                _CommittedTurn(),
+                current,
+                text,
+                new_mode,
+            )
+            rejections = _events(orchestrator, mission.id, "PlanningRejected")
+            assert rejections, "a refused round is recorded"
+            holder["reason"] = rejections[0].payload["reason"]
+            holder["detail"] = rejections[0].payload["detail"]
+
+    asyncio.run(case())
+    return str(holder["reason"]), dict(holder["detail"])
+
+
+def test_a_reply_with_no_readable_block_is_unreadable(tmp_path):
+    """P2.3d / defect D2c: ``proposal_unreadable`` keeps meaning what its name says."""
+
+    reason, detail = _reject_reason(tmp_path, text="I will refine the root goal.", key="d2c-a")
+    assert reason == "proposal_unreadable"
+    assert detail["block_defect"]
+    assert detail["repair_hint"]
+
+
+def test_a_readable_block_refused_on_its_content_is_not_grounded(tmp_path):
+    """The six L3 planning failures of the Grok run were filed under the wrong code.
+
+    The Planner *did* emit a well-formed ``<plan_revision_proposal>``; it named a
+    method whose preconditions do not hold here.  Recording that as "the model cannot
+    write the block" sent anybody reading the event log looking for a formatting
+    problem that was not there — and, because the message is also what the next
+    proposal is given as feedback, told the model to fix its formatting too.
+
+    **Mutation**: collapse the two branches back into one reason and this goes red
+    while ``test_a_reply_with_no_readable_block_is_unreadable`` stays green, which is
+    the asymmetry the split exists for.
+    """
+
+    contract = _outer()
+    reference = contract.method_ref()
+    refine = {
+        "op": "refine",
+        "goal_id": ROOT_TASK,
+        "obligation_id": ROOT_DUTY,
+        "method_ref": {
+            "id": reference.method_id,
+            "version": reference.version,
+            "content_hash": reference.content_hash,
+        },
+        "bindings": {},
+    }
+    # Two refinements in one round: a perfectly readable block the plan contract
+    # refuses on its content ("one refinement per round").
+    reason, detail = _reject_reason(
+        tmp_path,
+        text=_proposal_text(contract, operations=[refine, refine]),
+        key="d2c-b",
+    )
+    assert reason == "proposal_not_grounded"
+    assert "block_defect" not in detail
+    assert detail["error"]
 
 
 def test_a_turn_that_did_not_commit_is_a_planning_rejection(tmp_path):
