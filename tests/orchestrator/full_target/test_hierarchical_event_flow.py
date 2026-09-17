@@ -89,6 +89,8 @@ from agent_orchestrator.orchestrator.hierarchical_dispatch import (  # noqa: E40
     PLAN_COMMIT_REFUSED,
     PLAN_INTEGRITY_FAILED,
     RECOMPILABLE_REFUSALS,
+    SYNTHESIS_REPLY_UNREADABLE,
+    SYNTHESIS_ROUND_RECORDED,
     CompoundPhase,
     HierarchicalDispatch,
     PlanIntegrityError,
@@ -1397,6 +1399,10 @@ NEW_EVENT_TYPES = frozenset(
         MANAGEMENT_NOT_APPLICABLE,
         REFINEMENT_REQUESTED,
         SERVICE_INTENT_REHANDED_OFF,
+        # P2.3g: the synthesiser's two events — the round's conclusion (part 2c) and
+        # the one ask the codec could not read (P2.3g).  Neither existed in legacy.
+        SYNTHESIS_ROUND_RECORDED,
+        SYNTHESIS_REPLY_UNREADABLE,
     }
 )
 

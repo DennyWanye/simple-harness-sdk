@@ -2840,6 +2840,153 @@ planner:2 在 `1789615904.06` 交接到提供者，0.2 s 后传输层抛异常�
 - `tests/orchestrator/full_target` 2719 + 2 skip；旧模式回归 1 failed / 1854 passed / 20 skipped（唯一红仍是已知的 p33 AST 断言，零新增失败）；ruff 改动文件全清（仓库遗留 4 条不变）；`mypy src/agent_orchestrator` 17（基线）。
 - 真实局由协调方跑（任务书第 3 条），本片不跑。
 
+## 2i. P2.3g：MethodSynthesizer 提示词与编解码器逐字段对齐 + 结构化重试；Planner 回复里的 `<method_proposal>`（2026-09-17，同分支 `p2.3e-run-exit`，基 8b8466d）
+
+### 现象（§2g 真实局 H-L3-C1-r0 的四个回合原文，`execution.db` 只读）
+
+1. **Synthesizer 回合**（agent-c1baf7…）输出了一个**结构完整**的方法（7 步、部分序、两条 criterion link），字段名却是
+   `id / version / goal_signature_ref / statement / steps[].parameter_bindings / input_bindings / coverage_criteria /
+   composition.criterion_links[].parent_criterion / step_local_id / child_criterion`。codec（`MethodContract.from_json`）
+   逐字拒绝：`method_proposal.method is missing required fields: ['basis_refs','expected_effects','exploration_assumptions',
+   'goal_type_ref','method_id','method_version','output_schema_ref','parameter_schema_ref','required_capabilities','schema_version']`
+   → `MethodSynthesisRoundRecorded{admitted:false, UNREADABLE}`，合成轮就此结束，没有第二次机会。
+2. **Planner 第 2、3 轮**（agent-f58274…、agent-b3c035…）在所有方法 NEEDS_EVIDENCE、第 1 轮 `proposal_not_grounded` 之后，
+   回复的是 `<method_proposal>`（第三种拼法：`method_id / goal_signature_id / parameter_schema_ref(字符串) / preconditions /
+   steps[{step, task_type_ref(字符串), required_capabilities}]`），被记 `proposal_unreadable: block_missing`，梯子烧尽 → `planning_failed`。
+
+### 根因（一句话）
+
+**三处各说各话**：`method-synthesizer-v1` 只写「完整 MethodContract JSON」而不给字段名；请求包里模型能看到的形状是
+`goal_signature{signature_id,version,parameter_schema_ref,output_schema_ref}` 与 `operators[].task_type_ref`，模型就照着写；
+Planner 的 `planner-hierarchical-v1` 原文写着「如果当前目标缺一个可用方法，改为只输出一个 `<method_proposal>` 块」——它是**被要求**去提方法的。
+
+### 逐字段差异表（提示词 v1 / 请求包 / 模型实际写法 / codec 要求）
+
+| 对象 | codec 必填（`MethodContract.from_json`，与 `method-contract-v1.schema.json` 一致） | v1 提示词说了什么 | 请求包里能看到什么 | 模型写了什么（S1=synthesizer 第 1 轮；P2/P3=planner 第 2/3 轮） |
+|---|---|---|---|---|
+| method | `schema_version` | 未提 | 无 | 三轮都没写 |
+| method | `method_id` | 未提 | 无 | S1 `id`；P2 `method_id`；P3 `id` |
+| method | `method_version` | 未提 | 无 | 三轮都写 `version` |
+| method | `goal_type_ref{id,version,content_hash}` | 未提 | **无**（包里只有 `goal_signature`，没有目标类型的 content_hash） | S1 `goal_signature_ref{signature_id,version,parameter_schema_ref,output_schema_ref}`（照抄包里的 goal_signature）；P2/P3 `goal_signature_id`（照抄 Planner 包的字段名） |
+| method | `parameter_schema_ref` / `output_schema_ref`（第一层，对象） | 未提 | `goal_signature.parameter_schema_ref` / `output_schema_ref`（对象，带 hash） | S1 嵌在 `goal_signature_ref` 里；P2/P3 只写字符串 `"code.repo-params"`、没有 output_schema_ref |
+| method | `applicable_when[]`（条件对象：`op=predicate/all/any/not/constant`） | 规则 2 只说「只能用输入里出现过的谓词引用」 | 无谓词清单 | S1 `[]`（合法）；P2 `preconditions: []`；P3 `preconditions:[{id,version,polarity}]` |
+| method | `exploration_assumptions[]`、`expected_effects[]`、`basis_refs[]`、`required_capabilities[]` | 未提 | 无 | 三轮都没写（P2/P3 写了 `required_capabilities: []`） |
+| method | `statement` **不是字段**（多写整块被拒） | — | `goal_signature.statement` | S1 写了 `statement` |
+| step | `local_id` | 未提 | — | S1 `local_id`；P2/P3 `step` |
+| step | `task_type_ref{id,version,content_hash}` | 规则 1 说要照抄 id/version/content_hash | `operators[].task_type_ref`（带 hash） | S1 正确；P2/P3 只写字符串 id |
+| step | `form` | 未提 | `operators[].form` | 三轮都写 `primitive`（正确） |
+| step | `arguments{名: 值表达式}`，值表达式 `op=parameter/output/constant/object/array` | 未提 | — | S1 `parameter_bindings{p:{from_goal_parameter}}` + `input_bindings{k:{from_step,port}}`（另一套值语言）；P2/P3 没写 |
+| step | `required_capabilities` | 未提 | `operators[].required_capabilities` | S1 没写；P2/P3 写了 |
+| step | `obligation_relation`（`refines_parent`） | 未提 | — | 三轮都没写 |
+| step | `coverage_criteria` **不是字段** | — | `operators[].coverage_criteria` | S1 写了 |
+| composition | `criterion_links[]` 每条 `parent_criterion_id / child_step / child_criterion_id / evidence_requirement` | 规则 3 说「必须覆盖 required_criteria 里的每一条父要求」（**口径错**：注册协议查的是 goal_signature.coverage_criteria） | `required_criteria`（父要求 id）、`goal_signature.coverage_criteria`（准则 id） | S1 `parent_criterion / step_local_id / child_criterion`，无 `evidence_requirement`；P2/P3 无 composition |
+| composition | `outputs{}`、`finalizer_step`、`independent_review_required:true` | 未提 | — | 三轮都没写 |
+| ordering | `[{before,after}]` | 规则 5 | — | S1 正确；P2/P3 没写 |
+
+### 修法（六个源文件，+447/−14）
+
+1. `runtime/role_templates.py`（+140/−5）
+   - `METHOD_SYNTHESIZER_V1`（`method-synthesizer-v1`，字节不动，sha256 `9341ab10…` 与 HEAD 一致）保留可 pin；
+     新注册 **`METHOD_SYNTHESIZER = method-synthesizer-v2`**（L828–L920，`_revise` 派生）：输入字段说明加 `goal_type_ref / method_shape / schema_feedback`；
+     规则 3 改为「`parent_criterion_id` 逐条照抄 `goal_signature.coverage_criteria`」；输出要求改成**逐字段**清单（上表 codec 列全部覆盖，并点名
+     `id / version / goal_signature_ref / parameter_bindings / input_bindings / from_goal_parameter / from_step / coverage_criteria / statement` 不被接受），
+     附一个**最小完整示例块**（`dom.*` 中性 id，content_hash 位置写「照抄输入 X 的 content_hash」占位），并说明 `schema_feedback` 非空时的动作。
+   - `PLANNER_HIERARCHICAL_V4`（`planner-hierarchical-v4`，L581–L600，由 v3 派生）：删掉「改为只输出一个 `<method_proposal>` 块」那句，改为
+     「你永远不提出方法……没有方法可用就输出 operations 为空、rationale 以 `no_applicable_method: ` 开头的 `<plan_revision_proposal>`」。
+     v4 登记进 `HIERARCHICAL_PLANNER_VERSIONS` 与 `HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[2]`（包没变，pin v3 仍生效）；v1–v3 字节不动。
+2. `planning/htn/synthesis.py`（+108/−3）
+   - `METHOD_SHAPE`（L102）：codec 各对象的必填字段名清单，随请求包一起发给模型（`to_json()["method_shape"]`）；测试钉住它与 codec 一致（逐个删字段 → codec 点名该字段）。
+   - `SynthesisRequest` 新字段 `goal_type_ref`（目录里该目标类型的 `{id,version,content_hash}`，`method.goal_type_ref` 照抄它；目录没声明时为 null）与 `schema_feedback`；
+     `build_request(..., schema_feedback=())` 透传。请求 `content_hash()` 因此随 feedback 变化（第二问与第一问是不同请求，`context_version` 如实不同）。
+   - `SynthesisReplyUnreadable(ContractError)`（L143）：`accept_response` 里 `parse_method_proposal` 抛出的 ContractError 被命名为它，带 `problems`（codec 原话）与 `block_defect`
+     （BlockError 原因或 `"schema"`）；注册协议的 REJECTED 仍是 receipt，不走这条。`synthesis_schema_feedback()` = problems + 一句「按 method_shape 与示例改正后重出整块」。
+3. `orchestrator/hierarchical_dispatch.py`（+46/−1）：新事件 **`MethodSynthesisReplyUnreadable`**（键 `{mission}:{goal}:{ordinal}`，payload `goal_task_id / ordinal / block_defect / problems`）
+   与 `record_synthesis_reply_unreadable`；`record_synthesis_outcome` payload 多 **`asks`**（本轮问了几次）；`synthesis_request(..., schema_feedback=)` 透传。
+4. `orchestrator/event_handler.py`（+93/−5）
+   - `MAX_SYNTHESIS_ASKS = 2`（L241）。`_collect_synthesizer`（L3984）：`except SynthesisReplyUnreadable` → 若 `ordinal < 2`：记 `MethodSynthesisReplyUnreadable`、
+     意图 FAILED、`_create_synthesizer_intent(ordinal+1, schema_feedback=…)`（同 mission、同 goal、subject `…:synthesizer:<goal>:2`、同 `mission_planning` 账户、再预留一次——**第二次调用如实计费**）、
+     不结束合成轮、return；开不出第二问（ContractError/CommitRejected/BudgetError/RoutingUnavailable）则把原因并进 problems 按 UNREADABLE 收口。
+     第二次仍不可读 → `MethodSynthesisRoundRecorded{UNREADABLE, asks:2}` → `_after_synthesis_round` 老路。被读懂但被注册协议拒绝的回复（REJECTED）**不重问**。
+   - `_request_method_synthesis` 不改：它只看 ordinal 1 的 subject 是否存在，重问不会让它再开一轮；`_synthesis_intents_in_flight` 看角色不看序号，梯子照旧等第二问。
+   - `_give_up_blocked_plan_intent` 的 UNANSWERED 收口带 `asks=intent.ordinal`。
+   - `_collect_plan_hierarchical`：新增 `except NoApplicableMethodDeclared`（L4209）→ `PlanningRejected{no_applicable_method, detail:{proposal_id, rationale}}`，不带 repair_hint（无需修）；
+     BlockError 分支里 `cause.reason == proposal_wrong_block` → 理由码 **`proposal_wrong_block`**（L4252；`reason = "proposal_unreadable"` 字面量保留，event_flow 的源码断言不变）。
+   - `_hierarchical_planner_template` 兜底改 `PLANNER_HIERARCHICAL_V4`（L2588）。
+5. `planning/planner.py`（+52/−0）：`PROPOSAL_WRONG_BLOCK`、`NO_APPLICABLE_METHOD`、`NoApplicableMethodDeclared`；`parse_plan_proposal` 在 `block_missing` 且文本含 `<method_proposal>` 时改抛
+   `BlockError(proposal_wrong_block)` 为因；`operations == []` 在进 codec 之前抛 `NoApplicableMethodDeclared(rationale, proposal_id)`（codec 本身拒绝空 operations，契约未动）。
+6. `runtime/output_blocks.py`（+8）：`REPAIR_HINTS["proposal_wrong_block"]` =「你是 Planner，不提方法……没有可用方法就输出 operations 为空、rationale 以 no_applicable_method: 开头的块」。
+   走既有 `detail["repair_hint"]` → `_planning_rejections` → 下一轮包 `planning_rejected` 的通道，不新开机制。
+
+### 宽容解析（任务书第 4 条）：**不做**，理由
+
+三条真实回复逐个核对：S1 缺的是 `arguments`（它的 `parameter_bindings/input_bindings` 用的是 `from_goal_parameter/from_step` 另一套**值语言**，不是改名）、
+`obligation_relation`、`evidence_requirement`（只有作者能写的一句话）和 composition 的三个键；P2/P3 连 content_hash 和 arguments 都没有。
+纯改名映射（id→method_id、version→method_version、goal_signature_ref→goal_type_ref）对三条里**任何一条**都够不成可准入，只会掩盖模型用了哪种拼法；
+§18.5 的原则是边界处拒绝而不是改写。确定性的机制是「第二问 + codec 原话」。测试 `test_no_alias_is_normalised_on_the_way_in` 钉住：三条原文都以
+`SynthesisReplyUnreadable` 收口、注册表为空、`synthesis.py` 源码里没有 `normalised_fields` / alias。
+
+### 测试（`tests/orchestrator/full_target/test_synthesizer_schema_alignment.py`，679 行，15 函数 / 16 用例；夹具 `fixtures/htn/replies/` 三条原文 + SOURCE.md）
+
+| 测试 | 断言 |
+|---|---|
+| `test_the_grok_synthesizer_reply_is_refused_for_exactly_the_fields_the_episode_recorded` | 夹具在 codec 下的报错**逐字**等于真实局记录的 10 个缺失字段；模型写的是包里给过的形状 |
+| `test_v2_names_every_field_the_codec_requires_and_v1_named_none_of_them` | v2 含 `METHOD_SHAPE` 每个名字与被拒拼法；v1 只写「完整 MethodContract JSON」 |
+| `test_method_shape_is_the_codecs_own_field_list` | 逐个删 method/step/composition/criterion_link 字段 → codec 点名；多写 `id` → unknown fields |
+| `test_the_example_in_v2_parses_and_is_admitted_once_the_placeholders_are_copied` | 提示词示例只替换占位 hash/id → `parse_method_proposal` 通过且 **TRIAL_ADMITTED** |
+| `test_the_request_carries_the_goal_type_ref_and_the_field_list_the_method_must_copy` | `goal_type_ref` == 目录声明（含 hash）；`method_shape`；feedback 非空时 hash 变、其余字节不变 |
+| `test_v1_keeps_its_bytes_stays_registered_and_is_still_pinnable` | v1 sha256 = `9341ab10…`；两版都在 `TEMPLATE_VERSIONS`；pin v1 得 v1 |
+| `test_an_unreadable_reply_is_named_and_a_refused_one_is_not` | 缺字段 → `block_defect=schema`；无块 → `block_missing`；未知算子 → REJECTED 不抛 |
+| `test_a_reply_the_codec_cannot_read_is_asked_once_more_with_the_problems_attached` | 真 `Orchestrator`：S1 原文 → `MethodSynthesisReplyUnreadable{ordinal:1}` → 第二意图 `…:synthesizer:task-root:2`（同账户、序号 2）、包里 `schema_feedback[0]` == codec 原话、第一包为空 → `MethodSynthesisRoundRecorded{admitted:true, asks:2}` → `PlanRevisionCommitted`；synthesizer 调用恰 2 次 |
+| `test_a_second_unreadable_reply_concludes_the_round_and_nobody_is_asked_a_third_time` | 两次不可读 → `UNREADABLE, asks:2`，两个意图、无第三次调用，Mission FAILED `method_synthesis_refused` |
+| `test_the_retry_is_bounded_by_a_constant_read_off_the_intents_ordinal` | 源码钉住 `if ordinal < MAX_SYNTHESIS_ASKS`、feedback 来源、REJECTED 走另一分支 |
+| `test_a_planner_reply_carrying_the_other_roles_block_is_the_wrong_block[P2/P3]` | 因是 `BlockError(proposal_wrong_block)`；hint 含「Planner」「不提方法」「no_applicable_method」；纯文字仍是 `block_missing` |
+| `test_the_wrong_block_is_filed_under_its_own_reason_and_the_hint_reaches_the_next_round` | 真 `Orchestrator.run()`：P2 原文 → `PlanningRejected{proposal_wrong_block, block_defect, repair_hint}`；第二轮 Planner 包含该 hint、第一轮不含；随后采用提交 |
+| `test_an_empty_operations_proposal_is_the_planners_explicit_no_method_answer` | `NoApplicableMethodDeclared(rationale, proposal_id)`；走 `_collect_plan_hierarchical` → `no_applicable_method`，detail 无 repair_hint/block_defect |
+| `test_v4_never_tells_the_planner_to_propose_a_method_and_v3_keeps_its_bytes` | v3 含旧句、v4 不含；v4 含 `proposal_wrong_block`/`no_applicable_method`/「operations 写空数组」；v3 sha256 `ba244a12…`；v4 已注册、在版本集合；兜底源码为 V4 |
+| `test_no_alias_is_normalised_on_the_way_in` | 见上 |
+
+既有测试跟着改的三处：`test_evidence_saturation::test_a_refused_synthesis_round_ends_the_wait_it_caused` 原本脚本了一个**codec 读不懂**的块却注释为「被注册协议拒绝」，
+现在改为真正被注册协议拒绝的完整方法（未知算子），并加断言 `verdict == REJECTED`、`asks == 1`；`test_htn_end_to_end` 两条 chooser 测试改为「包 2 默认 v4、pin v3 仍得 v3、版本集合 = {v3, v4}」；
+`test_planner_typed_proposal::test_no_operations_is_refused` 不改，`NoApplicableMethodDeclared` 的消息里含 "has no operations"。
+`test_output_port_claims.FROZEN_PROMPT_DIGESTS` 登记四条（synthesizer v1/v2、planner v3/v4）；`test_hierarchical_event_flow.NEW_EVENT_TYPES` 加 `MethodSynthesisRoundRecorded`（漏登记的旧事件）与 `MethodSynthesisReplyUnreadable`。
+
+变异自证（临时改源 → 跑定向 18 条 → 从留存副本恢复，未用 git checkout）：
+
+| 变异 | 结果 |
+|---|---|
+| M1 `MAX_SYNTHESIS_ASKS = 1` | 2 红（重试两条） |
+| M2 提示词示例删掉 `"basis_refs":[]` | 1 红（示例可解析） |
+| M3 `parse_plan_proposal` 去掉 `<method_proposal>` 判定 | 3 红（P2/P3 参数化 + 端到端） |
+| M4 `_create_synthesizer_intent` 不把 feedback 放进请求 | 1 红（第二包无 feedback） |
+| M5 兜底提示词仍是 v3 | 2 红（chooser） |
+| M6 `operations == []` 不再抛 `NoApplicableMethodDeclared` | 1 红 |
+
+6/6 KILLED，其余 16–17 条在每个变异下保持绿（说明各断言互不掩盖）。
+
+### 契约变更请求
+
+无新增。`contracts/` 一字未动：空 operations 的显式拒绝形状在进 codec 之前由 `planning/planner.py` 解释；`MethodSynthesisRoundRecorded.asks` 与新事件都在 `orchestrator/`。
+**顺手记一条给契约持有者**：`PlanProposal.operations` 必须非空是契约层规定，所以「Planner 显式说没方法」永远到不了 `PlanProposal` 对象——如果 P3/TaskGraph 想把它当成一等操作
+（例如 `op=declare_no_method`），需要契约加一个操作种类；本片不提。
+
+### 口径
+
+- `SynthesisRequest.to_json()` 多三个键（`goal_type_ref / method_shape / schema_feedback`），合成意图的 `context_version` 因此与 8b8466d 不同；无 golden 钉它。
+- 层次 Planner 的默认提示词由 v3 变 v4（同一包版本 2）；已 pin v3 的部署不受影响。
+- `MethodSynthesisRoundRecorded.payload` 多 `asks`；`PlanningRejected.reason` 多两个取值 `proposal_wrong_block`、`no_applicable_method`。
+- **无新增配置项**，策略快照 digest 不变。legacy 事件字节不变（改动全在 `_new_mode(mission) is not None` 之后的分支里；`self._new_mode(mission)` 计数仍 18）。
+
+### 结果
+
+- 新增 16 用例全绿；`tests/orchestrator/full_target` **2739 passed + 2 skip（基线 2719 + 2，净增 20 = 新文件 16 用例 + 冻结摘要表 4 条参数化）**；旧模式回归（step02/05/06/07 + p34/p35）**step02/05/06/07 + p34/p35：560 passed / 13 skipped / 0 failed（skip 全是既有的 real-provider / pinned tokenizer，零新增失败）**；
+  `ruff check src/agent_orchestrator tests/orchestrator/full_target` All checks passed；`mypy src/agent_orchestrator` 17 errors in 4 files（基线）。
+- 真实局由协调方跑；本片不跑。
+
+### 未做 / 交下一片
+
+- 请求包仍没有**谓词清单**（`applicable_when` 规则 2 说「只能用输入里出现过的谓词引用」，但包里没有一份可抄的 predicate_ref）。S1 写 `applicable_when: []` 是合法的，
+  所以本片不加；真要让合成方法带前置条件，需要 `build_request` 多一个 `predicates` 参数（`world.predicates` 在 `synthesis_request` 里拿得到）。
+- Planner 的 `no_applicable_method` 声明目前只烧一级梯子并记录，不直接触发合成轮（D2b 的 `goals_needing_method` 仍是唯一判定者）。这是有意的：I18 不放宽，模型说「没方法」不等于系统认定没方法。
 ## 2j. P2.3h：根评审包必须携带可读证据、叶子准则按 criterion_links 限定、c-change-explained 有承诺人、requirements_revision 对齐（2026-09-17，分支 `p2.3h-root-review`，基 `8b8466d`）
 
 ### 现象（真实 Grok 局 `H-L3-C3-r0`，只读证据）

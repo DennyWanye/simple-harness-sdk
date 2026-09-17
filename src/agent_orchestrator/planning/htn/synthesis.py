@@ -40,7 +40,7 @@ What is deliberately **not** here:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,6 +54,7 @@ from ...contracts.htn import (
 )
 from ...contracts.models import ContractError
 from ...contracts.semantic_base import VersionedRef, content_hash_of
+from ...runtime.output_blocks import BlockError
 from ...runtime.role_templates import METHOD_PROPOSAL_TAG, METHOD_SYNTHESIZER
 
 # ``SYSTEM_BOUND_FIELDS`` comes from the one module that owns the list, so this
@@ -93,6 +94,77 @@ SYNTHESIS_AUTHOR = RegistryAuthor.MODEL
 #: as well as a description; a deployment with a thousand task types does not get a
 #: thousand-entry prompt.
 DEFAULT_MAX_OPERATORS = 64
+
+#: P2.3g.  The field names the codec requires, by object, as the request states them
+#: to the model (``method_shape``).  They are spelled here rather than read off
+#: ``MethodContract.from_json`` because that function keeps its list inline; the
+#: suite pins the two against each other (drop any name → the codec names it).
+METHOD_SHAPE: Mapping[str, tuple[str, ...]] = {
+    "method": (
+        "schema_version",
+        "method_id",
+        "method_version",
+        "goal_type_ref",
+        "parameter_schema_ref",
+        "output_schema_ref",
+        "applicable_when",
+        "exploration_assumptions",
+        "steps",
+        "ordering",
+        "required_capabilities",
+        "expected_effects",
+        "composition",
+        "basis_refs",
+    ),
+    "step": (
+        "local_id",
+        "task_type_ref",
+        "form",
+        "arguments",
+        "required_capabilities",
+        "obligation_relation",
+    ),
+    "composition": (
+        "criterion_links",
+        "outputs",
+        "finalizer_step",
+        "independent_review_required",
+    ),
+    "criterion_link": (
+        "parent_criterion_id",
+        "child_step",
+        "child_criterion_id",
+        "evidence_requirement",
+    ),
+    "versioned_ref": ("id", "version", "content_hash"),
+}
+
+
+class SynthesisReplyUnreadable(ContractError):
+    """The synthesiser's reply could not be decoded into a submission (P2.3g).
+
+    Distinct from a *rejected* method: the registry never saw this one.  ``problems``
+    is what the next ask is given as ``schema_feedback`` — the codec's own words
+    ("… is missing required fields: […]"), not a paraphrase — and ``block_defect``
+    is the :class:`BlockError` reason when the block itself was the problem, else
+    ``"schema"``.
+    """
+
+    def __init__(self, error: ContractError) -> None:
+        super().__init__(str(error))
+        cause = error.__cause__
+        self.block_defect = cause.reason if isinstance(cause, BlockError) else "schema"
+        self.problems: tuple[str, ...] = (str(error),)
+
+
+def synthesis_schema_feedback(error: SynthesisReplyUnreadable) -> tuple[str, ...]:
+    """What the second ask carries: the problems, verbatim, and one instruction."""
+
+    return (
+        *error.problems,
+        "上一次的回复没有通过解码（见上）。按 method_shape 与提示词里的例子逐字段改正后，"
+        f"重新只输出一个 <{METHOD_PROPOSAL_TAG}>…</{METHOD_PROPOSAL_TAG}> 块。",
+    )
 
 
 def authority_claims(payload: object, *, path: str = "") -> tuple[str, ...]:
@@ -236,6 +308,13 @@ class SynthesisRequest:
     rejected_methods: tuple[ApplicabilityNote, ...] = ()
     unavailable_capabilities: tuple[str, ...] = ()
     suggested_method_refs: tuple[Mapping[str, Any], ...] = ()
+    #: P2.3g: the goal type's own ``{id, version, content_hash}`` from the catalogue —
+    #: ``method.goal_type_ref`` is copied from it.  ``None`` when the deployment does
+    #: not declare the type (the empty-library case).
+    goal_type_ref: Mapping[str, Any] | None = None
+    #: P2.3g: the codec's problems with the previous reply, when this is the second
+    #: ask on the same anchor.  Empty on a first ask.
+    schema_feedback: tuple[str, ...] = ()
     output_tag: str = METHOD_PROPOSAL_TAG
     role_prompt_version: str = METHOD_SYNTHESIZER.prompt_version
     #: What the model may not write, stated *in* the request.  §18.5 refuses such a
@@ -249,6 +328,11 @@ class SynthesisRequest:
             "forbidden_fields",
             tuple(sorted(self.forbidden_fields or SYSTEM_BOUND_FIELDS)),
         )
+        object.__setattr__(
+            self, "schema_feedback", tuple(str(item) for item in self.schema_feedback)
+        )
+        if self.goal_type_ref is not None:
+            object.__setattr__(self, "goal_type_ref", dict(self.goal_type_ref))
         claims = authority_claims(self.to_json())
         if claims:
             raise ContractError(
@@ -271,6 +355,9 @@ class SynthesisRequest:
             "rejected_methods": [item.to_json() for item in self.rejected_methods],
             "unavailable_capabilities": list(self.unavailable_capabilities),
             "suggested_method_refs": [dict(item) for item in self.suggested_method_refs],
+            "goal_type_ref": None if self.goal_type_ref is None else dict(self.goal_type_ref),
+            "method_shape": {key: list(value) for key, value in METHOD_SHAPE.items()},
+            "schema_feedback": list(self.schema_feedback),
             "output_tag": self.output_tag,
             "role_prompt_version": self.role_prompt_version,
             "forbidden_fields": list(self.forbidden_fields),
@@ -327,6 +414,7 @@ class MethodSynthesizer:
         reports: Mapping[str, ApplicabilityReport] | None = None,
         mission_id: str | None = None,
         domain: str | None = None,
+        schema_feedback: Sequence[str] = (),
     ) -> SynthesisRequest:
         """The typed context for "this compound goal has no usable method".
 
@@ -385,6 +473,8 @@ class MethodSynthesizer:
                 if mission_id is not None and goal_type is not None
                 else ()
             ),
+            goal_type_ref=None if goal_type is None else goal_type.to_json(),
+            schema_feedback=tuple(schema_feedback),
         )
 
     def goal_type_ref(self, signature: GoalSignature) -> VersionedRef | None:
@@ -494,7 +584,12 @@ class MethodSynthesizer:
         resolved = (
             SYNTHESIS_AUTHOR if author_override is None else RegistryAuthor(str(author_override))
         )
-        proposal = parse_method_proposal(text)
+        try:
+            proposal = parse_method_proposal(text)
+        except ContractError as error:
+            # P2.3g: named, so the caller can ask once more with the codec's words
+            # attached instead of concluding the round on a reply nobody could read.
+            raise SynthesisReplyUnreadable(error) from error
         receipt = self._registry.admit(proposal, author=resolved, policy=policy)
         if receipt.verdict not in (AdmissionVerdict.TRIAL_ADMITTED, AdmissionVerdict.REJECTED):
             raise ContractError(
@@ -530,11 +625,18 @@ def build_request(
     reports: Mapping[str, ApplicabilityReport] | None = None,
     mission_id: str | None = None,
     domain: str | None = None,
+    schema_feedback: Sequence[str] = (),
 ) -> SynthesisRequest:
     """:meth:`MethodSynthesizer.build_request` for a caller that holds no synthesiser."""
 
     return MethodSynthesizer(registry, catalog).build_request(
-        goal, capabilities, registry, reports=reports, mission_id=mission_id, domain=domain
+        goal,
+        capabilities,
+        registry,
+        reports=reports,
+        mission_id=mission_id,
+        domain=domain,
+        schema_feedback=schema_feedback,
     )
 
 
@@ -555,14 +657,17 @@ def accept_response(
 
 __all__ = (
     "DEFAULT_MAX_OPERATORS",
+    "METHOD_SHAPE",
     "SYNTHESIS_AUTHOR",
     "SYNTHESIS_TERMINAL_STATUSES",
     "VALUE_CONTAINERS",
     "ApplicabilityNote",
     "MethodSynthesizer",
     "OperatorOffer",
+    "SynthesisReplyUnreadable",
     "SynthesisRequest",
     "accept_response",
     "authority_claims",
     "build_request",
+    "synthesis_schema_feedback",
 )

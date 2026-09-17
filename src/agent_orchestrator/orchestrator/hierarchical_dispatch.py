@@ -214,6 +214,12 @@ ROOT_REVIEW_SUPERSEDED = "HierarchicalRootReviewSuperseded"
 #: nothing to the registry and nothing to the plan, so without this event the only
 #: trace of the round would be its token cost.
 SYNTHESIS_ROUND_RECORDED = "MethodSynthesisRoundRecorded"
+#: P2.3g: one synthesiser reply the codec could not read, on a round that is *not*
+#: concluded by it — the same question is put once more with the codec's problems
+#: attached (``MAX_SYNTHESIS_ASKS`` in the event handler).  Keyed by ordinal, so the
+#: log shows which ask failed and why, and the round's one concluding event stays
+#: :data:`SYNTHESIS_ROUND_RECORDED`.
+SYNTHESIS_REPLY_UNREADABLE = "MethodSynthesisReplyUnreadable"
 #: G1 (Host acceptance runner): why each registered method was refused for each still
 #: open goal, at the plan revision the Planner was asked against.  The four-axis
 #: report was computed for the *prompt* and thrown away, so after a run nobody could
@@ -2556,7 +2562,12 @@ class HierarchicalDispatch:
 
     # ------------------------------------------------------- the MethodSynthesizer
     def synthesis_request(
-        self, mission_id: str, goal_task_id: str, *, domain: str | None = None
+        self,
+        mission_id: str,
+        goal_task_id: str,
+        *,
+        domain: str | None = None,
+        schema_feedback: Sequence[str] = (),
     ) -> Any:
         """The typed context one synthesis round is given (§7.3 source 4, §18.5 C8).
 
@@ -2595,6 +2606,7 @@ class HierarchicalDispatch:
             reports=reports,
             mission_id=mission_id,
             domain=domain,
+            schema_feedback=schema_feedback,
         )
 
     def method_applicability(self, mission_id: str) -> tuple[Any, ...]:
@@ -2962,6 +2974,7 @@ class HierarchicalDispatch:
         method_id: str = "",
         verdict: str = "",
         author: str = "",
+        asks: int = 1,
     ) -> Event:
         """What one MethodSynthesizer round produced, recorded where it can be read.
 
@@ -2983,6 +2996,37 @@ class HierarchicalDispatch:
                 "verdict": str(verdict),
                 "method_id": str(method_id),
                 "author": str(author),
+                "problems": [str(item) for item in problems][:12],
+                # P2.3g: how many times the synthesiser was asked on this round.
+                "asks": int(asks),
+            },
+        )
+
+    def record_synthesis_reply_unreadable(
+        self,
+        mission_id: str,
+        *,
+        goal_task_id: str,
+        ordinal: int,
+        problems: Sequence[str] = (),
+        block_defect: str = "",
+    ) -> Event:
+        """One reply the codec could not read, on a round that goes on (P2.3g).
+
+        Not :meth:`record_synthesis_outcome`: that event concludes the round and is
+        keyed one-per-goal.  This one is keyed by ask ordinal and says what the next
+        ask was told, so the log reads "ask 1: unreadable for X; ask 2: admitted".
+        """
+
+        return self._append(
+            SYNTHESIS_REPLY_UNREADABLE,
+            mission_id,
+            key=f"{mission_id}:{goal_task_id}:{int(ordinal)}",
+            task_id=goal_task_id or None,
+            payload={
+                "goal_task_id": str(goal_task_id),
+                "ordinal": int(ordinal),
+                "block_defect": str(block_defect),
                 "problems": [str(item) for item in problems][:12],
             },
         )
@@ -3557,6 +3601,7 @@ __all__ = (
     "ROOT_REVIEW_SUPERSEDED",
     "WITNESS_KEY_TAKEN",
     "COMPOUND_DISPLAY_STATUS",
+    "SYNTHESIS_REPLY_UNREADABLE",
     "SYNTHESIS_ROUND_RECORDED",
     "COMPOUND_PHASE_CHANGED",
     "DEFAULT_COMPILE_ATTEMPTS",

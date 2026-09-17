@@ -50,6 +50,38 @@ SYSTEM_BOUND_FIELDS = frozenset(
 )
 
 
+#: P2.3g.  The ``BlockError`` reason for a Planner reply that carries a
+#: ``<method_proposal>`` block and no ``<plan_revision_proposal>``.  In the Grok
+#: acceptance episode H-L3-C1 two rounds were filed ``block_missing`` for this, and
+#: the repair hint the next round was given said "no block found" — which was false
+#: (a block was there) and unhelpful (the model wrote the other role's block again).
+PROPOSAL_WRONG_BLOCK = "proposal_wrong_block"
+
+#: P2.3g.  The ``rationale`` prefix a Planner writes when no registered method is
+#: usable for the goal it was asked about.  The plan contract refuses an empty
+#: ``operations`` list (``proposal.operations must not be empty``), so the explicit
+#: refusal is read *here*, before the codec, and surfaces as its own exception.
+NO_APPLICABLE_METHOD = "no_applicable_method"
+
+
+class NoApplicableMethodDeclared(ContractError):
+    """The Planner said, in the agreed shape, that no registered method applies.
+
+    Not a malformed block and not a grounding failure: a well-formed
+    ``<plan_revision_proposal>`` whose ``operations`` is ``[]``.  The caller records
+    it under its own reason code and lets the synthesis path decide what to do — the
+    Planner has answered, it just has nothing to refine with.
+    """
+
+    def __init__(self, rationale: str, *, proposal_id: str) -> None:
+        super().__init__(
+            f"plan revision proposal {proposal_id!r} has no operations and declares "
+            f"{NO_APPLICABLE_METHOD}: {rationale[:300]}"
+        )
+        self.rationale = rationale
+        self.proposal_id = proposal_id
+
+
 def parse_task_proposal(text: str) -> TaskProposal:
     """Strict parse of the Planner's ``<task_proposal>`` block into a ``TaskProposal``."""
 
@@ -108,8 +140,25 @@ def parse_plan_proposal(text: str, *, mission_id: str) -> PlanProposal:
     try:
         raw = extract_block(text, PLAN_REVISION_PROPOSAL_TAG)
     except BlockError as error:
+        if error.reason == "block_missing" and f"<{METHOD_PROPOSAL_TAG}>" in text:
+            # P2.3g: the other role's block.  Reported under its own reason so the
+            # rejection and the repair hint say what actually happened.
+            wrong = BlockError(
+                PROPOSAL_WRONG_BLOCK,
+                f"a <{METHOD_PROPOSAL_TAG}> block was given where a "
+                f"<{PLAN_REVISION_PROPOSAL_TAG}> was required",
+            )
+            raise ContractError(f"plan revision proposal unreadable: {wrong}") from wrong
         raise ContractError(f"plan revision proposal unreadable: {error}") from error
     _refuse_authority_claims(raw, "plan revision proposal")
+    operations = raw.get("operations")
+    if isinstance(operations, list) and not operations:
+        # P2.3g: the explicit "no method applies" answer.  Read before the codec,
+        # which refuses an empty operations list as malformed; the rationale is kept
+        # verbatim so the record says what the Planner said.
+        raise NoApplicableMethodDeclared(
+            str(raw.get("rationale", "")), proposal_id=str(raw.get("proposal_id", ""))
+        )
     for index, item in enumerate(raw.get("read_set") or ()):
         if isinstance(item, Mapping):
             _refuse_authority_claims(item, f"plan revision proposal read_set[{index}]")
@@ -135,7 +184,10 @@ def parse_method_proposal(text: str) -> MethodProposal:
 
 
 __all__ = (
+    "NO_APPLICABLE_METHOD",
+    "PROPOSAL_WRONG_BLOCK",
     "SYSTEM_BOUND_FIELDS",
+    "NoApplicableMethodDeclared",
     "parse_method_proposal",
     "parse_plan_proposal",
     "parse_task_graph_proposal",

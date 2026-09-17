@@ -1167,10 +1167,12 @@ def test_a_legacy_prompt_pin_does_not_reach_the_hierarchical_branch() -> None:
     Part 2d (review P2-21) drives the real chooser instead of reading its source.
     """
 
-    from agent_orchestrator.runtime.role_templates import PLANNER, PLANNER_HIERARCHICAL_V3
+    from agent_orchestrator.runtime.role_templates import PLANNER, PLANNER_HIERARCHICAL_V4
 
-    assert _Pinned(PLANNER.prompt_version).choose() is PLANNER_HIERARCHICAL_V3
-    assert _Pinned(None).choose() is PLANNER_HIERARCHICAL_V3
+    # P2.3g: the unpinned default of package 2 is v4 (v3 minus the sentence that told
+    # the Planner to write a ``<method_proposal>``).
+    assert _Pinned(PLANNER.prompt_version).choose() is PLANNER_HIERARCHICAL_V4
+    assert _Pinned(None).choose() is PLANNER_HIERARCHICAL_V4
 
 
 def test_a_pin_from_an_older_package_version_does_not_apply_to_this_package() -> None:
@@ -1190,14 +1192,19 @@ def test_a_pin_from_an_older_package_version_does_not_apply_to_this_package() ->
         PLANNER_HIERARCHICAL,
         PLANNER_HIERARCHICAL_V1,
         PLANNER_HIERARCHICAL_V3,
+        PLANNER_HIERARCHICAL_V4,
         hierarchical_planner_versions,
     )
 
-    # v1 and v2 belong to the older package; v3 is this package’s own.
-    assert _Pinned(PLANNER_HIERARCHICAL_V1.prompt_version).choose() is PLANNER_HIERARCHICAL_V3
-    assert _Pinned(PLANNER_HIERARCHICAL.prompt_version).choose() is PLANNER_HIERARCHICAL_V3
+    # v1 and v2 belong to the older package; v3 and v4 are this package’s own (P2.3g:
+    # v4 is the default, a pin on v3 is still honoured because the package is the same).
+    assert _Pinned(PLANNER_HIERARCHICAL_V1.prompt_version).choose() is PLANNER_HIERARCHICAL_V4
+    assert _Pinned(PLANNER_HIERARCHICAL.prompt_version).choose() is PLANNER_HIERARCHICAL_V4
     assert _Pinned(PLANNER_HIERARCHICAL_V3.prompt_version).choose() is PLANNER_HIERARCHICAL_V3
-    assert hierarchical_planner_versions() == frozenset({PLANNER_HIERARCHICAL_V3.prompt_version})
+    assert _Pinned(PLANNER_HIERARCHICAL_V4.prompt_version).choose() is PLANNER_HIERARCHICAL_V4
+    assert hierarchical_planner_versions() == frozenset(
+        {PLANNER_HIERARCHICAL_V3.prompt_version, PLANNER_HIERARCHICAL_V4.prompt_version}
+    )
     # the mode-level set is still the union of every group, and nothing is orphaned
     assert (
         frozenset().union(*HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE.values())
