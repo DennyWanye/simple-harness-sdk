@@ -2957,7 +2957,34 @@ class HierarchicalDispatch:
         self.require_hierarchical(mission_id)
         synthesizer = MethodSynthesizer(world.registry, world.catalog)
         resolved = policy if policy is not None else self._admission_policy(mission_id)
-        return synthesizer.accept_response(text, policy=resolved)
+        receipt = synthesizer.accept_response(text, policy=resolved)
+        if receipt.admitted:
+            self._publish_admitted_method(world, receipt.method_ref)
+        return receipt
+
+    def _publish_admitted_method(self, world: Any, reference: Any) -> None:
+        """A just-admitted method goes into the **library**, not only into memory.
+
+        P2.3d review P1-1.  Admission decides against the in-memory
+        :class:`MethodRegistry`, but ``compile_proposal`` reads the chosen method back
+        out of ``htn_store`` — the definition a plan revision was compiled from has to
+        be durable and re-readable at exactly the version the commit recorded.
+        ``build_planning_world`` publishes the *seed* methods for that reason
+        (:func:`~..planning.htn.world.publish_methods`); nothing published a method the
+        Mission synthesised for itself, so the Planner's next round died with
+        "method … is not stored" and the synthesis round bought nothing at all.
+
+        Same re-registration rule as the assembly path: identical bytes are a no-op.
+        """
+
+        semantics = getattr(world, "semantics", None)
+        if semantics is None or reference is None:
+            return
+        contract = world.registry.definition(reference)
+        registration = world.registry.registration(reference)
+        if contract is None or registration is None:
+            return
+        semantics.register_method(contract, registration)
 
     def _admission_policy(self, mission_id: str) -> Any:
         """The policy a synthesised method is decided against on this deployment.

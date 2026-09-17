@@ -30,8 +30,10 @@ next question.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -50,18 +52,22 @@ from agent_orchestrator.contracts.evidence_state import (  # noqa: E402
     QueryCompleteness,
 )
 from agent_orchestrator.contracts.htn import TaskForm  # noqa: E402
-from agent_orchestrator.contracts.models import ContractError  # noqa: E402
+from agent_orchestrator.contracts.models import ContractError, MissionStatus  # noqa: E402
 from agent_orchestrator.contracts.semantic_base import (  # noqa: E402
     TypedRef,
     TypedRefKind,
     content_hash_of,
 )
+from agent_orchestrator.contracts.state_machines import TERMINAL_MISSION  # noqa: E402
+from agent_orchestrator.orchestrator.event_handler import Orchestrator  # noqa: E402
 from agent_orchestrator.orchestrator.hierarchical_dispatch import (  # noqa: E402
     DEFAULT_EVIDENCE_SATURATION_ROUNDS,
     HierarchicalDispatch,
 )
 from agent_orchestrator.planning.htn.applicability import ApplicabilityStatus  # noqa: E402
+from agent_orchestrator.runtime.assembly import OrchestratorConfig  # noqa: E402
 from agent_orchestrator.storage.htn_store import HtnStore  # noqa: E402
+from agent_orchestrator.testing.fixtures import RoleScriptedProvider  # noqa: E402
 
 PREDICATE = "plan.ready"
 
@@ -239,3 +245,251 @@ def test_saturation_never_settles_the_proposition(gated: World) -> None:
 
 def world_needs(world: World) -> tuple[str, ...]:
     return world.dispatch.goals_needing_method(world.mission.id)
+
+
+# ======================================================================================
+# review P1-1: the other half — a synthesised method has to reach the Planner
+# ======================================================================================
+
+
+def _free_method():
+    """The method the synthesiser invents: same goal, no precondition to be unsure of."""
+
+    return method(
+        "plan.outer.free",
+        "plan.goal",
+        parameter_schema="plan.goal.params",
+        applicable=(),
+        steps=(
+            step(
+                "leaf",
+                "plan.leaf",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject")},
+                capabilities=("plan.read",),
+            ),
+        ),
+        links=(("c-root", "leaf", "c-done"),),
+        finalizer="leaf",
+    )
+
+
+def _adopt(reference) -> str:
+    from test_htn_end_to_end import ROOT_DUTY  # noqa: PLC0415
+
+    from agent_orchestrator.testing.fixtures import plan_revision_proposal_step
+
+    return plan_revision_proposal_step(
+        proposal_id="prop-synthesised",
+        expected_plan_revision=0,
+        read_set=[
+            {
+                "kind": "method",
+                "id": reference.method_id,
+                "semantic_revision": reference.version,
+                "content_hash": reference.content_hash,
+            }
+        ],
+        operations=[
+            {
+                "op": "refine",
+                "goal_id": ROOT_TASK,
+                "obligation_id": ROOT_DUTY,
+                "method_ref": {
+                    "id": reference.method_id,
+                    "version": reference.version,
+                    "content_hash": reference.content_hash,
+                },
+                "bindings": {},
+            }
+        ],
+    )
+
+
+def test_a_saturated_goal_is_synthesised_and_the_new_method_is_planned(tmp_path) -> None:
+    """H-L3-C1's shape, driven end to end on a real ``Orchestrator``.
+
+    Review P1-1: D2b was only half of the way out of the live-lock.  ``goals_needing_method``
+    started returning the goal and a MethodSynthesizer round opened, but nothing on the
+    other side of that round asked the Planner anything:
+
+    * ``_collect_synthesizer`` recorded the outcome and settled the intent, full stop —
+      all five callers of ``_try_planner_intent`` were elsewhere;
+    * the admitted method went into the in-memory registry and **not** into the library,
+      so a Planner that did name it compiled into "method … is not stored";
+    * ``_planning_rejected`` opened the next rung the moment the previous one was
+      refused, so the ladder was spent — and the Mission failed — while the synthesiser
+      was still being asked.  Whether a Mission survived came down to which of two model
+      calls answered first.
+
+    All three are fixed here, and this test is the one that can tell: the only method the
+    Mission starts with is precondition-gated on an OPEN predicate that two readings have
+    left UNKNOWN, so nothing can be planned until the synthesised method arrives.
+    """
+
+    from agent_orchestrator.testing.fixtures import method_proposal_step
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _gated_world(evidence, key="p23d-saturation-e2e")
+    for ordinal in (1, 2):
+        _observe(world, observer="plan.observer", ordinal=ordinal)
+    invented = _free_method()
+    world.store.close()
+
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=60,
+        max_planning_attempts=2,
+    )
+    provider = RoleScriptedProvider(
+        {
+            # Two rounds that cannot work: every method the Mission holds is refused for
+            # an unknown precondition, so the honest Planner has nothing to propose.
+            "planner": [
+                "no plan is possible with the methods on offer",
+                "still nothing; the only method is gated on an unknown precondition",
+                _adopt(invented.method_ref()),
+            ],
+            "method_synthesizer": [method_proposal_step(invented.to_json())],
+        }
+    )
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, provider) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            # ``run()`` is driven a cycle at a time rather than left to its own poll:
+            # ``_observe_liveness`` reports a heartbeat as progress, so an unfinished
+            # scripted turn spends ``max_cycles`` before it ever gets to answer.  The
+            # body is the real one — this only controls when it is entered.
+            for _ in range(24):
+                await loop._cycle()
+                await asyncio.sleep(0.02)
+                mission = loop.store.get_mission(world.mission.id)
+                if mission is not None and mission.status in TERMINAL_MISSION:
+                    break
+            events = list(loop.store.list_events(world.mission.id))
+            return {
+                "types": [item.type for item in events],
+                "synthesis": [
+                    item.payload
+                    for item in events
+                    if item.type == "MethodSynthesisRoundRecorded"
+                ],
+                "committed": [
+                    item.payload
+                    for item in events
+                    if item.type == "PlanRevisionCommitted"
+                ],
+                "planner_rounds": provider.by_role.get("planner", 0),
+                "status": loop.store.get_mission(world.mission.id).status,
+                "progress": list(loop.progress_log),
+                "roles": dict(provider.by_role),
+            }
+
+    outcome = asyncio.run(case())
+    assert outcome["synthesis"] and outcome["synthesis"][0]["admitted"] is True, (
+        f"the saturated goal never reached a synthesis round: {outcome['types']} "
+        f"progress={outcome['progress']} roles={outcome['roles']}"
+    )
+    assert outcome["committed"], (
+        "the synthesised method never became a plan — the round bought nothing: "
+        f"{outcome['types']}"
+    )
+    assert outcome["planner_rounds"] == 3, "one more round than the ladder, not a loop"
+
+
+def test_the_planning_ladder_waits_for_a_synthesis_round_instead_of_racing_it(tmp_path) -> None:
+    """The third part of P1-1: which of two model calls answers first is not a design.
+
+    ``_planning_rejected`` opened the next rung the instant the previous one was
+    refused.  On the L3 shape that meant planner #2 was created *before* the
+    synthesiser had answered, its package sealed on the old library; when it was refused
+    too, ``ordinal >= max_planning_attempts`` and the Mission was failed — with a
+    synthesis round still in flight that was about to hand it the method it needed.
+    Raising ``max_planning_attempts`` does not fix that; it only moves the race.
+
+    So: while a synthesis round is out, a spent ladder waits rather than ends, and an
+    admitted method buys exactly one more rung.  The bound still holds — one synthesis
+    round per goal (``synthesis_round_recorded``), one extra rung per admitted method.
+    """
+
+    from agent_orchestrator.testing.fixtures import method_proposal_step
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _gated_world(evidence, key="p23d-saturation-race")
+    for ordinal in (1, 2):
+        _observe(world, observer="plan.observer", ordinal=ordinal)
+    invented = _free_method()
+    world.store.close()
+
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=60,
+        max_planning_attempts=2,
+    )
+    provider = RoleScriptedProvider(
+        {
+            "planner": [
+                "nothing to propose",
+                "still nothing",
+                _adopt(invented.method_ref()),
+            ],
+            "method_synthesizer": [method_proposal_step(invented.to_json())],
+        }
+    )
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, provider) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            mission = loop.store.get_mission(world.mission.id)
+            # Both rounds are out at once, which is the racing shape.
+            await loop._try_planner_intent(mission.id, ordinal=1)
+            await loop._request_method_synthesis(mission)
+            def planner_intent(ordinal: int):
+                return next(
+                    item
+                    for item in loop.store.list_intents(
+                        "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                    )
+                    if item.kind == "plan"
+                    and str(item.config.get("role", "")) != "method_synthesizer"
+                    and int(item.config.get("ordinal", 0)) == ordinal
+                )
+
+            # The Planner answers first, twice, and is refused both times: with
+            # ``max_planning_attempts=2`` the ladder is spent while the synthesiser is
+            # still out.  Before the fix this is where the Mission was failed.
+            await loop._planning_rejected(
+                planner_intent(1), reason="proposal_unreadable", detail={"error": "no block"}
+            )
+            await loop._planning_rejected(
+                planner_intent(2), reason="proposal_unreadable", detail={"error": "again"}
+            )
+            waited = loop.store.get_mission(world.mission.id).status
+            for _ in range(24):
+                await loop._cycle()
+                await asyncio.sleep(0.02)
+                current = loop.store.get_mission(world.mission.id)
+                if current is not None and current.status in TERMINAL_MISSION:
+                    break
+            events = list(loop.store.list_events(world.mission.id))
+            return {
+                "waited": waited,
+                "types": [item.type for item in events],
+                "committed": [
+                    item.payload for item in events if item.type == "PlanRevisionCommitted"
+                ],
+            }
+
+    outcome = asyncio.run(case())
+    assert outcome["waited"] is not MissionStatus.FAILED, (
+        "the Mission was ended on the old library while the new one was being written"
+    )
+    assert "MissionFailed" not in outcome["types"], outcome["types"]
+    assert outcome["committed"], outcome["types"]

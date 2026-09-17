@@ -201,6 +201,7 @@ from .commit_service import (
 )
 from .hierarchical_dispatch import (
     MISSION_STALLED,
+    SYNTHESIS_ROUND_RECORDED,
     DispatchAdmissions,
     HierarchicalDispatch,
     append_hierarchical_event,
@@ -3700,8 +3701,21 @@ class Orchestrator:
             self.commit.record_planning_rejected(
                 mission.id, ordinal=ordinal, reason=reason, detail=detail
             )
-        if ordinal < self._config.max_planning_attempts:
+        # Review P1-1: an admitted synthesised method buys one more round.  Without it
+        # the Mission raced two model calls against each other — planner ``n+1`` was
+        # created the instant planner ``n`` was refused, and whether the synthesiser's
+        # answer arrived before the ladder ran out decided whether the Mission lived.
+        allowance = int(self._config.max_planning_attempts) + self._synthesis_credits(mission.id)
+        if ordinal < allowance:
             await self._try_planner_intent(mission.id, ordinal=ordinal + 1)
+        elif self._synthesis_intents_in_flight(mission.id):
+            # The ladder is spent but the library is still being extended.  Ending here
+            # would be ending on the old library; ``_after_synthesis_round`` reopens the
+            # round when the answer lands, and ends the Mission when it is a refusal.
+            self._note(
+                f"mission {mission.id}: planning round {ordinal} rejected ({reason}); a method "
+                "synthesis round is still out, so the ladder waits for its answer"
+            )
         elif mission.status is MissionStatus.PLANNING:
             self.commit.fail_planning(
                 mission.id, reason=reason, detail={"attempts": ordinal, **dict(detail)}
@@ -3917,6 +3931,100 @@ class Orchestrator:
         )
         self._settle_intent(intent, "SETTLED" if admitted else "FAILED")
         self._settle_service_if_known(intent.subject_id, mission.id)
+        await self._after_synthesis_round(mission.id, admitted=admitted)
+
+    async def _after_synthesis_round(self, mission_id: str, *, admitted: bool) -> None:
+        """A synthesis round has concluded; somebody has to act on it (review P1-1).
+
+        D2b opened the round — ``goals_needing_method`` stopped answering "look again"
+        for a precondition two readings had already settled as unknowable — and nothing
+        was wired to the *other* side of it.  The method was admitted, the outcome was
+        recorded, the intent was settled, and all five callers of
+        ``_try_planner_intent`` were elsewhere: the Mission had bought a method it never
+        asked anybody to use.  The goal was still open, the Planner was never asked
+        again, and the L3 episodes ended exactly where they had before the fix.
+
+        A refused round is the other half and has to end the wait it caused: a Mission
+        held in PLANNING only because this round was in flight would otherwise sit there
+        with no intent and nothing to dispatch.
+        """
+
+        mission = self.store.get_mission(mission_id)
+        if mission is None or mission.status in TERMINAL_MISSION:
+            return
+        if self._planner_intents_in_flight(mission_id):
+            return  # one question at a time; that round carries the new method already
+        if admitted:
+            ordinal = self._next_planning_ordinal(mission_id)
+            self._note(
+                f"mission {mission_id}: a synthesised method was admitted; asking the "
+                f"Planner again (ordinal {ordinal})"
+            )
+            await self._planner_round_on_committed_plan(
+                mission_id, ordinal=ordinal, phase="method_synthesis"
+            )
+            return
+        if mission.status is MissionStatus.PLANNING and self._planning_ladder_spent(mission_id):
+            self._stop_planning_round(
+                mission_id,
+                reason="method_synthesis_refused",
+                detail={"attempts": self._planning_attempts(mission_id)},
+                stop_reason=MissionStopReason.PLANNING_FAILED,
+            )
+
+    def _planner_intents_in_flight(self, mission_id: str) -> bool:
+        """An open ``plan`` intent that is a *Planner* round, not a synthesis round.
+
+        The two ride on the same intent kind, so "is a plan intent open" answers yes to
+        a synthesis round as well — which is right for "do not ask two questions at
+        once" and wrong for "has the Planner already been asked".
+        """
+
+        return any(
+            intent.kind == "plan"
+            and intent.mission_id == mission_id
+            and str(intent.config.get("role", "")) != "method_synthesizer"
+            for intent in self.store.list_intents(
+                "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+            )
+        )
+
+    def _synthesis_intents_in_flight(self, mission_id: str) -> bool:
+        return any(
+            intent.kind == "plan"
+            and intent.mission_id == mission_id
+            and str(intent.config.get("role", "")) == "method_synthesizer"
+            for intent in self.store.list_intents(
+                "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+            )
+        )
+
+    def _synthesis_credits(self, mission_id: str) -> int:
+        """Planning rounds bought by a method the Mission synthesised for itself.
+
+        One admitted method is one more question worth asking — the ladder's bound is
+        "how many times may the Planner be wrong about the *same* library", and the
+        library just changed.  Read off the log, so it is the same number after a
+        restart; zero for a legacy Mission, which never writes these events.
+        """
+
+        return sum(
+            1
+            for event in self.store.list_events(mission_id)
+            if event.type == SYNTHESIS_ROUND_RECORDED and bool(event.payload.get("admitted"))
+        )
+
+    def _planning_attempts(self, mission_id: str) -> int:
+        return sum(
+            1
+            for event in self.store.list_events(mission_id)
+            if event.type in {"TaskGraphRejected", "PlanningRejected"}
+        )
+
+    def _planning_ladder_spent(self, mission_id: str) -> bool:
+        return self._planning_attempts(mission_id) >= (
+            int(self._config.max_planning_attempts) + self._synthesis_credits(mission_id)
+        )
 
     async def _collect_plan_hierarchical(  # type: ignore[no-untyped-def]
         self,
