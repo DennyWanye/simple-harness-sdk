@@ -197,9 +197,16 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
     "PLANNER": ("planner-v4", "13537f0abf6322c7075af9b5ddb3c0b7316c0271830311f49c3d6c195f5c9aad"),
     "CRITIC": ("critic-v3", "427fb096fc0c4cf6acc67358cd631d3f3c4c39ce2fea60b768a529f6290b7120"),
     "CRITIC_V2": ("critic-v2", "8eb51a32c06bfa16da88e4e89a28f48b50ce2e06969aec467abd803078a1c5ce"),
-    "WORKER_HIERARCHICAL": (
+    # review P1-2: v1 stays frozen because pinned Attempts replay on it; v2 is what a
+    # new hierarchical Mission gets, and the only difference is the sentence D3 made
+    # untrue ("且下游确有消费者").
+    "WORKER_HIERARCHICAL_V1": (
         "worker-hierarchical-v1",
         "e82e74aff9b37d4746da0e982b38855e3cb639efe848fb1a15116a18023e7de2",
+    ),
+    "WORKER_HIERARCHICAL": (
+        "worker-hierarchical-v2",
+        "120372b8a49162ab1d96c6cf2725d6fcf7adec1988c7c8646f378c21649870b7",
     ),
 }
 
@@ -259,6 +266,9 @@ def test_the_frozen_digests_cover_the_prompts_this_slice_depends_on() -> None:
     """
 
     assert {"WORKER", "WORKER_V2", "WORKER_HIERARCHICAL"} <= set(FROZEN_PROMPT_DIGESTS)
+    assert "WORKER_HIERARCHICAL_V1" in FROZEN_PROMPT_DIGESTS, (
+        "a superseded version is still replayed by every Attempt that pinned it"
+    )
     assert {"PLANNER", "CRITIC", "CRITIC_V2"} <= set(FROZEN_PROMPT_DIGESTS)
     assert FROZEN_PROMPT_DIGESTS["WORKER_HIERARCHICAL"][0] == WORKER_HIERARCHICAL_VERSION
     assert WORKER.prompt_version == "worker-v3"
@@ -277,8 +287,12 @@ def test_the_hierarchical_worker_version_is_registered_and_pinnable() -> None:
     versions = registered_versions()
     assert WORKER_HIERARCHICAL_VERSION in versions["worker"]
     assert HIERARCHICAL_WORKER_VERSIONS == frozenset(
-        {WORKER_HIERARCHICAL_VERSION, "worker-appworld-hierarchical-v1"}
-    )
+        {
+            WORKER_HIERARCHICAL_VERSION,
+            "worker-hierarchical-v1",
+            "worker-appworld-hierarchical-v1",
+        }
+    ), "every version a deployment may pin, superseded ones included"
     assert "worker-v3" not in HIERARCHICAL_WORKER_VERSIONS, (
         "a DAG-mode pin must not be honoured in the hierarchical mode: worker-v3 "
         "never asks for outputs, and every leaf would then be refused as unclaimed"
@@ -491,3 +505,49 @@ def test_a_dag_mode_pin_is_honoured_on_a_legacy_mission(tmp_path) -> None:
     intents, _ = _leaf_intent(tmp_path, mode="legacy", pin="worker-v3")
     for intent in intents:
         assert intent.config["prompt_version"] == "worker-v3"
+
+
+# ======================================================================================
+# review P1-2: the prompt a Mission actually gets must agree with D3's rule
+# ======================================================================================
+
+
+def test_no_hierarchical_worker_prompt_makes_the_claim_conditional_on_a_consumer() -> None:
+    """The words the Worker reads and the rule Acceptance applies are one rule.
+
+    ``worker-hierarchical-v1`` says a port must be claimed when it is ``required=true``
+    **and has a downstream consumer**.  That was true when the port set *was* "consumed
+    by a DataRequirement" — and D3 is precisely the change that made it false: the
+    finalizer's port has no consumer by construction, is declared anyway, and a leaf
+    that skips it is refused with ``OUTPUT_PORT_UNCLAIMED``.  The code-domain path is
+    the one that lost ten episodes, and its Worker was reading the older rule.
+
+    The context package carries no "has a consumer" field either
+    (``declared_output_ports_for`` gives port/required/cardinality/schema), so the
+    sentence asks the model to apply a test it cannot run.
+    """
+
+    from agent_orchestrator.governance.domains import DOMAINS
+    from agent_orchestrator.runtime.role_templates import (
+        TEMPLATE_VERSIONS,
+        WORKER_HIERARCHICAL,
+        hierarchical_worker_for_domain,
+    )
+
+    selected = {WORKER_HIERARCHICAL.prompt_version: WORKER_HIERARCHICAL.instructions}
+    for profile in DOMAINS.values():
+        chosen = hierarchical_worker_for_domain(profile)
+        selected[chosen.prompt_version] = chosen.instructions
+    offenders = [
+        version for version, text in selected.items() if "下游确有消费者" in text
+    ]
+    assert not offenders, (
+        f"{offenders} still condition the claim on a downstream consumer, which D3 "
+        "removed from the rule Acceptance applies"
+    )
+    for version, text in selected.items():
+        # The AppWorld text is written without the spaces the code-domain one uses.
+        assert "required=true的端口必须被认领" in text.replace(" ", ""), version
+    # v1 is kept registered and frozen: an Attempt replays on the bytes it pinned, so
+    # the old wording has to stay readable — it just is not what a new Mission gets.
+    assert "下游确有消费者" in TEMPLATE_VERSIONS["worker"]["worker-hierarchical-v1"].instructions

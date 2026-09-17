@@ -35,11 +35,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_htn_end_to_end import World, _accept_every_child, committed  # noqa: E402
 from test_root_review_coordinator import coordinator, review  # noqa: E402
 
+from agent_orchestrator.contracts import MissionStopReason  # noqa: E402
 from agent_orchestrator.contracts.models import MissionStatus  # noqa: E402
 from agent_orchestrator.contracts.resolution import (  # noqa: E402
     CriterionVerdict,
     ReviewVerdict,
 )
+from agent_orchestrator.contracts.state_machines import TERMINAL_MISSION  # noqa: E402
 from agent_orchestrator.orchestrator.event_handler import (  # noqa: E402
     ROOT_REVIEW_REPAIR_REASON,
     Orchestrator,
@@ -64,12 +66,14 @@ BLOCKER = (
 MINOR = ({"severity": "minor", "criterion_id": ROOT_CRITERION, "detail": "wording"},)
 
 
-def _rejected_world(tmp_path, *, findings, key: str) -> World:
+def _rejected_world(tmp_path, *, findings, key: str, tokens: int | None = None) -> World:
     """A Mission whose root review has concluded REJECT, on disk and closed."""
 
     evidence = Path(tmp_path) / "evidence"
     evidence.mkdir(parents=True, exist_ok=True)
-    world = committed(evidence, key=key, demand=True)
+    world = committed(
+        evidence, key=key, demand=True, **({} if tokens is None else {"tokens": tokens})
+    )
     world.dispatch.issue_input_witnesses(world.mission.id, world.network(), now_ms=1_000_000)
     _accept_every_child(world)
     coordinator(world).cut(world.mission.id, now_ms=NOW_MS)
@@ -116,6 +120,7 @@ def _advance(world: World, evidence: Path, *, repairs: int = 1, rounds: int = 1)
                     if item.mission_id == world.mission.id and item.kind == "plan"
                 ],
                 "status": loop.store.get_mission(world.mission.id).status,
+                "stop_reason": loop.store.get_mission(world.mission.id).stop_reason,
                 "next_ordinal": loop._next_planning_ordinal(world.mission.id),
             }
 
@@ -279,3 +284,63 @@ def test_a_rejected_repair_round_does_not_kill_a_mission_that_holds_a_plan(tmp_p
     # (One record, not two: ``record_planning_rejected`` is keyed by ordinal, and the
     # repair round and its rejection are the same ordinal.)
     assert "PlanningRejected" in outcome["events"]
+
+
+def test_a_repair_round_that_cannot_be_funded_stops_the_mission_visibly(tmp_path) -> None:
+    """Review P0-1, and the worst place in a Mission's life to find it.
+
+    The repair branch opens exactly after four leaves, four critics and one root review
+    have been paid for — the moment a Mission's account is emptiest.
+    ``_create_planner_intent`` reserves ``planner_reserve_tokens`` and raises
+    ``BudgetExhausted`` when the account cannot cover it; ``_cycle`` does not forgive a
+    ``StoreError`` and ``run()`` has no outer guard, so the runner's episode died with a
+    traceback, its ``PlanningRejected{root_review_rejected}`` already on disk, the
+    Mission left ACTIVE and no ``MissionFailed`` at all.  That is strictly worse than
+    the 0.12.0 behaviour this branch was written to improve on.
+
+    The Mission already holds a committed plan, so ``fail_planning`` is the wrong
+    ending (it files the stop as a *planning* failure on a Mission that was planned):
+    the honest one is a Mission-level stop with ``BUDGET_EXHAUSTED``.
+    """
+
+    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-broke", tokens=100)
+    outcome = _advance(world, Path(tmp_path) / "evidence")
+    assert outcome["moved"] == [False], "an unfundable round is not progress"
+    assert outcome["status"] is MissionStatus.FAILED
+    assert outcome["stop_reason"] == str(MissionStopReason.BUDGET_EXHAUSTED)
+    assert not outcome["intents"], "nothing was dispatched"
+
+
+def test_the_whole_loop_survives_a_repair_round_it_cannot_fund(tmp_path) -> None:
+    """The property the probe pinned: ``run()`` returns instead of raising.
+
+    A per-Mission stop that escapes ``_cycle`` is a *run*-level failure — every other
+    Mission in the process dies with it.  §24.1 decision 11 says one Mission's stop is
+    one Mission's stop.
+    """
+
+    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-loop", tokens=100)
+    evidence = Path(tmp_path) / "evidence"
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=5,
+        max_root_review_repairs=1,
+        max_planning_attempts=2,
+    )
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            await loop.run(max_cycles=4)
+            final = loop.store.get_mission(world.mission.id)
+            return {
+                "status": final.status,
+                "stop_reason": final.stop_reason,
+                "events": [item.type for item in loop.store.list_events(world.mission.id)],
+            }
+
+    outcome = asyncio.run(case())
+    assert outcome["status"] in TERMINAL_MISSION, "a Mission that cannot go on has an ending"
+    assert "MissionFailed" in outcome["events"]

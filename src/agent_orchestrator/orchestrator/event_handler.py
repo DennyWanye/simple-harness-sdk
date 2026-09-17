@@ -191,6 +191,7 @@ from .action_commits import (
 )
 from .commit_service import (
     GLOBAL_ACCOUNT,
+    REFINEMENT_REQUESTED,
     CommitRejected,
     CommitService,
     MissionSpec,
@@ -2129,7 +2130,12 @@ class Orchestrator:
                 self._deferred.pop(task_id, None)
         for mission_id in list(self._deferred_planning):
             mission = self.store.get_mission(mission_id)
-            if mission is None or mission.status is not MissionStatus.PLANNING:
+            # Review P2-4: the test used to be ``is not PLANNING``, which was right while
+            # the only planning round was the one that *produced* the first plan.  P2.3d
+            # opens rounds on a Mission that is already ACTIVE (D5-A's repair, D5-B's
+            # refinement), and dropping those silently left the Mission with the round
+            # counted as used and never asked.  A Mission that has ended still drops.
+            if mission is None or mission.status in TERMINAL_MISSION:
                 self._deferred_planning.pop(mission_id, None)
 
     async def _try_planner_intent(self, mission_id: str, *, ordinal: int) -> bool:
@@ -2155,7 +2161,7 @@ class Orchestrator:
             self._deferred_planning[mission_id] = (since, ordinal)
             if self.store.now - since >= self._config.profile_wait_seconds:
                 self._deferred_planning.pop(mission_id, None)
-                self.commit.fail_planning(
+                self._stop_planning_round(
                     mission_id,
                     reason="runtime_unavailable",
                     detail={
@@ -2172,10 +2178,10 @@ class Orchestrator:
             return False
         except ContextRejected as error:
             self._deferred_planning.pop(mission_id, None)
-            self.commit.fail_planning(
+            self._stop_planning_round(
                 mission_id,
                 reason="context_rejected",
-                detail={"error": str(error)[:300]},
+                detail={"error": str(error)[:300], "ordinal": ordinal},
                 stop_reason=MissionStopReason.CONTEXT_REJECTED,
             )
             self._note(f"mission {mission_id}: planner package refused ({error})")
@@ -2183,10 +2189,92 @@ class Orchestrator:
         self._deferred_planning.pop(mission_id, None)
         return True
 
+    def _stop_planning_round(
+        self,
+        mission_id: str,
+        *,
+        reason: str,
+        detail: Mapping[str, Any],
+        stop_reason: MissionStopReason,
+    ) -> None:
+        """End a Mission whose Planner round cannot be opened, in its own phase's terms.
+
+        Review P0-1 / P2-4.  ``fail_planning`` files the stop as a *planning* failure and
+        it was the only ending here, which was right while every Planner round belonged
+        to the phase that produces the first plan.  P2.3d opens rounds on a Mission that
+        already holds a committed plan, and calling ``fail_planning`` on one of those
+        says something untrue about it (``final_report.planning_failure`` on a Mission
+        that was planned) and skips the cascade a Mission-level stop owes its open work.
+
+        So: a Mission still in PLANNING ends exactly as it did before — byte for byte,
+        which is what the legacy goldens read — and a Mission past it ends through
+        ``fail_mission``, whose report carries the same reason and the Task rows.
+        """
+
+        mission = self.store.get_mission(mission_id)
+        if mission is None or mission.status in TERMINAL_MISSION:
+            return
+        if mission.status is MissionStatus.PLANNING:
+            self.commit.fail_planning(
+                mission_id, reason=reason, detail=detail, stop_reason=stop_reason
+            )
+            return
+        self.commit.fail_mission(
+            mission_id, stop_reason=stop_reason, detail={"reason": reason, **dict(detail)}
+        )
+
+    async def _planner_round_on_committed_plan(
+        self, mission_id: str, *, ordinal: int, phase: str
+    ) -> bool:
+        """Open a Planner round for a Mission that already holds a plan (P2.3d).
+
+        Review P0-1: ``_create_planner_intent`` reserves ``planner_reserve_tokens``
+        against the Mission account and raises ``BudgetExhausted`` — a ``StoreError``
+        that ``_cycle`` does not forgive and ``run()`` does not catch.  ``_start_planning``
+        has caught it since step 6; D5-A's repair round and D5-B's refinement round had
+        not, so a Mission that ran its account down — which is precisely the state the
+        repair branch is reached in — took the whole process with it.
+
+        One Mission's exhaustion is one Mission's stop (§24.1 decision 11).
+        """
+
+        try:
+            return await self._try_planner_intent(mission_id, ordinal=ordinal)
+        except BudgetExhausted as error:
+            self._stop_planning_round(
+                mission_id,
+                reason="budget_exhausted",
+                detail={
+                    "dimension": error.dimension,
+                    "requested": error.requested,
+                    "remaining": error.remaining,
+                    "account": error.account_id,
+                    "phase": phase,
+                    "ordinal": ordinal,
+                    "scope": "global" if error.account_id == GLOBAL_ACCOUNT else "mission",
+                },
+                stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+            )
+            self._note(
+                f"mission {mission_id} stopped in {phase}: budget_exhausted ({error.dimension})"
+            )
+            return False
+
     async def _retry_deferred_planning(self) -> bool:
         progressed = False
         self._prune_deferred()
         for mission_id, (_since, ordinal) in list(self._deferred_planning.items()):
+            mission = self.store.get_mission(mission_id)
+            if mission is not None and mission.status is not MissionStatus.PLANNING:
+                # Review P0-1: a deferred round belonging to a Mission that is already
+                # ACTIVE is one of P2.3d's, and the retry must not carry its exhaustion
+                # out of the loop either.  A Mission still in PLANNING keeps the exact
+                # path it had, exception and all, so the legacy goldens do not move.
+                if await self._planner_round_on_committed_plan(
+                    mission_id, ordinal=ordinal, phase="deferred_planning"
+                ):
+                    progressed = True
+                continue
             if await self._try_planner_intent(mission_id, ordinal=ordinal):
                 progressed = True
         return progressed
@@ -2243,7 +2331,7 @@ class Orchestrator:
         if active is None:
             return False  # nothing is committed yet; ``_start_planning`` owns that
         revision = int(active.revision)
-        if self._refinement_rounds.get(mission.id) == revision:
+        if self._refinement_round_asked(mission.id, revision):
             return False
         if any(
             intent.kind == "plan" and intent.mission_id == mission.id
@@ -2267,20 +2355,51 @@ class Orchestrator:
             if spec.form is TaskForm.COMPOUND
             and network.adopted_instance_for(spec.occurrence_id) is None
         ]
-        # Marked whichever way it came out: an occurrence set only changes with a new
-        # plan revision, so "this revision has nothing open" is as final an answer as
-        # "this revision has been put to the Planner" — and marking only the second
-        # would re-read the whole network every cycle for every finished plan.
-        self._refinement_rounds[mission.id] = revision
         if not open_compounds:
+            # In memory only: "this revision has nothing open" is a fact this process
+            # can re-derive at any time, and writing an event for every finished plan
+            # would put a row in the log for every cycle of every healthy Mission.  The
+            # *ask*, below, is what needs to outlive the process.
+            self._refinement_rounds[mission.id] = revision
             return False
         ordinal = self._next_planning_ordinal(mission.id)
+        # Review P2-5: recorded **before** the intent, so a crash between the two ends
+        # up asking nothing rather than asking twice, and recorded in the log rather
+        # than on this instance, so a resumed Mission reads the same answer.
+        self.commit.record_refinement_requested(
+            mission.id,
+            plan_revision=revision,
+            ordinal=ordinal,
+            open_goals=[str(spec.task_id) for spec in open_compounds],
+        )
+        self._refinement_rounds[mission.id] = revision
         self._note(
             f"mission {mission.id}: plan revision {revision} still holds "
             f"{len(open_compounds)} unrefined compound goal(s); asking the Planner again "
             f"(ordinal {ordinal})"
         )
-        return await self._try_planner_intent(mission.id, ordinal=ordinal)
+        return await self._planner_round_on_committed_plan(
+            mission.id, ordinal=ordinal, phase="compound_refinement"
+        )
+
+    def _refinement_round_asked(self, mission_id: str, revision: int) -> bool:
+        """Has this plan revision already been put back to the Planner? (D5-B's bound)
+
+        The in-memory dict is a cache in front of the log, not the answer: it saves
+        reading the events on the cycles where a healthy plan has nothing open, and it
+        is allowed to be empty — a fresh process falls through to the log and gets the
+        same answer the process that wrote it would have given.
+        """
+
+        if self._refinement_rounds.get(mission_id) == revision:
+            return True
+        key = f"{REFINEMENT_REQUESTED}:{mission_id}:refine:{int(revision)}"
+        asked = any(
+            event.idempotency_key == key for event in self.store.list_events(mission_id)
+        )
+        if asked:
+            self._refinement_rounds[mission_id] = revision
+        return asked
 
     def _planning_rejections(self, mission_id: str) -> list[dict[str, Any]]:
         """Durable feedback for the next proposal (D3-2'): the recorded rejections."""
@@ -6506,7 +6625,9 @@ class Orchestrator:
             f"mission {mission.id}: root review rejected with {len(blocking)} blocking "
             f"finding(s); asking the Planner again (ordinal {ordinal}, revision {revision})"
         )
-        return await self._try_planner_intent(mission.id, ordinal=ordinal)
+        return await self._planner_round_on_committed_plan(
+            mission.id, ordinal=ordinal, phase="root_review_repair"
+        )
 
     def _root_review_findings(self, mission_id: str, package_id: str) -> list[dict[str, Any]]:
         """The findings the reviewer filed against this package, newest record wins."""

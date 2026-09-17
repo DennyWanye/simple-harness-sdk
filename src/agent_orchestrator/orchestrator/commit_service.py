@@ -152,6 +152,11 @@ HIERARCHICAL_GRAPH_CHANGE_REFUSED = "HierarchicalGraphChangeRefused"
 #: exists to walk through it (P3 / TaskGraph), the honest answer is to open no round and
 #: say so where an operator reads it.
 MANAGEMENT_NOT_APPLICABLE = "ManagementNotApplicableUnderHierarchical"
+#: P2.3d / defect D5-B (review P2-5): one plan revision was put back to the Planner
+#: because it still holds an unrefined compound goal.  Durable because the bound is
+#: "once per revision" and a bound kept only in process memory is no bound after a
+#: restart: a resumed Mission would buy a second model call for a question already asked.
+REFINEMENT_REQUESTED = "HierarchicalRefinementRequested"
 
 #: P2.3c part 2c (review F6).  Appended when ``judge_mission`` is asked to conclude a
 #: hierarchical Mission whose root duty carries no adopted ``GoalResolution``.  A new
@@ -3824,6 +3829,33 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     "or no_progress allowance is spent, and the Task's own failure path "
                     "reports what actually happened (§18.5 rule 2)."
                 ),
+            },
+        )
+
+    def record_refinement_requested(
+        self,
+        mission_id: str,
+        *,
+        plan_revision: int,
+        ordinal: int,
+        open_goals: Sequence[str],
+    ) -> Event:
+        """P2.3d / defect D5-B: this plan revision has been put back to the Planner.
+
+        Keyed by ``(mission, revision)`` — which is exactly the bound: a second event
+        under the same key would mean the same question was asked twice.  Reading the
+        mark back off the log rather than off an instance attribute is what makes the
+        bound survive the process (review P2-5).
+        """
+
+        return self._emit(
+            REFINEMENT_REQUESTED,
+            mission_id,
+            key=f"{mission_id}:refine:{int(plan_revision)}",
+            payload={
+                "plan_revision": int(plan_revision),
+                "ordinal": int(ordinal),
+                "open_goals": [str(item) for item in open_goals][:16],
             },
         )
 

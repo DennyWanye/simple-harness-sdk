@@ -617,7 +617,7 @@ def hierarchical_planner_versions(
     return HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE.get(int(package_version), frozenset())
 
 
-WORKER_HIERARCHICAL_VERSION = "worker-hierarchical-v1"
+WORKER_HIERARCHICAL_V1_VERSION = "worker-hierarchical-v1"
 
 # P2.3c part 2d, decision 4: the hierarchical Worker is told **which output ports its
 # occurrence declares**, and says which file it wrote at each of them.  Nothing else
@@ -629,9 +629,9 @@ WORKER_HIERARCHICAL_VERSION = "worker-hierarchical-v1"
 # wrote it knows.  Everything the system binds (acceptance id, content hash, schema
 # ref, producer result, support revision, occurrence) stays out of the model's hands
 # and is refused by the parser if it appears; the prompt says so in as many words.
-WORKER_HIERARCHICAL = _revise(
+WORKER_HIERARCHICAL_V1 = _revise(
     WORKER,
-    WORKER_HIERARCHICAL_VERSION,
+    WORKER_HIERARCHICAL_V1_VERSION,
     (
         '   "evidence": [你修改过的文件路径或测试路径], "artifacts": [你修改或新增的文件路径],\n',
         '   "evidence": [你修改过的文件路径或测试路径], "artifacts": [你修改或新增的文件路径],\n'
@@ -649,6 +649,27 @@ WORKER_HIERARCHICAL = _revise(
         "块外不要输出任何文字。",
     ),
 )
+register_template(WORKER_HIERARCHICAL_V1)
+
+#: P2.3d review P1-2.  ``worker-hierarchical-v1`` tells the Worker that a port must be
+#: claimed when it is ``required=true`` **and has a downstream consumer** — which was
+#: the rule right up until D3 changed it.  After D3 the finalizer's port is declared
+#: precisely *because* nothing consumes it, and a leaf that reads v1's sentence and
+#: skips it is refused with ``OUTPUT_PORT_UNCLAIMED``: the words and the gate disagree,
+#: on the code-domain path that lost ten episodes.  The package carries no "has a
+#: consumer" field either, so v1 asks the model to apply a test it cannot run.
+#:
+#: v1 is not edited — an Attempt replays on the bytes it pinned (§26.3) and its digest
+#: is frozen — so this is a new version beside it, worded like the AppWorld one.
+WORKER_HIERARCHICAL_VERSION = "worker-hierarchical-v2"
+WORKER_HIERARCHICAL = _revise(
+    WORKER_HIERARCHICAL_V1,
+    WORKER_HIERARCHICAL_VERSION,
+    (
+        "declared_output_ports 里 required=true 且下游确有消费者的端口必须被认领，漏掉会被验收拒绝。",
+        "declared_output_ports 里 required=true 的端口必须被认领，漏掉会被验收拒绝。",
+    ),
+)
 register_template(WORKER_HIERARCHICAL)
 
 #: Every registered prompt version a *hierarchical* Worker may be pinned to.  Same
@@ -661,7 +682,10 @@ register_template(WORKER_HIERARCHICAL)
 #: need domain tools and domain words has its *own* hierarchical Worker version —
 #: ``worker-appworld-hierarchical-v1`` is the first — and the set is filled in as the
 #: domain template modules register at the bottom of this file, then frozen once.
-_HIERARCHICAL_WORKER_VERSIONS: set[str] = {WORKER_HIERARCHICAL_VERSION}
+_HIERARCHICAL_WORKER_VERSIONS: set[str] = {
+    WORKER_HIERARCHICAL_V1_VERSION,
+    WORKER_HIERARCHICAL_VERSION,
+}
 
 
 def register_hierarchical_worker(template: RoleTemplate) -> None:
@@ -954,6 +978,8 @@ __all__ = (
     "TASK_PROPOSAL_TAG",
     "WORKER",
     "WORKER_HIERARCHICAL",
+    "WORKER_HIERARCHICAL_V1",
+    "WORKER_HIERARCHICAL_V1_VERSION",
     "WORKER_HIERARCHICAL_VERSION",
     "WORKER_VERSION",
     "WORKER_V2",

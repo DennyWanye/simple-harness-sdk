@@ -51,7 +51,7 @@ from test_htn_end_to_end import (  # noqa: E402
     build_world,
 )
 
-from agent_orchestrator.contracts import MissionStatus  # noqa: E402
+from agent_orchestrator.contracts import MissionStatus, MissionStopReason  # noqa: E402
 from agent_orchestrator.contracts.htn import TaskForm  # noqa: E402
 from agent_orchestrator.graph.eligibility import ReadinessReason  # noqa: E402
 from agent_orchestrator.orchestrator.event_handler import Orchestrator  # noqa: E402
@@ -131,12 +131,17 @@ def _proposal(contract, *, goal_id: str, obligation_id: str, revision: int, prop
     )
 
 
-def _nested_world(tmp_path, *, key: str) -> World:
+def _nested_world(tmp_path, *, key: str, tokens: int | None = None) -> World:
     """A Mission whose committed plan holds one unrefined compound step."""
 
     evidence = Path(tmp_path) / "evidence"
     evidence.mkdir(parents=True, exist_ok=True)
-    world = build_world(evidence, key=key, mode=HIERARCHICAL_SEMANTICS)
+    world = build_world(
+        evidence,
+        key=key,
+        mode=HIERARCHICAL_SEMANTICS,
+        **({} if tokens is None else {"tokens": tokens}),
+    )
     env = world.env
     env.register_type(
         "plan.subgoal",
@@ -164,7 +169,9 @@ def _nested_world(tmp_path, *, key: str) -> World:
     return world
 
 
-def _cycle(world: World, evidence: Path, *, rounds: int = 1) -> dict[str, Any]:
+def _cycle(
+    world: World, evidence: Path, *, rounds: int = 1, settle_between: bool = False
+) -> dict[str, Any]:
     config = OrchestratorConfig(
         evidence_root=evidence, max_concurrency=1, test_timeout_seconds=5
     )
@@ -178,9 +185,23 @@ def _cycle(world: World, evidence: Path, *, rounds: int = 1) -> dict[str, Any]:
                 mission = loop.store.get_mission(world.mission.id)
                 assert mission is not None
                 moved.append(await loop._refine_open_compounds(mission))
+                if settle_between:
+                    # Review P1-3: the guard under test is the *per-revision* mark, and
+                    # while the first round's intent is still PENDING the separate
+                    # "one question at a time" check hides it.  Settling the intent is
+                    # what the real loop does the moment the Planner replies.
+                    for item in loop.store.list_intents(
+                        "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                    ):
+                        if item.mission_id == world.mission.id and item.kind == "plan":
+                            loop._settle_intent(item, "FAILED")
+            final = loop.store.get_mission(world.mission.id)
             return {
                 "moved": moved,
-                "status": loop.store.get_mission(world.mission.id).status,
+                "status": final.status,
+                "stop_reason": final.stop_reason,
+                "next_ordinal": loop._next_planning_ordinal(world.mission.id),
+                "events": [item.type for item in loop.store.list_events(world.mission.id)],
                 "intents": [
                     item
                     for item in loop.store.list_intents(
@@ -259,3 +280,96 @@ def test_a_fully_refined_plan_asks_for_nothing(tmp_path) -> None:
     outcome = _cycle(world, evidence, rounds=2)
     assert outcome["moved"] == [False, False]
     assert outcome["intents"] == []
+
+
+# ======================================================================================
+# review P1-3 / P0-1: the guard and the failure mode the first round of tests missed
+# ======================================================================================
+
+
+def test_the_revision_is_not_reopened_once_the_first_round_has_settled(tmp_path) -> None:
+    """The per-revision mark, with the "one question at a time" check taken away.
+
+    **Mutation M11** (survived the first round of tests): delete
+    ``self._refinement_rounds[mission.id] = revision`` from ``_refine_open_compounds``.
+    ``test_the_same_revision_is_not_put_to_the_planner_twice`` stayed green because its
+    three calls all happen while the first round's intent is still PENDING, so the
+    *other* guard answered.  In the real loop the intent settles the moment the Planner
+    replies — and without the mark the same revision is then asked again every cycle,
+    an unbounded Planner loop held back only by the budget.
+    """
+
+    world = _nested_world(tmp_path, key="p23d-nested-settled")
+    evidence = Path(tmp_path) / "evidence"
+    world.store.close()
+    outcome = _cycle(world, evidence, rounds=3, settle_between=True)
+    assert outcome["moved"] == [True, False, False]
+    # One *created* intent even though every round found the compound still unrefined.
+    assert outcome["next_ordinal"] == 2
+
+
+def test_a_refinement_round_that_cannot_be_funded_stops_the_mission_visibly(tmp_path) -> None:
+    """Review P0-1: ``BudgetExhausted`` used to escape ``run()`` with a traceback.
+
+    ``_create_planner_intent`` reserves ``planner_reserve_tokens`` against the Mission
+    account, and a Mission whose account cannot cover it raises ``BudgetExhausted`` —
+    a ``StoreError`` that ``_cycle`` does not forgive and ``run()`` does not catch.
+    ``_start_planning`` has caught it since step 6; the two rounds P2.3d added had not,
+    so the runner's episode died with a traceback, no ``MissionFailed`` and an
+    unreadable ``mission_status``.
+    """
+
+    world = _nested_world(tmp_path, key="p23d-nested-broke", tokens=100)
+    evidence = Path(tmp_path) / "evidence"
+    world.store.close()
+    outcome = _cycle(world, evidence)
+    assert outcome["moved"] == [False], "an unfundable round is not progress"
+    assert outcome["status"] is MissionStatus.FAILED
+    assert outcome["stop_reason"] == str(MissionStopReason.BUDGET_EXHAUSTED)
+    assert not outcome["intents"], "nothing was dispatched"
+
+
+def test_a_restarted_process_does_not_ask_the_same_revision_again(tmp_path) -> None:
+    """Review P2-5: the bound must survive the process that set it.
+
+    ``self._refinement_rounds`` is a dict on the Orchestrator instance.  The runner
+    gives each episode its own process, but a crash-and-resume — or a second instance
+    over the same library — would find the mark gone and spend another Planner round on
+    a question that was already asked.  The bound is a fact about the *plan revision*,
+    so it belongs where the plan revision does.
+    """
+
+    world = _nested_world(tmp_path, key="p23d-nested-restart")
+    evidence = Path(tmp_path) / "evidence"
+    world.store.close()
+    config = OrchestratorConfig(
+        evidence_root=evidence, max_concurrency=1, test_timeout_seconds=5
+    )
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as first:
+            world.env.semantics = HtnStore(first.store)
+            first.install_hierarchical(planning=world.env)
+            mission = first.store.get_mission(world.mission.id)
+            asked = await first._refine_open_compounds(mission)
+            for item in first.store.list_intents(
+                "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+            ):
+                if item.mission_id == world.mission.id and item.kind == "plan":
+                    first._settle_intent(item, "FAILED")
+        # A brand new Orchestrator over the same library: nothing in memory carries over.
+        async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as second:
+            world.env.semantics = HtnStore(second.store)
+            second.install_hierarchical(planning=world.env)
+            mission = second.store.get_mission(world.mission.id)
+            again = await second._refine_open_compounds(mission)
+            return {
+                "asked": asked,
+                "again": again,
+                "next_ordinal": second._next_planning_ordinal(world.mission.id),
+            }
+
+    outcome = asyncio.run(case())
+    assert outcome["asked"] is True
+    assert outcome["again"] is False, "the revision was already put to the Planner"
+    assert outcome["next_ordinal"] == 2
