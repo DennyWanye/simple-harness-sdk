@@ -3350,18 +3350,19 @@ Planner 侧的编排：包里没有信息、`compile_proposal` 只收「恰好�
    请求多一个字段 `review_feedback`（`SynthesisRequest.review_feedback`，不是 schema_feedback），
    合成器提示词 `method-synthesizer-v4`（合并 P2.3i 后自其 v3 修订，v2/v3 保留）说明「必须不同于被拒方法、要回答 findings，例如先写一条会失败的测试」。
    准入后照常 `_after_synthesis_round` 开 Planner 轮 → 新 revision。
-4. **有界与诚实停止**：修复轮次数仍受 `max_root_review_repairs`（每 plan_revision，默认 1）约束，合成受既有
-   `max_synthesis_rounds` / 证据饱和约束；停在 `hierarchical_no_dispatchable_work` 时，`fail_mission` 的 detail 多一块
-   `root_review{reason: root_review_rejected, status, package_id, plan_revision, repairs_used, max_root_review_repairs, findings}`
+4. **有界与诚实停止**：修复轮次数受 `max_root_review_repairs` 约束（**每 Mission** 累计，默认 1；同一 revision 永不二次修复——
+   核验 P1-1 处置前按 revision 计，见下「核验处置」），合成受既有 `max_synthesis_rounds` / 证据饱和约束；停在
+   `hierarchical_no_dispatchable_work` 时，`fail_mission` 的 detail 多一块
+   `root_review{reason: root_review_rejected, status, package_id, plan_revision, repairs_used, repairs_used_on_revision, rejected_method_refs, max_root_review_repairs, findings}`
    （`_root_review_stop_detail`，只在 REVIEW_REJECTED / CUT_BUDGET_SPENT 时出现）。
 
 修复后仍**不能**做的：
 
 - 不能「补步骤」——契约没有「在既有 MethodInstance 上追加子步骤」的操作，只能换方法（种子或合成）；「补步骤」
   的表达方式是合成一个含该步骤的新方法（v3 提示词已点名）。
-- 被拒历史不跨修订累计：`rejected_refinements` 只标当前 revision 上仍 ADOPTED 的被拒实例；替换方法再被拒时，
-  第二个修复轮只标第二个方法，第一个被拒方法会重新作为候选出现在库里（默认 `max_root_review_repairs=1` 下走不到这一步）。
-- Planner 只能在**同一** `refine` 里退一个实例；不能一次退多个、也不能退非被 refine occurrence 上的实例。
+- Planner 只能在**同一** `refine` 里退一个实例；不能一次退多个、也不能退非被 refine occurrence 上的实例；
+  只能退根评审拒绝过的实例（`rejected_refinements` 内），且被退子 occurrence 不得有未终态 Attempt（核验 P1-2 处置）。
+- 不能重提被拒过的方法（本 revision 或更早的都不行，核验 P0-1/P1-1 处置）：编译器按名拒绝，进梯子。
 - 修复轮不重跑叶子验收、不改根评审员的判词；根评审 ACCEPT 仍是新 revision 全部叶子 COMPLETED 之后的重评审。
 
 ### 顺手修的两个潜在缺陷（任何修复轮都会踩）
@@ -3433,8 +3434,8 @@ P2.3i 改 `_collect_synthesizer` 附近与 `synthesis.py`。本片在这两处�
 
 - 真实模型（DeepSeek flash / Grok）上把「REJECT → 换方法或合成 → ACCEPT」跑到 COMPLETED；本片只有脚本化端到端。
 - runner 的 FREEZE-candidate 需重生成（包版本 / 提示词版本变了）。
-- 被拒历史跨修订累计（见「不能做」第 2 条）；一次退多个实例。
-- `max_root_review_repairs` 默认 1：换方法后再被拒即诚实停止；是否放宽由 Grok 验收数据决定。
+- 一次退多个实例。
+- `max_root_review_repairs` 默认 1（每 Mission）：换方法后再被拒即诚实停止；是否放宽由 Grok 验收数据决定。
 
 ### 与 P2.3i 合并（`git merge p2.3i-synthesis-reask`，P2.3i = 4b62bc9 + 核验归档 40e8945）
 
@@ -3445,6 +3446,60 @@ P2.3i 改 `_collect_synthesizer` 附近与 `synthesis.py`。本片在这两处�
 - **语义冲突（git 未报）**：两边都登记了 `method-synthesizer-v3`——P2.3i 的 `METHOD_SYNTHESIZER`（schema_feedback 可含注册协议拒绝码）与 P2.3j 的 `METHOD_SYNTHESIZER_V3`（`review_feedback`），字节不同、同一版本号，`register_template` 会冲突。取舍：P2.3i 的 v3 已过 fable 核验，保留为 `METHOD_SYNTHESIZER_V3`（字节 `a38309fd…` 不动）；P2.3j 的提示词改为 **v4**，`_revise` 自 v3（锚点改为 v3 的两句），成为默认 `METHOD_SYNTHESIZER`（`METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v4"`），事件处理器照 P2.3i 的写法用默认模板；两边的说明都在 v4 里。P2.3i 的三处钉子（`test_synthesis_rejection_reask` 的 v3 字节/版本集合/默认版本、`test_synthesizer_schema_alignment` 的默认版本）改为「v3 字节钉住 + 默认 v4」，`FROZEN_PROMPT_DIGESTS` 含 synthesizer v3、默认 v4、planner v5。
 - 合并后两处测试按合并语义改：P2.3i 的 `_starve_the_second_ask` 桩改为透传 `**carried`（第二问现在也带 `synthesis_round` / `review_feedback`）；P2.3j 的有界测试里 `plan.ghost` 触发 `UNKNOWN_OPERATOR`，P2.3i 视为可修正拒绝而重问一次，断言改为「一轮、两问（`asks == 2`、`retry_refused == ""`、一条 `MethodSynthesisReplyRejected`）、合成器被问 2 次」。
 - 合并后核对：`_new_mode(mission)` 18 处与哨兵一致；`NEW_EVENT_TYPES` 含 `MethodSynthesisRoundRecorded` / `MethodSynthesisReplyUnreadable` / `MethodSynthesisReplyRejected`；ruff 全清。测试数字见合并提交说明。
+
+### 核验处置（独立核验 `reviews/核验-P2.3j-83eaa84-合并fc07312-2026-09-17.md`，结论「修后可合」：1 P0 / 2 P1 / 7 P2）
+
+- **P0-1（已修）重新采用曾被退的方法实例 → `StoreConflict` 逃逸、`run()` 崩、Mission 永远 ACTIVE。**
+  根因两层：`instance_identity` 是输入的确定函数，RETIRED 行不删，同方法同参数再 refine 就是同一个 id；`_cycle` 只宽恕
+  StoreBusy / CommitRejected / IllegalTransition。处置三道：① `compile_proposal` 对「被根评审在该 occurrence 拒绝过的方法
+  （任何 revision）」按名拒绝（`method_rejected_by_root_review`，进 `proposal_not_grounded` 梯子）；② `ground_method` 之后查
+  `method_instance_state(draft.instance_id)`，已存在（任何状态）即拒绝（`method_instance_already_stored`）——覆盖旧记录没有
+  `method_ref` 的形状；③ `_collect_plan_hierarchical` 接住 `StoreConflict` → `PlanningRejected{plan_commit_refused, detail.reason=store_conflict}`，
+  回合结算、循环继续。测试：`test_re_proposing_the_rejected_method_is_refused_by_name_not_by_the_store`、
+  `test_a_draft_colliding_with_a_stored_instance_is_refused_before_the_commit`、
+  `test_a_store_conflict_in_a_planning_round_is_a_refused_round_not_a_crash`（真 Orchestrator，`apply_planner_reply` 打桩抛 StoreConflict）、
+  `test_re_proposing_the_rejected_method_end_to_end_is_refused_and_bounded`（核验复现 2 的形状：修复轮 Planner 重提被拒方法 →
+  按名拒绝 → 梯子 → 合成一轮被拒 → FAILED，无异常）。
+- **P1-1（已修）有界按 plan revision 计、被拒历史不累计 → outer↔alt 振荡。** 处置：`_root_review_repairs(mission_id)` 按
+  **Mission** 累计（`revision=` 参数只用于「同一 revision 不二次修复」与停机报告的分项）；新增
+  `HierarchicalDispatch.rejected_method_refs(mission_id) → {occurrence: (MethodRef, …)}`，从**所有**
+  `PlanningRejected{root_review_rejected}` 记录读 `method_ref`（occurrence 仍在网络内即计），库标记（`hierarchical_planner_package(rejected_method_refs_of=)`）、
+  `method_applicability` 排除、`goals_needing_method` 候选数扣除、`compile_proposal` 拒绝四处共用；停机报告多
+  `repairs_used_on_revision` 与 `rejected_method_refs`。CHANGELOG「默认 1 下走不到」的错误口径已改。测试：
+  `test_two_rejections_end_the_mission_with_the_repair_bound_spent`（默认 1：outer → alt → 再拒 → 不再修复，FAILED，`repairs_used==1`，
+  `revisions==[1,2]`）、`test_a_second_repair_round_is_shown_every_method_the_review_rejected`（上限 2：第二个修复轮包 outer/alt 都标
+  `rejected_by_root_review`、根 occurrence 的 applicability 为空、候选扣到 0 → 声明无方法 → 第 3 轮合成带 alt 的 findings → 被拒 → FAILED，
+  `rejected_method_refs` 两条）。
+- **P1-2（已修）`retire_method` 对任何 ADOPTED 实例放行、`REQUEST_STOP_THEN_RECONCILE` 只是标签。** 处置：新
+  `_check_retirement_is_a_repair`——被退实例必须在 `rejected_refinements` 内（`retirement_not_a_repair`），且其子 occurrence 的 Task 没有
+  PENDING/CLAIMED/RUNNING/SUBMITTED/VERIFYING 的 Attempt（`running_work_not_reconciled`）。根评审只在全部叶子终态后裁包，P2.3j 主路径
+  不受影响；`build_command` 的策略标签保留但只在「无在途工作」时可达（docstring 写明）。核验 P2-6（守恒等式对在途工作偏乐观）随之
+  不可达。既有编译测试 `test_retire_and_refine_replaces…` / `…must_name_the_instance_adopted…` 改在「已拒绝 + 修复记录在案」的世界上跑
+  （新助手 `_repair_recorded` / `_rejected_open`）。测试：`test_a_retirement_of_an_instance_the_review_did_not_reject_is_refused`、
+  `test_a_replacement_waits_for_the_retired_leaves_open_attempts`（插入 RUNNING attempt 后拒绝，attempt 仍 RUNNING、revision 不动）。
+- **P2-2 / V1 盲区（已补测）**：`test_a_second_synthesis_round_after_a_pre_plan_round_is_its_own_record`——C1-r1 形状：round 1 已
+  TRIAL_ADMITTED（记录先写入）→ 拒绝 → 声明 → round 2 以 `…:round:2` 键打开，两条记录并存，COMPLETED（round 1 的准入让梯子多一
+  rung，Planner 被问 3 次）。
+- **P2-3 / V5 盲区（已补测）**：`test_the_rejected_methods_refusal_is_not_reported_as_applicability`——把被拒方法打桩成
+  CAPABILITY_UNAVAILABLE，断言根 occurrence 的 applicability 不含它、`goals_needing_method` 为空。
+- **变异自证（处置后，临时改源 → 定向跑 → 从副本恢复并 `cmp`）**：
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| MP0-1a | `compile_proposal` 不查被拒方法历史 | 按名拒绝单测 + 端到端重提 | 2 failed → KILLED |
+| MP0-1b | 不查 draft id 是否已存 | colliding 单测 | 1 failed → KILLED |
+| MP0-1c | `_collect_plan_hierarchical` 让 StoreConflict 逃逸 | store_conflict 端到端 | 1 failed → KILLED |
+| MP1-1a | 修复上限改回按 revision 计 | two_rejections 端到端 | 1 failed → KILLED |
+| MP1-1b | `rejected_method_refs` 恒返回 `{}` | history 端到端 + 按名拒绝单测 | 2 failed → KILLED |
+| MP1-2a | 任何 ADOPTED 实例都可退 | did_not_reject 单测 | 1 failed → KILLED |
+| MP1-2b | 不查在途 Attempt | open_attempts 单测 | 1 failed → KILLED |
+
+- **未做（P2，写入「未做」）**：P2-1 `record_synthesis_reply_rejected/unreadable` 的幂等键不带 round（同 goal 两轮的第一问若都被拒，
+  第二轮那条被静默丢弃；修法 `_synthesis_round_key(...) + ":" + ordinal`）；P2-4 `repair_round_answered` 把修复 ordinal 之后任何非修复
+  `PlanningRejected`（含 READ_SET_STALE / proposal_not_grounded / plan_commit_refused）都当「已答」，比「只认 no_applicable_method」宽，
+  有界（一轮），本片如实记录；P2-5 `run_evidence_round` 跳过已细化 occurrence，被拒根的替代方法若 NEEDS_EVIDENCE 永远不取证；
+  P2-7 文档口径：full_target 数字为合并前/后之别（本机 skip 数差异为环境性），整仓 `ruff check src tests` 的 87 条全在本片未触碰文件。
+- 数字：`test_root_review_repair_library.py` 13 → **23** 条；处置后 full_target **2810 passed / 2 skipped**（合并后 2800 + 10），旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**，ruff 全清，`_new_mode` 18 处与哨兵一致。id 守卫只在有 `retire_method` 时查（普通二次 refine 仍由 `_refined_occurrence` 按原样以 `CompilationRefused` 拒绝，两条既有 identical-reply 测试字节不变）。
 
 ## 3. 旧模式 golden 是否变
 

@@ -172,7 +172,14 @@ from ..scheduling.allocator import (
     allocate_v2,
 )
 from ..scheduling.backpressure import BackpressureState, Observation
-from ..storage.store import DispatchIntent, InjectedCrash, Store, StoreBusy, StoreError
+from ..storage.store import (
+    DispatchIntent,
+    InjectedCrash,
+    Store,
+    StoreBusy,
+    StoreConflict,
+    StoreError,
+)
 from ..verification.assessments import task_contract_revision
 from ..verification.critics import CriticVerdict, parse_critic_verdict
 from ..verification.deterministic_checks import LayerResult
@@ -2642,6 +2649,7 @@ class Orchestrator:
             # the goal a repair round is *about*, which ``open_compound_goals`` cannot
             # list because it is refined.  Empty on every ordinary round.
             rejected_refinements_of=new_mode.rejected_refinements(mission.id),
+            rejected_method_refs_of=new_mode.rejected_method_refs(mission.id),
         )
         return _seal(package)
 
@@ -4451,6 +4459,21 @@ class Orchestrator:
             elif result.state is AgentTurnState.COMMITTED:
                 reason = PROPOSAL_NOT_GROUNDED
             await self._planning_rejected(intent, reason=reason, detail=detail)
+            return
+        except StoreConflict as error:
+            # Verification P0-1 (second line): a commit that collides with a row the
+            # store already holds — a re-created method instance id, for one — is a
+            # refused round, not a crashed loop.  ``_cycle`` forgives StoreBusy and
+            # CommitRejected only, so without this the Mission stayed ACTIVE forever
+            # with ``run()`` gone.  The compiler refuses the known collision before
+            # the commit; this catches whatever else the store may refuse.
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            await self._planning_rejected(
+                intent,
+                reason="plan_commit_refused",
+                detail={"reason": "store_conflict", "error": str(error)[:300]},
+            )
             return
         if not outcome.committed:
             self._settle_intent(intent, "FAILED")
@@ -7255,10 +7278,13 @@ class Orchestrator:
         * the findings travel as a durable ``PlanningRejected`` record, which is what
           ``_planning_rejections`` feeds into the next proposal — the Planner is told
           what the reviewer said, not merely asked again;
-        * the bound is **per plan revision** (``max_root_review_repairs``, default 1).
-          A repair produces a new revision, so a Mission cannot circle here: the same
-          revision is never re-planned twice, and a Mission out of repairs falls
-          through to the idle stall exactly as before.
+        * the bound is **per Mission** (``max_root_review_repairs``, default 1), and
+          a revision is never re-planned twice.  Verification P1-1 of P2.3j: counted
+          per revision, every replacement revision earned a fresh repair, and with two
+          methods in the library the Planner oscillated outer → alt → outer until a
+          budget ran out (or the re-adoption collided with the retired instance's id).
+          A Mission out of repairs falls through to the idle stall exactly as before,
+          with the rejection in its stop report.
 
         Review P2-3: "one more round" is what *this* branch opens, not what the Mission
         then spends.  The round it opens is an ordinary Planner round, so if its
@@ -7285,12 +7311,20 @@ class Orchestrator:
             return False
         active = new_mode.semantics().active_plan_revision(mission.id)
         revision = 0 if active is None else int(active.revision)
-        used = self._root_review_repairs(mission.id, revision)
+        used = self._root_review_repairs(mission.id)
         if used >= int(self._config.max_root_review_repairs):
             self._note(
-                f"mission {mission.id}: root review rejected and plan revision {revision} has "
-                f"already been re-planned {used} time(s) (max_root_review_repairs="
-                f"{int(self._config.max_root_review_repairs)})"
+                f"mission {mission.id}: root review rejected plan revision {revision}, and "
+                f"this Mission has already been re-planned after a root review {used} time(s) "
+                f"(max_root_review_repairs={int(self._config.max_root_review_repairs)})"
+            )
+            return False
+        if self._root_review_repairs(mission.id, revision):
+            # Verification P1-1: the record below is keyed by revision, and a revision
+            # is never re-planned twice — that part of the old bound still holds.
+            self._note(
+                f"mission {mission.id}: root review rejected plan revision {revision}, "
+                "which a repair round has already been opened for"
             )
             return False
         ordinal = self._next_planning_ordinal(mission.id)
@@ -7350,15 +7384,24 @@ class Orchestrator:
             return [dict(item) for item in event.payload.get("findings", []) or []]
         return []
 
-    def _root_review_repairs(self, mission_id: str, revision: int) -> int:
-        """Repair rounds already opened for this plan revision."""
+    def _root_review_repairs(self, mission_id: str, revision: int | None = None) -> int:
+        """Repair rounds already opened for this Mission (or for one plan revision).
+
+        Verification P1-1: the bound is the Mission's, so the default counts every
+        repair record; ``revision`` narrows it to the "never twice for one revision"
+        check and to the stop report's per-revision line.
+        """
 
         return sum(
             1
             for event in self.store.list_events(mission_id)
             if event.type == "PlanningRejected"
             and event.payload.get("reason") == ROOT_REVIEW_REPAIR_REASON
-            and int((event.payload.get("detail") or {}).get("plan_revision", -1)) == int(revision)
+            and (
+                revision is None
+                or int((event.payload.get("detail") or {}).get("plan_revision", -1))
+                == int(revision)
+            )
         )
 
     def _root_review_stop_detail(
@@ -7394,7 +7437,13 @@ class Orchestrator:
                 "status": str(state.status),
                 "package_id": package_id,
                 "plan_revision": revision,
-                "repairs_used": self._root_review_repairs(mission.id, revision),
+                "repairs_used": self._root_review_repairs(mission.id),
+                "repairs_used_on_revision": self._root_review_repairs(mission.id, revision),
+                "rejected_method_refs": [
+                    reference.to_json()
+                    for refs in new_mode.rejected_method_refs(mission.id).values()
+                    for reference in refs
+                ],
                 "max_root_review_repairs": int(self._config.max_root_review_repairs),
                 "findings": self._root_review_findings(mission.id, package_id)[:16]
                 if package_id

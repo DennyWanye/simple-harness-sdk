@@ -71,6 +71,7 @@ from ..contracts.evidence_state import (
 )
 from ..contracts.htn import (
     MethodInstanceId,
+    MethodRef,
     MissionRef,
     ObligationId,
     OccurrenceId,
@@ -103,6 +104,7 @@ from ..contracts.resolution import (
     WorkspaceAccess,
 )
 from ..contracts.semantic_base import TypedRef, TypedRefKind, content_hash_of
+from ..contracts.state_machines import AttemptStatus
 from ..graph.eligibility import (
     ActivePlanView,
     EligiblePrimitiveTask,
@@ -137,7 +139,7 @@ from ..planning.htn.grounding import (
 from ..planning.planner import parse_method_proposal, parse_plan_proposal
 from ..storage.htn_store import HtnStore, PlanCommitReceipt
 from ..storage.obligation_store import ObligationStore
-from ..storage.store import StoreError
+from ..storage.store import StoreConflict, StoreError
 from ..verification.acceptance_rules import CompoundFacts, ExecutionPosture, IndependenceFacts
 from .accepted_outputs import (
     accepted_output_from_json,
@@ -2742,6 +2744,42 @@ class HierarchicalDispatch:
             )
         return tuple(newest[key] for key in sorted(newest))
 
+    def rejected_method_refs(self, mission_id: str) -> dict[str, tuple[MethodRef, ...]]:
+        """Every method the root review has rejected at each occurrence, across revisions.
+
+        P2.3j verification P1-1: :meth:`rejected_refinements` describes the *current*
+        plan (the instance a repair round retires), and reading only it let a rejected
+        method come back — a replacement revision retired the instance, the record
+        stopped matching the revision, and the next repair package offered the method
+        the review had already refused (outer → alt → outer, and the second re-adoption
+        collides with the RETIRED instance's own id, P0-1).  The history is read from
+        every repair record whose occurrence is still in the plan, keyed by occurrence,
+        and is what the library marks, the applicability leaves out, the synthesis
+        judgment subtracts and the compiler refuses.
+        """
+
+        network = self.network(mission_id)
+        present = {str(spec.occurrence_id) for spec in network.occurrences}
+        refs: dict[str, list[MethodRef]] = {}
+        for event in self.store.list_events(mission_id):
+            if event.type != "PlanningRejected":
+                continue
+            if str(event.payload.get("reason", "")) != ROOT_REVIEW_REPAIR_REASON:
+                continue
+            detail = dict(event.payload.get("detail") or {})
+            occurrence = str(detail.get("occurrence_id", "") or "")
+            reference = detail.get("method_ref")
+            if occurrence not in present or not isinstance(reference, Mapping):
+                continue
+            try:
+                parsed = MethodRef.from_json(dict(reference))
+            except ContractError:
+                continue
+            held = refs.setdefault(occurrence, [])
+            if parsed not in held:
+                held.append(parsed)
+        return {key: tuple(value) for key, value in sorted(refs.items())}
+
     def planner_round_in_flight(self, mission_id: str) -> bool:
         """An open ``plan`` intent that is a *Planner* round (not a synthesis or review)."""
 
@@ -2810,15 +2848,19 @@ class HierarchicalDispatch:
         network = self.network(mission_id)
         snapshot = world.snapshot()
         capabilities = world.capabilities()
-        rejected = {
-            item.occurrence_id: item.method_ref for item in self.rejected_refinements(mission_id)
-        }
+        rejected = {item.occurrence_id for item in self.rejected_refinements(mission_id)}
+        # Verification P1-1: the whole history of rejected methods at the occurrence,
+        # not only the one the current instance carries.
+        history = self.rejected_method_refs(mission_id)
         entries: list[Any] = []
         for spec in sorted(network.occurrences, key=lambda item: str(item.occurrence_id)):
             if spec.form is not TaskForm.COMPOUND:
                 continue
-            excluded = rejected.get(str(spec.occurrence_id))
-            if network.adopted_instance_for(spec.occurrence_id) is not None and excluded is None:
+            excluded = set(history.get(str(spec.occurrence_id), ()))
+            if (
+                network.adopted_instance_for(spec.occurrence_id) is not None
+                and str(spec.occurrence_id) not in rejected
+            ):
                 continue
             goal = network.binding_for_occurrence(spec.occurrence_id)
             signature = goal.goal_signature.signature_id
@@ -2826,7 +2868,7 @@ class HierarchicalDispatch:
                 contract = world.registry.definition(reference)
                 if contract is None or str(contract.goal_type_ref.id) != str(signature):
                     continue
-                if excluded is not None and contract.method_ref() == excluded:
+                if contract.method_ref() in excluded:
                     continue
                 report = assess_method(
                     goal, contract, snapshot, capabilities, registry=world.predicates
@@ -3099,16 +3141,19 @@ class HierarchicalDispatch:
             for item in self.rejected_refinements(mission_id)
             if self.repair_round_answered(mission_id, item)
         }
+        history = self.rejected_method_refs(mission_id)
         refused: dict[str, list[Any]] = {}
         for entry in self.method_applicability(mission_id):
             refused.setdefault(str(entry.goal_occurrence_id), []).append(entry.report)
         by_signature: dict[str, int] = {}
+        registered: set[MethodRef] = set()
         for reference in world.registry.method_refs():
             definition = world.registry.definition(reference)
             if definition is None:
                 continue
             key = str(definition.goal_type_ref.id)
             by_signature[key] = by_signature.get(key, 0) + 1
+            registered.add(definition.method_ref())
         needing: list[str] = []
         for spec in sorted(network.occurrences, key=lambda item: str(item.occurrence_id)):
             if spec.form is not TaskForm.COMPOUND:
@@ -3119,7 +3164,14 @@ class HierarchicalDispatch:
             goal = network.binding_for_occurrence(spec.occurrence_id)
             candidates = by_signature.get(str(goal.goal_signature.signature_id), 0)
             if rejection is not None:
-                candidates = max(0, candidates - 1)  # the rejected method is not a candidate
+                # Verification P1-1: every method the review rejected here, on any
+                # revision, is not a candidate — not only the current instance's.
+                struck = sum(
+                    1
+                    for reference in history.get(str(spec.occurrence_id), ())
+                    if reference in registered
+                )
+                candidates = max(0, candidates - struck)
             seen = refused.get(str(spec.occurrence_id), [])
             if candidates and len(seen) < candidates:
                 continue  # at least one method applies; nothing to synthesise
@@ -3504,11 +3556,26 @@ class HierarchicalDispatch:
                     "the same proposal refines; a replacement retires exactly the instance it "
                     "replaces (§9.1), and retiring anything else is a different revision"
                 )
+            self._check_retirement_is_a_repair(mission_id, network, proposal, adopted)
         contract = (
             self.semantics()
             .get_method(operation.method_ref.id, int(operation.method_ref.version))
             .contract
         )
+        # Verification P0-1 / P1-1: a method the root review rejected at this occurrence
+        # — on this revision or an earlier one — is not proposed again.  Re-adopting the
+        # very same method with the same bindings would produce the retired instance's
+        # own deterministic id and collide with its RETIRED row (``StoreConflict``
+        # escaping ``_cycle``); re-adopting it on a later revision is the oscillation
+        # the bound exists to stop.  Named here so the refusal climbs the ladder.
+        struck = self.rejected_method_refs(mission_id).get(str(occurrence), ())
+        if contract.method_ref() in struck:
+            raise ContractError(
+                f"proposal {proposal.proposal_id!r} refines occurrence {str(occurrence)!r} "
+                f"with {operation.method_ref.id}@{int(operation.method_ref.version)}, which "
+                "the root review already rejected there (method_rejected_by_root_review); "
+                "a repair proposes a different method, or declares no_applicable_method"
+            )
         report = assess_method(
             parent,
             contract,
@@ -3533,6 +3600,28 @@ class HierarchicalDispatch:
             plan_revision=network.plan_revision,
             goal_occurrence_id=occurrence,
         )
+        # Verification P0-1, the second guard: the draft's id is a function of its
+        # inputs (``instance_identity``), and a RETIRED row keeps that id.  A draft
+        # that would collide is refused as a proposal, never handed to the commit —
+        # whose UNIQUE violation is a ``StoreConflict`` no planning round should raise.
+        # Only a replacement can collide: a plain re-refinement of an adopted
+        # occurrence is refused by ``_refined_occurrence`` before this, as it always was.
+        state = ""
+        if retiring:
+            try:
+                state = self.semantics().method_instance_state(
+                    mission_id, str(draft.instance_id)
+                )
+            except StoreConflict:
+                state = ""
+        if state:
+            raise ContractError(
+                f"proposal {proposal.proposal_id!r} would re-create method instance "
+                f"{str(draft.instance_id)!r}, which this Mission already holds in state "
+                f"{state} (method_instance_already_stored); the same method with the same "
+                "bindings over the same occurrence is the instance that was retired, not a "
+                "new one"
+            )
         return compile_refinement_bundle(
             draft,
             network,
@@ -3555,6 +3644,59 @@ class HierarchicalDispatch:
             # delta id (§18.3's naming convention: the two are different objects).
             compiled_from_proposal_id=proposal.proposal_id,
         )
+
+    def _check_retirement_is_a_repair(
+        self,
+        mission_id: str,
+        network: TaskNetworkSnapshot,
+        proposal: PlanProposal,
+        adopted: Any,
+    ) -> None:
+        """A Planner may retire only what the root review rejected, and only when its
+        work is over (verification P1-2).
+
+        ``retire_method`` compiled for *any* adopted instance, and the command then
+        carried ``request_stop_then_reconcile`` — a policy nothing in this slice
+        implements: the retired leaves' RUNNING attempts stayed RUNNING, their
+        reservations stayed held, and the dirty marks had no consumer.  The one case
+        P2.3j is about has neither problem — the review only cuts a package once
+        every leaf is terminal — so that is the case the compiler accepts: the
+        instance must be one :meth:`rejected_refinements` names, and none of its
+        child occurrences may have an attempt still open.  Anything wider waits for
+        the slice that actually stops and reconciles running work.
+        """
+
+        rejected = {item.method_instance_id for item in self.rejected_refinements(mission_id)}
+        if str(adopted.instance_id) not in rejected:
+            raise ContractError(
+                f"proposal {proposal.proposal_id!r} retires {str(adopted.instance_id)!r}, "
+                "which the root review did not reject (retirement_not_a_repair); a Planner "
+                "round replaces only a method instance named in rejected_refinements"
+            )
+        open_states = {
+            AttemptStatus.PENDING,
+            AttemptStatus.CLAIMED,
+            AttemptStatus.RUNNING,
+            AttemptStatus.SUBMITTED,
+            AttemptStatus.VERIFYING,
+        }
+        for child in adopted.child_bindings:
+            try:
+                spec = network.occurrence(child.occurrence_id)
+            except KeyError:
+                continue
+            open_attempts = [
+                attempt.id
+                for attempt in self.store.list_attempts(str(spec.task_id))
+                if attempt.status in open_states
+            ]
+            if open_attempts:
+                raise ContractError(
+                    f"proposal {proposal.proposal_id!r} retires {str(adopted.instance_id)!r} "
+                    f"while occurrence {str(child.occurrence_id)!r} still has open attempt(s) "
+                    f"{open_attempts} (running_work_not_reconciled); nothing in this slice "
+                    "stops or reconciles running work, so a replacement waits for it to end"
+                )
 
     def _current_requirements_revision(self, mission_id: str) -> int:
         """The requirements revision in force, as the read-set checker will re-read it."""
@@ -3580,6 +3722,11 @@ class HierarchicalDispatch:
         therefore the *system's* reading of what the delta does — ``request_stop_then
         _reconcile`` when something is retired — and not the proposal's own claim,
         which for a plain refinement keeps the command byte-for-byte as before.
+
+        Verification P1-2: the policy is a label the commit honours without anybody
+        stopping or reconciling anything, so the compiler only lets a retirement
+        through when there is nothing running to stop
+        (:meth:`_check_retirement_is_a_repair`).
         """
 
         mission = self.mission(mission_id)

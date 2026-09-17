@@ -64,13 +64,22 @@ from test_htn_end_to_end import (  # noqa: E402
 )
 from test_root_review_coordinator import coordinator, review  # noqa: E402
 
+import agent_orchestrator.orchestrator.hierarchical_dispatch as hd  # noqa: E402
 from agent_orchestrator.contracts.htn import TaskForm  # noqa: E402
-from agent_orchestrator.contracts.models import ContractError, MissionStatus  # noqa: E402
+from agent_orchestrator.contracts.models import (  # noqa: E402
+    Attempt,
+    Budget,
+    ContractError,
+    MissionStatus,
+)
 from agent_orchestrator.contracts.resolution import (  # noqa: E402
     CriterionVerdict,
     ReviewVerdict,
 )
-from agent_orchestrator.contracts.state_machines import TERMINAL_MISSION  # noqa: E402
+from agent_orchestrator.contracts.state_machines import (  # noqa: E402
+    TERMINAL_MISSION,
+    AttemptStatus,
+)
 from agent_orchestrator.orchestrator.event_handler import (  # noqa: E402
     ROOT_REVIEW_REPAIR_REASON,
     Orchestrator,
@@ -85,6 +94,7 @@ from agent_orchestrator.planning.htn.planner_package import (  # noqa: E402
 from agent_orchestrator.runtime.assembly import OrchestratorConfig  # noqa: E402
 from agent_orchestrator.runtime.output_blocks import PortClaim  # noqa: E402
 from agent_orchestrator.storage.htn_store import HtnStore  # noqa: E402
+from agent_orchestrator.storage.store import StoreConflict  # noqa: E402
 from agent_orchestrator.testing.fixtures import (  # noqa: E402
     RoleScriptedProvider,
     method_proposal_step,
@@ -177,6 +187,77 @@ def _seeded(tmp_path, *, key: str, alt: bool, free_text: bool = False) -> World:
     world.dispatch.issue_input_witnesses(world.mission.id, world.network(), now_ms=1_000_000)
     _accept_every_child(world)
     return world
+
+
+def _repair_recorded(world: World, *, ordinal: int = 2, with_method_ref: bool = True) -> None:
+    """The durable record ``_repair_after_root_review`` writes before it asks the
+    Planner — the same shape, so unit tests of the compiler see what the loop sees."""
+
+    network = world.network()
+    root = network.root_occurrence_ids[0]
+    adopted = network.adopted_instance_for(root)
+    assert adopted is not None
+    detail: dict[str, Any] = {
+        "plan_revision": int(network.plan_revision),
+        "package_id": "pkg-test",
+        "repair_round": 1,
+        "max_root_review_repairs": 1,
+        "findings": [dict(item) for item in BLOCKER],
+        "occurrence_id": str(root),
+        "method_instance_id": str(adopted.instance_id),
+    }
+    if with_method_ref:
+        detail["method_ref"] = adopted.method_ref.to_json()
+    world.service.record_planning_rejected(
+        world.mission.id,
+        ordinal=ordinal,
+        reason=ROOT_REVIEW_REPAIR_REASON,
+        key=f"{world.mission.id}:root-review-repair:{int(network.plan_revision)}",
+        detail=detail,
+    )
+
+
+def _rejected_open(tmp_path, *, key: str, alt: bool, with_method_ref: bool = True) -> World:
+    """A Mission whose root review REJECTED the plan and whose repair round is on
+    record; the store is left open for ``world.plan``."""
+
+    world = _seeded(tmp_path, key=key, alt=alt)
+    coordinator(world).cut(world.mission.id, now_ms=NOW_MS)
+    review(
+        world,
+        verdict=ReviewVerdict.REJECTED,
+        verdicts={ROOT_CRITERION: CriterionVerdict.FAIL},
+        findings=BLOCKER,
+    )
+    _repair_recorded(world, with_method_ref=with_method_ref)
+    return world
+
+
+def _running_attempt(world: World, task_id: str, *, ordinal: int = 1) -> str:
+    attempt_id = f"{task_id}:att-{ordinal}"
+    world.store.insert_attempt(
+        Attempt(
+            id=attempt_id,
+            task_id=task_id,
+            mission_id=world.mission.id,
+            role="worker",
+            model="fixture",
+            prompt_version="worker-hierarchical-v2",
+            context_version="ctx",
+            budget_reserved=Budget(max_tokens=500),
+            lease_owner="w",
+            lease_expires_at=None,
+            status=AttemptStatus.RUNNING,
+            retry_of=None,
+            created_at=1.0,
+            version=1,
+            ordinal=ordinal,
+            creation_key=f"k-{attempt_id}",
+            input_id="i",
+            failure=None,
+        )
+    )
+    return attempt_id
 
 
 def _rejected(tmp_path, *, key: str, alt: bool, findings=BLOCKER) -> World:
@@ -426,7 +507,7 @@ def _adopted_root(world: World) -> str:
 def test_retire_and_refine_replaces_the_root_method_in_one_revision(tmp_path) -> None:
     """§9.1 "选择替代方法", through the compiler's ``retire_instance_ids`` and the commit."""
 
-    world = _seeded(tmp_path, key="p23j-replace", alt=True)
+    world = _rejected_open(tmp_path, key="p23j-replace", alt=True)
     alt = _alt_method()
     old = _adopted_root(world)
     outcome = world.plan(
@@ -463,7 +544,7 @@ def test_retire_and_refine_replaces_the_root_method_in_one_revision(tmp_path) ->
 
 
 def test_a_retirement_must_name_the_instance_adopted_at_the_refined_occurrence(tmp_path) -> None:
-    world = _seeded(tmp_path, key="p23j-replace-stranger", alt=True)
+    world = _rejected_open(tmp_path, key="p23j-replace-stranger", alt=True)
     with pytest.raises(ContractError, match="not the adopted method instance"):
         world.plan(
             _replacement(world, _alt_method(), instance_id="mi-stranger", revision=1),
@@ -532,6 +613,116 @@ def test_refining_a_refined_goal_without_retiring_is_still_refused(tmp_path) -> 
     with pytest.raises(ContractError, match="two adopted method instances"):
         world.plan(text, command_id="cmd-implicit")
     assert int(world.network().plan_revision) == 1
+
+
+def test_a_retirement_of_an_instance_the_review_did_not_reject_is_refused(tmp_path) -> None:
+    """Verification P1-2: ``retire_method`` is a repair, not a general operation.
+
+    The commit would have taken it under ``request_stop_then_reconcile`` — a policy
+    nothing implements — so the compiler only lets through the instance the root
+    review rejected.
+    """
+
+    world = _seeded(tmp_path, key="p23j-retire-unrejected", alt=True)
+    with pytest.raises(ContractError, match="retirement_not_a_repair"):
+        world.plan(
+            _replacement(world, _alt_method(), instance_id=_adopted_root(world), revision=1),
+            command_id="cmd-unrejected",
+        )
+    assert int(world.network().plan_revision) == 1
+    assert world.events(e2e.PLAN_REVISION_COMMITTED)[-1].payload["plan_revision"] == 1
+
+
+def test_a_replacement_waits_for_the_retired_leaves_open_attempts(tmp_path) -> None:
+    """Verification P1-2: a leaf still being worked on is not retired out from under
+    its attempt; the review only cuts a package once every leaf is terminal, so the
+    P2.3j path never meets this, and anything else is refused by name."""
+
+    world = _rejected_open(tmp_path, key="p23j-retire-running", alt=True)
+    network = world.network()
+    leaf = next(
+        str(spec.task_id) for spec in network.occurrences if spec.form is TaskForm.PRIMITIVE
+    )
+    attempt = _running_attempt(world, leaf)
+    with pytest.raises(ContractError, match="running_work_not_reconciled") as caught:
+        world.plan(
+            _replacement(world, _alt_method(), instance_id=_adopted_root(world), revision=1),
+            command_id="cmd-running",
+        )
+    assert attempt in str(caught.value)
+    assert int(world.network().plan_revision) == 1
+    stored = world.store.get_attempt(attempt)
+    assert stored is not None and stored.status is AttemptStatus.RUNNING
+
+
+def test_re_proposing_the_rejected_method_is_refused_by_name_not_by_the_store(tmp_path) -> None:
+    """Verification P0-1: the same method over the same occurrence *is* the retired
+    instance (its id is a function of its inputs), and re-adopting it used to reach
+    the store as a UNIQUE violation — ``StoreConflict`` escaping ``run()``."""
+
+    world = _rejected_open(tmp_path, key="p23j-readopt", alt=False)
+    old = _adopted_root(world)
+    with pytest.raises(ContractError, match="method_rejected_by_root_review"):
+        world.plan(
+            _replacement(world, world.contract, instance_id=old, revision=1),
+            command_id="cmd-readopt",
+        )
+    network = world.network()
+    assert int(network.plan_revision) == 1
+    assert _adopted_root(world) == old, "nothing was retired by a refused proposal"
+
+
+def test_a_draft_colliding_with_a_stored_instance_is_refused_before_the_commit(tmp_path) -> None:
+    """Verification P0-1, the second guard: a repair record without the method
+    reference (the shape older records have) leaves the history empty, and the draft
+    id check still keeps the collision out of the store."""
+
+    world = _rejected_open(tmp_path, key="p23j-readopt-id", alt=False, with_method_ref=False)
+    old = _adopted_root(world)
+    assert world.dispatch.rejected_method_refs(world.mission.id) == {}
+    with pytest.raises(ContractError, match="method_instance_already_stored"):
+        world.plan(
+            _replacement(world, world.contract, instance_id=old, revision=1),
+            command_id="cmd-readopt-id",
+        )
+    assert int(world.network().plan_revision) == 1
+
+
+def test_the_rejected_methods_refusal_is_not_reported_as_applicability(
+    tmp_path, monkeypatch
+) -> None:
+    """Verification V5 (test blind spot): a rejected method that would *also* be
+    refused by applicability is left out of the repair package's ``applicability``
+    — its reason is the review, in ``rejected_refinements`` — and out of the
+    synthesis judgment's candidate count."""
+
+    world = _rejected_open(tmp_path, key="p23j-applicability", alt=True)
+    struck = world.contract.method_ref()
+    real = hd.assess_method
+
+    def refusing(task: Any, method: Any, *args: Any, **kwargs: Any) -> Any:
+        import dataclasses
+
+        report = real(task, method, *args, **kwargs)
+        if method.method_ref() == struck:
+            return dataclasses.replace(
+                report,
+                status=hd.ApplicabilityStatus.CAPABILITY_UNAVAILABLE,
+                unmet_capabilities=("plan.nope",),
+            )
+        return report
+
+    monkeypatch.setattr(hd, "assess_method", refusing)
+    root = str(world.network().root_occurrence_ids[0])
+    entries = [
+        item
+        for item in world.dispatch.method_applicability(world.mission.id)
+        if str(item.goal_occurrence_id) == root
+    ]
+    assert entries == [], "the rejected method's refusal is the review's, not an axis"
+    assert world.dispatch.goals_needing_method(world.mission.id) == (), (
+        "the alternative applies; one rejected candidate struck, one left"
+    )
 
 
 # ======================================================================================
@@ -622,6 +813,75 @@ def _planner_replaces(request: Any) -> str:
     )
 
 
+def _planner_replaces_or_declines(request: Any) -> str:
+    """Replace when the package offers an unrejected method; otherwise declare none."""
+
+    package = package_of(request)
+    rejected = package["rejected_refinements"]
+    if rejected and any(
+        item["goal_signature_id"] == rejected[0]["goal_signature_id"]
+        and not item["rejected_by_root_review"]
+        for item in package["method_library"]
+    ):
+        return _planner_replaces(request)
+    return _planner_declines(request)
+
+
+def _planner_reproposes(request: Any) -> str:
+    """A Planner that ignores the marker and retires + refines with the first method
+    listed — the rejected one (the prompt says not to; the code must refuse it)."""
+
+    package = package_of(request)
+    entry = package["rejected_refinements"][0]
+    chosen = next(
+        item["refine_method_ref"]
+        for item in package["method_library"]
+        if item["goal_signature_id"] == entry["goal_signature_id"]
+    )
+    return plan_revision_proposal_step(
+        proposal_id=f"p-again-{package['plan']['plan_revision']}",
+        expected_plan_revision=int(package["plan"]["plan_revision"]),
+        read_set=[
+            {
+                "kind": "method",
+                "id": chosen["id"],
+                "semantic_revision": chosen["version"],
+                "content_hash": chosen["content_hash"],
+            }
+        ],
+        operations=[
+            {
+                "op": "retire_method",
+                "method_instance_id": entry["rejected_method_instance_id"],
+                "reason": "try the same method once more",
+            },
+            {
+                "op": "refine",
+                "goal_id": entry["goal_id"],
+                "obligation_id": entry["obligation_id"],
+                "method_ref": dict(chosen),
+                "bindings": {},
+            },
+        ],
+        rationale="re-adopting the rejected method",
+    )
+
+
+def _bogus_method():
+    """A method naming an operator nobody registered: refused at admission."""
+
+    return method(
+        "plan.bogus",
+        "plan.goal",
+        parameter_schema="plan.goal.params",
+        steps=(
+            step("ghost", "plan.ghost", TaskForm.PRIMITIVE, {"subject": param("subject")}),
+        ),
+        links=(("c-root", "ghost", "c-done"),),
+        finalizer="ghost",
+    )
+
+
 def _planner_declines(request: Any) -> str:
     package = package_of(request)
     return plan_revision_proposal_step(
@@ -698,6 +958,7 @@ def _drive(
     *,
     cycles: int = 40,
     accept_leaves: bool = True,
+    prepare: Any = None,
     **config: Any,
 ) -> dict[str, Any]:
     """Cycle a real Orchestrator until the Mission ends or the budget of cycles is spent."""
@@ -706,6 +967,8 @@ def _drive(
         async with Orchestrator(_config(evidence, **config), provider) as loop:
             world.env.semantics = HtnStore(loop.store)
             loop.install_hierarchical(planning=world.env)
+            if prepare is not None:
+                prepare(loop)
             original = loop._decide
             accepted: list[int] = []
 
@@ -764,6 +1027,11 @@ def _drive(
                     dict(item.payload) for item in events if item.type == SYNTHESIS_ROUND_RECORDED
                 ],
                 "synth_requests": synth_requests,
+                "planner_packages": [
+                    package_of(item)
+                    for item in provider.requests
+                    if any("[role:planner]" in str(m.content) for m in item.messages)
+                ],
                 "accepted": accepted,
                 "progress": list(loop.progress_log),
             }
@@ -918,6 +1186,214 @@ def test_repeated_rejections_end_honestly_with_the_reason_written_down(tmp_path)
     assert outcome["synthesis"][0]["retry_refused"] == ""
     assert outcome["types"].count("MethodSynthesisReplyRejected") == 1
     assert "MissionFailed" in outcome["types"]
+
+
+def test_a_store_conflict_in_a_planning_round_is_a_refused_round_not_a_crash(tmp_path) -> None:
+    """Verification P0-1, second line: whatever the store refuses on a planning commit
+    is written down as ``plan_commit_refused`` and the loop goes on; it used to escape
+    ``_cycle`` and leave the Mission ACTIVE with nobody running it."""
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _seeded(evidence, key="p23j-e2e-conflict", alt=True, free_text=True)
+    world.store.close()
+    provider = RoleScriptedProvider(
+        {
+            "root_reviewer": [_reviewer("FAIL", finding=C1_FINDING["detail"])] * 3,
+            "planner": [_planner_replaces] * 3,
+        }
+    )
+
+    def prepare(loop: Orchestrator) -> None:
+        dispatch = loop.hierarchical
+
+        def conflict(*args: Any, **kwargs: Any) -> Any:
+            raise StoreConflict("method instance mi-x already stored (probe)")
+
+        dispatch.apply_planner_reply = conflict  # type: ignore[method-assign]
+
+    outcome = _drive(world, evidence, provider, prepare=prepare, max_planning_attempts=1)
+    assert outcome["status"] is MissionStatus.FAILED, (
+        f"{outcome['status']} / {outcome['stop_reason']}: {outcome['types']}"
+    )
+    refused = [
+        item.payload
+        for item in outcome["events"]
+        if item.type == "PlanningRejected" and item.payload.get("reason") == "plan_commit_refused"
+    ]
+    assert len(refused) == 1 and refused[0]["detail"]["reason"] == "store_conflict"
+    assert "already stored" in refused[0]["detail"]["error"]
+    assert outcome["report"]["detail"]["root_review"]["reason"] == ROOT_REVIEW_REPAIR_REASON
+    assert outcome["revisions"] == [1]
+
+
+def test_re_proposing_the_rejected_method_end_to_end_is_refused_and_bounded(tmp_path) -> None:
+    """Verification P0-1 end to end: a Planner that retires the rejected instance and
+    refines with the same method is refused by name (``proposal_not_grounded``), the
+    ladder is spent, the synthesis question is put once, and the Mission ends
+    honestly — no ``StoreConflict``, no ACTIVE-forever."""
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _seeded(evidence, key="p23j-e2e-again", alt=False, free_text=True)
+    world.store.close()
+    provider = RoleScriptedProvider(
+        {
+            "root_reviewer": [_reviewer("FAIL", finding=C1_FINDING["detail"])] * 3,
+            "planner": [_planner_reproposes] * 4,
+            "method_synthesizer": [method_proposal_step(_bogus_method().to_json())] * 4,
+        }
+    )
+    outcome = _drive(world, evidence, provider, cycles=60, max_planning_attempts=1)
+    assert outcome["status"] is MissionStatus.FAILED, (
+        f"{outcome['status']} / {outcome['stop_reason']}: {outcome['types']}"
+    )
+    grounded = [
+        item.payload
+        for item in outcome["events"]
+        if item.type == "PlanningRejected" and item.payload.get("reason") == "proposal_not_grounded"
+    ]
+    assert len(grounded) == 1
+    assert "method_rejected_by_root_review" in grounded[0]["detail"]["error"]
+    assert outcome["revisions"] == [1], "nothing was re-adopted"
+    assert list(outcome["instances"].values()) == ["plan.outer"]
+    assert len(outcome["synthesis"]) == 1 and outcome["synthesis"][0]["synthesis_round"] == 2
+    assert outcome["report"]["detail"]["root_review"]["repairs_used"] == 1
+
+
+def test_two_rejections_end_the_mission_with_the_repair_bound_spent(tmp_path) -> None:
+    """Verification P1-1: the bound is the Mission's.  outer → alt is the one repair
+    the default allows; when alt is rejected too, no second repair opens, no
+    oscillation back to outer, and the stop report says how many were used."""
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _seeded(evidence, key="p23j-e2e-twice", alt=True, free_text=True)
+    world.store.close()
+    provider = RoleScriptedProvider(
+        {
+            "root_reviewer": [_reviewer("FAIL", finding=C1_FINDING["detail"])] * 4,
+            "planner": [_planner_replaces] * 4,
+            "critic": [_judge_critic],
+        }
+    )
+    outcome = _drive(world, evidence, provider, cycles=60, max_planning_attempts=1)
+    assert outcome["status"] is MissionStatus.FAILED, (
+        f"{outcome['status']} / {outcome['stop_reason']}: {outcome['types']}"
+    )
+    assert outcome["revisions"] == [1, 2], "one replacement, never a second"
+    assert list(outcome["instances"].values()) == ["plan.alt"]
+    assert outcome["types"].count("HierarchicalRootReviewRejected") == 2
+    assert outcome["roles"].get("planner") == 1, "no second repair round was opened"
+    repairs = [
+        item.payload
+        for item in outcome["events"]
+        if item.type == "PlanningRejected"
+        and item.payload.get("reason") == ROOT_REVIEW_REPAIR_REASON
+    ]
+    assert [item["detail"]["plan_revision"] for item in repairs] == [1]
+    detail = outcome["report"]["detail"]["root_review"]
+    assert detail["repairs_used"] == 1 and detail["max_root_review_repairs"] == 1
+    assert detail["plan_revision"] == 2 and detail["repairs_used_on_revision"] == 0
+    assert [item["method_id"] for item in detail["rejected_method_refs"]] == ["plan.outer"]
+
+
+def test_a_second_repair_round_is_shown_every_method_the_review_rejected(tmp_path) -> None:
+    """Verification P1-1, the history: with two repairs allowed, the second round's
+    package flags outer *and* alt, reports neither as an applicability refusal, and
+    the synthesis judgment strikes both — so the Planner declares none, the findings
+    go to a third synthesis round, and a refused proposal ends the Mission."""
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _seeded(evidence, key="p23j-e2e-history", alt=True, free_text=True)
+    world.store.close()
+    provider = RoleScriptedProvider(
+        {
+            "root_reviewer": [_reviewer("FAIL", finding=C1_FINDING["detail"])] * 4,
+            "planner": [_planner_replaces_or_declines] * 6,
+            "method_synthesizer": [method_proposal_step(_bogus_method().to_json())] * 4,
+            "critic": [_judge_critic],
+        }
+    )
+    outcome = _drive(
+        world,
+        evidence,
+        provider,
+        cycles=80,
+        max_planning_attempts=1,
+        max_root_review_repairs=2,
+    )
+    assert outcome["status"] is MissionStatus.FAILED, (
+        f"{outcome['status']} / {outcome['stop_reason']}: {outcome['types']}"
+    )
+    assert outcome["revisions"] == [1, 2]
+    assert outcome["roles"].get("planner") == 2
+    packages = outcome["planner_packages"]
+    assert len(packages) == 2
+    second = packages[1]
+    flags = {
+        item["refine_method_ref"]["id"]: item["rejected_by_root_review"]
+        for item in second["method_library"]
+    }
+    assert flags == {"plan.outer": True, "plan.alt": True}
+    assert second["rejected_refinements"][0]["rejected_method_ref"]["method_id"] == "plan.alt"
+    root = second["plan"]["root_occurrences"][0]
+    assert [item for item in second["applicability"] if item["goal_occurrence_id"] == root] == []
+    assert len(outcome["synthesis"]) == 1 and outcome["synthesis"][0]["synthesis_round"] == 3
+    feedback = "\n".join(outcome["synth_requests"][0]["review_feedback"])
+    assert "plan.alt" in feedback
+    detail = outcome["report"]["detail"]["root_review"]
+    assert detail["repairs_used"] == 2
+    assert sorted(item["method_id"] for item in detail["rejected_method_refs"]) == [
+        "plan.alt",
+        "plan.outer",
+    ]
+
+
+def test_a_second_synthesis_round_after_a_pre_plan_round_is_its_own_record(tmp_path) -> None:
+    """Verification V1 (test blind spot), the C1-r1 shape: round 1 (pre-plan) already
+    concluded TRIAL_ADMITTED; the rejection then opens round 2 under its own key, and
+    both records stand side by side."""
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _seeded(evidence, key="p23j-e2e-round2", alt=False, free_text=True)
+    world.dispatch.record_synthesis_outcome(
+        world.mission.id,
+        goal_task_id=ROOT_TASK,
+        admitted=True,
+        method_id="plan.outer",
+        verdict="TRIAL_ADMITTED",
+        author="model",
+        asks=1,
+    )
+    world.store.close()
+    invented = _synthesised_method()
+    provider = RoleScriptedProvider(
+        {
+            "root_reviewer": [_reviewer("FAIL", finding=C1_FINDING["detail"]), _reviewer("PASS")],
+            # The admitted round 1 bought the ladder one more rung (``_synthesis_credits``),
+            # so the repair round is asked twice before the synthesis question is put.
+            "planner": [_planner_declines, _planner_declines, _planner_replaces],
+            "method_synthesizer": [method_proposal_step(invented.to_json())],
+            "critic": [_judge_critic],
+        }
+    )
+    outcome = _drive(world, evidence, provider, cycles=60, max_planning_attempts=1)
+    assert outcome["status"] is MissionStatus.COMPLETED, (
+        f"{outcome['status']} / {outcome['stop_reason']}: {outcome['types']} "
+        f"roles={outcome['roles']}"
+    )
+    assert outcome["roles"].get("planner") == 3
+    assert [item["synthesis_round"] for item in outcome["synthesis"]] == [1, 2]
+    keys = {
+        item.idempotency_key
+        for item in outcome["events"]
+        if item.type == SYNTHESIS_ROUND_RECORDED
+    }
+    assert len(keys) == 2 and any(key.endswith(":round:2") for key in keys)
+    assert outcome["revisions"] == [1, 2]
 
 
 def test_the_synthesis_judgment_excludes_the_rejected_method_but_keeps_i18(tmp_path) -> None:

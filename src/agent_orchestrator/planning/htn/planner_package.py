@@ -458,6 +458,7 @@ def hierarchical_planner_package(
     rejected: Sequence[Mapping[str, Any]] = (),
     read_item: Any = None,
     rejected_refinements_of: Sequence[Any] = (),
+    rejected_method_refs_of: Mapping[str, Sequence[Any]] | None = None,
 ) -> dict[str, Any]:
     """The whole package, as a plain mapping the context builder can seal.
 
@@ -469,10 +470,16 @@ def hierarchical_planner_package(
     :class:`~..orchestrator.hierarchical_dispatch.RejectedRefinement` records for
     this plan.  Their signatures join the open goals' for ``method_library``, so the
     repair round is shown the library for the goal it is about (H-L3-C1-r1 was shown
-    an empty one), and their methods are flagged in it.
+    an empty one), and their methods are flagged in it.  ``rejected_method_refs_of``
+    (verification P1-1) is the history — every method the review rejected at each
+    occurrence, on any revision — so a method rejected two revisions ago is still
+    flagged, not offered afresh.
     """
 
     goals = open_goals(network)
+    struck: list[Any] = [item.method_ref for item in rejected_refinements_of]
+    for references in (rejected_method_refs_of or {}).values():
+        struck.extend(references)
     replaced = rejected_refinements(network, rejected_refinements_of)
     signatures = [item["goal_signature_id"] for item in goals] + [
         item["goal_signature_id"] for item in replaced
@@ -501,7 +508,7 @@ def hierarchical_planner_package(
             for item in method_library(
                 registry,
                 signatures,
-                rejected_refs=[item.method_ref for item in rejected_refinements_of],
+                rejected_refs=struck,
             )
         ],
         "applicability": [dict(item) for item in applicability_reports(reports)],
