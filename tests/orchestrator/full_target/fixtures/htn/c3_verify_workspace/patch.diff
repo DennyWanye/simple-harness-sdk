@@ -1,0 +1,11 @@
+--- a/stats/window.py
++++ b/stats/window.py
+@@ -3,7 +3,7 @@
+ 
+ def window_sum(values, start, end):
+     """Sum of ``values[start:end]`` -- ``end`` is exclusive."""
+-    return sum(values[start:end - 1])
++    return sum(values[start:end])
+ 
+ 
+ def rolling_mean(values, size):

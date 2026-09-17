@@ -41,6 +41,10 @@ from .fragment_commits import SelectionFragmentExpired
 if TYPE_CHECKING:
     from ..runtime.provider_budget_guard import ProviderBudgetGuard
 
+from ..artifacts.bound_workspace import (
+    bound_artifacts_named_in_envelope,
+    overlay_bound_producer_files,
+)
 from ..artifacts.store import ArtifactStoreError, backfill, read_nofollow, read_verified
 from ..artifacts.versioning import (
     ArtifactConflict,
@@ -3345,6 +3349,9 @@ class Orchestrator:
             "path": attempt.id,
             "seed": sorted(seed),
             "read_only_inputs": sorted(self._read_only_inputs(attempt.id)),
+            "bound_workspace_files": sorted(
+                item.path for item in self._upstream_inputs(attempt)
+            ),
             "writable_outputs": [] if task is None else list(task.outputs),
             "adopted": False,
         }
@@ -5153,6 +5160,16 @@ class Orchestrator:
         artifacts = [
             a for a in self.store.list_artifacts(attempt.id) if a.id in set(stored.artifacts)
         ]
+        # P2.3o: a bound input the envelope named is a recorded workspace file.
+        # Grok C3's verify leaf listed the patched ``stats/window.py`` the patch
+        # leaf had already accepted; the collector dropped it (P2.3m same-hash)
+        # and ``rule_check`` refused it as unrecorded.
+        artifacts = bound_artifacts_named_in_envelope(
+            stored.envelope.artifacts,
+            artifacts,
+            self._upstream_inputs(attempt),
+            self.store.get_artifact,
+        )
         # P3.2 review round 2 P1-3: rebuilt from the recorded bytes, never the live tree —
         # what is verified is what was recorded and what an approval will bind
         copy = self.assembled.workspaces.verification_copy(
@@ -5731,8 +5748,16 @@ class Orchestrator:
 
         protected: dict[str, str | bytes] = dict(self._protected_seed(mission, task))
         declared = set(task.outputs)
+        seed_paths = set((mission.final_report or {}).get("workspace_seed", {}))
         for item in self._upstream_inputs(attempt):
             if item.path in declared:  # the Task declared it will rewrite this path
+                continue
+            # P2.3o: a seed path overlaid from a bound producer is the consumer's
+            # baseline (so ``code_test`` runs on the accepted patch), not a
+            # protected port document.  Rewriting it to *new* bytes is still a
+            # read-only rewrite (P2.3m); pinning it here would reclassify that
+            # as ``protected_path_rewritten`` and skip the planning escalation.
+            if item.path in seed_paths:
                 continue
             artifact = self.store.get_artifact(item.artifact_id)
             try:  # P3.2 D3: the stored bytes, hash re-checked
@@ -8335,6 +8360,22 @@ class Orchestrator:
                     upstream_tasks, self._artifacts_by_task(upstream_tasks), tasks_by_id=all_tasks
                 )
             )
+            # P2.3o: a patch (or any DATA) binding names the port document; the
+            # files the producer changed overlay the consumer seed so verify /
+            # inspect / summarize start from the accepted workspace, not the
+            # unpatched snapshot.  ORDER-only predecessors still contribute
+            # nothing — overlay only reads producers the manifest already named.
+            if new_mode is not None and inputs:
+                producers = [
+                    all_tasks[item.task_id] for item in inputs if item.task_id in all_tasks
+                ]
+                inputs = overlay_bound_producer_files(
+                    inputs,
+                    seed_paths=set(
+                        (mission.final_report or {}).get("workspace_seed", {})
+                    ),
+                    artifacts_by_producer=self._artifacts_by_task(producers),
+                )
         except GraphIntegrityError as error:
             await self._plan_integrity_stop(mission, error)
             return True
