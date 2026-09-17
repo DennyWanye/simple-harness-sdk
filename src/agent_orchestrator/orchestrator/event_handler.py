@@ -371,6 +371,11 @@ class Orchestrator:
         self._deferred: dict[str, float] = {}  # task_id → first time it waited for a profile
         # review P0-1: a Planner whose pool is cooling down waits too: mission_id → (since, ordinal)
         self._deferred_planning: dict[str, tuple[float, int]] = {}
+        #: P2.3d / defect D5-B: the plan revision whose unrefined compounds this
+        #: process has already put to the Planner, per Mission.  One round per
+        #: revision: a successful refinement moves the revision on, and one that
+        #: fails leaves it where it was, so the same question is never asked twice.
+        self._refinement_rounds: dict[str, int] = {}
         self._poll = poll_interval
         self._critic_wait = (
             config.turn_deadline_seconds if critic_wait_seconds is None else critic_wait_seconds
@@ -1983,6 +1988,15 @@ class Orchestrator:
             if mission.status is MissionStatus.CREATED:
                 await self._start_planning(mission)
                 progressed = True
+            elif await self._refine_open_compounds(mission):
+                # P2.3d / defect D5-B: a Mission used to be planned exactly once.  A
+                # Planner that proposed a *nested* compound left it at
+                # ``CompoundPhaseChanged{planning_ready, NEEDS_REFINEMENT}`` and nothing
+                # ever asked for a method for it, so its primitives stayed in
+                # ``WAITING_ORDER`` and the Mission stopped with
+                # ``hierarchical_no_dispatchable_work`` — a plan deeper than one level
+                # could be proposed and could never run.
+                progressed = True
         if await self._retry_deferred_planning():
             progressed = True
         active = {mission.id for mission in self._active_missions()}
@@ -2202,6 +2216,67 @@ class Orchestrator:
             self._note(
                 f"mission {mission.id} stopped in planning: budget_exhausted ({error.dimension})"
             )
+
+    async def _refine_open_compounds(self, mission: Mission) -> bool:
+        """Ask the Planner for a method for a compound this plan has not refined yet.
+
+        P2.3d / defect D5-B.  ``_start_planning`` is the only caller of
+        ``begin_planning`` and it runs once, while the Mission is CREATED; after the
+        first ``PlanRevisionCommitted`` the Mission is ACTIVE and the Planner was never
+        asked anything again.  §6.3's decomposition is recursive by construction, so a
+        proposal with a nested compound was accepted, recorded as
+        ``NEEDS_REFINEMENT``, and then hung for ever.
+
+        The bound is **one refinement round per plan revision**, which needs no counter
+        of its own: a round that succeeds commits a new revision and a round that does
+        not leaves the revision where it was, so a Planner that cannot refine the goal
+        is asked once and the Mission then goes idle with its stall recorded — rather
+        than circling on the same question.
+        """
+
+        from ..contracts.htn import TaskForm
+
+        new_mode = self._new_mode(mission)
+        if new_mode is None or mission.status in TERMINAL_MISSION:
+            return False
+        active = new_mode.semantics().active_plan_revision(mission.id)
+        if active is None:
+            return False  # nothing is committed yet; ``_start_planning`` owns that
+        revision = int(active.revision)
+        if self._refinement_rounds.get(mission.id) == revision:
+            return False
+        if any(
+            intent.kind == "plan" and intent.mission_id == mission.id
+            for intent in self.store.list_intents(
+                "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+            )
+        ):
+            return False  # a planning round is already out; one question at a time
+        try:
+            network = new_mode.network(mission.id)
+        except (GraphIntegrityError, StoreError):
+            return False  # plan integrity is decided on its own path, not here
+        # The same test ``goals_needing_method`` applies: a compound occurrence with no
+        # adopted method instance is one nobody has refined.  ``ReadinessReason``'s
+        # ``NEEDS_REFINEMENT`` is deliberately *not* it — §18.5 constraint 4 makes every
+        # compound answer that, refined or not, so that a legacy status can never walk
+        # one into the Worker path.
+        open_compounds = [
+            spec
+            for spec in network.occurrences
+            if spec.form is TaskForm.COMPOUND
+            and network.adopted_instance_for(spec.occurrence_id) is None
+        ]
+        if not open_compounds:
+            return False
+        self._refinement_rounds[mission.id] = revision
+        ordinal = self._next_planning_ordinal(mission.id)
+        self._note(
+            f"mission {mission.id}: plan revision {revision} still holds "
+            f"{len(open_compounds)} unrefined compound goal(s); asking the Planner again "
+            f"(ordinal {ordinal})"
+        )
+        return await self._try_planner_intent(mission.id, ordinal=ordinal)
 
     def _planning_rejections(self, mission_id: str) -> list[dict[str, Any]]:
         """Durable feedback for the next proposal (D3-2'): the recorded rejections."""
@@ -3504,9 +3579,21 @@ class Orchestrator:
             )
         if ordinal < self._config.max_planning_attempts:
             await self._try_planner_intent(mission.id, ordinal=ordinal + 1)
-        else:
+        elif mission.status is MissionStatus.PLANNING:
             self.commit.fail_planning(
                 mission.id, reason=reason, detail={"attempts": ordinal, **dict(detail)}
+            )
+        else:
+            # P2.3d: a Mission that already holds a committed plan is not killed by a
+            # round that came *after* it — the root-review repair (D5-A) and the nested
+            # compound refinement (D5-B) both run while the Mission is ACTIVE, and their
+            # ladder is one round each rather than ``max_planning_attempts``.  The
+            # rejection is recorded; the Mission carries on with the plan it has and,
+            # if that plan cannot dispatch anything, stops through the stall path with
+            # the refusals written down.
+            self._note(
+                f"mission {mission.id}: planning round {ordinal} rejected ({reason}); the "
+                "committed plan stands and the Mission is not failed for it"
             )
 
     async def _collect_plan(self, intent: DispatchIntent, result) -> None:  # type: ignore[no-untyped-def]

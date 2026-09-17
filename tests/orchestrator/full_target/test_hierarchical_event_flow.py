@@ -1485,6 +1485,11 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     ``_repair_after_root_review`` is deliberately **not** a seventeenth: like
     ``_ask_root_reviewer`` it is reached only through ``_advance_root_review``, which has
     already asked, and is handed the answer.
+
+    P2.3d adds the seventeenth, ``_refine_open_compounds``: a compound goal the plan has
+    not refined is a hierarchical notion with no legacy counterpart, and asking the mode
+    there is what keeps the extra Planner round off a Mission that has no plan revisions
+    at all (defect D5-B).
     """
 
     del tmp_path
@@ -1493,7 +1498,7 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     from agent_orchestrator.orchestrator import event_handler
 
     source = inspect.getsource(event_handler)
-    assert source.count("self._new_mode(mission)") == 16
+    assert source.count("self._new_mode(mission)") == 17
     assert "is_hierarchical(mission)" in inspect.getsource(event_handler.Orchestrator._new_mode)
 
 
