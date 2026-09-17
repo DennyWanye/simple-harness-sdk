@@ -227,6 +227,16 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "planner-hierarchical-v4",
         "5ae3b39acf9326888e20bab934848ed6e1d21482884ccda932ac693b31122223",
     ),
+    # P2.3j: the repair-round prompts.  v5 reads ``rejected_refinements`` and knows
+    # the retire_method + refine repair; synthesizer v3 reads ``review_feedback``.
+    "PLANNER_HIERARCHICAL_V5": (
+        "planner-hierarchical-v5",
+        "2517d5fe727ba27ffffa105d72e786e72109893c342e56adebeaa033794f7608",
+    ),
+    "METHOD_SYNTHESIZER_V3": (
+        "method-synthesizer-v3",
+        "29ce1cc1d42f8b464466020eaa68dde912fafe58481ad49223b350820abcd4b7",
+    ),
 }
 
 #: P2.3d / defect D1: the same freeze for the versions a *domain module* registers.

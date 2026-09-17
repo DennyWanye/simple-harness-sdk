@@ -1,0 +1,49 @@
+[
+  {
+    "detail": {
+      "proposal_id": "p-1-no-applicable",
+      "rationale": "no_applicable_method: observed facts refute code.test-is-failing and code.regression-commit-known, so fix-by-patch and both revert methods are inapplicable; applicability also reports NEEDS_EVIDENCE with missing TRUE authorisation for every library method."
+    },
+    "ordinal": 1,
+    "reason": "no_applicable_method"
+  },
+  {
+    "detail": {
+      "error": "method 'code.fix-by-patch' is NEEDS_EVIDENCE for task task-root; a method is grounded only where it applies (§7.2)"
+    },
+    "ordinal": 2,
+    "reason": "proposal_not_grounded"
+  },
+  {
+    "detail": {
+      "proposal_id": "p-3-empty-no-applicable",
+      "rationale": "no_applicable_method: every method in applicability is NEEDS_EVIDENCE (authorisation UNKNOWN, not TRUE); observed facts refute code.test-is-failing (required by fix-by-patch) and code.regression-commit-known (required by both revert methods); code.fix-by-reproduce-patch-verify-explain has no applica"
+    },
+    "ordinal": 3,
+    "reason": "no_applicable_method"
+  },
+  {
+    "detail": {
+      "findings": [
+        {
+          "detail": "Root criterion c-change-explained is not met. The designated summarize-review artifact (acc-a550f23c314b63350f7a5c280dcccc01, port summary) does not explain an applied changeset: it restates defects and recommended fixes, then states that metrics/collector.py and metrics/reporter.py were not modified, the five defects remain in source, no concurrency/window/NTP tests were added, and production fixes have not been written. That does not satisfy evidence_requirement “summarize-review summary of inspect-changeset findings explains what changed and why” (inspect-changeset findings had recorded lock/snapshot/window/rate/test changes). Other artifacts cannot be used to mark this criterion met.",
+          "severity": "blocker"
+        }
+      ],
+      "max_root_review_repairs": 1,
+      "package_id": "pkg-root-229debd2c2c4ec3171b79b136400470c",
+      "plan_revision": 1,
+      "repair_round": 1
+    },
+    "ordinal": 5,
+    "reason": "root_review_rejected"
+  },
+  {
+    "detail": {
+      "proposal_id": "p-5-empty-no-applicable",
+      "rationale": "no_applicable_method: method_library is empty and applicability is empty, so no registered method can be refined onto obl-root/task-root; observed facts also show code.test-is-failing and code.regression-commit-known as false, which would block typical fix-by-patch and revert methods even if they we"
+    },
+    "ordinal": 5,
+    "reason": "no_applicable_method"
+  }
+]

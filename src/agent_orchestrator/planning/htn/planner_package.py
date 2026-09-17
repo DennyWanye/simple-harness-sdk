@@ -51,7 +51,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ...contracts.htn import ReadItemKind, TaskForm
+from ...contracts.htn import OccurrenceId, ReadItemKind, TaskForm
 from ...contracts.models import ContractError
 from ...contracts.semantic_base import content_hash_of
 from ...graph.task_network import TaskNetworkSnapshot
@@ -60,7 +60,11 @@ from ...graph.task_network import TaskNetworkSnapshot
 #: legacy ``PACKAGE_VERSION`` so a change to one never moves the other's request hash.
 #: v3 (P2.3c part 2c) adds the ``facts`` section and makes ``applicability`` read the
 #: fields an :class:`~.applicability.ApplicabilityReport` actually has.
-HIERARCHICAL_PACKAGE_VERSION = "planner-package-hierarchical-v3"
+#: v4 (P2.3j) adds ``rejected_refinements`` — the occurrences whose adopted method the
+#: root review rejected, with the instance to retire and the findings — computes
+#: ``method_library`` / ``applicability`` for those occurrences too, and flags each
+#: library entry ``rejected_by_root_review``.
+HIERARCHICAL_PACKAGE_VERSION = "planner-package-hierarchical-v4"
 
 #: How many method definitions one package lists per goal signature.  A bound, because
 #: the package is a prompt: a registry with two hundred methods for one signature would
@@ -132,7 +136,11 @@ def pending_primitives(network: TaskNetworkSnapshot) -> tuple[dict[str, Any], ..
 
 
 def method_library(
-    registry: Any, signatures: Sequence[str], *, limit: int = MAX_METHODS_PER_SIGNATURE
+    registry: Any,
+    signatures: Sequence[str],
+    *,
+    limit: int = MAX_METHODS_PER_SIGNATURE,
+    rejected_refs: Sequence[Any] = (),
 ) -> tuple[dict[str, Any], ...]:
     """The methods this deployment holds for the open goals' signatures.
 
@@ -141,8 +149,15 @@ def method_library(
     version or hash.  ``registry_status`` is shown and stated as read-only: a
     ``TRIAL_ADMITTED`` method is offered *and* labelled, so the Planner can prefer a
     promoted one without the package having to hide the other.
+
+    P2.3j: ``rejected_refs`` are the methods whose adopted instance the root review
+    rejected on this plan (see :func:`rejected_refinements`).  They are still listed
+    — hiding them would leave the Planner unable to say why the obvious method is not
+    an option — and flagged ``rejected_by_root_review`` so the reason is in the same
+    row as the triple.
     """
 
+    rejected = {_ref_key(item) for item in rejected_refs}
     entries: list[dict[str, Any]] = []
     for signature in sorted({str(item) for item in signatures}):
         found = _methods_for(registry, signature)
@@ -152,6 +167,7 @@ def method_library(
                 {
                     "goal_signature_id": signature,
                     "method_ref": reference.to_json(),
+                    "rejected_by_root_review": _ref_key(reference) in rejected,
                     # P2.3c part 2b: the *same* triple again, spelled the way a
                     # ``refine`` operation has to spell it.  ``MethodRef.to_json``
                     # writes ``method_id`` and the proposal codec reads ``id``, so a
@@ -187,6 +203,67 @@ def method_library(
                 }
             )
     return tuple(entries)
+
+
+#: How many reviewer findings one ``rejected_refinements`` entry quotes, and how long
+#: each may be.  The findings are the reviewer's words and the package is a prompt.
+MAX_REJECTION_FINDINGS = 8
+MAX_FINDING_CHARS = 1200
+
+
+def rejected_refinements(
+    network: TaskNetworkSnapshot, rejected: Sequence[Any]
+) -> tuple[dict[str, Any], ...]:
+    """The occurrences whose adopted method the root review rejected (P2.3j).
+
+    The repair round exists to answer these, and before this section it could not
+    even name them: ``open_goals`` lists only *unrefined* compounds, and a rejected
+    root is refined — by the instance being rejected.  Each entry carries what a
+    replacement proposal has to quote (``goal_id`` / ``obligation_id`` for the
+    ``refine``, ``rejected_method_instance_id`` for the ``retire_method``), the
+    goal's parameters and requirements as ``open_goals`` would show them, and the
+    reviewer's findings verbatim, bounded.  Nothing here is a judgment of this
+    package: the rejection is the review's, the instance is the plan's.
+    """
+
+    entries: list[dict[str, Any]] = []
+    for item in rejected:
+        occurrence = OccurrenceId(str(item.occurrence_id))
+        try:
+            spec = network.occurrence(occurrence)
+            binding = network.binding_for_occurrence(occurrence)
+        except KeyError:
+            continue
+        rendered = item.to_json()
+        findings = [
+            {
+                **{key: value for key, value in dict(finding).items() if key != "detail"},
+                "detail": str(finding.get("detail", ""))[:MAX_FINDING_CHARS],
+            }
+            for finding in list(rendered.get("findings", ()))[:MAX_REJECTION_FINDINGS]
+        ]
+        entries.append(
+            {
+                **rendered,
+                "findings": findings,
+                "requiredness": str(spec.requiredness),
+                "statement": binding.goal_signature.statement,
+                "typed_parameters": dict(binding.typed_parameters),
+                "requirement_refs": list(binding.requirement_refs),
+                "contract_revision": int(binding.contract_revision),
+            }
+        )
+    return tuple(sorted(entries, key=lambda entry: str(entry["occurrence_id"])))
+
+
+def _ref_key(reference: Any) -> tuple[str, int, str]:
+    to_json = getattr(reference, "to_json", None)
+    data = to_json() if callable(to_json) else dict(reference or {})
+    return (
+        str(data.get("method_id", data.get("id", ""))),
+        int(data.get("version", 0) or 0),
+        str(data.get("content_hash", "")),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,16 +457,26 @@ def hierarchical_planner_package(
     attempt_ordinal: int = 1,
     rejected: Sequence[Mapping[str, Any]] = (),
     read_item: Any = None,
+    rejected_refinements_of: Sequence[Any] = (),
 ) -> dict[str, Any]:
     """The whole package, as a plain mapping the context builder can seal.
 
     Returned as data rather than as a rendered string so the caller keeps ownership of
     rendering and of the context hash — the legacy ``_seal`` already does both, and a
     second renderer here would be a second answer to "what did the model see".
+
+    P2.3j: ``rejected_refinements_of`` are the
+    :class:`~..orchestrator.hierarchical_dispatch.RejectedRefinement` records for
+    this plan.  Their signatures join the open goals' for ``method_library``, so the
+    repair round is shown the library for the goal it is about (H-L3-C1-r1 was shown
+    an empty one), and their methods are flagged in it.
     """
 
     goals = open_goals(network)
-    signatures = [item["goal_signature_id"] for item in goals]
+    replaced = rejected_refinements(network, rejected_refinements_of)
+    signatures = [item["goal_signature_id"] for item in goals] + [
+        item["goal_signature_id"] for item in replaced
+    ]
     return {
         "role": "planner",
         "mode": "hierarchical",
@@ -409,8 +496,19 @@ def hierarchical_planner_package(
             "committed_primitives": [dict(item) for item in pending_primitives(network)],
             "required_obligations": sorted(str(item) for item in network.required_obligations),
         },
-        "method_library": [dict(item) for item in method_library(registry, signatures)],
+        "method_library": [
+            dict(item)
+            for item in method_library(
+                registry,
+                signatures,
+                rejected_refs=[item.method_ref for item in rejected_refinements_of],
+            )
+        ],
         "applicability": [dict(item) for item in applicability_reports(reports)],
+        # P2.3j: the goals whose adopted method the root review rejected.  A repair
+        # proposal names ``rejected_method_instance_id`` in a ``retire_method`` and
+        # ``goal_id`` / ``obligation_id`` in the ``refine`` that replaces it.
+        "rejected_refinements": [dict(item) for item in replaced],
         # Every observation this Mission has recorded, each with the read-set entry
         # that cites it verbatim.  See :func:`recorded_facts`: a Planner that is shown
         # no observation id can only invent one, and an invented id is
@@ -429,7 +527,11 @@ def hierarchical_planner_package(
             "commit). A read_set entry must be copied from this package: a method entry from "
             "method_library.refine_method_ref (as kind=method) and a fact entry from "
             "facts[].read_set_entry unchanged. Do not write a read_set entry whose id does not "
-            "appear in this package; if facts is empty, write no kind=fact entry at all"
+            "appear in this package; if facts is empty, write no kind=fact entry at all. "
+            "A rejected_refinements entry is repaired by ONE proposal carrying a retire_method "
+            "of its rejected_method_instance_id together with a refine of the same goal_id / "
+            "obligation_id using a method_library entry whose rejected_by_root_review is false; "
+            "if no such entry applies, answer no_applicable_method"
         ),
         "output_contract": "<plan_revision_proposal>{json}</plan_revision_proposal>",
         "package_version": HIERARCHICAL_PACKAGE_VERSION,
@@ -507,12 +609,14 @@ __all__ = (
     "MAX_APPLICABILITY_REPORTS",
     "MAX_FACTS",
     "MAX_METHODS_PER_SIGNATURE",
+    "MAX_REJECTION_FINDINGS",
     "MethodApplicability",
     "applicability_reports",
     "hierarchical_planner_package",
     "method_library",
     "open_goals",
     "pending_primitives",
+    "rejected_refinements",
     "FACT_ENTRY_FIELDS",
     "recorded_facts",
     "refuse_fact_inference",

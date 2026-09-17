@@ -17,3 +17,12 @@ SDK 分支 `p2.3e-run-exit` 8b8466d，模型 `grok-4.6`，提取日期 2026-09-1
 用途：`test_synthesizer_schema_alignment.py` 用它们钉住 (1) codec 对 v1 提示词形状的逐字拒绝
 理由，(2) synthesizer 不可读回复的一次结构化重试，(3) Planner 回复 `<method_proposal>` 时的
 `proposal_wrong_block` 理由码与修复提示。
+
+---
+
+# 追加（P2.3j）：Grok 验收局 H-L3-C1-r1 的修复轮请求包与根评审 findings
+
+见同级目录 `../c1_repair_round/README.md`。来源 `runs/h-arm/episodes/H-L3-C1-r1/orchestrator/orchestrator.db`
+（`dispatch_intents` 的 ordinal 4 / 5 Planner 请求包、`HierarchicalRootReviewRejected` 与五条 `PlanningRejected` 载荷），
+SDK 0.12.2 候选 c7cfedd，模型 `grok-4.6`，提取日期 2026-09-17；本机路径已替换为 `<workspace>`。
+用途：`test_root_review_repair_library.py` 钉住「修复轮包方法库为空」的缺陷形状与修后形状。

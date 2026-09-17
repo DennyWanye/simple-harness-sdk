@@ -315,6 +315,11 @@ class SynthesisRequest:
     #: P2.3g: the codec's problems with the previous reply, when this is the second
     #: ask on the same anchor.  Empty on a first ask.
     schema_feedback: tuple[str, ...] = ()
+    #: P2.3j: why a method that *applied* is nevertheless not enough — the root
+    #: review rejected the result the adopted method produced, and these are the
+    #: reviewer's findings plus the rejected method's identity.  Its own field: a
+    #: review finding is not a decode problem, and the prompt says which is which.
+    review_feedback: tuple[str, ...] = ()
     output_tag: str = METHOD_PROPOSAL_TAG
     role_prompt_version: str = METHOD_SYNTHESIZER.prompt_version
     #: What the model may not write, stated *in* the request.  §18.5 refuses such a
@@ -330,6 +335,9 @@ class SynthesisRequest:
         )
         object.__setattr__(
             self, "schema_feedback", tuple(str(item) for item in self.schema_feedback)
+        )
+        object.__setattr__(
+            self, "review_feedback", tuple(str(item) for item in self.review_feedback)
         )
         if self.goal_type_ref is not None:
             object.__setattr__(self, "goal_type_ref", dict(self.goal_type_ref))
@@ -358,6 +366,7 @@ class SynthesisRequest:
             "goal_type_ref": None if self.goal_type_ref is None else dict(self.goal_type_ref),
             "method_shape": {key: list(value) for key, value in METHOD_SHAPE.items()},
             "schema_feedback": list(self.schema_feedback),
+            "review_feedback": list(self.review_feedback),
             "output_tag": self.output_tag,
             "role_prompt_version": self.role_prompt_version,
             "forbidden_fields": list(self.forbidden_fields),
@@ -415,6 +424,7 @@ class MethodSynthesizer:
         mission_id: str | None = None,
         domain: str | None = None,
         schema_feedback: Sequence[str] = (),
+        review_feedback: Sequence[str] = (),
     ) -> SynthesisRequest:
         """The typed context for "this compound goal has no usable method".
 
@@ -475,6 +485,7 @@ class MethodSynthesizer:
             ),
             goal_type_ref=None if goal_type is None else goal_type.to_json(),
             schema_feedback=tuple(schema_feedback),
+            review_feedback=tuple(review_feedback),
         )
 
     def goal_type_ref(self, signature: GoalSignature) -> VersionedRef | None:
@@ -626,6 +637,7 @@ def build_request(
     mission_id: str | None = None,
     domain: str | None = None,
     schema_feedback: Sequence[str] = (),
+    review_feedback: Sequence[str] = (),
 ) -> SynthesisRequest:
     """:meth:`MethodSynthesizer.build_request` for a caller that holds no synthesiser."""
 
@@ -637,6 +649,7 @@ def build_request(
         mission_id=mission_id,
         domain=domain,
         schema_feedback=schema_feedback,
+        review_feedback=review_feedback,
     )
 
 

@@ -87,6 +87,7 @@ from agent_orchestrator.planning.planner import (  # noqa: E402
 from agent_orchestrator.runtime.assembly import OrchestratorConfig  # noqa: E402
 from agent_orchestrator.runtime.output_blocks import BlockError, repair_hint  # noqa: E402
 from agent_orchestrator.runtime.role_templates import (  # noqa: E402
+    HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE,
     METHOD_PROPOSAL_TAG,
     METHOD_SYNTHESIZER,
     METHOD_SYNTHESIZER_V1,
@@ -643,9 +644,12 @@ def test_v4_never_tells_the_planner_to_propose_a_method_and_v3_keeps_its_bytes()
     )
     assert PLANNER_HIERARCHICAL_V4.prompt_version == PLANNER_HIERARCHICAL_V4_VERSION
     assert TEMPLATE_VERSIONS["planner"][PLANNER_HIERARCHICAL_V4_VERSION] is PLANNER_HIERARCHICAL_V4
-    assert PLANNER_HIERARCHICAL_V4_VERSION in hierarchical_planner_versions()
-    assert PLANNER_HIERARCHICAL_V3.prompt_version in hierarchical_planner_versions()
-    assert "return PLANNER_HIERARCHICAL_V4" in inspect.getsource(
+    # P2.3j: v3 and v4 stay registered (replayable) under package 2; the current
+    # package is 3, whose only prompt is v5, so the chooser's fallback moved with it.
+    assert PLANNER_HIERARCHICAL_V4_VERSION in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[2]
+    assert PLANNER_HIERARCHICAL_V3.prompt_version in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[2]
+    assert PLANNER_HIERARCHICAL_V4_VERSION not in hierarchical_planner_versions()
+    assert "return PLANNER_HIERARCHICAL_V5" in inspect.getsource(
         Orchestrator._hierarchical_planner_template
     )
 

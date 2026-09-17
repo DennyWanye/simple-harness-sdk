@@ -1,0 +1,91 @@
+{
+  "planning_attempt": 5,
+  "plan": {
+    "committed_primitives": [
+      {
+        "obligation_id": "obl-root",
+        "occurrence_id": "occ-0460b6ac29ae7085007b49e62070a744",
+        "requiredness": "required",
+        "task_id": "task-fad3014eb0bbf12a518c6a6acb554d6d"
+      },
+      {
+        "obligation_id": "obl-root",
+        "occurrence_id": "occ-48acb4bb570c602436d5af9186ac2315",
+        "requiredness": "required",
+        "task_id": "task-a6050c545d29c41c9715639366c5ef9c"
+      },
+      {
+        "obligation_id": "obl-root",
+        "occurrence_id": "occ-825c056864d5096c2610a9732e46a5b5",
+        "requiredness": "required",
+        "task_id": "task-83cc063d7c98e8d52b48757f96dfc7fb"
+      },
+      {
+        "obligation_id": "obl-root",
+        "occurrence_id": "occ-97bc03196c4751f185e4e26ae4644dc8",
+        "requiredness": "required",
+        "task_id": "task-978e980a641963cdecbef639fdc3912e"
+      },
+      {
+        "obligation_id": "obl-root",
+        "occurrence_id": "occ-a685b57a240c38df149b1f032252c137",
+        "requiredness": "required",
+        "task_id": "task-627153176ab719a8100f74e46dbf2a50"
+      },
+      {
+        "obligation_id": "obl-root",
+        "occurrence_id": "occ-e738eb6a450d7ea066b8c433c0042c48",
+        "requiredness": "required",
+        "task_id": "task-5eeb2b8652770f248dbef1b80adada62"
+      }
+    ],
+    "open_compound_goals": [],
+    "plan_revision": 1,
+    "required_obligations": [
+      "obl-root"
+    ],
+    "root_occurrences": [
+      "task-root"
+    ]
+  },
+  "method_library": [],
+  "applicability": [],
+  "planning_rejected": [
+    {
+      "detail": {
+        "proposal_id": "p-1-no-applicable",
+        "rationale": "no_applicable_method: observed facts refute code.test-is-failing and code.regression-commit-known, so fix-by-patch and both revert methods are inapplicable; applicability also reports NEEDS_EVIDENCE with missing TRUE authorisation for every library method."
+      },
+      "reason": "no_applicable_method"
+    },
+    {
+      "detail": {
+        "error": "method 'code.fix-by-patch' is NEEDS_EVIDENCE for task task-root; a method is grounded only where it applies (§7.2)"
+      },
+      "reason": "proposal_not_grounded"
+    },
+    {
+      "detail": {
+        "proposal_id": "p-3-empty-no-applicable",
+        "rationale": "no_applicable_method: every method in applicability is NEEDS_EVIDENCE (authorisation UNKNOWN, not TRUE); observed facts refute code.test-is-failing (required by fix-by-patch) and code.regression-commit-known (required by both revert methods); code.fix-by-reproduce-patch-verify-explain has no applica"
+      },
+      "reason": "no_applicable_method"
+    },
+    {
+      "detail": {
+        "findings": [
+          {
+            "detail": "Root criterion c-change-explained is not met. The designated summarize-review artifact (acc-a550f23c314b63350f7a5c280dcccc01, port summary) does not explain an applied changeset: it restates defects and recommended fixes, then states that metrics/collector.py and metrics/reporter.py were not modified, the five defects remain in source, no concurrency/window/NTP tests were added, and production fixes have not been written. That does not satisfy evidence_requirement “summarize-review summary of inspect-changeset findings explains what changed and why” (inspect-changeset findings had recorded lock/snapshot/window/rate/test changes). Other artifacts cannot be used to mark this criterion met.",
+            "severity": "blocker"
+          }
+        ],
+        "max_root_review_repairs": 1,
+        "package_id": "pkg-root-229debd2c2c4ec3171b79b136400470c",
+        "plan_revision": 1,
+        "repair_round": 1
+      },
+      "reason": "root_review_rejected"
+    }
+  ],
+  "package_version": "planner-package-hierarchical-v3"
+}

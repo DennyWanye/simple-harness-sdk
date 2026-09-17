@@ -1109,8 +1109,24 @@ def _merge(
     # left behind they would name occurrences the adopted plan no longer projects,
     # which the validator correctly reads as missing edges.
     orphaned = _orphaned_occurrences(current, retired, keep=adopted)
+    # P2.3j: the orphaned occurrences leave the network *with* the membership, not
+    # only their edges.  Left in, they would still be counted as live work — the
+    # commit side funds a revision against every occurrence the network names — and
+    # the retired instance would still bind slots to them, which is the shape the
+    # store's plan-preservation check (§9.4) already accounts for as "retired
+    # children".  The retired instance itself leaves too: a network is read back
+    # from the adopted memberships only, and a re-read that kept the instance
+    # would name occurrences the revision no longer holds.
+    kept_occurrences = tuple(
+        spec for spec in current.occurrences if spec.occurrence_id not in orphaned
+    )
+    orphaned_tasks = {
+        spec.task_id for spec in current.occurrences if spec.occurrence_id in orphaned
+    } - {spec.task_id for spec in kept_occurrences}
     bindings: list[TaskSemanticBindingV1] = []
     for binding in current.task_bindings:
+        if binding.task_id in orphaned_tasks:
+            continue
         if binding.task_id == parent_binding.task_id:
             bindings.append(_adopting(parent_binding, draft.instance_id))
             continue
@@ -1124,14 +1140,14 @@ def _merge(
     instances = [
         instance
         for instance in current.method_instances
-        if instance.instance_id != draft.instance_id
+        if instance.instance_id != draft.instance_id and instance.instance_id not in retired
     ]
     instances.append(draft)
     try:
         return TaskNetworkSnapshot(
             mission_id=current.mission_id,
             plan_revision=PlanRevision(int(current.plan_revision) + 1),
-            occurrences=(*current.occurrences, *occurrences),
+            occurrences=(*kept_occurrences, *occurrences),
             task_bindings=tuple(bindings),
             method_instances=tuple(instances),
             adopted_instance_ids=tuple(adopted),
@@ -1153,14 +1169,44 @@ def _merge(
                 ),
                 *data_requirements,
             ),
-            typed_edges=current.typed_edges,
-            obligation_coverage=(*current.obligation_coverage, *coverage),
+            typed_edges=tuple(
+                edge
+                for edge in current.typed_edges
+                if not _edge_names_any(edge, orphaned, orphaned_tasks, retired)
+            ),
+            obligation_coverage=(
+                *(
+                    claim
+                    for claim in current.obligation_coverage
+                    if not any(covered in orphaned for covered in claim.covered_by)
+                ),
+                *coverage,
+            ),
             required_obligations=current.required_obligations,
         )
     except ContractError as error:
         raise CompilationRefused(
             f"the increment does not merge into the current network: {error}"
         ) from error
+
+
+def _edge_names_any(
+    edge: Any,
+    occurrences: frozenset[OccurrenceId],
+    tasks: set[TaskRef],
+    instances: set[MethodInstanceId],
+) -> bool:
+    """Whether a typed edge touches anything the retirement removes."""
+
+    for side in (edge.source, edge.target):
+        kind = str(getattr(side.kind, "value", side.kind))
+        if kind == "occurrence" and OccurrenceId(side.id) in occurrences:
+            return True
+        if kind == "task" and TaskRef(side.id) in tasks:
+            return True
+        if kind == "method_instance" and MethodInstanceId(side.id) in instances:
+            return True
+    return False
 
 
 def _orphaned_occurrences(

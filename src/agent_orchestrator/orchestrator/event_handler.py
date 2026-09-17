@@ -223,7 +223,9 @@ logger = logging.getLogger("agent_orchestrator")
 #: rejection ledger is what ``_planning_rejections`` hands to the next proposal, so
 #: recording it here is what makes the reviewer's findings reach the Planner at all,
 #: and the per-revision bound is counted off the same rows.
-ROOT_REVIEW_REPAIR_REASON = "root_review_rejected"
+# P2.3j: the reason code now lives beside its reader (``rejected_refinements``); the
+# name is kept here so nothing that imported it from this module moves.
+from .hierarchical_dispatch import ROOT_REVIEW_REPAIR_REASON  # noqa: E402
 
 #: P2.3d / defect D2c.  The ``PlanningRejected`` reason for a proposal that *was*
 #: readable and was refused on its content — a method that is not grounded here, an
@@ -1956,6 +1958,10 @@ class Orchestrator:
                     "outstanding_obligations": outstanding,
                     "fingerprint": after,
                     "confirmed_after_one_more_cycle": True,
+                    # P2.3j: a Mission that idles *because* its root review rejected the
+                    # plan and every repair route is spent says so here, rather than
+                    # leaving "no dispatchable work" to be read as a scheduling problem.
+                    **self._root_review_stop_detail(mission, new_mode),
                 },
             )
             self._note(
@@ -2142,11 +2148,23 @@ class Orchestrator:
             goals = new_mode.goals_needing_method(mission.id)
         except (GraphIntegrityError, ContractError):
             return False
+        # P2.3j: a goal whose adopted method the root review rejected is asked about in
+        # its *own* round — ``plan_revision + 1`` — with the reviewer's findings, once per
+        # rejected revision; the pre-plan round (1) keeps its key and its bound.
+        rejected = {
+            item.goal_id: item for item in new_mode.rejected_refinements(mission.id)
+        }
         progressed = False
         for goal_task_id in goals:
-            if new_mode.synthesis_round_recorded(mission.id, goal_task_id):
+            rejection = rejected.get(str(goal_task_id))
+            synthesis_round = 1 if rejection is None else int(rejection.plan_revision) + 1
+            if new_mode.synthesis_round_recorded(
+                mission.id, goal_task_id, synthesis_round=synthesis_round
+            ):
                 continue
-            subject = self._synthesizer_subject(mission.id, goal_task_id, ordinal=1)
+            subject = self._synthesizer_subject(
+                mission.id, goal_task_id, ordinal=1, synthesis_round=synthesis_round
+            )
             if self.store.get_intent_for_subject(subject) is not None:
                 # P2.3e (H-L3-C1, three identical episodes).  The round is out and the
                 # goal stays in ``goals_needing_method`` until its answer is recorded, so
@@ -2159,18 +2177,87 @@ class Orchestrator:
                 # them.  Asking once is the bound; waiting is not progress.
                 continue
             try:
-                await self._create_synthesizer_intent(mission.id, goal_task_id, ordinal=1)
+                await self._create_synthesizer_intent(
+                    mission.id,
+                    goal_task_id,
+                    ordinal=1,
+                    synthesis_round=synthesis_round,
+                    review_feedback=(
+                        () if rejection is None else self._review_feedback_for(rejection)
+                    ),
+                )
             except (ContractError, CommitRejected, BudgetError) as error:
                 self._note(f"method synthesis for {goal_task_id} not requested: {error}")
                 continue
+            self._note(
+                f"mission {mission.id}: method synthesis round {synthesis_round} requested for "
+                f"{goal_task_id}"
+                + ("" if rejection is None else " (after a root review rejection)")
+            )
             progressed = True
         return progressed
 
     @staticmethod
-    def _synthesizer_subject(mission_id: str, goal_task_id: str, *, ordinal: int) -> str:
-        """The MethodSynthesizer intent's subject — its creation key and its identity."""
+    def _review_feedback_for(rejection: Any) -> tuple[str, ...]:
+        """The root review's findings, in the shape the synthesiser's request carries.
 
-        return f"{mission_id}:synthesizer:{goal_task_id}:{ordinal}"
+        References and the reviewer's own words only: which method instance was
+        adopted, on which revision, what the review package was, and each finding
+        verbatim (bounded).  No paraphrase and no diagnosis — the synthesiser is the
+        one being asked what a different method would look like.
+        """
+
+        reference = rejection.method_ref
+        lines = [
+            f"root review rejected the adopted method {reference.method_id}@"
+            f"{int(reference.version)} (method instance {rejection.method_instance_id}, plan "
+            f"revision {int(rejection.plan_revision)}, review package "
+            f"{rejection.review_package_id}); every leaf of that method had been accepted "
+            "and the MISSION_FINAL review still rejected the composed result"
+        ]
+        for finding in list(rejection.findings)[:8]:
+            severity = str(finding.get("severity", "")) or "finding"
+            criterion = str(finding.get("criterion_id", "") or "")
+            detail = str(finding.get("detail", ""))[:1200]
+            lines.append(
+                f"{severity}" + (f" on {criterion}" if criterion else "") + f": {detail}"
+            )
+        return tuple(lines)
+
+    @staticmethod
+    def _carried_review_feedback(intent: DispatchIntent) -> tuple[str, ...]:
+        """The ``review_feedback`` a synthesis intent's request carried, for its retry.
+
+        Read back from the sealed request rather than recomputed, so the second ask
+        (P2.3g's structured retry) puts exactly the same question with the codec's
+        problems added — and a request that carried none yields none.
+        """
+
+        message = intent.config.get("message")
+        if not isinstance(message, Mapping):
+            return ()
+        try:
+            payload = json.loads(str(message.get("content", "")))
+        except (TypeError, ValueError):
+            return ()
+        if not isinstance(payload, Mapping):
+            return ()
+        return tuple(str(item) for item in payload.get("review_feedback", ()) or ())
+
+    @staticmethod
+    def _synthesizer_subject(
+        mission_id: str, goal_task_id: str, *, ordinal: int, synthesis_round: int = 1
+    ) -> str:
+        """The MethodSynthesizer intent's subject — its creation key and its identity.
+
+        P2.3j: round 1 keeps its exact spelling; a round opened after a root review
+        rejection (``synthesis_round = plan_revision + 1``) has its own, so it is a
+        different intent with its own idempotency.
+        """
+
+        if int(synthesis_round) <= 1:
+            return f"{mission_id}:synthesizer:{goal_task_id}:{ordinal}"
+        return f"{mission_id}:synthesizer:{goal_task_id}:round:{int(synthesis_round)}:{ordinal}"
 
     # ------------------------------------------------------------- planning
     def _prune_deferred(self) -> None:
@@ -2547,6 +2634,10 @@ class Orchestrator:
             read_item=_SemanticReadSetChecker(
                 self.store, new_mode.semantics(), mission_id=mission.id
             ).read_item,
+            # P2.3j: the occurrences whose adopted method the root review rejected —
+            # the goal a repair round is *about*, which ``open_compound_goals`` cannot
+            # list because it is refined.  Empty on every ordinary round.
+            rejected_refinements_of=new_mode.rejected_refinements(mission.id),
         )
         return _seal(package)
 
@@ -2572,7 +2663,7 @@ class Orchestrator:
         """
 
         from ..runtime.role_templates import (
-            PLANNER_HIERARCHICAL_V4,
+            PLANNER_HIERARCHICAL_V5,
             hierarchical_planner_versions,
         )
 
@@ -2585,7 +2676,9 @@ class Orchestrator:
         # P2.3g: v4 is v3 minus the sentence that told the Planner to write a
         # ``<method_proposal>`` when no method applied; same package, so a pin on v3
         # still selects v3 above and the unpinned default is v4.
-        return PLANNER_HIERARCHICAL_V4
+        # P2.3j: package v4 carries ``rejected_refinements``; v5 is the only prompt
+        # written against it, so it is the default and the only pin honoured here.
+        return PLANNER_HIERARCHICAL_V5
 
     def _hierarchical_worker_template(self, role: Any, mission_id: str) -> Any:
         """The Worker prompt that knows about output ports (part 2d, decision 4).
@@ -2770,8 +2863,16 @@ class Orchestrator:
         *,
         ordinal: int,
         schema_feedback: Sequence[str] = (),
+        synthesis_round: int = 1,
+        review_feedback: Sequence[str] = (),
     ) -> DispatchIntent:
         """The MethodSynthesizer's own dispatch (§7.3 source 4, §18.5 C8, §13 v1.4).
+
+        P2.3j: ``synthesis_round`` / ``review_feedback`` are the round opened after a
+        root review rejected the adopted method (``_request_method_synthesis``); the
+        round number rides in the intent's config so the collector records the
+        outcome under the right key, and the findings ride in the request as their
+        own field.
 
         A **new role**, not a new version of an existing one, and that shows in three
         places rather than one:
@@ -2789,7 +2890,7 @@ class Orchestrator:
         fixed at ``MODEL``.
         """
 
-        from ..runtime.role_templates import METHOD_SYNTHESIZER
+        from ..runtime.role_templates import METHOD_SYNTHESIZER_V3
 
         mission = self.store.get_mission(mission_id)
         assert mission is not None
@@ -2800,9 +2901,14 @@ class Orchestrator:
                 "Mission has no method library to extend (§18.5 rule 1)"
             )
         request = new_mode.synthesis_request(
-            mission_id, goal_task_id, schema_feedback=tuple(schema_feedback)
+            mission_id,
+            goal_task_id,
+            schema_feedback=tuple(schema_feedback),
+            review_feedback=tuple(review_feedback),
         )
-        template = self._template(METHOD_SYNTHESIZER, mission_id)
+        # P2.3j: v3 is v2 plus the sentence that says what ``review_feedback`` is; a
+        # deployment pinned to v1/v2 still gets its pin through ``_template``.
+        template = self._template(METHOD_SYNTHESIZER_V3, mission_id)
         decision = self._route_service("planner", mission_id)
         config = AgentConfig(
             name=f"method-synthesizer-{ordinal}",
@@ -2820,7 +2926,9 @@ class Orchestrator:
             ),
         )
         message = user_message_json(json.dumps(request.to_json(), ensure_ascii=False))
-        subject = self._synthesizer_subject(mission_id, goal_task_id, ordinal=ordinal)
+        subject = self._synthesizer_subject(
+            mission_id, goal_task_id, ordinal=ordinal, synthesis_round=synthesis_round
+        )
         return self.commit.create_service_intent(
             kind="plan",
             subject_id=subject,
@@ -2841,6 +2949,7 @@ class Orchestrator:
                 "role": "method_synthesizer",
                 "budget_account": str(ReviewAccount.MISSION_PLANNING),
                 "goal_task_id": str(goal_task_id),
+                "synthesis_round": int(synthesis_round),
                 **self._service_config(decision),
             },
             reservation=self._reservation(self._config.planner_reserve_tokens, decision.profile_id),
@@ -4004,6 +4113,10 @@ class Orchestrator:
         new_mode = self._new_mode(mission)
         goal_task_id = str(intent.config.get("goal_task_id", ""))
         ordinal = int(intent.config.get("ordinal", 1))
+        # P2.3j: which round this is (1 = pre-plan; n = after the root review rejected
+        # the method adopted on revision n-1).  Read off the intent so the record and
+        # the retry stay on the round the request was opened for.
+        synthesis_round = int(intent.config.get("synthesis_round", 1) or 1)
         if new_mode is None:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
@@ -4039,6 +4152,8 @@ class Orchestrator:
                         goal_task_id,
                         ordinal=ordinal + 1,
                         schema_feedback=synthesis_schema_feedback(unreadable),
+                        synthesis_round=synthesis_round,
+                        review_feedback=self._carried_review_feedback(intent),
                     )
                 except (ContractError, CommitRejected, BudgetError, RoutingUnavailable) as refused:
                     # No second ask could be opened: the round concludes on the reply
@@ -4061,6 +4176,7 @@ class Orchestrator:
             verdict=verdict,
             author=str(RegistryAuthor.MODEL),
             asks=ordinal,
+            synthesis_round=synthesis_round,
         )
         self._note(
             f"method synthesis for {goal_task_id}: "
@@ -7097,6 +7213,23 @@ class Orchestrator:
             )
             return False
         ordinal = self._next_planning_ordinal(mission.id)
+        # P2.3j: *which* adopted instance the review rejected, written into the record
+        # the round is opened from.  The package's ``rejected_refinements`` and the
+        # synthesis judgment both read it back (``rejected_refinements``), so the
+        # repair round is about a named instance and not about "the root, somehow".
+        rejected: dict[str, Any] = {}
+        try:
+            network = new_mode.network(mission.id)
+            root = network.root_occurrence_ids[0] if network.root_occurrence_ids else None
+            adopted = None if root is None else network.adopted_instance_for(root)
+            if adopted is not None:
+                rejected = {
+                    "occurrence_id": str(root),
+                    "method_instance_id": str(adopted.instance_id),
+                    "method_ref": adopted.method_ref.to_json(),
+                }
+        except (GraphIntegrityError, ContractError, StoreError, KeyError):
+            rejected = {}
         self.commit.record_planning_rejected(
             mission.id,
             ordinal=ordinal,
@@ -7112,6 +7245,7 @@ class Orchestrator:
                 "repair_round": used + 1,
                 "max_root_review_repairs": int(self._config.max_root_review_repairs),
                 "findings": blocking[:16],
+                **rejected,
             },
         )
         self._note(
@@ -7145,6 +7279,48 @@ class Orchestrator:
             and event.payload.get("reason") == ROOT_REVIEW_REPAIR_REASON
             and int((event.payload.get("detail") or {}).get("plan_revision", -1)) == int(revision)
         )
+
+    def _root_review_stop_detail(
+        self, mission: Mission, new_mode: HierarchicalDispatch
+    ) -> dict[str, Any]:
+        """What the stop report says about the root review, when it is why (P2.3j).
+
+        Empty when the review is not in a rejected or budget-spent state — an idle
+        Mission whose root review never ran has nothing to say here.  Otherwise the
+        status, the package, the findings the reviewer filed, and how many repair
+        rounds this revision spent: the reason is ``root_review_rejected``, the same
+        code the repair record carries, so one grep finds both.
+        """
+
+        from .root_review import RootReviewStatus
+
+        try:
+            state = self._root_review(mission, new_mode).state(mission.id)
+        except (GraphIntegrityError, ContractError, StoreError):
+            return {}
+        if state.status not in {
+            RootReviewStatus.REVIEW_REJECTED,
+            RootReviewStatus.CUT_BUDGET_SPENT,
+        }:
+            return {}
+        package = getattr(state, "package", None)
+        package_id = "" if package is None else str(package.package_id)
+        active = new_mode.semantics().active_plan_revision(mission.id)
+        revision = 0 if active is None else int(active.revision)
+        return {
+            "root_review": {
+                "reason": ROOT_REVIEW_REPAIR_REASON,
+                "status": str(state.status),
+                "package_id": package_id,
+                "plan_revision": revision,
+                "repairs_used": self._root_review_repairs(mission.id, revision),
+                "max_root_review_repairs": int(self._config.max_root_review_repairs),
+                "findings": self._root_review_findings(mission.id, package_id)[:16]
+                if package_id
+                else [],
+                "detail": str(state.detail)[:600],
+            }
+        }
 
     def _next_planning_ordinal(self, mission_id: str) -> int:
         """One past the highest ordinal any planning round of this Mission has used.

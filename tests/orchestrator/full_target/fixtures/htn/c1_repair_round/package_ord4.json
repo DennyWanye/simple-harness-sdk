@@ -1,0 +1,335 @@
+{
+  "planning_attempt": 4,
+  "plan": {
+    "committed_primitives": [],
+    "open_compound_goals": [
+      {
+        "capability_requirements": [],
+        "contract_revision": 1,
+        "goal_id": "task-root",
+        "goal_signature_id": "code.fix-failing-test",
+        "obligation_id": "obl-root",
+        "occurrence_id": "task-root",
+        "requiredness": "required",
+        "requirement_refs": [
+          "c-test-passes",
+          "c-change-explained"
+        ],
+        "statement": "make the named failing test pass and explain the change",
+        "typed_parameters": {
+          "failing_test": "tests/test_public_collector.py",
+          "repository": "<workspace>"
+        }
+      }
+    ],
+    "plan_revision": 0,
+    "required_obligations": [
+      "obl-root"
+    ],
+    "root_occurrences": [
+      "task-root"
+    ]
+  },
+  "method_library": [
+    {
+      "goal_signature_id": "code.fix-failing-test",
+      "method_id": "code.fix-by-assessed-revert",
+      "method_ref": {
+        "content_hash": "bcad4ee9fa646ba68cac362ec5841d8be9080238440a5f7837eac09d1ca0cb8f",
+        "method_id": "code.fix-by-assessed-revert",
+        "version": 2
+      },
+      "parameter_schema_ref": "code.repo-params",
+      "refine_method_ref": {
+        "content_hash": "bcad4ee9fa646ba68cac362ec5841d8be9080238440a5f7837eac09d1ca0cb8f",
+        "id": "code.fix-by-assessed-revert",
+        "version": 2
+      },
+      "registry_status": "UNKNOWN",
+      "required_capabilities": [],
+      "steps": [
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "repo.read"
+          ],
+          "step": "facts",
+          "task_type_ref": "code.read-repository-facts"
+        },
+        {
+          "form": "compound",
+          "required_capabilities": [],
+          "step": "assess",
+          "task_type_ref": "code.assess-regression"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "repo.write"
+          ],
+          "step": "revert",
+          "task_type_ref": "code.revert-commit"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "tests.run"
+          ],
+          "step": "verify",
+          "task_type_ref": "code.verify-tests"
+        }
+      ]
+    },
+    {
+      "goal_signature_id": "code.fix-failing-test",
+      "method_id": "code.fix-by-patch",
+      "method_ref": {
+        "content_hash": "813c6a9dc83727dda43ec7002c0382748bb2e9f991cd2df886a076e14a00b503",
+        "method_id": "code.fix-by-patch",
+        "version": 2
+      },
+      "parameter_schema_ref": "code.repo-params",
+      "refine_method_ref": {
+        "content_hash": "813c6a9dc83727dda43ec7002c0382748bb2e9f991cd2df886a076e14a00b503",
+        "id": "code.fix-by-patch",
+        "version": 2
+      },
+      "registry_status": "UNKNOWN",
+      "required_capabilities": [],
+      "steps": [
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "repo.read"
+          ],
+          "step": "facts",
+          "task_type_ref": "code.read-repository-facts"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "tests.run"
+          ],
+          "step": "reproduce",
+          "task_type_ref": "code.reproduce-failure"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "repo.write"
+          ],
+          "step": "patch",
+          "task_type_ref": "code.apply-patch"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "tests.run"
+          ],
+          "step": "verify",
+          "task_type_ref": "code.verify-tests"
+        }
+      ]
+    },
+    {
+      "goal_signature_id": "code.fix-failing-test",
+      "method_id": "code.fix-by-reproduce-patch-verify-explain",
+      "method_ref": {
+        "content_hash": "48aef554b4503df7d67661ff004779f3d729d1b274cf563f8baf6068b605e4fc",
+        "method_id": "code.fix-by-reproduce-patch-verify-explain",
+        "version": 1
+      },
+      "parameter_schema_ref": "code.repo-params",
+      "refine_method_ref": {
+        "content_hash": "48aef554b4503df7d67661ff004779f3d729d1b274cf563f8baf6068b605e4fc",
+        "id": "code.fix-by-reproduce-patch-verify-explain",
+        "version": 1
+      },
+      "registry_status": "UNKNOWN",
+      "required_capabilities": [
+        "repo.read",
+        "repo.write",
+        "tests.run"
+      ],
+      "steps": [
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "repo.read"
+          ],
+          "step": "read-facts",
+          "task_type_ref": "code.read-repository-facts"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "tests.run"
+          ],
+          "step": "reproduce",
+          "task_type_ref": "code.reproduce-failure"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "repo.write"
+          ],
+          "step": "apply-patch",
+          "task_type_ref": "code.apply-patch"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "tests.run"
+          ],
+          "step": "verify",
+          "task_type_ref": "code.verify-tests"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "repo.read"
+          ],
+          "step": "inspect",
+          "task_type_ref": "code.inspect-changeset"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "repo.read"
+          ],
+          "step": "summarize",
+          "task_type_ref": "code.summarize-review"
+        }
+      ]
+    },
+    {
+      "goal_signature_id": "code.fix-failing-test",
+      "method_id": "code.fix-by-revert",
+      "method_ref": {
+        "content_hash": "a83add6652afb28692355d8ef5efee0742779e5cc2e2bb54df74e51409554e8e",
+        "method_id": "code.fix-by-revert",
+        "version": 2
+      },
+      "parameter_schema_ref": "code.repo-params",
+      "refine_method_ref": {
+        "content_hash": "a83add6652afb28692355d8ef5efee0742779e5cc2e2bb54df74e51409554e8e",
+        "id": "code.fix-by-revert",
+        "version": 2
+      },
+      "registry_status": "UNKNOWN",
+      "required_capabilities": [],
+      "steps": [
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "repo.read"
+          ],
+          "step": "facts",
+          "task_type_ref": "code.read-repository-facts"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "repo.write"
+          ],
+          "step": "revert",
+          "task_type_ref": "code.revert-commit"
+        },
+        {
+          "form": "primitive",
+          "required_capabilities": [
+            "tests.run"
+          ],
+          "step": "verify",
+          "task_type_ref": "code.verify-tests"
+        }
+      ]
+    }
+  ],
+  "applicability": [
+    {
+      "conflicting_preconditions": [],
+      "goal_occurrence_id": "task-root",
+      "goal_signature_id": "code.fix-failing-test",
+      "method_ref": {
+        "content_hash": "bcad4ee9fa646ba68cac362ec5841d8be9080238440a5f7837eac09d1ca0cb8f",
+        "method_id": "code.fix-by-assessed-revert",
+        "version": 2
+      },
+      "missing_authority": [
+        "authorisation requires TRUE, not UNKNOWN"
+      ],
+      "missing_capabilities": [],
+      "parameter_problems": [],
+      "precondition_truth": "UNKNOWN",
+      "unknown_preconditions": [
+        "code.regression-commit-known@1#78773c94ea2e0f47b49a028c41476b8e",
+        "code.test-is-failing@1#ee1e8a03606ec2819f8b6f7a3a1f135f"
+      ],
+      "verdict": "NEEDS_EVIDENCE"
+    },
+    {
+      "conflicting_preconditions": [],
+      "goal_occurrence_id": "task-root",
+      "goal_signature_id": "code.fix-failing-test",
+      "method_ref": {
+        "content_hash": "813c6a9dc83727dda43ec7002c0382748bb2e9f991cd2df886a076e14a00b503",
+        "method_id": "code.fix-by-patch",
+        "version": 2
+      },
+      "missing_authority": [
+        "authorisation requires TRUE, not UNKNOWN"
+      ],
+      "missing_capabilities": [],
+      "parameter_problems": [],
+      "precondition_truth": "UNKNOWN",
+      "unknown_preconditions": [
+        "code.test-is-failing@1#ee1e8a03606ec2819f8b6f7a3a1f135f"
+      ],
+      "verdict": "NEEDS_EVIDENCE"
+    },
+    {
+      "conflicting_preconditions": [],
+      "goal_occurrence_id": "task-root",
+      "goal_signature_id": "code.fix-failing-test",
+      "method_ref": {
+        "content_hash": "a83add6652afb28692355d8ef5efee0742779e5cc2e2bb54df74e51409554e8e",
+        "method_id": "code.fix-by-revert",
+        "version": 2
+      },
+      "missing_authority": [
+        "authorisation requires TRUE, not UNKNOWN"
+      ],
+      "missing_capabilities": [],
+      "parameter_problems": [],
+      "precondition_truth": "UNKNOWN",
+      "unknown_preconditions": [
+        "code.regression-commit-known@1#78773c94ea2e0f47b49a028c41476b8e"
+      ],
+      "verdict": "NEEDS_EVIDENCE"
+    }
+  ],
+  "planning_rejected": [
+    {
+      "detail": {
+        "proposal_id": "p-1-no-applicable",
+        "rationale": "no_applicable_method: observed facts refute code.test-is-failing and code.regression-commit-known, so fix-by-patch and both revert methods are inapplicable; applicability also reports NEEDS_EVIDENCE with missing TRUE authorisation for every library method."
+      },
+      "reason": "no_applicable_method"
+    },
+    {
+      "detail": {
+        "error": "method 'code.fix-by-patch' is NEEDS_EVIDENCE for task task-root; a method is grounded only where it applies (§7.2)"
+      },
+      "reason": "proposal_not_grounded"
+    },
+    {
+      "detail": {
+        "proposal_id": "p-3-empty-no-applicable",
+        "rationale": "no_applicable_method: every method in applicability is NEEDS_EVIDENCE (authorisation UNKNOWN, not TRUE); observed facts refute code.test-is-failing (required by fix-by-patch) and code.regression-commit-known (required by both revert methods); code.fix-by-reproduce-patch-verify-explain has no applica"
+      },
+      "reason": "no_applicable_method"
+    }
+  ],
+  "package_version": "planner-package-hierarchical-v3"
+}

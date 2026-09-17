@@ -1,0 +1,17 @@
+{
+  "code": "root_review_not_accepted",
+  "criteria": {
+    "c-change-explained": "FAIL",
+    "c-test-passes": "PASS"
+  },
+  "findings": [
+    {
+      "detail": "Root criterion c-change-explained is not met. The designated summarize-review artifact (acc-a550f23c314b63350f7a5c280dcccc01, port summary) does not explain an applied changeset: it restates defects and recommended fixes, then states that metrics/collector.py and metrics/reporter.py were not modified, the five defects remain in source, no concurrency/window/NTP tests were added, and production fixes have not been written. That does not satisfy evidence_requirement “summarize-review summary of inspect-changeset findings explains what changed and why” (inspect-changeset findings had recorded lock/snapshot/window/rate/test changes). Other artifacts cannot be used to mark this criterion met.",
+      "severity": "blocker"
+    }
+  ],
+  "package_id": "pkg-root-229debd2c2c4ec3171b79b136400470c",
+  "record_id": "rec-root-e04aeec4a4d908f36841da4269905543",
+  "requirements_revision": 7,
+  "verdict": "REJECTED"
+}

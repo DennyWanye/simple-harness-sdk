@@ -907,6 +907,25 @@ class PlanCommitsMixin:
             revoked[task_id] = int(superseded.dispatch_generation)
         return revoked
 
+    def _held_by_retired_row(self, task: Any) -> int:
+        """What a Task row the active plan no longer names still holds (P2.3j).
+
+        Its settled usage plus whatever is still reserved on it — never more than its
+        ceiling, and the ceiling itself when the account cannot be read (a row opened
+        before accounts existed, or one this ledger does not know): counting *more*
+        is the conservative failure, counting less would grant the same tokens twice.
+        """
+
+        from .commit_service import task_account
+
+        ceiling = int(task.budget.max_tokens or 0)
+        try:
+            snapshot = self._ledger.account(task_account(task.id))
+        except BudgetError:
+            return ceiling
+        held = int(snapshot.reserved_tokens) + int(snapshot.settled_tokens)
+        return max(0, min(ceiling, held))
+
     @staticmethod
     def _retired_children(semantics: HtnStore, command: CommitPlanCommand) -> set[str]:
         found: set[str] = set()
@@ -1227,7 +1246,23 @@ class PlanCommitsMixin:
         # network names: an occurrence a previous revision retired still holds the
         # account it was opened with, and leaving it out of the equation would let the
         # same tokens be granted twice.
-        committed = sum(int(task.budget.max_tokens or 0) for task in stored)
+        #
+        # P2.3j: *holds* is read from the account for a row this network no longer
+        # contains.  A retired occurrence's row keeps its ceiling as history, but
+        # what it can never give back is only what it used or still has reserved;
+        # counting the whole ceiling meant a Mission whose first plan had shared the
+        # pool out over its leaves could not fund any replacement at all — the
+        # rejected branch held every token it had never spent, and the repair round's
+        # replacement was refused ``BUDGET_INSUFFICIENT`` (H-L3-C1-r1's shape: six
+        # accepted leaves holding the entire pool).  A row the network still names is
+        # counted at its ceiling as before, because it can still draw on it.
+        named = {str(spec.task_id) for spec in network.occurrences}
+        committed = sum(
+            int(task.budget.max_tokens or 0)
+            if task.id in named
+            else self._held_by_retired_row(task)
+            for task in stored
+        )
         for spec in sorted(network.occurrences, key=lambda item: str(item.occurrence_id)):
             task_id = str(spec.task_id)
             current = self._store.get_task(task_id)

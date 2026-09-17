@@ -3131,6 +3131,153 @@ Planner 的 `planner-hierarchical-v1` 原文写着「如果当前目标缺一个
 - P2-5：`excerpt_of` 经 `read_verified` 整文件读入再截断（哈希复核需要全量）；可用 `artifact.size_bytes` 预筛，超过阈值直接
   `omitted` + size。
 
+## 2l. P2.3j：根评审 REJECT 之后的修复轮方法库（2026-09-17，分支 `p2.3j-repair-round-library`，基 `c7cfedd` = 0.12.2 候选）
+
+### 现象（真实 Grok 局 `H-L3-C1-r1`，只读证据；`H-L3-C2-r0` 第二条佐证）
+
+`H-L3-C1-r1`：合成一问 TRIAL_ADMITTED → revision 1（`code.fix-by-patch@2`）→ 六叶 COMPLETED、六端口齐全 →
+根评审 REJECTED（`c-change-explained FAIL` / `c-test-passes PASS`，一条 blocker finding）→
+`PlanningRejected{ordinal 4, root_review_rejected}`（D5-A 修复分支）→ **ordinal 5 修复轮的 Planner 包
+`method_library: []` / `applicability: []` / `open_compound_goals: []` / `committed_primitives: 6`** →
+Planner 只能答 `no_applicable_method`（rationale 原话「method_library is empty and applicability is empty…」）→
+`hierarchical_no_dispatchable_work` 空转结束。ordinal 1–4 的包里 method_library 有 3–4 条、applicability 3 条、
+open goal 是 task-root；同一 Mission 到 ordinal 5 全空。原包与记录逐字节（去标识、路径改 `<workspace>`）存为夹具
+`tests/orchestrator/full_target/fixtures/htn/c1_repair_round/`（`package_ord4.json` / `package_ord5.json` /
+`root_review_rejected.json` / `planning_rejected.json`，来源见其 `README.md` 与 `fixtures/htn/replies/SOURCE.md`）。
+
+`H-L3-C2-r0` 与之**完全同形**：合成一问 TRIAL_ADMITTED（同一 method_id）→ revision 1 → 6 叶 COMPLETED →
+根评审 REJECTED（这次是 `c-test-passes FAIL`）→ `PlanningRejected{ordinal 3, root_review_rejected}` →
+ordinal 4 修复轮包 `method_library []` / `applicability []` → `no_applicable_method` → 空转，292K token。
+两局的 findings 分别指向 `c-change-explained` 与 `c-test-passes`——同一个方法两次以不同准则被拒，说明修复轮需要的
+不是「换个 Worker 再试」而是**换方法或补步骤**（例如带「先写一条会失败的测试」步骤的方法）；而修复轮恰恰
+被给了一个没有任何方法可选的包。
+
+### 根因（一句话）
+
+Planner 包的 `method_library` / `applicability` 只按 `open_goals(network)` 取——即**尚未细化**的 compound
+occurrence——而根评审拒绝时根 occurrence 已被 revision 1 细化（adopted instance 在位），所以修复轮的包里
+open goal 为空、库为空；D5-A 的修复分支只写了 `PlanningRejected{root_review_rejected}` 就开 Planner 轮，
+既没告诉 Planner 「哪个 occurrence 的哪个方法被拒、为什么」，也没有把「被拒」当作需要新方法的信号交给合成判断
+（`goals_needing_method` 同样只看 open goals）。三处「按契约正确」的读法在这一点上合成了一个空包。
+
+### 能做 / 不能做（与契约边界）
+
+**契约不改**（`contracts/` 零改动）。§9.1 决策表「方法前提被推翻 → 暂停该 MethodInstance，选择替代方法」
+所需的操作 `RetireMethodOperation` 与编译器 `compile_refinement_bundle(retire_instance_ids=…)`、commit 侧的
+`_check_preserves_plan`（retired children 视为已交代的删除）/ `_check_alternatives_are_method_instances` /
+`_revoke_dispatch(RunningWorkPolicy)` / `_withdraw_retired_demands` 在 0.12.2 里都已经存在；缺的是
+Planner 侧的编排：包里没有信息、`compile_proposal` 只收「恰好一个 refine」、合成判断不认「被拒」。
+
+修复后修复轮能做的：
+
+1. **包重新给出根 occurrence 的方法库与适用性**（`planner_package.hierarchical_planner_package(rejected_refinements_of=…)`）：
+   `method_library` 按 open goals ∪ 被拒 occurrence 的 goal_signature 取（种子 + 已准入的合成方法），每条加
+   `rejected_by_root_review: bool`；`applicability` 对被拒 occurrence 重新评估、排除被拒 method_ref
+   （`HierarchicalDispatch.method_applicability`）；新段 `rejected_refinements[]`（occurrence / goal / obligation /
+   signature / `rejected_method_instance_id` / `rejected_method_ref` / plan_revision / review_package_id /
+   findings（上限 8 条、每条 1200 字）/ requiredness / statement / typed_parameters / requirement_refs /
+   contract_revision / repair_round）。包版本 `planner-package-hierarchical-v4`、`HIERARCHICAL_PLANNER_PACKAGE_VERSION = 3`。
+   「被拒」来自**系统写的**持久记录 `PlanningRejected{root_review_rejected}`（detail 现多带 `occurrence_id` /
+   `method_instance_id` / `method_ref`），只对仍 ADOPTED 在当前 revision 上的 instance 生效（`rejected_refinements(mission_id)`）。
+2. **Planner 用既有操作换方法**：`compile_proposal` 现接受「恰好一个 `refine` + 至多一个 `retire_method`」，
+   `retire_method.method_instance_id` 必须正是被 refine 的 occurrence 上 ADOPTED 的那个（否则 `CompilationRefused`）；
+   裸 `retire_method`、或对已细化目标不 retire 直接 refine 仍拒。编译走 `retire_instance_ids`，
+   `build_command` 在 delta 有 retirement 时由系统置 `running_work_policy=REQUEST_STOP_THEN_RECONCILE`（不让模型选）。
+   同一 revision 内完成「退旧方法 + 上新方法」，被拒方法的六个叶子随 membership 离开网络（TG §9.3）。
+3. **Planner 声明无方法 → 带 findings 的新合成轮**：`goals_needing_method` 把被拒 occurrence 视为需要新方法，
+   但只在 `repair_round_answered`（修复轮的 Planner 已答、且没有产生新 revision）之后，避免与修复轮抢先；
+   候选数按「排除被拒方法」计（`candidates - 1`），I18「系统判、模型不判」不放松。合成轮编号
+   `synthesis_round = plan_revision + 1`，意图键 `{mission}:synthesizer:{goal}:round:{n}:{ordinal}`、
+   `MethodSynthesisRoundRecorded` 键 `{mission}:{goal}:round:{n}`（round 1 键与载荷键不变，只多 `synthesis_round` 字段），
+   请求多一个字段 `review_feedback`（`SynthesisRequest.review_feedback`，不是 schema_feedback），
+   合成器提示词 `method-synthesizer-v3`（v2 保留）说明「必须不同于被拒方法、要回答 findings，例如先写一条会失败的测试」。
+   准入后照常 `_after_synthesis_round` 开 Planner 轮 → 新 revision。
+4. **有界与诚实停止**：修复轮次数仍受 `max_root_review_repairs`（每 plan_revision，默认 1）约束，合成受既有
+   `max_synthesis_rounds` / 证据饱和约束；停在 `hierarchical_no_dispatchable_work` 时，`fail_mission` 的 detail 多一块
+   `root_review{reason: root_review_rejected, status, package_id, plan_revision, repairs_used, max_root_review_repairs, findings}`
+   （`_root_review_stop_detail`，只在 REVIEW_REJECTED / CUT_BUDGET_SPENT 时出现）。
+
+修复后仍**不能**做的：
+
+- 不能「补步骤」——契约没有「在既有 MethodInstance 上追加子步骤」的操作，只能换方法（种子或合成）；「补步骤」
+  的表达方式是合成一个含该步骤的新方法（v3 提示词已点名）。
+- 被拒历史不跨修订累计：`rejected_refinements` 只标当前 revision 上仍 ADOPTED 的被拒实例；替换方法再被拒时，
+  第二个修复轮只标第二个方法，第一个被拒方法会重新作为候选出现在库里（默认 `max_root_review_repairs=1` 下走不到这一步）。
+- Planner 只能在**同一** `refine` 里退一个实例；不能一次退多个、也不能退非被 refine occurrence 上的实例。
+- 修复轮不重跑叶子验收、不改根评审员的判词；根评审 ACCEPT 仍是新 revision 全部叶子 COMPLETED 之后的重评审。
+
+### 顺手修的两个潜在缺陷（任何修复轮都会踩）
+
+- `compile_proposal` 把 read-set 的 requirements 修订钉在编译器默认 0；根评审前一定发布过 `RequirementsRevision`，
+  所以修复轮的任何 commit 都会被 `READ_SET_STALE`（「requirements read at 0, current state is 2」）拒绝。
+  现传 `latest_requirements_revision`（`_current_requirements_revision`）。
+- `plan_commits._materialise_occurrences` 把被退方法叶子的 Task 行按 ceiling 计入 `committed`：六个叶子分光了池子，
+  替换方法的两个新叶子被 `BUDGET_INSUFFICIENT`（「task pool has 0 tokens left」）拒绝。现对网络不再命名的行只计
+  `min(ceiling, reserved + settled)`（`_held_by_retired_row`）；网络仍命名的行照旧按 ceiling。
+- 同源：`compiler._merge` 原只删被退实例的 ORDER/DATA 边、留着孤儿 occurrence 与实例本身；现 occurrence /
+  task_binding / method_instance / obligation_coverage / typed_edges 一并离开合并网络；`_read_network` 跳过
+  RETIRED 实例（否则回读的快照会绑到 revision 已不持有的 occurrence 而拒绝构造）。
+
+### 提示词
+
+`planner-hierarchical-v5`（`_revise` 自 v4：说明 `rejected_refinements` 段、`rejected_by_root_review` 标记、
+「一个提案里 retire_method + refine」的修复写法、`no_applicable_method` 时系统会带 findings 开合成轮）；
+`method-synthesizer-v3`（`_revise` 自 v2：说明 `review_feedback`）。v3/v4/v2 原样保留可 pin，sha256 钉在
+`test_output_port_claims.FROZEN_PROMPT_DIGESTS`（+2 条）。选择器：包版本 3 只登记 v5，钉 v1–v4 的部署一律回落到 v5
+（旧提示词不认识 `rejected_refinements` 段）——`test_htn_end_to_end` 与 `test_synthesizer_schema_alignment` 的钉子已改。
+
+### 测试（`tests/orchestrator/full_target/test_root_review_repair_library.py`，13 条，先红后绿）
+
+| 组 | 测试 | 断言 |
+|---|---|---|
+| 夹具钉缺陷 | `test_the_c1_repair_round_package_was_empty_before_the_fix` | C1 ord4 库 4/适用 3/open goal task-root；ord5 库 []/适用 []/open []/committed 6；`PlanningRejected` ord5 reason=root_review_rejected |
+| (a) 包 | `…now_offers_the_root_library_and_marks_the_rejected_method` / `…only_the_rejected_method_still_lists_it_as_rejected` / `…nobody_rejected_has_no_rejected_refinements` | 真 Orchestrator 走到 REVIEW_REJECTED 后的包：库非空、含 `rejected_by_root_review=True` 的被拒项与 False 的备选、`rejected_refinements[0]` 带 instance/ref/findings；无拒绝时段为空 |
+| (b) 编译 | `…retire_and_refine_replaces_the_root_method_in_one_revision` / `…retirement_must_name_the_instance_adopted…` / `…bare_retirement_is_refused` / `…refining_a_refined_goal_without_retiring_is_still_refused` | 一提案退旧上新 → revision+1、旧实例 RETIRED、旧叶子离开网络；三种错法 `CompilationRefused` |
+| (b) 端到端 | `…repair_round_can_switch_the_root_to_another_method_and_complete` | 真 `run()` 周期：REJECT → 修复 Planner 读包换 `plan.alt` → 新叶子 done → 根评审 ACCEPT → COMPLETED，`revisions == [1, 2]` |
+| (c) 端到端 | `…declared_no_method_after_rejection_opens_a_synthesis_round_with_the_findings` | 修复 Planner 答 no_applicable_method → 合成请求 `review_feedback` 含 findings、`synthesis_round == 2` → TRIAL_ADMITTED → 新 Planner 轮 → revision 2 → COMPLETED |
+| 有界 | `…repeated_rejections_end_honestly_with_the_reason_written_down` | 恒 REJECT：FAILED，`final_report.detail.root_review.reason == root_review_rejected`、repairs_used 1、合成一轮、`revisions == [1]` |
+| 判断 | `…synthesis_judgment_excludes_the_rejected_method_but_keeps_i18` / `…names_the_rejected_root_once_the_planner_declined` | 修复轮未答时不进 `goals_needing_method`；答后进入且候选数排除被拒方法 |
+
+### 变异自证（临时改源码 → 定向跑 → 从保存副本逐字节恢复，`cmp` 验证）
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | `hierarchical_planner_package` 的 signatures 不并入被拒 occurrence（库回到空） | 包组 2 条 | 2 failed → KILLED |
+| M2 | `goals_needing_method` 忽略被拒 occurrence（`if False and …`） | (c) 端到端 + 判断 1 条 | 2 failed → KILLED |
+| M3 | `compile_proposal` 解析 retire_method 但传 `retire_instance_ids=()` | 编译 1 条 + (b) 端到端 | 2 failed → KILLED |
+| M4 | `_root_review_stop_detail` 恒返回 `{}` | 有界 1 条 | 1 failed → KILLED |
+| M5 | `_merge` 保留被退实例的孤儿 occurrence | 编译 1 条 + (b) 端到端 | 2 failed → KILLED |
+| M6 | `_read_network` 不跳过 RETIRED 实例 | 编译 1 条 + (b) 端到端 | 2 failed → KILLED |
+
+### 回归
+
+full_target **2785 passed / 2 skipped**（基线 2770 / 2；+13 新测试 +2 冻结摘要参数化）；旧模式
+`step02 step05 step06 step07 p34 p35` **560 passed / 13 skipped / 0 failed**（与基线一致）；
+`ruff check src/agent_orchestrator tests/orchestrator/full_target` 全清；`_new_mode(mission)` 决策点 18 处、
+与哨兵测试一致（新逻辑全部挂在既有 `new_mode` 分支之下）；legacy 事件字节 golden 与旧函数源码 hash 三例全绿。
+
+### 与 P2.3i 的合并点
+
+P2.3i 改 `_collect_synthesizer` 附近与 `synthesis.py`。本片在这两处只做了最小追加、未重排：
+`synthesis.py` 只加 `SynthesisRequest.review_feedback` 字段（`__post_init__` 归一、`to_json` 多一键）与两个
+`build_request` 的透传参数；`_collect_synthesizer` 只多读 `intent.config["synthesis_round"]`，并把它传给重试意图与
+`record_synthesis_outcome(synthesis_round=…)`。
+
+### 偏差
+
+- 端到端里叶子不由真 Worker 完成：`_drive` 的 `_decide` 包装用 `LeafAcceptanceAssembly` 直接为 open leaf 写验收
+  （saturation 套件同一手法）；Mission Judge 用自由文本 critic（`FREE_TEXT_CRITERION`）。
+- 端到端 `max_planning_attempts=1`：默认梯子会在 `no_applicable_method` 后用剩余 rung 再问 Planner，梯子语义未动，
+  测试只是不让它遮住合成轮。
+- 变异自证 6 条（任务书要求 ≥4）。
+
+### 未做 / 交下一片
+
+- 真实模型（DeepSeek flash / Grok）上把「REJECT → 换方法或合成 → ACCEPT」跑到 COMPLETED；本片只有脚本化端到端。
+- runner 的 FREEZE-candidate 需重生成（包版本 / 提示词版本变了）。
+- 被拒历史跨修订累计（见「不能做」第 2 条）；一次退多个实例。
+- `max_root_review_repairs` 默认 1：换方法后再被拒即诚实停止；是否放宽由 Grok 验收数据决定。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

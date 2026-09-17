@@ -595,10 +595,41 @@ PLANNER_HIERARCHICAL_V4 = _revise(
     ),
 )
 
+# P2.3j.  Grok acceptance episodes H-L3-C1-r1 and H-L3-C2-r0: the root review rejected
+# the adopted method's result and the repair round was handed a package with no
+# library, no applicability and no way to name the rejected instance, so the only
+# honest answer was ``no_applicable_method``.  Package v4 adds ``rejected_refinements``
+# and flags the rejected method in ``method_library``; v5 tells the Planner what the
+# section is and that a replacement is *one* proposal carrying ``retire_method`` of the
+# rejected instance together with the ``refine`` of the same goal.  ``retire_method``
+# itself has been a listed operation since v1.  v1–v4 keep their exact words and stay
+# registered (§18.5 C8).
+PLANNER_HIERARCHICAL_V5_VERSION = "planner-hierarchical-v5"
+PLANNER_HIERARCHICAL_V5 = _revise(
+    PLANNER_HIERARCHICAL_V4,
+    PLANNER_HIERARCHICAL_V5_VERSION,
+    (
+        "系统据此决定是否进入方法合成轮，"
+        "你不需要也不能自己合成方法。\n",
+        "系统据此决定是否进入方法合成轮，"
+        "你不需要也不能自己合成方法。\n"
+        "如果输入里 rejected_refinements 非空，说明根评审拒绝了该目标当前采用的方法实例（findings 里是"
+        "评审员的原话，method_library 里对应条目的 rejected_by_root_review 为 true）。修复它只有一种写法："
+        "同一个 <plan_revision_proposal> 里恰好两个 operations——先 retire_method（method_instance_id "
+        "照抄 rejected_method_instance_id，reason 写你从 findings 里读到的原因），再 refine 同一个 "
+        "goal_id / obligation_id，method_ref 照抄一条 rejected_by_root_review 为 false 的 "
+        "refine_method_ref；expected_plan_revision 照抄 plan.plan_revision。不要重新 refine 被拒的那个方法；"
+        "不要只 retire 不 refine。如果没有任何 rejected_by_root_review 为 false 的方法能用（都被 "
+        "applicability 拒绝），就按上面的方式输出 no_applicable_method 的空操作提案，"
+        "系统会带着 findings 去请求合成新方法。\n",
+    ),
+)
+
 register_template(PLANNER_HIERARCHICAL_V1)
 register_template(PLANNER_HIERARCHICAL)
 register_template(PLANNER_HIERARCHICAL_V3)
 register_template(PLANNER_HIERARCHICAL_V4)
+register_template(PLANNER_HIERARCHICAL_V5)
 
 #: Every registered prompt version that belongs to the *hierarchical* Planner.
 #: P2.3c part 2b: a deployment's frozen ``prompt_versions`` pins ``planner`` to a
@@ -614,6 +645,7 @@ HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
         PLANNER_HIERARCHICAL_VERSION,
         PLANNER_HIERARCHICAL_V3_VERSION,
         PLANNER_HIERARCHICAL_V4_VERSION,
+        PLANNER_HIERARCHICAL_V5_VERSION,
     }
 )
 
@@ -627,7 +659,7 @@ HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
 #: ``facts`` section; that pairing is exactly the ``READ_SET_UNRESOLVED`` the part-2c
 #: smoke spent two rounds on.  Bump this number whenever the package changes in a way
 #: a prompt can be wrong about, and list the prompts written against it below.
-HIERARCHICAL_PLANNER_PACKAGE_VERSION = 2
+HIERARCHICAL_PLANNER_PACKAGE_VERSION = 3
 
 #: Which prompt versions were written against which package version.  A pin only
 #: applies among the versions of the package the branch actually builds.
@@ -639,6 +671,10 @@ HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE: Mapping[int, frozenset[str]] = {
     # against the same package (it changes only what a Planner with no usable method
     # says), so a pin on v3 is still honoured here and v4 is the default.
     2: frozenset({PLANNER_HIERARCHICAL_V3_VERSION, PLANNER_HIERARCHICAL_V4_VERSION}),
+    # package 3 (P2.3j, ``planner-package-hierarchical-v4``): carries
+    # ``rejected_refinements`` and the ``rejected_by_root_review`` flag; v5 is the
+    # only prompt that knows what to do with them.
+    3: frozenset({PLANNER_HIERARCHICAL_V5_VERSION}),
 }
 
 
@@ -923,6 +959,36 @@ METHOD_SYNTHESIZER = _revise(
 )
 register_template(METHOD_SYNTHESIZER)
 
+# P2.3j.  A second reason a method may be asked for: one that *applied* was adopted,
+# every leaf was accepted, and the root review rejected the result (Grok H-L3-C1-r1:
+# "the summary restates defects and says the source was not modified"; H-L3-C2-r0:
+# "the report does not show the failing test turning green").  The request carries
+# the reviewer's findings and the rejected method's identity in ``review_feedback``
+# — never in ``schema_feedback``, which means "your last reply did not decode" — and
+# v3 says what to do with it: propose a method that differs from the rejected one in
+# a way that answers the findings.  v1 and v2 keep their exact words and stay
+# registered (§18.5 C8).
+METHOD_SYNTHESIZER_V3_VERSION = "method-synthesizer-v3"
+METHOD_SYNTHESIZER_V3 = _revise(
+    METHOD_SYNTHESIZER,
+    METHOD_SYNTHESIZER_V3_VERSION,
+    (
+        "schema_feedback（非空表示你上一次的回复没有通过解码，逐条列出问题）。\n",
+        "schema_feedback（非空表示你上一次的回复没有通过解码，逐条列出问题）、"
+        "review_feedback（非空表示：这个目标已经用某个方法执行过一遍，叶子全部验收通过，"
+        "但根评审拒绝了最终结果；里面是被拒方法的 id/version 与评审员的原话 findings）。\n",
+    ),
+    (
+        "如果输入里 schema_feedback 非空，说明你上一次的回复没有通过解码：逐条改正它列出的问题，",
+        "如果输入里 review_feedback 非空，你提出的方法必须与被拒方法在步骤或验证方式上有实质区别，"
+        "并且能直接回答 findings 指出的缺口（例如 findings 说「没有证明目标测试由红转绿」，"
+        "新方法就要有先写一条会失败的测试、再修改、再证明它通过的步骤，并把这些步骤链到对应的父要求）；"
+        "不要把被拒方法换个名字重提。"
+        "如果输入里 schema_feedback 非空，说明你上一次的回复没有通过解码：逐条改正它列出的问题，",
+    ),
+)
+register_template(METHOD_SYNTHESIZER_V3)
+
 ROOT_REVIEWER_V1_VERSION = "root-reviewer-v1"
 
 # P2.3c part 3a (§13 v1.4, AER §5.2/I05): the root ``MISSION_FINAL`` review is its own
@@ -1138,6 +1204,8 @@ __all__ = (
     "METHOD_SYNTHESIZER_V1",
     "METHOD_SYNTHESIZER_V1_VERSION",
     "METHOD_SYNTHESIZER_VERSION",
+    "METHOD_SYNTHESIZER_V3",
+    "METHOD_SYNTHESIZER_V3_VERSION",
     "ROOT_REVIEWER",
     "ROOT_REVIEWER_V1",
     "ROOT_REVIEWER_V1_VERSION",
@@ -1158,6 +1226,8 @@ __all__ = (
     "PLANNER_HIERARCHICAL_V3_VERSION",
     "PLANNER_HIERARCHICAL_V4",
     "PLANNER_HIERARCHICAL_V4_VERSION",
+    "PLANNER_HIERARCHICAL_V5",
+    "PLANNER_HIERARCHICAL_V5_VERSION",
     "PLANNER_HIERARCHICAL_VERSION",
     "TASK_ROLE_BY_KIND",
     "CRITIC",
