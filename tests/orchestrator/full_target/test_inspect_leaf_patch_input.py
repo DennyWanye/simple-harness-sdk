@@ -110,8 +110,41 @@ class _CodeWorld:
     """The shipped code domain with the C1-r1 method admitted through the synthesiser
     path and adopted for the root — the way the real episode got it."""
 
-    def __init__(self, tmp_path, *, method: dict[str, Any], key: str) -> None:
-        self.service, self.mission = _mission(tmp_path, key=key)
+    def __init__(
+        self,
+        tmp_path,
+        *,
+        method: dict[str, Any],
+        key: str,
+        db_name: str | None = None,
+        success_criteria: tuple[str, ...] = ("c",),
+        allowed_tools: tuple[str, ...] = (),
+        workspace_seed: dict[str, str] | None = None,
+    ) -> None:
+        if db_name is None:
+            self.service, self.mission = _mission(tmp_path, key=key)
+        else:
+            # P2.3k verification P1-1: the same world under the library file a real
+            # ``Orchestrator`` opens (``evidence_root / orchestrator.db``), with the
+            # Mission's own criterion the C3 shape (``file:REPORT.md``).
+            from agent_orchestrator.contracts import Budget
+            from agent_orchestrator.orchestrator.commit_service import CommitService, MissionSpec
+            from agent_orchestrator.storage.store import Store
+
+            self.service = CommitService(Store.open(Path(tmp_path) / db_name))
+            self.mission, _ = self.service.create_mission(
+                MissionSpec(
+                    goal="修掉失败的测试并在 REPORT.md 里解释改动",
+                    success_criteria=success_criteria,
+                    tenant_id="t",
+                    idempotency_key=key,
+                    allowed_tools=allowed_tools,
+                    budget=Budget(max_tokens=200_000, max_attempts=4),
+                    workspace_seed=dict(workspace_seed or {}),
+                    orchestration_semantics_version="hierarchical",
+                )
+            )
+        self.path = Path(tmp_path) / (db_name or "db.sqlite3")
         self.semantics = HtnStore(self.service.store)
         self.world = build_planning_world(
             self.mission.id,
@@ -200,6 +233,10 @@ class _CodeWorld:
                     evidence={"mission_id": self.mission.id},
                 )
         self.clock = 1_000_000
+
+    @property
+    def store(self):
+        return self.service.store
 
     def task(self, type_id: str) -> str:
         return _task_of(self.dispatch, self.mission.id, type_id)

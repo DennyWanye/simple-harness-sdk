@@ -612,19 +612,24 @@ class MethodSynthesizer:
         # row stays in the catalogue — a method that already names it still resolves
         # and a stored reply still replays — but a synthesiser shown both would be
         # invited to build on the one whose ports were the defect.
+        # (Verification P2-3: "latest" is read among the rows that *would* be offered
+        # — primitive, in this domain — so a compound or foreign-domain row at a higher
+        # version cannot hide the primitive one the synthesiser may actually use.)
+        population = [
+            spec
+            for spec in self._catalog.task_types()
+            if spec.form is TaskForm.PRIMITIVE
+            and (domain is None or spec.domain is None or spec.domain == domain)
+        ]
         latest: dict[str, int] = {}
-        for spec in self._catalog.task_types():
+        for spec in population:
             key = spec.task_type_ref.id
             latest[key] = max(latest.get(key, 0), int(spec.task_type_ref.version))
         for spec in sorted(
-            self._catalog.task_types(),
+            population,
             key=lambda item: (item.task_type_ref.id, int(item.task_type_ref.version)),
         ):
-            if spec.form is not TaskForm.PRIMITIVE:
-                continue
             if int(spec.task_type_ref.version) < latest[spec.task_type_ref.id]:
-                continue
-            if domain is not None and spec.domain is not None and spec.domain != domain:
                 continue
             ref = spec.task_type_ref
             offers.append(

@@ -165,9 +165,11 @@ def _world_with_report_criterion(tmp_path, *, key: str) -> World:
 
 
 def _stored_file(
-    world: World, task_id: str, *, artifact_id: str, path: str, data: bytes, version: int = 1
+    world: Any, task_id: str, *, artifact_id: str, path: str, data: bytes, version: int = 1
 ) -> Artifact:
-    """One Attempt row per leaf, any number of artifact rows on it, bytes in the store."""
+    """One Attempt row per leaf, any number of artifact rows on it, bytes in the store.
+
+    ``world`` is anything with ``store``, ``mission`` and ``path`` (the library file)."""
 
     import hashlib
 
@@ -218,7 +220,7 @@ def _stored_file(
 
 
 def _complete_leaf(
-    world: World,
+    world: Any,
     task_id: str,
     *,
     port_path: str,
@@ -226,6 +228,7 @@ def _complete_leaf(
     report: bytes,
     report_version: int,
     now_ms: int,
+    port_version: int = 1,
 ) -> None:
     """A Worker's PASS as the loop leaves it: the legacy ``accept_result`` lifecycle
     (Task COMPLETED with its ``accepted_artifacts``) plus the hierarchical ``Acceptance``
@@ -233,7 +236,12 @@ def _complete_leaf(
     indexed as an accepted output — exactly what C3's leaves did with ``REPORT.md``."""
 
     port_artifact = _stored_file(
-        world, task_id, artifact_id=f"artifact-{task_id}-port", path=port_path, data=port_data
+        world,
+        task_id,
+        artifact_id=f"artifact-{task_id}-port",
+        path=port_path,
+        data=port_data,
+        version=port_version,
     )
     report_artifact = _stored_file(
         world,
@@ -292,33 +300,45 @@ def _two_leaves_wrote_report(tmp_path, *, key: str) -> World:
 
 
 def _accepting_reviewer(request: Any) -> str:
+    """PASS on every root criterion the package names (rule 2: ids copied verbatim)."""
+
+    shown = json.loads(
+        next(m.content for m in reversed(request.messages) if str(m.role).endswith("user"))
+    )
     return (
         "<critic_verdict>"
         + json.dumps(
             {
                 "verdict": "PASS",
                 "findings": [],
-                "mission_criteria": [{"criterion": "c-root", "met": True, "reason": "scripted"}],
+                "mission_criteria": [
+                    {"criterion": item["criterion_id"], "met": True, "reason": "scripted"}
+                    for item in shown["criteria"]
+                ],
             }
         )
         + "</critic_verdict>"
     )
 
 
-def _run(world: World, tmp_path, *, cycles: int = 30) -> dict[str, Any]:
-    """``run()``'s body a cycle at a time over the fixture's own library file."""
+def _run(world: Any, tmp_path, *, cycles: int = 30, planning: Any = None) -> dict[str, Any]:
+    """``run()``'s body a cycle at a time over the fixture's own library file.
+
+    ``planning`` is the object ``install_hierarchical`` is given; the shared fixture's
+    ``Env`` by default, a ``PlanningWorld`` for the code-domain worlds."""
 
     evidence = Path(tmp_path) / "evidence"
     world.store.close()
     provider = RoleScriptedProvider({"root_reviewer": [_accepting_reviewer]})
+    planning = world.env if planning is None else planning
 
     async def case() -> dict[str, Any]:
         config = OrchestratorConfig(
             evidence_root=evidence, max_concurrency=1, test_timeout_seconds=30
         )
         async with Orchestrator(config, provider) as loop:
-            world.env.semantics = HtnStore(loop.store)
-            loop.install_hierarchical(planning=world.env)
+            planning.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=planning)
             for _ in range(cycles):
                 progressed = await loop._cycle()
                 await asyncio.sleep(0.02)
@@ -331,8 +351,25 @@ def _run(world: World, tmp_path, *, cycles: int = 30) -> dict[str, Any]:
             mission = loop.store.get_mission(world.mission.id)
             assert mission is not None
             events = list(loop.store.list_events(world.mission.id))
+            # The tree itself, rebuilt read-only (the record is keyed once per Mission,
+            # so a second build appends nothing).
+            live = [
+                t for t in loop.store.list_tasks(mission.id) if t.status is not TaskStatus.CANCELLED
+            ]
+            tree = {
+                item.path: item.artifact_id
+                for item in loop._hierarchical_judgment_inputs(
+                    mission, loop._new_mode(mission), live
+                )
+            }
+            reviewer_seen: dict[str, Any] = {}
+            for intent in loop.store.list_intents("SETTLED"):
+                if intent.mission_id == mission.id and ":root-review:" in str(intent.subject_id):
+                    reviewer_seen = json.loads(intent.config["message"]["content"])
             return {
                 "status": mission.status,
+                "tree": tree,
+                "reviewer_seen": reviewer_seen,
                 "stop_reason": mission.stop_reason,
                 "report": dict(mission.final_report or {}),
                 "types": [item.type for item in events],
@@ -438,3 +475,246 @@ def test_a_path_only_one_leaf_wrote_is_kept_without_a_superseded_entry(tmp_path)
     paths = {item["path"] for item in recorded.payload["superseded"]}
     assert "out/result.json" not in paths and "out/verdict.json" not in paths
     assert recorded.payload["artifacts"] == 3, "two port files and one REPORT.md kept"
+
+
+# ======================================================================================
+# 3. Verification P1-1 (I05): two criterion-linked leaves writing one path — C1-r1
+# ======================================================================================
+
+C1_PORT_FILES: dict[str, tuple[str, bytes]] = {
+    # step → (port file path, bytes); ``verify.report`` and ``summarize.summary`` are
+    # both REPORT.md, exactly as the real C1-r1 leaves wrote them (v5 / v7).
+    "code.read-repository-facts": ("facts.json", b'{"tests": ["tests/test_kv.py"]}'),
+    "code.reproduce-failure": ("diagnosis.json", b'{"failing": "test_get"}'),
+    "code.apply-patch": ("patch.diff", b"--- a/kv.py\n+++ b/kv.py\n"),
+    "code.verify-tests": (REPORT, b"# verify\n\ntests/test_kv.py::test_get: 1 passed\n"),
+    "code.inspect-changeset": ("findings.json", b'{"changed": ["kv.py"]}'),
+    "code.summarize-review": (REPORT, b"# summary\n\nkv.py: get() now returns the value\n"),
+}
+
+
+def _c1_world(tmp_path, *, key: str):
+    """The C1-r1 method bound through the @2 ports, six leaves completed for real."""
+
+    from test_inspect_leaf_patch_input import _c1_method, _CodeWorld, _rebound
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _CodeWorld(
+        evidence,
+        method=_rebound(_c1_method()),
+        key=key,
+        db_name="orchestrator.db",
+        success_criteria=(f"file:{REPORT}",),
+    )
+    report_version = 0
+    for index, (step, (path, data)) in enumerate(C1_PORT_FILES.items()):
+        task_id = world.task(step)
+        if path == REPORT:
+            report_version += 1
+        artifact = _stored_file(
+            world,
+            task_id,
+            artifact_id=f"artifact-{step}",
+            path=path,
+            data=data,
+            version=report_version if path == REPORT else 1,
+        )
+        task = world.store.get_task(task_id)
+        assert task is not None
+        completed = next_task(
+            next_task(next_task(task, TaskStatus.ACTIVE), TaskStatus.VERIFYING),
+            TaskStatus.COMPLETED,
+            accepted_result_id=f"result-{task_id}",
+            accepted_artifacts=(artifact.id,),
+        )
+        world.store.update_task(completed, expected_version=task.version)
+        world.clock += 1_000
+        _accept_with(
+            world.service,
+            world.dispatch,
+            world.mission.id,
+            task_id,
+            artifacts=(artifact,),
+            now_ms=1_000_000 + index * 1_000,
+        )
+        world.dispatch.issue_input_witnesses(
+            world.mission.id, world.dispatch.network(world.mission.id), now_ms=world.clock
+        )
+    return world
+
+
+def test_c1_shape_keeps_the_report_the_reviewer_judged_c_test_passes_on(tmp_path) -> None:
+    """Both ``verify`` and ``summarize`` carry a root criterion and both wrote
+    ``REPORT.md``.  The reviewer's ``c-test-passes`` verdict was read off ``verify``'s
+    report; that artifact has to be in the delivered tree, whichever one holds the
+    canonical path (verification P1-1, AER I05)."""
+
+    world = _c1_world(tmp_path, key="p23k-p11-c1")
+    verify = world.task("code.verify-tests")
+    summarize = world.task("code.summarize-review")
+    outcome = _run(world, tmp_path, planning=world.world, cycles=40)
+    assert outcome["status"] is MissionStatus.COMPLETED, (
+        f"{outcome['status']} / {outcome['stop_reason']}: {outcome['report'].get('detail')} "
+        f"progress={outcome['progress'][-8:]}"
+    )
+    shown = outcome["reviewer_seen"]
+    assert shown, "the root reviewer was asked"
+    covered = {item["criterion_id"]: item["covered_by"] for item in shown["criteria"]}
+    by_acceptance = {item["acceptance_id"]: item for item in shown["contributions"]}
+    judged_on = {
+        name: [
+            output["artifact_id"]
+            for cover in covers
+            for output in by_acceptance[cover["acceptance_id"]]["accepted_outputs"]
+            if name in output["covers_root_criteria"]
+        ]
+        for name, covers in covered.items()
+    }
+    assert judged_on["c-test-passes"] == ["artifact-code.verify-tests"]
+    assert judged_on["c-change-explained"] == ["artifact-code.summarize-review"]
+    # Every artifact a root criterion was judged on is in the tree.
+    delivered = set(outcome["tree"].values())
+    for name, artifacts in judged_on.items():
+        assert set(artifacts) <= delivered, (name, artifacts, outcome["tree"])
+    # The canonical path holds the later linked writer; the other linked writer's
+    # bytes are kept under accepted-outputs/<task>/<port>/.
+    assert outcome["tree"][REPORT] == "artifact-code.summarize-review"
+    assert outcome["tree"][f"accepted-outputs/{verify}/report/{REPORT}"] == (
+        "artifact-code.verify-tests"
+    )
+    recorded = next(
+        item for item in outcome["events"] if item.type == ARTIFACT_MERGE_NOT_APPLICABLE
+    )
+    entry = {item["path"]: item for item in recorded.payload["superseded"]}[REPORT]
+    assert entry["kept_task_id"] == summarize
+    assert entry["kept_artifact_id"] == "artifact-code.summarize-review"
+    assert entry["kept_by"] == "acceptance_order_between_linked"
+    assert entry["superseded_task_ids"] == [verify]
+    [loser] = entry["superseded"]
+    assert loser["task_id"] == verify
+    assert loser["artifact_id"] == "artifact-code.verify-tests"
+    assert loser["linked"] is True and loser["port"] == "report"
+    assert loser["kept_at"] == f"accepted-outputs/{verify}/report/{REPORT}"
+    assert len(loser["content_hash"]) == 64
+
+
+def test_a_non_linked_loser_is_recorded_with_its_artifact_but_not_kept(tmp_path) -> None:
+    """The plan.goal shape again: the facts-style leaf's REPORT.md is superseded by the
+    finalizer's.  It is not evidence a criterion was judged on, so it is not kept in
+    the tree — but the record now names the artifact and its hash (P2-2)."""
+
+    world = _two_leaves_wrote_report(tmp_path, key="p23k-p11-nonlinked")
+    leaf_task = _leaf_task(world)
+    outcome = _run(world, tmp_path)
+    assert outcome["status"] is MissionStatus.COMPLETED
+    recorded = next(
+        item for item in outcome["events"] if item.type == ARTIFACT_MERGE_NOT_APPLICABLE
+    )
+    entry = {item["path"]: item for item in recorded.payload["superseded"]}[REPORT]
+    assert entry["kept_by"] == "criterion_link"
+    [loser] = entry["superseded"]
+    assert loser["task_id"] == leaf_task
+    assert loser["artifact_id"] == f"artifact-{leaf_task}-report"
+    assert loser["linked"] is False and loser["port"] is None and loser["kept_at"] is None
+    assert not any(path.startswith("accepted-outputs/") for path in outcome["tree"])
+
+
+def test_a_port_output_outranks_a_plain_accepted_artifact_of_an_earlier_leaf(tmp_path) -> None:
+    """Weight is (linked, port, order): an output the reviewer read at a declared port
+    beats a file merely left in an unlinked leaf's workspace, whatever the clock."""
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _world_with_report_criterion(evidence, key="p23k-p11-port")
+    world.dispatch.issue_input_witnesses(world.mission.id, world.network(), now_ms=1_000_000)
+    leaf_task = _leaf_task(world)
+    review_task = _review_task(world)
+    # The leaf claims ``out/verdict.json``-shaped bytes at *no* port (a plain file),
+    # the review claims its verdict at the ``verdict`` port on the same path.
+    _complete_leaf(
+        world,
+        leaf_task,
+        port_path="out/result.json",
+        port_data=b'{"result": "alpha"}',
+        report=LEAF_REPORT,
+        report_version=1,
+        now_ms=2_000_000,
+    )
+    stray = _stored_file(
+        world, leaf_task, artifact_id="artifact-leaf-stray", path="out/verdict.json", data=b"draft"
+    )
+    task = world.store.get_task(leaf_task)
+    assert task is not None
+    world.store.update_task(
+        next_task(task, accepted_artifacts=(*task.accepted_artifacts, stray.id)),
+        expected_version=task.version,
+    )
+    world.dispatch.issue_input_witnesses(world.mission.id, world.network(), now_ms=2_050_000)
+    _complete_leaf(
+        world,
+        review_task,
+        port_path="out/verdict.json",
+        port_data=b"verdict: PASS",
+        report=REVIEW_REPORT,
+        report_version=2,
+        now_ms=1_500_000,
+        port_version=2,  # the stray holds version 1 of the same path
+    )
+    outcome = _run(world, tmp_path)
+    assert outcome["status"] is MissionStatus.COMPLETED, outcome["stop_reason"]
+    assert outcome["tree"]["out/verdict.json"] == f"artifact-{review_task}-port"
+
+
+# ======================================================================================
+# 4. Verification P2-1 (mutant M7): only CURRENT contributions build the tree
+# ======================================================================================
+
+
+def test_a_revoked_acceptance_contributes_nothing_to_the_tree(tmp_path) -> None:
+    """``root_contributions`` reads validity; an Acceptance nobody holds any more is
+    history, and its files are neither delivered nor listed as superseded."""
+
+    import asyncio
+
+    world = _two_leaves_wrote_report(tmp_path, key="p23k-p21-revoked")
+    leaf_task = _leaf_task(world)
+    review_task = _review_task(world)
+    revoked = [
+        item
+        for item in world.semantics.list_acceptances(world.mission.id)
+        if str(item.task_id) == leaf_task
+    ]
+    assert len(revoked) == 1
+    world.store.connection.execute(
+        "UPDATE acceptances SET validity = 'REVOKED',"
+        " acceptance_json = json_set(acceptance_json, '$.validity', 'REVOKED')"
+        " WHERE acceptance_id = ?",
+        (str(revoked[0].acceptance_id),),
+    )
+    world.store.connection.commit()
+    evidence = Path(tmp_path) / "evidence"
+    world.store.close()
+
+    async def case() -> dict[str, Any]:
+        config = OrchestratorConfig(evidence_root=evidence, max_concurrency=1)
+        async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            mission = loop.store.get_mission(world.mission.id)
+            assert mission is not None
+            tasks = loop.store.list_tasks(mission.id)
+            tree = loop._hierarchical_judgment_inputs(mission, loop._new_mode(mission), tasks)
+            recorded = [
+                item.payload
+                for item in loop.store.list_events(mission.id)
+                if item.type == ARTIFACT_MERGE_NOT_APPLICABLE
+            ]
+            return {"tree": {item.path: item.task_id for item in tree}, "recorded": recorded}
+
+    outcome = asyncio.run(case())
+    assert set(outcome["tree"]) == {"out/verdict.json", REPORT}
+    assert set(outcome["tree"].values()) == {review_task}
+    [payload] = outcome["recorded"]
+    assert payload["contributions"] == 1
+    assert payload["superseded"] == []

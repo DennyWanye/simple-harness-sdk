@@ -3578,6 +3578,23 @@ legacy 事件字节 golden（`test_a_legacy_mission_produces_identical_event_byt
 - Host 侧：H1（交付文件按 ordinal 覆盖）与 D2a（C1/C2/C4 换目标签名或指向真红测试）仍在 Host，本片未动。
 - FREEZE-candidate 重生成。
 
+### 核验处置（独立核验稿 `reviews/核验-P2.3k-a5d2d3b-合并4022da9-2026-09-17.md`，结论「修后可合」；修在合并提交 4022da9 之上）
+
+| 条目 | 处置 | 位置 / 测试 |
+|---|---|---|
+| **P1-1（N3 / I05）** 两条 criterion-linked 叶写同一路径时「后验收者胜」丢掉评审员据以裁决的产物（C1-r1：verify 的 `report` 与 summarize 的 `summary` 都是 REPORT.md） | **修**。`_hierarchical_judgment_inputs` 权重改 `(linked, port, rank)`（评审员读过的端口产物先于同叶/他叶的非端口 `accepted_artifacts`）；**被 link 的端口产物永不丢弃**：同路径输掉的 linked 端口产物按 `accepted-outputs/<task_id>/<port>/<path>` 保留在交付树里（artifact id 不变），`superseded[]` 扩为 `{path, kept_task_id, kept_artifact_id, kept_content_hash, kept_by, superseded_task_ids, superseded: [{task_id, artifact_id, content_hash, linked, port, kept_at}]}`，两 linked 写者相争时 `kept_by=acceptance_order_between_linked`。没有走「编译期/验收期拒绝第二份」：两条根准则各自要一份报告是合法计划，拒绝会把 C1-r1 这类合成方法整体挡掉。 | `event_handler._hierarchical_judgment_inputs`；`test_hierarchical_judgment_tree.py` §3：C1-r1 形状（`_CodeWorld` + 改绑方法，六叶真产物，真 `Orchestrator` 到 COMPLETED）断言「根评审包 c-test-passes 所引 artifact ∈ 交付树」、`REPORT.md`=summarize、`accepted-outputs/<verify>/report/REPORT.md`=verify、载荷字段齐全；非 linked 输家只记不留（P2-2 记 id/hash）；端口产物压过更早叶子的普通产物。变异 V1（不保留 linked 输家）→ 1 failed，KILLED |
+| **P1-2（N4）** 只读按类型声明、运行时不强制；verify 叶也被剥掉 `code_test`；真实局 facts/reproduce 叶实际写了 `stats/window.py` | **修（两半）**。(a) `occurrence_task(criterion_linked=)`：`criterion_links` 指向的 occurrence（`criterion_linked_occurrences(network.obligation_coverage)`，`plan_commits._materialise_occurrences` 传入）不适用只读豁免——`verify`（`fix-by-patch@2` 两条准则都链到它）保留 `code_test`；facts / reproduce 仍无。(b) 运行时强制：`occurrence_tasks.read_only_rewrites(binding, artifacts, initial, guarded)`——只读叶改了它起步时就有的文件（`initial` = seed ∪ 上游输入；受保护路径已由 `protected_path_rewritten` 报告、不重复）→ `_collect_attempt` 在结果收集处 `reject_result(reason="read_only_leaf_rewrote_workspace", detail{paths, side_effect_kind, capabilities, hint})`，不登记产物、走既有 RETRY_WAIT 反馈；新建文件（端口产物、REPORT.md）不算改动——那是只读叶交付观察结果的方式。`new_mode` 在该函数里只问一次（原来 `advance_compound_phases` 前那次前移复用），`_new_mode` 仍 19 处。legacy Mission 无绑定，不触及。 | `occurrence_tasks.py`、`plan_commits.py`、`event_handler._collect_attempt`；`test_read_only_leaf_policy.py`：code 域四叶策略（verify 含 code_test）、`criterion_linked=True` 单元、`read_only_rewrites` 两条单元、**真 `_collect_attempt` 端到端两条**（脚本化 Worker 在 C1-r1 方法的 read-facts 叶写 `stats/window.py` + facts.json → `ResultRejected{read_only_leaf_rewrote_workspace, paths:[stats/window.py]}`、零产物；只写 facts.json + REPORT.md → `ResultSubmitted`）。变异 V2（`criterion_linked=False`）→ 1 failed；V3（收集处不查）→ 1 failed；均 KILLED |
+| **P1-3（N2）** `goal_parameters.repository` 是工作区绝对路径，原样进包与 `context_version` | **修**。`root_review.sanitised_goal_parameters`：绝对路径（POSIX 或 Windows）→ 工作区根 `<workspace>`（根 = 参数里被其它绝对值前缀最多的那个，平手取最短；不是「最短」——`/var/log` 不能冒充 checkout）、根下路径 `<workspace>/<rel>`、其它绝对路径 `<path>`；相对值、数字、嵌套 mapping/list 递归处理不改；`request()` 进包前调用。 | `root_review.py`；`test_root_review_user_goal.py` §4：占位规则单元、**两台机器两个 worktree 同一状态 `content_hash()` 相同**、真 code 域把 `REPOSITORY` 换成绝对路径后包里只有 `<workspace>` 且整份 JSON 不含该路径。变异 V4（不脱敏）→ 1 failed，KILLED |
+| **P2-1（M7 存活）** 裁决树只读 CURRENT 贡献无测试 | **补测试**：把 leaf 的验收行直接置 `REVOKED`（SQL，同时改 `acceptance_json`），`_hierarchical_judgment_inputs` 树里只剩 review 的两件、`contributions=1`、`superseded=[]`。变异 V5（去掉 `in contributing` 过滤）→ 1 failed，KILLED | `test_hierarchical_judgment_tree.py` §4 |
+| **P2-2** `superseded[]` 缺 artifact id | 并入 P1-1（见上） | — |
+| **P2-3** `_offers` 的 latest 早于 form/domain 过滤 | **修**：先按 primitive + 域筛出会被列出的总体，再在总体里取最高版本 | `synthesis.py`；既有 offers 测试覆盖 |
+| **P2-4** CHANGELOG 把 N4 写窄了 | **改**：CHANGELOG 与本节写明范围——只读豁免覆盖全部 `external_read`/`none` 无写能力类型（observer / inspect / summarize 也在内），但 criterion-linked 叶（verify）保留 `code_test`，且只读现在在收集处强制 | CHANGELOG P2.3k 段 |
+| §2(b) 次要（`latest` 与 compound/异域） | 同 P2-3 | — |
+
+未做（核验建议里未采纳的）：P1-1(a)「编译期 / 验收期拒绝第二份同路径 linked 产物」——理由见上；P1-2(b) 更完整的「验收侧只放端口产物进树」——树仍收只读叶的全部 `accepted_artifacts`，因为收集处已经拒绝了改动起步文件的结果，剩下的都是它新建的文件；Host 侧给 RequirementsRevision 加 `pytest:` check id 的建议记在 HANDOFF。
+
+回归（修后）：full_target **2848 passed / 2 skipped**（核验基线 4022da9 = 2835 / 3；本机少一条环境性 skip 即 2836 / 2，+12 新测试：tree +4、read-only +5、user-goal +3）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**；`ruff check src/agent_orchestrator tests/orchestrator/full_target` 全清；`_new_mode(mission)` 仍 19 处；legacy 事件字节 golden 不变。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

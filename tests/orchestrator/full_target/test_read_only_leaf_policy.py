@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -167,10 +168,53 @@ def test_the_c3_plans_read_only_leaves_are_materialised_without_code_test(tmp_pa
             ("verify", "code.verify-tests"),
         )
     }
-    for step in ("facts", "reproduce", "verify"):
+    for step in ("facts", "reproduce"):
         assert "code_test" not in policies[step], (step, policies[step])
         assert policies[step] == ("format_check", "rule_check"), (step, policies[step])
     assert policies["patch"] == ("format_check", "rule_check", "code_test")
+    # Verification P1-2: ``verify`` is ``external_read`` too, but it is the step the
+    # plan's criterion_links point at — the deterministic layer stays on it.
+    assert policies["verify"] == ("format_check", "rule_check", "code_test")
+
+
+def test_a_criterion_linked_leaf_keeps_code_test_whatever_its_side_effect_says() -> None:
+    from agent_orchestrator.contracts import Budget, Mission, MissionStatus
+    from agent_orchestrator.contracts.htn import OccurrenceId, OccurrenceSpec
+    from agent_orchestrator.orchestrator.occurrence_tasks import occurrence_task
+
+    mission = Mission(
+        id="mission-x",
+        tenant_id="t",
+        goal="g",
+        success_criteria=("c",),
+        status=MissionStatus.PLANNING,
+        allowed_tools=(),
+        budget=Budget(max_tokens=1000),
+        idempotency_key="k",
+        version=1,
+        stop_conditions=(),
+        risk_level="sandbox",
+        created_at=0.0,
+    )
+    import dataclasses
+
+    binding = dataclasses.replace(
+        _binding(side_effect=SideEffectKind.EXTERNAL_READ, capabilities=("tests.run",)),
+        requirement_refs=("c-green",),
+    )
+    spec = OccurrenceSpec(
+        occurrence_id=OccurrenceId("occ-verify"),
+        task_id=TaskRef("task-leaf"),
+        obligation_id=ObligationId("obl-leaf"),
+        form=TaskForm.PRIMITIVE,
+    )
+    common = dict(plan_revision=1, budget=Budget(max_tokens=100), ordinal=1, deployed=DEPLOYED)
+    plain = occurrence_task(mission, spec, binding, **common).task.verification_policy
+    linked = occurrence_task(
+        mission, spec, binding, criterion_linked=True, **common
+    ).task.verification_policy
+    assert plain == ("format_check", "rule_check")
+    assert linked == ("format_check", "rule_check", "code_test")
 
 
 def test_the_task_committed_proposal_says_the_same(tmp_path) -> None:
@@ -187,3 +231,190 @@ def test_the_task_committed_proposal_says_the_same(tmp_path) -> None:
     }
     assert "code_test" not in committed[facts]
     assert "code_test" in committed[patch]
+
+
+# ======================================================================================
+# 4. Verification P1-2: the declaration is enforced where the files come in
+# ======================================================================================
+
+
+class _File:
+    def __init__(self, path: str, content_hash: str) -> None:
+        self.path = path
+        self.content_hash = content_hash
+
+
+def test_read_only_rewrites_names_a_changed_starting_file_and_nothing_else() -> None:
+    from agent_orchestrator.orchestrator.occurrence_tasks import read_only_rewrites
+
+    binding = _binding(side_effect=SideEffectKind.EXTERNAL_READ)
+    initial = {"stats/window.py": "a" * 64, "README.md": "b" * 64, "tests/t.py": "c" * 64}
+    artifacts = [
+        _File("stats/window.py", "f" * 64),  # changed: the C3 facts leaf's write
+        _File("README.md", "b" * 64),  # unchanged, merely cited
+        _File("facts.json", "d" * 64),  # new: the leaf's own output
+        _File("tests/t.py", "e" * 64),  # changed but guarded: reported elsewhere
+    ]
+    assert read_only_rewrites(binding, artifacts, initial, guarded=("tests/t.py",)) == [
+        "stats/window.py"
+    ]
+    assert read_only_rewrites(binding, artifacts, initial) == ["stats/window.py", "tests/t.py"]
+
+
+def test_read_only_rewrites_is_empty_for_a_writing_leaf_or_no_change() -> None:
+    from agent_orchestrator.orchestrator.occurrence_tasks import read_only_rewrites
+
+    initial = {"stats/window.py": "a" * 64}
+    changed = [_File("stats/window.py", "f" * 64)]
+    writer = _binding(side_effect=SideEffectKind.LOCAL_WRITE)
+    assert read_only_rewrites(writer, changed, initial) == []
+    assert (
+        read_only_rewrites(
+            _binding(side_effect=SideEffectKind.EXTERNAL_READ, capabilities=("repo.write",)),
+            changed,
+            initial,
+        )
+        == []
+    )
+    assert read_only_rewrites(_binding(side_effect=None), changed, initial) == []
+    assert (
+        read_only_rewrites(
+            _binding(side_effect=SideEffectKind.EXTERNAL_READ),
+            [_File("stats/window.py", "a" * 64), _File("REPORT.md", "9" * 64)],
+            initial,
+        )
+        == []
+    )
+
+
+SEED = {
+    "stats/window.py": (
+        "def window_sum(values, start, end):\n    return sum(values[start:end - 1])\n"
+    )
+}
+TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list")
+
+
+def _collect_facts_leaf(
+    tmp_path, *, key: str, writes: list[tuple[str, str]], artifacts: list[str]
+):
+    """Dispatch the C1-r1 method's ``read-facts`` leaf to a scripted Worker that writes
+    ``writes`` and submits ``artifacts`` with ``facts.json`` claimed at its port, then
+    collect the result through the real ``_collect_attempt``."""
+
+    import asyncio
+
+    from test_inspect_leaf_patch_input import _c1_method, _CodeWorld, _rebound
+
+    from agent_orchestrator.orchestrator.event_handler import Orchestrator
+    from agent_orchestrator.runtime.assembly import OrchestratorConfig
+    from agent_orchestrator.storage.htn_store import HtnStore
+    from agent_orchestrator.testing.fixtures import RoleScriptedProvider, envelope_step
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _CodeWorld(
+        evidence,
+        method=_rebound(_c1_method()),
+        key=key,
+        db_name="orchestrator.db",
+        allowed_tools=TOOLS,
+        workspace_seed=SEED,
+    )
+    facts = world.task("code.read-repository-facts")
+    world.store.close()
+    steps: list[Any] = [
+        ("workspace_write_file", {"path": path, "content": text}) for path, text in writes
+    ]
+    steps.append(
+        envelope_step(
+            summary="repository facts",
+            artifacts=artifacts,
+            claims=["facts recorded"],
+            override=lambda body: {**body, "outputs": {"facts": "facts.json"}},
+        )
+    )
+    provider = RoleScriptedProvider({"worker": steps})
+    config = OrchestratorConfig(evidence_root=evidence, max_concurrency=1, test_timeout_seconds=5)
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, provider) as loop:
+            world.world.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.world)
+            mission = loop.store.get_mission(world.mission.id)
+            assert mission is not None
+            await loop._decide(mission)
+            intent = next(
+                item
+                for item in loop.store.list_intents(
+                    "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                )
+                if item.mission_id == mission.id
+                and item.kind == "attempt"
+                and str(item.subject_id).startswith(facts)
+            )
+            assert await loop._dispatch(intent)
+            intent = loop.store.get_intent(intent.intent_id)
+
+            async def completed():
+                while True:
+                    result = await loop.bridge_for(intent).result(
+                        agent_id=intent.agent_id, turn_id=intent.expected_turn_id
+                    )
+                    if result is not None:
+                        return result
+                    await asyncio.sleep(0.01)
+
+            result = await asyncio.wait_for(completed(), timeout=10)
+            await loop._collect_attempt(intent, result)
+            events = loop.store.list_events(mission.id)
+            return {
+                "rejections": [e.payload for e in events if e.type == "ResultRejected"],
+                "submitted": [e.type for e in events if e.type == "ResultSubmitted"],
+                "artifacts": sorted(a.path for a in loop.store.list_mission_artifacts(mission.id)),
+            }
+
+    return asyncio.run(case())
+
+
+def test_a_read_only_leaf_that_rewrites_a_seed_file_is_refused_at_collection(tmp_path) -> None:
+    """C3's ``facts`` leaf, replayed: it patched ``stats/window.py`` and reported facts.
+    The result is refused with the reason written down; nothing is registered."""
+
+    outcome = _collect_facts_leaf(
+        tmp_path,
+        key="p23k-p12-rewrite",
+        writes=[
+            (
+                "stats/window.py",
+                "def window_sum(values, start, end):\n    return sum(values[start:end])\n",
+            ),
+            ("facts.json", '{"tests": ["tests/test_public_window.py"]}'),
+        ],
+        artifacts=["stats/window.py", "facts.json"],
+    )
+    assert outcome["rejections"], outcome
+    last = outcome["rejections"][-1]
+    assert last["reason"] == "read_only_leaf_rewrote_workspace"
+    assert last["detail"]["paths"] == ["stats/window.py"]
+    assert last["detail"]["side_effect_kind"] == "external_read"
+    assert outcome["submitted"] == []
+    assert outcome["artifacts"] == []
+
+
+def test_a_read_only_leaf_that_only_adds_its_outputs_is_collected(tmp_path) -> None:
+    """The control: new files (its port output, a report) are how a read-only leaf
+    delivers; nothing it started from changed, so the result goes through."""
+
+    outcome = _collect_facts_leaf(
+        tmp_path,
+        key="p23k-p12-clean",
+        writes=[
+            ("facts.json", '{"tests": ["tests/test_public_window.py"]}'),
+            ("REPORT.md", "# facts\n\nread only\n"),
+        ],
+        artifacts=["facts.json", "REPORT.md"],
+    )
+    assert [item["reason"] for item in outcome["rejections"]] == []
+    assert outcome["submitted"] == ["ResultSubmitted"]
+    assert outcome["artifacts"] == ["REPORT.md", "facts.json"]

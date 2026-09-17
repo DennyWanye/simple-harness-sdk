@@ -48,7 +48,7 @@ refined yet*, and every other dimension the Mission bounds is inherited.  See
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -352,6 +352,38 @@ def occurrence_policy(
     return chosen
 
 
+def read_only_rewrites(
+    binding: TaskSemanticBindingV1,
+    artifacts: Sequence[Any],
+    initial: Mapping[str, str],
+    *,
+    guarded: Iterable[str] = (),
+) -> list[str]:
+    """The files a read-only leaf's Attempt changed that it was not allowed to change.
+
+    P2.3k verification P1-2: the type declaration is now *enforced* at result
+    collection, not only used to drop a verification layer.  Grok C3's ``facts`` and
+    ``reproduce`` leaves — ``external_read`` by declaration — each rewrote
+    ``stats/window.py``.  A read-only leaf may create files (its port outputs, its
+    report) — that is how it delivers what it observed — but may not change a file
+    it started from: ``initial`` is the seed plus the resolved upstream inputs, and a
+    path present there whose bytes differ is a write into the world the leaf was asked
+    to observe.  ``guarded`` paths are already refused as ``protected_path_rewritten``
+    and are not reported twice.
+    """
+
+    if not read_only_leaf(binding):
+        return []
+    shielded = set(guarded)
+    return sorted(
+        artifact.path
+        for artifact in artifacts
+        if artifact.path in initial
+        and artifact.path not in shielded
+        and artifact.content_hash != initial[artifact.path]
+    )
+
+
 def occurrence_task(
     mission: Mission,
     spec: OccurrenceSpec,
@@ -364,8 +396,15 @@ def occurrence_task(
     requirements: RequirementsRevision | None = None,
     now: float = 0.0,
     declared_policy: Sequence[str] = (),
+    criterion_linked: bool = False,
 ) -> OccurrenceTask:
     """Build the Task row for one occurrence.  Pure: nothing is written here.
+
+    ``criterion_linked`` (P2.3k verification P1-2): the plan's ``criterion_links``
+    point at this occurrence, so its accepted output is what a root criterion is
+    judged on.  Such a leaf keeps the default ``code_test`` layer even when its type
+    is read-only — ``code.verify-tests`` is ``external_read``, and it is exactly the
+    leaf whose report says the tests pass; the deterministic layer stays on it.
 
     A primitive starts READY — "may compete", which in this mode is not a permission
     because the v2 frontier takes only ``EligiblePrimitiveTask`` records.  A compound
@@ -393,7 +432,10 @@ def occurrence_task(
             ),
             success_criteria=criteria,
             verification_policy=occurrence_policy(
-                criteria, deployed, declared_policy, read_only=read_only_leaf(binding)
+                criteria,
+                deployed,
+                declared_policy,
+                read_only=read_only_leaf(binding) and not criterion_linked,
             ),
             allowed_tools=mission.allowed_tools,
             budget=budget,

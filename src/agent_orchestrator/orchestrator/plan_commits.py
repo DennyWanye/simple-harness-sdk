@@ -1305,6 +1305,11 @@ class PlanCommitsMixin:
             )
         built: list[OccurrenceTask] = []
         ordinal = len(stored)
+        # P2.3k verification P1-2: the occurrences a root criterion is linked to keep
+        # ``code_test`` whatever their side effect declares (``verify-tests``).
+        from .accepted_outputs import criterion_linked_occurrences
+
+        linked = criterion_linked_occurrences(network.obligation_coverage)
         for spec, binding in pending:
             ordinal += 1
             tokens = COMPOUND_TOKENS if spec.form is TaskForm.COMPOUND else share
@@ -1313,6 +1318,7 @@ class PlanCommitsMixin:
                     mission,
                     spec,
                     binding,
+                    criterion_linked=spec.occurrence_id in linked,
                     plan_revision=plan_revision,
                     budget=inherit_limits(
                         Budget(max_tokens=tokens, max_attempts=mission.budget.max_attempts),

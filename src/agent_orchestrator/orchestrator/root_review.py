@@ -209,6 +209,69 @@ class RootReviewState:
         }
 
 
+#: P2.3k verification P1-3: what an absolute path in a root parameter becomes in the
+#: request.  The workspace root (the shortest absolute path among the parameters) is
+#: ``<workspace>``, a path under it ``<workspace>/<relative>``, any other absolute path
+#: ``<path>``.  Host file-system layout is not evidence, must not reach the model, and
+#: must not move the request hash between machines.
+WORKSPACE_PLACEHOLDER = "<workspace>"
+PATH_PLACEHOLDER = "<path>"
+
+
+def _is_absolute_path(value: str) -> bool:
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
+
+
+def sanitised_goal_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
+    """The root's typed parameters with every host path replaced by a placeholder.
+
+    P2.3k verification P1-3.  ``typed_parameters.repository`` is the worktree's
+    absolute path on the host that ran the episode; before this it went into the
+    reviewer's JSON, into ``content_hash`` (the intent's ``context_version``) and so
+    into every event and fixture — the same Mission state hashed differently on two
+    machines, and the host's directory layout travelled into a model prompt.  The
+    reviewer needs to know *which* test the parameter names, never *where* the
+    checkout lives.  Pure and total: nothing else about a value is touched.
+    """
+
+    absolute = {
+        item.rstrip("/")
+        for item in parameters.values()
+        if isinstance(item, str) and _is_absolute_path(item)
+    }
+    # The workspace root is the absolute value the others live under: the one that
+    # prefixes the most of them, the shortest on a tie.  (Not simply the shortest —
+    # an unrelated short path such as ``/var/log`` must not claim the checkout.)
+    root = None
+    if absolute:
+        root = max(
+            sorted(absolute, key=len),
+            key=lambda candidate: sum(
+                1 for other in absolute if other != candidate and other.startswith(candidate + "/")
+            ),
+        )
+
+    def one(value: Any) -> Any:
+        if isinstance(value, str):
+            if not _is_absolute_path(value):
+                return value
+            if root is not None and (value == root or value.startswith(root + "/")):
+                relative = value[len(root) :].lstrip("/")
+                if not relative:
+                    return WORKSPACE_PLACEHOLDER
+                return f"{WORKSPACE_PLACEHOLDER}/{relative}"
+            return PATH_PLACEHOLDER
+        if isinstance(value, Mapping):
+            return {str(key): one(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [one(item) for item in value]
+        return value
+
+    return {str(key): one(item) for key, item in parameters.items()}
+
+
 @dataclass(frozen=True, slots=True)
 class RootReviewRequest:
     """The typed context the root reviewer is given.  No Mission-side authority in it.
@@ -241,6 +304,8 @@ class RootReviewRequest:
     mission_goal: str = ""
     #: P2.3k / N2: the root binding's typed parameters (``repository``,
     #: ``failing_test``, …) — what the template's placeholders actually stood for.
+    #: Host paths are placeholders (:func:`sanitised_goal_parameters`, P1-3): the
+    #: request never carries where a checkout lives.
     goal_parameters: Mapping[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
@@ -1103,7 +1168,9 @@ class RootReviewCoordinator:
         # Mission row and the root binding — never composed here.
         mission = self.store.get_mission(mission_id)
         mission_goal = "" if mission is None else str(mission.goal)
-        goal_parameters = {} if binding is None else dict(binding.typed_parameters)
+        goal_parameters = (
+            {} if binding is None else sanitised_goal_parameters(binding.typed_parameters)
+        )
         # What each Acceptance *delivered*, read from migration 17's
         # ``acceptance_outputs``.  Part 3a's round-3 smoke ended here: the request
         # showed only ``acceptance.artifact_refs``, which the accept path does not

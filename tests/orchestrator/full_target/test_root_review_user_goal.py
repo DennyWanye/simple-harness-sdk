@@ -37,7 +37,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_htn_deployment_wiring import FAILING_TEST, REPOSITORY  # noqa: E402
 from test_root_review_evidence import CodeWorld, _c3_artifacts  # noqa: E402
 
-from agent_orchestrator.orchestrator.root_review import RootReviewRequest  # noqa: E402
+from agent_orchestrator.orchestrator.root_review import (  # noqa: E402
+    PATH_PLACEHOLDER,
+    WORKSPACE_PLACEHOLDER,
+    RootReviewRequest,
+    sanitised_goal_parameters,
+)
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "htn" / "c2_root_review"
 
@@ -196,3 +201,79 @@ def test_the_prompt_v3_reads_the_requirement_against_the_user_goal_and_v2_is_fro
     # Everything v2 said, v3 still says: it is a revision, not a rewrite.
     for field in ("excerpt", "covered_by", "carries_root_criteria", "不得据此判 false"):
         assert field in ROOT_REVIEWER.instructions, field
+
+
+# ======================================================================================
+# 4. Verification P1-3: no host path in the request, and a hash that does not move
+#    with the checkout's location
+# ======================================================================================
+
+
+def test_host_paths_in_the_root_parameters_become_placeholders() -> None:
+    cleaned = sanitised_goal_parameters(
+        {
+            "repository": "/Users/someone/work/episodes/C3/worktree",
+            "failing_test": "tests/test_public_window.py::test_window_sum",
+            "scratch": "/Users/someone/work/episodes/C3/worktree/tmp/notes.md",
+            "elsewhere": "/var/log/other",
+            "windows": "C:\\work\\repo",
+            "count": 3,
+            "nested": {"path": "/Users/someone/work/episodes/C3/worktree/src"},
+            "many": ["/Users/someone/work/episodes/C3/worktree/a", "b"],
+        }
+    )
+    assert cleaned == {
+        "repository": WORKSPACE_PLACEHOLDER,
+        "failing_test": "tests/test_public_window.py::test_window_sum",
+        "scratch": f"{WORKSPACE_PLACEHOLDER}/tmp/notes.md",
+        "elsewhere": PATH_PLACEHOLDER,
+        "windows": PATH_PLACEHOLDER,
+        "count": 3,
+        "nested": {"path": f"{WORKSPACE_PLACEHOLDER}/src"},
+        "many": [f"{WORKSPACE_PLACEHOLDER}/a", "b"],
+    }
+    assert sanitised_goal_parameters({"repository": "repo-1", "failing_test": "t.py"}) == {
+        "repository": "repo-1",
+        "failing_test": "t.py",
+    }
+
+
+def test_the_request_hash_does_not_move_with_the_checkout_location() -> None:
+    """Two hosts, two worktree paths, one Mission state: one ``context_version``."""
+
+    def request(repository: str) -> RootReviewRequest:
+        return RootReviewRequest(
+            package_id="pkg-1",
+            goal_task_id="task-root",
+            goal_statement="make the named failing test pass and explain the change",
+            criteria=(),
+            contributions=(),
+            requirements_revision=3,
+            mission_goal="修掉失败的测试",
+            goal_parameters=sanitised_goal_parameters(
+                {"repository": repository, "failing_test": "tests/test_kv.py::test_get"}
+            ),
+        )
+
+    first = request("/Users/alice/runs/C3-r0/worktree")
+    second = request("/home/bob/evidence/2026-09-16/H-L3-C3-r0/worktree")
+    assert first.content_hash() == second.content_hash()
+    assert first.to_json()["goal_parameters"]["repository"] == WORKSPACE_PLACEHOLDER
+
+
+def test_the_real_request_carries_no_host_path(tmp_path, monkeypatch) -> None:
+    """On the shipped code domain with the C3 artifacts, a worktree bound as an
+    absolute path reaches the reviewer as ``<workspace>`` and nowhere else."""
+
+    import test_htn_deployment_wiring as wiring
+
+    worktree = str(Path(tmp_path) / "episodes" / "H-L3-C3-r0" / "worktree")
+    monkeypatch.setattr(wiring, "REPOSITORY", worktree)
+    world = _c3(tmp_path)
+    shown = world.request().to_json()
+    assert shown["goal_parameters"] == {
+        "repository": WORKSPACE_PLACEHOLDER,
+        "failing_test": FAILING_TEST,
+    }
+    assert worktree not in json.dumps(shown, ensure_ascii=False)
+    assert str(tmp_path) not in json.dumps(shown, ensure_ascii=False)

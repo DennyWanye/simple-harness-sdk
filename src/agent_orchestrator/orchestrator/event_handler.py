@@ -220,6 +220,7 @@ from .hierarchical_dispatch import (
     is_hierarchical,
     record_assembly_missing,
 )
+from .occurrence_tasks import read_only_rewrites
 from .plan_commits import PlanPrincipal
 from .resolution_commits import eligible_root_receipts
 
@@ -4710,6 +4711,42 @@ class Orchestrator:
             await self._release_attempt(attempt.id, cancel=False)
             self._note(f"attempt {attempt.id}: rewrote protected {rewritten} → RETRY_WAIT")
             return
+        # P2.3k verification P1-2: a hierarchical leaf whose type declares itself
+        # read-only may not have changed a file it started from.  Grok C3's ``facts``
+        # / ``reproduce`` leaves rewrote ``stats/window.py``; with ``code_test`` no
+        # longer on such leaves, the declaration has to be enforced where the files
+        # come in, not merely trusted.  Legacy Missions carry no binding and are
+        # untouched (``new_mode`` answers None).
+        new_mode = self._new_mode(mission)
+        if new_mode is not None:
+            binding = new_mode.semantics().task_semantics_of(mission.id, task.id)
+            rewrote = (
+                []
+                if binding is None
+                else read_only_rewrites(binding, artifacts, initial, guarded=guarded)
+            )
+            if rewrote:
+                self.commit.reject_result(
+                    attempt.id,
+                    turn_id=result.turn_id,
+                    reason="read_only_leaf_rewrote_workspace",
+                    detail={
+                        "paths": rewrote,
+                        "side_effect_kind": str(binding.side_effect_kind),
+                        "capabilities": list(binding.capability_requirements),
+                        "hint": (
+                            "this leaf's task type is read-only: observe and report at "
+                            "its declared output ports; do not change existing files"
+                        ),
+                    },
+                )
+                self._settle_intent(intent, "FAILED")
+                self._settle_if_known(attempt)
+                await self._release_attempt(attempt.id, cancel=False)
+                self._note(
+                    f"attempt {attempt.id}: read-only leaf rewrote {rewrote} → RETRY_WAIT"
+                )
+                return
         referenced = [
             artifact
             for artifact in artifacts
@@ -4734,7 +4771,7 @@ class Orchestrator:
         # P2.3b / TG §7: a child's result advances its parent compound's *typed* phase.
         # It never creates an Attempt for the compound and never writes its Task row —
         # the phase is a projection of typed state, recorded as an event.
-        new_mode = self._new_mode(mission)
+        # (``new_mode`` was asked once, above, before the read-only check.)
         if new_mode is not None:
             try:
                 new_mode.advance_compound_phases(mission.id)
@@ -7632,10 +7669,18 @@ class Orchestrator:
         acceptance's accepted artifacts, and the outputs P2.3h indexed on declared
         ports.  One path written by several contributions is not a conflict here —
         ordering in this mode is the typed network's, not ``dependency_ids`` — so the
-        rule is override: a later acceptance overrides an earlier one, and the output
-        of a step the plan made answerable for a root criterion (``criterion_links``)
-        overrides the rest, because that output is what the root criterion reads (ADR
-        §9.1).  Nothing raises; what was superseded is written down once, in
+        rule is override, weighted ``(criterion-linked, port-indexed, acceptance
+        order)``: the output of a step the plan made answerable for a root criterion
+        wins, then an output the reviewer read at a declared port, then the later
+        acceptance (the clock is the tie-break, never the rule).
+
+        P2.3k verification P1-1 (AER I05, "what the reviewer saw is what is
+        delivered"): an output a root criterion is linked to is **never dropped**.
+        When two criterion-linked port outputs land on one path — C1-r1's ``verify``
+        ``report`` and ``summarize`` ``summary`` were both ``REPORT.md`` — the loser
+        keeps its bytes in the tree under ``accepted-outputs/<task>/<port>/<path>``,
+        and the record names both artifacts.  Nothing raises; what was superseded
+        and where it was kept is written down once, in
         ``ArtifactMergeNotApplicableUnderHierarchical``.
         """
 
@@ -7658,27 +7703,21 @@ class Orchestrator:
             for item in self._root_review(mission, new_mode).carried_criteria(mission.id)
         }
         tasks_by_id = {task.id: task for task in tasks}
-        # (linked, acceptance rank, port-indexed) → the placement that wins a path.
-        placed: dict[str, tuple[tuple[int, int, int], str, Artifact]] = {}
-        writers: dict[str, list[str]] = {}
+        # path → every placement offered for it, each (weight, task_id, artifact, port)
+        offered: dict[str, list[tuple[tuple[int, int, int], str, Artifact, str | None]]] = {}
 
-        def place(task_id: str, artifact: Artifact | None, rank: int, *, port: bool) -> None:
+        def place(task_id: str, artifact: Artifact | None, rank: int, port: str | None) -> None:
             if artifact is None:
                 return
-            order = writers.setdefault(artifact.path, [])
-            if task_id not in order:
-                order.append(task_id)
-            weight = (int(task_id in linked), rank, int(port))
-            current = placed.get(artifact.path)
-            if current is None or weight > current[0]:
-                placed[artifact.path] = (weight, task_id, artifact)
+            weight = (int(task_id in linked), int(port is not None), rank)
+            offered.setdefault(artifact.path, []).append((weight, task_id, artifact, port))
 
         for acceptance in acceptances:
             task_id = str(acceptance.task_id)
             rank = rank_of[str(acceptance.acceptance_id)]
             task = tasks_by_id.get(task_id) or self.store.get_task(task_id)
             for artifact_id in () if task is None else task.accepted_artifacts:
-                place(task_id, self.store.get_artifact(artifact_id), rank, port=False)
+                place(task_id, self.store.get_artifact(artifact_id), rank, None)
         for row in semantics.list_acceptance_outputs(mission.id):
             acceptance_id = str(row.get("acceptance_id", ""))
             if acceptance_id not in rank_of:
@@ -7687,36 +7726,69 @@ class Orchestrator:
                 str(row.get("producer_task_ref", "")),
                 self.store.get_artifact(str(row.get("artifact_id", ""))),
                 rank_of[acceptance_id],
-                port=True,
+                str(row.get("output_port", "")) or None,
             )
-        superseded = [
-            {
-                "path": path,
-                "kept_task_id": placed[path][1],
-                "kept_artifact_id": placed[path][2].id,
-                "kept_by": "criterion_link" if placed[path][1] in linked else "acceptance_order",
-                "superseded_task_ids": [item for item in order if item != placed[path][1]],
-            }
-            for path, order in sorted(writers.items())
-            if len(order) > 1
-        ]
+        tree: dict[str, UpstreamInput] = {}
+        superseded: list[dict[str, Any]] = []
+        for path in sorted(offered):
+            placements = sorted(offered[path], key=lambda item: item[0], reverse=True)
+            _weight, kept_task, kept_artifact, _port = placements[0]
+            tree[path] = UpstreamInput(kept_task, path, kept_artifact.content_hash, kept_artifact.id)
+            losers: list[dict[str, Any]] = []
+            seen_artifacts = {kept_artifact.id}
+            for weight, task_id, artifact, port in placements[1:]:
+                if artifact.id in seen_artifacts or artifact.content_hash == kept_artifact.content_hash:
+                    continue  # the same bytes under another placement are not a loss
+                seen_artifacts.add(artifact.id)
+                kept_at = None
+                if weight[0] and port is not None:
+                    # I05: evidence a root criterion was judged on stays deliverable.
+                    kept_at = f"accepted-outputs/{task_id}/{port}/{path}"
+                    tree[kept_at] = UpstreamInput(task_id, kept_at, artifact.content_hash, artifact.id)
+                losers.append(
+                    {
+                        "task_id": task_id,
+                        "artifact_id": artifact.id,
+                        "content_hash": artifact.content_hash,
+                        "linked": bool(weight[0]),
+                        "port": port,
+                        "kept_at": kept_at,
+                    }
+                )
+            if not losers:
+                continue
+            kept_by = "acceptance_order"
+            if kept_task in linked:
+                kept_by = (
+                    "acceptance_order_between_linked"
+                    if any(item["linked"] for item in losers)
+                    else "criterion_link"
+                )
+            superseded.append(
+                {
+                    "path": path,
+                    "kept_task_id": kept_task,
+                    "kept_artifact_id": kept_artifact.id,
+                    "kept_content_hash": kept_artifact.content_hash,
+                    "kept_by": kept_by,
+                    "superseded_task_ids": list(dict.fromkeys(item["task_id"] for item in losers)),
+                    "superseded": losers,
+                }
+            )
         self.commit.record_artifact_merge_not_applicable(
             mission.id,
             subject=f"{mission.id}:judge:artifact-merge",
             contributions=len(acceptances),
-            artifacts=len(placed),
+            artifacts=len(tree),
             superseded=superseded,
         )
         if superseded:
             self._note(
-                f"hierarchical mission {mission.id}: judgment tree keeps the last / "
-                f"criterion-linked writer of {[item['path'] for item in superseded]}; "
-                "the legacy merge is not applied"
+                f"hierarchical mission {mission.id}: judgment tree keeps the criterion-linked / "
+                f"port / last writer of {[item['path'] for item in superseded]}; a linked loser "
+                "is kept under accepted-outputs/; the legacy merge is not applied"
             )
-        return [
-            UpstreamInput(task_id, path, artifact.content_hash, artifact.id)
-            for path, (_weight, task_id, artifact) in sorted(placed.items())
-        ]
+        return [tree[path] for path in sorted(tree)]
 
     def _artifacts_by_task(self, tasks: Sequence[Task]) -> dict[str, list[Artifact]]:
         by_task: dict[str, list[Artifact]] = {}
