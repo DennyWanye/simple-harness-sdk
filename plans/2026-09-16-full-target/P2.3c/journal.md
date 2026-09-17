@@ -3676,6 +3676,51 @@ P2 未做：见核验报告 §4（`runtime_unavailable` 不键 0 token、种子 
 1. **口径**：CHANGELOG 0.12.2 标题改为 P2.3e–P2.3m；文首「架构捷径声明」三项——根收尾 = `root_reviewer` + Mission Judge、Mission 账户两次；非根 compound = 机械 composition，不是独立 COMPOSITION 审阅；根评审 v3 准则解释权以 `mission_goal` 为准（与「准则以 goal signature 为准」相反）。HANDOFF 文首「最后核查」改为本片。
 2. **AER I05/I07**：`composition_review._outcomes` 删掉 `c-composition`「有子验收即 PASS」。无 coverage 映射 → UNKNOWN + `composition_criterion_uncovered`，不形成 ACCEPT。对照：M3 `assess-by-reading` 有链接的主路径仍决议。测试：`test_c_composition_without_coverage_does_not_form_accept`、`test_linked_assess_by_reading_still_forms_a_resolution`。变异 M1 恢复 PASS-if-accepted → 1 failed，KILLED（`/tmp/p23m-i07-composition_review.py.bak` 恢复）。回归：full_target **2867 passed / 2 skipped**（上一段 2865，+2）；旧模式 560/13/0；ruff 清。
 
+## 2q. P2.3o：下游叶工作区预铺上游已验收产物（2026-09-18，分支 `p2.3o-verify-workspace-inputs`，基 `2845b7e` = 0.12.2 候选第 3 版）
+
+输入：用户任务书 + 真实局只读 `H-L3-C3-r0`（证据目录零写入）。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。不碰 `planner_package.py` / `hierarchical_dispatch.py` 的库与适用性（P2.3n 并行）。
+
+### 证据（只读查询）
+
+C3-r0（`mission-01a511b9a5d78b1f`）：种子方法 `code.fix-by-patch@2`。facts / diagnosis / patch 三叶 AcceptanceCommitted；patch 端口 `patch.diff` 已验收，隐藏评分器 PASS（`stats/window.py` 哈希 `c6f733bacfb5…`）。verify 叶九次 `VerificationFailed`，每次 `rule_check`：`artifact 'stats/window.py' is not a recorded workspace file`（`checked_artifacts: stats/window.py, REPORT.md`）→ `MissionFailed{budget_exhausted}`。
+
+链：`data_requirements` 有 verify←patch 的 `patch` 端口；`input_manifests` 在验收时才落行，verify 从未验收故无行；`bound_inputs` 表为空（解析走 `acceptance_outputs` + 网络 DATA 边，不读该表）。派发意图 `inputs` 只有 `patch.diff`。工作区 `seed` 是未打补丁快照，`read_only_inputs: ["patch.diff"]`。Worker 自己把已验收的 `stats/window.py` 写入信封；P2.3m 同哈希过滤不把该路径登记为本叶产物；`rule_check` 的索引是本 Attempt 已登记产物，找不到它。`verification_copy` 从 seed + `patch.diff` + `REPORT.md` 重建，`code_test` 若跑到也是红基线。
+
+### 修法
+
+新文件 `artifacts/bound_workspace.py`（纯函数，不写库）：
+
+1. **`overlay_bound_producer_files`**：每个已绑定生产者，把它已验收且路径落在消费者 seed 上的产物并进 `UpstreamInput`。端口文件仍在；`REPORT.md` 等非 seed 文件不进基线（那是生产者自己的产出）。无 DATA 绑定的 ORDER 前驱贡献零文件（§24.1 裁决 4）。
+2. **`bound_artifacts_named_in_envelope`**：信封点名的绑定输入视为 recorded workspace file，即使收集处按 P2.3m 同哈希丢掉了它。
+
+接线（`event_handler.py`，已有 `new_mode` 变量上，不加第 20 处 `_new_mode`）：
+
+- `_next_attempt`：`attempt_inputs` 之后 overlay，冻进 intent.config.inputs（verify 局 `inputs=2`：`patch.diff` + `stats/window.py`）。
+- `_bind_workspace`：detail 加 `bound_workspace_files`（该 Attempt 起步的全部绑定路径）。
+- `_protected_files`：seed 路径上的 overlay 不当保护输入（否则新写会被打成 `protected_path_rewritten`，P2.3m 的规划升级跑不到）。端口文件（`patch.diff`）仍保护。
+- `_verify`：rule_check / verification_copy 的 artifacts 并上绑定输入。预铺文件走 P2.3m 同哈希口径，不算 Worker 改写。inspect/summarize@2 的可选 patch 走同一 overlay，不按叶类型分支。
+
+### 测试
+
+`test_verify_workspace_inputs.py` 8 条。夹具 `fixtures/htn/c3_verify_workspace/`（C3-r0 的 VerificationFailed 载荷 + 种子/补丁字节）。真 `Orchestrator.run()`：patch 验收 → verify 意图含 `stats/window.py` → rule_check / code_test PASS → 根评审 ACCEPT → COMPLETED。修前红即夹具那句 `not a recorded workspace file`。
+
+变异 4/4 KILLED（临时改源、从 `/tmp/p23o-*.bak` 恢复，不用 git checkout）：
+
+| # | 变异 | 结果 |
+|---|---|---|
+| M1 | overlay 原样返回 inputs | 3 failed（单元缺 window.py；端到端 C3 原句）→ KILLED |
+| M2 | rule_check 并集只返回 recorded | 2 failed（端到端 C3 原句）→ KILLED |
+| M3 | overlay 不按 seed 过滤（扫进 REPORT.md） | 2 failed（端到端 FAILED / 路径断言）→ KILLED |
+| M4 | 派发处关掉 overlay 调用 | 1 failed（端到端 C3 原句）→ KILLED |
+
+回归：full_target **2875 passed / 2 skipped**（P2.3m 审计后 2867/2，+8）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**；ruff 清；`_new_mode` 仍 19；legacy 事件字节 golden 不变。
+
+### 未做
+
+- 生产者只验收了 diff、没把改过的源码登记为产物时，不在内存里 apply unified diff（没有 artifact_id 填不进 `_input_files`）。C3 的 patch 叶登记了 `stats/window.py`，主路径覆盖。
+- 真实模型第 3 批未验。
+- P2.3n 的 Planner 包/合成方法采用（避开 `planner_package.py` 与 `hierarchical_dispatch.py` 库/适用性）。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

@@ -1,0 +1,18 @@
+{
+  "failures": [
+    {
+      "detail": {
+        "checked_artifacts": [
+          "stats/window.py",
+          "REPORT.md"
+        ],
+        "problems": [
+          "artifact 'stats/window.py' is not a recorded workspace file"
+        ]
+      },
+      "layer": "rule_check",
+      "status": "FAIL",
+      "summary": "artifact 'stats/window.py' is not a recorded workspace file"
+    }
+  ]
+}

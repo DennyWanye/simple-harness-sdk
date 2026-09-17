@@ -1,4 +1,4 @@
-## 0.12.2 — P2.3e–P2.3m：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议与只读拒绝有界（2026-09-17）
+## 0.12.2 — P2.3e–P2.3o：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界与下游工作区预铺补丁（2026-09-18）
 
 **架构捷径声明（0.12.2 对计划的诚实口径；禁止相反表述）：**
 
@@ -7,6 +7,13 @@
 3. **根评审 v3**：准则解释权以 `mission_goal` 为准，与「准则以 goal signature 为准」相反。
 
 **计划一致性审计必须修项**：`c-composition` 无 coverage 映射时不得因「有子验收」填 PASS → UNKNOWN + `composition_criterion_uncovered`，不形成 ACCEPT。审计全文 Host `plans/taskSys2/升级planV1/impl/计划一致性审计-P2.3d至P2.3l-2026-09-17.zh-CN.md`。
+
+**P2.3o：下游叶工作区预铺上游已验收产物。** 分支 `p2.3o-verify-workspace-inputs`，基 2845b7e；版本号不动。真实局 H-L3-C3-r0：`code.fix-by-patch@2` 的 patch 叶已验收且隐藏评分 PASS，verify 叶九次 `rule_check`「`artifact 'stats/window.py' is not a recorded workspace file`」→ `MissionFailed{budget_exhausted}`。InputManifest 只绑 `patch.diff`，工作区是未打补丁种子；Worker 把已验收源码列入信封，P2.3m 同哈希不登记为本叶产物，`rule_check` 认不得。
+
+- **overlay**：绑定生产者已验收且路径在消费者 seed 上的文件并进派发 `inputs`（verify 局 `patch.diff` + `stats/window.py`）。ORDER 前驱仍贡献零文件。
+- **rule_check**：信封点名的绑定输入视为 recorded workspace file。`verification_copy` / `code_test` 跑在预铺后的工作区。预铺文件按 P2.3m 同哈希不算 Worker 改写。
+- **inspect/summarize@2** 可选 patch 走同一 overlay。
+- 测试：`test_verify_workspace_inputs.py` 8 条（C3-r0 夹具 + 真 `Orchestrator.run()` COMPLETED）；4 变异 KILLED。full_target **2875 passed / 2 skipped**（+8）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2q。
 
 **P2.3l：Grok 第 2 批 L4 的两个 P0（N5 UNKNOWN grant 锁死重交接 / N7 非根 compound 无 composition 决议）。** 分支 `p2.3l-provider-grant-composition`，基 4a446f3；版本号不动。诊断 `plans/taskSys2/升级planV1/impl/Grok验收-第2批L4诊断-2026-09-17.zh-CN.md`；`contracts/` 零改动，无新配置项、无新提示词、无新事件名。
 
