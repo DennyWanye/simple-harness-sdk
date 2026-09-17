@@ -1632,6 +1632,13 @@ class Orchestrator:
                 idle_rounds = 0
                 if cycles % RECONCILE_EVERY_CYCLES == 0:
                     await self.actions.reconcile()
+                # P2.3e: a progressing cycle does not sleep, and the in-process bridge
+                # answers without suspending — so a run of progressing cycles used to
+                # starve the runtime's own turn tasks (H-L3-C1: two turns submitted at
+                # t+0 whose preflight ran at t+28.5 s, the instant this loop finally
+                # returned).  One yield per cycle costs nothing and keeps the loop's
+                # progress from being the only thing that is allowed to happen.
+                await asyncio.sleep(0)
                 continue
             if not until_idle:
                 # P2.3c part 2d, P2-17: a caller that drives the loop one step at a
@@ -2107,6 +2114,18 @@ class Orchestrator:
         for goal_task_id in goals:
             if new_mode.synthesis_round_recorded(mission.id, goal_task_id):
                 continue
+            subject = self._synthesizer_subject(mission.id, goal_task_id, ordinal=1)
+            if self.store.get_intent_for_subject(subject) is not None:
+                # P2.3e (H-L3-C1, three identical episodes).  The round is out and the
+                # goal stays in ``goals_needing_method`` until its answer is recorded, so
+                # this method used to ask again every cycle; ``create_service_intent`` is
+                # idempotent per subject and handed the same intent back, and *that* was
+                # reported as progress.  A progressing cycle never sleeps, so ``run()``
+                # spun its whole ``max_cycles`` budget in ~28 s — the runtime's turn
+                # tasks starved the whole time — and then left by the ``max_cycles``
+                # exit with both planning turns submitted and nobody left to collect
+                # them.  Asking once is the bound; waiting is not progress.
+                continue
             try:
                 await self._create_synthesizer_intent(mission.id, goal_task_id, ordinal=1)
             except (ContractError, CommitRejected, BudgetError) as error:
@@ -2114,6 +2133,12 @@ class Orchestrator:
                 continue
             progressed = True
         return progressed
+
+    @staticmethod
+    def _synthesizer_subject(mission_id: str, goal_task_id: str, *, ordinal: int) -> str:
+        """The MethodSynthesizer intent's subject — its creation key and its identity."""
+
+        return f"{mission_id}:synthesizer:{goal_task_id}:{ordinal}"
 
     # ------------------------------------------------------------- planning
     def _prune_deferred(self) -> None:
@@ -2753,7 +2778,7 @@ class Orchestrator:
             ),
         )
         message = user_message_json(json.dumps(request.to_json(), ensure_ascii=False))
-        subject = f"{mission_id}:synthesizer:{goal_task_id}:{ordinal}"
+        subject = self._synthesizer_subject(mission_id, goal_task_id, ordinal=ordinal)
         return self.commit.create_service_intent(
             kind="plan",
             subject_id=subject,

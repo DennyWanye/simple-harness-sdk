@@ -2682,6 +2682,98 @@ uv run --frozen --no-sync --group dev --extra local-capacity \
 结论：审阅处置后的代码在真实模型上仍闭环；D5-A/P0-1 的分支本局未触发（根评审一刀 ACCEPT），
 其覆盖以离线测试为准。
 
+## 2g. P2.3e：`run()` 在两个规划类意图在途时提前退出（2026-09-17，分支 `p2.3e-run-exit`，基 `05cfbb83`）
+
+### 现象（Grok 验收重跑，H-L3-C1 三局完全一致）
+
+runner 在 `orchestrator.run()` 之前先跑 `first_evidence_round`，对每条候选方法各问一次前置谓词，
+`code.test-is-failing` 被同一观察器记了两次 FALSE（C 题可见套件本来就是绿的）。在 05cfbb83 上，
+D2b 的证据饱和判定（N=2）因此在**第一个规划周期**就成立：`_start_planning` 开 `planner:1`，
+下一周期 `_request_method_synthesis` 开 `synthesizer:task-root:1`，两者都 `InputSubmitted`。
+之后 `run()` 在 ~28.5 s 时返回，`Orchestrator` 上下文关闭，两个 agent run 被取消——
+synthesizer 记 `runtime_boundary_interrupted`，planner 记 `provider_error_after_handoff` /
+`run.waiting{provider_outcome_unknown}`。Mission 停在 PLANNING，事件表只有
+AgentCreated/InputSubmitted，`unknown_usage_calls=1`、token=0。
+
+### 根因（一句话）
+
+**`_request_method_synthesis` 把「合成轮已在途、幂等返回同一意图」当成进展，`run()` 因而
+一个周期都不 sleep 地把 `max_cycles=10 000` 烧完并从 `max_cycles` 出口返回，`_has_inflight()`
+根本没被问到。**
+
+证据链（都在 `runs/h-arm/episodes/H-L3-C1-r0/orchestrator/`）：
+
+| 时间戳 | 事实 |
+| --- | --- |
+| `1789614780.03` | 两个意图 AgentCreated / InputSubmitted（orchestrator.db `events` 7–11） |
+| `1789614808.496` | planner run 的 `runtime.preflight` **才开始**（execution.db `run_events` seq 5）；synthesizer 的在 `.515` |
+| `1789614808.51–.54` | 两个 run 在 30 ms 内被打断：`runtime_boundary_interrupted`、`provider_error_after_handoff`、`run.waiting{provider_outcome_unknown}` |
+| `elapsed_seconds = 30.41` | 整局 30 s，无 `error_type`、无 `timed_out`（result.json） |
+
+也就是说：两个回合提交后 **28.5 s 内根本没开始跑**（不是代理慢、不是 28 s 限制），
+它们的 preflight 时间戳恰好等于 `run()` 返回、`__aexit__` 开始取消的那一瞬——事件循环这 28.5 s
+一直被 `run()` 独占。逐条排除：
+
+- `_has_inflight()`：对两类 `plan` 意图判定都正确（SUBMITTED 且 `runtime_profile_id="default"` 在 pools 里）——但它只在**无进展**的周期才被调用，而这 28.5 s 里每个周期都"有进展"。
+- 进展从哪来：`_cycle_inner` 每周期先跑 `_request_method_synthesis(mission)`；`goals_needing_method` 在合成轮在途期间仍返回 `task-root`（`synthesis_round_recorded` 只在 `_collect_synthesizer` 记下结果后才为真）；`_create_synthesizer_intent` → `commit.create_service_intent` 按 `subject_id` **幂等**，直接返回已存在的意图、不抛异常；方法于是 `progressed = True`。
+- 为什么 10 000 周期是 28.5 s：每周期 `_gather_evidence`（无新观察）+ `list_intents` + `_collect`（bridge 进程内同步返回 None）+ `_observe_liveness`，约 2.85 ms；`await` 都不真正挂起，runtime 的回合任务拿不到事件循环。
+- 为什么 a8e902a 上没有：没有 D2b，合成轮不会在第一周期开，Planner 独自在途时每周期无进展 → `_has_inflight()` 为真 → 正常 poll，40 s 后 planner 成功。
+- P2.3d 的 e2e 测试为什么没抓到：`test_a_saturated_goal_is_synthesised_and_the_new_method_is_planned` 的注释写着「`run()` 逐周期驱动而不是让它自己 poll：`_observe_liveness` 把心跳报成进展，未完成的脚本回合会先把 `max_cycles` 烧完」——作者看见了同一个症状、归因错了（liveness 对 plan 意图返回 False），并在测试里绕开了 `run()`，于是缺陷正好躲在被绕开的那条路上。
+- runtime 侧（handoff / interrupt）无缺陷：`runtime_boundary_interrupted` 与 `provider_error_after_handoff` 都是 `Orchestrator.__aexit__` 取消在途回合的正常记账；同一份 Planner 请求快照重放到 Grok 代理成功（200 / 58 s / 7 050 token）也印证不是代理问题。
+
+### 修法（`src/agent_orchestrator/orchestrator/event_handler.py`，+26/−1）
+
+1. `_request_method_synthesis`（L2117–2128）：创建前先 `store.get_intent_for_subject(subject)`，已有意图的目标直接 `continue`、不计进展。问一次是上限，等待不是进展。subject 拼法收拢到新 `_synthesizer_subject()`（L2137–2141），`_create_synthesizer_intent` 同用（L2781）。
+2. `run()`（L1634–1641）：每个有进展的周期后 `await asyncio.sleep(0)`——连续进展的循环也把控制权交给 runtime 的回合任务，不再让「循环自己的进展」成为唯一被允许发生的事。这是防御，不是根因修复：单独去掉第 1 条时红测试仍红（见下）。
+
+不改的：`_has_inflight`、profile/pool 归属、`_planner_intents_in_flight` / `_synthesis_intents_in_flight`、`_after_synthesis_round` 的等待逻辑、runtime 的 handoff/interrupt 路径、`max_cycles` 的语义（仍是"有进展周期"的上限，`run()` 退出后 Mission 保持原状是调用方的边界）。`contracts/` 未动。
+
+### 测试（`tests/orchestrator/full_target/test_run_loop_inflight_planning.py`，241 行，2 条）
+
+先红后绿，两条都在修前跑过：
+
+| 测试 | 修前 | 修后 |
+| --- | --- | --- |
+| `test_run_waits_for_two_inflight_planning_intents_however_slow_the_model_is` — 提供者全部挂在 `gate` 上（顶替 60 s 的 Grok 调用），`planner:1` + `synthesizer:task-root:1` 同时在途，`run(max_cycles=120)` 放进 task，1 s 后断言未返回、两回合已到达提供者；开闸后断言两意图都不再在途、`MethodSynthesisRoundRecorded{admitted}`、`PlanRevisionCommitted`、Mission 不在 PLANNING | 红：`returned=True`，两意图都还是 SUBMITTED，事件表只到 InputSubmitted——与真实三局同形 | 绿 |
+| `test_two_concurrent_planning_intents_each_settle_with_their_events` — 纯 `run()`，不逐周期驱动、不手工结算：planner:1 被拒、合成方法准入、planner:2 采用；断言三个意图各自有 `IntentSettled`、`PlanningRejected`、`PlanRevisionCommitted`，有进展的周期 < 60 | 红：`progressing=400`（`max_cycles` 烧尽）、零结算、Mission PLANNING | 绿：`progressing=4` |
+
+变异自证：只保留 `sleep(0)`、把合成守卫改成 `if False and ...` → 第 1 条仍红（`run()` 仍在 1 s 内返回），第 2 条绿（sleep(0) 让回合跑起来但 `max_cycles` 照样烧）。守卫是根因修复，sleep(0) 是防御。
+
+夹具口径：`build_world` 已经调过 `begin_planning`，Mission 起手就是 PLANNING，所以 `_start_planning` 在测试里不会跑；测试用同一个 `_try_planner_intent(ordinal=1)` 开第一轮，与 `test_the_planning_ladder_waits_for_a_synthesis_round_instead_of_racing_it` 同法。`max_concurrency=3` 取 runner 的值——`=1` 时合成轮的预留会把 Planner 推进 `_deferred_planning`，不是赛跑形状。
+
+### 真实复现（Grok 通路，runner 直跑，1 局）
+
+命令（runner 只读，SDK 通过 `PYTHONPATH` 指到本分支的 `src`，已先验证 `agent_orchestrator.__file__` 指向 `simple-harness-sdk-p23e/src`；`result.json` 里的 `sdk_commit` 仍写 runner 读的主树 HEAD `05cfbb83`，**实际跑的是本分支修后代码**）：
+
+```
+cd .local-test-evidence/2026-09-16/htn-acceptance/runner
+PYTHONPATH=/Users/taiwan/PROJECTS/SimplaHarness/simple-harness-sdk-p23e/src \
+  .../a96-grok/appworld-venv/bin/python run_h_arm.py --layers L3 --reps 0 --workers 1 --tasks C1 \
+  --out .../htn-acceptance/runs-p23e-probe/h-arm
+```
+
+证据目录 `htn-acceptance/runs-p23e-probe/h-arm/episodes/H-L3-C1-r0/`（`result.json`、`orchestrator/{orchestrator.db,execution.db}`、`grok-usage-audit.jsonl`）。用了 **1 局**（上限 3），修前不再单跑复现（离线红测试与三局证据同形）。
+
+| 项 | 修前（`runs/h-arm/…/H-L3-C1-r0`，三局一致） | 修后（本局） |
+| --- | --- | --- |
+| 开局形状 | planner:1 + synthesizer:task-root:1 同周期在途 | **相同**（`events` 5–11 同形，两个回合 `runtime.preflight` 在提交后 **80 ms** 内开始，不再是 28.5 s） |
+| planner:1 | 28.5 s 后被取消，`provider_error_after_handoff`，无结算 | **成功**（Grok 121 s，750 输出 token）→ `IntentSettled{FAILED}` + **`PlanningRejected{proposal_not_grounded}`**（模型点了 `code.fix-by-patch`，它是 NEEDS_EVIDENCE）→ 梯子开 planner:2 |
+| synthesizer:task-root:1 | 被取消，`runtime_boundary_interrupted`，无结算 | **成功**（Grok 163 s，1 868 输出 token）→ **`MethodSynthesisRoundRecorded{admitted:false, verdict:UNREADABLE}`**（提案缺 `method_id`/`goal_type_ref`/… 十个必填字段，模型输出质量问题，与本片无关）→ `IntentSettled{FAILED}` |
+| 事件表 | 11 条，到 InputSubmitted 为止 | 20 条：`IntentSettled×2`、`BudgetReleased×2`、`PlanningRejected×1`、`MethodSynthesisRoundRecorded×1`、planner:2 的 `BudgetReserved/AgentCreated/InputSubmitted` |
+| Mission 终态 | PLANNING，30.4 s，`timed_out=null` | PLANNING，**1802.4 s，`timed_out=true`**（见下一段：卡在 planner:2） |
+| token（已知下界） | 0，`unknown_usage_calls=1` | **25 672**（3 次调用：8 068 入 / 17 604 出），`unknown_usage_calls=1`（planner:2） |
+
+结论：**P2.3e 的缺陷已在真实通路上消失**——同一开局，两个同时在途的规划类意图各自等到了 Grok 的答案、各自结算、事件齐全，走到了 `PlanningRejected` 这一真实规划结果；`run()` 一直在 poll（没有再提前返回）。任务书要求的「走到 PlanningRejected/PlanRevisionCommitted 之类的真实规划结果」达成，不要求 COMPLETED。
+
+### 本局暴露的**下一个**阻塞（不在本片范围，交下一片）
+
+planner:2 在合成轮结算后 `1789615904.06` 交接到提供者，**0.2 s** 后提供者抛了一个不在 `_DEFINITE_PROVIDER_FAILURES` 里的异常（`execution/dispatch.py` L658 的 `except BaseException` 分支）→ `provider_error_after_handoff` → 回合 `run.waiting{provider_outcome_unknown}` + `run_wait_blockers` 一条 `provider` 阻塞，未解决。`ProviderTimeoutError` / `ProviderTransportError` 被设计成「交接后结果未知」（请求可能已到达提供者），0.2 s 的失败几乎肯定是 `ProviderTransportError`（httpx.RequestError，连接被重置/拒绝一类；异常文本没有落库，只有 code）。之后：
+
+- runtime 侧按设计等待一个 `ProviderReconciliationObservation`（`providers/reconciliation.py`），**编排侧没有任何人去做这件事**：`_observe_liveness` 对 `plan` 意图只看 `exists`，`self.actions.reconcile()` 只管 action 交接；于是 planner:2 保持 SUBMITTED、`_has_inflight()` 为真，`run()` 正确地一直等——直到 runner 的 `asyncio.timeout(1800)`。
+- 与本片的关系：本片修的是「`run()` 不该在意图在途时退出」，修后它确实不退出了；这一条是「在途意图的结果未知时没人裁决」，是另一条缺陷（同一个 `provider_error_after_handoff` code，成因完全不同：修前是 `__aexit__` 取消，这次是真实传输错误）。
+- 建议下一片（P2.3f 候选）：①对 `RecoveryKind.PROVIDER` 阻塞的 plan/critic 类意图，编排循环在 `stall_seconds` 内无解决时视作 `planner_turn_missing` 同级的可判定失败并按梯子处理（或按 `retryable=True` 重新交接一次，`rehandoff_count` 字段已存在）；②Grok 代理侧连续第三次调用即时失败的原因要在 Host 通路上查（前两次 121 s / 163 s 均成功），H 臂全量重跑前先探针确认。
+
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

@@ -1,3 +1,13 @@
+## 0.12.2 候选 — P2.3e：`run()` 在两个规划类意图在途时提前退出（2026-09-17）
+
+分支 `p2.3e-run-exit`，基于 `05cfbb83`（= 0.12.1）。Grok 验收重跑 H 臂 L3 C1 三局完全一致：runner 的 `first_evidence_round` 已把 `code.test-is-failing` 由同一观察器记了两次 FALSE，D2b 的证据饱和判定在**第一个规划周期**就成立，Planner 意图与 MethodSynthesizer 意图同周期创建、同为 `InputSubmitted`；约 28.5 s 后 `orchestrator.run()` 返回、`Orchestrator` 上下文关闭，两个 agent run 在刚开始 preflight 的那一刻被取消（`runtime_boundary_interrupted` / `provider_error_after_handoff`），Mission 停在 PLANNING，事件表只有 AgentCreated/InputSubmitted。
+
+- **根因（编排循环，不是 runtime、不是代理）**：`_request_method_synthesis` 每个周期都跑；合成轮在途期间 `goals_needing_method` 仍返回该目标（`synthesis_round_recorded` 只在回复被收集后才为真），`create_service_intent` 按 subject 幂等地把**已存在**的意图原样返回，方法把这当成 `progressed=True`。有进展的周期不 sleep，进程内 bridge 的 await 也不真正挂起，于是 `run()` 以每周期约 2.85 ms 把 `max_cycles=10 000` 的预算烧完（≈28.5 s），runtime 的回合任务在此期间一直饿着（两个回合的 `runtime.preflight` 时间戳恰好是 `run()` 返回的那一瞬），最后走 `max_cycles` 出口返回——而 `_has_inflight()` 从未被问到。
+- **修法**：`_request_method_synthesis` 在创建前先查 `get_intent_for_subject`，已有意图的目标直接跳过、不计进展（问一次是上限，等待不是进展；subject 拼法收拢到 `_synthesizer_subject`）；`run()` 每个有进展的周期后 `await asyncio.sleep(0)`，让连续进展的循环也把控制权交给 runtime 的回合任务。`_has_inflight` / profile 归属 / 合成等待逻辑 / runtime handoff 均无缺陷，未改。
+- 测试（`tests/orchestrator/full_target/test_run_loop_inflight_planning.py`，2 条，先红后绿）：①提供者全部挂在闸门上、两意图同时在途时 `run(max_cycles=120)` 1 s 内不得返回、两回合必须已到达提供者，开闸后两意图各自结算、`PlanRevisionCommitted`、Mission 不停在 PLANNING（去掉合成守卫时仍红，变异 KILLED）；②纯 `run()` 端到端：planner:1 被拒、合成方法准入、planner:2 采用，三个意图各有 `IntentSettled`，有进展的周期 < 60（修前 400/400 烧尽且零结算）。
+- 真实复现：见 `plans/2026-09-16-full-target/P2.3c/journal.md` 第四部分 §2g。
+- 测试计数：`tests/orchestrator/full_target` **2712 + 2 skip**（上一段 2710）；旧模式回归零新增失败；ruff 全清；`mypy src/agent_orchestrator` 17（基线）。
+
 ## 0.12.1 — P2.3d：Grok 验收暴露的分层闭环缺陷修复（2026-09-17）
 
 代码候选提交 b6b7700（分支 `p2.3d-fix`，基于 `e53395c`，已 ff 进 main）；发布身份以本条目所在的版本提交为准。独立审阅（需修后合）与两轮独立核验的记录在 `plans/2026-09-16-full-target/P2.3c/reviews/`；审阅处置后的真实模型冒烟再次 COMPLETED（`mission-1ac94ffc1d28e2b0`，deepseek-flash，454 097 token，journal §2f）。Grok 验收 H 臂 40 局 `mission_status = COMPLETED` 为 **0**，四类失败全部可复现、全部确定性；本段按诊断报告逐条修复。旧模式（`orchestration_semantics_version=legacy`，默认）零回归：legacy 事件字节 golden、旧函数源码 hash、`_ExplodingDispatch` 三例全绿。
