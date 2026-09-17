@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+#: The AppWorld Worker version the hierarchical one is derived from, and the version
+#: it is registered as.  Both are named here so the domain profile, the frozen digest
+#: table and the derivation cannot drift apart (P2.3d / defect D1).
+WORKER_APPWORLD_BASE_VERSION = "worker-appworld-v3"
+WORKER_APPWORLD_HIERARCHICAL_VERSION = "worker-appworld-hierarchical-v1"
+
 
 def register_appworld_templates() -> None:
     from .role_templates import ROLES, TEMPLATE_VERSIONS, RoleTemplate, register_template
@@ -100,3 +106,61 @@ def register_appworld_templates() -> None:
                     tool_names=(*previous.tool_names, "knowledge_list", "knowledge_read"),
                 )
             )
+
+    register_appworld_hierarchical_worker()
+
+
+def register_appworld_hierarchical_worker() -> None:
+    """P2.3d / defect D1: AppWorld's own *hierarchical* Worker prompt.
+
+    ``_hierarchical_worker_template`` used to return the constant
+    ``WORKER_HIERARCHICAL`` for every Mission whose pinned version was not the one
+    code-domain hierarchical version.  That threw away the AppWorld template chosen a
+    line earlier, and with it both halves of what an AppWorld Worker needs:
+
+    * ``appworld_execute`` — ``_revise`` copies ``tool_names`` from the template it
+      revises, so the hierarchical Worker carried ``worker-v2``'s four code-domain
+      tools; ``effective_tools`` walks ``role_tools`` and intersects, so the one tool
+      present in the Mission, Task and deployment sets but absent from the role's was
+      silently dropped.  All 20 L1 episodes of the Grok acceptance run reported
+      ``tool_not_exposed`` and did nothing at all;
+    * the AppWorld *words* — the Worker was told to run pytest with ``run_tests``
+      while operating a simulated world.  Even with the tool restored, the code-domain
+      prompt would have made those 20 episodes meaningless.
+
+    So the derivation is the other way round: take AppWorld's ``worker-appworld-v3``
+    and add decision 4's ``outputs`` field to **its** envelope contract, with
+    ``_revise``'s anchors written against the AppWorld text.  A missing anchor fails at
+    import, which is exactly what should happen if the AppWorld wording moves.
+    """
+
+    from .role_templates import (
+        TEMPLATE_VERSIONS,
+        _revise,
+        register_hierarchical_worker,
+    )
+
+    base = TEMPLATE_VERSIONS["worker"][WORKER_APPWORLD_BASE_VERSION]
+    register_hierarchical_worker(
+        _revise(
+            base,
+            WORKER_APPWORLD_HIERARCHICAL_VERSION,
+            (
+                '"evidence":["file:交付报告路径"],"artifacts":["交付报告路径"],',
+                '"evidence":["file:交付报告路径"],"artifacts":["交付报告路径"],'
+                '"outputs":{"<输入declared_output_ports里给你的端口名>":"<你本次真实写过的一个文件路径>"},',
+            ),
+            (
+                "无法完成时如实提交失败/限制，不编造观察。",
+                "无法完成时如实提交失败/限制，不编造观察。"
+                "outputs说明本次产物对应计划里的哪个输出端口："
+                "端口名只能从输入的declared_output_ports里照抄，不能自己造；"
+                "每个值必须是你本次真实写过的工作区文件路径，并且要同时出现在artifacts里。"
+                "没有声明的多余文件照常放在artifacts里当证据，不用写进outputs。"
+                "outputs里只写「端口名: 路径」两项，不要写版本、哈希、验收id、schema之类的字段——"
+                "那些由系统填写，你写了整块会被拒绝并要求重写。"
+                "declared_output_ports里required=true的端口必须被认领，漏掉会被验收拒绝。"
+                "AppWorld的模拟世界状态不是产物；端口上交的永远是工作区里的交付报告文件。",
+            ),
+        )
+    )

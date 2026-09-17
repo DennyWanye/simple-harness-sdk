@@ -203,6 +203,31 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
     ),
 }
 
+#: P2.3d / defect D1: the same freeze for the versions a *domain module* registers.
+#: They are not module attributes, so they are looked up in ``TEMPLATE_VERSIONS`` —
+#: the base is in the table too, because "the hierarchical one is the AppWorld one
+#: plus an ``outputs`` field" is only true while the base does not move.
+FROZEN_REGISTERED_DIGESTS: dict[str, str] = {
+    "worker-appworld-v3": "8fbea8282c1e8f4814e75fc9943bc41da21016db0af2026fe037f001b81bdd88",
+    "worker-appworld-hierarchical-v1": (
+        "9ad842af04458dd7f57d1935fb669a57fdb4b63d850427b5974716e3da994917"
+    ),
+}
+
+
+@pytest.mark.parametrize("version", sorted(FROZEN_REGISTERED_DIGESTS))
+def test_a_registered_domain_prompt_keeps_its_bytes(version: str) -> None:
+    import hashlib
+
+    from agent_orchestrator.runtime.role_templates import TEMPLATE_VERSIONS
+
+    template = TEMPLATE_VERSIONS["worker"][version]
+    digest = hashlib.sha256(template.instructions.encode("utf-8")).hexdigest()
+    assert digest == FROZEN_REGISTERED_DIGESTS[version], (
+        f"{version} changed its bytes; an Attempt replays on the prompt it froze, so a "
+        "new wording is a new version registered beside this one — never an edit of it"
+    )
+
 
 @pytest.mark.parametrize("name", sorted(FROZEN_PROMPT_DIGESTS))
 def test_a_shipped_prompt_keeps_its_bytes(name: str) -> None:
@@ -241,12 +266,26 @@ def test_the_frozen_digests_cover_the_prompts_this_slice_depends_on() -> None:
 
 
 def test_the_hierarchical_worker_version_is_registered_and_pinnable() -> None:
+    """P2.3d / defect D1 widened this set; what it must never hold is unchanged.
+
+    It used to be a one-element frozenset, and that was the defect's other half:
+    ``_hierarchical_worker_template`` treated "not in this set" as "replace with the
+    code-domain prompt", so an AppWorld Worker holding ``worker-appworld-v3`` lost its
+    domain tools and its domain words on every hierarchical Mission.
+    """
+
     versions = registered_versions()
     assert WORKER_HIERARCHICAL_VERSION in versions["worker"]
-    assert HIERARCHICAL_WORKER_VERSIONS == frozenset({WORKER_HIERARCHICAL_VERSION})
+    assert HIERARCHICAL_WORKER_VERSIONS == frozenset(
+        {WORKER_HIERARCHICAL_VERSION, "worker-appworld-hierarchical-v1"}
+    )
     assert "worker-v3" not in HIERARCHICAL_WORKER_VERSIONS, (
         "a DAG-mode pin must not be honoured in the hierarchical mode: worker-v3 "
         "never asks for outputs, and every leaf would then be refused as unclaimed"
+    )
+    assert "worker-appworld-v3" not in HIERARCHICAL_WORKER_VERSIONS, (
+        "the AppWorld DAG-mode prompt is not a hierarchical one either: it never asks "
+        "for outputs, and a pin naming it belongs to the other mode"
     )
 
 

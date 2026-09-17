@@ -244,15 +244,26 @@ def _outer(method_id: str = "plan.outer"):
     )
 
 
-def _spec(key: str, *, mode: str, tokens: int | None = MISSION_TOKENS) -> MissionSpec:
+def _spec(
+    key: str,
+    *,
+    mode: str,
+    tokens: int | None = MISSION_TOKENS,
+    domain: str | None = None,
+    tools: tuple[str, ...] = TOOLS,
+) -> MissionSpec:
+    """``domain`` / ``tools`` are P2.3d additions: defect D1 is about the Worker prompt
+    an AppWorld Mission gets, and that needs a Mission bound to the AppWorld domain."""
+
     return MissionSpec(
         goal="交付一个可验收的层次计划",
         success_criteria=("file:a.md",),
         tenant_id="tenant-p23c",
         idempotency_key=key,
-        allowed_tools=TOOLS,
+        allowed_tools=tools,
         budget=Budget(max_tokens=tokens, max_attempts=12),
         orchestration_semantics_version=mode,
+        **({} if domain is None else {"domain": domain}),
     )
 
 
@@ -383,10 +394,14 @@ def build_world(
     key: str = "p23c",
     tokens: int | None = MISSION_TOKENS,
     name: str = "orchestrator.db",
+    domain: str | None = None,
+    tools: tuple[str, ...] = TOOLS,
 ) -> World:
     path = Path(tmp_path) / name
     service = CommitService(Store.open(path))
-    mission, _ = service.create_mission(_spec(key, mode=mode, tokens=tokens))
+    mission, _ = service.create_mission(
+        _spec(key, mode=mode, tokens=tokens, domain=domain, tools=tools)
+    )
     env = _env(mission.id)
     contract = _outer()
     receipt = env.admit(contract)

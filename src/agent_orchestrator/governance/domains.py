@@ -422,7 +422,21 @@ APPWORLD_PROFILE_V3 = replace(
         )},
     },
 )
-APPWORLD_PROFILE = APPWORLD_PROFILE_V3
+#: P2.3d / defect D1.  A *new* profile version rather than an edit of v3: a frozen
+#: profile is what a replayed Mission reads back, and adding a key to the one already
+#: frozen would change what those Missions think they ran under.  The new key is
+#: ``worker_hierarchical`` and not ``worker`` — ``template_for_domain`` reads the
+#: latter for the DAG mode, and overwriting it would move every legacy AppWorld
+#: Mission onto a prompt that asks for ``outputs``.
+APPWORLD_PROFILE_V4 = replace(
+    APPWORLD_PROFILE_V3,
+    version="4",
+    role_templates={
+        **APPWORLD_PROFILE_V3.role_templates,
+        "worker_hierarchical": "worker-appworld-hierarchical-v1",
+    },
+)
+APPWORLD_PROFILE = APPWORLD_PROFILE_V4
 
 AGENTDOJO_PROFILE = DomainProfileV1(
     id=AGENTDOJO_DOMAIN, version="1",

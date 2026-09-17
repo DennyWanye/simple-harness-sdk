@@ -2314,18 +2314,29 @@ class Orchestrator:
         accept side would refuse every leaf for ``OUTPUT_PORT_UNCLAIMED``.  A pin that
         names a hierarchical version is honoured, which is how a Mission stays
         replayable on the prompt it ran with; any other pin belongs to the other mode.
+
+        P2.3d / defect D1: "a hierarchical version" is now per domain, and so is the
+        fallback.
         """
 
         from ..runtime.role_templates import (
-            HIERARCHICAL_WORKER_VERSIONS,
-            WORKER_HIERARCHICAL,
+            hierarchical_worker_for_domain,
+            hierarchical_worker_versions,
         )
 
         if role.name != "worker":
             return role
-        if role.prompt_version in HIERARCHICAL_WORKER_VERSIONS:
+        if role.prompt_version in hierarchical_worker_versions():
             return role
-        return WORKER_HIERARCHICAL
+        # P2.3d / defect D1: the fallback is the *domain's* hierarchical Worker, not a
+        # constant.  Returning ``WORKER_HIERARCHICAL`` unconditionally threw away the
+        # AppWorld template ``role_for_task`` had just selected and with it both
+        # ``appworld_execute`` (``effective_tools`` walks ``role_tools``, so a tool the
+        # role does not list is dropped however many other sets hold it) and the words
+        # saying there is a simulated world — 20 of the Grok run's L1 episodes reported
+        # ``tool_not_exposed`` and did nothing.  A domain that registers no hierarchical
+        # Worker still falls back to the code-domain one.
+        return hierarchical_worker_for_domain(self.commit.domain_for(mission_id))
 
     async def _create_planner_intent(self, mission_id: str, *, ordinal: int) -> DispatchIntent:
         from ..runtime.action_schema import planner_action_contract

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..contracts import ContractError
 
@@ -656,7 +656,63 @@ register_template(WORKER_HIERARCHICAL)
 #: is a pin for the DAG mode and does not apply here, because ``worker-v3`` never
 #: asks for ``outputs`` and the accept side would then refuse every leaf for
 #: ``OUTPUT_PORT_UNCLAIMED``.
-HIERARCHICAL_WORKER_VERSIONS: frozenset[str] = frozenset({WORKER_HIERARCHICAL_VERSION})
+#:
+#: P2.3d / defect D1: it is no longer a one-element set.  A domain whose Workers
+#: need domain tools and domain words has its *own* hierarchical Worker version —
+#: ``worker-appworld-hierarchical-v1`` is the first — and the set is filled in as the
+#: domain template modules register at the bottom of this file, then frozen once.
+_HIERARCHICAL_WORKER_VERSIONS: set[str] = {WORKER_HIERARCHICAL_VERSION}
+
+
+def register_hierarchical_worker(template: RoleTemplate) -> None:
+    """Register a Worker prompt that is a *hierarchical* one for some domain.
+
+    The alternative — a domain module reaching into a frozen constant — is how the
+    two facts ("this version exists" and "this version is hierarchical") end up
+    disagreeing, which is the shape defect D1 had: ``HIERARCHICAL_WORKER_VERSIONS``
+    held one element, so ``_hierarchical_worker_template`` threw away the AppWorld
+    template for *every* AppWorld Mission and the Worker lost ``appworld_execute``
+    along with the words telling it there was a simulated world at all.
+    """
+
+    if template.name != "worker":
+        raise RuntimeError(f"{template.prompt_version} is not a worker template")
+    register_template(template)
+    _HIERARCHICAL_WORKER_VERSIONS.add(template.prompt_version)
+
+
+def hierarchical_worker_versions() -> frozenset[str]:
+    """Every registered prompt version a hierarchical Worker may be pinned to."""
+
+    return frozenset(_HIERARCHICAL_WORKER_VERSIONS)
+
+
+#: The key a :class:`~...governance.domains.DomainProfileV1` uses to name its
+#: hierarchical Worker prompt.  It is deliberately *not* the role name ``worker``:
+#: ``template_for_domain`` reads that one for the DAG mode, and a domain that
+#: overwrote it would break every legacy Mission of that domain.
+HIERARCHICAL_WORKER_ROLE_KEY = "worker_hierarchical"
+
+
+def hierarchical_worker_for_domain(domain: DomainProfileV1 | Any) -> RoleTemplate:
+    """The hierarchical Worker prompt this domain registers, or the code-domain one.
+
+    P2.3d / defect D1.  A domain that names a version this build does not register is
+    a deployment error and is refused here, exactly as ``template_for_domain`` refuses
+    an unavailable domain prompt — the alternative is running an AppWorld Mission on
+    the code-domain words again without anybody being told.
+    """
+
+    wanted = getattr(domain, "role_templates", {}).get(HIERARCHICAL_WORKER_ROLE_KEY)
+    if wanted is None:
+        return WORKER_HIERARCHICAL
+    selected = TEMPLATE_VERSIONS.get("worker", {}).get(wanted)
+    if selected is None:
+        raise ContractError(
+            f"unavailable domain prompt: {getattr(domain, 'id', '?')}"
+            f"/{HIERARCHICAL_WORKER_ROLE_KEY}/{wanted}"
+        )
+    return selected
 
 METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v1"
 
@@ -836,6 +892,9 @@ from .appworld_templates import register_appworld_templates  # noqa: E402
 
 register_appworld_templates()
 
+#: Frozen once every domain module has registered.  Read it, not the mutable set.
+HIERARCHICAL_WORKER_VERSIONS: frozenset[str] = hierarchical_worker_versions()
+
 
 __all__ = (
     "ARBITER",
@@ -851,6 +910,7 @@ __all__ = (
     "ROLE_MIX_START",
     "SIMPLIFIER",
     "TEMPLATE_VERSIONS",
+    "register_hierarchical_worker",
     "register_template",
     "registered_versions",
     "template_for",
@@ -870,6 +930,9 @@ __all__ = (
     "HIERARCHICAL_PLANNER_VERSIONS",
     "HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE",
     "hierarchical_planner_versions",
+    "hierarchical_worker_for_domain",
+    "hierarchical_worker_versions",
+    "HIERARCHICAL_WORKER_ROLE_KEY",
     "HIERARCHICAL_WORKER_VERSIONS",
     "PLANNER_HIERARCHICAL",
     "PLANNER_HIERARCHICAL_V1",
