@@ -1,0 +1,18 @@
+{
+ "code": "root_review_not_accepted",
+ "criteria": {
+  "c-change-explained": "PASS",
+  "c-test-passes": "FAIL"
+ },
+ "findings": [
+  {
+   "detail": "Root criterion c-test-passes is not met by the designated verify-tests report (acc-9d8568a80654ae2eb763277d5621496e, port report). evidence_requirement requires that report to show the named failing test now passes after the applied patch. REPORT.md states that tests/test_public_pipeline.py still has 6 passed (those cases never called pipeline.run and were already green) and that tests/test_pipeline_run.py was added; it never names a previously failing test, never shows runner output for that test, and never records a fail-to-pass result after the patch.",
+   "severity": "blocker"
+  }
+ ],
+ "package_id": "pkg-root-e507f37ba60f5ac7f39d355af1891e2e",
+ "record_id": "rec-root-da45e8bc498993229489d72c12d573f7",
+ "requirements_revision": 7,
+ "reviewer_agent_id": "agent-redacted",
+ "verdict": "REJECTED"
+}

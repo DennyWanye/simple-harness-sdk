@@ -1,0 +1,7 @@
+{
+ "mission_goal": "让 ingest 流水线端到端跑通，坏行要留痕不要丢。\n\n你在一个隔离的工作区里改代码。用 workspace_list / workspace_read_file 读文件，workspace_write_file 写文件，run_tests 跑测试。可见测试在 tests/ 下。请真正修好问题本身，不要只让可见测试变绿，也不要删除或改写已有特性。改完在 REPORT.md 里写清楚你改了什么、为什么，以及你没能完成的部分。",
+ "goal_parameters": {
+  "failing_test": "tests/test_public_pipeline.py",
+  "repository": "<worktree>"
+ }
+}

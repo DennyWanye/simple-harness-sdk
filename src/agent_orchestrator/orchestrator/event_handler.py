@@ -7573,6 +7573,102 @@ class Orchestrator:
             )
         return outcome.committed
 
+    def _hierarchical_judgment_inputs(
+        self, mission: Mission, new_mode: HierarchicalDispatch, tasks: Sequence[Task]
+    ) -> list[UpstreamInput]:
+        """The Mission Judge's tree for a hierarchical Mission (P2.3k / defect N3).
+
+        Read from what the root ``GoalResolution`` was formed out of and nothing else:
+        the CURRENT acceptances of the adopted plan (``root_contributions``), each
+        acceptance's accepted artifacts, and the outputs P2.3h indexed on declared
+        ports.  One path written by several contributions is not a conflict here —
+        ordering in this mode is the typed network's, not ``dependency_ids`` — so the
+        rule is override: a later acceptance overrides an earlier one, and the output
+        of a step the plan made answerable for a root criterion (``criterion_links``)
+        overrides the rest, because that output is what the root criterion reads (ADR
+        §9.1).  Nothing raises; what was superseded is written down once, in
+        ``ArtifactMergeNotApplicableUnderHierarchical``.
+        """
+
+        semantics = new_mode.semantics()
+        contributing = {
+            item
+            for ids in new_mode.root_contributions(mission.id).values()
+            for item in ids
+        }
+        # ``list_acceptances`` orders by ``accepted_at_ms`` then id: the clock is the
+        # tie-break between contributions, never the rule.
+        acceptances = [
+            item
+            for item in semantics.list_acceptances(mission.id)
+            if str(item.acceptance_id) in contributing
+        ]
+        rank_of = {str(item.acceptance_id): index for index, item in enumerate(acceptances)}
+        linked = {
+            str(item.task_id)
+            for item in self._root_review(mission, new_mode).carried_criteria(mission.id)
+        }
+        tasks_by_id = {task.id: task for task in tasks}
+        # (linked, acceptance rank, port-indexed) → the placement that wins a path.
+        placed: dict[str, tuple[tuple[int, int, int], str, Artifact]] = {}
+        writers: dict[str, list[str]] = {}
+
+        def place(task_id: str, artifact: Artifact | None, rank: int, *, port: bool) -> None:
+            if artifact is None:
+                return
+            order = writers.setdefault(artifact.path, [])
+            if task_id not in order:
+                order.append(task_id)
+            weight = (int(task_id in linked), rank, int(port))
+            current = placed.get(artifact.path)
+            if current is None or weight > current[0]:
+                placed[artifact.path] = (weight, task_id, artifact)
+
+        for acceptance in acceptances:
+            task_id = str(acceptance.task_id)
+            rank = rank_of[str(acceptance.acceptance_id)]
+            task = tasks_by_id.get(task_id) or self.store.get_task(task_id)
+            for artifact_id in () if task is None else task.accepted_artifacts:
+                place(task_id, self.store.get_artifact(artifact_id), rank, port=False)
+        for row in semantics.list_acceptance_outputs(mission.id):
+            acceptance_id = str(row.get("acceptance_id", ""))
+            if acceptance_id not in rank_of:
+                continue
+            place(
+                str(row.get("producer_task_ref", "")),
+                self.store.get_artifact(str(row.get("artifact_id", ""))),
+                rank_of[acceptance_id],
+                port=True,
+            )
+        superseded = [
+            {
+                "path": path,
+                "kept_task_id": placed[path][1],
+                "kept_artifact_id": placed[path][2].id,
+                "kept_by": "criterion_link" if placed[path][1] in linked else "acceptance_order",
+                "superseded_task_ids": [item for item in order if item != placed[path][1]],
+            }
+            for path, order in sorted(writers.items())
+            if len(order) > 1
+        ]
+        self.commit.record_artifact_merge_not_applicable(
+            mission.id,
+            subject=f"{mission.id}:judge:artifact-merge",
+            contributions=len(acceptances),
+            artifacts=len(placed),
+            superseded=superseded,
+        )
+        if superseded:
+            self._note(
+                f"hierarchical mission {mission.id}: judgment tree keeps the last / "
+                f"criterion-linked writer of {[item['path'] for item in superseded]}; "
+                "the legacy merge is not applied"
+            )
+        return [
+            UpstreamInput(task_id, path, artifact.content_hash, artifact.id)
+            for path, (_weight, task_id, artifact) in sorted(placed.items())
+        ]
+
     def _artifacts_by_task(self, tasks: Sequence[Task]) -> dict[str, list[Artifact]]:
         by_task: dict[str, list[Artifact]] = {}
         for task in tasks:
@@ -8287,9 +8383,22 @@ class Orchestrator:
                 self.store, mission, domain, artifact_store=self.assembled.workspaces.artifact_store
             )
         all_tasks = {t.id: t for t in tasks}
+        # P2.3k / defect N3.  The legacy merge reads "independent branches" off
+        # ``Task.dependency_ids``, which a materialised occurrence leaves empty by
+        # design (§18.5 constraint 4) — so on a hierarchical Mission any two leaves that
+        # wrote one path were an ``ArtifactConflict``, and the Grok C3 episodes failed a
+        # Mission whose root ``GoalResolution`` already stood, one event after
+        # ``GoalResolutionCommitted``.  The tree is read from the resolution's own
+        # contributions there (same shape as P2.3d's D4: a mode branch and a record);
+        # the legacy Mission keeps the legacy rule, byte for byte.
+        new_mode = self._new_mode(mission)
         try:
-            merged = merge_accepted(
-                list(tasks), self._artifacts_by_task(tasks), tasks_by_id=all_tasks
+            merged = (
+                self._hierarchical_judgment_inputs(mission, new_mode, tasks)
+                if new_mode is not None
+                else merge_accepted(
+                    list(tasks), self._artifacts_by_task(tasks), tasks_by_id=all_tasks
+                )
             )
         except ArtifactConflict as error:
             self.commit.fail_mission(

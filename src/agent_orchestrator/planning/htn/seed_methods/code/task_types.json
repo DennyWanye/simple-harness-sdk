@@ -515,6 +515,79 @@
   },
   {
     "task_type_ref": {
+      "id": "code.inspect-changeset",
+      "version": 2
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.inspect-changeset",
+      "version": 2,
+      "parameter_schema_ref": {
+        "id": "code.changeset-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "inspect the changeset — the patched workspace when a patch is bound — and record findings",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "patch",
+        "schema_ref": {
+          "id": "code.patch",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": false
+      },
+      {
+        "port_key": "report",
+        "schema_ref": {
+          "id": "code.report",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": false
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "findings",
+        "schema_ref": {
+          "id": "code.findings",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.changeset-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-inspect-changeset",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "resource_reads": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
       "id": "code.summarize-review",
       "version": 1
     },
@@ -542,6 +615,82 @@
         },
         "cardinality": "single",
         "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "summary",
+        "schema_ref": {
+          "id": "code.summary",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.changeset-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-summarize-review",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code"
+  },
+  {
+    "task_type_ref": {
+      "id": "code.summarize-review",
+      "version": 2
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.summarize-review",
+      "version": 2,
+      "parameter_schema_ref": {
+        "id": "code.changeset-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "summarise the review findings against the patch and the verification report when they are bound",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "findings",
+        "schema_ref": {
+          "id": "code.findings",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      },
+      {
+        "port_key": "patch",
+        "schema_ref": {
+          "id": "code.patch",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": false
+      },
+      {
+        "port_key": "report",
+        "schema_ref": {
+          "id": "code.report",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": false
       }
     ],
     "output_ports": [

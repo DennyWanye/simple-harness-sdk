@@ -1,0 +1,285 @@
+{
+ "review_package_id": "pkg-root-e507f37ba60f5ac7f39d355af1891e2e",
+ "purpose": "MISSION_FINAL",
+ "budget_account": "mission",
+ "goal_task_id": "task-root",
+ "goal_statement": "make the named failing test pass and explain the change",
+ "requirements_revision": 7,
+ "requirements_revision_semantics": "requirements_revision numbers are one Mission-wide monotone counter: each leaf acceptance publishes its own requirements revision (the leaf's own criteria) and records the number current at that moment, and the root review's revision is published last, so accepted_at_requirements_revision < requirements_revision for every contribution is the expected shape and says nothing about staleness; a contribution accepted against outdated inputs would have been superseded before this package was cut",
+ "criteria": [
+  {
+   "criterion_id": "c-test-passes",
+   "statement": "c-test-passes is covered by the accepted contributions of task-root, judged as a whole",
+   "requirement_class": "REQUIRED_OUTCOME",
+   "covered_by": [
+    {
+     "acceptance_id": "acc-9d8568a80654ae2eb763277d5621496e",
+     "task_id": "task-a444e80cd15c87958eff92bf4ac03cdf",
+     "leaf_criterion_id": "c-tests-verified",
+     "evidence_requirement": "verify-tests report shows the named failing test now passes after the applied patch",
+     "ports": [
+      "report"
+     ]
+    }
+   ]
+  },
+  {
+   "criterion_id": "c-change-explained",
+   "statement": "c-change-explained is covered by the accepted contributions of task-root, judged as a whole",
+   "requirement_class": "REQUIRED_OUTCOME",
+   "covered_by": [
+    {
+     "acceptance_id": "acc-dbf7c231494fbc73e430bc8c66dda830",
+     "task_id": "task-dd9c0a042afce4827892bb3c55b6be97",
+     "leaf_criterion_id": "c-change-summarized",
+     "evidence_requirement": "summarize-review summary of inspect-changeset findings explains what changed and why",
+     "ports": [
+      "summary"
+     ]
+    }
+   ]
+  }
+ ],
+ "contributions": [
+  {
+   "acceptance_id": "acc-0774f9c9003a92dcc8861f68002e15a4",
+   "task_id": "task-41f2545962dab89c9cbb42492c98621f",
+   "obligation_id": "obl-root",
+   "accepted_at_requirements_revision": 4,
+   "goal_statement": "inspect the changeset and record findings",
+   "carries_root_criteria": [],
+   "accepted_outputs": [
+    {
+     "port": "findings",
+     "artifact_id": "artifact-05d131c03052c447",
+     "covers_root_criteria": [],
+     "excerpt": {
+      "path": "findings.md",
+      "content_hash": "278a5f40e71e21b4001f6916980518aabb3da286f848847938f2210abf484a21",
+      "size_bytes": 4180,
+      "kind": "text",
+      "total_chars": 4118,
+      "truncated": true,
+      "text": "# Findings: ingest pipeline changeset\n\n## Scope\nInspected the workspace snapshot (parser, store, pipeline, visible tests, README-task.md). Visible tests were executed; they pass. The public pipeline contract in README-task.md is **not** implemented.\n\n## Files inspected\n- `ingest/parser.py` — line parser (`parse_line`, `BadRow`)\n- `ingest/store.py` — `Record` dataclass and `Store`\n- `ingest/pipeline.py` — `run(lines, store, quarantine)`\n- `ingest/__init__.py` — empty\n- `tests/test_public_pipeline.py` — parser + store only\n- `README-task.md` — intended `pipeline.run` contract\n\n## Visible tests\nCommand equivalent: pytest on `tests/test_public_pipeline.py`.\nResult: **6 passed**.\n\nCovered:\n- Good CSV row → dict with cents and uppercased currency\n- Bad rows: too few fields, missing id, non-numeric amount, unsupported currency (`JPY`)\n- Store last-write-wins per id\n\nNot covered:\n- `pipeline.run`\n- quarantine append shape\n- exit codes\n- dict-vs-`Record` handoff\n- mixed good/bad batches\n- “every line lands in store or quarantine”\n\n## Contract vs implementation\n\nREADME-task.md / ops contract for `pipeline.run(lines, store, quarantine)`:\n\n1. Return `0` iff every line landed in the store; non-zero if any line went to quarantine.\n2. `quarantine` is a list; pipeline **appends** dicts with keys:\n   - `line_no` (1-based)\n   - `raw` (original line text **without** trailing newline)\n   - `reason` (string)\n3. Each input line must end in **exactly one** of store or quarantine.\n\nCurrent `ingest/pipeline.py`:\n\n```python\nfor line in lines:\n    record = parse_line(line)\n    store.add(record)\nreturn 0\n```\n\nGaps:\n\n| Requirement | Current behavior |\n|---|---|\n| Catch `BadRow` | Uncaught; first bad line raises and aborts the batch |\n| Quarantine append | `quarantine` unused |\n| Non-zero exit when quarantined | Always `return 0` (if it returns at all) |\n| 1-based `line_no` | No line counter |\n| `raw` without trailing newline | Original `line` never recorded |\n| `reason` string | Exception message never captured |\n| Every line accounted for | Bad lines crash; remaining lines never processed |\n| Store vs dict | `parse_line` returns a **dict**; `Store.add` uses `record.id` (attribute). A dict would raise `AttributeError`. Even **good** rows cannot be ingested end-to-end. |\n\n## Component notes\n\n### parser (`parse_line`)\n- Splits on comma; requires exactly 3 fields.\n- Strips field whitespace; `currency` compared/stored as `.upper()`.\n- Amount: `int(round(float(amount) * 100))` — float money (edge cases like `1.005` / binary float).\n- Raises `BadRow` for: field count, empty id, non-numeric amount, currency not in `(\"USD\", \"EUR\")`.\n- `rstrip(\"\\n\")` only (not `\"\\r\\n\"`); `\\r` could remain in the last field.\n- Empty / blank lines become one empty field → `BadRow` (field count), which is fine **if** the pipeline quarantines them.\n\n### store\n- `Record` is a frozen dataclass: `id`, `amount_cents`, `currency`.\n- `add` indexes by `record.id` and replaces on duplicate.\n- No validation that `record` is a `Record`.\n\n### pipeline\n- Imports only `parse_line`, not `BadRow` or `Record`.\n- No try/except, no conversion `dict → Record`, no quarantine, no exit-code logic.\n\n## Root cause (end-to-end)\nThe ingest path is not wired: parse errors are not quarantined, and successful parses are not turned into `Record` objects before `store.add`. The mission goal (“流水线端到端跑通，坏行要留痕不要丢”) is **not** met by this snapshot. Visible tests stay green because they never call `run`.\n\n## Recommended fix (not applied in this inspect task)\n1. Enumerate lines with 1-based `line_no`.\n2. `try: parsed = parse_line(line)` / `except BadRow as e: quarantine.append({...}); continue`.\n3. `store.add(Record(**parsed))` (or equivalent field mapping).\n4. Return `0` if `quarantine` stayed empty for this run, else non-zero (e.g. `1`).\n5. Normalize `raw` with a single trailing `\\n` stripped (and consider `\\r\\n`).\n6. Add tests for mixed batches, empty input (`0`), all-bad (non-zero + all quarantined), and dict/`Record` integration.\n\n## Out of scope this task\nNo production code was changed. This occurrence is ins"
+     }
+    }
+   ],
+   "review": {
+    "review_record_id": "rec-b29a8b6b6c145e1637e8034132ca6946",
+    "verdict": "ACCEPT",
+    "criteria": {
+     "c-leaf-verified": "PASS"
+    }
+   },
+   "artifacts": [],
+   "evidence": {
+    "kind": "accepted_outputs",
+    "count": 1,
+    "readable": 1
+   }
+  },
+  {
+   "acceptance_id": "acc-3a2b7130eeebc768d548334806ba9054",
+   "task_id": "task-ed4434f49257407dd0d64f827af356b1",
+   "obligation_id": "obl-root",
+   "accepted_at_requirements_revision": 3,
+   "goal_statement": "apply a patch that addresses the diagnosis",
+   "carries_root_criteria": [],
+   "accepted_outputs": [
+    {
+     "port": "patch",
+     "artifact_id": "artifact-b9093f88f5ad7734",
+     "covers_root_criteria": [],
+     "excerpt": {
+      "path": "patches/pipeline.patch",
+      "content_hash": "19c8a075de2c66d338e6c5865781a501dc7aff97ddec9bf20c922de4f2c6b10c",
+      "size_bytes": 1057,
+      "kind": "text",
+      "total_chars": 1057,
+      "truncated": false,
+      "text": "--- a/ingest/pipeline.py\n+++ b/ingest/pipeline.py\n@@ -1,13 +1,28 @@\n \"\"\"Drives the settlement export into the store.\"\"\"\n-from .parser import parse_line\n+from .parser import BadRow, parse_line\n+from .store import Record\n \n \n def run(lines, store, quarantine):\n     \"\"\"Load ``lines`` into ``store``.\n \n     Returns the process exit code: 0 when every line landed in the store,\n     non-zero when at least one line went to ``quarantine``.\n     \"\"\"\n-    for line in lines:\n-        record = parse_line(line)\n-        store.add(record)\n-    return 0\n+    had_quarantine = False\n+    for line_no, line in enumerate(lines, start=1):\n+        try:\n+            parsed = parse_line(line)\n+        except BadRow as exc:\n+            quarantine.append(\n+                {\n+                    \"line_no\": line_no,\n+                    \"raw\": line.rstrip(\"\\n\"),\n+                    \"reason\": str(exc),\n+                }\n+            )\n+            had_quarantine = True\n+            continue\n+        store.add(Record(**parsed))\n+    return 1 if had_quarantine else 0\n"
+     }
+    }
+   ],
+   "review": {
+    "review_record_id": "rec-cff9ec91aade6a58bb05e32fe3f1e93c",
+    "verdict": "ACCEPT",
+    "criteria": {
+     "c-leaf-verified": "PASS"
+    }
+   },
+   "artifacts": [],
+   "evidence": {
+    "kind": "accepted_outputs",
+    "count": 1,
+    "readable": 1
+   }
+  },
+  {
+   "acceptance_id": "acc-5b30b4c82b0ef60de9e947821a3fe38a",
+   "task_id": "task-64de1b6b70a4588ed6dd2a92c8610a48",
+   "obligation_id": "obl-root",
+   "accepted_at_requirements_revision": 1,
+   "goal_statement": "read the repository's current facts",
+   "carries_root_criteria": [],
+   "accepted_outputs": [
+    {
+     "port": "facts",
+     "artifact_id": "artifact-deca4ac99e964c9c",
+     "covers_root_criteria": [],
+     "excerpt": {
+      "path": "facts.json",
+      "content_hash": "77f4cdd299b57db1cbd0e3079936ab6cde45f630f419b3c072f7f77608e1e14b",
+      "size_bytes": 4229,
+      "kind": "text",
+      "total_chars": 4191,
+      "truncated": true,
+      "text": "{\n  \"schema_id\": \"code.facts\",\n  \"schema_version\": 1,\n  \"workspace_files\": [\n    \"README-task.md\",\n    \"ingest/__init__.py\",\n    \"ingest/parser.py\",\n    \"ingest/pipeline.py\",\n    \"ingest/store.py\",\n    \"tests/test_public_pipeline.py\"\n  ],\n  \"stated_goal\": \"让 ingest 流水线端到端跑通，坏行要留痕不要丢。\",\n  \"public_contract\": {\n    \"source\": \"README-task.md\",\n    \"entry\": \"ingest.pipeline.run(lines, store, quarantine)\",\n    \"exit_code\": {\n      \"all_stored\": 0,\n      \"any_quarantined\": \"non-zero\"\n    },\n    \"quarantine\": {\n      \"type\": \"list mutated by append\",\n      \"item_fields\": {\n        \"line_no\": \"1-based line number\",\n        \"raw\": \"original line text without trailing newline\",\n        \"reason\": \"string\"\n      }\n    },\n    \"coverage_rule\": \"every input line must land in store or quarantine; never neither\"\n  },\n  \"modules\": {\n    \"ingest/__init__.py\": {\n      \"content\": \"empty\"\n    },\n    \"ingest/parser.py\": {\n      \"exports\": [\"SUPPORTED_CURRENCIES\", \"BadRow\", \"parse_line\"],\n      \"SUPPORTED_CURRENCIES\": [\"USD\", \"EUR\"],\n      \"parse_line\": {\n        \"input\": \"one line string\",\n        \"success_return\": {\n          \"type\": \"dict\",\n          \"keys\": [\"id\", \"amount_cents\", \"currency\"]\n        },\n        \"failure\": \"raises BadRow (ValueError subclass)\",\n        \"steps\": [\n          \"rstrip only '\\\\n', then split on ','\",\n          \"require exactly 3 fields\",\n          \"strip whitespace on each field\",\n          \"reject empty identifier\",\n          \"amount: int(round(float(amount) * 100)); ValueError -> BadRow\",\n          \"currency must be in SUPPORTED_CURRENCIES after .upper(); stored uppercased\"\n        ],\n        \"reject_reasons_observed_in_tests\": [\n          \"wrong field count\",\n          \"missing id\",\n          \"non-numeric amount\",\n          \"unsupported currency (e.g. JPY)\"\n        ]\n      }\n    },\n    \"ingest/store.py\": {\n      \"Record\": {\n        \"kind\": \"frozen dataclass\",\n        \"fields\": [\"id: str\", \"amount_cents: int\", \"currency: str\"]\n      },\n      \"Store\": {\n        \"semantics\": \"one record per id; re-add replaces\",\n        \"add\": \"indexes by record.id attribute (not dict key)\",\n        \"get\": \"returns Record or KeyError if missing\",\n        \"count\": \"len of internal dict\",\n        \"ids\": \"sorted list of ids\"\n      }\n    },\n    \"ingest/pipeline.py\": {\n      \"run\": {\n        \"signature\": \"run(lines, store, quarantine)\",\n        \"current_body\": [\n          \"for line in lines: record = parse_line(line); store.add(record)\",\n          \"always return 0\"\n        ],\n        \"does_not\": [\n          \"catch BadRow\",\n          \"append to quarantine\",\n          \"assign 1-based line_no\",\n          \"strip trailing newline for quarantine raw\",\n          \"convert parse_line dict into store.Record\",\n          \"return non-zero when any line is bad\"\n        ]\n      }\n    }\n  },\n  \"type_mismatch\": {\n    \"description\": \"parse_line returns a dict; Store.add uses record.id. Passing the dict would raise AttributeError. Visible tests never call pipeline.run or Store.add with a dict.\",\n    \"implication\": \"even all-good rows cannot currently complete store.add unless callers wrap the dict as Record first\"\n  },\n  \"visible_tests\": {\n    \"path\": \"tests/test_public_pipeline.py\",\n    \"count\": 6,\n    \"scope\": \"parser and store in isolation; no pipeline.run coverage\",\n    \"cases\": [\n      \"test_parse_line_reads_a_good_row: 'INV-1,10.50,usd\\\\n' -> id INV-1, amount_cents 1050, currency USD\",\n      \"test_parse_line_rejects_a_bad_row parametrize: 'INV-1,10.50'; ',10.50,USD'; 'INV-2,ten,USD'; 'INV-3,1.00,JPY'\",\n      \"test_store_keeps_one_record_per_id: replace on same id, count 2, last amount_cents 1\"\n    ],\n    \"last_run\": {\n      \"command\": \"pytest tests/test_public_pipeline.py\",\n      \"result\": \"6 passed\"\n    }\n  },\n  \"gaps_vs_contract\": [\n    \"pipeline.run does not quarantine BadRow; exception escapes\",\n    \"pipeline.run never mutates quarantine\",\n    \"pipeline.run always returns 0\",\n    \"no line numbering\",\n    \"dict vs Record: store.add expects attribute access\",\n    \"no visible test for end-to-end run, exit codes, or quarantine shape\",\n    \"blank/emp"
+     }
+    }
+   ],
+   "review": {
+    "review_record_id": "rec-56f7e30618102c8fcc608afc2b6eade8",
+    "verdict": "ACCEPT",
+    "criteria": {
+     "c-leaf-verified": "PASS"
+    }
+   },
+   "artifacts": [],
+   "evidence": {
+    "kind": "accepted_outputs",
+    "count": 1,
+    "readable": 1
+   }
+  },
+  {
+   "acceptance_id": "acc-9d8568a80654ae2eb763277d5621496e",
+   "task_id": "task-a444e80cd15c87958eff92bf4ac03cdf",
+   "obligation_id": "obl-root",
+   "accepted_at_requirements_revision": 5,
+   "goal_statement": "run the test suite and record the report",
+   "carries_root_criteria": [
+    {
+     "root_criterion_id": "c-test-passes",
+     "leaf_criterion_id": "c-tests-verified",
+     "evidence_requirement": "verify-tests report shows the named failing test now passes after the applied patch",
+     "leaf_review_verdict": "PASS"
+    }
+   ],
+   "accepted_outputs": [
+    {
+     "port": "report",
+     "artifact_id": "artifact-a0c02900419b9755",
+     "covers_root_criteria": [
+      "c-test-passes"
+     ],
+     "excerpt": {
+      "path": "REPORT.md",
+      "content_hash": "593ca24bd4a9c86316e8f0efe46de08fc3e41073cdd7021d7c67ffdd7c7de4ef",
+      "size_bytes": 1830,
+      "kind": "text",
+      "total_chars": 1830,
+      "truncated": false,
+      "text": "# Ingest pipeline fix report\n\n## What changed\n\nApplied `patches/pipeline.patch` to `ingest/pipeline.py`.\n\n`pipeline.run` previously parsed every line and called `store.add(record)` with the parser dict, then always returned `0`. It never wrote to `quarantine`, never converted dicts into `store.Record`, and never used 1-based line numbers.\n\nThe patched `run`:\n\n- enumerates `lines` from 1\n- catches `BadRow` from `parse_line`\n- appends `{line_no, raw, reason}` to `quarantine` (`raw` is the original line without a trailing newline)\n- converts successful parses with `Record(**parsed)` before `store.add`\n- returns `0` only when every line landed in the store; returns `1` if any line was quarantined\n\nThat matches the contract in `README-task.md`: every row ends in the store or quarantine, never neither; exit code is non-zero when anything is quarantined.\n\n## Why\n\nThe visible tests in `tests/test_public_pipeline.py` only cover `parse_line` and `Store` in isolation. They stayed green even with a broken pipeline, so greening them would not have made ingest end-to-end.\n\nWithout the patch:\n\n- a bad row would raise and drop the rest of the file\n- a good row would fail inside `Store.add` (`dict` has no `.id`)\n- quarantine would stay empty and the process would claim success\n\n## Tests\n\n- `tests/test_public_pipeline.py`: 6 passed (parser + store, unchanged)\n- Added `tests/test_pipeline_run.py` covering all-good (exit 0), all-bad (quarantine fields + non-zero), mixed rows (no silent drops), and newline stripping on `raw`\n\n## Not done / limits\n\n- Did not change `parser.py` or `store.py`; their public behavior already matched the visible tests.\n- Duplicate ids still overwrite in the store (existing `Store` contract).\n- `run` does not wrap unexpected exceptions other than `BadRow`; only parse failures are quarantined.\n"
+     }
+    }
+   ],
+   "review": {
+    "review_record_id": "rec-36706ab2811d8b994fa001b05384951c",
+    "verdict": "ACCEPT",
+    "criteria": {
+     "c-tests-verified": "PASS"
+    }
+   },
+   "artifacts": [],
+   "evidence": {
+    "kind": "accepted_outputs",
+    "count": 1,
+    "readable": 1
+   }
+  },
+  {
+   "acceptance_id": "acc-ad22d3c164679976c05e9670a22a0b01",
+   "task_id": "task-e007d1f22275058b06e1e1894b67a431",
+   "obligation_id": "obl-root",
+   "accepted_at_requirements_revision": 2,
+   "goal_statement": "reproduce the reported failure and record a diagnosis",
+   "carries_root_criteria": [],
+   "accepted_outputs": [
+    {
+     "port": "diagnosis",
+     "artifact_id": "artifact-87c09bd1d21ee101",
+     "covers_root_criteria": [],
+     "excerpt": {
+      "path": "diagnosis.md",
+      "content_hash": "0d0b35e9efeb6c3db47995197f6aaec3cf25f2b980d9e2c6bf8d0a0b18383cf1",
+      "size_bytes": 3328,
+      "kind": "text",
+      "total_chars": 3322,
+      "truncated": false,
+      "text": "# Diagnosis: ingest pipeline does not honor the public run contract\n\n## Reported goal\n\nLet the ingest pipeline run end-to-end. Bad rows must be recorded, not dropped.\n\nPublic contract (`README-task.md` / `facts.json`):\n\n- `ingest.pipeline.run(lines, store, quarantine)`\n- Exit code `0` if every line is stored; non-zero if any line is quarantined\n- `quarantine` is a list; append dicts with `line_no` (1-based), `raw` (no trailing newline), `reason` (string)\n- Every input line must land in store **or** quarantine, never neither\n\n## Reproduction\n\nVisible tests in `tests/test_public_pipeline.py` all pass (parser + store in isolation). They never call `pipeline.run`.\n\nExecutable reproduction: `tests/test_pipeline_repro.py`.\n\nObserved failures:\n\n1. **All-good input raises `AttributeError`**\n   - Call: `run([\"INV-1,10.50,usd\\n\"], Store(), [])`\n   - `parse_line` succeeds and returns a `dict` with keys `id`, `amount_cents`, `currency`\n   - `Store.add` does `record.id`, which is invalid on a dict (`dict` has no `.id` attribute)\n   - Store stays empty; quarantine stays empty; no exit code is returned\n\n2. **Bad input raises `BadRow` instead of quarantine**\n   - Call: `run([\"INV-3,1.00,JPY\\n\"], Store(), [])`\n   - `parse_line` raises `BadRow` (`unsupported currency`)\n   - `run` does not catch it, so the exception escapes\n   - Store empty; quarantine empty; process never returns a non-zero exit code\n\n3. **Mixed batch never processes later rows**\n   - First good row already raises `AttributeError` before any store/quarantine write\n   - Even if dict-vs-Record were fixed, the first `BadRow` would abort the loop\n   - Coverage rule “every line lands in store or quarantine” is violated\n\n## Root causes (in `ingest/pipeline.py`)\n\nCurrent body:\n\n```python\nfor line in lines:\n    record = parse_line(line)\n    store.add(record)\nreturn 0\n```\n\nGaps:\n\n| Contract requirement | Current code |\n|---|---|\n| Catch `BadRow` | Not caught; exception escapes |\n| `quarantine.append({line_no, raw, reason})` | `quarantine` is never mutated |\n| 1-based `line_no` | No enumeration |\n| `raw` without trailing newline | Not stripped for quarantine |\n| Convert parse dict → `store.Record` | Dict passed straight to `Store.add` |\n| Non-zero exit if any quarantine | Always `return 0` on the success path |\n\nSecondary type mismatch (`ingest/parser.py` vs `ingest/store.py`):\n\n- `parse_line` returns `dict`\n- `Store.add` indexes by `record.id` (attribute), as used by visible store tests with `Record(...)`\n- Visible tests never pass a dict into `Store.add` or call `pipeline.run`, so this crash is hidden from the public suite\n\n## What is *not* broken\n\n- `parse_line` good-row and BadRow cases match visible tests\n- `Store` replace-on-same-id semantics match visible tests\n- `BadRow` is a `ValueError` subclass and carries a string message usable as `reason`\n\n## Suggested fix (out of scope for this diagnosis task)\n\nIn `run`:\n\n1. Enumerate lines with 1-based `line_no`\n2. `try: parsed = parse_line(line)` / `except BadRow as exc: quarantine.append({...}); continue`\n3. `store.add(Record(**parsed))` or equivalent\n4. Return `0` iff `quarantine` is empty, else non-zero (e.g. `1`)\n5. `raw = line.rstrip(\"\\n\")` (parser only strips `\\n`; `\\r` behavior is unspecified)\n\nDo not change parser/store public behavior that existing tests lock in.\n"
+     }
+    }
+   ],
+   "review": {
+    "review_record_id": "rec-79e57cf54d6811574ce2c273baa50132",
+    "verdict": "ACCEPT",
+    "criteria": {
+     "c-leaf-verified": "PASS"
+    }
+   },
+   "artifacts": [],
+   "evidence": {
+    "kind": "accepted_outputs",
+    "count": 1,
+    "readable": 1
+   }
+  },
+  {
+   "acceptance_id": "acc-dbf7c231494fbc73e430bc8c66dda830",
+   "task_id": "task-dd9c0a042afce4827892bb3c55b6be97",
+   "obligation_id": "obl-root",
+   "accepted_at_requirements_revision": 6,
+   "goal_statement": "summarise the review findings",
+   "carries_root_criteria": [
+    {
+     "root_criterion_id": "c-change-explained",
+     "leaf_criterion_id": "c-change-summarized",
+     "evidence_requirement": "summarize-review summary of inspect-changeset findings explains what changed and why",
+     "leaf_review_verdict": "PASS"
+    }
+   ],
+   "accepted_outputs": [
+    {
+     "port": "summary",
+     "artifact_id": "artifact-e9f3fc3f7d8359de",
+     "covers_root_criteria": [
+      "c-change-explained"
+     ],
+     "excerpt": {
+      "path": "REPORT.md",
+      "content_hash": "0738f6b862d5e32c31a21450c259ce11683b840f0b56730a976840a0176b9db1",
+      "size_bytes": 3666,
+      "kind": "text",
+      "total_chars": 3626,
+      "truncated": false,
+      "text": "# Review summary: ingest pipeline (inspect-changeset)\n\nThis task summarises the inspect-changeset findings in `findings.md` against the current workspace. Production code was **not** changed here; the inspect snapshot is the subject.\n\n## Goal vs snapshot\n\nMission intent: the ingest pipeline must run end-to-end, and bad rows must be retained (quarantine), not dropped or allowed to abort the batch.\n\nPublic contract (`README-task.md`) for `pipeline.run(lines, store, quarantine)`:\n\n1. Exit code `0` only if every line landed in the store; any quarantined line ⇒ non-zero.\n2. `quarantine` is a list; the pipeline **appends** dicts with `line_no` (1-based), `raw` (original line without trailing newline), `reason` (string).\n3. Every input line must appear in **exactly one** of store or quarantine.\n\nThe current snapshot does **not** implement that contract.\n\n## What the inspect found (and why)\n\nVisible tests (`tests/test_public_pipeline.py`) cover parser and store in isolation only. They were run: **6 passed**. They never call `pipeline.run`, so they stay green while the end-to-end path is broken.\n\n### Pipeline is not wired\n\n`ingest/pipeline.py` currently:\n\n- loops `for line in lines`, calls `parse_line(line)`, then `store.add(record)`, then always `return 0`\n- does not import `BadRow` or `Record`\n- does not catch parse failures, so the first bad line raises and the rest of the batch is never processed\n- never appends to `quarantine` (the argument is unused)\n- never counts 1-based `line_no`\n- never records `raw` or `reason`\n\nThat is why bad rows are not “留痕”: they crash the run instead of being quarantined.\n\n### Dict vs Record handoff\n\n`parse_line` returns a **dict** (`id`, `amount_cents`, `currency`). `Store.add` indexes with `record.id` (attribute access). Passing the dict would raise `AttributeError`. Even **good** rows cannot be ingested end-to-end until the pipeline constructs `Record(**parsed)` (or equivalent).\n\nThis is the second root cause of “流水线端到端跑通” failing: parse success is not converted into a store `Record`.\n\n### Parser / store notes (unchanged components)\n\n- Parser: 3 comma fields; strip whitespace; currency uppercased; amount via `int(round(float(amount) * 100))` (float money edge cases). Raises `BadRow` for field count, empty id, non-numeric amount, currency not in `USD`/`EUR`.\n- `rstrip(\"\\n\")` only (not `\\r\\n`); a trailing `\\r` can remain on the last field.\n- Blank lines become one empty field → `BadRow` (field count), which is acceptable **if** the pipeline quarantines them.\n- Store: frozen `Record`; last-write-wins per `id`; no type check that `record` is a `Record`.\n\n## Coverage gap in visible tests\n\nCovered: good CSV → dict; bad rows (too few fields, missing id, non-numeric amount, `JPY`); store last-write-wins.\n\nNot covered: `pipeline.run`; quarantine shape; exit codes; dict→`Record` handoff; mixed good/bad batches; “every line in store or quarantine”.\n\n## Recommended fix (not applied in this summarise/inspect occurrence)\n\n1. Enumerate lines with 1-based `line_no`.\n2. `try`/`except BadRow`: append `{line_no, raw, reason}` to `quarantine` and continue.\n3. `store.add(Record(**parsed))`.\n4. Return `0` if this run added nothing to quarantine, else non-zero (e.g. `1`).\n5. Strip a single trailing newline from `raw` (consider `\\r\\n`).\n6. Add tests for mixed batches, empty input (`0`), all-bad (non-zero + all quarantined), and dict/`Record` integration.\n\n## What this occurrence did not do\n\nNo production code was modified. This write-up only records the inspect findings: what is wrong, why the contract fails, and what a later implement task should change.\n"
+     }
+    }
+   ],
+   "review": {
+    "review_record_id": "rec-9aa9b09faea3feb07f9cf95d53ba4971",
+    "verdict": "ACCEPT",
+    "criteria": {
+     "c-change-summarized": "PASS"
+    }
+   },
+   "artifacts": [],
+   "evidence": {
+    "kind": "accepted_outputs",
+    "count": 1,
+    "readable": 1
+   }
+  }
+ ]
+}

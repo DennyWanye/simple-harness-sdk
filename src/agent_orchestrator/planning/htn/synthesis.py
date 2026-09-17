@@ -607,11 +607,22 @@ class MethodSynthesizer:
         self, capabilities: CapabilitySnapshot, *, domain: str | None
     ) -> tuple[OperatorOffer, ...]:
         offers: list[OperatorOffer] = []
+        # P2.3k / defect N1: a task type published at a new version (the way P2.3h
+        # published the fix methods at @2) is offered at that version only.  The older
+        # row stays in the catalogue — a method that already names it still resolves
+        # and a stored reply still replays — but a synthesiser shown both would be
+        # invited to build on the one whose ports were the defect.
+        latest: dict[str, int] = {}
+        for spec in self._catalog.task_types():
+            key = spec.task_type_ref.id
+            latest[key] = max(latest.get(key, 0), int(spec.task_type_ref.version))
         for spec in sorted(
             self._catalog.task_types(),
             key=lambda item: (item.task_type_ref.id, int(item.task_type_ref.version)),
         ):
             if spec.form is not TaskForm.PRIMITIVE:
+                continue
+            if int(spec.task_type_ref.version) < latest[spec.task_type_ref.id]:
                 continue
             if domain is not None and spec.domain is not None and spec.domain != domain:
                 continue

@@ -56,6 +56,7 @@ from ..contracts import Budget, Mission, Task, TaskStatus
 from ..contracts.htn import (
     OccurrenceSpec,
     Requiredness,
+    SideEffectKind,
     TaskForm,
     TaskSemanticBindingV1,
 )
@@ -293,8 +294,37 @@ def occurrence_criteria(
     return tuple(criteria)
 
 
+#: P2.3k / defect N4: the side effects under which a leaf changes nothing the
+#: ``code_test`` layer could measure.  The same set the registry calls read-only.
+READ_ONLY_SIDE_EFFECTS = frozenset({SideEffectKind.NONE, SideEffectKind.EXTERNAL_READ})
+
+
+def read_only_leaf(binding: TaskSemanticBindingV1) -> bool:
+    """Whether this occurrence's type declares that it writes nothing (P2.3k / N4).
+
+    Three declarations have to agree, and silence on the first is *not* read-only: a
+    binding whose ``side_effect_kind`` is ``None`` said nothing, and a leaf that said
+    nothing keeps the system default.  A write capability (``repo.write``, anything
+    ending in ``.write``) or a declared ``resource_writes`` overrides a read-only side
+    effect — the type's own words are the authority, and a type that asks to write is
+    not read-only whatever else it says.
+    """
+
+    if binding.side_effect_kind is None:
+        return False
+    if SideEffectKind(binding.side_effect_kind) not in READ_ONLY_SIDE_EFFECTS:
+        return False
+    if any(str(item).endswith(".write") for item in binding.capability_requirements):
+        return False
+    return not binding.resource_writes
+
+
 def occurrence_policy(
-    criteria: Sequence[str], deployed: frozenset[str], declared: Sequence[str] = ()
+    criteria: Sequence[str],
+    deployed: frozenset[str],
+    declared: Sequence[str] = (),
+    *,
+    read_only: bool = False,
 ) -> tuple[str, ...]:
     """The verification layers one materialised occurrence runs.
 
@@ -302,11 +332,20 @@ def occurrence_policy(
     otherwise it is the system default narrowed the same way, plus ``code_test``
     whenever a criterion actually names a ``pytest:`` target — a Task carrying a test
     criterion that no layer runs is a criterion nobody checks.
+
+    P2.3k / defect N4: a ``read_only`` leaf is not given the *default* ``code_test``.
+    Grok C3's ``facts`` and ``reproduce`` leaves each lost their first Attempt to
+    ``code_test`` on a baseline that is red by construction, and the model then patched
+    product code inside a read-only leaf to get through.  The layer can only measure
+    the patch step's work, so it stays on the leaves that write.  A ``pytest:``
+    criterion of the leaf's own still adds it (a criterion nobody checks is the worse
+    outcome), and a policy the deployment *declared* is narrowed, never rewritten.
     """
 
-    chosen = tuple(layer for layer in declared if layer in deployed) or default_change_policy(
-        deployed
-    )
+    stated = tuple(layer for layer in declared if layer in deployed)
+    chosen = stated or default_change_policy(deployed)
+    if read_only and not stated:
+        chosen = tuple(layer for layer in chosen if layer != "code_test")
     if any(str(item).startswith("pytest:") for item in criteria) and "code_test" in deployed:
         if "code_test" not in chosen:
             chosen = (*chosen, "code_test")
@@ -353,7 +392,9 @@ def occurrence_task(
                 f"{binding.goal_signature.signature_id}"
             ),
             success_criteria=criteria,
-            verification_policy=occurrence_policy(criteria, deployed, declared_policy),
+            verification_policy=occurrence_policy(
+                criteria, deployed, declared_policy, read_only=read_only_leaf(binding)
+            ),
             allowed_tools=mission.allowed_tools,
             budget=budget,
             priority=_priority(spec),

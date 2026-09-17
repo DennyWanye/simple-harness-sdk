@@ -75,6 +75,7 @@ from agent_orchestrator.graph.eligibility import (  # noqa: E402
 from agent_orchestrator.graph.projection_validation import GraphIntegrityError  # noqa: E402
 from agent_orchestrator.orchestrator import hierarchical_dispatch as module  # noqa: E402
 from agent_orchestrator.orchestrator.commit_service import (  # noqa: E402
+    ARTIFACT_MERGE_NOT_APPLICABLE,
     MANAGEMENT_NOT_APPLICABLE,
     REFINEMENT_REQUESTED,
     SERVICE_INTENT_REHANDED_OFF,
@@ -1407,6 +1408,9 @@ NEW_EVENT_TYPES = frozenset(
         # P2.3i: the sibling for a reply the protocol read and refused for a slip the
         # model can correct — the round goes on, this says which ask fell short.
         SYNTHESIS_REPLY_REJECTED,
+        # P2.3k / N3: the legacy artifact merge the Mission Judge does not run on a
+        # hierarchical Mission, written down once with what the tree kept instead.
+        ARTIFACT_MERGE_NOT_APPLICABLE,
     }
 )
 
@@ -1510,6 +1514,14 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     then ended through its role's failure door — on a hierarchical Mission.  A legacy
     Mission's Planner and Critic waits are pinned by the recovery matrix and the event
     goldens, and asking the mode there is what keeps them exactly as they were.
+
+    P2.3k adds the nineteenth, ``_evaluate_criteria``: the Mission Judge's integrated
+    tree.  The legacy ``merge_accepted`` reads "independent branches" off
+    ``Task.dependency_ids``, which the materialised occurrences leave empty by design,
+    so on a hierarchical Mission two leaves writing one path failed a Mission whose
+    root ``GoalResolution`` already stood (Grok C3, defect N3).  Asking the mode there
+    is what sends the hierarchical Mission to its resolution's contributions and keeps
+    the legacy Mission on the legacy merge, byte for byte.
     """
 
     del tmp_path
@@ -1518,7 +1530,7 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     from agent_orchestrator.orchestrator import event_handler
 
     source = inspect.getsource(event_handler)
-    assert source.count("self._new_mode(mission)") == 18
+    assert source.count("self._new_mode(mission)") == 19
     assert "is_hierarchical(mission)" in inspect.getsource(event_handler.Orchestrator._new_mode)
 
 

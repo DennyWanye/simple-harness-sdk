@@ -1,0 +1,184 @@
+{
+ "applicable_when": [],
+ "basis_refs": [],
+ "composition": {
+  "criterion_links": [
+   {
+    "child_criterion_id": "c-tests-verified",
+    "child_step": "verify",
+    "evidence_requirement": "verify-tests report after the applied patch shows the named failing test now passes",
+    "parent_criterion_id": "c-test-passes"
+   },
+   {
+    "child_criterion_id": "c-review-summarized",
+    "child_step": "summarize",
+    "evidence_requirement": "summarize-review summary of inspect-changeset findings explains what changed and why",
+    "parent_criterion_id": "c-change-explained"
+   }
+  ],
+  "finalizer_step": "summarize",
+  "independent_review_required": true,
+  "outputs": {}
+ },
+ "expected_effects": [],
+ "exploration_assumptions": [],
+ "goal_type_ref": {
+  "content_hash": "8b52f0b3223f62b8158b548adcb5dd68cbdb10c373c965d7e6dbc447fe6d324c",
+  "id": "code.fix-failing-test",
+  "version": 1
+ },
+ "method_id": "code.fix-by-reproduce-patch-verify-explain",
+ "method_version": 1,
+ "ordering": [
+  {
+   "after": "reproduce",
+   "before": "read-facts"
+  },
+  {
+   "after": "apply-patch",
+   "before": "reproduce"
+  },
+  {
+   "after": "verify",
+   "before": "apply-patch"
+  },
+  {
+   "after": "inspect",
+   "before": "apply-patch"
+  },
+  {
+   "after": "summarize",
+   "before": "inspect"
+  },
+  {
+   "after": "summarize",
+   "before": "verify"
+  }
+ ],
+ "output_schema_ref": {
+  "content_hash": "17b4e11a1312750d23b08e12695906ddb3a7dafb2fee2c9f914adaec61ffbaa6",
+  "id": "code.outputs",
+  "version": 1
+ },
+ "parameter_schema_ref": {
+  "content_hash": "b70b8327d395ec19a871e3bbafe4efc494922bad0f9921a23c63ab108c518b5d",
+  "id": "code.repo-params",
+  "version": 1
+ },
+ "required_capabilities": [
+  "repo.read",
+  "repo.write",
+  "tests.run"
+ ],
+ "schema_version": 1,
+ "steps": [
+  {
+   "arguments": {},
+   "form": "primitive",
+   "local_id": "read-facts",
+   "obligation_relation": "refines_parent",
+   "required_capabilities": [
+    "repo.read"
+   ],
+   "task_type_ref": {
+    "content_hash": "9f3c970b6f6adc66044056ad6df2d79f0386dc1ffb4cf553e95dc0b34320bc73",
+    "id": "code.read-repository-facts",
+    "version": 1
+   }
+  },
+  {
+   "arguments": {
+    "repository_facts": {
+     "op": "output",
+     "port": "facts",
+     "step": "read-facts"
+    }
+   },
+   "form": "primitive",
+   "local_id": "reproduce",
+   "obligation_relation": "refines_parent",
+   "required_capabilities": [
+    "tests.run"
+   ],
+   "task_type_ref": {
+    "content_hash": "97182caa99722a7aa49236f434d95d86eca0fcfa4f4bf55f403d50b0d67ccdf1",
+    "id": "code.reproduce-failure",
+    "version": 1
+   }
+  },
+  {
+   "arguments": {
+    "diagnosis": {
+     "op": "output",
+     "port": "diagnosis",
+     "step": "reproduce"
+    }
+   },
+   "form": "primitive",
+   "local_id": "apply-patch",
+   "obligation_relation": "refines_parent",
+   "required_capabilities": [
+    "repo.write"
+   ],
+   "task_type_ref": {
+    "content_hash": "b134c243f9932e7c05ce402432eede54b28f120178558b755df9c9cf1a2e9561",
+    "id": "code.apply-patch",
+    "version": 1
+   }
+  },
+  {
+   "arguments": {
+    "patch": {
+     "op": "output",
+     "port": "patch",
+     "step": "apply-patch"
+    }
+   },
+   "form": "primitive",
+   "local_id": "verify",
+   "obligation_relation": "refines_parent",
+   "required_capabilities": [
+    "tests.run"
+   ],
+   "task_type_ref": {
+    "content_hash": "35fee9b82161f766bccece94789a5511848e0e29db8494de48027c09f42acf56",
+    "id": "code.verify-tests",
+    "version": 1
+   }
+  },
+  {
+   "arguments": {},
+   "form": "primitive",
+   "local_id": "inspect",
+   "obligation_relation": "refines_parent",
+   "required_capabilities": [
+    "repo.read"
+   ],
+   "task_type_ref": {
+    "content_hash": "76843c108408e83c427a8384a0347cde5350638c74364ba16419a3aa295f9177",
+    "id": "code.inspect-changeset",
+    "version": 1
+   }
+  },
+  {
+   "arguments": {
+    "findings": {
+     "op": "output",
+     "port": "findings",
+     "step": "inspect"
+    }
+   },
+   "form": "primitive",
+   "local_id": "summarize",
+   "obligation_relation": "refines_parent",
+   "required_capabilities": [
+    "repo.read"
+   ],
+   "task_type_ref": {
+    "content_hash": "c2870549d29a7e14db808b560c1531f04d6ff4d74de7abc41976c47efb84a520",
+    "id": "code.summarize-review",
+    "version": 1
+   }
+  }
+ ]
+}

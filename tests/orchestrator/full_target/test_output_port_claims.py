@@ -227,9 +227,15 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "method-synthesizer-v3",
         "a38309fdb328c929d6ddefa37ff4de294628f0f508dfad82c7a27bb1cd0e6c9c",
     ),
-    "METHOD_SYNTHESIZER": (
+    "METHOD_SYNTHESIZER_V4": (
         "method-synthesizer-v4",
         "8d457abe7a74d614642ac7e2446e656aea9c46e4a7f509820353dd04f93f39b6",
+    ),
+    # P2.3k / N1: v5 = v4 plus "the step that explains the change must be fed the
+    # change through an input port; operators list the latest version only".
+    "METHOD_SYNTHESIZER": (
+        "method-synthesizer-v5",
+        "6973e125b9cc3b02b8af77190a9b0ff4b5a1ddd3cdfe8cc1f60900304fe21e6b",
     ),
     "PLANNER_HIERARCHICAL_V3": (
         "planner-hierarchical-v3",

@@ -3446,6 +3446,84 @@ P2.3i 改 `_collect_synthesizer` 附近与 `synthesis.py`。本片在这两处�
 - 合并后两处测试按合并语义改：P2.3i 的 `_starve_the_second_ask` 桩改为透传 `**carried`（第二问现在也带 `synthesis_round` / `review_feedback`）；P2.3j 的有界测试里 `plan.ghost` 触发 `UNKNOWN_OPERATOR`，P2.3i 视为可修正拒绝而重问一次，断言改为「一轮、两问（`asks == 2`、`retry_refused == ""`、一条 `MethodSynthesisReplyRejected`）、合成器被问 2 次」。
 - 合并后核对：`_new_mode(mission)` 18 处与哨兵一致；`NEW_EVENT_TYPES` 含 `MethodSynthesisRoundRecorded` / `MethodSynthesisReplyUnreadable` / `MethodSynthesisReplyRejected`；ruff 全清。测试数字见合并提交说明。
 
+## 2m. P2.3k：Grok 第 2 批 L3 诊断的四条 SDK 缺陷——N3 遗留合并推翻根决议、N1 inspect 叶看不到补丁、N2 根评审包没有用户目标、N4 只读叶挂 code_test（2026-09-17，分支 `p2.3k-legacy-merge-on-htn`，基 fc07312 = 0.12.2 候选 + P2.3i + P2.3j 合并）
+
+输入：`impl/Grok验收-第2批L3诊断-2026-09-17.zh-CN.md`（8 局逐局链）；真实局只读 `H-L3-C3-r0/r1`（N3、N4）、`H-L3-C1-r1`（N1）、`H-L3-C2-r0`（N2）的 `orchestrator.db`（复制到会话 scratchpad 查询，证据目录零写入）。`contracts/` 零改动；避开 P2.3j 核验修复的 `compile_proposal` / 修复计数 / retire 路径，未碰。
+
+### N3（P0）· 根目标已解决后被遗留 artifact 冲突判定推翻
+
+- **现象**：C3-r0/r1 隐藏评分 PASS、根评审 ACCEPT、`GoalResolutionCommitted{SATISFIED, is_mission_root}` 之后紧接 `MissionFailed{artifact_conflict}`：`REPORT.md is produced by both task-544f… and task-68e2… (independent branches) with different content`。
+- **根因**：`_decide` → `_judge` → `_evaluate_criteria` 用 legacy `merge_accepted(tasks, artifacts_by_task, tasks_by_id)` 建 Mission Judge 的集成树；它以 `Task.dependency_ids` 的祖先闭包判「独立分支」，而分层模式的 occurrence 行 `dependency_ids=()` 是设计如此（§18.5 约束 4：顺序在 `order_constraints`），于是任何两叶同路径不同字节都是冲突。用户目标写「改完在 REPORT.md 里写清楚」几乎保证每叶都写 REPORT.md（C3-r0 四叶四份不同的 REPORT.md）。
+- **修法**（`orchestrator/event_handler.py`、`orchestrator/commit_service.py`）：与 P2.3d D4 同形——`_evaluate_criteria` 加模式分支（`self._new_mode(mission)` 第 **19** 处，哨兵同步 +1，docstring 加段），分层 Mission 走新 `_hierarchical_judgment_inputs`：树只从根决议的贡献读——`root_contributions` 的 CURRENT 验收 → 各验收 Task 的 `accepted_artifacts` → 再叠 P2.3h 索引在声明端口上的 `acceptance_outputs` 行；同路径多写不是冲突而是覆盖：验收晚者胜（`list_acceptances` 按 `accepted_at_ms` 序），**criterion_links 指向的步骤（`carried_criteria`）的产物压过其余**（它才是根准则读的东西，ADR §9.1），不抛 `ArtifactConflict`。记一次新事件 **`ArtifactMergeNotApplicableUnderHierarchical`**（`commit_service.record_artifact_merge_not_applicable`，按 subject `{mission}:judge:artifact-merge` 幂等；载荷 `reason=SEMANTICS_IS_HIERARCHICAL`、`redirect=root_resolution_contributions`、`contributions`、`artifacts`、`superseded[{path, kept_task_id, kept_artifact_id, kept_by: criterion_link|acceptance_order, superseded_task_ids}]`）。legacy 半边 `merge_accepted` 调用与 `versioning.merge_accepted` 一字未动（`merge_accepted(` 仍恰好 2 处）。
+- **测试**（`test_hierarchical_judgment_tree.py`，5 条）：①用 C3 形状（两 Task `dependency_ids=()`、REPORT.md 两个哈希）钉住 legacy 函数仍抛「independent branches」；②**真 `Orchestrator` 逐周期端到端**：`plan.goal` 夹具、Mission 准则改为 `file:REPORT.md`，leaf/review 两叶各按 `accept_result` 生命周期（READY→ACTIVE→VERIFYING→COMPLETED，`accepted_artifacts` 含端口文件 + 各自的 REPORT.md）完成并经 `LeafAcceptanceAssembly` 验收，脚本化根评审 PASS → `GoalResolutionCommitted` → **COMPLETED**（修前红：同样的链在 `GoalResolutionCommitted` 后 `MissionFailed{artifact_conflict}`，进度日志原话「failed at judgment: REPORT.md is produced by both …」）；③事件载荷：`contributions=2`、`superseded` 只含 REPORT.md、`kept_task_id`=review（finalizer）、`kept_by=criterion_link`；④review 的时钟戳早于 leaf 时仍是 review 胜（链接压过时钟）；⑤单写者路径不进 `superseded`，`artifacts=3`。
+- **变异**：M1 分支关掉（回到 legacy 合并）→ 4 failed；M2 去掉链接优先（只按时钟）→ 1 failed；M3 不记事件 → 3 failed。全部 KILLED。
+- **未做**：树只收「根决议的贡献」；被 supersede 的验收（`Validity` 非 CURRENT）的产物不进树——这是有意的（§21.5）。`file:` 准则对分层 Mission 仍在集成副本上判，`pytest:` 准则同理；两者在本片的夹具里只覆盖了 `file:`。
+
+### N4（P2）· 只读叶继承 code_test 层
+
+- **现象**：C3-r0/r1 的 facts、reproduce 叶 attempt-1 都 `VerificationFailed(code_test: 1 failed, 1 passed)`（基线红是题目构造），attempt-2 模型被迫在只读叶里改 `stats/window.py`；C1-r1 的 reproduce 叶因自写的红复现测试被打回。每局多 2 次 attempt、约 +30% token。
+- **根因**：`occurrence_tasks.occurrence_policy` 对每个 occurrence 一律复制系统默认 `("format_check","rule_check","code_test")`，不看叶子是谁。
+- **修法**（`orchestrator/occurrence_tasks.py`）：新 `read_only_leaf(binding)`：`side_effect_kind ∈ {none, external_read}` **且** 无 `*.write` 能力 **且** `resource_writes` 为空 才算只读；`side_effect_kind is None`（类型没说）不算只读，沿用默认。`occurrence_policy(..., read_only=)`：只读叶不加**默认**的 `code_test`；叶子自己的 `pytest:` 准则仍加回（没人查的准则更糟，host 0.9.8 口径）；部署**声明**的策略只收窄不改写。`occurrence_task` 传 `read_only=read_only_leaf(binding)`。code 域结果：facts / reproduce / verify / inspect / summarize / 各 observer 都是 `external_read` 无写能力 → `("format_check","rule_check")`；apply-patch / revert-commit（`local_write` + `repo.write` + `resource_writes`）→ 仍含 `code_test`。
+- **测试**（`test_read_only_leaf_policy.py`，8 条）：规则 4 条（只读去 code_test / 写叶保默认 / `pytest:` 准则仍加 / 声明策略不改写）、绑定判定 2 条（三条件与 None 不算）、真 code 域 `_both_lane_world` 2 条（四叶策略 + `TaskCommitted.proposal.verification_policy` 同口径——C3 的这个字段每叶都带 code_test）。
+- **变异**：M4 `occurrence_task` 传 `read_only=False` → 2 failed，KILLED。
+- **未做 / 取舍**：verify 叶也是 `external_read` 所以也不跑 `code_test`——它自己跑测试写报告，根评审按摘录判；Mission 级 `pytest:` 准则仍在集成树上跑。若后续要求 verify 叶必须被系统复跑一次，走「类型声明 `pytest:` 准则」或 finalizer 例外，本片不加。
+
+### N2（P1）· 根评审包没有用户目标，c-test-passes 对绿基线题字面不可满足
+
+- **现象**：C2-r0/r1、C4-r0/r1 四次 `c-test-passes` FAIL 全是「report 未展示 named failing test 由红转绿」；这四题 `failing_test` 指向本来就绿的可见套件，隐藏测试 worker 拿不到，没有任何 worker 能给出该证据；评审员对它看到的包判得**对**。
+- **根因**：`root_review.request()` 的 `goal_statement` 只取目标签名模板句「make the named failing test pass and explain the change」，包里**没有** Mission 用户目标（C2：「让 ingest 流水线端到端跑通，坏行要留痕不要丢」）也没有根参数；`evidence_requirement` 由合成器照抄模板。Host 构造把「实现题面契约」题包装成 `code.fix-failing-test` 是另一半（Host 侧，本片不改题目）。
+- **修法**（`orchestrator/root_review.py`、`runtime/role_templates.py`）：`RootReviewRequest` 加 `mission_goal`（`store.get_mission(...).goal` 原文）与 `goal_parameters`（根绑定 `typed_parameters`），两者都进 `to_json` 因而进 `content_hash()` = 意图 `context_version`（评审员读到的正文就是这份 JSON）。提示词只加 **`root-reviewer-v3`**（`_revise` 自 v2：字段清单说明 goal_statement 是模板措辞、mission_goal 以之为准、goal_parameters；新增硬约束 1c「statement / evidence_requirement 是方法作者按模板写的，以 mission_goal 为准解释；若要求 named failing test 由红转绿而 goal_parameters.failing_test 在基线本来就绿或 mission_goal 没点名失败测试，改为要求报告证明覆盖用户目标的测试（含叶子新写的）由红转绿或新增并通过；缺则写明缺哪种证据」）。v2 改名 `ROOT_REVIEWER_V2` 保留可 pin，sha256 `75debfd9…` 钉在测试里；默认 `ROOT_REVIEWER` = v3。
+- **(b) 取舍——seed 措辞不改**：`c-test-passes` 的「named failing test」措辞在两处：目标签名 `statement`（task_types.json，`code.fix-failing-test@1`）与 `code.fix-by-patch@2` 等三个方法的 `evidence_requirement`。**不改**，理由：①对真有一条红测试的题（C3）它恰恰是正确且更强的要求，改成「以目标为准」会把 C3 这类局的证据门槛放松；②问题的另一半在 Host 构造（C1/C2/C4 不是 fix-failing-test 题），诊断 §4 N2 已建议 Host 换签名或指向真红测试；③再升三个方法到 @3 会又一次让 runner FREEZE 重生成。评审员现在有 mission_goal 与 goal_parameters，能自己判断「这题没有 named failing test」。若 Host 决定不换签名，再考虑加一条 `code.implement-contract` 目标签名（新签名而非改措辞）。
+- **测试**（`test_root_review_user_goal.py`，5 条）：C2-r0 真包夹具 `fixtures/htn/c2_root_review/`（去标识：mission id、agent id、工作区绝对路径）钉住「包里无 mission_goal / goal_parameters、用户目标不含 failing、参数指向绿套件、评审员 finding 原话『named failing test … already green』」；C3 code 域 `request().to_json()` 带 `mission_goal` 与 `{repository, failing_test}`；去掉 mission_goal 的请求 `content_hash()` 不同；真 `Orchestrator` 上 `_ask_root_reviewer` 后意图 `config.message.content` 里有同样的字段；提示词 v3 含新字段与「以 mission_goal 为准 / 基线 / 由红转绿」，v2 字节钉住、可 pin、v1–v3 都注册。既有 `test_the_prompt_v2_names_the_new_fields_and_v1_is_frozen` 改为钉 v2。
+- **变异**：M5 `to_json` 去掉 `mission_goal` → 3 failed，KILLED。
+- **未做**：真实模型上 v3 是否真的按 mission_goal 判，要等第 3 批；Host 侧换签名/指向真红测试仍是诊断 §7 第 3 条的另一半。
+
+### N1（P1）· inspect / summarize 叶看不到补丁
+
+- **现象**：五局合成方法同形，`inspect` 步 `arguments: {}`（`code.inspect-changeset@1` 不声明输入端口），叶子工作区永远是未打补丁的快照，findings/summary 如实写「未改产品代码」→ `c-change-explained` 被正确拒（C1-r1、C2-r1）；C1-r0 合成器想把 `verify.report` 接进 summarize 被 `PORT_UNAVAILABLE` 拒——模型想接，库不让接。verify 叶无此问题（`patch` 必需端口，C3 verify 拿到了补丁）。
+- **修法**（`seed_methods/code/task_types.json`、`planning/htn/synthesis.py`、`runtime/role_templates.py`）：①目录新增 **`code.inspect-changeset@2`**（可选输入 `patch`:code.patch、`report`:code.report）与 **`code.summarize-review@2`**（`findings` 必需 + 可选 `patch`、`report`），同 operator、同 side_effect；**@1 行字节不动**（149 行纯插入）——种子哈希由 `(id, version)` 派生，C1-r1 存库方法与 P2.3i 的 C1-r0 回复夹具引用的 @1 哈希仍解析，P2.3i「逐字复现 PORT_UNAVAILABLE」不受影响。②`MethodSynthesizer._offers` 每个 task_type_id 只列**最高版本**（旧版仍在目录里可解析、可回放，只是不再被推荐）。③提示词只加 **`method-synthesizer-v5`**（`_revise` 自 v4：承担「解释改动」类父要求的步骤必须通过输入端口接到产生改动步骤的产物——apply 的 patch → inspect 的 patch、verify 的 report → summarize 的 report；无数据输入的步骤只能看到未修改快照，这样的方法不要提；operators 只列最高版本按其引用）；v4 改名 `METHOD_SYNTHESIZER_V4` 保留，digest `8d457abe…` 钉住（`FROZEN_PROMPT_DIGESTS` 加 V4 条、默认条改 v5 `6973e125…`）；默认 `METHOD_SYNTHESIZER` = v5。**methods.json 未改字节**，故无方法版本升级；`review-changes-directly/recursively` 仍引用 @1（它们审外部 changeset，不需要补丁端口）。
+- **测试**（`test_inspect_leaf_patch_input.py`，7 条；夹具 `fixtures/htn/c1_inspect_input/method.json` = C1-r1 `method_contracts` 表里的方法原文）：①按原定义经 `apply_synthesizer_reply`（真合成准入路径）准入并采用，facts/reproduce/apply-patch 验收后 `attempt_inputs(inspect) == []`（钉住缺陷）；②@1 行字节/端口未变、存库方法点名的哈希仍解析；③改绑 `inspect@2.patch ← apply-patch.patch`、`summarize@2.report ← verify.report` 后：apply-patch 验收前 inspect 是「未到」（WAITING_DATA/WAITING_ORDER——该方法还写了显式 ordering），验收后 `attempt_inputs(inspect) == ["out/patch.json"]`；④summarize 在 verify 验收后仍等 findings，inspect 验收后收到 findings + report；⑤@2 端口可选性、side_effect、operator 与 @1 一致；⑥`_offers` 每类型一条且是最高版本，inspect@2 端口 {patch, report}，@1 仍 `resolve` 得到；⑦提示词 v5 句子存在、v4 字节钉住可 pin、v5 保留 v4 全部句子。既有 v4 默认版本钉子三处改 v5。
+- **变异**：M6 `_offers` 不过滤旧版 → 1 failed，KILLED。
+- **未做**：没有把「承担 c-change-explained 的步骤必须绑补丁/报告端口」做成注册协议的静态准入规则（`RejectionCode` 在 `contracts/`，新码属契约变更；且规则要依赖对父准则语义的猜测），本片只走提示词 + 端口可用；真实模型上合成器是否按 v5 绑端口要等第 3 批。也没加一条带 inspect/summarize 的种子 fix 方法（`fix-by-patch@2` 把 c-change-explained 挂在 verify.report 已经足够）。
+
+### 口径
+
+- 新事件 1：`ArtifactMergeNotApplicableUnderHierarchical`（`NEW_EVENT_TYPES` 已加；legacy 事件字节 golden 与旧函数 hash 不变）；`_new_mode(mission)` 决策点 **19**（哨兵已改）。
+- 根评审员看到的 JSON 多 `mission_goal` / `goal_parameters`，`context_version` 因而不同；合成器包 `operators` 少了 inspect/summarize 的 @1 行；默认提示词 root-reviewer-v3、method-synthesizer-v5（旧版都可 pin）；runner FREEZE-candidate 需重生成（task_types.json / 提示词版本变）。
+- 分层 Mission 每叶的 `verification_policy` 变了（只读叶无 code_test）——第 3 批开跑前 Host 侧不用改配置，只是 attempt 数会降。
+- **无新增配置项**，策略快照 digest 不变；`contracts/` 零改动；契约变更请求：无（若要把「解释步必须绑补丁」做成注册协议规则，需 `RejectionCode` 新码，记为待议）。
+
+### 变异自证（合计 6 条，全部 KILLED；临时改源 → 定向跑 → 从留存副本恢复，不用 git checkout）
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | `_evaluate_criteria` 分支关掉，分层 Mission 回到 legacy `merge_accepted` | judgment_tree 5 条 | 4 failed → KILLED |
+| M2 | `_hierarchical_judgment_inputs` 权重去掉「链接优先」只按时钟 | 同上 | 1 failed → KILLED |
+| M3 | 不记 `ArtifactMergeNotApplicableUnderHierarchical` | 同上 | 3 failed → KILLED |
+| M4 | `occurrence_task` 传 `read_only=False` | read_only_leaf_policy 8 条 | 2 failed → KILLED |
+| M5 | `RootReviewRequest.to_json` 去掉 `mission_goal` | root_review_user_goal 5 条 | 3 failed → KILLED |
+| M6 | `_offers` 不过滤旧版本 | inspect_leaf_patch_input 7 条 | 1 failed → KILLED |
+
+### 回归
+
+full_target **2826 passed / 2 skipped**（本机基线 2800 / 2，任务书口径 2799 / 3 差一条环境性 skip；+25 新测试 +1 `FROZEN_PROMPT_DIGESTS` 参数化条目）；旧模式
+`step02 step05 step06 step07 p34 p35` **560 passed / 13 skipped / 0 failed**（与基线逐项一致，skip 全是既有的 real-provider / pinned tokenizer）；
+`ruff check src/agent_orchestrator tests/orchestrator/full_target` 全清；`_new_mode(mission)` 决策点 19 处与哨兵一致；
+legacy 事件字节 golden（`test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`）与旧函数源码 hash 全绿，
+`test_the_legacy_run_appends_none_of_the_new_event_types` 含新事件仍 `isdisjoint`；`merge_accepted(` 仍恰好 2 处。
+
+### 偏差
+
+- N3 端到端里叶子不由真 Worker 完成：用 `store.update_task` 按 `accept_result` 的转移表把 Task 推到 COMPLETED 并写 `accepted_artifacts`（这正是 legacy 生命周期留下、`_judge` 读到的那两个字段），验收经真 `LeafAcceptanceAssembly`，根评审/决议/裁决经真 `Orchestrator._cycle`。
+- N1 读取真实局的方法定义来自 `method_contracts` 表（事件载荷不含定义）。
+- N2(b) 没改 seed 措辞，理由见上。
+
+### 未做 / 交下一片
+
+- 真实模型（第 3 批）验证：C3 类局是否 COMPLETED（N3）、合成器是否按 v5 绑 patch/report 端口（N1）、评审员是否按 mission_goal 判 c-test-passes（N2）、attempt 数是否下降（N4）。
+- Host 侧：H1（交付文件按 ordinal 覆盖）与 D2a（C1/C2/C4 换目标签名或指向真红测试）仍在 Host，本片未动。
+- FREEZE-candidate 重生成。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

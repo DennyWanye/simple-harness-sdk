@@ -152,6 +152,16 @@ HIERARCHICAL_GRAPH_CHANGE_REFUSED = "HierarchicalGraphChangeRefused"
 #: exists to walk through it (P3 / TaskGraph), the honest answer is to open no round and
 #: say so where an operator reads it.
 MANAGEMENT_NOT_APPLICABLE = "ManagementNotApplicableUnderHierarchical"
+#: P2.3k / defect N3.  Appended once per hierarchical Mission when the Mission Judge
+#: builds its integrated tree: the legacy ``merge_accepted`` (override legal only along
+#: ``Task.dependency_ids``, anything else an ``ArtifactConflict``) is not applied, because
+#: in this mode ``dependency_ids`` is empty by design (§18.5 constraint 4) and the rule
+#: read every pair of leaves that wrote the same path as "independent branches".  The
+#: Grok C3 episodes lost a root ``GoalResolution`` that already stood to exactly that
+#: (``MissionFailed{artifact_conflict}`` one event after ``GoalResolutionCommitted``).
+#: The tree is read from the resolution's own contributions instead; the record says so
+#: and names every path more than one contribution wrote and which writer was kept.
+ARTIFACT_MERGE_NOT_APPLICABLE = "ArtifactMergeNotApplicableUnderHierarchical"
 #: P2.3d / defect D5-B (review P2-5): one plan revision was put back to the Planner
 #: because it still holds an unrefined compound goal.  Durable because the bound is
 #: "once per revision" and a bound kept only in process memory is no bound after a
@@ -3916,6 +3926,49 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             if reason in {"outcome_no_progress", "outcome_failure", "verification_failed"}:
                 count += 1
         return count
+
+    def record_artifact_merge_not_applicable(
+        self,
+        mission_id: str,
+        *,
+        subject: str,
+        contributions: int,
+        artifacts: int,
+        superseded: Sequence[Mapping[str, Any]],
+    ) -> Event:
+        """P2.3k / defect N3: the legacy artifact merge a hierarchical Mission does not run.
+
+        Keyed by the subject so the durable record is written once per Mission judgment
+        tree rather than once per cycle, exactly like ``record_management_not_applicable``.
+        It carries the same reason code the mode gate would have raised
+        (``SEMANTICS_IS_HIERARCHICAL``) and, so the reader can see what the tree holds
+        instead, every path more than one contribution wrote — with the writer that was
+        kept and why (``acceptance_order`` or ``criterion_link``).
+        """
+
+        return self._emit(
+            ARTIFACT_MERGE_NOT_APPLICABLE,
+            mission_id,
+            key=subject,
+            payload={
+                "reason": "SEMANTICS_IS_HIERARCHICAL",
+                "subject": subject,
+                "redirect": "root_resolution_contributions",
+                "contributions": int(contributions),
+                "artifacts": int(artifacts),
+                "superseded": [dict(item) for item in superseded],
+                "detail": (
+                    "this Mission runs under the hierarchical semantics; the legacy "
+                    "merge_accepted reads 'independent branches' off Task.dependency_ids, "
+                    "which the materialised occurrences leave empty by design, so two leaves "
+                    "writing one path would be an artifact_conflict overturning a root "
+                    "GoalResolution that already stands. The judgment tree is built from "
+                    "the resolution's CURRENT contributions instead: later acceptances "
+                    "override earlier ones and a criterion-linked step's accepted output "
+                    "overrides the rest (§9.1, §21.5)."
+                ),
+            },
+        )
 
     def record_management_not_applicable(
         self, mission_id: str, *, task_id: str, trigger: str, subject: str

@@ -104,6 +104,7 @@ from agent_orchestrator.runtime.role_templates import (  # noqa: E402
     METHOD_SYNTHESIZER_V2_VERSION,
     METHOD_SYNTHESIZER_V3,
     METHOD_SYNTHESIZER_V3_VERSION,
+    METHOD_SYNTHESIZER_V4_VERSION,
     METHOD_SYNTHESIZER_VERSION,
     TEMPLATE_VERSIONS,
     template_for,
@@ -760,13 +761,14 @@ def test_the_second_ask_is_opened_before_the_first_is_written_down_and_the_gate_
 
 def test_v3_tells_the_model_a_protocol_refusal_may_travel_in_schema_feedback():
     # P2.3j merge: v3 is this slice's prompt and keeps its bytes; the default moved to
-    # v4 (v3 plus ``review_feedback``), which carries every sentence checked here.
+    # v4 (v3 plus ``review_feedback``) and, with P2.3k, to v5 (v4 plus "feed the
+    # explaining step the change") — each carries every sentence checked here.
     v3 = METHOD_SYNTHESIZER_V3.instructions
     v2 = METHOD_SYNTHESIZER_V2.instructions
     assert METHOD_SYNTHESIZER_V3.prompt_version == METHOD_SYNTHESIZER_V3_VERSION
     assert METHOD_SYNTHESIZER_V3_VERSION == "method-synthesizer-v3"
     assert METHOD_SYNTHESIZER.prompt_version == METHOD_SYNTHESIZER_VERSION
-    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v4"
+    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v5"
     assert "拒绝码" in METHOD_SYNTHESIZER.instructions
     for code in sorted(CORRECTABLE_REJECTIONS, key=str):
         assert str(code) in v3, f"v3 names every correctable code: {code!s}"
@@ -796,6 +798,7 @@ def test_v2_keeps_its_bytes_stays_registered_and_is_still_pinnable():
         METHOD_SYNTHESIZER_V1_VERSION,
         METHOD_SYNTHESIZER_V2_VERSION,
         METHOD_SYNTHESIZER_V3_VERSION,
+        METHOD_SYNTHESIZER_V4_VERSION,
         METHOD_SYNTHESIZER_VERSION,
     }
     assert versions[METHOD_SYNTHESIZER_V3_VERSION] is METHOD_SYNTHESIZER_V3
@@ -817,4 +820,4 @@ def test_v2_keeps_its_bytes_stays_registered_and_is_still_pinnable():
     env = synth.empty_library_env()
     request = synth.synthesizer(env).build_request(synth.goal(env), env.capabilities())
     assert isinstance(request, SynthesisRequest)
-    assert request.to_json()["role_prompt_version"] == "method-synthesizer-v4"
+    assert request.to_json()["role_prompt_version"] == "method-synthesizer-v5"

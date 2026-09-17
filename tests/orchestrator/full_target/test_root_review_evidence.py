@@ -647,15 +647,20 @@ def test_the_revision_numbers_are_explained_rather_than_left_to_be_misread(c3: C
 
 
 def test_the_prompt_v2_names_the_new_fields_and_v1_is_frozen() -> None:
+    """P2.3k moved the default to v3 (``test_root_review_user_goal``); v2 keeps every
+    word this test pinned, and v1 keeps its bytes."""
+
     from agent_orchestrator.runtime.role_templates import (
-        ROOT_REVIEWER,
         ROOT_REVIEWER_V1,
         ROOT_REVIEWER_V1_VERSION,
-        ROOT_REVIEWER_VERSION,
+        ROOT_REVIEWER_V2,
+        ROOT_REVIEWER_V2_VERSION,
         TEMPLATE_VERSIONS,
         template_for,
     )
 
+    ROOT_REVIEWER = ROOT_REVIEWER_V2  # noqa: N806 - the version this test is about
+    ROOT_REVIEWER_VERSION = ROOT_REVIEWER_V2_VERSION  # noqa: N806
     assert ROOT_REVIEWER.prompt_version == ROOT_REVIEWER_VERSION == "root-reviewer-v2"
     for field in (
         "excerpt",

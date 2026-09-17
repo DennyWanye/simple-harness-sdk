@@ -52,7 +52,7 @@ last is exactly the mis-accounting §18.5 warns a new role purpose about.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -232,6 +232,16 @@ class RootReviewRequest:
     schema_feedback: str = ""
     #: P2.3h: what the revision numbers in this request mean, stated beside them.
     requirements_revision_semantics: str = ""
+    #: P2.3k / defect N2: the Mission's goal as the user wrote it, verbatim.
+    #: ``goal_statement`` is the goal *signature's* template sentence ("make the named
+    #: failing test pass …"); the Grok C2/C4 episodes were rejected on that sentence
+    #: alone, because the reviewer had no way to know the user's goal named no failing
+    #: test and the ``failing_test`` parameter pointed at a suite that was green at
+    #: baseline.  Inside the hashed request, so ``context_version`` covers it.
+    mission_goal: str = ""
+    #: P2.3k / N2: the root binding's typed parameters (``repository``,
+    #: ``failing_test``, …) — what the template's placeholders actually stood for.
+    goal_parameters: Mapping[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -240,6 +250,8 @@ class RootReviewRequest:
             "budget_account": str(ReviewAccount.MISSION),
             "goal_task_id": self.goal_task_id,
             "goal_statement": self.goal_statement,
+            "mission_goal": self.mission_goal,
+            "goal_parameters": dict(self.goal_parameters),
             "requirements_revision": int(self.requirements_revision),
             "requirements_revision_semantics": self.requirements_revision_semantics,
             "criteria": [dict(item) for item in self.criteria],
@@ -1087,6 +1099,11 @@ class RootReviewCoordinator:
         statement = ""
         if binding is not None and binding.goal_signature.statement:
             statement = str(binding.goal_signature.statement)
+        # P2.3k / N2: the user's own words and the root's parameters, read off the
+        # Mission row and the root binding — never composed here.
+        mission = self.store.get_mission(mission_id)
+        mission_goal = "" if mission is None else str(mission.goal)
+        goal_parameters = {} if binding is None else dict(binding.typed_parameters)
         # What each Acceptance *delivered*, read from migration 17's
         # ``acceptance_outputs``.  Part 3a's round-3 smoke ended here: the request
         # showed only ``acceptance.artifact_refs``, which the accept path does not
@@ -1205,6 +1222,8 @@ class RootReviewCoordinator:
             requirements_revision=int(package.binding.requirements_revision),
             schema_feedback=str(schema_feedback),
             requirements_revision_semantics=REQUIREMENTS_REVISION_SEMANTICS,
+            mission_goal=mission_goal,
+            goal_parameters=goal_parameters,
         )
 
     def carried_criteria(self, mission_id: str) -> tuple[CarriedCriterion, ...]:

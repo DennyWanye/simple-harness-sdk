@@ -1007,10 +1007,10 @@ register_template(METHOD_SYNTHESIZER_V3)
 # written against v2: it revises P2.3i's v3 (protocol refusals in schema_feedback),
 # so both readings travel in one prompt.  v1, v2 and v3 keep their exact words and
 # stay registered (§18.5 C8).
-METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v4"
-METHOD_SYNTHESIZER = _revise(
+METHOD_SYNTHESIZER_V4_VERSION = "method-synthesizer-v4"
+METHOD_SYNTHESIZER_V4 = _revise(
     METHOD_SYNTHESIZER_V3,
-    METHOD_SYNTHESIZER_VERSION,
+    METHOD_SYNTHESIZER_V4_VERSION,
     (
         "是注册协议的拒绝理由原话）。\n",
         "是注册协议的拒绝理由原话）、"
@@ -1024,6 +1024,31 @@ METHOD_SYNTHESIZER = _revise(
         "新方法就要有先写一条会失败的测试、再修改、再证明它通过的步骤，并把这些步骤链到对应的父要求）；"
         "不要把被拒方法换个名字重提。"
         "如果输入里 schema_feedback 非空，说明你上一次的回复没有被接受：",
+    ),
+)
+register_template(METHOD_SYNTHESIZER_V4)
+
+#: P2.3k / defect N1.  Five Grok episodes synthesised the same shape — facts →
+#: reproduce → apply → {verify, inspect} → summarize — with the ``inspect`` step bound
+#: to nothing: ``code.inspect-changeset@1`` declared no input port, so the leaf's
+#: workspace was the unpatched snapshot, its findings said "no product code was
+#: changed", and the root reviewer correctly failed ``c-change-explained``.  The
+#: catalogue now offers ``code.inspect-changeset@2`` / ``code.summarize-review@2``
+#: with optional ``patch`` / ``report`` inputs; v5 tells the synthesiser that the step
+#: answering an "explain the change" requirement has to be *fed* the change.  v4 keeps
+#: its bytes (digest frozen in ``test_output_port_claims``).
+METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v5"
+METHOD_SYNTHESIZER = _revise(
+    METHOD_SYNTHESIZER_V4,
+    METHOD_SYNTHESIZER_VERSION,
+    (
+        "不要把被拒方法换个名字重提。",
+        "不要把被拒方法换个名字重提。"
+        "承担「解释改动」类父要求（例如 c-change-explained）的步骤，必须通过输入端口接到"
+        "产生改动的步骤的产物：把 apply/patch 步的 patch 输出端口绑到 inspect 步的 patch 输入端口，"
+        "把 verify 步的 report 输出端口绑到 summarize 步的 report 输入端口。"
+        "没有任何数据输入的步骤只能看到未修改的仓库快照，它写出的解释必然是「未改代码」，"
+        "这样的方法不要提出。同一算子在 operators 里只列出最高版本，按列出的版本与 content_hash 引用。",
     ),
 )
 register_template(METHOD_SYNTHESIZER)
@@ -1082,10 +1107,10 @@ register_template(ROOT_REVIEWER_V1)
 #: reviewer reading v1's words would still look for the old fields.  v1 is not edited
 #: (an Attempt replays on the bytes it pinned, §26.3, and its digest is frozen in
 #: ``test_root_review_evidence``); this is a new version beside it.
-ROOT_REVIEWER_VERSION = "root-reviewer-v2"
-ROOT_REVIEWER = _revise(
+ROOT_REVIEWER_V2_VERSION = "root-reviewer-v2"
+ROOT_REVIEWER_V2 = _revise(
     ROOT_REVIEWER_V1,
-    ROOT_REVIEWER_VERSION,
+    ROOT_REVIEWER_V2_VERSION,
     (
         "输入是一份类型化上下文，字段固定：review_package_id、goal_task_id、goal_statement、"
         "requirements_revision、criteria（根目标必须覆盖的准则，逐条带 criterion_id 与 statement）、"
@@ -1125,6 +1150,44 @@ ROOT_REVIEWER = _revise(
         "  1b. 每条贡献的 accepted_at_requirements_revision 小于根的 requirements_revision "
         "是正常形态（见 requirements_revision_semantics）：修订号是全 Mission 单调计数，"
         "不表示过期或不组合，不得据此判 false，也不要就此记 finding。\n",
+    ),
+)
+register_template(ROOT_REVIEWER_V2)
+
+#: P2.3k / defect N2.  The Grok C2/C4 episodes were rejected on ``c-test-passes``
+#: because the package's ``goal_statement`` was the goal signature's template ("make
+#: the named failing test pass …") and the ``evidence_requirement`` repeated it, while
+#: the user's goal named no failing test and the ``failing_test`` parameter pointed at
+#: a suite that was green at baseline — a requirement no Worker could satisfy, and the
+#: reviewer had nothing that said so.  ``root_review.request`` now carries the
+#: Mission's own goal and the root's typed parameters; v3 says how to read the
+#: author's wording against them.  v2 keeps its bytes (the batch-2 episodes replay on
+#: it; its digest is frozen in ``test_root_review_user_goal``).
+ROOT_REVIEWER_VERSION = "root-reviewer-v3"
+ROOT_REVIEWER = _revise(
+    ROOT_REVIEWER_V2,
+    ROOT_REVIEWER_VERSION,
+    (
+        "输入是一份类型化上下文，字段固定：review_package_id、goal_task_id、goal_statement、"
+        "requirements_revision、requirements_revision_semantics（修订号的含义）、",
+        "输入是一份类型化上下文，字段固定：review_package_id、goal_task_id、"
+        "goal_statement（目标签名的模板措辞，由方法库作者写，不是用户写的）、"
+        "mission_goal（用户提交 Mission 时写下的目标原文，判断「做没做到」以它为准）、"
+        "goal_parameters（根目标的类型化参数，例如 repository、failing_test）、"
+        "requirements_revision、requirements_revision_semantics（修订号的含义）、",
+    ),
+    (
+        "不表示过期或不组合，不得据此判 false，也不要就此记 finding。\n",
+        "不表示过期或不组合，不得据此判 false，也不要就此记 finding。\n"
+        "  1c. criteria[].statement 与 covered_by[].evidence_requirement 是方法作者按目标签名模板"
+        "写的措辞；解释它们时以 mission_goal 为准，二者冲突时按 mission_goal 判断准则是否被满足，"
+        "并在 reason 里写明你是按用户目标解释的。特别地：若 evidence_requirement 要求"
+        "「named failing test 由红转绿」，而 goal_parameters.failing_test 指向的测试在基线上"
+        "本来就是绿的（摘录显示它修改前就通过，或 mission_goal 根本没有点名一条失败测试），"
+        "这条字面要求就没有任何 Worker 能满足；此时改为要求：报告证明覆盖 mission_goal 所述"
+        "行为的测试（包括叶子自己新写的测试）由红转绿，或新增并通过。有这样的证据判 met=true；"
+        "没有则判 met=false，并在 findings 里写明缺的是哪一种证据，而不是重复「没有 named "
+        "failing test」。\n",
     ),
 )
 register_template(ROOT_REVIEWER)
