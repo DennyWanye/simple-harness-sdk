@@ -138,6 +138,21 @@ from .state_machine import next_attempt, next_claim, next_mission, next_task
 #: own rejections has to be able to tell "fix the proposal" from "use the other entry".
 HIERARCHICAL_GRAPH_CHANGE_REFUSED = "HierarchicalGraphChangeRefused"
 
+#: P2.3d / defect D4.  Appended when a *management round would have been opened* for a
+#: hierarchical Mission and was not.  The Grok acceptance run showed the cost of not
+#: having this: ``_request_management`` had one switch (``dynamic_graph``) and no mode
+#: branch, so every hierarchical Task that failed verification opened a Manager intent,
+#: the Manager answered with a legacy ``TaskGraphChange``, ``commit_graph_change``
+#: refused it unconditionally (``SEMANTICS_IS_HIERARCHICAL``) and the round was a model
+#: call that could not possibly change anything.  Twenty L1 episodes burned
+#: ``max_manager_rounds`` that way and stopped with ``management_exhausted``; three L4
+#: episodes burned ``no_progress_limit`` and stopped with ``no_progress`` — in both
+#: cases hiding the real failure behind a repair loop that was closed by construction.
+#: The door that *is* open is a ``PlanRevisionProposal``; until a hierarchical Manager
+#: exists to walk through it (P3 / TaskGraph), the honest answer is to open no round and
+#: say so where an operator reads it.
+MANAGEMENT_NOT_APPLICABLE = "ManagementNotApplicableUnderHierarchical"
+
 #: P2.3c part 2c (review F6).  Appended when ``judge_mission`` is asked to conclude a
 #: hierarchical Mission whose root duty carries no adopted ``GoalResolution``.  A new
 #: event type for the same reason as the one above: the judgment was not *wrong*, it
@@ -3780,6 +3795,37 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             if reason in {"outcome_no_progress", "outcome_failure", "verification_failed"}:
                 count += 1
         return count
+
+    def record_management_not_applicable(
+        self, mission_id: str, *, task_id: str, trigger: str, subject: str
+    ) -> Event:
+        """P2.3d / defect D4: the management round a hierarchical Mission does not open.
+
+        Keyed by the subject, so the durable record is written once per trigger rather
+        than once per cycle, exactly like the intent it stands in for.  It carries the
+        same reason code the commit side would have raised, because it is the same
+        refusal moved one step earlier: ``SEMANTICS_IS_HIERARCHICAL``.
+        """
+
+        return self._emit(
+            MANAGEMENT_NOT_APPLICABLE,
+            mission_id,
+            key=subject,
+            task_id=task_id,
+            payload={
+                "reason": "SEMANTICS_IS_HIERARCHICAL",
+                "trigger": trigger,
+                "subject": subject,
+                "redirect": "commit_plan_revision",
+                "detail": (
+                    "this Mission runs under the hierarchical semantics; a Manager here "
+                    "can only offer a legacy TaskGraphChange, which commit_graph_change "
+                    "refuses unconditionally. No management round is opened, no manager "
+                    "or no_progress allowance is spent, and the Task's own failure path "
+                    "reports what actually happened (§18.5 rule 2)."
+                ),
+            },
+        )
 
     def record_management_requested(
         self, mission_id: str, *, task_id: str, trigger: str, subject: str, round_number: int

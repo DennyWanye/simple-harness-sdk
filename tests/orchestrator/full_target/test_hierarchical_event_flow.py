@@ -74,7 +74,11 @@ from agent_orchestrator.graph.eligibility import (  # noqa: E402
 )
 from agent_orchestrator.graph.projection_validation import GraphIntegrityError  # noqa: E402
 from agent_orchestrator.orchestrator import hierarchical_dispatch as module  # noqa: E402
-from agent_orchestrator.orchestrator.commit_service import CommitService, MissionSpec  # noqa: E402
+from agent_orchestrator.orchestrator.commit_service import (  # noqa: E402
+    MANAGEMENT_NOT_APPLICABLE,
+    CommitService,
+    MissionSpec,
+)
 from agent_orchestrator.orchestrator.event_handler import Orchestrator  # noqa: E402
 from agent_orchestrator.orchestrator.hierarchical_dispatch import (  # noqa: E402
     COMPOUND_DISPLAY_STATUS,
@@ -1385,6 +1389,7 @@ NEW_EVENT_TYPES = frozenset(
         ROOT_REVIEW_REJECTED,
         ROOT_REVIEW_UNREADABLE,
         ROOT_REVIEW_CUT_BUDGET_SPENT,
+        MANAGEMENT_NOT_APPLICABLE,
     }
 )
 

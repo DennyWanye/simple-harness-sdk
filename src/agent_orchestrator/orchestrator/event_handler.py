@@ -4932,6 +4932,22 @@ class Orchestrator:
             self._note(f"dynamic graph disabled: no management for {task.id} ({trigger})")
             return None
         subject = f"{mission.id}:manager:{trigger}"
+        if self._new_mode(current_mission) is not None:
+            # P2.3d / defect D4.  A Manager on a hierarchical Mission can only produce a
+            # legacy ``TaskGraphChange``, and ``commit_graph_change`` refuses every one
+            # of them (``SEMANTICS_IS_HIERARCHICAL``).  Opening the round anyway spends a
+            # model call, a ``max_manager_rounds`` slot and — through the retry it does
+            # not produce — a ``no_progress_limit`` slot, so the Mission stops with
+            # ``management_exhausted`` or ``no_progress`` instead of with the reason the
+            # Task actually failed for.  The refusal belongs here, before the request.
+            self.commit.record_management_not_applicable(
+                mission.id, task_id=task.id, trigger=trigger, subject=subject
+            )
+            self._note(
+                f"hierarchical mission {mission.id}: no legacy management for {task.id} "
+                f"({trigger}); the open door is a plan revision proposal"
+            )
+            return None
         existing = self.store.get_intent_for_subject(subject)
         if existing is not None:
             return existing
