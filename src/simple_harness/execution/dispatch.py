@@ -235,6 +235,16 @@ _DEFINITE_PROVIDER_FAILURES = (
 )
 
 
+def _handoff_unknown_diagnostics(exc: BaseException) -> dict[str, object]:
+    """Short class name and HTTP status only. Never body, headers, or secrets."""
+
+    payload: dict[str, object] = {"error_class": type(exc).__name__}
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        payload["http_status"] = status
+    return payload
+
+
 class ProviderInvocationCoordinator:
     """Durably claim, hand off once, and CAS-settle one Provider request."""
 
@@ -652,10 +662,18 @@ class ProviderInvocationCoordinator:
                 self._emit_attempt(failed, outcome=Outcome.FAILED, error_code=str(exc.code))
                 raise
             except (ProviderCancelledError, asyncio.CancelledError) as exc:
-                unknown = await self._settle_unknown(handed_off, "provider_cancelled_after_handoff")
+                unknown = await self._settle_unknown(
+                    handed_off,
+                    "provider_cancelled_after_handoff",
+                    diagnostics=_handoff_unknown_diagnostics(exc),
+                )
                 raise ProviderInvocationUnknownError(unknown) from exc
             except BaseException as exc:
-                unknown = await self._settle_unknown(handed_off, "provider_error_after_handoff")
+                unknown = await self._settle_unknown(
+                    handed_off,
+                    "provider_error_after_handoff",
+                    diagnostics=_handoff_unknown_diagnostics(exc),
+                )
                 raise ProviderInvocationUnknownError(unknown) from exc
 
             charge = self._response_charge(response, handed_off.budget_charge, binding=binding)
@@ -765,13 +783,31 @@ class ProviderInvocationCoordinator:
         return BudgetCharge.unknown()
 
     async def _settle_unknown(
-        self, handed_off: ProviderInvocationRecord, error_code: str
+        self,
+        handed_off: ProviderInvocationRecord,
+        error_code: str,
+        *,
+        diagnostics: Mapping[str, object] | None = None,
     ) -> ProviderInvocationRecord:
         unknown = handed_off.settle_unknown(
             error_code=error_code,
             at=self._clock(),
             expected_version=handed_off.version,
         )
+        if diagnostics:
+            raw = unknown.usage_json
+            usage = (
+                dict(raw)
+                if isinstance(raw, Mapping)
+                else {"budget": unknown.budget_charge.to_json()}
+            )
+            class_name = diagnostics.get("error_class")
+            if isinstance(class_name, str) and class_name.isidentifier():
+                usage["error_class"] = class_name
+            status = diagnostics.get("http_status")
+            if isinstance(status, int) and not isinstance(status, bool):
+                usage["http_status"] = status
+            unknown = replace(unknown, usage_json=usage)
         try:
             if error_code == "recovered_after_handoff" and callable(
                 getattr(self._uow, "read_provider_runtime_lease", None)

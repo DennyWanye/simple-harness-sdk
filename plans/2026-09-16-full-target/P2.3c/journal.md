@@ -3760,6 +3760,44 @@ C3-r0（`mission-01a511b9a5d78b1f`）：种子方法 `code.fix-by-patch@2`。fac
 - 真实模型第 3 批未验。
 - P2.3n 的 Planner 包/合成方法采用（避开 `planner_package.py` 与 `hierarchical_dispatch.py` 库/适用性）。
 
+## 2r. P2.3p：交接后连续 UNKNOWN 有界停机 + 可诊断性（2026-09-18，分支 `p2.3p-after-handoff-unknown-bounded`，基 `4a12e8d` = main，含 P2.3n/o）
+
+输入：用户任务书 + 独立核验 `reviews/核验-P2.3n+o-8664d23-2026-09-18.md` §5 + 真实局只读 `H-L3-C2-r0` / `H-L3-C2-r1`（证据目录零写入）。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。
+
+### 根因
+
+`dispatch.py` 交接后不在 `_DEFINITE_PROVIDER_FAILURES` 的 `BaseException` 一律 `_settle_unknown(..., "provider_error_after_handoff")`，异常短类名与 `ProviderError.status_code` 不落库。编排侧 P2.3f 对该 UNKNOWN 等 300 s → 重交接一次 → 再 UNKNOWN → `PlanningRejected{provider_outcome_unknown}` → **新 planner ordinal**。P2.3l 的 `runtime_unavailable` 只在梯子烧尽且 Mission 仍 PLANNING 时停；剩下的 rung（或 ACTIVE 的 Worker）把 hang 拖到墙钟。r0 停在 PLANNING、`stop_reason=null`、planner:4 预留悬挂；r1 Worker 叶 `blocked=true` 直到 1800 s / `budget_exhausted`。
+
+### Worker 叶（非 planner）
+
+`_observe_liveness` 对 attempt：`liveness.blocked` 时不算 stall（stall 只要 `running and not blocked`），且 P2.3f 的 `_resolve_provider_blocked_service` 原先只接 plan / critic。Worker **同样无界**。`rehandoff_service_intent` 明确拒绝 attempt（工作区与 selection 走 Attempt 状态机）。同一机制覆盖：等 `min(stall_seconds, 300)` 后结束该 Attempt；Mission 内连续 0-token after-handoff UNKNOWN 达到 N 则 `runtime_unavailable` + MissionFailed。不给 Worker 重交接。
+
+### 修法
+
+1. **有界停机**：`N = MAX_SERVICE_REHANDOFFS + 1`（=2），模块常量，不是配置项。同一 Mission 连续「handoff 后 UNKNOWN 且 0 token」计 streak；≥N 时 planner 不再开新 ordinal、不再重交接，Worker 不再空转，`fail_planning` / `fail_mission` 写 `runtime_unavailable` + MissionFailed，释放 UNKNOWN grant（P2.3l P1-1：未知用量留账、不按 0 结算），`remaining+reserved+settled==pool`。有 token 的 UNKNOWN 或只出现 1 次仍走 P2.3f 梯子。synthesizer / critic 已有 P2.3f 收口，不改成快失败。legacy `_new_mode is None` 原样。
+2. **可诊断性**：`provider_error_after_handoff` 落库时 `usage_json` 加 `error_class`（短类名，`isidentifier`）与 `http_status`（若有 int）。不写响应体、请求体、头、密钥。`audit_error_code` 白名单不变；公开审计 `_usage` 只读 usage/budget 键。无 DB 迁移。
+
+### 测试
+
+`test_after_handoff_unknown_bounded.py` 6 条（N 口径钉；梯子仍有 rung 时连续 N → runtime_unavailable + MissionFailed + 预留释放 + 守恒；字面 1 次 UNKNOWN 后恢复 COMPLETED；legacy 仍挂 SUBMITTED；Worker 叶连续 N → runtime_unavailable；usage_json 含类名与 HTTP 状态）+ `test_provider_unknown.py` +2。先红后绿。真 `Orchestrator.run()`。
+
+变异 4/4 KILLED（临时改源，从 `/tmp/p23p-mutant-backup/` 恢复，sha256 与备份一致，不用 git checkout）：
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | `bounded` 恒假且 `_planning_rejected` 不看 streak | 梯子仍有 rung 的停机 e2e | **KILLED**（planner:2/:3 被打开，calls=6） |
+| M2 | `_settle_unknown` 忽略 diagnostics | 落库单测 + e2e | **KILLED**（2 failed：无 error_class） |
+| M3 | `N = MAX_SERVICE_REHANDOFFS`（=1） | 常量钉 + 1 次 UNKNOWN 后恢复 | **KILLED**（2 failed：第一次 UNKNOWN 即 runtime_unavailable） |
+| M4 | Worker `_observe_liveness` 不调 resolver | Worker 叶 e2e | **KILLED**（`run()` 超时未返回） |
+
+回归：full_target **2888 passed / 2 skipped**（基线 2882/2，+6）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**；`tests/integration/test_provider_unknown.py` 等 dispatch 定向绿。ruff 改动文件清；`_new_mode` 仍 19；legacy 事件字节 golden 不变；冻结提示词 sha256 不变。
+
+### 未做
+
+- 真实模型第 3 批未重跑。
+- 有 token 的 UNKNOWN 目前 `settle_unknown` 仍不从异常里抄 usage（异常路径没有 response）；streak 重置靠 SUCCEEDED / usage.total_tokens>0。
+- synthesizer / critic 两次 UNKNOWN 仍走 P2.3f 既有 UNANSWERED / runner 门，不改成 `runtime_unavailable`（已有界）。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

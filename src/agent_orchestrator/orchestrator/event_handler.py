@@ -316,6 +316,11 @@ MAX_SERVICE_BLOCKER_SECONDS = 300.0
 #: retry; a third is a loop that spends the Mission account on a Provider that is
 #: down, which is what the deadline exists to end.
 MAX_SERVICE_REHANDOFFS = 1
+#: P2.3p: consecutive after-handoff 0-token UNKNOWNs on one Mission before the
+#: loop stops as ``runtime_unavailable``.  Same width as P2.3f's per-subject
+#: retry — the original hand-off plus :data:`MAX_SERVICE_REHANDOFFS` re-hand-offs.
+#: Not a config item.
+MAX_CONSECUTIVE_AFTER_HANDOFF_UNKNOWNS = MAX_SERVICE_REHANDOFFS + 1
 # step 9 (plan D9-3'): the whitelisted items a deployment configuration also names — a
 # difference from the ACTIVE version is recorded as drift (the version still governs)
 CONFIG_DERIVED = frozenset(
@@ -445,6 +450,10 @@ class Orchestrator:
         #: bound is a *wait*, and a restarted process starting the wait again costs at
         #: most one more window; the re-hand-off itself is durable (the event).
         self._service_blocked_since: dict[str, float] = {}
+        #: P2.3p: consecutive after-handoff 0-token UNKNOWNs per Mission, and the
+        #: invocation ids already counted so a poll does not increment twice.
+        self._after_handoff_zero_streak: dict[str, int] = {}
+        self._counted_after_handoff_unknowns: set[str] = set()
         self._poll = poll_interval
         self._critic_wait = (
             config.turn_deadline_seconds if critic_wait_seconds is None else critic_wait_seconds
@@ -1270,6 +1279,77 @@ class Orchestrator:
         guard.release_held_grants(
             intent_id=intent.intent_id, reason="provider_outcome_unknown"
         )
+
+    def _release_mission_unknown_grants(self, mission_id: str) -> None:
+        for intent in self.store.list_intents(
+            "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED", "FAILED"
+        ):
+            if intent.mission_id == mission_id:
+                self._release_unknown_grants(intent)
+
+    def _reset_after_handoff_unknown_streak(self, mission_id: str) -> None:
+        self._after_handoff_zero_streak[mission_id] = 0
+
+    @staticmethod
+    def _provider_usage_tokens(record: object) -> int:
+        payload = getattr(record, "usage_json", None)
+        if not isinstance(payload, Mapping):
+            return 0
+        observed = payload.get("usage")
+        if not isinstance(observed, Mapping):
+            return 0
+        total = observed.get("total_tokens")
+        if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+            return total
+        inp = observed.get("input_tokens")
+        out = observed.get("output_tokens")
+        if not isinstance(inp, int) or isinstance(inp, bool):
+            inp = 0
+        if not isinstance(out, int) or isinstance(out, bool):
+            out = 0
+        return inp + out
+
+    def _count_zero_token_after_handoff(self, intent: DispatchIntent) -> int:
+        """Count a new after-handoff 0-token UNKNOWN on this executor; return the streak."""
+
+        mission_id = intent.mission_id
+        if intent.agent_id is None:
+            return self._after_handoff_zero_streak.get(mission_id, 0)
+        from simple_harness.contracts import RunId
+
+        try:
+            records = self.bridge_for(intent).runtime.uow.list_provider_invocations(
+                RunId(str(intent.agent_id))
+            )
+        except Exception:  # noqa: BLE001 - runtime ledger unreachable
+            return self._after_handoff_zero_streak.get(mission_id, 0)
+        for record in records:
+            invocation_id = getattr(record, "invocation_id", None)
+            if not isinstance(invocation_id, str):
+                continue
+            if invocation_id in self._counted_after_handoff_unknowns:
+                continue
+            if str(getattr(record, "state", "")) != "unknown":
+                continue
+            if getattr(record, "error_code", None) != "provider_error_after_handoff":
+                continue
+            if getattr(record, "handed_off_at", None) is None:
+                continue
+            self._counted_after_handoff_unknowns.add(invocation_id)
+            if self._provider_usage_tokens(record) > 0:
+                self._after_handoff_zero_streak[mission_id] = 0
+            else:
+                self._after_handoff_zero_streak[mission_id] = (
+                    self._after_handoff_zero_streak.get(mission_id, 0) + 1
+                )
+        return self._after_handoff_zero_streak.get(mission_id, 0)
+
+    @staticmethod
+    def _is_planner_service(intent: DispatchIntent) -> bool:
+        return intent.kind == "plan" and str(intent.config.get("role", "")) not in {
+            "method_synthesizer",
+            "root_reviewer",
+        }
 
     def _service_config(self, decision: RoutingDecision) -> dict[str, Any]:
         config: dict[str, Any] = {
@@ -3839,6 +3919,12 @@ class Orchestrator:
                         f"attempt {attempt.id} TIMED_OUT: no progress for {stalled_for:.1f}s"
                     )
                     return True
+            # P2.3p: a Worker blocked on an after-handoff UNKNOWN must not sit until
+            # the wall clock.  Reuses P2.3f's resolver (no extra ``_new_mode`` site);
+            # attempt intents are never re-handed off.
+            if self._provider_blocked(liveness):
+                outcome = await self._resolve_provider_blocked_service(intent, liveness)
+                return outcome is not None
             return False
         if not liveness.exists:
             self._import_usage(intent)
@@ -4012,6 +4098,23 @@ class Orchestrator:
         # created the instant planner ``n`` was refused, and whether the synthesiser's
         # answer arrived before the ladder ran out decided whether the Mission lived.
         allowance = int(self._config.max_planning_attempts) + self._synthesis_credits(mission.id)
+        streak = self._after_handoff_zero_streak.get(mission.id, 0)
+        if (
+            reason == "provider_outcome_unknown"
+            and streak >= MAX_CONSECUTIVE_AFTER_HANDOFF_UNKNOWNS
+        ):
+            # P2.3p: remaining ladder rungs must not open another planner ordinal
+            # after consecutive after-handoff 0-token UNKNOWNs (C2 r0).
+            await self._fail_runtime_unavailable(
+                mission,
+                reason=reason,
+                detail={
+                    "attempts": ordinal,
+                    "consecutive_after_handoff_unknowns": streak,
+                    **dict(detail),
+                },
+            )
+            return
         if ordinal < allowance:
             if mission.status is MissionStatus.PLANNING:
                 # The phase that produces the first plan, legacy included: unchanged,
@@ -4076,6 +4179,8 @@ class Orchestrator:
         mission = self.store.get_mission(intent.mission_id)
         assert mission is not None
         self._import_usage(intent)
+        if result.state is AgentTurnState.COMMITTED:
+            self._reset_after_handoff_unknown_streak(mission.id)
         new_mode = self._new_mode(mission)
         if (
             result.state is not AgentTurnState.COMMITTED
@@ -4665,6 +4770,8 @@ class Orchestrator:
         attempt = self.store.get_attempt(intent.subject_id)
         assert attempt is not None
         self._import_usage(intent)
+        if result.state is AgentTurnState.COMMITTED:
+            self._reset_after_handoff_unknown_streak(attempt.mission_id)
         if attempt.status is not AttemptStatus.RUNNING:
             if attempt.status in {AttemptStatus.SUPERSEDED, AttemptStatus.CANCELLED}:
                 # D3-6': a late result on a closed Attempt is history, never a transition
@@ -6844,8 +6951,32 @@ class Orchestrator:
                 detail={"blocker": dict(liveness.blocker or {}), "auth": True, "rehandoffs": 0},
             )
             return "give_up"
+        streak = self._count_zero_token_after_handoff(intent)
+        bounded = streak >= MAX_CONSECUTIVE_AFTER_HANDOFF_UNKNOWNS and (
+            intent.kind == "attempt" or self._is_planner_service(intent)
+        )
         now = self.store.now
         since = self._service_blocked_since.get(key)
+        if bounded:
+            self._service_blocked_since.pop(key, None)
+            done = self.commit.rehandoffs_of(intent.subject_id, intent.mission_id)
+            detail = {
+                "consecutive_after_handoff_unknowns": streak,
+                "limit": MAX_CONSECUTIVE_AFTER_HANDOFF_UNKNOWNS,
+                "blocker": dict(liveness.blocker or {}),
+                "rehandoffs": done,
+            }
+            if intent.kind == "attempt":
+                await self._stop_consecutive_after_handoff_unknowns(
+                    intent, mission, new_mode, detail=detail
+                )
+            else:
+                # Planner: keep P2.3f's PlanningRejected, then the ladder
+                # refuses a new ordinal (P2.3p).
+                await self._give_up_blocked_plan_intent(
+                    intent, mission, new_mode, detail=detail
+                )
+            return "give_up"
         if since is None:
             self._service_blocked_since[key] = now
             self._note(
@@ -6863,7 +6994,7 @@ class Orchestrator:
             "blocker": dict(liveness.blocker or {}),
         }
         done = self.commit.rehandoffs_of(intent.subject_id, intent.mission_id)
-        if done < MAX_SERVICE_REHANDOFFS:
+        if done < MAX_SERVICE_REHANDOFFS and intent.kind != "attempt":
             assert intent.agent_id is not None
             self.assembled.gateway.unbind(intent.agent_id)
             await self._cancel_turn(intent)  # advisory: the waiting run has no loop to stop
@@ -6884,6 +7015,11 @@ class Orchestrator:
             self._note(
                 f"{intent.subject_id}: unknown Provider outcome again after {done} re-hand-off(s); "
                 "the Critic runner ends the wait"
+            )
+            return "give_up"
+        if intent.kind == "attempt":
+            await self._give_up_blocked_attempt(
+                intent, mission, detail={**detail, "rehandoffs": done}
             )
             return "give_up"
         await self._give_up_blocked_plan_intent(
@@ -6945,6 +7081,104 @@ class Orchestrator:
             return
         await self._planning_rejected(
             intent, reason="provider_outcome_unknown", detail=dict(detail)
+        )
+
+    async def _stop_consecutive_after_handoff_unknowns(
+        self,
+        intent: DispatchIntent,
+        mission: Mission,
+        new_mode: HierarchicalDispatch,
+        *,
+        detail: Mapping[str, Any],
+    ) -> None:
+        """N consecutive after-handoff 0-token UNKNOWNs: named stop, grants released."""
+
+        del new_mode
+        self._release_mission_unknown_grants(mission.id)
+        self._import_usage(intent)
+        self._settle_intent(intent, "FAILED")
+        if intent.kind == "attempt":
+            attempt = self.store.get_attempt(intent.subject_id)
+            if attempt is not None:
+                self.commit.settle_subject_known(
+                    attempt.id, mission.id, task_id=attempt.task_id
+                )
+                self.commit.mark_attempt_lost(
+                    attempt.id, reason="provider_outcome_unknown"
+                )
+                await self._release_attempt(attempt.id, cancel=True)
+            await self._fail_runtime_unavailable(
+                mission, reason="provider_outcome_unknown", detail=dict(detail)
+            )
+            return
+        self._settle_service_if_known(intent.subject_id, mission.id)
+        await self._fail_runtime_unavailable(
+            mission, reason="provider_outcome_unknown", detail=dict(detail)
+        )
+
+    async def _give_up_blocked_attempt(
+        self,
+        intent: DispatchIntent,
+        mission: Mission,
+        *,
+        detail: Mapping[str, Any],
+    ) -> None:
+        """End a Worker turn waiting on an unknown after-handoff outcome (P2.3p).
+
+        Attempt intents are never re-handed off (``rehandoff_service_intent``).
+        The first 0-token UNKNOWN still waits the P2.3f bound then fails this
+        Attempt so ``max_attempts`` may retry; the consecutive Mission bound
+        is what stops the hang.
+        """
+
+        self._release_unknown_grants(intent)
+        self._import_usage(intent)
+        self._settle_intent(intent, "FAILED")
+        attempt = self.store.get_attempt(intent.subject_id)
+        if attempt is None:
+            return
+        self.commit.settle_subject_known(attempt.id, mission.id, task_id=attempt.task_id)
+        self.commit.mark_attempt_lost(attempt.id, reason="provider_outcome_unknown")
+        await self._release_attempt(attempt.id, cancel=True)
+        streak = self._after_handoff_zero_streak.get(mission.id, 0)
+        if streak >= MAX_CONSECUTIVE_AFTER_HANDOFF_UNKNOWNS:
+            self._release_mission_unknown_grants(mission.id)
+            await self._fail_runtime_unavailable(
+                mission,
+                reason="provider_outcome_unknown",
+                detail={**dict(detail), "consecutive_after_handoff_unknowns": streak},
+            )
+
+    async def _fail_runtime_unavailable(
+        self,
+        mission: Mission,
+        *,
+        reason: str,
+        detail: Mapping[str, Any],
+    ) -> None:
+        """Named stop: MissionFailed + runtime_unavailable, never PLANNING with no reason."""
+
+        self._release_mission_unknown_grants(mission.id)
+        current = self.store.get_mission(mission.id)
+        if current is None or current.status in TERMINAL_MISSION:
+            return
+        payload = dict(detail)
+        if current.status is MissionStatus.PLANNING:
+            self.commit.fail_planning(
+                current.id,
+                reason=reason,
+                detail=payload,
+                stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+            )
+        else:
+            self.commit.fail_mission(
+                current.id,
+                stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+                detail={"reason": reason, **payload},
+            )
+        await self._release_mission(current.id)
+        self._note(
+            f"mission {current.id}: consecutive after-handoff UNKNOWN → runtime_unavailable"
         )
 
     # --------------------------------------------------------------- decide

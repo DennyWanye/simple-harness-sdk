@@ -1,5 +1,4 @@
-## 0.12.2 — P2.3e–P2.3n：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界与第二轮合成采用（2026-09-18）
-## 0.12.2 — P2.3e–P2.3o：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界与下游工作区预铺补丁（2026-09-18）
+## 0.12.2 — P2.3e–P2.3p：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺与交接后连续 UNKNOWN 有界停机（2026-09-18）
 
 **架构捷径声明（0.12.2 对计划的诚实口径；禁止相反表述）：**
 
@@ -8,6 +7,12 @@
 3. **根评审 v3**：准则解释权以 `mission_goal` 为准，与「准则以 goal signature 为准」相反。
 
 **计划一致性审计必须修项**：`c-composition` 无 coverage 映射时不得因「有子验收」填 PASS → UNKNOWN + `composition_criterion_uncovered`，不形成 ACCEPT。审计全文 Host `plans/taskSys2/升级planV1/impl/计划一致性审计-P2.3d至P2.3l-2026-09-17.zh-CN.md`。
+
+**P2.3p：交接后连续 UNKNOWN 有界停机。** 分支 `p2.3p-after-handoff-unknown-bounded`，基 4a12e8d；版本号不动。真实局 H-L3-C2-r0/r1：planner:1 + synthesizer 成功后，后续 planner 全部 `provider_error_after_handoff`（0 token）；P2.3f 等 300 s → 重交接 → 再 UNKNOWN → 新 planner ordinal，直到墙钟。r0 停在 PLANNING、`stop_reason=null`、预留悬挂；r1 Worker 叶空转到 1800 s。P2.3l 的 `runtime_unavailable` 只覆盖梯子烧尽的 PLANNING。
+
+- **有界**：`N = MAX_SERVICE_REHANDOFFS + 1`（=2，非配置项）。同一 Mission 连续 handoff 后 0-token UNKNOWN 达 N 后不再开新 planner 轮 / 不再重交接，判 `runtime_unavailable`，写 MissionFailed，释放 UNKNOWN grant（未知用量留账、不按 0 结算），守恒成立。有 token 的 UNKNOWN 或只 1 次仍走 P2.3f。Worker 叶同样无界，同一 streak 覆盖（attempt 不重交接）。legacy 原样。
+- **可诊断**：`usage_json` 加 `error_class` 与 `http_status`（若有）。不写响应体 / 请求体 / 头 / 密钥。`audit_error_code` 白名单不变。无 DB 迁移。
+- 测试：`test_after_handoff_unknown_bounded.py` 6 + 落库 2；4 变异 KILLED。full_target **2888 passed / 2 skipped**（基线 2882/2，+6）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2r。
 
 **P2.3o：下游叶工作区预铺上游已验收产物。** 分支 `p2.3o-verify-workspace-inputs`，基 2845b7e；版本号不动。真实局 H-L3-C3-r0：`code.fix-by-patch@2` 的 patch 叶已验收且隐藏评分 PASS，verify 叶九次 `rule_check`「`artifact 'stats/window.py' is not a recorded workspace file`」→ `MissionFailed{budget_exhausted}`。InputManifest 只绑 `patch.diff`，工作区是未打补丁种子；Worker 把已验收源码列入信封，P2.3m 同哈希不登记为本叶产物，`rule_check` 认不得。
 

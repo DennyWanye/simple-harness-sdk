@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from simple_harness.contracts import RequestId, RunId
+from simple_harness.contracts import RequestId, RunId, thaw_json
 from simple_harness.contracts.messages import Message, MessageRole
 from simple_harness.execution.budget import BudgetPolicy, FrozenPriceEstimator
 from simple_harness.execution.dispatch import (
@@ -67,6 +67,62 @@ def test_error_after_handoff_is_unknown_and_never_replayed() -> None:
     asyncio.run(exercise())
     assert provider.calls == 1
     assert next(iter(uow.records.values())).state is ProviderInvocationState.UNKNOWN
+
+
+def test_error_after_handoff_records_error_class_and_http_status() -> None:
+    """P2.3p: the UNKNOWN row keeps the short class name and HTTP status, never the body."""
+
+    uow = FakeProviderInvocationUnitOfWork()
+    provider = RecordingProvider(
+        error=ProviderTransportError(
+            public_message="scripted transport loss after handoff",
+            status_code=418,
+        )
+    )
+
+    async def exercise() -> None:
+        coordinator = _coordinator(uow, provider)
+        with pytest.raises(ProviderInvocationUnknownError):
+            await coordinator.invoke(
+                RunId("run-1"), _request(), cancel=CancelToken(), execution_lease=LEASE
+            )
+
+    asyncio.run(exercise())
+    record = next(iter(uow.records.values()))
+    assert record.state is ProviderInvocationState.UNKNOWN
+    assert record.error_code == "provider_error_after_handoff"
+    payload = thaw_json(record.usage_json) if record.usage_json is not None else {}
+    assert isinstance(payload, dict)
+    assert payload.get("error_class") == "ProviderTransportError"
+    assert payload.get("http_status") == 418
+    dumped = str(payload)
+    assert "scripted transport loss" not in dumped
+    assert "api_key" not in dumped
+    assert "Authorization" not in dumped
+
+
+def test_unclassified_runtime_error_after_handoff_records_the_short_class_name() -> None:
+    uow = FakeProviderInvocationUnitOfWork()
+
+    class AdapterGlitch(RuntimeError):
+        pass
+
+    provider = RecordingProvider(error=AdapterGlitch("do-not-store-this-body"))
+
+    async def exercise() -> None:
+        coordinator = _coordinator(uow, provider)
+        with pytest.raises(ProviderInvocationUnknownError):
+            await coordinator.invoke(
+                RunId("run-1"), _request(), cancel=CancelToken(), execution_lease=LEASE
+            )
+
+    asyncio.run(exercise())
+    record = next(iter(uow.records.values()))
+    payload = thaw_json(record.usage_json) if record.usage_json is not None else {}
+    assert isinstance(payload, dict)
+    assert payload.get("error_class") == "AdapterGlitch"
+    assert "http_status" not in payload
+    assert "do-not-store-this-body" not in str(payload)
 
 
 def test_recovery_marks_stranded_handed_off_unknown_without_provider_call() -> None:
