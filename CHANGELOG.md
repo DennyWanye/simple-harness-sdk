@@ -1,4 +1,12 @@
-## 0.12.2 — P2.3e/P2.3f/P2.3g/P2.3h：Grok 验收重跑与探针暴露的规划循环、provider 阻塞、合成器字段对齐、根评审证据四组缺陷修复（2026-09-17）
+## 0.12.2 — P2.3e–P2.3m：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议与只读拒绝有界（2026-09-17）
+
+**架构捷径声明（0.12.2 对计划的诚实口径；禁止相反表述）：**
+
+1. **根收尾** = 独立 `root_reviewer` + 既有 Mission Judge，Mission 账户 **两次**。
+2. **非根 compound** = 机械 composition（按子叶 CURRENT Acceptance 形成 GoalResolution），**不是**独立 COMPOSITION 审阅。
+3. **根评审 v3**：准则解释权以 `mission_goal` 为准，与「准则以 goal signature 为准」相反。
+
+**计划一致性审计必须修项**：`c-composition` 无 coverage 映射时不得因「有子验收」填 PASS → UNKNOWN + `composition_criterion_uncovered`，不形成 ACCEPT。审计全文 Host `plans/taskSys2/升级planV1/impl/计划一致性审计-P2.3d至P2.3l-2026-09-17.zh-CN.md`。
 
 **P2.3l：Grok 第 2 批 L4 的两个 P0（N5 UNKNOWN grant 锁死重交接 / N7 非根 compound 无 composition 决议）。** 分支 `p2.3l-provider-grant-composition`，基 4a446f3；版本号不动。诊断 `plans/taskSys2/升级planV1/impl/Grok验收-第2批L4诊断-2026-09-17.zh-CN.md`；`contracts/` 零改动，无新配置项、无新提示词、无新事件名。
 
@@ -14,6 +22,7 @@
 - **提示词**：只加 `method-synthesizer-v6`（必须有写/patch 步；只读叶不得改文件），v5 钉住。
 - **401**：runtime 已区分 `ProviderAuthenticationError` 为 FAILED；编排侧对 FAILED 鉴权立即 `runtime_unavailable`。
 - 测试：`test_read_only_rewrite_bound.py` 7 条；4 变异 KILLED。同哈希过滤只走分层（legacy 静态 DAG 列出上游文件，套上会挂住 `run()`）。full_target **2865 passed / 2 skipped**（基线 2856/3）；旧模式 step02/05/06/07/p34/p35 **560/13/0**；ruff 清；`_new_mode` 仍 19。详见 journal 第四部分 §2o。
+- **审计 I07**：无 coverage 的 `c-composition` 不再因有子验收填 PASS。
 
 代码候选提交（第 2 版）：444879a（P2.3e–P2.3h）之上再并入 P2.3i 4b62bc9、P2.3j 83eaa84/3c2af6f、P2.3k a5d2d3b/9db33dc、P2.3l 5b317cc/6453573/a2a197e（合并提交 fc07312、4022da9，均已 ff 进 main）；第 2 批 Grok 重跑（c7cfedd，H 臂 L3+L4 共 20 局：官方通过 11、COMPLETED 0）逐局诊断见 Host `impl/Grok验收-第2批L3诊断` / `L4诊断`；发布身份以本条目所在的版本提交为准。四片各有独立 fable 核验记录在 `plans/2026-09-16-full-target/P2.3c/reviews/`（P2.3e/f 可合、P2.3g 可合、P2.3h 修后可合 → 256a316 已修）。**迁移**：`code.fix-by-patch` / `fix-by-revert` / `fix-by-assessed-revert` 升到 `method_version 2`，旧库 `@1` 行保留并存；Grok runner 的 FREEZE-candidate 必须按本提交重生成。
 

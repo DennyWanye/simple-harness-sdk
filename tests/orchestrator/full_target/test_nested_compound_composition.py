@@ -39,9 +39,13 @@ from test_nested_compound_refinement import _proposal  # noqa: E402
 
 from agent_orchestrator.contracts import MissionStatus, TaskStatus  # noqa: E402
 from agent_orchestrator.contracts.htn import TaskForm  # noqa: E402
+from agent_orchestrator.contracts.resolution import CriterionVerdict  # noqa: E402
+from agent_orchestrator.contracts.semantic_base import content_hash_of  # noqa: E402
 from agent_orchestrator.contracts.state_machines import MissionStopReason  # noqa: E402
 from agent_orchestrator.graph.eligibility import ReadinessReason  # noqa: E402
 from agent_orchestrator.orchestrator.composition_review import (  # noqa: E402
+    COMPOSITION_LOCAL_CRITERION,
+    COMPOSITION_UNCOVERED,
     CompositionAcceptanceAssembly,
 )
 from agent_orchestrator.orchestrator.event_handler import Orchestrator  # noqa: E402
@@ -503,4 +507,172 @@ def test_occurrence_outcomes_ignore_a_goal_resolution_whose_epoch_has_moved(
     assert after.outcomes.get(assess_occ) is not OccurrenceOutcome.ACCEPTED, (
         "a GoalResolution whose ValidityWitness is behind the scope epoch is not ACCEPTED"
     )
+    world.store.close()
+
+
+def _bare_world(tmp_path, *, key: str) -> World:
+    """Nested compound whose goal signature has no coverage_criteria.
+
+    Root coverage hangs on the revert leaf, so admission does not need the
+    inner compound to carry a parent criterion.  The inner method has no
+    criterion_links.  ``_criteria`` therefore synthesises ``c-composition``.
+    """
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = build_world(evidence, key=key, mode=HIERARCHICAL_SEMANTICS)
+    env = world.env
+    env.register_type(
+        "plan.bare",
+        form=TaskForm.COMPOUND,
+        parameters=(("subject", "string"),),
+        domain="plan",
+    )
+    env.register_type(
+        "plan.act",
+        parameters=(("subject", "string"),),
+        outputs=(("verdict", "plan.verdict"),),
+        capabilities=("plan.read",),
+        criteria=("c-done",),
+        domain="plan",
+    )
+    outer = method(
+        "plan.assessed-bare",
+        "plan.goal",
+        parameter_schema="plan.goal.params",
+        steps=(
+            step("assess", "plan.bare", TaskForm.COMPOUND, {"subject": param("subject")}),
+            step(
+                "revert",
+                "plan.act",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject")},
+                capabilities=("plan.read",),
+            ),
+        ),
+        ordering=(("assess", "revert"),),
+        links=(("c-root", "revert", "c-done"),),
+        finalizer="revert",
+    )
+    inner = method(
+        "plan.assess-by-reading-bare",
+        "plan.bare",
+        parameter_schema="plan.bare.params",
+        steps=(
+            step(
+                "leaf",
+                "plan.leaf",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject")},
+                capabilities=("plan.read",),
+            ),
+        ),
+        # Contract forbids empty criterion_links; this link is not a coverage
+        # criterion of ``plan.bare``, so composition still synthesises
+        # ``c-composition``.
+        links=(("c-orphan", "leaf", "c-leaf-verified"),),
+        finalizer="leaf",
+    )
+    for contract in (outer, inner):
+        receipt = env.admit(contract)
+        assert receipt.admitted, receipt.problems
+        HtnStore(world.store).register_method(
+            contract, env.registry.registration(contract.method_ref())
+        )
+    first = world.dispatch.apply_planner_reply(
+        world.mission.id,
+        _proposal(outer, goal_id=ROOT_TASK, obligation_id=ROOT_DUTY, revision=0, proposal_id="o"),
+        principal=world.principal,
+        command_id="cmd-o",
+    )
+    assert first.committed, first.last_reason
+    world.dispatch.advance_compound_phases(world.mission.id)
+    assess = _task_of(world, "plan.bare")
+    network = world.network()
+    assess_spec = next(spec for spec in network.occurrences if str(spec.task_id) == assess)
+    second = world.dispatch.apply_planner_reply(
+        world.mission.id,
+        _proposal(
+            inner,
+            goal_id=assess,
+            obligation_id=str(assess_spec.obligation_id),
+            revision=int(network.plan_revision),
+            proposal_id="i",
+        ),
+        principal=world.principal,
+        command_id="cmd-i",
+    )
+    assert second.committed, second.last_reason
+    world.dispatch.advance_compound_phases(world.mission.id)
+    world.admit_demand()
+    world.dispatch.issue_input_witnesses(world.mission.id, world.network(), now_ms=1_000_000)
+    world.dispatch.issue_start_witnesses(world.mission.id, world.network(), now_ms=1_000_000)
+    leaf = _task_of(world, "plan.leaf")
+    _accept_leaf(world, task_id=leaf, now_ms=1_000_000)
+    task = world.store.get_task(leaf)
+    assert task is not None
+    completed = next_task(
+        next_task(next_task(task, TaskStatus.ACTIVE), TaskStatus.VERIFYING),
+        TaskStatus.COMPLETED,
+        accepted_result_id="result-1",
+    )
+    world.store.update_task(completed, expected_version=task.version)
+    world.dispatch.advance_compound_phases(world.mission.id)
+    return world
+
+
+def _inner_occurrence(world: World, signature: str):
+    view = world.dispatch.read(world.mission.id)
+    return next(
+        spec.occurrence_id
+        for spec in view.network.occurrences
+        if str(view.network.binding_for_occurrence(spec.occurrence_id).goal_signature.signature_id)
+        == signature
+    )
+
+
+def _official_composition_record(world: World, occurrence_id):
+    store = HtnStore(world.store)
+    latest = store.latest_requirements_revision(world.mission.id)
+    assert latest is not None
+    digest = content_hash_of({"occ": str(occurrence_id), "rev": latest.revision})[:32]
+    return store.official_review_record(f"pkg-compose-{digest}")
+
+
+def test_c_composition_without_coverage_does_not_form_accept(tmp_path) -> None:
+    """AER I05/I07: child acceptances are not a PASS for unmapped ``c-composition``.
+
+    Before the fix ``_outcomes`` wrote PASS whenever ``accepted`` was non-empty,
+    so ``resolve_ready`` formed an ACCEPT GoalResolution.  After: UNKNOWN with
+    ``composition_criterion_uncovered``, no resolution.
+    """
+
+    world = _bare_world(tmp_path, key="p23m-i07-uncovered")
+    occ = _inner_occurrence(world, "plan.bare")
+    formed = _assembly(world).resolve_ready(world.mission.id)
+    resolutions = HtnStore(world.store).list_goal_resolutions(world.mission.id)
+    record = _official_composition_record(world, occ)
+    assert record is not None, "the composition record must still be written"
+    outcome = next(
+        item for item in record.criteria if item.criterion_id == COMPOSITION_LOCAL_CRITERION
+    )
+    assert outcome.verdict is CriterionVerdict.UNKNOWN, outcome
+    assert COMPOSITION_UNCOVERED in outcome.limitations, outcome.limitations
+    assert formed == ()
+    assert resolutions == ()
+    world.store.close()
+
+
+def test_linked_assess_by_reading_still_forms_a_resolution(tmp_path) -> None:
+    """Control: M3 ``assess-by-reading`` has criterion_links; the main path stays."""
+
+    world = _world(tmp_path, key="p23m-i07-linked")
+    occ = _inner_occurrence(world, "plan.subgoal")
+    formed = _assembly(world).resolve_ready(world.mission.id)
+    assert formed, "a linked inner compound must still resolve"
+    resolutions = HtnStore(world.store).list_goal_resolutions(world.mission.id)
+    assert resolutions, resolutions
+    assert all(item.verdict is CriterionVerdict.PASS for item in resolutions[0].criteria)
+    view = world.dispatch.read(world.mission.id)
+    assert view.outcomes.get(occ) is OccurrenceOutcome.ACCEPTED
     world.store.close()

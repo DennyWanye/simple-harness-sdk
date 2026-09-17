@@ -1,6 +1,6 @@
 # FULL-TARGET-1.4 实施交接（P0–P2 先行）
 
-**最后核查：2026-09-17 CST，P2.3d（Grok 验收暴露的分层闭环缺陷修复）已完成，分支 `p2.3d-fix`，基于 main `e53395c`（= 0.12.0 + 发布记录），**未推送、未合并 main**。`tests/orchestrator/full_target` **2710 PASS + 2 skip**（基线 2648，净增 62；含两轮独立审阅/核验处置补的 20 条）；旧模式回归 **1 failed · 1966 passed · 20 skipped**（空载连续三次同一数字，红的是 `p33::test_legacy_check_ast_and_default_retrieval_bytes_are_unchanged`）。**口径提醒**：核验方在隔离副本上得到 2 failed / 1965 passed，多出来的那条是 `p35::test_action_applied_receipt_lost_sigkill_cold_and_offline_backup`——它是 wall-clock 抖动、机器有负载时才红，与 p33 一样都在任务书的允许名单内。两个数字都不算新增失败；看到 2 failed 时先确认第二条就是这个 p35。`ruff check src/agent_orchestrator tests/orchestrator` 本片改过的文件全清（仓库遗留 4 条在 p33/p34/p35）；`mypy src/agent_orchestrator` 17（基线未增）。上一段：P2.3c 第三部分 c（HEAD `e53395c`）。计划来源：Host 仓库 `plans/taskSys2/升级planV1/v1.4/simpleharness-full-target-1.4/complete-plan.zh-CN.md`（§23 执行顺序、§21.5 Grok 验收协议）；本片依据：`impl/Grok验收-H臂故障诊断-2026-09-17.zh-CN.md`。**H 臂必须在本片之后全量重跑；F 臂因配对口径也要在同一提交上重跑。**
+**最后核查：2026-09-17 CST，P2.3m 之上的计划一致性审计必须修项已处置**（分支 `p2.3m-readonly-rejection-bounded`，基 P2.3m `bf7edc5`），**未推送**。代码：`c-composition` 无 coverage 映射时不再因「有子验收」填 PASS。口径：CHANGELOG 0.12.2 标题覆盖 P2.3e–P2.3m，文首写明三项架构捷径（根收尾 = root_reviewer + Mission Judge、Mission 账户两次；非根 compound = 机械 composition，不是独立 COMPOSITION 审阅；根评审 v3 准则解释权以 `mission_goal` 为准）。审计：Host `plans/taskSys2/升级planV1/impl/计划一致性审计-P2.3d至P2.3l-2026-09-17.zh-CN.md`「必须在 0.12.2 前修」。测试数字见本提交。上一段：P2.3m 只读拒绝有界。计划来源：Host `complete-plan.zh-CN.md`。
 
 ## 1. 接手结论
 

@@ -469,22 +469,9 @@ class CompositionAcceptanceAssembly:
         outcomes: list[CriterionOutcome] = []
         for criterion in package.criteria:
             name = str(criterion.criterion_id)
-            if name == COMPOSITION_LOCAL_CRITERION:
-                verdict = (
-                    CriterionVerdict.PASS if accepted else CriterionVerdict.UNKNOWN
-                )
-                outcomes.append(
-                    CriterionOutcome(
-                        criterion_id=name,
-                        verdict=verdict,
-                        check_execution=(
-                            CheckExecution.SUCCEEDED
-                            if verdict is CriterionVerdict.PASS
-                            else CheckExecution.NOT_RUN
-                        ),
-                    )
-                )
-                continue
+            # AER I05/I07: ``c-composition`` is a synthetic local name used when
+            # the compound's goal signature published no coverage_criteria.  Child
+            # acceptances are not a mapping and must not become PASS.
             linked = by_parent.get(name, ())
             verdict = CriterionVerdict.UNKNOWN
             for link in linked:

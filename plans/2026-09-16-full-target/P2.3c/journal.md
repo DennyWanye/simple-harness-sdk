@@ -3669,6 +3669,13 @@ P2 未做：见核验报告 §4（`runtime_unavailable` 不键 0 token、种子 
 - 只读叶工作区起步时不预铺已验收补丁（只在收集处豁免同哈希）；Worker 仍可能「再打一遍补丁」。
 - 真实模型第 3 批未验。
 
+### 审计处置
+
+输入：Host `plans/taskSys2/升级planV1/impl/计划一致性审计-P2.3d至P2.3l-2026-09-17.zh-CN.md`「必须在 0.12.2 前修」。
+
+1. **口径**：CHANGELOG 0.12.2 标题改为 P2.3e–P2.3m；文首「架构捷径声明」三项——根收尾 = `root_reviewer` + Mission Judge、Mission 账户两次；非根 compound = 机械 composition，不是独立 COMPOSITION 审阅；根评审 v3 准则解释权以 `mission_goal` 为准（与「准则以 goal signature 为准」相反）。HANDOFF 文首「最后核查」改为本片。
+2. **AER I05/I07**：`composition_review._outcomes` 删掉 `c-composition`「有子验收即 PASS」。无 coverage 映射 → UNKNOWN + `composition_criterion_uncovered`，不形成 ACCEPT。对照：M3 `assess-by-reading` 有链接的主路径仍决议。测试：`test_c_composition_without_coverage_does_not_form_accept`、`test_linked_assess_by_reading_still_forms_a_resolution`。变异 M1 恢复 PASS-if-accepted → 1 failed，KILLED（`/tmp/p23m-i07-composition_review.py.bak` 恢复）。回归：full_target **2867 passed / 2 skipped**（上一段 2865，+2）；旧模式 560/13/0；ruff 清。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、
