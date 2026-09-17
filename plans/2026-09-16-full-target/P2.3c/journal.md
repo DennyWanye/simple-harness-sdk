@@ -2559,6 +2559,29 @@ uv run --frozen --no-sync --group dev --extra local-capacity \
   --run-real-provider -q -s
 ```
 
+## 2d. 真实模型冒烟补跑：**COMPLETED**（2026-09-17，由协调方在 DeepSeek 官方端点补跑）
+
+命令与 §2c 相同，但凭证改用 DeepSeek 官方端点（`SH_MODEL=deepseek-flash`，key 从
+`.local-test-evidence/2026-09-07/credentials/deepseek.env` 只进环境、不打印、不落盘），
+证据目录 `.local-test-evidence/2026-09-17/htn-smoke-p23d/`（忽略于 git）。
+
+| 项 | 值 |
+| --- | --- |
+| Mission | `mission-3243bfd86e5035d5` |
+| 终态 | **COMPLETED**（`stop_reason=verification_passed`） |
+| 模型 | `deepseek-flash`（回显一致） |
+| plan_revisions / planner_rounds 重开 | 1 / 0（`rejections=[]`，`proposal_unreadable=false`） |
+| 叶子 | 4 个 attempt 全部 VerificationPassed → AcceptanceCommitted |
+| `accepted_outputs` | facts / diagnosis / patch / **report**（终结步端口非空——D3 在真实模型上的直接证据） |
+| 根评审 | 1 刀，ACCEPT，`GoalResolutionCommitted → MissionSuccessJudged → MissionCompleted` |
+| 结算 token | 137 906（上限 600 000） |
+| 用时 | 143 s |
+| 收口断言 | 「每条 `AcceptanceCommitted.accepted_outputs` 不得为空」通过 |
+
+结论：§2c 的偏差 8（端点抽风、模型不是 deepseek-flash）已由本次补跑关闭；
+「到 COMPLETED」这条交付补齐。与 P2.3c 第三部分第 4 轮的 COMPLETED 不同，
+这一次终结步有产物，不依赖评审员宽容。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、
