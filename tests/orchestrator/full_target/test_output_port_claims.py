@@ -208,6 +208,25 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "worker-hierarchical-v2",
         "120372b8a49162ab1d96c6cf2725d6fcf7adec1988c7c8646f378c21649870b7",
     ),
+    # P2.3g: the synthesiser's v1 is what the Grok episode ran on and stays pinnable;
+    # v2 spells the codec's field list.  The hierarchical Planner's v3 is frozen for
+    # the same reason, and v4 is v3 minus "write a <method_proposal> instead".
+    "METHOD_SYNTHESIZER_V1": (
+        "method-synthesizer-v1",
+        "9341ab10390015fb45d528d95dac0af5b29658f0ee9b70060369d607f8f0ae32",
+    ),
+    "METHOD_SYNTHESIZER": (
+        "method-synthesizer-v2",
+        "27ccb23492ef00b73404735a03f51439d2bf0eb1339a6a6b4320950ee8beaccb",
+    ),
+    "PLANNER_HIERARCHICAL_V3": (
+        "planner-hierarchical-v3",
+        "ba244a12bf504051d7ebc954f462cf23f9c7734dff980c539187834a0a670acb",
+    ),
+    "PLANNER_HIERARCHICAL_V4": (
+        "planner-hierarchical-v4",
+        "5ae3b39acf9326888e20bab934848ed6e1d21482884ccda932ac693b31122223",
+    ),
 }
 
 #: P2.3d / defect D1: the same freeze for the versions a *domain module* registers.

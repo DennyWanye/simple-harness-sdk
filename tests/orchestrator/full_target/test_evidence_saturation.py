@@ -520,16 +520,32 @@ def test_a_refused_synthesis_round_ends_the_wait_it_caused(tmp_path) -> None:
         test_timeout_seconds=60,
         max_planning_attempts=2,
     )
+    # Readable by the codec, refused by the admission protocol: a complete method
+    # whose only step names an operator this deployment has never registered.  P2.3g:
+    # a reply the *codec* cannot read is no longer a refusal — it is asked once more
+    # with the codec's problems attached — so this test scripts the refusal it is
+    # about, not a malformed block (see ``test_synthesizer_schema_alignment.py``).
+    refused = method(
+        "plan.nowhere",
+        "plan.goal",
+        parameter_schema="plan.goal.params",
+        applicable=(),
+        steps=(
+            step(
+                "leaf",
+                "plan.no-such-operator",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject")},
+                capabilities=("plan.read",),
+            ),
+        ),
+        links=(("c-root", "leaf", "c-done"),),
+        finalizer="leaf",
+    )
     provider = RoleScriptedProvider(
         {
             "planner": ["nothing to propose", "still nothing"],
-            # Readable as a block, refused by the admission protocol: it names a goal
-            # signature this deployment has never heard of.
-            "method_synthesizer": [
-                method_proposal_step(
-                    {"method_id": "plan.nowhere", "goal_signature": "no.such.goal"}
-                )
-            ],
+            "method_synthesizer": [method_proposal_step(refused.to_json())],
         }
     )
 
@@ -590,5 +606,7 @@ def test_a_refused_synthesis_round_ends_the_wait_it_caused(tmp_path) -> None:
     outcome = asyncio.run(case())
     assert outcome["waiting"] is MissionStatus.PLANNING, "the ladder waited, as it should"
     assert outcome["synthesis"] and outcome["synthesis"][0]["admitted"] is False
+    assert outcome["synthesis"][0]["verdict"] == "REJECTED", outcome["synthesis"]
+    assert outcome["synthesis"][0]["asks"] == 1, "a read-and-refused reply is not re-asked"
     assert outcome["status"] is MissionStatus.FAILED, "the wait ended, and it ended honestly"
     assert outcome["report"]["planning_failure"]["reason"] == "method_synthesis_refused"

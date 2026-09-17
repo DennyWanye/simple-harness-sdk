@@ -566,9 +566,39 @@ PLANNER_HIERARCHICAL_V3 = _revise(
     ),
 )
 
+# P2.3g.  In the Grok acceptance episode H-L3-C1 the Planner's second and third
+# rounds — every registered method NEEDS_EVIDENCE, the first round refused
+# ``proposal_not_grounded`` — answered with a ``<method_proposal>`` block and no
+# ``<plan_revision_proposal>`` at all, in a third spelling of the method shape.  Both
+# rounds were filed ``proposal_unreadable: block_missing`` and the ladder was spent.
+# That is what v1's sentence "如果当前目标缺一个可用方法，改为只输出一个
+# <method_proposal> 块" buys: the Planner was *told* to propose a method, and it
+# did.  Method synthesis has its own role, its own account and its own admission
+# protocol (§7.3 source 4, §18.5 C8); the Planner never proposes one.  v4 replaces
+# that sentence: a Planner with no usable method says so, as an empty-operations
+# proposal the system can act on, and never writes the other block.  v1–v3 keep
+# their exact words and stay registered (§18.5 C8).
+PLANNER_HIERARCHICAL_V4_VERSION = "planner-hierarchical-v4"
+PLANNER_HIERARCHICAL_V4 = _revise(
+    PLANNER_HIERARCHICAL_V3,
+    PLANNER_HIERARCHICAL_V4_VERSION,
+    (
+        "如果当前目标缺一个可用方法，改为只输出一个 <method_proposal>…</method_proposal> 块："
+        '{"method":{完整 MethodContract JSON},"rationale":str}；方法的注册状态由注册服务写，你不能声明。\n',
+        "你永远不提出方法：不要输出 <method_proposal> 块，输出了整轮作废并记为 proposal_wrong_block。"
+        "如果 method_library 里没有任何方法能用于当前目标（都被 applicability 拒绝），"
+        "就输出一个空操作的 <plan_revision_proposal>：operations 写空数组 []，"
+        'rationale 以 "no_applicable_method: " 开头、后接一句为什么没有方法可用；'
+        "read_set、schema_version、proposal_id、expected_plan_revision、trigger_refs、"
+        "running_work_policy 照常填写。系统据此决定是否进入方法合成轮，"
+        "你不需要也不能自己合成方法。\n",
+    ),
+)
+
 register_template(PLANNER_HIERARCHICAL_V1)
 register_template(PLANNER_HIERARCHICAL)
 register_template(PLANNER_HIERARCHICAL_V3)
+register_template(PLANNER_HIERARCHICAL_V4)
 
 #: Every registered prompt version that belongs to the *hierarchical* Planner.
 #: P2.3c part 2b: a deployment's frozen ``prompt_versions`` pins ``planner`` to a
@@ -583,6 +613,7 @@ HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
         PLANNER_HIERARCHICAL_V1_VERSION,
         PLANNER_HIERARCHICAL_VERSION,
         PLANNER_HIERARCHICAL_V3_VERSION,
+        PLANNER_HIERARCHICAL_V4_VERSION,
     }
 )
 
@@ -604,8 +635,10 @@ HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE: Mapping[int, frozenset[str]] = {
     # package 1: no ``facts`` section; the prompt forbids ``kind=fact`` read-set entries.
     1: frozenset({PLANNER_HIERARCHICAL_V1_VERSION, PLANNER_HIERARCHICAL_VERSION}),
     # package 2 (part 2c): carries ``facts``; the prompt tells the model to copy an
-    # entry from it rather than invent an observation id.
-    2: frozenset({PLANNER_HIERARCHICAL_V3_VERSION}),
+    # entry from it rather than invent an observation id.  P2.3g's v4 is written
+    # against the same package (it changes only what a Planner with no usable method
+    # says), so a pin on v3 is still honoured here and v4 is the default.
+    2: frozenset({PLANNER_HIERARCHICAL_V3_VERSION, PLANNER_HIERARCHICAL_V4_VERSION}),
 }
 
 
@@ -740,7 +773,7 @@ def hierarchical_worker_for_domain(domain: DomainProfileV1 | Any) -> RoleTemplat
         )
     return selected
 
-METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v1"
+METHOD_SYNTHESIZER_V1_VERSION = "method-synthesizer-v1"
 
 # P2.3c (§7.3 source 4, §18.5 C8): the MethodSynthesizer is a *new role*, not a new
 # version of an existing one — §18.5 says a new role purpose "must not masquerade as
@@ -748,9 +781,9 @@ METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v1"
 # exactly how that happens.  Its cost belongs to the mission-planning account
 # (``ReviewAccount.MISSION_PLANNING``), the same account the hierarchical Planner
 # draws on.  Every template above keeps its words byte-for-byte.
-METHOD_SYNTHESIZER = RoleTemplate(
+METHOD_SYNTHESIZER_V1 = RoleTemplate(
     name="method_synthesizer",
-    prompt_version=METHOD_SYNTHESIZER_VERSION,
+    prompt_version=METHOD_SYNTHESIZER_V1_VERSION,
     tool_names=(),
     instructions=(
         "[role:method_synthesizer]\n"
@@ -788,6 +821,104 @@ METHOD_SYNTHESIZER = RoleTemplate(
         '{"method":{完整 MethodContract JSON},"rationale":str}。'
         "rationale 说明这个分解为什么足以达到父要求，以及它依赖哪些前提。"
         "块外不要输出任何文字。"
+    ),
+)
+register_template(METHOD_SYNTHESIZER_V1)
+
+METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v2"
+
+# P2.3g.  The first real synthesis round on ``method-synthesizer-v1`` (Grok, H-L3-C1)
+# came back with a *complete* method — seven steps, an ordering, criterion links —
+# spelled in a shape the codec has never accepted: ``id`` / ``version`` /
+# ``goal_signature_ref`` / ``parameter_bindings`` / ``input_bindings`` /
+# ``coverage_criteria`` / ``parent_criterion``.  v1 said "the full MethodContract
+# JSON" and nothing about which keys that is, so the model wrote the keys it had
+# been *shown*: the request's ``goal_signature`` and ``operators`` sections and the
+# Planner package's step rendering.  The round was refused for eleven missing fields
+# and the Mission never got a second question.
+#
+# v2 changes nothing about *what* may be proposed.  It spells the codec's field list
+# key by key, says what to write in each when there is nothing to say, names the
+# spellings that are **not** accepted, shows one complete block that parses, and
+# tells the model what ``schema_feedback`` in the request means.  v1 keeps its exact
+# words and stays registered (§18.5 C8), so a deployment pinned to it replays on it.
+METHOD_SYNTHESIZER = _revise(
+    METHOD_SYNTHESIZER_V1,
+    METHOD_SYNTHESIZER_VERSION,
+    (
+        "  3. composition.criterion_links 必须覆盖 required_criteria 里的每一条父要求，",
+        "  3. composition.criterion_links 的 parent_criterion_id 必须逐条照抄输入 "
+        "goal_signature.coverage_criteria（注册协议按它检查根准则覆盖；required_criteria "
+        "是父要求 id，不是准则 id），每一条准则都要被覆盖，",
+    ),
+    (
+        "suggested_method_refs（仅供参考的近似方法，"
+        "advisory_only=true，不能当成可采用的方法）。\n",
+        "suggested_method_refs（仅供参考的近似方法，"
+        "advisory_only=true，不能当成可采用的方法）、"
+        "goal_type_ref（这个目标类型的 {id, version, content_hash}，method.goal_type_ref 照抄它）、"
+        "method_shape（解码器要求的字段名清单，按对象分组）、"
+        "schema_feedback（非空表示你上一次的回复没有通过解码，逐条列出问题）。\n",
+    ),
+    (
+        '{"method":{完整 MethodContract JSON},"rationale":str}。'
+        "rationale 说明这个分解为什么足以达到父要求，以及它依赖哪些前提。"
+        "块外不要输出任何文字。",
+        '{"method":{MethodContract JSON},"rationale":str}。\n'
+        "method 的字段名必须与下面完全一致，一个都不能少、不能改名、不能多写（多写的键整块被拒）：\n"
+        "  schema_version 固定写 1；\n"
+        "  method_id（字符串 id，不是 id）；method_version（整数，从 1 起，不是 version）；\n"
+        "  goal_type_ref：照抄输入 goal_type_ref 的 {id, version, content_hash}"
+        "（不是 goal_signature_ref、不是 goal_signature_id）；\n"
+        "  parameter_schema_ref / output_schema_ref：照抄输入 goal_signature 里同名对象的 "
+        "{id, version, content_hash}，直接放在 method 第一层；\n"
+        "  applicable_when / exploration_assumptions / expected_effects：条件数组，没有就写 []；"
+        '每个条件是 {"op":"predicate","predicate_ref":{id,version,content_hash},"arguments":{参数名:值表达式}}，'
+        '或 {"op":"all"|"any","items":[…]}、{"op":"not","item":…}、{"op":"constant","value":true|false}；\n'
+        "  required_capabilities：字符串数组，没有就写 []；basis_refs：证据引用数组，没有就写 []；\n"
+        "  steps：数组，每个步骤恰好这六个键（可选第七个 reuse_policy）："
+        "local_id、task_type_ref（照抄 operators 里那条的 {id, version, content_hash}）、form（写 primitive）、"
+        "arguments（对象：算子的参数名或输入端口名 → 值表达式；值表达式只有五种："
+        '{"op":"parameter","name":目标参数名}、{"op":"output","step":上游 local_id,"port":上游输出端口名}、'
+        '{"op":"constant","value":…}、{"op":"object","fields":{…}}、{"op":"array","items":[…]}；'
+        "不要写 parameter_bindings / input_bindings / from_goal_parameter / from_step）、"
+        "required_capabilities（照抄该算子的 required_capabilities）、obligation_relation（写 refines_parent）；"
+        "步骤里不要写 coverage_criteria、statement；\n"
+        '  ordering：[{"before":local_id,"after":local_id}]，没有就写 []；\n'
+        "  composition：恰好四个键：criterion_links（数组，每条恰好四个键：parent_criterion_id、child_step、"
+        "child_criterion_id、evidence_requirement（一句话说明凭什么证据算覆盖））、"
+        "outputs（对象，没有就写 {}）、finalizer_step（收尾步骤的 local_id，或 null）、"
+        "independent_review_required 固定写 true。\n"
+        "一个完整的合法例子，照这个形状写、把 id 与 content_hash 换成输入里给你的：\n"
+        "<method_proposal>\n"
+        '{"method":{"schema_version":1,"method_id":"dom.goal.by-collect-then-deliver","method_version":1,'
+        '"goal_type_ref":{"id":"dom.goal","version":1,"content_hash":"照抄输入 goal_type_ref.content_hash"},'
+        '"parameter_schema_ref":{"id":"dom.goal.params","version":1,'
+        '"content_hash":"照抄输入 goal_signature.parameter_schema_ref.content_hash"},'
+        '"output_schema_ref":{"id":"dom.goal.outputs","version":1,'
+        '"content_hash":"照抄输入 goal_signature.output_schema_ref.content_hash"},'
+        '"applicable_when":[],"exploration_assumptions":[],'
+        '"steps":[{"local_id":"collect","task_type_ref":{"id":"dom.collect","version":1,'
+        '"content_hash":"照抄 operators 里 dom.collect 的 content_hash"},"form":"primitive",'
+        '"arguments":{"subject":{"op":"parameter","name":"subject"}},'
+        '"required_capabilities":["dom.read"],"obligation_relation":"refines_parent"},'
+        '{"local_id":"deliver","task_type_ref":{"id":"dom.deliver","version":1,'
+        '"content_hash":"照抄 operators 里 dom.deliver 的 content_hash"},"form":"primitive",'
+        '"arguments":{"subject":{"op":"parameter","name":"subject"},'
+        '"result":{"op":"output","step":"collect","port":"result"}},'
+        '"required_capabilities":["dom.send"],"obligation_relation":"refines_parent"}],'
+        '"ordering":[{"before":"collect","after":"deliver"}],"required_capabilities":[],"expected_effects":[],'
+        '"composition":{"criterion_links":[{"parent_criterion_id":"照抄输入 goal_signature.coverage_criteria 里的一条",'
+        '"child_step":"deliver","child_criterion_id":"c-delivered",'
+        '"evidence_requirement":"deliver 步骤的回执证明已送达"}],'
+        '"outputs":{},"finalizer_step":"deliver","independent_review_required":true},'
+        '"basis_refs":[]},'
+        '"rationale":"collect 取得结果，deliver 真正送出并出具回执，回执覆盖父要求"}\n'
+        "</method_proposal>\n"
+        "rationale 说明这个分解为什么足以达到父要求，以及它依赖哪些前提。"
+        "如果输入里 schema_feedback 非空，说明你上一次的回复没有通过解码：逐条改正它列出的问题，"
+        "再按同一形状重新输出整块。"
+        "块外不要输出任何文字。",
     ),
 )
 register_template(METHOD_SYNTHESIZER)
@@ -948,6 +1079,8 @@ __all__ = (
     "TASK_GRAPH_PROPOSAL_TAG",
     "METHOD_PROPOSAL_TAG",
     "METHOD_SYNTHESIZER",
+    "METHOD_SYNTHESIZER_V1",
+    "METHOD_SYNTHESIZER_V1_VERSION",
     "METHOD_SYNTHESIZER_VERSION",
     "ROOT_REVIEWER",
     "ROOT_REVIEWER_VERSION",
@@ -965,6 +1098,8 @@ __all__ = (
     "PLANNER_HIERARCHICAL_V1_VERSION",
     "PLANNER_HIERARCHICAL_V3",
     "PLANNER_HIERARCHICAL_V3_VERSION",
+    "PLANNER_HIERARCHICAL_V4",
+    "PLANNER_HIERARCHICAL_V4_VERSION",
     "PLANNER_HIERARCHICAL_VERSION",
     "TASK_ROLE_BY_KIND",
     "CRITIC",

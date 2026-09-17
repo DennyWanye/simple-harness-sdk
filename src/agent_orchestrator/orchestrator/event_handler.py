@@ -112,7 +112,12 @@ from ..memory.summaries import build_summaries
 from ..memory.verified_knowledge import KnowledgeIndex
 from ..planning.fragments import _task_contract
 from ..planning.manager import terminal_task
-from ..planning.planner import parse_task_graph_proposal
+from ..planning.planner import (
+    NO_APPLICABLE_METHOD,
+    PROPOSAL_WRONG_BLOCK,
+    NoApplicableMethodDeclared,
+    parse_task_graph_proposal,
+)
 from ..runtime.actions import ActionExecutor, publication_overlaps_storage
 from ..runtime.agent_worker import AgentBridge, Liveness, user_message_json
 from ..runtime.assembly import (
@@ -225,6 +230,15 @@ ROOT_REVIEW_REPAIR_REASON = "root_review_rejected"
 #: operation the plan cannot carry.  ``proposal_unreadable`` stays what its name says:
 #: the typed block could not be parsed at all (``__cause__`` is a ``BlockError``).
 PROPOSAL_NOT_GROUNDED = "proposal_not_grounded"
+
+#: P2.3g.  How many times one MethodSynthesizer round may be asked on the same anchor.
+#: The first real round (Grok, H-L3-C1) answered with a complete method in a shape the
+#: codec does not accept and was concluded ``UNREADABLE`` on the spot; the second ask
+#: carries the codec's problems as ``schema_feedback`` — the same bounded repair the
+#: root reviewer gets (``MAX_ROOT_REVIEW_ASKS``) and the Task Critic gets through
+#: ``critic_schema_retry_feedback``.  A reply that was *read* and refused by the
+#: admission protocol is a conclusion and is never re-asked.
+MAX_SYNTHESIS_ASKS = 2
 
 FAULT_POINTS = (
     "after_agent_created",
@@ -2558,7 +2572,7 @@ class Orchestrator:
         """
 
         from ..runtime.role_templates import (
-            PLANNER_HIERARCHICAL_V3,
+            PLANNER_HIERARCHICAL_V4,
             hierarchical_planner_versions,
         )
 
@@ -2568,7 +2582,10 @@ class Orchestrator:
         # P2.3c part 2c: v3 is the one whose read-set rule matches the package the
         # branch above builds (it carries a ``facts`` section; v2 tells the model there
         # is none).  The prompt and the package are chosen together or not at all.
-        return PLANNER_HIERARCHICAL_V3
+        # P2.3g: v4 is v3 minus the sentence that told the Planner to write a
+        # ``<method_proposal>`` when no method applied; same package, so a pin on v3
+        # still selects v3 above and the unpinned default is v4.
+        return PLANNER_HIERARCHICAL_V4
 
     def _hierarchical_worker_template(self, role: Any, mission_id: str) -> Any:
         """The Worker prompt that knows about output ports (part 2d, decision 4).
@@ -2747,7 +2764,12 @@ class Orchestrator:
         self._note(f"task {task.id}: acceptance {receipt.acceptance_id} recorded")
 
     async def _create_synthesizer_intent(
-        self, mission_id: str, goal_task_id: str, *, ordinal: int
+        self,
+        mission_id: str,
+        goal_task_id: str,
+        *,
+        ordinal: int,
+        schema_feedback: Sequence[str] = (),
     ) -> DispatchIntent:
         """The MethodSynthesizer's own dispatch (§7.3 source 4, §18.5 C8, §13 v1.4).
 
@@ -2777,7 +2799,9 @@ class Orchestrator:
                 "a MethodSynthesizer round belongs to a hierarchical Mission; a legacy "
                 "Mission has no method library to extend (§18.5 rule 1)"
             )
-        request = new_mode.synthesis_request(mission_id, goal_task_id)
+        request = new_mode.synthesis_request(
+            mission_id, goal_task_id, schema_feedback=tuple(schema_feedback)
+        )
         template = self._template(METHOD_SYNTHESIZER, mission_id)
         decision = self._route_service("planner", mission_id)
         config = AgentConfig(
@@ -3972,9 +3996,14 @@ class Orchestrator:
         """
 
         from ..planning.htn.registry import RegistryAuthor
+        from ..planning.htn.synthesis import (
+            SynthesisReplyUnreadable,
+            synthesis_schema_feedback,
+        )
 
         new_mode = self._new_mode(mission)
         goal_task_id = str(intent.config.get("goal_task_id", ""))
+        ordinal = int(intent.config.get("ordinal", 1))
         if new_mode is None:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
@@ -3987,6 +4016,40 @@ class Orchestrator:
             problems = tuple(f"{item.code!s}: {item.detail}" for item in receipt.problems)
             method_ref = str(receipt.method_ref.method_id)
             verdict = str(receipt.verdict)
+        except SynthesisReplyUnreadable as unreadable:
+            # P2.3g: the reply could not be decoded — the registry never saw it.  That
+            # is not an answer, so the same question is put once more with the codec's
+            # problems attached (``schema_feedback``), on the same anchor, ordinal +1,
+            # written down first.  Bounded at ``MAX_SYNTHESIS_ASKS``; the second
+            # unreadable reply concludes the round ``UNREADABLE`` as before.
+            admitted, problems, method_ref, verdict = False, unreadable.problems, "", "UNREADABLE"
+            if ordinal < MAX_SYNTHESIS_ASKS:
+                new_mode.record_synthesis_reply_unreadable(
+                    mission.id,
+                    goal_task_id=goal_task_id,
+                    ordinal=ordinal,
+                    problems=unreadable.problems,
+                    block_defect=unreadable.block_defect,
+                )
+                self._settle_intent(intent, "FAILED")
+                self._settle_service_if_known(intent.subject_id, mission.id)
+                try:
+                    await self._create_synthesizer_intent(
+                        mission.id,
+                        goal_task_id,
+                        ordinal=ordinal + 1,
+                        schema_feedback=synthesis_schema_feedback(unreadable),
+                    )
+                except (ContractError, CommitRejected, BudgetError, RoutingUnavailable) as refused:
+                    # No second ask could be opened: the round concludes on the reply
+                    # it has, with the reason the retry was not asked written beside it.
+                    problems = (*unreadable.problems, f"retry not asked: {refused}")
+                else:
+                    self._note(
+                        f"method synthesis for {goal_task_id}: reply {ordinal} unreadable "
+                        f"({unreadable.block_defect}); asking once more with the codec's problems"
+                    )
+                    return
         except (ContractError, BlockError, StoreError) as error:
             admitted, problems, method_ref, verdict = False, (str(error),), "", "UNREADABLE"
         new_mode.record_synthesis_outcome(
@@ -3997,6 +4060,7 @@ class Orchestrator:
             method_id=method_ref,
             verdict=verdict,
             author=str(RegistryAuthor.MODEL),
+            asks=ordinal,
         )
         self._note(
             f"method synthesis for {goal_task_id}: "
@@ -4142,6 +4206,24 @@ class Orchestrator:
             self._settle_service_if_known(intent.subject_id, mission.id)
             await self._plan_integrity_stop(mission, error)
             return
+        except NoApplicableMethodDeclared as declared:
+            # P2.3g: the Planner answered, in the agreed shape, that nothing in the
+            # library applies.  Its own reason code — not unreadable (the block was
+            # fine) and not ungrounded (nothing was proposed) — and no repair hint,
+            # because there is nothing to repair.  The rung is spent like any other
+            # refused round; whether a synthesis round is opened is decided by
+            # ``goals_needing_method`` (D2b), never by the Planner's say-so.
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            await self._planning_rejected(
+                intent,
+                reason=NO_APPLICABLE_METHOD,
+                detail={
+                    "proposal_id": declared.proposal_id,
+                    "rationale": declared.rationale[:300],
+                },
+            )
+            return
         except ContractError as error:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
@@ -4164,6 +4246,11 @@ class Orchestrator:
             if isinstance(cause, BlockError):
                 detail["repair_hint"] = repair_hint(cause, PLAN_REVISION_PROPOSAL_TAG)
                 detail["block_defect"] = cause.reason
+                # P2.3g: the other role's block is its own reason — the two rounds the
+                # Grok episode lost this way were filed "block_missing", and the next
+                # round was told to write a block it had in fact written.
+                if cause.reason == PROPOSAL_WRONG_BLOCK:
+                    reason = PROPOSAL_WRONG_BLOCK
             elif result.state is AgentTurnState.COMMITTED:
                 reason = PROPOSAL_NOT_GROUNDED
             await self._planning_rejected(intent, reason=reason, detail=detail)
@@ -6321,6 +6408,7 @@ class Orchestrator:
                 method_id="",
                 verdict="UNANSWERED",
                 author=str(RegistryAuthor.MODEL),
+                asks=int(intent.config.get("ordinal", 1)),
             )
             await self._after_synthesis_round(mission.id, admitted=False)
             return

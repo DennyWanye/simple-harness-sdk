@@ -156,6 +156,14 @@ REPAIR_HINTS: dict[str, str] = {
     "output_port_claimed_twice": "一个单值输出端口只能对应一个文件（{detail}）。",
     "output_path_not_a_string": "outputs 的每个值必须是一个文件路径字符串（{detail}）。",
     "output_path_not_produced": "outputs 里的路径必须是你本次真实写过的文件（{detail}）。",
+    # P2.3g: the Planner answered with the *other* role's block.  Not ``block_missing``
+    # — the model did write a block, the wrong one — and the hint says whose job the
+    # method is and what to write instead.
+    "proposal_wrong_block": (
+        "你是 Planner，不提方法：不要输出 <method_proposal> 块。没有可用方法就输出一个 "
+        "operations 为空、rationale 以 \"no_applicable_method: \" 开头的 <{tag}>…</{tag}> 块"
+        "（{detail}）。"
+    ),
 }
 
 
