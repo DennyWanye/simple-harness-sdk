@@ -2194,17 +2194,31 @@ def test_a_required_consumed_port_nobody_claimed_refuses_the_acceptance(live: Wo
     assert live.semantics.list_acceptance_outputs(live.mission.id) == ()
 
 
-def test_a_port_with_no_consumer_needs_no_claim(live: World) -> None:
-    """Nothing consumes the review leaf, so it declares no port and claims none."""
+def test_the_finalizers_port_is_declared_although_no_edge_consumes_it(live: World) -> None:
+    """P2.3d / defect D3: this test used to assert the opposite, and that was the bug.
 
-    assert live.dispatch.declared_output_ports_for(live.mission.id, _review_task(live)) == ()
+    Nothing downstream consumes the review leaf's ``verdict`` — and the root's
+    ``c-root`` criterion is linked to that very step, so the root reviewer reads that
+    artifact and nothing else.  While "declared" meant "consumed by a
+    ``DataRequirement``" the leaf was never told the port existed, wrote no
+    ``outputs``, and the gap only surfaced as ``HierarchicalRootReviewRejected`` with
+    ``evidence.kind=none``.  See ``test_finalizer_output_ports.py``.
+    """
+
+    from agent_orchestrator.runtime.output_blocks import PortClaim
+
+    reported = live.dispatch.declared_output_ports_for(live.mission.id, _review_task(live))
+    assert [item["port"] for item in reported] == ["verdict"]
     _accept_leaf(
         live,
         task_id=_review_task(live),
         result_id="result-review",
         artifacts=(_Artifact("artifact-2", "out/verdict.json"),),
+        port_claims=(PortClaim(port_key="verdict", path="out/verdict.json"),),
     )
-    assert live.semantics.list_acceptance_outputs(live.mission.id) == ()
+    assert [
+        row["output_port"] for row in live.semantics.list_acceptance_outputs(live.mission.id)
+    ] == ["verdict"]
 
 
 def test_no_port_is_ever_derived_from_an_artifact_path(live: World) -> None:
@@ -2249,20 +2263,34 @@ def _schema_of(world: World):
     return declared_output_ports(world.network(), producer)["result"]
 
 
-def test_a_leaf_whose_output_nobody_consumes_indexes_nothing(live: World) -> None:
-    """§24.1 decision 4: an index entry exists only where the plan drew an edge."""
+def test_an_artifact_no_claim_names_indexes_nothing(live: World) -> None:
+    """§24.1 decision 4: an index entry exists only where something reads it.
+
+    P2.3d narrowed this case rather than removing it.  The review leaf *does* declare
+    a port now (its criterion link is the reader), so the case "a produced file that
+    no port claim names" is made with an extra artifact instead: it stays evidence of
+    the run and never enters the index.
+    """
+
+    from agent_orchestrator.runtime.output_blocks import PortClaim
 
     _assembly(live).accept(
         live.mission.id,
         _review_task(live),
         result_id="result-review",
         layers=_passing_layers(),
-        artifacts=(_Artifact("artifact-2", "out/verdict.json"),),
+        artifacts=(
+            _Artifact("artifact-2", "out/verdict.json"),
+            _Artifact("artifact-spare", "out/scratch.log"),
+        ),
         producer_agent_ids=("agent-worker",),
         reviewer_agent_id="agent-critic",
         now_ms=1_000_000,
+        port_claims=(PortClaim(port_key="verdict", path="out/verdict.json"),),
     )
-    assert live.semantics.list_acceptance_outputs(live.mission.id) == ()
+    assert [
+        row["artifact_id"] for row in live.semantics.list_acceptance_outputs(live.mission.id)
+    ] == ["artifact-2"]
 
 
 def test_the_recorded_output_reaches_the_data_consumer(live: World) -> None:
@@ -3310,7 +3338,16 @@ def _final_witness(world: World, *, now_ms: int = ROOT_NOW_MS):
 
 
 def _accept_every_child(world: World) -> None:
-    """Both gating children of the adopted root method, through the real chain."""
+    """Both gating children of the adopted root method, through the real chain.
+
+    P2.3d / defect D3: ``review`` is the finalizer step the root criterion is linked
+    to, so its ``verdict`` port is a declared port even though no ``DataRequirement``
+    consumes it — and an acceptance that claims none of its declared ports is refused
+    with ``OUTPUT_PORT_UNCLAIMED``.  The claim below is what a Worker holding the
+    port name in its context package would have written.
+    """
+
+    from agent_orchestrator.runtime.output_blocks import PortClaim
 
     _accept_leaf(world)
     _assembly(world).accept(
@@ -3322,6 +3359,7 @@ def _accept_every_child(world: World) -> None:
         producer_agent_ids=("agent-worker",),
         reviewer_agent_id="agent-critic",
         now_ms=1_100_000,
+        port_claims=(PortClaim(port_key="verdict", path="out/verdict.json"),),
     )
 
 

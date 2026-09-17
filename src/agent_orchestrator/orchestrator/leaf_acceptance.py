@@ -106,7 +106,7 @@ from ..runtime.output_blocks import PortClaim
 from ..storage.htn_store import HtnStore
 from ..storage.store import StoreError
 from ..verification.acceptance_rules import ExecutionPosture, IndependenceFacts
-from .accepted_outputs import declared_ports_in_revision
+from .accepted_outputs import output_ports_in_revision
 from .resolution_commits import AcceptanceReceipt, AcceptReviewCommand, ResolutionPrincipal
 
 #: The review policy this deployment reviews a hierarchical leaf under.  A named
@@ -733,8 +733,8 @@ class LeafAcceptanceAssembly:
         )
         if occurrence is None:
             return ()
-        ports = declared_ports_in_revision(
-            semantics.list_data_requirements(mission_id, revision), occurrence
+        ports = output_ports_in_revision(
+            semantics, mission_id, revision, occurrence, str(binding.task_id)
         )
         return accepted_outputs_for(
             ports,

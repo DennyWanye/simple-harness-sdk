@@ -85,7 +85,7 @@ from ..verification.acceptance_rules import (
     acceptable,
 )
 from ._read_set import ReadSetChannelUnknown, SemanticReadSetChecker
-from .accepted_outputs import accepted_output_json, declared_ports_in_revision
+from .accepted_outputs import accepted_output_json, output_ports_in_revision
 from .plan_commits import HIERARCHICAL_SEMANTICS, semantics_of
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -207,13 +207,18 @@ def _posture_json(posture: ExecutionPosture) -> dict[str, Any]:
 
 
 def _declared_ports(
-    semantics: HtnStore, mission_id: str, revision: int, producer: Any
+    semantics: HtnStore, mission_id: str, revision: int, producer: Any, task_id: str
 ) -> Mapping[str, Any]:
-    """The producer's declared output ports, read from the plan revision's own rows."""
+    """The producer's declared output ports, read from the plan revision's own rows.
 
-    return declared_ports_in_revision(
-        semantics.list_data_requirements(mission_id, revision), producer
-    )
+    P2.3d / defect D3: "declared" is "consumed by a ``DataRequirement`` **or** pointed
+    at by a ``criterion_link``".  The finalizer step is the case that matters — its
+    artifact is what the root's success criterion reads, and while this side counted
+    only edges, ``OUTPUT_PORT_UNCLAIMED`` could never fire for it and the gap surfaced
+    two steps later as a root review rejection nobody could act on.
+    """
+
+    return output_ports_in_revision(semantics, mission_id, revision, producer, task_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -795,7 +800,9 @@ class ResolutionCommitsMixin:
                 "accepted output is filed under the occurrence the plan holds, not under one "
                 "the command names",
             )
-        consumed = _declared_ports(semantics, command.mission_id, revision, producer)
+        consumed = _declared_ports(
+            semantics, command.mission_id, revision, producer, command.task_id
+        )
         # Order matters: "you named a port that does not exist" is answered before
         # "you left a declared port empty".  A relabelled output is both, and the
         # first is the actionable one — the second would send the producer looking

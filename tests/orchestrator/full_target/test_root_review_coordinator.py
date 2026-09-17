@@ -67,6 +67,7 @@ from agent_orchestrator.orchestrator.root_review import (  # noqa: E402
     RootReviewStatus,
     root_criteria,
 )
+from agent_orchestrator.runtime.output_blocks import PortClaim  # noqa: E402
 
 NOW_MS = 2_000_000
 #: The root goal type of the shared fixture declares exactly this coverage criterion.
@@ -542,6 +543,9 @@ def _accept_one_more_leaf(world: World) -> None:
         producer_agent_ids=("agent-worker",),
         reviewer_agent_id="agent-critic",
         now_ms=NOW_MS + 100_000,
+        # P2.3d / defect D3: the finalizer's own port is declared even with no
+        # downstream edge, so an acceptance that claims none of them is refused.
+        port_claims=(PortClaim(port_key="verdict", path="out/verdict.json"),),
     )
 
 

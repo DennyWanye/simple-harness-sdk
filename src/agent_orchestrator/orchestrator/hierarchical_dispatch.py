@@ -136,7 +136,12 @@ from ..storage.htn_store import HtnStore, PlanCommitReceipt
 from ..storage.obligation_store import ObligationStore
 from ..storage.store import StoreError
 from ..verification.acceptance_rules import CompoundFacts, ExecutionPosture, IndependenceFacts
-from .accepted_outputs import accepted_output_from_json
+from .accepted_outputs import (
+    accepted_output_from_json,
+)
+from .accepted_outputs import (
+    stored_coverage as _stored_coverage,
+)
 from .plan_commits import (
     HIERARCHICAL_SEMANTICS,
     PLAN_REVISION_COMMITTED,
@@ -802,7 +807,8 @@ class HierarchicalDispatch:
                 )
             ),
             # P2.3c part 2c: re-derived, because it is not a column.  See
-            # :func:`_stored_coverage` — round one's claims were simply absent from a
+            # :func:`~.accepted_outputs.stored_coverage` — round one's claims were
+            # simply absent from a
             # network read back out of the store, so a *second* refinement round was
             # refused with ``root_coverage_gap`` and no plan could ever go two levels
             # deep.
@@ -1652,15 +1658,15 @@ class HierarchicalDispatch:
         or by "one port, one file" — the guess TG design §10.2 forbids — or, honestly
         but uselessly, not at all.
 
-        The ports come from :func:`~.accepted_outputs.declared_ports_in_revision`, the
+        The ports come from :func:`~.accepted_outputs.output_ports_in_revision`, the
         same function the accept side checks against, so "which ports exist" has one
-        answer rather than two.  A port is in this list only because a
-        ``DataRequirement`` consumes it, and **the edge is what makes it required** —
-        third-round review P2-3 asked for that to be said out loud, because the memo's
-        wording ("required and actually consumed") reads as two conditions and there is
-        only one: ``DataRequirement`` has no ``required`` field, so a port a live edge
-        consumes is a port this leaf owes, and an unconsumed port feeds nobody and is
-        not asked for at all.
+        answer rather than two.  A port is in this list because a ``DataRequirement``
+        consumes it **or** because a ``criterion_link`` of the adopted method points at
+        this occurrence (P2.3d / defect D3: the finalizer step's port has no downstream
+        edge and the root's success criterion still reads it, so a leaf that was never
+        told the port existed delivered nothing and the root review rejected the
+        Mission).  An occurrence that is neither consumed nor criterion-linked feeds
+        nobody and is not asked for at all.
 
         Deliberately **not** intersected with the binding's own ``output_ports``.  The
         memo describes the two sources as an intersection, and a port a live edge
@@ -1676,7 +1682,7 @@ class HierarchicalDispatch:
         default.
         """
 
-        from .accepted_outputs import declared_ports_in_revision
+        from .accepted_outputs import output_ports_in_revision
 
         semantics = self.semantics()
         active = semantics.active_plan_revision(mission_id)
@@ -1693,8 +1699,8 @@ class HierarchicalDispatch:
         )
         if occurrence is None:
             return ()
-        ports = declared_ports_in_revision(
-            semantics.list_data_requirements(mission_id, revision), occurrence
+        ports = output_ports_in_revision(
+            semantics, mission_id, revision, occurrence, str(task_id)
         )
         binding = semantics.task_semantics_of(mission_id, str(task_id))
         specs = {} if binding is None else {item.port_key: item for item in binding.output_ports}
@@ -3184,52 +3190,6 @@ class HierarchicalDispatch:
         return append_hierarchical_event(
             self.store, event_type, mission_id, key=key, payload=payload, task_id=task_id
         )
-
-
-def _stored_coverage(
-    semantics: HtnStore,
-    instances: Sequence[Any],
-    adopted: Sequence[Any],
-    bindings: Mapping[TaskRef, TaskSemanticBindingV1],
-) -> tuple[Any, ...]:
-    """The ``obligation_coverage`` claims of a plan read back from the store.
-
-    The claims are a *function* of the adopted method instances — each one's contract
-    says which parent criterion each slot covers, and the instance says which
-    occurrence each slot bound — so they are recomputed rather than stored twice.
-    :func:`~..planning.htn.compiler.coverage_from_slots` is that function, shared with
-    the compiler so a re-read plan and a freshly compiled one cannot disagree about
-    what covers what.
-
-    An instance whose method the registry no longer holds contributes nothing rather
-    than raising: the plan is still readable, and the coverage check will report the
-    gap in the language it is about.
-    """
-
-    from ..planning.htn.compiler import CompilationRefused, coverage_from_slots
-
-    chosen = {str(item) for item in adopted}
-    claims: list[Any] = []
-    for draft in instances:
-        if str(draft.instance_id) not in chosen:
-            continue
-        parent = bindings.get(TaskRef(str(draft.goal_id)))
-        if parent is None:
-            continue
-        try:
-            stored = semantics.get_method(
-                str(draft.method_ref.method_id), int(draft.method_ref.version)
-            )
-        except StoreError:
-            continue
-        by_slot = {str(child.slot_key): child.occurrence_id for child in draft.child_bindings}
-        try:
-            claims.extend(
-                coverage_from_slots(stored.contract, by_slot, obligation=parent.obligation_id)
-            )
-        except CompilationRefused:
-            continue
-    return tuple(claims)
 
 
 def _refined_occurrence(

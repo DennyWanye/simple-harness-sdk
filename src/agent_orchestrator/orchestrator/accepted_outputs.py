@@ -101,18 +101,52 @@ def declared_output_ports(
 ) -> Mapping[str, VersionedRef]:
     """The ports this occurrence is declared to produce on, and each port's schema.
 
-    Read from the :class:`~..contracts.htn.DataRequirement` edges rather than from the
-    producer's own port list, because a port with no consumer feeds nothing and a
-    consumer's compatibility check is made against the *edge's* schema.  A port
-    declared twice with two schemas is refused rather than resolved to the last one:
-    two answers about what flows down one edge is not something a later read settles.
+    Two things make a port declared, and P2.3d added the second one:
+
+    * a :class:`~..contracts.htn.DataRequirement` edge **consumes** it — the schema
+      then comes from the edge, because that is the reference the consumer's
+      compatibility check is made against, and a port declared twice with two schemas
+      is refused rather than resolved to the last one;
+    * the adopted method's ``composition.criterion_links`` **point at** this
+      occurrence — the finalizer step above all.  The Grok acceptance run (H arm,
+      2026-09-17, defect D3) failed 10 of 40 episodes on exactly this gap: the seed
+      method ``code.fix-by-patch`` hangs ``c-test-passes`` on the ``verify`` step's
+      own criterion, ``verify`` declares a required ``report`` port and *nothing
+      downstream consumes it*, so all three readers agreed it was "a port nobody
+      wants" — the leaf was never told the port existed, never filled ``outputs``,
+      the accept side had nothing to refuse, and the root reviewer then read
+      ``evidence.kind=none`` and rejected the whole Mission.  A criterion link is a
+      consumer: the root's success criterion is what reads that artifact.
+
+    A criterion-linked port's schema comes from the producer's own
+    :class:`~..contracts.htn.PortSpec`, because there is no edge to take it from; an
+    edge that *does* consume the same port keeps its schema, so a producer still
+    cannot relabel what flows down a live edge.
     """
 
-    return _ports_of(network.data_requirements, producer)
+    covered = criterion_linked_occurrences(network.obligation_coverage)
+    binding = None
+    if producer in covered:
+        binding = next(
+            (
+                item
+                for item, spec in zip(network.task_bindings, network.occurrences, strict=False)
+                if spec.occurrence_id == producer
+            ),
+            None,
+        )
+    return _merge_ports(
+        _ports_of(network.data_requirements, producer),
+        binding if producer in covered else None,
+    )
 
 
 def declared_ports_in_revision(
-    requirements: Sequence[Any], producer: OccurrenceId
+    requirements: Sequence[Any],
+    producer: OccurrenceId,
+    *,
+    binding: Any = None,
+    criterion_linked: bool = False,
 ) -> Mapping[str, VersionedRef]:
     """:func:`declared_output_ports` for a caller holding the *rows*, not a network.
 
@@ -122,9 +156,143 @@ def declared_ports_in_revision(
     revision's ``data_requirements`` rows instead, and the rule applied to them has
     to be the same rule, so both readers call :func:`_ports_of` and neither owns a
     second copy of "which ports this occurrence declares".
+
+    ``criterion_linked`` says whether a ``criterion_link`` of the adopted method
+    points at this occurrence; ``binding`` is that occurrence's semantic binding,
+    read for its declared ``output_ports``.  Callers that hold a store should use
+    :func:`output_ports_in_revision`, which answers both from the rows itself.
     """
 
-    return _ports_of(requirements, producer)
+    return _merge_ports(
+        _ports_of(requirements, producer), binding if criterion_linked else None
+    )
+
+
+def output_ports_in_revision(
+    semantics: Any,
+    mission_id: str,
+    revision: int,
+    producer: OccurrenceId,
+    task_id: str,
+) -> Mapping[str, VersionedRef]:
+    """The one answer to "which output ports does this occurrence owe", from rows.
+
+    Every production reader of that question goes through here — the context package
+    the leaf is handed (``HierarchicalDispatch.declared_output_ports_for``), the
+    index the acceptance writes (``LeafAcceptanceAssembly._outputs``) and the check
+    that refuses an unclaimed port (``ResolutionCommitsMixin.accept_review``) — so
+    "told", "filed" and "enforced" cannot drift apart again, which is what defect D3
+    was made of.
+    """
+
+    covered = criterion_linked_occurrences(coverage_in_revision(semantics, mission_id, revision))
+    binding = semantics.task_semantics_of(mission_id, str(task_id)) if producer in covered else None
+    return declared_ports_in_revision(
+        semantics.list_data_requirements(mission_id, revision),
+        producer,
+        binding=binding,
+        criterion_linked=producer in covered,
+    )
+
+
+def criterion_linked_occurrences(coverage: Sequence[Any]) -> frozenset[Any]:
+    """The occurrences a plan's ``criterion_links`` point at.
+
+    ``ObligationCoverage.covered_by`` *is* that set: it is built by
+    :func:`~..planning.htn.compiler.coverage_from_slots` out of the adopted method's
+    ``composition.criterion_links``, resolving a link with no ``child_step`` to the
+    finalizer slot.  Reading it back here rather than walking the links again is what
+    keeps one answer to "which step carries a parent criterion".
+    """
+
+    return frozenset(
+        occurrence for claim in coverage for occurrence in getattr(claim, "covered_by", ())
+    )
+
+
+def coverage_in_revision(semantics: Any, mission_id: str, revision: int) -> tuple[Any, ...]:
+    """:func:`stored_coverage` for a caller that holds only a store and a revision."""
+
+    from ..contracts.htn import TaskRef
+
+    bindings: dict[Any, Any] = {}
+    for spec in semantics.list_plan_memberships(mission_id, revision):
+        binding = semantics.task_semantics_of(mission_id, str(spec.task_id))
+        if binding is not None:
+            bindings[TaskRef(str(spec.task_id))] = binding
+    instances = tuple(
+        draft
+        for draft in semantics.list_method_instances(mission_id)
+        if TaskRef(str(draft.goal_id)) in bindings
+    )
+    adopted = tuple(
+        draft.instance_id
+        for draft in instances
+        if semantics.method_instance_state(mission_id, str(draft.instance_id)) == "ADOPTED"
+    )
+    return stored_coverage(semantics, instances, adopted, bindings)
+
+
+def stored_coverage(
+    semantics: Any,
+    instances: Sequence[Any],
+    adopted: Sequence[Any],
+    bindings: Mapping[Any, Any],
+) -> tuple[Any, ...]:
+    """The ``obligation_coverage`` claims of a plan read back from the store.
+
+    The claims are a *function* of the adopted method instances — each one's contract
+    says which parent criterion each slot covers, and the instance says which
+    occurrence each slot bound — so they are recomputed rather than stored twice.
+    :func:`~..planning.htn.compiler.coverage_from_slots` is that function, shared with
+    the compiler so a re-read plan and a freshly compiled one cannot disagree about
+    what covers what.
+
+    An instance whose method the registry no longer holds contributes nothing rather
+    than raising: the plan is still readable, and the coverage check will report the
+    gap in the language it is about.
+    """
+
+    from ..contracts.htn import TaskRef
+    from ..planning.htn.compiler import CompilationRefused, coverage_from_slots
+    from ..storage.store import StoreError
+
+    chosen = {str(item) for item in adopted}
+    claims: list[Any] = []
+    for draft in instances:
+        if str(draft.instance_id) not in chosen:
+            continue
+        parent = bindings.get(TaskRef(str(draft.goal_id)))
+        if parent is None:
+            continue
+        try:
+            stored = semantics.get_method(
+                str(draft.method_ref.method_id), int(draft.method_ref.version)
+            )
+        except StoreError:
+            continue
+        by_slot = {str(child.slot_key): child.occurrence_id for child in draft.child_bindings}
+        try:
+            claims.extend(
+                coverage_from_slots(stored.contract, by_slot, obligation=parent.obligation_id)
+            )
+        except CompilationRefused:
+            continue
+    return tuple(claims)
+
+
+def _merge_ports(
+    consumed: Mapping[str, VersionedRef], binding: Any
+) -> Mapping[str, VersionedRef]:
+    """``consumed`` plus the required ports a criterion-linked producer declares."""
+
+    if binding is None:
+        return consumed
+    ports = dict(consumed)
+    for port in getattr(binding, "output_ports", ()):
+        if port.required:
+            ports.setdefault(port.port_key, port.schema_ref)
+    return ports
 
 
 def _ports_of(requirements: Sequence[Any], producer: OccurrenceId) -> Mapping[str, VersionedRef]:
@@ -193,6 +361,10 @@ __all__ = (
     "accepted_output_json",
     "check_against_ports",
     "check_declared",
+    "coverage_in_revision",
+    "criterion_linked_occurrences",
     "declared_output_ports",
     "declared_ports_in_revision",
+    "output_ports_in_revision",
+    "stored_coverage",
 )
