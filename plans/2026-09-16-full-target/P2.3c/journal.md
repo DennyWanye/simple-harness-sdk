@@ -2473,6 +2473,8 @@ OPEN 谓词 + 真否定观察 = 永远 UNKNOWN（`NO_SUPPORT`），于是 `_gath
 | 类别 | 名字 | 位置 | 说明 |
 |---|---|---|---|
 | 事件 | `ManagementNotApplicableUnderHierarchical` | `commit_service.MANAGEMENT_NOT_APPLICABLE` | D4；已加进 `test_hierarchical_event_flow.NEW_EVENT_TYPES`（legacy Mission 永不产生） |
+| 事件 | `HierarchicalRefinementRequested` | `commit_service.REFINEMENT_REQUESTED` | D5-B / 审阅 P2-5；键 `(mission, revision)`，即「每修订一轮」这条界限本身 |
+| 提示词 | `worker-hierarchical-v2` | `runtime/role_templates.WORKER_HIERARCHICAL` | 审阅 P1-2；sha256 `120372b8…`。v1 保留注册且摘要仍冻结（`WORKER_HIERARCHICAL_V1`） |
 | 理由码 | `proposal_not_grounded` | `event_handler.PROPOSAL_NOT_GROUNDED` | D2c |
 | 理由码 | `root_review_rejected` | `event_handler.ROOT_REVIEW_REPAIR_REASON`（走 `PlanningRejected`） | D5-A |
 | 配置 | `OrchestratorConfig.max_root_review_repairs`（默认 1） | `runtime/assembly.py` | D5-A；已进 `to_json()` |
@@ -2582,6 +2584,62 @@ uv run --frozen --no-sync --group dev --extra local-capacity \
 「到 COMPLETED」这条交付补齐。与 P2.3c 第三部分第 4 轮的 COMPLETED 不同，
 这一次终结步有产物，不依赖评审员宽容。
 
+## 2e. 审阅处置（独立审阅稿 `reviews/审阅-第四部分P2.3d-2026-09-17.md`，结论「需修后合」）
+
+审阅方式：只读源码 + 隔离副本全量 + 16 条自拟变异 + 3 个探针 + 证据库逐库核对。
+下表逐条处置；每条都**先写红测试再修**，每条的修法都用变异复验过（拿掉修法就红）。
+
+| 级别 | 条目 | 处置 | 红测试 / 变异杀手 |
+|---|---|---|---|
+| **P0-1** | D5-A / D5-B 新开的 Planner 轮没接 `BudgetExhausted`，整个 `run()` 带 traceback 退出，Mission 停在 ACTIVE 无 `MissionFailed` | **已修** | `test_root_review_repair.py::test_a_repair_round_that_cannot_be_funded_stops_the_mission_visibly`、`::test_the_whole_loop_survives_a_repair_round_it_cannot_fund`、`test_nested_compound_refinement.py::test_a_refinement_round_that_cannot_be_funded_stops_the_mission_visibly` |
+| **P1-1** | D2b 只做了半程：合成方法准入后无人再问 Planner | **已修（三处）** | `test_evidence_saturation.py::test_a_saturated_goal_is_synthesised_and_the_new_method_is_planned`、`::test_the_planning_ladder_waits_for_a_synthesis_round_instead_of_racing_it` |
+| **P1-2** | 冻结提示词 `worker-hierarchical-v1` 的认领规则与 D3 相反 | **已修** | `test_output_port_claims.py::test_no_hierarchical_worker_prompt_makes_the_claim_conditional_on_a_consumer` |
+| **P1-3** | 变异 M11 存活：D5-B「每修订一轮」守卫没被钉住 | **已修** | `test_nested_compound_refinement.py::test_the_revision_is_not_reopened_once_the_first_round_has_settled`（变异 M11 现 KILLED） |
+| P2-2 | 修复轮的拒绝理由被同 ordinal 键吞掉 | **已修** | `test_root_review_repair.py::test_the_repair_record_does_not_swallow_the_rounds_own_rejection` |
+| P2-3 | 「梯子各一轮」不准确 | **已改口径**（`_repair_after_root_review` docstring + 本节下方） | — |
+| P2-4 | 修复轮遇 `RoutingUnavailable` / `ContextRejected` 用的是 PLANNING 的写法 | **已修**（随 P0-1 的 `_stop_planning_round` / `_prune_deferred`） | 与 P0-1 同一组测试 |
+| P2-5 | `_refinement_rounds` 是进程内状态 | **已修**（改为事件 `HierarchicalRefinementRequested`，键 `(mission, revision)`） | `test_nested_compound_refinement.py::test_a_restarted_process_does_not_ask_the_same_revision_again` |
+| P2-6 | 变异 M05 存活：criterion-linked 但 optional 的端口语义未钉 | **已修**（选「只并入 required 端口」，理由见下） | `test_finalizer_output_ports.py::test_an_optional_port_of_a_criterion_linked_step_is_not_owed`（M05 现 KILLED） |
+| P2-7 | `declared_output_ports(network)` 用 zip 索引对齐 | **已修**（改 `binding_for_occurrence`） | `test_finalizer_output_ports.py::test_the_network_reader_matches_the_binding_by_occurrence_not_by_position` |
+| P2-8 | D5-A 夹具修复轮 ordinal=1，包里没有 findings | **已修**（夹具先花掉 ordinal 1） | `test_root_review_repair.py::test_the_findings_are_in_the_package_the_repair_round_actually_carries` |
+| P2-9 | 「不再烧 no_progress 额度」口径不准 | **已改口径**（HANDOFF / CHANGELOG / 下方） | — |
+| P2-10 | 非终结步 criterion-linked 无独立测试 | **已补** | `test_finalizer_output_ports.py::test_a_criterion_link_to_a_non_finalizer_step_declares_that_steps_ports` |
+| P2-1 | D5-A 连续 REJECT 的跨修订链路测试 | **未做**，理由同偏差 2（整链脚本化＝把真实冒烟重写一遍）。跨修订的界限已在 `_repair_after_root_review` docstring 写清：每修订 1 次修复 + `max_root_review_cuts` 的裁剪预算封顶。**交下一片** | — |
+
+### 几条判断的理由
+
+1. **P0-1 为什么不是 `fail_planning`**：`fail_planning` 把停机写成「规划失败」并跳过级联，
+   而这条路上的 Mission **已经有一份提交过的计划**。所以新增 `_stop_planning_round`：
+   还在 PLANNING 的走原路（逐字节不变，legacy golden 读的就是它），过了 PLANNING 的走
+   `fail_mission`，报告里带同样的 reason，还带上 Task 行。
+2. **P1-1 为什么是三处而不是一处**：①没有任何调用点在合成之后问 Planner；
+   ②准入只进内存 registry，`compile_proposal` 读的是 `htn_store`，所以即使问了也会
+   死在 `method … is not stored`（`apply_synthesizer_reply` 现在顺手 publish，
+   沿用 store 自己的「同字节即 no-op」规则）；③梯子在跟合成**赛跑**——planner n+1 在
+   planner n 被拒的瞬间就建好了（包封在旧库上），谁先回决定 Mission 生死。
+   把 `max_planning_attempts` 调大只是把赛跑往后挪。现在：有合成轮在途时梯子**等**，
+   每条准入的合成方法**买一级**（`_synthesis_credits`，从事件读，重启后同一个数）。
+3. **P1-2 为什么是新版本不是改字**：Attempt 重放钉住 `prompt_version`（§26.3），
+   改字等于改写过去。`worker-hierarchical-v1` 保留注册且摘要仍冻结，
+   新 Mission 拿 `worker-hierarchical-v2`（措辞与 AppWorld 版一致）。
+4. **P2-6 选「只并入 required」的理由**：「declared」就是「owed」——
+   `declared_output_ports_for` 对集合里每个端口都报 `required: True`，
+   `OUTPUT_PORT_UNCLAIMED` 也照此拒。把 optional 端口并进去，等于告诉模型「必须交」
+   又照此强制，与契约相反；并进去但标 `required=False`，则是「告知但永不强制」，
+   等于什么都没说。被边消费的端口不受影响：那是消费者的要求把它放进集合的。
+
+5. **§2d 那次 COMPLETED 跑在审阅前的代码上**：它用的是 `worker-hierarchical-v1`（P1-2 的旧措辞），也没有走过 P0-1/P1-1 的任何分支。结论仍然成立（终结步端口有产物 = D3 在真实模型上闭环），但它**不是**对本节这批改动的验证。Grok 两臂重跑前值得再跑一次冒烟，成本一次约 14 万 token；**记为未做项交下一片**。
+
+### P2-3 / P2-9 两处口径更正
+
+- **P2-3**：D5-A 开的是**一轮**，不是 Mission 此后只花一轮。那一轮是普通 Planner 轮，
+  提案读不懂时 `_planning_rejected` 照常爬梯子（总计受 `max_planning_attempts` 约束）。
+  本分支界定的是「一次根验收拒绝可以重开几次规划」；跨修订的封顶是 `max_root_review_cuts`。
+- **P2-9**：D4 的准确说法是「**no_progress 上限不再作用于分层 Task**」，不是
+  「不再烧 no_progress 额度」。`no_progress_count` 只数 attempt 的失败原因；
+  真正烧额度的是 manager 收集路径末尾的 `_enforce_no_progress`，短路后分层 Task
+  不再进这条路，重复验证失败只受 `max_attempts` 约束。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、
@@ -2654,3 +2712,5 @@ uv run --frozen --no-sync --group dev --extra local-capacity \
   超时/5xx 把 8 次 attempt 吃光，没走到根评审；端点恢复后补跑一次即可。
   这是本片唯一一条「机制装好了但没在真模型上端到端验过」的缺口，Grok 验收重跑前应先补上。
 - `FREEZE.json` 重生成（本片动了被钉住的上游文件，见 HANDOFF §2 第 9 条）。
+- 审阅 P2-1：D5-A 连续 REJECT 的跨修订链路测试（脚本化 planner + 恒 REJECT 的 reviewer，断言终态是 `HierarchicalRootReviewCutBudgetSpent`/stall 而不是循环）。界限已在代码与 docstring 写清，缺的是一条跑到 stall 的链路测试，成本与偏差 2 同源。
+- 审阅后冒烟重跑一次（见 §2e 理由 5）。
