@@ -687,10 +687,10 @@ def hierarchical_worker_versions() -> frozenset[str]:
     return frozenset(_HIERARCHICAL_WORKER_VERSIONS)
 
 
-#: The key a :class:`~...governance.domains.DomainProfileV1` uses to name its
-#: hierarchical Worker prompt.  It is deliberately *not* the role name ``worker``:
-#: ``template_for_domain`` reads that one for the DAG mode, and a domain that
-#: overwrote it would break every legacy Mission of that domain.
+#: How a domain names its hierarchical Worker prompt, for messages and for tests.  The
+#: mapping itself lives beside the domain profiles
+#: (:data:`~..governance.domains.HIERARCHICAL_WORKER_TEMPLATES`) and deliberately not
+#: inside ``DomainProfileV1.role_templates``, which is read as "role name → version".
 HIERARCHICAL_WORKER_ROLE_KEY = "worker_hierarchical"
 
 
@@ -703,7 +703,9 @@ def hierarchical_worker_for_domain(domain: DomainProfileV1 | Any) -> RoleTemplat
     the code-domain words again without anybody being told.
     """
 
-    wanted = getattr(domain, "role_templates", {}).get(HIERARCHICAL_WORKER_ROLE_KEY)
+    from ..governance.domains import HIERARCHICAL_WORKER_TEMPLATES
+
+    wanted = HIERARCHICAL_WORKER_TEMPLATES.get(str(getattr(domain, "id", "")))
     if wanted is None:
         return WORKER_HIERARCHICAL
     selected = TEMPLATE_VERSIONS.get("worker", {}).get(wanted)

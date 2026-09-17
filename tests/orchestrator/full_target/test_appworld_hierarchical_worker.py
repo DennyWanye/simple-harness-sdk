@@ -127,38 +127,37 @@ def test_a_code_domain_mission_still_gets_the_code_hierarchical_worker(tmp_path)
 
 
 def test_the_appworld_domain_names_a_registered_hierarchical_worker() -> None:
-    """A domain naming a version this build does not register is a deployment error."""
+    """Every version the domain table names is one this build actually registers."""
 
-    from agent_orchestrator.governance.domains import APPWORLD_PROFILE
+    from agent_orchestrator.governance.domains import (
+        APPWORLD_PROFILE,
+        HIERARCHICAL_WORKER_TEMPLATES,
+    )
     from agent_orchestrator.runtime.role_templates import (
-        HIERARCHICAL_WORKER_ROLE_KEY,
         hierarchical_worker_for_domain,
         hierarchical_worker_versions,
     )
 
-    named = APPWORLD_PROFILE.role_templates[HIERARCHICAL_WORKER_ROLE_KEY]
-    assert named in hierarchical_worker_versions()
+    assert set(HIERARCHICAL_WORKER_TEMPLATES.values()) <= hierarchical_worker_versions()
+    named = HIERARCHICAL_WORKER_TEMPLATES[APPWORLD_DOMAIN]
     assert hierarchical_worker_for_domain(APPWORLD_PROFILE).prompt_version == named
 
 
-def test_a_domain_naming_an_unregistered_version_is_refused() -> None:
-    from dataclasses import replace
+def test_a_domain_naming_an_unregistered_version_is_refused(monkeypatch) -> None:
+    """A deployment error is refused, not answered with the code-domain prompt."""
 
-    from agent_orchestrator.contracts import ContractError
-    from agent_orchestrator.governance.domains import APPWORLD_PROFILE
-    from agent_orchestrator.runtime.role_templates import (
-        HIERARCHICAL_WORKER_ROLE_KEY,
-        hierarchical_worker_for_domain,
-    )
+    from types import MappingProxyType
 
-    broken = replace(
-        APPWORLD_PROFILE,
-        role_templates={
-            **dict(APPWORLD_PROFILE.role_templates),
-            HIERARCHICAL_WORKER_ROLE_KEY: "worker-appworld-hierarchical-v99",
-        },
-    )
     import pytest
 
+    from agent_orchestrator.contracts import ContractError
+    from agent_orchestrator.governance import domains
+    from agent_orchestrator.runtime.role_templates import hierarchical_worker_for_domain
+
+    monkeypatch.setattr(
+        domains,
+        "HIERARCHICAL_WORKER_TEMPLATES",
+        MappingProxyType({APPWORLD_DOMAIN: "worker-appworld-hierarchical-v99"}),
+    )
     with pytest.raises(ContractError, match="unavailable domain prompt"):
-        hierarchical_worker_for_domain(broken)
+        hierarchical_worker_for_domain(domains.APPWORLD_PROFILE)

@@ -422,21 +422,7 @@ APPWORLD_PROFILE_V3 = replace(
         )},
     },
 )
-#: P2.3d / defect D1.  A *new* profile version rather than an edit of v3: a frozen
-#: profile is what a replayed Mission reads back, and adding a key to the one already
-#: frozen would change what those Missions think they ran under.  The new key is
-#: ``worker_hierarchical`` and not ``worker`` — ``template_for_domain`` reads the
-#: latter for the DAG mode, and overwriting it would move every legacy AppWorld
-#: Mission onto a prompt that asks for ``outputs``.
-APPWORLD_PROFILE_V4 = replace(
-    APPWORLD_PROFILE_V3,
-    version="4",
-    role_templates={
-        **APPWORLD_PROFILE_V3.role_templates,
-        "worker_hierarchical": "worker-appworld-hierarchical-v1",
-    },
-)
-APPWORLD_PROFILE = APPWORLD_PROFILE_V4
+APPWORLD_PROFILE = APPWORLD_PROFILE_V3
 
 AGENTDOJO_PROFILE = DomainProfileV1(
     id=AGENTDOJO_DOMAIN, version="1",
@@ -479,6 +465,23 @@ ARE_PROFILE = DomainProfileV1(
         "explorer", "exploiter", "simplifier", "connector", "failure_analyst",
     )},
 )
+
+#: P2.3d / defect D1: the *hierarchical* Worker prompt each domain's Missions get.
+#:
+#: Kept beside the profiles rather than inside one.  ``DomainProfileV1.role_templates``
+#: is read as "role name → prompt version" — ``template_for_domain`` looks a role up in
+#: it, and callers iterate it expecting every key to name a role — so a
+#: ``worker_hierarchical`` entry there is a key that breaks both readings.  It is also
+#: not a *frozen* fact about a Mission in the way the profile is: the hierarchical mode
+#: had no working AppWorld path before this slice, so there is no replay to preserve and
+#: nothing here needs a profile version bump.
+#:
+#: A domain with no entry falls back to the code-domain ``WORKER_HIERARCHICAL``; an
+#: entry naming a version this build does not register is refused
+#: (:func:`~..runtime.role_templates.hierarchical_worker_for_domain`).
+HIERARCHICAL_WORKER_TEMPLATES: Mapping[str, str] = MappingProxyType({
+    APPWORLD_DOMAIN: "worker-appworld-hierarchical-v1",
+})
 
 DOMAINS: Mapping[str, DomainProfileV1] = MappingProxyType({
     CODE_DOMAIN: CODE_PROFILE, DOC_DOMAIN: DOC_PROFILE, APPWORLD_DOMAIN: APPWORLD_PROFILE,

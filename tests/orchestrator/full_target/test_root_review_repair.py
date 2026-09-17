@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_htn_end_to_end import World, _accept_every_child, committed  # noqa: E402
 from test_root_review_coordinator import coordinator, review  # noqa: E402
 
+from agent_orchestrator.contracts.models import MissionStatus  # noqa: E402
 from agent_orchestrator.contracts.resolution import (  # noqa: E402
     CriterionVerdict,
     ReviewVerdict,
@@ -215,3 +216,66 @@ def test_the_bound_is_configuration_and_zero_switches_the_branch_off(tmp_path) -
 def test_the_config_refuses_a_negative_bound() -> None:
     with pytest.raises(ValueError, match="max_root_review_repairs"):
         OrchestratorConfig(evidence_root=Path("/tmp/none"), max_root_review_repairs=-1)
+
+
+def test_a_rejected_repair_round_does_not_kill_a_mission_that_holds_a_plan(tmp_path) -> None:
+    """The other half of D5-A, and the half that bites hardest.
+
+    ``_planning_rejected`` used to end ``fail_planning`` unconditionally once the
+    ladder was spent.  That was sound while the only planning rounds were the ones
+    that *produced* the first plan — the Mission was PLANNING, and a Mission that
+    cannot be planned is a dead Mission.  D5-A and D5-B both open a round **after** a
+    plan is committed and the Mission is ACTIVE, so the old ending turned "the repair
+    attempt did not work out" into "the Mission is failed", throwing away a plan whose
+    leaves were all accepted.
+
+    **Mutation**: drop the ``mission.status is MissionStatus.PLANNING`` guard and this
+    goes red — the Mission comes back FAILED with the repair round's reason.
+    """
+
+    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-survives")
+    evidence = Path(tmp_path) / "evidence"
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=5,
+        max_root_review_repairs=1,
+        # One rung: the repair round itself is the last one, so its rejection lands on
+        # the branch this test is about instead of opening yet another round.
+        max_planning_attempts=1,
+    )
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            mission = loop.store.get_mission(world.mission.id)
+            assert mission is not None
+            before = mission.status
+            assert await loop._advance_root_review(mission, loop._new_mode(mission))
+            intent = next(
+                item
+                for item in loop.store.list_intents(
+                    "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                )
+                if item.mission_id == world.mission.id and item.kind == "plan"
+            )
+            await loop._planning_rejected(
+                intent, reason="proposal_unreadable", detail={"error": "no block"}
+            )
+            return {
+                "before": before,
+                "after": loop.store.get_mission(world.mission.id).status,
+                "events": [
+                    item.type for item in loop.store.list_events(world.mission.id)
+                ],
+            }
+
+    outcome = asyncio.run(case())
+    assert outcome["before"] is MissionStatus.ACTIVE, "the fixture holds a committed plan"
+    assert outcome["after"] is MissionStatus.ACTIVE
+    assert "MissionFailed" not in outcome["events"]
+    # The refusal is still written down — not failing is not the same as not noticing.
+    # (One record, not two: ``record_planning_rejected`` is keyed by ordinal, and the
+    # repair round and its rejection are the same ordinal.)
+    assert "PlanningRejected" in outcome["events"]

@@ -30,9 +30,7 @@ def test_published_appworld_result_example_passes_strict_ingress(role):
 
 
 def test_new_default_and_frozen_legacy_keep_distinct_contract_versions():
-    # P2.3d / defect D1: profile 4 adds the ``worker_hierarchical`` key and changes no
-    # DAG-mode role template, which the per-role assertions below are the witness for.
-    assert resolve_domain("appworld-v1").version == "4"
+    assert resolve_domain("appworld-v1").version == "3"
     restored = DomainProfileV1.from_json(APPWORLD_PROFILE_V1.to_json())
     assert restored.version == "1"
     for role in RESULT_ROLES:
@@ -57,25 +55,26 @@ def test_new_default_and_frozen_legacy_keep_distinct_contract_versions():
         )
 
 
-def test_the_hierarchical_worker_key_is_additive_and_names_a_registered_version():
+def test_the_hierarchical_worker_pointer_is_beside_the_profile_not_inside_it():
     """P2.3d / defect D1: the hierarchical Worker prompt AppWorld Missions get.
 
-    ``template_for_domain`` never reads this key, so every legacy AppWorld Mission
-    keeps ``worker-appworld-v3``; ``_hierarchical_worker_template`` reads it and stops
-    returning the code-domain prompt for an AppWorld Mission.
+    It is **not** a ``role_templates`` entry: that mapping is read as "role name →
+    prompt version" both by ``template_for_domain`` and by callers that iterate it, so
+    a ``worker_hierarchical`` key there is a key that breaks both readings.  Keeping
+    the pointer beside the profiles also means no profile version has to move: the
+    hierarchical mode had no working AppWorld path to replay.
     """
 
-    from agent_orchestrator.governance.domains import APPWORLD_PROFILE_V3
+    from agent_orchestrator.governance.domains import HIERARCHICAL_WORKER_TEMPLATES
     from agent_orchestrator.runtime.role_templates import (
-        HIERARCHICAL_WORKER_ROLE_KEY,
+        ROLES,
         hierarchical_worker_for_domain,
     )
 
-    assert HIERARCHICAL_WORKER_ROLE_KEY not in APPWORLD_PROFILE_V3.role_templates
-    assert dict(APPWORLD_PROFILE.role_templates) == {
-        **dict(APPWORLD_PROFILE_V3.role_templates),
-        HIERARCHICAL_WORKER_ROLE_KEY: "worker-appworld-hierarchical-v1",
-    }
+    assert set(APPWORLD_PROFILE.role_templates) <= set(ROLES), (
+        "every key of role_templates names a role; a non-role key breaks both readers"
+    )
+    assert HIERARCHICAL_WORKER_TEMPLATES["appworld-v1"] == "worker-appworld-hierarchical-v1"
     chosen = hierarchical_worker_for_domain(APPWORLD_PROFILE)
     assert chosen.prompt_version == "worker-appworld-hierarchical-v1"
     assert "appworld_execute" in chosen.tool_names

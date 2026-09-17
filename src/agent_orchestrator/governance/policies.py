@@ -260,6 +260,10 @@ SNAPSHOT_FIELDS: dict[str, str] = {
             # Mission stops asking and takes the idle-stall path, so it is a
             # behaviour parameter and belongs in the snapshot.
             "max_root_review_cuts",
+            # P2.3d / defect D5-A: how many times one plan revision may answer a
+            # blocking root-review rejection by asking the Planner again.  Same reason
+            # as the line above — it decides whether a Mission repairs or stalls.
+            "max_root_review_repairs",
             "manager_reserve_tokens",
             "aging_window_seconds",
             "global_budget",

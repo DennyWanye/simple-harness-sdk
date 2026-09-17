@@ -2367,10 +2367,18 @@ L4 M3 3 局烧光 `no_progress_limit` → `no_progress`，两边都把 Task 真�
    「可变集合 `_HIERARCHICAL_WORKER_VERSIONS` + `register_hierarchical_worker()` + 域模块注册完毕后
    在模块尾部**冻结一次**」，并新增 `hierarchical_worker_versions()`、
    `hierarchical_worker_for_domain()`、`HIERARCHICAL_WORKER_ROLE_KEY = "worker_hierarchical"`。
-3. `governance/domains.py`：新增 **`APPWORLD_PROFILE_V4`**（`replace(V3, version="4")` + 一个
-   `worker_hierarchical` 键），`APPWORLD_PROFILE = APPWORLD_PROFILE_V4`。
-   **不是就地改 V3**：冻结档是重放 Mission 读回来的东西，给已冻结的版本加键会改变那些 Mission
-   「自己以为跑在什么上面」。键名不用 `worker`，因为 `template_for_domain` 读的正是那一个，
+3. `governance/domains.py`：新增**独立映射** `HIERARCHICAL_WORKER_TEMPLATES: Mapping[str, str]`
+   （`{APPWORLD_DOMAIN: "worker-appworld-hierarchical-v1"}`），域档 `APPWORLD_PROFILE`
+   与 `resolve_domain("appworld-v1").version == "3"` **一个字节都没动**。
+   **这一步先走错过一次**（记为偏差 5）：原本新建了 `APPWORLD_PROFILE_V4`
+   （`replace(V3, version="4")` + 一个 `worker_hierarchical` 键），被 gap_phase1 的
+   `test_startup_tool_binding` 抓出 `KeyError: 'worker_hierarchical'` ——
+   `DomainProfileV1.role_templates` 不只被 `template_for_domain` 按 key 查，
+   还被调用方**整体遍历**（`for role in profile.role_templates: ROLES[role]`），
+   所以那张表的键必须个个是真角色名，放不下「角色 × 编排语义」这第二维。
+   指针挪到表外以后也不必再动档位版本：层次模式此前在 AppWorld 域下根本没有可重放的历史，
+   没有「已冻结的 Mission 以为自己跑在什么上面」需要区分。
+   键名同样不用 `worker`：`template_for_domain` 读的正是那一个，
    覆盖它会把每个 legacy AppWorld Mission 换到一个要求 `outputs` 的提示词上。
 4. `event_handler._hierarchical_worker_template` 的兜底由常量改为
    `hierarchical_worker_for_domain(self.commit.domain_for(mission_id))`；域没登记时仍回落到
@@ -2469,8 +2477,87 @@ OPEN 谓词 + 真否定观察 = 永远 UNKNOWN（`NO_SUPPORT`），于是 `_gath
 | 理由码 | `root_review_rejected` | `event_handler.ROOT_REVIEW_REPAIR_REASON`（走 `PlanningRejected`） | D5-A |
 | 配置 | `OrchestratorConfig.max_root_review_repairs`（默认 1） | `runtime/assembly.py` | D5-A；已进 `to_json()` |
 | 配置 | `HierarchicalDispatch.evidence_saturation_rounds`（默认 2） | `orchestrator/hierarchical_dispatch.py` | D2b |
-| 域档 | `APPWORLD_PROFILE_V4` + `role_templates["worker_hierarchical"]` | `governance/domains.py` | D1；`resolve_domain("appworld-v1").version` 由 `"3"` 变 `"4"` |
+| 域表 | `HIERARCHICAL_WORKER_TEMPLATES`（域 id → 层次 Worker 提示词版本） | `governance/domains.py` | D1；**域档版本不变**，`resolve_domain("appworld-v1").version` 仍是 `"3"` |
 | 提示词 | `worker-appworld-hierarchical-v1` | `runtime/appworld_templates.py` | D1；sha256 `9ad842af…` |
+
+## 2b. 每条缺陷的「先红后绿」测试
+
+每条都在**修之前**跑过一次，红的理由就是缺陷本身；D3/D4/D1/D2b/D5-B 另用临时变异
+（把修法那一行改回旧行为）复验过「拿掉修法就红、其余全绿」。
+
+| 缺陷 | 红测试（文件::名字） | 红的原因 |
+|---|---|---|
+| D3 | `test_finalizer_output_ports.py::test_a_criterion_linked_finalizer_declares_the_port_its_contract_names` | 终结步端口不在集合里 |
+| D3 | `test_finalizer_output_ports.py::test_the_finalizer_leaf_is_told_about_its_declared_output_port` | 上下文包没有 `declared_output_ports` |
+| D3 | `test_finalizer_output_ports.py::test_a_finalizer_that_claims_no_port_is_refused` | 漏填不触发 `OUTPUT_PORT_UNCLAIMED` |
+| D3 | `test_finalizer_output_ports.py::test_the_three_readers_give_the_same_answer` | 三个读者答案不一致 |
+| D3 | `test_htn_end_to_end.py::test_the_finalizers_port_is_declared_although_no_edge_consumes_it` | 原测试断言的正是旧行为（已改写） |
+| D4 | `test_hierarchical_management_door.py::test_a_hierarchical_mission_opens_no_legacy_manager_intent` | 照开 manager intent |
+| D4 | `test_hierarchical_management_door.py::test_the_refusal_is_recorded_where_an_operator_reads_it` | 无记录 |
+| D4 | `test_hierarchical_management_door.py::test_the_legacy_mode_still_opens_its_management_round` | 反向护栏 |
+| D1 | `test_appworld_hierarchical_worker.py::test_the_prompt_is_the_appworld_hierarchical_one` | 拿到代码域提示词 |
+| D1 | `test_appworld_hierarchical_worker.py::test_an_appworld_hierarchical_attempt_exposes_appworld_execute` | `tool_not_exposed` 的根因 |
+| D1 | `test_appworld_result_contract.py::test_the_hierarchical_worker_pointer_is_beside_the_profile_not_inside_it` | 指针位置（回滚 V4 后改写） |
+| D5-A | `test_root_review_repair.py::test_a_blocking_finding_reopens_one_planner_round` | REJECT 后直接 idle stall |
+| D5-A | `test_root_review_repair.py::test_the_bound_is_configuration_and_zero_switches_the_branch_off` | 上限 |
+| D5-A | `test_root_review_repair.py::test_the_findings_travel_to_the_planner_as_durable_feedback` | 重问但不说哪里错（§9.1 禁止的静默重试） |
+| D5-A | `test_root_review_repair.py::test_a_rejected_repair_round_does_not_kill_a_mission_that_holds_a_plan` | 事后规划轮被拒时 `fail_planning` 判死已提交计划的 ACTIVE Mission |
+| D2c | `test_hierarchical_event_flow.py::test_a_readable_block_refused_on_its_content_is_not_grounded` | 理由码混成一条 |
+| D2c | `test_hierarchical_event_flow.py::test_a_reply_with_no_readable_block_is_unreadable` | 反向护栏 |
+| D5-B | `test_nested_compound_refinement.py::test_an_unrefined_nested_compound_reopens_the_planner` | 二层计划提交后再无规划轮 |
+| D5-B | `test_nested_compound_refinement.py::test_a_fully_refined_plan_asks_for_nothing` | 反向护栏 |
+| D2b | `test_evidence_saturation.py::test_the_same_observer_reading_twice_with_no_change_is_saturation` | 活锁：永远返回空 |
+| D2b | `test_evidence_saturation.py::test_saturation_never_settles_the_proposition` | I18 护栏 |
+| 冒烟 | `test_real_provider_hierarchical_smoke.py::test_real_hierarchical_planner_round`（收口断言） | 0.12.0 的 COMPLETED 下 `accepted_outputs` 为空 |
+
+## 2c. 真实模型冒烟：跑到了，收口断言过了，但**没到 COMPLETED**
+
+**断言已补强**（本条的可交付部分）：`test_real_provider_hierarchical_smoke.py` 的 report
+新增 `accepted_outputs` 段（每条 `AcceptanceCommitted` 的 `task_id` → 认领端口列表），收口处新增
+
+```python
+empty = [item for item in report["accepted_outputs"] if not item["ports"]]
+assert not empty, ...
+```
+
+理由：0.12.0 那次 `COMPLETED` 是**评审员宽容**而不是机制成立——同一个 D3 缺陷下
+deepseek-flash 判 ACCEPT、grok-4.6 判 REJECT。不把「每条验收都真的认领了端口」写成断言，
+下一次 `COMPLETED` 仍然什么都不证明。
+
+**本次结果**（`.local-test-evidence/2026-09-17/p23d-smoke-retry/report.json`）：
+
+| 项 | 值 |
+|---|---|
+| 测试 | `test_real_hierarchical_planner_round` **1 passed** |
+| 模型 | `gpt-5.6-luna`（见「模型偏差」） |
+| mission_id | `mission-8f18736bb4dbe2bc`（`run_id` 为 `null`——冒烟不经 runner，没有 run id） |
+| 规划 | `proposal_unreadable = false`，`plan_revisions = 1`（**D2c 的两个理由码都没被触发**） |
+| **D3 的活证据** | `accepted_outputs = [{task_id: task-0fcdcbe733…, ports: ["facts"]}]`——真实模型在真实叶子上**认领了一个 criterion-linked 端口**，`AcceptanceCommitted` 的列表不再为空。这正是 0.12.0 那次 COMPLETED 里空着的东西 |
+| 评审 | `TASK_CONTENT` 1 条 ACCEPT，根评审未开（没走到） |
+| token | 结算 **28 660**，attempts **8/8**，tool calls 7 |
+| 终态 | `FAILED / budget_exhausted` |
+
+**为什么没到 COMPLETED**：`progress` 显示 attempt 1 `TIMED_OUT: no progress for 180.0s`，
+其后数条 `SDK turn failed → RETRY_WAIT`——8 次 attempt 额度被端点的超时/5xx 吃光，
+不是机制拒绝。该中转端点整轮都在抽风：本片收尾时又打了 4 次最小探针
+（绕过 SDK 直连 `/chat/completions` 发 8 token 的 `ping`），拿到 **502 / 502 / 503 / 503**；
+更早的三次 SDK 尝试分别落在 `provider_server_error` / `provider_request_rejected`
+（该 base_url 的 `/v1/models` 21 个模型里**没有任何 `deepseek-*`**）/
+`provider_authentication_failed`。收尾时又整跑了一次（`p23d-smoke-final`，`mission-5fa69fd4664415af`），
+1.7 秒内两轮 Planner 全 `provider_server_error`、`planning_failed`、0 token——
+端点已经又不可用了。全程未打印 key。
+
+**模型偏差**：任务书要求用 `deepseek-flash`。本机 `llm_runtime.json` 唯一配置好的
+base_url 不提供这个模型（已用 `/v1/models` 核实），DeepSeek 官方 key 配在这个 base_url 上
+认证失败；因此实际跑的是该端点的出厂模型 `gpt-5.6-luna`。**记为偏差 8。**
+
+**端点恢复后补跑**（会把「到 COMPLETED」这一格补上）：
+
+```
+uv run --frozen --no-sync --group dev --extra local-capacity \
+  python -m pytest tests/orchestrator/full_target/test_real_provider_hierarchical_smoke.py \
+  --run-real-provider -q -s
+```
 
 ## 3. 旧模式 golden 是否变
 
@@ -2480,13 +2567,18 @@ OPEN 谓词 + 真否定观察 = 永远 UNKNOWN（`NO_SUPPORT`），于是 `_gath
 
 - D3/D5-A/D5-B/D2b 只在层次 Mission 的代码路径上；
 - D4 在 `_request_management` 里加的是模式分支，legacy 半边有专门的反向测试；
-- D1 只新增一个注册版本与一个**新**域档版本，没有编辑任何已冻结的提示词或档位。
+- D1 只新增一个注册提示词版本与一张**新**的域表，没有编辑任何已冻结的提示词或档位
+  （`APPWORLD_PROFILE` 与所有 `role_templates` 逐字节未动）。
 
 三个口径变化要记进发布说明：
 
-1. `resolve_domain("appworld-v1").version`：`"3"` → `"4"`（新建 Mission 冻结 V4；已冻结的不动）；
-2. `OrchestratorConfig.to_json()` 多一个 `max_root_review_repairs` 键（依赖配置 digest 做外部对照的脚本要重取基线）；
+1. `OrchestratorConfig.to_json()` 多一个 `max_root_review_repairs` 键（依赖配置 digest 做外部对照的脚本要重取基线）；
+2. `policy_snapshot()` 的 `config` 段同样多这一个键——新字段必须登记进
+   `governance.policies.SNAPSHOT_FIELDS`，否则 `policy_snapshot()` 对未分类字段直接抛
+   `ValueError`（与第三部分 a 的 `max_root_review_cuts` 同一条路；这次是被旧模式回归
+   51 条失败抓出来的）；
 3. `HIERARCHICAL_WORKER_VERSIONS` 不再是单元素集合。
+   （`resolve_domain("appworld-v1").version` **没有**变化，仍是 `"3"`。）
 
 ## 4. 偏差
 
@@ -2500,15 +2592,33 @@ OPEN 谓词 + 真否定观察 = 永远 UNKNOWN（`NO_SUPPORT`），于是 `_gath
    同样的保护由「三读者同答 + 上下文包必含端口 + 漏填必被 `OUTPUT_PORT_UNCLAIMED` 拒 +
    冒烟收口断言」四条覆盖，而最后一条正是原缺陷唯一的真实漏网点。**记为未做项交下一片。**
 3. **`max_planning_attempts` 默认值未改**，见 D2c 段的理由；runner 需显式传参。
-4. **`_next_planning_ordinal` 用 intent 探测而不是事件扫描**：`list_intents` 没有按 mission 过滤的入口，
+4. **两次用了 `git checkout -- <file>` 回滚自己刚写的临时变异**（`# TEMP-RED`，用来自证红测试真的红）。
+   任务书写的是「绝不 git stash/checkout」，这违反了字面规定。回滚的都是我自己在已提交状态上
+   刻意加的一行改坏代码，没有任何未提交的真实工作在里面，但仍如实记为偏差；下一片改用
+   「改完手动改回」或 `patch -R`。
+5. **D1 先建了 `APPWORLD_PROFILE_V4` 又整体回滚**（见 D1 修法第 3 步）：`role_templates`
+   被调用方整体遍历为角色名，放不下第二维；指针改到 `HIERARCHICAL_WORKER_TEMPLATES`。
+   代价是 `test_appworld_result_contract.py` / `test_appworld_hierarchical_worker.py`
+   各有一条测试跟着改写（现在钉的是「`role_templates` 的键个个是真角色名」这条更强的性质）。
+6. **`_next_planning_ordinal` 用 intent 探测而不是事件扫描**：`list_intents` 没有按 mission 过滤的入口，
    而 ordinal 就是创建键，逐个探测既准确又无需新 store API。
+7. **额外跑了 `gap_phase1`**（任务书给的回归范围把它 `--ignore` 掉了）。跑它是因为本片动了
+   `governance/`：新配置项没登记进 `SNAPSHOT_FIELDS`、`role_templates` 多一个非角色键，
+   两处都只有 `gap_phase1` 抓得到（`policy_snapshot` 的 `ValueError` 还会连带打挂旧模式回归
+   51 条）。当前结果 **169 passed / 27 skipped / 0 failed**；另有 **14 条 collection error
+   是本机环境既有的**（`pydantic` 未装、单独跑该目录时 `asyncio` marker 未注册），与本片无关。
+8. **真实冒烟用的是 `gpt-5.6-luna` 而不是任务书指定的 `deepseek-flash`**，且 Mission
+   没到 `COMPLETED`（`budget_exhausted`，8 次 attempt 被端点超时/5xx 吃光）。理由与证据见 §2c。
+   收口断言本身**过了**，D3 在真实模型上拿到了非空的 `accepted_outputs`。
 
 ## 5. 契约变更请求
 
 无。本片没有改 `contracts/`：新配置项在 `runtime/assembly.py`，新事件名在 `orchestrator/`，
 新域档版本在 `governance/`，端口规则在 `orchestrator/accepted_outputs.py`。
-`APPWORLD_PROFILE_V4` 用 `DomainProfileV1` 既有的 `role_templates` 映射承载新键，
-`DomainProfileV1` 不校验键名、`to_json`/`from_json` 原样收发，故无契约改动。
+`HIERARCHICAL_WORKER_TEMPLATES` 是 `governance/domains.py` 里的一张普通模块级映射，
+不进 `DomainProfileV1`、不进快照、不参与 `to_json`/`from_json`，故无契约改动。
+（`DomainProfileV1` 没有「角色 × 编排语义」这一维，真要把指针放进档位才是契约变更请求；
+本片按「表外指针」实现，等 P3/TaskGraph 有更多域再决定要不要进契约。）
 
 ## 6. 未做 / 交下一片
 
@@ -2517,3 +2627,7 @@ OPEN 谓词 + 真否定观察 = 永远 UNKNOWN（`NO_SUPPORT`），于是 `_gath
 - D4(b)（给 Manager 一个 hierarchical 变体，产出 `<plan_revision_proposal>`）——按诊断建议放到 P3/TaskGraph。
 - D3 的整链脚本化复现（见偏差 2）。
 - `run_h_arm.py` 需显式传 `max_planning_attempts=3`（见偏差 3）。
+- **真实模型冒烟跑到 COMPLETED**（见 §2c）——本次到了「计划提交 + 叶子验收认领端口」就被端点
+  超时/5xx 把 8 次 attempt 吃光，没走到根评审；端点恢复后补跑一次即可。
+  这是本片唯一一条「机制装好了但没在真模型上端到端验过」的缺口，Grok 验收重跑前应先补上。
+- `FREEZE.json` 重生成（本片动了被钉住的上游文件，见 HANDOFF §2 第 9 条）。

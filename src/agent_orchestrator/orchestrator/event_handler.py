@@ -2267,9 +2267,13 @@ class Orchestrator:
             if spec.form is TaskForm.COMPOUND
             and network.adopted_instance_for(spec.occurrence_id) is None
         ]
+        # Marked whichever way it came out: an occurrence set only changes with a new
+        # plan revision, so "this revision has nothing open" is as final an answer as
+        # "this revision has been put to the Planner" — and marking only the second
+        # would re-read the whole network every cycle for every finished plan.
+        self._refinement_rounds[mission.id] = revision
         if not open_compounds:
             return False
-        self._refinement_rounds[mission.id] = revision
         ordinal = self._next_planning_ordinal(mission.id)
         self._note(
             f"mission {mission.id}: plan revision {revision} still holds "
